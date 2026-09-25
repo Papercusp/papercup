@@ -115,6 +115,28 @@ export interface CutLegs {
   arm64?: boolean;
 }
 
+export interface MigrationBootSmokeOverride {
+  /** The exact superproject source whose migration corpus passed independently. */
+  sourceSha: string;
+  /** Durable reference to the successful full replay result. */
+  proofRef: string;
+  reason: string;
+}
+
+export function validateMigrationBootSmokeOverride(
+  override: MigrationBootSmokeOverride | undefined,
+  expectedSourceSha: string,
+): string | null {
+  if (!override) return null;
+  if (!isValidSourceSha(override.sourceSha) || override.sourceSha !== expectedSourceSha) {
+    return 'migration_boot_smoke_override_source_mismatch — proof sourceSha must equal the exact cut sourceSha';
+  }
+  if (!override.proofRef?.trim() || !override.reason?.trim()) {
+    return 'migration_boot_smoke_override_evidence_required — pass a proofRef and reason';
+  }
+  return null;
+}
+
 /** Runtime-only identity and retry controls for a release cut. The owner identity
  * is deliberately never persisted in the tree: the finished-byte identity audit
  * needs it as a search literal, but writing it into release source would create
@@ -154,6 +176,8 @@ export interface CutRuntimeEnv {
   releaseOperationId?: string;
   /** Enqueue instant, so the journal can separate queue wait from build time. */
   enqueuedAtMs?: number;
+  /** Explicit, exact-source, audited bypass after a separate full replay passes. */
+  migrationBootSmokeOverride?: MigrationBootSmokeOverride;
 }
 
 function requiredOwnerName(value: string): string {
@@ -181,6 +205,8 @@ export function buildCutEnv(
   runtime: CutRuntimeEnv,
   platform?: Platform,
 ): Record<string, string> {
+  const overrideError = validateMigrationBootSmokeOverride(runtime.migrationBootSmokeOverride, expectedSourceSha);
+  if (overrideError) throw new Error(overrideError);
   const env: Record<string, string> = {
     PAPERCUSP_PUBLISH_GITHUB: '0',
     PAPERCUSP_EXPECTED_SOURCE_SHA: expectedSourceSha,
@@ -203,6 +229,7 @@ export function buildCutEnv(
     // Mobile has its own release rail; declare the desktop-only scope explicitly.
     PAPERCUSP_SKIP_MOBILE: '1',
   };
+  if (runtime.migrationBootSmokeOverride) env.PAPERCUSP_SKIP_MIGRATION_BOOTSMOKE = '1';
   const ownerEmail = runtime.ownerEmail?.trim();
   if (ownerEmail) env.PAPERCUSP_RELEASE_OWNER_EMAIL = ownerEmail;
   // Absent => release-local.sh skips the writeback rather than guessing a path.

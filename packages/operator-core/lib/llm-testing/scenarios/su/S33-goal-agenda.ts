@@ -77,7 +77,7 @@ export function s33PlacementInput(c: S33Case, effected = false): PlanPlacementPr
   const portfolio: GoalPortfolioBrief = {
     schemaVersion: 1, assembledAt: NOW,
     goal: { id: GOAL, title: 'Fixture goal', status: stopped(c) ? c : 'active', body: null, killCriterion: null, standing: true, parentId: null },
-    worklist, pots: [{ harness: 'papercusp', role: 'owner', note: null }],
+    worklist, pots: [{ harness: 'papercusp', role: 'owner', note: null, killCriterion: null, linkId: 'fixture-link' }],
     drainFleet: { slug: 'fixture-supervisor', exists: true, controlState: 'active', leaderOwnerId: OWNER, live: 1, working: 1 },
     queue: { total: worklist.length, terminal: 0, inFlight: working ? 1 : 0, blocked: 0, needsHuman: 0, claimable: working ? 0 : worklist.length, claimabilityScope: 'issue-family' },
     launch: { settings: null, ceilings: launch.ceilings, headcount: launch.headcount },

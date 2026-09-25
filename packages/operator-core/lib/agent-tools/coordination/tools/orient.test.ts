@@ -1214,7 +1214,7 @@ const GOAL_PORTFOLIO: GoalPortfolioBrief = {
     parentId: null,
   },
   worklist: [],
-  pots: [{ harness: 'papercusp', role: 'owner', note: null }],
+  pots: [{ harness: 'papercusp', role: 'owner', note: null, killCriterion: null, linkId: 'fixture-link' }],
   drainFleet: {
     slug: 'goal-1-drain',
     exists: true,

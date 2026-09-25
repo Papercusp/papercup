@@ -71,6 +71,7 @@ import {
   resolveGoalPotPlacementAuthority,
   renderGoalPortfolioBrief,
   evaluateGoalOperatingInputs,
+  evaluateGoalLadderHealth,
   goalHolderInputRefusal,
   writeGoalLaunchSettings,
   resolveCeiling,
@@ -1106,7 +1107,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     tripwires: [{ metric: 'queue_age', label: 'Queue age', threshold: 60, current: 12, unit: 'minutes' }],
     properties: { worklist: { value: ['plan:papercusp/alpha'] } },
     metadata: { drainFleet: 'goal-1-drain' },
-    pots: [{ harness: 'papercusp', role: 'owner', note: 'canonical pot' }],
+    pots: [{ id: '42', harness: 'papercusp', role: 'owner', note: 'canonical pot', killCriterion: 'stop if no owner' }],
     plans: [
       {
         ref: 'plan:papercusp/alpha',
@@ -1115,6 +1116,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         slug: 'alpha',
         title: 'Alpha plan',
         status: 'active',
+        goalId: 'goal-1',
         ambiguousMatches: 1,
         items: [
           { id: 'P-001', text: 'Done', status: 'done', phase: 'Build', blockedBy: [], seq: 1 },
@@ -1123,6 +1125,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         ],
       },
     ],
+    ladder_work_items: [{ id: 'WI-42', harness: 'papercusp', planSlug: 'alpha', goalId: 'goal-1' }],
     queue: {
       total: 7,
       terminal: 2,
@@ -1198,6 +1201,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         lastOwnerReportAt: '2026-08-28T02:20:00Z',
       },
       operatingInputs: { status: 'ready', canExecute: true, spendCoverage: 'measured-pot' },
+      attribution: { status: 'healthy', checked: { pots: 1, plans: 1, workItems: 1 }, issues: [] },
     });
     expect(brief?.priorities).toEqual([
       'Report 1 owner-walled queue item(s) with exact asks.',
@@ -1212,6 +1216,17 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
 
     const rendered = renderGoalPortfolioBrief(brief!);
     expect(rendered).toContain(`GOAL PORTFOLIO SNAPSHOT — assembled ${NOW.toISOString()}`);
+    expect(rendered).toContain('Pots: papercusp:owner[kill=stop if no owner]');
+    expect(rendered).toContain('Attribution ladder: healthy; checked=1 pot links/1 plans/1 work items');
+    const attested = renderGoalPortfolioBrief({
+      ...brief!,
+      holderAttestation: {
+        status: 'partial', workspaceId: WS, goalId: 'goal-1', ownerId: 'su-holder',
+        modeSetAt: NOW.toISOString(), loopActive: true, checkpointAt: NOW.toISOString(),
+        portfolioAct: null, missing: ['portfolio-act'], unavailable: [],
+      },
+    });
+    expect(attested).toContain('Holder first-turn attestation: partial; missing=portfolio-act');
     expect(rendered).toContain('1. plan:papercusp/alpha [active; placement=unplaced] next=P-002');
     expect(rendered).toContain('Queue: total=7; terminal=2; in-flight=2; blocked=1; needs-human=1');
     // P-004: this line lands in every goal agent's kickoff (goals:start,
@@ -1616,6 +1631,36 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
     expect(child.goalBrief?.portfolio).toBeUndefined();
     expect(childSeen.some((sql) => sql.includes('WITH goal_row AS'))).toBe(false);
+  });
+});
+
+describe('P-019 goal attribution ladder', () => {
+  const pot = {
+    harness: 'papercusp', role: 'owner' as const, note: null,
+    killCriterion: 'stop after two failed cuts', linkId: '42',
+  };
+  it('surfaces missing owner, link criterion and goal stamps as typed issues', () => {
+    const verdict = evaluateGoalLadderHealth({
+      goalId: 'goal-a',
+      pots: [{ ...pot, role: 'contributing', killCriterion: null }],
+      plans: [{ ref: 'plan:papercusp/alpha', harness: 'papercusp', goalId: null, exists: true }],
+      workItems: [{ id: 'WI-1', harness: 'papercusp', planSlug: 'alpha', goalId: null }],
+    });
+    expect(verdict.status).toBe('incomplete');
+    expect(verdict.issues.map((issue) => issue.code)).toEqual([
+      'missing-pot-owner', 'missing-link-kill-criterion', 'unstamped-plan', 'unstamped-work-item',
+    ]);
+  });
+
+  it('distinguishes wrong attribution from absent attribution, and never calls unreadable healthy', () => {
+    const wrong = evaluateGoalLadderHealth({
+      goalId: 'goal-a', pots: [pot],
+      plans: [{ ref: 'plan:papercusp/alpha', harness: 'papercusp', goalId: 'goal-b', exists: true }],
+      workItems: [{ id: 'WI-1', harness: 'papercusp', planSlug: 'alpha', goalId: 'goal-b' }],
+    });
+    expect(wrong.issues.map((issue) => issue.code)).toEqual(['plan-goal-mismatch', 'work-item-goal-mismatch']);
+    expect(evaluateGoalLadderHealth({ goalId: 'goal-a', pots: [], plans: [], workItems: [], unreadable: true }))
+      .toMatchObject({ status: 'unknown', issues: [{ code: 'ladder-unreadable' }] });
   });
 });
 

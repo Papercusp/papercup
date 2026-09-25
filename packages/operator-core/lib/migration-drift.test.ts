@@ -10,8 +10,18 @@ import {
   resolveDeployedSqlDir,
   resolveSqlDir,
   resolveCanonicalStagingSqlDir,
+  migrationReplayTestTimeoutMs,
   type MigrationContentDrift,
 } from './migration-drift';
+
+describe('migrationReplayTestTimeoutMs', () => {
+  it('keeps the historical floor for small corpora and grows with migration count', () => {
+    expect(migrationReplayTestTimeoutMs(0)).toBe(300_000);
+    expect(migrationReplayTestTimeoutMs(200)).toBe(300_000);
+    expect(migrationReplayTestTimeoutMs(1_139)).toBe(1_708_500);
+    expect(() => migrationReplayTestTimeoutMs(-1)).toThrow(/non-negative/);
+  });
+});
 import type { AppliedMigrationTextResult } from './migration-applied-text';
 
 /**

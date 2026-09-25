@@ -9,6 +9,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PreflightResult, CutStatus, HandoffResult, ReleaseGate } from '../../release-cut-launch';
 
+const { auditSqlM } = vi.hoisted(() => ({ auditSqlM: vi.fn() }));
+
 // Partial-mock: keep the REAL pure helpers the handler uses (isValidVersion, buildCutArgv,
 // desktopRoot, CHANNELS, CUT_UNIT, cutUnitFor, legsForPlatform, ...) and override only the
 // functions that do real I/O.
@@ -31,7 +33,7 @@ vi.mock('../../release-cut-operation', async (importOriginal) => ({
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: { unsafe: vi.fn() } }) as never,
+  getOrgPg: () => ({ sql: { unsafe: auditSqlM } }) as never,
 }));
 vi.mock('../../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../workspace-registry')>()),
@@ -98,6 +100,7 @@ function mkPreflight(over: Partial<PreflightResult> = {}, inFlight = false): Pre
 
 beforeEach(() => {
   vi.clearAllMocks();
+  auditSqlM.mockResolvedValue([]);
   registryM.mockResolvedValue({ projects: [] });
   preflightM.mockReturnValue(mkPreflight());
   launchM.mockResolvedValue({
@@ -618,6 +621,45 @@ describe('release:cut — handoff (LOCAL deliverable)', () => {
 describe('release:cut — run (operator-gated write)', () => {
   const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
   const runArgs = { op: 'run', version: '0.0.8', channel: 'alpha', sourceSha, ownerName: 'Avi' };
+  const migrationBootSmokeOverride = {
+    sourceSha,
+    proofRef: 'WI-10003146#exact-source-pass',
+    reason: 'Frozen source has the old aggregate Vitest deadline',
+  };
+
+  it('refuses mismatched proof before a launch or audit write', async () => {
+    const b = body(await tool.handler({
+      ...runArgs,
+      migrationBootSmokeOverride: { ...migrationBootSmokeOverride, sourceSha: 'a'.repeat(40) },
+      confirm: true,
+    } as never, { role: 'operator' } as never));
+    expect(b.refused).toBe(true);
+    expect(b.reason).toMatch(/source_mismatch/);
+    expect(launchM).not.toHaveBeenCalled();
+    expect(auditSqlM).not.toHaveBeenCalled();
+  });
+
+  it('previews the exceptional bypass and requires a durable audit write before launch', async () => {
+    const args = { ...runArgs, migrationBootSmokeOverride };
+    const preview = body(await tool.handler(args as never, { role: 'operator' } as never));
+    expect(preview.wouldRun).toContain("PAPERCUSP_SKIP_MIGRATION_BOOTSMOKE='1'");
+    expect(auditSqlM).not.toHaveBeenCalled();
+
+    auditSqlM.mockRejectedValueOnce(new Error('audit unavailable'));
+    const refused = body(await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never));
+    expect(refused.refused).toBe(true);
+    expect(refused.reason).toMatch(/release_cut_audit_required/);
+    expect(launchM).not.toHaveBeenCalled();
+
+    const launched = body(await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never));
+    expect(launched.launched).toBe(true);
+    expect(launched.migrationBootSmokeOverrideAuditId).toMatch(/^relcut-/);
+    expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
+      runtime: expect.objectContaining({ migrationBootSmokeOverride }),
+    }));
+    const auditDetails = JSON.parse(auditSqlM.mock.calls[1][1][5] as string);
+    expect(auditDetails).toMatchObject({ sourceSha, proofRef: migrationBootSmokeOverride.proofRef });
+  });
 
   it('is role-gated: a cup cannot cut, and no build fires', async () => {
     const b = body(await tool.handler({ ...runArgs, confirm: true } as never, { role: 'cup' } as never));

@@ -56,6 +56,17 @@ export function resolveSqlDir(baseDir: string = process.cwd()): string | null {
   return candidates.find((p) => fs.existsSync(p)) ?? null;
 }
 
+/** The seeded replay visits the migration corpus in two phases. Keep its aggregate
+ * Vitest deadline proportional to that corpus while each phase-2 statement still
+ * has its own 15-second failure guard. A fixed five-minute test limit timed out
+ * mid-replay on the 0.0.22-alpha source without reporting a failed migration. */
+export function migrationReplayTestTimeoutMs(migrationCount: number): number {
+  if (!Number.isSafeInteger(migrationCount) || migrationCount < 0) {
+    throw new Error('migrationCount must be a non-negative safe integer');
+  }
+  return Math.max(300_000, migrationCount * 1_500);
+}
+
 /** The exact candidates {@link resolveSqlDir} tries, IN ORDER, for diagnostics —
  *  e.g. logging what was tried when resolution fails (EI-18737837917400418). */
 export function sqlDirCandidates(baseDir: string = process.cwd()): string[] {

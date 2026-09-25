@@ -123,6 +123,25 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
     );
   });
 
+  it('only forwards a migration smoke bypass backed by matching exact-source proof', () => {
+    const migrationBootSmokeOverride = {
+      sourceSha,
+      proofRef: 'WI-10003146#exact-source-pass',
+      reason: 'Frozen source has the old aggregate Vitest deadline',
+    };
+    expect(buildCutEnv({}, sourceSha, { ownerName: 'Avi', migrationBootSmokeOverride }))
+      .toHaveProperty('PAPERCUSP_SKIP_MIGRATION_BOOTSMOKE', '1');
+    expect(buildCutEnv({}, sourceSha, runtime)).not.toHaveProperty('PAPERCUSP_SKIP_MIGRATION_BOOTSMOKE');
+    expect(() => buildCutEnv({}, sourceSha, {
+      ownerName: 'Avi',
+      migrationBootSmokeOverride: { ...migrationBootSmokeOverride, sourceSha: 'a'.repeat(40) },
+    })).toThrow(/source_mismatch/);
+    expect(() => buildCutEnv({}, sourceSha, {
+      ownerName: 'Avi',
+      migrationBootSmokeOverride: { ...migrationBootSmokeOverride, proofRef: ' ' },
+    })).toThrow(/evidence_required/);
+  });
+
   it('refuses a missing runtime owner identity before constructing a cut command', () => {
     expect(() => buildCutEnv({}, sourceSha, { ownerName: '   ' })).toThrow(/release_owner_name_required/);
   });

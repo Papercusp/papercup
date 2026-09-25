@@ -63,6 +63,7 @@ import {
   integrationRoot,
   isValidVersion,
   isValidSourceSha,
+  validateMigrationBootSmokeOverride,
   CHANNELS,
   CUT_UNIT,
   PLATFORMS,
@@ -75,6 +76,7 @@ import {
   type Channel,
   type CutLegs,
   type CutRuntimeEnv,
+  type MigrationBootSmokeOverride,
   type Platform,
 } from '../../release-cut-launch';
 import {
@@ -221,6 +223,7 @@ function cutRuntimeEnv(
     ownerName: string;
     ownerEmail?: string;
     reuseSeed?: boolean;
+    migrationBootSmokeOverride?: MigrationBootSmokeOverride;
   },
   operation?: BeginCutOperationResult | null,
 ): CutRuntimeEnv {
@@ -228,6 +231,9 @@ function cutRuntimeEnv(
     ownerName: args.ownerName,
     ownerEmail: args.ownerEmail,
     reuseSeed: args.reuseSeed,
+    ...(args.migrationBootSmokeOverride
+      ? { migrationBootSmokeOverride: args.migrationBootSmokeOverride }
+      : {}),
     // P-001: present ⇒ release-local.sh runs its phase journal and the cut becomes
     // resumable and discoverable; absent ⇒ unchanged unmanaged behavior. buildCutEnv
     // refuses a half-set pair, so these two always travel together.
@@ -529,9 +535,9 @@ export async function resolveCutRoot(
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
 
-/** Append a forensic audit_log row for a cut invocation. Fire-and-forget; never throws
- *  (mirrors release:deploy's recordDeployAudit — the canonical full-column shape). */
-async function recordCutAudit(op: string, actor: string, details: Record<string, unknown>): Promise<void> {
+/** Append a forensic audit row. An exceptional migration-smoke bypass requires a
+ * successful write BEFORE launch; ordinary cut telemetry preserves best effort. */
+async function recordCutAudit(op: string, actor: string, details: Record<string, unknown>, required = false): Promise<string | null> {
   try {
     const { sql } = getOrgPg();
     const id = `relcut-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -540,11 +546,19 @@ async function recordCutAudit(op: string, actor: string, details: Record<string,
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
       [id, Date.now(), actor, 'release:cut', op, JSON.stringify(details), activeWorkspaceId()],
     );
+    return id;
   } catch (err) {
-
+    if (required) throw new Error(`release_cut_audit_required — ${(err as Error)?.message ?? String(err)}`);
     console.warn('[release:cut] audit write failed:', (err as Error)?.message);
+    return null;
   }
 }
+
+const migrationBootSmokeOverrideArg = z.object({
+  sourceSha: z.string().regex(/^[0-9a-f]{40}$/).describe('Exact superproject SHA of the independent successful migration replay; must equal cut sourceSha.'),
+  proofRef: z.string().min(1).describe('Durable reference to the full successful exact-source replay result.'),
+  reason: z.string().min(1).describe('Why this cut must bypass the frozen source test after that independent proof.'),
+});
 
 const legsFrom = (a: { mac?: boolean; windows?: boolean; arm64?: boolean }): CutLegs => ({
   mac: a.mac,
@@ -637,6 +651,7 @@ export default defineTool({
       ownerName: cutOwnerNameArg,
       ownerEmail: cutOwnerEmailArg,
       reuseSeed: cutReuseSeedArg,
+      migrationBootSmokeOverride: migrationBootSmokeOverrideArg.optional().describe('Exceptional exact-source bypass only after an independent full replay passes. Requires a durable proofRef and is audited before launch.'),
       confirm: z
         .boolean()
         .optional()
@@ -667,6 +682,7 @@ export default defineTool({
       ownerName: cutOwnerNameArg,
       ownerEmail: cutOwnerEmailArg,
       reuseSeed: cutReuseSeedArg,
+      migrationBootSmokeOverride: migrationBootSmokeOverrideArg.optional().describe('Exceptional exact-source bypass only after an independent full replay passes. Requires a durable proofRef and is audited before launch.'),
       confirm: z
         .boolean()
         .optional()
@@ -971,6 +987,8 @@ export default defineTool({
           reason: `bad_source_sha '${args.sourceSha ?? '<missing>'}' — expected the exact 40-character lowercase superproject commit authorized for this cut.`,
         });
       }
+      const overrideError = validateMigrationBootSmokeOverride(args.migrationBootSmokeOverride, args.sourceSha);
+      if (overrideError) return json({ ok: false, op: 'run-leg', refused: true, reason: overrideError });
       const channel = args.channel as Channel;
       const platform = args.platform as Platform;
       const legs = legsForPlatform(platform);
@@ -1013,6 +1031,7 @@ export default defineTool({
           version: args.version,
           channel,
           sourceSha: args.sourceSha,
+          migrationBootSmokeOverride: args.migrationBootSmokeOverride ?? null,
           root: selected.desktopRoot,
           orchestratorRoot,
           ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
@@ -1029,6 +1048,17 @@ export default defineTool({
 
       const { ownerLabel } = readIdentity(ctx);
       const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
+      let migrationBootSmokeOverrideAuditId: string | null = null;
+      if (args.migrationBootSmokeOverride) {
+        try {
+          migrationBootSmokeOverrideAuditId = await recordCutAudit('migration-boot-smoke-override', actor, {
+            version: args.version, channel, platform, sourceSha: args.sourceSha,
+            ...args.migrationBootSmokeOverride,
+          }, true);
+        } catch (err) {
+          return json({ ok: false, op: 'run-leg', refused: true, reason: (err as Error).message });
+        }
+      }
       const managed = await openCutOperation({
         version: args.version,
         channel,
@@ -1061,6 +1091,7 @@ export default defineTool({
         // The operation id is the only durable handle on this cut; an audit entry without
         // it cannot be joined to the journal row later.
         operationId: launch.operationId,
+        migrationBootSmokeOverrideAuditId,
         taskId: launch.taskId,
         ...(managed.reason ? { managedSkipReason: managed.reason } : {}),
         ...(launch.reason ? { reason: launch.reason } : {}),
@@ -1082,6 +1113,7 @@ export default defineTool({
         logPath: launch.logPath,
         managed: launch.operationId !== null,
         operationId: launch.operationId,
+        migrationBootSmokeOverrideAuditId,
         taskId: launch.taskId,
         ...(managed.reason ? { managedSkipReason: managed.reason } : {}),
         ...(launch.reason ? { reason: launch.reason } : {}),
@@ -1117,6 +1149,8 @@ export default defineTool({
         reason: `bad_source_sha '${args.sourceSha ?? '<missing>'}' — expected the exact 40-character lowercase superproject commit authorized for this cut.`,
       });
     }
+    const overrideError = validateMigrationBootSmokeOverride(args.migrationBootSmokeOverride, args.sourceSha);
+    if (overrideError) return json({ ok: false, op: 'run', refused: true, reason: overrideError });
     const channel = args.channel as Channel;
     const legs = legsFrom(args);
     const orchestratorRoot = desktopRoot();
@@ -1158,6 +1192,7 @@ export default defineTool({
         version: args.version,
         channel,
         sourceSha: args.sourceSha,
+        migrationBootSmokeOverride: args.migrationBootSmokeOverride ?? null,
         root: selected.desktopRoot,
         orchestratorRoot,
         ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
@@ -1173,6 +1208,17 @@ export default defineTool({
 
     const { ownerLabel } = readIdentity(ctx);
     const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
+    let migrationBootSmokeOverrideAuditId: string | null = null;
+    if (args.migrationBootSmokeOverride) {
+      try {
+        migrationBootSmokeOverrideAuditId = await recordCutAudit('migration-boot-smoke-override', actor, {
+          version: args.version, channel, sourceSha: args.sourceSha,
+          ...args.migrationBootSmokeOverride,
+        }, true);
+      } catch (err) {
+        return json({ ok: false, op: 'run', refused: true, reason: (err as Error).message });
+      }
+    }
     const managed = await openCutOperation({
       version: args.version,
       channel,
@@ -1201,6 +1247,7 @@ export default defineTool({
       launched: launch.launched,
       unit: launch.unit,
       operationId: launch.operationId,
+      migrationBootSmokeOverrideAuditId,
       taskId: launch.taskId,
       ...(managed.reason ? { managedSkipReason: managed.reason } : {}),
       ...(launch.reason ? { reason: launch.reason } : {}),
@@ -1221,6 +1268,7 @@ export default defineTool({
       logPath: launch.logPath,
       managed: launch.operationId !== null,
       operationId: launch.operationId,
+      migrationBootSmokeOverrideAuditId,
       taskId: launch.taskId,
       ...(managed.reason ? { managedSkipReason: managed.reason } : {}),
       ...(launch.reason ? { reason: launch.reason } : {}),

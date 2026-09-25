@@ -174,9 +174,10 @@ export function findFile(base) {
 /**
  * Extract import/export specifiers from TypeScript AST.
  * @param {ts.SourceFile} source - Source file
- * @returns {string[]} Array of module specifiers
+ * @param {{ onUnresolved?: (site: { kind: string, line: number }) => void }} [options]
+ * @returns {Array<{ spec: string, kind: string, typeOnly: boolean, line: number }>}
  */
-export function extractImports(source) {
+export function extractImports(source, options = {}) {
   const specs = [];
 
   const add = (node, spec, kind, typeOnly = false) => {
@@ -199,27 +200,25 @@ export function extractImports(source) {
         add(node, node.moduleSpecifier.text, 'export', node.isTypeOnly === true);
       }
     }
+    else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      const spec = node.moduleReference.expression;
+      if (spec && ts.isStringLiteral(spec)) add(node, spec.text, 'import-equals', node.isTypeOnly);
+    }
     // require('...') or import('...')
     else if (ts.isCallExpression(node)) {
       const expr = node.expression;
       if (!expr) return;
 
-      // require('...')
-      if (
-        ts.isIdentifier(expr) &&
-        expr.text === 'require' &&
-        node.arguments.length > 0 &&
-        ts.isStringLiteral(node.arguments[0])
-      ) {
-        add(node, node.arguments[0].text, 'require');
-      }
-      // import('...')
-      else if (
-        expr.kind === ts.SyntaxKind.ImportKeyword &&
-        node.arguments.length > 0 &&
-        ts.isStringLiteral(node.arguments[0])
-      ) {
-        add(node, node.arguments[0].text, 'dynamic-import');
+      const kind = ts.isIdentifier(expr) && expr.text === 'require' ? 'require'
+        : expr.kind === ts.SyntaxKind.ImportKeyword ? 'dynamic-import' : null;
+      if (kind) {
+        const spec = node.arguments[0];
+        if (spec && (ts.isStringLiteral(spec) || ts.isNoSubstitutionTemplateLiteral(spec))) {
+          add(node, spec.text, kind);
+        } else {
+          const { line } = source.getLineAndCharacterOfPosition(node.getStart(source));
+          options.onUnresolved?.({ kind, line: line + 1 });
+        }
       }
     }
 

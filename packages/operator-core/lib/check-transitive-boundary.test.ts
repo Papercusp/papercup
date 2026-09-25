@@ -29,6 +29,28 @@ afterEach(() => {
 });
 
 describe('transitive client/server boundary preflight', () => {
+  it('reports computed import sites without returning their expressions and keeps literal templates and import-equals', () => {
+    const source = ts.createSourceFile('sample.ts', [
+      "import './side-effect'; export { value } from './reexport';",
+      "const text = \"import('never-emit-me')\"; // require('never-emit-me')",
+      'import(`./literal`); require(`./legacy`);',
+      "import legacy = require('./import-equals');",
+      "import type onlyType = require('./type-only');",
+      "import('never-emit-me' + suffix); require(privatePath);",
+    ].join('\n'), ts.ScriptTarget.Latest, true);
+    const unresolved: Array<{ kind: string; line: number }> = [];
+    expect(extractImports(source, { onUnresolved: site => unresolved.push(site) })).toEqual([
+      { spec: './side-effect', kind: 'import', typeOnly: false, line: 1 },
+      { spec: './reexport', kind: 'export', typeOnly: false, line: 1 },
+      { spec: './literal', kind: 'dynamic-import', typeOnly: false, line: 3 },
+      { spec: './legacy', kind: 'require', typeOnly: false, line: 3 },
+      { spec: './import-equals', kind: 'import-equals', typeOnly: false, line: 4 },
+      { spec: './type-only', kind: 'import-equals', typeOnly: true, line: 5 },
+    ]);
+    expect(unresolved).toEqual([{ kind: 'dynamic-import', line: 6 }, { kind: 'require', line: 6 }]);
+    expect(JSON.stringify(unresolved)).not.toContain('never-emit-me');
+  });
+
   it('ignores erased type imports but retains value import line metadata', () => {
     const source = ts.createSourceFile(
       'sample.ts',

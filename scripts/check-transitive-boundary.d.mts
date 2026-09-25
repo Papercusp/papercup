@@ -27,9 +27,20 @@ export function findFile(base: string): string | null;
 /**
  * Extract import/export specifiers from TypeScript AST.
  * @param {ts.SourceFile} source - Source file
- * @returns {string[]} Array of module specifiers
+ * @param {{ onUnresolved?: (site: { kind: string, line: number }) => void }} [options]
+ * @returns {Array<{ spec: string, kind: string, typeOnly: boolean, line: number }>}
  */
-export function extractImports(source: ts.SourceFile): string[];
+export function extractImports(source: ts.SourceFile, options?: {
+    onUnresolved?: (site: {
+        kind: string;
+        line: number;
+    }) => void;
+}): Array<{
+    spec: string;
+    kind: string;
+    typeOnly: boolean;
+    line: number;
+}>;
 /**
  * Walk the import graph from an entry file, tracking violations.
  *

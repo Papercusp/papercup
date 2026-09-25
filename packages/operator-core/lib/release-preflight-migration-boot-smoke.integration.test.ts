@@ -37,6 +37,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { copyFile, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config/pg';
@@ -46,7 +47,7 @@ import { getTestPg } from '@papercusp/test-config/pg';
 // signature is generated from the source's JSDoc.
 import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { compareMigrationFilenames } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
-import { resolveSqlDir } from './migration-drift';
+import { migrationReplayTestTimeoutMs, resolveSqlDir } from './migration-drift';
 
 // The runner applies each file as a raw `BEGIN; <ddl>; COMMIT;` via .unsafe(),
 // which postgres-js rejects on a pooled (max>1) connection — so this MUST be
@@ -54,6 +55,13 @@ import { resolveSqlDir } from './migration-drift';
 let bootClient: postgres.Sql | undefined;
 let dbName = '';
 let adminUri = '';
+
+// Vitest reads a case's timeout when it registers the test. Count the very SQL
+// corpus resolveSqlDir will replay, including an explicit exact-source override.
+const replaySqlDir = resolveSqlDir();
+const seededReplayTimeoutMs = migrationReplayTestTimeoutMs(
+  replaySqlDir ? readdirSync(replaySqlDir).filter((f) => f.endsWith('.sql')).length : 0,
+);
 
 beforeAll(async () => {
   adminUri = await getTestPg();
@@ -277,7 +285,7 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
         await cleanup.end({ timeout: 5 });
       }
     }
-  }, 300_000);
+  }, seededReplayTimeoutMs);
 
   /**
    * EI-18748424931934157 — THE HOLE 678 FELL THROUGH.

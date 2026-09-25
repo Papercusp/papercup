@@ -83,6 +83,7 @@ import { claimSpecFilterPositivelyTargets, validateClaimSpec } from './scheduler
 // one. Keeping this erased leaves the acceptance gate out of the portfolio
 // read's runtime graph.
 import type { PlanClosureState, PlanClosureVerdict } from './goals/plan-closure';
+import type { GoalHolderFirstTurnAttestation } from './goals/holder-attestation';
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
@@ -731,7 +732,16 @@ export interface GoalPortfolioBrief {
     ambiguousMatches: number;
     placement: GoalPlanPlacement;
   }>;
-  pots: Array<{ harness: string; role: 'owner' | 'contributing'; note: string | null }>;
+  pots: Array<{
+    harness: string;
+    role: 'owner' | 'contributing';
+    note: string | null;
+    killCriterion: string | null;
+    /** The live goal_pots edge, not an inferred plan or work-item owner. */
+    linkId: string | null;
+  }>;
+  /** P-019: one deterministic read of the goal → pot → plan → work-item ladder. */
+  attribution?: GoalLadderHealth;
   drainFleet: {
     slug: string | null;
     exists: boolean | null;
@@ -766,6 +776,8 @@ export interface GoalPortfolioBrief {
     checkpoint: { workItemId: string; updatedAt: string; note: string } | null;
     lastOwnerReportAt: string | null;
   };
+  /** P-018: live, typed evidence for the session receiving this snapshot. */
+  holderAttestation?: GoalHolderFirstTurnAttestation | null;
   priorities: string[];
   degradedReasons: string[];
 }
@@ -790,6 +802,19 @@ export interface GoalOperatingInputs {
     required: boolean;
     action: string;
   }>;
+}
+
+export interface GoalLadderHealth {
+  status: 'healthy' | 'incomplete' | 'unknown';
+  issues: Array<{
+    code:
+      | 'missing-pot-link' | 'missing-pot-owner' | 'missing-link-kill-criterion'
+      | 'missing-plan' | 'plan-goal-mismatch' | 'unstamped-plan'
+      | 'unstamped-work-item' | 'work-item-goal-mismatch' | 'ladder-unreadable';
+    ref: string;
+    action: string;
+  }>;
+  checked: { pots: number; plans: number; workItems: number };
 }
 
 /** Compile only from the canonical goal, tripwire and spend fields already read. */
@@ -870,6 +895,7 @@ type GoalPortfolioSourceRow = {
   metadata?: unknown;
   pots?: unknown;
   plans?: unknown;
+  ladder_work_items?: unknown;
   queue?: unknown;
   drain_fleet?: unknown;
   checkpoint?: unknown;
@@ -887,6 +913,52 @@ const portfolioNumber = (value: unknown): number => {
   const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : 0;
   return Number.isFinite(n) ? n : 0;
 };
+
+/** Pure fold so fixture, live read and prompt render share one attribution rule. */
+export function evaluateGoalLadderHealth(args: {
+  goalId: string;
+  pots: GoalPortfolioBrief['pots'];
+  plans: Array<{ ref: string; harness: string | null; goalId: string | null; exists: boolean }>;
+  workItems: Array<{ id: string; harness: string | null; planSlug: string | null; goalId: string | null }>;
+  unreadable?: boolean;
+}): GoalLadderHealth {
+  const issues: GoalLadderHealth['issues'] = [];
+  const add = (code: GoalLadderHealth['issues'][number]['code'], ref: string, action: string) =>
+    issues.push({ code, ref, action });
+  if (args.unreadable) {
+    add('ladder-unreadable', args.goalId, 'Re-read the canonical goal, pot, plan and work-item records.');
+    return { status: 'unknown', issues, checked: { pots: 0, plans: 0, workItems: 0 } };
+  }
+  if (args.pots.length === 0) add('missing-pot-link', args.goalId, 'Attach a pot with goals:attach-pot.');
+  if (args.pots.length > 0 && !args.pots.some((pot) => pot.role === 'owner')) {
+    add('missing-pot-owner', args.goalId, 'Elect one owned pot link with goals:attach-pot { role: "owner" }.');
+  }
+  for (const pot of args.pots) {
+    if (!pot.linkId) add('missing-pot-link', pot.harness, 'Restore the live goal_pots edge.');
+    if (!pot.killCriterion?.trim()) {
+      add('missing-link-kill-criterion', pot.harness, 'Set this edge\'s stop condition with goals:attach-pot { killCriterion }.');
+    }
+  }
+  for (const plan of args.plans) {
+    if (!plan.exists) add('missing-plan', plan.ref, 'Repair the worklist ref or create the missing plan.');
+    else if (!plan.goalId) add('unstamped-plan', plan.ref, 'Stamp this plan through its goal-scoped creator or launcher.');
+    else if (plan.goalId !== args.goalId) add('plan-goal-mismatch', plan.ref, 'Review the plan attribution; do not reparent it silently.');
+    if (plan.exists && plan.harness && !args.pots.some((pot) => pot.harness === plan.harness)) {
+      add('missing-pot-link', plan.ref, 'Attach the plan pot to this goal before placing work.');
+    }
+  }
+  for (const item of args.workItems) {
+    if (!item.goalId) add('unstamped-work-item', item.id, 'Repair the canonical work-item goal_id stamp.');
+    else if (item.goalId !== args.goalId) add('work-item-goal-mismatch', item.id, 'Review the item attribution; do not reparent it silently.');
+    if (item.harness && !args.pots.some((pot) => pot.harness === item.harness)) {
+      add('missing-pot-link', item.id, 'Attach the work-item pot to this goal.');
+    }
+  }
+  return {
+    status: issues.length ? 'incomplete' : 'healthy', issues,
+    checked: { pots: args.pots.length, plans: args.plans.length, workItems: args.workItems.length },
+  };
+}
 
 const portfolioJsonObject = (value: unknown): Record<string, unknown> | null => {
   const direct = portfolioObject(value);
@@ -1237,7 +1309,10 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
   return [
     `GOAL PORTFOLIO SNAPSHOT — assembled ${brief.assembledAt} (schema v${brief.schemaVersion})`,
     `Goal: ${brief.goal.status ?? 'unknown'}; worklist: ${plans}`,
-    `Pots: ${brief.pots.map((p) => `${p.harness}:${p.role}`).join(', ') || 'none'}`,
+    `Pots: ${brief.pots.map((p) => `${p.harness}:${p.role}[kill=${p.killCriterion ?? 'missing'}]`).join(', ') || 'none'}`,
+    ...(brief.attribution
+      ? [`Attribution ladder: ${brief.attribution.status}; checked=${brief.attribution.checked.pots} pot links/${brief.attribution.checked.plans} plans/${brief.attribution.checked.workItems} work items; issues=${brief.attribution.issues.map((issue) => `${issue.code}(${issue.ref})`).join(', ') || 'none'}`]
+      : []),
     `Drain fleet: ${brief.drainFleet.slug ?? 'not declared'}; live=${brief.drainFleet.live ?? 'unknown'}; working=${brief.drainFleet.working ?? 'unknown'}; control=${brief.drainFleet.controlState ?? 'unknown'}`,
     `Queue: total=${brief.queue.total}; terminal=${brief.queue.terminal}; in-flight=${brief.queue.inFlight}; blocked=${brief.queue.blocked}; needs-human=${brief.queue.needsHuman}; claimable=${brief.queue.claimable ?? 'unknown'} (${brief.queue.claimabilityScope})`,
     `Launch: headcount=${brief.launch.headcount.total}; maxAgents=${brief.launch.ceilings.maxAgents ?? 'unlimited'}; maxPerFleet=${brief.launch.ceilings.maxPerFleet ?? 'unlimited'}`,
@@ -1254,6 +1329,9 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
       : []),
     `Pending: Blender=${brief.pending.blenderIdeas ?? 'unknown'}; rubric=${brief.pending.acceptanceRubric ? `${brief.pending.acceptanceRubric.id}:${brief.pending.acceptanceRubric.status ?? 'unknown'}` : 'none'}`,
     `Continuity: checkpoint=${brief.continuity.checkpoint ? `${brief.continuity.checkpoint.workItemId}@${brief.continuity.checkpoint.updatedAt}` : 'none'}; last-owner-report=${brief.continuity.lastOwnerReportAt ?? 'none'}`,
+    ...(brief.holderAttestation
+      ? [`Holder first-turn attestation: ${brief.holderAttestation.status}; missing=${brief.holderAttestation.missing.join(', ') || 'none'}; unavailable=${brief.holderAttestation.unavailable.join(', ') || 'none'}; act=${brief.holderAttestation.portfolioAct?.tool ?? 'none'}`]
+      : []),
     ...(brief.degradedReasons.length ? [`DEGRADED — ${brief.degradedReasons.join('; ')}`] : []),
     'GOAL KICKOFF EVIDENCE — REQUIRED BEFORE ANY PORTFOLIO MUTATION',
     `In the current GOAL window, successfully run ${GOAL_KICKOFF_REQUIRED_READS.join(', ')} on the goal's terms; then send an owner-facing report AFTER those reads (coord:send to ["human"] or coord:escalate) that names the exact goal id "${brief.goal.id}".`,
@@ -1325,6 +1403,8 @@ async function resolveWorklistClosures(
 export async function readGoalPortfolioBrief(args: {
   workspaceId: string;
   goalId: string;
+  /** Only attest the elected holder when composing that holder's orient. */
+  attestOwnerId?: string;
   sql?: Sql;
   now?: Date;
   launch?: {
@@ -1364,6 +1444,7 @@ export async function readGoalPortfolioBrief(args: {
   const sql = pg(args.sql);
   let liveHolderOwnerIds: string[] = [];
   let goalHolderOwnerIds: string[] | null = null;
+  let holderAttestation: GoalHolderFirstTurnAttestation | null = null;
   try {
     // A durable GOAL mode row is not evidence that its session is still alive.
     // Reuse the canonical holder+liveness fold before attributing current
@@ -1378,6 +1459,14 @@ export async function readGoalPortfolioBrief(args: {
     // Independence uses the elected identity even if its liveness is unknown;
     // presence is not authority. A failed read remains null, not a known empty set.
     goalHolderOwnerIds = holders.elected ? [holders.elected.ownerId] : [];
+    if (args.attestOwnerId) {
+      const { readGoalHolderFirstTurnAttestation } = await import('./goals/holder-attestation');
+      holderAttestation = await readGoalHolderFirstTurnAttestation(sql, {
+        workspaceId: args.workspaceId,
+        goalId: args.goalId,
+        holder: holders.elected?.ownerId === args.attestOwnerId ? holders.elected : null,
+      });
+    }
     if (holders.liveness === 'unknown') {
       degradedReasons.push(
         'goal holder liveness unavailable; holder-scoped report and Blender counts may be incomplete',
@@ -1385,6 +1474,14 @@ export async function readGoalPortfolioBrief(args: {
     }
   } catch (error) {
     degradedReasons.push(`goal holder liveness read failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (args.attestOwnerId) {
+      holderAttestation = {
+        status: 'unknown', workspaceId: args.workspaceId, goalId: args.goalId,
+        ownerId: args.attestOwnerId, modeSetAt: null, loopActive: null,
+        checkpointAt: null, portfolioAct: null, missing: [],
+        unavailable: ['goal-declaration'],
+      };
+    }
   }
   try {
     const rows = await sql<GoalPortfolioSourceRow[]>`
@@ -1395,7 +1492,8 @@ export async function readGoalPortfolioBrief(args: {
       )
       SELECT g.status, g.parent_id, g.tripwires, g.properties, g.metadata,
              (SELECT COALESCE(jsonb_agg(jsonb_build_object(
-                       'harness', gp.harness_slug, 'role', gp.role, 'note', gp.note
+                       'id', gp.id, 'harness', gp.harness_slug, 'role', gp.role,
+                       'note', gp.note, 'killCriterion', gp.kill_criterion
                      ) ORDER BY (gp.role = 'owner') DESC, gp.added_at), '[]'::jsonb)
                 FROM harness_shared.goal_pots gp
                WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id AND gp.removed_at IS NULL) AS pots,
@@ -1406,6 +1504,7 @@ export async function readGoalPortfolioBrief(args: {
                            'harness', p.harness_slug,
                            'slug', regexp_replace(wr.ref, '^plan:(?:[^/]+/)?', ''),
                            'title', p.title, 'status', COALESCE(p.op_status, p.status),
+                           'goalId', p.goal_id,
                            'ambiguousMatches', (
                              SELECT count(*) FROM harness_shared.harness_plans matches
                               WHERE matches.workspace_id = g.workspace_id
@@ -1516,6 +1615,21 @@ export async function readGoalPortfolioBrief(args: {
                        LIMIT 1
                     ) p ON true
                 ) plans) AS plans,
+             (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                       'id', wi.feature_id, 'harness', wi.harness_slug,
+                       'planSlug', wi.source_plan_slug, 'goalId', wi.goal_id
+                     ) ORDER BY wi.feature_id), '[]'::jsonb)
+                FROM harness_shared.work_items wi
+               WHERE wi.workspace_id = g.workspace_id
+                 AND EXISTS (
+                   SELECT 1
+                     FROM jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value', '[]'::jsonb)) wr(ref)
+                    WHERE wi.source_plan_slug = regexp_replace(wr.ref, '^plan:(?:[^/]+/)?', '')
+                      AND (
+                        position('/' in regexp_replace(wr.ref, '^plan:', '')) = 0
+                        OR wi.harness_slug = split_part(regexp_replace(wr.ref, '^plan:', ''), '/', 1)
+                      )
+                 )) AS ladder_work_items,
              (SELECT jsonb_build_object(
                        'total', count(*),
                        'terminal', count(*) FILTER (WHERE wi.status = ANY(ARRAY['done','passed','resolved','closed','deprecated','dropped']::text[])),
@@ -1640,6 +1754,8 @@ export async function readGoalPortfolioBrief(args: {
           harness,
           role: pot.role === 'owner' ? ('owner' as const) : ('contributing' as const),
           note: portfolioString(pot.note),
+          killCriterion: portfolioString(pot.killCriterion),
+          linkId: pot.id == null ? null : String(pot.id),
         },
       ];
     });
@@ -1680,7 +1796,28 @@ export async function readGoalPortfolioBrief(args: {
       claimable,
       claimabilityScope,
     };
+    const attribution = evaluateGoalLadderHealth({
+      goalId: args.goalId,
+      pots,
+      plans: portfolioArray(row.plans).flatMap((value) => {
+        const plan = portfolioObject(value);
+        const ref = portfolioString(plan?.ref);
+        if (!plan || !ref) return [];
+        return [{ ref, harness: portfolioString(plan.harness),
+          goalId: portfolioString(plan.goalId), exists: Boolean(portfolioString(plan.title)) }];
+      }),
+      workItems: portfolioArray(row.ladder_work_items).flatMap((value) => {
+        const item = portfolioObject(value);
+        const id = portfolioString(item?.id);
+        if (!item || !id) return [];
+        return [{ id, harness: portfolioString(item.harness),
+          planSlug: portfolioString(item.planSlug), goalId: portfolioString(item.goalId) }];
+      }),
+    });
     const priorities: string[] = [];
+    if (attribution.status !== 'healthy') {
+      priorities.push(`Repair attribution ladder: ${attribution.issues.map((issue) => `${issue.code}(${issue.ref})`).join(', ')}.`);
+    }
     if (operatingInputs.status !== 'ready') {
       priorities.push(`Repair goal operating inputs: ${operatingInputs.issues.map((issue) => issue.code).join(', ')}.`);
     }
@@ -1715,6 +1852,7 @@ export async function readGoalPortfolioBrief(args: {
       },
       worklist,
       pots,
+      attribution,
       drainFleet: {
         slug: declaredFleet,
         exists: declaredFleet ? Boolean(fleetRaw) : null,
@@ -1760,6 +1898,7 @@ export async function readGoalPortfolioBrief(args: {
             : null,
         lastOwnerReportAt: portfolioString(row.last_owner_report_at),
       },
+      ...(args.attestOwnerId ? { holderAttestation } : {}),
       priorities: priorities.slice(0, 6),
       degradedReasons: [...new Set(degradedReasons)],
     };
@@ -1778,6 +1917,7 @@ export async function readGoalPortfolioBrief(args: {
       },
       worklist: [],
       pots: [],
+      attribution: evaluateGoalLadderHealth({ goalId: args.goalId, pots: [], plans: [], workItems: [], unreadable: true }),
       drainFleet: { slug: null, exists: null, controlState: null, leaderOwnerId: null, live: null, working: null },
       queue: {
         total: 0,
@@ -1814,6 +1954,7 @@ export async function readGoalPortfolioBrief(args: {
       }),
       pending: { blenderIdeas: null, acceptanceRubric: null },
       continuity: { checkpoint: null, lastOwnerReportAt: null },
+      ...(args.attestOwnerId ? { holderAttestation } : {}),
       priorities: ['Re-read the goal portfolio before any placement or write.'],
       degradedReasons: [
         ...new Set([
