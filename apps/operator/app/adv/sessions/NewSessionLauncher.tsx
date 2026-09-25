@@ -109,7 +109,7 @@ export function buildIdentityLaunchOptions(catalog: Pick<IdentityLaunchCatalog,
   for (const identity of catalog.identities) {
     if (identity.slots.length === 0 && identity.launchCompatibility?.eligible) {
       options.push({ value: `composition:${identity.id}`, label: identity.id,
-        detail: `Named composition · ${identity.tier} · ${identity.version || 'unversioned'}`,
+        detail: `Named composition · ${identity.tier} · ${identity.version || 'unversioned'} · ${identity.sourceRevision.slice(0, 12)}`,
         keywords: [identity.id, identity.tier, 'composition'],
         disabled: !/^[a-f0-9]{64}$/.test(identity.sourceRevision) });
     }
@@ -117,7 +117,7 @@ export function buildIdentityLaunchOptions(catalog: Pick<IdentityLaunchCatalog,
       options.push({ value: `${slot.slot}:${identity.id}`, label: identity.id,
         detail: identity.launchCompatibility?.eligible === false
           ? `${slot.slot} · unavailable: ${identity.launchCompatibility.reason}`
-          : `${slot.slot} · ${identity.tier} · ${identity.version || 'unversioned'}`,
+          : `${slot.slot} · ${identity.tier} · ${identity.version || 'unversioned'} · ${identity.sourceRevision.slice(0, 12)}`,
         keywords: [identity.id, identity.tier, slot.slot],
         disabled: identity.launchCompatibility?.eligible === false ||
           !slot.cardinality || !/^[a-f0-9]{64}$/.test(identity.sourceRevision) });

@@ -78,6 +78,13 @@ describe('resolveInheritedOperatorBaseUrl', () => {
 });
 
 describe('resolveSpawnHostOperatorBaseUrl (WI-6154)', () => {
+  it('uses the desktop sidecar dev port over an inherited staging Hono port', () => {
+    expect(resolveSpawnHostOperatorBaseUrl({
+      OPERATOR_DEV_PORT: '33700', PAPERCUSP_HONO_PORT: '3170',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+    })).toBe('http://localhost:33700');
+  });
+
   it('HONO_PORT set (this process IS an operator host) → own identity wins, even with a stale inherited OPERATOR_URL', () => {
     // Reproduces the staging-host leak: .env.local sets PAPERCUSP_OPERATOR_URL to
     // the LIVE :3070 operator, and the staging service ADDITIONALLY exports its

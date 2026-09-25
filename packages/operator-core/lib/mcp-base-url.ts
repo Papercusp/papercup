@@ -103,6 +103,13 @@ export function resolveInheritedOperatorBaseUrl(raw: string | undefined): string
  * other five).
  */
 export function resolveSpawnHostOperatorBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+  // The desktop sidecar listens on OPERATOR_DEV_PORT. Its shell can also
+  // inherit PAPERCUSP_HONO_PORT from a different staging host; that inherited
+  // value must not redirect a child launch away from this process's source.
+  const desktopPort = env.OPERATOR_DEV_PORT?.trim();
+  if (desktopPort && Number.isInteger(Number(desktopPort)) && Number(desktopPort) > 0) {
+    return `http://localhost:${desktopPort}`;
+  }
   const honoPort = env.PAPERCUSP_HONO_PORT?.trim();
   if (honoPort) return `http://localhost:${honoPort}`;
   const fromEnv = env.PAPERCUSP_OPERATOR_URL?.trim();

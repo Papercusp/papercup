@@ -8598,7 +8598,7 @@ export function identityPickerChoices(page) {
   for (const identity of page.identities || []) {
     if (identity.slots?.length === 0 && identity.launchCompatibility?.eligible) {
       choices.push({
-        name: `${identity.id}  ·  named composition  ·  ${identity.tier}  ·  ${identity.version || "unversioned"}`,
+        name: `${identity.id}  ·  named composition  ·  ${identity.tier}  ·  ${identity.version || "unversioned"}  ·  ${identity.sourceRevision?.slice(0, 12) || "unversioned source"}`,
         value: `composition:${identity.id}`,
         ...(/^[a-f0-9]{64}$/.test(identity.sourceRevision || "")
           ? {} : { disabled: "source revision unavailable" }),
@@ -8607,7 +8607,7 @@ export function identityPickerChoices(page) {
     for (const slot of identity.slots || []) {
       const ref = `${slot.slot}:${identity.id}`;
       choices.push({
-        name: `${identity.id}  ·  ${slot.slot}  ·  ${identity.tier}  ·  ${identity.version || "unversioned"}`,
+        name: `${identity.id}  ·  ${slot.slot}  ·  ${identity.tier}  ·  ${identity.version || "unversioned"}  ·  ${identity.sourceRevision?.slice(0, 12) || "unversioned source"}`,
         value: ref,
         ...(identity.launchCompatibility?.eligible === false
           ? { disabled: identity.launchCompatibility.reason || "not launchable" }

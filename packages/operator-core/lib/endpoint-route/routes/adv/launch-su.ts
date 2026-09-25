@@ -740,12 +740,19 @@ async function handleLaunchSu(req: Request): Promise<Response> {
         import('../../../mcp-base-url'),
       ]);
       const workspaceId = activeWorkspaceId();
+      const spawnHostBase = resolveSpawnHostOperatorBaseUrl();
+      const spawnHostPort = new URL(spawnHostBase).port;
       const base = await buildConsoleEnvelope({
         workspaceId,
         // null (not undefined) is the "no harness" value here — the envelope
         // builder then resolves the workspace's home checkout as cwd.
         slug: harness,
-        operatorBaseUrl: resolveSpawnHostOperatorBaseUrl(),
+        operatorBaseUrl: spawnHostBase,
+        // The long-lived proxy fronts green main. A current-build desktop or
+        // staging launch must bootstrap against the same operator that read
+        // its selected identity; otherwise its child silently uses old code.
+        ...(spawnHostPort && spawnHostPort !== '3070'
+          ? { agentMcpBaseUrl: spawnHostBase } : {}),
         // Each psu bootstraps its own MCP — same reason capability:terminal and
         // fleet:launch-on-plan skip it.
         skipMcpJson: true,

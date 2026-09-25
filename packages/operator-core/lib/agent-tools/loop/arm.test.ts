@@ -46,6 +46,10 @@ vi.mock('../coordination/identity', () => ({
     value === 'self' ? callerOwnerId : value,
   ),
 }));
+vi.mock('../../acceptance-runtime-wait-guard', () => ({
+  acceptancePlaneAdvisoryForWait: vi.fn(async () => null),
+  mainWaitPlanReviewForWait: vi.fn(async () => null),
+}));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
 vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../pot/_resolve', () => ({ resolveHomePotSlug: vi.fn(async () => 'papercusp') }));
@@ -168,6 +172,7 @@ import {
   type PersistedMonitorConfig,
 } from '../../harness/routines/monitor-policy';
 import { computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
+import { mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import {
   mockResolvedOnceTyped,
@@ -213,6 +218,20 @@ const call = (args: Record<string, unknown>) =>
     { harnessSlug: 'papercusp' } as never,
   ) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
+
+describe('loop:arm — plan progress before a main wait', () => {
+  it('refuses to arm before any durable loop is written when staging work is ready', async () => {
+    vi.mocked(mainWaitPlanReviewForWait).mockResolvedValueOnce({
+      plan: 'plan-a', allowWait: false, code: 'plan_main_wait_review_required',
+      readyItems: ['P-002'], downstreamItems: [], waitRoots: ['P-001'], reasonAccepted: false,
+      message: 'Continue P-002 on staging',
+    });
+    const out = body(await call({ goal: 'wait for green main before continuing plan-a' }));
+    expect(out).toMatchObject({ ok: false, error: 'plan_main_wait_review_required', readyItems: ['P-002'] });
+    expect(materializeM).not.toHaveBeenCalled();
+  });
+});
+
 const monitorConfig = (overrides: Record<string, unknown> = {}) => ({
   predicateKey: 'release:green:papercusp',
   stopCondition: 'the exact green verdict is recorded',

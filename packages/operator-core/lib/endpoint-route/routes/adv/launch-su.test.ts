@@ -40,6 +40,7 @@ const spawnHeadlessMock = vi.fn(
     error: '' as string,
   }),
 );
+const spawnHostUrlMock = vi.hoisted(() => vi.fn(() => 'http://localhost:3070'));
 const attachedMock = vi.fn(async (_request: Request, _input: unknown) => Response.json({ status: 'ok', transport: 'structured' }));
 const durableMock = vi.fn();
 const getSessionMock = vi.fn();
@@ -79,7 +80,7 @@ vi.mock('../../../console-launcher', () => ({
 }));
 vi.mock('../../../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/pc' }));
 vi.mock('../../../mcp-base-url', () => ({
-  resolveSpawnHostOperatorBaseUrl: () => 'http://localhost:3070',
+  resolveSpawnHostOperatorBaseUrl: () => spawnHostUrlMock(),
   resolveLongLivedSessionMcpBaseUrl: () => 'http://127.0.0.1:9071',
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
@@ -173,9 +174,33 @@ beforeEach(() => {
   durableMock.mockReset();
   getSessionMock.mockReset();
   vi.clearAllMocks();
+  spawnHostUrlMock.mockReturnValue('http://localhost:3070');
 });
 
 describe('launch-su — headless routes to spawnHeadless, headed to spawnInTerminal (WI-6505)', () => {
+  it('pins a current-build headless child to the operator that selected its identity', async () => {
+    spawnHostUrlMock.mockReturnValue('http://localhost:33700');
+    const { buildConsoleEnvelope } = await import('../../../console-launcher');
+    const result = await launch({ headless: true, stack: ['composition:native-composition'],
+      selected_identity_revision: 'a'.repeat(64) });
+    expect(result.status).toBe(200);
+    expect(buildConsoleEnvelope).toHaveBeenCalledWith(expect.objectContaining({
+      operatorBaseUrl: 'http://localhost:33700',
+      agentMcpBaseUrl: 'http://localhost:33700',
+    }));
+    expect(headlessOneliner()).toContain('--stack=composition:native-composition');
+  });
+
+  it('keeps green-main headless children on the existing long-lived proxy', async () => {
+    const { buildConsoleEnvelope } = await import('../../../console-launcher');
+    const result = await launch({ headless: true });
+    expect(result.status).toBe(200);
+    expect(buildConsoleEnvelope).toHaveBeenCalledWith(expect.objectContaining({
+      operatorBaseUrl: 'http://localhost:3070',
+    }));
+    expect(vi.mocked(buildConsoleEnvelope).mock.calls[0]?.[0]).not.toHaveProperty('agentMcpBaseUrl');
+  });
+
   it('starts PUI through the structured SU branch without either native launcher', async () => {
     const result = await launch({ attached_engine: true, agent_chat_id: 'chat', harness_slug: 'papercusp', account: 'default', carry: 'warm' });
     expect(result).toMatchObject({ status: 200, json: { transport: 'structured' } });

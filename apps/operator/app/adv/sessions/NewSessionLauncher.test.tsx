@@ -223,6 +223,8 @@ describe('selected identity launch', () => {
       value: 'invalid:broken', disabled: true,
       detail: 'Invalid: attestation-missing',
     }));
+    expect(buildIdentityLaunchOptions(h.identityCatalog).find((option) =>
+      option.value === 'domain:research-steward')?.detail).toContain(revision.slice(0, 12));
     expect(buildIdentityLaunchOptions({ ...h.identityCatalog, identities: [{
       id: 'needs-producer', tier: 'installed', version: '1.0.0', sourceRevision: revision,
       slots: [{ slot: 'domain', cardinality: 'exclusive' }],

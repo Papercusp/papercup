@@ -10,7 +10,7 @@ vi.mock('./operation-admission', () => ({ readAcceptedBlueprintDirectWorkItem })
 vi.mock('../agent-identities/source', () => ({ getIdentitySource }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_workspace: string, run: () => unknown) => run() }));
 
-import { resolveAcceptedOperationWorkerBinding } from './operation-worker-binding';
+import { matchOperationWorkerClaim, resolveAcceptedOperationWorkerBinding } from './operation-worker-binding';
 
 const HASH = 'a'.repeat(64);
 const REVISION = 'b'.repeat(64);
@@ -49,12 +49,38 @@ describe('accepted blueprint operation worker binding', () => {
   it('derives the exact identity and tool set from the accepted item', async () => {
     const binding = await resolveAcceptedOperationWorkerBinding(args);
     expect(binding).toEqual({
-      workItemId: 'WI-1', operationId: 'run', specificationRevision: REVISION,
+      workItemId: 'WI-1', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: REVISION,
       identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: HASH },
       stack: ['domain:blueprint-operation-worker'],
       requiredTools: ['coord:orient', 'work_items:get'],
     });
     expect(getIdentitySource).toHaveBeenCalledWith('blueprint-operation-worker', { repoDir: '/repo/harness-a' });
+  });
+
+  it('matches only the exact pinned item for an active worker', () => {
+    const binding = {
+      workItemId: 'WI-1', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: REVISION,
+      identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: HASH },
+      stack: ['domain:blueprint-operation-worker'], requiredTools: ['work_items:get'],
+    };
+    const pinned = { id: 'WI-1', harness: 'harness-a', payload: { blueprintOperation: {
+      kind: 'blueprint-operation', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: REVISION,
+    } } };
+    const read = { status: 'bound' as const, binding, receipt: {
+      sessionId: 1, workspaceId: 'ws-a', ownerId: 'worker-a',
+      specificationRevision: HASH, stateRevision: 'state-a', acceptedOperation: {},
+    } };
+    expect(matchOperationWorkerClaim(read, pinned)).toEqual({ allowed: true });
+    expect(matchOperationWorkerClaim(read, { ...pinned, id: 'WI-2' }).allowed).toBe(false);
+    expect(matchOperationWorkerClaim(read, { ...pinned, harness: 'harness-b' }).allowed).toBe(false);
+    expect(matchOperationWorkerClaim(read, { ...pinned, payload: {} }).allowed).toBe(false);
+    expect(matchOperationWorkerClaim(read, { ...pinned, payload: {
+      blueprintOperation: { ...pinned.payload.blueprintOperation, specificationRevision: 'c'.repeat(64) },
+    } }).allowed).toBe(false);
+    expect(matchOperationWorkerClaim({ status: 'none' }, pinned).allowed).toBe(false);
+    expect(matchOperationWorkerClaim({ status: 'none' }, { ...pinned, payload: {} })).toEqual({ allowed: true });
+    expect(matchOperationWorkerClaim({ status: 'unavailable', reason: 'ended' }, pinned).allowed).toBe(false);
+    expect(matchOperationWorkerClaim({ status: 'unavailable', reason: 'ended' }, { ...pinned, payload: {} }).allowed).toBe(false);
   });
 
   it('leaves ordinary work items on their existing role launch path', async () => {

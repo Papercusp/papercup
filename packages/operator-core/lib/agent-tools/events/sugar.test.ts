@@ -114,6 +114,10 @@ vi.mock("../../harness/git-sync/pipeline-events", () => ({
   findGreenCheckpointVerdictForCandidate: vi.fn(async () => null),
 }));
 
+vi.mock("../../acceptance-runtime-wait-guard", () => ({
+  mainWaitPlanReviewForWait: vi.fn(async () => null),
+}));
+
 // EI-13095/P-006: the work-item:await latches probe the live item — mocked here
 // so the rig stays hermetic (the real module pulls db-org). Default
 // 'live'/a real blocking edge = every existing case registers exactly as before.
@@ -141,6 +145,7 @@ import { gitPipelineSnapshot } from "../../git-pipeline-stats";
 import { gitPipelinePosition } from "../../git-pipeline-position";
 import { readDeployInFlight } from "../../release-deploy-launch";
 import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
+import { mainWaitPlanReviewForWait } from "../../acceptance-runtime-wait-guard";
 import { checkpointPipelineName } from "./sugar";
 
 const checkpointTool = definedTools.find(
@@ -167,6 +172,17 @@ beforeEach(() => {
 });
 
 describe("checkpoint:await sugar", () => {
+  it("refuses a main wait with ready plan work before registering any wake", async () => {
+    vi.mocked(mainWaitPlanReviewForWait).mockResolvedValueOnce({
+      plan: 'plan-a', allowWait: false, code: 'plan_main_wait_review_required',
+      readyItems: ['P-002'], downstreamItems: [], waitRoots: ['P-001'], reasonAccepted: false,
+      message: 'Continue P-002 on staging',
+    });
+    const out = await call({ pipeline: 'papercusp' });
+    expect(out).toMatchObject({ ok: false, error: 'plan_main_wait_review_required', readyItems: ['P-002'] });
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
   it("defaults to the current pipeline-scoped gate keys", async () => {
     const out = await call({});
 
@@ -427,6 +443,17 @@ describe("deploy:await already-deployed latch (EI-18676050719521433 — was pure
     const res = await deployTool.handler(args as never, ctx);
     return JSON.parse(res.content[0].text);
   };
+
+  it("refuses a main wait with staging-ready plan work before registering either outcome", async () => {
+    vi.mocked(mainWaitPlanReviewForWait).mockResolvedValueOnce({
+      plan: 'plan-a', allowWait: false, code: 'plan_main_wait_review_required',
+      readyItems: ['P-002'], downstreamItems: [], waitRoots: ['P-001'], reasonAccepted: false,
+      message: 'Continue P-002 on staging',
+    });
+    const out = await callDeploy({ note: 'waiting for main before P-002' });
+    expect(out).toMatchObject({ ok: false, error: 'plan_main_wait_review_required', readyItems: ['P-002'] });
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
 
   it("a sha ALREADY deployed answers already_deployed and registers NOTHING (the stranded-wait class)", async () => {
     vi.mocked(gitPipelinePosition).mockResolvedValueOnce({

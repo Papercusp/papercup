@@ -17,6 +17,10 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-awaiter', ownerLabel: 'a', source: 'static-client', workspaceId: 'ws-x', userId: null }),
 }));
+vi.mock('../../acceptance-runtime-wait-guard', () => ({
+  acceptancePlaneAdvisoryForWait: vi.fn(async () => null),
+  mainWaitPlanReviewForWait: vi.fn(async () => null),
+}));
 // EI-20268841604319803: the service-up EDGE advisory reads live health at arm
 // time. Stub ONLY the probe so the real predicate (./service-up-edge) and the
 // real handler wiring both execute. Defaults to "no probe result" ⇒ no
@@ -172,6 +176,7 @@ import {
 } from './producer-health';
 import { resolveAnnouncementOwnership } from './status';
 import { hasActiveMonitorForOwnerPredicate } from '../../harness/routines/monitor-policy';
+import { mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -185,6 +190,18 @@ beforeEach(() => {
 });
 
 describe('events:await wrapper defaults', () => {
+  it('refuses a plan-wide main wait before retiring or registering an await', async () => {
+    vi.mocked(mainWaitPlanReviewForWait).mockResolvedValueOnce({
+      plan: 'plan-a', allowWait: false, code: 'plan_main_wait_review_required',
+      readyItems: ['P-002'], downstreamItems: [], waitRoots: ['P-001'], reasonAccepted: false,
+      message: 'Continue P-002 on staging',
+    });
+    const out = await call({ event: 'release:green:papercusp' });
+    expect(out).toMatchObject({ ok: false, error: 'plan_main_wait_review_required', readyItems: ['P-002'] });
+    expect(cancelAwaitsForSubscribersOnKeys).not.toHaveBeenCalled();
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
   it('refuses an exact await when the owner already has the same active monitor, before mutation', async () => {
     vi.mocked(hasActiveMonitorForOwnerPredicate).mockResolvedValueOnce(true);
     const out = await call({ event: 'release:green:papercusp' });

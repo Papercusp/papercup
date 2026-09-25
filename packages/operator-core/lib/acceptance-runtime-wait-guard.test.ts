@@ -9,6 +9,9 @@ import {
   goalNamesDeployWait,
   isDeployWaitEvent,
   loadHeldLiveBars,
+  mainWaitPlanReviewForWait,
+  reviewMainWaitPlan,
+  type MainWaitPlanSnapshot,
   type WaitGuardDeps,
 } from './acceptance-runtime-wait-guard';
 
@@ -32,8 +35,11 @@ describe('deploy-wait detection', () => {
     expect(isDeployWaitEvent('release:deployed:papercusp')).toBe(true);
     expect(isDeployWaitEvent('release:deploy-failed')).toBe(true);
     expect(isDeployWaitEvent('deploy:await')).toBe(true);
+    expect(isDeployWaitEvent('release:green:papercusp')).toBe(true);
+    expect(isDeployWaitEvent('green-checkpoint:red:papercusp')).toBe(true);
+    expect(isDeployWaitEvent('green-checkpoint:held:papercusp')).toBe(true);
     expect(isDeployWaitEvent('work-item:done:WI-1')).toBe(false);
-    expect(isDeployWaitEvent('release:green')).toBe(false);
+    expect(isDeployWaitEvent('release:green')).toBe(true);
     expect(isDeployWaitEvent(null)).toBe(false);
   });
 
@@ -41,9 +47,122 @@ describe('deploy-wait detection', () => {
     expect(goalNamesDeployWait('Wait for the fix to reach green main, then grade R-3')).toBe(true);
     expect(goalNamesDeployWait('re-check :3070 serves the fix')).toBe(true);
     expect(goalNamesDeployWait('waiting on the deploy before acceptance')).toBe(true);
+    expect(goalNamesDeployWait('wait for the green-checkpoint verdict before continuing')).toBe(true);
     expect(goalNamesDeployWait('finish once it lands on main')).toBe(true);
     expect(goalNamesDeployWait('the main risk is the parser; fix it')).toBe(false);
     expect(goalNamesDeployWait('Carry plan X to shipped')).toBe(false);
+  });
+});
+
+describe('plan frontier before a main wait', () => {
+  const item = (
+    id: string,
+    effectiveStatus: string,
+    blockedBy: string[] = [],
+    extra: Partial<MainWaitPlanSnapshot['items'][number]> = {},
+  ): MainWaitPlanSnapshot['items'][number] => ({
+    id,
+    text: `Implement ${id} on staging`,
+    effectiveStatus,
+    blockedBy,
+    linkedBlocked: false,
+    liveHeld: false,
+    heldByCaller: false,
+    ...extra,
+  });
+  const reason = 'deployed-only rollback target; staging cannot exercise the released artifact because its live pin differs';
+
+  it('keeps independent B and C visible even when A has a genuine deployed-only reason', () => {
+    const snapshot: MainWaitPlanSnapshot = {
+      slug: 'plan-a',
+      items: [
+        item('P-001', 'blocked', [], { heldByCaller: true, text: 'Verify released artifact on main' }),
+        item('P-002', 'todo'),
+        item('P-003', 'blocked', ['P-002']),
+      ],
+    };
+    const review = reviewMainWaitPlan(snapshot, reason);
+    expect(review).toMatchObject({ allowWait: false, readyItems: ['P-002'], downstreamItems: [] });
+    expect(review?.message).toContain('Continue or hand off');
+  });
+
+  it('surfaces the full A -> B -> C chain for semantic dependency review', () => {
+    const snapshot: MainWaitPlanSnapshot = {
+      slug: 'plan-a',
+      items: [
+        item('P-001', 'blocked', [], { heldByCaller: true, text: 'Verify released artifact on main' }),
+        item('P-002', 'blocked', ['P-001']),
+        item('P-003', 'blocked', ['P-002']),
+      ],
+    };
+    const review = reviewMainWaitPlan(snapshot, reason);
+    expect(review?.allowWait).toBe(false);
+    expect(review?.downstreamItems).toEqual([
+      { item: 'P-002', path: ['P-001', 'P-002'] },
+      { item: 'P-003', path: ['P-001', 'P-002', 'P-003'] },
+    ]);
+    expect(review?.message).toContain('plans:set-item-blocked-by');
+    expect(reviewMainWaitPlan(snapshot, `${reason}; P-002 and P-003 need the released artifact`)).toMatchObject({ allowWait: true });
+  });
+
+  it('allows a narrowly justified final release wait when no other work remains', () => {
+    const snapshot: MainWaitPlanSnapshot = {
+      slug: 'plan-a',
+      items: [item('P-001', 'blocked', [], { heldByCaller: true, text: 'Verify released artifact on main' })],
+    };
+    expect(reviewMainWaitPlan(snapshot, reason)).toMatchObject({ allowWait: true, readyItems: [] });
+    expect(reviewMainWaitPlan(snapshot, 'wait for main')).toMatchObject({ allowWait: false, reasonAccepted: false });
+    expect(reviewMainWaitPlan({ ...snapshot, items: [item('P-001', 'todo', [], { text: 'Verify released artifact on main' })] }, reason))
+      .toMatchObject({ allowWait: true, readyItems: [] });
+  });
+
+  it('does not offer an item held back by the plan spec gate as staging-ready', () => {
+    const snapshot: MainWaitPlanSnapshot = {
+      slug: 'plan-a',
+      specTriadGated: true,
+      items: [item('P-001', 'todo')],
+    };
+    expect(reviewMainWaitPlan(snapshot, reason)).toMatchObject({ readyItems: [], allowWait: false });
+  });
+
+  it('finds A before downstream IDs mentioned in a leader explanation', () => {
+    const snapshot: MainWaitPlanSnapshot = {
+      slug: 'plan-a',
+      items: [
+        item('P-001', 'blocked', [], { text: 'Wait for release on main' }),
+        item('P-002', 'blocked', ['P-001']),
+        item('P-003', 'blocked', ['P-002']),
+      ],
+    };
+    expect(reviewMainWaitPlan(snapshot, `${reason}; P-002 and P-003 need the released artifact`))
+      .toMatchObject({ waitRoots: ['P-001'], allowWait: true });
+  });
+
+  it('does not turn gate repair into an implementation wait refusal', () => {
+    const snapshot: MainWaitPlanSnapshot = {
+      slug: 'restore-main-green',
+      items: [item('P-001', 'blocked', [], { heldByCaller: true, text: 'Repair the green-checkpoint gate-red verdict' })],
+    };
+    expect(reviewMainWaitPlan(snapshot, 'wait for main green')).toBeNull();
+    expect(reviewMainWaitPlan({
+      ...snapshot,
+      items: [item('P-001', 'blocked', [], { heldByCaller: true, text: 'Wait for green-checkpoint before verifying a feature' })],
+    }, 'wait for main green')).toMatchObject({ allowWait: false });
+  });
+
+  it('does not read the plan for unrelated awaits', async () => {
+    let reads = 0;
+    const d: WaitGuardDeps = {
+      ...deps([]),
+      planSnapshot: async () => {
+        reads += 1;
+        return { slug: 'plan-a', items: [item('P-001', 'todo')] };
+      },
+    };
+    expect(await mainWaitPlanReviewForWait({ ownerId: 'su-x', event: 'work-item:done:WI-1' }, d)).toBeNull();
+    expect(reads).toBe(0);
+    expect(await mainWaitPlanReviewForWait({ ownerId: 'su-x', event: 'release:green' }, d)).toMatchObject({ allowWait: false });
+    expect(reads).toBe(1);
   });
 });
 
