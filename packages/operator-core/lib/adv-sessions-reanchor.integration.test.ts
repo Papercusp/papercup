@@ -116,6 +116,8 @@ describe('active operation worker claim receipt', () => {
     const acceptedOperation = {
       kind: 'blueprint-operation-worker', workItemId: 'WI-claim-reader', operationId: 'extract',
       specificationRevision: 'c'.repeat(64),
+      pin: { kind: 'blueprint-operation', harnessSlug: 'papercusp', operationId: 'extract',
+        specificationRevision: 'c'.repeat(64), operationVersion: '1.0.0', input: {} },
       identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: 'd'.repeat(64) },
       requiredTools: ['work_items:get'],
     };
@@ -151,7 +153,7 @@ describe('active operation worker claim receipt', () => {
       if (claimBinding.status !== 'bound') throw new Error(JSON.stringify(claimBinding));
       expect(claimBinding).toMatchObject({
         status: 'bound', receipt: {
-          sessionId: id, workspaceId: WS, ownerId: owner,
+          sessionId: Number(id), workspaceId: WS, ownerId: owner,
           specificationRevision: revision.specificationRevision,
           stateRevision: revision.stateRevision,
           acceptedOperation,
@@ -370,6 +372,8 @@ describe('bootstrap-role receipt through the route and real PostgreSQL', () => {
     const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) };
     const acceptedOperation = {
       workItemId: 'F-route-receipt', operationId: 'run', specificationRevision: 'c'.repeat(64),
+      pin: { kind: 'blueprint-operation', harnessSlug: 'papercusp', operationId: 'run',
+        specificationRevision: 'c'.repeat(64), operationVersion: '1.0.0', input: {} },
       identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: 'd'.repeat(64) },
       stack: ['domain:blueprint-operation-worker'], requiredTools: ['work_items:get'],
     };
@@ -450,7 +454,7 @@ describe('bootstrap-role receipt through the route and real PostgreSQL', () => {
         specificationArtifact: artifact, ...revision,
         acceptedOperation: {
           kind: 'blueprint-operation-worker', workItemId: acceptedOperation.workItemId,
-          identity: acceptedOperation.identity, requiredTools: ['work_items:get'],
+          pin: acceptedOperation.pin, identity: acceptedOperation.identity, requiredTools: ['work_items:get'],
         },
       });
       expect(await readSuLaunchSpecByOwner(sid)).toEqual(stored.launch_spec);
