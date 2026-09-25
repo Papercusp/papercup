@@ -42,7 +42,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest';
 import type { GitSyncOutcome, RunGitSyncOpts } from './run-git-sync';
 import type { BridgeTickInput, BridgeTickOutcome } from '../../sync/pot-git/github-bridge-tick';
 import { configureScheduledRegistry, resetScheduledRegistry, type TimerHandle } from '@papercusp/scheduled-registry';
@@ -91,6 +91,16 @@ vi.mock('../../sync/hyperbee/substrate-booted-handles-pg', async (importOriginal
     reason: 'test fixture has no serving advertisement',
   }),
 }));
+// WI-10003079: both mocks above spread `importOriginal`, which loads the whole
+// real hyperbee graph — and production reaches them only through a LAZY import
+// inside resolveHiveGitActor. Left lazy, the first test to hit serving
+// resolution pays that load inside its own timeout (measured ~1.8s of a 2s
+// budget), so the graph growing elsewhere turns an unrelated case red and its
+// orphaned run leaks warnings into later tests. Pay it once, here.
+beforeAll(async () => {
+  await import('../../sync/hyperbee/boot-all');
+  await import('../../sync/hyperbee/substrate-booted-handles-pg');
+}, 120_000);
 const tryAcquireResourceMock = vi.fn(
   async (
     _tx: unknown,
