@@ -14,6 +14,7 @@ import {
 } from '../read-merge';
 import { DeferralEvictionReFold } from '../eviction-refold';
 import { PendingEpochContent } from '../pending-epoch-content';
+import { PendingMembershipContent } from '../pending-membership-content';
 import { drainQueuedEpochContent, type DrainedEpoch } from '../hive-epoch-op-gate';
 import type { OwnLog, PeerLogOp } from '../peer-log';
 import type { OpEnvelope } from '../op-envelope-types';
@@ -506,6 +507,26 @@ describe('P-522 (b): DeferralEvictionReFold and rewindMergeCursor', () => {
     expect(refold.isCaughtUp).toBe(true);
   });
 
+  it('P-541: a log with ops but no position, or a paid rewind, puts the fold back to catching up', () => {
+    const refold = new DeferralEvictionReFold();
+    const cursor = createMergeCursor();
+    refold.noteIdle(); // the last pass had nothing to fold
+    refold.noteUnpositioned([lengthOf(0)], cursor); // an empty log has nothing to catch up on
+    expect(refold.isCaughtUp).toBe(true);
+    refold.noteUnpositioned([lengthOf(1_000)], cursor); // admitted since the last pass
+    expect(refold.isCaughtUp).toBe(false);
+
+    cursor.positions.set(K, 100);
+    refold.markFloors(cursor, false); // floor 100
+    refold.noteEviction();
+    cursor.positions.set(K, 1_000);
+    refold.noteFold([lengthOf(1_000)], cursor, new Map([[K, 100]]));
+    refold.noteUnpositioned([lengthOf(1_000)], cursor); // positioned: no change
+    expect(refold.isCaughtUp).toBe(true);
+    expect(refold.settle(cursor)).toEqual({ kind: 'rewound', moved: [{ keyHex: K, floor: 100 }] });
+    expect(refold.isCaughtUp).toBe(false);
+  });
+
   it('a replaced cursor pays the debt (it re-reads from its seeds); its floors start over', () => {
     const refold = new DeferralEvictionReFold();
     const a = createMergeCursor();
@@ -672,5 +693,115 @@ describe('D-016: a dropped deferral owes a re-fold only when its blocker clears,
     expect(r.pending.hasEvicted('pot', 1)).toBe(true);
     expect(r.pending.dropped.holdsSourceless).toBe(false);
     expect(r.pending.dropped.takeOwed()).toBeNull();
+  });
+});
+
+describe('P-541: a log admitted since the last pass folds its snapshot set with the member TTL held', () => {
+  /**
+   * P-007 run #15's shape. The log is admitted after a pass that had nothing to fold, so that
+   * pass ended caught up. Its set holds member A's content; the long tail holds non-member B's
+   * content, then A's member row. Every apply ticks the clock, and the TTL is shorter than the
+   * tail, so with expiry live a B deferral sweeps A's entries before A's row arrives. The pass
+   * loop is boot.ts's: drops and the top-of-pass hold, settle, (P-541) the re-decided hold,
+   * seeding, floors, the fold, then the member drain.
+   */
+  async function runJoin(opts: { policy: 'top-only' | 'p541'; maxPasses: number }) {
+    const log = memLog('e1'.repeat(32));
+    const prefix: PeerLogOp[] = [];
+    for (let i = 0; i < 20; i++) prefix.push(op('plain', `P${i}`, { i }, T0 + i));
+    for (let i = 0; i < 6; i++) prefix.push(op('mc', `A${i}`, { i }, T0 + 100 + i));
+    await log.appendBatch!(prefix);
+    const setAt = log.length;
+    await produceLogSnapshot(log, { now: T0 + 1_000, schemaVersion: 1, maxChunkBytes: 400 });
+    const setEnd = log.length;
+    const tail: PeerLogOp[] = [];
+    for (let i = 0; i < 80; i++) tail.push(op('plain', `Q${i}`, { i }, T0 + 2_000 + i));
+    for (let i = 0; i < 3; i++) tail.push(op('mc', `B${i}`, { i }, T0 + 3_000 + i));
+    tail.push(op('members', 'A', { device: 'A' }, T0 + 4_000));
+    await log.appendBatch!(tail);
+    const oracle = await fullReplay(log);
+    const expected = Object.fromEntries(Object.entries(oracle).filter(([k]) => !k.startsWith('mc::B')));
+
+    const TTL = 40;
+    let clock = 0;
+    const pending = new PendingMembershipContent(5_000, TTL);
+    const refold = new DeferralEvictionReFold();
+    const members = new Set<string>();
+    const drainQueue: string[] = [];
+    const pg: Pg = new Map();
+    const applyImpl = async (env: OpEnvelope): Promise<boolean> => {
+      clock++;
+      const key = env.hbKey ?? '';
+      if (env.table === 'mc') {
+        const author = key.slice(0, 1);
+        if (!members.has(author)) {
+          const reapply = async () => {
+            await applyImpl(env);
+          };
+          pending.defer({ authorDevice: author, tableTag: 'mc', rowKey: key, reapply }, clock);
+          return false;
+        }
+      }
+      if (env.table === 'members') {
+        members.add(key);
+        drainQueue.push(key);
+      }
+      pg.set(`${env.table}::${key}`, env.value);
+      return true;
+    };
+
+    let cursor = createMergeCursor();
+    const rewoundTo: number[] = [];
+    let expired = 0;
+    let passes = 0;
+    for (; passes < opts.maxPasses; passes++) {
+      expired += pending.dropped.takeDropCounts().expired;
+      const owed = pending.dropped.takeOwed();
+      if (owed) refold.noteOwed(owed);
+      pending.holdExpiry(!refold.isCaughtUp);
+      const logs = passes === 0 ? [] : [log]; // admitted after the first pass
+      const action = refold.settle(cursor);
+      if (action.kind === 'reset') cursor = createMergeCursor();
+      if (action.kind === 'rewound') for (const m of action.moved) rewoundTo.push(m.floor);
+      if (opts.policy === 'p541') {
+        refold.noteUnpositioned(logs, cursor);
+        pending.holdExpiry(!refold.isCaughtUp);
+      }
+      await seedCursorFromSnapshots(logs, cursor, { getTimeoutMs: 0 });
+      refold.markFloors(cursor, pending.size() > 0 || pending.dropped.holdsSourceless);
+      if (logs.length === 0) {
+        refold.noteIdle();
+        continue;
+      }
+      const before = new Map(cursor.positions);
+      await mergeAdmittedLogsIncremental(logs, cursor, {
+        getTimeoutMs: 0,
+        maxOpsPerPass: 0,
+        applyImpl: applyImpl as never,
+      });
+      refold.noteFold(logs, cursor, before);
+      while (drainQueue.length > 0) {
+        for (const d of pending.drainForDevices([drainQueue.shift()!], clock)) await d.reapply();
+      }
+      const atTail = cursor.positions.get(log.keyHex) === log.length;
+      if (atTail && !refold.isOwed && isDeepStrictEqual(Object.fromEntries(pg), expected)) break;
+    }
+    return { pg: Object.fromEntries(pg), expected, passes, setAt, setEnd, rewoundTo, expired };
+  }
+
+  it('CONTROL (the P-538 top-of-pass hold): the set runs with expiry live, A expires mid-join and the re-fold rewinds into the set', async () => {
+    const r = await runJoin({ policy: 'top-only', maxPasses: 10 });
+    expect(r.expired).toBeGreaterThan(0);
+    expect(r.rewoundTo).toHaveLength(1);
+    expect(r.rewoundTo[0]).toBeGreaterThanOrEqual(r.setAt);
+    expect(r.rewoundTo[0]).toBeLessThan(r.setEnd);
+  });
+
+  it('P-541: the hold covers the pass that admits the log; nothing of A expires, nothing rewinds, and the join converges', async () => {
+    const r = await runJoin({ policy: 'p541', maxPasses: 10 });
+    expect(r.expired).toBe(0);
+    expect(r.rewoundTo).toEqual([]);
+    expect(r.pg).toEqual(r.expected);
+    expect(r.passes).toBe(1);
   });
 });
