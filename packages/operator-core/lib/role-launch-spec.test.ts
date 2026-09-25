@@ -471,6 +471,62 @@ describe('buildRoleLaunchSpec', () => {
     }
   });
 
+  it('compiles a named composition root with its selected component prompts and source pins', async () => {
+    const { saveNamedIdentityComposition, previewNamedIdentityComposition } = await import('./identity-management');
+    const { resolveNamedIdentityCompositionSelection } = await import('./agent-identities/source');
+    const dir = mkdtempSync(join(tmpdir(), 'named-launch-composition-'));
+    try {
+      for (const [id, slot, prompt] of [
+        ['named-domain', 'domain', 'NAMED DOMAIN RULES'],
+        ['named-practice', 'practice', 'NAMED PRACTICE RULES'],
+      ]) {
+        const componentDir = join(dir, '.papercusp', 'blueprints', id!);
+        mkdirSync(join(componentDir, 'prompts'), { recursive: true });
+        writeFileSync(join(componentDir, 'blueprint.yaml'),
+          `id: ${id}\nextends: base\nversion: 1.0.0\nslots:\n  - slot: ${slot}\n`);
+        writeFileSync(join(componentDir, 'prompts', `${slot}.md`), `${prompt}\n`);
+      }
+      const selection = { id: 'named-review', repoDir: dir,
+        componentRefs: ['domain:named-domain', 'practice:named-practice'] };
+      await previewNamedIdentityComposition(selection);
+      await saveNamedIdentityComposition(selection);
+      const { papercuspPathForWorkspace } = await import('./papercusp-root');
+      const flags = await import('@papercusp/flags/server');
+      const flagSpy = vi.spyOn(flags, 'getFlag').mockResolvedValueOnce(false);
+      vi.mocked(papercuspPathForWorkspace).mockReturnValueOnce(dir);
+      await expect(buildLaunchSpec({ kind: 'su', agent: 'claude',
+        workspaceId: 'default', operatorBaseUrl: 'http://localhost:3070',
+        stack: ['composition:named-review'] })).rejects.toThrow(/requires the SU blueprint persona renderer/);
+      flagSpy.mockRestore();
+      vi.mocked(papercuspPathForWorkspace).mockReturnValueOnce(dir);
+      const suSpec = await buildLaunchSpec({ kind: 'su', agent: 'claude',
+        workspaceId: 'default', operatorBaseUrl: 'http://localhost:3070',
+        stack: ['composition:named-review'] });
+      expect(suSpec.stack).toEqual(selection.componentRefs);
+      const launch = await compileLaunchSpecificationArtifact({
+        promptText: 'ROLE KERNEL', cwd: dir, role: 'su', stack: selection.componentRefs,
+        compositionRootId: selection.id, state: { schemaVersion: 1 }, renderStack: true,
+      });
+      expect(launch.promptText).toContain('NAMED DOMAIN RULES');
+      expect(launch.promptText).toContain('NAMED PRACTICE RULES');
+      const selected = await resolveNamedIdentityCompositionSelection(selection.id, dir);
+      expect(selected.layers.every((layer) => launch.specificationArtifact.inputs.some((entry) =>
+        entry.kind === 'blueprint-layer' && entry.ref === layer.id &&
+        entry.contentHash === layer.contentHash))).toBe(true);
+      for (const id of ['named-review', 'named-domain', 'named-practice']) {
+        expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+          kind: 'blueprint-layer', ref: id,
+        }));
+      }
+      await expect(compileLaunchSpecificationArtifact({
+        promptText: 'ROLE KERNEL', cwd: dir, role: 'su', stack: ['practice:named-practice'],
+        compositionRootId: selection.id, state: { schemaVersion: 1 }, renderStack: true,
+      })).rejects.toThrow(/stack changed/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('accepts exact selected provider setting and prompt receipts and refuses a changed source', async () => {
     const { bindSelectedIdentityOutputArtifact } = await import('./agent-identities/source');
     const dir = mkdtempSync(join(tmpdir(), 'mixed-provider-identity-artifact-'));

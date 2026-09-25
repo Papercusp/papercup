@@ -39,8 +39,9 @@ export interface IdentitySourceOptions {
 export function identityLaunchCompatibility(
   document: BlueprintSourceDocument,
   selectableSlots: readonly unknown[] = document.slots ?? [],
+  namedStack: readonly string[] | undefined = document.roles?.find((role) => role.id === 'su')?.stack,
 ) {
-  if (selectableSlots.length === 0) {
+  if (selectableSlots.length === 0 && !namedStack?.length) {
     return { eligible: false, reason: 'This named composition needs a launch selection before it can start.' };
   }
   if (document.mode) return { eligible: false, reason: 'Activate this mode through the validated mode control.' };
@@ -48,6 +49,53 @@ export function identityLaunchCompatibility(
     return { eligible: false, reason: 'This identity needs a live producer binding at launch.' };
   }
   return { eligible: true, reason: null };
+}
+
+/** A composition selection pins its root and every inherited component. */
+export function identitySelectionRevision(source: {
+  contentHash: string;
+  identity: BlueprintSourceDocument;
+  layers: readonly { id: string; contentHash: string }[];
+}): string {
+  const namedStack = source.identity.roles?.find((role) => role.id === 'su')?.stack;
+  if (source.identity.slots?.length || !namedStack?.length) return source.contentHash;
+  return createHash('sha256').update(canonicalJson({
+    stack: namedStack,
+    layers: source.layers.map(({ id, contentHash }) => ({ id, contentHash })),
+  })).digest('hex');
+}
+
+/** Resolve a selected slotless library root through its authored role stack.
+ * A composition marker never becomes a slot or an authority-bearing identity. */
+export async function resolveNamedIdentityCompositionSelection(id: string, repoDir: string) {
+  const selected = await getIdentitySource(id, { repoDir });
+  if (!selected.ok || !selected.sourcePath) throw new Error(`named identity ${id} is unavailable`);
+  const stack = selected.identity.roles?.find((role) => role.id === 'su')?.stack;
+  if (selected.identity.slots?.length || !stack?.length) {
+    throw new Error(`identity ${id} is not a named launch composition`);
+  }
+  const raw = parseBlueprintSource(await readFile(selected.sourcePath, 'utf8'));
+  const resolved = resolveBlueprintSource(raw, { sourcePath: selected.sourcePath,
+    resolve: operatorResolveExtends({ localDirs: localDirs(repoDir) }) });
+  const effective = BlueprintSourceDocumentSchema.parse(resolved.merged);
+  const compatibility = identityLaunchCompatibility(effective, [], stack);
+  if (!resolved.validation.ok || !compatibility.eligible) {
+    throw new Error(`named identity ${id} cannot launch: ${compatibility.reason ?? 'invalid source'}`);
+  }
+  const parentIds = new Set(Array.isArray(selected.identity.extends)
+    ? selected.identity.extends : selected.identity.extends ? [selected.identity.extends] : []);
+  for (const ref of stack) {
+    const [slot, componentId] = ref.split(':');
+    if (!slot || !componentId || !parentIds.has(componentId)) {
+      throw new Error(`named identity ${id} has an unselected component ${ref}`);
+    }
+    const component = await getIdentitySource(componentId, { repoDir });
+    if (!component.ok || !component.identity.slots?.some((entry) => entry.slot === slot)) {
+      throw new Error(`named identity ${id} component ${ref} is unavailable`);
+    }
+  }
+  return { id, stack: [...stack], sourcePath: selected.sourcePath,
+    sourceRevision: identitySelectionRevision(selected), layers: selected.layers };
 }
 
 let selectedModeCatalogCache: { fingerprint: string; value: ModeCatalogSnapshot } | null = null;
@@ -570,8 +618,9 @@ export async function listIdentitySources(opts: { repoDir?: string; after?: stri
             sourceId: doc.id,
             tier: entry.tier,
             version: doc.version,
-            sourceRevision: selected.contentHash,
-            launchCompatibility: identityLaunchCompatibility(effective, doc.slots),
+            sourceRevision: identitySelectionRevision(selected),
+            launchCompatibility: identityLaunchCompatibility(effective, doc.slots,
+              doc.roles?.find((role) => role.id === 'su')?.stack),
             description: doc.description,
             // The slot registry is authoritative for cardinality. Identity files
             // may omit the optional restatement, but the UI still has to choose

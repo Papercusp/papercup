@@ -321,6 +321,8 @@ export interface LaunchArtifactInput {
   role: string;
   /** null/omitted selects `roles[].stack`; [] explicitly selects no optional layers. */
   stack?: readonly string[] | null;
+  /** Slotless named library root selected before its component stack expands. */
+  compositionRootId?: string | null;
   /** Versioned mutable mode/policy/principal state kept distinct from source configuration. */
   state: Record<string, unknown>;
   /** A caller-owned state watermark (for SU, the instruction-precedence watermark). */
@@ -470,9 +472,10 @@ async function selectedLaunchCompositionSource(
   stack: readonly string[],
   cwd: string,
   producerBindings: readonly { identityId: string; artifact: CompiledAgentSpecification }[] = [],
+  compositionRootId?: string | null,
 ) : Promise<EffectiveLaunchSource> {
   const [{ BlueprintSourceDocumentSchema, replayAgentSpecification, resolveBlueprint, resolveBlueprintSource, stackBindingFromRefs },
-    { getIdentitySource }, { operatorResolveExtends }] =
+    { getIdentitySource, resolveNamedIdentityCompositionSelection }, { operatorResolveExtends }] =
     await Promise.all([
       import('@papercusp/orchestrator/blueprint'),
       import('./agent-identities/source'),
@@ -486,6 +489,11 @@ async function selectedLaunchCompositionSource(
     contributionOmissions: [],
   });
   if (stack.length === 0) return original();
+  const selectedRoot = compositionRootId
+    ? await resolveNamedIdentityCompositionSelection(compositionRootId, cwd) : null;
+  if (selectedRoot && JSON.stringify(selectedRoot.stack) !== JSON.stringify(stack)) {
+    throw new Error('named launch composition stack changed before compilation');
+  }
   const paths = new Map<string, string>();
   const parents: string[] = [];
   if (source.loaded?.sourcePath) {
@@ -573,14 +581,20 @@ async function selectedLaunchCompositionSource(
         path: path.join(path.dirname(identity.sourcePath), 'prompts', `${fileName}.md`) });
     }
     const alias = `__launch_identity_${index}__`;
-    paths.set(alias, identity.sourcePath);
-    parents.push(alias);
+    if (!selectedRoot) {
+      paths.set(alias, identity.sourcePath);
+      parents.push(alias);
+    }
     selected.push({ id: layer.id, path: identity.sourcePath, hash: identity.contentHash });
   }
   if (producerBindings.some((binding) => !usedBindings.has(binding.identityId))) {
     throw new Error('launch producer binding does not name a selected identity with operational contributions');
   }
   if (selected.length === 0) return original();
+  if (selectedRoot) {
+    paths.set('__launch_composition__', selectedRoot.sourcePath);
+    parents.push('__launch_composition__');
+  }
   const fallback = operatorResolveExtends({ localDirs: [path.join(cwd, '.papercusp', 'blueprints')] });
   const resolve: ResolveExtendsPath = (id) => paths.get(id) ?? fallback(id);
   // A standalone identity is an abstract source. The role launcher supplies
@@ -600,6 +614,11 @@ async function selectedLaunchCompositionSource(
       throw new Error(`launch stack identity ${JSON.stringify(entry.id)} changed during composition`);
     }
   }
+  if (selectedRoot && !resolved.layers.some((layer) =>
+    layer.id === selectedRoot.id && layer.sourcePath === selectedRoot.sourcePath &&
+    layer.contentHash === selectedRoot.layers.at(-1)?.contentHash)) {
+    throw new Error('named launch composition root changed during compilation');
+  }
   return 'merged' in resolved
     ? { source: raw, resolve, configuration: BlueprintSourceDocumentSchema.parse(resolved.merged), pinnedFixedPromptFiles, providerInputs, contributionOmissions }
     : { source: resolved, configuration: resolved.blueprint, pinnedFixedPromptFiles, providerInputs, contributionOmissions };
@@ -616,7 +635,8 @@ export async function compileLaunchSpecificationArtifact(input: LaunchArtifactIn
   const { compileAgentSpecification, specificationPrompt } =
     await import('@papercusp/orchestrator/blueprint');
   const resourceArtifacts: CompiledAgentSpecification[] = [];
-  const composition = await selectedLaunchCompositionSource(source, stack, input.cwd, input.producerBindings);
+  const composition = await selectedLaunchCompositionSource(source, stack, input.cwd,
+    input.producerBindings, input.compositionRootId);
   const prompt = input.renderStack && stack.length > 0
     ? { role: input.role, documents: await roleStackDocuments({ ...input, stack }) }
     : { role: input.role, text: input.promptText };
@@ -1139,6 +1159,11 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
     }
   }
   stackRefs ??= [];
+  if (stackRefs.length === 1 && stackRefs[0]?.startsWith('composition:')) {
+    const id = stackRefs[0].slice('composition:'.length);
+    const { resolveNamedIdentityCompositionSelection } = await import('./agent-identities/source');
+    stackRefs = (await resolveNamedIdentityCompositionSelection(id, cwd)).stack;
+  }
   const { stackBindingFromRefs } = await import('@papercusp/orchestrator/blueprint');
   const requestedStack = stackBindingFromRefs(stackRefs);
 
@@ -1199,7 +1224,11 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   try {
     const { getFlag } = await import('@papercusp/flags/server');
     const { FLAGS } = await import('@papercusp/flags');
-    if (await getFlag(FLAGS.SU_BLUEPRINT_PERSONA, input.workspaceId)) {
+    const blueprintPersonaEnabled = await getFlag(FLAGS.SU_BLUEPRINT_PERSONA, input.workspaceId);
+    if (!blueprintPersonaEnabled && requestedStack.layers.length > 0) {
+      throw new Error('selected identity stack requires the SU blueprint persona renderer');
+    }
+    if (blueprintPersonaEnabled) {
       const files = resolvePromptFiles({ harnessDir: harnessRoot(), phase: '', dept: '' }, 'su');
       if (files.length > 0) {
         suBaseSource = files[files.length - 1];
