@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkItem } from '../work-items';
 import {
+  BLUEPRINT_PROGRAM_COMPLETION_OWNER,
+  blueprintProgramCompletionRef,
   projectBlueprintOperationStatus,
   type BlueprintOperationHandle,
 } from './operation-service';
@@ -46,6 +48,19 @@ describe('projectBlueprintOperationStatus', () => {
     expect(projectBlueprintOperationStatus(direct, [item('WI-12', 'dropped')])).toMatchObject({
       phase: 'terminal', outcome: 'dropped',
     });
+  });
+
+  it('derives a failed program outcome from the canonical root close only', () => {
+    const failedRoot = { ...item('WI-12', 'dropped'),
+      terminalOwner: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
+      terminalCompletionRef: blueprintProgramCompletionRef(direct, 'failed') };
+    expect(projectBlueprintOperationStatus(direct, [failedRoot]))
+      .toMatchObject({ phase: 'terminal', outcome: 'failed' });
+    expect(projectBlueprintOperationStatus({ ...direct, receiptId: 99 }, [failedRoot]))
+      .toMatchObject({ phase: 'terminal', outcome: 'dropped' });
+    expect(projectBlueprintOperationStatus(direct, [failedRoot], null,
+      { cancellationRequested: true, wait: null }))
+      .toMatchObject({ phase: 'terminal', outcome: 'cancelled' });
   });
 
   it('does not present a partially settled plan as a completed result', () => {
