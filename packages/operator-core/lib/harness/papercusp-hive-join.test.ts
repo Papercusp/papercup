@@ -87,11 +87,14 @@ describe('joinCanonicalPapercuspHive', () => {
     });
     expect(res.state).toBe('skipped');
     expect(records.some((r) => /sign in to github/i.test(r[2]?.detail ?? ''))).toBe(true);
+    // P-539: not retried in-process — the setup wizard re-triggers after sign-in.
+    expect(res.retryable).toBeUndefined();
   });
 
-  it('no directory wiring → skipped', async () => {
+  it('no directory wiring → skipped, retryable (the invite topic was never joined; P-539)', async () => {
     const res = await joinCanonicalPapercuspHive(INVITE, { ...baseDeps(), ensureWired: async () => null });
     expect(res.state).toBe('skipped');
+    expect(res.retryable).toBe(true);
   });
 
   it('uses the baked owner-device binding when the matching announce omits it', async () => {
@@ -243,6 +246,8 @@ describe('joinCanonicalPapercuspHive', () => {
     });
     expect(res.state).toBe('skipped');
     expect(res.reason).toMatch(/stalled/);
+    // P-539: retried in-process, since the invite topic was never joined.
+    expect(res.retryable).toBe(true);
     // Must move the bar OFF 5% so the banner doesn't read "connecting (5%)" forever.
     expect(records.some((r) => r[2]?.percent === 10)).toBe(true);
   }, 5_000);
