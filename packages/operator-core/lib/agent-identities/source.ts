@@ -16,6 +16,8 @@ import {
   type ModeCatalogSnapshot,
   type BlueprintSourceDocument,
   type ResolvedAgentInput,
+  bindingRefs,
+  stackBindingFromRefs,
   slotSpec,
 } from '@papercusp/orchestrator/blueprint';
 import { parseBlueprintSource, resolveAndValidate } from '../agent-tools/blueprint/_resolve';
@@ -70,10 +72,11 @@ export function identitySelectionRevision(source: {
 export async function resolveNamedIdentityCompositionSelection(id: string, repoDir: string) {
   const selected = await getIdentitySource(id, { repoDir });
   if (!selected.ok || !selected.sourcePath) throw new Error(`named identity ${id} is unavailable`);
-  const stack = selected.identity.roles?.find((role) => role.id === 'su')?.stack;
-  if (selected.identity.slots?.length || !stack?.length) {
+  const authoredStack = selected.identity.roles?.find((role) => role.id === 'su')?.stack;
+  if (selected.identity.slots?.length || !authoredStack?.length) {
     throw new Error(`identity ${id} is not a named launch composition`);
   }
+  const stack = bindingRefs(stackBindingFromRefs(authoredStack));
   const raw = parseBlueprintSource(await readFile(selected.sourcePath, 'utf8'));
   const resolved = resolveBlueprintSource(raw, { sourcePath: selected.sourcePath,
     resolve: operatorResolveExtends({ localDirs: localDirs(repoDir) }) });
@@ -96,6 +99,37 @@ export async function resolveNamedIdentityCompositionSelection(id: string, repoD
   }
   return { id, stack: [...stack], sourcePath: selected.sourcePath,
     sourceRevision: identitySelectionRevision(selected), layers: selected.layers };
+}
+
+/** Resolve a persisted picker choice against the SAME source catalog as first
+ * launch. A changed root, inherited component or selected slot fails closed on
+ * refresh/resume; an explicit identity mutation must deliberately replace it. */
+export async function resolvePinnedIdentityLaunchSelection(input: {
+  ref: string;
+  sourceRevision: string;
+  repoDir: string;
+  stack: readonly string[];
+}) {
+  const canonicalStack = bindingRefs(stackBindingFromRefs(input.stack));
+  if (input.ref.startsWith('composition:')) {
+    const id = input.ref.slice('composition:'.length);
+    const selected = await resolveNamedIdentityCompositionSelection(id, input.repoDir);
+    if (selected.sourceRevision !== input.sourceRevision ||
+        JSON.stringify(selected.stack) !== JSON.stringify(canonicalStack)) {
+      throw new Error(`selected identity ${input.ref} source revision or component stack changed before rebuild`);
+    }
+    return { compositionRootId: id, layers: selected.layers };
+  }
+  const [slot, id, extra] = input.ref.split(':');
+  if (!slot || !id || extra || !canonicalStack.includes(input.ref)) {
+    throw new Error(`selected identity ${input.ref} is not in the persisted launch stack`);
+  }
+  const selected = await getIdentitySource(id, { repoDir: input.repoDir });
+  if (!selected.ok || !selected.identity.slots?.some((entry) => entry.slot === slot) ||
+      identitySelectionRevision(selected) !== input.sourceRevision) {
+    throw new Error(`selected identity ${input.ref} source revision changed before rebuild`);
+  }
+  return { compositionRootId: null, layers: selected.layers };
 }
 
 let selectedModeCatalogCache: { fingerprint: string; value: ModeCatalogSnapshot } | null = null;
