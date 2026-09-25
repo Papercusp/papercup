@@ -329,7 +329,8 @@ const OperationEventBodySchema = z.discriminatedUnion('kind', [
     usage: z.object({ inputTokens: z.number().int().nonnegative().nullable(),
       outputTokens: z.number().int().nonnegative().nullable(),
       cacheReadTokens: z.number().int().nonnegative().nullable(),
-      cacheCreationTokens: z.number().int().nonnegative().nullable() }).strict(),
+      cacheCreationTokens: z.number().int().nonnegative().nullable(),
+      inputTokenBasis: z.enum(['uncached', 'inclusive']).optional() }).strict(),
     source: z.literal('gateway'),
   }),
 ]);
@@ -440,12 +441,18 @@ export function recordDirectOperationModelAttestation(
   input: DirectOperationModelAttestation,
 ): Promise<{ id: string; replayed: boolean }> {
   return runWithWorkspace(context.workspaceId, async () => {
-    const read = await readActiveOperationModelPolicy(context.workspaceId, context.ownerId);
+    const read = await readActiveOperationModelPolicy(context.workspaceId, context.ownerId, input.backend);
     if (read.status !== 'bound' || !read.attestation || !isDeepStrictEqual(read.attestation, context)) {
       throw new Error('blueprint model attestation requires the current applied operation receipt');
     }
     if ((input.forwardedEffort === null) !== (input.effortSource === 'unavailable')) {
       throw new Error('blueprint model attestation effort source contradicts its value');
+    }
+    if ((input.backend === 'codex' &&
+          (input.provider !== 'openai' || input.usage.inputTokenBasis !== 'inclusive')) ||
+        (input.backend === 'claude' &&
+          (input.provider !== 'anthropic' || input.usage.inputTokenBasis === 'inclusive'))) {
+      throw new Error('blueprint model attestation provider or token basis differs from backend');
     }
     const body = OperationEventBodySchema.parse({
       ...input,
@@ -642,9 +649,9 @@ export type BlueprintOperationResult =
   | { state: 'ready'; status: BlueprintOperationStatus; output: unknown; evidenceRef: string };
 
 /** A launch selector or a requested model cannot prove what served a turn.
- * Read only transcript request observations from the session whose launch
- * receipt carries this exact accepted item pin. Other backends need their own
- * independently reported model seam before they can satisfy this policy. */
+ * Claude transcripts carry provider message ids. Codex turn_context carries
+ * requested model only, so its provider event supplies actual model and its
+ * request-grain transcript supplies an independently counted usage multiset. */
 async function verifyDirectOperationModel(
   sql: Sql,
   workspaceId: string,
@@ -673,6 +680,7 @@ async function verifyDirectOperationModel(
     agent: string | null; owner_id: string | null; native_session_id: string | null;
     model: string | null; provider: string | null; model_source: string | null;
     grain: string | null; source_id: string | null;
+    input_total_tokens: string | number | null;
     input_tokens: string | number | null; output_tokens: string | number | null;
     cache_read_tokens: string | number | null; cache_creation_tokens: string | number | null;
   }>>`
@@ -681,7 +689,8 @@ async function verifyDirectOperationModel(
            u.cache_read_tokens, u.cache_creation_tokens,
            u.usage_provenance->>'modelSource' AS model_source,
            u.usage_provenance->>'grain' AS grain,
-           u.usage_provenance->>'sourceId' AS source_id
+           u.usage_provenance->>'sourceId' AS source_id,
+           u.usage_provenance->>'inputTotalTokens' AS input_total_tokens
       FROM harness_shared.adv_sessions s
       LEFT JOIN harness_shared.agent_usage_samples u
         ON u.workspace_id = s.workspace_id AND u.session_id = s.session_id
@@ -714,34 +723,73 @@ async function verifyDirectOperationModel(
     if (events.has(key)) return 'accepted worker has duplicate model attestation';
     events.set(key, event);
   }
+  const unmatched = new Set(events.keys());
   const nonnegative = (value: string | number | null) => value !== null && Number.isSafeInteger(Number(value)) && Number(value) >= 0;
   // Reuse the gateway's CLI-alias resolution: a listed `opus[1m]` is the
   // provider's `claude-opus-5` after the CLI moves the window into a header.
   // Pricing normalization alone strips the marker but cannot resolve it.
   const { resolveGatewayModel } = await import('../inference-gateway/gateway');
-  const canonicalModel = (value: string) => {
+  const canonicalClaudeModel = (value: string) => {
     const bare = value.includes('/') ? value.slice(value.lastIndexOf('/') + 1) : value;
     return normalizeModelId(resolveGatewayModel(bare).model);
   };
+  const { resolveCodexModel } = await import('../model-context-budget.mjs');
+  const canonicalCodexModel = (value: string) => {
+    const bare = value.includes('/') ? value.slice(value.lastIndexOf('/') + 1) : value;
+    return normalizeModelId(resolveCodexModel(bare.replace(/:(low|medium|high|xhigh|max|ultra)$/i, '')));
+  };
   const modelAllowed = (model: string, provider: string, effort: string | null): boolean => {
     const actualPrefix = model.includes('/') ? model.slice(0, model.indexOf('/')).toLowerCase() : null;
-    if (actualPrefix && actualPrefix !== provider) return false;
+    if (actualPrefix && actualPrefix !== provider && !(provider === 'openai' && actualPrefix === 'openai-codex')) return false;
     return policy.models.some((entry) => {
-      const listedProvider = entry.includes('/') ? entry.slice(0, entry.indexOf('/')).toLowerCase() : 'anthropic';
+      const listedProvider = entry.includes('/') ? entry.slice(0, entry.indexOf('/')).toLowerCase() : provider;
       const listedEffort = /:(low|medium|high|xhigh|max|ultra)$/i.exec(entry)?.[1]?.toLowerCase();
-      return listedProvider === provider && canonicalModel(entry) === canonicalModel(model) &&
+      return (listedProvider === provider || (provider === 'openai' && listedProvider === 'openai-codex')) &&
+        (provider === 'openai'
+          ? canonicalCodexModel(entry) === canonicalCodexModel(model)
+          : canonicalClaudeModel(entry) === canonicalClaudeModel(model)) &&
         (!listedEffort || listedEffort === effort);
     });
   };
   for (const row of rows) {
-    if (row.agent !== 'claude' || row.provider !== 'anthropic' ||
+    if ((row.agent !== 'claude' && row.agent !== 'codex') ||
+        row.provider !== (row.agent === 'claude' ? 'anthropic' : 'openai') ||
         row.model_source !== 'transcript' || row.grain !== 'request' || !row.model ||
-        !row.owner_id || !row.native_session_id || !row.source_id?.startsWith('message:')) {
+        !row.owner_id || !row.native_session_id || !row.source_id) {
       return 'accepted worker has an unreported or unsupported actual model';
     }
-    const event = events.get(`${row.native_session_id}:${row.source_id.slice('message:'.length)}`);
-    if (!event || event.ownerId !== row.owner_id || event.backend !== row.agent ||
-        event.provider !== row.provider || canonicalModel(event.actualModel) !== canonicalModel(row.model)) {
+    let matchedKey: string | null = null;
+    if (row.agent === 'claude') {
+      if (!row.source_id.startsWith('message:')) return 'accepted worker has an unreported or unsupported actual model';
+      matchedKey = `${row.native_session_id}:${row.source_id.slice('message:'.length)}`;
+    } else {
+      // Codex token_count has no provider response id. Match the bounded
+      // multiset of provider totals to request-grain transcript totals within
+      // the same applied native session. turn_context model is REQUESTED model;
+      // the event's provider response model remains the actual-model authority.
+      if (!nonnegative(row.input_total_tokens) || !nonnegative(row.output_tokens)) {
+        return 'accepted worker usage differs from provider request attestation';
+      }
+      const match = [...events.entries()].find(([key, candidate]) => unmatched.has(key) &&
+        candidate.backend === 'codex' && candidate.provider === 'openai' &&
+        candidate.nativeSessionId === row.native_session_id && candidate.ownerId === row.owner_id &&
+        candidate.usage.inputTokenBasis === 'inclusive' &&
+        candidate.usage.inputTokens === Number(row.input_total_tokens) &&
+        candidate.usage.outputTokens === Number(row.output_tokens) &&
+        canonicalCodexModel(candidate.requestedModel) === canonicalCodexModel(row.model!) &&
+        (row.cache_read_tokens === null || candidate.usage.cacheReadTokens === null ||
+          Number(row.cache_read_tokens) === candidate.usage.cacheReadTokens) &&
+        (row.cache_creation_tokens === null || candidate.usage.cacheCreationTokens === null ||
+          Number(row.cache_creation_tokens) === candidate.usage.cacheCreationTokens));
+      matchedKey = match?.[0] ?? null;
+    }
+    const event = matchedKey ? events.get(matchedKey) : null;
+    if (!event || !matchedKey || !unmatched.delete(matchedKey) ||
+        event.ownerId !== row.owner_id || event.backend !== row.agent ||
+        event.provider !== row.provider ||
+        (row.agent === 'claude' &&
+          (event.usage.inputTokenBasis === 'inclusive' ||
+            canonicalClaudeModel(event.actualModel) !== canonicalClaudeModel(row.model)))) {
       return 'accepted worker transcript differs from its provider model attestation';
     }
     if (!modelAllowed(event.requestedModel, row.provider, event.forwardedEffort) ||
@@ -753,8 +801,9 @@ async function verifyDirectOperationModel(
         event.forwardedEffort !== policy.effort.toLowerCase())) {
       return 'actual reasoning effort is not attested at the accepted level';
     }
-    if (!nonnegative(row.input_tokens) || !nonnegative(row.output_tokens) ||
-        event.usage.inputTokens === null || Number(row.input_tokens) !== event.usage.inputTokens ||
+    if ((row.agent === 'claude' && (!nonnegative(row.input_tokens) ||
+          event.usage.inputTokens === null || Number(row.input_tokens) !== event.usage.inputTokens)) ||
+        !nonnegative(row.output_tokens) ||
         (row.cache_read_tokens !== null && event.usage.cacheReadTokens !== null &&
           Number(row.cache_read_tokens) !== event.usage.cacheReadTokens) ||
         (row.cache_creation_tokens !== null && event.usage.cacheCreationTokens !== null &&
@@ -762,7 +811,7 @@ async function verifyDirectOperationModel(
       return 'accepted worker usage differs from provider request attestation';
     }
   }
-  if (events.size !== rows.length) return 'accepted worker has unmatched request-grain model evidence';
+  if (unmatched.size) return 'accepted worker has unmatched request-grain model evidence';
   return null;
 }
 
