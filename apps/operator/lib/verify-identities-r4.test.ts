@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { checkedCommand, serializeEvidence, toolArgs } from "../../../scripts/verify-identities-r4.mjs";
+import { checkedCommand, requireRollbackResponse, selectIdentityInCatalog, serializeEvidence, toolArgs } from "../../../scripts/verify-identities-r4.mjs";
 import { findBoxIdentityPaths } from "../../../scripts/lib/identity-leak-patterns.mjs";
 
 const script = readFileSync(resolve(__dirname, "../../../scripts/verify-identities-r4.mjs"), "utf8");
@@ -24,13 +24,63 @@ describe("P-015 R-4 maintained identity UI verifier", () => {
   });
 
   it("uses real pointer clicks and settle guards for every transition", () => {
-    expect(script).toContain('Inspect identity research-steward');
+    expect(script).toContain('selectIdentity("research-steward", "real-select-identity")');
     expect(script).toContain('button[aria-label="Apply identity"]');
     expect(script).toContain('button[aria-label="Roll back identity"]');
     expect(script).toContain("inline:'center'");
     expect(script).toContain("node.scrollWidth > node.clientWidth");
     expect(script).toContain("pointer target outside viewport");
     expect(script.match(/settle\(\);/g)?.length).toBeGreaterThanOrEqual(6);
+  });
+
+  it("visits later catalog pages before selecting the identity with pointer input", () => {
+    const pages = [
+      { marker: "1–20", found: false, canAdvance: true },
+      { marker: "21–40", found: true, canAdvance: false },
+    ];
+    const clicks: string[] = [];
+    let settled = 0;
+    const scanned = selectIdentityInCatalog("research-steward", "select", {
+      readPage: (_selector, page) => pages[page - 1],
+      click: (selector) => clicks.push(selector),
+      settle: () => { settled++; },
+    });
+    expect(scanned).toBe(2);
+    expect(clicks).toEqual([
+      '[aria-label="Identity catalog pages"] button:last-child',
+      '[aria-label="Inspect identity research-steward"]',
+    ]);
+    expect(settled).toBe(1);
+  });
+
+  it("fails when catalog pagination stalls or exhausts without the requested identity", () => {
+    const click = () => {};
+    const settle = () => {};
+    expect(() => selectIdentityInCatalog("research-steward", "select", {
+      readPage: () => ({ marker: "1–20", found: false, canAdvance: true }),
+      click, settle,
+    })).toThrow(/did not advance/);
+    expect(() => selectIdentityInCatalog("research-steward", "select", {
+      readPage: () => ({ marker: "1–20", found: false, canAdvance: false }),
+      click, settle,
+    })).toThrow(/absent after 1 catalog page/);
+  });
+
+  it("waits for the rollback response and rejects a response from another action", () => {
+    let response: { request: { action: string }; status: number; body: string } | null = null;
+    const accepted = { request: { action: "rollback" }, status: 200, body: '{"ok":true,"action":"rollback"}' };
+    expect(requireRollbackResponse({
+      poll: () => { response = accepted; },
+      readResponse: () => response,
+    })).toEqual(accepted);
+    expect(() => requireRollbackResponse({
+      poll: () => {},
+      readResponse: () => ({ request: { action: "switch" }, status: 200, body: accepted.body }),
+    })).toThrow(/rollback route refused/);
+    expect(() => requireRollbackResponse({
+      poll: () => {},
+      readResponse: () => ({ request: { action: "rollback" }, status: 409, body: '{"ok":false}' }),
+    })).toThrow(/rollback route refused/);
   });
 
   it("keeps synthetic UI proof separate from host activation proof", () => {
