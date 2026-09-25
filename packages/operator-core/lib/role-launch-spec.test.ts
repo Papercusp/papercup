@@ -357,7 +357,7 @@ describe('buildRoleLaunchSpec', () => {
       expect(identityInput).toBeDefined();
       if (identityInput?.kind !== 'blueprint-layer') throw new Error('plain-domain source pin missing');
       const acceptedOperation = {
-        workItemId: 'WI-1', operationId: 'run', specificationRevision: 'a'.repeat(64),
+        workItemId: 'WI-1', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: 'a'.repeat(64),
         identity: { ref: 'plain-domain', revision: identityInput!.revision,
           contentHash: identityInput!.contentHash },
         stack: ['domain:plain-domain'], requiredTools: ['work_items:get'],
@@ -394,7 +394,7 @@ describe('buildRoleLaunchSpec', () => {
         entry.kind === 'blueprint-layer' && entry.ref === 'other-domain');
       if (otherInput?.kind !== 'blueprint-layer') throw new Error('other-domain source pin missing');
       const otherOperation = {
-        workItemId: 'WI-2', operationId: 'read', specificationRevision: 'b'.repeat(64),
+        workItemId: 'WI-2', harnessSlug: 'harness-a', operationId: 'read', specificationRevision: 'b'.repeat(64),
         identity: { ref: 'other-domain', revision: otherInput.revision,
           contentHash: otherInput.contentHash },
         stack: ['domain:other-domain'], requiredTools: ['mail:read'],
@@ -420,6 +420,11 @@ describe('buildRoleLaunchSpec', () => {
         kind: 'blueprint-layer', ref: 'plain-domain',
       }));
       expect(other.acceptedOperation?.requiredTools).toEqual(['mail:read']);
+      await expect(buildRoleLaunchSpec({
+        role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        featureId: 'WI-1', operatorBaseUrl: 'http://localhost:3070',
+        acceptedOperation: { ...acceptedOperation, harnessSlug: 'harness-b' },
+      })).rejects.toThrow('launch scope');
       await expect(buildRoleLaunchSpec({
         role: 'worker', workspaceId: 'workspace-a', harnessSlug: 'harness-a',
         featureId: 'WI-1', operatorBaseUrl: 'http://localhost:3070',
@@ -523,6 +528,40 @@ describe('buildRoleLaunchSpec', () => {
         compositionRootId: selection.id, state: { schemaVersion: 1 }, renderStack: true,
       })).rejects.toThrow(/stack changed/);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves a GUI-saved workspace composition from a different child checkout', async () => {
+    const { saveNamedIdentityComposition } = await import('./identity-management');
+    const { getIdentitySource } = await import('./agent-identities/source');
+    const dir = mkdtempSync(join(tmpdir(), 'named-launch-state-library-'));
+    const home = join(dir, 'state');
+    const checkout = join(dir, 'checkout');
+    const priorHome = process.env.PAPERCUSP_HOME;
+    try {
+      mkdirSync(checkout, { recursive: true });
+      process.env.PAPERCUSP_HOME = home;
+      const componentDir = join(home, '.papercusp', 'blueprints', 'state-domain');
+      mkdirSync(join(componentDir, 'prompts'), { recursive: true });
+      writeFileSync(join(componentDir, 'blueprint.yaml'),
+        'id: state-domain\nextends: base\nversion: 1.0.0\nslots:\n  - slot: domain\n');
+      writeFileSync(join(componentDir, 'prompts', 'domain.md'), 'STATE LIBRARY DOMAIN\n');
+      await saveNamedIdentityComposition({ id: 'state-named', repoDir: home,
+        componentRefs: ['domain:state-domain'] });
+      expect((await getIdentitySource('state-named', { repoDir: checkout })).ok).toBe(true);
+      const launch = await compileLaunchSpecificationArtifact({
+        promptText: 'ROLE KERNEL', cwd: checkout, role: 'su',
+        stack: ['domain:state-domain'], compositionRootId: 'state-named',
+        renderStack: true, state: { schemaVersion: 1 },
+      });
+      expect(launch.promptText).toContain('STATE LIBRARY DOMAIN');
+      expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: 'state-named',
+      }));
+    } finally {
+      if (priorHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = priorHome;
       rmSync(dir, { recursive: true, force: true });
     }
   });

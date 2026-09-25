@@ -475,7 +475,7 @@ async function selectedLaunchCompositionSource(
   compositionRootId?: string | null,
 ) : Promise<EffectiveLaunchSource> {
   const [{ BlueprintSourceDocumentSchema, replayAgentSpecification, resolveBlueprint, resolveBlueprintSource, stackBindingFromRefs },
-    { getIdentitySource, resolveNamedIdentityCompositionSelection }, { operatorResolveExtends }] =
+    { getIdentitySource, localDirs, resolveNamedIdentityCompositionSelection }, { operatorResolveExtends }] =
     await Promise.all([
       import('@papercusp/orchestrator/blueprint'),
       import('./agent-identities/source'),
@@ -595,7 +595,7 @@ async function selectedLaunchCompositionSource(
     paths.set('__launch_composition__', selectedRoot.sourcePath);
     parents.push('__launch_composition__');
   }
-  const fallback = operatorResolveExtends({ localDirs: [path.join(cwd, '.papercusp', 'blueprints')] });
+  const fallback = operatorResolveExtends({ localDirs: localDirs(cwd) });
   const resolve: ResolveExtendsPath = (id) => paths.get(id) ?? fallback(id);
   // A standalone identity is an abstract source. The role launcher supplies
   // its native execution session; a synthetic work item or fleet would leak
@@ -690,7 +690,8 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   const featureId = input.featureId?.trim() || null;
   const harnessSlug = input.harnessSlug?.trim() || null;
   const acceptedOperation = input.acceptedOperation ?? null;
-  if (acceptedOperation && (!harnessSlug || acceptedOperation.workItemId !== featureId ||
+  if (acceptedOperation && (!harnessSlug || acceptedOperation.harnessSlug !== harnessSlug ||
+      acceptedOperation.workItemId !== featureId ||
       (input.stack != null && JSON.stringify(input.stack) !== JSON.stringify(acceptedOperation.stack)))) {
     throw new Error('accepted blueprint operation launch scope or requested identity stack disagrees');
   }

@@ -129,8 +129,13 @@ async function selectedModeFingerprint(installed: ReturnType<typeof availableBlu
   return JSON.stringify([INSTALLED_BLUEPRINTS_DIR(), builtins, active]);
 }
 
-function localDirs(repoDir?: string): string[] {
-  return repoDir ? [join(resolvePath(repoDir), '.papercusp', 'blueprints')] : [];
+/** The library can be addressed from a checkout or from the workspace's
+ * state-root catalog. The latter is where workspace-only GUI compositions are
+ * saved, while a spawned session's cwd is its code checkout. */
+export function localDirs(repoDir?: string): string[] {
+  const roots = [repoDir, process.env.PAPERCUSP_HOME].filter((value): value is string =>
+    typeof value === 'string' && value.trim().length > 0);
+  return [...new Set(roots.map((root) => join(resolvePath(root), '.papercusp', 'blueprints')))];
 }
 
 function inInstalledTier(file: string | null): boolean {
