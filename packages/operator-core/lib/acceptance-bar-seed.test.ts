@@ -426,6 +426,30 @@ describe('activation seed contract completeness (requireContractCompleteness)', 
     expect(mismatch).toMatchObject({ ok: false, error: 'bar_contract_check_layer_mismatch' });
   });
 
+  it('requires layers for a live-plane tests check while preserving an explicit manual check', () => {
+    const liveMap = '| R-1 | P-001 | live |';
+    const noLayers = {
+      ...completeSections,
+      acceptance: { condition: 'Every matching ID appears exactly once.', falsifier: 'Any ID is missing.' },
+    };
+    const automated = buildAcceptanceBarSeed({
+      ...input,
+      planContent: plan({ requirements: block(noLayers), map: liveMap }),
+      requireContractCompleteness: true,
+    });
+    expect(automated).toMatchObject({ ok: false, error: 'bar_contract_test_layers_missing' });
+
+    const manual = buildAcceptanceBarSeed({
+      ...input,
+      planContent: plan({ requirements: block({
+        ...noLayers,
+        verification: { method: 'Inspect the live state.', check: { kind: 'instrument', instrumentKey: 'none' } },
+      }), map: liveMap }),
+      requireContractCompleteness: true,
+    });
+    expect(manual.ok).toBe(true);
+  });
+
   it('judges only fresh post-epoch BARs: opt-out, legacy backfill and unchanged priors are untouched', () => {
     expect(buildAcceptanceBarSeed({ ...input, planContent: plan() }).ok).toBe(true);
     expect(buildAcceptanceBarSeed({ ...input, planContent: plan(), cohort: 'legacy-backfilled',

@@ -12,6 +12,7 @@ import {
   classifyProxyHandlerError,
   effectivePriorityLabel,
   MODEL_DOWNGRADED_HEADER,
+  ACCOUNT_HEADER,
   OWNER_HEADER,
   RETRIES_EXHAUSTED_HEADER,
   ROUTED_ACCOUNT_HEADER,
@@ -1398,11 +1399,153 @@ test.each([
   else assert.equal(response.headers.get(MODEL_DOWNGRADED_HEADER), null);
 });
 
-test('accepted operation model policy lookup failure refuses the last-resort substitution', async () => {
+test.each([
+  {
+    name: 'exact policy refuses an unlisted initial model',
+    policy: { mode: 'exact', models: ['claude-opus-4'], onUnavailable: 'fail' },
+    model: 'claude-sonnet-4-6', status: 403,
+  },
+  {
+    name: 'allowed policy refuses a provider mismatch',
+    policy: { mode: 'allowed', models: ['openai/claude-sonnet-4-6'], onUnavailable: 'fail' },
+    model: 'claude-sonnet-4-6', status: 403,
+  },
+  {
+    name: 'preferred policy refuses a requested effort mismatch',
+    policy: { mode: 'preferred', models: ['claude-opus-4:high'], effort: 'high', onUnavailable: 'fail' },
+    model: 'claude-opus-4:low', status: 403,
+  },
+  {
+    name: 'preferred policy permits another listed initial model',
+    policy: { mode: 'preferred', models: ['claude-opus-4', 'claude-sonnet-4-6'], onUnavailable: 'fail' },
+    model: 'claude-sonnet-4-6', status: 200,
+  },
+] as const)('accepted operation initial admission: $name', async ({ policy, model, status }) => {
+  let upstreamCalls = 0;
+  upstream = await startUpstream((_req, res) => {
+    upstreamCalls++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  let policyReads = 0;
+  gw = createInferenceGateway({
+    upstreamBase: upstream.base,
+    accountId: 'A',
+    token: async () => 'token',
+    readAcceptedOperationModelPolicy: async () => {
+      policyReads++;
+      return { status: 'bound', policy };
+    },
+  });
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, status);
+  assert.equal(upstreamCalls, status === 200 ? 1 : 0);
+  assert.equal(policyReads, 1, 'one immutable-policy read covers initial admission and retries');
+});
+
+test.each(['allowed', 'preferred'] as const)(
+  'accepted %s policy selects a listed serviceable model before upstream when the selected model is paused',
+  async (mode) => {
+    resetGovernorRegistry();
+    let upstreamCalls = 0;
+    upstream = await startUpstream((_req, res) => {
+      upstreamCalls++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    getGovernor('anthropic', 'opus', undefined, 'A').penalize({ retryAfterMs: 60_000 });
+    gw = createInferenceGateway({
+      pool: createFailoverPool([{ accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} }]),
+      upstreamBase: upstream.base,
+      readAcceptedOperationModelPolicy: async () => ({ status: 'bound', policy: {
+        mode, models: ['claude-opus-4', 'anthropic/claude-sonnet-4-6'], onUnavailable: 'fail',
+      } }),
+    });
+    port = await gw.listen(0);
+    const response = await ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+      body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(upstreamCalls, 1);
+    assert.equal(JSON.parse(upstream.last.body).model, 'claude-sonnet-4-6');
+    resetGovernorRegistry();
+  },
+);
+
+test.each([
+  { mode: 'exact', onUnavailable: 'wait', status: 429 },
+  { mode: 'exact', onUnavailable: 'fail', status: 503 },
+] as const)('accepted $mode policy has honest $onUnavailable capacity refusal', async ({ mode, onUnavailable, status }) => {
+  resetGovernorRegistry();
+  let upstreamCalls = 0;
+  upstream = await startUpstream((_req, res) => {
+    upstreamCalls++;
+    res.writeHead(200).end();
+  });
+  getGovernor('anthropic', 'opus', undefined, 'A').penalize({ retryAfterMs: 60_000 });
+  gw = createInferenceGateway({
+    pool: createFailoverPool([{ accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} }]),
+    upstreamBase: upstream.base,
+    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', policy: {
+      mode, models: ['claude-opus-4'], onUnavailable,
+    } }),
+  });
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, status);
+  assert.equal(upstreamCalls, 0);
+  if (status === 429) assert.ok(Number(response.headers.get('retry-after')) > 0);
+  resetGovernorRegistry();
+});
+
+test('accepted model capacity selection respects a hard account pin', async () => {
   resetGovernorRegistry();
   upstream = await startUpstream((_req, res) => {
-    res.writeHead(403, { 'content-type': 'application/json' });
-    res.end('{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  getGovernor('anthropic', 'opus', undefined, 'A').penalize({ retryAfterMs: 60_000 });
+  gw = createInferenceGateway({
+    pool: createFailoverPool([
+      { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+      { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+    ]),
+    upstreamBase: upstream.base,
+    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', policy: {
+      mode: 'allowed', models: ['claude-opus-4', 'claude-sonnet-4-6'], onUnavailable: 'fail',
+    } }),
+  });
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker',
+      [ACCOUNT_HEADER]: 'A', 'x-papercusp-account-pin': 'hard' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(upstream.last.body).model, 'claude-sonnet-4-6');
+  assert.equal(upstream.last.headers.authorization, 'Bearer A-tok');
+  resetGovernorRegistry();
+});
+
+test('accepted operation model policy lookup failure refuses before the initial upstream send', async () => {
+  resetGovernorRegistry();
+  let upstreamCalls = 0;
+  upstream = await startUpstream((_req, res) => {
+    upstreamCalls++;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
   });
   gw = createInferenceGateway({
     pool: createFailoverPool([
@@ -1421,7 +1564,7 @@ test('accepted operation model policy lookup failure refuses the last-resort sub
   });
   assert.equal(response.status, 503);
   assert.match(await response.text(), /model policy unavailable/);
-  assert.equal(JSON.parse(upstream.last.body).model, 'claude-opus-4');
+  assert.equal(upstreamCalls, 0);
 });
 
 test('a NON-org 403 is forwarded unchanged (not treated as account-disqualifying)', async () => {

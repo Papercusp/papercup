@@ -546,8 +546,9 @@ export function acceptanceBarSourceContractProblems(
     const criterion = bar.criterion;
     const evidencePlane = criterion?.evidencePlane ?? planeByBar.get(bar.barKey) ?? 'tree';
     const layers = criterion?.requiredTestLayers;
-    // Same derivation the projection makes: an explicitly manual BAR with no layers
-    // owes no automated proof; otherwise the clause class decides.
+    // A structured tests check owes automated proof even on a live/deployed plane,
+    // whose generated clause class is otherwise non-automated. Match the projection
+    // so activation cannot accept a contract that amendment would refuse.
     const explicitlyManual = isExplicitlyManualCheck(criterion?.check) && (layers?.length ?? 0) === 0;
     const gaps = acceptanceBarContractGaps({
       role: criterion?.role ?? 'outcome',
@@ -555,7 +556,8 @@ export function acceptanceBarSourceContractProblems(
       check: criterion?.check,
       requiredTestLayers: layers,
       automatedProofRequired:
-        !explicitlyManual && acceptanceBarBehaviorClass(evidencePlane, layers) !== 'non-automated',
+        criterion?.check?.kind === 'tests' ||
+        (!explicitlyManual && acceptanceBarBehaviorClass(evidencePlane, layers) !== 'non-automated'),
     });
     if (gaps.length === 0) continue;
     let repair: string;

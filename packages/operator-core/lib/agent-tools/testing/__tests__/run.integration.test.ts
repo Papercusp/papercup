@@ -914,6 +914,14 @@ describe('testing:run (integration)', () => {
         'TEST_FILE_NOT_MEASURED requested=2 executed=0 matched=2 measuredFiles=1 status=not-measured reason=admission-starved',
       ),
     ).toBeNull();
+    const watchdog = [
+      'TEST_FILE_WATCHDOG cwd=packages/operator-core files=["pui.integration.test.ts"] timeoutMs=600000 status=timed-out — owned child tree reaped; NOT MEASURED',
+      'TEST_FILE_NOT_MEASURED requested=5 executed=5 matched=5 status=not-measured — a watchdog reaped at least one run before it finished; no test-failure verdict was produced.',
+    ].join('\n');
+    expect(parseRouterNotMeasuredMarker(watchdog)).toEqual({
+      requested: 5, executed: 5, matched: 5, status: 'not-measured', reason: 'router-watchdog',
+    });
+    expect(parseRouterNotMeasuredMarker(watchdog.split('\n')[1]!)).toBeNull();
   });
 
   it('returns structured actual/expected values for a real failing assertion', async () => {
