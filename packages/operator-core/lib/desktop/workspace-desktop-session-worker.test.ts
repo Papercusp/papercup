@@ -20,7 +20,16 @@ describe('isolated desktop worker', () => {
       DATABASE_URL: 'postgres://secret', ANTHROPIC_API_KEY: 'secret', LD_PRELOAD: '/attack.so', NODE_OPTIONS: '--require attack',
       HOME: '/var/lib/papercusp', PATH: '/attack', DISPLAY: ':110', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/tmp/owned',
     });
-    expect(env).toEqual({ HOME: '/var/lib/papercusp-desktop', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', DISPLAY: ':110', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/tmp/owned' });
+    expect(env).toEqual({ HOME: '/var/lib/papercusp-desktop', PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', SHELL: '/bin/bash', DISPLAY: ':110', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/tmp/owned' });
+  });
+  it('gives desktop terminals an interactive shell although the account is nologin (WI-10003133)', () => {
+    // The worker rebuilds process.env from workspaceDesktopEnvironment({}) — an EMPTY input —
+    // so a SHELL placed on the systemd unit is wiped. Measured on a hosted machine: the
+    // terminal's child exec'd /usr/sbin/nologin and the window closed within ~70ms.
+    expect(workspaceDesktopEnvironment({}).SHELL).toBe('/bin/bash');
+    // Fixed, never inherited: a caller-supplied value cannot select the desktop's shell.
+    expect(workspaceDesktopEnvironment({ SHELL: '/usr/sbin/nologin' }).SHELL).toBe('/bin/bash');
+    expect(workspaceDesktopEnvironment({ SHELL: '/tmp/attack' }).SHELL).toBe('/bin/bash');
   });
   it('bundles and executes with only builtins and no operator/database runtime', () => {
     const root = resolve(import.meta.dirname, '../../../..');

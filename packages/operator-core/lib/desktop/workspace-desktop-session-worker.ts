@@ -16,9 +16,17 @@ export function assertWorkspaceDesktopIdentity(identity: { uid: number; username
   }
 }
 
-/** Explicit allowlist: this child never receives service/agent/provider/database credentials. */
+/**
+ * Explicit allowlist: this child never receives service/agent/provider/database credentials.
+ *
+ * SHELL is FIXED here, not inherited (WI-10003133). The desktop account is `nologin` on
+ * purpose, and XFCE Terminal picks `$SHELL` before the passwd shell — without it every
+ * terminal window execs `/usr/sbin/nologin`, which exits at once and closes the window
+ * (the "flash"). This allowlist wipes the unit's `Environment=` lines, so a SHELL set on
+ * the systemd unit never reaches the session; it has to be set in this function.
+ */
 export function workspaceDesktopEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const clean: NodeJS.ProcessEnv = { HOME: WORKSPACE_DESKTOP_HOME, PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8' };
+  const clean: NodeJS.ProcessEnv = { HOME: WORKSPACE_DESKTOP_HOME, PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8', SHELL: '/bin/bash' };
   for (const key of ['DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'AT_SPI_BUS_ADDRESS', 'NO_AT_BRIDGE', 'GTK_MODULES', 'QT_ACCESSIBILITY']) {
     if (env[key] !== undefined) clean[key] = env[key];
   }
