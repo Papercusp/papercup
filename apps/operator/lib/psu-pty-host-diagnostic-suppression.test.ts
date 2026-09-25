@@ -106,7 +106,7 @@ describe('contract falsifiability controls', () => {
   });
 });
 
-describe('the three routine defer diagnostics are routed, not bare', () => {
+describe('routine host diagnostics are routed, not bare', () => {
   /**
    * Source-text guard. The subject is `psu-pty-host.mjs`, a DIFFERENT file from this one, so
    * the self-match trap that bites a guard whose fixture lives inside its own subject does not
@@ -118,6 +118,8 @@ describe('the three routine defer diagnostics are routed, not bare', () => {
     'DEFERRED for ${ownerId} (${reason})',
     'DEFERRED/REFUSED for ${ownerId}',
     'DEFERRED for ${ownerId} (quota-blocked;',
+    'submit not confirmed for ${ownerId} — resubmit CR #${n}',
+    "mcp-reconnect ${result.ok ? 'OK' : 'FAILED'} for ${ownerId}",
   ];
 
   it.each(ROUTINE_DEFER_MARKERS)('%s is emitted via writeHostDiagnostic', (marker) => {
