@@ -977,6 +977,22 @@ describe('blueprint direct-item revision pin', () => {
     expect(await getBlueprintOperationResult(db.sql, first, request.callerId)).toMatchObject({
       state: 'ready', output: { answer: 'done' }, evidenceRef: 'verification:service-test',
     });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(payload, '{blueprintResult,output,answer}', ${JSON.stringify(4)}::text::jsonb)
+       WHERE feature_id = ${first.target.id} AND workspace_id = 'default' AND harness_slug = 'papercup'
+    `;
+    expect(await getBlueprintOperationStatus(db.sql, first, request.callerId))
+      .toMatchObject({ phase: 'terminal', outcome: 'unverified' });
+    expect(await getBlueprintOperationResult(db.sql, first, request.callerId)).toMatchObject({
+      state: 'unavailable', status: { outcome: 'unverified' },
+      reason: expect.stringContaining('output is invalid'),
+    });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = jsonb_set(payload, '{blueprintResult,output,answer}', ${JSON.stringify('done')}::text::jsonb)
+       WHERE feature_id = ${first.target.id} AND workspace_id = 'default' AND harness_slug = 'papercup'
+    `;
     expect(await client.result(clientHandle)).toMatchObject({ state: 'ready', output: { answer: 'done' } });
     expect(await signalBlueprintOperation(db.sql, first, request.callerId, signalInput))
       .toMatchObject({ eventId: signal.eventId, replayed: true, wakeQueued: false });
