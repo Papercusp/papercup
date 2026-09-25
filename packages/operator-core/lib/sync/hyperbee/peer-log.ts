@@ -35,7 +35,7 @@ import type Corestore from 'corestore';
 // defined explicitly so this module doesn't depend on the (retiring) Autobase;
 // `OpEnvelope` now lives in its own types module (Stage 4d).
 import type { OpEnvelope } from './op-envelope-types';
-import type { CancellableRead } from './read-merge';
+import type { CancellableRead, PrefetchRange } from './read-merge';
 import { resolveRemoteCoreHost } from './remote-core-host';
 import { trackDetached } from '../../detached-imports';
 
@@ -165,9 +165,11 @@ export interface RemoteLog {
    * peer stream the whole range continuously instead of paying one round trip
    * per sequential `get(i)` — without it, WAN merge ingest is RTT-bound at
    * ~1/RTT ops/sec per log (EI-92). Never throws and never blocks: subsequent
-   * `get(i)` calls resolve as blocks arrive.
+   * `get(i)` calls resolve as blocks arrive. P-533: returns a handle whose `cancel()`
+   * withdraws the range (undefined when no range was requested), so the merge can
+   * stop streaming a snapshot set it jumps over.
    */
-  prefetch(start: number, end: number): void;
+  prefetch(start: number, end: number): PrefetchRange | undefined;
   /** True iff block `i` is downloaded locally (Hypercore `has`). A snapshot-seeded
    *  joiner never requests blocks before its snapshot index, so this is false there —
    *  the sparse-fetch the compaction buys (substrate-peer-log-compaction P-008). */
@@ -217,7 +219,7 @@ interface CoreLike {
   update(opts?: { wait?: boolean }): Promise<boolean>;
   /** Hypercore ranged download — returns a Range whose `done()` resolves when
    *  the range is local. Optional in the structural view (present on real cores). */
-  download?(range: { start: number; end: number }): { done(): Promise<void> };
+  download?(range: { start: number; end: number }): { done(): Promise<void>; destroy?(): void };
   /** Whether block `index` is downloaded locally. Present on real cores. */
   has?(index: number): boolean;
   /** Length of the contiguous downloaded prefix from 0. Present on real cores. */
@@ -459,17 +461,29 @@ export async function openRemoteLog(store: Corestore, keyHex: string): Promise<R
     async update(): Promise<void> {
       await core.update({ wait: true });
     },
-    prefetch(start: number, end: number): void {
-      if (typeof core.download !== 'function') return;
-      if (end <= start || start < 0) return;
+    prefetch(start: number, end: number): PrefetchRange | undefined {
+      if (typeof core.download !== 'function') return undefined;
+      if (end <= start || start < 0) return undefined;
       try {
         // Fire-and-forget: the range request rides the replication stream in
         // the background; `done()` is observed only to swallow rejection
         // (peer gone mid-range is normal churn, not an error).
         const range = core.download({ start, end });
         void range.done().catch(() => {});
+        // P-533: Hypercore's `destroy()` detaches the range from the replicator, so its
+        // blocks not yet requested are never fetched. Blocks already in flight still land.
+        return {
+          cancel() {
+            try {
+              range.destroy?.();
+            } catch {
+              // best-effort: the range then simply runs to completion
+            }
+          },
+        };
       } catch {
         // A failed request degrades to per-op sequential fetch — still correct.
+        return undefined;
       }
     },
     has(i: number): boolean {

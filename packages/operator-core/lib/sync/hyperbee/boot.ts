@@ -77,6 +77,7 @@ import {
   DEFAULT_GET_TIMEOUT_MS,
   type AdmittedLog,
   type CancellableReadLog,
+  type PrefetchRange,
   type MergeCursorPeerLifecycleUpdate,
   type MergeCursorStore,
   type MergeApplyFailure,
@@ -1117,7 +1118,8 @@ export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<Boote
  * "newer Papercusp available" alert once per (slug, version).
  */
 function versionGatedLog(slug: string, log: AdmittedLog): CancellableReadLog {
-  const maybePrefetch = (log as AdmittedLog & { prefetch?(start: number, end: number): void }).prefetch;
+  const maybePrefetch = (log as AdmittedLog & { prefetch?(start: number, end: number): PrefetchRange | undefined })
+    .prefetch;
   const maybeCancellable = (log as CancellableReadLog).getCancellable;
   // Drop unknown-newer ops (D-024). acceptOpVersion alerts once.
   const gate = (op: PeerLogOp | null): PeerLogOp | null =>

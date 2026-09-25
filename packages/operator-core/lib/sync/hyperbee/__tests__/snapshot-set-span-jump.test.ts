@@ -12,6 +12,10 @@
  *      row, reading every chunk.
  *   4. The look-ahead cancels its reads of a skipped set's span, keeping the two blocks the
  *      jump reads, and cancels nothing for a set the cursor owes.
+ *   5. The pass's EI-92 range never streams a skipped set: a pass that opens on one starts
+ *      its range at the set's end, and a jump withdraws a range that overlaps the set and
+ *      re-opens it where the jump lands. A set the cursor owes keeps its range (rig
+ *      2026-09-25 08:07Z: the range fetched about 2 GB for a two-chunk crossing).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -24,6 +28,7 @@ import {
   type IncrementalMergeOpts,
   type IncrementalMergeResult,
   type MergeCursor,
+  type PrefetchRange,
 } from '../read-merge';
 import type { PeerLogOp } from '../peer-log';
 
@@ -53,6 +58,9 @@ interface SpanLog extends AdmittedLog {
   fetched: Set<number>;
   cancelled: Set<number>;
   getCancellable?(i: number): CancellableRead;
+  /** Ranged prefetches (EI-92) requested, in order, and whether each was withdrawn. */
+  ranges: { start: number; end: number; cancelled: boolean }[];
+  prefetch?(start: number, end: number): PrefetchRange | undefined;
 }
 
 interface SpanLogOpts {
@@ -62,6 +70,8 @@ interface SpanLogOpts {
   slowOnce?: Map<number, number>;
   /** Offer `getCancellable`, as a RemoteLog does. Its blocks arrive in position order. */
   cancellable?: boolean;
+  /** Offer a withdrawable ranged `prefetch`, as a RemoteLog does. */
+  prefetchable?: boolean;
 }
 
 function spanLog(opts: SpanLogOpts = {}): SpanLog {
@@ -72,6 +82,7 @@ function spanLog(opts: SpanLogOpts = {}): SpanLog {
     reads: [],
     fetched: new Set(),
     cancelled: new Set(),
+    ranges: [],
     get keyHex() {
       return KEY;
     },
@@ -106,6 +117,17 @@ function spanLog(opts: SpanLogOpts = {}): SpanLog {
           clearTimeout(timer);
           log.cancelled.add(i);
           reject(new Error('REQUEST_CANCELLED'));
+        },
+      };
+    };
+  }
+  if (opts.prefetchable) {
+    log.prefetch = (start: number, end: number): PrefetchRange => {
+      const r = { start, end, cancelled: false };
+      log.ranges.push(r);
+      return {
+        cancel() {
+          r.cancelled = true;
         },
       };
     };
@@ -170,6 +192,7 @@ async function converged(log: SpanLog, c: number, extra: Partial<IncrementalMerg
   log.reads.length = 0;
   log.fetched.clear();
   log.cancelled.clear();
+  log.ranges.length = 0;
   return { cursor, pg };
 }
 
@@ -307,6 +330,47 @@ describe('P-533: the look-ahead does not fetch a skipped set', () => {
     const res = await fold(log, cursor, pg, lookAhead);
     expect(log.cancelled.size).toBe(0);
     expect([...log.fetched].filter((p) => p >= c && p < c + n)).toHaveLength(n);
+    expect(res.applies).toBe(rows + 10);
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(log));
+  });
+});
+
+describe('P-533: the pass range does not stream a skipped set', () => {
+  it('a converged cursor that meets the set first opens its range at the set\'s end', async () => {
+    const { log, c, n } = logWithSet({ prefetchable: true });
+    const { cursor, pg } = await converged(log, c);
+
+    const res = await fold(log, cursor, pg);
+    expect(log.ranges).toEqual([{ start: c + n, end: log.length, cancelled: false }]);
+    expect(res.snapshotChunksJumped).toBe(n - 1);
+    expect(cursor.positions.get(KEY)).toBe(log.length);
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(log));
+  });
+
+  it('a cursor a few ops behind withdraws the range the jump crosses and re-opens it where it lands', async () => {
+    const { log, c, n } = logWithSet({ prefetchable: true });
+    const cursor = createMergeCursor();
+    const pg: Pg = new Map();
+    await fold(log, cursor, pg, { maxOpsPerPass: c - 3 });
+    log.ranges.length = 0;
+
+    const res = await fold(log, cursor, pg);
+    expect(log.ranges).toEqual([
+      { start: c - 3, end: log.length, cancelled: true },
+      { start: c + n, end: log.length, cancelled: false },
+    ]);
+    expect(res.snapshotChunksJumped).toBe(n - 1);
+    expect(cursor.positions.get(KEY)).toBe(log.length);
+    expect(Object.fromEntries(pg)).toEqual(await historyOracle(log));
+  });
+
+  it('CONTROL: a set the cursor owes keeps one range over the whole window', async () => {
+    const { log, c, rows } = logWithSet({ prefetchable: true });
+    const { pg } = await converged(log, c);
+    const cursor = restarted(c, true);
+
+    const res = await fold(log, cursor, pg);
+    expect(log.ranges).toEqual([{ start: c, end: log.length, cancelled: false }]);
     expect(res.applies).toBe(rows + 10);
     expect(Object.fromEntries(pg)).toEqual(await historyOracle(log));
   });

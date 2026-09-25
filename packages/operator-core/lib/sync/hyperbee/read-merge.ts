@@ -924,6 +924,37 @@ function tryPrefetch(log: AdmittedLog, start: number, end: number): void {
   }
 }
 
+/** EI-92: open a ranged prefetch the caller may withdraw later (P-533). */
+function prefetchRange(log: AdmittedLog, start: number, end: number): PassRange {
+  const pf = (log as PrefetchableLog).prefetch;
+  if (typeof pf !== 'function' || end <= start) return { start, range: null };
+  try {
+    return { start, range: pf.call(log, start, end) ?? null };
+  } catch {
+    return { start, range: null }; // degraded to per-op fetch, still correct
+  }
+}
+
+/**
+ * P-533: open a fold pass's EI-92 range once its first op `first` (at `pos`) is read. When
+ * that op is a chunk of a set this cursor skips, the range starts at the set's end. For a
+ * converged peer the whole window IS the new set, and streaming it fetched about 2 GB on
+ * the rig for a crossing that reads two chunks (set@7787948, 2026-09-25 08:07Z).
+ */
+function openPassRange(
+  log: AdmittedLog,
+  cursor: MergeCursor,
+  first: PeerLogOp | null,
+  pos: number,
+  upper: number,
+): PassRange {
+  const span =
+    first && isSnapshotOp(first)
+      ? skippedSetSpan(cursor, log.keyHex, first.value as SnapshotPayload | undefined, pos)
+      : null;
+  return prefetchRange(log, span ? span.end : pos, upper);
+}
+
 /**
  * P-004: the reader for a BACKWARD scan. `read(i)` returns exactly what
  * `readOpBoundedDetailed(log, i)` returns, and the scan still calls it one index at
@@ -2711,7 +2742,19 @@ async function raceMergeDeadline<T>(p: Promise<T>, ms: number, what: string): Pr
 /** A log the incremental merge can OPTIONALLY range-prefetch (RemoteLog does;
  *  the own log + in-memory test logs don't). Feature-detected per log. */
 interface PrefetchableLog extends AdmittedLog {
-  prefetch?(start: number, end: number): void;
+  prefetch?(start: number, end: number): PrefetchRange | undefined;
+}
+
+/** P-533: a ranged prefetch the caller can withdraw. `cancel()` detaches the range, so
+ *  the blocks it has not requested yet are never fetched (RemoteLog returns one). */
+export interface PrefetchRange {
+  cancel(): void;
+}
+
+/** P-533: one fold pass's EI-92 range, kept so a jump can withdraw it. */
+interface PassRange {
+  start: number;
+  range: PrefetchRange | null;
 }
 
 /** P-533: one read the caller can withdraw. `cancel()` settles `op` (it rejects) and
@@ -3344,16 +3387,10 @@ async function mergeIncrementalPass(
       continue;
     }
 
-    // EI-92: ask the peer to stream the whole window now instead of paying a
-    // round trip per op below. Feature-detected; fire-and-forget.
-    const pf = (log as PrefetchableLog).prefetch;
-    if (typeof pf === 'function') {
-      try {
-        pf.call(log, from, upper);
-      } catch {
-        /* degraded to sequential fetch — still correct */
-      }
-    }
+    // EI-92: ask the peer to stream the window instead of paying a round trip per op
+    // below. Feature-detected. P-533: it opens once the pass's first op is read, past a
+    // set this cursor skips (openPassRange), and a jump withdraws what it overlaps.
+    let passRange: PassRange | null = null;
 
     // WI-559 — structural-deferral cursor hold. Cursor positions are MONOTONIC, so
     // not recording a winner is necessary but NOT sufficient to make a deferred op
@@ -3765,6 +3802,11 @@ async function mergeIncrementalPass(
         crossing.jumped += jumped;
       }
       pos = to - 1;
+      // The pass's range must not keep streaming the span this jump crosses.
+      if (passRange?.range && passRange.start < span.end) {
+        passRange.range.cancel();
+        passRange = prefetchRange(log, to, upper);
+      }
       return { kind: 'jumped', last: to === span.end ? (got.op!.value as SnapshotPayload) : null };
     };
 
@@ -3872,6 +3914,7 @@ async function mergeIncrementalPass(
         // A cached result (or an immediate fresh result) owns this position;
         // any additional late results for it are stale once the cursor moves.
         if (cached || got.kind !== 'unavailable') cursor.lateReadResults?.delete(readIdent);
+        passRange ??= openPassRange(log, cursor, got.kind === 'op' ? got.op : null, pos, upper);
         if (got.kind === 'unavailable') {
           // WI-2141796 / P-203: retry from here next pass (UNBOUNDED, because a
           // peer withholding one block is usually transient and dead-lettering

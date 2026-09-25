@@ -197,4 +197,28 @@ describe('peer-log getCancellable (P-533)', () => {
     connect();
     await expect(remote.getCancellable!(2).op).resolves.toMatchObject({ hbKey: 'R-3' });
   });
+
+  // P-533: the fold withdraws the pass's ranged prefetch when it jumps a skipped set. On the
+  // rig that range fetched about 2 GB for a two-chunk crossing (2026-09-25 08:07Z).
+  it('a prefetch range withdrawn while the peer is away fetches nothing once it returns', async () => {
+    const { remote, connect } = await replicaOf3();
+    const range = remote.prefetch(1, 3);
+    expect(range).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 20)); // the range is filed and waiting
+    range!.cancel();
+    connect();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    // `contiguousLength`, not `has`: RemoteLog.has returns a truthy promise on Hypercore 11.
+    expect(remote.contiguousLength).toBe(1);
+  });
+
+  it('CONTROL: a prefetch range left alone fetches its blocks in the same window', async () => {
+    const { remote, connect } = await replicaOf3();
+    expect(remote.contiguousLength).toBe(1);
+    remote.prefetch(1, 3);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    connect();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(remote.contiguousLength).toBe(3);
+  });
 });
