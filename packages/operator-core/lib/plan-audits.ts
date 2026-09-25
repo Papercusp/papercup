@@ -2212,6 +2212,7 @@ export async function recordCurrentActivationAudit(
             acceptanceBarSourceFingerprint(previous.content_snapshot),
             acceptanceBarSourceFingerprint(current.content),
           ]);
+          const rubricAlreadyPinsCurrentPlan = Number(previous.subject_version) === Number(current.version);
           if (
             priorPending?.rubricSlug === current.acceptance_bar_rubric_slug &&
             priorPending.previousSubjectPlanRevision === Number(previous.subject_version) &&
@@ -2223,10 +2224,26 @@ export async function recordCurrentActivationAudit(
             // that advances the still-stale rubric pin on a repeat call.
             barSeedPendingAmendment = priorPending;
           } else if (
+            priorPending?.rubricSlug === current.acceptance_bar_rubric_slug &&
+            priorPending.previousSubjectPlanRevision === Number(previous.subject_version) &&
+            previousSource != null && previousSource === currentSource &&
+            !rubricAlreadyPinsCurrentPlan
+          ) {
+            // A decision or Now edit after a pending semantic change must carry
+            // that pending amendment forward. The last audit snapshot is already
+            // the changed BAR source; treating this neutral edit as a fresh seed
+            // would reconstruct the started rubric from incomplete plan prose.
+            barSeedPendingAmendment = {
+              ...priorPending,
+              currentSubjectPlanRevision: Number(current.version),
+              currentPlanContentHash: current.content_hash,
+            };
+          } else if (
             previous.subject_version != null &&
             previousSource != null &&
             currentSource != null &&
-            previousSource !== currentSource
+            previousSource !== currentSource &&
+            !rubricAlreadyPinsCurrentPlan
           ) {
             // Audit authority and BAR-amendment authority are deliberately
             // separate. A semantic Requirements/map edit still needs a fresh
@@ -2262,14 +2279,19 @@ export async function recordCurrentActivationAudit(
               reason: 'acceptance_bar_source_changed',
             };
           } else {
-            // This reuses the Requirements/map fingerprint and canonical BAR/hash
-            // validation. Only the derived subject pin moves; METHOD, rubric version,
-            // and existing evidence identities remain intact.
-            await synchronizeAcceptanceBarSubjectRevision(tx, {
-              workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug,
-              previousBody: previous.content_snapshot, nextBody: current.content,
-              previousVersion: Number(previous.subject_version), nextVersion: Number(current.version),
-            });
+            if (!rubricAlreadyPinsCurrentPlan) {
+              // This reuses the Requirements/map fingerprint and canonical BAR/hash
+              // validation. Only the derived subject pin moves; METHOD, rubric version,
+              // and existing evidence identities remain intact.
+              await synchronizeAcceptanceBarSubjectRevision(tx, {
+                workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, planSlug: input.planSlug,
+                previousBody: previous.content_snapshot, nextBody: current.content,
+                previousVersion: Number(previous.subject_version), nextVersion: Number(current.version),
+              });
+            }
+            // If rubrics:amend already pinned this plan revision, let the seed
+            // reconcile work-item edges instead of recording a false pending
+            // amendment against a reviewed contract.
           }
         }
       }

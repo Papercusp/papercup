@@ -751,6 +751,95 @@ describe('migration 938 activation-audit ledger', () => {
       SELECT template_data FROM harness_shared.harness_plans
        WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
     expect(afterRepeat!.template_data).toEqual(expectedNeutral);
+
+    // A Decision added while the semantic amendment is still pending does not
+    // reset the source baseline to the unapproved Requirements/map. The latest
+    // audit snapshot already contains that source, so this neutral edit must
+    // carry the pending obligation instead of trying to seed a started rubric.
+    const pendingWithDecision = `${changedMap}\n## Decisions\n\n### D-001 — Review remains pending\n\nThe BAR amendment is still pending.\n`;
+    const decisionHash = hashPlanContent(pendingWithDecision);
+    await db.sql`UPDATE harness_shared.harness_plans SET content = ${pendingWithDecision},
+      content_hash = ${decisionHash}, version = 12 WHERE plan_slug = 'post-epoch-seed-target'`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions
+      (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
+      VALUES ('activation-audit-test', 'papercusp', 'post-epoch-seed-target', 74, ${decisionHash}, ${pendingWithDecision})`;
+    const decisionAudit = await recordCurrentActivationAudit(input);
+    expect(decisionAudit).toMatchObject({
+      ok: true,
+      auditedPlanRevision: { seq: 74 },
+      barSeed: null,
+      barSeedPendingAmendment: {
+        previousSubjectPlanRevision: 9,
+        currentSubjectPlanRevision: 12,
+        currentPlanContentHash: decisionHash,
+      },
+    });
+    const [afterDecision] = await db.sql<Array<{ template_data: unknown }>>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    expect(afterDecision!.template_data).toEqual(expectedNeutral);
+  });
+
+  it('does not resurrect a pending amendment after the rubric already pins the changed source', async () => {
+    await seedPostEpochPlan();
+    const input = {
+      workspaceId: 'activation-audit-test', harnessSlug: 'papercusp',
+      planSlug: 'post-epoch-seed-target', createdBy: 'su-seeder',
+      classRef: evaluatedClassRef,
+      activation: { ...payload, mappings: [{ ...payload.mappings[0],
+        planTargets: ['P-001', 'P-002', 'section:Requirements'] }] },
+    };
+    expect(await recordCurrentActivationAudit(input)).toMatchObject({ ok: true });
+    const [stored] = await db.sql<Array<{ template_data: unknown }>>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    const amended = rubricTemplateDataSchema.parse(stored!.template_data);
+    const oldCondition = postEpochR1.acceptance.condition;
+    const newCondition = 'The revised criterion remains the BAR authority.';
+    const revisedRequirement = {
+      ...postEpochR1,
+      acceptance: { ...postEpochR1.acceptance, condition: newCondition },
+    };
+    const source = postEpochContent.replace(JSON.stringify(postEpochR1), JSON.stringify(revisedRequirement));
+    const sourceHash = hashPlanContent(source);
+    amended.criteria = amended.criteria.map((criterion) => criterion.barKey !== 'R-1' ? criterion :
+      normalizeAcceptanceBarCriterion({ ...criterion, barHash: undefined,
+        model: criterion.model!.replace(oldCondition, newCondition),
+      }));
+    amended.barSetHash = computeAcceptanceBarSetHash(amended.criteria);
+    amended.barContract = { ...amended.barContract!, subjectPlanRevision: 8 };
+    await db.sql`UPDATE harness_shared.harness_plans SET content = ${source},
+      content_hash = ${sourceHash}, version = 8, status = 'active',
+      acceptance_bar_set_hash = ${amended.barSetHash}, acceptance_bar_rubric_revision = 2
+      WHERE plan_slug = 'post-epoch-seed-target'`;
+    await db.sql`INSERT INTO harness_shared.plan_revisions
+      (workspace_id, harness_slug, plan_slug, seq, content_hash, content_snapshot)
+      VALUES ('activation-audit-test', 'papercusp', 'post-epoch-seed-target', 71, ${sourceHash}, ${source})`;
+    await db.sql`UPDATE harness_shared.harness_plans SET
+      template_data = ${JSON.stringify(amended)}::text::jsonb, version = 2
+      WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, source_plan_slug, source_plan_item_ids)
+      VALUES ('activation-audit-test', 'papercusp', 'WI-ALREADY-APPLIED',
+        'post-epoch-seed-target', ${['P-001']}::text[])`;
+
+    const audit = await recordCurrentActivationAudit(input);
+    expect(audit, JSON.stringify(audit)).toMatchObject({
+      ok: true,
+      auditedPlanRevision: { seq: 71 },
+      barSeed: { rubricRevision: 2 },
+    });
+    expect(audit).not.toHaveProperty('barSeedPendingAmendment');
+    const [after] = await db.sql<Array<{ template_data: unknown }>>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = 'acceptance-post-epoch-seed-target'`;
+    expect(after!.template_data).toEqual(amended);
+    const edges = await db.sql<Array<{ spec_id: string }>>`
+      SELECT spec_id FROM harness_shared.work_item_spec_revision_edges
+       WHERE work_item_id = 'WI-ALREADY-APPLIED' ORDER BY spec_id`;
+    expect(edges.map((edge) => edge.spec_id)).toEqual([
+      'AUTO-BAR-R-1-P-001', 'AUTO-BAR-R-2-P-001',
+    ]);
   });
 
   it.each([
