@@ -15,10 +15,15 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { resolveVerifiedAuthorGithubId } from '../../../work-items-admission';
+import { readVerifiedAuthorGithubId } from '../../../work-items-admission';
 import { normalizeJsonbInput } from './_jsonb-input';
 import type postgres from 'postgres';
-import type { TableProjection, ProvenanceContext } from '../projection';
+import {
+  projectionSql,
+  projectionStatementFailed,
+  type TableProjection,
+  type ProvenanceContext,
+} from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 
@@ -288,7 +293,8 @@ async function writeToPg(
     }
     return;
   }
-  const sql = opts.sql ?? getOrgPg().sql;
+  // P-537: both statements below run on the merge's batch transaction when there is one.
+  const sql = await projectionSql(opts.sql ?? getOrgPg().sql);
   // EI-7939: collapse an empty-ish / `'unassigned'` placeholder taken_by to NULL
   // at ingest so the "unassigned ⟺ NULL/''" invariant every claim floor relies on
   // holds (EXCLUDED.taken_by below — and thus the ON CONFLICT UPDATE + the LWW
@@ -308,10 +314,17 @@ async function writeToPg(
   // when unverified/revoked/local, so the trust gate (autoPickableWhereSql /
   // isAutoPickable) conservatively refuses the fast-path. This is the PRODUCER
   // for the column the gate consumes (the consumer was landed in P-010).
-  const verifiedAuthorGithubUserId =
-    origin === 'remote' && authorPubkey
-      ? await resolveVerifiedAuthorGithubId(sql, { workspaceId: opts.workspaceId, authorPubkey })
-      : null;
+  let verifiedAuthorGithubUserId: number | null = null;
+  if (origin === 'remote' && authorPubkey) {
+    try {
+      verifiedAuthorGithubUserId = await readVerifiedAuthorGithubId(sql, { workspaceId: opts.workspaceId, authorPubkey });
+    } catch {
+      // Fail-safe as before (an unreadable pot_members stamps NULL, so the trust gate
+      // refuses). Inside the batch the error aborted the transaction; the read was this
+      // write's only statement, so rolling back to the op's savepoint loses nothing.
+      await projectionStatementFailed();
+    }
+  }
   // WI-1612 (same class as WI-1572): ALWAYS write workspace_id explicitly from
   // opts.workspaceId (bound at projection-registration time, so it is already the
   // correct owning workspace for this harness) — never leave it NULL for the
@@ -503,7 +516,7 @@ async function deleteFromPg(
   delHlc?: string,
 ): Promise<void> {
   if (!key) return;
-  const sql = opts.sql ?? getOrgPg().sql;
+  const sql = await projectionSql(opts.sql ?? getOrgPg().sql);
   const ts = delTs ?? null;
   const hlc = delHlc ?? null;
   await sql`
@@ -530,6 +543,10 @@ export function buildHarnessFeaturesProjection(
     tableTag: 'features-by-id',
     // EI-117: CDC-captured table — own-log ops are replays; see TableProjection.skipOwnOps.
     skipOwnOps: true,
+    // P-537 (D-034 #2): every statement goes through projectionSql, the one caught read
+    // calls projectionStatementFailed, and no transaction-local state is set, so ops fold
+    // inside the batch transaction.
+    batchable: true,
     composeKey,
     decodeValue,
     writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
