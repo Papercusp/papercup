@@ -425,6 +425,7 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
   const raw = parseBlueprintSource(await readFile(sourcePath, 'utf8'));
   const source = resolveBlueprintSource(raw, { sourcePath, resolve: resolver });
   if (!source.validation.ok) throw new Error(`selected identity ${input.identityId} is invalid`);
+  const document = BlueprintSourceDocumentSchema.parse(source.merged);
   const selectedModeId = input.sourceTier !== 'builtin' && input.identityId.startsWith('su.mode-')
     ? input.identityId.slice('su.mode-'.length) : null;
   const selectedMode = selectedModeId
@@ -432,7 +433,7 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
   if (selectedModeId && (!selectedMode || selectedMode.sourceRevision !== source.layers.at(-1)!.contentHash)) {
     throw new Error(`selected mode ${selectedModeId} definition does not match the identity source`);
   }
-  const declarations = raw.contributions as Array<{
+  const declarations = document.contributions as Array<{
     id: string; purpose: string; source: string; inputKind: string; ref: string;
     producerRef?: string; availability?: string;
   }> | undefined;
@@ -480,7 +481,7 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
       omissions.push({ id: entry.id, reason: 'not-requested' });
     }
   }
-  const definitionContributionId = (raw.mode as { definitionContributionId?: string } | undefined)
+  const definitionContributionId = (document.mode as { definitionContributionId?: string } | undefined)
     ?.definitionContributionId;
   const selectedPromptRef = selectedMode
     ? declarations?.find((entry) => entry.id === definitionContributionId)?.ref : undefined;
@@ -510,7 +511,6 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
     inputClosure: closure,
     contributionOmissions: omissions,
   };
-  const document = BlueprintSourceDocumentSchema.parse(source.merged);
   const hasResources = Boolean(document.bundles?.length || document.grants?.requires?.length ||
     document.grants?.optional?.length || resolveSeedPackKey(document).packId);
   const workspaceId = input.scope.workspace;
