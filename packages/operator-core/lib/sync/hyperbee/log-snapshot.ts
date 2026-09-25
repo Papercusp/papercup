@@ -22,7 +22,7 @@
  * in P-005 / P-007.
  */
 
-import type { OwnLog, PeerLogOp } from './peer-log';
+import type { HeldOwnLogAppender, OwnLog, PeerLogOp } from './peer-log';
 // Dependency-free constants module, so this file stays safe to bundle into the fold worker.
 import { SELF_REGENERATING_TABLES } from './seed-excluded-tables';
 import {
@@ -1207,6 +1207,29 @@ export interface ProduceSnapshotResult {
   droppedGovernorReceipts?: number;
   /** D-024 — candidate `{__rekey}` rows the filter could not open (kept). */
   unopenedGovernorEnvelopes?: number;
+  /**
+   * D-025 — how long every other append on the own log waited for this set (the final
+   * re-anchor, the build and the append). Absent when the log has no append hold.
+   */
+  appendsHeldMs?: number;
+}
+
+/**
+ * D-025 — run the producer's final re-anchor, build and append under the own log's
+ * append hold, so no live op can land between the anchor and the set (WI-37526). The
+ * convergence passes before it keep the delta folded under the hold small. A log with
+ * no hold (test fakes) runs `fn` directly with the old, racy window.
+ */
+async function withOwnLogAppendsHeld<T extends ProduceSnapshotResult>(
+  ownLog: OwnLog,
+  fn: (log: HeldOwnLogAppender) => Promise<T>,
+): Promise<T> {
+  if (!ownLog.withAppendsHeld) return fn(ownLog);
+  return ownLog.withAppendsHeld(async (held) => {
+    const heldAt = Date.now();
+    const result = await fn(held);
+    return { ...result, appendsHeldMs: Date.now() - heldAt };
+  });
 }
 
 /**
@@ -1512,55 +1535,67 @@ export async function produceLogSnapshot(
     await foldRange(foldedUpTo, target);
     foldedUpTo = target;
   }
-  coversUpTo = foldedUpTo;
 
-  // EI-1688: `now` (= the snapshot ts) GCs tombstones past the horizon at production —
-  // the same argument `buildSnapshotOps` passes for the non-streaming path.
-  const rows = folder.finish({ now: opts.now });
-  const snapshotOps = buildSnapshotOpsFromRows({
-    rows,
-    coversUpTo,
-    author_pubkey: ownLog.keyHex,
-    ts: opts.now,
-    schema_version: opts.schemaVersion,
-    maxChunkBytes: opts.maxChunkBytes,
-    excludeTables: [...ownExcluded],
+  // D-025 — convergence alone shrinks the race window to the gap between the last
+  // length read and the append, and the build sits in that gap: on the tower's own log
+  // (~0.8 ops/s) a 478-chunk set lost the race at 03:41Z. Under the hold the length
+  // cannot move, so the last delta folded here makes the anchor exact.
+  return withOwnLogAppendsHeld(ownLog, async (held) => {
+    if (ownLog.length > foldedUpTo) {
+      const target = ownLog.length;
+      await foldRange(foldedUpTo, target);
+      foldedUpTo = target;
+    }
+    coversUpTo = foldedUpTo;
+
+    // EI-1688: `now` (= the snapshot ts) GCs tombstones past the horizon at production —
+    // the same argument `buildSnapshotOps` passes for the non-streaming path.
+    const rows = folder.finish({ now: opts.now });
+    const snapshotOps = buildSnapshotOpsFromRows({
+      rows,
+      coversUpTo,
+      author_pubkey: ownLog.keyHex,
+      ts: opts.now,
+      schema_version: opts.schemaVersion,
+      maxChunkBytes: opts.maxChunkBytes,
+      excludeTables: [...ownExcluded],
+    });
+    if (opts.shouldAbort?.()) {
+      throw new SnapshotAbortedError(
+        `[snapshot] own compaction aborted before append (coversUpTo=${coversUpTo}, ` +
+          `${snapshotOps.length} chunk(s) discarded): the caller is stopping`,
+      );
+    }
+    // Append the whole set in ONE batch so the chunks land CONTIGUOUSLY at
+    // [coversUpTo, coversUpTo + N) — the reader recognizes the set by that span and
+    // only seeds a cursor once every chunk is present (crash-consistency guard).
+    await held.appendBatch(snapshotOps);
+
+    // ── VERIFY THE ANCHOR HELD ─────────────────────────────────────────────────
+    //
+    // A log with no append hold still has the gap between the last length read and
+    // the append, where a writer can interleave. Reporting `appended: true` for a set
+    // the reader can never find is the failure mode that cost ~6 cut attempts across
+    // several sessions — the producer claimed success and the consequence surfaced
+    // 40+ minutes later as a misleading "no complete snapshot within the reader scan
+    // window". A snapshot that cannot be located is not a snapshot, so this FAILS
+    // LOUDLY instead.
+    assertSnapshotAnchorHeld(await ownLog.get(coversUpTo), coversUpTo, snapshotOps.length);
+
+    const rowCount = snapshotOps.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
+    return {
+      appended: true,
+      coversUpTo,
+      rowCount,
+      chunkCount: snapshotOps.length,
+      ...(governorProjection
+        ? {
+            droppedGovernorReceipts: governorProjection.stats.dropped,
+            unopenedGovernorEnvelopes: governorProjection.stats.unopened,
+          }
+        : {}),
+    };
   });
-  if (opts.shouldAbort?.()) {
-    throw new SnapshotAbortedError(
-      `[snapshot] own compaction aborted before append (coversUpTo=${coversUpTo}, ` +
-        `${snapshotOps.length} chunk(s) discarded): the caller is stopping`,
-    );
-  }
-  // Append the whole set in ONE batch so the chunks land CONTIGUOUSLY at
-  // [coversUpTo, coversUpTo + N) — the reader recognizes the set by that span and
-  // only seeds a cursor once every chunk is present (crash-consistency guard).
-  await ownLog.appendBatch(snapshotOps);
-
-  // ── VERIFY THE ANCHOR HELD ───────────────────────────────────────────────────
-  //
-  // Convergence shrinks the race window from the whole read (~44s) to the gap
-  // between the last length read and the append, but does not close it: a writer
-  // can still interleave. Reporting `appended: true` for a set the reader can never
-  // find is the failure mode that cost ~6 cut attempts across several sessions —
-  // the producer claimed success and the consequence surfaced 40+ minutes later as
-  // a misleading "no complete snapshot within the reader scan window". A snapshot
-  // that cannot be located is not a snapshot, so this FAILS LOUDLY instead.
-  assertSnapshotAnchorHeld(await ownLog.get(coversUpTo), coversUpTo, snapshotOps.length);
-
-  const rowCount = snapshotOps.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
-  return {
-    appended: true,
-    coversUpTo,
-    rowCount,
-    chunkCount: snapshotOps.length,
-    ...(governorProjection
-      ? {
-          droppedGovernorReceipts: governorProjection.stats.dropped,
-          unopenedGovernorEnvelopes: governorProjection.stats.unopened,
-        }
-      : {}),
-  };
 }
 
 /** Throw unless `anchorOp` (read back at `coversUpTo`) is chunk 0 of the set just appended. */
@@ -1737,33 +1772,44 @@ async function produceLogSnapshotOffloaded(
       await foldRange(foldedUpTo, target);
       foldedUpTo = target;
     }
-    coversUpTo = foldedUpTo;
 
-    const { blocks, rowCount, droppedGovernorReceipts, unopenedGovernorEnvelopes } = await worker.finish({
-      now: opts.now,
-      coversUpTo,
-      author_pubkey: ownLog.keyHex,
-      ts: opts.now,
-      schema_version: opts.schemaVersion,
-      maxChunkBytes: opts.maxChunkBytes,
-      excludeTables,
+    // D-025 — the final re-anchor, the worker's build and the append run under the
+    // own log's append hold; see produceLogSnapshot.
+    return await withOwnLogAppendsHeld(ownLog, async (held) => {
+      if (ownLog.length > foldedUpTo) {
+        const target = ownLog.length;
+        await foldRange(foldedUpTo, target);
+        foldedUpTo = target;
+      }
+      coversUpTo = foldedUpTo;
+
+      const { blocks, rowCount, droppedGovernorReceipts, unopenedGovernorEnvelopes } = await worker.finish({
+        now: opts.now,
+        coversUpTo,
+        author_pubkey: ownLog.keyHex,
+        ts: opts.now,
+        schema_version: opts.schemaVersion,
+        maxChunkBytes: opts.maxChunkBytes,
+        excludeTables,
+      });
+      if (opts.shouldAbort?.()) {
+        throw new SnapshotAbortedError(
+          `[snapshot] own compaction aborted before append (coversUpTo=${coversUpTo}, ` +
+            `${blocks.length} chunk(s) discarded): the caller is stopping`,
+        );
+      }
+      // The held appender, never the log's own appendRawBatch: that one waits on the hold.
+      await (held.appendRawBatch?.bind(held) ?? appendRawBatch)(blocks);
+      assertSnapshotAnchorHeld(await inspectAt(coversUpTo), coversUpTo, blocks.length);
+      return {
+        appended: true,
+        coversUpTo,
+        rowCount,
+        chunkCount: blocks.length,
+        ...(droppedGovernorReceipts !== undefined ? { droppedGovernorReceipts } : {}),
+        ...(unopenedGovernorEnvelopes !== undefined ? { unopenedGovernorEnvelopes } : {}),
+      };
     });
-    if (opts.shouldAbort?.()) {
-      throw new SnapshotAbortedError(
-        `[snapshot] own compaction aborted before append (coversUpTo=${coversUpTo}, ` +
-          `${blocks.length} chunk(s) discarded): the caller is stopping`,
-      );
-    }
-    await appendRawBatch(blocks);
-    assertSnapshotAnchorHeld(await inspectAt(coversUpTo), coversUpTo, blocks.length);
-    return {
-      appended: true,
-      coversUpTo,
-      rowCount,
-      chunkCount: blocks.length,
-      ...(droppedGovernorReceipts !== undefined ? { droppedGovernorReceipts } : {}),
-      ...(unopenedGovernorEnvelopes !== undefined ? { unopenedGovernorEnvelopes } : {}),
-    };
   } finally {
     await worker.close().catch(() => {});
   }

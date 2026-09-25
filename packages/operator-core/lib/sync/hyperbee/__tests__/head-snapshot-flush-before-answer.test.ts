@@ -27,11 +27,16 @@ import { CURRENT_SCHEMA_VERSION } from '../schema-version';
 
 /**
  * Keep this suite hermetic. Production resolves re-key dependencies
- * fail-closed, but these unit cases exercise the substrate with no real PG.
- * Individual tests can still override this default through the existing seam.
+ * fail-closed and takes a governor-receipt census before a head snapshot
+ * (WI-10003060), but these unit cases exercise the substrate with no real PG.
+ * Individual tests can still override these defaults through the existing seams.
  */
 function bootHarnessSubstrate(opts: BootHarnessOpts) {
-  return bootHarnessSubstrateImpl({ rekeyDepsOverride: null, ...opts });
+  return bootHarnessSubstrateImpl({
+    rekeyDepsOverride: null,
+    loadOwnCompactionGovernorReceiptKeys: async () => [],
+    ...opts,
+  });
 }
 
 const cleanups: Array<() => void | Promise<void>> = [];

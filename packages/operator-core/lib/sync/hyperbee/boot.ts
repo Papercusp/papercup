@@ -102,7 +102,10 @@ import {
   loadLiveGovernorReceiptSnapshotKeys,
   loadOwnCompactionEnvelopeKeys,
 } from './governor-receipt-snapshot-census';
-import type { GovernorReceiptEnvelopeKeys } from './governor-receipt-snapshot-filter';
+import type {
+  GovernorReceiptEnvelopeKeys,
+  GovernorReceiptSnapshotFilter,
+} from './governor-receipt-snapshot-filter';
 
 /**
  * WI-10002836 — how often a long own-log compaction reports its fold position. One
@@ -422,8 +425,9 @@ export interface BootHarnessOpts {
   ownCompactionFailureBackoffBaseMs?: number;
   /**
    * P-530 test seam. Production reads the current work_items-backed legacy receipt
-   * keys immediately after capturing the own-log boundary; tests inject a census
-   * without touching PostgreSQL.
+   * keys immediately after capturing the own-log boundary, for the own compaction and
+   * the release cut's head snapshot alike; tests inject a census without touching
+   * PostgreSQL.
    */
   loadOwnCompactionGovernorReceiptKeys?: (workspaceId: string) => Promise<readonly string[]>;
   /**
@@ -808,6 +812,8 @@ export type OwnCompactionOutcome =
       unopenedGovernorEnvelopes: number;
       /** D-024: epochs the filter held a key for (0 ⇒ every encrypted row is kept). */
       envelopeKeyEpochs: number;
+      /** D-025: how long live appends on the own log waited for this set's build + append. */
+      appendsHeldMs?: number;
       elapsedMs: number;
     }
   | { ok: false; error: string; elapsedMs: number };
@@ -3472,6 +3478,38 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     }
   }
 
+  /**
+   * P-530 / D-024 — the governor-receipt filter for one own-log snapshot. The own
+   * compaction and the release cut's head snapshot both use it (WI-10003060), so every
+   * set this log publishes drops the same dead receipts. The boundary is captured BEFORE
+   * the PG census: a receipt appended after the census is at/above this index and the
+   * transform keeps it automatically; a row already present in PG is kept through the
+   * exact qualified-key set.
+   */
+  async function loadGovernorReceiptFilter(): Promise<GovernorReceiptSnapshotFilter> {
+    const maxSourceIndexExclusive = ownLog.length;
+    const liveQualifiedKeys = await (
+      opts.loadOwnCompactionGovernorReceiptKeys ?? loadLiveGovernorReceiptSnapshotKeys
+    )(opts.workspaceId);
+    // D-024: own-log engineer-issues rows are hive-epoch envelopes, so the filter sees a
+    // receipt only through these keys. A failed load keeps every encrypted row; the
+    // outcome then reports them as unopened instead of reading as "no receipts".
+    const envelopePotId = rekeyDeps?.potHomeSlug;
+    const envelopeKeys = envelopePotId
+      ? await (opts.loadOwnCompactionEnvelopeKeys ?? loadOwnCompactionEnvelopeKeys)(
+          opts.workspaceId,
+          envelopePotId,
+        ).catch((e: unknown) => {
+          console.error(
+            `[snapshot] own-log snapshot: epoch keys for ${envelopePotId} unavailable; ` +
+              `encrypted receipts stay in the set: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          return null;
+        })
+      : null;
+    return { maxSourceIndexExclusive, liveQualifiedKeys, ...(envelopeKeys ? { envelopeKeys } : {}) };
+  }
+
   async function runOwnCompaction(trigger: 'cadence' | 'requested' = 'cadence'): Promise<OwnCompactionOutcome> {
     const startedAt = Date.now();
     const previousCoversUpTo = lastSnapshotCoversUpTo;
@@ -3488,37 +3526,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // observability must never fail the compaction
     }
     try {
-      // P-530: capture the boundary BEFORE the PG census. A receipt appended after
-      // the census is at/above this index and the transform keeps it automatically;
-      // a row already present in PG is kept through the exact qualified-key set.
-      const receiptFilterCoversUpTo = ownLog.length;
-      const liveGovernorReceiptKeys = await (
-        opts.loadOwnCompactionGovernorReceiptKeys ?? loadLiveGovernorReceiptSnapshotKeys
-      )(opts.workspaceId);
-      // D-024: own-log engineer-issues rows are hive-epoch envelopes, so the filter sees a
-      // receipt only through these keys. A failed load keeps every encrypted row; the
-      // outcome then reports them as unopened instead of reading as "no receipts".
-      const envelopePotId = rekeyDeps?.potHomeSlug;
-      const envelopeKeys = envelopePotId
-        ? await (opts.loadOwnCompactionEnvelopeKeys ?? loadOwnCompactionEnvelopeKeys)(
-            opts.workspaceId,
-            envelopePotId,
-          ).catch((e: unknown) => {
-            console.error(
-              `[snapshot] own compaction: epoch keys for ${envelopePotId} unavailable; ` +
-                `encrypted receipts stay in the set: ${e instanceof Error ? e.message : String(e)}`,
-            );
-            return null;
-          })
-        : null;
+      const governorReceiptFilter = await loadGovernorReceiptFilter();
+      const liveGovernorReceiptKeys = governorReceiptFilter.liveQualifiedKeys.length;
+      const envelopeKeyEpochs = governorReceiptFilter.envelopeKeys?.keys.length ?? 0;
       const snap = await produceLogSnapshot(ownLog, {
         now: Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
-        governorReceiptFilter: {
-          maxSourceIndexExclusive: receiptFilterCoversUpTo,
-          liveQualifiedKeys: liveGovernorReceiptKeys,
-          ...(envelopeKeys ? { envelopeKeys } : {}),
-        },
+        governorReceiptFilter,
         ...(lastOwnCompactionSet ? { priorSnapshotHint: lastOwnCompactionSet } : {}),
         shouldAbort: () => stopped,
         // WI-10002855: the fold runs in a worker thread. Inline, the first full-history
@@ -3558,9 +3572,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         chunkCount: snap.chunkCount,
         rowCount: snap.rowCount,
         droppedGovernorReceipts: snap.droppedGovernorReceipts ?? 0,
-        liveGovernorReceiptKeys: liveGovernorReceiptKeys.length,
+        liveGovernorReceiptKeys,
         unopenedGovernorEnvelopes: snap.unopenedGovernorEnvelopes ?? 0,
-        envelopeKeyEpochs: envelopeKeys?.keys.length ?? 0,
+        envelopeKeyEpochs,
+        ...(snap.appendsHeldMs !== undefined ? { appendsHeldMs: snap.appendsHeldMs } : {}),
         elapsedMs: Date.now() - startedAt,
       };
       if (!snap.appended) return outcome;
@@ -3574,9 +3589,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           'own_log_compaction',
           `own log compaction: coversUpTo=${snap.coversUpTo} chunks=${snap.chunkCount} rows=${snap.rowCount} ` +
             `droppedGovernorReceipts=${snap.droppedGovernorReceipts ?? 0} ` +
-            `liveGovernorReceiptKeys=${liveGovernorReceiptKeys.length} ` +
+            `liveGovernorReceiptKeys=${liveGovernorReceiptKeys} ` +
             `unopenedGovernorEnvelopes=${snap.unopenedGovernorEnvelopes ?? 0} ` +
-            `envelopeKeyEpochs=${envelopeKeys?.keys.length ?? 0} ` +
+            `envelopeKeyEpochs=${envelopeKeyEpochs} ` +
+            `appendsHeldMs=${snap.appendsHeldMs ?? 'none'} ` +
             `grewBy=${snap.coversUpTo - previousCoversUpTo} nextThreshold=${snapshotCompactThreshold(snap.rowCount)} ` +
             `elapsedMs=${Date.now() - startedAt} mergeGateHeld=false`,
         );
@@ -3657,9 +3673,22 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     const startedAt = Date.now();
     const lengthBefore = ownLog.length;
     try {
+      // WI-10003060 — the cut ships this set as the published seed, so it drops the same
+      // dead governor receipts as the own compaction. Without the filter a cut that seeds
+      // from an unfiltered set, or folds from 0, re-ships them (56% of set@7711093's rows,
+      // plan p2p-join-catchup-speed D-019). A failed census costs a larger seed, never a
+      // wrong one, so the cut proceeds unfiltered instead of failing.
+      const governorReceiptFilter = await loadGovernorReceiptFilter().catch((e: unknown) => {
+        console.error(
+          `[snapshot] head snapshot: governor-receipt census failed; the set keeps every receipt: ` +
+            (e instanceof Error ? e.message : String(e)),
+        );
+        return null;
+      });
       const snap = await produceLogSnapshot(ownLog, {
         now: Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
+        ...(governorReceiptFilter ? { governorReceiptFilter } : {}),
         // EI-20108164746219771 — the SERVER installer shipped the build box's machine
         // label. This snapshot is the one a no-outage release cut ships: the cutter opens
         // READ-ONLY (we hold the write lock), asks for this via the head-snapshot route,
@@ -3747,6 +3776,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           'peer_capped',
           `on-demand head snapshot: appended=${snap.appended} coversUpTo=${snap.coversUpTo} ` +
             `chunks=${snap.chunkCount} rows=${snap.rowCount} readBlocks=${lengthBefore} ` +
+            `receiptFilter=${governorReceiptFilter ? 'on' : 'off'} ` +
+            `droppedGovernorReceipts=${snap.droppedGovernorReceipts ?? 0} ` +
+            `unopenedGovernorEnvelopes=${snap.unopenedGovernorEnvelopes ?? 0} ` +
+            `appendsHeldMs=${snap.appendsHeldMs ?? 'none'} ` +
             `flushedToSst=${flushed} mergeStalledMs=${Date.now() - startedAt}`,
         );
       } catch {

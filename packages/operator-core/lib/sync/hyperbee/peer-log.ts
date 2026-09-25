@@ -119,10 +119,26 @@ export interface OwnLog {
    * for the decoded op, so the log's content is identical whichever form wrote it.
    */
   appendRawBatch?(blocks: Uint8Array[]): Promise<void>;
+  /**
+   * Run `fn` while every other append on this log waits, so the length cannot move
+   * under it; appends issued before the hold land first. `fn` appends through the
+   * handle it is given — this log's own append methods wait on the hold, so calling
+   * them inside `fn` deadlocks. The snapshot producer holds appends from its last
+   * re-anchor through its append: on the tower's busy own log a live op otherwise lands
+   * between the two and displaces the whole set (the WI-37526 anchor race; plan
+   * p2p-join-catchup-speed D-025). Optional: test fakes omit it; callers feature-detect.
+   */
+  withAppendsHeld?<T>(fn: (log: HeldOwnLogAppender) => Promise<T>): Promise<T>;
   /** Number of ops appended so far. */
   readonly length: number;
   /** 64-char lowercase hex hypercore key — the `log_core_key` to replicate. */
   readonly keyHex: string;
+}
+
+/** The appends open to the holder of {@link OwnLog.withAppendsHeld}. */
+export interface HeldOwnLogAppender {
+  appendBatch(ops: PeerLogOp[]): Promise<void>;
+  appendRawBatch?(blocks: Uint8Array[]): Promise<void>;
 }
 
 /** A read-only replica handle to another peer's log. */
@@ -268,15 +284,54 @@ export async function openNamedLog(
   }
 
   let rawSessionPromise: Promise<CoreLike> | undefined;
+  // withAppendsHeld: the hold every other append waits behind, and the appends already
+  // issued, which the holder lets land before it reads the length.
+  let appendHold: Promise<void> | null = null;
+  const inFlightAppends = new Set<Promise<unknown>>();
+  // The hold check and the append's start run in ONE synchronous step, so a hold taken
+  // in between cannot miss this append.
+  async function appendUnlessHeld(start: () => Promise<unknown>): Promise<void> {
+    while (appendHold) await appendHold;
+    const pending = start();
+    inFlightAppends.add(pending);
+    try {
+      await pending;
+    } finally {
+      inFlightAppends.delete(pending);
+    }
+  }
+  const appendRawNow = async (blocks: Uint8Array[]): Promise<void> => {
+    if (blocks.length === 0) return;
+    await (await rawSession()).append(blocks);
+  };
 
   return {
     async append(op: PeerLogOp): Promise<void> {
-      await core.append(op);
+      await appendUnlessHeld(() => core.append(op));
     },
     async appendBatch(ops: PeerLogOp[]): Promise<void> {
       if (ops.length === 0) return;
       // Hypercore's append accepts an array of blocks — one batch, one flush.
-      await core.append(ops);
+      await appendUnlessHeld(() => core.append(ops));
+    },
+    async withAppendsHeld<T>(fn: (log: HeldOwnLogAppender) => Promise<T>): Promise<T> {
+      while (appendHold) await appendHold;
+      let release!: () => void;
+      appendHold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      try {
+        await Promise.allSettled([...inFlightAppends]);
+        return await fn({
+          async appendBatch(ops: PeerLogOp[]): Promise<void> {
+            if (ops.length > 0) await core.append(ops);
+          },
+          appendRawBatch: appendRawNow,
+        });
+      } finally {
+        appendHold = null;
+        release();
+      }
     },
     async get(i: number): Promise<PeerLogOp | null> {
       // Out-of-range → null. The own core is writable with no peers, so an
@@ -295,7 +350,7 @@ export async function openNamedLog(
     },
     async appendRawBatch(blocks: Uint8Array[]): Promise<void> {
       if (blocks.length === 0) return;
-      await (await rawSession()).append(blocks);
+      await appendUnlessHeld(() => appendRawNow(blocks));
     },
     get length(): number {
       return core.length;

@@ -16,17 +16,20 @@
  *  3. concurrent callers COALESCE onto one snapshot (a naive flag would orphan the
  *     first waiter and hang it forever);
  *  4. a stopped engine REJECTS rather than hanging (mergeNow short-circuits when
- *     stopped, so an armed request would never be serviced).
+ *     stopped, so an armed request would never be serviced);
+ *  5. the published seed drops dead governor receipts like the own compaction does,
+ *     and a failed census degrades to an unfiltered cut (WI-10003060).
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bootHarnessSubstrate } from '../boot';
+import { bootHarnessSubstrate, type BootHarnessOpts } from '../boot';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { findLatestSnapshotIndex } from '../read-merge';
-import { isSnapshotOp } from '../log-snapshot';
+import { isSnapshotOp, type SnapshotPayload } from '../log-snapshot';
 import { listBootHistory } from '../boot-history';
+import type { PeerLogOp } from '../peer-log';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -45,7 +48,11 @@ function tmpWorkspaceRoot(): string {
   return dir;
 }
 
-async function bootWithOps(slug: string, opCount: number) {
+async function bootWithOps(
+  slug: string,
+  opCount: number,
+  extra: Pick<BootHarnessOpts, 'loadOwnCompactionGovernorReceiptKeys'> = {},
+) {
   const handle = await bootHarnessSubstrate({
     workspaceRoot: tmpWorkspaceRoot(),
     workspaceId: 'ws-p019',
@@ -54,6 +61,8 @@ async function bootWithOps(slug: string, opCount: number) {
     loadRevokedOverride: async () => new Set(), // avoid real PG
     applyOverride: async () => true,
     rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
+    loadOwnCompactionGovernorReceiptKeys: async () => [], // the head census, without real PG
+    ...extra,
   });
   expect(
     listBootHistory({
@@ -165,4 +174,75 @@ describe('produceHeadSnapshotNow (P-019 / D-012)', () => {
     await handle.close();
     await expect(handle.produceHeadSnapshotNow()).rejects.toThrow(/stopped|closing/i);
   });
+
+  it('drops absent pre-census governor receipts and keeps live ones (WI-10003060 / P-530)', async () => {
+    // The cut ships this set as the published seed. Before WI-10003060 the head path
+    // passed only excludeTables, so every cut re-shipped the dead receipts.
+    const slug = 'wi3060-a';
+    const handle = await bootWithOps(slug, 2, {
+      loadOwnCompactionGovernorReceiptKeys: async () => ['papercusp/WI-LIVE'],
+    });
+    await handle.append(governorReceipt('papercusp/WI-DEAD'));
+    await handle.append(governorReceipt('papercusp/WI-LIVE'));
+
+    const snap = await handle.produceHeadSnapshotNow();
+
+    expect(snap).toMatchObject({ appended: true, droppedGovernorReceipts: 1 });
+    const keys = await snapshotRowKeys(handle, snap);
+    expect(keys).not.toContain('papercusp/WI-DEAD');
+    expect(keys).toContain('papercusp/WI-LIVE');
+    expect(keys).toContain('K-0');
+    expect(headSnapshotEvent(slug)).toContain('receiptFilter=on droppedGovernorReceipts=1');
+  });
+
+  it('a failed receipt census still cuts, unfiltered, instead of failing the release cut (WI-10003060)', async () => {
+    const slug = 'wi3060-b';
+    const handle = await bootWithOps(slug, 1, {
+      loadOwnCompactionGovernorReceiptKeys: async () => {
+        throw new Error('census unavailable');
+      },
+    });
+    await handle.append(governorReceipt('papercusp/WI-DEAD'));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    cleanups.push(() => consoleError.mockRestore());
+
+    const snap = await handle.produceHeadSnapshotNow();
+
+    expect(snap.appended).toBe(true);
+    expect(await snapshotRowKeys(handle, snap)).toContain('papercusp/WI-DEAD');
+    expect(consoleError).toHaveBeenCalledWith(
+      expect.stringContaining('head snapshot: governor-receipt census failed; the set keeps every receipt: census unavailable'),
+    );
+    expect(headSnapshotEvent(slug)).toContain('receiptFilter=off droppedGovernorReceipts=0');
+  });
 });
+
+function governorReceipt(hbKey: string): PeerLogOp {
+  return {
+    type: 'put',
+    table: 'engineer-issues',
+    hbKey,
+    value: { payload: { resource_governor: { schemaVersion: 1, state: 'completed' } } },
+    ts: 2_000,
+    schema_version: CURRENT_SCHEMA_VERSION,
+    author_pubkey: '',
+  };
+}
+
+async function snapshotRowKeys(
+  handle: Awaited<ReturnType<typeof bootWithOps>>,
+  snap: { coversUpTo: number; chunkCount: number },
+): Promise<string[]> {
+  const keys: string[] = [];
+  for (let i = 0; i < snap.chunkCount; i++) {
+    const op = await handle.ownLog.get(snap.coversUpTo + i);
+    keys.push(...((op?.value as SnapshotPayload | undefined)?.rows ?? []).map((row) => row.hbKey));
+  }
+  return keys;
+}
+
+function headSnapshotEvent(slug: string): string | undefined {
+  return listBootHistory({ workspaceId: 'ws-p019', harnessSlug: slug, kinds: ['peer_capped'] })
+    .map((e) => e.message ?? '')
+    .find((m) => m.startsWith('on-demand head snapshot: '));
+}
