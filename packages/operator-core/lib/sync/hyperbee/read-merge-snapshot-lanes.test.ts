@@ -63,11 +63,31 @@ function chunk(rows: SnapshotRow[]): PeerLogOp {
 
 type Result = { command: string };
 
-/** A key/value store where each reserved connection holds its own transaction. */
+/** One connection's transaction: savepoint levels (named), and whether a failed statement aborted it. */
+interface FakeTx {
+  stack: Map<string, unknown>[] | null;
+  names: string[];
+  aborted: boolean;
+  /** Keys this connection wrote, in the order it wrote them (P-536). */
+  order: string[];
+}
+
+/**
+ * A key/value store where each reserved connection holds its own transaction.
+ * Like PG, a failed statement aborts the transaction until ROLLBACK TO SAVEPOINT, and a
+ * savepoint is released or rolled back to only from the innermost level (the fake refuses
+ * anything else, so a protocol slip fails the test instead of passing silently).
+ */
 class LaneDb {
   readonly committed = new Map<string, unknown>();
   readonly statements: string[] = [];
   failCommits = 0;
+  /** P-536: a WRITEMANY holding any of these keys fails whole with a 23505. */
+  readonly failGroupKeys = new Set<string>();
+  /** P-536: a WRITE of one of these keys fails once with a 23505. */
+  readonly failWriteOnce = new Set<string>();
+  /** P-536: every reserved connection's write order. */
+  readonly connections: FakeTx[] = [];
   reserves = 0;
   releases = 0;
   /** The reserve call (1-based) that is not granted until {@link grantStalled}; 0 = none. */
@@ -106,7 +126,8 @@ class LaneDb {
 
   private connection(reserved: boolean) {
     let chain: Promise<unknown> = Promise.resolve();
-    const tx: { stack: Map<string, unknown>[] | null } = { stack: null };
+    const tx: FakeTx = { stack: null, names: [], aborted: false, order: [] };
+    if (reserved) this.connections.push(tx);
     const run = (text: string, vals: unknown[]) => {
       const p = chain.then(() => this.exec(text, vals, reserved, tx));
       chain = p.catch(() => {});
