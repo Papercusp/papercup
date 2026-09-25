@@ -94,11 +94,25 @@ export interface TextCollector {
  * that fd was not piped (`'ignore'`, `'inherit'`, or an fd handoff), and every
  * call site would otherwise need the same guard.
  */
-export function createTextCollector(stream?: NodeJS.ReadableStream | null): TextCollector {
+export function createTextCollector(
+  stream?: NodeJS.ReadableStream | null,
+  options: { maxChars?: number } = {},
+): TextCollector {
+  const maxChars = options.maxChars;
+  if (maxChars !== undefined && (!Number.isInteger(maxChars) || maxChars < 1)) {
+    throw new RangeError('maxChars must be a positive integer');
+  }
   const decoder = new StringDecoder('utf8');
   let acc = '';
   let flushed = false;
   let bytes = 0;
+  const trimTail = (): void => {
+    if (maxChars === undefined || acc.length <= maxChars) return;
+    acc = acc.slice(-maxChars);
+    // A UTF-16 slice can start at the low half of an emoji; drop that half.
+    const first = acc.charCodeAt(0);
+    if (first >= 0xdc00 && first <= 0xdfff) acc = acc.slice(1);
+  };
 
   const onData = (chunk: Buffer | string): void => {
     if (typeof chunk === 'string') {
@@ -106,21 +120,25 @@ export function createTextCollector(stream?: NodeJS.ReadableStream | null): Text
       // did so with its OWN StringDecoder, which is boundary-safe. Re-decoding
       // would be wrong; take the string as given.
       acc += chunk;
+      trimTail();
       bytes += Buffer.byteLength(chunk);
       return;
     }
     bytes += chunk.length;
     acc += decoder.write(chunk);
+    trimTail();
     flushed = false;
   };
 
   const collector: TextCollector = {
     append(text: string): void {
       acc += text;
+      trimTail();
     },
     text(): string {
       if (!flushed) {
         acc += decoder.end();
+        trimTail();
         flushed = true;
       }
       return acc;

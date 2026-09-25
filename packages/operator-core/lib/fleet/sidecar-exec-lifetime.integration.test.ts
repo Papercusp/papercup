@@ -10,6 +10,7 @@ import { captureSidecarContainment, observeSidecarExit, reapDeadSidecar, sidecar
 import { runCommandViaSpawnerSidecar, isSidecarInfrastructureFault } from './git-via-sidecar';
 import { SpawnerIpcClient } from './spawner-ipc-client';
 import { newTaskId, scopeUnitForTask } from '../task-manager/types';
+import { createTextCollector } from '../child-output';
 import type { SidecarContainment } from './sidecar-exec-lifetime';
 
 // The subject here is real kernel containment, not the task ledger/flag store.
@@ -40,15 +41,13 @@ async function startScope() {
   scopes.push({ unit: task.scopeUnit!, child: task.child });
   // Both the fault injection and afterEach are deliberate fixture teardown.
   markManagedSpawnTeardown(task.child);
-  let text = '';
-  let errors = '';
-  task.child.stdout!.on('data', (data) => { text += data.toString(); });
-  task.child.stderr!.on('data', (data) => { errors += data.toString(); });
+  const text = createTextCollector(task.child.stdout);
+  const errors = createTextCollector(task.child.stderr);
   await vi.waitFor(() => {
-    if (task.child.exitCode !== null || task.child.signalCode !== null) throw new Error(`scope exited before ready: ${errors}`);
-    expect(text).toContain('\n');
+    if (task.child.exitCode !== null || task.child.signalCode !== null) throw new Error(`scope exited before ready: ${errors.peek()}`);
+    expect(text.peek()).toContain('\n');
   }, { timeout: 10_000 });
-  const { pid, helper } = JSON.parse(text.trim()) as { pid: number; helper: number };
+  const { pid, helper } = JSON.parse(text.peek().trim()) as { pid: number; helper: number };
   const snapshot = captureSidecarContainment(task.scopeUnit!, pid);
   expect(snapshot).not.toBeNull();
   return { snapshot: snapshot!, pid, helper };
@@ -106,12 +105,11 @@ it.runIf(process.platform === 'linux')(
     expect(task.scopeUnit).toBeTruthy();
     scopes.push({ unit: task.scopeUnit!, child: task.child });
     markManagedSpawnTeardown(task.child);
-    let output = '';
-    task.child.stdout!.on('data', (data) => { output += data.toString(); });
-    task.child.stderr!.on('data', (data) => { output += data.toString(); });
+    const output = createTextCollector(task.child.stdout);
+    output.attach(task.child.stderr);
     await vi.waitFor(() => {
-      if (task.child.exitCode !== null || task.child.signalCode !== null) throw new Error(output);
-      expect(output).toContain('PAPERCUSP_SPAWNER_READY');
+      if (task.child.exitCode !== null || task.child.signalCode !== null) throw new Error(output.peek());
+      expect(output.peek()).toContain('PAPERCUSP_SPAWNER_READY');
     }, { timeout: 30_000 });
     const control = new SpawnerIpcClient(socketPath);
     const capabilities = await control.call<{ processExecContainment: SidecarContainment }>('spawn:cancel', {});

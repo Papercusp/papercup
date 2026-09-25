@@ -276,10 +276,9 @@ export default defineTool({
     // display spelling (`work_items__list`; `sanitizeToolName` maps ':' → '__'),
     // reached no tool at all, and reported "no open work items found". Re-running
     // the same arm with this contract delivered produced ZERO such calls in 12 runs.
-    // It is ALSO ≤100 chars on purpose: rails are truncated at SUMMARY_LEAD_MAX_CHARS,
-    // so a longer one would ship cut in half at exactly the tier that needs it.
-    '⚠ Pass the exact tool name in COLON form, e.g. "flags:set" — NEVER the underscored ' +
-    'display name. Args go in `args`. The call is ' +
+    // Keep this rail under SUMMARY_LEAD_MAX_CHARS so it ships intact at the
+    // compact tier where the wrong display spelling caused actual failures.
+    '⚠ Use colon tool names (flags:set); NEVER underscored display names. Args go in `args`. The call is ' +
     'dispatched server-side and gated exactly as a direct call would be. Pair with tools:find: ' +
     'tools:find("<intent>") to get the name + arg schema, then tools:invoke({ name, args }) to run it. ' +
     'Use this when a tool you need is not in your loaded set and your client has not surfaced it directly.',

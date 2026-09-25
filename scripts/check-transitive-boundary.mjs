@@ -23,8 +23,9 @@
 
 import { readFileSync, statSync } from 'node:fs';
 import { resolve, relative, dirname, extname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const APP_DIR = resolve(ROOT, 'apps/operator-vite');
@@ -372,6 +373,6 @@ Read more: /internal/docs/agent-insights/fcp-server-libs-leak-into-eager-client-
   process.exit(1);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isCliEntry(import.meta.url)) {
   main();
 }

@@ -46,6 +46,21 @@ describe('the bug being fixed', () => {
 });
 
 describe('createTextCollector', () => {
+  it('keeps a bounded decoded tail across split UTF-8 bytes', () => {
+    const stream = new PassThrough();
+    const c = createTextCollector(stream, { maxChars: 4 });
+    const full = Buffer.from('abc€de', 'utf8');
+    const cut = full.indexOf(Buffer.from('€', 'utf8')) + 1;
+    stream.write(full.subarray(0, cut));
+    expect(c.peek()).toBe('abc');
+    stream.write(full.subarray(cut));
+    expect(c.peek()).toBe('c€de');
+    expect(c.text()).toBe('c€de');
+    expect(c.bytes).toBe(full.length);
+    c.append('fg');
+    expect(c.text()).toBe('defg');
+  });
+
   it('decodes a 3-byte character split across two chunks', () => {
     expect(collect([Buffer.from([0xe2]), Buffer.from([0x82, 0xac])])).toBe('€');
   });

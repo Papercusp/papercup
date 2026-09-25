@@ -15,6 +15,7 @@ import { getSidecarFallbackStats, resetSidecarFallbackStatsForTest } from '../..
 import { closeSpawnerIpcClient, SpawnerIpcClient } from '../../fleet/spawner-ipc-client';
 import { sidecarContainmentCurrent, observeSidecarExit, type SidecarContainment } from '../../fleet/sidecar-exec-lifetime';
 import { newTaskId, scopeUnitForTask } from '../../task-manager/types';
+import { createTextCollector } from '../../child-output';
 
 vi.mock('../../task-manager/enabled', () => ({ isTaskManagerEnabled: async () => true }));
 vi.mock('../../fleet/spawner-sidecar-spawn', () => ({ spawnSpawnerSidecar: async () => {} }));
@@ -63,12 +64,11 @@ it.runIf(process.platform === 'linux')('compares identical multi-repository read
     unit = task.scopeUnit ?? undefined;
     expect(unit).toBeTruthy();
     markManagedSpawnTeardown(child);
-    let output = '';
-    child.stdout!.on('data', (data) => { output = (output + data.toString()).slice(-4000); });
-    child.stderr!.on('data', (data) => { output = (output + data.toString()).slice(-4000); });
+    const output = createTextCollector(child.stdout, { maxChars: 4000 });
+    output.attach(child.stderr);
     await vi.waitFor(() => {
-      if (child!.exitCode !== null || child!.signalCode !== null) throw new Error(`sidecar exited: ${output}`);
-      expect(output).toContain('PAPERCUSP_SPAWNER_READY');
+      if (child!.exitCode !== null || child!.signalCode !== null) throw new Error(`sidecar exited: ${output.peek()}`);
+      expect(output.peek()).toContain('PAPERCUSP_SPAWNER_READY');
     }, { timeout: 30_000 });
     const startupMs = performance.now() - startAt;
     const control = new SpawnerIpcClient(socketPath);
