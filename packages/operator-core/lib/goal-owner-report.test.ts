@@ -61,6 +61,20 @@ describe('P-021 evidence-backed owner report draft', () => {
     expect(draft.fields.killed).toContain('unknown');
     expect(parseGoalOwnerReport(draft.text).complete).toBe(true);
   });
+
+  it('describes a changed record without dating an unobserved state transition', () => {
+    const draft = buildGoalOwnerReportDraft({ ...base, movements: [
+      { ref: 'work-item:WI-2', state: 'wip', updatedAt: '2026-09-25T19:30:00.000Z' },
+    ] });
+    expect(draft.fields.moved).toContain('record updated 2026-09-25T19:30:00.000Z');
+    expect(draft.fields.moved).toContain('current state=wip (state transition unverified)');
+  });
+
+  it('marks capped evidence lists as partial inside the four report fields', () => {
+    const draft = buildGoalOwnerReportDraft({ ...base, movementTruncated: true, killedTruncated: true });
+    expect(draft.fields.moved).toContain('partial coverage');
+    expect(draft.fields.killed).toContain('partial coverage');
+  });
 });
 
 describe('parseGoalOwnerReport', () => {

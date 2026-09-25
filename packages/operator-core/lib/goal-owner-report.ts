@@ -58,6 +58,8 @@ export interface GoalOwnerReportDraftInput {
   ownerWalls: Array<{ ref: string; action: string }> | null;
   killed: Array<{ ref: string; criterion: string | null; at: string }> | null;
   artifactReads: Array<{ ref: string; readAt: string }>;
+  movementTruncated?: boolean;
+  killedTruncated?: boolean;
 }
 
 export interface GoalOwnerReportDraft {
@@ -78,7 +80,9 @@ export function buildGoalOwnerReportDraft(input: GoalOwnerReportDraftInput): Goa
     .filter((row) => Number.isFinite(cutoff) && Date.parse(row.updatedAt) > cutoff && Date.parse(row.updatedAt) <= observed)
     .map((row) => {
       const terminal = TERMINAL_REPORT_STATES.has(row.state);
-      if (!terminal) return `${row.ref}: ${row.state} at ${row.updatedAt}`;
+      // An updated record proves a changed record, not that its current state
+      // began at that timestamp. Keep the two claims separate in the report.
+      if (!terminal) return `${row.ref}: record updated ${row.updatedAt}; current state=${row.state} (state transition unverified)`;
       const artifact = row.artifact;
       const read = artifact && input.artifactReads.find((candidate) =>
         candidate.ref === artifact.ref &&
@@ -87,18 +91,20 @@ export function buildGoalOwnerReportDraft(input: GoalOwnerReportDraftInput): Goa
       );
       if (!artifact || !read) {
         unreadArtifacts.push(artifact?.ref ?? row.ref);
-        return `${row.ref}: terminal label ${row.state} at ${row.updatedAt}; completion unverified (artifact unread)`;
+        return `${row.ref}: record updated ${row.updatedAt}; terminal label ${row.state}; completion unverified (artifact unread)`;
       }
-      return `${row.ref}: ${row.state} at ${row.updatedAt}; artifact ${artifact.ref} read ${read.readAt}`;
+      return `${row.ref}: record updated ${row.updatedAt}; current state=${row.state}; artifact ${artifact.ref} read ${read.readAt}`;
     });
   const cost = input.cost;
   const costText = cost.spentCents == null
     ? `unknown; coverage=${cost.coverage}; source=${cost.source ?? 'unavailable'}`
     : `${cost.spentCents}c / ${cost.budgetCents ?? 'undeclared'}c; coverage=${cost.coverage}; source=${cost.source ?? 'unmarked'}${cost.unmeasuredPricedSpend ? '; unmeasured priced spend remains' : ''}`;
   const fields: Record<GoalOwnerReportField, string> = {
-    moved: moved.length ? moved.join('; ') : Number.isFinite(cutoff)
+    moved: `${moved.length ? moved.join('; ') : Number.isFinite(cutoff)
       ? 'none evidenced since the previous report in this snapshot'
-      : 'unknown (no previous report watermark; current status is not a movement)',
+      : 'unknown (no previous report watermark; current status is not a movement)'}${input.movementTruncated
+      ? '; partial coverage: more changed records exist; read the rest before claiming complete movement coverage'
+      : ''}`,
     cost: costText,
     ownerWalled: input.ownerWalls === null ? 'unknown (owner-wall read unavailable)'
       : input.ownerWalls.length ? input.ownerWalls.map((wall) => `${wall.ref}: ${wall.action}`).join('; ')
@@ -106,7 +112,8 @@ export function buildGoalOwnerReportDraft(input: GoalOwnerReportDraftInput): Goa
     killed: input.killed === null ? 'unknown (kill/disposition read unavailable)'
       : input.killed.length ? input.killed.map((row) =>
         `${row.ref} at ${row.at}; criterion=${row.criterion ?? 'unverified'}`,
-      ).join('; ')
+      ).join('; ') + (input.killedTruncated ? '; partial coverage: more stopped work exists; read the rest' : '')
+      : input.killedTruncated ? 'partial coverage: more stopped work exists; read the rest'
       : 'none evidenced in the current portfolio',
   };
   const text = [
