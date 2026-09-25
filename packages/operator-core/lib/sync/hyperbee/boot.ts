@@ -3879,7 +3879,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         );
       }
       // D-016: a catching-up fold must not expire member content by wall clock (see holdExpiry).
-      pendingMemberContent.holdExpiry(!evictionReFold.isSettled);
+      // P-538: "catching up" is any log behind its length, including one that stalled.
+      pendingMemberContent.holdExpiry(!evictionReFold.isCaughtUp);
 
       // Queued admissions land first so THIS pass merges them (P-022).
       await drainAdmissionQueue();
