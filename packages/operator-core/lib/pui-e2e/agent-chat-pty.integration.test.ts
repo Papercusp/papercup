@@ -16,7 +16,7 @@ import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { execFile, fork, spawnSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -1182,8 +1182,13 @@ beforeAll(async () => {
   bin = ensurePuiBinary();
   binarySha256 = createHash('sha256').update(readFileSync(bin)).digest('hex');
   home = mkdtempSync(path.join(tmpdir(), 'pui-agent-chat-e2e-'));
-  mkdirSync(path.join(home, '.papercusp'), { recursive: true });
-  writeFileSync(path.join(home, '.papercusp', 'pui-state.json'), JSON.stringify({ tutorialSeen: true }));
+  const fixturePapercuspHome = path.join(home, '.papercusp');
+  mkdirSync(fixturePapercuspHome, { recursive: true });
+  writeFileSync(path.join(fixturePapercuspHome, 'pui-state.json'), JSON.stringify({ tutorialSeen: true }));
+  // The test operator and its MCP client must share a private bearer even when
+  // the calling session has a workspace-scoped PAPERCUSP_HOME with no token.
+  writeFileSync(path.join(fixturePapercuspHome, 'superuser-token'),
+    randomBytes(32).toString('base64url'), { mode: 0o600 });
 
   const routedAccount = scriptedEngine.real && process.env.PUI_REAL_ACCOUNT === 'auto';
   const catalogPath = process.env.PUI_NATIVE_ACCOUNT_CATALOG;
@@ -1216,6 +1221,7 @@ beforeAll(async () => {
     }));
   }
   const keys = [
+    'PAPERCUSP_HOME',
     'HARNESS_DATABASE_URL',
     'HARNESS_ADMIN_DATABASE_URL',
     'DATABASE_URL',
@@ -1237,6 +1243,7 @@ beforeAll(async () => {
   ];
   previousEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   Object.assign(process.env, {
+    PAPERCUSP_HOME: fixturePapercuspHome,
     HARNESS_DATABASE_URL: db.appDsn,
     HARNESS_ADMIN_DATABASE_URL: db.adminDsn,
     DATABASE_URL: db.adminDsn,
