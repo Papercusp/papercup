@@ -664,7 +664,7 @@ export function classifyAcceptanceGraderTerminalFailure(
   // general grader may quote the same prose in frozen evidence.
   const toolSurfaceRefusal = allowToolSurfaceRefusal
     ? normalized.match(
-        /(?:didn't|did not)\s+grade scorecard\s+EI-[A-Za-z0-9-]+[\s\S]{0,300}?(?:didn't|did not)\s+emit a\s+grading-integrity audit[\s\S]{0,1800}?(?:platform tools (?:aren't|are not) loaded|no way to reach the\s+platform)[\s\S]{0,6000}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,
+        /(?:(?:didn't|did not)\s+grade scorecard\s+EI-[A-Za-z0-9-]+[\s\S]{0,300}?(?:didn't|did not)\s+emit a\s+grading-integrity audit|haven(?:'|’)t\s+graded or emitted anything for scorecard\s+EI-[A-Za-z0-9-]+)[\s\S]{0,1800}?(?:platform tools (?:aren't|are not) loaded|no platform tools loaded|no way to reach the\s+platform)[\s\S]{0,6000}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,
       )
     : null;
   if (toolSurfaceRefusal) {

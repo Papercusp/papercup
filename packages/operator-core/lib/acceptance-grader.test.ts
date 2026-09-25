@@ -1154,6 +1154,18 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     })).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure(refusal, { allowToolSurfaceRefusal: true }))
       .toMatchObject({ code: 'tool_surface_unavailable' });
+    const observedRefusal =
+      "● I haven't graded or emitted anything for scorecard EI-24234352612789401. " +
+      "I couldn't read it, check the lease, or emit the audit.\n" +
+      '- No platform tools loaded. I ran three tool searches and none found any ' +
+      'mcp__papercusp__* tool.\n' +
+      '✻ Cooked for 24s · done 7:57 AM\n❯';
+    expect(classifyAcceptanceGraderTerminalFailure(observedRefusal)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(observedRefusal.replace('· done', '· working'), {
+      allowToolSurfaceRefusal: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(observedRefusal, { allowToolSurfaceRefusal: true }))
+      .toMatchObject({ code: 'tool_surface_unavailable' });
   });
 });
 
