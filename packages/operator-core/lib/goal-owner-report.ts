@@ -30,6 +30,92 @@ export const GOAL_OWNER_REPORT_HEADING_LIST = GOAL_OWNER_REPORT_FIELDS.map(
   (field) => GOAL_OWNER_REPORT_HEADINGS[field],
 ).join(' / ');
 
+/**
+ * P-021: a report draft is assembled from one timestamped portfolio read and
+ * explicit artifact-read receipts. A status label alone cannot certify a
+ * completed result. The caller may present that label, but this assembler
+ * refuses to call it complete until the exact artifact was read after its last
+ * update. These are inputs to the existing four-field report, not another
+ * reporting ledger or transport.
+ */
+export interface GoalOwnerReportDraftInput {
+  goalId: string;
+  observedAt: string;
+  previousReportAt: string | null;
+  movements: Array<{
+    ref: string;
+    state: string;
+    updatedAt: string;
+    artifact?: { ref: string; updatedAt: string } | null;
+  }>;
+  cost: {
+    spentCents: number | null;
+    budgetCents: number | null;
+    source: string | null;
+    coverage: string;
+    unmeasuredPricedSpend: boolean;
+  };
+  ownerWalls: Array<{ ref: string; action: string }> | null;
+  killed: Array<{ ref: string; criterion: string | null; at: string }> | null;
+  artifactReads: Array<{ ref: string; readAt: string }>;
+}
+
+export interface GoalOwnerReportDraft {
+  fields: Record<GoalOwnerReportField, string>;
+  /** Exact refs whose unread/old artifact prevents a completion assertion. */
+  unreadArtifacts: string[];
+  /** The four field report, accepted by the canonical parser and coord stamp. */
+  text: string;
+}
+
+const TERMINAL_REPORT_STATES = new Set(['done', 'passed', 'resolved', 'closed', 'shipped', 'achieved']);
+
+export function buildGoalOwnerReportDraft(input: GoalOwnerReportDraftInput): GoalOwnerReportDraft {
+  const cutoff = input.previousReportAt ? Date.parse(input.previousReportAt) : NaN;
+  const observed = Date.parse(input.observedAt);
+  const unreadArtifacts: string[] = [];
+  const moved = input.movements
+    .filter((row) => Number.isFinite(cutoff) && Date.parse(row.updatedAt) > cutoff && Date.parse(row.updatedAt) <= observed)
+    .map((row) => {
+      const terminal = TERMINAL_REPORT_STATES.has(row.state);
+      if (!terminal) return `${row.ref}: ${row.state} at ${row.updatedAt}`;
+      const artifact = row.artifact;
+      const read = artifact && input.artifactReads.find((candidate) =>
+        candidate.ref === artifact.ref &&
+        Date.parse(candidate.readAt) >= Date.parse(artifact.updatedAt) &&
+        Date.parse(candidate.readAt) <= observed,
+      );
+      if (!artifact || !read) {
+        unreadArtifacts.push(artifact?.ref ?? row.ref);
+        return `${row.ref}: terminal label ${row.state} at ${row.updatedAt}; completion unverified (artifact unread)`;
+      }
+      return `${row.ref}: ${row.state} at ${row.updatedAt}; artifact ${artifact.ref} read ${read.readAt}`;
+    });
+  const cost = input.cost;
+  const costText = cost.spentCents == null
+    ? `unknown; coverage=${cost.coverage}; source=${cost.source ?? 'unavailable'}`
+    : `${cost.spentCents}c / ${cost.budgetCents ?? 'undeclared'}c; coverage=${cost.coverage}; source=${cost.source ?? 'unmarked'}${cost.unmeasuredPricedSpend ? '; unmeasured priced spend remains' : ''}`;
+  const fields: Record<GoalOwnerReportField, string> = {
+    moved: moved.length ? moved.join('; ') : Number.isFinite(cutoff)
+      ? 'none evidenced since the previous report in this snapshot'
+      : 'unknown (no previous report watermark; current status is not a movement)',
+    cost: costText,
+    ownerWalled: input.ownerWalls === null ? 'unknown (owner-wall read unavailable)'
+      : input.ownerWalls.length ? input.ownerWalls.map((wall) => `${wall.ref}: ${wall.action}`).join('; ')
+      : 'none evidenced in the current portfolio',
+    killed: input.killed === null ? 'unknown (kill/disposition read unavailable)'
+      : input.killed.length ? input.killed.map((row) =>
+        `${row.ref} at ${row.at}; criterion=${row.criterion ?? 'unverified'}`,
+      ).join('; ')
+      : 'none evidenced in the current portfolio',
+  };
+  const text = [
+    `Goal ${input.goalId}; portfolio read ${input.observedAt}`,
+    ...GOAL_OWNER_REPORT_FIELDS.map((field) => `${GOAL_OWNER_REPORT_HEADINGS[field]}: ${fields[field]}`),
+  ].join('\n');
+  return { fields, unreadArtifacts, text };
+}
+
 export interface GoalOwnerReportStamp {
   schemaVersion: typeof GOAL_OWNER_REPORT_SCHEMA_VERSION;
   goalId: string;

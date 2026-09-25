@@ -7,6 +7,7 @@ import {
   GOAL_OWNER_REPORT_HEADING_LIST,
   GOAL_OWNER_REPORT_HEADINGS,
   GOAL_OWNER_REPORT_SCHEMA_VERSION,
+  buildGoalOwnerReportDraft,
   diagnoseGoalOwnerReportEnvelope,
   envelopeHasCompleteGoalOwnerReport,
   isGoalOwnerReportStamp,
@@ -16,6 +17,51 @@ import {
 } from './goal-owner-report';
 
 const GOAL = 'work-on-everything-070565';
+
+describe('P-021 evidence-backed owner report draft', () => {
+  const base = {
+    goalId: GOAL,
+    observedAt: '2026-09-25T20:00:00.000Z',
+    previousReportAt: '2026-09-25T19:00:00.000Z',
+    movements: [{ ref: 'plan:papercusp/alpha', state: 'shipped', updatedAt: '2026-09-25T19:30:00.000Z',
+      artifact: { ref: 'scorecard:alpha', updatedAt: '2026-09-25T19:25:00.000Z' } }],
+    cost: { spentCents: 340, budgetCents: 1000, source: 'goal-pots-rollup',
+      coverage: 'measured-pot', unmeasuredPricedSpend: false },
+    ownerWalls: [{ ref: 'WI-1', action: 'choose a domain' }],
+    killed: [{ ref: 'fleet:old', criterion: 'cost exceeded 1000c', at: '2026-09-25T19:40:00.000Z' }],
+    artifactReads: [] as Array<{ ref: string; readAt: string }>,
+  };
+
+  it('marks a terminal label unverified until an exact fresh artifact read exists', () => {
+    const unread = buildGoalOwnerReportDraft(base);
+    expect(unread.unreadArtifacts).toEqual(['scorecard:alpha']);
+    expect(unread.fields.moved).toContain('completion unverified (artifact unread)');
+    expect(unread.fields.cost).toContain('coverage=measured-pot; source=goal-pots-rollup');
+    expect(unread.fields.ownerWalled).toContain('WI-1: choose a domain');
+    expect(unread.fields.killed).toContain('fleet:old');
+    expect(parseGoalOwnerReport(unread.text).complete).toBe(true);
+    const stale = buildGoalOwnerReportDraft({ ...base, artifactReads: [
+      { ref: 'scorecard:alpha', readAt: '2026-09-25T19:20:00.000Z' },
+    ] });
+    expect(stale.unreadArtifacts).toEqual(['scorecard:alpha']);
+    const read = buildGoalOwnerReportDraft({ ...base, artifactReads: [
+      { ref: 'scorecard:alpha', readAt: '2026-09-25T19:50:00.000Z' },
+    ] });
+    expect(read.unreadArtifacts).toEqual([]);
+    expect(read.fields.moved).toContain('artifact scorecard:alpha read 2026-09-25T19:50:00.000Z');
+  });
+
+  it('never turns a first snapshot or missing reads into false movement, cost, walls or kills', () => {
+    const draft = buildGoalOwnerReportDraft({ ...base, previousReportAt: null,
+      cost: { spentCents: null, budgetCents: 1000, source: null,
+        coverage: 'unverified', unmeasuredPricedSpend: true }, ownerWalls: null, killed: null });
+    expect(draft.fields.moved).toContain('no previous report watermark');
+    expect(draft.fields.cost).toContain('unknown; coverage=unverified');
+    expect(draft.fields.ownerWalled).toContain('unknown');
+    expect(draft.fields.killed).toContain('unknown');
+    expect(parseGoalOwnerReport(draft.text).complete).toBe(true);
+  });
+});
 
 describe('parseGoalOwnerReport', () => {
   it('parses and normalizes the four structured coord sections, including explicit none/unknown', () => {
