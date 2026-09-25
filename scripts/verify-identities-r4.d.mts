@@ -30,4 +30,20 @@ export function toolArgs(pid: string | number, args: readonly string[]): string[
  * @returns {string}
  */
 export function checkedCommand(command: string, args: readonly string[], options?: Record<string, any>): string;
+/**
+ * Find an identity through the catalog's paginated pointer controls.
+ * The injected page reader and pointer actions keep the live bridge in charge
+ * while allowing the same traversal to run in the maintained test suite.
+ */
+export function selectIdentityInCatalog(id: any, label: any, { readPage, click, settle, maxPages }: {
+    readPage: any;
+    click: any;
+    settle: any;
+    maxPages?: number | undefined;
+}): number;
+/** Require the rollback's own accepted response before inspecting activation. */
+export function requireRollbackResponse({ poll, readResponse }: {
+    poll: any;
+    readResponse: any;
+}): any;
 export function main(): Promise<void>;
