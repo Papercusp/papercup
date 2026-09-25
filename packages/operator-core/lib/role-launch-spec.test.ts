@@ -602,7 +602,7 @@ describe('buildRoleLaunchSpec', () => {
         '  - id: current-brief',
         '    purpose: operational',
         '    source: provider',
-        '    refresh: launch',
+        '    refresh: turn',
         '    inputKind: setting',
         '    ref: current-brief',
         '    producerRef: existing.brief', '',
@@ -648,9 +648,34 @@ describe('buildRoleLaunchSpec', () => {
         producerRef: 'existing.guidance',
       }));
       expect(launch.specificationArtifact.provenance).toContainEqual(expect.objectContaining({
-        path: 'contribution.current-brief', decision: 'provider:launch',
+        path: 'contribution.current-brief', decision: 'provider:turn',
         producerRef: 'existing.brief',
       }));
+      const fresh = await bindSelectedIdentityOutputArtifact({
+        identityId: id, repoDir: dir,
+        outputs: [
+          { contributionId: 'current-brief', value: { summary: 'Fresh brief.' } },
+          { contributionId: 'current-guidance', value: 'CURRENT GUIDANCE FROM PRODUCER' },
+        ],
+        scope: { workspace: 'workspace-a', harness: 'harness-a' },
+        observedAt: '2026-09-24T00:00:01.000Z',
+      });
+      const refreshed = await compileLaunchSpecificationArtifact({ ...input,
+        producerBindings: [{ identityId: id, artifact: fresh.artifact }],
+      });
+      expect(fresh.sourceRevision).toBe(bound.sourceRevision);
+      expect(refreshed.specificationRevision).not.toBe(launch.specificationRevision);
+      expect(refreshed.specificationArtifact.inputs).toContainEqual(
+        launch.specificationArtifact.inputs.find((entry) =>
+          entry.kind === 'blueprint-layer' && entry.ref === id),
+      );
+      expect(refreshed.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'setting', ref: 'current-brief', value: { summary: 'Fresh brief.' },
+        producerRef: 'existing.brief',
+      }));
+      for (const field of ['workItem', 'spine', 'fleet', 'assignment', 'launchSlot']) {
+        expect(refreshed.specificationArtifact.configuration).not.toHaveProperty(field);
+      }
       const omitted = await bindSelectedIdentityOutputArtifact({
         identityId: id, repoDir: dir,
         outputs: [
