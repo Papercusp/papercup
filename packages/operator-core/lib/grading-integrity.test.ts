@@ -645,6 +645,43 @@ describe('dispatchPendingGradingAudits', () => {
     });
   });
 
+  it('recovers the measured completed-turn refusal wording instead of deduping to the idle Claude judge', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-24234352612789401')]);
+    d.listTasks.mockResolvedValue([{
+      taskId: 'task-tool-less-judge',
+      state: 'running',
+      detail: { label: 'grading-audit:EI-24234352612789401' },
+      logPath: '/tmp/tool-less-judge.log',
+    } as unknown as TaskRow]);
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const result = await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp', targetIds: ['EI-24234352612789401'] },
+      {
+        ...d,
+        killTask,
+        readLogTail: () =>
+          "● I haven't graded or emitted anything for scorecard EI-24234352612789401.\n" +
+          '- No platform tools loaded. No mcp__papercusp__* tool appeared.\n' +
+          '✻ Cooked for 24s · done 7:57 AM\n❯',
+        sleep: async () => undefined,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+    expect(killTask).toHaveBeenCalledWith('task-tool-less-judge', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(d.launch).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'codex', account: 'auto' }),
+      auditorCtx,
+    );
+    expect(result.receipts[0]).toMatchObject({
+      state: 'launched',
+      terminalRecovery: { codes: ['tool_surface_unavailable'] },
+    });
+  });
+
   it('retires a ledger-live auditor with a delayed terminal log and launches the bounded Codex fallback', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-live-terminal-auditor')]);
