@@ -21,6 +21,7 @@ import {
   produceLogSnapshot,
   SnapshotAbortedError,
   SNAPSHOT_READ_CONCURRENCY,
+  type ProduceSnapshotResult,
   type SnapshotPayload,
 } from '../log-snapshot';
 import {
@@ -109,6 +110,17 @@ async function setRows(log: OwnLog, coversUpTo: number, chunkCount: number): Pro
   return rows;
 }
 
+/**
+ * D-025 — both paths build and append under the own log's append hold, and each reports
+ * how long it held other appends. That is wall-clock, so it is checked for presence and
+ * dropped before the byte-identity comparison.
+ */
+function heldResult(result: ProduceSnapshotResult): Omit<ProduceSnapshotResult, 'appendsHeldMs'> {
+  const { appendsHeldMs, ...rest } = result;
+  expect(appendsHeldMs).toBeGreaterThanOrEqual(0);
+  return rest;
+}
+
 const NOW = 50_000;
 const inlineOpts ={ now: NOW, schemaVersion: CURRENT_SCHEMA_VERSION, maxChunkBytes: 2_048 };
 const offloadOpts = {
@@ -141,7 +153,7 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
     const inline = await produceLogSnapshot(a, inlineOpts);
     const offloaded = await produceLogSnapshot(b, offloadOpts);
 
-    expect(offloaded).toEqual(inline);
+    expect(heldResult(offloaded)).toEqual(heldResult(inline));
     expect(inline.appended).toBe(true);
     expect(inline.chunkCount).toBeGreaterThan(1); // the small chunk cap forces a multi-chunk set
     expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
@@ -174,7 +186,7 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
     const inline = await produceLogSnapshot(a, { ...inlineOpts, governorReceiptFilter: filter });
     const offloaded = await produceLogSnapshot(b, { ...offloadOpts, governorReceiptFilter: filter });
 
-    expect(offloaded).toEqual(inline);
+    expect(heldResult(offloaded)).toEqual(heldResult(inline));
     expect(inline.droppedGovernorReceipts).toBe(1);
     expect(inline.rowCount).toBe(2);
     expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
@@ -244,7 +256,7 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
     const inline = await produceLogSnapshot(a, { ...inlineOpts, governorReceiptFilter: filter });
     const offloaded = await produceLogSnapshot(b, { ...offloadOpts, governorReceiptFilter: filter });
 
-    expect(offloaded).toEqual(inline);
+    expect(heldResult(offloaded)).toEqual(heldResult(inline));
     expect(inline).toMatchObject({ droppedGovernorReceipts: 1, unopenedGovernorEnvelopes: 1, rowCount: 3 });
     const keys = (await setRows(a, inline.coversUpTo, inline.chunkCount)).map((r) => r.hbKey).sort();
     expect(keys).toEqual(['papercusp/WI-EPOCH2', 'papercusp/WI-LIVE', 'papercusp/WI-NORMAL']);
@@ -300,7 +312,7 @@ describe('offloaded own compaction is byte-identical to the inline fold (real wo
     const inline = await produceLogSnapshot(a, { ...inlineOpts, priorSnapshotHint: hint });
     const offloaded = await produceLogSnapshot(b, { ...offloadOpts, priorSnapshotHint: hint });
 
-    expect(offloaded).toEqual(inline);
+    expect(heldResult(offloaded)).toEqual(heldResult(inline));
     expect(await rawRange(b, 0, b.length)).toEqual(await rawRange(a, 0, a.length));
   });
 
