@@ -48,7 +48,7 @@ import { assertGoalWriteAuthorityForCaller } from '../../goals/write-authority';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { buildAgentLaunchCommand, injectFleetArg, injectLaunchedByArg } from '../../agent-launch-core';
-import { drainFleetAutoMintEnabled, mintDrainFleetForGoal, teardownDrainFleetMint } from '../../goals/drain-fleet-mint';
+import { drainFleetAutoMintEnabled, mintDrainFleetForGoal, registerGoalDrainFleetLeader, teardownDrainFleetMint } from '../../goals/drain-fleet-mint';
 import {
   goalLaunchSettingsSchema,
   goalHolderPolicyProblem,
@@ -938,8 +938,8 @@ export default defineTool({
       goalId: id, ownerId, workspaceId, kickoff, portfolio: portfolioText, modeState: modeRes,
     }, ctx.metadata);
 
-    // ── 3.5 the drain lane's puller (P-001) ───────────────────────────────
-    // A lane needs a MEMBER, not just a spec. Spawned LAST on purpose: every
+    // ── 3.5 the drain lane's delegated leader and puller ────────────────
+    // A lane needs a separate LEADER before any MEMBER. Spawned LAST on purpose: every
     // earlier side effect is compensable, a process is not — so it starts only
     // once the goal is definitely keeping its agent. `--fleet` is what makes
     // bootstrap-su stamp the membership fact getClaimSpec's fleet-inheritance
@@ -947,23 +947,95 @@ export default defineTool({
     // the member pulls instead of parking). Fail-soft: a memberless fleet reads
     // as 'drain-fleet-dead' to the watchdog, which is the designed backstop —
     // never a reason to unwind a successfully-started goal.
+    let drainLeader: { ownerId: string; pid: number | null; coupled: boolean } | null = null;
     let drainMember: { pid: number | null; terminal: string } | null = null;
     if (drainFleet) {
       try {
+        const leaderLaunch = await resolveGoalLaunchForGoal({
+          workspaceId,
+          goalId: id,
+          goalRole: 'drain-fleet-leader',
+          fleetSlug: drainFleet.slug,
+          launcherOwnerId: ownerId,
+          requested: {},
+          sql: ctx.tx as never,
+        });
+        if (leaderLaunch.refusal) throw new Error(`leader launch policy refused: ${leaderLaunch.refusal.message}`);
+        const leaderOwnerId = `su-${randomUUID()}`;
+        const leaderMode = await setMode({
+          workspaceId,
+          ownerId: leaderOwnerId,
+          modeId: 'auto',
+          enabled: true,
+          reason: `delegated leader of goal ${id} drain fleet ${drainFleet.slug}`,
+          setBy: callerOwnerId ?? 'operator-ui',
+        });
+        if (!leaderMode.ok) throw new Error(`leader AUTO mode could not be stamped: ${leaderMode.error ?? 'unknown'}`);
+        let leaderCmd = buildAgentLaunchCommand({
+          mode: 'fresh',
+          agent: leaderLaunch.effective.agent ?? args.agent ?? 'claude',
+          harness: installSlug,
+          ownerId: leaderOwnerId,
+          account: leaderLaunch.effective.account ?? args.account ?? null,
+          model: leaderLaunch.effective.model ?? args.model ?? null,
+          effort: leaderLaunch.effective.effort ?? args.effort ?? null,
+          carry: leaderLaunch.effective.carry ?? args.carry ?? null,
+          contextSize: leaderLaunch.effective.contextSize ?? args.contextSize ?? null,
+          compactionLimit: leaderLaunch.effective.compactionLimit ?? args.compactionLimit ?? null,
+          headless: true,
+        });
+        leaderCmd = injectFleetArg(leaderCmd, drainFleet.slug).command;
+        leaderCmd = injectLaunchedByArg(leaderCmd, ownerId).command;
+        const leader = await spawnHeadless({
+          envelope: {
+            ...base,
+            env: {
+              ...base.env,
+              PAPERCUSP_KICKOFF_PROMPT:
+                `You are the delegated leader of drain fleet ${drainFleet.slug} for goal ${id}. ` +
+                `The GOAL holder ${ownerId} owns portfolio decisions. Verify fleet:status names you ` +
+                `as leader before steering this fleet; supervise its workers and keep their ` +
+                `goal-scoped lane progressing. If a concurrent leader won, stand down.`,
+            },
+            greetingCmd: leaderCmd,
+            cwd: base.cwd,
+          },
+          label: `goal-drain leader · ${args.title.slice(0, 34)}`,
+          logDir: join(papercuspPathForWorkspace(workspaceId), 'fleet-logs'),
+          coordOwnerId: leaderOwnerId,
+        });
+        if (leader.status !== 'ok') {
+          await setMode({ workspaceId, ownerId: leaderOwnerId, modeId: 'auto', enabled: false,
+            reason: 'delegated drain leader failed to open', setBy: callerOwnerId ?? 'operator-ui' }).catch(() => {});
+          throw new Error(`leader failed to launch: ${'error' in leader ? leader.error : 'no detail'}`);
+        }
+        const registered = await registerGoalDrainFleetLeader({
+          workspaceId, goalId: id, fleetSlug: drainFleet.slug, holderOwnerId: ownerId,
+          leaderOwnerId, declaredBy: callerOwnerId ?? 'operator-ui', expectedLeaderOwnerId: null,
+        });
+        if (!registered.registered) throw new Error(`opened leader could not be registered: ${registered.warning}`);
+        drainLeader = { ownerId: leaderOwnerId, pid: leader.pid ?? null, coupled: registered.coupled };
+        if (registered.warning) drainWarnings.push(`drain-fleet leader partial setup: ${registered.warning}`);
+
+        const memberLaunch = await resolveGoalLaunchForGoal({
+          workspaceId, goalId: id, goalRole: 'drain-fleet-member', fleetSlug: drainFleet.slug,
+          launcherOwnerId: ownerId, requested: {}, sql: ctx.tx as never,
+        });
+        if (memberLaunch.refusal) throw new Error(`member launch policy refused: ${memberLaunch.refusal.message}`);
         let memberCmd = buildAgentLaunchCommand({
           mode: 'fresh',
-          agent: goalLaunch.effective.agent ?? args.agent ?? 'claude',
+          agent: memberLaunch.effective.agent ?? args.agent ?? 'claude',
           harness: installSlug,
-          account: goalLaunch.effective.account ?? args.account ?? null,
-          model: goalLaunch.effective.model ?? args.model ?? null,
-          effort: goalLaunch.effective.effort ?? null,
-          carry: goalLaunch.effective.carry ?? null,
-          contextSize: goalLaunch.effective.contextSize ?? null,
-          compactionLimit: goalLaunch.effective.compactionLimit ?? null,
+          account: memberLaunch.effective.account ?? args.account ?? null,
+          model: memberLaunch.effective.model ?? args.model ?? null,
+          effort: memberLaunch.effective.effort ?? args.effort ?? null,
+          carry: memberLaunch.effective.carry ?? args.carry ?? null,
+          contextSize: memberLaunch.effective.contextSize ?? args.contextSize ?? null,
+          compactionLimit: memberLaunch.effective.compactionLimit ?? args.compactionLimit ?? null,
           headless: true,
         });
         memberCmd = injectFleetArg(memberCmd, drainFleet.slug).command;
-        memberCmd = injectLaunchedByArg(memberCmd, callerOwnerId).command;
+        memberCmd = injectLaunchedByArg(memberCmd, ownerId).command;
         // Deliberately `base.env`, never the goal agent's `env`: the kickoff
         // brief names ONE owner of the goal, and a drain bee that also received
         // it would believe itself that owner.
@@ -1015,6 +1087,9 @@ export default defineTool({
         // row as metadata.drainFleet — the watchdog's surface). Null means the
         // mint was skipped (flag off) or failed; see `warning`.
         drain_fleet: drainFleet?.slug ?? null,
+        drain_leader_owner_id: drainLeader?.ownerId ?? null,
+        drain_leader_pid: drainLeader?.pid ?? null,
+        drain_leader_coupled: drainLeader?.coupled ?? false,
         drain_member_pid: drainMember?.pid ?? null,
         // P-004: present ONLY when the caller overrode the activation gate —
         // the audit trail that this goal started with unsatisfied prerequisites.

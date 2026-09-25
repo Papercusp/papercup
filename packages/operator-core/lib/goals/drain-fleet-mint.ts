@@ -33,7 +33,9 @@
 
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 
-import { createFleetIfAbsent, deleteFleet } from '../agent-fleets-store';
+import { createFleetIfAbsent, deleteFleet, setFleetLeader } from '../agent-fleets-store';
+import { setPresenceFleet } from '../agent-tools/coordination/presence';
+import { declareCoupling } from '../coord/couplings';
 import { DEFAULT_CLAIM_SPEC } from '../scheduler/claim-spec';
 import { clearClaimSpec, fleetSpecBeeKey, setClaimSpec } from '../scheduler/claim-spec-store';
 
@@ -98,8 +100,8 @@ export interface DrainFleetMintArgs {
   workspaceId: string;
   goalId: string;
   goalTitle: string;
-  /** The goal agent's pre-pinned identity — recorded as the fleet's owner AND leader,
-   *  so the agent that owns the goal also steers its lane from its first orient. */
+  /** The goal agent's pre-pinned identity — the portfolio owner of this fleet.
+   *  Its delegated leader is installed only after a separate process opens. */
   agentOwnerId: string;
   /** The SQL tag the goal row was just written with — the `metadata.drainFleet`
    *  stamp rides the same handle so the declaration lands beside the row it
@@ -128,7 +130,9 @@ export async function mintDrainFleetForGoal(args: DrainFleetMintArgs): Promise<D
     title: `goal drain · ${args.goalTitle.slice(0, 48)}`,
     description: `Standing drain fleet for goal ${args.goalId} — auto-minted by goals:start (P-001); lane is goal-scoped per D-005.`,
     owner: args.agentOwnerId,
-    leaderOwnerId: args.agentOwnerId,
+    // A GOAL holder must never be the execution fleet's leader. The row is
+    // truthfully leaderless until the delegated agent has actually opened.
+    leaderOwnerId: null,
   });
   try {
     const applied = await setClaimSpec({
@@ -154,6 +158,60 @@ export async function mintDrainFleetForGoal(args: DrainFleetMintArgs): Promise<D
     if (created) await teardownDrainFleetMint({ workspaceId: args.workspaceId, fleetSlug }).catch(() => {});
     throw e;
   }
+}
+
+/**
+ * Install an OPENED delegated leader with a compare-and-set. A concurrent
+ * takeover wins over this recovery; the goal holder is never impersonated as
+ * the caller. A missing coupling is returned as a partial result so the next
+ * watchdog sweep can repair it without relaunching either agent.
+ */
+export async function registerGoalDrainFleetLeader(args: {
+  workspaceId: string;
+  goalId: string;
+  fleetSlug: string;
+  holderOwnerId: string;
+  leaderOwnerId: string;
+  declaredBy: string;
+  expectedLeaderOwnerId: string | null;
+}): Promise<{ registered: boolean; coupled: boolean; warning: string | null }> {
+  const record = await setFleetLeader(
+    args.workspaceId, args.fleetSlug, args.leaderOwnerId, undefined, args.expectedLeaderOwnerId,
+  );
+  if (!record) return { registered: false, coupled: false, warning: 'fleet leadership changed during launch' };
+  let warning: string | null = null;
+  try {
+    await setPresenceFleet(args.workspaceId, args.leaderOwnerId, args.fleetSlug, 'leader');
+  } catch (error) {
+    warning = `leader presence could not be labelled: ${String(error)}`;
+  }
+  try {
+    const edge = await ensureGoalDrainLeaderCoupling(args);
+    if (edge) return { registered: true, coupled: true, warning };
+    warning = [warning, 'coupling store returned no edge'].filter(Boolean).join('; ');
+  } catch (error) {
+    warning = [warning, `coupling failed: ${String(error)}`].filter(Boolean).join('; ');
+  }
+  return { registered: true, coupled: false, warning };
+}
+
+/** Repair an omitted/failed holder↔leader edge without replacing a live leader. */
+export async function ensureGoalDrainLeaderCoupling(args: {
+  workspaceId: string;
+  goalId: string;
+  fleetSlug: string;
+  holderOwnerId: string;
+  leaderOwnerId: string;
+  declaredBy: string;
+}): Promise<boolean> {
+  const edge = await declareCoupling({
+    workspaceId: args.workspaceId,
+    agentA: args.holderOwnerId,
+    agentB: args.leaderOwnerId,
+    declaredBy: args.declaredBy,
+    reason: `GOAL ${args.goalId} delegated drain fleet ${args.fleetSlug} leadership`,
+  });
+  return edge?.state === 'coupled';
 }
 
 /**

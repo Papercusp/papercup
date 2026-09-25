@@ -65,6 +65,7 @@ import { goalPlanPlacementChangedKey } from '../agent-obligations';
 import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { openEscalation } from '../agent-tools/coordination/escalations';
+import { listCouplingsFor, peerOf } from '../coord/couplings';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 // P-001: holder rows, the alive predicate and the oracle fold all come from the
@@ -151,10 +152,51 @@ export interface GoalDrainRespawnLedgerLike {
 }
 
 /**
- * The drain-fleet leg's own liveness verdict, resolved per declared fleet.
+ * The drain-fleet WORKER leg's liveness verdict, resolved per declared fleet.
  * `unknown` exists so a degraded read suppresses rather than false-alarms.
  */
 export type DrainFleetLiveness = 'alive' | 'dead' | 'not-found' | 'unknown';
+
+/**
+ * P-014: a live fleet LEADER is supervision, not proof that a drain WORKER is
+ * pulling goal work. Exclude the registry leader from the worker population.
+ * One positively-live worker proves worker coverage; if none is live, an
+ * unresolved worker keeps the verdict unknown rather than inventing death.
+ */
+export function classifyDrainWorkerLiveness(
+  leaderOwnerId: string | null,
+  memberOwnerIds: readonly string[],
+  verdicts: ReadonlyMap<string, LivenessVerdict>,
+): DrainFleetLiveness {
+  const workers = [...new Set(memberOwnerIds)].filter((ownerId) => ownerId !== leaderOwnerId);
+  if (workers.length === 0) return 'dead';
+  let unresolved = false;
+  for (const ownerId of workers) {
+    const verdict = verdicts.get(ownerId);
+    if (!verdict) unresolved = true;
+    else if (holderCountsAsAlive(verdict)) return 'alive';
+  }
+  return unresolved ? 'unknown' : 'dead';
+}
+
+/** A drain fleet is ready only with a distinct live leader, a recorded holder
+ * coupling, and a positively live worker. Unknown leader evidence suppresses
+ * recovery instead of treating a degraded read as death. */
+export function classifyDelegatedDrainFleetLiveness(
+  holderOwnerId: string | null,
+  leaderOwnerId: string | null,
+  coupled: boolean,
+  memberOwnerIds: readonly string[],
+  verdicts: ReadonlyMap<string, LivenessVerdict>,
+): DrainFleetLiveness {
+  if (!leaderOwnerId || leaderOwnerId === holderOwnerId) return 'dead';
+  const leader = verdicts.get(leaderOwnerId);
+  if (!leader) return 'unknown';
+  if (!holderCountsAsAlive(leader) || !coupled) return 'dead';
+  return classifyDrainWorkerLiveness(
+    leaderOwnerId, memberOwnerIds.filter((id) => id !== holderOwnerId), verdicts,
+  );
+}
 
 export type GoalDrainReason =
   | 'no-drain-fleet-declared'
@@ -672,9 +714,10 @@ export type GoalDrainRelaunchRateDecision =
 
 export interface GoalDrainRelaunchResult {
   fleetSlug: string;
-  /** The launched member's pre-pinned owner id (null only if launch-su withheld it). */
+  /** The newly launched worker, if any. A leader/coupling repair can preserve all workers. */
   ownerId: string | null;
   warnings: string[];
+  actions?: { reminted: boolean; leaderLaunched: boolean; couplingRepaired: boolean; memberLaunched: boolean };
 }
 
 export interface GoalDrainFleetSweepDeps {
@@ -682,7 +725,7 @@ export interface GoalDrainFleetSweepDeps {
   resolveLiveness: (ownerIds: string[]) => Promise<Map<string, LivenessVerdict>>;
   /** Resolve every declared drain fleet (by fleetKey) to a liveness verdict. */
   resolveFleetLiveness: (
-    fleets: { workspaceId: string; fleetSlug: string }[],
+    fleets: { workspaceId: string; fleetSlug: string; holderOwnerId?: string }[],
   ) => Promise<Map<string, DrainFleetLiveness>>;
   /** D-005: resolve each (goal, declared fleet) pair to a claim-spec scope
    *  verdict, keyed by goalId. Only consulted for ALIVE fleets. */
@@ -928,13 +971,11 @@ export async function clearGoalDrainFleetLedger(
 }
 
 /**
- * A declared fleet is ALIVE when at least one of its current members (the
- * coord_presence fleet_slug projection) resolves alive through the shared
- * oracle. No fleets-table row ⇒ not-found. Members present but every verdict
- * dead ⇒ dead. ANY member the oracle could not resolve ⇒ unknown (suppress) —
- * the same degraded-read rule as everywhere else in this pair of files.
+ * A declared fleet has worker coverage only when a current NON-LEADER member
+ * resolves alive. No fleets-table row ⇒ not-found. A leader-only fleet is dead
+ * as a drain lane, even if its leader is healthy and supervising nothing.
  */
-function makeResolveFleetLiveness(
+export function makeResolveFleetLiveness(
   sql: Sql,
   resolveLiveness: (ownerIds: string[]) => Promise<Map<string, LivenessVerdict>>,
 ): GoalDrainFleetSweepDeps['resolveFleetLiveness'] {
@@ -942,11 +983,14 @@ function makeResolveFleetLiveness(
     const out = new Map<string, DrainFleetLiveness>();
     if (fleets.length === 0) return out;
     const slugs = [...new Set(fleets.map((f) => f.fleetSlug))];
-    const fleetRows = await sql<{ workspace_id: string; fleet_slug: string }[]>`
-      SELECT workspace_id, fleet_slug
-        FROM harness_shared.agent_fleets
-       WHERE fleet_slug = ANY(${slugs}::text[])`;
-    const existing = new Set(fleetRows.map((r) => fleetKey(r.workspace_id, r.fleet_slug)));
+    const fleetRows = await sql<{
+      workspace_id: string; fleet_slug: string; owner: string | null;
+      leader_owner_id: string | null;
+    }[]>`
+      SELECT f.workspace_id, f.fleet_slug, f.owner, f.leader_owner_id
+        FROM harness_shared.agent_fleets f
+       WHERE f.fleet_slug = ANY(${slugs}::text[])`;
+    const existing = new Map(fleetRows.map((r) => [fleetKey(r.workspace_id, r.fleet_slug), r]));
     const memberRows = await sql<{ workspace_id: string; fleet_slug: string; owner_id: string }[]>`
       SELECT workspace_id, fleet_slug, owner_id
         FROM harness_shared.coord_presence
@@ -958,33 +1002,43 @@ function makeResolveFleetLiveness(
       list.push(m.owner_id);
       membersByFleet.set(k, list);
     }
-    const allMembers = [...new Set(memberRows.map((m) => m.owner_id))];
+    const allMembers = [...new Set([
+      ...memberRows.map((m) => m.owner_id),
+      ...fleetRows.map((r) => r.leader_owner_id).filter((id): id is string => !!id),
+    ])];
     const verdicts = allMembers.length > 0 ? await resolveLiveness(allMembers) : new Map<string, LivenessVerdict>();
+    const holderIds = [...new Set(fleets.map((f) => f.holderOwnerId).filter((id): id is string => !!id))];
+    const couplingRows = holderIds.length > 0
+      ? await sql<{ workspace_id: string; agent_a: string; agent_b: string }[]>`
+          SELECT workspace_id, agent_a, agent_b FROM harness_shared.agent_couplings
+           WHERE state = 'coupled'
+             AND (expires_at IS NULL OR expires_at > clock_timestamp())
+             AND (agent_a = ANY(${holderIds}::text[]) OR agent_b = ANY(${holderIds}::text[]))`
+      : [];
+    const couplingKeys = new Set(couplingRows.map((r) => `${r.workspace_id}\0${r.agent_a}\0${r.agent_b}`));
 
     for (const f of fleets) {
       const k = fleetKey(f.workspaceId, f.fleetSlug);
-      if (!existing.has(k)) {
+      const fleet = existing.get(k);
+      if (!fleet) {
         out.set(k, 'not-found');
         continue;
       }
       const members = membersByFleet.get(k) ?? [];
-      if (members.length === 0) {
-        out.set(k, 'dead');
+      // This resolver also serves plan-fleet coverage. Only a declared drain
+      // goal supplies a holder and requires GOAL delegation/coupling.
+      if (!f.holderOwnerId) {
+        out.set(k, classifyDrainWorkerLiveness(fleet.leader_owner_id, members, verdicts));
         continue;
       }
-      let verdict: DrainFleetLiveness = 'dead';
-      for (const ownerId of members) {
-        const v = verdicts.get(ownerId);
-        if (!v) {
-          verdict = 'unknown'; // degraded read — never inferred as dead
-          break;
-        }
-        if (holderCountsAsAlive(v)) {
-          verdict = 'alive';
-          break;
-        }
-      }
-      out.set(k, verdict);
+      const holderOwnerId = f.holderOwnerId;
+      const leaderOwnerId = fleet.leader_owner_id;
+      const pair = holderOwnerId && leaderOwnerId
+        ? [holderOwnerId, leaderOwnerId].sort() : null;
+      const coupled = pair ? couplingKeys.has(`${f.workspaceId}\0${pair[0]}\0${pair[1]}`) : false;
+      out.set(k, classifyDelegatedDrainFleetLiveness(
+        holderOwnerId, leaderOwnerId, coupled, members, verdicts,
+      ));
     }
     return out;
   };
@@ -1204,7 +1258,7 @@ async function defaultRelaunchFlagEnabled(): Promise<boolean> {
  * is what makes bootstrap-su stamp membership and auto-kick the member so it
  * pulls instead of parking (see goals:start §3.5).
  */
-async function defaultRelaunchDrainFleet(
+export async function defaultRelaunchDrainFleet(
   sql: Sql,
   alert: GoalDrainAlert,
   goal: GoalDrainRowLike,
@@ -1216,12 +1270,18 @@ async function defaultRelaunchDrainFleet(
   const holderOwnerId = alert.liveHolders[0];
   if (!holderOwnerId) throw new Error(`goal ${goal.goalId} has no live holder to own the fleet`);
 
-  const [{ mintDrainFleetForGoal }, { resolveGoalLaunchForGoal }, { launchAgent }, { composeLaunchModelSpec }] =
+  const [
+    { mintDrainFleetForGoal, registerGoalDrainFleetLeader, ensureGoalDrainLeaderCoupling },
+    { resolveGoalLaunchForGoal }, { launchAgent }, { composeLaunchModelSpec },
+    { getFleet }, { fleetSpecBeeKey, getClaimSpec },
+  ] =
     await Promise.all([
       import('../goals/drain-fleet-mint'),
       import('../goal-launch-settings'),
       import('../launch-agent'),
       import('../agent-config-constants'),
+      import('../agent-fleets-store'),
+      import('../scheduler/claim-spec-store'),
     ]);
 
   // ROWS: only a MISSING fleet is re-minted. An existing-but-dead fleet keeps
@@ -1230,8 +1290,9 @@ async function defaultRelaunchDrainFleet(
   // was at spec revision 13, a multi-plan carve-out; re-minting would have
   // silently reset it to the bare goal leaf). Scope drift on an alive fleet is
   // the D-005 leg's report, not this leg's repair.
+  const reminted = alert.reason === 'drain-fleet-not-found' || !goal.drainFleet;
   const fleetSlug =
-    alert.reason === 'drain-fleet-not-found' || !goal.drainFleet
+    reminted
       ? (
           await mintDrainFleetForGoal({
             workspaceId: goal.workspaceId,
@@ -1242,6 +1303,107 @@ async function defaultRelaunchDrainFleet(
           })
         ).fleetSlug
       : goal.drainFleet;
+  if (!fleetSlug) throw new Error(`goal ${goal.goalId} has no drain fleet after mint`);
+
+  const claimSpec = await getClaimSpec({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId: goal.workspaceId });
+  if (!claimSpecIsGoalScoped(claimSpec, goal.goalId)) {
+    throw new Error(`drain fleet ${fleetSlug} has no positive goal claim-spec leaf for ${goal.goalId}`);
+  }
+
+  const warnings: string[] = [];
+  const fleet = await getFleet(goal.workspaceId, fleetSlug);
+  if (!fleet) throw new Error(`drain fleet ${fleetSlug} disappeared after mint`);
+  let leaderOwnerId = fleet.leaderOwnerId;
+  let leaderLive = false;
+  let leaderLaunched = false;
+  let couplingRepaired = false;
+  if (leaderOwnerId && leaderOwnerId !== holderOwnerId) {
+    const leaderVerdict = (await resolveHolderLiveness([leaderOwnerId])).get(leaderOwnerId);
+    if (!leaderVerdict) throw new Error(`leader ${leaderOwnerId} liveness is unresolved; suppressing replacement`);
+    leaderLive = holderCountsAsAlive(leaderVerdict);
+  }
+  if (!leaderLive) {
+    const leaderPolicy = await resolveGoalLaunchForGoal({
+      workspaceId: goal.workspaceId,
+      goalId: goal.goalId,
+      goalRole: 'drain-fleet-leader',
+      fleetSlug,
+      requested: {},
+      launcherOwnerId: WATCHDOG_IDENTITY.ownerId,
+      sql,
+    });
+    if (leaderPolicy.refusal) throw new Error(`launch policy refused a drain leader: ${leaderPolicy.refusal.message}`);
+    const opened = await launchAgent({
+      slug: installSlug,
+      agent: leaderPolicy.effective.agent,
+      model: composeLaunchModelSpec(leaderPolicy.effective.model, leaderPolicy.effective.effort),
+      account: leaderPolicy.effective.account,
+      contextSize: leaderPolicy.effective.contextSize,
+      carry: leaderPolicy.effective.carry,
+      compactionLimit: leaderPolicy.effective.compactionLimit,
+      headless: true,
+      fleet: fleetSlug,
+      mode: 'auto',
+      label: `goal-drain leader · ${goal.title.slice(0, 34)}`,
+      kickoffPrompt:
+        `You are the delegated leader of drain fleet ${fleetSlug} for goal ${goal.goalId}. ` +
+        `The recorded GOAL holder is ${holderOwnerId}. Verify fleet:status names you as ` +
+        `leader before steering the fleet; if a concurrent leader won, stand down. ` +
+        `Preserve verified workers and supervise the goal-scoped work lane.`,
+    });
+    if (!opened.ok || !opened.ownerId || opened.warning) {
+      throw new Error(`drain leader did not open cleanly: ${opened.error ?? opened.warning ?? 'owner id missing'}`);
+    }
+    const installed = await registerGoalDrainFleetLeader({
+      workspaceId: goal.workspaceId, goalId: goal.goalId, fleetSlug,
+      holderOwnerId, leaderOwnerId: opened.ownerId,
+      declaredBy: WATCHDOG_IDENTITY.ownerId,
+      expectedLeaderOwnerId: leaderOwnerId,
+    });
+    if (!installed.registered) throw new Error(`leader opened but registry CAS lost: ${installed.warning}`);
+    leaderOwnerId = opened.ownerId;
+    leaderLaunched = true;
+    couplingRepaired = installed.coupled;
+    if (!installed.coupled) {
+      couplingRepaired = await ensureGoalDrainLeaderCoupling({
+        workspaceId: goal.workspaceId, goalId: goal.goalId, fleetSlug,
+        holderOwnerId, leaderOwnerId, declaredBy: WATCHDOG_IDENTITY.ownerId,
+      });
+      if (!couplingRepaired) throw new Error(`replacement leader ${leaderOwnerId} opened without holder coupling`);
+    }
+    warnings.push(...leaderPolicy.degradedReasons.map((reason) => `leader policy degraded: ${reason}`));
+    if (installed.warning) warnings.push(`leader registration partial: ${installed.warning}`);
+  } else if (leaderOwnerId) {
+    const existingEdges = await listCouplingsFor(holderOwnerId, goal.workspaceId);
+    const alreadyCoupled = existingEdges.some((edge) =>
+      edge.state === 'coupled' && peerOf(edge, holderOwnerId) === leaderOwnerId);
+    if (!alreadyCoupled) {
+      couplingRepaired = await ensureGoalDrainLeaderCoupling({
+        workspaceId: goal.workspaceId, goalId: goal.goalId, fleetSlug,
+        holderOwnerId, leaderOwnerId, declaredBy: WATCHDOG_IDENTITY.ownerId,
+      });
+      if (!couplingRepaired) throw new Error(`coupling repair returned no edge for ${holderOwnerId} and ${leaderOwnerId}`);
+    }
+  }
+
+  // A healthy worker survives a leader or coupling repair. An unresolved
+  // worker suppresses duplication until the liveness oracle can decide.
+  const workerRows = await sql<{ owner_id: string }[]>`
+    SELECT owner_id FROM harness_shared.coord_presence
+     WHERE workspace_id = ${goal.workspaceId} AND fleet_slug = ${fleetSlug}
+       AND owner_id <> ${holderOwnerId} AND owner_id <> ${leaderOwnerId}`;
+  const workerIds = [...new Set(workerRows.map((r) => r.owner_id))];
+  if (workerIds.length > 0) {
+    const workerVerdicts = await resolveHolderLiveness(workerIds);
+    if (workerIds.some((id) => {
+      const verdict = workerVerdicts.get(id);
+      return verdict && holderCountsAsAlive(verdict);
+    })) return { fleetSlug, ownerId: null, warnings,
+      actions: { reminted, leaderLaunched, couplingRepaired, memberLaunched: false } };
+    if (workerIds.some((id) => !workerVerdicts.has(id))) {
+      throw new Error(`worker liveness unresolved for ${fleetSlug}; suppressing duplicate launch`);
+    }
+  }
 
   const resolved = await resolveGoalLaunchForGoal({
     workspaceId: goal.workspaceId,
@@ -1266,15 +1428,19 @@ async function defaultRelaunchDrainFleet(
     fleet: fleetSlug,
     label: `goal-drain · ${goal.title.slice(0, 40)}`,
   });
-  if (!launched.ok) {
-    throw new Error(`launch-su refused the drain member for ${goal.goalId}: ${launched.error ?? 'no error detail'}`);
+  if (!launched.ok || !launched.ownerId || launched.warning) {
+    throw new Error(
+      `launch-su did not confirm the drain worker for ${goal.goalId}: ` +
+      `${launched.error ?? launched.warning ?? 'owner id missing'}`,
+    );
   }
   return {
     fleetSlug,
-    ownerId: launched.ownerId ?? null,
+    ownerId: launched.ownerId,
+    actions: { reminted, leaderLaunched, couplingRepaired, memberLaunched: true },
     warnings: [
+      ...warnings,
       ...resolved.degradedReasons.map((reason) => `launch policy degraded: ${reason}`),
-      ...(launched.warning ? [`launch-su warning: ${launched.warning}`] : []),
     ],
   };
 }
@@ -1287,13 +1453,20 @@ async function defaultNotifyRelaunch(
   const { sendMessage } = await import('../agent-tools/coordination/messages');
   const summary =
     `Drain fleet '${result.fleetSlug}' for goal '${goal.goalId}' was RE-ESTABLISHED by the watchdog` +
-    (result.ownerId ? ` (member ${result.ownerId})` : '');
+    (result.ownerId ? ` (new worker ${result.ownerId})` : ' (existing workers preserved)');
   const body =
     `Your standing goal "${goal.title}" (${goal.goalId}) declared drain fleet '${result.fleetSlug}', which ` +
     `read '${alert.reason}' for longer than ${GOAL_DRAIN_FLEET_DEAD_GRACE_MS / 60_000} min. Per the GOAL ` +
-    `contract (one standing drain fleet per goal, always maintained) the goal-drain-fleet watchdog re-minted ` +
-    `the goal-scoped lane and launched one headless member into it` +
-    (result.ownerId ? ` — owner id ${result.ownerId}` : '') +
+    `contract (one standing drain fleet per goal, always maintained) the goal-drain-fleet watchdog ` +
+    `repaired the delegated drain lane: ` +
+    (result.actions
+      ? [
+          result.actions.reminted ? 're-minted the goal-scoped fleet' : 'preserved the fleet row and goal-scoped claim spec',
+          result.actions.leaderLaunched ? 'opened a replacement leader' : 'preserved the live leader',
+          result.actions.couplingRepaired ? 'repaired holder/leader coupling' : 'preserved holder/leader coupling',
+          result.actions.memberLaunched ? `opened worker ${result.ownerId ?? 'unknown'}` : 'preserved live workers',
+        ].join('; ')
+      : result.ownerId ? `opened worker ${result.ownerId}` : 'preserved existing workers') +
     `. Nothing is expected of you beyond continuing to file work under the goal; check fleet:status ` +
     `{ fleet: '${result.fleetSlug}' } if you want to see it pull.\n\n` +
     `Posture note (WI-2140699): a refusal from ONE launch door (e.g. a cross-hive fleet:launch-on-plan ` +
@@ -1468,7 +1641,11 @@ export async function runGoalDrainFleetSweepOnce(
   const verdicts = await deps.resolveLiveness([...new Set(relevant.map((h) => h.ownerId))]);
 
   const declaredGoals = goals.filter((g): g is GoalDrainRowLike & { drainFleet: string } => g.drainFleet !== null);
-  const declared = declaredGoals.map((g) => ({ workspaceId: g.workspaceId, fleetSlug: g.drainFleet }));
+  const declared = declaredGoals.map((g) => ({
+    workspaceId: g.workspaceId, fleetSlug: g.drainFleet,
+    holderOwnerId: relevant.find((h) => h.goalId === g.goalId && h.workspaceId === g.workspaceId &&
+      !!verdicts.get(h.ownerId) && holderCountsAsAlive(verdicts.get(h.ownerId)!))?.ownerId,
+  }));
   const fleetLiveness = await deps.resolveFleetLiveness(declared);
 
   // D-005: scope is judged only where it can change the verdict — a fleet that
