@@ -335,8 +335,8 @@ describe('own-log compaction is observable after the fact (P-005)', () => {
     const outcome = await handle.compactOwnLogNow();
 
     expect(outcome).toMatchObject({ ok: true, appended: true, droppedGovernorReceipts: 1, liveGovernorReceiptKeys: 1 });
-    const second = await waitFor(() => {
-      const s = findLatestCompleteSnapshot(handle.ownLog);
+    const second = await waitFor(async () => {
+      const s = await findLatestCompleteSnapshot(handle.ownLog);
       return s && s.seedIndex > first.seedIndex ? s : null;
     });
     const rows = [] as SnapshotPayload['rows'];
