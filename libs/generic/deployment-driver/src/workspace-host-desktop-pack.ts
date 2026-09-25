@@ -561,6 +561,9 @@ WorkingDirectory=$DESKTOP_ROOT
 Environment=HOME=$DESKTOP_ROOT
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Environment=LANG=C.UTF-8
+# XFCE Terminal uses SHELL, then the passwd shell. Keep the account nologin for
+# authentication while giving terminal windows an interactive shell.
+Environment=SHELL=/bin/bash
 # Reapply the fixed root-owned rules before ANY worker, including after a reboot.
 ExecStartPre=+/usr/sbin/nft -f /etc/papercusp/desktop-egress.nft
 ExecStart=$DESKTOP_LIB/node $DESKTOP_LIB/session.cjs --stdio

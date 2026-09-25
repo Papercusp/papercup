@@ -258,6 +258,13 @@ describe('P-012 — no credential bleed into sandboxes', () => {
     expect(script).toContain('--no-create-home');
   });
 
+  it('opens XFCE Terminal with a shell while keeping desktop login disabled', () => {
+    const script = render();
+    expect(script).toContain('--shell /usr/sbin/nologin "$DESKTOP_USER"');
+    expect(script).toContain('Environment=SHELL=/bin/bash');
+    expect(script).toContain('Environment=HOME=$DESKTOP_ROOT');
+  });
+
   it('asserts the NEGATIVE: not in the workspace, service or agent group, and cannot read EITHER protected home (D-248)', () => {
     const script = render();
     // Group membership...
