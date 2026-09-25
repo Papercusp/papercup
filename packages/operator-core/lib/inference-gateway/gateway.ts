@@ -23,7 +23,8 @@ import { randomUUID } from 'node:crypto';
 import { normalizeModelId } from '@papercusp/model-pricing';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ActiveOperationModelPolicyRead } from '../blueprint/operation-worker-binding';
+import type { ActiveOperationAttestationContext, ActiveOperationModelPolicyRead } from '../blueprint/operation-worker-binding';
+import type { DirectOperationModelAttestation } from '../blueprint/operation-service';
 import { PassThrough, Readable } from 'node:stream';
 import { describeAdmissionCeiling } from './admission-ceiling';
 import { describeGatewayLiveAdmissionState } from './admission-state-model';
@@ -830,16 +831,25 @@ function acceptedClaudeModelAllows(policy: AcceptedClaudeModelPolicy, requested:
   const requestedEffort = MODEL_EFFORT_SUFFIX.exec(requested)?.[1]?.toLowerCase();
   if (policy.effort && requestedEffort && policy.effort.toLowerCase() !== requestedEffort) return false;
   return policy.models.some((entry) => {
-    if (provider(entry) !== 'anthropic' || normalizeModelId(entry) !== normalizeModelId(requested)) return false;
+    const upstream = acceptedClaudeUpstreamModel(entry);
+    if (!upstream || normalizeModelId(upstream.model) !== normalizeModelId(requested)) return false;
     const listedEffort = MODEL_EFFORT_SUFFIX.exec(entry)?.[1]?.toLowerCase();
     return (!listedEffort || !requestedEffort || listedEffort === requestedEffort) &&
       (!policy.effort || !listedEffort || listedEffort === policy.effort.toLowerCase());
   });
 }
 
+function forwardedClaudeEffort(bodyBuf: Buffer): string | null {
+  try {
+    const parsed = JSON.parse(bodyBuf.toString('utf8')) as { output_config?: { effort?: unknown } };
+    return typeof parsed.output_config?.effort === 'string' && parsed.output_config.effort.trim()
+      ? parsed.output_config.effort.trim().toLowerCase() : null;
+  } catch { return null; }
+}
+
 /** Convert only an accepted Anthropic policy entry to an upstream API id.
  * A provider prefix and CLI effort are launch metadata; the 1M marker is a
- * separate request window and must agree with the caller's current window. */
+ * separate window used by the capacity selector. */
 function acceptedClaudeUpstreamModel(entry: string): GatewayModelResolution | null {
   const slash = entry.indexOf('/');
   if (slash >= 0 && entry.slice(0, slash).toLowerCase() !== 'anthropic') return null;
@@ -979,6 +989,11 @@ export interface GatewayDeps {
   /** Server-side accepted-operation policy read at a model substitution boundary.
    * A failed read is an explicit unavailable verdict, never permission to downgrade. */
   readAcceptedOperationModelPolicy?: (ownerId: string) => Promise<ActiveOperationModelPolicyRead>;
+  /** Persist provider-observed evidence before a bound worker sees a successful response. */
+  recordAcceptedOperationModelAttestation?: (
+    context: ActiveOperationAttestationContext,
+    evidence: DirectOperationModelAttestation,
+  ) => Promise<void>;
   /**
    * Canonical resource-governor seam for gateway request starts.  The default
    * uses the admit-immediately compatibility driver while the durable queue
@@ -4851,6 +4866,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         /* non-JSON body (e.g. a count_tokens variant) — keep defaults */
       }
     }
+    const requestedModel = model;
     stageSpan?.setModel(model);
     stageSpan?.setStreaming(isStream);
     stageSpan?.setCacheShape(bodyBuf);
@@ -4892,6 +4908,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }, { 'x-should-retry': 'false' });
         return;
       }
+      if (operationModelPolicy.status === 'bound' && operationModelPolicy.policy.effort &&
+          forwardedClaudeEffort(bodyBuf) !== operationModelPolicy.policy.effort.toLowerCase()) {
+        sendJson(res, 503, { type: 'error',
+          error: { type: 'api_error', message: 'forwarded reasoning effort differs from the accepted operation policy' },
+          gateway: true }, { 'x-should-retry': 'false' });
+        return;
+      }
+      if (operationModelPolicy.status === 'bound' && operationModelPolicy.attestation &&
+          !deps.recordAcceptedOperationModelAttestation) {
+        sendJson(res, 503, { type: 'error',
+          error: { type: 'api_error', message: 'accepted operation request attestation writer is unavailable' },
+          gateway: true }, { 'x-should-retry': 'false' });
+        return;
+      }
     }
     // DYNAMIC OWNER PIN (account-dynamic-pin-2026-06-29): a runtime pin (accounts:pin) keyed by owner id
     // OVERRIDES the static x-papercusp-account spawn header — so an agent can re-route itself or another LIVE.
@@ -4930,6 +4960,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const hardPin =
       headerPinned !== null &&
       (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
+    // Claude CLI commonly resolves `[1m]` into a bare API model and puts the
+    // window in the beta header before it reaches us. The header is therefore
+    // part of the effective request window even when body normalization did not
+    // see the marker.
+    const requestedWindow1m = context1m || hasContext1mBeta(req.headers['anthropic-beta'] as string | undefined);
     if (operationModelPolicy.status === 'bound' && pool.healthyCount) {
       const policy = operationModelPolicy.policy;
       const healthyFor = (candidate: string) => pool.healthyCount!((id) =>
@@ -4941,7 +4976,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (healthyFor(model) === 0) {
         const alternate = policy.mode === 'exact' ? null : policy.models
           .map(acceptedClaudeUpstreamModel)
-          .find((candidate) => candidate && candidate.context1m === context1m &&
+          .find((candidate) => candidate &&
+            (requestedWindow1m ? supportsContext1m(candidate.model, model) : !candidate.context1m) &&
             normalizeModelId(candidate.model) !== normalizeModelId(model) &&
             acceptedClaudeModelAllows(policy, candidate.model) && healthyFor(candidate.model) > 0);
         const rewritten = alternate ? rewriteRequestModel(bodyBuf, alternate.model) : null;
@@ -5521,6 +5557,72 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // ladder. Guarded per pass so a repeated `canRotate` consult cannot inflate it.
       let rotateSuppressRecorded = false;
       let cacheProbe: PassThrough | null = null;
+      const modelAttestation = operationModelPolicy.status === 'bound' ? operationModelPolicy.attestation : null;
+      const modelAttestationRequestId = randomUUID();
+      let pendingAttestedHead: { status: number; headers: Record<string, string>; sse: boolean } | null = null;
+      const pendingAttestedChunks: Buffer[] = [];
+      let pendingAttestedBytes = 0;
+      let attestationFailed = false;
+      const forwardedEffort = forwardedClaudeEffort(bodyBuf);
+      const writeDownstream = async (chunk: Buffer) => {
+        if (!res.write(chunk)) {
+          await new Promise<void>((resolve) => {
+            const settle = () => {
+              res.off('drain', settle);
+              res.off('close', settle);
+              res.off('error', settle);
+              resolve();
+            };
+            res.once('drain', settle);
+            res.once('close', settle);
+            res.once('error', settle);
+          });
+        }
+      };
+      const attestAndFlush = async (raw: Buffer, sse: boolean) => {
+        let message: { id?: unknown; model?: unknown; usage?: Record<string, unknown> } | undefined;
+        try {
+          const text = raw.toString('utf8');
+          const event = sse ? /^data: (\{"type":"message_start".*\})$/m.exec(text)?.[1] : text;
+          if (event) message = (sse ? JSON.parse(event).message : JSON.parse(event)) as typeof message;
+        } catch { /* malformed provider evidence is refused below */ }
+        if (!message || typeof message.id !== 'string' || !message.id ||
+            typeof message.model !== 'string' || !message.model || !modelAttestation ||
+            !deps.recordAcceptedOperationModelAttestation) {
+          throw new Error('accepted operation provider response lacks model attestation');
+        }
+        const count = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+          ? value : null;
+        const usage = message.usage ?? {};
+        try {
+          if (operationModelPolicy.status !== 'bound' ||
+              !acceptedClaudeModelAllows(operationModelPolicy.policy, message.model)) {
+            throw new Error('provider returned a model outside the accepted operation policy');
+          }
+          if (count(usage.input_tokens) === null || (!sse && count(usage.output_tokens) === null)) {
+            throw new Error('provider response lacks request token usage');
+          }
+          await deps.recordAcceptedOperationModelAttestation(modelAttestation, {
+            requestId: modelAttestationRequestId, providerResponseId: message.id,
+            backend: 'claude', provider: 'anthropic', requestedModel,
+            actualModel: message.model,
+            forwardedEffort, effortSource: forwardedEffort ? 'forwarded-request' : 'unavailable',
+            usage: { inputTokens: count(usage.input_tokens), outputTokens: sse ? null : count(usage.output_tokens),
+              cacheReadTokens: count(usage.cache_read_input_tokens),
+              cacheCreationTokens: count(usage.cache_creation_input_tokens) },
+          });
+        } catch (error) {
+          attestationFailed = true;
+          throw error;
+        }
+        const head = pendingAttestedHead;
+        if (!head) throw new Error('accepted operation attestation response head disappeared');
+        pendingAttestedHead = null;
+        res.writeHead(head.status, head.headers);
+        for (const chunk of pendingAttestedChunks) await writeDownstream(chunk);
+        pendingAttestedChunks.length = 0;
+        pendingAttestedBytes = 0;
+      };
       const endCacheProbe = () => {
         if (!cacheProbe) return;
         cacheProbe.end();
@@ -6362,27 +6464,36 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   );
                 }
                 sseForward = (outHeaders['content-type'] ?? '').includes('text/event-stream');
-                res.writeHead(status, outHeaders);
+                if (status >= 200 && status < 300 && modelAttestation) {
+                  pendingAttestedHead = { status, headers: outHeaders, sse: sseForward };
+                } else {
+                  res.writeHead(status, outHeaders);
+                }
               },
               write: async (chunk) => {
                 cacheProbe?.write(chunk);
-                // Honour downstream backpressure exactly as the old `pipe(res)` did.
-                if (!res.write(chunk)) {
-                  await new Promise<void>((resolve) => {
-                    const settle = () => {
-                      res.off('drain', settle);
-                      res.off('close', settle);
-                      res.off('error', settle);
-                      resolve();
-                    };
-                    res.once('drain', settle);
-                    res.once('close', settle);
-                    res.once('error', settle);
-                  });
+                if (pendingAttestedHead) {
+                  const buffered = Buffer.from(chunk);
+                  pendingAttestedChunks.push(buffered);
+                  pendingAttestedBytes += buffered.length;
+                  if (pendingAttestedBytes > (pendingAttestedHead.sse ? 65_536 : 8_388_608)) {
+                    throw new Error('accepted operation provider response exceeds the attestation buffer');
+                  }
+                  if (pendingAttestedHead.sse && /^data: \{"type":"message_start".*\}$/m.test(
+                    Buffer.concat(pendingAttestedChunks).toString('utf8'))) {
+                    await attestAndFlush(Buffer.concat(pendingAttestedChunks), true);
+                  }
+                } else {
+                  // Honour downstream backpressure exactly as the old `pipe(res)` did.
+                  await writeDownstream(Buffer.from(chunk));
                 }
               },
-              end: () => {
+              end: async () => {
                 endCacheProbe();
+                if (pendingAttestedHead) {
+                  if (pendingAttestedHead.sse) throw new Error('accepted operation stream ended without model attestation');
+                  await attestAndFlush(Buffer.concat(pendingAttestedChunks), false);
+                }
                 res.end();
               },
             },
@@ -6523,7 +6634,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
               if (operationModelPolicy.status === 'bound') {
                 const policy = operationModelPolicy.policy;
                 if (!acceptedClaudeModelAllows(policy, model) ||
-                    !acceptedClaudeModelAllows(policy, LAST_RESORT_SONNET_MODEL) || policy.effort) {
+                    !acceptedClaudeModelAllows(policy, LAST_RESORT_SONNET_MODEL) || policy.effort ||
+                    (servedContext1m && !supportsContext1m(LAST_RESORT_SONNET_MODEL, model))) {
                   const wait = policy.onUnavailable === 'wait';
                   sendJson(res, wait ? 429 : 503, {
                     type: 'error',
@@ -6638,6 +6750,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
             } catch {
               /* already torn down */
             }
+            return;
+          }
+
+          if (attestationFailed) {
+            sendJson(res, 503, { type: 'error',
+              error: { type: 'api_error', message: 'accepted operation request attestation could not be verified or persisted' },
+              gateway: true }, { 'x-should-retry': 'false' });
             return;
           }
 
