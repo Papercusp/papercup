@@ -429,7 +429,8 @@ export function predictAmendedBarProofFloor(
       // proof-floor inputs too, so a manual → tests transition is re-predicted
       // before approval instead of inheriting the old manual verdict.
       if (!criterion || (before && before.barHash === bar.barHash &&
-        effectiveCriterionInstrumentKey(before) === effectiveCriterionInstrumentKey(criterion) &&
+        effectiveCriterionInstrumentKey({ model: before.model, check: before.check ?? undefined }) ===
+          effectiveCriterionInstrumentKey(criterion) &&
         (before.requiredTestLayers?.length ?? 0) === (criterion.requiredTestLayers?.length ?? 0) &&
         (before.evidencePlane ?? 'tree') === (criterion.evidencePlane ?? 'tree'))) return bar;
       const plane = (criterion.evidencePlane ?? before?.evidencePlane ?? 'tree') as AcceptanceEvidencePlane;
