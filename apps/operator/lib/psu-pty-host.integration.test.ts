@@ -105,7 +105,9 @@ describe('plain launch kickoff turn-start proof', () => {
           PAPERCUSP_PSU_HEADLESS: '1', CODEX_HOME: codexHome,
           NATIVE_FILE: nativeFile, CHOICE_FILE: choiceFile,
           [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
-          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          // The headless model-choice redraw can take the host's bounded 2s
+          // fallback; the startup budget must outlive that real actuator.
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '1000',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
           PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
@@ -120,6 +122,9 @@ describe('plain launch kickoff turn-start proof', () => {
       });
       const deadline = Date.now() + 8_000;
       while (readFileSync(proofPath, 'utf8').length === 0 && Date.now() < deadline) await sleep(10);
+      const eventsPath = eventLogPathForOwner(ownerId);
+      const events = existsSync(eventsPath) ? readFileSync(eventsPath, 'utf8') : '(no host events)';
+      expect(existsSync(choiceFile), `${captured()}\n${events}`).toBe(true);
       expect(readFileSync(choiceFile, 'utf8')).toBe('existing');
       expect(captured()).toContain('COMPOSER_ECHO:');
       expect(readFileSync(nativeFile, 'utf8')).toContain(marker);
@@ -595,6 +600,16 @@ describe('session-port managed seed + native persistence helpers', () => {
     // The header repainted with a real model is written once the session exists.
     const sessionFrame = '\x1b[4;1H│ model:       \x1b[1mGPT-5.6-Sol high\x1b[22m   /model to change │';
     expect(codexSessionFrameObserved(codexProbe + preSessionFrame + sessionFrame)).toBe(true);
+    // v0.157 (grading-audit EI-24211723316824223) kept the header at
+    // `model: loading` after its model-choice modal, but painted a Ready footer.
+    // The old header-only proof waited 75s, then dropped the first turn.
+    const startingFooter = '\x1b[23;3HStarting · GPT-6-Sol medium · Context 100% left · staging';
+    const readyFooter = '\x1b[23;3HReady · GPT-6-Sol medium · Context 100% left · staging';
+    expect(startupOutputReady('codex', startingFooter)).toBe(false);
+    expect(codexSessionFrameObserved(codexProbe + preSessionFrame + startingFooter)).toBe(false);
+    expect(startupOutputReady('codex', readyFooter)).toBe(true);
+    expect(codexSessionFrameObserved(codexProbe + preSessionFrame + readyFooter)).toBe(true);
+    expect(codexSessionFrameObserved(readyFooter + codexProbe)).toBe(false);
     // Chrome painted BEFORE the latest probe does not count: the frame must follow it.
     expect(codexSessionFrameObserved(sessionFrame + codexProbe)).toBe(false);
     // No probe in the buffer is not a frame, unless the caller already saw the

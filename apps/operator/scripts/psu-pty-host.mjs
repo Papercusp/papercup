@@ -4721,6 +4721,13 @@ export function makeScrollbackGuard() {
  * footer while MCP servers are still booting, so only a non-Starting status
  * counts as the composer being installed. */
 const CODEX_STATUS_FOOTER_RE = /([A-Za-z]+)\s*·[^·\n]{0,120}·\s*Context\s+\d{1,3}%\s+left/g;
+function codexReadyStatusFooterObserved(visible) {
+  // Codex v0.157 can leave the header at `model: loading` even after the
+  // session is ready. The footer is the positive, post-model-choice signal;
+  // its `Starting` form is painted while MCP startup is still in flight.
+  return [...visible.matchAll(CODEX_STATUS_FOOTER_RE)]
+    .some((match) => /ready$/i.test(match[1]));
+}
 export function headlessClaudeKickoffReadiness({
   enabled = false,
   requireInitialOutput = false,
@@ -4736,12 +4743,7 @@ export function startupOutputReady(agent, output) {
   if (normalized === 'omp') return /\bomp\s+v\d/i.test(visible);
   if (normalized === 'codex') {
     if (/\d{1,3}%\s*context left/i.test(visible)) return true;
-    for (const match of visible.matchAll(CODEX_STATUS_FOOTER_RE)) {
-      // Stripped frames can glue a previous cell onto the status word
-      // ("…leftReady"), so test the suffix rather than equality.
-      if (!/starting$/i.test(match[1])) return true;
-    }
-    return false;
+    return codexReadyStatusFooterObserved(visible);
   }
   if (normalized === 'claude') return freshChildPromptReady(normalized, output);
   return String(output ?? '').length > 0;
@@ -4778,7 +4780,9 @@ export function codexTuiStartObserved(output) {
  * (`model: GPT-5.6-Sol high`), which Codex writes in full once the session is
  * configured (captured: scratch/su-bd109afe/wi2745-capture-*.jsonl).
  *
- * `probeAlreadySeen` covers a probe that the caller's bounded startup buffer
+ * Codex v0.157 can keep that header at `model: loading` after model selection;
+ * its `Ready · <model> · Context NN% left` footer is then the positive session
+ * proof. `Starting` is not ready. `probeAlreadySeen` covers a probe that the caller's bounded startup buffer
  * has already trimmed away: the whole buffer then counts as post-probe.
  * Pure and exported for tests. */
 const CODEX_SESSION_MODEL_RE = /model:\s+(?!loading\b)[^\s│]/;
@@ -4787,7 +4791,7 @@ export function codexSessionFrameObserved(output, { probeAlreadySeen = false } =
   const probeAt = raw.lastIndexOf('\x1b[6n');
   if (probeAt < 0 && !probeAlreadySeen) return false;
   const visible = stripAnsi(probeAt < 0 ? raw : raw.slice(probeAt + '\x1b[6n'.length));
-  return CODEX_SESSION_MODEL_RE.test(visible);
+  return CODEX_SESSION_MODEL_RE.test(visible) || codexReadyStatusFooterObserved(visible);
 }
 
 /** If the Codex first frame is never observed (a future Codex that stops
@@ -8951,6 +8955,7 @@ export function hostThroughPty(o) {
           // and Enter in one PTY write can submit the still-selected first row.
           const offeredChild = child;
           child.write('\x1b[B');
+          appendHostEvent(ownerId, 'headless-codex-model-choice-select-existing', {});
           codexModelChoiceConfirmTimer = setTimeout(() => {
             if (child !== offeredChild ||
                 headlessCodexModelChoice.status().phase !== 'await-existing') return;
@@ -8959,8 +8964,10 @@ export function hostThroughPty(o) {
             confirmExistingModel('fallback-after-arrow');
           }, 2_000);
           codexModelChoiceConfirmTimer.unref?.();
-        } catch {
-          /* child-exit teardown owns a vanished pty */
+        } catch (error) {
+          appendHostEvent(ownerId, 'headless-codex-model-choice-select-failed', {
+            error: String(error?.message ?? error).slice(0, 200),
+          });
         }
       } else if (codexModelChoice.action === 'confirm-existing') {
         confirmExistingModel('repaint-confirmed');

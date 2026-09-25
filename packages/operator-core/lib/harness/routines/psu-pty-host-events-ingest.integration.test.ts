@@ -56,7 +56,7 @@ async function seedDir(files: Record<string, unknown[]>): Promise<string> {
   dirs.push(dir);
   for (const [owner, rows] of Object.entries(files)) {
     await writeFile(
-      join(dir, `${owner}.jsonl`),
+      join(dir, `${owner}.events.jsonl`),
       rows.map((r) => JSON.stringify(r)).join('\n') + '\n',
       'utf8',
     );
@@ -69,15 +69,18 @@ const evt = (ts: string, kind: string, extra: Record<string, unknown> = {}) => (
   kind,
   ...extra,
 });
+// Keep fixtures inside the production retention window as the calendar moves.
+const fixtureBaseMs = Date.now() - 60_000;
+const fixtureTs = (seconds = 0) => new Date(fixtureBaseMs + seconds * 1_000).toISOString();
 
 describe('ingestPsuPtyHostEvents against a real Postgres', () => {
   it('actually PERSISTS rows — the whole-run failure a fake sql cannot see', async () => {
     const dir = await seedDir({
       'su-aaaa': [
-        evt('2026-09-20T01:36:58.903Z', 'turn-delivered', { mode: 'wake', attempts: 1 }),
-        evt('2026-09-20T01:37:10.000Z', 'wake-rearm-queued', { mode: 'wake' }),
+        evt(fixtureTs(), 'turn-delivered', { mode: 'wake', attempts: 1 }),
+        evt(fixtureTs(12), 'wake-rearm-queued', { mode: 'wake' }),
       ],
-      'su-bbbb': [evt('2026-09-20T02:00:00.000Z', 'respawn-carry-delivered', { attempts: 1 })],
+      'su-bbbb': [evt(fixtureTs(30), 'respawn-carry-delivered', { attempts: 1 })],
     });
 
     const res = await ingestPsuPtyHostEvents({ sql, workspaceId: WS, dir });
@@ -101,7 +104,7 @@ describe('ingestPsuPtyHostEvents against a real Postgres', () => {
     // test above; this one additionally catches a "fix" that stores the wrong INSTANT (e.g. by
     // dropping the timezone and re-reading it as local), which a bare count cannot detect.
     const dir = await seedDir({
-      'su-cccc': [evt('2026-09-20T01:36:58.903Z', 'turn-delivered')],
+      'su-cccc': [evt(fixtureTs(), 'turn-delivered')],
     });
 
     const res = await ingestPsuPtyHostEvents({ sql, workspaceId: WS, dir });
@@ -111,7 +114,7 @@ describe('ingestPsuPtyHostEvents against a real Postgres', () => {
       SELECT ts, kind FROM harness_shared.psu_pty_host_events WHERE workspace_id = ${WS}
     `;
     expect(row.ts).toBeInstanceOf(Date);
-    expect(row.ts.toISOString()).toBe('2026-09-20T01:36:58.903Z');
+    expect(row.ts.toISOString()).toBe(fixtureTs());
     expect(row.kind).toBe('turn-delivered');
   });
 
@@ -120,7 +123,7 @@ describe('ingestPsuPtyHostEvents against a real Postgres', () => {
     // text: a double-encoded payload reads back as a jsonb STRING and every ->> below is null.
     const dir = await seedDir({
       'su-dddd': [
-        evt('2026-09-20T03:00:00.000Z', 'turn-delivered', { mode: 'wake', attempts: 1 }),
+        evt(fixtureTs(), 'turn-delivered', { mode: 'wake', attempts: 1 }),
       ],
     });
 
@@ -137,8 +140,8 @@ describe('ingestPsuPtyHostEvents against a real Postgres', () => {
   it('is idempotent across runs — ON CONFLICT (row_digest) DO NOTHING holds on real rows', async () => {
     const dir = await seedDir({
       'su-eeee': [
-        evt('2026-09-20T04:00:00.000Z', 'turn-delivered'),
-        evt('2026-09-20T04:00:01.000Z', 'turn-delivered'),
+        evt(fixtureTs(), 'turn-delivered'),
+        evt(fixtureTs(1), 'turn-delivered'),
       ],
     });
 
@@ -161,7 +164,7 @@ describe('ingestPsuPtyHostEvents against a real Postgres', () => {
     // The detector half of D-014. `rowsInserted: 0` must never again be the only trace of a
     // write that failed: a caller has to be able to tell "nothing to do" from "nothing worked".
     const dir = await seedDir({
-      'su-ffff': [evt('2026-09-20T05:00:00.000Z', 'turn-delivered')],
+      'su-ffff': [evt(fixtureTs(), 'turn-delivered')],
     });
 
     const exploding = new Proxy(sql, {
