@@ -2041,7 +2041,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
         () => waiter !== undefined && (waiter.exitCode !== null || waiter.signalCode !== null),
         stageTimeoutMs,
       );
-      expect(await waiterExit).toBe(75);
+      expect(await waiterExit, waiterErr.text()).toBe(75);
       expect(existsSync(ran)).toBe(false);
 
       const err = waiterErr.text();
