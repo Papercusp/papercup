@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-4 real-backend identity UI journey (2026-09-25): catalog pagination, URL recovery, read-only provider bindings, a forced compare-and-swap failure with prior state kept, retry over SSE, then switch and rollback applied on the host",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-2143764",
+  "observer": "su-fc805113-5350-4dd5-b0f8-5072246412a7",
+  "recordedBy": "su-fc805113-5350-4dd5-b0f8-5072246412a7",
+  "capturedAt": "2026-09-25T13:35:37.085Z",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "VERIFY_TAURI_ISOLATED_DB=1 P015_R4_REAL_BACKEND=1 P015_R4_REAL_RECOVERY=1 node scripts/verify-identities-r4.mjs"
+  ],
+  "commandBasis": "Copied from the launching shell (exec_command:5922), not reconstructed: VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- bash -c 'P015_R4_REAL_BACKEND=1 P015_R4_REAL_RECOVERY=1 TAURI_SURFACE_VERIFY_P015_R4_OUT=<out> node scripts/verify-identities-r4.mjs'; the shell printed START/BLOB lines before and POST_BLOB/R4_DRILL_EXIT/END lines after the headless run.",
+  "exitCode": 0,
+  "startedAt": "2026-09-25T13:31:15.694Z",
+  "finishedAt": "2026-09-25T13:35:37.085Z",
+  "summary": "Closes the grader's R-4 gaps on the REAL backend in one run of the maintained driver (scripts/verify-identities-r4.mjs, P015_R4_REAL_RECOVERY=1) inside verify-tauri-headless.sh with an isolated database. The target was selected on catalog page 2; rollback received action-specific HTTP 200. Pointer clicks write identityId and identityTab to the URL; a fresh navigation to the captured URL restores the same identity and the Provider bindings tab. That tab names M3 and exposes 0 control(s), 0 enabled. A concurrent writer held the session row lock until the pointer-clicked Apply's compare-and-swap UPDATE was observed waiting on it (wait_event_type Lock), then committed; the route answered HTTP 409 'changed concurrently'. The launch spec, activation and activation-event count were unchanged, the page showed the failure banner with the prior identity, and Apply stayed enabled. The pointer retry succeeded (HTTP 200), and its identities.surface SSE invalidation reached the page (count 1 -> 5) in the same document. Switch applied at generation 1 (revision 87e7ac8cfd21); rollback applied at generation 2 (revision 8bb020a038e1). Supersedes docs/evidence/p015-r4-real-backend-operational-2026-09-24c.json: the current run repeats its journey on committed identity-management, role-launch-spec and verifier source, and additionally proves page-two catalog selection and an action-specific rollback response.",
+  "timeBasis": "startedAt and finishedAt are the launching shell's own `date -u` stamps around the whole headless run (boot, drill, teardown).",
+  "subject": {
+    "workspaceId": "verify-tauri-isolated-90",
+    "ownerId": "p015-r4-owned-2509582-1790343238063",
+    "bridgePid": 2482211,
+    "treeHead": "084669b806912a5e2c9add442a92a4fc465e6c53",
+    "launchHead": "084669b806912a5e2c9add442a92a4fc465e6c53",
+    "buildHead": "084669b806912a5e2c9add442a92a4fc465e6c53",
+    "frozenSpaIndexSha256": "bc2edbde8124dc0950023b8302e7ba3d42ce361d291dfb6059e2ef2b4ec4b230",
+    "sourceBlobs": {
+      "apps/operator/app/settings/identities/page.tsx": "2a6200f770a658f7c415feb0a76c5a79b0f7499f",
+      "packages/operator-core/lib/identity-management.ts": "4841744c8f82afd9678e5dedf650027ab49528c0",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts": "01c52268a165fe89cdd6604c2cccb45199e683d3",
+      "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts": "0864e1795c247028280f200a16bf43bc3b8862af",
+      "packages/operator-core/lib/role-launch-spec.ts": "c2ee54d9aab042f17aa31bbd1120b51a34794773",
+      "scripts/verify-identities-r4.mjs": "5ec6af4bb7cccc43792d2f94d77914660aa09a5b"
+    },
+    "sourceCommits": {
+      "apps/operator/app/settings/identities/page.tsx": "084669b806912a5e2c9add442a92a4fc465e6c53",
+      "packages/operator-core/lib/identity-management.ts": "084669b806912a5e2c9add442a92a4fc465e6c53",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts": "084669b806912a5e2c9add442a92a4fc465e6c53",
+      "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts": "084669b806912a5e2c9add442a92a4fc465e6c53",
+      "packages/operator-core/lib/role-launch-spec.ts": "084669b806912a5e2c9add442a92a4fc465e6c53",
+      "scripts/verify-identities-r4.mjs": "084669b806912a5e2c9add442a92a4fc465e6c53"
+    },
+    "note": "A disposable owner seeded in the verifier's isolated database. The UI, the identity-management route, its compare-and-swap, the SSE sync path and the host activation acknowledgement are production code paths, not mocks. sourceBlobs are the blobs that ran; each equals its HEAD blob at build time."
+  },
+  "rawArtifact": {
+    "path": "docs/evidence/p015-r4-real-backend-2026-09-25.json",
+    "sha256": "4cb7b688f0a98f08ad3293a3785db9ac0a16973a51d6b7c1ac16c2cd814074b8",
+    "redaction": "The driver's serializeEvidence (redactIdentityLeaks) scrubbed home-directory paths at write time; the builder refuses an artifact containing the home prefix. Copied byte-for-byte; no post-hoc edit."
+  },
+  "replication": [
+    {
+      "tool": "scripts/verify-tauri-headless.sh",
+      "command": "VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- bash -c 'P015_R4_REAL_BACKEND=1 P015_R4_REAL_RECOVERY=1 TAURI_SURFACE_VERIFY_P015_R4_OUT=<out> node scripts/verify-identities-r4.mjs'",
+      "expect": "exit 0 and evidence.json with status=pass, realBackend=true, hostActivationProven=true, forcedRealFailureProven=true, syncInvalidationProven=true, recoveryObserved ending in sse-sync-invalidation and rollback-applied"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "pointer-reachable-selection",
+      "scope": "pointer reachability",
+      "passed": true,
+      "evidence": "Steps owned-agent-visible, identity-library-visible, owned-agent-selected, recovery-select-identity and real-select-identity passed. Every transition is a real X11 pointer click on an element scrolled into the viewport (steps with input 'X11 pointer')."
+    },
+    {
+      "id": "nuqs-url-roundtrip",
+      "scope": "nuqs state written and restored",
+      "passed": true,
+      "evidence": "nuqs-selection-written (identityId=research-steward) and nuqs-tab-written (identityTab=bindings) after pointer clicks; nuqs-restore-navigate to the captured URL, then nuqs-state-restored-from-url (the identity tablist's selected tab is Provider bindings, the section renders, identityId kept); nuqs-tab-rewritten after clicking Library."
+    },
+    {
+      "id": "provider-bindings-boundary",
+      "scope": "no silent provider selection",
+      "passed": true,
+      "evidence": "provider-bindings-boundary: the section text names 'Available in M3'; 0 interactive control(s), 0 enabled."
+    },
+    {
+      "id": "review-diff-from-backend",
+      "scope": "authoritative explain/diff",
+      "passed": true,
+      "evidence": "real-review-response: action 'preview', HTTP 200, body ok:true with 200 diff row(s); real-review-diff-visible passed."
+    },
+    {
+      "id": "forced-real-failure",
+      "scope": "failure on the real backend",
+      "passed": true,
+      "evidence": "forced-failure-response: action 'switch', HTTP 409, body names 'changed concurrently'. blockedSwitch shows the switch's adv_sessions UPDATE waiting (wait_event_type Lock, wait_event transactionid) before the writer committed; the driver's pg_stat_activity predicate selected only a statement containing the CAS clause 'AND launch_spec =' (the recorded query is a 160-char prefix)."
+    },
+    {
+      "id": "prior-state-retained",
+      "scope": "no partial apply",
+      "passed": true,
+      "evidence": "forced-failure-prior-state: launchSpecUnchanged=true, activationUnchanged=true, activation events 1 -> 1. forced-failure-banner-prior-identity-kept: the banner reads 'Identity change failed: The session identity changed concurrently', no 'Change requested', and the stack card still shows domain:papercusp-engineer."
+    },
+    {
+      "id": "retry-reachable-and-synced",
+      "scope": "recovery and sync",
+      "passed": true,
+      "evidence": "forced-failure-controls: Apply identity present and enabled. The pointer retry (real-switch) returned HTTP 200 changed:true; identities.surface SSE invalidations 1 -> 5 (sync-before-retry-switch, sync-after-retry-switch); retry-switch-same-document kept the no-reload marker."
+    },
+    {
+      "id": "switch-honest-states",
+      "scope": "desired/prepared/applied honesty",
+      "passed": true,
+      "evidence": "real-switch-change-requested, real-switch-host-ack, real-switch-applied: controlGeneration 1 = controlDeliveredGeneration 1, status 'applied', failure null, applied revision 87e7ac8cfd21 = switch response revision."
+    },
+    {
+      "id": "rollback-applied",
+      "scope": "rollback",
+      "passed": true,
+      "evidence": "real-rollback-change-requested, real-rollback-host-ack, real-rollback-applied: controlGeneration 2 = controlDeliveredGeneration 2, status 'applied', failure null, revision 8bb020a038e1 differs from the switch."
+    },
+    {
+      "id": "catalog-pagination",
+      "scope": "later catalog page",
+      "passed": true,
+      "evidence": "recovery-select-identity-catalog-search scanned 2 pages before selecting research-steward through pointer controls."
+    },
+    {
+      "id": "rollback-response",
+      "scope": "action-specific rollback response",
+      "passed": true,
+      "evidence": "real-rollback-response recorded HTTP 200, request action rollback and response body action rollback before activation was inspected."
+    },
+    {
+      "id": "no-synthetic-transport",
+      "scope": "live path, not mocked transport",
+      "passed": true,
+      "evidence": "realBackend=true, syntheticMutationResponses=false; the fetch observer (eval:observe-real-fetch) captured every mutation from the page's own requests."
+    }
+  ],
+  "notProven": [
+    "Failure classes other than a concurrent-writer compare-and-swap conflict (transport loss, 5xx) on the real backend; the controlled-response run (docs/evidence/p015-r4-controlled-ui-2026-09-20.json) covers the generic failure banner.",
+    "Provider-binding SELECTION. M1 ships the read-only boundary proven here; selection arrives in M3.",
+    "Full P-015 or plan acceptance. This is scoped R-4 evidence."
+  ],
+  "supersedes": "docs/evidence/p015-r4-real-backend-operational-2026-09-24c.json: the current run repeats its journey on committed identity-management, role-launch-spec and verifier source, and additionally proves page-two catalog selection and an action-specific rollback response",
+  "sourcePaths": [
+    "apps/operator/app/settings/identities/page.tsx",
+    "packages/operator-core/lib/identity-management.ts",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "packages/operator-core/lib/role-launch-spec.ts",
+    "scripts/verify-identities-r4.mjs"
+  ],
+  "testRunIds": []
+}
