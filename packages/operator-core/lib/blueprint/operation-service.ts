@@ -149,6 +149,18 @@ export function submitBlueprintOperation(
 
 export type BlueprintOperationPhase = 'accepted' | 'dispatched' | 'waiting' | 'terminal';
 export type BlueprintOperationOutcome = 'succeeded' | 'unverified' | 'failed' | 'cancelled' | 'dropped';
+export const BLUEPRINT_PROGRAM_COMPLETION_OWNER = 'system:blueprint-program';
+
+/** The canonical root's completion reference carries an executor disposition,
+ * but the work item remains the only business-state authority. The receipt in
+ * the reference prevents a different operation's close from being read here. */
+export function blueprintProgramCompletionRef(
+  handle: BlueprintOperationHandle, disposition: 'succeeded' | 'failed',
+): string {
+  if (handle.target.kind !== 'work-item') throw new Error('program completion requires a work-item root');
+  return `blueprint-program:${disposition}:receipt:${handle.receiptId}`;
+}
+
 export interface BlueprintOperationStatus {
   handle: BlueprintOperationHandle;
   phase: BlueprintOperationPhase;
@@ -184,6 +196,9 @@ export function projectBlueprintOperationStatus(
   const succeeded = (item: WorkItem) => item.state === 'done' || item.state === 'passed' || item.state === 'resolved';
   const childOutcome = (): BlueprintOperationOutcome => {
     if (cancelling && items.every(dropped)) return 'cancelled';
+    if (handle.target.kind === 'work-item' && items.length === 1 && dropped(items[0]) &&
+        items[0].terminalOwner === BLUEPRINT_PROGRAM_COMPLETION_OWNER &&
+        items[0].terminalCompletionRef === blueprintProgramCompletionRef(handle, 'failed')) return 'failed';
     if (items.some(dropped)) return 'dropped';
     if (!items.every(succeeded)) return 'failed';
     return items.every((item) => item.completionAuthority === 'committed' || item.completionAuthority === 'validated')
