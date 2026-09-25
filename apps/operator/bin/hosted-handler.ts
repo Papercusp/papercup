@@ -37,6 +37,10 @@ export const HOSTED_FORBIDDEN_HOST_PATH_PREFIXES = [
  */
 export function readAttachRequest(request: Request): HostedWorkspaceAttachRequest {
   const params = new URL(request.url).searchParams;
+  // D-418 / WI-10002873: the portal backend's relay to the workspace's own
+  // operator. The broker echoes `kind` on `session.bound`, so a client can tell
+  // this control plane honoured it rather than degrading to a PTY.
+  if (params.get("kind") === "operator-http") return { kind: "operator-http" };
   if (params.get("kind") !== "desktop") return {};
   const desktopSessionId = params.get("desktopSessionId")?.trim();
   return {

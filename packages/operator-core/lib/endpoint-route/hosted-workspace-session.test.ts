@@ -184,3 +184,62 @@ describe('HostedWorkspaceSessionBroker — desktop channels (P-013 / D-023, D-02
     );
   });
 });
+
+describe('HostedWorkspaceSessionBroker — operator-http channels (D-418 / WI-10002873)', () => {
+  function attached(attach: Parameters<HostedWorkspaceSessionBroker['attachBrowser']>[2]) {
+    let n = 0;
+    const broker = new HostedWorkspaceSessionBroker({ randomId: () => `channel-${++n}` });
+    const host = new FakeSocket();
+    const client = new FakeSocket();
+    broker.attachConnector(connector, host);
+    broker.attachBrowser(ticket(), client, attach);
+    return { broker, host, client };
+  }
+  const request = { type: 'http.request', requestId: 'r1', method: 'GET', path: '/api/harness/portal/agent-chats' };
+
+  it('opens with kind operator-http, echoes the kind, and is always controller', () => {
+    const { host, client } = attached({ kind: 'operator-http' });
+    expect(host.sent).toContainEqual(expect.objectContaining({ type: 'relay.open', kind: 'operator-http', role: 'controller' }));
+    expect(client.sent).toContainEqual(expect.objectContaining({ type: 'session.bound', kind: 'operator-http', role: 'controller' }));
+  });
+
+  it('does not take the PTY controller slot', () => {
+    let n = 0;
+    const broker = new HostedWorkspaceSessionBroker({ randomId: () => `channel-${++n}` });
+    broker.attachConnector(connector, new FakeSocket());
+    broker.attachBrowser(ticket(), new FakeSocket(), { kind: 'operator-http' });
+    const tab = new FakeSocket();
+    broker.attachBrowser(ticket(), tab);
+    expect(tab.sent).toContainEqual(expect.objectContaining({ type: 'session.bound', kind: 'pty', role: 'controller' }));
+  });
+
+  it('forwards request frames and relays host response frames back', () => {
+    const { host, client } = attached({ kind: 'operator-http' });
+    client.message(request);
+    expect(host.sent).toContainEqual({ type: 'relay', channelId: 'channel-1', payload: request });
+    host.message({ type: 'relay', channelId: 'channel-1', payload: { type: 'http.response', requestId: 'r1', status: 200, headers: {} } });
+    expect(client.sent).toContainEqual({ type: 'http.response', requestId: 'r1', status: 200, headers: {} });
+  });
+
+  it('refuses non-http frames on an operator-http channel', () => {
+    const { host, client } = attached({ kind: 'operator-http' });
+    client.message({ type: 'pty.input', data: 'aGk=' });
+    client.message({ type: 'desktop.start' });
+    expect(client.sent).toContainEqual({ type: 'session.denied', reason: 'channel_kind_mismatch', requestType: 'pty.input' });
+    expect(client.sent).toContainEqual({ type: 'session.denied', reason: 'channel_kind_mismatch', requestType: 'desktop.start' });
+    expect(host.sent.filter((m) => (m as { type: string }).type === 'relay')).toEqual([]);
+  });
+
+  it('refuses http frames on a PTY channel, so a terminal ticket cannot call the operator API', () => {
+    const { host, client } = attached({});
+    client.message(request);
+    expect(client.sent).toContainEqual({ type: 'session.denied', reason: 'channel_kind_mismatch', requestType: 'http.request' });
+    expect(host.sent.filter((m) => (m as { type: string }).type === 'relay')).toEqual([]);
+  });
+
+  it('refuses in-place control claims on an operator-http channel', () => {
+    const { client } = attached({ kind: 'operator-http' });
+    client.message({ type: 'session.claim-control' });
+    expect(client.sent).toContainEqual(expect.objectContaining({ type: 'session.denied', reason: 'operator_http_role_fixed' }));
+  });
+});
