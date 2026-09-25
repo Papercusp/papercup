@@ -417,6 +417,28 @@ describe("interactive role picker", () => {
       vi.doUnmock("@inquirer/prompts");
     }
   });
+
+  it('offers a launchable named composition root with its closure revision', async () => {
+    const revision = 'b'.repeat(64);
+    const page = { status: 'ok', identities: [{ id: 'named-review', tier: 'local',
+      version: '1.0.0', sourceRevision: revision, slots: [],
+      launchCompatibility: { eligible: true, reason: null } }], unreadable: [], nextAfter: null };
+    expect(identityPickerChoices(page)).toContainEqual(expect.objectContaining({
+      value: 'composition:named-review',
+    }));
+    const select = vi.fn().mockResolvedValue('composition:named-review');
+    vi.doMock('@inquirer/prompts', () => ({ select }));
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(JSON.stringify(page), { status: 200 }));
+    try {
+      await expect(pickIdentity('default', 'papercusp')).resolves.toEqual({
+        stack: ['composition:named-review'], selectedIdentityRevision: revision,
+      });
+    } finally {
+      fetch.mockRestore();
+      vi.doUnmock('@inquirer/prompts');
+    }
+  });
 });
 
 describe("normalizeOperatorBaseUrl (WI-6821 DEFECT A — a suffixed pin killed psu in 0.4s)", () => {
@@ -3190,6 +3212,7 @@ describe("psu-launcher arg parsing", () => {
       agent: null,
       role: null,
       stack: [],
+      selectedIdentityRevision: null,
       feature: null,
       workspace: null,
       harness: null,
@@ -3346,6 +3369,7 @@ describe("psu-launcher arg parsing", () => {
       agent: "claude",
       role: null,
       stack: [],
+      selectedIdentityRevision: null,
       feature: null,
       workspace: "ws1",
       harness: "papercup",
