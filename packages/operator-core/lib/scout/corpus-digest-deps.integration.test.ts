@@ -237,4 +237,26 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(flat.map((p) => p.ref)).toEqual(refs);
     expect(flat.every((p) => p.category === 'pty-host-health')).toBe(true);
   });
+
+  it('cites the newest event time when older files are ingested later', async () => {
+    const sql = db.adminSql;
+    const newerAt = new Date(T + 1_000).toISOString();
+    const olderAt = new Date(T).toISOString();
+    const [newest] = await sql<{ id: string }[]>`
+      INSERT INTO harness_shared.psu_pty_host_events
+        (workspace_id, owner_id, ts, kind, payload, row_digest)
+      VALUES (${WS}, 'su-pty-a', ${newerAt}::timestamptz,
+              'control-socket-error', '{}'::jsonb, 'pty-health-citation-newer')
+      RETURNING id::text AS id`;
+    await sql`
+      INSERT INTO harness_shared.psu_pty_host_events
+        (workspace_id, owner_id, ts, kind, payload, row_digest)
+      VALUES (${WS}, 'su-pty-a', ${olderAt}::timestamptz,
+              'control-socket-error', '{}'::jsonb, 'pty-health-citation-older')`;
+
+    const lane = await buildPtyHostHealthLane({ workspaceId: WS, nowMs: T + 2_000 });
+    const pattern = lane.find((entry) => entry.ref === 'pty-host:kind:control-socket-error');
+    expect(pattern?.detail).toContain(`psu_pty_host_events.id=${newest!.id}`);
+    expect(pattern?.detail).toContain(newerAt.replace('T', ' ').slice(0, 19));
+  });
 });

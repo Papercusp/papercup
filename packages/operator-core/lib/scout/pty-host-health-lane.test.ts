@@ -108,4 +108,17 @@ describe('PTY host event classification for Blender', () => {
     expect(lane[1]).toMatchObject({ ref: 'pty-host:coverage-residue' });
     expect(lane[1]?.detail).toContain('2 kinds outside');
   });
+
+  it('keeps recovered delivery and unknown kinds visible when failures fill the cap', () => {
+    const failures = Array.from({ length: 21 }, (_, index) => row(`failure-${index}-failed`, 21 - index));
+    const lane = buildPtyHostHealthPatterns([
+      ...failures,
+      row('turn-delivered-after-retry', 610),
+      row('future-unrecognized-event', 1),
+    ]);
+    expect(lane).toHaveLength(21); // 20 patterns plus a coverage residue
+    expect(lane.map((pattern) => pattern.ref)).toContain('pty-host:kind:turn-delivered-after-retry');
+    expect(lane.map((pattern) => pattern.ref)).toContain('pty-host:kind:future-unrecognized-event');
+    expect(lane.at(-1)?.ref).toBe('pty-host:coverage-residue');
+  });
 });

@@ -80,14 +80,23 @@ export function buildPtyHostHealthPatterns(
   opts: { limit?: number; totalKinds?: number } = {},
 ): MetaPattern[] {
   const limit = Math.max(1, opts.limit ?? 20);
+  const rank = { failure: 3, recovered: 2, unclassified: 1, routine: 0 };
   const ranked = aggregates
     .map((row) => ({ row, eventClass: classifyPtyHostEvent(row.kind) }))
     .filter(({ eventClass }) => eventClass !== 'routine')
     .sort((a, b) => {
-      const rank = { failure: 3, recovered: 2, unclassified: 1, routine: 0 };
       return rank[b.eventClass] - rank[a.eventClass] || b.row.count - a.row.count || a.row.kind.localeCompare(b.row.kind);
     });
-  const shown = ranked.slice(0, limit);
+  // A noisy failure class must not crowd recovered delivery or a new,
+  // unclassified kind entirely out of Blender's bounded view.
+  const representatives = ranked
+    .filter((candidate, index) => ranked.findIndex((entry) => entry.eventClass === candidate.eventClass) === index)
+    .slice(0, limit);
+  const selected = new Set(representatives);
+  const shown = [
+    ...representatives,
+    ...ranked.filter((entry) => !selected.has(entry)).slice(0, limit - representatives.length),
+  ].sort((a, b) => rank[b.eventClass] - rank[a.eventClass] || b.row.count - a.row.count || a.row.kind.localeCompare(b.row.kind));
   const patterns = shown.map(({ row, eventClass }): MetaPattern => ({
     category: 'pty-host-health',
     ref: `pty-host:kind:${encodeURIComponent(row.kind)}`,
@@ -137,7 +146,8 @@ export async function buildPtyHostHealthLane(
       )
       SELECT kind, count(*)::int AS count,
              count(DISTINCT owner_id)::int AS owners,
-             max(id)::text AS latest_id, max(ts)::text AS last_at,
+             ((array_agg(id ORDER BY ts DESC, id DESC))[1])::text AS latest_id,
+             max(ts)::text AS last_at,
              count(*) OVER()::int AS total_kinds
         FROM scoped
        GROUP BY kind
