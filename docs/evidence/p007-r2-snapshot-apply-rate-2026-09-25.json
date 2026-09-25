@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "p2p-join-catchup-speed-2026-09-23 R-2 (P-002): read-merge snapshot-set apply rate on the Mac VM rig, run #16",
+  "framework": "operational",
+  "command": [
+    "tower: bash .papercusp/scratch/p007/run16-drive.sh  # verify papercusp-staging source, reset the Mac VM to a fresh hyperbee store + embedded PG, compose the sidecar bundle, start the timeline probe",
+    "mac-vm: sidecar serve log -> /tmp/serve-current.log; timeline probe -> ~/p007-run16-probe.out",
+    "tower: per-~2-min set progress sampler -> .papercusp/scratch/p007/run16-set-progress.txt"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T20:24:46Z",
+  "finishedAt": "2026-09-25T21:08:47Z",
+  "summary": "R-2 method on the Mac VM rig, build papercusp-staging 14d91e00e7c5, fresh device joining the papercusp pot (log 5b00878b). The graded P-008 APPLIED line for the joined log's snapshot set reports 622,335 rows in 1325.9 s = 469 rows/s, in one pass. The R-2 gate is 10x the ~25 rows/s row-by-row re-apply measured on 2026-09-23, i.e. 250 rows/s; 469 rows/s is ~19x. Tail ops are recorded and disclosed against the 66-90 ops/s serial tail rate, not gated (owner ruling D-033 #2, BAR amendments D-041/D-045). Plan Decision: D-044 (run #16); earlier runs on other builds: run #10 659 rows/s (D-035), run #11 627 rows/s.",
+  "assertions": [
+    {
+      "id": "r2-applied-line-present",
+      "passed": true,
+      "evidence": "VM /tmp/serve-current.log: '[2026-09-25T21:04:20.741Z] [read-merge] [papercusp-workspace/papercusp] P-008 snapshot set: log 5b00878b7df0 set@7789069: APPLIED 478 chunk(s), 622335 row(s) in 1325.9s (this cursor was seeded at it).' Exactly one APPLYING line for set@7789069 (first chunk 1/478 at 20:42:14.843Z): one pass, no rewind."
+    },
+    {
+      "id": "r2-snapshot-rows-at-least-10x-serial",
+      "passed": true,
+      "evidence": "622335 rows / 1325.9 s = 469.4 rows/s >= 250 rows/s (10 x ~25 rows/s serial re-apply, 2026-09-23). Ratio ~18.8x."
+    },
+    {
+      "id": "r2-rate-profile",
+      "passed": true,
+      "evidence": "Per ~2 min over the set (tower run16-set-progress.txt): 694, 543, 515, 428, 443, 345, 513, 511, then 238 and 200 rows/s over chunks 424-455 (21:00:45-21:03:00Z). The average, not any single window, is the graded figure."
+    },
+    {
+      "id": "r2-tail-ops-disclosed-not-gated",
+      "passed": true,
+      "evidence": "Probe backlog 8,975 at 21:04:27.932Z -> 181 at 21:04:57.978Z: 8,798 ops merged in 30.05 s, >= 293 ops/s (bounded by the sample interval) against the 66-90 ops/s serial tail rate, ~3.3-4.4x. Recorded and disclosed only; not a gate (D-033 #2)."
+    }
+  ]
+}
