@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-004 root SU turn-start HTTP receipt and confirmed cursor",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready scripts/verify-tauri-headless.sh -- python3 -",
+    "Inside the disposable host: coord:declare-intent, mode:set auto, POST /api/agent-mcp/turn-start-memory with confirmedDelivery:null, read orientation cursor, echo the returned token in a second POST, then read the committed cursor receipt"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T22:26:34Z",
+  "finishedAt": "2026-09-25T22:29:10Z",
+  "summary": "The isolated current-build turn-start endpoint returned nonempty orientation text and a delivery token. Its pending identityComponentDeliveryV1 receipt bound the root SU mode and assignment contributions from the declared producers; echoing the received token promoted the same bound root receipt to the committed cursor. The assertion command and verifier teardown exited 0.",
+  "assertions": [
+    {
+      "id": "nonempty-turn-start-delivery",
+      "passed": true,
+      "evidence": "The first native POST returned ok:true, nonempty text with SHA-256 4c92617f1d22fcc5510d2d8979b88c449b8d8feee209812ea2869dac2a2b9086, and a nonempty deliveryToken. Mode AUTO and presence intent were recorded first in the disposable workspace."
+    },
+    {
+      "id": "root-su-pending-producer-receipt",
+      "passed": true,
+      "evidence": "Pending orientation cursor identityComponentDeliveryV1 status=bound; root.identityId=su, sourceRevision=f4d612298e67e1b280e0c71f81e2baff45c83dfc7e03d394f25e2e2d86930282, current-mode-state producerRef=modes/store:agent_modes, current-assignment producerRef=coord:presence."
+    },
+    {
+      "id": "confirmed-root-su-cursor",
+      "passed": true,
+      "evidence": "The second native POST echoed the exact received deliveryToken. The committed orientation cursor then held status=bound, the same token and the same root source revision; no pending-only receipt was mistaken for confirmed delivery."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-004",
+  "workItem": "WI-10002959",
+  "operatorPlane": "isolated current-build turn-start HTTP endpoint and disposable migrated PostgreSQL cursor",
+  "limitation": "The assertion script received the block and confirmed its token; it did not run an LLM model turn. This is current-build native hook evidence, not deployed main, rollback, fleet/GOAL replacement, or final P-008 acceptance. The disposable host and database were torn down after the check."
+}
