@@ -9,7 +9,8 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { buildBlueprintReleaseArchive, commitBlueprintRelease } from './cupboard/blueprint-release';
 import { diffIdentitySpecifications, previewNamedIdentityComposition,
   resolveIdentityStackMutation, saveNamedIdentityComposition } from './identity-management';
-import { bindSelectedIdentitySetting, getIdentitySource, getSelectedModeCatalog, listIdentitySources } from './agent-identities/source';
+import { bindSelectedIdentitySetting, getIdentitySource, getSelectedModeCatalog, listIdentitySources,
+  resolveNamedIdentityCompositionSelection } from './agent-identities/source';
 import { renderStackTransitionContext, renderStackTransitionContextResult } from './stack-binding-channel';
 import type { SuLaunchSpecRecord } from './su-persona-render';
 
@@ -67,18 +68,27 @@ describe('identity management service', () => {
       const preview = await previewNamedIdentityComposition(input);
       expect(preview.components.map((component) => component.ref)).toEqual(input.componentRefs);
       expect(preview.components.map((component) => component.tier)).toEqual(['local', 'local']);
-      expect(preview.preview.launchCompatibility).toMatchObject({ eligible: false,
-        reason: expect.stringContaining('launch selection') });
+      expect(preview.preview.launchCompatibility).toMatchObject({ eligible: true });
       expect(preview.preview.layers.map((layer) => layer.id)).toContain(domainId);
       const saved = await saveNamedIdentityComposition(input);
       expect(saved.ok).toBe(true);
       const yaml = await readFile(join(root, '.papercusp', 'blueprints', id, 'blueprint.yaml'), 'utf8');
-      expect(parseYaml(yaml)).toMatchObject({ id, extends: [domainId, practiceId], slots: [] });
+      expect(parseYaml(yaml)).toMatchObject({ id, extends: [domainId, practiceId], slots: [],
+        roles: [{ id: 'su', stack: input.componentRefs }] });
       expect((await getIdentitySource(id, { repoDir: root })).ok).toBe(true);
       expect((await listIdentitySources({ repoDir: root, after: 'zy', limit: 10 })).identities)
         .toContainEqual(expect.objectContaining({ id, launchCompatibility: {
-          eligible: false, reason: expect.stringContaining('launch selection'),
+          eligible: true, reason: null,
         } }));
+      const selected = await resolveNamedIdentityCompositionSelection(id, root);
+      expect(selected.stack).toEqual(input.componentRefs);
+      const listed = (await listIdentitySources({ repoDir: root, after: 'zy', limit: 10 })).identities
+        .find((entry) => entry.id === id);
+      expect(listed?.sourceRevision).toBe(selected.sourceRevision);
+      await writeFile(join(root, '.papercusp', 'blueprints', domainId, 'blueprint.yaml'),
+        stringifyYaml({ id: domainId, extends: 'base', version: '1.0.1', slots: [{ slot: 'domain' }] }));
+      expect((await resolveNamedIdentityCompositionSelection(id, root)).sourceRevision)
+        .not.toBe(selected.sourceRevision);
       const providerDir = join(root, '.papercusp', 'blueprints', 'zz-provider-parent');
       const providerChildDir = join(root, '.papercusp', 'blueprints', 'zz-provider-child');
       await mkdir(providerDir, { recursive: true });
