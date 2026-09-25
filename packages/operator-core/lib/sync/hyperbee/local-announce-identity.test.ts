@@ -624,4 +624,62 @@ describe('resolveLocalAnnounceIdentityFromHiveMembers', () => {
 
     expect(identity).toBeNull();
   });
+
+  // WI-10003109: the owner's own row can carry an empty gist (written at pot creation,
+  // before the gist existed). Announcing '' makes every gist-gated joiner reject the owner.
+  const emptyGistMember = {
+    githubUserId: 4242,
+    githubUsername: 'alice',
+    deviceAttestations: [{ device_pubkey: 'PUBKEY==', gist_id: '' }],
+  };
+  const cachedIdentity = {
+    keychainId: '4242:m',
+    devicePubkeyBase64: 'PUBKEY==',
+    githubUserId: 4242,
+    githubLogin: 'alice',
+    attestationGistId: 'gist-cached',
+  };
+
+  it('fills an empty row gist from the cached identity of the same device and user', async () => {
+    const identity = await resolveLocalAnnounceIdentityFromHiveMembers({
+      members: [emptyGistMember],
+      buildKeychainId: (uid) => `${uid}:m`,
+      loadExistingKeypair: async (keychainId) => ({ keychainId, pubkeyBase64: 'PUBKEY==' }),
+      loadCachedIdentity: async () => cachedIdentity,
+    });
+
+    expect(identity?.attestationGistId).toBe('gist-cached');
+  });
+
+  it('keeps the empty gist when the cached identity names another device or user', async () => {
+    for (const cached of [
+      { ...cachedIdentity, devicePubkeyBase64: 'OTHER==' },
+      { ...cachedIdentity, githubUserId: 9999 },
+    ]) {
+      const identity = await resolveLocalAnnounceIdentityFromHiveMembers({
+        members: [emptyGistMember],
+        buildKeychainId: (uid) => `${uid}:m`,
+        loadExistingKeypair: async (keychainId) => ({ keychainId, pubkeyBase64: 'PUBKEY==' }),
+        loadCachedIdentity: async () => cached,
+      });
+
+      expect(identity?.attestationGistId).toBe('');
+    }
+  });
+
+  it('prefers the row gist over the cache and does not read the cache for it', async () => {
+    let cacheReads = 0;
+    const identity = await resolveLocalAnnounceIdentityFromHiveMembers({
+      members: [{ ...emptyGistMember, deviceAttestations: [{ device_pubkey: 'PUBKEY==', gist_id: 'gist-row' }] }],
+      buildKeychainId: (uid) => `${uid}:m`,
+      loadExistingKeypair: async (keychainId) => ({ keychainId, pubkeyBase64: 'PUBKEY==' }),
+      loadCachedIdentity: async () => {
+        cacheReads++;
+        return cachedIdentity;
+      },
+    });
+
+    expect(identity?.attestationGistId).toBe('gist-row');
+    expect(cacheReads).toBe(0);
+  });
 });
