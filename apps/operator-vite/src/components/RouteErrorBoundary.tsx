@@ -4,6 +4,7 @@ import { hardReload } from '@papercusp/operator-core/lib/hard-reload';
 import { CHUNK_LOAD_ERROR_RE } from '@papercusp/operator-core/lib/lazy-with-retry';
 import { inDevBuildWatcherShell } from '../lib/dev-build-shell';
 import { ErrorDetail } from './ErrorDetail';
+import { reportRenderCrash } from '../lib/render-crash-report';
 
 /**
  * Error boundary around the route content (`<Outlet/>`).
@@ -221,6 +222,7 @@ class RouteErrorBoundaryInner extends Component<Props, State> {
     this.setState({ componentStack: info.componentStack ?? null });
     // eslint-disable-next-line no-console
     console.error('[RouteErrorBoundary] caught render error:', error, info.componentStack);
+    reportRenderCrash('route', error, info.componentStack ?? null);
     // Stale-chunk AUTO-HEAL (2026-07-01): a long-open window whose lazy tab
     // chunk 404s after a rebuild used to sit on "Something went wrong" until a
     // human clicked Reload. Reload once automatically; if the 60s debounce

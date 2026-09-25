@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { ErrorDetail } from '../ErrorDetail';
+import { reportRenderCrash } from '../../lib/render-crash-report';
 
 /**
  * AdvTabErrorBoundary — isolates a render crash in ONE /adv tab body so it can't
@@ -43,6 +44,7 @@ export default class AdvTabErrorBoundary extends Component<Props, State> {
     // The shell survives a caught tab crash, so this console line is the only
     // signal the tab died — surfaced for the read_console_messages debug path.
     console.error(`[adv-tab:${this.props.tab}] render crashed:`, error, info.componentStack);
+    reportRenderCrash('adv-tab', error, info.componentStack ?? null, this.props.tab);
   }
 
   render(): ReactNode {
