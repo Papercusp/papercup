@@ -28,7 +28,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 
 const { buildStateOfHiveReaders } = await import('./corpus-digest-deps');
+const { buildPtyHostHealthLane } = await import('./pty-host-health-lane');
 const { synthesizeStateOfHive } = await import('./corpus-digest');
+const { flattenDigest } = await import('./lenses');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { createIssue } = await import('../issues-engineer');
 const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');
@@ -202,5 +204,37 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(e2e!.summary).toContain('broken');
     expect(e2e!.category).toBe('rubric-rating');
     expect(digest.rubricRatings.some((p) => p.ref.includes('ideation-quality'))).toBe(false); // healthy → not surfaced
+  });
+
+  it('ingested PTY-host failures and recovered retries reach Blender with persisted row citations', async () => {
+    const sql = db.adminSql;
+    const at = new Date(T).toISOString();
+    await sql`
+      INSERT INTO harness_shared.psu_pty_host_events
+        (workspace_id, owner_id, ts, kind, payload, row_digest)
+      VALUES
+        (${WS}, 'su-pty-a', ${at}::timestamptz, 'submit-verify-unconfirmed',
+         '{"label":"reset inject","resubmits":3}'::jsonb, 'pty-health-failure'),
+        (${WS}, 'su-pty-a', ${at}::timestamptz, 'turn-delivered',
+         '{"label":"reset inject","resubmits":3}'::jsonb, 'pty-health-recovered'),
+        (${WS}, 'su-pty-a', ${at}::timestamptz, 'turn-delivered',
+         '{"label":"turn inject","resubmits":0}'::jsonb, 'pty-health-routine'),
+        (${OTHER_WS}, 'su-pty-other', ${at}::timestamptz, 'pty-load-failed',
+         '{}'::jsonb, 'pty-health-other-workspace')`;
+
+    const lane = await buildPtyHostHealthLane({ workspaceId: WS, nowMs: T + 1_000 });
+    const refs = lane.map((p) => p.ref);
+    expect(refs).toContain('pty-host:kind:submit-verify-unconfirmed');
+    expect(refs).toContain('pty-host:kind:turn-delivered-after-retry');
+    expect(refs).not.toContain('pty-host:kind:turn-delivered');
+    expect(refs).not.toContain('pty-host:kind:pty-load-failed');
+    expect(lane.every((p) => p.detail?.includes('psu_pty_host_events.id='))).toBe(true);
+
+    const flat = flattenDigest({
+      recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
+      ptyHostHealth: lane,
+    });
+    expect(flat.map((p) => p.ref)).toEqual(refs);
+    expect(flat.every((p) => p.category === 'pty-host-health')).toBe(true);
   });
 });

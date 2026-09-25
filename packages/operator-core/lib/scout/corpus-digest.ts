@@ -226,6 +226,7 @@ const META_PATTERN_CATEGORIES = [
   'standing-fact',
   'niche-map',
   'watchdog-health',
+  'pty-host-health',
   'gate-pipeline-health',
   'coord-health',
   'tool-telemetry',
@@ -305,6 +306,9 @@ export const DigestSchema = z.object({
    *  collector signals + standing open conditions (watchdog_ticks). OPTIONAL:
    *  populated by the cycle seam (cycle-deps readCorpus), like nicheMap. */
   watchdogHealth: z.array(MetaPatternSchema).optional(),
+  /** PTY host runtime failures and recovered retries from psu_pty_host_events.
+   *  OPTIONAL: populated by the cycle seam, like watchdogHealth. */
+  ptyHostHealth: z.array(MetaPatternSchema).optional(),
   /** GATE / PIPELINE HEALTH (blender-self-learning-2026-07-12 P-010) — the
    *  release ship-path: standing gate reds + stall, promotion/deploy lag, and
    *  chronic pipeline_events failure classes (WI-4455). OPTIONAL: populated by

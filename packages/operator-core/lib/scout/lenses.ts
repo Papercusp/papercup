@@ -173,6 +173,7 @@ export function flattenDigest(digest: CorpusDigest): MetaPattern[] {
     // P-007 (blender-self-learning): chronic watchdog signals ride the flatten
     // so ideation targets measured infrastructure pain directly.
     ['watchdog-health', digest.watchdogHealth ?? []],
+    ['pty-host-health', digest.ptyHostHealth ?? []],
     // P-010 (blender-self-learning): the release ship-path incident rides the
     // flatten so ideation targets chronic gate/pipeline pain directly.
     ['gate-pipeline-health', digest.gatePipelineHealth ?? []],
@@ -225,6 +226,8 @@ function categoryLabel(c: MetaPatternCategory): string {
       return 'QD niche map (novelty guidance — occupied niches; propose in UNEXPLORED behavior-space)';
     case 'watchdog-health':
       return 'Watchdog health (chronic measured infrastructure signal — 15min collectors)';
+    case 'pty-host-health':
+      return 'PTY host health (persisted delivery failures and recovered retries)';
     case 'gate-pipeline-health':
       return 'Gate / pipeline health (release ship-path — standing reds, promotion/deploy stall, chronic pipeline failures)';
     case 'coord-health':

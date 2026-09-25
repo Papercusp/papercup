@@ -632,6 +632,16 @@ export function buildScoutCycleDeps(
       } catch {
         /* best-effort */
       }
+      // PTY-HOST-HEALTH: the host's durable event stream already reaches
+      // Postgres; surface failures and recovered retries to the same grounded
+      // corpus the ideators read. An unavailable store drops only this lane.
+      try {
+        const { buildPtyHostHealthLane } = await import('./pty-host-health-lane');
+        const lane = await buildPtyHostHealthLane();
+        if (lane.length > 0) digest.ptyHostHealth = lane;
+      } catch {
+        /* best-effort */
+      }
       // GATE / PIPELINE-HEALTH lane (blender-self-learning-2026-07-12 P-010 /
       // WI-4455): the release ship-path — standing gate reds + stall,
       // promotion/deploy lag, and chronic pipeline_events failures, joined into

@@ -92,6 +92,7 @@ export type MetaPatternCategory =
   // signals + standing open conditions — infrastructure pain measured every
   // 15min, fed to ideation directly instead of waiting for a human filing.
   | 'watchdog-health'
+  | 'pty-host-health'
   // blender-self-learning-2026-07-12 P-010: the release pipeline's ship-path
   // health — standing gate reds + stall, promotion/deploy lag, and chronic
   // pipeline_events failure classes, JOINED into one incident (WI-4455).
@@ -187,6 +188,9 @@ export interface CorpusDigest {
    *  (`ref` = `watchdog:<collector>` / `watchdog:open:<key>`). OPTIONAL:
    *  populated by the cycle seam, like standingFacts / nicheMap. */
   watchdogHealth?: MetaPattern[];
+  /** PTY host delivery failures and recovered retries from the existing
+   *  per-owner event ingest. OPTIONAL: populated by the cycle seam. */
+  ptyHostHealth?: MetaPattern[];
   /** GATE / PIPELINE HEALTH (blender-self-learning-2026-07-12 P-010) — the
    *  release ship-path: standing gate reds + stall, promotion/deploy lag, and
    *  chronic pipeline_events failure classes, joined into one incident
