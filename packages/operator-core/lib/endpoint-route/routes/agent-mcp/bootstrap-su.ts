@@ -2766,6 +2766,8 @@ export const bootstrapSu = defineTool({
         harnessSlug,
         role: suRoleRaw ?? 'su',
         stack: spec.stack,
+        compositionRootId: body.stack?.length === 1 && body.stack[0]?.startsWith('composition:')
+          ? body.stack[0].slice('composition:'.length) : null,
         stateRevision: precedence.watermark,
         state: {
           schemaVersion: 1,
@@ -2776,9 +2778,18 @@ export const bootstrapSu = defineTool({
       });
       if (body.selected_identity_revision) {
         const selectedId = body.stack![0]!.split(':').slice(1).join(':');
-        if (!selectedId || !launchArtifact.specificationArtifact.inputs.some((entry) =>
-          entry.kind === 'blueprint-layer' && entry.ref === selectedId &&
-          entry.contentHash === body.selected_identity_revision)) {
+        const pinned = launchArtifact.specificationArtifact.inputs.filter((entry) =>
+          entry.kind === 'blueprint-layer');
+        let revisionMatches = pinned.some((entry) => entry.ref === selectedId &&
+          entry.contentHash === body.selected_identity_revision);
+        if (body.stack![0]!.startsWith('composition:')) {
+          const { resolveNamedIdentityCompositionSelection } = await import('../../../agent-identities/source');
+          const selected = await resolveNamedIdentityCompositionSelection(selectedId, cwd);
+          revisionMatches = selected.sourceRevision === body.selected_identity_revision &&
+            selected.layers.every((layer) => pinned.some((entry) =>
+              entry.ref === layer.id && entry.contentHash === layer.contentHash));
+        }
+        if (!selectedId || !revisionMatches) {
           throw new Error('selected identity source revision changed after picker selection');
         }
       }

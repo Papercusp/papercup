@@ -219,7 +219,8 @@ export async function readIdentitySurface(input: {
 }
 
 /** A named composition is another validated abstract blueprint source in the
- * existing local library. It has no work item, fleet or launch slot of its own. */
+ * existing local library. Its SU role stack preserves the exact selected slot
+ * of each component without assigning a slot to the composition container. */
 export async function previewNamedIdentityComposition(input: {
   id: string;
   description?: string;
@@ -258,7 +259,7 @@ export async function previewNamedIdentityComposition(input: {
   }
   const source = { id: input.id, extends: components.map((entry) => entry.id),
     version: '1.0.0', description: input.description?.trim() || `Named composition ${input.id}`,
-    slots: [] as [] };
+    slots: [] as [], roles: [{ id: 'su', stack: components.map((entry) => entry.ref) }] };
   const inspected = inspectIdentitySource(source, { repoDir: input.repoDir });
   if (!inspected.ok) {
     const details = 'errors' in inspected && Array.isArray(inspected.errors)

@@ -252,7 +252,7 @@ Launch context:
   --agent=<claude|omp|codex>         Backend to launch
   --tui=<pui>                       Caller origin (PUI hides recursive PUI choice)
   --role=<role>                      Launch a role-scoped session
-  --stack=<slot:id>                  Select an identity component (repeatable)
+  --stack=<slot:id|composition:id>   Select an identity component or named composition
   --identity-revision=<sha256>       Require the selected stack source revision
   --workspace=<slug>                 Workspace context
   --harness=<slug>                   Harness context
@@ -8596,6 +8596,14 @@ export async function pickRole() {
 export function identityPickerChoices(page) {
   const choices = [{ name: "SU  — default identity", value: "su" }];
   for (const identity of page.identities || []) {
+    if (identity.slots?.length === 0 && identity.launchCompatibility?.eligible) {
+      choices.push({
+        name: `${identity.id}  ·  named composition  ·  ${identity.tier}  ·  ${identity.version || "unversioned"}`,
+        value: `composition:${identity.id}`,
+        ...(/^[a-f0-9]{64}$/.test(identity.sourceRevision || "")
+          ? {} : { disabled: "source revision unavailable" }),
+      });
+    }
     for (const slot of identity.slots || []) {
       const ref = `${slot.slot}:${identity.id}`;
       choices.push({
@@ -8633,7 +8641,8 @@ export async function pickIdentity(workspace, harness) {
       continue;
     }
     const identity = (page.identities || []).find((entry) =>
-      entry.slots?.some((slot) => `${slot.slot}:${entry.id}` === choice));
+      entry.slots?.some((slot) => `${slot.slot}:${entry.id}` === choice) ||
+      (entry.slots?.length === 0 && `composition:${entry.id}` === choice));
     if (!identity || identity.launchCompatibility?.eligible === false ||
         !/^[a-f0-9]{64}$/.test(identity.sourceRevision || "")) {
       throw new Error("selected identity has no validated source revision");

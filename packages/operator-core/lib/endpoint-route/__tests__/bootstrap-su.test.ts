@@ -7,7 +7,7 @@
  * (claude/omp) or codexHome (codex) + a per-session PAPERCUSP_SID (P-022),
  * NOT a `*-su` wrapper.
  */
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1292,6 +1292,52 @@ describe('bootstrap-su', () => {
     }));
     const exact = await callPost(selection);
     expect(exact.status).toBe(200);
+  });
+
+  it('pins every component of a selected named composition at bootstrap', async () => {
+    const { resolveNamedIdentityCompositionSelection } = await import('../../agent-identities/source');
+    const dir = mkdtempSync(join(tmpdir(), 'bootstrap-named-composition-'));
+    try {
+      const componentDir = join(dir, '.papercusp', 'blueprints', 'named-route-domain');
+      const rootDir = join(dir, '.papercusp', 'blueprints', 'named-route-root');
+      mkdirSync(componentDir, { recursive: true });
+      mkdirSync(rootDir, { recursive: true });
+      const componentPath = join(componentDir, 'blueprint.yaml');
+      writeFileSync(componentPath,
+        'id: named-route-domain\nextends: base\nversion: 1.0.0\nslots:\n  - slot: domain\n');
+      writeFileSync(join(rootDir, 'blueprint.yaml'),
+        'id: named-route-root\nextends: named-route-domain\nslots: []\nroles:\n  - id: su\n    stack:\n      - domain:named-route-domain\n');
+      const selected = await resolveNamedIdentityCompositionSelection('named-route-root', dir);
+      const originalBuild = buildLaunchSpecMock.getMockImplementation()!;
+      const selection = { agent: 'claude', cwd: dir, stack: ['composition:named-route-root'],
+        selected_identity_revision: selected.sourceRevision };
+      const run = async () => {
+        buildLaunchSpecMock.mockImplementationOnce(async (input: any) => ({
+          ...await originalBuild(input), cwd: dir, stack: selected.stack,
+        }));
+        compileLaunchSpecificationArtifactMock.mockImplementationOnce(async (input: any) => ({
+          promptText: input.promptText, stack: input.stack,
+          specificationArtifact: { inputs: selected.layers.map((layer) => ({
+            kind: 'blueprint-layer', ref: layer.id, contentHash: layer.contentHash,
+          })) },
+          specificationRevision: 'b'.repeat(64),
+          stateRevision: input.stateRevision ?? 'c'.repeat(64),
+          compositionSource: 'compatibility', resourceArtifacts: [],
+        }));
+        return callPost(selection);
+      };
+      const exact = await run();
+      expect(exact.status, JSON.stringify(await exact.clone().json())).toBe(200);
+      expect(compileLaunchSpecificationArtifactMock).toHaveBeenCalledWith(
+        expect.objectContaining({ compositionRootId: 'named-route-root', stack: selected.stack }));
+      writeFileSync(componentPath,
+        'id: named-route-domain\nextends: base\nversion: 1.0.1\nslots:\n  - slot: domain\n');
+      const changed = await run();
+      expect(changed.status).toBe(500);
+      expect((await changed.json()).error).toContain('source revision changed after picker selection');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('options (no harness) lists the active-workspace harnesses', async () => {

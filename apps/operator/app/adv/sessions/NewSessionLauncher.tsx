@@ -107,6 +107,12 @@ export function buildIdentityLaunchOptions(catalog: Pick<IdentityLaunchCatalog,
   const options: ComboboxOption[] = [{ value: IDENTITY_SELECT_DEFAULT, label: 'SU',
     detail: 'Default identity composition' }];
   for (const identity of catalog.identities) {
+    if (identity.slots.length === 0 && identity.launchCompatibility?.eligible) {
+      options.push({ value: `composition:${identity.id}`, label: identity.id,
+        detail: `Named composition · ${identity.tier} · ${identity.version || 'unversioned'}`,
+        keywords: [identity.id, identity.tier, 'composition'],
+        disabled: !/^[a-f0-9]{64}$/.test(identity.sourceRevision) });
+    }
     for (const slot of identity.slots) {
       options.push({ value: `${slot.slot}:${identity.id}`, label: identity.id,
         detail: identity.launchCompatibility?.eligible === false
@@ -377,7 +383,8 @@ export default function NewSessionLauncher({
   const identityOptions = useMemo(() => buildIdentityLaunchOptions(identityCatalog),
     [identityCatalog.identities, identityCatalog.unreadable, identityCatalog.nextAfter]);
   const selectedIdentity = identityCatalog.identities.find((identity) =>
-    identity.slots.some((slot) => `${slot.slot}:${identity.id}` === identityRef)) ?? null;
+    identity.slots.some((slot) => `${slot.slot}:${identity.id}` === identityRef) ||
+    (identity.slots.length === 0 && `composition:${identity.id}` === identityRef)) ?? null;
   const modelOptions = useMemo(
     () => buildModelOptions(launchOptions.ompCatalog.models),
     [launchOptions.ompCatalog.models],

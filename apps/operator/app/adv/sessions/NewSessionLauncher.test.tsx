@@ -237,6 +237,23 @@ describe('selected identity launch', () => {
       stack: ['domain:research-steward'], selectedIdentityRevision: revision,
     })));
   });
+  it('forwards a named composition root and its closure revision', async () => {
+    const revision = 'b'.repeat(64);
+    h.identityCatalog.identities = [{ id: 'named-review', tier: 'local', version: '1.0.0',
+      sourceRevision: revision, slots: [],
+      launchCompatibility: { eligible: true, reason: null } }];
+    const { buildIdentityLaunchOptions } = await import('./NewSessionLauncher');
+    expect(buildIdentityLaunchOptions(h.identityCatalog)).toContainEqual(expect.objectContaining({
+      value: 'composition:named-review', disabled: false,
+    }));
+    render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Identity for new session' }),
+      { target: { value: 'composition:named-review' } });
+    fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+    await waitFor(() => expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({
+      stack: ['composition:named-review'], selectedIdentityRevision: revision,
+    })));
+  });
 });
 afterEach(() => cleanup());
 
