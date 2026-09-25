@@ -1,25 +1,126 @@
 /** Resolve a worker's authority from the accepted operation, never launch args. */
-import type { Sql } from 'postgres';
+import type { JSONValue, Sql } from 'postgres';
+import { isDeepStrictEqual } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import { getWorkItem } from '../work-items';
 import { runWithWorkspace } from '../workspace-als';
 import { getIdentitySource } from '../agent-identities/source';
 import { normalizeSessionActivation } from '../session-activation';
-import { readAcceptedBlueprintDirectWorkItem } from './operation-admission';
+import { readAcceptedBlueprintDirectWorkItem, type AcceptedOperationPin } from './operation-admission';
 
 export interface AcceptedOperationWorkerBinding {
   workItemId: string;
+  harnessSlug: string;
   operationId: string;
   specificationRevision: string;
+  pin: AcceptedOperationPin;
   identity: { ref: string; revision: string; contentHash: string };
   stack: string[];
   requiredTools: string[];
 }
 
 export type ActiveOperationWorkerClaimRead =
-  | { status: 'bound'; binding: AcceptedOperationWorkerBinding }
+  | { status: 'bound'; binding: AcceptedOperationWorkerBinding; receipt: {
+      sessionId: number;
+      workspaceId: string;
+      ownerId: string;
+      specificationRevision: string;
+      stateRevision: string;
+      acceptedOperation: Record<string, unknown>;
+    } }
   | { status: 'none' }
   | { status: 'unavailable'; reason: string };
+
+/** A worker can claim only the direct item named by its applied launch receipt.
+ * Ordinary sessions retain ordinary items; a pinned item requires its worker.
+ * The SQL claim writer must repeat these pin comparisons in its UPDATE so a
+ * changed payload cannot slip through after this read. */
+export function matchOperationWorkerClaim(
+  read: ActiveOperationWorkerClaimRead,
+  item: { id: string; harness: string | null; payload: unknown },
+): { allowed: true } | { allowed: false; reason: string } {
+  if (read.status === 'unavailable') return { allowed: false, reason: read.reason };
+  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? item.payload as Record<string, unknown> : null;
+  const pin = payload?.blueprintOperation;
+  if (read.status === 'none') return pin === undefined
+    ? { allowed: true }
+    : { allowed: false, reason: 'accepted operation item requires its applied worker' };
+  if (!pin || typeof pin !== 'object' || Array.isArray(pin)) {
+    return { allowed: false, reason: 'operation worker cannot claim an unpinned item' };
+  }
+  const accepted = pin as Record<string, unknown>;
+  const binding = read.binding;
+  if (item.id !== binding.workItemId || item.harness !== binding.harnessSlug ||
+      accepted.kind !== 'blueprint-operation' || accepted.harnessSlug !== binding.harnessSlug ||
+      accepted.operationId !== binding.operationId ||
+      accepted.specificationRevision !== binding.specificationRevision ||
+      !isDeepStrictEqual(accepted, binding.pin)) {
+    return { allowed: false, reason: 'work item differs from the applied operation receipt' };
+  }
+  return { allowed: true };
+}
+
+/** Repeat the receipt/pin match inside the claiming UPDATE. The preceding
+ * read gives a useful refusal reason; this predicate is the race fence. */
+export function operationWorkerClaimWhereSql(
+  sql: Sql,
+  read: ActiveOperationWorkerClaimRead,
+  columns: {
+    payload: 'target.payload' | 'payload' | 'wi.payload';
+    id: 'target.feature_id' | 'target.issue_id' | 'feature_id' | 'wi.feature_id';
+    harness: 'target.harness_slug' | 'target.scope' | 'harness_slug' | 'wi.harness_slug';
+  },
+) {
+  if (read.status === 'unavailable') return sql`FALSE`;
+  const payload = sql.unsafe(columns.payload);
+  if (read.status === 'none') return sql`NOT (COALESCE(${payload}, '{}'::jsonb) ? 'blueprintOperation')`;
+  const pin = sql`(${payload} -> 'blueprintOperation')`;
+  const binding = read.binding;
+  const receipt = read.receipt;
+  return sql`(
+    ${sql.unsafe(columns.id)} = ${binding.workItemId}
+    AND ${sql.unsafe(columns.harness)} = ${columns.harness === 'target.scope'
+      ? (binding.harnessSlug ? `harness:${binding.harnessSlug}` : 'operator')
+      : binding.harnessSlug}
+    AND ${pin} ->> 'kind' = 'blueprint-operation'
+    AND ${pin} ->> 'harnessSlug' = ${binding.harnessSlug}
+    AND ${pin} ->> 'operationId' = ${binding.operationId}
+    AND ${pin} ->> 'specificationRevision' = ${binding.specificationRevision}
+    AND ${pin} = ${sql.json(binding.pin as JSONValue)}
+    AND EXISTS (
+      SELECT 1 FROM harness_shared.adv_sessions s
+      JOIN harness_shared.session_briefs b
+        ON b.workspace_id = s.workspace_id AND b.owner_id = s.coord_owner_id
+      WHERE s.id = ${receipt.sessionId}
+        AND s.workspace_id = ${receipt.workspaceId}
+        AND s.coord_owner_id = ${receipt.ownerId}
+        AND s.ended_at IS NULL AND s.ended_by IS NULL
+        AND s.launch_spec->'acceptedOperation' = ${sql.json(receipt.acceptedOperation as JSONValue)}
+        AND s.launch_spec->>'specificationRevision' = ${receipt.specificationRevision}
+        AND s.launch_spec->>'stateRevision' = ${receipt.stateRevision}
+        AND b.control_state->'activation'->>'status' = 'applied'
+        AND b.control_state->'activation'->'applied'->>'specificationRevision' = ${receipt.specificationRevision}
+        AND b.control_state->'activation'->'applied'->>'stateRevision' = ${receipt.stateRevision}
+        AND b.control_state->'activation'->'attribution'->>'sessionId' = ${receipt.ownerId}
+    )
+  )`;
+}
+
+/** A claim receipt is not an effect lease. A worker must still hold the item
+ * when a state or completion write reaches its canonical SQL writer. */
+export function operationWorkerEffectWhereSql(
+  sql: Sql,
+  read: ActiveOperationWorkerClaimRead,
+  columns: Parameters<typeof operationWorkerClaimWhereSql>[2] & {
+    holder: 'taken_by' | 'wi.taken_by';
+  },
+) {
+  const claim = operationWorkerClaimWhereSql(sql, read, columns);
+  return read.status === 'bound'
+    ? sql`${claim} AND ${sql.unsafe(columns.holder)} = ${read.receipt.ownerId}`
+    : claim;
+}
 
 /** Read the current, applied operation identity for a claim target. A launch
  * request is only a desired identity; it cannot authorize a claim until the
@@ -69,6 +170,8 @@ export async function readActiveOperationWorkerClaimBinding(
       !Array.isArray(row.accepted_operation) ? row.accepted_operation as Record<string, unknown> : null;
     const identity = accepted?.identity && typeof accepted.identity === 'object' &&
       !Array.isArray(accepted.identity) ? accepted.identity as Record<string, unknown> : null;
+    const pin = accepted?.pin && typeof accepted.pin === 'object' &&
+      !Array.isArray(accepted.pin) ? accepted.pin as Record<string, unknown> : null;
     const requiredTools = accepted?.requiredTools;
     if (row.launch_workspace_id !== workspaceId || !row.launch_harness_slug ||
         row.launch_role !== session.role || row.grants_kind !== 'object' ||
@@ -77,6 +180,11 @@ export async function readActiveOperationWorkerClaimBinding(
         typeof accepted.workItemId !== 'string' || !accepted.workItemId ||
         typeof accepted.operationId !== 'string' || !accepted.operationId ||
         !/^[0-9a-f]{64}$/.test(String(accepted.specificationRevision ?? '')) ||
+        pin?.kind !== 'blueprint-operation' || pin.harnessSlug !== row.launch_harness_slug ||
+        pin.operationId !== accepted.operationId ||
+        pin.specificationRevision !== accepted.specificationRevision ||
+        typeof pin.operationVersion !== 'string' || !pin.operationVersion ||
+        !pin.input || typeof pin.input !== 'object' || Array.isArray(pin.input) ||
         typeof identity?.ref !== 'string' || !identity.ref ||
         typeof identity.revision !== 'string' || !identity.revision ||
         !/^[0-9a-f]{64}$/.test(String(identity.contentHash ?? '')) ||
@@ -98,10 +206,20 @@ export async function readActiveOperationWorkerClaimBinding(
     }
     return {
       status: 'bound',
+      receipt: {
+        sessionId: session.id,
+        workspaceId,
+        ownerId,
+        specificationRevision: row.specification_revision as string,
+        stateRevision: row.state_revision as string,
+        acceptedOperation: accepted,
+      },
       binding: {
         workItemId: accepted.workItemId,
+        harnessSlug: row.launch_harness_slug,
         operationId: accepted.operationId,
         specificationRevision: accepted.specificationRevision as string,
+        pin: pin as AcceptedOperationPin,
         identity: { ref: identity.ref, revision: identity.revision, contentHash: identity.contentHash as string },
         stack: [`domain:${identity.ref}`],
         requiredTools: [...new Set(requiredTools as string[])].sort(),
@@ -149,8 +267,10 @@ export async function resolveAcceptedOperationWorkerBinding(input: {
     const requiredTools = [...new Set(operation.policy.requiredTools)].sort();
     return {
       workItemId: item.id,
+      harnessSlug: item.harness,
       operationId: pin.operationId,
       specificationRevision: pin.specificationRevision,
+      pin,
       identity: { ref: ref.ref, revision: ref.revision, contentHash: ref.contentHash },
       stack: [`domain:${ref.ref}`],
       requiredTools,
