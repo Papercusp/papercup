@@ -537,6 +537,10 @@ export async function captureCarryArtifactManifest(input: {
    * candidates, external packages and computed imports remain explicit. This
    * does not authenticate a loader or discover files outside the declared set. */
   scriptArtifactIds?: string[];
+  /** Walk relative source candidates transitively from these selected scripts.
+   * Discovered files are frozen separately from the caller's declared graph.
+   * Package exports, runtime loaders and data reads remain outside this walk. */
+  relativeScriptRoots?: string[];
 }) {
   input = structuredClone(input);
   const nonblank = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
@@ -551,10 +555,15 @@ export async function captureCarryArtifactManifest(input: {
   const scriptIds = new Set(input.scriptArtifactIds ?? []);
   if (input.scriptArtifactIds !== undefined && (!Array.isArray(input.scriptArtifactIds) || !scriptIds.size ||
     scriptIds.size !== input.scriptArtifactIds.length || [...scriptIds].some(id =>
-      !input.artifacts.some(artifact => artifact.id === id && /\.(?:[cm]?[jt]s|[jt]sx)$/.test(artifact.filePath))))) {
+      !input.artifacts.some(artifact => artifact.id === id)))) {
     throw new Error('carry script census requires unique declared script artifact ids');
   }
   const scriptSources = new Map<string, string>();
+  const relativeRoots = input.relativeScriptRoots;
+  if (relativeRoots !== undefined && (!Array.isArray(relativeRoots) || !relativeRoots.length ||
+    new Set(relativeRoots).size !== relativeRoots.length || relativeRoots.some(id => !scriptIds.has(id)))) {
+    throw new Error('carry relative census requires unique selected script roots');
+  }
   let scriptBytes = 0;
   const observed = input.configuration;
   if (!observed || !Array.isArray(observed.servers) || observed.servers.some(server =>
@@ -572,8 +581,8 @@ export async function captureCarryArtifactManifest(input: {
     !/^[a-f0-9]{64}$/.test(config.configSha256) || !/^[a-f0-9]{64}$/.test(config.toolInventorySha256)) {
     throw new Error('carry manifest requires a native configuration observation');
   }
-  const artifacts = [];
-  for (const artifact of [...input.artifacts].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
+  const scriptFormat = (path: string) => /\.(?:[cm]?[jt]s|[jt]sx)$/.test(path);
+  const captureArtifact = async (artifact: CarryArtifactInput, retainSource: boolean) => {
     // Legitimate executable links are resolved and bound, so later retargeting
     // fails even if both destinations contain identical bytes. O_NONBLOCK keeps
     // a substituted FIFO from hanging before the regular-file check.
@@ -594,7 +603,7 @@ export async function captureCarryArtifactManifest(input: {
         bytes += read.bytesRead;
         if (bytes > artifact.maxBytes) throw new Error(`carry artifact ${artifact.id} exceeded its byte bound`);
         hash.update(buffer.subarray(0, read.bytesRead));
-        if (scriptIds.has(artifact.id)) {
+        if (retainSource) {
           scriptBytes += read.bytesRead;
           if (bytes > 4 * 1024 * 1024 || scriptBytes > 32 * 1024 * 1024) {
             throw new Error('carry script census exceeds source-byte bound');
@@ -608,26 +617,77 @@ export async function captureCarryArtifactManifest(input: {
         canonicalJson(identity(await stat(resolvedPath, { bigint: true }))) !== canonicalJson(identity(before))) {
         throw new Error(`carry artifact ${artifact.id} changed during capture`);
       }
-      artifacts.push({ id: artifact.id, filePath: artifact.filePath, maxBytes: artifact.maxBytes,
-        resolvedPath, bytes, sha256: hash.digest('hex'), identity: identity(before) });
-      if (scriptIds.has(artifact.id)) scriptSources.set(artifact.id, Buffer.concat(sourceChunks).toString('utf8'));
+      if (retainSource) scriptSources.set(artifact.id, Buffer.concat(sourceChunks).toString('utf8'));
+      return { id: artifact.id, filePath: artifact.filePath, maxBytes: artifact.maxBytes,
+        resolvedPath, bytes, sha256: hash.digest('hex'), identity: identity(before) };
     } finally { await fh.close(); }
+  };
+  const artifacts: Array<Awaited<ReturnType<typeof captureArtifact>>> = [];
+  for (const artifact of [...input.artifacts].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
+    artifacts.push(await captureArtifact(artifact, scriptIds.has(artifact.id)));
   }
   let scriptCensus;
   if (scriptIds.size) {
     const ts = await import('typescript');
     const { extractImports, findFile } = await import('../../../../scripts/check-transitive-boundary.mjs');
+    const discoveredArtifacts: typeof artifacts = [];
+    const allArtifacts = [...artifacts];
+    const parsedImports = new Map<string, { imports: ReturnType<typeof extractImports>;
+      computed: Array<{ kind: string; line: number }> }>();
+    const parseArtifact = (artifact: typeof artifacts[number]) => {
+      const cached = parsedImports.get(artifact.id);
+      if (cached) return cached;
+      if (!scriptFormat(artifact.resolvedPath)) {
+        throw new Error(`carry script census requires a supported script format (${artifact.id})`);
+      }
+      const parsed = ts.createSourceFile(artifact.resolvedPath, scriptSources.get(artifact.id)!, ts.ScriptTarget.Latest, true);
+      if ((parsed as typeof parsed & { parseDiagnostics?: readonly unknown[] }).parseDiagnostics?.length) {
+        throw new Error(`carry script census cannot parse artifact ${artifact.id}`);
+      }
+      const computed: Array<{ kind: string; line: number }> = [];
+      const result = { imports: extractImports(parsed, { onUnresolved: site => computed.push(site) }), computed };
+      parsedImports.set(artifact.id, result);
+      return result;
+    };
+    const visited = new Set<string>(), pending = [...(relativeRoots ?? [])].sort();
+    for (let i = 0; i < pending.length; i++) {
+      const artifactId = pending[i];
+      if (visited.has(artifactId)) continue;
+      visited.add(artifactId);
+      const artifact = allArtifacts.find(artifact => artifact.id === artifactId)!;
+      for (const site of parseArtifact(artifact).imports) {
+        if (site.typeOnly || !site.spec.startsWith('.')) continue;
+        const candidate = findFile(resolve(dirname(artifact.resolvedPath), site.spec));
+        if (!candidate) continue;
+        const resolvedPath = await realpath(candidate);
+        const targets = allArtifacts.filter(artifact => artifact.resolvedPath === resolvedPath);
+        if (targets.length > 1) continue; // Ambiguity stays visible in the sites below.
+        let target = targets[0];
+        if (!target) {
+          if (allArtifacts.length >= 256) throw new Error('carry relative census exceeds artifact bound');
+          const id = `relative:${createHash('sha256').update(resolvedPath).digest('hex')}`;
+          if (allArtifacts.some(artifact => artifact.id === id)) throw new Error('carry relative artifact id collision');
+          target = await captureArtifact({ id, filePath: candidate, maxBytes: 4 * 1024 * 1024 }, scriptFormat(resolvedPath));
+          if (target.resolvedPath !== resolvedPath) throw new Error('carry relative candidate changed during capture');
+          discoveredArtifacts.push(target); allArtifacts.push(target);
+        }
+        if (!scriptFormat(target.resolvedPath)) continue;
+        if (!scriptSources.has(target.id)) {
+          const reread = await captureArtifact(target, true);
+          if (canonicalJson(reread) !== canonicalJson(target)) throw new Error('carry relative artifact changed during capture');
+        }
+        scriptIds.add(target.id); pending.push(target.id);
+      }
+    }
     const sites: Array<{ artifactId: string; line: number; kind: string; disposition: string;
       specifierSha256?: string; targetArtifactId?: string }> = [];
     for (const artifactId of [...scriptIds].sort()) {
-      const artifact = artifacts.find(artifact => artifact.id === artifactId)!;
-      const parsed = ts.createSourceFile(artifact.filePath, scriptSources.get(artifactId)!, ts.ScriptTarget.Latest, true);
-      if ((parsed as typeof parsed & { parseDiagnostics?: readonly unknown[] }).parseDiagnostics?.length) {
-        throw new Error(`carry script census cannot parse artifact ${artifactId}`);
-      }
-      const imports = extractImports(parsed, { onUnresolved: site => {
-        sites.push({ artifactId, ...site, disposition: 'computed-specifier' });
-      } });
+      const artifact = allArtifacts.find(artifact => artifact.id === artifactId)!;
+      // Node normally resolves an entry symlink before loading its module. An
+      // extensionless CLI link is still a script; use its frozen real path for
+      // syntax and relative candidates, retaining the link in artifact identity.
+      const { imports, computed } = parseArtifact(artifact);
+      for (const site of computed) sites.push({ artifactId, ...site, disposition: 'computed-specifier' });
       for (const site of imports) {
         const base = { artifactId, line: site.line, kind: site.kind,
           specifierSha256: createHash('sha256').update(site.spec).digest('hex') };
@@ -637,9 +697,9 @@ export async function captureCarryArtifactManifest(input: {
         // Reuse the boundary checker's relative source candidate resolution.
         // This is NOT the native loader: export conditions, hooks, aliases,
         // indirect loaders and files read as data still need separate evidence.
-        const candidate = findFile(resolve(dirname(artifact.filePath), site.spec));
+        const candidate = findFile(resolve(dirname(artifact.resolvedPath), site.spec));
         const resolved = candidate ? await realpath(candidate) : null;
-        const targets = resolved ? artifacts.filter(artifact => artifact.resolvedPath === resolved) : [];
+        const targets = resolved ? allArtifacts.filter(artifact => artifact.resolvedPath === resolved) : [];
         const target = targets.length === 1 ? targets[0] : null;
         sites.push({ ...base, disposition: !candidate ? 'unresolved-relative' : targets.length > 1 ? 'ambiguous-relative' : !target ? 'unbound-relative'
           : scriptIds.has(target.id) ? 'bound-script-candidate' : 'unscanned-artifact-candidate',
@@ -649,7 +709,10 @@ export async function captureCarryArtifactManifest(input: {
     }
     sites.sort((a, b) => a.artifactId.localeCompare(b.artifactId) || a.line - b.line || a.kind.localeCompare(b.kind));
     scriptCensus = { evidenceKind: 'selected-static-import-sites' as const,
-      scriptArtifactIds: [...scriptIds].sort(), sites, runtimeClosureEstablished: false as const };
+      scriptArtifactIds: [...input.scriptArtifactIds!].sort(), sites, runtimeClosureEstablished: false as const,
+      ...(relativeRoots ? { relativeTraversal: { rootArtifactIds: [...relativeRoots].sort(),
+        scannedArtifactIds: [...visited].sort(),
+        artifacts: discoveredArtifacts.sort((a, b) => a.id.localeCompare(b.id)) } } : {}) };
   }
   const body = { schemaVersion: 1 as const, evidenceKind: 'observation-only' as const,
     protocolRef: input.protocolRef, configuration: config, artifacts,
@@ -676,6 +739,7 @@ export async function recheckCarryArtifactManifest(
     configuration: manifest.configuration,
     dependencyScope: manifest.dependencyScope,
     scriptArtifactIds: manifest.scriptCensus?.scriptArtifactIds,
+    relativeScriptRoots: manifest.scriptCensus?.relativeTraversal?.rootArtifactIds,
     artifacts: manifest.artifacts.map(({ id, filePath, maxBytes }) => ({ id, filePath, maxBytes })) });
   if (current.sha256 !== sha256) {
     const changed = current.artifacts.filter((artifact, index) =>

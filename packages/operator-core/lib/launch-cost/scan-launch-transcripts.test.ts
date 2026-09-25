@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile, symlink, readFile, appendFile, rename } 
 import * as fsPromises from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -480,10 +480,77 @@ describe('frozen carry artifact bindings', () => {
     expect(manifest.scriptCensus!.runtimeClosureEstablished).toBe(false);
   });
 
-  it.each([[], ['entry', 'entry'], ['missing'], ['task']].map(scriptArtifactIds => ({ scriptArtifactIds })))
+  it('freezes transitive relative candidates, deduplicates cycles and keeps package/data gaps explicit', async () => {
+    const { input, peer } = await scriptFixture();
+    await writeFile(join(root, 'outside.mjs'), 'export { nested } from "./nested.mjs";');
+    await writeFile(join(root, 'nested.mjs'), 'import "./outside.mjs"; import "./value.json"; export const nested = 1;');
+    await writeFile(join(root, 'value.json'), '{"private":"never-emit-me"}');
+    const manifest = await captureCarryArtifactManifest({ ...input, relativeScriptRoots: ['entry'] });
+    const census = manifest.scriptCensus!, walk = census.relativeTraversal!;
+    expect(walk.artifacts.map(artifact => basename(artifact.filePath)).sort())
+      .toEqual(['nested.mjs', 'outside.mjs', 'value.json']);
+    expect(walk.scannedArtifactIds).toHaveLength(5); // entry, dep, leaf, outside, nested
+    expect(census.sites.some(site => site.disposition === 'unbound-relative')).toBe(false);
+    expect(census.sites.map(site => site.disposition)).toEqual(expect.arrayContaining([
+      'computed-specifier', 'external-module', 'unresolved-relative', 'unscanned-artifact-candidate',
+    ]));
+    expect(census.runtimeClosureEstablished).toBe(false);
+    expect(JSON.stringify(manifest)).not.toContain('never-emit-me');
+    await expect(recheckCarryArtifactManifest(manifest, peer)).resolves.toBeUndefined();
+    await writeFile(join(root, 'nested.mjs'), 'export const nested = 2;');
+    await expect(recheckCarryArtifactManifest(manifest, peer)).rejects.toThrow('manifest metadata');
+  });
+
+  it('detects same-byte retargeting of a discovered dependency symlink', async () => {
+    const { input, peer } = await scriptFixture();
+    await writeFile(join(root, 'target-one.mjs'), 'export const stable = 1;');
+    await writeFile(join(root, 'target-two.mjs'), 'export const stable = 1;');
+    await rm(join(root, 'outside.mjs'));
+    await symlink(join(root, 'target-one.mjs'), join(root, 'outside.mjs'));
+    const manifest = await captureCarryArtifactManifest({ ...input, relativeScriptRoots: ['entry'] });
+    await rm(join(root, 'outside.mjs'));
+    await symlink(join(root, 'target-two.mjs'), join(root, 'outside.mjs'));
+    await expect(recheckCarryArtifactManifest(manifest, peer)).rejects.toThrow('manifest metadata');
+  });
+
+  it.each([[], ['entry', 'entry'], ['leaf'], ['absent']].map(relativeScriptRoots => ({ relativeScriptRoots })))
+    ('refuses invalid relative traversal roots $relativeScriptRoots', async ({ relativeScriptRoots }) => {
+      const { input } = await scriptFixture();
+      await expect(captureCarryArtifactManifest({ ...input, relativeScriptRoots })).rejects.toThrow('unique selected script roots');
+    });
+
+  it('refuses a partial traversal when the frozen artifact bound is exhausted', async () => {
+    const { input } = await scriptFixture();
+    for (let index = input.artifacts.length; index < 256; index++) {
+      input.artifacts.push({ ...input.artifacts[0], id: `unrelated-${index}` });
+    }
+    await expect(captureCarryArtifactManifest({ ...input, relativeScriptRoots: ['entry'] }))
+      .rejects.toThrow('relative census exceeds artifact bound');
+  });
+
+  it.each([[], ['entry', 'entry'], ['missing']].map(scriptArtifactIds => ({ scriptArtifactIds })))
     ('refuses invalid selected script ids $scriptArtifactIds', async ({ scriptArtifactIds }) => {
     const { input } = await scriptFixture();
     await expect(captureCarryArtifactManifest({ ...input, scriptArtifactIds })).rejects.toThrow('unique declared script');
+  });
+
+  it('resolves extensionless CLI links and their relative imports from the frozen real script path', async () => {
+    const { input, peer } = await scriptFixture();
+    const entry = input.artifacts.find(artifact => artifact.id === 'entry')!;
+    const original = entry.filePath, alias = join(root, 'bin', 'cli');
+    await mkdir(join(root, 'bin')); await symlink(original, alias); entry.filePath = alias;
+    const manifest = await captureCarryArtifactManifest(input);
+    expect(manifest.artifacts.find(artifact => artifact.id === 'entry'))
+      .toMatchObject({ filePath: alias, resolvedPath: original });
+    expect(manifest.scriptCensus!.sites.find(site => site.artifactId === 'entry' && site.line === 1))
+      .toMatchObject({ disposition: 'bound-script-candidate', targetArtifactId: 'dep' });
+    await expect(recheckCarryArtifactManifest(manifest, peer)).resolves.toBeUndefined();
+  });
+
+  it('refuses a declared non-script instead of guessing its format', async () => {
+    const { input } = await scriptFixture();
+    await expect(captureCarryArtifactManifest({ ...input, scriptArtifactIds: ['task'] }))
+      .rejects.toThrow('supported script format');
   });
 
   it('refuses syntax errors instead of accepting a partial AST as a dependency census', async () => {
