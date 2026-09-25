@@ -93,7 +93,7 @@ import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC as MAX_TIMEOUT_SEC } from '../../events/await/types';
 import type { AwaitRow } from '../../events/await/types';
 import { projectAwaitWaitOperationalBrief } from '../../operational-brief/wait-brief';
-import { acceptancePlaneAdvisoryForWait } from '../../acceptance-runtime-wait-guard';
+import { acceptancePlaneAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 
 type GenerationPinDetails = {
   eventKey: string;
@@ -1195,6 +1195,21 @@ export default defineTool({
       }
     }
 
+    // A release await can park this session while unrelated plan work is ready,
+    // or while a false A -> B -> C edge hides that work. Check the plan before
+    // retiring any existing await or registering a new one.
+    const mainWaitPlanReview = await mainWaitPlanReviewForWait({
+      ownerId: identity.ownerId,
+      event: eventKey,
+      note: args.note,
+    });
+    if (mainWaitPlanReview && !mainWaitPlanReview.allowWait) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: mainWaitPlanReview.code, ...mainWaitPlanReview }) }],
+        isError: true,
+      };
+    }
+
     let supersededCount = 0;
     try {
       supersededCount = await cancelAwaitsForSubscribersOnKeys([identity.ownerId], [eventKey], {
@@ -1682,6 +1697,7 @@ export default defineTool({
             wake_handle: handleNote,
             ...(operationalBrief ? { operational_brief: operationalBrief } : {}),
             ...(acceptancePlaneAdvisory ? { acceptance_plane_advisory: acceptancePlaneAdvisory } : {}),
+            ...(mainWaitPlanReview ? { main_wait_plan_review: mainWaitPlanReview } : {}),
             advice: patternAwait
               ? `Registered a PATTERN await on "${row.eventKey}". End your turn now — you will be re-invoked when the FIRST matching key fires (or at the deadline). It is one-shot: re-register if you need to wake on the next match too. Do not poll.`
               : 'Registered. End your turn now — you will be re-invoked when the event fires (or at the deadline). Do not poll.',

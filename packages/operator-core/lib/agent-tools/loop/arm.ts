@@ -61,7 +61,7 @@ import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getSessionBrief } from '../../session-brief';
 import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
-import { acceptancePlaneAdvisoryForWait } from '../../acceptance-runtime-wait-guard';
+import { acceptancePlaneAdvisoryForWait, mainWaitPlanReviewForWait } from '../../acceptance-runtime-wait-guard';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import {
   admitMonitorArm,
@@ -856,6 +856,20 @@ export default defineTool({
     // truncated prefix (for example `EI-214022`), producing a misleading not_found
     // auto-claim result (EI-21405190650662222).
     const goal = clampText(rawGoal, 4000);
+    // Refuse a plan-wide release wait while staging work remains available or
+    // blocked descendants have not been reviewed. This runs before any loop or
+    // work-item claim is written; the same guard serves events:await and sugar.
+    const mainWaitPlanReview = await mainWaitPlanReviewForWait({
+      ownerId,
+      goal,
+      note: [goal, args.blockedOn?.reason].filter(Boolean).join('\n'),
+    });
+    if (mainWaitPlanReview && !mainWaitPlanReview.allowWait) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: mainWaitPlanReview.code, ...mainWaitPlanReview }) }],
+        isError: true,
+      };
+    }
     const carryForScope: 'warm' | 'cold' | undefined =
       args.carry ??
       (prior?.active
@@ -1654,6 +1668,7 @@ export default defineTool({
             // acceptance-runtime-plane P-003: a loop whose goal waits on main/:3070/a deploy,
             // armed by an agent whose held live acceptance bars run elsewhere. Advisory only.
             ...(acceptancePlaneAdvisory ? { acceptancePlaneAdvisory } : {}),
+            ...(mainWaitPlanReview ? { mainWaitPlanReview } : {}),
             note,
           }),
         },

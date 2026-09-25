@@ -52,6 +52,7 @@ import {
   resolveConcreteHarnessSlug,
 } from "../_harness-scope";
 import { probeServiceUpLatch } from "./service-up-edge";
+import { mainWaitPlanReviewForWait } from "../../acceptance-runtime-wait-guard";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -394,6 +395,14 @@ defineTool({
     // Retire this caller's prior pending success/failure pair before arming the
     // replacement; otherwise every idle-loop renewal leaks two registrations
     // and one deploy produces duplicate wakes.
+    const mainWaitPlanReview = await mainWaitPlanReviewForWait({
+      ownerId: resolveAgentIdentity(ctx).ownerId,
+      event: keys[0],
+      note: args.note,
+    });
+    if (mainWaitPlanReview && !mainWaitPlanReview.allowWait) {
+      return { ...reply({ ok: false, error: mainWaitPlanReview.code, ...mainWaitPlanReview }), isError: true };
+    }
     const armed = await armAwaits(ctx, keys, note, args.timeout_sec, {
       supersedeKeys: keys,
       timeoutBehavior: args.on_timeout,
@@ -426,7 +435,7 @@ defineTool({
         });
       }
     }
-    return reply(armed);
+    return reply({ ...armed, ...(mainWaitPlanReview ? { mainWaitPlanReview } : {}) });
   },
 });
 
@@ -631,6 +640,14 @@ defineTool({
     // producer certificate is intentionally enriched only after registration;
     // otherwise a slow git/DB snapshot can make the caller time out before an
     // await exists at all.
+    const mainWaitPlanReview = await mainWaitPlanReviewForWait({
+      ownerId: resolveAgentIdentity(ctx).ownerId,
+      event: keys[0],
+      note: args.note,
+    });
+    if (mainWaitPlanReview && !mainWaitPlanReview.allowWait) {
+      return { ...reply({ ok: false, error: mainWaitPlanReview.code, ...mainWaitPlanReview }), isError: true };
+    }
     const registrationStartedAtMs = Date.now();
     const armed = await armAwaits(ctx, keys, note, timeoutSec, {
       payloadFilter,
