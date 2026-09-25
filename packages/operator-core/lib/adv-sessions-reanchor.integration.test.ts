@@ -14,6 +14,9 @@
  * `started_at` ordering.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import {
@@ -290,4 +293,113 @@ describe('setAdvSessionPid workspace override (WI-10002854, real PG)', () => {
     `;
     expect(row).toEqual({ pid: 5151, terminal_bin: 'psu-headless:/tmp/x.log' });
   });
+});
+
+describe('bootstrap-role receipt through the route and real PostgreSQL', () => {
+  it('records the accepted operation and activates its grant-bearing identity before returning', async () => {
+    const sid = 'role-receipt-route-integration';
+    const cwd = mkdtempSync(join(tmpdir(), 'bootstrap-role-receipt-'));
+    const priorLaunchContextDir = process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR;
+    process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = cwd;
+    const artifact = { configuration: { grants: { requires: ['work_items:get'], optional: [], suggestedProviders: {} } } };
+    const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) };
+    const acceptedOperation = {
+      workItemId: 'F-route-receipt', operationId: 'run', specificationRevision: 'c'.repeat(64),
+      identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: 'd'.repeat(64) },
+      stack: ['domain:blueprint-operation-worker'], requiredTools: ['work_items:get'],
+    };
+    const mocked = [
+      './auth/require-principal', './role-registry', './role-launch-spec',
+      './blueprint/operation-worker-binding', './spawn-config',
+      './endpoint-route/routes/agent-mcp/bootstrap-su', '@papercusp/flags/server',
+      './interactive-claude-config', './saved-prompts-materialize',
+    ];
+
+    vi.doMock('./auth/require-principal', async (orig) => ({
+      ...(await orig<typeof import('./auth/require-principal')>()),
+      requirePrincipal: vi.fn(async () => {}),
+    }));
+    vi.doMock('./role-registry', async (orig) => ({
+      ...(await orig<typeof import('./role-registry')>()),
+      roleConsumes: () => ({ feature: 'required', plan: 'none' }),
+    }));
+    vi.doMock('./role-launch-spec', async (orig) => ({
+      ...(await orig<typeof import('./role-launch-spec')>()),
+      buildRoleLaunchSpec: async (input: { acceptedOperation?: unknown }) => ({
+        role: 'worker', runId: 'worker-F-route-receipt-1', spawnId: 'sp-route-receipt',
+        harnessSlug: 'papercusp', featureId: acceptedOperation.workItemId, cwd,
+        promptText: 'RESTRICTED WORKER', promptFile: join(cwd, 'role.md'),
+        mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=test',
+        mcpJsonContents: JSON.stringify({ mcpServers: { papercusp: { url: 'http://localhost:3070/api/mcp?role=worker&sig=test' } } }),
+        sid, nativeSessionId: 'f7e30bb4-772b-4994-a10b-e257afbb12ce',
+        claudeConfigDir: join(cwd, 'claude'), sessionMcpDir: join(cwd, 'mcp'),
+        contextSize: 'trimmed', stack: acceptedOperation.stack,
+        acceptedOperation: input.acceptedOperation,
+        specificationArtifact: artifact, ...revision, compositionSource: 'blueprint',
+      }),
+    }));
+    vi.doMock('./blueprint/operation-worker-binding', () => ({
+      resolveAcceptedOperationWorkerBinding: vi.fn(async () => acceptedOperation),
+    }));
+    vi.doMock('./spawn-config', async (orig) => ({
+      ...(await orig<typeof import('./spawn-config')>()),
+      resolveProjectDir: vi.fn(async () => cwd),
+    }));
+    vi.doMock('./endpoint-route/routes/agent-mcp/bootstrap-su', async (orig) => ({
+      ...(await orig<typeof import('./endpoint-route/routes/agent-mcp/bootstrap-su')>()),
+      resolveAccountPin: vi.fn(async () => ({ env: {}, notice: null, accountId: null, provider: null })),
+      resolveFleet: vi.fn(async () => ({ env: {}, notice: null, fleetSlug: null, fleetRole: null })),
+      reconstructPsuLaunchArgv: vi.fn(() => ['psu', '--role=worker']),
+      stampFleetMembershipAtBoot: vi.fn(async () => null),
+      stampPresenceAtBoot: vi.fn(async () => null),
+    }));
+    vi.doMock('@papercusp/flags/server', async (orig) => ({
+      ...(await orig<typeof import('@papercusp/flags/server')>()),
+      getFlag: vi.fn(async () => false),
+    }));
+    vi.doMock('./interactive-claude-config', () => ({
+      writeInteractiveClaudeConfig: vi.fn(() => ({ configDir: join(cwd, 'claude') })),
+    }));
+    vi.doMock('./saved-prompts-materialize', () => ({
+      materializeCodexPrompts: vi.fn(async () => ({})),
+      materializeWorkspacePrompts: vi.fn(async () => ({})),
+      materializeHarnessPrompts: vi.fn(async () => ({})),
+    }));
+
+    try {
+      const { default: routes } = await import('./endpoint-route/routes/agent-mcp/bootstrap-role');
+      const post = routes.find((route) => route.method === 'POST')!;
+      const response = await post.handler(new Request('http://localhost:3070/api/agent-mcp/console/bootstrap-role', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ role: 'worker', agent: 'claude', harness_slug: 'papercusp', feature: acceptedOperation.workItemId }),
+      }), { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal });
+      expect(response.status).toBe(200);
+      const launch = await response.json();
+      expect(launch.envelopeEnv.PAPERCUSP_SID).toBe(sid);
+      const [stored] = await admin<{ value_kind: string; launch_spec: unknown }[]>`
+        SELECT jsonb_typeof(launch_spec) AS value_kind, launch_spec
+          FROM harness_shared.adv_sessions WHERE id = ${launch.sessionId}
+      `;
+      expect(stored?.value_kind).toBe('object');
+      expect(stored?.launch_spec).toMatchObject({
+        specificationArtifact: artifact, ...revision,
+        acceptedOperation: {
+          kind: 'blueprint-operation-worker', workItemId: acceptedOperation.workItemId,
+          identity: acceptedOperation.identity, requiredTools: ['work_items:get'],
+        },
+      });
+      expect(await readSuLaunchSpecByOwner(sid)).toEqual(stored.launch_spec);
+      const [brief] = await admin<{ activation: unknown }[]>`
+        SELECT control_state->'activation' AS activation
+          FROM harness_shared.session_briefs WHERE owner_id = ${sid}
+      `;
+      expect(brief?.activation).toMatchObject({ desired: revision, status: 'desired' });
+    } finally {
+      await admin`DELETE FROM harness_shared.session_briefs WHERE owner_id = ${sid}`;
+      for (const name of mocked) vi.doUnmock(name);
+      if (priorLaunchContextDir === undefined) delete process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR;
+      else process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = priorLaunchContextDir;
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
