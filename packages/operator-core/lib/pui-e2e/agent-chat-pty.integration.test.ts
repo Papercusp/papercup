@@ -36,6 +36,7 @@ import { paneContains, screenContains, screenHasAssistantReply, VtScreen } from 
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
 import { HARNESS_TAG } from './release-acceptance';
+import { sessionProcessHolder } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
 // that load on the shared box trips at random; fail-on-console turned it into
@@ -5211,6 +5212,10 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     expect(first.shutdownStages).toContain('os-hard-exit-ready');
     // A process exit is observed before a NEW OS process binds the SAME port.
     // No in-memory host, registry, mock or JavaScript closure crosses this seam.
+    const postExitHolder = sessionProcessHolder(saved!.identity.nativeSessionId);
+    console.info('PUI_RESTART_PROCESS_HOLDER', JSON.stringify({
+      held: postExitHolder.held, reason: postExitHolder.reason, pid: postExitHolder.pid,
+    }));
     await putViewState('Plans');
     const second = await startOperatorProcess(first.port);
     const resumedPane = new PuiPane(bin, second.port, home);
