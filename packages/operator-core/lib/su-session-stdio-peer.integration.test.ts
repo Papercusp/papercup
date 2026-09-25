@@ -8,7 +8,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { parse as parseToml, stringify as stringifyToml } from '@iarna/toml';
@@ -155,6 +155,93 @@ async function waitForMcpStartup(events: RpcFrame[], threadId: string, name: str
     'timed out', 'Unauthorized', 'Forbidden', '404', '401', '403', '502', '503', 'parse', 'initialize']
     .filter(label => detail.toLowerCase().includes(label.toLowerCase()));
   expect((terminal()!.params as RpcFrame).status, `MCP startup causes: ${causes.join(', ') || 'unclassified'}`).toBe('ready');
+}
+
+type ControllerModule = {
+  id: string; file?: string; evaluated?: boolean; imports: Set<string>;
+  meta?: { file?: string | null; code?: string; externalize?: string; mockedModule?: unknown };
+};
+function controllerModules(): Map<string, ControllerModule> {
+  const state = (globalThis as typeof globalThis & {
+    __vitest_worker__?: { evaluatedModules?: { idToModuleMap?: Map<string, ControllerModule> } };
+  }).__vitest_worker__;
+  const modules = state?.evaluatedModules?.idToModuleMap;
+  if (!(modules instanceof Map)) throw new Error('owned controller module observation unavailable');
+  return modules;
+}
+
+/** Read the existing Vite/Vitest cache, not a second resolver. `evaluated` is
+ * set in Vite's finally block, including failures: it means settled, NOT success.
+ * External/manual mocks and cache entries without code remain explicit residue.
+ * This snapshot cannot see evicted entries, native external imports, earlier
+ * transforms, production loaders, or arbitrary mutations between rechecks. */
+function controllerLoaderProbe(home: string, name: string, selected: CarryArtifactInput[], modules = controllerModules()) {
+  const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+  const inspect = () => {
+    if (modules.size > 8192) throw new Error('owned controller module population exceeds bound');
+    return [...modules].map(([id, node]) => {
+      const kind = id.startsWith('mock:') || node.meta?.mockedModule ? 'mocked'
+        : node.meta?.externalize !== undefined ? 'external'
+        : typeof node.meta?.code === 'string' ? 'transformed' : 'unavailable';
+      const path = node.meta?.file ?? node.file;
+      const filePath = path && isAbsolute(path) && existsSync(path) ? realpathSync(path) : null;
+      return { idSha256: hash(id), filePath, kind, evaluationSettled: node.evaluated === true,
+        imports: [...node.imports].map(hash).sort(),
+        transformedSha256: kind === 'transformed' ? hash(node.meta!.code!) : null };
+    }).sort((a, b) => a.idSha256.localeCompare(b.idSha256));
+  };
+  const rows = inspect();
+  const selectedPaths = new Set(selected.map(a => realpathSync(a.filePath)));
+  const selectedRows = rows.filter(row => row.filePath && selectedPaths.has(row.filePath));
+  const artifacts: CarryArtifactInput[] = [];
+  // Freeze selected returned transform bytes separately from current disk source:
+  // a source hash alone is not the JavaScript supplied to the module evaluator.
+  for (const row of selectedRows.filter(row => row.kind === 'transformed')) {
+    const node = [...modules].find(([id]) => hash(id) === row.idSha256)![1];
+    const code = node.meta!.code!;
+    if (Buffer.byteLength(code) > 8 * 1024 * 1024) throw new Error('owned controller transform exceeds bound');
+    const filePath = join(home, `${name}-${row.idSha256}.js`);
+    writeFileSync(filePath, code, { mode: 0o600 });
+    artifacts.push({ id: `controller-transform-${row.idSha256}`, filePath, maxBytes: 8 * 1024 * 1024 });
+  }
+  // Nearest package metadata is an observed disk input, not a claim that every
+  // package condition/ancestor consulted by the loader has been discovered.
+  const packages = new Set<string>();
+  for (const path of selectedPaths) {
+    let dir = dirname(path);
+    while (true) {
+      const candidate = join(dir, 'package.json');
+      if (existsSync(candidate)) { packages.add(realpathSync(candidate)); break; }
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  for (const path of [...packages].sort()) artifacts.push({
+    id: `controller-package-${hash(path)}`, filePath: path, maxBytes: 1024 * 1024,
+  });
+  const observation = { schemaVersion: 'owned-controller-cache-v1', pid: process.pid, nodeVersion: process.version,
+    rows, selectedRows, unmatchedPaths: [...selectedPaths].filter(path => !selectedRows.some(row => row.filePath === path)),
+    runtimeClosureEstablished: false };
+  const text = JSON.stringify(observation);
+  if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw new Error('owned controller observation exceeds bound');
+  const filePath = join(home, `${name}.json`);
+  writeFileSync(filePath, text, { mode: 0o600 });
+  artifacts.push({ id: 'controller-observation', filePath, maxBytes: 8 * 1024 * 1024 });
+  return { observation, artifacts,
+    recheck() {
+      const current = inspect().filter(row => row.filePath && selectedPaths.has(row.filePath));
+      if (!isDeepStrictEqual(current, selectedRows)) {
+        const changes = [...new Set([...selectedRows, ...current].map(row => row.idSha256))].flatMap(id => {
+          const before = selectedRows.find(row => row.idSha256 === id), after = current.find(row => row.idSha256 === id);
+          if (isDeepStrictEqual(before, after)) return [];
+          return [{ idSha256: id, filePath: after?.filePath ?? before?.filePath,
+            fields: before && after ? Object.keys(before).filter(key =>
+              !isDeepStrictEqual(before[key as keyof typeof before], after[key as keyof typeof after])) : ['population'] }];
+        });
+        throw new Error(`owned controller selected module observation changed: ${JSON.stringify(changes.slice(0, 20))}`);
+      }
+    } };
 }
 
 describe('native JSON-line pipe transport', () => {
@@ -369,6 +456,38 @@ describe('native JSON-line pipe transport', () => {
 });
 
 describe('owned Node loader observations', () => {
+  it('binds retained controller transforms and refuses selected cache drift without treating mocks as source', () => {
+    const home = mkdtempSync(join(tmpdir(), 'carry-controller-')); homes.push(home);
+    const driver = fileURLToPath(import.meta.url);
+    const transport = fileURLToPath(new URL('./su-session-stdio-peer.ts', import.meta.url));
+    const modules = new Map([...controllerModules()].map(([id, node]) => [id, { ...node, meta: { ...node.meta } }]));
+    const probe = controllerLoaderProbe(home, 'controller', [driver, transport].map((filePath, i) => ({
+      id: `source-${i}`, filePath, maxBytes: 1024 * 1024,
+    })), modules);
+    expect(probe.observation.unmatchedPaths).toEqual([]);
+    const transformed = probe.observation.selectedRows.filter(row => row.kind === 'transformed');
+    expect(transformed.map(row => row.filePath)).toEqual(expect.arrayContaining([realpathSync(driver), realpathSync(transport)]));
+    expect(transformed.every(row => row.evaluationSettled)).toBe(true);
+    expect(probe.observation.rows.some(row => row.kind === 'mocked')).toBe(true);
+    expect(probe.observation.rows.some(row => row.kind === 'external')).toBe(true);
+    for (const row of transformed) {
+      const artifact = probe.artifacts.find(a => a.id === `controller-transform-${row.idSha256}`)!;
+      const code = readFileSync(artifact.filePath, 'utf8');
+      expect(createHash('sha256').update(code).digest('hex')).toBe(row.transformedSha256);
+      expect(row.transformedSha256).not.toBe(createHash('sha256').update(readFileSync(row.filePath!)).digest('hex'));
+    }
+    expect(JSON.stringify(probe.observation)).not.toContain(NEVER_EMIT_MARKER);
+    probe.recheck();
+    const node = [...modules.values()].find(node => node.meta?.file === transport && typeof node.meta.code === 'string')!;
+    node.meta!.code += '\n// changed after observation';
+    expect(() => probe.recheck()).toThrow('owned controller selected module observation changed');
+    const unknownPath = join(home, 'not-imported.js'); writeFileSync(unknownPath, 'export default 1;');
+    expect(controllerLoaderProbe(home, 'unmatched', [{ id: 'unknown', filePath: unknownPath, maxBytes: 1024 }]).observation.unmatchedPaths)
+      .toEqual([unknownPath]);
+    expect(() => controllerLoaderProbe(home, 'overflow', [], new Map(Array.from({ length: 8193 }, (_, i) =>
+      [String(i), { id: String(i), imports: new Set<string>() }])))).toThrow('population exceeds bound');
+  });
+
   it('rejects an overflowed trace even when the observed program catches the loader refusal', async () => {
     const home = mkdtempSync(join(tmpdir(), 'carry-loader-bound-')); homes.push(home);
     const loader = nodeLoaderProbe(home, 'bounded');
@@ -1025,6 +1144,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
     const armTimings: Array<{ arm: string; preflightAgeMs: number; firstDispatchRef: string;
       measurement: ReturnType<typeof measureCarryArmTiming> }> = [];
     const manifests: Awaited<ReturnType<typeof captureCarryArtifactManifest>>[] = [];
+    const controllers = new Map<Awaited<ReturnType<typeof captureCarryArtifactManifest>>, ReturnType<typeof controllerLoaderProbe>>();
     const runtimeBoundaries: Array<{ threadId: string; turnId?: string; phase: string;
       runtime: Awaited<ReturnType<typeof captureCarryRuntimeSnapshot>> }> = [];
     const sourceGuards: Array<{ peer: SuStdioPeer; threadId: string; path: string; device: bigint; inode: bigint }> = [];
@@ -1117,7 +1237,11 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
             artifacts.push({ id: `node-loader-${artifacts.length}`, filePath: path, maxBytes: 4 * 1024 * 1024 });
           }
         }
-        const manifest = await captureCarryArtifactManifest({ protocolRef: `D017:unpaid-local-${task.id}-pair`, configuration, artifacts,
+        for (const [id, specifier] of [['controller-vite-package', 'vite/package.json'],
+          ['controller-vitest-package', 'vitest/package.json'], ['controller-vite-runner', 'vite/module-runner']]) {
+          artifacts.push({ id, filePath: fileURLToPath(import.meta.resolve(specifier)), maxBytes: 4 * 1024 * 1024 });
+        }
+        const capture = () => captureCarryArtifactManifest({ protocolRef: `D017:unpaid-local-${task.id}-pair`, configuration, artifacts,
           relativeScriptRoots: ['scanner', 'launcher', 'usage-parser', 'recipe-checker', 'wrapper-script', 'import-extractor'],
           scriptArtifactIds: ['driver', 'transport', 'scanner', 'recipe-checker', 'launcher', 'usage-parser',
             'usage-writer', 'gateway', 'gateway-observer', 'clock', 'wrapper-script', 'pricing', 'import-extractor', 'loader-hook',
@@ -1131,10 +1255,29 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
               ...extra.roots],
             nodes: artifacts.map(a => ({ artifactId: a.id, dependsOn: a.id === 'driver' ? artifacts.filter(b => b.id !== a.id).map(b => b.id) : [] })),
             unresolved: [...mutablePaths.map(path => `unfrozen writable native file: ${path}`),
-              'wrapper Node resolve/load observations only; controller loader, Rust data reads, unexercised branches and transient/default native storage remain uncensused',
+              'wrapper Node events and retained Vitest controller cache only; external/mocked/pre-observer/evicted modules, production transforms, Rust data reads, unexercised branches and transient/default native storage remain uncensused',
               'fixture disables optional shell/plugin work; transient native storage and external writers remain unproven',
               'scripted app-server delivery is not production host adoption, model quality, native output bounds or authenticated charges'] } });
+        // The existing census lazily loads its AST parser/extractor. Observe the
+        // controller AFTER that work so the very first preparation manifest also
+        // binds their retained transforms. Both captures are timed preparation;
+        // no inference request is dispatched between them.
+        await capture();
+        const controller = controllerLoaderProbe(live.home, `controller-${manifests.length}`, artifacts.filter(a =>
+          ['driver', 'transport', 'scanner', 'recipe-checker', 'launcher', 'usage-parser', 'usage-writer', 'gateway',
+            'gateway-observer', 'clock', 'pricing', 'import-extractor', 'source-read-tool'].includes(a.id)));
+        artifacts.push(...controller.artifacts);
+        const manifest = await capture();
         manifests.push(manifest);
+        controllers.set(manifest, controller);
+        controller.recheck();
+        for (const row of controller.observation.selectedRows.filter(row => row.kind === 'transformed')) {
+          expect(manifest.artifacts.find(a => a.id === `controller-transform-${row.idSha256}`)?.sha256).toBe(row.transformedSha256);
+        }
+        for (const id of ['driver', 'transport', 'scanner', 'recipe-checker', 'import-extractor']) {
+          const path = realpathSync(artifacts.find(a => a.id === id)!.filePath);
+          expect(controller.observation.selectedRows.some(row => row.filePath === path && row.kind === 'transformed')).toBe(true);
+        }
         for (const row of loaderRows.filter(row => row.phase === 'load' && row.filePath && row.sourceSha256)) {
           expect(manifest.artifacts.find(artifact => artifact.resolvedPath === realpathSync(row.filePath!))?.sha256)
             .toBe(row.sourceSha256);
@@ -1156,11 +1299,19 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
           fileArtifacts: loaderFiles.map(path => ({ filePath: path, sha256: createHash('sha256').update(readFileSync(path)).digest('hex') })),
           traceSha256: createHash('sha256').update(readFileSync(live.loader.tracePath)).digest('hex'),
           runtimeClosureEstablished: false }));
+        console.log('CARRY_CONTROLLER_LOADER_RECEIPT', JSON.stringify({ threadId, pid: process.pid,
+          cacheEntries: controller.observation.rows.length,
+          selected: controller.observation.selectedRows.map(row => ({ filePath: row.filePath, kind: row.kind,
+            evaluationSettled: row.evaluationSettled, transformedSha256: row.transformedSha256 })),
+          unmatchedPaths: controller.observation.unmatchedPaths,
+          artifactHashes: manifest.artifacts.filter(a => a.id.startsWith('controller-')).map(a => ({ id: a.id, sha256: a.sha256 })),
+          runtimeClosureEstablished: false }));
         return manifest;
       };
       const turn = async (live: Awaited<ReturnType<typeof openNative>>, threadId: string, text: string,
         manifest: Awaited<ReturnType<typeof captureManifest>>) => {
         await recheckCarryArtifactManifest(manifest, live.p);
+        controllers.get(manifest)!.recheck();
         assertSourceGuards();
         if (source) await recheckCarrySourceSnapshot(source);
         const eventStart = live.events.length;
@@ -1188,6 +1339,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native proto
         }
         modelWitnesses.push({ phase, threadId, turnId, model, requests: turnRequests.length });
         await recheckCarryArtifactManifest(manifest, live.p);
+        controllers.get(manifest)!.recheck();
         assertSourceGuards();
         const runtimeAfter = await captureCarryRuntimeSnapshot(live.p.pid()!);
         runtimeBoundaries.push({ threadId, turnId, phase, runtime: runtimeAfter });
