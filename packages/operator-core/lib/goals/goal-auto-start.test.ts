@@ -67,6 +67,7 @@ type GoalLaunchMockResult = {
   effective: Record<string, unknown>;
   refusal: null;
   goalBrief: { portfolio?: unknown } | null;
+  holderReadiness?: { canExecute: boolean; issues: Array<{ code: string; required: boolean; action: string }> };
 };
 const goalLaunchMocks = vi.hoisted(() => ({
   buildBrief: vi.fn((o: { goalId: string; portfolio?: unknown }) => `kickoff for ${o.goalId}`),
@@ -315,6 +316,18 @@ describe('goal-auto-start — Scout workspace sentinel (EI-22762141222831537)', 
 });
 
 describe('goal-auto-start — blocked-by edge wiring (P-004)', () => {
+  it('rolls back rather than spawning a non-standing holder with missing operating inputs', async () => {
+    goalLaunchMocks.resolve.mockResolvedValue({
+      effective: {}, refusal: null, goalBrief: null,
+      holderReadiness: {
+        canExecute: false,
+        issues: [{ code: 'missing-kill-criterion', required: true, action: 'Set a checkable kill criterion.' }],
+      },
+    });
+    await expect(call()).rejects.toThrow('goal_operating_inputs_missing');
+    expect(order).toContain('delete');
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
   it('threads the resolver portfolio into the canonical first-turn brief', async () => {
     const portfolio = { schemaVersion: 1, goal: { id: 'goal-portfolio' } };
     goalLaunchMocks.resolve.mockResolvedValue({

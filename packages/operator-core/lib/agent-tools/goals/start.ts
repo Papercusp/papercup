@@ -55,6 +55,7 @@ import {
   goalHolderPolicySchema,
   launchProfileSchema,
   renderGoalPortfolioBrief,
+  goalHolderInputRefusal,
   resolveGoalLaunchForGoal,
   type GoalPortfolioBrief,
   type LaunchProfile,
@@ -850,6 +851,11 @@ export default defineTool({
     if (goalLaunch.refusal) {
       await rollback();
       return err(goalLaunch.refusal.message);
+    }
+    const inputRefusal = goalHolderInputRefusal(goalLaunch.holderReadiness);
+    if (inputRefusal) {
+      await rollback();
+      return err(inputRefusal);
     }
 
     let command: string;

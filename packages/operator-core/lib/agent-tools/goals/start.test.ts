@@ -150,6 +150,7 @@ const { buildAgentLaunchCommand } = await import('../../agent-launch-core');
 
 /** SQL the handler actually issued, as (text, values) pairs. */
 const sql: Array<{ text: string; values: unknown[] }> = [];
+let currentGoalArgs: Record<string, unknown> = {};
 const ctx = {
   workspaceId: 'ws-test',
   harnessSlug: 'papercusp',
@@ -158,6 +159,28 @@ const ctx = {
     const text = strings.join(' ? ');
     sql.push({ text, values });
     order.push(/INSERT/i.test(text) ? 'insert' : /DELETE/i.test(text) ? 'delete' : 'sql');
+    if (text.includes('SELECT title, body, kill_criterion, standing,')) {
+      return Promise.resolve([{
+        title: currentGoalArgs.title,
+        body: currentGoalArgs.body ?? null,
+        kill_criterion: currentGoalArgs.killCriterion ?? null,
+        standing: currentGoalArgs.standing === true,
+        launch_settings: null,
+        budget_cents: currentGoalArgs.budgetCents ?? null,
+        budget_window_sec: currentGoalArgs.budgetWindowSec ?? null,
+        spent_cents: null,
+        spent_cents_breakdown: null,
+        spent_cents_at: null,
+        spent_cents_source: null,
+        drain_fleet: null,
+      }]);
+    }
+    if (text.includes('WITH goal_row AS')) {
+      return Promise.resolve([{
+        status: 'active', tripwires: currentGoalArgs.tripwires ?? [],
+        pots: [], plans: [], queue: {}, drain_fleet: null,
+      }]);
+    }
     return Promise.resolve([]);
   },
 } as never;
@@ -177,17 +200,19 @@ const ARGS = {
   holder: { requireLive: true },
 };
 
-const call = (extra: Record<string, unknown> = {}) =>
-  (goalsStart as unknown as { handler: (a: unknown, c: unknown) => Promise<unknown> }).handler(
-    { ...ARGS, ...extra },
-    ctx,
+const call = (extra: Record<string, unknown> = {}) => {
+  currentGoalArgs = { ...ARGS, ...extra };
+  return (goalsStart as unknown as { handler: (a: unknown, c: unknown) => Promise<unknown> }).handler(
+    currentGoalArgs, ctx,
   );
+};
 const dataOf = (res: unknown) => (res as { data: Record<string, unknown> }).data;
 const textOf = (res: unknown) => (res as { content?: Array<{ text: string }> }).content?.[0]?.text ?? '';
 const isError = (res: unknown) => !!(res as { isError?: boolean }).isError;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  currentGoalArgs = { ...ARGS };
   order.length = 0;
   sql.length = 0;
   setModeCalls.length = 0;
@@ -305,7 +330,7 @@ describe('goals:start — the happy path', () => {
       contributionId: 'goal-kickoff', value: env.PAPERCUSP_KICKOFF_PROMPT,
     });
     expect(binding.outputs[2]).toEqual({
-      contributionId: 'goal-portfolio', omission: { reason: 'not-requested' },
+      contributionId: 'goal-portfolio', value: expect.stringContaining('Operating inputs: incomplete'),
     });
     expect(env.PAPERCUSP_KICKOFF_PROMPT).toContain(dataOf(res).id as string);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
@@ -924,24 +949,27 @@ describe('goals:start — the shared kill-criterion rule applies at THIS door to
     expect(textOf(res)).toMatch(/states no abandonment condition/);
   });
 
-  /**
-   * CONTROLS. WI-37604 (owner-directed 2026-08-09) made a criterion OPTIONAL at
-   * creation. That overrule is about PRESENCE; this rule is about quality GIVEN
-   * presence. Without these two cases, a guard that simply REQUIRED a criterion
-   * would pass both tests above while silently re-imposing exactly what the
-   * owner removed — and the happy-path suite would not catch it either, because
-   * ARGS always supplies one.
-   */
-  it('still starts a goal with NO criterion at all — WI-37604', async () => {
+  // WI-37604 still permits a draft with no criterion. P-015 now refuses
+  // non-standing HOLDER execution until that draft has an operating stop rule.
+  it('refuses a non-standing holder with no criterion', async () => {
     const res = await call({ killCriterion: undefined });
-    expect(isError(res)).toBe(false);
-    expect(sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text))).toBeTruthy();
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('missing-kill-criterion');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
-  it('still starts a goal with a blank criterion', async () => {
+  it('refuses a non-standing holder with a blank criterion', async () => {
     const res = await call({ killCriterion: '   ' });
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('missing-kill-criterion');
+  });
+
+  it('allows a standing holder with missing inputs and exposes incompleteness', async () => {
+    const res = await call({ killCriterion: undefined, standing: true });
     expect(isError(res)).toBe(false);
-    expect(sql.find((s) => /INSERT INTO harness_shared\.goals/i.test(s.text))).toBeTruthy();
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect((spawnConsoleMock.mock.calls[0][0] as { envelope: { env: Record<string, string> } }).envelope.env.PAPERCUSP_KICKOFF_PROMPT)
+      .toContain('Operating inputs: incomplete');
   });
 });
 

@@ -66,7 +66,7 @@ import { refreshControlAnchorAfterMutation } from '../agent-tools/coordination/c
 // Same direction the sibling package-start door already imports (start-from-package.ts):
 // lib/goals → lib/agent-tools/goals/start. No cycle; start.ts does not import this file.
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
-import { renderGoalPortfolioBrief, resolveGoalLaunchForGoal, type GoalLaunchResolution } from '../goal-launch-settings';
+import { goalHolderInputRefusal, renderGoalPortfolioBrief, resolveGoalLaunchForGoal, type GoalLaunchResolution } from '../goal-launch-settings';
 
 export interface StartGoalByIdInput {
   workspaceId: string;
@@ -106,7 +106,8 @@ export type StartGoalByIdRefusalReason =
   | 'no-harness'
   | 'already-held'
   | 'holder-unknown'
-  | 'not-ready';
+  | 'not-ready'
+  | 'operating-inputs';
 
 export type StartGoalByIdResult =
   | {
@@ -357,6 +358,10 @@ export async function startGoalById(
   });
   if (resolvedLaunch.refusal) {
     throw new Error(`goal-holder-launch refused for ${goalId}: ${resolvedLaunch.refusal.message}`);
+  }
+  const inputRefusal = goalHolderInputRefusal(resolvedLaunch.holderReadiness);
+  if (inputRefusal) {
+    return { ok: false, reason: 'operating-inputs', detail: inputRefusal };
   }
   const portfolio = resolvedLaunch.goalBrief?.portfolio ?? null;
   const portfolioText = portfolio && (input.kickoffPrompt == null ||

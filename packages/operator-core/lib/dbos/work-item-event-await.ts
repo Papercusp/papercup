@@ -48,6 +48,25 @@ function latchedIntent(latch: KeyFireRow | null): string | null {
   return typeof token === 'string' && token.length > 0 ? token : null;
 }
 
+function hasValidatedSuccess(item: WorkItem): boolean {
+  if (!ALL_SUCCESSFUL_STATUSES.has(item.state) ||
+      (item.completionAuthority !== 'committed' && item.completionAuthority !== 'validated')) return false;
+  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? item.payload as Record<string, unknown> : null;
+  if (!payload || !Object.prototype.hasOwnProperty.call(payload, 'blueprintOperation')) return true;
+  const pin = payload.blueprintOperation;
+  const result = payload.blueprintResult;
+  if (!pin || typeof pin !== 'object' || Array.isArray(pin) ||
+      !result || typeof result !== 'object' || Array.isArray(result)) return false;
+  const accepted = pin as Record<string, unknown>;
+  const completed = result as Record<string, unknown>;
+  return accepted.kind === 'blueprint-operation' &&
+    completed.operationId === accepted.operationId &&
+    completed.specificationRevision === accepted.specificationRevision &&
+    typeof completed.evidenceRef === 'string' && completed.evidenceRef.trim().length > 0 &&
+    Object.prototype.hasOwnProperty.call(completed, 'output');
+}
+
 async function defaultReadItem(input: WorkItemEventWaitInput): Promise<WorkItem | null> {
   return runWithWorkspace(input.workspaceId, () => getWorkItem(input.itemId, input.harnessSlug));
 }
@@ -92,7 +111,7 @@ export async function awaitWorkItemCompletionEvent(
             (!currentIntent || currentIntent === pendingIntent)) {
           return {
             kind: 'settled', itemId: input.itemId, state: current.state,
-            successful: ALL_SUCCESSFUL_STATUSES.has(current.state),
+            successful: hasValidatedSuccess(current),
             source: pendingIntent ? 'completion-event' : 'current-state',
             completionIntentId: pendingIntent,
           };

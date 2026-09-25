@@ -13,7 +13,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { goalReadiness } from '@papercusp/agent-mcp/goal-deps';
-import { renderGoalPortfolioBrief, type GoalLaunchResolution, type GoalPortfolioBrief } from '../goal-launch-settings';
+import { evaluateGoalOperatingInputs, renderGoalPortfolioBrief, type GoalLaunchResolution, type GoalPortfolioBrief } from '../goal-launch-settings';
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 import type { GoalHolders, ResolvedGoalHolder } from './holder';
 import { startGoalById, type StartGoalByIdDeps, type StartGoalByIdInput } from './start-goal-by-id';
@@ -551,6 +551,19 @@ describe('startGoalById — an omitted kickoff is BUILT, never left null', () =>
     });
 
     await expect(run(deps)).rejects.toThrow('goal-holder-launch refused for fix-the-roof-a1b2c3: budget exhausted');
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('returns an operating-input refusal before opening an outcome holder', async () => {
+    const readiness = evaluateGoalOperatingInputs({
+      standing: false, killCriterion: null, budgetCents: null, budgetWindowSec: null,
+      spentCents: null, spentCentsSource: null, unmeasuredPricedSpend: false, tripwires: [],
+    });
+    const { deps, launch } = makeDeps({
+      resolveGoalLaunch: vi.fn().mockResolvedValue(launchResolution({ holderReadiness: readiness })),
+    });
+    const result = await run(deps);
+    expect(result).toMatchObject({ ok: false, reason: 'operating-inputs' });
     expect(launch).not.toHaveBeenCalled();
   });
 

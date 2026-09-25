@@ -31,6 +31,7 @@ beforeAll(async () => {
         reads++;
         return {
           id: itemId, harness: 'papercusp', state: reads === 1 ? 'wip' : 'done',
+          completionAuthority: reads === 1 ? null : 'committed',
           payload: { _completionEventIntentId: 'cycle-1' },
         } as WorkItem;
       },

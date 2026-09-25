@@ -150,6 +150,13 @@ export interface ResolveLocalAnnounceIdentityFromHiveMembersOpts {
     keychainId: string,
   ) => Promise<{ keychainId: string; pubkeyBase64: string } | null>;
   buildKeychainId?: (githubUserId: number) => string;
+  /**
+   * WI-10003109: source for a real gist when the membership row's attestation for
+   * this device carries an empty one. Defaults to the persisted, keychain-verified
+   * identity cache (no GitHub I/O). Injected-dependency calls default to none, so
+   * tests stay hermetic.
+   */
+  loadCachedIdentity?: () => Promise<LocalAnnounceIdentity | null>;
 }
 
 interface CachedLocalAnnounceIdentity extends LocalAnnounceIdentity {
@@ -326,12 +333,23 @@ async function loadExistingDeviceKeypair(
  * a GitHub outage without weakening admission: peers still verify the announce
  * signature and admit only if their own `hive_members` row names the same device
  * pubkey (or, for unknown peers, the normal gist path still applies).
+ *
+ * WI-10003109: a row can carry an EMPTY gist for this device (the owner's own row
+ * written at pot creation, before its gist existed). Announcing that empty gist
+ * makes every gist-gated joiner reject the owner as binding_invalid, although the
+ * device has a valid gist in its identity cache. So an empty gist is filled from
+ * the cache when the cache names the same device and GitHub user.
  */
 export async function resolveLocalAnnounceIdentityFromHiveMembers(
   opts: ResolveLocalAnnounceIdentityFromHiveMembersOpts,
 ): Promise<LocalAnnounceIdentity | null> {
   const buildKeychainId = opts.buildKeychainId ?? resolveDeviceKeychainId;
   const loadExistingKeypair = opts.loadExistingKeypair ?? loadExistingDeviceKeypair;
+  const loadCachedIdentity =
+    opts.loadCachedIdentity ??
+    (opts.loadExistingKeypair || opts.buildKeychainId
+      ? async () => null
+      : () => loadCachedLocalAnnounceIdentity());
 
   for (const member of opts.members) {
     const keychainId = buildKeychainId(member.githubUserId);
@@ -342,12 +360,23 @@ export async function resolveLocalAnnounceIdentityFromHiveMembers(
       const devicePubkey = attestation?.device_pubkey;
       if (!devicePubkey || revoked.has(devicePubkey)) continue;
       if (devicePubkey !== keypair.pubkeyBase64) continue;
+      let attestationGistId = attestation.gist_id ?? '';
+      if (!attestationGistId) {
+        const cached = await loadCachedIdentity().catch(() => null);
+        if (
+          cached?.attestationGistId &&
+          cached.devicePubkeyBase64 === keypair.pubkeyBase64 &&
+          cached.githubUserId === member.githubUserId
+        ) {
+          attestationGistId = cached.attestationGistId;
+        }
+      }
       return {
         keychainId,
         devicePubkeyBase64: keypair.pubkeyBase64,
         githubUserId: member.githubUserId,
         githubLogin: member.githubUsername,
-        attestationGistId: attestation.gist_id ?? '',
+        attestationGistId,
       };
     }
   }

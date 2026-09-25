@@ -45,7 +45,7 @@ import { spawnHeadless } from '../console-spawn';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { buildAgentLaunchCommand, injectFleetArg, injectLaunchedByArg } from '../agent-launch-core';
 import { papercuspPathForWorkspace } from '../papercusp-root';
-import { resolveGoalLaunchForGoal } from '../goal-launch-settings';
+import { goalHolderInputRefusal, resolveGoalLaunchForGoal } from '../goal-launch-settings';
 import { activeWorkspaceId } from '../workspace-registry';
 import { setMode } from '../modes/store';
 import { getOrgPg } from '@papercusp/db-org';
@@ -308,6 +308,11 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
   if (goalLaunch.refusal) {
     await rollback();
     throw new Error(goalLaunch.refusal.message);
+  }
+  const inputRefusal = goalHolderInputRefusal(goalLaunch.holderReadiness);
+  if (inputRefusal) {
+    await rollback();
+    throw new Error(inputRefusal);
   }
 
   let command: string;

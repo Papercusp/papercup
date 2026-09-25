@@ -11,6 +11,7 @@ const input: WorkItemEventWaitInput = {
 function item(state: string, intent?: string): WorkItem {
   return {
     id: input.itemId, harness: input.harnessSlug, state,
+    completionAuthority: state === 'done' ? 'committed' : null,
     payload: intent ? { _completionEventIntentId: intent } : {},
   } as WorkItem;
 }
@@ -45,6 +46,24 @@ describe('DBOS canonical work-item completion consumer bridge', () => {
       sleep: async () => { throw new Error('already settled'); },
     });
     expect(result).toMatchObject({ kind: 'settled', state: 'dropped', successful: false, source: 'current-state' });
+  });
+
+  it('reports settlement without claiming an unvalidated result succeeded', async () => {
+    const unverified = { ...item('done'), completionAuthority: null };
+    const noAuthority = await awaitWorkItemCompletionEvent(input, {
+      readItem: async () => unverified,
+      sleep: async () => { throw new Error('already settled'); },
+    });
+    expect(noAuthority).toMatchObject({ kind: 'settled', state: 'done', successful: false });
+
+    const pinnedWithoutResult = { ...item('done'), payload: { blueprintOperation: {
+      kind: 'blueprint-operation', operationId: 'run', specificationRevision: 'a'.repeat(64),
+    } } };
+    const noOutput = await awaitWorkItemCompletionEvent(input, {
+      readItem: async () => pinnedWithoutResult,
+      sleep: async () => { throw new Error('already settled'); },
+    });
+    expect(noOutput).toMatchObject({ kind: 'settled', state: 'done', successful: false });
   });
 
   it('rejects an old completion when the item reopens before delivery', async () => {

@@ -756,6 +756,8 @@ export interface GoalPortfolioBrief {
   };
   budget: GoalBudgetTruth & { budgetWindowSec: number | null };
   tripwires: Array<{ metric: string; label?: string; threshold?: number; current?: number; unit?: string }>;
+  /** P-015: explicit operating-input verdict. Optional for stored pre-P-015 snapshots. */
+  operatingInputs?: GoalOperatingInputs;
   pending: {
     blenderIdeas: number | null;
     acceptanceRubric: { id: string; status: string | null; latestScorecardAt: string | null } | null;
@@ -766,6 +768,98 @@ export interface GoalPortfolioBrief {
   };
   priorities: string[];
   degradedReasons: string[];
+}
+
+export interface GoalOperatingInputs {
+  status: 'ready' | 'incomplete' | 'blocked';
+  canExecute: boolean;
+  budgetWindow: 'undeclared' | 'lifetime' | 'rolling';
+  spendCoverage: 'no-ceiling' | 'measured-pot' | 'not-yet-measured' | 'unmeasurable' | 'unverified';
+  issues: Array<{
+    code:
+      | 'missing-kill-criterion'
+      | 'missing-budget-ceiling'
+      | 'missing-budget-window'
+      | 'tripwire-coverage-unassessed'
+      | 'tripwire-missing-threshold'
+      | 'tripwires-unreadable'
+      | 'spend-not-yet-measured'
+      | 'spend-unmeasurable'
+      | 'spend-provenance-unverified'
+      | 'portfolio-unreadable';
+    required: boolean;
+    action: string;
+  }>;
+}
+
+/** Compile only from the canonical goal, tripwire and spend fields already read. */
+export function evaluateGoalOperatingInputs(args: {
+  standing: boolean;
+  killCriterion: string | null;
+  budgetCents: number | null;
+  budgetWindowSec: number | null;
+  spentCents: number | null;
+  spentCentsSource: string | null;
+  unmeasuredPricedSpend: boolean;
+  tripwires: GoalPortfolioBrief['tripwires'] | null;
+  portfolioReadFailed?: boolean;
+}): GoalOperatingInputs {
+  const issues: GoalOperatingInputs['issues'] = [];
+  const add = (code: GoalOperatingInputs['issues'][number]['code'], required: boolean, action: string) =>
+    issues.push({ code, required, action });
+  const requiredForOutcome = !args.standing;
+  if (!args.killCriterion?.trim()) {
+    add('missing-kill-criterion', requiredForOutcome,
+      args.standing ? 'Declare the standing duty\'s stop polarity or explicit retirement condition.' : 'Set a checkable kill criterion on the goal.');
+  }
+  if (args.budgetCents == null) {
+    add('missing-budget-ceiling', requiredForOutcome, 'Set a budget ceiling on the goal.');
+  }
+  if (args.standing && args.budgetCents != null && args.budgetWindowSec == null) {
+    add('missing-budget-window', false, 'Choose a rolling budget window or explicitly retain a lifetime ceiling.');
+  }
+  if (args.tripwires === null) {
+    add('tripwires-unreadable', requiredForOutcome, 'Re-read the goal tripwires before holder execution.');
+  } else if (args.tripwires.length === 0) {
+    add('tripwire-coverage-unassessed', false, 'Review countable limits in the goal and declare a tripwire for each one.');
+  } else if (args.tripwires.some((tripwire) => tripwire.threshold == null)) {
+    add('tripwire-missing-threshold', requiredForOutcome, 'Give every declared countable tripwire a threshold.');
+  }
+  let spendCoverage: GoalOperatingInputs['spendCoverage'] = 'no-ceiling';
+  if (args.budgetCents != null) {
+    if (args.unmeasuredPricedSpend) {
+      spendCoverage = 'unmeasurable';
+      add('spend-unmeasurable', requiredForOutcome, 'Repair authoritative goal spend measurement; do not infer zero spend.');
+    } else if (args.spentCents == null) {
+      spendCoverage = 'not-yet-measured';
+      add('spend-not-yet-measured', false, 'Check the first goal spend rollup before claiming measured headroom.');
+    } else if (budgetSpendScope(args.spentCentsSource) === REFUSAL_SCOPES.BUDGET_POT) {
+      spendCoverage = 'measured-pot';
+    } else {
+      spendCoverage = 'unverified';
+      add('spend-provenance-unverified', requiredForOutcome, 'Repair the spend provenance marker before relying on the ceiling.');
+    }
+  }
+  if (args.portfolioReadFailed) {
+    add('portfolio-unreadable', requiredForOutcome, 'Re-read the canonical goal portfolio before any placement.');
+  }
+  const canExecute = !issues.some((issue) => issue.required);
+  return {
+    status: issues.length === 0 ? 'ready' : canExecute ? 'incomplete' : 'blocked',
+    canExecute,
+    budgetWindow: args.budgetCents == null ? 'undeclared' : args.budgetWindowSec == null ? 'lifetime' : 'rolling',
+    spendCoverage,
+    issues,
+  };
+}
+
+/** One recovery message for each holder start door; no prose-only readiness fork. */
+export function goalHolderInputRefusal(readiness: GoalOperatingInputs | null | undefined): string | null {
+  if (!readiness || readiness.canExecute) return null;
+  return `goal_operating_inputs_missing: ${readiness.issues
+    .filter((issue) => issue.required)
+    .map((issue) => `${issue.code} — ${issue.action}`)
+    .join('; ')}. Nothing was spawned; repair the goal and retry its holder start.`;
 }
 
 type GoalPortfolioSourceRow = {
@@ -1117,6 +1211,16 @@ function parsePortfolioWorklist(
 
 /** Render the compact snapshot for a prompt without creating a second prose contract. */
 export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
+  const operatingInputs = brief.operatingInputs ?? evaluateGoalOperatingInputs({
+    standing: brief.goal.standing,
+    killCriterion: brief.goal.killCriterion,
+    budgetCents: brief.budget.budgetCents,
+    budgetWindowSec: brief.budget.budgetWindowSec,
+    spentCents: brief.budget.spentCents,
+    spentCentsSource: brief.budget.spentCentsSource,
+    unmeasuredPricedSpend: brief.budget.unmeasuredPricedSpend,
+    tripwires: brief.tripwires,
+  });
   const plans = brief.worklist.length
     ? brief.worklist
         .map(
@@ -1144,6 +1248,10 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
     `Budget: spent=${brief.budget.spentCents ?? 'unknown'}c${
       brief.budget.spentCents == null ? '' : ` [${budgetSpendScope(brief.budget.spentCentsSource)}]`
     } / ${brief.budget.budgetCents ?? 'undeclared'}c${brief.budget.spentCentsAt ? ` at ${brief.budget.spentCentsAt}` : ''}`,
+    `Operating inputs: ${operatingInputs.status}; execution=${operatingInputs.canExecute ? 'allowed' : 'blocked'}; budget-window=${operatingInputs.budgetWindow}; spend-coverage=${operatingInputs.spendCoverage}`,
+    ...(operatingInputs.issues.length
+      ? [`Recover inputs: ${operatingInputs.issues.map((issue) => `${issue.code}${issue.required ? ' [required]' : ''}: ${issue.action}`).join('; ')}`]
+      : []),
     `Pending: Blender=${brief.pending.blenderIdeas ?? 'unknown'}; rubric=${brief.pending.acceptanceRubric ? `${brief.pending.acceptanceRubric.id}:${brief.pending.acceptanceRubric.status ?? 'unknown'}` : 'none'}`,
     `Continuity: checkpoint=${brief.continuity.checkpoint ? `${brief.continuity.checkpoint.workItemId}@${brief.continuity.checkpoint.updatedAt}` : 'none'}; last-owner-report=${brief.continuity.lastOwnerReportAt ?? 'none'}`,
     ...(brief.degradedReasons.length ? [`DEGRADED — ${brief.degradedReasons.join('; ')}`] : []),
@@ -1553,6 +1661,16 @@ export async function readGoalPortfolioBrief(args: {
         },
       ];
     });
+    const operatingInputs = evaluateGoalOperatingInputs({
+      standing: launch.goalBrief.standing,
+      killCriterion: launch.goalBrief.killCriterion,
+      budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
+      budgetWindowSec: launch.goalBrief.budgetWindowSec,
+      spentCents: launch.budget?.spentCents ?? null,
+      spentCentsSource: launch.budget?.spentCentsSource ?? null,
+      unmeasuredPricedSpend: launch.budget?.unmeasuredPricedSpend ?? false,
+      tripwires,
+    });
     const queue = {
       total: portfolioNumber(queueRaw.total),
       terminal: portfolioNumber(queueRaw.terminal),
@@ -1563,6 +1681,9 @@ export async function readGoalPortfolioBrief(args: {
       claimabilityScope,
     };
     const priorities: string[] = [];
+    if (operatingInputs.status !== 'ready') {
+      priorities.push(`Repair goal operating inputs: ${operatingInputs.issues.map((issue) => issue.code).join(', ')}.`);
+    }
     if (!declaredFleet) priorities.push('Declare and delegate the standing drain fleet.');
     else if (!fleetRaw || portfolioNumber(fleetRaw.live) === 0)
       priorities.push(`Restore delegated leadership and live coverage for drain fleet ${declaredFleet}.`);
@@ -1616,6 +1737,7 @@ export async function readGoalPortfolioBrief(args: {
         budgetWindowSec: launch.goalBrief.budgetWindowSec,
       },
       tripwires,
+      operatingInputs,
       pending: {
         blenderIdeas: row.blender_pending == null ? null : portfolioNumber(row.blender_pending),
         acceptanceRubric:
@@ -1679,6 +1801,17 @@ export async function readGoalPortfolioBrief(args: {
         budgetWindowSec: launch.goalBrief.budgetWindowSec,
       },
       tripwires: [],
+      operatingInputs: evaluateGoalOperatingInputs({
+        standing: launch.goalBrief.standing,
+        killCriterion: launch.goalBrief.killCriterion,
+        budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
+        budgetWindowSec: launch.goalBrief.budgetWindowSec,
+        spentCents: launch.budget?.spentCents ?? null,
+        spentCentsSource: launch.budget?.spentCentsSource ?? null,
+        unmeasuredPricedSpend: launch.budget?.unmeasuredPricedSpend ?? false,
+        tripwires: null,
+        portfolioReadFailed: true,
+      }),
       pending: { blenderIdeas: null, acceptanceRubric: null },
       continuity: { checkpoint: null, lastOwnerReportAt: null },
       priorities: ['Re-read the goal portfolio before any placement or write.'],
@@ -1717,6 +1850,8 @@ export interface GoalLaunchResolution {
   settings: GoalLaunchSettings | null;
   /** Canonical source fields for the holder's first-turn brief. */
   goalBrief: GoalLaunchBrief | null;
+  /** Holder-only P-015 gate; descendants never inherit this start requirement. */
+  holderReadiness?: GoalOperatingInputs | null;
   /** Merged profile: caller request > per-role > goal defaults. Absent keys stay absent. */
   effective: LaunchProfile;
   ceilings: { maxAgents: number | null; maxPerFleet: number | null };
@@ -2401,6 +2536,7 @@ export async function resolveGoalLaunchForGoal(args: {
       goalId: null,
       settings: null,
       goalBrief: null,
+      holderReadiness: null,
       effective: foldLaunchProfile(null, args.goalRole, args.requested),
       ceilings: { maxAgents: null, maxPerFleet: null },
       headcount: { total: 0, fleet: args.fleetSlug ? 0 : null },
@@ -2605,6 +2741,7 @@ export async function resolveGoalLaunchForGoal(args: {
   // descendant launches still use this resolver for policy/ceilings, but their
   // kickoff is not a portfolio-manager kickoff and must not assemble the whole
   // goal on every child spawn.
+  let holderReadiness: GoalOperatingInputs | null = null;
   if (args.goalRole === 'goal' && goalBrief) {
     const portfolio = await readGoalPortfolioBrief({
       workspaceId: args.workspaceId,
@@ -2619,13 +2756,30 @@ export async function resolveGoalLaunchForGoal(args: {
         degradedReasons,
       },
     });
-    if (portfolio) goalBrief = { ...goalBrief, portfolio };
+    if (portfolio) {
+      goalBrief = { ...goalBrief, portfolio };
+      holderReadiness = portfolio.operatingInputs ?? null;
+    }
+  }
+  if (args.goalRole === 'goal' && !holderReadiness) {
+    holderReadiness = evaluateGoalOperatingInputs({
+      standing: goalBrief?.standing ?? false,
+      killCriterion: goalBrief?.killCriterion ?? null,
+      budgetCents: budget?.budgetCents ?? goalBrief?.budgetCents ?? null,
+      budgetWindowSec: goalBrief?.budgetWindowSec ?? null,
+      spentCents: budget?.spentCents ?? null,
+      spentCentsSource: budget?.spentCentsSource ?? null,
+      unmeasuredPricedSpend: budget?.unmeasuredPricedSpend ?? false,
+      tripwires: null,
+      portfolioReadFailed: true,
+    });
   }
 
   return {
     goalId,
     settings,
     goalBrief,
+    holderReadiness,
     effective,
     ceilings,
     headcount,

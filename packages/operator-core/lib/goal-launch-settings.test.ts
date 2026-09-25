@@ -70,6 +70,8 @@ import {
   readGoalLaunchSettingsForLauncher,
   resolveGoalPotPlacementAuthority,
   renderGoalPortfolioBrief,
+  evaluateGoalOperatingInputs,
+  goalHolderInputRefusal,
   writeGoalLaunchSettings,
   resolveCeiling,
   resolveGoalLaunch,
@@ -1195,6 +1197,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
         checkpoint: { workItemId: 'WI-42', updatedAt: '2026-08-28T02:15:00.000Z' },
         lastOwnerReportAt: '2026-08-28T02:20:00Z',
       },
+      operatingInputs: { status: 'ready', canExecute: true, spendCoverage: 'measured-pot' },
     });
     expect(brief?.priorities).toEqual([
       'Report 1 owner-walled queue item(s) with exact asks.',
@@ -1613,6 +1616,43 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     });
     expect(child.goalBrief?.portfolio).toBeUndefined();
     expect(childSeen.some((sql) => sql.includes('WITH goal_row AS'))).toBe(false);
+  });
+});
+
+describe('P-015 GOAL operating inputs', () => {
+  const base = {
+    standing: false,
+    killCriterion: 'stop if no paying user by day 30',
+    budgetCents: 50_000,
+    budgetWindowSec: null,
+    spentCents: 1_000,
+    spentCentsSource: 'goal-pots-rollup',
+    unmeasuredPricedSpend: false,
+    tripwires: [{ metric: 'paying_users', threshold: 1 }],
+  };
+
+  it('blocks outcome holders missing their stop rule or budget, while a standing duty stays explicitly incomplete', () => {
+    const missing = { ...base, killCriterion: null, budgetCents: null };
+    const outcome = evaluateGoalOperatingInputs(missing);
+    expect(outcome).toMatchObject({ status: 'blocked', canExecute: false, budgetWindow: 'undeclared' });
+    expect(goalHolderInputRefusal(outcome)).toContain('missing-kill-criterion');
+    expect(goalHolderInputRefusal(outcome)).toContain('missing-budget-ceiling');
+
+    const standing = evaluateGoalOperatingInputs({ ...missing, standing: true });
+    expect(standing).toMatchObject({ status: 'incomplete', canExecute: true });
+    expect(goalHolderInputRefusal(standing)).toBeNull();
+  });
+
+  it('treats countable tripwires without a threshold and priced spend without measurement as recovery work', () => {
+    const verdict = evaluateGoalOperatingInputs({
+      ...base, tripwires: [{ metric: 'paying_users' }],
+      spentCents: null, unmeasuredPricedSpend: true,
+    });
+    expect(verdict).toMatchObject({ status: 'blocked', spendCoverage: 'unmeasurable' });
+    expect(verdict.issues.map((issue) => issue.code)).toEqual([
+      'tripwire-missing-threshold', 'spend-unmeasurable',
+    ]);
+    expect(evaluateGoalOperatingInputs(base)).toMatchObject({ status: 'ready', canExecute: true });
   });
 });
 

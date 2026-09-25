@@ -324,6 +324,28 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
         expect.objectContaining({ kind: 'plan-run', status: 'done', outcome: 'partial', outputStored: true }),
       ]));
 
+    await sql`
+      UPDATE harness_shared.work_items SET status = 'passed', authority = 'committed'
+       WHERE workspace_id = ${WS} AND payload->'plan_run'->>'runId' = ${String(first.runId)}
+         AND payload->'plan_run'->>'instancePlanSlug' = ${first.instanceSlug}
+    `;
+    await sql`
+      UPDATE harness_shared.plan_runs SET status = 'done', outcome = 'success', outputs = '[]'::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND id = ${first.runId}
+    `;
+    expect(await getBlueprintOperationStatus(sql, handle, request.callerId))
+      .toMatchObject({ phase: 'terminal', outcome: 'unverified' });
+    expect(await getBlueprintOperationResult(sql, handle, request.callerId))
+      .toMatchObject({ state: 'unavailable', status: { outcome: 'unverified' } });
+    await sql`
+      UPDATE harness_shared.plan_runs SET outputs = ${JSON.stringify({ count: 2 })}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND id = ${first.runId}
+    `;
+    expect(await getBlueprintOperationStatus(sql, handle, request.callerId))
+      .toMatchObject({ phase: 'terminal', outcome: 'succeeded' });
+    expect(await getBlueprintOperationResult(sql, handle, request.callerId))
+      .toMatchObject({ state: 'ready', output: { count: 2 } });
+
     const leafOwner = 'leaf-recursion-test';
     const leafRevision = { specificationRevision: 'a'.repeat(64), stateRevision: 'state-leaf' };
     const leafPin = { kind: 'blueprint-operation', harnessSlug: HARNESS,

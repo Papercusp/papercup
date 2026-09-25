@@ -1,0 +1,29 @@
+# PTY host incident verification
+
+Plan: `psu-pty-host-recent-errors-2026-09-24`, P-004. This report is in progress. It separates proof from a fresh current-build PTY process, historical event classifications, and adoption by long-lived owner hosts.
+
+## Census and diagnosed behavior
+
+WI-10003045 fixed the observation window at 2026-09-23T22:16:24.312Z–2026-09-24T22:16:24.312Z. It scanned 1,019 real owner files, found 242 with in-window rows, and classified 10,640 valid host events across 51 kinds after inspecting event writers and representative native sessions. These are counts from that census, not a current failure rate.
+
+| Diagnosed behavior | Origin and repair | Current-build outcome |
+| --- | --- | --- |
+| Quiet PTY output caused redundant submit CRs after the exact native turn marker had persisted. | WI-10003047 and WI-10003048 changed submit verification to check native marker proof before retrying. | `psu-pty-host.test.ts` run 19451034 passed 402 tests. The real PTY `psu-pty-host-turn.integration.test.ts` run 19447322 passed 30 tests. The regression's positive native proof produces zero extra CRs; its negative control still requires a retry when proof is absent. |
+| Wake rearm could pass its outer safe-boundary gate, then lose delivery in a redundant inner busy wait. | WI-10003050 removed the inner wait for that verified callback and preserved owner-input safety. | Real PTY run 19447322 recorded the native completion boundary, ECHO, then `wake-rearm-delivered`. Historical six `never-settled` rows lack an inner-gate phase label, so their exact cause is not retroactively proven. |
+| A live Codex PTY host's home could be omitted from session GC and storage-prune protected sets; missing-home repair could pass a null model or empty instruction base. | WI-10003054 added live-host protection, canonical persona and carry-base rebuild, and running-model priority for legacy rows. The exact writer that removed historical `session-23321` was not observed. | `role-codex-home.test.ts` run 19451662 passed 49 tests; launcher guard run 19451133 passed 36; session-route run 19451041 passed 6. Regressions exercise an ended database row with a live host, a missing home, and a rejected carry-only or empty base. |
+| A headless Codex startup model menu could appear after an apparent ready composer; bundled Arrow and Enter input could confirm before the selection repaint. | P-003 host logic waits for the menu repaint and sends a separate confirmation for the startup menu. | Real PTY run 19447322 covers the late startup menu with a positive selected outcome and leaves a menu appearing after turn submission to the agent. Host unit run 19451034 covers model-choice state. The historical owner's manual separate Enter recovered one stuck instance; that intervention is not proof that every old instance recovered. |
+| Carry first-turn delivery must retain the canonical instruction base and submit only after a fresh Codex composer is ready. | P-003 launcher and host regressions require a valid base, preserve owner input, and verify actual native submission. | Real PTY run 19447322 exercises ready, launch-ready, terminal-reply, owner-input, and not-ready composer cases. Launcher guard run 19451133 and role-home run 19451662 passed. |
+
+All three P-003 clause evaluations passed with no adequacy blockers after current source/test remeasurement. The refreshed terminal cards are EI-24253482244977940 (R-2@2), EI-24253493735731759 (R-3@5), and EI-24253498305392437 (carry@1); each has a passed independent grading audit. WI-10003051/P-003 has committed completion evidence.
+
+## Event limits and adoption
+
+The census left 11 MCP reconnect failure rows without historical operator-health proof, one backend-frame timeout without a later host event, and one model-turn-absent row without a retry result. Twenty-five mutex-stuck warnings across five owners had later delivered turns and no observed force release. These event rows alone do not establish a repairable root cause or terminal failure. They remain explicit limits, not repaired-outcome claims.
+
+This session's own long-lived host logged `respawn-carry-dropped` after `turn-start-unverified` at 2026-09-25T16:47Z, then a backend frame and `turn-delivered` at 16:55Z. Its metadata reports loaded host code hash `3b5e6e25…`; current `apps/operator/scripts/psu-pty-host.mjs` hashes to `758f84df…`. Because the process predates the current file, this sequence neither proves adoption nor isolates a current-code carry defect. A fresh isolated PTY process is the current-build evidence above; production host adoption remains unverified.
+
+## Affected verification and acceptance
+
+The first `npm run test:affected` run in `/tmp/pty-incident-affected-20260925.log` ended `status=failed`: 7 of 64 tasks failed, one timed out, and the runner reported three commits of tree drift. A second full run in `/tmp/pty-incident-affected-rerun-20260925.log` ended `status=failed`, exit 1: 6 of 64 tasks failed and one timed out. The second run reported `treeMoved=false` and no caller scope. Its failed tasks were web tests, operator-core pure and stateful tests, desktop tests, operator-vite tests, and prompt projections. The failure ledger names 32 files plus one unattributed prompt-projection task. Neither run establishes a green affected verdict, and the unscoped second run cannot attribute the red to this PTY change.
+
+Acceptance R-1 has the completed bounded census. R-2 has the focused current-tree and real PTY proofs above. R-3 has a red affected verdict and awaits scoped diagnosis and independent acceptance grading under rubric `acceptance-psu-pty-host-recent-errors-2026-09-24` revision 5. The plan is not shipped, and this report does not claim production adoption. Work is paused by Avraham's September 25 system-wide instruction; the red verdict and remaining proof are preserved for an explicit resume.
