@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 native carry builder restores pinned v1 and refreshes post-stamp mode in a fresh Codex context",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=pinned-source-stale scripts/verify-tauri-headless.sh -- bash -s",
+    "Inside the disposable host: install v1, run a selected Codex model turn, install v2, restore the v1 home, enable IDEATE and warm-resume the model, call buildCarryDoc/renderCarryDoc for the exact owner, then enable AUTO and start a fresh Codex thread on the same home with the rendered carry document as its first prompt"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T10:57:27.680Z",
+  "finishedAt": "2026-09-25T10:59:07.099Z",
+  "summary": "The carry builder produced a complete document containing IDEATE at control generation 3. AUTO was enabled after that stamp. A fresh Codex thread with the carry document received a full control resync at generation 4, kept the installed v1 definition after the real v2 update, and answered that AUTO and IDEATE were active. The disposable verifier exited 0.",
+  "assertions": [
+    {
+      "id": "real-install-update-and-warm-turn",
+      "passed": true,
+      "evidence": "Cupboard returned install v1 then update v2 with retainedVersions=[1.0.1,1.0.0]. Native home repair returned pinned-source-stale and preservedSpecificationRevision=89c2995e921f446dfe0f6db4a55e5c6e34cc8079cb8de7ce5eb5747cb399d21d. Codex thread 01a0d836-8821-7390-a347-7fecb5bffd24 completed its first and resumed model turns, quoting the v1 marker; the resumed turn received IDEATE. The isolated adv_sessions launch pin retained sourceRevision=2e036f854fb7e550daf545c60770dabb4d6acf95eb6f2268e2e3c07eef8a3ce4."
+    },
+    {
+      "id": "supported-carry-builder-stamp",
+      "passed": true,
+      "evidence": "buildCarryDoc for the exact disposable owner returned session modes=[ideate] and automaticRecovery.marker.complete=true with controlGeneration=3. renderCarryDoc wrote 5,789 bytes, SHA-256 5306d5eaaf27eee1973675301111ed6b16db2fc993d9d23263c4b007ac6fc3bb. The builder uses the existing rearmControlWitnessForContextWipe seam for a context wipe."
+    },
+    {
+      "id": "post-stamp-live-mode-reaches-fresh-context",
+      "passed": true,
+      "evidence": "Native mode:set enabled AUTO after the carry document was built. A fresh Codex thread 01a0d837-f855-7f52-ac60-3caf6acc8670 received that document as its first prompt. Its recorded developer injection contained CTRL:full-resync reason=generation-mismatch, previousGeneration=2, generation=4, modes=[auto,ideate], plus an su.mode-auto stack attachment. The prompt asked for active modes without naming either one; the completed model reply quoted P006 INSTALLED V1 DEFINITION and listed auto and ideate. The fresh-turn JSONL SHA-256 was c7509eeb8f14d7b66219d3deb060c715c84a8e3ae18617df65f05302224a3d59."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-006",
+  "workItem": "WI-10002963",
+  "operatorPlane": "current-build frozen host, disposable Tauri/Postgres, native Codex model turns, existing carry builder",
+  "nativeTranscriptHashes": {
+    "warmThread": "054695966bc1a9551c671c6d2345e4a30c579d0ab9c3ab333b98a4fe650adc6f",
+    "freshThread": "6d351aec7a5a456a6165de2d52bfa9f84e872aca59462b35dc0149c9ca92abef"
+  },
+  "limitation": "The fresh Codex process was invoked directly with the actual buildCarryDoc output; this run did not exercise the automatic cold-loop scheduler or host respawn command. It does not prove Claude carry, fleet/GOAL holder replacement, generic identity isolation, or a full provider value receipt. The disposable transcripts and carry file are identified by hashes but were not retained as repository artifacts."
+}
