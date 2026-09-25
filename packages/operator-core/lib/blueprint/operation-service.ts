@@ -7,7 +7,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { operationFromSpecification } from '@papercusp/orchestrator/blueprint';
 import { normalizeModelId } from '@papercusp/model-pricing';
-import { readAcceptedBlueprintDirectWorkItem } from './operation-admission';
+import { readAcceptedBlueprintDirectWorkItem, type AcceptedOperationPin } from './operation-admission';
+import { readActiveOperationModelPolicy, type ActiveOperationAttestationContext } from './operation-worker-binding';
 import { checkAgainstJsonSchema } from '../json-schema-validation';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { getWorkItem, type WorkItem } from '../work-items';
@@ -317,6 +318,20 @@ const OperationEventBodySchema = z.discriminatedUnion('kind', [
     workItemId: z.string().nullable(), runId: z.string().nullable(),
     waitName: z.string().min(1), token: z.string().min(1), response: z.unknown(),
   }),
+  z.object({
+    kind: z.literal('model-attestation'), receiptId: z.number().int().positive(),
+    workItemId: z.string().min(1), runId: z.null(),
+    ownerId: z.string().min(1), nativeSessionId: z.string().min(1),
+    requestId: z.string().uuid(), providerResponseId: z.string().min(1),
+    backend: z.enum(['claude', 'omp', 'codex']), provider: z.string().min(1),
+    requestedModel: z.string().min(1), actualModel: z.string().min(1),
+    forwardedEffort: z.string().nullable(), effortSource: z.enum(['forwarded-request', 'unavailable']),
+    usage: z.object({ inputTokens: z.number().int().nonnegative().nullable(),
+      outputTokens: z.number().int().nonnegative().nullable(),
+      cacheReadTokens: z.number().int().nonnegative().nullable(),
+      cacheCreationTokens: z.number().int().nonnegative().nullable() }).strict(),
+    source: z.literal('gateway'),
+  }),
 ]);
 
 export type BlueprintOperationEvent = z.infer<typeof OperationEventBodySchema> & {
@@ -408,6 +423,46 @@ async function appendControlEvent(
     throw new Error('blueprint operation control key was reused with different input');
   }
   return { id: String(prior[0].id), replayed: true };
+}
+
+export type DirectOperationModelAttestation = Omit<
+  Extract<z.infer<typeof OperationEventBodySchema>, { kind: 'model-attestation' }>,
+  'kind' | 'receiptId' | 'workItemId' | 'runId' | 'ownerId' | 'nativeSessionId' | 'source'
+>;
+
+/** Append provider-observed request evidence to the operation's existing
+ * receipt-keyed event stream. This is evidence, not a second usage sample:
+ * counted tokens remain on agent_usage_samples. Re-read the applied worker
+ * binding so a stale or caller-forged context cannot append to another task. */
+export function recordDirectOperationModelAttestation(
+  sql: Sql,
+  context: ActiveOperationAttestationContext,
+  input: DirectOperationModelAttestation,
+): Promise<{ id: string; replayed: boolean }> {
+  return runWithWorkspace(context.workspaceId, async () => {
+    const read = await readActiveOperationModelPolicy(context.workspaceId, context.ownerId);
+    if (read.status !== 'bound' || !read.attestation || !isDeepStrictEqual(read.attestation, context)) {
+      throw new Error('blueprint model attestation requires the current applied operation receipt');
+    }
+    if ((input.forwardedEffort === null) !== (input.effortSource === 'unavailable')) {
+      throw new Error('blueprint model attestation effort source contradicts its value');
+    }
+    const body = OperationEventBodySchema.parse({
+      ...input,
+      kind: 'model-attestation', receiptId: context.operationReceiptId,
+      workItemId: context.workItemId, runId: null,
+      ownerId: context.ownerId, nativeSessionId: context.nativeSessionId,
+      source: 'gateway',
+    });
+    const handle: BlueprintOperationHandle = {
+      workspaceId: context.workspaceId, harnessSlug: context.harnessSlug,
+      receiptId: context.operationReceiptId, operationId: context.operationId,
+      specificationRevision: context.specificationRevision,
+      target: { kind: 'work-item', id: context.workItemId },
+    };
+    return appendControlEvent(sql, handle,
+      eventIdentity('model-attestation', handle, `${context.nativeSessionId}:${input.providerResponseId}`), body);
+  });
 }
 
 async function declaredOperation(sql: Sql, handle: BlueprintOperationHandle) {
@@ -597,14 +652,36 @@ async function verifyDirectOperationModel(
   pin: Record<string, unknown>,
   policy: { mode: 'exact' | 'allowed' | 'preferred'; models: readonly string[]; effort?: string },
 ): Promise<string | null> {
-  if (policy.effort) return 'actual reasoning effort is not attested by the worker transcript';
+  if (pin.kind !== 'blueprint-operation' || typeof pin.harnessSlug !== 'string' ||
+      typeof pin.operationId !== 'string' || typeof pin.specificationRevision !== 'string') {
+    return 'accepted operation model pin is malformed';
+  }
+  const acceptedPin = pin as AcceptedOperationPin;
+  const [invocation] = await sql<Array<{ id: string | number }>>`
+    SELECT id FROM harness_shared.blueprint_operation_invocations
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${acceptedPin.harnessSlug}
+       AND target_kind = 'work-item' AND target_ref = ${workItemId}
+       AND operation_id = ${acceptedPin.operationId}
+       AND specification_revision = ${acceptedPin.specificationRevision}
+       AND caller_id = ${acceptedPin.callerId ?? null} AND request_key = ${acceptedPin.requestKey ?? null}
+       AND request_fingerprint = ${acceptedPin.requestFingerprint ?? null}
+  `;
+  if (!invocation) return 'accepted operation has no durable model attestation receipt';
+  const receiptId = Number(invocation.id);
+  if (!Number.isSafeInteger(receiptId) || receiptId <= 0) return 'accepted operation model receipt is invalid';
   const rows = await sql<Array<{
-    agent: string | null; model: string | null; provider: string | null;
-    model_source: string | null; grain: string | null;
+    agent: string | null; owner_id: string | null; native_session_id: string | null;
+    model: string | null; provider: string | null; model_source: string | null;
+    grain: string | null; source_id: string | null;
+    input_tokens: string | number | null; output_tokens: string | number | null;
+    cache_read_tokens: string | number | null; cache_creation_tokens: string | number | null;
   }>>`
-    SELECT s.agent, u.model, u.provider,
+    SELECT s.agent, s.coord_owner_id AS owner_id, s.session_id AS native_session_id,
+           u.model, u.provider, u.input_tokens, u.output_tokens,
+           u.cache_read_tokens, u.cache_creation_tokens,
            u.usage_provenance->>'modelSource' AS model_source,
-           u.usage_provenance->>'grain' AS grain
+           u.usage_provenance->>'grain' AS grain,
+           u.usage_provenance->>'sourceId' AS source_id
       FROM harness_shared.adv_sessions s
       LEFT JOIN harness_shared.agent_usage_samples u
         ON u.workspace_id = s.workspace_id AND u.session_id = s.session_id
@@ -617,20 +694,75 @@ async function verifyDirectOperationModel(
   `;
   if (!rows.length) return 'no accepted worker session reported an actual model';
   if (rows.length > 1000) return 'model evidence exceeds the bounded verification window';
+  const eventRows = await sql<Array<{ body: unknown }>>`
+    SELECT body FROM harness_shared.coord_event_log
+     WHERE workspace_id = ${workspaceId} AND surface = 'blueprint-operation'
+       AND writer_key = ${`receipt:${receiptId}`}
+       AND body->>'kind' = 'model-attestation'
+       AND body->>'workItemId' = ${workItemId}
+     ORDER BY id LIMIT 1001
+  `;
+  if (eventRows.length > 1000) return 'model attestation events exceed the bounded verification window';
+  const events = new Map<string, Extract<z.infer<typeof OperationEventBodySchema>, { kind: 'model-attestation' }>>();
+  for (const row of eventRows) {
+    const parsed = OperationEventBodySchema.safeParse(row.body);
+    if (!parsed.success || parsed.data.kind !== 'model-attestation' || parsed.data.receiptId !== receiptId) {
+      return 'accepted worker has malformed model attestation';
+    }
+    const event = parsed.data;
+    const key = `${event.nativeSessionId}:${event.providerResponseId}`;
+    if (events.has(key)) return 'accepted worker has duplicate model attestation';
+    events.set(key, event);
+  }
+  const nonnegative = (value: string | number | null) => value !== null && Number.isSafeInteger(Number(value)) && Number(value) >= 0;
+  // Reuse the gateway's CLI-alias resolution: a listed `opus[1m]` is the
+  // provider's `claude-opus-5` after the CLI moves the window into a header.
+  // Pricing normalization alone strips the marker but cannot resolve it.
+  const { resolveGatewayModel } = await import('../inference-gateway/gateway');
+  const canonicalModel = (value: string) => {
+    const bare = value.includes('/') ? value.slice(value.lastIndexOf('/') + 1) : value;
+    return normalizeModelId(resolveGatewayModel(bare).model);
+  };
+  const modelAllowed = (model: string, provider: string, effort: string | null): boolean => {
+    const actualPrefix = model.includes('/') ? model.slice(0, model.indexOf('/')).toLowerCase() : null;
+    if (actualPrefix && actualPrefix !== provider) return false;
+    return policy.models.some((entry) => {
+      const listedProvider = entry.includes('/') ? entry.slice(0, entry.indexOf('/')).toLowerCase() : 'anthropic';
+      const listedEffort = /:(low|medium|high|xhigh|max|ultra)$/i.exec(entry)?.[1]?.toLowerCase();
+      return listedProvider === provider && canonicalModel(entry) === canonicalModel(model) &&
+        (!listedEffort || listedEffort === effort);
+    });
+  };
   for (const row of rows) {
     if (row.agent !== 'claude' || row.provider !== 'anthropic' ||
-        row.model_source !== 'transcript' || row.grain !== 'request' || !row.model) {
+        row.model_source !== 'transcript' || row.grain !== 'request' || !row.model ||
+        !row.owner_id || !row.native_session_id || !row.source_id?.startsWith('message:')) {
       return 'accepted worker has an unreported or unsupported actual model';
     }
-    const actualPrefix = row.model.includes('/') ? row.model.slice(0, row.model.indexOf('/')).toLowerCase() : null;
-    const allowed = (!actualPrefix || actualPrefix === row.provider) && policy.models.some((entry) => {
-      const policyProvider = entry.includes('/') ? entry.slice(0, entry.indexOf('/')).toLowerCase() : 'anthropic';
-      return policyProvider === row.provider && normalizeModelId(entry) === normalizeModelId(row.model!);
-    });
-    if (!allowed) {
+    const event = events.get(`${row.native_session_id}:${row.source_id.slice('message:'.length)}`);
+    if (!event || event.ownerId !== row.owner_id || event.backend !== row.agent ||
+        event.provider !== row.provider || canonicalModel(event.actualModel) !== canonicalModel(row.model)) {
+      return 'accepted worker transcript differs from its provider model attestation';
+    }
+    if (!modelAllowed(event.requestedModel, row.provider, event.forwardedEffort) ||
+        !modelAllowed(event.actualModel, row.provider, event.forwardedEffort) ||
+        !modelAllowed(row.model, row.provider, event.forwardedEffort)) {
       return `accepted worker reported a model outside the ${policy.mode} policy`;
     }
+    if (policy.effort && (event.effortSource !== 'forwarded-request' ||
+        event.forwardedEffort !== policy.effort.toLowerCase())) {
+      return 'actual reasoning effort is not attested at the accepted level';
+    }
+    if (!nonnegative(row.input_tokens) || !nonnegative(row.output_tokens) ||
+        event.usage.inputTokens === null || Number(row.input_tokens) !== event.usage.inputTokens ||
+        (row.cache_read_tokens !== null && event.usage.cacheReadTokens !== null &&
+          Number(row.cache_read_tokens) !== event.usage.cacheReadTokens) ||
+        (row.cache_creation_tokens !== null && event.usage.cacheCreationTokens !== null &&
+          Number(row.cache_creation_tokens) !== event.usage.cacheCreationTokens)) {
+      return 'accepted worker usage differs from provider request attestation';
+    }
   }
+  if (events.size !== rows.length) return 'accepted worker has unmatched request-grain model evidence';
   return null;
 }
 
