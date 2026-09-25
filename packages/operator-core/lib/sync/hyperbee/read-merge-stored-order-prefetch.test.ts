@@ -223,6 +223,7 @@ describe('stored-order prefetch (P-002)', () => {
       applyImpl: store.apply,
       getTimeoutMs: 0,
     });
-    expect(res).toEqual({ applied: 1, decoded: 1, caughtUp: true, truncated: false });
+    // `snapshotChunksJumped` (P-533) is always reported; only the P-002 counter is optional.
+    expect(res).toEqual({ applied: 1, decoded: 1, caughtUp: true, truncated: false, snapshotChunksJumped: 0 });
   });
 });

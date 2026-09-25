@@ -696,6 +696,21 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       .not.toContain('bar_snapshot_proof_depth_missing');
   });
 
+  it('requires proof depth when a live-plane BAR declares a tests check', () => {
+    const input = fixture(1);
+    input.rubrics.rows[0]!.criteria[0]!.evidencePlane = 'live';
+    input.rubrics.rows[0]!.criteria[0]!.check = {
+      kind: 'tests',
+      files: ['packages/operator-core/lib/acceptance-bar-contract-snapshot.test.ts'],
+    };
+    input.clauses.rows[0]!.behaviorClass = 'non-automated';
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.automatedProofRequired).toBe(true);
+    expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_depth_missing');
+  });
+
   // An EXPLICITLY manual BAR (check instrument:'none') must not carry an automated proof
   // floor even on the `tree` plane, where acceptanceBarBehaviorClass projects every clause
   // as `happy-path`. Before this, such a criterion was unshippable by construction: the

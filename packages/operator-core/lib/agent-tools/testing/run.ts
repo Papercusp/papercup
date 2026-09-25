@@ -2707,6 +2707,18 @@ export async function runTestFilesCore(opts: {
       ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
       ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
     };
+    // WI-10003090: the router owns a second, inner Vitest watchdog. Its default
+    // is 600s for a short file list, even when this caller has a longer budget
+    // (scorecard checks have 13m). Derive the child deadline from THIS run's
+    // remaining budget so a progressing batch is not reaped by an unrelated
+    // default. Leave at most 30s, or 10% for short runs, for the router to
+    // report a typed timeout before the outer deadline closes its transport.
+    // The router's documented maximum is 120m; this env applies only to the
+    // nested invocation, while direct test:file keeps its own CLI default.
+    const routerHeadroomMs = Math.min(30_000, Math.floor(timeoutMs / 10));
+    childEnv.PAPERCUSP_TEST_FILE_TIMEOUT_MS = String(
+      Math.max(1, Math.min(120 * 60_000, timeoutMs - routerHeadroomMs)),
+    );
     // `testing:run` can itself be invoked from the repository's pc-heavy
     // wrapper. That wrapper exports a one-shot readiness/finalization marker
     // for its direct child; forwarding those exact paths into this nested

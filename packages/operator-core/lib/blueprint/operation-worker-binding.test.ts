@@ -10,7 +10,7 @@ vi.mock('./operation-admission', () => ({ readAcceptedBlueprintDirectWorkItem })
 vi.mock('../agent-identities/source', () => ({ getIdentitySource }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_workspace: string, run: () => unknown) => run() }));
 
-import { matchOperationWorkerClaim, resolveAcceptedOperationWorkerBinding } from './operation-worker-binding';
+import { matchOperationWorkerClaim, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } from './operation-worker-binding';
 
 const HASH = 'a'.repeat(64);
 const REVISION = 'b'.repeat(64);
@@ -91,6 +91,46 @@ describe('accepted blueprint operation worker binding', () => {
     getWorkItem.mockResolvedValue({ ...item, payload: {} });
     expect(await resolveAcceptedOperationWorkerBinding(args)).toBeNull();
     expect(readAcceptedBlueprintDirectWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('pins an accepted exact model and refuses an incompatible launch selector', async () => {
+    readAcceptedBlueprintDirectWorkItem.mockResolvedValue({ pin, operation: {
+      ...operation, policy: { ...operation.policy,
+        model: { mode: 'exact', models: ['anthropic/claude-opus-4-8'], onUnavailable: 'fail' },
+      },
+    } });
+    const binding = await resolveAcceptedOperationWorkerBinding(args);
+    expect(binding?.modelPolicy).toEqual({
+      mode: 'exact', models: ['anthropic/claude-opus-4-8'], onUnavailable: 'fail',
+    });
+    expect(selectAcceptedOperationWorkerModel(binding, 'claude-opus-4-8', 'claude')).toEqual({
+      model: 'claude-opus-4-8', requestedModel: 'claude-opus-4-8',
+      backend: 'claude', source: 'operation-policy',
+    });
+    expect(() => selectAcceptedOperationWorkerModel(binding, 'claude-sonnet-4-6', 'claude'))
+      .toThrow('outside the accepted exact model policy');
+    expect(() => selectAcceptedOperationWorkerModel(binding, 'openai-codex/claude-opus-4-8', 'claude'))
+      .toThrow('outside the accepted exact model policy');
+  });
+
+  it('selects only listed allowed/preferred models and preserves required effort', () => {
+    const binding = {
+      workItemId: 'WI-1', harnessSlug: 'harness-a', operationId: 'run', specificationRevision: REVISION,
+      pin, identity: { ref: 'blueprint-operation-worker', revision: '0.1.0', contentHash: HASH },
+      stack: ['domain:blueprint-operation-worker'], requiredTools: [],
+      modelPolicy: { mode: 'allowed' as const, models: ['gpt-5.6-terra', 'gpt-5.6-sol'],
+        effort: 'high', onUnavailable: 'wait' as const },
+    };
+    expect(selectAcceptedOperationWorkerModel(binding, null, 'codex')?.model).toBe('gpt-5.6-terra:high');
+    expect(selectAcceptedOperationWorkerModel(binding, 'sol:high', 'codex')?.model).toBe('gpt-5.6-sol:high');
+    expect(() => selectAcceptedOperationWorkerModel(binding, 'gpt-5.6-luna:high', 'codex'))
+      .toThrow('outside the accepted allowed model policy');
+    expect(() => selectAcceptedOperationWorkerModel(binding, 'sol:low', 'codex'))
+      .toThrow('reasoning effort differs');
+    expect(selectAcceptedOperationWorkerModel({ ...binding,
+      modelPolicy: { ...binding.modelPolicy, mode: 'preferred' },
+    }, null, 'codex')?.model).toBe('gpt-5.6-terra:high');
+    expect(selectAcceptedOperationWorkerModel({ ...binding, modelPolicy: undefined }, 'gpt-5.6-luna', 'codex')).toBeNull();
   });
 
   it('refuses a different role or harness', async () => {

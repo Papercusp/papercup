@@ -1292,6 +1292,11 @@ describe('bootstrap-su', () => {
     }));
     const exact = await callPost(selection);
     expect(exact.status).toBe(200);
+    const { recordSuLaunchSpec } = await import('../../adv-sessions');
+    expect(recordSuLaunchSpec).toHaveBeenCalledWith(expect.anything(), expect.anything(),
+      expect.objectContaining({ selectedIdentity: {
+        ref: 'domain:research-steward', sourceRevision: revision,
+      } }));
   });
 
   it('pins every component of a selected named composition at bootstrap', async () => {

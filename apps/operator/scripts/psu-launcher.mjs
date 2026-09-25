@@ -14559,6 +14559,12 @@ export function requireOmpRoleMcpJsonPath(res) {
 // role-scoped session — role persona + tools + feature context, human at
 // the keyboard. Goes through bootstrap-role + execs the raw backend with
 // the role prompt + signed role-scoped .mcp.json (NOT a *-su wrapper).
+export function requestedRoleModelFromBootstrap(res, requestedModel) {
+  return res.agent === "omp"
+    ? res.envelopeEnv?.PAPERCUSP_OMP_MODEL_SELECTOR || res.model || requestedModel
+    : res.model || requestedModel;
+}
+
 async function roleFlow(args, role, rolesMeta) {
   const consumes = (rolesMeta || []).find((r) => r.id === role)?.consumes ?? {
     feature: "none",
@@ -14643,10 +14649,7 @@ async function roleFlow(args, role, rolesMeta) {
   const roleCoordExt = join(homedir(), ".papercusp", "papercusp-coord.ts");
   const roleCoordExtPath =
     res.agent === "omp" && existsSync(roleCoordExt) ? roleCoordExt : undefined;
-  const requestedRoleModel =
-    res.agent === "omp"
-      ? res.envelopeEnv?.PAPERCUSP_OMP_MODEL_SELECTOR || args.model
-      : args.model;
+  const requestedRoleModel = requestedRoleModelFromBootstrap(res, args.model);
   const roleModel =
     res.agent === "omp"
       ? normalizeOmpModelSpec(requestedRoleModel)
@@ -14662,7 +14665,7 @@ async function roleFlow(args, role, rolesMeta) {
     runLaunchPreflight({
       promptFile: res.promptFile,
       contextSize: args.contextSize,
-      model: args.model,
+      model: requestedRoleModel,
       agent: res.agent,
       budget: res.contextBudget,
       force: args.force,

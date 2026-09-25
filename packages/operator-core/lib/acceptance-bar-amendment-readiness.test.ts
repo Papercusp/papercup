@@ -48,7 +48,7 @@ function rows<T>(values: T[], limit = Math.max(values.length, 1)): BoundedAccept
   return { rows: values, limit, truncated: false };
 }
 
-function criterion(n: number, check: RubricCriterion['check']): RubricCriterion {
+function criterion(n: number, check: RubricCriterion['check'], plane: 'tree' | 'live' = 'tree'): RubricCriterion {
   const value = {
     key: `r-${n}`,
     title: `Outcome ${n}`,
@@ -58,8 +58,8 @@ function criterion(n: number, check: RubricCriterion['check']): RubricCriterion 
     barKey: `R-${n}`,
     role: 'outcome' as const,
     mandatory: true,
-    requiredScope: ['tree'],
-    evidencePlane: 'tree' as const,
+    requiredScope: [plane],
+    evidencePlane: plane,
     passRatings: ['healthy'],
     check,
     barProvenance: { lifecycle: 'pre-implementation' as const, declaredAt: iso, declaredBy: 'su-author' },
@@ -68,11 +68,11 @@ function criterion(n: number, check: RubricCriterion['check']): RubricCriterion 
 }
 
 /** A started, post-epoch contract whose BARs carry the given checks. */
-function contract(checks: Array<RubricCriterion['check']>): {
+function contract(checks: Array<RubricCriterion['check']>, plane: 'tree' | 'live' = 'tree'): {
   snapshot: AcceptanceBarContractSnapshot;
   criteria: RubricCriterion[];
 } {
-  const criteria = checks.map((check, index) => criterion(index + 1, check));
+  const criteria = checks.map((check, index) => criterion(index + 1, check, plane));
   const barSetHash = computeAcceptanceBarSetHash(criteria);
   const rubric = {
     rubricId: 'acceptance-plan-a', revision: 2, workspaceId: 'ws-1', kind: 'acceptance',
@@ -85,11 +85,11 @@ function contract(checks: Array<RubricCriterion['check']>): {
   const clauses = criteria.map((bar, index) => ({
     planSlug: 'plan-a', specId: `AUTO-BAR-${bar.barKey}-P-00${index + 1}`, sourceValId: null,
     currentRevision: 1, revision: 1, planItemId: `P-00${index + 1}`, behavior: bar.model,
-    behaviorClass: 'happy-path', requiredEvidence: ['tree'], requiredTestLayers: [], mutationRequired: false,
+    behaviorClass: plane === 'tree' ? 'happy-path' : 'non-automated', requiredEvidence: [plane], requiredTestLayers: [], mutationRequired: false,
     lifecycleStatus: 'active', supersedes: null, exemption: null, falsifier: { observation: bar.driftMarkers },
     contentHash: `spec-hash-${index + 1}`, createdBy: 'su-author', createdAt: iso, acceptedBy: 'su-author',
     acceptedAt: iso, acceptanceRef: `acceptance-plan-a@2:${bar.barKey}`,
-    sourceBar: { barKey: bar.barKey!, barHash: bar.barHash!, barSetHash, rubricSlug: 'acceptance-plan-a', rubricRevision: 2, evidencePlane: 'tree' },
+    sourceBar: { barKey: bar.barKey!, barHash: bar.barHash!, barSetHash, rubricSlug: 'acceptance-plan-a', rubricRevision: 2, evidencePlane: plane },
   }) as SpecClauseRevision);
   const input: AcceptanceBarContractSnapshotInput = {
     planRows: rows([{
@@ -120,7 +120,7 @@ function amend(
   nextChecks: Array<RubricCriterion['check']>,
   { predict = true } = {},
 ): AcceptanceBarContractSnapshot {
-  const nextCriteria = nextChecks.map((check, index) => criterion(index + 1, check));
+  const nextCriteria = nextChecks.map((check, index) => criterion(index + 1, check, current.criteria[index]!.evidencePlane as 'tree' | 'live'));
   const raw = buildAcceptanceBarAmendmentCandidate(
     current.snapshot,
     nextCriteria,
@@ -156,6 +156,55 @@ describe('rubrics:amend dry-run readiness delta (P-039 guard)', () => {
     expect(delta.raisesProofFloorOnly).toBe(true);
     expect(delta.summary).toContain('ONLY RAISES THE PROOF FLOOR');
     expect(delta.summary).toContain(`Flips from ${MANUAL_CONTRACT_LABEL} to ${AUTOMATED_CONTRACT_LABEL}: R-1.`);
+  });
+
+  it('re-predicts a check change when the criterion carries a stale barHash alias', () => {
+    const current = contract([MANUAL, MANUAL]);
+    expect(current.snapshot.bars[0]?.automatedProofRequired).toBe(false);
+    const nextCriteria = current.criteria.map((bar, index) =>
+      index === 0 ? { ...bar, check: TESTS } : bar,
+    );
+    // Requirement patches can retain the prior read alias until the canonical
+    // writer re-hashes the criterion. The check delta still raises the floor.
+    expect(nextCriteria[0]?.barHash).toBe(current.criteria[0]?.barHash);
+    const raw = buildAcceptanceBarAmendmentCandidate(
+      current.snapshot,
+      nextCriteria,
+      new Map(nextCriteria.map((bar, index) => [bar.barKey!, { planItemIds: [`P-00${index + 1}`] }])),
+      new Map(nextCriteria.map((_, index) => [`P-00${index + 1}`, 'done'])),
+      {
+        rubricRevision: 3,
+        subjectPlanRevision: 8,
+        barSetHash: computeAcceptanceBarSetHash(nextCriteria),
+        barContract: { schemaVersion: 1, adoptionEpoch: 1, cohort: 'post-epoch', subjectPlanRevision: 8, seededAt: iso, seededBy: 'su-author' } as Rubric['barContract'],
+      },
+    );
+    const predicted = predictAmendedBarProofFloor(current.snapshot, raw, nextCriteria);
+    expect(predicted.bars[0]?.automatedProofRequired).toBe(true);
+    expect(evaluateAmendmentReadinessDelta(current.snapshot, predicted).flippedToAutomated).toEqual(['R-1']);
+  });
+
+  it('raises the floor for a live-plane manual BAR changed to tests without layers', () => {
+    const current = contract([MANUAL, MANUAL], 'live');
+    expect(current.snapshot.bars[0]?.automatedProofRequired).toBe(false);
+    const nextCriteria = current.criteria.map((bar, index) =>
+      index === 0 ? { ...bar, check: TESTS } : bar,
+    );
+    const raw = buildAcceptanceBarAmendmentCandidate(
+      current.snapshot,
+      nextCriteria,
+      new Map(nextCriteria.map((bar, index) => [bar.barKey!, { planItemIds: [`P-00${index + 1}`] }])),
+      new Map(nextCriteria.map((_, index) => [`P-00${index + 1}`, 'done'])),
+      {
+        rubricRevision: 3,
+        subjectPlanRevision: 8,
+        barSetHash: computeAcceptanceBarSetHash(nextCriteria),
+        barContract: { schemaVersion: 1, adoptionEpoch: 1, cohort: 'post-epoch', subjectPlanRevision: 8, seededAt: iso, seededBy: 'su-author' } as Rubric['barContract'],
+      },
+    );
+    const predicted = predictAmendedBarProofFloor(current.snapshot, raw, nextCriteria);
+    expect(predicted.bars[0]?.automatedProofRequired).toBe(true);
+    expect(evaluateAmendmentReadinessDelta(current.snapshot, predicted).flippedToAutomated).toEqual(['R-1']);
   });
 
   it('CALIBRATION: without the re-prediction the candidate carries the old manual verdict and the flip is invisible', () => {

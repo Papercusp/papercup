@@ -121,6 +121,7 @@ import {
   effectiveAutoMode,
   assertFleetJoined,
   roleBootstrapBody,
+  requestedRoleModelFromBootstrap,
   requireOmpRoleMcpJsonPath,
   forkSeedPaths,
   findUntrackedSession,
@@ -5245,6 +5246,16 @@ describe("psu-launcher arg parsing", () => {
     );
     expect(roleBody).toContain("...contextTrimmingEnv(res.agent)");
     expect(roleBody).toContain("...nativeCompactionEnv(res.agent)");
+  });
+
+  it("roleFlow launches the server-selected operation model", () => {
+    const selected = requestedRoleModelFromBootstrap({ agent: "claude", model: "opus:xhigh" }, "sonnet:high");
+    const launch = roleLaunchArgs("claude", { promptFile: "/p.md", model: selected });
+    expect(launch.args).toContain("opus");
+    expect(launch.args).not.toContain("sonnet");
+    expect(requestedRoleModelFromBootstrap({ agent: "omp", model: "anthropic/claude-opus-4-8",
+      envelopeEnv: { PAPERCUSP_OMP_MODEL_SELECTOR: "claude-bridge/claude-opus-4-8" } }, "anthropic/claude-sonnet-4-6"))
+      .toBe("claude-bridge/claude-opus-4-8");
   });
 
   it("buildResumeEnv: P-022 native-compaction retirement is re-stamped on Claude resumes only", () => {

@@ -16,7 +16,7 @@
  * import (EI-9784: pay bootstrap-su's heavy first import exactly once).
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -77,7 +77,8 @@ vi.mock('../../../role-launch-spec', () => ({
 vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   requestSessionIdentityActivation: (input: unknown) => requestSessionIdentityActivationMock(input),
 }));
-vi.mock('../../../agent-tools/coordination/presence', () => ({
+vi.mock('../../../agent-tools/coordination/presence', async (orig) => ({
+  ...(await orig<typeof import('../../../agent-tools/coordination/presence')>()),
   touchHeartbeat: vi.fn(async () => {}),
 }));
 
@@ -197,6 +198,56 @@ describe('POST bootstrap-su/persona-refresh — the happy path', () => {
       fleetRole: 'leader',
       modes: ['auto'],
     }));
+  });
+
+  it('keeps a named composition pin through refresh and refuses an edited component', async () => {
+    const { resolveNamedIdentityCompositionSelection } = await import('../../../agent-identities/source');
+    const { recordSuLaunchSpec } = await import('../../../adv-sessions');
+    const sourceDir = mkdtempSync(join(tmpdir(), 'refresh-named-composition-'));
+    try {
+      const domainDir = join(sourceDir, '.papercusp', 'blueprints', 'refresh-domain');
+      const rootDir = join(sourceDir, '.papercusp', 'blueprints', 'refresh-suite');
+      mkdirSync(domainDir, { recursive: true });
+      mkdirSync(rootDir, { recursive: true });
+      const componentPath = join(domainDir, 'blueprint.yaml');
+      writeFileSync(componentPath,
+        'id: refresh-domain\nextends: base\nversion: 1.0.0\nslots:\n  - slot: domain\n');
+      writeFileSync(join(rootDir, 'blueprint.yaml'),
+        'id: refresh-suite\nextends: refresh-domain\nslots: []\nroles:\n  - id: su\n    stack:\n      - domain:refresh-domain\n');
+      const selected = await resolveNamedIdentityCompositionSelection('refresh-suite', sourceDir);
+      const pin = { ref: 'composition:refresh-suite', sourceRevision: selected.sourceRevision };
+      readLaunchSpecMock.mockResolvedValue(spec({ stack: selected.stack, selectedIdentity: pin }));
+      const baseBuild = buildLaunchSpecMock.getMockImplementation()!;
+      const mockBuild = async () => ({ ...await baseBuild(), cwd: sourceDir, stack: selected.stack });
+      buildLaunchSpecMock.mockImplementationOnce(mockBuild).mockImplementationOnce(mockBuild);
+      compileLaunchSpecificationArtifactMock.mockImplementationOnce(async (input: any) => ({
+        promptText: input.promptText,
+        stack: input.stack,
+        specificationArtifact: { inputs: selected.layers.map((layer) => ({
+          kind: 'blueprint-layer', ref: layer.id, contentHash: layer.contentHash,
+        })) },
+        specificationRevision: 'a'.repeat(64),
+        stateRevision: input.stateRevision,
+        compositionSource: 'composition',
+      }));
+
+      expect(await (await refresh({ coordOwnerId: OWNER })).json()).toMatchObject({ ok: true });
+      expect(compileLaunchSpecificationArtifactMock).toHaveBeenCalledWith(
+        expect.objectContaining({ compositionRootId: 'refresh-suite', stack: selected.stack }));
+      expect(recordSuLaunchSpec).toHaveBeenCalledWith(null, OWNER,
+        expect.objectContaining({ selectedIdentity: pin }));
+
+      writeFileSync(componentPath,
+        'id: refresh-domain\nextends: base\nversion: 1.0.1\nslots:\n  - slot: domain\n');
+      expect(await (await refresh({ coordOwnerId: OWNER })).json()).toMatchObject({
+        ok: false, reason: 'render-failed',
+        error: expect.stringMatching(/source revision or component stack changed/),
+      });
+      expect(recordSuLaunchSpec).toHaveBeenCalledTimes(1);
+      expect(compileLaunchSpecificationArtifactMock).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(sourceDir, { recursive: true, force: true });
+    }
   });
 
   it('overwrites its own previous refresh instead of accumulating one file per respawn', async () => {

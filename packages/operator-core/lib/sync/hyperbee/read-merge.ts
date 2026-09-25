@@ -770,6 +770,37 @@ function snapshotSetDisposition(
   return 'skip';
 }
 
+/**
+ * P-533: the positions `[start, end)` of the set holding the chunk at `pos`, when this
+ * cursor would SKIP that set (`snapshotSetDisposition` answers 'skip'). Null for any
+ * other set, and for a chunk that does not say where it sits in a multi-chunk set.
+ * Pure: it records nothing on the cursor, so the look-ahead may ask before the fold
+ * reaches the set.
+ */
+function skippedSetSpan(
+  cursor: MergeCursor,
+  keyHex: string,
+  payload: SnapshotPayload | undefined,
+  pos: number,
+): { start: number; end: number } | null {
+  if (!payload || !isSkipEligibleSnapshot(payload, pos)) return null;
+  if (payload.coversUpTo <= (cursor.snapshotApplyThrough?.get(keyHex) ?? NO_SNAPSHOT_APPLY)) return null;
+  if (cursor.snapshotHole?.has(keyHex)) return null;
+  const { chunkIdx: idx, chunkCount: count } = payload;
+  if (!Number.isInteger(idx) || !Number.isInteger(count)) return null;
+  if (count! < 2 || idx! < 0 || idx! >= count!) return null;
+  return { start: pos - idx!, end: pos - idx! + count! };
+}
+
+/** P-533: whether `op` is the LAST chunk of the set `chunk` belongs to. */
+function isLastChunkOf(op: PeerLogOp | null, chunk: PeerLogOp): boolean {
+  if (!op || !isSnapshotOp(op) || op.ts !== chunk.ts) return false;
+  const p = op.value as SnapshotPayload | undefined;
+  const c = chunk.value as SnapshotPayload | undefined;
+  if (!p || !c || typeof c.chunkCount !== 'number') return false;
+  return p.coversUpTo === c.coversUpTo && p.chunkCount === c.chunkCount && p.chunkIdx === c.chunkCount - 1;
+}
+
 /** P-008: one in-progress snapshot-set crossing, for progress logging. */
 interface SnapshotSetCrossing {
   coversUpTo: number;
@@ -779,6 +810,8 @@ interface SnapshotSetCrossing {
   lastLogAt: number;
   chunks: number;
   rows: number;
+  /** P-533: chunks crossed in one step, without a fold read. */
+  jumped: number;
 }
 
 /** P-008: a chunk's position within its set, for log lines. */
@@ -2681,6 +2714,19 @@ interface PrefetchableLog extends AdmittedLog {
   prefetch?(start: number, end: number): void;
 }
 
+/** P-533: one read the caller can withdraw. `cancel()` settles `op` (it rejects) and
+ *  withdraws the block request from the network, so an unwanted block is not fetched. */
+export interface CancellableRead {
+  op: Promise<PeerLogOp | null>;
+  cancel(): void;
+}
+
+/** P-533: a log whose reads can be cancelled one by one (RemoteLog can). Feature-detected
+ *  per log, like `prefetch`; the look-ahead falls back to plain `get` without it. */
+export interface CancellableReadLog extends AdmittedLog {
+  getCancellable?(i: number): CancellableRead;
+}
+
 export interface IncrementalMergeOpts {
   /** Override the apply sink (defaults to `applyHyperbeeOpToPg`). */
   applyImpl?: (op: OpEnvelope) => Promise<boolean | MergeApplyOutcome>;
@@ -2845,6 +2891,8 @@ export interface IncrementalMergeResult {
    * superseder then failed replays next pass and is counted again if skipped again.
    */
   supersededSkips?: number;
+  /** P-533: positions of skipped snapshot sets crossed in one step, without a fold read. */
+  snapshotChunksJumped: number;
   /** P-002 step 2: batch-transaction counters. Present unless `batchApply: false`. */
   batch?: MergeBatchStats;
 }
@@ -2931,15 +2979,47 @@ async function peekAndSeedStoredOrder(args: {
     timer = setTimeout(() => resolve(TIMEOUT), Math.max(0, peekTimeoutMs));
     if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref();
   });
+  // P-533: a window that reaches a set this cursor will SKIP must not fetch the set. The
+  // first chunk to arrive says where the set sits, so every other read in its span is
+  // cancelled then, even after the deadline (a read outlives the peek). The fold's own
+  // next position and the set's last block stay: the fold's jump reads exactly those.
+  const cancellable = (log as CancellableReadLog).getCancellable;
+  const inFlight = typeof cancellable === 'function' ? new Map<number, CancellableRead>() : null;
+  const dropSkippedSpan = (op: PeerLogOp | null, i: number): void => {
+    if (!inFlight || !op || !isSnapshotOp(op)) return;
+    const span = skippedSetSpan(cursor, log.keyHex, op.value as SnapshotPayload | undefined, i);
+    if (!span) return;
+    for (let j = Math.max(span.start, start) + 1; j < Math.min(span.end - 1, end); j++) {
+      inFlight.get(j)?.cancel();
+      inFlight.delete(j);
+    }
+  };
   try {
     const reads: Promise<void>[] = [];
     for (let i = start; i < end; i++) {
-      const read = Promise.resolve()
-        .then(() => log.get(i))
-        .then(
-          (op) => ({ ok: true as const, op }),
-          () => ({ ok: false as const }),
+      let read: Promise<{ ok: true; op: PeerLogOp | null } | { ok: false }>;
+      if (inFlight) {
+        const handle = cancellable!.call(log, i);
+        inFlight.set(i, handle);
+        read = handle.op.then(
+          (op) => {
+            inFlight.delete(i);
+            dropSkippedSpan(op, i);
+            return { ok: true as const, op };
+          },
+          () => {
+            inFlight.delete(i);
+            return { ok: false as const };
+          },
         );
+      } else {
+        read = Promise.resolve()
+          .then(() => log.get(i))
+          .then(
+            (op) => ({ ok: true as const, op }),
+            () => ({ ok: false as const }),
+          );
+      }
       reads.push(
         Promise.race([read, deadline]).then((r) => {
           // P-532 (D-027): a snapshot chunk is never kept. Neither consumer reads one, and
@@ -3215,6 +3295,7 @@ async function mergeIncrementalPass(
   const skipSuperseded = opts?.skipSuperseded;
   const lookAhead = prefetchStoredOrder !== undefined || skipSuperseded !== undefined;
   let supersededSkips = 0;
+  let snapshotChunksJumped = 0;
   // P-524: optional key-before-content seek; at most one seek per (log, pot, epoch) per pass.
   const keySeek = opts?.keySeek;
   const keySeeksThisPass = new Set<string>();
@@ -3246,7 +3327,7 @@ async function mergeIncrementalPass(
       // The caller will normally replace the cursor after this signal. Drop
       // retained late reads so a re-fold cannot consume a stale position.
       cursor.lateReadResults?.clear();
-      return { applied: 0, decoded: 0, caughtUp: false, truncated: true };
+      return { applied: 0, decoded: 0, caughtUp: false, truncated: true, snapshotChunksJumped: 0 };
     }
   }
 
@@ -3610,7 +3691,7 @@ async function mergeIncrementalPass(
               : disposition === 'apply-ineligible'
                 ? 'not skip-eligible'
                 : 'redundant';
-        crossing = { coversUpTo: c, mode, reason, startedAt: now, lastLogAt: now, chunks: 0, rows: 0 };
+        crossing = { coversUpTo: c, mode, reason, startedAt: now, lastLogAt: now, chunks: 0, rows: 0, jumped: 0 };
         if (mode === 'apply' && idx < count - 1) {
           console.info(
             `[read-merge] ${setLabel(c)}: APPLYING (${reason}) from chunk ${idx + 1}/${count}; ` +
@@ -3639,10 +3720,52 @@ async function mergeIncrementalPass(
         crossing.mode === 'apply'
           ? `[read-merge] ${setLabel(c)}: APPLIED ${crossing.chunks} chunk(s), ${crossing.rows} row(s) ` +
               `in ${seconds}s (${crossing.reason}).`
-          : `[read-merge] ${setLabel(c)}: SKIPPED ${crossing.chunks} chunk(s), ${crossing.rows} row(s) ` +
-              `not re-applied; this cursor already folded [0, ${c}) op by op.`,
+          : `[read-merge] ${setLabel(c)}: SKIPPED ${crossing.chunks} chunk(s)` +
+              (crossing.jumped > 0 ? ` (${crossing.jumped} crossed in one step, P-533)` : '') +
+              `, ${crossing.rows} row(s) read and not re-applied; this cursor already folded [0, ${c}) op by op.`,
       );
       crossing = null;
+    };
+
+    // P-533: a set this cursor skips is crossed in one step. The chunk at `pos` says
+    // where its set ends, and ONE read of the set's last block proves that nothing but
+    // this set's chunks sits in between: a set is appended as one atomic batch in chunk
+    // order, so chunk `idx` at `pos` and chunk `count - 1` at `pos + count - 1 - idx`
+    // leave exactly enough positions for the chunks between them. Any other answer keeps
+    // the chunk-by-chunk skip. `stalled` = that read did not finish in time.
+    let jumpRefusedFor: number | null = null;
+    const jumpSkippedSet = async (
+      chunk: PeerLogOp,
+      payload: SnapshotPayload | undefined,
+    ): Promise<{ kind: 'jumped'; last: SnapshotPayload | null } | { kind: 'read' } | { kind: 'stalled' }> => {
+      const span = skippedSetSpan(cursor, log.keyHex, payload, pos);
+      if (!span || span.end - 1 <= pos || span.end > log.length) return { kind: 'read' };
+      if (jumpRefusedFor === payload!.coversUpTo) return { kind: 'read' };
+      const got = await readOpBoundedDetailed(log, span.end - 1, getTimeoutMs);
+      if (got.kind === 'unavailable') {
+        console.info(
+          `[read-merge] ${setLabel(payload!.coversUpTo)}: its last chunk #${span.end - 1} was not read in ` +
+            `${getTimeoutMs}ms; the skip resumes next pass (P-533).`,
+        );
+        return { kind: 'stalled' };
+      }
+      if (got.kind !== 'op' || !isLastChunkOf(got.op, chunk)) {
+        jumpRefusedFor = payload!.coversUpTo;
+        console.warn(
+          `[read-merge] ${setLabel(payload!.coversUpTo)}: block #${span.end - 1} is not this set's last chunk; ` +
+            `skipping it chunk by chunk (P-533 jump refused).`,
+        );
+        return { kind: 'read' };
+      }
+      const to = Math.min(span.end, upper);
+      const jumped = to - pos - 1;
+      snapshotChunksJumped += jumped;
+      if (crossing) {
+        crossing.chunks += jumped;
+        crossing.jumped += jumped;
+      }
+      pos = to - 1;
+      return { kind: 'jumped', last: to === span.end ? (got.op!.value as SnapshotPayload) : null };
     };
 
     for (; pos < upper; pos++) {
@@ -3854,7 +3977,13 @@ async function mergeIncrementalPass(
         const rows = snapshotRows(op);
         noteSnapshotCrossing(payload, disposition, rows.length);
         if (disposition === 'skip') {
-          endSnapshotChunk(payload);
+          const jump = await jumpSkippedSet(op, payload);
+          if (jump.kind === 'stalled') {
+            pos++; // this chunk is crossed; the pass stops before the next one
+            break;
+          }
+          if (jump.kind === 'read') endSnapshotChunk(payload);
+          else if (jump.last) endSnapshotChunk(jump.last);
           continue;
         }
         // Rows, not ops, drive the persist cadence here: one chunk can hold thousands
@@ -4041,6 +4170,7 @@ async function mergeIncrementalPass(
     truncated: false,
     ...(prefetchStoredOrder ? { storedOrderSkips } : {}),
     ...(skipSuperseded ? { supersededSkips } : {}),
+    snapshotChunksJumped,
     ...batchStats,
   };
 }

@@ -1533,15 +1533,16 @@ describe('template_data persistence boundary — the set-template-data door', ()
   // seeding (see the note at the end of this helper). It is OPT-IN because it
   // writes template_data, which advances clause revisions — cases that assert
   // exact revision numbers or history counts want the bare seed.
-  async function seedBarContract(subject: string, opts: { authorMethods?: boolean } = {}) {
+  async function seedBarContract(subject: string, opts: { authorMethods?: boolean; evidencePlane?: 'tree' | 'live' } = {}) {
     const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
     const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
     const workspaceId = activeWorkspaceId();
     const content = `---\ntitle: METHOD pins\nslug: ${subject}\nstatus: active\n---\n\n## Requirements\n\n**R-1 — First outcome.** The first outcome holds.\n\n**R-2 — Second outcome.** The second outcome holds.\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n| R-1 | P-001 | tree |\n| R-2 | P-002 | tree |\n\n## Work\n\n- **P-001** \`done\` first outcome\n- **P-002** \`done\` second outcome\n`;
+    const seededContent = opts.evidencePlane === 'live' ? content.replaceAll('| tree |', '| live |') : content;
     await db.adminSql`
       INSERT INTO harness_shared.harness_plans
         (workspace_id,harness_slug,plan_slug,content,content_hash,version,title,status,owner,acceptance_bar_epoch,acceptance_bar_cohort)
-      VALUES (${workspaceId},'papercusp',${subject},${content},${hashPlanContent(content)},1,'METHOD pins','active','su-test',1,'post-epoch')`;
+      VALUES (${workspaceId},'papercusp',${subject},${seededContent},${hashPlanContent(seededContent)},1,'METHOD pins','active','su-test',1,'post-epoch')`;
     for (const [index, item] of ['P-001', 'P-002'].entries()) {
       await db.adminSql`INSERT INTO harness_shared.plan_items
         (workspace_id,harness_slug,plan_slug,item_id,seq,status,item_text)
@@ -1564,7 +1565,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
         workspaceId,
         harnessSlug: 'papercusp',
         planSlug: subject,
-        planContent: content,
+        planContent: seededContent,
         planTitle: 'METHOD pins',
         planStatus: 'active',
         planVersion: 1,
@@ -1638,6 +1639,41 @@ describe('template_data persistence boundary — the set-template-data door', ()
       })),
     };
     expect((await rubrics.previewAcceptanceBarAmendment(manual))?.changedBars).toEqual(['R-1', 'R-2']);
+  });
+
+  it('refuses a live-plane manual BAR changed to tests without a layer', async () => {
+    const seeded = await seedBarContract('amendment-live-missing-proof-layer', { evidencePlane: 'live' });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const manual: Parameters<typeof rubrics.amendRubric>[0] = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'method-author',
+      reason: 'Declare the live BARs explicitly manual.',
+      criteria: before.criteria.map((criterion) => ({
+        ...criterion,
+        method: 'Inspect the live state.',
+        check: { kind: 'instrument' as const, instrumentKey: 'none' },
+      })),
+    };
+    await rubrics.amendRubric({ ...manual, approvalRef: await postApproval(manual) });
+    const current = (await rubrics.getRubric(seeded.rubricSlug))!;
+    expect(current.criteria[0]?.evidencePlane).toBe('live');
+    expect(current.criteria[0]?.check).toEqual({ kind: 'instrument', instrumentKey: 'none' });
+
+    const testsWithoutLayer: Parameters<typeof rubrics.previewAcceptanceBarAmendment>[0] = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'method-author',
+      reason: 'Change a live manual check to tests without declaring its proof layer.',
+      requirement: {
+        key: 'r-1',
+        verification: {
+          check: { kind: 'tests', files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+        },
+      },
+    };
+    await expect(rubrics.previewAcceptanceBarAmendment(testsWithoutLayer)).rejects.toThrow(
+      /acceptance_bar_amendment_test_layers_missing.*R-1.*requiredTestLayers/,
+    );
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(current.revision);
   });
 
   it('advances meaningRevision on a meaning-changing cross-plan amendment', async () => {

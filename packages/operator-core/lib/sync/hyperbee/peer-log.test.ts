@@ -131,3 +131,70 @@ describe('peer-log', () => {
     expect(await sibling.get(0)).toMatchObject({ hbKey: 'R-1' });
   });
 });
+
+// p2p-join-catchup-speed-2026-09-23 P-533: the merge's look-ahead cancels its reads of a
+// snapshot set it will skip. These pin `getCancellable` against a REAL Hypercore: the
+// cancel reaches the replicator (the read rejects instead of waiting on a peer), a
+// cancel that lands before the request is filed still refuses it, and a second reader
+// of the same block keeps its own request.
+describe('peer-log getCancellable (P-533)', () => {
+  type Stream = { pipe<T extends Stream>(dest: T): T; destroy(): void };
+  async function replicaOf3(): Promise<{
+    remote: Awaited<ReturnType<typeof openRemoteLog>>;
+    connect(): void;
+  }> {
+    const s1 = makeStore('mb-cw-'); await s1.ready();
+    const s2 = makeStore('mb-cr-'); await s2.ready();
+    const own = await openOwnLog(s1);
+    for (const hbKey of ['R-1', 'R-2', 'R-3']) {
+      await own.append({ type: 'put', table: 'features_consolidated', hbKey, value: {}, ts: 10, schema_version: 1, author_pubkey: 'A' });
+    }
+    let streams: Stream[] = [];
+    const connect = (): void => {
+      const a = s1.replicate(true) as unknown as Stream;
+      const b = s2.replicate(false) as unknown as Stream;
+      a.pipe(b).pipe(a);
+      streams = [a, b];
+    };
+    connect();
+    const remote = await openRemoteLog(s2, own.keyHex);
+    await remote.update();
+    expect(remote.length).toBe(3);
+    expect(await remote.get(0)).toMatchObject({ hbKey: 'R-1' }); // block 0 local, 1-2 are not
+    for (const s of streams) s.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    return { remote, connect };
+  }
+
+  it('cancel() rejects a read that is waiting on the network', async () => {
+    const { remote } = await replicaOf3();
+    const read = remote.getCancellable!(2);
+    await new Promise((resolve) => setTimeout(resolve, 20)); // the request is filed and waiting
+    read.cancel();
+    await expect(read.op).rejects.toMatchObject({ code: 'REQUEST_CANCELLED' });
+  });
+
+  it('a cancel that lands before the request is filed still refuses it', async () => {
+    const { remote } = await replicaOf3();
+    const read = remote.getCancellable!(2);
+    read.cancel();
+    await expect(read.op).rejects.toMatchObject({ code: 'REQUEST_CANCELLED' });
+  });
+
+  it('another reader of the same block keeps its request, and gets the block once a peer returns', async () => {
+    const { remote, connect } = await replicaOf3();
+    const plain = remote.get(1);
+    const read = remote.getCancellable!(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    read.cancel();
+    await expect(read.op).rejects.toMatchObject({ code: 'REQUEST_CANCELLED' });
+    connect();
+    await expect(plain).resolves.toMatchObject({ hbKey: 'R-2' });
+  });
+
+  it('an in-range read that is not cancelled resolves the op', async () => {
+    const { remote, connect } = await replicaOf3();
+    connect();
+    await expect(remote.getCancellable!(2).op).resolves.toMatchObject({ hbKey: 'R-3' });
+  });
+});

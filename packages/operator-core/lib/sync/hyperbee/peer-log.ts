@@ -35,6 +35,7 @@ import type Corestore from 'corestore';
 // defined explicitly so this module doesn't depend on the (retiring) Autobase;
 // `OpEnvelope` now lives in its own types module (Stage 4d).
 import type { OpEnvelope } from './op-envelope-types';
+import type { CancellableRead } from './read-merge';
 import { resolveRemoteCoreHost } from './remote-core-host';
 import { trackDetached } from '../../detached-imports';
 
@@ -150,6 +151,13 @@ export interface RemoteLog {
    * peer, then returns the decoded op.
    */
   get(i: number): Promise<PeerLogOp | null>;
+  /**
+   * p2p-join-catchup-speed P-533: `get(i)` that the caller can withdraw. `cancel()`
+   * rejects `op` and withdraws the block request from the peer, so a block nobody
+   * needs any more (a chunk of a snapshot set the merge skips) is not downloaded.
+   * Optional: the merge feature-detects it and falls back to `get`.
+   */
+  getCancellable?(i: number): CancellableRead;
   /** Block until the writer's current length is known to this replica. */
   update(): Promise<void>;
   /**
@@ -203,7 +211,9 @@ export interface RemoteLog {
 interface CoreLike {
   ready(): Promise<void>;
   append(value: unknown): Promise<number>;
-  get(index: number, opts?: { wait?: boolean }): Promise<unknown>;
+  /** `activeRequests` (Hypercore): the array this read's network request is filed in,
+   *  so the caller can withdraw it with `Hypercore.destroyRequests`. */
+  get(index: number, opts?: { wait?: boolean; activeRequests?: unknown[] }): Promise<unknown>;
   update(opts?: { wait?: boolean }): Promise<boolean>;
   /** Hypercore ranged download — returns a Range whose `done()` resolves when
    *  the range is local. Optional in the structural view (present on real cores). */
@@ -426,6 +436,25 @@ export async function openRemoteLog(store: Corestore, keyHex: string): Promise<R
       if (i < 0 || i >= core.length) return null;
       const v = await core.get(i, { wait: true });
       return (v as PeerLogOp | null) ?? null;
+    },
+    getCancellable(i: number): CancellableRead {
+      if (i < 0 || i >= core.length) return { op: Promise.resolve(null), cancel() {} };
+      // Hypercore files the block request in `requests`; `destroyRequests` rejects it,
+      // detaches it (the peer is told to stop when no other reader shares the block),
+      // and marks the array dead so a request `get` has not filed yet is refused too.
+      // Another reader of the same block keeps its own request.
+      const requests: unknown[] = [];
+      const destroy = (core.constructor as unknown as { destroyRequests?(requests: unknown[], err?: unknown): void })
+        .destroyRequests;
+      let cancelled = false;
+      return {
+        op: core.get(i, { wait: true, activeRequests: requests }).then((v) => (v as PeerLogOp | null) ?? null),
+        cancel() {
+          if (cancelled || typeof destroy !== 'function') return;
+          cancelled = true;
+          destroy.call(core.constructor, requests);
+        },
+      };
     },
     async update(): Promise<void> {
       await core.update({ wait: true });

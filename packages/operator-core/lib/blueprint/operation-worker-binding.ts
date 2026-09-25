@@ -2,10 +2,12 @@
 import type { JSONValue, Sql } from 'postgres';
 import { isDeepStrictEqual } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
+import { normalizeModelId } from '@papercusp/model-pricing';
 import { getWorkItem } from '../work-items';
 import { runWithWorkspace } from '../workspace-als';
 import { getIdentitySource } from '../agent-identities/source';
 import { normalizeSessionActivation } from '../session-activation';
+import { resolveCodexModel } from '../model-context-budget.mjs';
 import { readAcceptedBlueprintDirectWorkItem, type AcceptedOperationPin } from './operation-admission';
 
 export interface AcceptedOperationWorkerBinding {
@@ -17,6 +19,70 @@ export interface AcceptedOperationWorkerBinding {
   identity: { ref: string; revision: string; contentHash: string };
   stack: string[];
   requiredTools: string[];
+  modelPolicy?: {
+    mode: 'exact' | 'allowed' | 'preferred';
+    models: readonly string[];
+    effort?: string;
+    onUnavailable: 'wait' | 'fail';
+  };
+  modelSelection?: {
+    model: string;
+    requestedModel: string | null;
+    backend: 'claude' | 'omp' | 'codex';
+    source: 'operation-policy';
+  };
+}
+
+const MODEL_EFFORT_SUFFIX = /:(low|medium|high|xhigh|max|ultra)$/i;
+
+/** A blueprint worker launches on a model from its accepted specification,
+ * even when the caller supplied a compatible alias. The caller's selector
+ * can choose within an allowed/preferred list but cannot widen that list. */
+export function selectAcceptedOperationWorkerModel(
+  binding: AcceptedOperationWorkerBinding | null,
+  requestedModel: string | null,
+  backend: 'claude' | 'omp' | 'codex',
+): AcceptedOperationWorkerBinding['modelSelection'] | null {
+  const policy = binding?.modelPolicy;
+  if (!policy) return null;
+  const canonical = (value: string) => normalizeModelId(
+    backend === 'codex' ? resolveCodexModel(value) : value,
+  );
+  const provider = (value: string) => {
+    const slash = value.indexOf('/');
+    return slash > 0 ? value.slice(0, slash).toLowerCase() : null;
+  };
+  const requestedId = requestedModel ? canonical(requestedModel) : null;
+  const selected = requestedId
+    ? policy.models.find((candidate) => canonical(candidate) === requestedId &&
+        (!provider(requestedModel!) || !provider(candidate) || provider(requestedModel!) === provider(candidate)))
+    : policy.models[0];
+  if (!selected) throw new Error(`requested model is outside the accepted ${policy.mode} model policy`);
+  const chosenEffort = MODEL_EFFORT_SUFFIX.exec(selected)?.[1]?.toLowerCase();
+  const requestedEffort = requestedModel ? MODEL_EFFORT_SUFFIX.exec(requestedModel)?.[1]?.toLowerCase() : undefined;
+  const requiredEffort = policy.effort?.toLowerCase();
+  if ((requiredEffort && chosenEffort && requiredEffort !== chosenEffort) ||
+      (requiredEffort && requestedEffort && requiredEffort !== requestedEffort) ||
+      (chosenEffort && requestedEffort && chosenEffort !== requestedEffort)) {
+    throw new Error('requested reasoning effort differs from the accepted model policy');
+  }
+  const effort = requiredEffort ?? requestedEffort ?? chosenEffort;
+  let model = selected.replace(MODEL_EFFORT_SUFFIX, '') + (effort ? `:${effort}` : '');
+  if (backend === 'codex') {
+    model = resolveCodexModel(model);
+    if (!model.startsWith('gpt-')) throw new Error('accepted model is not supported by the Codex backend');
+  } else if (backend === 'claude') {
+    const slash = model.indexOf('/');
+    if (slash > 0) {
+      if (model.slice(0, slash) !== 'anthropic') throw new Error('accepted model uses a non-Anthropic provider');
+      model = model.slice(slash + 1);
+    }
+    const bareModel = model.replace(MODEL_EFFORT_SUFFIX, '').replace(/\[1m\]$/i, '');
+    if (!/^claude-[a-z0-9-]+$/i.test(bareModel) && !/^(opus|sonnet|haiku|fable)$/i.test(bareModel)) {
+      throw new Error('accepted model is not supported by the Claude backend');
+    }
+  }
+  return { model, requestedModel, backend, source: 'operation-policy' };
 }
 
 export type ActiveOperationWorkerClaimRead =
@@ -274,6 +340,7 @@ export async function resolveAcceptedOperationWorkerBinding(input: {
       identity: { ref: ref.ref, revision: ref.revision, contentHash: ref.contentHash },
       stack: [`domain:${ref.ref}`],
       requiredTools,
+      ...(operation.policy.model ? { modelPolicy: operation.policy.model } : {}),
     };
   });
 }

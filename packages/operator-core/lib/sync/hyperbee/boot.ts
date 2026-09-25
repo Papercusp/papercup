@@ -76,6 +76,7 @@ import {
   snapshotApplyMarks,
   DEFAULT_GET_TIMEOUT_MS,
   type AdmittedLog,
+  type CancellableReadLog,
   type MergeCursorPeerLifecycleUpdate,
   type MergeCursorStore,
   type MergeApplyFailure,
@@ -1115,8 +1116,12 @@ export async function bootHarnessSubstrate(opts: BootHarnessOpts): Promise<Boote
  * merge stays a pure read→LWW→apply. `acceptOpVersion` emits the
  * "newer Papercusp available" alert once per (slug, version).
  */
-function versionGatedLog(slug: string, log: AdmittedLog): AdmittedLog {
+function versionGatedLog(slug: string, log: AdmittedLog): CancellableReadLog {
   const maybePrefetch = (log as AdmittedLog & { prefetch?(start: number, end: number): void }).prefetch;
+  const maybeCancellable = (log as CancellableReadLog).getCancellable;
+  // Drop unknown-newer ops (D-024). acceptOpVersion alerts once.
+  const gate = (op: PeerLogOp | null): PeerLogOp | null =>
+    op && acceptOpVersion(slug, op.schema_version) ? op : null;
   return {
     get keyHex() {
       return log.keyHex;
@@ -1125,16 +1130,21 @@ function versionGatedLog(slug: string, log: AdmittedLog): AdmittedLog {
       return log.length;
     },
     async get(i: number): Promise<PeerLogOp | null> {
-      const op = await log.get(i);
-      if (!op) return null;
-      // Drop unknown-newer ops (D-024). acceptOpVersion alerts once.
-      if (!acceptOpVersion(slug, op.schema_version)) return null;
-      return op;
+      return gate(await log.get(i));
     },
     // Forward the ranged-prefetch capability (EI-92) — the incremental merge
     // feature-detects it on the wrapped log.
     ...(typeof maybePrefetch === 'function'
       ? { prefetch: (start: number, end: number) => maybePrefetch.call(log, start, end) }
+      : {}),
+    // P-533: forward cancellable reads, gated like `get`.
+    ...(typeof maybeCancellable === 'function'
+      ? {
+          getCancellable: (i: number) => {
+            const read = maybeCancellable.call(log, i);
+            return { op: read.op.then(gate), cancel: () => read.cancel() };
+          },
+        }
       : {}),
   };
 }

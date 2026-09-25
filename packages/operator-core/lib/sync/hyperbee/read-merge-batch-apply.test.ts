@@ -329,6 +329,6 @@ describe('P-002 step 2: batched fold commits', () => {
       getTimeoutMs: 0,
     });
     expect(applied).toEqual(['k0', 'k1', 'k2', 'k3']);
-    expect(res).toEqual({ applied: 4, decoded: 4, caughtUp: true, truncated: false });
+    expect(res).toEqual({ applied: 4, decoded: 4, caughtUp: true, truncated: false, snapshotChunksJumped: 0 });
   });
 });

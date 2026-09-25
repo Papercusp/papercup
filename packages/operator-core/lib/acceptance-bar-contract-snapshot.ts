@@ -379,6 +379,7 @@ export interface ProjectedClauseProofObligation {
  */
 export function projectedAutomatedProofRequired(input: {
   instrumentKey: string | null;
+  structuredTestsCheck: boolean;
   criterionTestLayers: readonly string[] | null | undefined;
   clauses: readonly ProjectedClauseProofObligation[];
 }): boolean {
@@ -387,9 +388,11 @@ export function projectedAutomatedProofRequired(input: {
     (input.criterionTestLayers?.length ?? 0) === 0 &&
     input.clauses.length > 0 &&
     input.clauses.every((clause) => clause.requiredTestLayers.length === 0 && !clause.mutationRequired);
-  return !explicitlyManual && (input.clauses.length === 0 || input.clauses.some((clause) =>
+  // A tests check is an authored automated obligation even on a live/deployed
+  // plane, whose generated clauses otherwise have the non-automated class.
+  return input.structuredTestsCheck || (!explicitlyManual && (input.clauses.length === 0 || input.clauses.some((clause) =>
     clause.behaviorClass !== 'non-automated' || clause.requiredTestLayers.length > 0 || clause.mutationRequired,
-  ));
+  )));
 }
 
 /**
@@ -421,7 +424,14 @@ export function predictAmendedBarProofFloor(
     bars: candidate.bars.map((bar) => {
       const before = priorByKey.get(bar.barKey);
       const criterion = criterionByKey.get(bar.barKey);
-      if (!criterion || (before && before.barHash && before.barHash === (criterion.barHash ?? null))) return bar;
+      // A requirement patch can carry a stale criterion.barHash read alias even
+      // while the candidate's check has changed. Compare the candidate and the
+      // proof-floor inputs too, so a manual → tests transition is re-predicted
+      // before approval instead of inheriting the old manual verdict.
+      if (!criterion || (before && before.barHash === bar.barHash &&
+        effectiveCriterionInstrumentKey(before) === effectiveCriterionInstrumentKey(criterion) &&
+        (before.requiredTestLayers?.length ?? 0) === (criterion.requiredTestLayers?.length ?? 0) &&
+        (before.evidencePlane ?? 'tree') === (criterion.evidencePlane ?? 'tree'))) return bar;
       const plane = (criterion.evidencePlane ?? before?.evidencePlane ?? 'tree') as AcceptanceEvidencePlane;
       const layers = criterion.requiredTestLayers ?? [];
       const clause: ProjectedClauseProofObligation = {
@@ -433,6 +443,7 @@ export function predictAmendedBarProofFloor(
         ...bar,
         automatedProofRequired: projectedAutomatedProofRequired({
           instrumentKey: effectiveCriterionInstrumentKey(criterion),
+          structuredTestsCheck: criterion.check?.kind === 'tests',
           criterionTestLayers: layers,
           clauses: bar.mappings.map(() => clause),
         }),
@@ -1047,6 +1058,7 @@ export function projectAcceptanceBarContractSnapshot(
     // it must have clauses, and NO clause may declare a layer or a mutation obligation.
     const automatedProofRequired = projectedAutomatedProofRequired({
       instrumentKey: effectiveCriterionInstrumentKey(criterion),
+      structuredTestsCheck: criterion.check?.kind === 'tests',
       criterionTestLayers: criterion.requiredTestLayers,
       clauses: enforceableClauses,
     });

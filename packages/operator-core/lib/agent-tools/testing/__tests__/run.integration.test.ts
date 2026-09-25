@@ -415,6 +415,49 @@ describe('mixed-checkout test batches (EI-22733560502709681)', () => {
   }, 30_000);
 });
 
+describe('nested router deadline (WI-10003090)', () => {
+  it('gives a five-file router the caller budget instead of its inherited 600s limit', async () => {
+    await mkdir(join(REPO_ROOT, '.papercusp', 'tmp'), { recursive: true });
+    const root = await mkdtemp(join(REPO_ROOT, '.papercusp', 'tmp', 'testing-run-router-budget-'));
+    selectorRoots.push(root);
+    const files = Array.from({ length: 5 }, (_, index) => `criterion-${index}.test.ts`);
+    await mkdir(join(root, '.git'));
+    await mkdir(join(root, 'scripts'));
+    await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: [] }));
+    for (const file of files) await writeFile(join(root, file), 'export {};\n');
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      "import { resolve } from 'node:path';",
+      "const budget = Number(process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS);",
+      "if (!(budget > 600_000 && budget < 780_000)) {",
+      "  console.error(`nested router budget ${budget} does not follow the 13m caller`);",
+      "  process.exit(2);",
+      "}",
+      "const reportArg = process.argv.find((arg) => arg.startsWith('--outputFile='));",
+      "if (!reportArg) process.exit(2);",
+      `const files = ${JSON.stringify(files)};`,
+      "writeFileSync(reportArg.slice('--outputFile='.length), JSON.stringify({ testResults: files.map((file) => ({",
+      "  name: resolve(file), status: 'passed', startTime: 0, endTime: 1,",
+      "  assertionResults: [{ status: 'passed', fullName: 'criterion ran' }],",
+      "})) }));",
+    ].join('\n'));
+
+    const previous = process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
+    process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS = '600000';
+    try {
+      const out = await runTestFilesCore({ root, files, timeoutMs: 13 * 60_000 });
+      expect(out.error, JSON.stringify(out)).toBeUndefined();
+      if (out.error !== undefined) return;
+      expect(out.ok, JSON.stringify(out)).toBe(true);
+      expect(out.files).toBe(5);
+      expect(Object.keys(out.byFile)).toHaveLength(5);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
+      else process.env.PAPERCUSP_TEST_FILE_TIMEOUT_MS = previous;
+    }
+  });
+});
+
 describe('governed test-process admission (P-003)', () => {
   it('returns a timed-out outcome and aborts a governed admission that never settles', async () => {
     let observedSignal: AbortSignal | undefined;
