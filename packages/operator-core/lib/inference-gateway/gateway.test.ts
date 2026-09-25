@@ -1382,7 +1382,7 @@ test.each([
     readAcceptedOperationModelPolicy: async (ownerId) => {
       assert.equal(ownerId, 'operation-worker');
       policyReads++;
-      return { status: 'bound', policy };
+      return { status: 'bound', policy, attestation: null };
     },
   });
   port = await gw.listen(0);
@@ -1397,6 +1397,41 @@ test.each([
   if (status === 429) assert.ok(Number(response.headers.get('retry-after')) > 0);
   if (status === 200) assert.equal(response.headers.get(MODEL_DOWNGRADED_HEADER), 'opus->sonnet');
   else assert.equal(response.headers.get(MODEL_DOWNGRADED_HEADER), null);
+});
+
+test('accepted 1M operation refuses a last-resort 200k-only Sonnet substitution', async () => {
+  resetGovernorRegistry();
+  const upstreamModels: string[] = [];
+  upstream = await startUpstream((_req, res, body) => {
+    const model = (JSON.parse(body) as { model: string }).model;
+    upstreamModels.push(model);
+    res.writeHead(model.includes('opus') ? 403 : 200, { 'content-type': 'application/json' });
+    res.end(model.includes('opus')
+      ? '{"type":"error","error":{"type":"permission_error","message":"OAuth authentication is currently not allowed for this organization."}}'
+      : '{"ok":true}');
+  });
+  gw = createInferenceGateway({
+    pool: createFailoverPool([
+      { accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} },
+      { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
+    ]),
+    upstreamBase: upstream.base, maxQueueWaitMs: 200,
+    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', attestation: null, policy: {
+      mode: 'allowed', models: ['opus[1m]', 'claude-sonnet-4-6'], onUnavailable: 'fail',
+    } }),
+  });
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker',
+      'anthropic-beta': 'context-1m-2025-08-07' },
+    body: JSON.stringify({ model: 'claude-opus-5', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, 503);
+  assert.ok(upstreamModels.length > 0);
+  assert.ok(upstreamModels.every((model) => model === 'claude-opus-5'));
+  assert.equal(response.headers.get(MODEL_DOWNGRADED_HEADER), null);
+  resetGovernorRegistry();
 });
 
 test.each([
@@ -1434,7 +1469,7 @@ test.each([
     token: async () => 'token',
     readAcceptedOperationModelPolicy: async () => {
       policyReads++;
-      return { status: 'bound', policy };
+      return { status: 'bound', policy, attestation: null };
     },
   });
   port = await gw.listen(0);
@@ -1462,7 +1497,7 @@ test.each(['allowed', 'preferred'] as const)(
     gw = createInferenceGateway({
       pool: createFailoverPool([{ accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} }]),
       upstreamBase: upstream.base,
-      readAcceptedOperationModelPolicy: async () => ({ status: 'bound', policy: {
+      readAcceptedOperationModelPolicy: async () => ({ status: 'bound', attestation: null, policy: {
         mode, models: ['claude-opus-4', 'anthropic/claude-sonnet-4-6'], onUnavailable: 'fail',
       } }),
     });
@@ -1479,6 +1514,55 @@ test.each(['allowed', 'preferred'] as const)(
   },
 );
 
+test('accepted exact 1M alias admits its resolved Anthropic API model and window', async () => {
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  gw = createInferenceGateway({
+    accountId: 'A', token: async () => 'A-tok', upstreamBase: upstream.base,
+    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', attestation: null, policy: {
+      mode: 'exact', models: ['opus[1m]'], onUnavailable: 'fail',
+    } }),
+  });
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+    body: JSON.stringify({ model: 'opus[1m]', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(upstream.last.body).model, 'claude-opus-5');
+  assert.match(String(upstream.last.headers['anthropic-beta']), /context-1m-2025-08-07/);
+});
+
+test('accepted capacity choice keeps a CLI-resolved 1M header and skips a 200k-only alternate', async () => {
+  resetGovernorRegistry();
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end('{"ok":true}');
+  });
+  getGovernor('anthropic', 'opus', undefined, 'A').penalize({ retryAfterMs: 60_000 });
+  gw = createInferenceGateway({
+    pool: createFailoverPool([{ accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} }]),
+    upstreamBase: upstream.base,
+    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', attestation: null, policy: {
+      mode: 'allowed', models: ['opus[1m]', 'claude-sonnet-4-6', 'sonnet[1m]'], onUnavailable: 'fail',
+    } }),
+  });
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker',
+      'anthropic-beta': 'context-1m-2025-08-07' },
+    body: JSON.stringify({ model: 'claude-opus-5', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal(JSON.parse(upstream.last.body).model, 'claude-sonnet-5');
+  assert.match(String(upstream.last.headers['anthropic-beta']), /context-1m-2025-08-07/);
+  resetGovernorRegistry();
+});
+
 test.each([
   { mode: 'exact', onUnavailable: 'wait', status: 429 },
   { mode: 'exact', onUnavailable: 'fail', status: 503 },
@@ -1493,7 +1577,7 @@ test.each([
   gw = createInferenceGateway({
     pool: createFailoverPool([{ accountId: 'A', token: async () => 'A-tok', invalidateToken: () => {} }]),
     upstreamBase: upstream.base,
-    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', policy: {
+    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', attestation: null, policy: {
       mode, models: ['claude-opus-4'], onUnavailable,
     } }),
   });
@@ -1522,7 +1606,7 @@ test('accepted model capacity selection respects a hard account pin', async () =
       { accountId: 'B', token: async () => 'B-tok', invalidateToken: () => {} },
     ]),
     upstreamBase: upstream.base,
-    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', policy: {
+    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', attestation: null, policy: {
       mode: 'allowed', models: ['claude-opus-4', 'claude-sonnet-4-6'], onUnavailable: 'fail',
     } }),
   });
@@ -1537,6 +1621,136 @@ test('accepted model capacity selection respects a hard account pin', async () =
   assert.equal(JSON.parse(upstream.last.body).model, 'claude-sonnet-4-6');
   assert.equal(upstream.last.headers.authorization, 'Bearer A-tok');
   resetGovernorRegistry();
+});
+
+test.each(['persisted', 'failed'] as const)(
+  'accepted worker provider response is withheld until attestation is $0',
+  async (writeOutcome) => {
+    upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"type":"message_sta');
+      setTimeout(() => res.end('rt","message":{"id":"msg-bound-1","model":"claude-opus-4",' +
+        '"usage":{"input_tokens":10,"cache_read_input_tokens":2,"cache_creation_input_tokens":0}}}\n\n'), 2);
+    });
+    const attestation = {
+      operationReceiptId: 12, advSessionId: 34, nativeSessionId: 'native-bound-1',
+      workspaceId: 'default', ownerId: 'operation-worker', harnessSlug: 'papercup',
+      workItemId: 'WI-bound-1', operationId: 'run', specificationRevision: 'a'.repeat(64),
+    };
+    const observed: unknown[] = [];
+    gw = createInferenceGateway({
+      accountId: 'A', token: async () => 'A-tok', upstreamBase: upstream.base,
+      readAcceptedOperationModelPolicy: async () => ({ status: 'bound', policy: {
+        mode: 'exact', models: ['claude-opus-4'], onUnavailable: 'fail',
+      }, attestation }),
+      recordAcceptedOperationModelAttestation: async (context, evidence) => {
+        observed.push({ context, evidence });
+        if (writeOutcome === 'failed') throw new Error('database unavailable');
+      },
+    });
+    port = await gw.listen(0);
+    const response = await ask('/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+      body: JSON.stringify({ model: 'claude-opus-4', stream: true,
+        output_config: { effort: 'high' }, messages: [{ role: 'user', content: 'x' }] }),
+    });
+    assert.equal(response.status, writeOutcome === 'persisted' ? 200 : 503);
+    assert.equal(observed.length, 1);
+    assert.deepEqual(observed[0], { context: attestation, evidence: {
+      requestId: (observed[0] as { evidence: { requestId: string } }).evidence.requestId,
+      providerResponseId: 'msg-bound-1', backend: 'claude', provider: 'anthropic',
+      requestedModel: 'claude-opus-4', actualModel: 'claude-opus-4',
+      forwardedEffort: 'high', effortSource: 'forwarded-request',
+      usage: { inputTokens: 10, outputTokens: null, cacheReadTokens: 2, cacheCreationTokens: 0 },
+    } });
+    assert.match((observed[0] as { evidence: { requestId: string } }).evidence.requestId,
+      /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i);
+    if (writeOutcome === 'persisted') assert.match(await response.text(), /msg-bound-1/);
+    else assert.doesNotMatch(await response.text(), /msg-bound-1/);
+  },
+);
+
+test.each([
+  { name: 'off-policy provider model', model: 'claude-sonnet-4-6',
+    usage: { input_tokens: 10, output_tokens: 2 } },
+  { name: 'missing provider token usage', model: 'claude-opus-4', usage: {} },
+])('accepted worker refuses $name before exposing a provider success', async ({ model, usage }) => {
+  upstream = await startUpstream((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ id: 'msg-unsafe-provider', model, usage }));
+  });
+  let attestationWrites = 0;
+  gw = createInferenceGateway({
+    accountId: 'A', token: async () => 'A-tok', upstreamBase: upstream.base,
+    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', policy: {
+      mode: 'exact', models: ['claude-opus-4'], onUnavailable: 'fail',
+    }, attestation: {
+      operationReceiptId: 12, advSessionId: 34, nativeSessionId: 'native-bound-1',
+      workspaceId: 'default', ownerId: 'operation-worker', harnessSlug: 'papercup',
+      workItemId: 'WI-bound-1', operationId: 'run', specificationRevision: 'a'.repeat(64),
+    } }),
+    recordAcceptedOperationModelAttestation: async () => { attestationWrites++; },
+  });
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, 503);
+  assert.doesNotMatch(await response.text(), /msg-unsafe-provider/);
+  assert.equal(attestationWrites, 0);
+});
+
+test.each([undefined, 'low'] as const)(
+  'accepted high-effort worker refuses forwarded effort %s before upstream I/O', async (effort) => {
+    let upstreamCalls = 0;
+    upstream = await startUpstream((_req, res) => {
+      upstreamCalls++;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"id":"msg-effort","model":"claude-opus-4","usage":{"input_tokens":1,"output_tokens":1}}');
+    });
+    gw = createInferenceGateway({
+      accountId: 'A', token: async () => 'A-tok', upstreamBase: upstream.base,
+      readAcceptedOperationModelPolicy: async () => ({ status: 'bound', attestation: null, policy: {
+        mode: 'exact', models: ['claude-opus-4'], effort: 'high', onUnavailable: 'fail',
+      } }),
+    });
+    port = await gw.listen(0);
+    const response = await ask('/v1/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+      body: JSON.stringify({ model: 'claude-opus-4',
+        ...(effort ? { output_config: { effort } } : {}), messages: [{ role: 'user', content: 'x' }] }),
+    });
+    assert.equal(response.status, 503);
+    assert.equal(upstreamCalls, 0);
+  },
+);
+
+test('accepted worker refuses a missing attestation writer before upstream I/O', async () => {
+  let upstreamCalls = 0;
+  upstream = await startUpstream((_req, res) => {
+    upstreamCalls++;
+    res.writeHead(200).end();
+  });
+  gw = createInferenceGateway({
+    accountId: 'A', token: async () => 'A-tok', upstreamBase: upstream.base,
+    readAcceptedOperationModelPolicy: async () => ({ status: 'bound', policy: {
+      mode: 'exact', models: ['claude-opus-4'], onUnavailable: 'fail',
+    }, attestation: {
+      operationReceiptId: 12, advSessionId: 34, nativeSessionId: 'native-bound-1',
+      workspaceId: 'default', ownerId: 'operation-worker', harnessSlug: 'papercup',
+      workItemId: 'WI-bound-1', operationId: 'run', specificationRevision: 'a'.repeat(64),
+    } }),
+  });
+  port = await gw.listen(0);
+  const response = await ask('/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [OWNER_HEADER]: 'operation-worker' },
+    body: JSON.stringify({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] }),
+  });
+  assert.equal(response.status, 503);
+  assert.equal(upstreamCalls, 0);
 });
 
 test('accepted operation model policy lookup failure refuses before the initial upstream send', async () => {
