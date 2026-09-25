@@ -72,7 +72,8 @@ export interface SeedReplicaForAdmission {
   readonly keyHex: string;
   readonly length: number;
   readonly contiguousLength?: number;
-  has?(index: number): boolean;
+  /** Async, as Hypercore 11's `has` is (WI-10003092: a sync read of it is always truthy). */
+  has?(index: number): Promise<boolean>;
   close?(): Promise<void>;
 }
 
@@ -156,10 +157,10 @@ export async function resolveSeedLogAdmissions(
  * absent.  A replica without either a block probe or a complete contiguous
  * prefix is rejected rather than guessed usable.
  */
-export function validateSeedReplicaForAdmission(
+export async function validateSeedReplicaForAdmission(
   replica: SeedReplicaForAdmission,
   admission: SeedLogAdmission,
-): { ok: true } | { ok: false; reason: string } {
+): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (replica.keyHex.toLowerCase() !== admission.keyHex) {
     return { ok: false, reason: 'replica key does not match manifest key' };
   }
@@ -173,13 +174,13 @@ export function validateSeedReplicaForAdmission(
   const last = admission.expectedLength - 1;
   try {
     if (typeof replica.has === 'function') {
-      if (!replica.has(admission.shippedFrom)) {
+      if (!(await replica.has(admission.shippedFrom))) {
         return {
           ok: false,
           reason: `shipped start block ${admission.shippedFrom} is not present locally`,
         };
       }
-      if (!replica.has(last)) {
+      if (!(await replica.has(last))) {
         return { ok: false, reason: `shipped tail block ${last} is not present locally` };
       }
       return { ok: true };

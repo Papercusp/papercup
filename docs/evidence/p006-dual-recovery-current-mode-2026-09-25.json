@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 isolated native Claude and Codex pin continuity with fresh mode orientation",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=pinned-source-stale scripts/verify-tauri-headless.sh -- bash -s",
+    "Inside the verified disposable instance: bootstrap Claude and Codex with one selected v1 domain, update that source to v2, call Claude persona-refresh and Codex ensure-codex-home, enable IDEATE for each owner, call native coord:orient as each owner, and read both isolated adv_sessions launch records"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T08:59:54Z",
+  "finishedAt": "2026-09-25T09:00:36Z",
+  "summary": "Both selected sessions retained their v1 source and specification pins after a disposable v2 source edit. Claude's carry refresh refused the changed source while preserving its v1 prompt file; Codex missing-home repair restored v1 instructions. A new IDEATE mode then appeared in each owner's native orientation without replacing those pins. The verifier exited 0 and tore down its isolated database and home.",
+  "assertions": [
+    {
+      "id": "isolated-host-and-database",
+      "passed": true,
+      "evidence": "The verifier confirmed sidecar HARNESS_ADMIN_DATABASE_URL reached its disposable Postgres on port 42777, workspace verify-tauri-isolated-90, and the frozen plain-node host bundle contained pinned-source-stale."
+    },
+    {
+      "id": "same-v1-selection-at-two-native-bootstraps",
+      "passed": true,
+      "evidence": "Native bootstrap-su returned status ok for Claude sessionId 1 and Codex sessionId 2 with selected domain:p006-dual-domain v1. The isolated adv_sessions rows later retained selectedIdentity.sourceRevision 76272faa94b5883ad3e0cbc7b31b74895a1d8bd1cb03748601e900f2987d92c5 and their original specificationRevisions 1c18bbad1abfe59257ce642f854e441bbbbb3fbe1a7a6eba88eae1887711f4aa and 25f4d7a6e64617e2a330c1f127f34538e56d1ff9f27a95a71a9468c01616fab9."
+    },
+    {
+      "id": "claude-carry-retains-v1",
+      "passed": true,
+      "evidence": "After editing the isolated source and prompt to v2, native bootstrap-su/persona-refresh returned ok=false, reason=render-failed, error=selected identity domain:p006-dual-domain source revision changed before rebuild. The inherited Claude prompt file SHA-256 was unchanged."
+    },
+    {
+      "id": "codex-missing-home-restores-v1",
+      "passed": true,
+      "evidence": "After removing only the disposable Codex session's AGENTS.md, native adv/sessions/ensure-codex-home returned ok=true, repaired=true, promptRepaired=true, reason=pinned-source-stale, preservedSpecificationRevision=25f4d7a6e64617e2a330c1f127f34538e56d1ff9f27a95a71a9468c01616fab9. Restored AGENTS.md contained P006 DUAL V1 DEFINITION and lacked P006 DUAL V2 DEFINITION."
+    },
+    {
+      "id": "fresh-mode-state-beside-v1-definition",
+      "passed": true,
+      "evidence": "After the v2 source edit, native mode:set enabled IDEATE for each disposable owner. Native coord:orient called under each exact owner ID returned modes.active including ideate, while the Claude prompt hash, Codex v1 instructions, and both adv_sessions v1 pins remained unchanged."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-006",
+  "workItem": "WI-10002963",
+  "operatorPlane": "current-build frozen host and isolated Tauri/Postgres",
+  "limitation": "This drove native bootstrap, persona-refresh, home repair, mode:set, coord:orient and persisted receipts without starting an actual Claude or Codex model turn. IDEATE is a fresh registry value, not a fresh provider-rendered contribution from the selected identity. Fleet/GOAL holder replacement, generic identity isolation and full warm/cold host cycles remain untested here."
+}

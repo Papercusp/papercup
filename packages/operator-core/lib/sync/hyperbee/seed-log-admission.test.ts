@@ -178,45 +178,61 @@ describe('validateSeedReplicaForAdmission', () => {
     seedDir: '/seed',
   } as const;
 
-  it('accepts a sparse replica only when the declared shipped range is local', () => {
-    expect(
+  it('accepts a sparse replica only when the declared shipped range is local', async () => {
+    await expect(
       validateSeedReplicaForAdmission(
         {
           keyHex: KEY_A,
           length: 103,
           contiguousLength: 0,
-          has: (index) => index >= 77 && index < 103,
+          has: async (index) => index >= 77 && index < 103,
         },
         admission,
       ),
-    ).toEqual({ ok: true });
+    ).resolves.toEqual({ ok: true });
   });
 
-  it('rejects the observed stale seed-only shape: manifest length 103, local length 0', () => {
-    expect(
+  it('rejects the observed stale seed-only shape: manifest length 103, local length 0', async () => {
+    await expect(
       validateSeedReplicaForAdmission(
         {
           keyHex: KEY_A,
           length: 0,
           contiguousLength: 0,
-          has: () => false,
+          has: async () => false,
         },
         admission,
       ),
-    ).toEqual({ ok: false, reason: 'local length 0 is below manifest length 103' });
+    ).resolves.toEqual({ ok: false, reason: 'local length 0 is below manifest length 103' });
   });
 
-  it('rejects a header-only replica that knows the length but lacks shipped blocks', () => {
-    expect(
+  it('rejects a header-only replica that knows the length but lacks shipped blocks', async () => {
+    await expect(
       validateSeedReplicaForAdmission(
         {
           keyHex: KEY_A,
           length: 103,
           contiguousLength: 0,
-          has: () => false,
+          has: async () => false,
         },
         admission,
       ),
-    ).toEqual({ ok: false, reason: 'shipped start block 77 is not present locally' });
+    ).resolves.toEqual({ ok: false, reason: 'shipped start block 77 is not present locally' });
+  });
+
+  // WI-10003092: Hypercore 11's `has` is async, so a sync read of it (`!!core.has(i)`) was
+  // `!!Promise` — true for every block — and this guard admitted exactly the replica above.
+  it('rejects a replica whose tail block is missing even though its start block is local', async () => {
+    await expect(
+      validateSeedReplicaForAdmission(
+        {
+          keyHex: KEY_A,
+          length: 103,
+          contiguousLength: 0,
+          has: async (index) => index === 77,
+        },
+        admission,
+      ),
+    ).resolves.toEqual({ ok: false, reason: 'shipped tail block 102 is not present locally' });
   });
 });

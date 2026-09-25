@@ -962,6 +962,12 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       const { activeWorkspaceId } = await import('../workspace-registry');
       return readActiveOperationModelPolicy(opts.workspace ?? activeWorkspaceId(), ownerId);
     },
+    recordAcceptedOperationModelAttestation: async (context, evidence) => {
+      const [{ getOrgPg }, { recordDirectOperationModelAttestation }] = await Promise.all([
+        import('@papercusp/db-org'), import('../blueprint/operation-service'),
+      ]);
+      await recordDirectOperationModelAttestation(getOrgPg().sql, context, evidence);
+    },
     pool,
     codexPool,
     codexCliPool,

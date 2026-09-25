@@ -604,7 +604,7 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
         get: reads,
         update: async () => {},
         prefetch: () => {},
-        has: () => false,
+        has: async () => false,
         close: vi.fn(async () => {}),
         peersCount: () => 1,
       };
@@ -1206,7 +1206,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       get: async () => null,
       update: async () => {},
       prefetch: () => {},
-      has: () => false,
+      has: async () => false,
     };
   }
 
@@ -2285,7 +2285,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       get: async () => null,
       update: async () => {},
       prefetch: () => {},
-      has: () => false,
+      has: async () => false,
       close: vi.fn(async () => {}),
     };
   }
@@ -2847,7 +2847,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
         },
         update: async () => {},
         prefetch: () => {},
-        has: () => false,
+        has: async () => false,
         close: vi.fn(async () => {}),
         peersCount: () => 1,
       };
@@ -2991,7 +2991,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
         },
         update: async () => {},
         prefetch: () => {},
-        has: () => false,
+        has: async () => false,
         close: vi.fn(async () => {}),
         peersCount: () => 1,
       };
@@ -3084,7 +3084,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
         },
         update: async () => {},
         prefetch: () => {},
-        has: () => false,
+        has: async () => false,
         close: vi.fn(async () => {}),
         peersCount: () => livePeers,
       };
@@ -3333,7 +3333,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
         },
         update: async () => {},
         prefetch: () => {},
-        has: () => false,
+        has: async () => false,
         close: vi.fn(async () => {}),
         peersCount: () => 0,
       };
@@ -3756,7 +3756,7 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
     keyHex: string,
     opts: {
       length?: number;
-      has?: (index: number) => boolean;
+      has?: (index: number) => Promise<boolean>;
       onClose?: () => void;
     } = {},
   ): RemoteLog {
@@ -3767,7 +3767,7 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
       get: async () => null,
       update: async () => {},
       prefetch: () => {},
-      has: opts.has ?? (() => true),
+      has: opts.has ?? (async () => true),
       close: async () => opts.onClose?.(),
     };
   }
@@ -3848,7 +3848,7 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
       bootOpts(workspaceId, async (_store, logKeyHex) =>
         fakeRemoteLog(logKeyHex, {
           length: 0,
-          has: () => false,
+          has: async () => false,
           onClose: () => { closed += 1; },
         }),
       ),
@@ -3870,7 +3870,7 @@ describe('bootHarnessSubstrate — WI-3288 seed-log admission (offline pot)', ()
     withSeedEnv(writeSeedDir(HIVE_HOME));
     const handle = await bootHarnessSubstrate(
       bootOpts(workspaceId, async (_store, logKeyHex) =>
-        fakeRemoteLog(logKeyHex, { length: 3, has: () => false }),
+        fakeRemoteLog(logKeyHex, { length: 3, has: async () => false }),
       ),
     );
     cleanups.push(() => handle.close());

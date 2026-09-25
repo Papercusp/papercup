@@ -92,7 +92,7 @@ function makeClosableRemoteLog(logKeyHex: string, closes: Map<string, () => Prom
     get: async () => null,
     update: async () => undefined,
     prefetch: () => undefined,
-    has: () => false,
+    has: async () => false,
     close,
   };
 }

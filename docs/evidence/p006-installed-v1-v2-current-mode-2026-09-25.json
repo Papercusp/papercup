@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 isolated Cupboard v1 install, v2 update and pinned Codex recovery",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=pinned-source-stale scripts/verify-tauri-headless.sh -- bash -s",
+    "Inside the verified disposable instance: use snapshotBlueprintReleaseSource and commitBlueprintRelease to install an attested v1 identity; bootstrap a selected Codex session; use commitBlueprintRelease to update the same installed identity to v2; remove only that disposable session's AGENTS.md; call native ensure-codex-home; enable IDEATE and call native coord:orient as the session; inspect isolated adv_sessions"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-25T09:19:25Z",
+  "finishedAt": "2026-09-25T09:21:36Z",
+  "summary": "The existing Cupboard lifecycle installed v1 and updated the same attested identity to v2 while retaining both immutable releases. The selected Codex session recovered its original v1 instructions and launch specification revision after the v2 update. A newly enabled IDEATE mode reached its native orientation without changing that pin. The verifier exited 0 and tore down its disposable database and home.",
+  "assertions": [
+    {
+      "id": "isolated-current-build",
+      "passed": true,
+      "evidence": "The verifier confirmed sidecar HARNESS_ADMIN_DATABASE_URL reached disposable Postgres on port 36527, workspace verify-tauri-isolated-90, and its frozen plain-node host bundle contained pinned-source-stale."
+    },
+    {
+      "id": "real-cupboard-release-update",
+      "passed": true,
+      "evidence": "snapshotBlueprintReleaseSource plus commitBlueprintRelease returned operation=install, activeVersion=1.0.0, retainedVersions=[1.0.0], then operation=update, activeVersion=1.0.1, retainedVersions=[1.0.1,1.0.0]. The source used the existing installed blueprint directory and attested identity document."
+    },
+    {
+      "id": "selected-v1-definition-remains-after-v2",
+      "passed": true,
+      "evidence": "Native bootstrap-su returned status ok for selected domain:p006-installed-domain v1, sessionId 1, specificationRevision 9cc9b425fd888c9c6e3917376f108cae16946d05717c9f8fe5f6b76f0808f271. After v2 update and deletion of only the disposable Codex session's AGENTS.md, native ensure-codex-home returned ok=true, repaired=true, promptRepaired=true, reason=pinned-source-stale and preservedSpecificationRevision matching that original revision. Restored AGENTS.md contained P006 INSTALLED V1 DEFINITION and lacked P006 INSTALLED V2 DEFINITION."
+    },
+    {
+      "id": "current-mode-value-and-persisted-pin",
+      "passed": true,
+      "evidence": "After the v2 update, native mode:set enabled IDEATE for the selected session; native coord:orient under its exact owner ID reported modes.active=[ideate]. The isolated adv_sessions launch_spec row still had selectedIdentity.ref=domain:p006-installed-domain, v1 sourceRevision=2e036f854fb7e550daf545c60770dabb4d6acf95eb6f2268e2e3c07eef8a3ce4 and the original specificationRevision 9cc9b425fd888c9c6e3917376f108cae16946d05717c9f8fe5f6b76f0808f271."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-006",
+  "workItem": "WI-10002963",
+  "operatorPlane": "current-build frozen host and isolated Tauri/Postgres",
+  "limitation": "This exercised native installation, bootstrap, missing-home recovery, mode change/orientation and persisted receipts without starting or resuming an actual Codex model turn. IDEATE is a fresh mode-registry value; it is not a provider-rendered operational contribution declared by the selected domain. Claude warm carry, fleet/GOAL replacement and generic identity isolation are covered only by other scoped tests or remain open."
+}

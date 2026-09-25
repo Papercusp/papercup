@@ -104,7 +104,7 @@ function makeDeadRemoteLog(logKeyHex: string, closes: Map<string, ReturnType<typ
     get: async () => null,
     update: async () => undefined,
     prefetch: () => undefined,
-    has: () => false,
+    has: async () => false,
     close,
     peersCount: () => 0,
   };

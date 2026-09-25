@@ -78,7 +78,7 @@ function brokenNonAttachingLog(keyHex: string): RemoteLog {
     get: async () => null,
     update: async () => {},
     prefetch: () => {},
-    has: () => false,
+    has: async () => false,
     peersCount: () => 0,
     close: async () => {},
   };
