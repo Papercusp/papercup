@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type postgres from 'postgres';
 import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog, type MergeCursor } from './read-merge';
-import { projectionSql } from './projection';
+import { projectionAfterCommit, projectionSql } from './projection';
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
 
@@ -124,6 +124,23 @@ function sink(db: FakeDb, extraWriteFor?: string) {
     const sql = (await projectionSql(db.target)) as unknown as FakeSql;
     await sql`WRITE ${op.hbKey} ${op.value}`;
     if (op.hbKey === extraWriteFor) await sql`WRITE ${`${op.hbKey}-extra`} ${op.value}`;
+    return true;
+  };
+}
+
+/**
+ * P-537: a batchable sink that also queues an effect for after its commit (like
+ * coord-messages' wakes). Each effect records whether its op's row was durable when it ran.
+ */
+function effectSink(db: FakeDb, effects: string[], failAfterEffect?: string) {
+  return async (op: OpEnvelope): Promise<boolean> => {
+    const sql = (await projectionSql(db.target)) as unknown as FakeSql;
+    await sql`WRITE ${op.hbKey} ${op.value}`;
+    const key = op.hbKey ?? '';
+    await projectionAfterCommit(async () => {
+      effects.push(`${key}:${db.committed.has(key) ? 'committed' : 'NOT committed'}`);
+    });
+    if (key === failAfterEffect) throw Object.assign(new Error(`fk violation after ${key}`), { code: '23503' });
     return true;
   };
 }
@@ -331,5 +348,63 @@ describe('P-002 step 2: batched fold commits', () => {
     });
     expect(applied).toEqual(['k0', 'k1', 'k2', 'k3']);
     expect(res).toEqual({ applied: 4, decoded: 4, caughtUp: true, truncated: false, snapshotChunksJumped: 0 });
+  });
+});
+
+describe('P-537: effects that wait for the batch commit (projectionAfterCommit)', () => {
+  const all = (n: number) => Array.from({ length: n }, (_, i) => `k${i}:committed`);
+
+  it('an effect queued by a batched op runs after its COMMIT, never before, in op order', async () => {
+    const ops = Array.from({ length: 12 }, (_, i) => put(`k${i}`, 1000 + i, { i }));
+    const db = new FakeDb();
+    const effects: string[] = [];
+    await mergeAdmittedLogsIncremental([memLog('A', ops)], createMergeCursor(), {
+      applyImpl: effectSink(db, effects),
+      getTimeoutMs: 0,
+      batchApply: { maxOps: 5, ...NO_AGE_BOUND },
+    });
+    expect(db.count('COMMIT')).toBe(3);
+    expect(effects).toEqual(all(12));
+  });
+
+  it('a lost COMMIT drops its effects; the replay runs each exactly once', async () => {
+    const ops = Array.from({ length: 12 }, (_, i) => put(`k${i}`, 1000 + i, { i }));
+    const db = new FakeDb();
+    db.failCommits = 1;
+    const effects: string[] = [];
+    const cursor = createMergeCursor();
+    const opts = { applyImpl: effectSink(db, effects), getTimeoutMs: 0, batchApply: { maxOps: 5, ...NO_AGE_BOUND } };
+    await mergeAdmittedLogsIncremental([memLog('A', ops)], cursor, opts);
+    // The first window rolled back: an effect run now would announce rows that do not exist.
+    expect(db.committed.size).toBe(0);
+    expect(effects).toEqual([]);
+    await mergeAdmittedLogsIncremental([memLog('A', ops)], cursor, opts);
+    expect(effects).toEqual(all(12));
+  });
+
+  it('an op that does not apply drops its effect while the rest of the batch runs theirs', async () => {
+    const ops = Array.from({ length: 6 }, (_, i) => put(`k${i}`, 1000 + i, { i }));
+    const db = new FakeDb();
+    const effects: string[] = [];
+    await mergeAdmittedLogsIncremental([memLog('A', ops)], createMergeCursor(), {
+      applyImpl: effectSink(db, effects, 'k3'),
+      getTimeoutMs: 0,
+      batchApply: { maxOps: 50, ...NO_AGE_BOUND },
+    });
+    expect([...db.committed.keys()].sort()).toEqual(['k0', 'k1', 'k2', 'k4', 'k5']);
+    expect(effects).toEqual(['k0:committed', 'k1:committed', 'k2:committed', 'k4:committed', 'k5:committed']);
+  });
+
+  it('without a batch the effect runs inline, after its own autocommit', async () => {
+    const ops = Array.from({ length: 4 }, (_, i) => put(`k${i}`, 1000 + i, { i }));
+    const db = new FakeDb();
+    const effects: string[] = [];
+    await mergeAdmittedLogsIncremental([memLog('A', ops)], createMergeCursor(), {
+      applyImpl: effectSink(db, effects),
+      getTimeoutMs: 0,
+      batchApply: false,
+    });
+    expect(db.statements.some((s) => s === 'BEGIN')).toBe(false);
+    expect(effects).toEqual(all(4));
   });
 });
