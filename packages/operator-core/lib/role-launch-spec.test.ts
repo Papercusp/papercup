@@ -594,27 +594,8 @@ describe('buildRoleLaunchSpec', () => {
     const file = join(identityDir, 'blueprint.yaml');
     try {
       mkdirSync(join(identityDir, 'prompts'), { recursive: true });
-      const source = [
-        `id: ${id}`, 'extends: base', 'version: 1.0.0',
-        'slots:', '  - slot: domain',
-        'knobs:', '  aiBackend:', '    default:', '      model: selected-provider-model',
-        'contributions:',
-        '  - id: current-brief',
-        '    purpose: operational',
-        '    source: provider',
-        '    refresh: turn',
-        '    inputKind: setting',
-        '    ref: current-brief',
-        '    producerRef: existing.brief', '',
-        '  - id: current-guidance',
-        '    purpose: prompt',
-        '    source: provider',
-        '    refresh: launch',
-        '    inputKind: prompt-file',
-        '    ref: current-guidance',
-        '    producerRef: existing.guidance', '',
-        '    availability: optional', '',
-      ].join('\n');
+      const source = readFileSync(process.env.PAPERCUSP_MUTATION_PROBE_SOURCE ??
+        new URL('./agent-identities/fixtures/required-provider-domain.yaml', import.meta.url), 'utf8');
       writeFileSync(file, source);
       writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'PROVIDER DOMAIN\n');
       const bound = await bindSelectedIdentityOutputArtifact({
@@ -665,6 +646,13 @@ describe('buildRoleLaunchSpec', () => {
       expect(launch.specificationArtifact.provenance).toContainEqual(expect.objectContaining({
         path: 'contribution.current-brief', decision: 'provider:turn',
         producerRef: 'existing.brief',
+      }));
+      expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: id, contentHash: bound.sourceRevision,
+      }));
+      expect(launch.specificationArtifact.provenance).toContainEqual(expect.objectContaining({
+        path: 'contribution.current-guidance', decision: 'provider:launch',
+        producerRef: 'existing.guidance',
       }));
       const fresh = await bindSelectedIdentityOutputArtifact({
         identityId: id, repoDir: dir,

@@ -4503,6 +4503,24 @@ describe("psu-launcher arg parsing", () => {
     });
   });
 
+  it("preserves GOAL bootstrap subject through parse, recorded argv, and bootstrap body without separate AUTO", () => {
+    const args = parseArgs([
+      "--no-picker", "--agent=claude", "--owner-id=su-new-holder",
+      "--goal-bootstrap-subject=goal-123",
+    ]);
+    const body = freshSuBootstrapBody(
+      { agent: "claude", workspace: "ws1", harness: "h1", plan: null }, args,
+    );
+    expect(args.goalBootstrapSubject).toBe("goal-123");
+    expect(body.goal_bootstrap_subject).toBe("goal-123");
+    expect(body.launch_argv).toContain("--goal-bootstrap-subject=goal-123");
+    expect(body).not.toHaveProperty("auto");
+    expect(body).not.toHaveProperty("mode");
+    expect(() => parseArgs(["--goal-bootstrap-subject="])).toThrow(/non-empty goal id/);
+    expect(() => parseArgs(["--goal-bootstrap-subject=goal-123", "--auto"])).toThrow(/without separate AUTO/);
+    expect(() => parseArgs(["--goal-bootstrap-subject=goal-123", "--resume=sid-1"])).toThrow(/fresh, fleetless/);
+  });
+
   it("agent-allocation P-005: parseArgs takes --seat=<ref>; freshSuBootstrapBody forwards seat + records --seat= in launch_argv", () => {
     // The missing client leg P-006 caught live (2026-07-03): fleet:launch-on-plan
     // emitted --seat=<ref> but parseArgs dropped it, so bootstrap-su never saw
