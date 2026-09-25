@@ -1414,7 +1414,7 @@ const ensureCodexHome = defineTool({
         headers: JSON_HEADERS,
       });
     }
-    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, rebuildSuLaunchArtifact }, { composeModePromptSection }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }] =
+    const [{ readSuLaunchSpecByOwner, recordSuLaunchSpec }, { parseSuLaunchSpecRecord, pinnedSuRecoveryPrompt, rebuildSuLaunchArtifact }, { composeModePromptSection }, { ensureSuCodexHomeConfig }, { readSuperuserToken }, { requestSessionIdentityActivation }, { CODEX_DEFAULT_MODEL, resolveCodexModel }, { buildLaunchSpec }] =
       await Promise.all([
         import('../../../adv-sessions'),
         import('../../../su-persona-render'),
@@ -1423,6 +1423,7 @@ const ensureCodexHome = defineTool({
         import('../../../superuser-token'),
         import('../../../agent-tools/coordination/control-anchor'),
         import('../../../model-context-budget.mjs'),
+        import('../../../role-launch-spec'),
       ]);
     const persistedRecord = parseSuLaunchSpecRecord(await readSuLaunchSpecByOwner(owner));
     const sessionRow = await getAdvSession(advSessionId);
@@ -1463,28 +1464,53 @@ const ensureCodexHome = defineTool({
       model: repairModel,
       modelSource: requestedModel ? 'inherited' as const : 'configured-default' as const,
     } : record;
-    const rebuilt = await rebuildSuLaunchArtifact({
-      ownerId: owner,
-      operatorBaseUrl: new URL(req.url).origin,
-      record: repairRecord,
-      modeSection: composeModePromptSection({
-        autoMode: record.autoMode,
-        drainMode: record.drainMode,
-        loopArmed: record.loopArmed,
-      }),
-    });
-    const r = ensureSuCodexHomeConfig({
+    const ensureConfig = (mcpUrl: string, promptText: string) => ensureSuCodexHomeConfig({
       sessionKey: advSessionId,
-      mcpUrl: rebuilt.spec.mcpUrl,
+      mcpUrl,
       sid: owner,
       model: repairModel,
       token: readSuperuserToken(),
       codexGatewayAuto: body.requireGatewayProvider === true,
       codexGatewayPriority: body.requireGatewayProvider === true ? 'su' : null,
       trustDir: null, // the home's inherited trust tables already cover the cwd
-      promptText: rebuilt.promptText,
+      promptText,
       recoverMissingHome: sessionRow?.coordOwnerId === owner,
     });
+    let rebuilt;
+    try {
+      rebuilt = await rebuildSuLaunchArtifact({
+        ownerId: owner,
+        operatorBaseUrl: new URL(req.url).origin,
+        record: repairRecord,
+        modeSection: composeModePromptSection({
+          autoMode: record.autoMode,
+          drainMode: record.drainMode,
+          loopArmed: record.loopArmed,
+        }),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.startsWith('selected identity ')) throw error;
+      const pinned = pinnedSuRecoveryPrompt(repairRecord);
+      if (!pinned) throw error;
+      // Only the MCP connection settings come from a fresh, unselected spec.
+      // The instruction bytes come from the verified prior artifact; a source
+      // update must never silently apply a new identity during home recovery.
+      const connection = await buildLaunchSpec({
+        kind: 'su', agent: 'codex', workspaceId: record.workspaceId,
+        operatorBaseUrl: new URL(req.url).origin,
+        harnessSlug: record.harnessSlug, profile: record.profile,
+        contextSize: record.contextSize, personaTier: record.personaTier,
+        model: repairModel, stack: [], modes: [],
+      });
+      const recovered = ensureConfig(connection.mcpUrl, pinned.promptText);
+      return new Response(JSON.stringify({
+        ok: true, owner, advSessionId, ...recovered,
+        reason: 'pinned-source-stale',
+        preservedSpecificationRevision: pinned.specificationRevision,
+      }), { status: 200, headers: JSON_HEADERS });
+    }
+    const r = ensureConfig(rebuilt.spec.mcpUrl, rebuilt.promptText);
     if (r.promptRepaired) {
       const artifact = rebuilt.artifact;
       const updatedRecord = {
