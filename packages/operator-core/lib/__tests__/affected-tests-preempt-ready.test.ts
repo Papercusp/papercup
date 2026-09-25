@@ -96,6 +96,15 @@ describe('affected-tests after-ready publication boundary (EI-21361599312981776)
 });
 
 describe('once-only package wiring', () => {
+  it('scopes every affected-test entry point to this harness before nested test routers run', () => {
+    for (const name of ['test', 'test:affected', 'test:related', 'test:affected:integration', 'test:all', 'test:all:integration']) {
+      expect(PACKAGE_JSON.scripts?.[name], `${name} would produce unbindable test runs and trigger an unscoped-router warning`)
+        .toMatch(/^PAPERCUSP_TEST_RUN_HARNESS=papercusp /);
+    }
+    // A standalone focused test still requires its caller to declare the target harness.
+    expect(PACKAGE_JSON.scripts?.['test:file']).not.toContain('PAPERCUSP_TEST_RUN_HARNESS=');
+  });
+
   it('creates one proof group outside the fresh-attempt retry loop', () => {
     const proofGroup = PC_HEAVY_SRC.indexOf('export AFFECTED_TASK_VERDICT_PROOF_GROUP="$_resume_proof_group"');
     const retryLoop = PC_HEAVY_SRC.indexOf('while [ "$_retry_attempt" -le "$_retry_limit" ]; do');
