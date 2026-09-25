@@ -18,13 +18,16 @@ import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import {
   markAdvSessionEnded,
+  readSuLaunchSpecByOwner,
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
+  recordSuLaunchSpec,
   setAdvSessionPid,
   type AdvSessionExpectedBinding,
 } from './adv-sessions';
 import { activeWorkspaceId } from './workspace-registry';
 import { resolveSessionRef } from './compaction-usage';
+import { requestSessionIdentityActivation } from './agent-tools/coordination/control-anchor';
 
 // Exercise the lifecycle SQL without scheduling real delayed cleanup of test rows.
 vi.mock('./session-end-lease-release-hook', () => ({ scheduleSessionEndLeaseRelease: vi.fn() }));
@@ -67,6 +70,38 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await admin`TRUNCATE harness_shared.adv_sessions`;
+});
+
+describe('grant-bearing role receipt and activation (canonical PostgreSQL client)', () => {
+  it('persists a readable artifact before recording the launch activation', async () => {
+    const id = await seedAdv({ coordOwnerId: OWNER });
+    const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) };
+    const artifact = { configuration: { grants: { requires: [], optional: [], suggestedProviders: {} } } };
+    const launchSpec = {
+      v: 1, workspaceId: WS, harnessSlug: 'papercusp', role: 'worker',
+      stack: ['domain:blueprint-operation-worker'], ...revision,
+      specificationArtifact: artifact,
+    };
+    expect(await recordSuLaunchSpec(id, OWNER, launchSpec)).toBe(true);
+    const [stored] = await admin<{ value_kind: string; launch_spec: unknown }[]>`
+      SELECT jsonb_typeof(launch_spec) AS value_kind, launch_spec
+        FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    expect(stored?.value_kind).toBe('object');
+    expect(stored?.launch_spec).toMatchObject(launchSpec);
+    expect(await readSuLaunchSpecByOwner(OWNER)).toMatchObject(launchSpec);
+
+    const anchor = await requestSessionIdentityActivation({
+      ownerId: OWNER, workspaceId: WS, revision, source: 'launch',
+      attribution: { actorId: OWNER, principalId: OWNER, sessionId: OWNER },
+    });
+    expect(anchor.state.activation).toMatchObject({ desired: revision, status: 'desired' });
+    const [persisted] = await admin<{ activation: unknown }[]>`
+      SELECT control_state->'activation' AS activation
+        FROM harness_shared.session_briefs WHERE owner_id = ${OWNER}
+    `;
+    expect(persisted?.activation).toMatchObject({ desired: revision, status: 'desired' });
+  });
 });
 
 describe('successor lifecycle compare-and-swap (EI-22446987530949437, real PG)', () => {
