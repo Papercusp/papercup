@@ -3721,6 +3721,7 @@ describe("psu-launcher arg parsing", () => {
       args: [
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
         "-m",
         "gpt-5.6-sol",
         "-c",
@@ -3825,6 +3826,7 @@ describe("psu-launcher arg parsing", () => {
       [
         "--dangerously-bypass-hook-trust",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--no-alt-screen",
         "-m",
         "gpt-5.6-sol",
         "-c",
@@ -3886,6 +3888,7 @@ describe("psu-launcher arg parsing", () => {
     ).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--no-alt-screen",
       "-m",
       "gpt-5.6-sol",
       "-c",
@@ -3903,6 +3906,7 @@ describe("psu-launcher arg parsing", () => {
     ).args).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--no-alt-screen",
       "-m",
       "gpt-5.6-sol",
       "-c",
@@ -4033,6 +4037,7 @@ describe("psu-launcher arg parsing", () => {
     ).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--no-alt-screen",
       "-m",
       "gpt-5.6-sol",
       "-c",
@@ -4057,6 +4062,7 @@ describe("psu-launcher arg parsing", () => {
     ).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--no-alt-screen",
       "-m",
       "gpt-5.6-sol",
       "-c",
@@ -6645,6 +6651,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
     expect(args).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--no-alt-screen",
       "-m",
       "gpt-5.6-sol",
       "-c",
@@ -6719,6 +6726,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
     ).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--no-alt-screen",
       "-m",
       "gpt-5.6-sol",
       "-c",
@@ -6840,6 +6848,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
     expect(args).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--no-alt-screen",
     ]);
   });
 
@@ -6930,6 +6939,7 @@ describe("suLaunchArgs (P-020 raw-CLI su launch, mirrors roleLaunchArgs)", () =>
     expect(suLaunchArgs("codex", files).args).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--no-alt-screen",
     ]);
   });
 
@@ -10991,6 +11001,7 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
     ).toEqual([
       "--dangerously-bypass-hook-trust",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--no-alt-screen",
       "-m",
       "gpt-5.6-sol",
       "-c",
