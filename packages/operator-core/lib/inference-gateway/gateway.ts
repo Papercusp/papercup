@@ -817,6 +817,37 @@ export function effectivePriorityLabel(headers: Record<string, unknown>): string
  *  `claude-sonnet-4` 404s upstream). */
 const LAST_RESORT_SONNET_MODEL = 'claude-sonnet-4-6';
 
+type AcceptedClaudeModelPolicy = Extract<ActiveOperationModelPolicyRead, { status: 'bound' }>['policy'];
+const MODEL_EFFORT_SUFFIX = /:(low|medium|high|xhigh|max|ultra)$/i;
+
+/** The gateway must check the requested model before the first upstream send as
+ * well as before a retry substitutes another model. Pricing normalization alone
+ * drops provider and effort, so compare those separately. */
+function acceptedClaudeModelAllows(policy: AcceptedClaudeModelPolicy, requested: string): boolean {
+  const provider = (value: string) => value.includes('/')
+    ? value.slice(0, value.indexOf('/')).toLowerCase() : 'anthropic';
+  if (provider(requested) !== 'anthropic') return false;
+  const requestedEffort = MODEL_EFFORT_SUFFIX.exec(requested)?.[1]?.toLowerCase();
+  if (policy.effort && requestedEffort && policy.effort.toLowerCase() !== requestedEffort) return false;
+  return policy.models.some((entry) => {
+    if (provider(entry) !== 'anthropic' || normalizeModelId(entry) !== normalizeModelId(requested)) return false;
+    const listedEffort = MODEL_EFFORT_SUFFIX.exec(entry)?.[1]?.toLowerCase();
+    return (!listedEffort || !requestedEffort || listedEffort === requestedEffort) &&
+      (!policy.effort || !listedEffort || listedEffort === policy.effort.toLowerCase());
+  });
+}
+
+/** Convert only an accepted Anthropic policy entry to an upstream API id.
+ * A provider prefix and CLI effort are launch metadata; the 1M marker is a
+ * separate request window and must agree with the caller's current window. */
+function acceptedClaudeUpstreamModel(entry: string): GatewayModelResolution | null {
+  const slash = entry.indexOf('/');
+  if (slash >= 0 && entry.slice(0, slash).toLowerCase() !== 'anthropic') return null;
+  const bare = (slash >= 0 ? entry.slice(slash + 1) : entry).replace(MODEL_EFFORT_SUFFIX, '');
+  const resolved = resolveGatewayModel(bare);
+  return /^claude-[a-z0-9-]+$/i.test(resolved.model) ? resolved : null;
+}
+
 /** WI-1073: rewrite the `model` field of a buffered `/v1/messages` request body to `newModel`, returning
  *  the re-serialized body — or `null` when the body isn't JSON with a string `model` (⇒ the caller leaves
  *  the request unchanged and forwards the original failure, byte-identical to today). Pure. */
@@ -4769,6 +4800,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       stageSpan?.endStage('bodyRead');
     }
     let model = 'claude-opus-4';
+    let requestedModelPresent = false;
     let context1m = false;
     // WI-1073: at-most-once guard — we downgrade a walled OPUS request to sonnet only ONCE per request,
     // so a failed sonnet retry forwards (never opus→sonnet→sonnet looping).
@@ -4806,7 +4838,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           stream?: boolean;
           metadata?: { user_id?: unknown };
         };
-        if (typeof j.model === 'string') model = j.model;
+        if (typeof j.model === 'string') {
+          model = j.model;
+          requestedModelPresent = true;
+        }
         if (j.stream === true) isStream = true;
         // Claude CLI per-session caller id — the auto-affinity fallback key when no x-papercusp-owner
         // header is present (WI-2140943). Read-only; the body is forwarded unchanged.
@@ -4829,6 +4864,35 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // all-throttled shed back to this bee for the stall-waker (P-002). Absent ⇒ not wake-able (no-op).
     const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
     recordOwnerOutcome(wantOwner, 'request'); // P-008 per-owner ledger
+    // This server-side read is bound to the applied launch receipt and immutable
+    // operation pin. A caller-supplied owner header cannot grant model authority.
+    // Check once per HTTP request, before account selection or upstream I/O; reuse
+    // the same verdict if the internal retry ladder reaches a substitution.
+    let operationModelPolicy: ActiveOperationModelPolicyRead = { status: 'none' };
+    if (wantOwner && deps.readAcceptedOperationModelPolicy) {
+      try {
+        operationModelPolicy = await deps.readAcceptedOperationModelPolicy(wantOwner);
+      } catch {
+        operationModelPolicy = { status: 'unavailable', reason: 'model policy lookup failed' };
+      }
+      if (operationModelPolicy.status === 'unavailable') {
+        sendJson(res, 503, {
+          type: 'error',
+          error: { type: 'api_error', message: `accepted operation model policy unavailable: ${operationModelPolicy.reason}` },
+          gateway: true,
+        }, { 'x-should-retry': 'false' });
+        return;
+      }
+      if (operationModelPolicy.status === 'bound' &&
+          (!requestedModelPresent || !acceptedClaudeModelAllows(operationModelPolicy.policy, model))) {
+        sendJson(res, 403, {
+          type: 'error',
+          error: { type: 'permission_error', message: `requested model is outside the accepted ${operationModelPolicy.policy.mode} model policy` },
+          gateway: true,
+        }, { 'x-should-retry': 'false' });
+        return;
+      }
+    }
     // DYNAMIC OWNER PIN (account-dynamic-pin-2026-06-29): a runtime pin (accounts:pin) keyed by owner id
     // OVERRIDES the static x-papercusp-account spawn header — so an agent can re-route itself or another LIVE.
     // Absent ⇒ the static header (today's behavior). The dynamic pin also carries its own hard/soft choice.
@@ -4866,6 +4930,38 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const hardPin =
       headerPinned !== null &&
       (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
+    if (operationModelPolicy.status === 'bound' && pool.healthyCount) {
+      const policy = operationModelPolicy.policy;
+      const healthyFor = (candidate: string) => pool.healthyCount!((id) =>
+        (!hardPin || id === headerPinned!.accountId) &&
+        governorForAccount(candidate, id).state.pausedUntil <= Date.now());
+      // The launch-selected model stays in place while any eligible account can
+      // serve it. Change models only on measured pool-wide (or hard-pin-local)
+      // unavailability, and only within the accepted allowed/preferred list.
+      if (healthyFor(model) === 0) {
+        const alternate = policy.mode === 'exact' ? null : policy.models
+          .map(acceptedClaudeUpstreamModel)
+          .find((candidate) => candidate && candidate.context1m === context1m &&
+            normalizeModelId(candidate.model) !== normalizeModelId(model) &&
+            acceptedClaudeModelAllows(policy, candidate.model) && healthyFor(candidate.model) > 0);
+        const rewritten = alternate ? rewriteRequestModel(bodyBuf, alternate.model) : null;
+        if (alternate && rewritten) {
+          bodyBuf = rewritten;
+          model = alternate.model;
+          stageSpan?.setModel(model);
+          stageSpan?.setCacheShape(bodyBuf);
+        } else {
+          const wait = policy.onUnavailable === 'wait';
+          sendJson(res, wait ? 429 : 503, {
+            type: 'error',
+            error: { type: wait ? 'rate_limit_error' : 'api_error',
+              message: `no accepted ${policy.mode} model is currently serviceable on the eligible account pool` },
+            gateway: true,
+          }, wait ? { 'retry-after': '30' } : { 'x-should-retry': 'false' });
+          return;
+        }
+      }
+    }
     const poolActive = pool.active();
     // Fault #3 — pinned-but-paced failover. The spawn-side drain selector pins a bee to an account by
     // its cross-process BUDGET projection, which can't see the gateway's LIVE pacing — so it can pin a
@@ -6424,41 +6520,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
               (taken.status === 403 || taken.status === 429) &&
               model.includes('opus')
             ) {
-              if (wantOwner && deps.readAcceptedOperationModelPolicy) {
-                let modelPolicy: ActiveOperationModelPolicyRead;
-                try {
-                  modelPolicy = await deps.readAcceptedOperationModelPolicy(wantOwner);
-                } catch {
-                  modelPolicy = { status: 'unavailable', reason: 'model policy lookup failed' };
-                }
-                if (modelPolicy.status === 'unavailable') {
-                  sendJson(res, 503, {
+              if (operationModelPolicy.status === 'bound') {
+                const policy = operationModelPolicy.policy;
+                if (!acceptedClaudeModelAllows(policy, model) ||
+                    !acceptedClaudeModelAllows(policy, LAST_RESORT_SONNET_MODEL) || policy.effort) {
+                  const wait = policy.onUnavailable === 'wait';
+                  sendJson(res, wait ? 429 : 503, {
                     type: 'error',
-                    error: { type: 'api_error', message: `accepted operation model policy unavailable: ${modelPolicy.reason}` },
+                    error: {
+                      type: wait ? 'rate_limit_error' : 'api_error',
+                      message: `accepted ${policy.mode} model policy cannot substitute ${LAST_RESORT_SONNET_MODEL} for ${model}`,
+                    },
                     gateway: true,
-                  }, { 'x-should-retry': 'false' });
+                  }, wait
+                    ? { 'retry-after': String(Math.max(1, Math.ceil((lastExhaustResetAt - Date.now()) / 1000))) }
+                    : { 'x-should-retry': 'false' });
                   return;
-                }
-                if (modelPolicy.status === 'bound') {
-                  const policy = modelPolicy.policy;
-                  const allowed = (candidate: string) => policy.models.some((entry) => {
-                    const provider = entry.includes('/') ? entry.slice(0, entry.indexOf('/')).toLowerCase() : 'anthropic';
-                    return provider === 'anthropic' && normalizeModelId(entry) === normalizeModelId(candidate);
-                  });
-                  if (!allowed(model) || !allowed(LAST_RESORT_SONNET_MODEL) || policy.effort) {
-                    const wait = policy.onUnavailable === 'wait';
-                    sendJson(res, wait ? 429 : 503, {
-                      type: 'error',
-                      error: {
-                        type: wait ? 'rate_limit_error' : 'api_error',
-                        message: `accepted ${policy.mode} model policy cannot substitute ${LAST_RESORT_SONNET_MODEL} for ${model}`,
-                      },
-                      gateway: true,
-                    }, wait
-                      ? { 'retry-after': String(Math.max(1, Math.ceil((lastExhaustResetAt - Date.now()) / 1000))) }
-                      : { 'x-should-retry': 'false' });
-                    return;
-                  }
                 }
               }
               const sonnetBody = rewriteRequestModel(bodyBuf, LAST_RESORT_SONNET_MODEL);
