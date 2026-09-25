@@ -144,7 +144,8 @@ export function hasNarrowDeployedMainException(text: string): boolean {
 
 /** Gate repair itself operates the release plane; it is not ordinary plan implementation. */
 export function isLiveGateOperationText(text: string): boolean {
-  return LIVE_GATE_OPERATION_RE.test(text);
+  return LIVE_GATE_OPERATION_RE.test(text) &&
+    /\b(?:repair|fix|triage|diagnos\w*|run|rerun|re-run|fire|restore|re-green)\b/i.test(text);
 }
 
 /**
