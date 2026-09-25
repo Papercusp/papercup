@@ -12,7 +12,7 @@
  * increment) still exercises the runner path.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn, spawnSync, execSync } from 'node:child_process';
+import { spawn, spawnSync, execSync, execFileSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -2009,6 +2009,10 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
   });
 
   it('EI-21361359358514189: a caller TERM while queued is retryable and reports the live holder', async () => {
+    // Each observable stage has its own 30s budget. Keep the outer Vitest
+    // budget above their sum so a stalled stage reports its stderr/state
+    // instead of an uninformative framework timeout after 10s.
+    const stageTimeoutMs = 30_000;
     const env = {
       PC_HEAVY_SLOTS: '1',
       PC_HEAVY_COALESCE: '0',
@@ -2022,16 +2026,21 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     const holderErr = createTextCollector(holder.stderr);
     let waiter: ReturnType<typeof spawn> | undefined;
     try {
-      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the queue-signal holder taking the only slot');
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the queue-signal holder taking the only slot', stageTimeoutMs);
 
       waiter = spawn('bash', [PC_HEAVY, 'bash', '-c', 'echo ran > "' + ran + '"'], {
         env: baseEnv(env), cwd: dir, detached: true,
       });
       const waiterErr = createTextCollector(waiter.stderr);
       const waiterExit = new Promise<number>((res) => waiter?.on('exit', (c) => res(c ?? -1)));
-      await untilStderr(waiter, waiterErr, (t) => t.includes('queued for a heavy slot'), 'the caller entering the queue');
+      await untilStderr(waiter, waiterErr, (t) => t.includes('queued for a heavy slot'), 'the caller entering the queue', stageTimeoutMs);
 
       killGroup(waiter);
+      await waitFor(
+        'the queued caller exiting after TERM',
+        () => waiter !== undefined && (waiter.exitCode !== null || waiter.signalCode !== null),
+        stageTimeoutMs,
+      );
       expect(await waiterExit).toBe(75);
       expect(existsSync(ran)).toBe(false);
 
@@ -2046,7 +2055,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       killGroup(holder);
       if (waiter) killGroup(waiter);
     }
-  }, 10_000);
+  }, 100_000);
 
   it('a waiter grabs a DIFFERENT slot that frees, instead of convoying on slot 0 alone (regression: pc-heavy slot-0 convoy)', async () => {
     // 2 slots. Holder A takes slot 0 (the natural first pick with no
@@ -3498,9 +3507,9 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
   // whenever the SOURCE the command exercises changed between two identical
   // invocations (edit, then re-run to check) — the coalescer replayed a
   // pre-edit result as if it were fresh. The fix folds a cheap tree-state
-  // token (referenced-file mtime+size, plus a git-status hash when inside a
-  // worktree) into the key so an edit busts the cache while a genuine
-  // no-op re-run still coalesces.
+  // token (referenced-file mtime+size, plus git-status hashes for the current
+  // worktree and recursive submodules) into the key so edits bust the cache
+  // while a genuine no-op re-run still coalesces.
   describe('tree-state token busts the cache on a real edit (EI-18688348461605365)', () => {
     // The worktree is a SUBDIR of `dir`, never `dir` itself — see runSync's note
     // (EI-19424611266793426): PC_HEAVY_DIR is `dir`, so initing `dir` would put
@@ -3592,6 +3601,38 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       writeFileSync(join(repo, 'src.txt'), 'dirty-version-two');
 
       const second = runSync(['bash', '-c', 'cat src.txt'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(second.stderr).not.toContain('coalesced:');
+      expect(second.stdout).toContain('dirty-version-two');
+    });
+
+    it('a second edit to an already-dirty tracked submodule file busts the cache', () => {
+      const repo = gitRepo();
+      writeFileSync(join(repo, 'superproject.txt'), 'seed');
+      commitAll(repo);
+
+      const submoduleRepo = join(dir, 'submodule-source');
+      mkdirSync(submoduleRepo, { recursive: true });
+      execSync('git init -q', { cwd: submoduleRepo });
+      execSync('git config user.email t@example.com && git config user.name test', { cwd: submoduleRepo });
+      writeFileSync(join(submoduleRepo, 'src.txt'), 'committed');
+      commitAll(submoduleRepo);
+      execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', submoduleRepo, 'nested-source'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+      commitAll(repo);
+
+      const source = join(repo, 'nested-source', 'src.txt');
+      writeFileSync(source, 'dirty-version-one');
+      const args = ['bash', '-c', 'cat nested-source/src.txt'];
+      const first = runSync(args, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(first.stderr).not.toContain('coalesced:');
+      expect(first.stdout).toContain('dirty-version-one');
+
+      // Keep the submodule's parent-visible dirty marker identical; only the
+      // content of an already-dirty tracked source file changes.
+      writeFileSync(source, 'dirty-version-two');
+      const second = runSync(args, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
       expect(second.stderr).not.toContain('coalesced:');
       expect(second.stdout).toContain('dirty-version-two');
     });
