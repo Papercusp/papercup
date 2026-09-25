@@ -20,8 +20,10 @@
  */
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { normalizeModelId } from '@papercusp/model-pricing';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { ActiveOperationModelPolicyRead } from '../blueprint/operation-worker-binding';
 import { PassThrough, Readable } from 'node:stream';
 import { describeAdmissionCeiling } from './admission-ceiling';
 import { describeGatewayLiveAdmissionState } from './admission-state-model';
@@ -943,6 +945,9 @@ const STRIP_REQUEST = new Set([
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
 
 export interface GatewayDeps {
+  /** Server-side accepted-operation policy read at a model substitution boundary.
+   * A failed read is an explicit unavailable verdict, never permission to downgrade. */
+  readAcceptedOperationModelPolicy?: (ownerId: string) => Promise<ActiveOperationModelPolicyRead>;
   /**
    * Canonical resource-governor seam for gateway request starts.  The default
    * uses the admit-immediately compatibility driver while the durable queue
@@ -6419,6 +6424,43 @@ export function createInferenceGateway(deps: GatewayDeps) {
               (taken.status === 403 || taken.status === 429) &&
               model.includes('opus')
             ) {
+              if (wantOwner && deps.readAcceptedOperationModelPolicy) {
+                let modelPolicy: ActiveOperationModelPolicyRead;
+                try {
+                  modelPolicy = await deps.readAcceptedOperationModelPolicy(wantOwner);
+                } catch {
+                  modelPolicy = { status: 'unavailable', reason: 'model policy lookup failed' };
+                }
+                if (modelPolicy.status === 'unavailable') {
+                  sendJson(res, 503, {
+                    type: 'error',
+                    error: { type: 'api_error', message: `accepted operation model policy unavailable: ${modelPolicy.reason}` },
+                    gateway: true,
+                  }, { 'x-should-retry': 'false' });
+                  return;
+                }
+                if (modelPolicy.status === 'bound') {
+                  const policy = modelPolicy.policy;
+                  const allowed = (candidate: string) => policy.models.some((entry) => {
+                    const provider = entry.includes('/') ? entry.slice(0, entry.indexOf('/')).toLowerCase() : 'anthropic';
+                    return provider === 'anthropic' && normalizeModelId(entry) === normalizeModelId(candidate);
+                  });
+                  if (!allowed(model) || !allowed(LAST_RESORT_SONNET_MODEL) || policy.effort) {
+                    const wait = policy.onUnavailable === 'wait';
+                    sendJson(res, wait ? 429 : 503, {
+                      type: 'error',
+                      error: {
+                        type: wait ? 'rate_limit_error' : 'api_error',
+                        message: `accepted ${policy.mode} model policy cannot substitute ${LAST_RESORT_SONNET_MODEL} for ${model}`,
+                      },
+                      gateway: true,
+                    }, wait
+                      ? { 'retry-after': String(Math.max(1, Math.ceil((lastExhaustResetAt - Date.now()) / 1000))) }
+                      : { 'x-should-retry': 'false' });
+                    return;
+                  }
+                }
+              }
               const sonnetBody = rewriteRequestModel(bodyBuf, LAST_RESORT_SONNET_MODEL);
               if (sonnetBody) {
                 opusDowngraded = true;
