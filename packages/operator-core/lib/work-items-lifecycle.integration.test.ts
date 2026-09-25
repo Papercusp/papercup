@@ -50,6 +50,7 @@ import { reconcileWorkItemCompletionEventIntents } from './work-item-completion-
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { projectBlueprintToPg } from './blueprint/project-to-pg';
 import { acceptBlueprintDirectWorkItem, readAcceptedBlueprintDirectWorkItem } from './blueprint/operation-admission';
+import { readActiveOperationModelPolicy } from './blueprint/operation-worker-binding';
 import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus, openBlueprintOperationWait, resumeBlueprintOperation, signalBlueprintOperation, submitBlueprintOperation } from './blueprint/operation-service';
 import { BlueprintOperationClient, createPgBlueprintOperationPort } from './blueprint/operation-client';
 
@@ -305,7 +306,10 @@ beforeEach(async () => {
 });
 
 describe('blueprint direct-item revision pin', () => {
-  it('admits a model-bound result only with compatible actual request reports', async () => {
+  it.each([
+    { mode: 'exact', models: ['claude-opus-4-8'] },
+    { mode: 'allowed', models: ['claude-opus-4-8', 'openai/claude-sonnet-4-6'] },
+  ] as const)('admits a $mode model-bound result only with compatible actual request reports', async ({ mode, models }) => {
     const source = {
       id: 'model-result-fixture', workItem: { kind: 'feature' }, roles: [{ id: 'worker' }],
       spine: { edges: { DONE: { to: 'done' } } },
@@ -314,7 +318,7 @@ describe('blueprint direct-item revision pin', () => {
         execution: { kind: 'agent', role: 'worker' },
         inputSchema: { type: 'object' },
         acceptance: { resultSchema: { type: 'object' } },
-        policy: { model: { mode: 'exact', models: ['claude-opus-4-8'], onUnavailable: 'fail' } },
+        policy: { model: { mode, models: [...models], onUnavailable: 'fail' } },
       }],
     };
     await projectBlueprintToPg(db.sql, {
@@ -360,7 +364,7 @@ describe('blueprint direct-item revision pin', () => {
     await report('anthropic/claude-opus-4-8:high');
     expect(await result()).toMatchObject({ state: 'ready' });
     await report('claude-sonnet-4-6');
-    expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('outside the exact policy') });
+    expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining(`outside the ${mode} policy`) });
     await report('claude-opus-4-8');
     await db.sql`
       INSERT INTO harness_shared.agent_usage_samples
@@ -368,7 +372,7 @@ describe('blueprint direct-item revision pin', () => {
       VALUES ('default', ${nativeSession}, 'interactive', 'anthropic', 'claude-sonnet-4-6',
         ${db.sql.json({ grain: 'request', modelSource: 'transcript' })})
     `;
-    expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('outside the exact policy') });
+    expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining(`outside the ${mode} policy`) });
     await report(null);
     expect(await result()).toMatchObject({ state: 'unavailable', reason: expect.stringContaining('unreported') });
     await report('claude-opus-4-8', 'request');
@@ -433,6 +437,9 @@ describe('blueprint direct-item revision pin', () => {
       `;
       await db.sql`UPDATE harness_shared.work_items SET taken_by = ${owner}
         WHERE workspace_id = 'default' AND feature_id = ${itemId}`;
+      expect(await readActiveOperationModelPolicy('default', owner)).toEqual({
+        status: 'bound', policy: modelPolicy,
+      });
       await db.sql`
         INSERT INTO harness_shared.agent_usage_samples
           (workspace_id, session_id, source, provider, model, usage_provenance)

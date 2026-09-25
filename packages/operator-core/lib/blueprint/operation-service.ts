@@ -617,13 +617,17 @@ async function verifyDirectOperationModel(
   `;
   if (!rows.length) return 'no accepted worker session reported an actual model';
   if (rows.length > 1000) return 'model evidence exceeds the bounded verification window';
-  const allowed = new Set(policy.models.map(normalizeModelId));
   for (const row of rows) {
     if (row.agent !== 'claude' || row.provider !== 'anthropic' ||
         row.model_source !== 'transcript' || row.grain !== 'request' || !row.model) {
       return 'accepted worker has an unreported or unsupported actual model';
     }
-    if (!allowed.has(normalizeModelId(row.model))) {
+    const actualPrefix = row.model.includes('/') ? row.model.slice(0, row.model.indexOf('/')).toLowerCase() : null;
+    const allowed = (!actualPrefix || actualPrefix === row.provider) && policy.models.some((entry) => {
+      const policyProvider = entry.includes('/') ? entry.slice(0, entry.indexOf('/')).toLowerCase() : 'anthropic';
+      return policyProvider === row.provider && normalizeModelId(entry) === normalizeModelId(row.model!);
+    });
+    if (!allowed) {
       return `accepted worker reported a model outside the ${policy.mode} policy`;
     }
   }
