@@ -24,8 +24,10 @@
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
 import {
+  projectionDefer,
   projectionSql,
   projectionStatementFailed,
+  type ProjectionGroupWriter,
   type TableProjection,
   type ProvenanceContext,
   type StoredFedOrder,
@@ -223,25 +225,23 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
 const COLLISION_CREATED_AT_TOLERANCE_MS = 5_000;
 const FEDERATED_TERMINAL_STATES = [...ANY_FAMILY_TERMINAL_STATES];
 
-async function isDistinctEntityCollision(
-  sql: postgres.Sql,
-  harnessSlug: string,
-  featureId: string,
-  incomingCreatedTs: number | null | undefined,
-): Promise<{ collided: boolean; existingCreatedAtIso?: string }> {
-  // WI-6327: fail OPEN when the op carries no authoritative creation instant. Every op
-  // appended before mig 688 has a `created_at` fabricated at drain time (the capture
-  // trigger never emitted one) which is indistinguishable from a genuine value — judging
-  // those dropped 10,070 distinct ids on the P-302 rig. Only a carried `created_ts` is
-  // trustworthy enough to refuse a write over.
-  if (incomingCreatedTs === null || incomingCreatedTs === undefined) return { collided: false };
-  const rows = await sql<{ created_ts: string | number }[]>`
-    SELECT created_ts FROM harness_shared.work_items
-     WHERE harness_slug = ${harnessSlug} AND feature_id = ${featureId}`;
-  const existing = rows[0];
-  if (!existing) return { collided: false };
+/**
+ * Does an incoming op carrying `incomingCreatedTs` name a DIFFERENT issue than the stored
+ * row created at `existingCreatedTs`? The caller reads the stored row
+ * ({@link distinctEntityCollisions}) and passes an op only when it carries a creation instant.
+ *
+ * WI-6327: an op WITHOUT an authoritative creation instant fails OPEN and is never judged.
+ * Every op appended before mig 688 has a `created_at` fabricated at drain time (the capture
+ * trigger never emitted one) which is indistinguishable from a genuine value — judging
+ * those dropped 10,070 distinct ids on the P-302 rig. Only a carried `created_ts` is
+ * trustworthy enough to refuse a write over.
+ */
+function isDistinctEntityCollision(
+  incomingCreatedTs: number,
+  existingCreatedTs: number,
+): { collided: boolean; existingCreatedAtIso?: string } {
   const incomingMs = Number(incomingCreatedTs);
-  const existingMs = Number(existing.created_ts);
+  const existingMs = Number(existingCreatedTs);
   if (!Number.isFinite(incomingMs) || !Number.isFinite(existingMs)) return { collided: false };
   if (Math.abs(incomingMs - existingMs) <= COLLISION_CREATED_AT_TOLERANCE_MS) return { collided: false };
   return { collided: true, existingCreatedAtIso: new Date(existingMs).toISOString() };
@@ -586,10 +586,128 @@ function decodeValue(raw: unknown): EngineerIssueRow | null {
   return isEngineerIssueRow(raw) ? raw : null;
 }
 
+/**
+ * p2p-join-catchup-speed-2026-09-23 P-536: one row of {@link upsertIssues}'s JSON input,
+ * named after the work_items columns it fills (plus `created_at`, from which the
+ * statement derives `created_ts`).
+ */
+interface IssueUpsertInput {
+  workspace_id: string;
+  harness_slug: string;
+  feature_id: string;
+  item_kind: string;
+  title: string;
+  summary: string;
+  status: string;
+  taken_by: string | null;
+  taken_at: string | null;
+  payload: Record<string, unknown>;
+  author_pubkey: string | null;
+  origin: string;
+  fed_ts: number | null;
+  fed_hlc: string | null;
+  created_at: string | null;
+  terminal_owner: string | null;
+  terminal_completion_ref: string | null;
+  terminal_reason: string | null;
+  authority: string | null;
+  closed_ts: number | null;
+  admission: string | null;
+  admitted_at: string | null;
+  admitted_by: string | null;
+  state_changed_at: string | null;
+  tags: unknown;
+  parent_id: string | null;
+  source_plan_slug: string | null;
+  source_plan_item_ids: string[] | null;
+  expected_cost_cents: number | null;
+}
+
+/**
+ * P-536: one issue write as `writeToPg` decided it, complete, so a snapshot lane's group
+ * write can land it after the op has returned ({@link ProjectionGroupWriter}).
+ */
+interface IssueWrite {
+  input: IssueUpsertInput;
+  /** WI-6327: the wire's creation instant, the only one the EI-13285 guard trusts. Null fails open. */
+  createdTs: number | null;
+  /** The wire payload as received, which the identity-conflict coalesce reads. */
+  payload: unknown;
+}
+
+/**
+ * The value postgres-js sends for a string bound to a timestamptz parameter: it parses it
+ * with `new Date` and sends `toISOString()` (millisecond precision). The upsert takes its
+ * rows as JSON, so it normalises here, and a row lands with the instant a per-parameter
+ * bind stored before P-536, on this build and on an older peer alike.
+ */
+function asTimestamptzParam(value: string | null | undefined): string | null {
+  return value == null ? null : new Date(value).toISOString();
+}
+
+function issueWrite(
+  opts: EngineerIssuesProjectionOpts,
+  row: EngineerIssueRow,
+  vSlug: string,
+  provenance: ProvenanceContext,
+): IssueWrite {
+  const basePayload = row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, unknown>) : {};
+  return {
+    input: {
+      workspace_id: opts.workspaceId,
+      harness_slug: vSlug,
+      feature_id: row.issue_id,
+      item_kind: row.kind,
+      title: row.title,
+      summary: row.body,
+      status: row.state,
+      taken_by: row.assignee,
+      taken_at: asTimestamptzParam(row.assigned_at),
+      payload: {
+        ...basePayload,
+        _ei: {
+          scope: row.scope ?? null,
+          severity: row.severity ?? null,
+          source: row.source ?? null,
+          found_during: row.found_during ?? null,
+          linked_feature_id: row.linked_feature_id ?? null,
+          created_by: row.created_by ?? null,
+          assigned_by: row.assigned_by ?? null,
+        },
+      },
+      author_pubkey: provenance?.authorPubkey ?? null,
+      origin: provenance.origin,
+      fed_ts: provenance?.ts ?? null,
+      fed_hlc: provenance?.fedHlc ?? null,
+      created_at: asTimestamptzParam(row.created_at),
+      terminal_owner: row.terminal_owner ?? null,
+      terminal_completion_ref: row.terminal_completion_ref ?? null,
+      terminal_reason: row.terminal_reason ?? null,
+      authority: row.authority ?? null,
+      closed_ts: row.closed_ts ?? null,
+      admission: row.admission ?? null,
+      admitted_at: asTimestamptzParam(row.admitted_at),
+      admitted_by: row.admitted_by ?? null,
+      state_changed_at: asTimestamptzParam(row.state_changed_at),
+      // EI-21467654382027859 (mig 965): an absent tags value must land SQL NULL, not the
+      // jsonb 'null' literal that reads as present. jsonb_to_recordset maps a JSON null
+      // to SQL NULL for every column type.
+      tags: row.tags ?? null,
+      parent_id: row.parent_id ?? null,
+      source_plan_slug: row.source_plan_slug ?? null,
+      source_plan_item_ids: row.source_plan_item_ids ?? null,
+      expected_cost_cents: row.expected_cost_cents ?? null,
+    },
+    createdTs: row.created_ts ?? null,
+    payload: row.payload,
+  };
+}
+
 async function writeToPg(
   opts: EngineerIssuesProjectionOpts,
   row: EngineerIssueRow,
   provenance: ProvenanceContext,
+  groupWriter?: ProjectionGroupWriter<IssueWrite>,
 ): Promise<void | false> {
   // WI-259/D-027 parity (shared-hive member-content federation): own-slug applies; a CROSS-member
   // issue/task applies iff its VERIFIED source-log device ∈ the hive's CURRENT members. The bare slug
@@ -609,7 +727,7 @@ async function writeToPg(
           fedHlc: provenance?.fedHlc ?? null,
           fedTs: provenance?.ts ?? null,
           reapply: async () => {
-            await writeToPg(opts, row, provenance);
+            await writeToPg(opts, row, provenance, groupWriter);
           },
         },
         Date.now(),
@@ -624,7 +742,7 @@ async function writeToPg(
           fedHlc: provenance?.fedHlc ?? null,
           fedTs: provenance?.ts ?? null,
           reapply: async () => {
-            await writeToPg(opts, row, provenance);
+            await writeToPg(opts, row, provenance, groupWriter);
           },
         },
         Date.now(),
@@ -632,19 +750,12 @@ async function writeToPg(
     }
     return;
   }
-  // P-002 step 2 (batchable): every statement below, helper reads included, runs
-  // on this one handle, so inside the merge's batch it is the batch transaction.
-  const sql = await projectionSql(opts.sql ?? getOrgPg().sql);
-  const authorPubkey = provenance?.authorPubkey ?? null;
-  const origin = provenance.origin;
-  const fedTs = provenance?.ts ?? null;
-  const fedHlc = provenance?.fedHlc ?? null;
+  const target = opts.sql ?? getOrgPg().sql;
   // P-010 unification: apply the issue op to the work_items BASE table (engineer_issues is
   // now a compat view → no ON CONFLICT). Map issue→work_items: issue_id→feature_id,
   // scope→canonical issue harness_slug (migration 382: 'operator:<workspace>' for
   // operator-scope rows; '<harness>' for harness-scoped rows) + issue-only cols into
   // payload->'_ei', body→summary, state→status, assignee→taken_by, kind→item_kind.
-  // payload binds via ::text::jsonb (postgres-js-jsonb-binding gotcha).
   const vSlug =
     typeof row.scope === 'string' && row.scope.startsWith('harness:')
       ? row.scope.slice(8)
@@ -660,6 +771,14 @@ async function writeToPg(
     );
     return false;
   }
+  const write = issueWrite(opts, row, vSlug, provenance);
+  // P-536: inside a snapshot lane a qualified row joins the lane's group write (one
+  // collision read and one upsert per group). A bare legacy row reads the retired-twin
+  // markers first, so it always writes alone.
+  if (row.storage_harness_slug && groupWriter && (await projectionDefer(target, groupWriter, write))) return;
+  // P-002 step 2 (batchable): every statement below, helper reads included, runs
+  // on this one handle, so inside the merge's batch it is the batch transaction.
+  const sql = await projectionSql(target);
   // WI-40113 / migration 859: a bare pre-829 PUT has no physical identity of
   // its own.  If migration-826 survivor evidence proves that this exact source
   // identity was retired, applying the op would recreate the physical twin.
@@ -672,35 +791,118 @@ async function writeToPg(
     );
     return false;
   }
-  // EI-13285: id-collision guard — see isDistinctEntityCollision's header. Must run
-  // BEFORE the upsert below, which would otherwise blindly clobber a distinct local
-  // record sharing this issue_id.
-  const collision = await isDistinctEntityCollision(sql, vSlug, row.issue_id, row.created_ts);
-  if (collision.collided) {
+  return writeIssue(sql, opts, write);
+}
+
+/**
+ * EI-13285: the writes whose issue_id already names a DISTINCT local issue (see
+ * {@link isDistinctEntityCollision}), each logged as the refusal it is. One read for the
+ * whole set. It must run BEFORE the upsert, which would otherwise blindly clobber a
+ * distinct local record sharing this issue_id.
+ */
+async function distinctEntityCollisions(sql: postgres.Sql, writes: readonly IssueWrite[]): Promise<Set<IssueWrite>> {
+  const refused = new Set<IssueWrite>();
+  // WI-6327: a write without a carried creation instant fails open, unread.
+  const judged = writes.filter((w): w is IssueWrite & { createdTs: number } => w.createdTs !== null);
+  if (judged.length === 0) return refused;
+  const rows = await sql<{ harness_slug: string; feature_id: string; created_ts: string | number }[]>`
+    SELECT w.harness_slug, w.feature_id, w.created_ts
+      FROM unnest(${judged.map((w) => w.input.harness_slug)}::text[],
+                  ${judged.map((w) => w.input.feature_id)}::text[]) AS k(harness_slug, feature_id)
+      JOIN harness_shared.work_items w
+        ON w.harness_slug = k.harness_slug AND w.feature_id = k.feature_id`;
+  const existingMs = new Map(rows.map((r) => [`${r.harness_slug}\u0000${r.feature_id}`, Number(r.created_ts)]));
+  for (const w of judged) {
+    const existing = existingMs.get(`${w.input.harness_slug}\u0000${w.input.feature_id}`);
+    if (existing === undefined) continue;
+    const collision = isDistinctEntityCollision(w.createdTs, existing);
+    if (!collision.collided) continue;
     console.warn(
       `[engineer-issues projection] EI-13285 id collision: refusing to apply remote op for ` +
-        `issue_id=${row.issue_id} (harness_slug=${vSlug}) — the existing local row was created at ` +
-        `${collision.existingCreatedAtIso}, but the incoming op claims created_at=${row.created_at}. ` +
+        `issue_id=${w.input.feature_id} (harness_slug=${w.input.harness_slug}) — the existing local row was created at ` +
+        `${collision.existingCreatedAtIso}, but the incoming op claims created_at=${w.input.created_at}. ` +
         `These are two distinct issues that were allocated the same id; the incoming op is DROPPED ` +
         `(not applied) to avoid destroying the local record. The authoring peer's own copy is unaffected.`,
     );
+    refused.add(w);
+  }
+  return refused;
+}
+
+/** One issue write on its own: the per-op path, and what a failed group write replays. */
+async function writeIssue(sql: postgres.Sql, opts: EngineerIssuesProjectionOpts, write: IssueWrite): Promise<void | false> {
+  if ((await distinctEntityCollisions(sql, [write])).size > 0) return false;
+  try {
+    await upsertIssues(sql, [write]);
+  } catch (error) {
+    // The physical-row ON CONFLICT cannot arbitrate migration 865's
+    // separate partial unique index. A historical terminal row can therefore
+    // receive a stale remote PUT that tries to reopen it while a newer live row
+    // already owns the same watchdog identity. Retrying that deterministic
+    // 23505 forever pins every per-harness merge cursor on the same op.
+    //
+    // Migration 1157's keyless title-identity index has the same shape: a peer
+    // that had not yet replicated an open filing mints a duplicate with the same
+    // server-authored titleKey, and its replay here is a deterministic 23505.
+    // Migration 986's resource-governor identity is the third instance: two
+    // machines admit work under the same idempotencyKey.
+    //
+    // Recover only those named indexes and only after the complete incoming
+    // identity resolves to exactly one different row (non-terminal for 865 and
+    // 1157, whose predicates exclude terminal rows). That row is
+    // the already-coalesced logical item, so the duplicate physical-row PUT is
+    // a no-op. Any missing/malformed component, lookup failure, or other 23505
+    // rethrows the original error and remains visible to the merge retry path.
+    //
+    // P-002 step 2: inside the merge's batch transaction the 23505 aborted the
+    // transaction, so the lookups below would fail and the coalesce could never
+    // resolve. Rolling back to the op's savepoint is exact here: every statement
+    // this write issued before the upsert was a read.
+    await projectionStatementFailed();
+    const coalesced = await resolveIdentityConflict(
+      error,
+      sql,
+      opts.workspaceId,
+      write.input.harness_slug,
+      write.input.feature_id,
+      write.payload,
+    );
+    if (!coalesced) throw error;
+    console.warn(coalesced);
+    // The op's own row was not written; another row already holds the logical item.
     return false;
   }
-  const basePayload = row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, unknown>) : {};
-  const payloadText = JSON.stringify({
-    ...basePayload,
-    _ei: {
-      scope: row.scope ?? null,
-      severity: row.severity ?? null,
-      source: row.source ?? null,
-      found_during: row.found_during ?? null,
-      linked_feature_id: row.linked_feature_id ?? null,
-      created_by: row.created_by ?? null,
-      assigned_by: row.assigned_by ?? null,
-    },
-  });
-  try {
-    await sql`
+}
+
+/**
+ * P-536: a snapshot lane's group of issue writes, as two statements: the collision read
+ * and one upsert. The lane never passes two writes for one row, so each write's collision
+ * check sees what it would have seen alone. Any failure (an identity-index 23505 among
+ * them) rolls the group back and the lane replays each write through {@link writeIssue}.
+ */
+async function writeIssueGroup(sql: postgres.Sql, writes: readonly IssueWrite[]): Promise<void> {
+  const refused = await distinctEntityCollisions(sql, writes);
+  const kept = refused.size === 0 ? writes : writes.filter((w) => !refused.has(w));
+  if (kept.length > 0) await upsertIssues(sql, kept);
+}
+
+function issueGroupWriter(opts: EngineerIssuesProjectionOpts): ProjectionGroupWriter<IssueWrite> {
+  return {
+    name: 'engineer-issues',
+    rowOf: (w) => `${w.input.harness_slug}\u0000${w.input.feature_id}`,
+    writeMany: writeIssueGroup,
+    writeOne: async (w) => writeIssue(await projectionSql(opts.sql ?? getOrgPg().sql), opts, w),
+  };
+}
+
+/**
+ * The issue upsert. ONE statement text for one row or many (P-536): the rows travel as a
+ * JSON array, so the per-op path and a lane's group write cannot drift apart. Rows in one
+ * call name distinct physical rows; a conflict between two of them fails the statement.
+ */
+async function upsertIssues(sql: postgres.Sql, writes: readonly IssueWrite[]): Promise<void> {
+  const rowsJson = JSON.stringify(writes.map((w) => w.input));
+  await sql`
       INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
        taken_by, taken_at, payload, author_pubkey, origin, fed_ts, fed_hlc,
@@ -708,24 +910,29 @@ async function writeToPg(
        authority, closed_ts,
        admission, admitted_at, admitted_by, state_changed_at, tags, parent_id,
        source_plan_slug, source_plan_item_ids, expected_cost_cents)
-    VALUES
-      (${opts.workspaceId}, ${vSlug}, ${row.issue_id}, ${row.kind}, ${row.title},
-       ${row.body}, ${row.state}, ${row.assignee}, ${row.assigned_at},
-       ${payloadText}::text::jsonb, ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc},
-       COALESCE((extract(epoch FROM ${row.created_at}::timestamptz) * 1000)::bigint,
+    SELECT
+       r.workspace_id, r.harness_slug, r.feature_id, r.item_kind, r.title,
+       r.summary, r.status, r.taken_by, r.taken_at,
+       r.payload, r.author_pubkey, r.origin, r.fed_ts, r.fed_hlc,
+       COALESCE((extract(epoch FROM r.created_at) * 1000)::bigint,
                 (extract(epoch FROM now()) * 1000)::bigint),
        (extract(epoch FROM now()) * 1000)::bigint,
        (extract(epoch FROM now()) * 1000)::bigint,
-       ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null}, ${row.terminal_reason ?? null},
-       ${row.authority ?? null}, ${row.closed_ts ?? null},
-       -- EI-21467654382027859 (mig 965). The tags column binds via ::text::jsonb like
-       -- payload above, but must bind SQL NULL (not the jsonb 'null' literal) when
-       -- absent: JSON.stringify(null) would store a jsonb null that reads as present.
-       ${row.admission ?? null}, ${row.admitted_at ?? null}, ${row.admitted_by ?? null},
-       ${row.state_changed_at ?? null},
-       ${row.tags === undefined || row.tags === null ? null : JSON.stringify(row.tags)}::text::jsonb,
-       ${row.parent_id ?? null}, ${row.source_plan_slug ?? null},
-       ${row.source_plan_item_ids ?? null}::text[], ${row.expected_cost_cents ?? null})
+       r.terminal_owner, r.terminal_completion_ref, r.terminal_reason,
+       r.authority, r.closed_ts,
+       r.admission, r.admitted_at, r.admitted_by, r.state_changed_at, r.tags,
+       r.parent_id, r.source_plan_slug, r.source_plan_item_ids, r.expected_cost_cents
+      -- The rows bind as ONE text parameter cast to jsonb (the postgres-js jsonb binding
+      -- gotcha). jsonb_to_recordset turns a JSON null into SQL NULL for every column.
+      FROM jsonb_to_recordset(${rowsJson}::text::jsonb) AS r(
+       workspace_id text, harness_slug text, feature_id text, item_kind text, title text,
+       summary text, status text, taken_by text, taken_at timestamptz,
+       payload jsonb, author_pubkey text, origin text, fed_ts bigint, fed_hlc text,
+       created_at timestamptz,
+       terminal_owner text, terminal_completion_ref text, terminal_reason text,
+       authority text, closed_ts bigint,
+       admission text, admitted_at timestamptz, admitted_by text, state_changed_at timestamptz, tags jsonb,
+       parent_id text, source_plan_slug text, source_plan_item_ids text[], expected_cost_cents bigint)
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       item_kind     = EXCLUDED.item_kind,
       title         = EXCLUDED.title,
@@ -896,37 +1103,6 @@ async function writeToPg(
         )
       )
     `;
-  } catch (error) {
-    // The physical-row ON CONFLICT above cannot arbitrate migration 865's
-    // separate partial unique index. A historical terminal row can therefore
-    // receive a stale remote PUT that tries to reopen it while a newer live row
-    // already owns the same watchdog identity. Retrying that deterministic
-    // 23505 forever pins every per-harness merge cursor on the same op.
-    //
-    // Migration 1157's keyless title-identity index has the same shape: a peer
-    // that had not yet replicated an open filing mints a duplicate with the same
-    // server-authored titleKey, and its replay here is a deterministic 23505.
-    // Migration 986's resource-governor identity is the third instance: two
-    // machines admit work under the same idempotencyKey.
-    //
-    // Recover only those named indexes and only after the complete incoming
-    // identity resolves to exactly one different row (non-terminal for 865 and
-    // 1157, whose predicates exclude terminal rows). That row is
-    // the already-coalesced logical item, so the duplicate physical-row PUT is
-    // a no-op. Any missing/malformed component, lookup failure, or other 23505
-    // rethrows the original error and remains visible to the merge retry path.
-    //
-    // P-002 step 2: inside the merge's batch transaction the 23505 aborted the
-    // transaction, so the lookups below would fail and the coalesce could never
-    // resolve. Rolling back to the op's savepoint is exact here: every statement
-    // this op issued before the INSERT above was a read.
-    await projectionStatementFailed();
-    const coalesced = await resolveIdentityConflict(error, sql, opts.workspaceId, vSlug, row.issue_id, row.payload);
-    if (!coalesced) throw error;
-    console.warn(coalesced);
-    // The op's own row was not written; another row already holds the logical item.
-    return false;
-  }
 }
 
 async function deleteFromPg(
@@ -1014,6 +1190,8 @@ async function storedOrderForKeys(
 }
 
 export function buildEngineerIssuesProjection(opts: EngineerIssuesProjectionOpts): TableProjection<EngineerIssueRow> {
+  // P-536: one writer per projection, so a lane batch keeps one group for it.
+  const groupWriter = issueGroupWriter(opts);
   return {
     tableTag: 'engineer-issues',
     // EI-117: CDC-captured table (mig 197 custom capture) — own-log ops are replays.
@@ -1023,7 +1201,7 @@ export function buildEngineerIssuesProjection(opts: EngineerIssuesProjectionOpts
     batchable: true,
     composeKey,
     decodeValue,
-    writeToPg: (row, provenance) => writeToPg(opts, row, provenance),
+    writeToPg: (row, provenance) => writeToPg(opts, row, provenance, groupWriter),
     deleteFromPg: (key, delTs, delHlc, provenance) => deleteFromPg(opts, key, delTs, delHlc, provenance),
     storedOrderForKeys: (keys) => storedOrderForKeys(opts, keys),
     // P-528: a QUALIFIED key names one physical row (the put refuses a row whose storage
@@ -1038,4 +1216,5 @@ export const _testing = {
   decodeValue,
   isEngineerIssueRow,
   RETIRED_LEGACY_TWIN_SQL,
+  asTimestamptzParam,
 };

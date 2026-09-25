@@ -229,6 +229,43 @@ export interface ProjectionBatchSession {
   flush(): Promise<void>;
   /** Roll this op back to its savepoint after a statement error the projection caught (see {@link projectionStatementFailed}). */
   recover(): Promise<void>;
+  /**
+   * P-536: hand `record` to the batch's pending group for `writer` instead of writing it
+   * now. True when the batch took it (see {@link projectionDefer}); absent or false means
+   * the op writes the record itself.
+   */
+  defer?(target: postgres.Sql, writer: ProjectionGroupWriter<unknown>, record: unknown): Promise<boolean>;
+}
+
+/**
+ * p2p-join-catchup-speed-2026-09-23 P-536 (D-034 #1): a projection's multi-row write.
+ *
+ * Measured on the Mac VM (w1-bench-vm.log): writing engineer-issues rows one statement
+ * pair at a time runs 855-1,320 rows/s on 4 lanes and costs node 0.5-1.0 ms of CPU per
+ * row; one collision SELECT and one multi-row INSERT per 50 rows run 3,240-3,780 rows/s at
+ * 0.05-0.2 ms. So a batch that runs groups ({@link projectionDefer}) collects an op's record
+ * instead of writing it, and writes every record it holds for one writer in one go before
+ * its transaction commits.
+ *
+ * Contract for implementers:
+ *  - `writeOne(record)` is exactly what the op would have written without the group: its
+ *    statements go through {@link projectionSql}, and a caught statement error calls
+ *    {@link projectionStatementFailed} first. It resolves `false` when it refused the record.
+ *  - `writeMany(sql, records)` leaves the rows `writeOne` would leave, applied in order,
+ *    using only `sql` (the batch transaction). The batch never passes two records for the
+ *    same {@link rowOf}, so each record's reads see the rows as they stood before the group.
+ *    It may throw on any failure: the batch rolls the group back and replays every record
+ *    through `writeOne`, one savepoint each.
+ *  - The record carries everything the write needs; the op has already returned when the
+ *    group is written, so nothing may be read from the op's context then.
+ */
+export interface ProjectionGroupWriter<R> {
+  /** Names the writer in logs. */
+  readonly name: string;
+  /** The physical row `record` writes. */
+  rowOf(record: R): string;
+  writeMany(sql: postgres.Sql, records: readonly R[]): Promise<void>;
+  writeOne(record: R): Promise<void | false>;
 }
 
 // Pinned: read-merge enters the store and every projection reads it, so a split
@@ -265,6 +302,22 @@ export async function projectionSql(target: postgres.Sql): Promise<postgres.Sql>
  */
 export async function projectionStatementFailed(): Promise<void> {
   await projectionBatchStore.getStore()?.recover();
+}
+
+/**
+ * P-536: offer `record` to the ambient batch's group for `writer`. True means the batch
+ * owns the write now: it lands with the batch's other records for `writer` before the
+ * batch commits, and the op must issue nothing more for it. False (no batch, a batch that
+ * runs no groups, or one that could not open) means the op writes it itself.
+ */
+export async function projectionDefer<R>(
+  target: postgres.Sql,
+  writer: ProjectionGroupWriter<R>,
+  record: R,
+): Promise<boolean> {
+  const session = projectionBatchStore.getStore();
+  if (!session?.defer) return false;
+  return session.defer(target, writer as ProjectionGroupWriter<unknown>, record);
 }
 
 /** The federation order stored on a PG row (`fed_hlc`, `fed_ts`), as the LWW guard reads it. */
