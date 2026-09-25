@@ -309,6 +309,7 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   const FILE = 'libs/generic/tooldef/src/strict-args.test.ts';
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
   const runCapturedTestProcessMock = vi.fn();
   const runVitestListMock = vi.fn();
 
@@ -383,6 +384,10 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   beforeEach(() => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // main() also writes warn-level diagnostics (the unscoped focused-run notice
+    // when PAPERCUSP_TEST_RUN_HARNESS is unset). Swallow them like log/error, or
+    // vitest-fail-on-console reds every case here whenever the router gains one.
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // These tests drive main() as a UNIT, but this suite is itself normally run
     // BY `npm run test:file`, i.e. under pc-heavy — which exports
     // PC_HEAVY_PREEMPT_READY_FILE and has ALREADY published that marker for the
@@ -398,6 +403,7 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     vi.unstubAllEnvs();
     logSpy.mockRestore();
     errSpy.mockRestore();
+    warnSpy.mockRestore();
     spawnSyncMock.mockReset();
     runCapturedTestProcessMock.mockReset();
     runVitestListMock.mockReset();
