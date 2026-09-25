@@ -143,6 +143,67 @@ function nodeLoaderProbe(home: string, name: string) {
     } };
 }
 
+/** Linux owned-fixture observation only. -s 0 suppresses syscall buffer contents;
+ * -yy still resolves descriptor labels at the syscall. The file-size limit also
+ * applies to the tracee, so this instrumentation must never measure production
+ * latency or stand in for an uninstrumented paired arm. */
+function syscallFileProbe(home: string, name: string) {
+  const tracePath = join(home, `${name}-syscalls.log`), maxBytes = 8 * 1024 * 1024;
+  writeFileSync(tracePath, '', { mode: 0o600 });
+  const parse = (text: string) => {
+    if (!text.endsWith('\n') || Buffer.byteLength(text) >= maxBytes) throw new Error('incomplete owned syscall trace');
+    const pending = new Map<number, string>(), exited = new Set<number>(), seen = new Set<number>();
+    const accesses: Array<{ pid: number; syscall: string; filePath: string; result: string }> = [];
+    let unavailableLabels = 0, failedCalls = 0;
+    for (const line of text.trimEnd().split('\n')) {
+      const match = line.match(/^\s*(\d+)\s+(.+)$/);
+      if (!match) throw new Error('unrecognized owned syscall trace row');
+      const pid = Number(match[1]); let call = match[2]; seen.add(pid);
+      if (exited.has(pid)) throw new Error('owned syscall row after exit');
+      if (call === '+++ exited with 0 +++') { exited.add(pid); continue; }
+      if (call.startsWith('--- ')) continue; // signals carry no read-completeness claim
+      if (call.endsWith('<unfinished ...>')) {
+        if (pending.has(pid)) throw new Error('overlapping owned syscall trace row');
+        pending.set(pid, call.slice(0, -'<unfinished ...>'.length)); continue;
+      }
+      const resumed = call.match(/^<\.\.\. (\w+) resumed>(.*)$/);
+      if (resumed) {
+        const prefix = pending.get(pid);
+        if (!prefix?.startsWith(`${resumed[1]}(`)) throw new Error('unmatched owned syscall continuation');
+        call = prefix + resumed[2]; pending.delete(pid);
+      }
+      const result = call.match(/^(\w+)\((.*)\)\s+=\s+(-?\d+|0x[\da-f]+)(?:<.*>)?(?:\s.*)?$/);
+      if (!result) throw new Error(`incomplete owned syscall result (${call.match(/^(\w+)\(/)?.[1] ?? 'lifecycle'})`);
+      const [, syscall, args, value] = result;
+      if (Number(value) < 0) { failedCalls++; continue; }
+      if (!['read', 'pread64', 'readv', 'preadv', 'preadv2', 'mmap'].includes(syscall)) continue;
+      if (syscall !== 'mmap' && Number(value) === 0) continue;
+      const descriptor = syscall === 'mmap' ? args.match(/, \d+<([^>]+)>, (?:0|0x[\da-f]+)$/)
+        : args.match(/^\d+<([^>]+)>,/);
+      // Do not guess escaped/truncated/deleted descriptor paths or non-files.
+      // These remain explicit residue; file paths are labels, not inode/byte proof.
+      const path = descriptor?.[1];
+      if (!path?.startsWith('/') || /[\\<>]| \(deleted\)$/.test(path)) { unavailableLabels++; continue; }
+      accesses.push({ pid, syscall, filePath: path, result: value });
+    }
+    if (pending.size || !seen.size || [...seen].some(pid => !exited.has(pid))) throw new Error('incomplete owned syscall lifecycle');
+    return { schemaVersion: 'owned-syscall-files-v1', evidenceKind: 'observation-only',
+      traceSha256: createHash('sha256').update(text).digest('hex'), traceBytes: Buffer.byteLength(text),
+      tracedPids: [...seen].sort((a, b) => a - b), accesses, unavailableLabels, failedCalls,
+      unresolved: ['descriptor labels do not authenticate bytes or inode identity',
+        'failed opens, non-file descriptors and escaped/deleted paths are not resolved',
+        'unselected syscalls, unexercised branches, external writers and production equivalence remain unproven'] };
+  };
+  return { tracePath, parse,
+    launch: (binary: string, args: string[]) => ({ binary: '/usr/bin/prlimit', args: [`--fsize=${maxBytes}`, '--',
+      '/usr/bin/strace', '-f', '-q', '-s', '0', '-yy', '-o', tracePath,
+      '-e', 'trace=openat,openat2,read,pread64,readv,preadv,preadv2,mmap,close', '--', binary, ...args] }),
+    read: () => {
+      if (lstatSync(tracePath).size >= maxBytes) throw new Error('owned syscall trace bound exceeded');
+      return parse(readFileSync(tracePath, 'utf8'));
+    } };
+}
+
 async function waitForMcpStartup(events: RpcFrame[], threadId: string, name: string) {
   const terminal = () => events.find(frame => frame.method === 'mcpServer/startupStatus/updated' &&
     (frame.params as RpcFrame).threadId === threadId && (frame.params as RpcFrame).name === name &&
@@ -547,7 +608,77 @@ describe('owned Node loader observations', () => {
   });
 });
 
+it('rejects incomplete syscall evidence and preserves descriptor parsing residue', () => {
+  const home = mkdtempSync(join(tmpdir(), 'carry-syscall-parser-')); homes.push(home);
+  const trace = syscallFileProbe(home, 'parse');
+  const complete = '1 read(3</input>, ""..., 1) = 1\n1 +++ exited with 0 +++\n';
+  expect(() => trace.parse(complete.trimEnd())).toThrow('incomplete owned syscall trace');
+  expect(() => trace.parse(complete.replace('1 +++ exited with 0 +++\n', ''))).toThrow('incomplete owned syscall lifecycle');
+  expect(() => trace.parse('1 read(3</input>,  <unfinished ...>\n1 +++ exited with 0 +++\n'))
+    .toThrow('incomplete owned syscall lifecycle');
+  expect(() => trace.parse('1 <... read resumed>"", 1) = 1\n1 +++ exited with 0 +++\n'))
+    .toThrow('unmatched owned syscall continuation');
+  expect(() => trace.parse('1 read(3</input>, "", 1) = 1\n1 +++ killed by SIGXFSZ +++\n'))
+    .toThrow('incomplete owned syscall result');
+  expect(() => trace.parse(complete + '1 close(3</input>) = 0\n')).toThrow('owned syscall row after exit');
+  expect(() => trace.parse('x'.repeat(8 * 1024 * 1024) + '\n')).toThrow('incomplete owned syscall trace');
+  const resumed = trace.parse('1 read(3</input>,  <unfinished ...>\n1 <... read resumed>""..., 1) = 1\n1 +++ exited with 0 +++\n');
+  expect(resumed.accesses).toEqual([{ pid: 1, syscall: 'read', filePath: '/input', result: '1' }]);
+  expect(trace.parse('1 openat(AT_FDCWD, ""..., O_RDONLY) = 3</input>\n1 +++ exited with 0 +++\n').accesses).toEqual([]);
+  const residue = trace.parse('1 openat(AT_FDCWD, ""..., O_RDONLY) = 3</dev/null<char 1:3>>\n' +
+    '1 read(3</dev/null<char 1:3>>, ""..., 1) = 1\n1 read(3</input (deleted)>, ""..., 1) = 1\n' +
+    '1 read(3</input>, "", 1) = -1 EIO (Input/output error)\n1 +++ exited with 0 +++\n');
+  expect(residue).toMatchObject({ accesses: [], unavailableLabels: 2, failedCalls: 1 });
+});
+
 describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('installed native protocol startup', () => {
+  it('observes owned file reads without recording buffers', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'carry-syscalls-')); homes.push(home);
+    const filePath = join(home, 'input.bin');
+    writeFileSync(filePath, NEVER_EMIT_MARKER.repeat(100));
+    const trace = syscallFileProbe(home, 'read');
+    const launch = trace.launch(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      const fd = fs.openSync('input.bin', 'r');
+      const buffer = Buffer.alloc(32);
+      fs.readSync(fd, buffer, 0, buffer.length, 0);
+      fs.readvSync(fd, [buffer], 0);
+      fs.closeSync(fd);
+      require('node:readline').createInterface({ input: process.stdin }).on('line', line =>
+        process.stdout.write(JSON.stringify({ id: JSON.parse(line).id, result: {} }) + '\\n'));
+    `]);
+    const p = await peer(launch.binary, launch.args, {}, undefined, undefined, undefined, home);
+    await p.request({ method: 'ready' }); await p.close();
+    const raw = readFileSync(trace.tracePath, 'utf8'), observation = trace.read();
+    expect(raw.includes(NEVER_EMIT_MARKER), 'syscall trace must not record private buffers').toBe(false);
+    expect(observation.accesses.filter(row => row.filePath === filePath).map(row => row.syscall))
+      .toEqual(expect.arrayContaining(['pread64', 'preadv']));
+    expect(observation.accesses.some(row => row.syscall === 'mmap')).toBe(true);
+  }, 30_000);
+
+  it('observes installed native startup data reads through process exit without provider inference', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'carry-native-syscalls-')); homes.push(home);
+    const trace = syscallFileProbe(home, 'native');
+    const launch = trace.launch('codex', ['app-server', '-c', 'features.shell_snapshot=false', '-c', 'features.shell_tool=false',
+      '-c', 'features.plugins=false', '-c', 'features.remote_plugin=false']);
+    const p = await peer(launch.binary, launch.args, {}, undefined,
+      'web_search = "disabled"\n', undefined, home);
+    await p.request({ method: 'initialize', params: { clientInfo: { name: 'unpaid_file_observation', version: '1' } } });
+    p.send({ method: 'initialized', params: {} });
+    await p.close();
+    const observation = trace.read();
+    expect(observation.accesses.some(row => row.syscall === 'read' && row.filePath === join(home, 'config.toml'))).toBe(true);
+    expect(new Set(observation.accesses.filter(row => row.filePath === join(home, 'config.toml')).map(row => row.pid)).size)
+      .toBeGreaterThan(0);
+    expect(observation.evidenceKind).toBe('observation-only');
+    expect(observation.unresolved.length).toBeGreaterThan(0);
+    console.info('CARRY_NATIVE_SYSCALL_OBSERVATION', JSON.stringify({ traceSha256: observation.traceSha256,
+      traceBytes: observation.traceBytes, tracedPids: observation.tracedPids.length,
+      fileReadCalls: observation.accesses.filter(row => row.syscall !== 'mmap').length,
+      mappedFileCalls: observation.accesses.filter(row => row.syscall === 'mmap').length,
+      unavailableLabels: observation.unavailableLabels, failedCalls: observation.failedCalls }));
+  }, 30_000);
+
   it('observes the installed native runtime before opening a thread without provider inference', async () => {
     // This fixture observes only the idle core runtime. Freeze its launch
     // without optional shell/plugin startup work; the default native startup
