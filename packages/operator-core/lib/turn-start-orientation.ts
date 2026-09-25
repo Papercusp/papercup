@@ -4496,6 +4496,11 @@ export function defaultOrientationDeps(): OrientationDeps {
 
 export const TURN_START_IDENTITY_DELIVERY_KEY = 'identityComponentDeliveryV1';
 
+type SuAssignmentPresence = Pick<
+  import('./agent-tools/coordination/presence').PresenceRecord,
+  'ownerId' | 'workspaceId' | 'intent' | 'currentPlanSlug' | 'stale'
+>;
+
 /** Bind only values the existing turn-start producers already computed. This
  * candidate rides the existing proof cursor; the next confirmed token promotes
  * it with the same ACK that proves the block was printed. */
@@ -4508,8 +4513,11 @@ export async function bindTurnStartIdentityOutputs(input: {
   contextTokens: number | null;
   block: string;
   deliveryToken: string | null;
-}, binder?: typeof import('./agent-identities/source').bindSelectedIdentityOutputs) {
+}, binder?: typeof import('./agent-identities/source').bindSelectedIdentityOutputs,
+  assignmentReader?: (ownerId: string) => Promise<SuAssignmentPresence | null>) {
   const bind = binder ?? (await import('./agent-identities/source')).bindSelectedIdentityOutputs;
+  const readAssignment = assignmentReader ?? (async (ownerId: string) =>
+    (await import('./agent-tools/coordination/presence')).getPresence(ownerId));
   const observedAt = new Date().toISOString();
   const failure = (identityId: string, errorRef: string, error: unknown) => ({
     identityId, status: 'unavailable', errorRef,
@@ -4521,6 +4529,28 @@ export async function bindTurnStartIdentityOutputs(input: {
     scope: { workspace: input.workspaceId, ownerId: input.ownerId, sink: 'turn-start' },
     observedAt,
   }).catch((error) => failure('su.practice', 'turn-start:practice-binding-failed', error));
+  const rootPromise = input.state.modes === null
+    ? Promise.resolve({ identityId: 'su', status: 'unavailable',
+        errorRef: 'turn-start:mode-state-unavailable' })
+    : Promise.resolve().then(async () => {
+        const presence = await readAssignment(input.ownerId);
+        if (!presence || presence.stale || presence.ownerId !== input.ownerId ||
+          presence.workspaceId !== input.workspaceId) {
+          throw new Error('current assignment presence is absent, stale or mismatched');
+        }
+        return bind({
+          identityId: 'su', sourceTier: 'builtin',
+          outputs: [
+            { contributionId: 'current-mode-state', value: input.state.modes },
+            { contributionId: 'current-assignment', value: {
+              ownerId: presence.ownerId, intent: presence.intent,
+              currentPlanSlug: presence.currentPlanSlug,
+            } },
+          ],
+          scope: { workspace: input.workspaceId, ownerId: input.ownerId, sink: 'turn-start' },
+          observedAt,
+        });
+      }).catch((error) => failure('su', 'turn-start:root-binding-failed', error));
   const goalMode = input.state.modes?.some((mode) => mode.mode === 'goal');
   const obligation = deliveredObligationProjection(
     input.state, input.committed, input.epoch, input.block, input.contextTokens,
@@ -4545,9 +4575,9 @@ export async function bindTurnStartIdentityOutputs(input: {
           observedAt,
         }).catch((error) => failure('su.mode-goal', 'turn-start:goal-binding-failed', error))
       : Promise.resolve(null);
-  const [practice, goal] = await Promise.all([practicePromise, goalPromise]);
+  const [root, practice, goal] = await Promise.all([rootPromise, practicePromise, goalPromise]);
   return { version: 1, offeredAt: observedAt, token: input.deliveryToken,
-    proofMode: input.deliveryToken ? 'token' : 'arrival', practice, goal };
+    proofMode: input.deliveryToken ? 'token' : 'arrival', root, practice, goal };
 }
 
 /** What one turn-start orientation call delivered. */
@@ -4591,6 +4621,8 @@ export async function buildTurnStartOrientationBlock(input: {
   progressReceiptDeps?: GoalPlacementTurnReceiptDeps;
   /** Test seam only; production uses the selected identity compiler. */
   identityBinder?: typeof import('./agent-identities/source').bindSelectedIdentityOutputs;
+  /** Test seam only; production reads the caller's authoritative presence row. */
+  identityAssignmentReader?: (ownerId: string) => Promise<SuAssignmentPresence | null>;
 }): Promise<TurnStartOrientationDelivery> {
   try {
     const { ownerId, workspaceId } = input;
@@ -4708,7 +4740,7 @@ export async function buildTurnStartOrientationBlock(input: {
           bindTurnStartIdentityOutputs({
             ownerId, workspaceId, state, committed: ack?.committed ?? null, epoch, contextTokens,
             block, deliveryToken: deliveryToken ?? null,
-          }, input.identityBinder),
+          }, input.identityBinder, input.identityAssignmentReader),
           { fallback: null, timeoutMs: 5_000, label: 'turn-start:identity-bind-background' },
         );
         const unavailable = (part: unknown) => !!part && typeof part === 'object' &&
@@ -4716,8 +4748,10 @@ export async function buildTurnStartOrientationBlock(input: {
         const receipt = measured.value
           ? { ...measured.value, token: identityToken, deliveryToken: deliveryToken ?? null,
               outputRevision: pendingIdentity.outputRevision,
-              status: unavailable(measured.value.practice) ? 'unavailable'
-                : unavailable(measured.value.goal) ? 'partial' : 'bound' }
+              status: unavailable(measured.value.practice) && unavailable(measured.value.root)
+                ? 'unavailable'
+                : unavailable(measured.value.root) || unavailable(measured.value.practice) ||
+                    unavailable(measured.value.goal) ? 'partial' : 'bound' }
           : { ...pendingIdentity, status: 'unavailable', reason: measured.reason ?? 'binding-unavailable' };
         const { annotateReadCursorByToken } = await import('./agent-tools/coordination/read-cursors');
         await annotateReadCursorByToken(
