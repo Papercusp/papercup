@@ -78,6 +78,26 @@ describe('coord:orient component receipt', () => {
     });
   });
 
+  it('compiles the root SU orient receipt with the actual built-in identity source', async () => {
+    const { bindSelectedIdentityOutputs } = await import('../../../agent-identities/source');
+    const result = { ok: true, self: { ownerId: 'su-1' } };
+    const metadata = vi.fn();
+    expect(await bindOrientOutputResult(result,
+      { ownerId: 'su-1', workspaceId: 'ws-1', harness: 'papercusp' }, false,
+      metadata, bindSelectedIdentityOutputs, [{ mode: 'auto' }],
+      async () => ({ ownerId: 'su-1', workspaceId: 'ws-1',
+        intent: 'WI-9 current task', currentPlanSlug: 'plan-1', stale: false }))).toBe(result);
+    expect(metadata.mock.calls[0]![0].rootIdentityContribution).toMatchObject({
+      identityId: 'su', sourceRevision: expect.any(String),
+      contributions: expect.arrayContaining([
+        expect.objectContaining({ contributionId: 'current-mode-state', status: 'bound',
+          producerRef: 'modes/store:agent_modes' }),
+        expect.objectContaining({ contributionId: 'current-assignment', status: 'bound',
+          producerRef: 'coord:presence' }),
+      ]),
+    });
+  });
+
   it('keeps the same assembled result and merges the delta marker into one metadata write', async () => {
     const result = { ok: true, inbox: { summary: { total: 2 } } };
     const metadata = vi.fn();
