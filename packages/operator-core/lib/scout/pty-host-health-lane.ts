@@ -43,6 +43,9 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'wake-turn-deferred-for-pending-respawn' ||
     kind === 'turn-deferred-for-owner-input' ||
     kind === 'duplicate-delivery-id' ||
+    // The first model turn began while its retry was queued; suppressing that
+    // second kickoff is successful duplicate prevention, not a host failure.
+    kind === 'launch-kickoff-model-turn-retry-skipped' ||
     kind === 'queued-turn-folded' ||
     kind === 'headless-codex-model-choice-kept-existing' ||
     kind === 'headless-codex-model-choice-select-existing' ||

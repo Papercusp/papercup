@@ -97,6 +97,18 @@ describe('PTY host event classification for Blender', () => {
     expect(classifyPtyHostEvent('future-unrecognized-event')).toBe('unclassified');
   });
 
+  it('omits a safely suppressed kickoff retry while preserving a failed retry', () => {
+    const patterns = buildPtyHostHealthPatterns([
+      row('launch-kickoff-model-turn-retry-skipped', 20),
+      row('launch-kickoff-model-turn-retry-error', 1, '43'),
+    ]);
+    expect(classifyPtyHostEvent('launch-kickoff-model-turn-retry-skipped')).toBe('routine');
+    expect(patterns.map((pattern) => pattern.ref)).toEqual([
+      'pty-host:kind:launch-kickoff-model-turn-retry-error',
+    ]);
+    expect(patterns[0]?.detail).toContain('Failure signal');
+  });
+
   it('classifies every kind observed in the production 24-hour host-event census', () => {
     const observed = [
       'wake-turn-deferred-for-pending-respawn', 'turn-delivered', 'respawn-carry-delivered',
