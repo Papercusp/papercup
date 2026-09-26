@@ -19,7 +19,8 @@
  * way back (undici already decoded the body) and forces `accept-encoding: identity` upstream.
  */
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { processMonotonicClock } from '../process-monotonic-clock';
 import { normalizeModelId } from '@papercusp/model-pricing';
 import { resolveCodexModel } from '../model-context-budget.mjs';
 import { readFileSync } from 'node:fs';
@@ -1006,7 +1007,46 @@ const STRIP_REQUEST = new Set([
 ]);
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
 
+/** Trusted controller input for one actual, fully shaped Codex HTTP attempt.
+ * Account labels and client metadata alone are not serving-scope authentication.
+ * The controller must verify the bound credential/scope, source and native bounds,
+ * then atomically reserve the complete remaining D017 budget before returning.
+ * Body text is private validation input: never copy it into telemetry or receipts.
+ */
+export interface GatewayCarryTrialAttempt {
+  readonly attemptId: string;
+  readonly manifestSha256: string;
+  readonly armId: string;
+  readonly transport: 'oauth-http' | 'bearer-http';
+  readonly accountId: string;
+  readonly credentialSha256: string;
+  readonly target: string;
+  readonly body: string;
+  readonly bodySha256: string;
+  readonly clockId: string;
+  readonly signal: AbortSignal;
+}
+
+export interface GatewayCarryTrialBinding {
+  readonly manifestSha256: string;
+  readonly armId: string;
+  /** SHA256 of a controller-issued high-entropy Bearer token for THIS arm.
+   * This is a dedicated gateway binding, not a caller-selected owner/arm header. */
+  readonly requestTokenSha256: string;
+  readonly authorizeAttempt: (attempt: GatewayCarryTrialAttempt) => Promise<{
+    readonly attemptId: string;
+    readonly reservationRef: string;
+    readonly clockId: string;
+    readonly validUntilMonotonicMs: number;
+  } | null>;
+}
+
 export interface GatewayDeps {
+  /** Dedicated bounded-trial gateway only. No production grant issuer is implied.
+   * When bound, every request is authenticated and only Codex HTTP Responses
+   * inference is allowed. Reservations are never implicitly refunded on failure.
+   * The controller owns durable CAS, charge settlement and R4/R5 approval checks. */
+  carryTrial?: GatewayCarryTrialBinding;
   /** Server-side accepted-operation policy read at a model substitution boundary.
    * A failed read is an explicit unavailable verdict, never permission to downgrade. */
   readAcceptedOperationModelPolicy?: (
@@ -2002,6 +2042,54 @@ export function accumulateGatewayRouteUsage(
 }
 
 export function createInferenceGateway(deps: GatewayDeps) {
+  // Snapshot the binding so a mutable dependency cannot change an arm or remove
+  // its enforcement while the request is queued or waiting on authorization.
+  const carryTrial = deps.carryTrial ? Object.freeze({ ...deps.carryTrial }) : null;
+  if (carryTrial && (!/^[a-f0-9]{64}$/.test(carryTrial.manifestSha256) ||
+    !/^[a-f0-9]{64}$/.test(carryTrial.requestTokenSha256) || !carryTrial.armId.trim() ||
+    typeof carryTrial.authorizeAttempt !== 'function')) {
+    throw new Error('inference-gateway: invalid carry trial binding');
+  }
+  const carryTrialRequests = new WeakSet<http.IncomingMessage>();
+  const trialRefusal = () => new GatewayRequestKernelError('carry trial attempt not authorized', {
+    code: 'invalid-route', outcome: 'gateway-error', status: 403, retryable: false,
+  });
+  async function authorizeCarryTrialAttempt(
+    req: http.IncomingMessage,
+    transport: GatewayCarryTrialAttempt['transport'],
+    accountId: string | undefined,
+    target: string,
+    init: { headers: Record<string, string>; body?: Uint8Array | null; signal: AbortSignal },
+  ): Promise<() => void> {
+    if (!carryTrial) return () => {};
+    if (!carryTrialRequests.has(req) || !accountId || !init.body || init.signal.aborted) throw trialRefusal();
+    const authorization = new Headers(init.headers).get('authorization');
+    if (!authorization) throw trialRefusal();
+    const body = Buffer.from(init.body).toString('utf8');
+    const attemptId = randomUUID();
+    let reservation: Awaited<ReturnType<GatewayCarryTrialBinding['authorizeAttempt']>>;
+    try {
+      reservation = await carryTrial.authorizeAttempt(Object.freeze({
+        attemptId, manifestSha256: carryTrial.manifestSha256, armId: carryTrial.armId,
+        transport, accountId, target, body,
+        bodySha256: createHash('sha256').update(init.body).digest('hex'),
+        credentialSha256: createHash('sha256').update(authorization).digest('hex'),
+        clockId: processMonotonicClock.id, signal: init.signal,
+      }));
+    } catch { throw trialRefusal(); } // Do not expose private controller errors.
+    // Copy the receipt: mutation after return must not extend the send window.
+    const receipt = reservation ? { ...reservation } : null;
+    return () => {
+      // Last synchronous check INSIDE the observed fetch callback, after any
+      // authorization wait. Post-send headers-write evidence still judges the
+      // actual D017 band; this is not proof of remote receipt or invoice cost.
+      if (init.signal.aborted || !receipt || receipt.attemptId !== attemptId ||
+        typeof receipt.reservationRef !== 'string' || !receipt.reservationRef.trim() ||
+        receipt.clockId !== processMonotonicClock.id ||
+        !Number.isFinite(receipt.validUntilMonotonicMs) ||
+        processMonotonicClock.now() >= receipt.validUntilMonotonicMs) throw trialRefusal();
+    };
+  }
   const processStartedAt = Date.now();
   // EI-22038414992051268: the FALLBACK admission idempotency keys below are derived from
   // process-local sequence counters (`legacyAdmissionRequestSeq`, `gatewayAdmissionRequestSeq`,
@@ -7024,6 +7112,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         );
         return;
       case 'serveCodexCliBridge':
+        if (carryTrial) {
+          sendJson(execution.res, 403, { error: { message: 'carry trial requires observed HTTP attempts' } },
+            { 'x-should-retry': 'false' });
+          return;
+        }
         if (execution.acceptedOperation) {
           sendJson(execution.res, 503, { type: 'error',
             error: { type: 'api_error', message: 'accepted Codex operation requires provider-authored model attestation' },
@@ -7711,7 +7804,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
           const fetchInit: FetchInit = { method: init.method, headers: init.headers, signal: init.signal };
           if (init.body) fetchInit.body = init.body as unknown as BodyInit;
           if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-          const send = () => doFetch(target, fetchInit as RequestInit);
+          const check = await authorizeCarryTrialAttempt(req, 'oauth-http', init.diagnosticAccountId, target, init);
+          if (carryTrial) fetchInit.redirect = 'error'; // A redirect would be another, unreserved send.
+          const send = () => { check(); return doFetch(target, fetchInit as RequestInit); };
           const upstream = stageSpan
             ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
             : await send();
@@ -8218,7 +8313,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             res,
             failure.status ?? 503,
             { type: 'error', error: { type: 'api_error', message: failure.message }, gateway: true },
-            { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+            { [ROUTED_ACCOUNT_HEADER]: lastAccountId, ...(failure.status === 403 ? { 'x-should-retry': 'false' } : {}) },
           );
           return;
         }
@@ -8731,7 +8826,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // rather than the per-attempt re-copy the widening would otherwise force.
         if (init.body) fetchInit.body = init.body as unknown as BodyInit;
         if (init.dispatcher) fetchInit.dispatcher = init.dispatcher as UndiciDispatcher;
-        const send = () => doFetch(target, fetchInit as RequestInit);
+        const check = await authorizeCarryTrialAttempt(req, 'bearer-http', init.diagnosticAccountId, target, init);
+        if (carryTrial) fetchInit.redirect = 'error';
+        const send = () => { check(); return doFetch(target, fetchInit as RequestInit); };
         const upstream = stageSpan
           ? await stageSpan.observeUpstreamFetch(target, init.method, init.diagnosticAccountId, send)
           : await send();
@@ -9124,7 +9221,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             res,
             failure.status ?? 503,
             { type: 'error', error: { type: 'api_error', message: failure.message }, gateway: true },
-            { [ROUTED_ACCOUNT_HEADER]: lastAccountId },
+            { [ROUTED_ACCOUNT_HEADER]: lastAccountId, ...(failure.status === 403 ? { 'x-should-retry': 'false' } : {}) },
           );
           return;
         }
@@ -9466,6 +9563,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const dispatchRequest = (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = req.url ?? '/';
     const requestPath = url.split('?', 1)[0] || '/';
+    if (carryTrial) {
+      const token = /^Bearer ([^\s]+)$/.exec(requestHeader(req, 'authorization') ?? '')?.[1];
+      const authenticated = token && timingSafeEqual(createHash('sha256').update(token).digest(),
+        Buffer.from(carryTrial.requestTokenSha256, 'hex'));
+      const supported = (req.method === 'POST' && requestPath === '/v1/responses') ||
+        (req.method === 'GET' && requestPath === '/v1/models');
+      if (!authenticated || !supported) {
+        req.resume();
+        sendJson(res, 403, { error: { message: 'carry trial request not authorized' } },
+          { 'x-should-retry': 'false' });
+        return;
+      }
+      carryTrialRequests.add(req);
+    }
     if (req.method === 'GET' && requestPath === GATEWAY_FLAG_ATTEST_PATH) {
       const requestUrl = new URL(url, 'http://127.0.0.1');
       const key = requestUrl.searchParams.get('key')?.trim() ?? '';
