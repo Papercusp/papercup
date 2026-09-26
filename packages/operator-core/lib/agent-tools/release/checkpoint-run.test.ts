@@ -793,7 +793,15 @@ describe('release:checkpoint-run', () => {
     }));
 
     const { default: tool } = await import('./checkpoint-run');
-    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+    const metadata = vi.fn();
+    const b = parse((await tool.handler({}, MAKE_CTX('operator', { metadata })) as never));
+
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      gateActionReceipt: expect.objectContaining({
+        action: 'checkpoint-run',
+        effect: expect.objectContaining({ status: 'not-launched', reason: 'already_running' }),
+      }),
+    }));
 
     expect(launchSpy).toHaveBeenCalledWith(
       expect.objectContaining({

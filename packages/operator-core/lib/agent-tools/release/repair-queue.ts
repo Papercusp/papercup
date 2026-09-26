@@ -733,15 +733,20 @@ export default defineTool({
       // The action receipt remains explicitly unknown if identity cannot be resolved.
     }
     let ownership: Awaited<ReturnType<typeof readGateOwnership>> | null = null;
+    let ownershipObservedAt: string | null = null;
     try {
       ownership = await readGateOwnership({ harness: inspected.target.installSlug });
+      ownershipObservedAt = new Date().toISOString();
     } catch {
       // A failed observation cannot be promoted to ownership proof.
     }
     const gateOwnershipReceipt = ownership?.claimState === 'held' && ownership.workItem
-      ? { certainty: 'prelaunch-observation' as const, workItem: ownership.workItem,
-          holder: ownership.takenBy, assessment: ownership.assessment }
-      : { certainty: 'unknown' as const, workItem: ownership?.workItem ?? null,
+      ? { certainty: 'prelaunch-observation' as const, observedAt: ownershipObservedAt,
+          conditionKey: ownership.eventKey, workItem: ownership.workItem,
+          holder: ownership.takenBy, takenAt: ownership.takenAt,
+          claimState: ownership.claimState, assessment: ownership.assessment }
+      : { certainty: 'unknown' as const, observedAt: ownershipObservedAt,
+          conditionKey: ownership?.eventKey ?? null, workItem: ownership?.workItem ?? null,
           holder: ownership?.takenBy ?? null, reason: ownership?.unknown?.code ?? 'no-held-condition' };
     const stampActionEffect = (effect: Record<string, unknown>) => ctx.metadata?.({
       gateActionReceipt: {

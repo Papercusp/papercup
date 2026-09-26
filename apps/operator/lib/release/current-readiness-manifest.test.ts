@@ -1,13 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import type { ReleaseProfileVerdict } from '@papercusp/release-profile';
-import {
+import type { ReadinessCapabilityInput } from './current-readiness-manifest';
+
+// Test-only copy-out seam for scripts/mutation-probe.sh. The assertions still
+// execute the production adapter, including its real lineage and peer checks.
+const {
   appendReadinessHistory,
   buildCurrentReadinessManifest,
   deriveReadinessDependencyGraph,
   renderReadinessTable,
   serializeCurrentReadinessManifest,
-  type ReadinessCapabilityInput,
-} from './current-readiness-manifest';
+} = await import(
+  process.env.PROBE_CURRENT_READINESS_MANIFEST ?? './current-readiness-manifest'
+) as typeof import('./current-readiness-manifest');
 
 const NOW = '2026-09-05T03:00:00.000Z';
 

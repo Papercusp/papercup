@@ -57,6 +57,9 @@ const taskEnrolment = vi.hoisted(() => ({
   begin: vi.fn(() => ({ taskId: 'task1234', confined: false, scopeUnit: null })),
   complete: vi.fn(),
 }));
+const taskControl = vi.hoisted(() => ({
+  kill: vi.fn(async () => ({ ok: true, taskId: 'task1234', action: 'kill' })),
+}));
 vi.mock('node:child_process', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   spawn: (...a: unknown[]) => spawnMock(...a),
@@ -65,6 +68,7 @@ vi.mock('./task-manager/enroll-sync', () => ({
   beginSyncEnrolment: taskEnrolment.begin,
   completeSyncEnrolment: taskEnrolment.complete,
 }));
+vi.mock('./task-manager/control', () => ({ killTask: taskControl.kill }));
 
 /** A fake detached terminal child: emit 'exit' to simulate an early death. */
 function fakeChild(pid = 4242) {
@@ -495,12 +499,49 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     spawnMock.mockReset();
     taskEnrolment.begin.mockClear();
     taskEnrolment.complete.mockClear();
+    taskControl.kill.mockClear();
   });
 
   // No-systemd-run fallback path — pin hasSystemdRun:false so these don't flake
   // with whichever host/CI runner actually runs the suite (same class of bug
   // findLinuxTerminal's _resetTerminalCacheForTests exists for).
   const noSystemdRun = { spawnCommandProbes: { hasSystemdRun: () => false } };
+
+  it('cleans an idle task when the host proves the kickoff was never submitted', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7790));
+    const r = await spawnHeadless({
+      envelope,
+      label: 'unsubmitted',
+      kickoffProof: true,
+      kickoffProofProbes: {
+        windowMs: 0,
+        readReceipt: (_path, token) => JSON.stringify({
+          token,
+          persisted: false,
+          nativeRef: null,
+          reason: 'kickoff-not-submitted:kickoff-marker-echo-unconfirmed',
+        }),
+      },
+      bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+      ...noSystemdRun,
+    });
+    expect(taskControl.kill).toHaveBeenCalledWith('task1234');
+    expect(r).toMatchObject({ status: 'error', code: 502 });
+  });
+
+  it('keeps an uncertain kickoff available for recovery', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7791));
+    const r = await spawnHeadless({
+      envelope,
+      label: 'uncertain',
+      kickoffProof: true,
+      kickoffProofProbes: { windowMs: 0, readReceipt: () => '' },
+      bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+      ...noSystemdRun,
+    });
+    expect(taskControl.kill).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ status: 'ok', kickoffProof: { persisted: false, reason: 'kickoff-proof-timeout' } });
+  });
 
   it('writes the envelope MCP config into the headless cwd when opted in', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'papercup-headless-mcp-'));

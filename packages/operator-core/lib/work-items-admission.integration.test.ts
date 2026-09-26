@@ -52,6 +52,21 @@ const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 const HFC_FED_HLC_PATCH = `
   ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS fed_hlc text`;
 
+// Claim admission now checks whether the claimant is an active blueprint
+// operation worker. These ordinary test claimants have no adv_sessions row;
+// keep the real lookup available so it returns `none` rather than failing
+// because this focused database omitted the session table entirely.
+const CLAIM_SESSION_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL,
+    coord_owner_id text,
+    role text,
+    started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    ended_at timestamptz,
+    ended_by text
+  )`;
+
 // P-008: the admission records the verified-author resolver reads. Minimal shape
 // mirroring harness_shared.pot_members (migration 185): a member's bound devices
 // (device_attestations jsonb array of {device_pubkey,...}) + the revoked blocklist
@@ -126,6 +141,7 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(HFC_FED_HLC_PATCH);
+  await db.sql.unsafe(CLAIM_SESSION_DDL);
   await db.sql.unsafe(REPLICAS_DDL);
   await db.sql.unsafe(ISSUES_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps

@@ -33,7 +33,6 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
-import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { readDeployStatus, launchDetachedDeploy, integrationRoot, type DeployStatus } from '../../release-deploy-launch';
@@ -45,6 +44,7 @@ import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-tim
 import { statePlaneForDoor } from '../state-plane-door';
 import { deployTriggerRefusalReason } from '../../release/deploy-trigger-refusal';
 import { readGateOwnership, shouldStandDownForLivePeer, type CellOwnership } from '../../coord/gate-ownership';
+import { executeWithGateActionReceipt } from '../../release/gate-action-receipt';
 import {
   projectGateWaitOperationalBrief,
   renderGateWaitFactLines,
@@ -149,23 +149,6 @@ function harnessAssertionRefusal(op: 'status' | 'trigger' | 'force' | 'gate-hist
  */
 export const RELEASE_STATUS_READ_TIMEOUT_MS = 20_000;
 
-/** Append a forensic audit_log row for a manual deploy invocation. Fire-and-forget; never
- *  throws (the deploy already fired) — mirrors flag-audit.ts's canonical full-column shape. */
-async function recordDeployAudit(op: string, actor: string, details: Record<string, unknown>): Promise<void> {
-  try {
-    const { sql } = getOrgPg();
-    const id = `deploy-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    await sql.unsafe(
-      `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
-      [id, Date.now(), actor, 'release:deploy', op, JSON.stringify(details), activeWorkspaceId()],
-    );
-  } catch (err) {
-
-    console.warn('[release:deploy] audit write failed:', (err as Error)?.message);
-  }
-}
-
 /** A pre-launch observation is useful audit evidence, but is not an atomic claim receipt. */
 async function deployGateOwnershipReceipt(callerOwnerId: string) {
   try {
@@ -177,8 +160,11 @@ async function deployGateOwnershipReceipt(callerOwnerId: string) {
           ? 'prelaunch-observation' as const
           : 'unknown' as const,
         observedAt: new Date().toISOString(),
+        conditionKey: ownership.eventKey,
         workItem: ownership.workItem,
         holder: ownership.takenBy,
+        takenAt: ownership.takenAt,
+        claimState: ownership.claimState,
         assessment: ownership.assessment,
         unknownReason: ownership.unknown?.code ?? (ownership.workItem ? null : 'no-held-condition'),
       },
@@ -189,8 +175,11 @@ async function deployGateOwnershipReceipt(callerOwnerId: string) {
       receipt: {
         certainty: 'unknown' as const,
         observedAt: new Date().toISOString(),
+        conditionKey: null,
         workItem: null,
         holder: null,
+        takenAt: null,
+        claimState: null,
         assessment: null,
         unknownReason: error instanceof Error ? error.message : String(error),
       },
@@ -433,7 +422,7 @@ export default defineTool({
       harness: harnessAssertion,
       reason: hardText(LIMITS.SHORT_TITLE, { min: 8 }).describe('Why a force (un-green) deploy is justified — loudly audited.'),
       ownerSignoffRef: z.string().min(8).max(200).optional().describe(
-        'For confirm:true, a durable owner authorization reference (for example an owner directive or approved decision). Required before a force deploy can launch; omitted for dry-run preview.',
+        'For confirm:true, a caller-supplied owner authorization reference. Required before a force deploy can launch; this tool records but does not validate the cited authorization.',
       ),
       acknowledgeRedTests: z
         .array(z.string().min(1))
@@ -571,28 +560,32 @@ export default defineTool({
         return json({ ok: false, op: 'trigger', refused: true, ...stamp,
           reason: 'gate_condition_claimed_by_live_peer', ownership: gateOwnership.receipt });
       }
-      const launch = await launchDetachedDeploy({});
+      const accepted = await executeWithGateActionReceipt({
+        action: 'release:deploy', actor, ownerId: identity.ownerId,
+        conditionKey: gateOwnership.receipt.conditionKey ?? '',
+        target: { op: 'trigger', greenPinSha: status.deploy.greenPinSha },
+        run: () => launchDetachedDeploy({}),
+        summarize: (effect) => ({ status: effect.launched ? 'detached-launch-accepted' : 'not-launched',
+          unit: effect.unit ?? null, reason: effect.reason ?? null, deployedSha: 'unknown' }),
+      });
+      if (!accepted.ok) {
+        ctx.metadata?.({ gateActionReceipt: { schemaVersion: 2, action: 'deploy-trigger',
+          callerOwnerId: identity.ownerId, receiptId: accepted.receiptId,
+          effect: { status: accepted.effectMayHaveRun ? 'unknown' : 'refused', reason: accepted.reason } } });
+        return json({ ok: false, op: 'trigger', refused: !accepted.effectMayHaveRun, ...stamp,
+          reason: accepted.reason, receiptId: accepted.receiptId, effectMayHaveRun: accepted.effectMayHaveRun });
+      }
+      const launch = accepted.effect;
       ctx.metadata?.({ gateActionReceipt: {
-        schemaVersion: 1, action: 'deploy-trigger', callerOwnerId: identity.ownerId,
-        ownership: gateOwnership.receipt, target: { greenPinSha: status.deploy.greenPinSha },
+        schemaVersion: 2, action: 'deploy-trigger', callerOwnerId: identity.ownerId,
+        receiptId: accepted.receiptId,
+        ownership: { ...gateOwnership.receipt, ...accepted.ownership,
+          certainty: 'claim-row-locked-through-effect' }, target: { greenPinSha: status.deploy.greenPinSha },
         effect: { status: launch.launched ? 'detached-launch-accepted' : 'not-launched', unit: launch.unit ?? null,
           reason: launch.reason ?? null, deployedSha: 'unknown' },
       } });
-      // EI-20536291988678536: systemd has already accepted the detached deploy here.  Do not
-      // put the launch receipt behind another unbounded I/O hop: this process is the operator
-      // the deploy will restart, so a slow audit INSERT can otherwise hold the MCP response
-      // until that restart cuts the transport.  The caller then sees an empty result even
-      // though the deploy is running.  recordDeployAudit is deliberately best-effort and
-      // catches its own rejection; let it finish in the several-minute deploy window while
-      // returning the authoritative launch receipt immediately.
-      void recordDeployAudit('trigger', actor, {
-        mode: 'trigger',
-        greenPinSha: status.deploy.greenPinSha,
-        commitsAhead: status.deploy.deployedBehindGreenPin,
-        launched: launch.launched,
-        unit: launch.unit,
-        reason: launch.reason,
-      });
+      // The committed audit intent survives a process restart. Its settlement
+      // and the claim-row lock complete before this response is returned.
       return json({
         ok: launch.launched,
         op: 'trigger',
@@ -666,32 +659,41 @@ export default defineTool({
       return json({ ok: false, op: 'force', refused: true, ...stamp,
         reason: 'gate_condition_claimed_by_live_peer', ownership: gateOwnership.receipt });
     }
-    // Fire: loud audit + owner notification BEFORE the detached deploy (which then broadcasts its own outcome).
-    await recordDeployAudit('force', actor, {
-      mode: 'force',
-      commit,
-      acknowledgeRedTests: args.acknowledgeRedTests,
-      reason: args.reason,
-      ownerSignoffRef: args.ownerSignoffRef,
-      gateAtForce: statusBrief(status),
-      gateOwnership: gateOwnership.receipt,
+    // The audit intent must commit and the claim row must be locked before a
+    // notification can truthfully say a force deploy was triggered.
+    const accepted = await executeWithGateActionReceipt({
+      action: 'release:deploy', actor, ownerId: identity.ownerId,
+      conditionKey: gateOwnership.receipt.conditionKey ?? '',
+      target: { op: 'force', commit, ownerSignoffRef: args.ownerSignoffRef },
+      run: () => launchDetachedDeploy({ force: true, commit }),
+      summarize: (effect) => ({ status: effect.launched ? 'detached-launch-accepted' : 'not-launched',
+        unit: effect.unit ?? null, reason: effect.reason ?? null, deployedSha: 'unknown' }),
     });
-    try {
-      const { notifyAttention } = await import('../../attention-notify');
-      await notifyAttention({
-        kind: 'intervention',
-        importance: 'urgent',
-        title: '⚠ FORCE deploy triggered',
-        body: `${actor} force-deployed ${commit.slice(0, 12)} past a red gate. Accepting reds: ${args.acknowledgeRedTests.join(', ')}. Reason: ${args.reason}`,
-      });
-    } catch (err) {
-
-      console.warn('[release:deploy] force notifyAttention failed:', (err as Error)?.message);
+    if (!accepted.ok) {
+      ctx.metadata?.({ gateActionReceipt: { schemaVersion: 2, action: 'deploy-force',
+        callerOwnerId: identity.ownerId, receiptId: accepted.receiptId,
+        effect: { status: accepted.effectMayHaveRun ? 'unknown' : 'refused', reason: accepted.reason } } });
+      return json({ ok: false, op: 'force', refused: !accepted.effectMayHaveRun, ...stamp,
+        reason: accepted.reason, receiptId: accepted.receiptId, effectMayHaveRun: accepted.effectMayHaveRun });
     }
-    const launch = await launchDetachedDeploy({ force: true, commit });
+    const launch = accepted.effect;
+    if (launch.launched) {
+      try {
+        const { notifyAttention } = await import('../../attention-notify');
+        await notifyAttention({
+          kind: 'intervention', importance: 'urgent', title: '⚠ FORCE deploy triggered',
+          body: `${actor} force-deployed ${commit.slice(0, 12)} past a red gate. Accepting reds: ${args.acknowledgeRedTests.join(', ')}. Reason: ${args.reason}`,
+        });
+      } catch (err) {
+        console.warn('[release:deploy] force notifyAttention failed:', (err as Error)?.message);
+      }
+    }
     ctx.metadata?.({ gateActionReceipt: {
-      schemaVersion: 1, action: 'deploy-force', callerOwnerId: identity.ownerId,
-      ownership: gateOwnership.receipt, target: { commit, ownerSignoffRef: args.ownerSignoffRef },
+      schemaVersion: 2, action: 'deploy-force', callerOwnerId: identity.ownerId,
+      receiptId: accepted.receiptId,
+      ownership: { ...gateOwnership.receipt, ...accepted.ownership,
+        certainty: 'claim-row-locked-through-effect' }, target: { commit, ownerSignoffRef: args.ownerSignoffRef,
+        ownerSignoffAssessment: 'caller-supplied-unverified' },
       effect: { status: launch.launched ? 'detached-launch-accepted' : 'not-launched', unit: launch.unit ?? null,
         reason: launch.reason ?? null, deployedSha: 'unknown' },
     } });

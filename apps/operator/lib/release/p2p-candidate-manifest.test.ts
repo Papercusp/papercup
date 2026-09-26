@@ -1,13 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import {
-  P2P_EXPECTED_PEERS,
-  P521_JOURNEYS,
-  buildP2pCandidateManifest,
-  candidateArtifactDigest,
-  type P2pCandidateProvenance,
-  type P2pJourneyResult,
+import type {
+  P2pCandidateProvenance,
+  P2pJourneyResult,
 } from './p2p-candidate-manifest';
 import { renderReadinessTable } from './current-readiness-manifest';
+
+// The maintained mutation probe supplies a relocated copy; ordinary CI imports
+// the production module. No mock or alternate evaluator is involved.
+const { buildP2pCandidateManifest, candidateArtifactDigest } = await import(
+  process.env.PROBE_P2P_CANDIDATE_MANIFEST ?? './p2p-candidate-manifest'
+) as typeof import('./p2p-candidate-manifest');
+
+// P-521's contract is the oracle. Importing the producer's population here would
+// let a deleted journey or peer silently weaken both the subject and its test.
+const REQUIRED_JOURNEYS = [
+  'discovery-join',
+  'git-consistency-signed-scope',
+  'serving-identity-restart',
+  'replicated-write-outage-replay',
+  'delegated-seat-lifecycle',
+  'protected-effect-fencing',
+  'github-bridge',
+  'full-installer-compat',
+] as const;
+const REQUIRED_PEERS = ['mac-vm', 'tower'] as const;
 
 const NOW = Date.parse('2026-09-23T01:00:00.000Z');
 const SHA = 'f22392a985e0bf1c3dc54365276b81a77bab84c1';
@@ -23,7 +39,7 @@ const candidate: P2pCandidateProvenance = {
   ],
 };
 
-function passOn(digest: string, peers: readonly string[] = P2P_EXPECTED_PEERS): P2pJourneyResult {
+function passOn(digest: string, peers: readonly string[] = REQUIRED_PEERS): P2pJourneyResult {
   return {
     verdict: 'pass',
     reason: 'journey passed',
@@ -63,15 +79,17 @@ describe('P-521 candidate manifest', () => {
     expect(manifest.current.go).toBe(false);
     expect(manifest.profile.go).toBe(false);
     const byKey = new Map(manifest.current.rows.map((r) => [r.capability, r]));
-    for (const j of P521_JOURNEYS) {
-      expect(byKey.get(j.key)?.state).toBe('unmeasured');
-      expect(byKey.get(j.key)?.missingPeers).toEqual([...P2P_EXPECTED_PEERS]);
+    expect([...byKey.keys()]).toEqual(REQUIRED_JOURNEYS);
+    for (const key of REQUIRED_JOURNEYS) {
+      expect(byKey.get(key)?.state).toBe('unmeasured');
+      expect(byKey.get(key)?.expectedPeers).toEqual(REQUIRED_PEERS);
+      expect(byKey.get(key)?.missingPeers).toEqual(REQUIRED_PEERS);
     }
   });
 
   it('source-closed F-items are journey dependencies, never rows of their own (D-036/D-037)', async () => {
     const manifest = await buildP2pCandidateManifest({ candidate, now: NOW });
-    expect(manifest.current.rows.map((r) => r.capability)).toEqual(P521_JOURNEYS.map((j) => j.key));
+    expect(manifest.current.rows.map((r) => r.capability)).toEqual(REQUIRED_JOURNEYS);
     const deps = new Set(manifest.current.rows.flatMap((r) => r.dependencies));
     for (const item of ['P-512', 'P-513', 'P-514', 'P-515', 'P-516', 'P-517', 'P-518', 'P-520']) {
       expect(deps.has(item)).toBe(true);
@@ -102,13 +120,38 @@ describe('P-521 candidate manifest', () => {
 
   it('GO only when all eight journeys pass on this artifact', async () => {
     const digest = candidateArtifactDigest(candidate.artifacts);
-    const journeys = Object.fromEntries(P521_JOURNEYS.map((j) => [j.key, passOn(digest)]));
+    const journeys = Object.fromEntries(REQUIRED_JOURNEYS.map((key) => [key, passOn(digest)]));
     const manifest = await buildP2pCandidateManifest({ candidate, now: NOW, journeys });
     expect(manifest.current.go).toBe(true);
     const failing = { ...journeys, 'full-installer-compat': { ...passOn(digest), verdict: 'fail' as const } };
     const refused = await buildP2pCandidateManifest({ candidate, now: NOW, journeys: failing });
     expect(refused.current.go).toBe(false);
     expect(refused.current.rows.find((r) => r.capability === 'full-installer-compat')?.state).toBe('failed-on-this-artifact');
+  });
+
+  it.each(REQUIRED_JOURNEYS)('keeps a partial profile NO-GO when %s is unmeasured', async (missing) => {
+    const digest = candidateArtifactDigest(candidate.artifacts);
+    const journeys = Object.fromEntries(
+      REQUIRED_JOURNEYS.filter((key) => key !== missing).map((key) => [key, passOn(digest)]),
+    );
+    const manifest = await buildP2pCandidateManifest({ candidate, now: NOW, journeys });
+    expect(manifest.current.go).toBe(false);
+    expect(manifest.profile.go).toBe(false);
+    expect(manifest.current.rows.find((r) => r.capability === missing)?.state).toBe('unmeasured');
+  });
+
+  it.each(REQUIRED_PEERS)('keeps otherwise passing journeys NO-GO when %s is absent', async (missing) => {
+    const digest = candidateArtifactDigest(candidate.artifacts);
+    const peers = REQUIRED_PEERS.filter((peer) => peer !== missing);
+    const journeys = Object.fromEntries(REQUIRED_JOURNEYS.map((key) => [key, passOn(digest, peers)]));
+    const manifest = await buildP2pCandidateManifest({ candidate, now: NOW, journeys });
+    expect(manifest.profile.go).toBe(true);
+    expect(manifest.current.go).toBe(false);
+    expect(manifest.current.rows).toHaveLength(REQUIRED_JOURNEYS.length);
+    for (const row of manifest.current.rows) {
+      expect(row.state).toBe('advancing');
+      expect(row.missingPeers).toEqual([missing]);
+    }
   });
 
   it('refuses an unknown journey key and a malformed source sha', async () => {
@@ -122,6 +165,6 @@ describe('P-521 candidate manifest', () => {
 
   it('renders a readiness table naming every journey', async () => {
     const table = renderReadinessTable(await buildP2pCandidateManifest({ candidate, now: NOW }));
-    for (const j of P521_JOURNEYS) expect(table).toContain(j.key);
+    for (const key of REQUIRED_JOURNEYS) expect(table).toContain(key);
   });
 });

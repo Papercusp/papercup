@@ -9,6 +9,7 @@ import {
   builtinBlueprintPath,
   compileAgentSpecification,
   modeCatalogFromValidatedSources,
+  layerContentHash,
   resolveBuiltinExtends,
   resolveBlueprintSource,
   RunnableBlueprintSchema,
@@ -20,6 +21,7 @@ import {
   stackBindingFromRefs,
   slotSpec,
 } from '@papercusp/orchestrator/blueprint';
+import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
 import { parseBlueprintSource, resolveAndValidate } from '../agent-tools/blueprint/_resolve';
 import { buildBlueprintReleaseArchive, readBlueprintLifecycle } from '../cupboard/blueprint-release';
 import { compileBlueprintWithPackages, resolveBlueprintPackageInputs } from '../blueprint/compile-packages';
@@ -292,6 +294,17 @@ async function verifiedInstalledModePolicy(
   }
 }
 
+/** Packaged hosts carry the generated catalog, not the source repository. Only
+ * absence permits that baseline; unreadable or malformed live sources refuse. */
+async function readBuiltinModeSource(id: string): Promise<string | null> {
+  try {
+    return await readFile(builtinBlueprintPath(id), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 /** Select modes from the ordinary blueprint catalog. Built-ins establish the
  * baseline; each installed replacement must carry an exact prior revision and
  * an installer-owned approval for its full current package closure. */
@@ -299,12 +312,25 @@ export async function getSelectedModeCatalog() {
   const available = availableBlueprintSources();
   const fingerprint = await selectedModeFingerprint(available);
   if (selectedModeCatalogCache?.fingerprint === fingerprint) return selectedModeCatalogCache.value;
+  const missingBuiltins = new Set<string>();
   const builtins = await Promise.all(SU_MODE_DOCUMENTS.map(async ({ id }) => {
     const file = builtinBlueprintPath(id);
-    return resolveBlueprintSource(parseBlueprintSource(await readFile(file, 'utf8')), {
+    const text = await readBuiltinModeSource(id);
+    if (text === null) {
+      missingBuiltins.add(id);
+      return null;
+    }
+    return resolveBlueprintSource(parseBlueprintSource(text), {
       sourcePath: file, resolve: resolveBuiltinExtends,
     });
   }));
+  const supportedPolicyRefs = SU_MODE_DOCUMENTS.flatMap((document) => document.modes);
+  const baseline = modeCatalogFromValidatedSources(builtins.filter((source) => source !== null), {
+    supportedPolicyRefs,
+    builtinEntries: BUILTIN_MODE_COMPONENTS
+      .filter((entry) => missingBuiltins.has(entry.sourceId))
+      .map(({ definitionText: _text, ...entry }) => entry),
+  });
   const installed = [];
   const approvedPolicyRefs = new Set<string>();
   const approvedInstalledSourceHashes = new Map<string, string>();
@@ -312,6 +338,13 @@ export async function getSelectedModeCatalog() {
   for (const entry of available.filter((source) => source.tier === 'installed')) {
     const raw = parseBlueprintSource(await readFile(entry.file, 'utf8'));
     if (!raw.mode) continue;
+    // A shipped mirror may share the installed catalog. Ignore only an exact
+    // source AND prompt match; it contributes no installed authority or parents.
+    const builtin = baseline.entries.find((candidate) => candidate.sourceId === entry.id);
+    if (builtin && layerContentHash(raw) === builtin.sourceHash) {
+      const prompt = await readFile(join(dirname(entry.file), 'prompts', `${builtin.slot}.md`), 'utf8');
+      if (createHash('sha256').update(prompt).digest('hex') === builtin.definitionHash) continue;
+    }
     const approval = await verifiedInstalledModePolicy(entry.id, entry.file, raw);
     if (!approval.policyRef || approval.stale) {
       throw new Error(`installed mode "${entry.id}" has no current moderated release approval`);
@@ -329,8 +362,9 @@ export async function getSelectedModeCatalog() {
     const root = source.layers.at(-1)!;
     approvedInstalledSourceHashes.set(root.id, root.contentHash);
   }
-  const selected = modeCatalogFromValidatedSources([...builtins, ...installed], {
-    supportedPolicyRefs: SU_MODE_DOCUMENTS.flatMap((document) => document.modes),
+  const selected = modeCatalogFromValidatedSources(installed, {
+    supportedPolicyRefs,
+    builtinEntries: baseline.entries,
     approvedModePolicyRefs: approvedPolicyRefs,
     approvedInstalledSourceHashes,
   });
@@ -360,12 +394,19 @@ export async function getSelectedModeDefinitions(modeIds: readonly string[]): Pr
     if (!entry || entry.definition.source !== 'fixed' || entry.definition.inputKind !== 'prompt-file') {
       throw new Error('mode ' + modeId + ' has no selected fixed definition');
     }
-    const identity = await getIdentitySource(entry.sourceId);
-    if (!identity.ok || !identity.sourcePath || identity.contentHash !== entry.sourceHash) {
-      throw new Error('selected mode ' + modeId + ' source revision is unavailable or stale');
+    const compiled = BUILTIN_MODE_COMPONENTS.find((candidate) => candidate.sourceId === entry.sourceId &&
+      candidate.revision === entry.revision);
+    let definition: string;
+    if (compiled && await readBuiltinModeSource(entry.sourceId) === null) {
+      definition = compiled.definitionText;
+    } else {
+      const identity = await getIdentitySource(entry.sourceId);
+      if (!identity.ok || !identity.sourcePath || identity.contentHash !== entry.sourceHash) {
+        throw new Error('selected mode ' + modeId + ' source revision is unavailable or stale');
+      }
+      const path = join(dirname(identity.sourcePath), 'prompts', entry.slot + '.md');
+      definition = await readFile(path, 'utf8');
     }
-    const path = join(dirname(identity.sourcePath), 'prompts', entry.slot + '.md');
-    const definition = await readFile(path, 'utf8');
     const hash = createHash('sha256').update(definition).digest('hex');
     if (hash !== entry.definitionHash) {
       throw new Error('selected mode ' + modeId + ' definition changed after catalog resolution');
@@ -502,7 +543,12 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
       ...(selectedMode && entry.ref === selectedPromptRef
         ? { bytes: selectedMode.contract, contentHash: selectedMode.definitionHash } : {}) };
   });
-  const compileInput = {
+  // The host chooses the delivery cadence; the identity cannot choose when its
+  // own omission is acceptable. Other callers may still compile source only.
+  const sink = input.scope.sink;
+  const contributionRefresh = sink === 'turn-start' ? 'turn' as const
+    : sink === 'launch' || sink === 'on-demand' || sink === 'source-change' ? sink : undefined;
+  const compileInput: import('@papercusp/orchestrator/blueprint').CompositionCompilerInput = {
     source: raw,
     sourcePath,
     resolve: resolver,
@@ -510,6 +556,7 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
     settings,
     inputClosure: closure,
     contributionOmissions: omissions,
+    ...(contributionRefresh ? { contributionRefresh } : {}),
   };
   const hasResources = Boolean(document.bundles?.length || document.grants?.requires?.length ||
     document.grants?.optional?.length || resolveSeedPackKey(document).packId);

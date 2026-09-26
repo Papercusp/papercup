@@ -13,9 +13,9 @@
     "libs/papercusp/packages/orchestrator/tsconfig.json"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-26T18:46:30Z",
-  "finishedAt": "2026-09-26T18:46:31Z",
-  "summary": "Full, non-incremental tsc --noEmit over the orchestrator package project, run from the canonical staging tree while every P-037 subject was under the D-131 freeze lock (no concurrent edits). The project's include is src/**/*.ts, so the program covers both the P-037 sources (blueprint/schema.ts, loader.ts, composition-compiler.ts, stack-mutation.ts) and their tests (blueprint/contracts.test.ts, loader.layers.test.ts, loader.test.ts). tsc printed zero diagnostics and exited 0. A census via --listFilesOnly confirmed that 207 orchestrator src files were in the program, so this is not a zero-file vacuous pass.",
+  "startedAt": "2026-09-26T19:45:21Z",
+  "finishedAt": "2026-09-26T19:45:24Z",
+  "summary": "Full, non-incremental tsc --noEmit over the orchestrator package project after the D-132/D-133 peer source window and the composition-packages control-fixture typing correction. The project's include is src/**/*.ts, covering the P-037 sources and tests. tsc printed zero diagnostics and exited 0. The same-project --listFilesOnly census at 19:39 contained 207 orchestrator src files. The earlier 19:39 typecheck failed TS2769/TS2339 at composition-packages.test.ts:304; WI-10003339 narrowed the overloaded test callable, and this run verifies that correction. This measures the working tree, including that then-uncommitted test correction.",
   "testLayer": "typecheck",
   "planSlug": "identities-v1-2026-08-30",
   "specIds": [
@@ -25,14 +25,17 @@
   "workItemId": "WI-2144483",
   "subjectRepo": {
     "path": "libs/papercusp",
-    "head": "c9dec14bb90bb2508432afd1e0bc2b4d706d474c",
-    "orchestratorPackageDirty": false
+    "head": "16d984fa9e1b2bda5d9c2c7fab9f86c27baba1ae",
+    "orchestratorPackageDirty": true,
+    "subsequentCommit": "6be1d812cf3fc0be26e77b5cf7f62f0ed553622f",
+    "compilerBlob": "1f659e73bebc9606b847435891f6f08fc6b8f2f6",
+    "correctedTestBlob": "2708e44e85fb9514b67fcf0c200e9ae35055b0ef"
   },
   "assertions": [
     {
       "id": "tsc-exit-zero-no-diagnostics",
       "passed": true,
-      "evidence": "npx tsc --noEmit --incremental false -p libs/papercusp/packages/orchestrator/tsconfig.json exited 0 at 18:46:31Z and emitted no diagnostics in the captured command output."
+      "evidence": "npx tsc --noEmit --incremental false -p libs/papercusp/packages/orchestrator/tsconfig.json exited 0 at 19:45:24Z and emitted no diagnostics. The shell preserved tsc's exit status explicitly."
     },
     {
       "id": "program-covers-p037-subjects",
@@ -40,9 +43,9 @@
       "evidence": "tsc --listFilesOnly over the same project lists 207 files under packages/orchestrator/src/, including src/blueprint/loader.ts, composition-compiler.ts and stack-mutation.ts, and the tests src/blueprint/contracts.test.ts, loader.layers.test.ts and loader.test.ts. tsconfig include = src/**/*.ts, bin/**/*.ts and the vitest configs, so blueprint/schema.ts (imported by contracts.test.ts) is also type-checked."
     },
     {
-      "id": "subject-tree-clean-and-frozen",
+      "id": "source-subjects-frozen-and-correction-accounted-for",
       "passed": true,
-      "evidence": "git -C libs/papercusp status --porcelain -- packages/orchestrator was empty at libs/papercusp HEAD c9dec14bb90bb2508432afd1e0bc2b4d706d474c. The D-131 freeze holds carried by su-d652716d (libs 7400f4ff-83f4-469b-8281-1f361c40b6bc, superproject 57ebf67f-2bb8-4229-b9ca-9ed555613407, expiry 19:21Z) cover the source subjects. The fresh run follows the composition-compiler explicit-domain fix."
+      "evidence": "The compiler source and sibling test were re-frozen under 1c1a2fa8-cbb6-44a1-b93a-25224f100ef1 after the peer window; the remaining D-131 subjects retain 7400f4ff-83f4-469b-8281-1f361c40b6bc and 57ebf67f-2bb8-4229-b9ca-9ed555613407. At run time only composition-packages.test.ts was dirty in the orchestrator package. Its corrected blob 2708e44e85fb9514b67fcf0c200e9ae35055b0ef subsequently committed in 6be1d812cf3fc0be26e77b5cf7f62f0ed553622f; the package status was clean at the 19:47 verification. The superproject gitlink was still awaiting git-sync; this artifact does not claim shipment."
     }
   ]
 }

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const loadHarnessRegistry = vi.fn();
+const ORIGINAL_MCP_PROXY_BASE = process.env.PAPERCUSP_MCP_PROXY_BASE;
 vi.mock('./harness-registry', () => ({
   loadHarnessRegistry: (...a: unknown[]) => loadHarnessRegistry(...a),
 }));
@@ -18,7 +19,11 @@ import { resolveProjectDir, resolveStateDir, resolveSpawnCwd, resolveContextEnv 
 beforeAll(() => {
   loadHarnessRegistry.mockResolvedValue({ projects: [{ slug: 'p', path: '/proj' }] });
 });
-afterEach(() => loadHarnessRegistry.mockClear());
+afterEach(() => {
+  loadHarnessRegistry.mockClear();
+  if (ORIGINAL_MCP_PROXY_BASE === undefined) delete process.env.PAPERCUSP_MCP_PROXY_BASE;
+  else process.env.PAPERCUSP_MCP_PROXY_BASE = ORIGINAL_MCP_PROXY_BASE;
+});
 
 describe('resolveProjectDir / resolveStateDir', () => {
   it('resolves a registered slug to its path', async () => {
@@ -61,21 +66,25 @@ describe('resolveSpawnCwd', () => {
 });
 
 describe('resolveContextEnv', () => {
-  it('sets the harness slug, pi-sessions dir, and API base from the request URL', () => {
+  it('keeps callbacks on the request origin while routing long-lived MCP traffic through the stable proxy', () => {
+    process.env.PAPERCUSP_MCP_PROXY_BASE = 'http://127.0.0.1:9171/';
     const env = resolveContextEnv({
       slug: 'p',
       stateDir: '/proj/.papercusp',
-      requestUrl: 'http://127.0.0.1:3070/api/x?y=1',
+      requestUrl: 'http://127.0.0.1:3170/api/x?y=1',
     });
     expect(env.PAPERCUSP_HARNESS_SLUG).toBe('p');
     expect(env.PI_CODING_AGENT_DIR).toBe('/proj/.papercusp/pi-sessions');
-    expect(env.PAPERCUSP_API_BASE).toBe('http://127.0.0.1:3070');
+    expect(env.PAPERCUSP_API_BASE).toBe('http://127.0.0.1:3170');
+    expect(env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9171');
   });
 
-  it('omits pi-sessions when stateDir is null and API base on a bad URL', () => {
+  it('uses the standard :9071 fallback even when the callback URL is invalid', () => {
+    delete process.env.PAPERCUSP_MCP_PROXY_BASE;
     const env = resolveContextEnv({ slug: 'p', stateDir: null, requestUrl: 'not a url' });
     expect(env.PI_CODING_AGENT_DIR).toBeUndefined();
     expect(env.PAPERCUSP_API_BASE).toBeUndefined();
     expect(env.PAPERCUSP_HARNESS_SLUG).toBe('p');
+    expect(env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
   });
 });

@@ -316,6 +316,39 @@ describe('uninstallPack', () => {
     expect(forgotten.sort()).toEqual(['p1', 'p2']);
     expect(res.kept).toEqual([]);
   });
+
+  it('reports exact cleanup failures and retries only surviving rows without losing edits', async () => {
+    const remaining = [...pool, {
+      id: 'p3', text: 'C — always do c', scope: 'hive:h',
+      metadata: { source: 'pack', pack_id: 'rails-pack', pack_item_id: 'c' },
+    }];
+    const { backend } = fakeBackend({ pool: remaining });
+    let failFirstDelete = true;
+    backend.forget.mockImplementation(async (id: string) => {
+      if (id === 'p1' && failFirstDelete) {
+        failFirstDelete = false;
+        throw new Error('memory store unavailable');
+      }
+      const index = remaining.findIndex((row) => row.id === id);
+      if (index >= 0) remaining.splice(index, 1);
+    });
+    const options = { potSlug: 'h', packId: 'rails-pack', pack };
+    const first = await uninstallPack(options, { backend: backend as never });
+    expect(first).toMatchObject({
+      ok: false, removed: 1,
+      failed: [{ id: 'p1', error: 'memory store unavailable' }],
+      kept: [{ id: 'p2', text: 'B — but we do it our way' }],
+    });
+    expect(remaining.map((row) => row.id)).toEqual(['p1', 'p2', 'o1', 'x1']);
+
+    backend.forget.mockClear();
+    const retried = await uninstallPack(options, { backend: backend as never });
+    expect(retried).toMatchObject({ ok: true, removed: 1, failed: [] });
+    expect(backend.forget.mock.calls).toEqual([['p1']]);
+    expect(remaining.map((row) => row.id)).toEqual(['p2', 'o1', 'x1']);
+    await expect(uninstallPack(options, { backend: backend as never }))
+      .resolves.toMatchObject({ ok: true, removed: 0, failed: [] });
+  });
 });
 
 describe('sweepHiveConflicts', () => {

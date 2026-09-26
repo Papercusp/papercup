@@ -51,6 +51,7 @@ describe('coord:orient component receipt', () => {
     expect(assignmentReader).toHaveBeenCalledExactlyOnceWith('su-1');
     expect(binder).toHaveBeenCalledWith(expect.objectContaining({
       identityId: 'su', sourceTier: 'builtin', outputs: [
+        { contributionId: 'coord-orientation', value: result },
         { contributionId: 'current-mode-state', value: modeRows },
         { contributionId: 'current-assignment', value: {
           ownerId: 'su-1', intent: 'WI-9 current task', currentPlanSlug: 'plan-1',

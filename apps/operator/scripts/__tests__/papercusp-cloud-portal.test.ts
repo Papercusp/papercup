@@ -414,6 +414,10 @@ esac
       expect(readFileSync(files.logPath, "utf8")).toContain("--user enable --now papercusp-cloud-portal-reconcile.timer\n");
       expect(readFileSync(join(files.unitDir, "papercusp-cloud-portal-reconcile.service"), "utf8"))
         .toContain("reconcile-cloud-portal.mjs");
+      expect(readFileSync(join(files.unitDir, "papercusp-cloud-portal-reconcile.service"), "utf8"))
+        .not.toContain("EnvironmentFile=-%h/.config/papercusp/portal-public-links.env");
+      expect(readFileSync(join(files.unitDir, "papercusp-cloud-portal-reconcile.service"), "utf8"))
+        .toContain("PAPERCUSP_CLOUD_PORTAL_PUBLIC_LINKS_ENV=%h/.config/papercusp/portal-public-links.env");
     } finally {
       rmSync(files.dir, { recursive: true, force: true });
     }

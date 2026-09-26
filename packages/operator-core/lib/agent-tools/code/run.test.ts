@@ -883,6 +883,27 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
     expect(shaped.summaryNotice.truncated).toBe(true);
   });
 
+  it('marks a populated nested result when depth bounding omits its fields, while preserving a truly empty object', () => {
+    const results = Array.from({ length: 8 }, (_, index) => ({
+      outputPayload: index === 0 ? {} : {
+        processLifecycleVerdict: { status: 'passed', detail: 'x'.repeat(1_500) },
+        audit: { detail: 'y'.repeat(1_500) },
+      },
+      detail: 'z'.repeat(1_000),
+    }));
+    const shaped = shapeCodeRunSummary({ summary: { results } }) as {
+      summary: { results: Array<{ outputPayload: Record<string, unknown> }> };
+      summaryNotice: { truncated: true; paths: string[] };
+    };
+
+    expect(shaped.summaryNotice.truncated).toBe(true);
+    expect(shaped.summary.results[0]?.outputPayload).toEqual({});
+    expect(shaped.summary.results[1]?.outputPayload).toMatchObject({
+      __truncated: expect.stringContaining('summaryNotice.paths'),
+    });
+    expect(shaped.summaryNotice.paths).toContain('summary.results[1].outputPayload');
+  });
+
   it('preserves background launch handles inside nested MCP result envelopes', () => {
     const launched = Array.from({ length: 9 }, (_, index) => ({
       result: {

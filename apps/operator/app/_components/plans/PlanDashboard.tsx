@@ -54,7 +54,7 @@ import {
   Plus,
   Search,
 } from 'lucide-react';
-import { parseAsString, useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { toast } from 'sonner';
 import { FLAGS } from '@papercusp/flags';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
@@ -264,10 +264,17 @@ export default function PlanDashboard({
   );
 
   // Popups: written here, rendered by ChatRefPopupHost's singleton mount.
-  const [, setOpenPlanPopup] = useQueryState(CHAT_PLAN_POPUP_PARAM, parseAsString);
+  // The popup identity, view and optional jump target are ONE transition.
+  // Writing them through three independent nuqs setters schedules repeated
+  // router/root work before PlanDetail can mount; native P-007 traces measured
+  // multi-second click-to-request gaps on that path. useQueryStates is the
+  // existing atomic URL-transition primitive (CreateHarnessPicker precedent).
+  const [, setPlanPopupState] = useQueryStates({
+    [CHAT_PLAN_POPUP_PARAM]: parseAsString,
+    ppv: parseAsString,
+    jump: parseAsString,
+  });
   const [, setOpenWorkItem] = useQueryState(CHAT_WORK_ITEM_POPUP_PARAM, parseAsString);
-  const [, setPopupView] = useQueryState('ppv', parseAsString);
-  const [, setPlanTarget] = useQueryState("jump", parseAsString);
 
   // PlansPane starts this same idempotent warm-up before a sidebar row click,
   // but the dashboard is also independently deep-linkable. Warm here too so
@@ -293,28 +300,34 @@ export default function PlanDashboard({
     // PlanPopupModal. PlanEditor.handleParsed consumes the mark when Vditor
     // finishes the first body render.
     beginInteraction(PERF_INTERACTIONS.planPopupOpen);
-    void setPopupView("plan");
-    void setPlanTarget(null);
-    void setOpenPlanPopup(encodeScopedRef(harness, planSlug));
-  }, [setOpenPlanPopup, setPlanTarget, setPopupView, harness, planSlug]);
+    void setPlanPopupState({
+      [CHAT_PLAN_POPUP_PARAM]: encodeScopedRef(harness, planSlug),
+      ppv: "plan",
+      jump: null,
+    });
+  }, [setPlanPopupState, harness, planSlug]);
 
   const openPlanTarget = useCallback(
     (target: string) => {
       beginInteraction(PERF_INTERACTIONS.planPopupOpen);
-      void setPopupView("plan");
-      void setPlanTarget(target);
-      void setOpenPlanPopup(encodeScopedRef(harness, planSlug));
+      void setPlanPopupState({
+        [CHAT_PLAN_POPUP_PARAM]: encodeScopedRef(harness, planSlug),
+        ppv: "plan",
+        jump: target,
+      });
     },
-    [setOpenPlanPopup, setPlanTarget, setPopupView, harness, planSlug],
+    [setPlanPopupState, harness, planSlug],
   );
 
   const openTranscriptSearch = useCallback(() => {
     // The popup's Sessions tab IS the plan-scoped transcript search surface
     // (PlanSessionsTab) — open the popup directly onto it.
-    void setPopupView("sessions");
-    void setPlanTarget(null);
-    void setOpenPlanPopup(encodeScopedRef(harness, planSlug));
-  }, [setPopupView, setPlanTarget, setOpenPlanPopup, harness, planSlug]);
+    void setPlanPopupState({
+      [CHAT_PLAN_POPUP_PARAM]: encodeScopedRef(harness, planSlug),
+      ppv: "sessions",
+      jump: null,
+    });
+  }, [setPlanPopupState, harness, planSlug]);
 
   const [launching, setLaunching] = useState(false);
   const onLaunch = useCallback(async () => {

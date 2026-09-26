@@ -494,11 +494,30 @@ export default defineTool({
             lifecycle = lifecycle ?? restored;
           }
         } catch (error) {
+          // The payload write above already committed. Return a structured
+          // partial outcome with the authoritative post-failure row so a caller
+          // can recover without blindly repeating a clear that has taken effect.
+          const persisted = await getWorkItem(input.id, input.harness).catch(() => null);
+          const persistedActive = persisted ? activeExternalBlockers(persisted.payload) : active;
+          const persistedState = persisted?.state ?? null;
           return {
             ok: false as const,
             id: input.id,
-            error: `typed blocker persisted, but lifecycle parking failed: ${error instanceof Error ? error.message : String(error)}`,
-            activeBlockers: active,
+            code: input.clear ? 'partial-clear' : 'partial-set',
+            error: `typed blocker persisted, but lifecycle transition failed: ${error instanceof Error ? error.message : String(error)}. ` +
+              `Current state: ${persistedState ?? 'unavailable'}; active blockers: ${persistedActive.length}. ` +
+              'Read work_items:get before recovery; do not repeat the clear blindly.',
+            partialOutcome: {
+              blockerHistoryPersisted: true,
+              lifecycleApplied: false,
+              currentState: persistedState,
+              activeBlockerCount: persistedActive.length,
+              recoveryAction: persistedState === 'blocked' && persistedActive.length === 0
+                ? 'Reopen the item through work_items:set_state after checking for independent work-item dependencies.'
+                : 'Read work_items:get and repair the lifecycle state indicated by the remaining blockers.',
+            },
+            workItem: persisted ?? updated,
+            activeBlockers: persistedActive,
             blockerHistory: history.blockers,
           };
         }

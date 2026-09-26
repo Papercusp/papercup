@@ -60,7 +60,7 @@ describe('root SU operational identity delivery', () => {
       undefined,
       readAssignment,
     );
-    if (!('contributions' in first.root)) throw new Error('root SU turn-start receipt was unavailable');
+    if (!('contributions' in first.root)) throw new Error('root SU turn-start receipt was unavailable: ' + JSON.stringify(first.root));
     expect(first.root.contributions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -132,7 +132,7 @@ describe('root SU operational identity delivery', () => {
       undefined,
       readAssignment,
     );
-    if (!('contributions' in second.root)) throw new Error('refreshed root SU receipt was unavailable');
+    if (!('contributions' in second.root)) throw new Error('refreshed root SU receipt was unavailable: ' + JSON.stringify(second.root));
     expect(second.root.sourceRevision).toBe(first.root.sourceRevision);
     for (const contributionId of ['current-mode-state', 'current-assignment']) {
       expect(

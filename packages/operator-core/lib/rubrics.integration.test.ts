@@ -2605,8 +2605,15 @@ describe('template_data persistence boundary — the set-template-data door', ()
     const current = await rubrics.getRubric(seeded.rubricSlug);
     expect(current!.barSetHash).not.toBe(before!.barSetHash);
     expect(current!.criteria[1]!.barHash).toBe(before!.criteria[1]!.barHash);
+    // EI-24352619832794123: the amendment receipt must include the delegated
+    // class revision in its grading identity, just like a fresh read and the
+    // immutable snapshot. Matching BAR hashes alone did not detect this drift.
+    expect(after!.criteriaHash).toBe(current!.criteriaHash);
+    const frozen = await rubrics.getRubric(seeded.rubricSlug, after!.revision);
+    expect(frozen!.criteriaHash).toBe(after!.criteriaHash);
     const replayed = await rubrics.amendRubric(accepted);
     expect(replayed!.barSetHash).toBe(current!.barSetHash);
+    expect(replayed!.criteriaHash).toBe(after!.criteriaHash);
     expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(current!.revision);
     // Hold both advisory locks in another transaction. An exact retry must
     // reconcile from the committed subject decision before attempting either

@@ -1127,10 +1127,15 @@ detect_runner_misuse() {
 # plain-node guard), so a non-test guard can never trip it.
 detect_zero_selection() {
   local line
+  # Vitest may print "Tests closed successfully ..." AFTER its count summary.
+  # Diagnostic prose is not a zero-test result and must not replace that summary.
   line="$(sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$1" 2>/dev/null \
-          | grep -E '^[[:space:]]*Tests[[:space:]]+[^[:space:]]' | tail -1)"
+          | grep -E '^[[:space:]]*Tests[[:space:]]+[0-9]+[[:space:]]+(passed|failed|skipped|todo|pending)([[:space:]]|$)' | tail -1)"
   [ -n "$line" ] || return 0
-  case "$line" in *passed*) return 0 ;; esac
+  # Require a positive count: "0 passed" is still zero selection.
+  if printf '%s' "$line" | grep -Eq '(^|[[:space:]|])[1-9][0-9]*[[:space:]]+passed([[:space:]|]|$)'; then
+    return 0
+  fi
   printf '%s' "$(printf '%s' "$line" | sed -r 's/^[[:space:]]+//; s/[[:space:]]+$//')"
 }
 
@@ -1386,6 +1391,17 @@ if [ "$IN_TREE" = "1" ]; then
 else
   TARGET_MODE="copy-out"
   COPY_OUT_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null || true)"
+  # A submodule can import hoisted dependencies from its superproject. Preserve
+  # that enclosing path hierarchy too; mirroring only the inner Git root makes
+  # the unchanged copy fail module resolution before the mutation is exercised.
+  while [ -n "$COPY_OUT_ROOT" ]; do
+    COPY_OUT_PARENT="$(git -C "$COPY_OUT_ROOT" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
+    [ -n "$COPY_OUT_PARENT" ] || break
+    case "$COPY_OUT_ROOT" in
+      "$COPY_OUT_PARENT"/*) COPY_OUT_ROOT="$COPY_OUT_PARENT" ;;
+      *) break ;;
+    esac
+  done
   COPY_OUT_REL=""
   if [ -n "$COPY_OUT_ROOT" ]; then
     case "$FILE" in

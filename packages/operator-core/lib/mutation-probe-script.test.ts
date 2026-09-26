@@ -565,6 +565,36 @@ function makeLocationalRepo(): { repo: string; subject: string } {
 }
 
 describe('mutation-probe.sh — copy-out relocates into a mirror of the subject worktree', () => {
+  it('keeps hoisted superproject dependencies for a subject inside a real submodule', () => {
+    const { repo: origin } = makeLocationalRepo();
+    const superproject = join(dir, 'superproject');
+    mkdirSync(superproject);
+    git(superproject, ['init', '-q']);
+    git(superproject, ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', origin, 'modules/child']);
+    const dependency = join(superproject, 'node_modules', 'probe-hoisted');
+    mkdirSync(dependency, { recursive: true });
+    writeFileSync(join(dependency, 'package.json'), JSON.stringify({
+      name: 'probe-hoisted', type: 'module', exports: './index.mjs',
+    }));
+    writeFileSync(join(dependency, 'index.mjs'), "export const HOISTED = 'HOISTED';\n");
+    const file = join(superproject, 'modules/child/pkg/tools/subject.mjs');
+    const original = readFileSync(file, 'utf8');
+    const withDependency = "import { HOISTED } from 'probe-hoisted';\n" + original +
+      "console.log(HOISTED);\n";
+    writeFileSync(file, withDependency);
+    expect(git(join(superproject, 'modules/child'), ['rev-parse', '--show-superproject-working-tree']))
+      .toBe(superproject);
+    const { code, out } = runProbeIO([
+      '--file', file,
+      '--mutate', "s/const VERDICT = 'OK'/const VERDICT = 'MUTATED'/",
+      '--test', "node {} | grep -qx 'OK sib=SIB root=ROOT-MARKER'",
+    ]);
+    expect(out).not.toMatch(/COPY-BASELINE FAILED/);
+    expect(out).toMatch(/verdict=caught/);
+    expect(code).toBe(0);
+    expect(readFileSync(file, 'utf8')).toBe(withDependency);
+  });
+
   it('reaches a genuine CAUGHT verdict for a subject coupled to BOTH its siblings and its repo-root location', () => {
     const { subject } = makeLocationalRepo();
     const { code, out } = runProbeIO([
@@ -1315,6 +1345,25 @@ describe('mutation-probe.sh — a baseline that ran zero tests is never scored',
     expect(out).toMatch(/MUTANT SURVIVED/);
     expect(out).not.toMatch(/ZERO TESTS/);
     expect(out).not.toMatch(/verdict=harness-error/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it.each([
+    ['1 passed | 1 skipped (2)', 1, 'survived'],
+    ['2 skipped (2)', 2, 'harness-error'],
+    ['0 passed | 2 skipped (2)', 2, 'harness-error'],
+  ] as const)('uses the numeric summary %s when Vitest prints a close warning afterward', (summary, expectedCode, verdict) => {
+    const { code, out } = runProbeIO([
+      '--file', subject,
+      '--mutate', 's/beta/BETA/',
+      '--test', phaseGuard(
+        `printf '  Tests  ${summary}\\nTests closed successfully but something prevents Vite server from exiting\\n'; exit 0`,
+      ),
+    ]);
+    expect(code).toBe(expectedCode);
+    expect(out).toContain(`verdict=${verdict}`);
+    if (expectedCode === 2) expect(out).toContain(`zero_selection=Tests__${summary.replaceAll(' ', '_')}`);
+    else expect(out).not.toContain('BASELINE RAN ZERO TESTS');
     expect(read()).toBe(ORIGINAL);
   });
 

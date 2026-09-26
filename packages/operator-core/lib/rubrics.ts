@@ -4817,6 +4817,10 @@ async function amendAcceptanceBarRubric(
     txResult.rubricBody && txResult.templateData
       ? await rubricRevisionCriteriaHash(txResult.templateData, rubricScope)
       : null;
+  // The locked projection omits the delegated class revision. Return the same
+  // resolved identity we pin in history, so an amendment receipt agrees with
+  // an immediate getRubric read (EI-24352619832794123).
+  if (criteriaHash) txResult.rubric.criteriaHash = criteriaHash;
   await Promise.all([
     txResult.rubricBody && txResult.templateData
       ? recordPlanRevision({

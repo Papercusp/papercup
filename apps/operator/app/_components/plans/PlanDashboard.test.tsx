@@ -14,6 +14,7 @@ import type { PlanGetResult, PlanItem } from '@/app/admin/plans/plans-api';
 const {
   nuqs,
   setters,
+  setQueryStatesSpy,
   planData,
   attentionItems,
   syncData,
@@ -25,6 +26,9 @@ const {
 } = vi.hoisted(() => ({
   nuqs: {} as Record<string, unknown>,
   setters: {} as Record<string, ReturnType<typeof vi.fn>>,
+  setQueryStatesSpy: vi.fn(async (values: Record<string, unknown>) => {
+    Object.assign(nuqs, values);
+  }),
   // plans-list-windowing-cardinality-fix-2026-08-30 P-003: this surface reads
   // its OWN plan via a targeted `usePlan(slug, {live:true})` fetch now, not a
   // slice of the shared `plans.list` cache — so the fixture is a single
@@ -55,6 +59,15 @@ vi.mock('nuqs', () => ({
   useQueryState: (key: string, parser?: { _d?: unknown }) => [
     nuqs[key] !== undefined ? nuqs[key] : (parser?._d ?? null),
     mkSetter(key),
+  ],
+  useQueryStates: (parsers: Record<string, { _d?: unknown }>) => [
+    Object.fromEntries(
+      Object.entries(parsers).map(([key, parser]) => [
+        key,
+        nuqs[key] !== undefined ? nuqs[key] : (parser?._d ?? null),
+      ]),
+    ),
+    setQueryStatesSpy,
   ],
   parseAsString: { withDefault: (d: unknown) => ({ _d: d }) },
 }));
@@ -285,6 +298,7 @@ afterEach(() => {
   cleanup();
   for (const k of Object.keys(nuqs)) delete nuqs[k];
   for (const setter of Object.values(setters)) setter.mockClear();
+  setQueryStatesSpy.mockClear();
   launchAgentSpy.mockClear();
   beginInteractionSpy.mockClear();
   preloadVditorSpy.mockClear();
@@ -376,7 +390,7 @@ describe('PlanDashboard header', () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 
-  it('Open full plan starts the popup timing before writing the scoped ?wppop ref', () => {
+  it('Open full plan starts timing before one atomic popup URL transition', () => {
     seed();
     renderDash();
     const primary = screen.getByTestId('plan-dash-open-full');
@@ -388,17 +402,26 @@ describe('PlanDashboard header', () => {
     fireEvent.click(primary);
     expect(beginInteractionSpy).toHaveBeenCalledWith('plan-popup-open');
     expect(beginInteractionSpy.mock.invocationCallOrder[0]).toBeLessThan(
-      setters['wppop'].mock.invocationCallOrder[0]!,
+      setQueryStatesSpy.mock.invocationCallOrder[0]!,
     );
-    expect(setters['wppop']).toHaveBeenCalledWith('papercusp::p1');
+    expect(setQueryStatesSpy).toHaveBeenCalledTimes(1);
+    expect(setQueryStatesSpy).toHaveBeenCalledWith({
+      wppop: 'papercusp::p1',
+      ppv: 'plan',
+      jump: null,
+    });
   });
 
   it('Search transcripts opens the popup onto its Sessions tab', () => {
     seed();
     renderDash();
     fireEvent.click(screen.getByTestId('plan-dash-search-transcripts'));
-    expect(setters['ppv']).toHaveBeenCalledWith('sessions');
-    expect(setters['wppop']).toHaveBeenCalledWith('papercusp::p1');
+    expect(setQueryStatesSpy).toHaveBeenCalledTimes(1);
+    expect(setQueryStatesSpy).toHaveBeenCalledWith({
+      wppop: 'papercusp::p1',
+      ppv: 'sessions',
+      jump: null,
+    });
   });
 
   it('starts a one-plan clean-up from the header and deep-links its run', async () => {
@@ -569,9 +592,11 @@ describe('PlanDashboard direction-A surfaces (plan-dashboard-mission-control-202
     expect(refs).toEqual(["D-007", "D-003", "D-001"]);
     expect(dec.textContent).toContain("3 decisions");
     fireEvent.click(screen.getByTestId("plan-dash-decision-D-001"));
-    expect(setters["ppv"]).toHaveBeenCalledWith("plan");
-    expect(setters["jump"]).toHaveBeenCalledWith("D-001");
-    expect(setters["wppop"]).toHaveBeenCalledWith("papercusp::p1");
+    expect(setQueryStatesSpy).toHaveBeenCalledWith({
+      wppop: "papercusp::p1",
+      ppv: "plan",
+      jump: "D-001",
+    });
   });
 
   it("opens every P-item in the full plan and keeps a separate linked-work-item action", () => {
@@ -619,9 +644,11 @@ describe('PlanDashboard direction-A surfaces (plan-dashboard-mission-control-202
     const promoted = screen.getByTestId("plan-dash-item-P-002");
     expect(promoted.textContent).toContain("WI-77");
     fireEvent.click(screen.getByTestId("plan-dash-item-detail-P-002"));
-    expect(setters["ppv"]).toHaveBeenCalledWith("plan");
-    expect(setters["jump"]).toHaveBeenCalledWith("P-002");
-    expect(setters["wppop"]).toHaveBeenCalledWith("papercusp::p1");
+    expect(setQueryStatesSpy).toHaveBeenCalledWith({
+      wppop: "papercusp::p1",
+      ppv: "plan",
+      jump: "P-002",
+    });
     expect(setters["wpop"]).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByTestId("plan-dash-item-work-P-002"));
@@ -632,8 +659,11 @@ describe('PlanDashboard direction-A surfaces (plan-dashboard-mission-control-202
       "P-003",
     );
     fireEvent.click(screen.getByTestId("plan-dash-item-detail-P-003"));
-    expect(setters["jump"]).toHaveBeenCalledWith("P-003");
-    expect(setters["wppop"]).toHaveBeenLastCalledWith("papercusp::p1");
+    expect(setQueryStatesSpy).toHaveBeenLastCalledWith({
+      wppop: "papercusp::p1",
+      ppv: "plan",
+      jump: "P-003",
+    });
   });
 
   it('collapses consecutive generic edit rows into a run and promotes rationales to notes', () => {

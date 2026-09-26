@@ -118,15 +118,26 @@ describe('pot-git integrator-tick (real bare repo, faked trust + swarm seams)', 
     await writeNamespaceRef(scopedRepo, devA.pubBase64, WORK_REF, sha);
     const signed = await buildSigrefs(scopedRepo, devA.pubBase64, devA.sign, { nowMs: 1, context: peer });
     const oid = (await readNamespaceRef(scopedRepo, devA.pubBase64, SIGREFS_REF))!;
-    const invoke = (acceptedSnapshots: Record<string, SignedSnapshotFloor>) => runIntegratorTick({
+    const invoke = (
+      acceptedSnapshots: Record<string, SignedSnapshotFloor>,
+      runGit = defaultRunGit,
+    ) => runIntegratorTick({
       potHomeSlug: 'hive-i', workspaceId: 'ws-1', repoKey: 'scoped-admission',
       memberDevicePubkeysBase64: [devA.pubBase64], integratorDevicePubkeyBase64: integrator.pubBase64,
       epoch: 1, priorSeq: 0, context: own, acceptedSnapshots, sign: integrator.sign, resolveTier: () => 'steer',
-      deps: { isIntegrator: async () => true, sql: fakeSql() },
+      deps: { isIntegrator: async () => true, sql: fakeSql(), runGit },
     });
-    const missing = await invoke({});
+    const missingFloorGitCalls: string[][] = [];
+    const missing = await invoke({}, async (args, cwd) => {
+      missingFloorGitCalls.push([...args]);
+      return defaultRunGit(args, cwd);
+    });
     expect(missing.gated?.integrated).toBe(0);
     expect(missing.announcement).toBeNull();
+    expect(
+      missingFloorGitCalls.some((args) => args.some((arg) => arg.includes(SIGREFS_REF))),
+      'a device with no accepted floor must not trigger any sigrefs Git read',
+    ).toBe(false);
     const floor = { ...peer, version: signed.version, sigrefs_oid: oid };
     const wrongOid = await invoke({ [devA.pubBase64]: { ...floor, sigrefs_oid: 'c'.repeat(40) } });
     expect(wrongOid.gated?.integrated).toBe(0);

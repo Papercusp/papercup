@@ -81,6 +81,7 @@ import {
 } from './in-flight-candidate';
 import { buildKey } from '../events/await/catalog';
 import type { EmitAwaitedEventOpts } from '../events/await/engine';
+import type { GateOwnershipAssessment } from '../coord/gate-ownership';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -3454,6 +3455,8 @@ export interface StrandedRepairQueueSnapshot {
   fixerSpawnId: string | null;
   /** true = live, false = definitively dead, null = unknown / no fixer recorded. */
   fixerAlive: boolean | null;
+  /** Independent gate-owner oracle; null means ownership could not be measured. */
+  gateOwnership: GateOwnershipAssessment | null;
   /** The queue policy's own current decision kind (e.g. 'wait-for-fixer', 'hold-exhausted'). */
   decision: string;
   manifest: { legs: number; red: number; admitted: number; green: number; pathless: number } | null;
@@ -3463,7 +3466,7 @@ export interface StrandedRepairQueueVerdict {
   alarm: boolean;
   /** The rung this verdict is about; the check re-alarms only when this INCREASES. */
   rung: number;
-  /** awaiting-fixer with no live fixer — the 40h shape, named explicitly in the alarm. */
+  /** awaiting-fixer with neither a live fixer nor a live gate owner. */
   stranded: boolean;
   reason: string | null;
 }
@@ -3473,7 +3476,10 @@ export function evaluateStrandedRepairQueue(s: StrandedRepairQueueSnapshot | nul
   if (!s || !Number.isFinite(s.ageEscalationRung) || s.ageEscalationRung < 1) {
     return { alarm: false, rung: 0, stranded: false, reason: null };
   }
-  const stranded = s.phase === 'awaiting-fixer' && s.fixerAlive !== true;
+  const ownerAbsent = s.gateOwnership === 'unowned' || s.gateOwnership === 'claimable' ||
+    s.gateOwnership === 'lease-expired' || s.gateOwnership === 'held-by-ended-session';
+  const fixerAbsent = !s.fixerSpawnId || s.fixerAlive === false;
+  const stranded = s.phase === 'awaiting-fixer' && fixerAbsent && ownerAbsent;
   const hours = Math.round(s.ageMs / 3_600_000);
   const fixer = !s.fixerSpawnId
     ? 'NO fixer recorded'
@@ -3492,7 +3498,8 @@ export function evaluateStrandedRepairQueue(s: StrandedRepairQueueSnapshot | nul
     stranded,
     reason:
       `Frozen candidate ${s.candidate.slice(0, 12)} has held main for ~${hours}h in phase '${s.phase}' ` +
-      `(age rung ${s.ageEscalationRung}, ${s.attempts} fixer attempt(s); ${fixer}; queue decision '${s.decision}').` +
+      `(age rung ${s.ageEscalationRung}, ${s.attempts} fixer attempt(s); ${fixer}; ` +
+      `gate ownership ${s.gateOwnership ?? 'UNKNOWN'}; queue decision '${s.decision}').` +
       m +
       (stranded
         ? ' STRANDED SHAPE: awaiting a fixer with none live — the queue cannot leave awaiting-fixer until one ' +
@@ -3528,12 +3535,16 @@ export async function checkStrandedRepairQueue(
     const { readFrozenCandidateRepairQueueState } = await import('../harness/routines/release-actions');
     const { diagnoseFrozenCandidateRepairQueue } = await import('./frozen-candidate-repair-queue');
     const { releaseFixerSpawnAlive } = await import('./fixer-liveness');
+    const { readGateOwnership } = await import('../coord/gate-ownership');
     const read = await readFrozenCandidateRepairQueueState({ workspaceId, installSlug });
     const queue = read.status === 'value' ? read.queue : null;
     const fixerAlive = queue?.fixerSpawnId
       ? await releaseFixerSpawnAlive(sql as never, queue.fixerSpawnId).catch(() => null)
       : null;
     const diag = diagnoseFrozenCandidateRepairQueue(queue, { nowMs: now, fixerAlive });
+    const gateOwnership = diag
+      ? await readGateOwnership({ harness: installSlug }).then((ownership) => ownership.assessment).catch(() => null)
+      : null;
     const verdict = evaluateStrandedRepairQueue(
       diag
         ? {
@@ -3544,13 +3555,14 @@ export async function checkStrandedRepairQueue(
             attempts: diag.attempts,
             fixerSpawnId: diag.fixerSpawnId,
             fixerAlive: diag.fixerAlive,
+            gateOwnership,
             decision: diag.decision,
             manifest: diag.manifestSummary,
           }
         : null,
     );
 
-    const existing = await sql<{ escalation: { candidate?: string; rung?: number } | null }[]>`
+    const existing = await sql<{ escalation: { candidate?: string; rung?: number; stranded?: boolean } | null }[]>`
       SELECT escalation FROM harness_shared.harness_escalations
        WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_QUEUE_PHASE}`;
     const prior = existing[0]?.escalation ?? null;
@@ -3558,7 +3570,18 @@ export async function checkStrandedRepairQueue(
 
     if (verdict.alarm && diag) {
       // One-shot per rung: re-alarm only when the rung climbs or a DIFFERENT candidate froze.
-      if (prior && prior.candidate === diag.candidate && (prior.rung ?? 0) >= verdict.rung) return out;
+      if (prior && prior.candidate === diag.candidate && (prior.rung ?? 0) >= verdict.rung) {
+        // A previous pass may have labelled this age alarm stranded before the gate owner was
+        // measured. Correct the durable diagnosis without sending another age-rung alert.
+        if (prior.stranded !== verdict.stranded) {
+          await sql`
+            UPDATE harness_shared.harness_escalations
+               SET escalation = ${JSON.stringify({ ...prior, stranded: verdict.stranded, detail: verdict.reason, corrected_at: now })},
+                   mtime_ms = ${now}
+             WHERE harness_slug = ${installSlug} AND phase = ${STRANDED_REPAIR_QUEUE_PHASE}`;
+        }
+        return out;
+      }
       const title = verdict.stranded
         ? `Frozen repair queue STRANDED ~${Math.round(diag.ageMs / 3_600_000)}h — awaiting a fixer, none live`
         : `Frozen repair queue has held main ~${Math.round(diag.ageMs / 3_600_000)}h`;

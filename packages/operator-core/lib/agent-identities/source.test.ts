@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { describe, expect, it, vi } from 'vitest';
 import { builtinBlueprintPath, SU_MODE_DOCUMENTS } from '@papercusp/orchestrator/blueprint';
+import * as blueprint from '@papercusp/orchestrator/blueprint';
+import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
 import {
   bindSelectedIdentityOutputArtifact, bindSelectedIdentityOutputs, compileSelectedIdentityResources,
   getSelectedModeCatalog, getSelectedModeDefinitions,
@@ -149,6 +151,70 @@ describe('selected identity producer output binding', () => {
     expect(selected.get('cold-auto')!.contract).toContain('## COLD AUTO');
     expect(selected.get('cold-auto')!.sourceRevision).toBe(selected.get('auto')!.sourceRevision);
     await expect(getSelectedModeDefinitions(['unknown-mode'])).rejects.toThrow(/no selected fixed definition/);
+  });
+
+  it('uses the pinned generated catalog and definitions on a host without source YAML', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'packaged-mode-catalog-'));
+    vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
+    vi.spyOn(blueprint, 'builtinBlueprintPath').mockImplementation((id) => join(root, 'missing', id, 'blueprint.yaml'));
+    try {
+      const catalog = await getSelectedModeCatalog();
+      expect(catalog.entries).toEqual(BUILTIN_MODE_COMPONENTS.map(({ definitionText: _text, ...entry }) => entry));
+      const definitions = await getSelectedModeDefinitions(['auto', 'cold-auto', 'goal']);
+      for (const modeId of ['auto', 'goal']) {
+        const compiled = BUILTIN_MODE_COMPONENTS.find((entry) => entry.id === modeId)!;
+        expect(definitions.get(modeId)).toMatchObject({
+          contract: compiled.definitionText, sourceRevision: compiled.sourceHash,
+          definitionHash: compiled.definitionHash, catalogRevision: catalog.revision,
+        });
+      }
+      expect(definitions.get('cold-auto')!.contract).toContain('## COLD AUTO');
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts only exact installed mirrors of a packaged baseline and refuses unmoderated variants', async () => {
+    const raw = parseYaml(readFileSync(builtinBlueprintPath('su.mode-auto'), 'utf8'));
+    const compiled = BUILTIN_MODE_COMPONENTS.find((entry) => entry.id === 'auto')!;
+    const root = mkdtempSync(join(tmpdir(), 'packaged-mode-mirror-'));
+    const dir = join(root, 'home', 'blueprints', 'su.mode-auto');
+    mkdirSync(join(dir, 'prompts'), { recursive: true });
+    writeFileSync(join(dir, 'blueprint.yaml'), stringifyYaml(raw));
+    writeFileSync(join(dir, 'prompts', 'autonomy.md'), compiled.definitionText);
+    vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
+    vi.spyOn(blueprint, 'builtinBlueprintPath').mockImplementation((id) => join(root, 'missing', id, 'blueprint.yaml'));
+    try {
+      expect((await getSelectedModeCatalog()).entries.find((entry) => entry.id === 'auto')!.revision).toBe(compiled.revision);
+      expect((await getSelectedModeDefinitions(['auto'])).get('auto')!.contract).toBe(compiled.definitionText);
+      writeFileSync(join(dir, 'prompts', 'autonomy.md'), 'Unapproved replacement prompt.');
+      await expect(getSelectedModeCatalog()).rejects.toThrow(/no current moderated release approval/);
+      writeFileSync(join(dir, 'prompts', 'autonomy.md'), compiled.definitionText);
+      writeFileSync(join(dir, 'blueprint.yaml'), stringifyYaml({ ...raw, mode: { ...raw.mode, title: 'Unapproved mode' } }));
+      await expect(getSelectedModeCatalog()).rejects.toThrow(/no current moderated release approval/);
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses malformed live builtins instead of hiding them with the packaged baseline', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'packaged-mode-invalid-'));
+    const dir = join(root, 'source', 'su.mode-auto');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'blueprint.yaml'), 'not a source mapping');
+    vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
+    vi.spyOn(blueprint, 'builtinBlueprintPath').mockImplementation((id) => join(root, 'source', id, 'blueprint.yaml'));
+    try {
+      await expect(getSelectedModeCatalog()).rejects.toThrow('blueprint source is not a YAML/JSON mapping');
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('binds every catalogued mode state through its declared turn producer and fixed definition', async () => {

@@ -1107,8 +1107,9 @@ function appendRatingRerunProbes(
  *   1 — cards minted before the stamp existed (absent field reads as 1).
  *   2 — the a49fca9b96 scenario-scoped falsifiability target + the WI-10002724 own-specId
  *       fallback (D-009), which the stamp was introduced alongside.
+ *   3 — correct-layer requires the declared live/deployed evidence plane on a current binding.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 2;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 3;
 
 type MutationTargetClause = Pick<SpecClauseRevision, 'specId' | 'falsifier'>;
 
@@ -1378,7 +1379,7 @@ export function evaluateSpecTestAdequacy(input: {
           rating: 'pass',
           evidence: evidenceWithBindings(
             clauseSelfTarget !== null
-              ? `A bound mutation or counterexample binding targets ${clauseIdentity(clause)} itself, which declares no falsifier scenarios.`
+              ? `A bound mutation or counterexample binding targets ${clauseIdentity(clause)} itself, which declares no falsifier.requiredScenarios${clause.falsifier ? ' (its falsifier observation and probe method do not name scenarios)' : ''}.`
               : `A bound mutation or counterexample binding targets a declared falsifier scenario for ${clauseIdentity(clause)}.`,
             clauseScopedMutationOrCounterexample,
           ),
@@ -1518,23 +1519,43 @@ export function evaluateSpecTestAdequacy(input: {
               ),
             };
   }
-  if (scenarioRating === null) {
-    ratings['correct-layer'] = layerRating;
-  } else {
-    const combinedRating: AdequacyRating =
-      layerRating.rating === 'fail' || scenarioRating.rating === 'fail'
-        ? 'fail'
-        : layerRating.rating === 'unknown' || scenarioRating.rating === 'unknown'
-          ? 'unknown'
-          : 'pass';
-    ratings['correct-layer'] = {
-      rating: combinedRating,
-      evidence: `${layerRating.evidence} Scenario completeness: ${scenarioRating.evidence}`,
-      ...([layerRating.suggestion, scenarioRating.suggestion].filter(Boolean).length > 0
-        ? { suggestion: [layerRating.suggestion, scenarioRating.suggestion].filter(Boolean).join(' ') }
-        : {}),
-    };
-  }
+  // A standalone clause can require a live or deployed observation without a source BAR.
+  // The BAR ship gate checks its own evidence plane, but cannot cover such a clause.
+  // Inspect only current-cohort bindings and use the same explicit plane metadata as
+  // the BAR snapshot; a tree test cannot satisfy a declared live observation.
+  const requiredPlanes = [...new Set(clause.requiredEvidence
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry === 'live' || entry === 'deployed'))];
+  const presentPlanes = new Set(currentEvidence.flatMap((row) => {
+    const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
+    return typeof plane === 'string' ? [plane.trim().toLowerCase()] : [];
+  }));
+  const missingPlanes = requiredPlanes.filter((plane) => !presentPlanes.has(plane));
+  const planeRating: AdequacyRatingEntry | null = requiredPlanes.length === 0 ? null : missingPlanes.length > 0
+    ? {
+        rating: 'fail',
+        evidence: `Required evidence plane(s) are absent for ${clauseIdentity(clause)}: ${missingPlanes.join(', ')}.`,
+        suggestion: 'Bind current evidence with an explicit matching evidencePlane for each requiredEvidence plane.',
+      }
+    : {
+        rating: 'pass',
+        evidence: `Current bindings cover the required evidence plane(s) for ${clauseIdentity(clause)}: ${requiredPlanes.join(', ')}.`,
+      };
+  const parts = [layerRating, scenarioRating, planeRating].filter((part): part is AdequacyRatingEntry => part !== null);
+  const combinedRating: AdequacyRating = parts.some((part) => part.rating === 'fail')
+    ? 'fail'
+    : parts.some((part) => part.rating === 'unknown')
+      ? 'unknown'
+      : parts.every((part) => part.rating === 'not-applicable')
+        ? 'not-applicable'
+        : 'pass';
+  ratings['correct-layer'] = {
+    rating: combinedRating,
+    evidence: parts.map((part) => part.evidence).join(' '),
+    ...((parts.map((part) => part.suggestion).filter(Boolean).length > 0)
+      ? { suggestion: parts.map((part) => part.suggestion).filter(Boolean).join(' ') }
+      : {}),
+  };
 
   ratings['oracle-independence'] = booleanRating(evidence, (d) => d.oracleIndependent, {
     pass: `A bound proof explicitly uses an implementation-independent oracle for ${clauseIdentity(clause)}.`,

@@ -138,6 +138,12 @@ beforeAll(async () => {
       id text PRIMARY KEY, workspace_id text, install_slug text, name text, target_role text,
       active boolean DEFAULT true, trigger_config jsonb, next_fire_at timestamptz
     );
+    -- Claim admission now reads the active operation-worker receipt even for
+    -- ordinary targets; an empty session table proves this fixture has no bound worker.
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
+      role text, started_at timestamptz DEFAULT now(), ended_at timestamptz, ended_by text
+    );
   `);
   await db.sql`INSERT INTO harness_shared.operator_secrets VALUES
     ('spawn-signing-key', ${Buffer.alloc(32, 42).toString('base64')})`;
@@ -263,15 +269,15 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     expect(h.claim).not.toHaveBeenCalled();
   });
 
-  it('renews role capabilities before screening and never treats signed provenance as a grant', async () => {
+  it('rechecks restrictive reviewer scope before screening and never treats signed provenance as a grant', async () => {
     const original = await create();
     await request(original.id);
-    await db.sql`UPDATE harness_shared.system_principals SET capabilities = '["work_items:read","work_items:write"]'`;
+    h.denied = true;
     await tick();
     expect((await row(original.id))).toMatchObject({
       admission: 'pending', taken_by: null,
       payload: { _admissionRecovery: { version: 3, state: 'held', stage: 'authorize',
-        reason: expect.stringContaining('coord:write') } },
+        reason: expect.stringContaining('restrictive reviewer override') } },
     });
     expect(h.model).not.toHaveBeenCalled();
     expect(h.claim).not.toHaveBeenCalled();
@@ -377,14 +383,17 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
   });
 
-  it('reloads revoked target capabilities instead of inheriting the dispatcher or saved request grants', async () => {
+  it('rechecks revoked target authority instead of inheriting the dispatcher or saved request grants', async () => {
     const original = await create();
     await request(original.id);
     await tick();
-    await db.sql`UPDATE harness_shared.system_principals SET capabilities = '["work_items:read"]'`;
-    await expect(pickup(original.id)).rejects.toThrow('missing_capability');
+    h.revoked = true;
+    await expect(pickup(original.id)).rejects.toThrow('revoked');
     expect(h.dispatches.mock.calls.map(([name]) => name)).toEqual(['work_items:pickup']);
     expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
+    h.revoked = false;
+    // Reviewer has a declared blueprint baseline: a narrower provisioned row
+    // cannot revoke its built-in work-item capabilities; the live gate above can.
     await db.sql`UPDATE harness_shared.system_principals SET capabilities = '["work_items:read","work_items:write"]'`;
     await expect(pickup(original.id)).resolves.toMatchObject({ ok: true, claimed: true });
   });

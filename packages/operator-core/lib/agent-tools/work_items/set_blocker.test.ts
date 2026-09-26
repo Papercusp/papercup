@@ -863,6 +863,43 @@ describe('work_items:set_blocker', () => {
     expect(out.workItem.state).toBe('open');
   });
 
+  it('reports persisted clear and the stranded state when lifecycle reopening fails', async () => {
+    const blocker = {
+      kind: 'event', ref: 'meeting:ready', summary: 'Meeting not ready', status: 'active',
+      createdAt: '2026-09-25T15:00:00.000Z', createdBy: 'su-a',
+      updatedAt: '2026-09-25T15:00:00.000Z',
+    };
+    const item = {
+      id: 'WI-1', family: 'issue', kind: 'bug', state: 'blocked', harness: 'papercusp',
+      payload: { externalBlockers: [blocker] },
+    };
+    const persisted = {
+      ...item,
+      payload: { externalBlockers: [{ ...blocker, status: 'cleared' }] },
+    };
+    getWorkItem.mockResolvedValueOnce(item).mockResolvedValueOnce(persisted);
+    mergeWorkItemPayload.mockResolvedValue(persisted);
+    setWorkItemClaimHold.mockRejectedValue(new Error('claim hold update failed'));
+
+    const out = await one({ id: 'WI-1', kind: 'event', ref: 'meeting:ready', clear: true, evidence: 'ready' });
+
+    expect(out).toMatchObject({
+      ok: false,
+      code: 'partial-clear',
+      partialOutcome: {
+        blockerHistoryPersisted: true,
+        lifecycleApplied: false,
+        currentState: 'blocked',
+        activeBlockerCount: 0,
+      },
+      workItem: persisted,
+      activeBlockers: [],
+    });
+    expect(out.error).toContain('claim hold update failed');
+    expect(out.error).toContain('do not repeat the clear blindly');
+    expect(out.partialOutcome.recoveryAction).toContain('work_items:set_state');
+  });
+
   it('EI-13301 backstop: retries the restore when the primary attempt leaves state stuck at blocked', async () => {
     // Simulates the race/no-op EI-13301 reported: the primary open-restore call fires
     // (updated.state was 'blocked') but its OWN result still reports 'blocked' (a

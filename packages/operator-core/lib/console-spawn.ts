@@ -60,6 +60,7 @@ import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 import { scrubTerminalContextEnv } from './terminal-spawn';
 import { CLIENT_SERVER_TERMINALS, PROCESS_PER_WINDOW_TERMINALS } from './linux-terminals';
 import { beginSyncEnrolment, completeSyncEnrolment } from './task-manager/enroll-sync';
+import { killTask } from './task-manager/control';
 import { scopeUnitForTask, sliceForClass } from './task-manager/types';
 import { warmScopeProbe } from './task-manager/managed-spawn';
 import {
@@ -1351,7 +1352,7 @@ export const KICKOFF_PROOF_WINDOW_MS = 30_000;
 
 /** Injectable seams for the detached kickoff-proof receipt poll. */
 export interface KickoffProofProbes {
-  readReceipt?: (path: string) => string;
+  readReceipt?: (path: string, token: string) => string;
   sleep?: (ms: number) => Promise<void>;
   windowMs?: number;
   pollMs?: number;
@@ -1417,7 +1418,7 @@ async function waitForKickoffProof(
   const attempts = Math.max(1, Math.ceil(windowMs / pollMs) + 1);
   for (let attempt = 0; attempt < attempts; attempt++) {
     let proof: KickoffProofResult | null = null;
-    try { proof = parseKickoffProofReceipt(readReceipt(request.path), request.token); }
+    try { proof = parseKickoffProofReceipt(readReceipt(request.path, request.token), request.token); }
     catch { proof = null; }
     if (proof) return proof;
     if (attempt + 1 < attempts) await sleep(pollMs);
@@ -2750,6 +2751,29 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       ? await waitForKickoffProof(kickoffProofRequest, opts.kickoffProofProbes)
       : undefined;
     cleanupKickoffProofRequest(kickoffProofRequest);
+
+    // A host receipt saying the kickoff was never submitted is conclusive: this
+    // child cannot become the requested agent. Reap the enrolled task now so a
+    // partial launch does not strand an idle headless process and its scope.
+    // An absent/timed-out proof is only uncertainty; preserve that process and
+    // its identity for the caller to inspect rather than killing a live turn.
+    if (kickoffProof?.reason?.startsWith('kickoff-not-submitted:')) {
+      let cleaned = false;
+      try {
+        const cleanup = await killTask(enrolment.taskId);
+        cleaned = cleanup.ok || cleanup.error === 'already_gone';
+      } catch {
+        // Preserve the task identity in the partial-launch result below so
+        // the caller can inspect and recover it when cleanup itself fails.
+      }
+      if (cleaned) {
+        return {
+          status: 'error',
+          error: `headless kickoff was not submitted (${kickoffProof.reason}); task ${enrolment.taskId} was stopped or already gone`,
+          code: 502,
+        };
+      }
+    }
 
     return {
       status: 'ok',

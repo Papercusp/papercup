@@ -757,7 +757,7 @@ export function detectUnsafeFrozenCarryInstruction(text: string): UnsafeFrozenCa
         // still catch instructions that actually run or judge against a
         // moving source.
         const directRelationBefore = new RegExp(
-          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))|worktree)\b.{0,140}\b(?:from|at|on|to|is|equals?)\b.{0,70}${pattern}\s*$`,
+          String.raw`\b(?:candidate|judged\s+candidate|canonical(?:\s+(?:test|verification|verdict|run))|worktree(?!\s+list\b))\b.{0,140}\b(?:from|at|on|to|is|equals?)\b.{0,70}${pattern}\s*$`,
           'i',
         ).exec(throughSource);
         const directRelationAfter = new RegExp(

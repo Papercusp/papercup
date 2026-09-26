@@ -3031,6 +3031,7 @@ export async function bindOrientOutputResult<T extends Record<string, unknown>>(
         return bind({
           identityId: 'su', sourceTier: 'builtin',
           outputs: [
+            { contributionId: 'coord-orientation', value: result },
             { contributionId: 'current-mode-state', value: modeRows },
             { contributionId: 'current-assignment', value: {
               ownerId: presence.ownerId, intent: presence.intent,

@@ -4,7 +4,11 @@ import { createHash } from 'node:crypto';
 import postgres from 'postgres';
 import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
-import { parseJsonWithTrailer } from '@papercusp/tooldef';
+import {
+  parseJsonWithTrailer,
+  type AbortCompletionReceipt,
+  type ToolResult,
+} from '@papercusp/tooldef';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
@@ -2212,11 +2216,20 @@ export async function emitScorecard(
     let auditContext: {
       subjectIssueId: string;
       auditor: string;
+      verdict: 'passed' | 'failed';
       rubricRevision?: number;
       criteriaHash?: string;
       dispatchReservation?: { key: string; reservedAt: string };
     } | null = null;
     if (args.rubricRef === GRADING_INTEGRITY_RUBRIC_REF) {
+      const auditVerdict = auditVerdictFromRatings(ratings);
+      if (auditVerdict === null) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_verdict_unknown' as const,
+          error: 'grading-integrity ratings cannot establish a passed or failed verdict; resolve unknown ratings before emitting an audit card',
+        };
+      }
       if (args.subject?.kind !== 'scorecard' || !args.subject.ref) {
         return {
           ok: false as const,
@@ -2426,6 +2439,7 @@ export async function emitScorecard(
       auditContext = {
         subjectIssueId: args.subject.ref,
         auditor: input.createdBy,
+        verdict: auditVerdict,
         ...(rubric.revision != null ? { rubricRevision: rubric.revision } : {}),
         ...(rubric.criteriaHash ? { criteriaHash: rubric.criteriaHash } : {}),
         ...(args.gradingAuditReservation ? { dispatchReservation: args.gradingAuditReservation } : {}),
@@ -2963,30 +2977,16 @@ export async function emitScorecard(
     let auditSettlement: Awaited<ReturnType<typeof recordGradingAudit>> | undefined;
     let auditCleanupError: string | undefined;
     if (auditContext && result.created && result.issue?.id) {
-      const auditVerdict = auditVerdictFromRatings(ratings);
-      if (auditVerdict === null) {
-        auditSettlement = {
-          ok: false,
-          issueId: auditContext.subjectIssueId,
-          error:
-            "grading-integrity audit card '" +
-            result.issue.id +
-            "' has unknown or unrecognized ratings; graded scorecard '" +
-            auditContext.subjectIssueId +
-            "' remains pending",
-        };
-      } else {
-        auditSettlement = await recordGradingAudit(auditContext.subjectIssueId, {
-          auditIssueId: result.issue.id,
-          auditor: auditContext.auditor,
-          verdict: auditVerdict,
-          requireCurrentIdentity: true,
-          ...(auditContext.dispatchReservation ? { dispatchReservation: auditContext.dispatchReservation } : {}),
-          ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
-          ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
-          ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
-        });
-      }
+      auditSettlement = await recordGradingAudit(auditContext.subjectIssueId, {
+        auditIssueId: result.issue.id,
+        auditor: auditContext.auditor,
+        verdict: auditContext.verdict,
+        requireCurrentIdentity: true,
+        ...(auditContext.dispatchReservation ? { dispatchReservation: auditContext.dispatchReservation } : {}),
+        ...(auditContext.rubricRevision != null ? { rubricRevision: auditContext.rubricRevision } : {}),
+        ...(auditContext.criteriaHash ? { criteriaHash: auditContext.criteriaHash } : {}),
+        ...(args.supersedes ? { supersedesAuditIssueId: args.supersedes } : {}),
+      });
       if (auditSettlement.ok) {
         try {
           await (deps.closeSourceAuditConsults ?? closeSourceAuditConsults)(
@@ -3150,6 +3150,12 @@ export default defineTool({
   // extend the transport race instead of returning request_timeout while the
   // mutation is still running server-side.
   timeoutSec: SCORECARD_EMIT_TIMEOUT_SEC,
+  // EI-24054635524770728: force:true deliberately permits two distinct cards, so
+  // this tool is NOT globally idempotent. A completed handler can still prove
+  // what this exact attempt did through its durable issue id. The dispatcher's
+  // abort-race branch surfaces only that receipt-bearing result and fails closed
+  // when the receipt is absent or incomplete.
+  abortCompletionReceipt: (_args, result) => scorecardAbortCompletionReceipt(result),
   agentRoles: [...COORD_ROLES, 'judge'],
   args: scorecardEmitArgs,
   // The `returns` prose above INTERPRETS this result; the structural shape comes from
@@ -3182,9 +3188,88 @@ export default defineTool({
     })
     .passthrough(),
   async handler(args, ctx) {
-    return { data: await emitScorecardForToolContext(args, ctx) };
+    const data = await emitScorecardForToolContext(args, ctx);
+    return { data: attachScorecardCompletionReceipt(data) };
   },
 });
+
+type ScorecardCompletionData = {
+  ok: boolean;
+  created?: boolean;
+  issueId?: string | null;
+  previousIssueId?: string | null;
+  reason?: string;
+  code?: string;
+  error?: string;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+export function scorecardCompletionReceipt(data: ScorecardCompletionData): AbortCompletionReceipt {
+  if (!data.ok) {
+    return {
+      status: 'not-recorded',
+      reason: data.code ?? data.error ?? data.reason ?? 'scorecard emit refused before recording a card',
+    };
+  }
+  const effectRef = data.issueId ?? data.previousIssueId ?? null;
+  if (effectRef) {
+    return {
+      status: 'recorded',
+      effectRef,
+      ...(data.created === false ? { reason: data.reason ?? 'existing-card' } : {}),
+    };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'scorecard emit reported success without a durable issue identity',
+    failures: ['missing-issue-id'],
+  };
+}
+
+export function attachScorecardCompletionReceipt<T extends ScorecardCompletionData>(
+  data: T,
+): T & { completionReceipt: AbortCompletionReceipt } {
+  return { ...data, completionReceipt: scorecardCompletionReceipt(data) };
+}
+
+function scorecardResultPayload(result: ToolResult): Record<string, unknown> | null {
+  const structured = asRecord(result.structuredContent);
+  if (structured) return structured;
+  const firstText = result.content.find(
+    (item): item is Extract<ToolResult['content'][number], { type: 'text' }> => item.type === 'text',
+  );
+  if (!firstText) return null;
+  try {
+    return asRecord(JSON.parse(firstText.text));
+  } catch {
+    return asRecord(parseJsonWithTrailer(firstText.text)?.value);
+  }
+}
+
+export function scorecardAbortCompletionReceipt(result: ToolResult): AbortCompletionReceipt {
+  const receipt = asRecord(scorecardResultPayload(result)?.completionReceipt);
+  const status = receipt?.status;
+  if (!receipt || (status !== 'recorded' && status !== 'not-recorded' && status !== 'recovery-incomplete')) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'scorecards:emit result omitted a valid completionReceipt',
+      failures: ['missing-completion-receipt'],
+    };
+  }
+  return {
+    status,
+    ...(typeof receipt.effectRef === 'string' ? { effectRef: receipt.effectRef } : {}),
+    ...(typeof receipt.reason === 'string' ? { reason: receipt.reason } : {}),
+    ...(Array.isArray(receipt.failures) && receipt.failures.every((value) => typeof value === 'string')
+      ? { failures: receipt.failures as string[] }
+      : {}),
+  };
+}
 
 /**
  * The scorecards:emit handler body, exported so a composing verb

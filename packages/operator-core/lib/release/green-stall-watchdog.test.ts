@@ -3416,6 +3416,7 @@ describe('evaluateStrandedRepairQueue (WI-10002439)', () => {
     attempts: 1,
     fixerSpawnId: 'spawn-1',
     fixerAlive: false,
+    gateOwnership: 'unowned',
     decision: 'recover-dead-fixer',
     manifest: { legs: 2, red: 1, admitted: 0, green: 1, pathless: 0 },
     ...over,
@@ -3451,6 +3452,31 @@ describe('evaluateStrandedRepairQueue (WI-10002439)', () => {
     expect(v.alarm).toBe(true);
     expect(v.stranded).toBe(false);
     expect(v.reason).not.toContain('STRANDED SHAPE');
+  });
+
+  it('a held-live gate owner prevents the false none-live alarm despite no recorded fixer', () => {
+    const v = evaluateStrandedRepairQueue(base({ fixerSpawnId: null, fixerAlive: null, gateOwnership: 'held-live' }));
+    expect(v.alarm).toBe(true);
+    expect(v.stranded).toBe(false);
+    expect(v.reason).toContain('gate ownership held-live');
+    expect(v.reason).not.toContain('STRANDED SHAPE');
+  });
+
+  it('a stalled but live owner is not absent; an ended owner is', () => {
+    expect(evaluateStrandedRepairQueue(base({ gateOwnership: 'held-stalled' })).stranded).toBe(false);
+    expect(evaluateStrandedRepairQueue(base({ gateOwnership: 'held-by-ended-session' })).stranded).toBe(true);
+  });
+
+  it('unknown gate ownership or fixer liveness cannot prove nobody is live', () => {
+    for (const over of [
+      { fixerSpawnId: null, fixerAlive: null, gateOwnership: null },
+      { fixerSpawnId: 'spawn-1', fixerAlive: null, gateOwnership: 'unowned' as const },
+      { fixerSpawnId: null, fixerAlive: null, gateOwnership: 'held-needs-confirmation' as const },
+    ]) {
+      const v = evaluateStrandedRepairQueue(base(over));
+      expect(v.alarm).toBe(true);
+      expect(v.stranded).toBe(false);
+    }
   });
 
   it('pathless manifest rows are REPORTED, never a trigger on their own (pathless = admittable by hand)', () => {

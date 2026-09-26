@@ -409,6 +409,40 @@ describe('with the task manager ON', () => {
     warn.mockRestore();
   });
 
+  it('releases a retained failed service even when its ledger registration failed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    registerTask.mockRejectedValueOnce(new Error('database unavailable'));
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    const terminal = {
+      capturedAt: '2026-09-26T19:30:33.000Z',
+      scopeUnit: e.scopeUnit!,
+      cgroupPath: null,
+      invocationId: 'unregistered-failure',
+      loadState: 'loaded',
+      activeState: 'failed',
+      serviceResult: 'exit-code',
+      execMainCode: 1,
+      execMainStatus: 3,
+      memoryMaxBytes: null,
+      peakMemoryBytes: 1024,
+      peakMemorySource: 'systemd' as const,
+    };
+    const inspect = vi.fn(async () => new Map([[e.scopeUnit!, terminal]]));
+    const reset = vi.fn(async () => true);
+
+    completeSyncEnrolment(e, spec as never, 4242);
+    finishSyncEnrolment(
+      e,
+      { state: 'exited', exitCode: 3 },
+      { inspectTaskUnitTerminals: inspect, resetFailedTaskUnit: reset },
+    );
+
+    await vi.waitFor(() => expect(reset).toHaveBeenCalledWith(terminal));
+    expect(inspect).toHaveBeenCalledWith([e.scopeUnit]);
+    expect(closeTask).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('closes the row on finish', () => {
     const e = beginSyncEnrolment({ class: 'bash-job' });
     finishSyncEnrolment(e, { state: 'exited', exitCode: 0 });

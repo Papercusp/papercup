@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AdmissionOutcome, AdmitPathsInput } from "@papercusp/operator-core/lib/release/repair-head-admission";
 import {
   GEN_CHECK_SELF_HEAL_ACTOR,
+  applyGenCheckHeal,
   describeGenCheckHeal,
   genCheckEntriesOf,
   healGenCheckLegs,
@@ -67,7 +68,7 @@ function fakeIo(opts: FakeOpts = {}) {
     log: (line) => log.push(line),
     now: () => 1_700_000_000_000,
   };
-  return { io, scripts, admits, built, log };
+  return { io, scripts, admits, built, log, resetWriter: () => { writerRan = false; } };
 }
 
 const queue = { candidate: CAND, repairHead: HEAD };
@@ -190,6 +191,43 @@ describe("healGenCheckLegs", () => {
     });
     const out = await healGenCheckLegs(f.io, { root: "/r", queue, signature: genRed });
     expect(out).toMatchObject({ kind: "admission-refused", refusal: { code: "lineage-ref-moved" }, paths: ["x.json"] });
+  });
+
+  it("regenerates on the current head when a concurrent admission moves the lineage", async () => {
+    const newerHead = "f".repeat(40);
+    const f = fakeIo({
+      dirtyAfter: [".papercusp/tool-catalog.json"],
+      admit: (input) => input.repairHead === HEAD
+        ? { ok: false, code: "lineage-ref-moved", detail: "a fixer admitted" } as AdmissionOutcome
+        : {
+            ok: true, commit: NEXT, tree: "e".repeat(40),
+            entry: {
+              fromRepairHead: newerHead, toRepairHead: NEXT,
+              paths: [".papercusp/tool-catalog.json"],
+              atMs: 1_700_000_000_000,
+            },
+          } as AdmissionOutcome,
+    });
+    const freshQueue = { ...queue, repairHead: newerHead, updatedAtMs: 2 } as never;
+    f.io.refreshAfterRefMove = async () => {
+      f.resetWriter(); // rematerializing the new head discards the old writer delta
+      return freshQueue;
+    };
+    const out = await healGenCheckLegs(f.io, { root: "/r", queue, signature: genRed });
+    expect(out).toMatchObject({
+      kind: "healed", fromRepairHead: newerHead, refreshedQueue: freshQueue,
+    });
+    expect(f.built.map((b) => b.repairHead)).toEqual([HEAD, newerHead]);
+    expect(f.scripts).toEqual([
+      "gen:tool-catalog", "gen:tool-catalog:check",
+      "gen:tool-catalog", "gen:tool-catalog:check",
+    ]);
+    expect(f.admits.map((a) => a.repairHead)).toEqual([HEAD, newerHead]);
+    if (out.kind === "healed") {
+      const applied = applyGenCheckHeal(out.refreshedQueue!, out);
+      expect(applied.repairHead).toBe(NEXT);
+      expect(applied.admissions?.at(-1)?.fromRepairHead).toBe(newerHead);
+    }
   });
 
   it("probe-failed when the source commit cannot be built", async () => {

@@ -349,7 +349,13 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
               return { gaps, longTasks, supportsLongTasks: observer !== null };
             },
           };
-          const records: Array<{ api: string; ms: number; at: number; stack?: string }> = [];
+          const records: Array<{
+            api: string;
+            ms: number;
+            at: number;
+            target?: string;
+            stack?: string;
+          }> = [];
           const restores: Array<() => void> = [];
           const observe = (proto: object, key: string) => {
             const descriptor = Object.getOwnPropertyDescriptor(proto, key);
@@ -369,6 +375,36 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
           };
           for (const key of ['getBoundingClientRect', 'getClientRects', 'scrollIntoView', 'clientWidth', 'clientHeight', 'scrollHeight']) observe(Element.prototype, key);
           for (const key of ['offsetWidth', 'offsetHeight', 'focus', 'innerText']) observe(HTMLElement.prototype, key);
+          // Radix Presence reads computed animation styles during a dialog
+          // mount. On a large desktop tree that can force a full style flush
+          // before the popup's data effect dispatches. Element-property probes
+          // above cannot see a global getComputedStyle call, so retain the
+          // target identity for any slow one instead of reporting only a
+          // generic React effect stack.
+          const originalGetComputedStyle = window.getComputedStyle;
+          window.getComputedStyle = ((element: Element, pseudoElt?: string | null) => {
+            const at = performance.now();
+            try {
+              return originalGetComputedStyle.call(window, element, pseudoElt);
+            } finally {
+              const ms = performance.now() - at;
+              if (ms >= 10) {
+                const testId = element.getAttribute('data-testid');
+                const id = element.id ? `#${element.id}` : '';
+                const classes = Array.from(element.classList).slice(0, 4);
+                records.push({
+                  api: 'getComputedStyle',
+                  ms,
+                  at,
+                  target: `${element.tagName.toLowerCase()}${id}${testId ? `[data-testid="${testId}"]` : ''}${classes.length ? `.${classes.join('.')}` : ''}`.slice(0, 240),
+                  stack: new Error().stack?.slice(0, 1600),
+                });
+              }
+            }
+          }) as typeof window.getComputedStyle;
+          restores.push(() => {
+            window.getComputedStyle = originalGetComputedStyle;
+          });
           (window as unknown as { __perfLayoutProbe: { records: typeof records; restore(): void } }).__perfLayoutProbe = {
             records, restore: () => restores.forEach((restore) => restore()),
           };
@@ -740,16 +776,36 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     console.log('[perf] plan-popup start wall time', startWallMs === null ? 'missing' : new Date(startWallMs).toISOString());
     console.log('[perf] plan-popup phases (cumulative click-to-phase ms)', JSON.stringify(phases));
     if (process.env.PAPERCUSP_PERF_REACT_MODULE) {
-      const effects = await browser.execute(() => {
-        const probe = (window as unknown as { __perfReactProbe?: { records: unknown[]; restore(): void } }).__perfReactProbe;
+      const effects = await browser.execute((name) => {
+        const probe = (window as unknown as {
+          __perfReactProbe?: {
+            records: Array<{ hook: string; ms: number; at: number; stack?: string }>;
+            restore(): void;
+          };
+        }).__perfReactProbe;
+        const interaction = performance.getEntriesByName(name, 'measure').at(-1);
         probe?.restore();
-        return probe?.records ?? [];
-      });
+        return (probe?.records ?? []).map((record) => ({
+          ...record,
+          atMs: interaction ? Math.round(record.at - interaction.startTime) : null,
+        }));
+      }, INTERACTION_NAME);
       console.log('[perf] React effects', JSON.stringify(effects));
     }
     if (process.env.PAPERCUSP_PERF_LAYOUT_DIAGNOSTIC === '1') {
       const diagnostics = await browser.execute((name) => {
-        const probe = (window as unknown as { __perfLayoutProbe?: { records: unknown[]; restore(): void } }).__perfLayoutProbe;
+        const probe = (window as unknown as {
+          __perfLayoutProbe?: {
+            records: Array<{
+              api: string;
+              ms: number;
+              at: number;
+              target?: string;
+              stack?: string;
+            }>;
+            restore(): void;
+          };
+        }).__perfLayoutProbe;
         probe?.restore();
         const interaction = performance.getEntriesByName(name, 'measure').at(-1);
         const triggerReturn = performance.getEntriesByName(`${name}:trigger-return`, 'mark').at(-1);
@@ -761,7 +817,10 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
           } };
         }).__perfEventLoopProbe?.stop();
         return {
-          layout: probe?.records ?? [],
+          layout: (probe?.records ?? []).map((record) => ({
+            ...record,
+            atMs: interaction ? Math.round(record.at - interaction.startTime) : null,
+          })),
           supportsLongTasks: probeResult?.supportsLongTasks ?? false,
           visibility: document.visibilityState,
           triggerReturnMs: interaction && triggerReturn

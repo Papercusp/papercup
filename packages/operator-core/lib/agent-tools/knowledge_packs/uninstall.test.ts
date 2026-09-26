@@ -54,4 +54,14 @@ describe('knowledge_packs:uninstall tool', () => {
   it('returns the core result', async () => {
     expect(body(await callTool({ pot: 'h', pack: 'p1' }))).toMatchObject({ ok: true, removed: 5 });
   });
+
+  it('preserves partial cleanup failure details for callers to retry', async () => {
+    const failed = {
+      ok: false, packId: 'p1', removed: 1, kept: [],
+      failed: [{ id: 'memory-2', error: 'memory store unavailable' }],
+      error: '1 memory row deletion(s) failed; retry uninstall to finish cleanup',
+    };
+    mockUninstall.mockResolvedValue(failed);
+    expect(body(await callTool({ pot: 'h', pack: 'p1' }))).toEqual(failed);
+  });
 });

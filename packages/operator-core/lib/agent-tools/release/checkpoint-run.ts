@@ -750,6 +750,7 @@ export default defineTool({
     // path that continues would wipe every preLaunchExclusion key.
     let ownershipLivenessAmbiguous = false;
     let gateOwnershipAtDispatch: Awaited<ReturnType<typeof readGateOwnership>> | null = null;
+    let gateOwnershipObservedAt: string | null = null;
     let gateCallerOwnerId: string | null = null;
     // A claim whose holder the oracle CONFIRMS dead (`ended`). The stand-down rail already
     // lets these through — `POSITIVELY_LIVE` maps `ended` to false — so this changes no
@@ -758,6 +759,7 @@ export default defineTool({
     let ownershipAbandoned = false;
     const ownership = await readGateOwnership({ harness: installSlug });
     gateOwnershipAtDispatch = ownership;
+    gateOwnershipObservedAt = new Date().toISOString();
     // Resolving the CALLER can throw (a power-user ctx missing its uiClientId). If we cannot
     // tell who we are, we cannot tell whether the claim is our OWN — and refusing then would
     // block an agent from re-firing its own gate. Unknown identity ⇒ fail open, like every
@@ -1804,6 +1806,38 @@ export default defineTool({
       candidateSource: launchCandidateSource,
       logicalAttemptId,
     });
+    // Stamp at the launch boundary: refusal and already-running paths return
+    // before the later containment diagnostics, and those diagnostics can fail.
+    // A transport-success row must still carry the actual launch effect.
+    const transportedCandidateSha = launchCandidate ?? result.willJudge?.candidate ?? null;
+    recordMetadata({
+      gateActionReceipt: {
+        schemaVersion: 1,
+        action: 'checkpoint-run',
+        callerOwnerId: gateCallerOwnerId,
+        ownership: gateOwnershipAtDispatch?.claimState === 'held' && gateOwnershipAtDispatch.workItem
+          ? {
+              certainty: 'prelaunch-observation',
+              observedAt: gateOwnershipObservedAt,
+              conditionKey: gateOwnershipAtDispatch.eventKey,
+              workItem: gateOwnershipAtDispatch.workItem,
+              holder: gateOwnershipAtDispatch.takenBy,
+              takenAt: gateOwnershipAtDispatch.takenAt,
+              claimState: gateOwnershipAtDispatch.claimState,
+              assessment: gateOwnershipAtDispatch.assessment,
+            }
+          : { certainty: 'unknown', observedAt: gateOwnershipObservedAt,
+              conditionKey: gateOwnershipAtDispatch?.eventKey ?? null,
+              reason: gateOwnershipAtDispatch?.unknown?.code ?? 'no-held-condition' },
+        target: { candidate: transportedCandidateSha, repairHead: frozenLineageCas.liveIdentity?.repairHead ?? null },
+        effect: {
+          status: result.launched ? 'detached-launch-accepted' : 'not-launched',
+          unit: result.unit ?? null,
+          reason: result.reason ?? null,
+          publishedVerdict: 'unknown',
+        },
+      },
+    });
     if (
       !result.launched &&
       !(result.reason === 'already_running' && qualificationReservation.status === 'idempotent')
@@ -2131,7 +2165,6 @@ export default defineTool({
     // hour before making both mistakes, which is the evidence that a rule you must recall
     // at exactly the right instant is a detector that only fires for someone who already
     // knows. It belongs in the return value.
-    const transportedCandidateSha = launchCandidate ?? result.willJudge?.candidate ?? null;
     const reportedWillJudge = result.willJudge
       ? {
           ...result.willJudge,
@@ -2160,31 +2193,6 @@ export default defineTool({
           queueCas: frozenLineageCas.reason,
         }
       : null;
-    // The detached unit accepting a launch is an effect, not a published verdict.
-    // Keep that distinction and the non-atomic ownership observation in the
-    // invocation row; a later audit must never infer either from status='ok'.
-    recordMetadata({
-      gateActionReceipt: {
-        schemaVersion: 1,
-        action: 'checkpoint-run',
-        callerOwnerId: gateCallerOwnerId,
-        ownership: gateOwnershipAtDispatch?.claimState === 'held' && gateOwnershipAtDispatch.workItem
-          ? {
-              certainty: 'prelaunch-observation',
-              workItem: gateOwnershipAtDispatch.workItem,
-              holder: gateOwnershipAtDispatch.takenBy,
-              assessment: gateOwnershipAtDispatch.assessment,
-            }
-          : { certainty: 'unknown', reason: gateOwnershipAtDispatch?.unknown?.code ?? 'no-held-condition' },
-        target: { candidate: transportedCandidateSha, repairHead: frozenLineageCas.liveIdentity?.repairHead ?? null },
-        effect: {
-          status: result.launched ? 'detached-launch-accepted' : 'not-launched',
-          unit: result.unit ?? null,
-          reason: result.reason ?? null,
-          publishedVerdict: 'unknown',
-        },
-      },
-    });
     const reportedContainment = containment
       ? {
           ...containment,

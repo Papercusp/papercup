@@ -8,6 +8,8 @@ import {
   GoogleGmailApiError,
   googleGmailBackfillParked,
   googleGmailBackfillPending,
+  googleGmailIncrementalParked,
+  googleGmailIncrementalPending,
   googleGmailSourceEmail,
   googleGmailSourceHistoryId,
   googleGmailWatchExpiresAt,
@@ -266,6 +268,13 @@ export async function runGoogleGmailPoll(
         source,
         source.ownerUserId ? `owner:${source.ownerUserId}` : null,
       );
+      // A quota cool-down applies to the whole mailbox, including history and
+      // notification follow-up. Pulling the same doorbells during it cannot
+      // make progress and competes with interactive sends for per-user quota.
+      if (googleGmailBackfillParked(source, now()) || googleGmailIncrementalParked(source, now())) {
+        result.quotaThrottled += 1;
+        continue;
+      }
       let authAttempt = 0;
       const prepared = await withAccessTokenRetry(source, ctx.installSlug, async (accessToken) => {
         let current =
@@ -275,7 +284,7 @@ export async function runGoogleGmailPoll(
         let fullResyncs = 0;
         // A cursorless mailbox bootstraps here; a cursored one whose resumable
         // backfill is still pending advances it by one budgeted chunk per poll.
-        if (!googleGmailSourceHistoryId(current) || googleGmailBackfillPending(current)) {
+        if (!googleGmailSourceHistoryId(current) || googleGmailBackfillPending(current) || googleGmailIncrementalPending(current)) {
           const initial = await syncSource(sql, current, accessToken, syncOptions);
           messages += initial.messages;
           messagesGone += initial.messagesGone;
@@ -286,6 +295,9 @@ export async function runGoogleGmailPoll(
           const persisted = await getSource(sql, ctx.workspaceId, current.id);
           if (!persisted) throw new Error(`google_gmail_source_missing_after_initial_sync:${current.id}`);
           current = persisted;
+          if (initial.incrementalPending) {
+            return { readySource: current, renewed: false, messages, messagesGone, fullResyncs, incrementalPending: true };
+          }
         }
         // The users.watch renewal shares the per-user quota with the backfill
         // chunk that just ran. While that backfill is parked on a quota
@@ -319,7 +331,7 @@ export async function runGoogleGmailPoll(
         return { readySource, renewed: watched.renewed, messages, messagesGone, fullResyncs };
       });
       sourceById.set(source.id, prepared.readySource);
-      readySourceIds.add(source.id);
+      if (!prepared.incrementalPending) readySourceIds.add(source.id);
       result.messages += prepared.messages;
       result.messagesGone += prepared.messagesGone;
       result.fullResyncs += prepared.fullResyncs;
@@ -335,6 +347,14 @@ export async function runGoogleGmailPoll(
       }
       await recordFailure(source, cause);
     }
+  }
+
+  // No mailbox can safely consume a notification yet. Leave Pub/Sub alone so
+  // it redelivers only when a source's incremental cursor can advance again.
+  if (readySourceIds.size === 0) {
+    result.failed = failedSourceIds.size;
+    result.succeeded = sources.length - result.failed;
+    return result;
   }
 
   const maxMessages = boundedInteger(ctx.triggerConfig.max_messages, 100, 1, 1_000);

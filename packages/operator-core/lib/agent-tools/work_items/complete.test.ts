@@ -2360,6 +2360,8 @@ describe('work_items:complete (keyed-array)', () => {
     it('documents specAdequacy/outputPayload as top-level siblings and auto-hoists a nested specAdequacy (EI-22073105984724419, was EI-21709695952126373)', () => {
       expect(complete.guidance?.when).toContain('top-level siblings of `completion`');
       expect(complete.guidance?.when).toContain('auto-hoisted');
+      expect(complete.guidance?.when).toContain('results[].workItem.payload.out');
+      expect(complete.guidance?.when).toContain('payloadTier:"full"');
       const parsed = (
         complete.args as {
           safeParse: (x: unknown) => {

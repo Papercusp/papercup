@@ -58,6 +58,9 @@ describe('portable contribution refresh at the selected-identity boundary', () =
     }, (input) => bindSelectedIdentityOutputs({ ...input, sourceTier: 'builtin' }),
     async (ownerId) => ({ ownerId, workspaceId: 'refresh-workspace', intent: 'refresh fixture',
       currentPlanSlug: null, stale: false }));
+    expect(receipt.root).toMatchObject({ contributions: expect.arrayContaining([
+      expect.objectContaining({ contributionId: 'turn-start-orientation', status: 'bound' }),
+    ]) });
     expect(receipt.goal).toMatchObject({ contributions: expect.arrayContaining([
       expect.objectContaining({ contributionId: 'goal-portfolio', status: 'omitted:not-requested' }),
       expect.objectContaining({ contributionId: 'goal-obligations', status: 'omitted:ineligible' }),

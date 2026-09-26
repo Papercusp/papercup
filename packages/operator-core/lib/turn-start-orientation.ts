@@ -4541,6 +4541,7 @@ export async function bindTurnStartIdentityOutputs(input: {
         return bind({
           identityId: 'su', sourceTier: 'builtin',
           outputs: [
+            { contributionId: 'turn-start-orientation', value: input.block },
             { contributionId: 'current-mode-state', value: input.state.modes },
             { contributionId: 'current-assignment', value: {
               ownerId: presence.ownerId, intent: presence.intent,

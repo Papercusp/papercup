@@ -70,6 +70,19 @@ const NON_RATING_DIRECTIVE_WORDS = new Set([
 // narrow preserves the fail-closed behavior for real, unquoted labels.
 const NON_RATING_TARGET_WORDS = new Set(['it', 'this', 'that', 'them', 'one', 'ones']);
 
+// In an inspection procedure, "read the scorecard and grade lineage" names
+// two things to read. The second noun phrase is not a command to emit a rating.
+// Restrict this exception to metadata objects in the same inspection clause;
+// a standalone "Grade lineage" (or a quoted rating) remains a directive.
+const GRADE_METADATA_OBJECT_RE = /^(?:lineage|provenance|history|record|records|metadata)\b/i;
+const INSPECTION_CONJUNCTION_RE = /\b(?:read|inspect|review|trace|verify|check|audit)\b[^.!?;:\n]*\band\s+$/i;
+
+function isInspectedGradeMetadata(text: string, directiveStart: number, input: string): boolean {
+  if (!GRADE_METADATA_OBJECT_RE.test(input.trimStart())) return false;
+  const clause = text.slice(Math.max(0, directiveStart - 180), directiveStart);
+  return INSPECTION_CONJUNCTION_RE.test(clause);
+}
+
 function normalizeRating(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, ' ');
 }
@@ -259,7 +272,9 @@ export function extractRubricRatingInstructions(
     if (preceding === '+' || preceding === '-' || preceding === '/') continue;
     const directiveEnd = directiveStart + match[0].length;
     if (isNumberedProcedureHeading(text, directiveStart, directiveEnd)) continue;
-    const target = parseDirectiveTarget(text.slice(directiveStart + match[0].length), directive);
+    const input = text.slice(directiveEnd);
+    if (directive.toLowerCase() === 'grade' && isInspectedGradeMetadata(text, directiveStart, input)) continue;
+    const target = parseDirectiveTarget(input, directive);
     if (!target) continue;
     const end = directiveStart + match[0].length + target.end;
     instructions.push({

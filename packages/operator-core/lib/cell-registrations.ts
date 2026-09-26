@@ -1080,7 +1080,7 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
 
   visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
-  changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.ownership.claimState' },
+  changeSignal: { kind: 'poll', tool: 'dev:gate_ownership', path: 'gate.ownership.claimState' },
   shape:
     '{ gate: { ownership: { eventKey, workItem, claimState, unknown, takenBy, takenAt, lastProgressAt, expiresAt, holderSessionState, duplicates[], ' +
     'thread: { recent[{ at, author, text, chars, truncated }], shown, total, topics[{ slug, ref, since }], unknown } } }, verdictUnknown[] }',

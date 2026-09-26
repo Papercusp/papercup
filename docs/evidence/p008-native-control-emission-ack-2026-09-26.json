@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-008 native control delivery: withheld emission stays Prepared; actual hook emission precedes Applied",
+  "framework": "operational",
+  "command": [
+    "Verify staging /api/health sha b95c119c84; set this session loop interval from 60 to 61 seconds through loop:arm to create control generation 4.",
+    "Import apps/operator/scripts/hooks/inject/core.mjs postInjection; call turn-start for this real SU owner with memoryEnabled:false and confirmedDelivery:null; intentionally do not emit the returned text or commit a delivery ledger token.",
+    "Read exact-owner session_briefs, turn-start-control read cursor, and session_identity_activation_events for generation 4 through attributed code:run/dev:pg_query.",
+    "Let the next actual Codex turn-start hook emit generation 4. Read its developer-message CTRL line from the native transcript and compare the hook ledger token digest with the pending server cursor digest.",
+    "Let the following actual turn-start hook echo its own recorded token. Assert Prepared timestamp < native emission timestamp < Applied timestamp, exact specification/state/native-session equality, and delivered generation 4. No manual token confirmation was sent."
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-26T18:42:01.353Z",
+  "finishedAt": "2026-09-26T18:57:58.438Z",
+  "summary": "The existing hook transport returned generation-4 content on the current staging build. With emission deliberately withheld, the server kept the generation Prepared and the delivery watermark at 3 with zero generation-4 Applied receipts. A real subsequent Codex hook emitted generation 4 and recorded the matching token. The next actual hook request acknowledged it, writing Applied after the observed native emission and advancing the watermark to 4. This is control-only generation delivery evidence; the selected identity pair did not change.",
+  "assertions": [
+    {
+      "id": "current-runtime-and-real-native-session",
+      "passed": true,
+      "evidence": "Staging :3170 /api/health returned b95c119c84 before the successful negative control and after acknowledgment. The control receipt names the actual native Codex session 01a0dee3-36e4-7e71-95a3-78b0962fb12b. No disposable fake owner or mocked handler was used."
+    },
+    {
+      "id": "returned-but-not-emitted-is-not-acknowledged",
+      "passed": true,
+      "evidence": "postInjection returned text and a deliveryToken in 1145ms at 18:42:02.499Z. Text SHA256 ed20662305bc7fcf714265ae1bb9f3243cac8fbf904786f9d7556ebf7212b0ac. No text emission or ledger commit followed. Exact-owner read: control_generation=4, control_delivered_generation=3, activation.status=prepared, pending cursor generation=4, token present, generation-4 applied_receipts=0."
+    },
+    {
+      "id": "actual-native-emission-and-token-match",
+      "passed": true,
+      "evidence": "The native transcript records the developer CTRL generation-4 message at 2026-09-26T18:45:22.900Z. CTRL line SHA256 c311a62454db0f0a9e6479692acf10f47ec3771fb58d2a99772c23ef0b7c327d. The hook emission ledger token MD5 2ff675bd80211eda4c0f07c766f37bb5 equals the server pending token digest, staged at 18:45:22.83543Z. The actual token is intentionally omitted."
+    },
+    {
+      "id": "acknowledgment-follows-native-emission",
+      "passed": true,
+      "evidence": "The following actual turn began at 2026-09-26T18:54:50.735Z. Its hook wrote generation-4 Applied at 18:54:49.105632Z, after the prior turn's native emission. Prepared was recorded at 18:42:01.378715Z. Exact-owner row now has generation=4, delivered=4, activation.status=applied; the successful acknowledgment cleared its control cursor. A code:run oracle asserted timestamp ordering and exact specificationRevision, stateRevision and native-session equality and returned passed:true."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-008",
+  "workItem": "WI-10002965",
+  "blocker": "WI-10003297",
+  "decision": "su-mode-contract-identity-unification-2026-09-24#D-017",
+  "operatorPlane": "current-build staging :3170, actual existing native Codex SU session",
+  "sourceCommit": "b95c119c84ae621fd6b2d65ffabf58f4f1278766",
+  "sourcePaths": [
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.ts",
+    "packages/operator-core/lib/agent-tools/coordination/read-cursors.ts",
+    "apps/operator/scripts/hooks/inject/core.mjs",
+    "apps/operator/scripts/hooks/inject/delivery-ledger.mjs",
+    "apps/operator/scripts/hooks/inject/index.mjs"
+  ],
+  "subject": {
+    "ownerId": "su-4c4c4024-9f3c-448a-80a0-4932cd65c1e7",
+    "nativeSessionId": "01a0dee3-36e4-7e71-95a3-78b0962fb12b",
+    "generation": 4,
+    "specificationRevision": "059d00d000d7fc7103d7f6954708e3f34adf8cb3c9bd87e97f8671a9d39ffe10",
+    "stateRevision": "6d031da47dd39792a88f48637eea526c61d72bc60e1aed220260b074ae15a25f",
+    "nativeTranscriptRelativeToCodexHome": "sessions/2026/09/26/rollout-2026-09-26T14-03-47-01a0dee3-36e4-7e71-95a3-78b0962fb12b.jsonl"
+  },
+  "limitations": [
+    "The generation changed the loop interval, not the selected identity revision. The desired pair already matched the prior applied pair; exact-generation receipt and watermark ordering are the measured oracle, not pair equality alone.",
+    "The CTRL transition snapshot carried the prior activation status Applied; the authoritative mutable row remained Prepared until token acknowledgment. This artifact does not claim the snapshot alone describes the new generation's delivery status.",
+    "An earlier 18:40:21 transport attempt returned no payload while staging was unavailable and is excluded as inconclusive. The service journal attributes that outage to a watchdog SIGKILL after missed event-loop heartbeats; the blocking operation remains undetermined.",
+    "No deployed-main receipt, rollback-resumed session, newly selected identity revision, generic identity launch, GUI launch or complete plan-wide acceptance is established by this artifact."
+  ]
+}

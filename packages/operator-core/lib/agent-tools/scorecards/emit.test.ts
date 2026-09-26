@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import scorecardEmitTool, { cleanupAcceptanceGraderTasks } from './emit';
+import scorecardEmitTool, {
+  attachScorecardCompletionReceipt,
+  cleanupAcceptanceGraderTasks,
+  scorecardAbortCompletionReceipt,
+} from './emit';
 import { COORD_ROLES } from '../coordination/roles';
 
 const task = (taskId: string, label: string, headless = true) => ({
@@ -103,5 +107,65 @@ describe('dedicated acceptance judge lifecycle', () => {
     expect(opts.includeSubtree).toBe(true);
     expect(opts.escalateAfterMs).toBeGreaterThan(0);
     expect(opts.escalateAfterMs).toBeLessThanOrEqual(10_000);
+  });
+});
+
+describe('scorecard abort completion receipts', () => {
+  it('identifies both a newly-created card and an unchanged-evidence replay by durable issue id', () => {
+    expect(attachScorecardCompletionReceipt({ ok: true, created: true, issueId: 'EI-new' })).toMatchObject({
+      completionReceipt: { status: 'recorded', effectRef: 'EI-new' },
+    });
+    expect(
+      attachScorecardCompletionReceipt({
+        ok: true,
+        created: false,
+        previousIssueId: 'EI-existing',
+        reason: 'unchanged-evidence',
+      }),
+    ).toMatchObject({
+      completionReceipt: {
+        status: 'recorded',
+        effectRef: 'EI-existing',
+        reason: 'unchanged-evidence',
+      },
+    });
+  });
+
+  it('distinguishes a no-write refusal from an incomplete successful receipt', () => {
+    expect(attachScorecardCompletionReceipt({ ok: false, code: 'stale_pass_blocked' })).toMatchObject({
+      completionReceipt: { status: 'not-recorded', reason: 'stale_pass_blocked' },
+    });
+    expect(attachScorecardCompletionReceipt({ ok: true, created: true, issueId: null })).toMatchObject({
+      completionReceipt: {
+        status: 'recovery-incomplete',
+        failures: ['missing-issue-id'],
+      },
+    });
+  });
+
+  it('requires the serialized result to carry its explicit receipt and keeps force calls non-idempotent', () => {
+    expect(scorecardEmitTool.idempotent).not.toBe(true);
+    expect(scorecardEmitTool.abortCompletionReceipt).toEqual(expect.any(Function));
+    expect(
+      scorecardAbortCompletionReceipt({
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              created: true,
+              issueId: 'EI-force-attempt',
+              completionReceipt: { status: 'recorded', effectRef: 'EI-force-attempt' },
+            }),
+          },
+        ],
+      }),
+    ).toEqual({ status: 'recorded', effectRef: 'EI-force-attempt' });
+    expect(
+      scorecardAbortCompletionReceipt({ content: [{ type: 'text', text: '{"ok":true,"issueId":"EI-no-receipt"}' }] }),
+    ).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-completion-receipt'],
+    });
   });
 });

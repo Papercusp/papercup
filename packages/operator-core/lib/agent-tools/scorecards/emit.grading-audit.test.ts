@@ -85,6 +85,7 @@ vi.mock('../../grading-integrity', async (importOriginal) => {
 });
 
 import { emitScorecard } from './emit';
+import { SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 import { auditVerdictFromRatings } from '../../scorecards';
 import { needsGradingAudit } from '../../grading-integrity';
 import type { ObservationRatings } from '../../harness/improvements/observation-types';
@@ -129,7 +130,7 @@ const RERUN_RECIPE = {
   schemaVersion: 1 as const,
   evaluator: 'plans:evaluate-spec-test-adequacy' as const,
   evaluatorBuild: { sha: 'graded-evaluator-sha', version: '1.2.2' },
-  evaluatorRevision: 2,
+  evaluatorRevision: SPEC_TEST_ADEQUACY_EVALUATOR_REVISION,
   classRef: 'plan-class-feature-ship' as const,
   args: {
     slug: 'reconnect-plan',
@@ -794,12 +795,12 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     );
 
     expect(res).toMatchObject({ ok: false, code: 'grading_audit_evaluator_changed' });
-    expect((res as { error?: string }).error).toContain('changed from 1 to 2');
+    expect((res as { error?: string }).error).toContain(`changed from 1 to ${SPEC_TEST_ADEQUACY_EVALUATOR_REVISION}`);
     expect((res as { error?: string }).error).toContain('re-emit the target card');
     expect(markGradingAuditAwaitingReemit).toHaveBeenCalledWith(
       'EI-CARD',
       expect.objectContaining({ state: 'pending', dispatchReservation: reservation }),
-      expect.objectContaining({ reason: expect.stringContaining('changed from 1 to 2') }),
+      expect.objectContaining({ reason: expect.stringContaining(`changed from 1 to ${SPEC_TEST_ADEQUACY_EVALUATOR_REVISION}`) }),
     );
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();

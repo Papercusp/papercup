@@ -10,6 +10,10 @@ Environment=PAPERCUSP_CLOUD_PORTAL_ROOT=@PORTAL_ROOT@
 Environment=PAPERCUSP_CLOUD_PORTAL_RUNTIME_ROOT=@RUNTIME_ROOT@
 Environment=PAPERCUSP_CLOUD_PORTAL_INTEGRATION_ROOT=@INTEGRATION_ROOT@
 Environment=PAPERCUSP_CLOUD_PORTAL_PORT=@PORT@
+# NEXT_PUBLIC_* values are compile-time inputs. Keep them on the recurring
+# builder, which reads and fingerprints one snapshot of this file so a link
+# change rebuilds even when no source file moved.
+Environment=PAPERCUSP_CLOUD_PORTAL_PUBLIC_LINKS_ENV=%h/.config/papercusp/portal-public-links.env
 Environment=PATH=@NODE_DIR@:%h/.local/bin:%h/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=@TSX@ @INTEGRATION_ROOT@/apps/operator/scripts/systemd/reconcile-cloud-portal.mjs
 TimeoutStartSec=3600

@@ -114,7 +114,27 @@ const server = createAdaptorServer({
             plan_slug?: string;
           })
         : null;
+    const mcpRequest = pathname === '/api/mcp' && request.method === 'POST'
+      ? await request.clone().json().catch(() => null) as { method?: string; params?: { protocolVersion?: string } } | null
+      : null;
     const response = await app.fetch(request, env);
+    if (pathname === '/api/mcp') {
+      send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_MCP_NEGOTIATION', {
+        method: request.method, rpcMethod: mcpRequest?.method,
+        headerProtocol: request.headers.get('mcp-protocol-version'),
+        offeredProtocol: mcpRequest?.method === 'initialize' ? mcpRequest.params?.protocolVersion : undefined,
+        status: response.status,
+      }] });
+      if (mcpRequest?.method === 'initialize' && response.ok) {
+        void response.clone().text().then((text) => {
+          const data = text.split('\n').find((line) => line.startsWith('data:'))?.slice(5) ?? text;
+          const result = JSON.parse(data).result;
+          send({ type: 'diagnostic', level: 'info', args: ['PUI_OPERATOR_MCP_INITIALIZED', {
+            protocolVersion: result?.protocolVersion,
+          }] });
+        }).catch(() => {});
+      }
+    }
     if (configStep) {
       send({
         type: 'diagnostic',

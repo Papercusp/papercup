@@ -133,7 +133,7 @@ describe('google-gmail-poll system action', () => {
     expect(formatGoogleGmailPollLog(result)).toContain('full_resyncs=1 messages_gone=0');
   });
 
-  it('defers watch renewal while the backfill is parked on a quota cool-down and the watch is still valid', async () => {
+  it('parks the whole mailbox while its backfill quota cool-down is active', async () => {
     const now = new Date('2026-09-16T02:04:12.000Z');
     const parked: ExternalTriggerSourceRow = {
       ...source('source-parked', 'parked@example.com'),
@@ -174,7 +174,7 @@ describe('google-gmail-poll system action', () => {
       ensureFlagshipBinding: vi.fn(),
       pull: vi.fn(async () => []),
       acknowledge: vi.fn(async () => 0),
-      // The parked chunk is skipped inside the sync; only the history replay runs.
+      // A parked mailbox must not enter the history replay either.
       syncSource: vi.fn(async () => ({
         mode: 'incremental' as const,
         messages: 0,
@@ -192,8 +192,70 @@ describe('google-gmail-poll system action', () => {
     // watch has days left, so the renewal waits for the cool-down to lift.
     expect(ensureWatch).not.toHaveBeenCalled();
     expect(updateSource).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ succeeded: 1, failed: 0, renewed: 0, watchDeferred: 1, watchThrottled: 0, failures: [] });
-    expect(formatGoogleGmailPollLog(result)).toContain('watch_deferred=1 watch_throttled=0');
+    expect(result).toMatchObject({ succeeded: 1, failed: 0, renewed: 0, quotaThrottled: 1, pulled: 0, acknowledged: 0, failures: [] });
+    expect(formatGoogleGmailPollLog(result)).toContain('quota_throttled=1');
+  });
+
+  it('keeps a partially replayed mailbox off the notification path until its cursor catches up', async () => {
+    const pending: ExternalTriggerSourceRow = {
+      ...source('source-pending', 'pending@example.com'),
+      cursor: { emailAddress: 'pending@example.com', historyId: 'h1', incrementalMore: true },
+    };
+    const syncSource = vi.fn(async () => ({
+      mode: 'incremental' as const, messages: 25, messagesGone: 0,
+      historyPages: 1, messagePages: 0, historyId: 'h2', backfill: null,
+      resyncReason: null, incrementalPending: true,
+    }));
+    const pull = vi.fn(async () => [doorbell('ack-pending', 'pending@example.com')]);
+    const acknowledge = vi.fn(async () => 0);
+    const result = await runGoogleGmailPoll(CTX, {
+      sql: {} as never,
+      listSources: vi.fn(async () => [pending]),
+      getSource: vi.fn(async () => pending),
+      resolveAccessToken: vi.fn(async () => 'token'),
+      provision: vi.fn(async () => ({
+        projectId: 'project', subscriptionId: 'subscription',
+        topicName: 'projects/project/topics/shared',
+        subscriptionName: 'projects/project/subscriptions/subscription',
+        topic: 'existing' as const, subscription: 'existing' as const,
+        publisherGrant: 'existing' as const,
+      })),
+      ensureFlagshipBinding: vi.fn(),
+      ensureWatch: vi.fn(),
+      syncSource, pull, acknowledge,
+    });
+    expect(syncSource).toHaveBeenCalledTimes(1);
+    expect(pull).not.toHaveBeenCalled();
+    expect(acknowledge).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ messages: 25, pulled: 0, acknowledged: 0, failed: 0 });
+  });
+
+  it('makes no Gmail or Pub/Sub calls during an incremental quota cool-down', async () => {
+    const parked: ExternalTriggerSourceRow = {
+      ...source('source-incremental-parked', 'parked@example.com'),
+      cursor: {
+        emailAddress: 'parked@example.com', historyId: 'h1', incrementalMore: true,
+        incrementalThrottledUntil: new Date(Date.now() + 60_000).toISOString(),
+      },
+    };
+    const syncSource = vi.fn();
+    const pull = vi.fn();
+    const result = await runGoogleGmailPoll(CTX, {
+      sql: {} as never,
+      listSources: vi.fn(async () => [parked]),
+      provision: vi.fn(async () => ({
+        projectId: 'project', subscriptionId: 'subscription',
+        topicName: 'projects/project/topics/shared',
+        subscriptionName: 'projects/project/subscriptions/subscription',
+        topic: 'existing' as const, subscription: 'existing' as const,
+        publisherGrant: 'existing' as const,
+      })),
+      ensureFlagshipBinding: vi.fn(),
+      syncSource, pull,
+    });
+    expect(syncSource).not.toHaveBeenCalled();
+    expect(pull).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ quotaThrottled: 1, pulled: 0, acknowledged: 0, failed: 0 });
   });
 
   it('treats a per-user quota 403 on watch renewal as a pause and keeps the source connected', async () => {

@@ -130,6 +130,17 @@ export function resolvePtoolOperatorCandidates(env = process.env, explicitUrl = 
   return [primary];
 }
 
+/**
+ * A named call must use the operator selected at invocation start. Otherwise a
+ * dead staging listener can silently move a schema-dependent write or replay to
+ * an older live operator. Catalog browsing may still recover to another host;
+ * callers can then explicitly pin that host with --url for a subsequent call.
+ */
+export function resolvePtoolInvocationCandidates(args = {}, env = process.env) {
+  const candidates = resolvePtoolOperatorCandidates(env, args.url);
+  return args.tool ? candidates.slice(0, 1) : candidates;
+}
+
 const OPERATOR_URL = resolvePtoolOperatorBase(process.env);
 
 // psu-launcher exports the resolved URL into every child so the MCP config can
@@ -1370,6 +1381,12 @@ export const PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS = 900_000;
 // the typed success/refusal is the first outcome observed.
 export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 915_000;
 
+// scorecards:repair can dispatch independent auditors for up to fifty pending
+// cards. Its handler declares a 900s budget, and MCP adds 5s for settlement.
+// A 30s client cutoff previously reported an unknown outcome even after the
+// dispatcher wrote a reservation (EI-24230006371870177).
+export const PTOOL_SCORECARD_REPAIR_TIMEOUT_MS = 915_000;
+
 // EI-21106949380687332: a FOREGROUND-capable tool (testing:run, build:typecheck,
 // capability:bash, capability:inspect, code:run) self-clamps its OWN command timeout to
 // FOREGROUND_TIMEOUT_CEILING_MS (50s — packages/operator-core/lib/agent-tools/capability/
@@ -1538,6 +1555,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['backup:restore', PTOOL_BACKUP_RESTORE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
   ['scorecards:emit', PTOOL_SCORECARD_EMIT_TIMEOUT_MS],
+  ['scorecards:repair', PTOOL_SCORECARD_REPAIR_TIMEOUT_MS],
   ['release:checkpoint-run', PTOOL_CHECKPOINT_RUN_TIMEOUT_MS],
   ['testing:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['build:typecheck', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
@@ -3044,9 +3062,7 @@ async function main() {
   }
 
   let operatorUrl = args.url || OPERATOR_URL;
-  let operatorCandidates = args.url
-    ? [args.url]
-    : resolvePtoolOperatorCandidates(process.env);
+  let operatorCandidates = resolvePtoolInvocationCandidates(args, process.env);
   const workspace = resolveWorkspaceScope({ workspace: args.workspace, allWorkspaces: args.allWorkspaces });
   const harness = resolveHarnessScope({
     harness: args.harness,
@@ -3055,7 +3071,7 @@ async function main() {
   });
   const scope = { workspace, harness, tokenFile: args.tokenFile, transport: args.transport };
   const retryOptions = ptoolConnectionRetryOptions(args, process.env);
-  const rediscover = Object.keys(retryOptions).length === 0 ? discoverOperatorUrl : null;
+  const rediscover = !args.tool && Object.keys(retryOptions).length === 0 ? discoverOperatorUrl : null;
   const connectOperator = async ({ preferredIndex = 0 } = {}) => {
     const candidates = preferredIndex > 0
       ? [

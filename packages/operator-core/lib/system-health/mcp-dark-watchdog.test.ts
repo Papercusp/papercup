@@ -5,6 +5,9 @@
  * injected so no real time is involved.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   evaluateMcpDark,
   evaluateInteractiveMcpDark,
@@ -12,10 +15,12 @@ import {
   interactiveHealJitterMs,
   markHealSent,
   healedWakeText,
+  taggedHealedWakeText,
   checkInteractiveMcpDark,
   type McpDarkSnapshot,
   type InteractiveDarkSnapshot,
 } from './mcp-dark-watchdog';
+import { parseEnvelope } from '../turn-provenance/turn-provenance';
 
 // checkInteractiveMcpDark lazily `await import()`s this module — mock it so the
 // recovery-sweep tests below never touch the real FS/pty layer.
@@ -290,6 +295,29 @@ describe('healedWakeText', () => {
     expect(text).toContain('loop:status');
     expect(text).toContain('re-park');
     expect(text).toContain('~45m');
+  });
+
+  it('writes watchdog provenance before returning the PTY turn so it cannot become an OWNER directive', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-dark-watchdog-provenance-'));
+    try {
+      const tagged = await taggedHealedWakeText('su-x', 45, { dir, nowMs: INOW });
+      const parsed = parseEnvelope(tagged);
+      expect(parsed).toMatchObject({ origin: 'watchdog', payload: healedWakeText('su-x', 45) });
+
+      const ledger = readFileSync(join(dir, 'su-x.jsonl'), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { sid: string; nonce: string; origin: string; ts: number });
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]).toMatchObject({
+        sid: 'su-x',
+        nonce: parsed?.nonce,
+        origin: 'watchdog',
+        ts: INOW,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

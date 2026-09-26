@@ -2587,7 +2587,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         await openComposer(pane, false);
         pane.write(prompt);
         pane.enter();
-        await pane.waitFor('Operator does not support windowless', { timeoutMs: 30_000 });
+        await pane.waitFor('This operator cannot run sessions inside PUI; update it before starting.', { timeoutMs: 30_000 });
         pane.escape();
         await pane.waitFor(prompt);
         expect(pane.screen()).toContain(prompt);
@@ -2597,7 +2597,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(nativeTerminalLaunch).not.toHaveBeenCalled();
         // Retrying the retained draft must not fall back to the legacy route.
         pane.enter();
-        await pane.waitFor('Operator does not support windowless');
+        await pane.waitFor('This operator cannot run sessions inside PUI; update it before starting.');
         expect(launchRequests).toEqual([]);
         expect(nativeTerminalLaunch).not.toHaveBeenCalled();
         console.info('PUI_COMPATIBILITY_REFUSAL_ACCEPTANCE', JSON.stringify({

@@ -110,11 +110,17 @@ const tryAcquireResourceMock = vi.fn(
 const tryReleaseResourceMock = vi.fn(
   async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; released?: number }> => ({ ok: true }),
 );
-const releaseAllResourcesForOwnerMock = vi.fn(async (_tx: unknown, _coordinationDomain: string, _owner: string) => ({
-  released: 3,
-  exclusiveResources: [],
-  waiters: {},
-}));
+const releaseAllResourcesForOwnerMock = vi.fn(
+  async (
+    _tx: unknown,
+    _coordinationDomain: string,
+    _owner: string,
+  ): Promise<{ released: number; exclusiveResources: string[]; waiters: Record<string, string[]> }> => ({
+    released: 3,
+    exclusiveResources: [],
+    waiters: {},
+  }),
+);
 const heldResourcesByOwner = new Map<string, string[]>();
 const releaseTrace: string[] = [];
 const readResourceQueueMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>) => ({
@@ -339,11 +345,13 @@ vi.mock('./pipeline-events', () => ({
 }));
 
 const emitGitSyncLockRetryEventMock = vi.fn();
+const emitResourceReleasedEventMock = vi.fn();
 const emitGitSyncCommittedEventMock = vi.fn();
 const emitGitSyncEgressedEventMock = vi.fn();
 vi.mock('./git-sync-events', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./git-sync-events')>()),
   emitGitSyncLockRetryEvent: (...a: unknown[]) => emitGitSyncLockRetryEventMock(...a),
+  emitResourceReleasedEvent: (...a: unknown[]) => emitResourceReleasedEventMock(...a),
   emitGitSyncCommittedEvent: (...a: unknown[]) => emitGitSyncCommittedEventMock(...a),
   emitGitSyncEgressedEvent: (...a: unknown[]) => emitGitSyncEgressedEventMock(...a),
 }));
@@ -523,6 +531,8 @@ import {
   isGenericLockIntent,
   runWithGitSyncPerInstallLease,
   resolveGitServingStateWithBootRecovery,
+  formatIntegratorErrorWarning,
+  resetIntegratorErrorWarningsForTest,
   GIT_SYNC_HISTORY_EXCLUDED_PATHS_CAP,
 } from './git-sync-action';
 import { endedSessionOwners } from '../../agent-tools/locks/ended-session-owners';
@@ -613,6 +623,31 @@ describe('isIntegratorActorAdmitted — canonical signer membership gate (WI-389
   it('never treats an empty actor or empty roster as admitted', () => {
     expect(isIntegratorActorAdmitted('', ['device-a'])).toBe(false);
     expect(isIntegratorActorAdmitted('device-a', [])).toBe(false);
+  });
+});
+
+describe('P-008 integrator prerequisite warning coalescing', () => {
+  beforeEach(() => resetIntegratorErrorWarningsForTest());
+
+  it('logs first/change/periodic diagnoses, counts suppressed repeats, and resets on recovery', () => {
+    const first = ['unaccepted signed snapshot for device-a — waiting for verified ref announcement'];
+    const changed = ['unaccepted signed snapshot for device-b — waiting for verified ref announcement'];
+
+    expect(formatIntegratorErrorWarning('papercusp', first, 1_000)).toContain(first[0]);
+    expect(formatIntegratorErrorWarning('papercusp', first, 2_000)).toBeNull();
+    expect(formatIntegratorErrorWarning('papercusp', first, 3_000)).toBeNull();
+    expect(formatIntegratorErrorWarning('papercusp', changed, 4_000)).toContain(
+      '2 identical warnings suppressed',
+    );
+    expect(formatIntegratorErrorWarning('papercusp', changed, 5_000)).toBeNull();
+    expect(formatIntegratorErrorWarning('papercusp', changed, 10 * 60_000 + 4_000)).toContain(
+      '1 identical warning suppressed',
+    );
+
+    expect(formatIntegratorErrorWarning('papercusp', [], 10 * 60_000 + 5_000)).toBeNull();
+    expect(formatIntegratorErrorWarning('papercusp', changed, 10 * 60_000 + 6_000)).not.toContain(
+      'suppressed',
+    );
   });
 });
 import { getSystemAction, getSystemActionEntry, type SystemActionCtx } from '../routines/system-actions';
@@ -831,6 +866,7 @@ beforeEach(() => {
   recoverQueuedDependencyPrebuildMock.mockResolvedValue('none');
   appendPipelineEventMock.mockReset();
   emitGitSyncLockRetryEventMock.mockReset();
+  emitResourceReleasedEventMock.mockReset();
   emitGitSyncCommittedEventMock.mockReset();
   emitGitSyncEgressedEventMock.mockReset();
   bridgeTickOverride = null;
@@ -1963,7 +1999,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       sequence.push('release-lock-set');
       releaseAttempts += 1;
       if (releaseAttempts === 1) throw contention;
-      return { released: 3, exclusiveResources: [], waiters: {} };
+      return { released: 3, exclusiveResources: ['git-sync:papercup'], waiters: {} };
+    });
+    emitResourceReleasedEventMock.mockImplementation((resource) => {
+      sequence.push(`resource-released:${resource}`);
     });
     emitGitSyncCommittedEventMock.mockImplementation(() => {
       sequence.push('committed-event');
@@ -1971,9 +2010,28 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     await action(ctx);
 
-    expect(sequence).toEqual(['release-lock-set', 'release-lock-set', 'committed-event']);
+    expect(sequence).toEqual([
+      'release-lock-set',
+      'release-lock-set',
+      'resource-released:git-sync:papercup',
+      'committed-event',
+    ]);
+    expect(emitResourceReleasedEventMock).toHaveBeenCalledExactlyOnceWith('git-sync:papercup', 'ws-42');
     expect(releaseAllResourcesForOwnerMock).toHaveBeenCalledTimes(2);
     expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+  });
+
+  it('does not announce resource release when bulk cleanup fails', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    releaseAllResourcesForOwnerMock.mockRejectedValue(new Error('release transaction failed'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await action(ctx);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock-set release failed'));
+      expect(emitResourceReleasedEventMock).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('EI-20744916065879285: passes live file-lock paths to the pure pipeline as protected exclusions', async () => {

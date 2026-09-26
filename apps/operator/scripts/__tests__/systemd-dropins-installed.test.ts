@@ -25,6 +25,14 @@ const AMBIENT_CURSOR_DROP_IN = join(
   REPO_ROOT,
   'apps/operator/scripts/systemd/papercup-dev-api.service.d/60-ambient-semantic-push.conf',
 );
+const CODE_SERVER_CRASH_LOOP_GUARD = join(
+  REPO_ROOT,
+  'apps/operator/scripts/systemd/code-server.service.d/10-crash-loop-guard.conf',
+);
+const DEMOS_GALLERY_SOURCE_GUARD = join(
+  REPO_ROOT,
+  'apps/operator/scripts/systemd/papercup-demos-gallery.service.d/10-require-gallery-source.conf',
+);
 
 /**
  * Wires scripts/check-systemd-dropins-installed.mjs onto a blocking path.
@@ -88,6 +96,23 @@ describe('systemd drop-in install guard (scripts/check-systemd-dropins-installed
     const dropIn = readFileSync(AMBIENT_CURSOR_DROP_IN, 'utf8');
     expect(dropIn).toMatch(/^Environment=PAPERCUSP_AMBIENT_CURSOR=1$/m);
     expect(dropIn).toContain('Set the value to 0');
+  });
+
+  it('keeps optional user services from crash-looping after their prerequisites disappear', () => {
+    const codeServer = readFileSync(CODE_SERVER_CRASH_LOOP_GUARD, 'utf8');
+    expect(codeServer).toMatch(/^ConditionFileIsExecutable=%h\/\.local\/bin\/code-server$/m);
+    expect(codeServer).toMatch(/^StandardOutput=journal$/m);
+    expect(codeServer).toMatch(/^StandardError=journal$/m);
+    expect(codeServer).toMatch(/^Restart=on-failure$/m);
+    expect(codeServer).not.toContain('ConditionPathIsExecutable');
+
+    const gallery = readFileSync(DEMOS_GALLERY_SOURCE_GUARD, 'utf8');
+    expect(gallery).toMatch(
+      /^ConditionPathExists=%h\/demos\/papercusp-offsite-planner\/serve-gallery\.py$/m,
+    );
+    expect(gallery).toMatch(
+      /^ConditionPathIsDirectory=%h\/demos\/papercusp-offsite-planner\/public$/m,
+    );
   });
 
   it('--list reports a well-formed population and never fails the build', () => {

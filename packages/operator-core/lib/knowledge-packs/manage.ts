@@ -347,6 +347,9 @@ export interface UninstallResult {
   removed: number;
   /** Edited rows kept (keepEdited, the default) — listed so the caller can report. */
   kept: Array<{ id: string; text: string }>;
+  /** Rows still requiring cleanup; a retry re-reads the surviving provenance rows. */
+  failed: Array<{ id: string; error: string }>;
+  error?: string;
 }
 
 /**
@@ -370,6 +373,7 @@ export async function uninstallPack(
   const mine = entries.filter((e) => packIdOf(e) === opts.packId);
 
   const kept: Array<{ id: string; text: string }> = [];
+  const failed: UninstallResult['failed'] = [];
   let removed = 0;
   for (const e of mine) {
     const itemId = typeof e.metadata?.pack_item_id === 'string' ? e.metadata.pack_item_id : undefined;
@@ -382,8 +386,8 @@ export async function uninstallPack(
     try {
       await backend.forget(e.id);
       removed += 1;
-    } catch {
-      /* best-effort; report what we did */
+    } catch (error) {
+      failed.push({ id: e.id, error: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -396,7 +400,10 @@ export async function uninstallPack(
     })
     .catch(() => {});
 
-  return { ok: true, packId: opts.packId, removed, kept };
+  return {
+    ok: failed.length === 0, packId: opts.packId, removed, kept, failed,
+    ...(failed.length ? { error: `${failed.length} memory row deletion(s) failed; retry uninstall to finish cleanup` } : {}),
+  };
 }
 
 /* ────────────────────────────────────────────────────────────────────────

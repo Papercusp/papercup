@@ -355,7 +355,32 @@ export function finishSyncEnrolment(
     // best-effort and its pending state guard makes a close that wins after
     // insertion safe.
     if (enrolment.registrationReady) {
-      void enrolment.registrationReady.then(close, () => {});
+      void enrolment.registrationReady
+        .then(close, async () => {
+          /*
+           * WI-10003338: confinement can succeed even when the asynchronous
+           * ledger INSERT cannot. Failed transient services deliberately use
+           * CollectMode=inactive so their Result/exit/peak evidence survives
+           * long enough to reach the ledger. With no row, however, neither the
+           * ordinary close nor the live-row reconciler can ever consume that
+           * evidence, so every such failure stayed loaded forever (4,378
+           * pc-*.service units on the shared host). Preserve the registration
+           * diagnostic emitted by completeSyncEnrolment, inspect the retained
+           * terminal while it still exists, then release it. There is no row to
+           * attach the snapshot to; retaining the unit indefinitely cannot make
+           * that evidence durable after registration has already failed.
+           */
+          enrolment.releaseEnvironmentTransport();
+          if (!enrolment.confined || !enrolment.scopeUnit) return;
+          const terminal = (
+            await (opts.inspectTaskUnitTerminals ?? inspectTaskUnitTerminals)([enrolment.scopeUnit])
+          ).get(enrolment.scopeUnit);
+          if (terminal) await (opts.resetFailedTaskUnit ?? resetFailedTaskUnit)(terminal);
+        })
+        .catch(() => {
+          // The retained unit stays available to the host-level fallback sweep;
+          // cleanup failure must never turn a completed shell into a tool error.
+        });
     } else {
       close();
     }

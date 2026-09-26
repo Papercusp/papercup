@@ -89,6 +89,8 @@ export type GenCheckHealOutcome =
       toRepairHead: string;
       paths: string[];
       reason: string;
+      /** Fresh queue used when another admission moved the lineage during verification. */
+      refreshedQueue?: FrozenCandidateRepairQueue;
     }
   /** R-5's one legitimate failure: the paired writer itself exited non-zero / threw. */
   | { kind: "regeneration-failed"; id: string; writer: string; detail: string }
@@ -108,6 +110,10 @@ export interface GenCheckHealIo {
    *  verification tree's current content for `paths`. Returns the sha. */
   buildSourceCommit(repairHead: string, paths: readonly string[]): Promise<string>;
   admit(input: AdmitPathsInput): AdmissionOutcome;
+  /** Re-read the queue and rematerialize its current head after a lineage CAS loss. */
+  refreshAfterRefMove?(
+    previous: Pick<FrozenCandidateRepairQueue, "candidate" | "repairHead">,
+  ): Promise<FrozenCandidateRepairQueue | null>;
   log(line: string): void;
   now?: () => number;
 }
@@ -140,7 +146,13 @@ export async function healGenCheckLegs(
   const now = io.now ?? Date.now;
   const entries = genCheckEntriesOf(input.signature);
   if (entries.length === 0) return { kind: "nothing-to-heal" };
-  const from = input.queue.repairHead;
+  let queue = input.queue;
+  let refreshedQueue: FrozenCandidateRepairQueue | undefined;
+  // The selective verification can take long enough for a human fixer to admit a
+  // second change. Re-run the generator against that NEW head: replaying the old
+  // artifact would be wrong if the admitted change touched generator inputs.
+  for (let attempt = 0; attempt < 3; attempt++) {
+  const from = queue.repairHead;
   let before: Set<string>;
   try {
     before = new Set(await io.dirtyPaths());
@@ -198,7 +210,7 @@ export async function healGenCheckLegs(
   const reason = buildReason(entries, paths, from);
   const outcome = io.admit({
     root: input.root,
-    candidate: input.queue.candidate,
+    candidate: queue.candidate,
     repairHead: from,
     paths,
     source: { ref: sourceCommit },
@@ -206,7 +218,23 @@ export async function healGenCheckLegs(
     reason,
     nowMs: now(),
   });
-  if (!outcome.ok) return { kind: "admission-refused", refusal: outcome, paths };
+  if (!outcome.ok) {
+    if (outcome.code !== "lineage-ref-moved" || !io.refreshAfterRefMove || attempt === 2) {
+      return { kind: "admission-refused", refusal: outcome, paths };
+    }
+    let fresh: FrozenCandidateRepairQueue | null;
+    try {
+      fresh = await io.refreshAfterRefMove(queue);
+    } catch (e) {
+      return { kind: "probe-failed", detail: `refresh after lineage move: ${errMsg(e)}` };
+    }
+    if (!fresh || fresh.candidate !== input.queue.candidate || fresh.repairHead === from) {
+      return { kind: "admission-refused", refusal: outcome, paths };
+    }
+    queue = fresh;
+    refreshedQueue = fresh;
+    continue;
+  }
   return {
     kind: "healed",
     healedIds: entries.map((e) => e.id),
@@ -215,7 +243,10 @@ export async function healGenCheckLegs(
     toRepairHead: outcome.commit,
     paths,
     reason,
+    ...(refreshedQueue ? { refreshedQueue } : {}),
   };
+  }
+  throw new Error("gen-check self-heal retry bound was not respected");
 }
 
 /** Fold a `healed` outcome into the queue row (advances repairHead; P-001 retest marker set). */
@@ -272,6 +303,7 @@ export interface RealGenCheckHealIoInput {
   /** Run one root npm script in `checkpointRoot` (the gate's own exec, so pc-heavy / env apply). */
   runScript(script: string): Promise<{ code: number; tail: string }>;
   log(line: string): void;
+  refreshAfterRefMove?: GenCheckHealIo["refreshAfterRefMove"];
   git?: AdmissionGitRunner;
 }
 
@@ -303,6 +335,7 @@ export function makeRealGenCheckHealIo(input: RealGenCheckHealIoInput): GenCheck
   return {
     runScript: input.runScript,
     log: input.log,
+    ...(input.refreshAfterRefMove ? { refreshAfterRefMove: input.refreshAfterRefMove } : {}),
     async dirtyPaths() {
       return parsePorcelainZ(
         gitOk(["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"], input.checkpointRoot),

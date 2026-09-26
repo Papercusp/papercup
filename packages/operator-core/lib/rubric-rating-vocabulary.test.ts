@@ -81,6 +81,27 @@ describe('rubric rating-vocabulary validation (WI-835208)', () => {
     ).toMatchObject({ ok: true, instructions: [], violations: [] });
   });
 
+  it('treats grade lineage as an inspection object without hiding an explicit off-scale rating', () => {
+    const scale = ['healthy', 'degraded', 'broken', 'unknown'];
+    const inspection = validateRubricRatingVocabulary(
+      [criterion({ key: 'lineage', method: 'Read the independent scorecard and grade lineage.' })],
+      scale,
+    );
+    expect(inspection).toMatchObject({ ok: true, instructions: [], violations: [] });
+
+    const directive = validateRubricRatingVocabulary(
+      [criterion({ key: 'lineage', method: 'Read the scorecard. Grade lineage if the chain is incomplete.' })],
+      scale,
+    );
+    expect(directive.violations.map((violation) => violation.rating)).toEqual(['lineage']);
+    expect(
+      validateRubricRatingVocabulary(
+        [criterion({ key: 'lineage', method: "Read the scorecard and Grade 'lineage' if the chain is incomplete." })],
+        scale,
+      ).violations.map((violation) => violation.rating),
+    ).toEqual(['lineage']);
+  });
+
   it('ignores numbered GRADE headings and rate-of noun phrases without hiding a real directive', () => {
     const instructions = extractRubricRatingInstructions(
       'procedure-prose',

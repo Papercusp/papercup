@@ -924,7 +924,25 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
       expect(clause().falsifier).toBeNull();
       expect(result.ratings.falsifiability.rating).toBe('pass');
-      expect(result.ratings.falsifiability.evidence).toContain('which declares no falsifier scenarios');
+      expect(result.ratings.falsifiability.evidence).toContain('which declares no falsifier.requiredScenarios');
+    });
+
+    it('does not describe a declared falsifier as absent when it has no named scenarios', () => {
+      const result = evaluateSpecTestAdequacy({
+        clause: clause({
+          falsifier: {
+            observation: 'At least one diagnosed failure lacks a measured outcome.',
+            probeMethod: 'Compare diagnosed failures with the verification report.',
+          },
+        }),
+        evidence: [evidence(), mutationTargeting('spec-003-01')],
+        classRef: 'plan-class-feature-ship',
+      });
+
+      expect(result.ratings.falsifiability.rating).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('declares no falsifier.requiredScenarios');
+      expect(result.ratings.falsifiability.evidence).toContain('its falsifier observation and probe method');
+      expect(result.ratings.falsifiability.evidence).not.toContain('declares no falsifier scenarios');
     });
 
     it('does not credit a mutation binding that targets a sibling spec', () => {
@@ -964,6 +982,38 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       expect(result.ratings.falsifiability.rating).toBe('unknown');
       expect(result.ratings.falsifiability.evidence).toContain('do not name a scenario declared in falsifier.requiredScenarios');
     });
+  });
+
+  it('requires live evidence for a standalone clause that declares requiredEvidence live', () => {
+    const liveClause = clause({ requiredEvidence: ['live'], requiredTestLayers: [] });
+    const treeProof = evidence();
+    const missing = evaluateSpecTestAdequacy({
+      clause: liveClause,
+      evidence: [treeProof],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(missing.ratings['correct-layer'].rating).toBe('fail');
+    expect(missing.ratings['correct-layer'].evidence).toContain('Required evidence plane(s) are absent');
+    expect(missing.wouldBlock).toContain('correct-layer');
+
+    const liveProof = evidence({
+      evidenceRef: 'live:verified-report',
+      details: { ...treeProof.details, evidencePlane: 'live' },
+    });
+    const staleLive = evaluateSpecTestAdequacy({
+      clause: liveClause,
+      evidence: [treeProof, { ...liveProof, currentness: { ...liveProof.currentness, overall: 'stale' } }],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(staleLive.ratings['correct-layer'].rating).toBe('fail');
+
+    const covered = evaluateSpecTestAdequacy({
+      clause: liveClause,
+      evidence: [treeProof, liveProof],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+    expect(covered.ratings['correct-layer'].evidence).toContain('Current bindings cover the required evidence plane(s)');
   });
 
   it('accepts stronger targeted L4 counterexample proof for an L3 floor', () => {

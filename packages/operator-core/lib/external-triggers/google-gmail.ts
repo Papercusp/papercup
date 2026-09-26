@@ -122,6 +122,8 @@ export interface GoogleGmailResyncReason {
 
 export interface GoogleGmailSyncResult {
   mode: 'incremental' | 'full';
+  /** True when the bounded incremental walk has more history for a later poll. */
+  incrementalPending?: boolean;
   messages: number;
   /**
    * Listed messages that were gone (messages.get 404) by the time they were
@@ -270,6 +272,10 @@ function cursorWithoutHistory(cursor: Record<string, unknown>): Record<string, u
   // An expired history cursor means changes were lost; the re-bootstrap walks
   // the mailbox again (delivery is dedupe-keyed, so already-seen mail is a no-op).
   delete cleared.backfill;
+  delete cleared.incrementalPending;
+  delete cleared.incrementalMore;
+  delete cleared.incrementalThrottledUntil;
+  delete cleared.incrementalThrottleCount;
   return cleared;
 }
 
@@ -311,6 +317,15 @@ export function googleGmailBackfillParked(source: ExternalTriggerSourceRow, now:
   if (!state || state.status !== 'throttled' || !state.throttledUntil) return false;
   const parkedUntil = Date.parse(state.throttledUntil);
   return Number.isFinite(parkedUntil) && parkedUntil > now.getTime();
+}
+
+export function googleGmailIncrementalPending(source: ExternalTriggerSourceRow): boolean {
+  return source.cursor.incrementalMore === true;
+}
+
+export function googleGmailIncrementalParked(source: ExternalTriggerSourceRow, now: Date): boolean {
+  const until = nonEmpty(source.cursor.incrementalThrottledUntil);
+  return until !== null && Number.isFinite(Date.parse(until)) && Date.parse(until) > now.getTime();
 }
 
 /** history.list rejecting the stored startHistoryId — the ONLY legitimate full-resync trigger. */
@@ -1175,12 +1190,24 @@ async function incrementalSync(
   startHistoryId: string,
   sinks: IngestSink[],
   deps: Required<Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin' | 'ingest'>>,
-): Promise<{ messages: number; gone: number; pages: number; historyId: string }> {
+  budget: number,
+  persistCursor: (historyId: string, pending: { historyId: string; messageIds: string[] } | null) => Promise<void>,
+): Promise<{ messages: number; gone: number; pages: number; historyId: string; complete: boolean }> {
   let pageToken: string | null = null;
   let pages = 0;
   let gone = 0;
   let nextHistoryId: string | null = null;
+  let cursorHistoryId = startHistoryId;
+  let fetchedCount = 0;
   const delivered = new Set<string>();
+  const rawPending = source.cursor.incrementalPending;
+  const pending = rawPending && typeof rawPending === 'object'
+    ? rawPending as { historyId?: unknown; messageIds?: unknown }
+    : null;
+  const pendingHistoryId = nonEmpty(pending?.historyId);
+  const pendingIds = pendingHistoryId && Array.isArray(pending?.messageIds)
+    ? new Set(pending.messageIds.filter((id): id is string => typeof id === 'string'))
+    : new Set<string>();
   do {
     if (++pages > MAX_PAGES) throw new Error('google_gmail_history_page_limit_exceeded');
     const params = new URLSearchParams({
@@ -1198,23 +1225,37 @@ async function incrementalSync(
       { params },
     );
     for (const history of body.history ?? []) {
+      const recordId = nonEmpty(history.id);
+      if (!recordId) throw new Error('google_gmail_history_record_id_missing');
+      const processed = recordId === pendingHistoryId ? new Set(pendingIds) : new Set<string>();
       for (const added of history.messagesAdded ?? []) {
         const id = nonEmpty(added.message?.id);
-        if (!id || delivered.has(id)) continue;
+        if (!id || processed.has(id) || delivered.has(id)) continue;
+        if (fetchedCount >= budget) return { messages: delivered.size, gone, pages, historyId: cursorHistoryId, complete: false };
         const fetched = await getMessageIfPresent(deps.fetch, deps.apiOrigin, accessToken, id);
+        fetchedCount += 1;
         if (!fetched) {
           gone += 1;
-          continue;
+        } else {
+          await deliver(sql, deps.ingest, sinks, source, fetched);
+          delivered.add(id);
         }
-        await deliver(sql, deps.ingest, sinks, source, fetched);
-        delivered.add(id);
+        processed.add(id);
+        // A record can contain more messages than one quota-safe chunk. Persist
+        // the completed IDs so a restart or quota error does not re-fetch them.
+        if (recordId) await persistCursor(cursorHistoryId, { historyId: recordId, messageIds: [...processed] });
+      }
+      if (recordId) {
+        cursorHistoryId = recordId;
+        await persistCursor(cursorHistoryId, null);
       }
     }
     nextHistoryId = nonEmpty(body.historyId) ?? nextHistoryId;
     pageToken = nonEmpty(body.nextPageToken);
+    if (fetchedCount >= budget && pageToken) return { messages: delivered.size, gone, pages, historyId: cursorHistoryId, complete: false };
   } while (pageToken);
   if (!nextHistoryId) throw new Error('google_gmail_next_history_id_missing');
-  return { messages: delivered.size, gone, pages, historyId: nextHistoryId };
+  return { messages: delivered.size, gone, pages, historyId: nextHistoryId, complete: true };
 }
 
 function newBackfillState(now: Date): GoogleGmailBackfillState {
@@ -1354,14 +1395,27 @@ export async function syncGoogleGmailSource(
   let messagesGone = 0;
   let historyPages = 0;
   let messagePages = 0;
+  let incrementalPending = false;
 
   if (historyId) {
     try {
-      const synced = await incrementalSync(sql, source, accessToken, historyId, sinks, deps);
+      const synced = await incrementalSync(
+        sql, source, accessToken, historyId, sinks, deps,
+        Math.min(budgetCeiling, MIN_BACKFILL_MESSAGES_PER_SYNC),
+        async (nextHistoryId, pending) => {
+          const cursor: Record<string, unknown> = { ...workingSource.cursor, historyId: nextHistoryId };
+          if (pending) cursor.incrementalPending = pending;
+          else delete cursor.incrementalPending;
+          workingSource = await updateSource(sql, source.workspaceId, source.id, {
+            status: 'connected', cursor, lastError: null, connected: true,
+          });
+        },
+      );
       messages = synced.messages;
       messagesGone = synced.gone;
       historyPages = synced.pages;
       historyId = synced.historyId;
+      incrementalPending = !synced.complete;
     } catch (cause) {
       // ONLY history.list itself saying the cursor is too old justifies the
       // full re-bootstrap below (which discards the resumable backfill). A 404
@@ -1373,6 +1427,18 @@ export async function syncGoogleGmailSource(
       // the poll action before backfillChunk can persist its cooldown, and the
       // next poll retries the same full-size chunk against the exhausted quota.
       if (isGoogleGmailQuotaError(cause)) {
+        const throttleCount = nonNegativeInteger(workingSource.cursor.incrementalThrottleCount) + 1;
+        workingSource = await updateSource(sql, source.workspaceId, source.id, {
+          status: 'connected',
+          cursor: {
+            ...workingSource.cursor,
+            incrementalMore: true,
+            incrementalThrottleCount: throttleCount,
+            incrementalThrottledUntil: new Date(now.getTime() + backfillThrottleMs(throttleCount - 1)).toISOString(),
+          },
+          lastError: null,
+          connected: true,
+        });
         const backfill = googleGmailBackfillState(workingSource);
         if (backfill && backfill.status !== 'complete') {
           const throttled = throttledBackfillState(backfill, now);
@@ -1419,7 +1485,7 @@ export async function syncGoogleGmailSource(
   }
 
   let backfill = googleGmailBackfillState(workingSource);
-  if (backfill && backfill.status !== 'complete') {
+  if (!incrementalPending && backfill && backfill.status !== 'complete') {
     if (!googleGmailBackfillParked(workingSource, now)) {
       // A mailbox that just tripped its quota walks a smaller chunk this time;
       // the ceiling comes back once a chunk completes cleanly.
@@ -1433,16 +1499,25 @@ export async function syncGoogleGmailSource(
     }
   }
 
-  const cursor = {
+  const cursor: Record<string, unknown> = {
     ...workingSource.cursor,
     historyId,
-    lastSyncAt: now.toISOString(),
   };
+  if (incrementalPending) cursor.incrementalMore = true;
+  else {
+    delete cursor.incrementalMore;
+    cursor.lastSyncAt = now.toISOString();
+    delete cursor.incrementalThrottledUntil;
+    delete cursor.incrementalThrottleCount;
+  }
   await updateSource(sql, source.workspaceId, source.id, {
     status: 'connected',
     cursor,
     lastError: null,
     connected: true,
   });
-  return { mode, messages, messagesGone, resyncReason, historyPages, messagePages, historyId, backfill };
+  return {
+    mode, messages, messagesGone, resyncReason, historyPages, messagePages, historyId, backfill,
+    ...(incrementalPending ? { incrementalPending: true } : {}),
+  };
 }

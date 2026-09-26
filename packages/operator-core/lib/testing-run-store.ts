@@ -400,15 +400,17 @@ async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): P
   let query: PromiseLike<unknown>;
   try {
     query = sql`
-      SELECT run_id, kind, label, file_path, command, status, exit_code,
-             started_at, finished_at, output, truncated, task_id,
+      SELECT snapshot.run_id, snapshot.kind, snapshot.label, snapshot.file_path,
+             snapshot.command, snapshot.status, snapshot.exit_code,
+             snapshot.started_at, snapshot.finished_at, snapshot.output,
+             snapshot.truncated, snapshot.task_id,
              task_ledger.state AS task_state,
              task_ledger.deadline_at AS task_deadline_at
-        FROM harness_shared.testing_run_snapshots
+        FROM harness_shared.testing_run_snapshots AS snapshot
         LEFT JOIN harness_shared.task_ledger AS task_ledger
-          ON task_ledger.task_id = harness_shared.testing_run_snapshots.task_id
-       WHERE run_id = ${runId}
-         AND (finished_at IS NULL OR finished_at >= now() - interval '1 hour')
+          ON task_ledger.task_id = snapshot.task_id
+       WHERE snapshot.run_id = ${runId}
+         AND (snapshot.finished_at IS NULL OR snapshot.finished_at >= now() - interval '1 hour')
        LIMIT 1
     `;
   } catch {

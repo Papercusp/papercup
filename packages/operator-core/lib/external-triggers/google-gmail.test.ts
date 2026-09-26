@@ -324,14 +324,14 @@ describe('Google Gmail adapter', () => {
       const url = new URL(request instanceof Request ? request.url : request.toString());
       if (url.pathname.endsWith('/history') && !url.searchParams.has('pageToken')) {
         return json({
-          history: [{ messagesAdded: [{ message: { id: 'm-1' } }] }],
+          history: [{ id: 'history-page-1', messagesAdded: [{ message: { id: 'm-1' } }] }],
           nextPageToken: 'page-2',
           historyId: 'history-mid',
         });
       }
       if (url.pathname.endsWith('/history')) {
         return json({
-          history: [{ messagesAdded: [{ message: { id: 'm-1' } }, { message: { id: 'm-2' } }] }],
+          history: [{ id: 'history-page-2', messagesAdded: [{ message: { id: 'm-1' } }, { message: { id: 'm-2' } }] }],
           historyId: 'history-new',
         });
       }
@@ -362,17 +362,64 @@ describe('Google Gmail adapter', () => {
       'gmail:m-1:message.received',
       'gmail:m-2:message.received',
     ]);
-    expect(d.updates).toEqual([
-      expect.objectContaining({
-        status: 'connected',
-        cursor: {
-          emailAddress: 'owner@example.com',
-          historyId: 'history-new',
-          lastSyncAt: NOW.toISOString(),
-        },
-        connected: true,
-      }),
-    ]);
+    expect(d.updates.some((update) => (update.cursor as Record<string, unknown>).historyId === 'history-page-1')).toBe(true);
+    expect(d.updates.at(-1)).toEqual(expect.objectContaining({
+      status: 'connected',
+      cursor: { emailAddress: 'owner@example.com', historyId: 'history-new', lastSyncAt: NOW.toISOString() },
+      connected: true,
+    }));
+  });
+
+  it('bounds incremental reads and resumes after a quota error inside a history record', async () => {
+    let m4Quota = true;
+    const fetched: string[] = [];
+    const fetchImpl = vi.fn(async (request: string | URL | Request) => {
+      const url = new URL(request instanceof Request ? request.url : request.toString());
+      if (url.pathname.endsWith('/history')) {
+        const start = url.searchParams.get('startHistoryId');
+        if (start === 'h0') return json({
+          history: [{ id: 'h1', messagesAdded: [{ message: { id: 'm1' } }, { message: { id: 'm2' } }] }],
+          nextPageToken: 'page-2', historyId: 'h3',
+        });
+        if (start === 'h1') return json({
+          history: [{ id: 'h2', messagesAdded: [{ message: { id: 'm3' } }, { message: { id: 'm4' } }] }],
+          historyId: 'h3',
+        });
+      }
+      const id = url.pathname.split('/').pop() ?? '';
+      if (/^m[1-4]$/.test(id)) {
+        fetched.push(id);
+        if (id === 'm4' && m4Quota) return json({ error: { message: 'Quota exceeded for Total Query Cost' } }, 403);
+        return json(message(id));
+      }
+      throw new Error(`unexpected request ${url}`);
+    }) as unknown as typeof fetch;
+    const d = syncDeps(fetchImpl);
+    const deps = { ...d.value, backfillMessagesPerSync: 2 };
+
+    const first = await syncGoogleGmailSource({} as never, source({ historyId: 'h0' }), 'access-token', deps);
+    expect(first).toMatchObject({ historyId: 'h1', messages: 2, incrementalPending: true });
+    expect(fetched).toEqual(['m1', 'm2']);
+    const afterFirst = d.updates.at(-1)?.cursor as Record<string, unknown>;
+    expect(afterFirst).toMatchObject({ historyId: 'h1', incrementalMore: true });
+
+    await expect(syncGoogleGmailSource({} as never, source(afterFirst), 'access-token', deps))
+      .rejects.toMatchObject({ status: 403, operation: 'message_get' });
+    const afterQuota = d.updates.at(-1)?.cursor as Record<string, unknown>;
+    expect(afterQuota).toMatchObject({
+      historyId: 'h1', incrementalMore: true,
+      incrementalPending: { historyId: 'h2', messageIds: ['m3'] },
+    });
+
+    m4Quota = false;
+    const resumed = await syncGoogleGmailSource({} as never, source(afterQuota), 'access-token', {
+      ...deps, now: () => new Date(NOW.getTime() + 60_000),
+    });
+    expect(resumed).toMatchObject({ historyId: 'h3', messages: 1 });
+    expect(resumed.incrementalPending).toBeUndefined();
+    expect(fetched.filter((id) => id === 'm3')).toHaveLength(1);
+    expect(d.ingested.map((event) => event.externalId)).toEqual(['m1', 'm2', 'm3', 'm4']);
+    expect(d.updates.at(-1)?.cursor).toMatchObject({ historyId: 'h3' });
   });
 
   it('skips a message deleted between history.list and messages.get instead of full-resyncing (EI-23429618437235533)', async () => {
@@ -380,7 +427,7 @@ describe('Google Gmail adapter', () => {
       const url = new URL(request instanceof Request ? request.url : request.toString());
       if (url.pathname.endsWith('/history')) {
         return json({
-          history: [{ messagesAdded: [{ message: { id: 'm-gone' } }, { message: { id: 'm-2' } }] }],
+          history: [{ id: 'history-page-1', messagesAdded: [{ message: { id: 'm-gone' } }, { message: { id: 'm-2' } }] }],
           historyId: 'history-new',
         });
       }
@@ -403,8 +450,7 @@ describe('Google Gmail adapter', () => {
     // restarted the resumable backfill from zero every few minutes.
     expect(result).toMatchObject({ mode: 'incremental', messages: 1, messagesGone: 1, resyncReason: null, historyId: 'history-new' });
     expect(d.ingested.map((input) => input.dedupeKey)).toEqual(['gmail:m-2:message.received']);
-    expect(d.updates).toHaveLength(1);
-    expect((d.updates[0]!.cursor as Record<string, unknown>).backfill).toMatchObject({ status: 'throttled', pages: 3, messages: 666, startedAt: '2026-09-16T02:02:51.000Z' });
+    expect((d.updates.at(-1)!.cursor as Record<string, unknown>).backfill).toMatchObject({ status: 'throttled', pages: 3, messages: 666, startedAt: '2026-09-16T02:02:51.000Z' });
   });
 
   it('clears an expired history cursor on 404, full-resyncs, then stores profile historyId', async () => {
@@ -426,7 +472,10 @@ describe('Google Gmail adapter', () => {
 
     const result = await syncGoogleGmailSource(
       {} as never,
-      source({ historyId: 'expired', watchExpiration: '2026-08-28T12:00:00.000Z', keep: 'yes' }),
+      source({
+        historyId: 'expired', watchExpiration: '2026-08-28T12:00:00.000Z', keep: 'yes',
+        incrementalMore: true, incrementalPending: { historyId: 'old-record', messageIds: ['old-message'] },
+      }),
       'access-token',
       d.value,
     );

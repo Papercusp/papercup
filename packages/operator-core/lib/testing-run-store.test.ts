@@ -615,7 +615,7 @@ describe('durable detached snapshot lifecycle', () => {
         };
         return [];
       }
-      if (statement.includes('SELECT run_id, kind, label')) return durableRow ? [durableRow] : [];
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) return durableRow ? [durableRow] : [];
       return [];
     }) as unknown as Sql;
 
@@ -632,6 +632,16 @@ describe('durable detached snapshot lifecycle', () => {
       status: 'running',
       finishedAt: null,
     });
+    // Both joined tables expose exit_code and timestamps. An unqualified
+    // projection fails with PostgreSQL 42702 on a sibling worker, while the
+    // launching worker's local map masks that SQL error.
+    const readSql = (sql as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map((call) => (call[0] as TemplateStringsArray).join(' '))
+      .find((statement) => statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot'));
+    expect(readSql).toContain('snapshot.exit_code');
+    expect(readSql).toContain('snapshot.started_at');
+    expect(readSql).toContain('snapshot.finished_at');
+    expect(readSql).toContain('WHERE snapshot.run_id =');
   });
 
   it('retries an empty sibling read until the confirmed snapshot becomes visible', async () => {
@@ -654,7 +664,7 @@ describe('durable detached snapshot lifecycle', () => {
     };
     const sql = vi.fn(async (strings: TemplateStringsArray) => {
       const statement = strings.join(' ');
-      if (statement.includes('SELECT run_id, kind, label')) {
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
         snapshotReads += 1;
         return snapshotReads === 1 ? [] : [durableRow];
       }
@@ -692,7 +702,7 @@ describe('durable detached snapshot lifecycle', () => {
     }));
     const sql = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
       const statement = strings.join(' ');
-      if (statement.includes('SELECT run_id, kind, label')) throw new Error('snapshot table unavailable');
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) throw new Error('snapshot table unavailable');
       if (statement.includes('FROM harness_shared.test_runs')) return ledgerRows;
       return [];
     }) as unknown as Sql;
@@ -740,7 +750,7 @@ describe('durable detached snapshot lifecycle', () => {
     const updates: unknown[][] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const statement = strings.join(' ');
-      if (statement.includes('SELECT run_id, kind, label')) {
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
         return [
           {
             run_id: 'orphan-run',
@@ -785,7 +795,7 @@ describe('durable detached snapshot lifecycle', () => {
     const updates: unknown[][] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const statement = strings.join(' ');
-      if (statement.includes('SELECT run_id, kind, label')) {
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
         return [
           {
             run_id: 'ledger-pass-run',
@@ -835,7 +845,7 @@ describe('durable detached snapshot lifecycle', () => {
   it('does not recover a running snapshot from a partial or active test_runs ledger', async () => {
     const sql = vi.fn(async (strings: TemplateStringsArray) => {
       const statement = strings.join(' ');
-      if (statement.includes('SELECT run_id, kind, label')) {
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
         return [
           {
             run_id: 'ledger-partial-run',
@@ -885,7 +895,7 @@ describe('durable detached snapshot lifecycle', () => {
     const updates: unknown[][] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const statement = strings.join(' ');
-      if (statement.includes('SELECT run_id, kind, label')) {
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
         return [
           {
             run_id: 'deadline-run',
@@ -925,7 +935,7 @@ describe('durable detached snapshot lifecycle', () => {
   it('does not report a local orphan conversion when the compare-and-set loses a race', async () => {
     const sql = vi.fn(async (strings: TemplateStringsArray) => {
       const statement = strings.join(' ');
-      if (statement.includes('SELECT run_id, kind, label')) {
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
         return [
           {
             run_id: 'raced-run',

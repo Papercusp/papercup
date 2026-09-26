@@ -37,6 +37,7 @@ import {
   PTOOL_DEV_RESTART_TIMEOUT_MS,
   PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
+  PTOOL_SCORECARD_REPAIR_TIMEOUT_MS,
   timeoutForTool,
   isLoopPressureShed,
   callToolWithPressureRetry,
@@ -928,6 +929,19 @@ describe('ptool timeoutForTool — scorecards:emit outlives its 900s tool budget
   it('honours the same override through the deferred tools:invoke transport', () => {
     expect(timeoutForTool('tools:invoke', { name: 'scorecards:emit' }))
       .toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+  });
+});
+
+describe('ptool timeoutForTool — scorecards:repair outlives its 900s dispatch budget (EI-24230006371870177)', () => {
+  it('keeps direct and deferred calls alive beyond the MCP settlement deadline', () => {
+    expect(timeoutForTool('scorecards:repair', { targetIds: ['EI-target'] }))
+      .toBe(PTOOL_SCORECARD_REPAIR_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'scorecards:repair',
+      args: { targetIds: ['EI-target'] },
+    })).toBe(PTOOL_SCORECARD_REPAIR_TIMEOUT_MS);
+    expect(PTOOL_SCORECARD_REPAIR_TIMEOUT_MS).toBeGreaterThan(905_000);
+    expect(PTOOL_SCORECARD_REPAIR_TIMEOUT_MS).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 });
 

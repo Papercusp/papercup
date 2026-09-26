@@ -1092,6 +1092,10 @@ function isCodeRunSummaryScalar(value: unknown): boolean {
   return value === null || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string';
 }
 
+function codeRunSummaryOmittedValue(): Record<string, string> {
+  return { __truncated: 'nested value omitted; see summaryNotice.paths' };
+}
+
 // EI-22796173621053064: bounded evidence/result arrays must retain the lines that explain a
 // failure. Their usual shape is a long PASS prefix followed by a FAIL/result/verdict suffix, so
 // a plain prefix slice can make a failed run look healthy. Keep this selector path-scoped: other
@@ -1366,6 +1370,7 @@ function projectCodeRunSummaryDepthBoundary(
   if (!isCodeRunSummaryRecord(value)) return undefined;
 
   const projected: Record<string, unknown> = {};
+  let omittedFields = 0;
   for (const [key, entry] of Object.entries(value)) {
     const childPath = path ? `${path}.${key}` : key;
     // EI-21382842145185659: ordinary nested records (for example rows returned by
@@ -1390,15 +1395,17 @@ function projectCodeRunSummaryDepthBoundary(
     if (Array.isArray(entry)) {
       const boundaryProjection = projectCodeRunSummaryDepthBoundary(entry, childPath, options, stats);
       if (boundaryProjection !== undefined) projected[key] = boundaryProjection;
+      else omittedFields++;
+    } else {
+      omittedFields++;
     }
   }
-  if (Object.keys(projected).length === 0) return undefined;
-
-  // The boundary projection is intentionally selective. Keep the omission visible so a
-  // caller does not mistake the compact envelope for the complete child result.
-  stats.valuesTruncated++;
-  stats.omittedItems++;
-  noteCodeRunSummaryPath(stats, path);
+  if (omittedFields > 0) {
+    projected.__truncated = 'nested value omitted; see summaryNotice.paths';
+    stats.valuesTruncated += omittedFields;
+    stats.omittedItems += omittedFields;
+    noteCodeRunSummaryPath(stats, path);
+  }
   return projected;
 }
 
@@ -1446,7 +1453,7 @@ function projectCodeRunSummaryBoundaryArray(
     // Preserve the fact that this array had an element even when that element's
     // shape contains no boundary-safe scalar fields. The notice/path remains the
     // authoritative disclosure of what was omitted.
-    projected.push(Array.isArray(entry) ? [null] : {});
+    projected.push(Array.isArray(entry) ? [null] : codeRunSummaryOmittedValue());
     stats.valuesTruncated++;
     stats.omittedItems++;
     noteCodeRunSummaryPath(stats, entryPath);
@@ -1482,7 +1489,7 @@ function projectCodeRunSummaryValue(
     stats.valuesTruncated++;
     stats.omittedItems++;
     noteCodeRunSummaryPath(stats, path);
-    return Array.isArray(value) ? [] : {};
+    return Array.isArray(value) ? [codeRunSummaryOmittedValue()] : codeRunSummaryOmittedValue();
   }
 
   if (Array.isArray(value)) {

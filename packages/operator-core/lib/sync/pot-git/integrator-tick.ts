@@ -190,10 +190,20 @@ export async function runIntegratorTick(input: IntegratorTickInput): Promise<Int
       const verified = await Promise.all(heads.map(async (head) => {
         const device = head.devicePubkeyBase64;
         const floor = input.acceptedSnapshots?.[device];
+        // The ref-announcement receiver is the authority that mints this
+        // durable floor. Without one the device is ineligible by definition,
+        // so reading/parsing its sigrefs and namespace OID cannot change the
+        // verdict. Papercusp currently has dozens of repos with one dormant
+        // peer lacking a floor; doing those Git reads every tick amplified the
+        // same prerequisite miss across the whole registry.
+        if (!floor) {
+          errors.push(`unaccepted signed snapshot for ${device.slice(0, 12)} — waiting for verified ref announcement`);
+          return null;
+        }
         const [signed, oid] = await Promise.all([
           readSigrefs(repoPath, device, runGit), readNamespaceRef(repoPath, device, SIGREFS_REF, runGit),
         ]);
-        if (!floor || !signed || oid !== floor.sigrefs_oid || signed.store_generation !== floor.store_generation ||
+        if (!signed || oid !== floor.sigrefs_oid || signed.store_generation !== floor.store_generation ||
             signed.version !== floor.version ||
             !acceptFetchedSigrefs(signed, device, null, { expectedContext: scope }).ok ||
             (await reconcileFetchedHeads(repoPath, device, signed, runGit)).length !== 0) {

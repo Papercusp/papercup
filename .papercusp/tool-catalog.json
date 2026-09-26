@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 915,
+  "count": 916,
   "tools": [
     {
       "name": "ablation:report",
@@ -9964,6 +9964,44 @@
         "operator"
       ],
       "profile": "engineer"
+    },
+    {
+      "name": "dev:gate_ownership",
+      "http": {
+        "path": "/api/agent-tools/dev/gate_ownership",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the green-checkpoint incident owner and holder liveness without running git or release-position probes.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "mug",
+        "architect",
+        "worker",
+        "scoper",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "cup",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "release-fixer",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "When deciding who owns a red or stalled green-checkpoint incident.",
+        "notWhen": "To locate a particular edit in staging, main, or the deployed operator; use dev:pipeline_position."
+      }
     },
     {
       "name": "dev:harnesses",
@@ -24167,7 +24205,7 @@
       "guidance": {
         "when": "Turning a plan into a scheduled/recurring one, editing its cadence/expiry, or clearing its schedule.",
         "notWhen": "Arming a saved schedule so it starts firing — that is the autonomy-gated arm step, not authoring. Flipping plan/item status uses plans:set-plan-status / plans:set-status.",
-        "chaining": "plans:set-schedule → (arm, autonomy-gated) → the routines engine fires system:plan-run; plans:run-now to fire one manually."
+        "chaining": "plans:set-schedule → (arm, autonomy-gated) → the routines engine fires the configured blueprint operation (or legacy system:plan-run); plans:run-now to fire one legacy plan manually."
       }
     },
     {
@@ -31864,7 +31902,7 @@
           "POST"
         ]
       },
-      "description": "Install a disarmed external-event binding from one source to one target — a plan, a goal, or the canonical Email direct work-item kind — with an optional payload filter and storm policy.",
+      "description": "Install a disarmed external-event binding from one source to one target — preferably a registered blueprint operation, or a legacy plan, goal, or canonical Email direct work-item kind — with an optional payload filter and storm policy.",
       "capabilities": [
         "plans:write"
       ],
@@ -31882,7 +31920,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Attach an existing external source event pattern (ext:<source>:<event>) to a plan ({ harness, plan }), a goal ({ goal }), or Email direct work-item ingress ({ workItemHarnessSlug:\"email\", workItemKind:\"email-draft-proposal\" }). The new binding is installed but DISARMED.",
+        "when": "Attach an existing external source event pattern (ext:<source>:<event>) to a blueprint operation ({ operationHarnessSlug, operationId, input? }), legacy plan ({ harness, plan }), goal ({ goal }), or Email direct work-item ingress. The new binding is installed but DISARMED.",
         "notWhen": "To activate it use triggers:arm separately. For schedules use plans:set-schedule then plans:arm-schedule. For manual starts use plans:run-now.",
         "chaining": "triggers:list → triggers:bind → inspect the returned disarmed binding → triggers:arm { bindingId, confirm:true }."
       }

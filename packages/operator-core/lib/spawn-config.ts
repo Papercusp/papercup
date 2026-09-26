@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { loadHarnessRegistry } from './harness-registry';
+import { resolveLongLivedSessionMcpBaseUrl } from './mcp-base-url';
 
 /**
  * Resolve a harness's filesystem project dir via the harness registry.
@@ -72,6 +73,15 @@ export function resolveContextEnv(opts: {
   const env: Record<string, string> = {};
   if (opts.stateDir) env.PI_CODING_AGENT_DIR = join(opts.stateDir, 'pi-sessions');
   env.PAPERCUSP_HARNESS_SLUG = opts.slug;
+  // Browser PTYs inherit the operator host's ambient process env. On staging
+  // that includes PAPERCUSP_OPERATOR_URL=:3170, which turns a terminal-opened
+  // psu session into a long-lived direct client of the single UI request host.
+  // Pin the agent/MCP path to the existing resilient proxy explicitly. Keep
+  // PAPERCUSP_API_BASE below on the request origin: browser-side callbacks are
+  // still staging/current-build scoped, while long-lived MCP + hook traffic is
+  // isolated from that UI process. An explicit body.env supplied by the PTY
+  // caller is spread after this result and remains the deliberate A/B override.
+  env.PAPERCUSP_OPERATOR_URL = resolveLongLivedSessionMcpBaseUrl();
   if (opts.requestUrl) {
     try {
       const u = new URL(opts.requestUrl);

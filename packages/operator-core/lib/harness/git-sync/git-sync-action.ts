@@ -227,6 +227,7 @@ import {
   emitGitSyncCommittedEvent,
   emitGitSyncEgressedEvent,
   emitGitSyncLockRetryEvent,
+  emitResourceReleasedEvent,
   isSystemGitSyncHolder,
   snapshotGitSyncLockHolders,
   type GitSyncLockHolderSnapshot,
@@ -930,9 +931,15 @@ async function releaseAll(cd: string, owner: string, acquired: GitSyncLockReques
     // settled together, those teardown transactions contended with each other,
     // routinely outliving the 15s cleanup budget and keeping dev:restart's
     // exclusive barrier draining for its full 45s (EI-22047168222679674).
-    await acquireWithContentionRetry(() =>
+    const released = await acquireWithContentionRetry(() =>
       inWorkspaceTxn(cd, owner, (tx) => releaseAllResourcesForOwner(tx, cd, owner)),
     );
+    // The bulk store release bypasses locks:release and its broadcast helper.
+    // Emit only after the transaction has removed each exclusive row so a
+    // held_exclusive caller can await the truthful exact-resource boundary.
+    for (const resource of released.exclusiveResources) {
+      emitResourceReleasedEvent(resource, cd === '*' ? null : cd);
+    }
   } catch (error) {
     // The bulk release is transactional: either every owner-scoped row is gone
     // or none is. Keep the TTL as the final backstop, but make the missed release
@@ -6050,6 +6057,50 @@ async function runRefAnnounceLeg(
   }
 }
 
+const INTEGRATOR_ERROR_WARN_INTERVAL_MS = 10 * 60_000;
+const integratorErrorWarningState = new Map<
+  string,
+  { fingerprint: string; lastWarnAt: number; suppressed: number }
+>();
+
+/**
+ * Keep the current diagnosis durable in routine metadata every tick, but do
+ * not repeat an identical prerequisite warning for every install cadence.
+ * A changed diagnosis logs immediately; an unchanged one re-emits every ten
+ * minutes with its suppressed count; a recovery clears the throttle so a
+ * recurrence is visible immediately.
+ */
+export function formatIntegratorErrorWarning(
+  slug: string,
+  errors: readonly string[],
+  nowMs = Date.now(),
+): string | null {
+  if (errors.length === 0) {
+    integratorErrorWarningState.delete(slug);
+    return null;
+  }
+  const fingerprint = errors.join('\u0000');
+  const prior = integratorErrorWarningState.get(slug);
+  if (
+    prior?.fingerprint === fingerprint &&
+    nowMs - prior.lastWarnAt < INTEGRATOR_ERROR_WARN_INTERVAL_MS
+  ) {
+    prior.suppressed += 1;
+    return null;
+  }
+  const suppressed = prior?.suppressed ?? 0;
+  integratorErrorWarningState.set(slug, { fingerprint, lastWarnAt: nowMs, suppressed: 0 });
+  return (
+    `[git-sync] ${slug}: integrator-tick reported errors: ${errors.join('; ')}` +
+    (suppressed > 0 ? ` (${suppressed} identical warning${suppressed === 1 ? '' : 's'} suppressed)` : '')
+  );
+}
+
+/** Test-only reset for the module-local warning window. */
+export function resetIntegratorErrorWarningsForTest(): void {
+  integratorErrorWarningState.clear();
+}
+
 /** Canonical integration uses the single owning hive (F6/D-022). The runtime
  * capability supplies serving/device/generation identity; the existing owner
  * key authorizes the effect. Publication term and sequence persist under the
@@ -6279,9 +6330,8 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
         );
       }
     }
-    if (outcome.errors.length) {
-      console.warn(`[git-sync] ${slug}: integrator-tick reported errors: ${outcome.errors.join('; ')}`);
-    }
+    const warning = formatIntegratorErrorWarning(slug, outcome.errors);
+    if (warning) console.warn(warning);
   } catch (e) {
     console.warn(`[git-sync] ${slug}: integrator-tick failed: ${e instanceof Error ? e.message : e}`);
   }

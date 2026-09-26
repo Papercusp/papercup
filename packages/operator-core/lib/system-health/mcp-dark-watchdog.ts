@@ -597,6 +597,33 @@ export function healedWakeText(ownerId: string, staleMins: number): string {
   );
 }
 
+/**
+ * Enrol the watchdog-authored wake in the same verified turn-provenance ledger
+ * used by every other machine injector. The ledger row is written before the
+ * tagged text is returned for PTY injection, so UserPromptSubmit can never
+ * classify this machine turn as interactive OWNER speech. Fail-soft delivery
+ * preserves the watchdog's recovery role if provenance storage is unavailable.
+ */
+export async function taggedHealedWakeText(
+  ownerId: string,
+  staleMins: number,
+  options: { dir?: string; nowMs?: number } = {},
+): Promise<string> {
+  const text = healedWakeText(ownerId, staleMins);
+  try {
+    const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
+    return tagTurnForInjection({
+      sid: ownerId,
+      origin: 'watchdog',
+      text,
+      ...(options.dir ? { dir: options.dir } : {}),
+      ...(options.nowMs != null ? { nowMs: options.nowMs } : {}),
+    }).taggedText;
+  } catch {
+    return text;
+  }
+}
+
 const interactiveHealState = new Map<string, OwnerHealState>();
 const interactiveHealBudget: InteractiveHealBudgetState = {
   attemptsMs: [],
@@ -882,7 +909,7 @@ async function runInteractiveHealStep(
     if (host) {
       await discovery.injectIntoHost(host.sock, {
         mode: 'turn',
-        data: healedWakeText(step.ownerId, v?.staleMins ?? 0),
+        data: await taggedHealedWakeText(step.ownerId, v?.staleMins ?? 0),
         ownerId: step.ownerId,
       });
     }

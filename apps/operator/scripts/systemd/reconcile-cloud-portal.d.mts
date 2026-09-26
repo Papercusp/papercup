@@ -5,6 +5,7 @@ export interface PortalReconcileConfig {
   deployScript: string;
   npm: string;
   port: number;
+  publicLinksEnv?: string;
   env: Record<string, string>;
 }
 

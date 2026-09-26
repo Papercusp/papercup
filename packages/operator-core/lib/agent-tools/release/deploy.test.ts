@@ -26,7 +26,9 @@ vi.mock('../../release-deploy-launch', () => ({
 // real OTHER exports of these modules; we override only the single function each touches.
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: { unsafe: auditUnsafeM } }) as never,
+  getOrgPg: () => ({ sql: { unsafe: auditUnsafeM,
+    begin: (fn: (tx: { unsafe: typeof auditUnsafeM }) => Promise<unknown>) => fn({ unsafe: auditUnsafeM }),
+  } }) as never,
 }));
 vi.mock('../../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../workspace-registry')>()),
@@ -174,10 +176,14 @@ function checkpointRun(
 beforeEach(() => {
   vi.clearAllMocks();
   gateOwnershipM.mockResolvedValue({
-    assessment: 'unowned', claimState: 'no-object', workItem: null, takenBy: null, unknown: null,
+    assessment: 'held-live', claimState: 'held', workItem: 'WI-gate', takenBy: 'o',
+    takenAt: '2026-09-26T18:00:00.000Z', eventKey: 'gate-red-streak:papercusp',
+    holderSessionState: 'live', unknown: null, duplicates: [],
   });
   fireGitSyncM.mockResolvedValue(undefined as never);
-  auditUnsafeM.mockResolvedValue(undefined);
+  auditUnsafeM.mockImplementation(async (query: string) => query.includes('SELECT w.feature_id')
+    ? [{ work_item: 'WI-gate', holder: 'o', taken_at: '2026-09-26T18:00:00.000Z', expires_at: null }]
+    : []);
   launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'trigger', argv: [], logPath: '/tmp/x.log' });
 });
 
@@ -484,7 +490,7 @@ describe('release:deploy — trigger', () => {
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
       gateActionReceipt: expect.objectContaining({
         action: 'deploy-trigger',
-        ownership: expect.objectContaining({ certainty: 'unknown' }),
+        ownership: expect.objectContaining({ certainty: 'claim-row-locked-through-effect' }),
         effect: expect.objectContaining({ status: 'detached-launch-accepted', deployedSha: 'unknown' }),
       }),
     }));
@@ -495,14 +501,22 @@ describe('release:deploy — trigger', () => {
       deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2 } }));
     gateOwnershipM.mockResolvedValue({
       assessment: 'held-live', claimState: 'held', workItem: 'WI-38026', takenBy: 'su-live-peer',
+      eventKey: 'gate-red-streak:papercusp', takenAt: '2026-09-26T18:00:00.000Z',
       holderSessionState: 'live', unknown: null, duplicates: [],
     });
-    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
+    const metadata = vi.fn();
+    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator', metadata } as never));
     expect(b).toMatchObject({ ok: false, refused: true, reason: 'gate_condition_claimed_by_live_peer' });
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({ gateActionReceipt: expect.objectContaining({
+      ownership: expect.objectContaining({ certainty: 'prelaunch-observation',
+        conditionKey: 'gate-red-streak:papercusp', workItem: 'WI-38026', holder: 'su-live-peer',
+        takenAt: '2026-09-26T18:00:00.000Z', claimState: 'held', observedAt: expect.any(String) }),
+      effect: { status: 'refused-live-peer' },
+    }) }));
     expect(launchM).not.toHaveBeenCalled();
   });
 
-  it('returns the launch receipt without waiting for a post-launch audit insert', async () => {
+  it('does not launch when the durable pre-effect intent cannot be written', async () => {
     statusM.mockResolvedValue(
       mkStatus({
         state: 'green-deployable',
@@ -511,7 +525,7 @@ describe('release:deploy — trigger', () => {
         deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2 },
       }),
     );
-    auditUnsafeM.mockImplementation(() => new Promise<void>(() => {}));
+    auditUnsafeM.mockRejectedValue(new Error('audit unavailable'));
 
     const outcome = await Promise.race([
       tool
@@ -522,9 +536,10 @@ describe('release:deploy — trigger', () => {
 
     expect(outcome.kind).toBe('result');
     if (outcome.kind === 'result') {
-      expect(body(outcome.value)).toMatchObject({ ok: true, op: 'trigger', launched: true });
+      expect(body(outcome.value)).toMatchObject({ ok: false, op: 'trigger', refused: true,
+        reason: 'gate_action_intent_unavailable' });
     }
-    expect(launchM).toHaveBeenCalledWith({});
+    expect(launchM).not.toHaveBeenCalled();
     expect(auditUnsafeM).toHaveBeenCalledTimes(1);
   });
 
@@ -695,7 +710,8 @@ describe('release:deploy — force (owner-gated)', () => {
     expect(notifyM).toHaveBeenCalledTimes(1); // loud owner notification
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
       gateActionReceipt: expect.objectContaining({
-        action: 'deploy-force', target: { commit: 'feedface', ownerSignoffRef: 'owner-directive:123' },
+        action: 'deploy-force', target: { commit: 'feedface', ownerSignoffRef: 'owner-directive:123',
+          ownerSignoffAssessment: 'caller-supplied-unverified' },
         effect: expect.objectContaining({ status: 'detached-launch-accepted', deployedSha: 'unknown' }),
       }),
     }));
