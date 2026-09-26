@@ -419,6 +419,12 @@ async function startDbosOnce(): Promise<void> {
     await import('./plan-markdown-render-workflow');
   }
 
+  // blueprint-backed-work-item-execution-2026-09-23 P-019 (D-019): explicitly durable tool
+  // orchestration — one workflow per `orchestrate:run { execution.durability:'durable' }` run,
+  // one checkpointed step per nested tool call. Registered (ungated) before launch so DBOS
+  // recovery resumes an interrupted run; nothing executes until a caller admits a durable run.
+  await import('./durable-orchestration-workflow');
+
   // EI-20196041413229589: register the release:checkpoint-run eligibility waiter before
   // DBOS.launch, then install its request-side enqueue seam only after the runtime is live.
   // This keeps waitForEligibility transport-safe without making DBOS a request-handler import.

@@ -898,6 +898,10 @@ async function readSuRefScopedTerminalEntries(
  */
 async function readScoutRefScopedTerminalEntries(
   opts: ScoutLedgerOpts = {},
+  // goal-brief-to-claimed-plan-work P-009: goal-local plans are routed as
+  // origin 'su-ideate' plan rows, and their outcome must be read from the same
+  // plan/gym/goal terminal states as a Blender plan's — not only from wi: refs.
+  refOrigin: 'scout' | 'su-ideate' = 'scout',
 ): Promise<ChangeFeedEntry[]> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
@@ -905,7 +909,7 @@ async function readScoutRefScopedTerminalEntries(
   // concurrent Promise.all below). Same optional scoping as the su ref-scoped read.
   const scoutRefsFor = (prefix: string) => sql`
     SELECT routed_ref FROM harness_shared.scout_routed_ideas
-     WHERE origin = 'scout' AND routed_ref LIKE ${prefix + '%'}
+     WHERE origin = ${refOrigin} AND routed_ref LIKE ${prefix + '%'}
        AND workspace_id = ${ws}
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}`;
@@ -1187,11 +1191,12 @@ async function gatherCompletionsForOrigin(
   const o = origin ?? 'scout';
   const completions = await gatherCompletions(buildChangeFeedReaders());
   if (o === 'su-ideate') {
-    const [losses, refScoped] = await Promise.all([
+    const [losses, refScoped, artifactScoped] = await Promise.all([
       readWorkItemLossEntries(),
       readSuRefScopedTerminalEntries(opts),
+      readScoutRefScopedTerminalEntries(opts, 'su-ideate'),
     ]);
-    const extras = [...losses, ...refScoped];
+    const extras = [...losses, ...refScoped, ...artifactScoped];
     return extras.length > 0 ? dedupById([...completions, ...extras]) : completions;
   }
   if (o === 'scout') {

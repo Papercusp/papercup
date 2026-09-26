@@ -1224,7 +1224,9 @@ export function evaluateCarryTaskPairs(samples: readonly CarryTaskEvaluation[]) 
         if (chargedRequests.has(request.id)) insufficient.push(`reused-request:${taskId}:${row.arm}:${request.id}`);
         chargedRequests.add(request.id);
       }
-      if (row.requests.filter(request => request.phase === 'startup').length < 2) {
+      // D-060: first-two is the first two canonical requests of the arm thread;
+      // an arm whose whole work is one request has a one-request first-two.
+      if (row.requests.filter(request => request.phase === 'startup').length < 1) {
         insufficient.push(`missing-startup:${taskId}:${row.arm}`);
       }
       if (row.firstUsefulResponseMs === null || !Number.isFinite(row.firstUsefulResponseMs) || row.firstUsefulResponseMs < 0) {

@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "subject": {
+    "plan": "measured-agent-productivity-2026-09-06",
+    "planItem": "P-002",
+    "workItem": "WI-10000331",
+    "specs": [
+      "AUTO-BAR-R-001-P-002@7",
+      "AUTO-BAR-R-002-P-002@7",
+      "AUTO-BAR-R-004-P-002@7",
+      "SPEC-P002-comparison@1"
+    ],
+    "decision": "measured-agent-productivity-2026-09-06#D-009"
+  },
+  "source": {
+    "ledgers": ["harness_shared.experiment_runs", "harness_shared.replay_runs"],
+    "batteryId": "p002-relevance-dedup-20260907-878ab3bb-r1",
+    "sourceSnapshot": "staging@878ab3bb41dd567f8ca3066daff1c501f050d877",
+    "experimentCreatedAt": "2026-09-07T06:51:15.348Z",
+    "extractedAt": "2026-09-26T17:30:00Z",
+    "extractedBy": "su-745111bd-8b40-40f1-97b9-e985e7827b4b",
+    "extraction": "Verbatim copy of the six replay_runs cells and the experiment_runs comparison row for the battery; no value recomputed."
+  },
+  "method": {
+    "signalOrigin": "replay",
+    "tier": "offline",
+    "provider": "OpenAI via Papercusp Codex gateway",
+    "runnerModel": "gpt-5.6-sol",
+    "judgeModel": "gpt-5.6-sol:xhigh",
+    "rubricHash": "f97ac913b336d37deaa33ee7841669d30be8a0c6cce480dc6b4b8fee3d9b61ff",
+    "concurrency": 1,
+    "repeats": 1,
+    "primaryScorer": "composite",
+    "minDelta": 0,
+    "preselectedWinner": null,
+    "baselineVariant": "baseline",
+    "dimensions": { "d1": "outcome", "d2": "process", "d3": "divergenceValue" }
+  },
+  "variants": [
+    {
+      "id": "baseline",
+      "label": "historical baseline",
+      "policy": "current 250k named-member context and existing preload defaults",
+      "removes": [],
+      "preserves": ["mandatory", "current", "task-linked", "duplicate", "older-history"]
+    },
+    {
+      "id": "relevance-dedup",
+      "label": "preserve relevant preload; collapse duplicates and searchable older history",
+      "policy": "preserve mandatory/current/task-linked preload; collapse duplicates; keep older history searchable",
+      "removes": ["duplicate", "older-history"],
+      "preserves": ["mandatory", "current", "task-linked"]
+    }
+  ],
+  "unavailableArms": [
+    {
+      "id": "higher-context",
+      "reason": "named-member runtime hard-caps context at 250000; no effective 400k support was proven"
+    },
+    {
+      "id": "combined",
+      "reason": "depends on the unavailable higher-context member arm"
+    }
+  ],
+  "cells": [
+    { "runId": "p002-relevance-dedup-20260907-878ab3bb-r1:baseline:WI-10000276:r0", "taskId": "WI-10000276", "variantId": "baseline", "status": "scored", "d1": 9.7, "d2": 10, "d3": 9.5, "composite": 9.75, "rubricHash": "f97ac913b336d37deaa33ee7841669d30be8a0c6cce480dc6b4b8fee3d9b61ff", "elapsedMs": 23061, "costUsd": 0 },
+    { "runId": "p002-relevance-dedup-20260907-878ab3bb-r1:baseline:WI-10000316:r0", "taskId": "WI-10000316", "variantId": "baseline", "status": "scored", "d1": 1.5, "d2": 3.5, "d3": 5, "composite": 2.8, "rubricHash": "f97ac913b336d37deaa33ee7841669d30be8a0c6cce480dc6b4b8fee3d9b61ff", "elapsedMs": 21585, "costUsd": 0 },
+    { "runId": "p002-relevance-dedup-20260907-878ab3bb-r1:baseline:EI-22552545539859127:r0", "taskId": "EI-22552545539859127", "variantId": "baseline", "status": "scored", "d1": 8, "d2": 8, "d3": 5, "composite": 7.4, "rubricHash": "f97ac913b336d37deaa33ee7841669d30be8a0c6cce480dc6b4b8fee3d9b61ff", "elapsedMs": 33019, "costUsd": 0 },
+    { "runId": "p002-relevance-dedup-20260907-878ab3bb-r1:relevance-dedup:WI-10000276:r0", "taskId": "WI-10000276", "variantId": "relevance-dedup", "status": "scored", "d1": 10, "d2": 10, "d3": 10, "composite": 10, "rubricHash": "f97ac913b336d37deaa33ee7841669d30be8a0c6cce480dc6b4b8fee3d9b61ff", "elapsedMs": 11657, "costUsd": 0 },
+    { "runId": "p002-relevance-dedup-20260907-878ab3bb-r1:relevance-dedup:WI-10000316:r0", "taskId": "WI-10000316", "variantId": "relevance-dedup", "status": "scored", "d1": 1, "d2": 3, "d3": 0, "composite": 1.4, "rubricHash": "f97ac913b336d37deaa33ee7841669d30be8a0c6cce480dc6b4b8fee3d9b61ff", "elapsedMs": 34585, "costUsd": 0 },
+    { "runId": "p002-relevance-dedup-20260907-878ab3bb-r1:relevance-dedup:EI-22552545539859127:r0", "taskId": "EI-22552545539859127", "variantId": "relevance-dedup", "status": "scored", "d1": 4, "d2": 5, "d3": 3, "composite": 4.1, "rubricHash": "f97ac913b336d37deaa33ee7841669d30be8a0c6cce480dc6b4b8fee3d9b61ff", "elapsedMs": 25199, "costUsd": 0 }
+  ],
+  "recorded": {
+    "experimentWinner": null,
+    "experimentDecision": "proposed",
+    "selectionReason": "baseline_holds: best candidate 'relevance-dedup' primary improvement -1.4833333333333343 ≤ minDelta 0",
+    "verdict": "baseline-holds",
+    "verdictText": "baseline holds; do not adopt relevance/dedup overlay",
+    "preload": "retain-current-preload",
+    "recommendation": "retain 250k named-member and 400k leader defaults, guaranteed relevant preload, and searchable older history; no fleet-wide default change",
+    "costCaveat": "experiment ledger records 0 but gpt-5.6-sol is unpriced by codexCostUsd; actual cost unavailable; budget_exhausted=false",
+    "timeoutTreatment": "client timed out after 316519ms; no second logical invocation; durable replay_runs and experiment_runs ledgers proved completion"
+  },
+  "disclosedGaps": [
+    "The higher-context and combined arms were not run: the named-member runtime caps context at 250000, so R-004's higher-compaction-target comparison is recorded as unavailable with a reason, not as a loss or a win.",
+    "One repeat per cell (n=3 per arm); the verdict is a HOLD on the evidence available, not a proof that the overlay can never help.",
+    "Actual model cost is unavailable (the runner model is unpriced); cost is not used as a success signal."
+  ]
+}
