@@ -64,6 +64,7 @@ export interface RunResult {
   out: string;
   legs: Array<{ engine: string; status: number | null; evidence: string; rows: number }>;
   stockMachines: StockMachineResult[];
+  cloudDeviceStart: CloudDeviceStartResult;
   suiteProvenance: Array<{ file: string; candidateBlob: string | null; runBlob: string | null }>;
 }
 
@@ -71,6 +72,52 @@ export interface StockMachineResult {
   image: string;
   status: number | null;
   output: string;
+}
+
+export interface CloudDeviceStartResult {
+  endpoint: string;
+  checkedAt: string;
+  status: number | null;
+  ok: boolean;
+  problem: string | null;
+}
+
+/** F10: exercise the public ingress, which local portal tests cannot cover.
+ * Persist only the verdict: device codes and verification links are credentials.
+ */
+export async function runCloudDeviceStartSmoke(origin = 'https://app.papercusp.com'): Promise<CloudDeviceStartResult> {
+  const endpoint = new URL('/api/hosted/cli/device/code', origin).href;
+  const result: CloudDeviceStartResult = {
+    endpoint, checkedAt: new Date().toISOString(), status: null, ok: false, problem: null,
+  };
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+      redirect: 'error', signal: AbortSignal.timeout(15_000),
+    });
+    result.status = response.status;
+    if (response.status !== 200) {
+      await response.body?.cancel();
+      result.problem = `HTTP ${response.status}; device authorization did not start`;
+      return result;
+    }
+    const grant: unknown = await response.json();
+    const row = grant as Record<string, unknown> | null;
+    const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+    const verificationUrl = (value: unknown) => {
+      if (!nonempty(value)) return false;
+      try { return new URL(value).origin === new URL(origin).origin; } catch { return false; }
+    };
+    result.ok = Boolean(row && row.ok === true && nonempty(row.deviceCode) && nonempty(row.userCode)
+      && verificationUrl(row.verificationUri) && verificationUrl(row.verificationUriComplete)
+      && typeof row.expiresIn === 'number' && row.expiresIn > 0
+      && typeof row.interval === 'number' && row.interval > 0);
+    if (!result.ok) result.problem = 'response did not contain a usable device authorization grant';
+  } catch {
+    // Never persist a response body or exception text that could include a code.
+    result.problem = 'device authorization request failed, timed out, redirected, or returned invalid JSON';
+  }
+  return result;
 }
 
 const STOCK_LINUX_IMAGES = ['ubuntu:24.04', 'debian:stable-slim'];
@@ -202,6 +249,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   };
   const sourceSha = provenance.source.commit;
   const stockMachines = provenance.target.startsWith('linux-') ? runStockMachineSmoke(unit) : [];
+  const cloudDeviceStart = await runCloudDeviceStartSmoke();
 
   const home = path.join(work, 'home');
   mkdirSync(path.join(home, 'tmp'), { recursive: true });
@@ -232,7 +280,8 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('VITEST')));
   // A binary that cannot start on stock Linux cannot earn PTY evidence. Keep
   // writing the acceptance verdict, but avoid launching expensive live legs.
-  const legsToRun = stockMachines.some((machine) => machine.status !== 0) ? [] : [null, ...(options.real ?? [])];
+  const legsToRun = !cloudDeviceStart.ok || stockMachines.some((machine) => machine.status !== 0)
+    ? [] : [null, ...(options.real ?? [])];
   for (const leg of legsToRun) {
     const engine = leg ? leg.backend : 'scripted';
     const evidence = path.join(work, `evidence-${engine}.json`);
@@ -268,6 +317,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   const contract = committed(sourceSha, 'apps/tui/PUBLIC_RELEASE_UX.md');
   const matrixText = committed(sourceSha, 'apps/tui/release/acceptance-matrix.json');
   const extra: string[] = [];
+  if (!cloudDeviceStart.ok) extra.push(`public cloud device-start smoke failed: ${cloudDeviceStart.problem}`);
   if (!contract) extra.push(`candidate ${sourceSha} carries no apps/tui/PUBLIC_RELEASE_UX.md`);
   if (!matrixText) extra.push(`candidate ${sourceSha} carries no apps/tui/release/acceptance-matrix.json`);
   if (!platform) extra.push(`this host (${process.platform}/${process.arch}) is not a platform in the release matrix`);
@@ -293,8 +343,8 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   writeFileSync(out, `${JSON.stringify({
     schemaVersion: 1,
     checkedAt: new Date().toISOString(),
-    runner: { head: git('rev-parse', 'HEAD'), platform, legs, stockMachines, suiteProvenance, work },
+    runner: { head: git('rev-parse', 'HEAD'), platform, legs, stockMachines, cloudDeviceStart, suiteProvenance, work },
     ...verdict,
   }, null, 2)}\n`);
-  return { verdict, out, legs, stockMachines, suiteProvenance };
+  return { verdict, out, legs, stockMachines, cloudDeviceStart, suiteProvenance };
 }

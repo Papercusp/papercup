@@ -117,6 +117,7 @@ needs no download.
 | File | Purpose |
 | --- | --- |
 | `bin/pui` | the PUI binary |
+| `bin/pui-audio` | optional audio device helper; on Linux, voice requires the system ALSA library (`libasound2`) |
 | `bin/psu` | the Papercusp launcher PUI uses for sessions, sign-in and remote hosts |
 | `lib/psu/` | psu's program files |
 | `lib/node/` | the private Node runtime psu runs on (not added to your `PATH`) |

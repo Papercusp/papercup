@@ -1,9 +1,63 @@
 import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
 import { disqualification, HARNESS_TAG, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
-import { runReleaseAcceptance } from './release-acceptance-run';
+import { runCloudDeviceStartSmoke, runReleaseAcceptance } from './release-acceptance-run';
+
+describe('public cloud device-start release guard', () => {
+  it('requires a usable grant through HTTP and never records its credentials', async () => {
+    let status = 200;
+    let body: unknown;
+    const requests: Array<{ method?: string; url?: string; body: string }> = [];
+    const server = createServer(async (req, res) => {
+      let input = '';
+      for await (const chunk of req) input += chunk.toString();
+      requests.push({ method: req.method, url: req.url, body: input });
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(typeof body === 'string' ? body : JSON.stringify(body));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const grant = {
+      ok: true, deviceCode: 'pdc_PRIVATE_CODE', userCode: 'PRIVATE-USER-CODE',
+      verificationUri: `${origin}/api/hosted/cli/device`,
+      verificationUriComplete: `${origin}/api/hosted/cli/device?user_code=PRIVATE-USER-CODE`,
+      expiresIn: 600, interval: 5,
+    };
+    try {
+      body = grant;
+      const passed = await runCloudDeviceStartSmoke(origin);
+      expect(passed).toMatchObject({ ok: true, status: 200, problem: null });
+      expect(JSON.stringify(passed)).not.toContain('PRIVATE');
+      expect(requests).toEqual([{ method: 'POST', url: '/api/hosted/cli/device/code', body: '{}' }]);
+
+      // The actual ingress regression returned HTTP 404; a JSON ok flag must
+      // not disguise it. A login page with HTTP 200 must also fail closed.
+      status = 404;
+      expect(await runCloudDeviceStartSmoke(origin)).toMatchObject({ ok: false, status: 404 });
+      status = 200;
+      body = '<html>sign in</html>';
+      expect(await runCloudDeviceStartSmoke(origin)).toMatchObject({ ok: false, status: 200 });
+      for (const malformed of [
+        { ...grant, deviceCode: '' }, { ...grant, userCode: '' },
+        { ...grant, expiresIn: 0 }, { ...grant, interval: 0 },
+        { ...grant, verificationUriComplete: 'https://other.invalid/device' },
+      ]) {
+        body = malformed;
+        const failed = await runCloudDeviceStartSmoke(origin);
+        expect(failed).toMatchObject({ ok: false, status: 200 });
+        expect(JSON.stringify(failed)).not.toContain('PRIVATE');
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    expect(await runCloudDeviceStartSmoke(origin)).toMatchObject({ ok: false, status: null });
+  });
+});
 
 describe('release acceptance evidence parsing', () => {
   it('reads every record when Vitest batches two console writes into one chunk', () => {
