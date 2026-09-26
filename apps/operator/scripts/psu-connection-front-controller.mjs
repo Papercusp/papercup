@@ -851,8 +851,17 @@ async function hostedLogin(originInput, store, deps) {
   });
   const grant = started.payload;
   if (started.status !== 200 || grant?.ok !== true || typeof grant.deviceCode !== "string") {
+    // Starting a device grant needs no credentials, so a refusal here is never
+    // the user's sign-in state: name the server's own code and say where the
+    // fault is, instead of a bare status that reads like a local mistake
+    // (WI-10003292: the cloud answered 401 portal_auth_required for weeks).
+    const error = grant?.error;
+    const code = typeof error === "string" ? error : error?.code;
+    const detail = `HTTP ${started.status}${typeof code === "string" && code ? ` ${code}` : ""}`;
     throw new Error(
-      `Cannot start a Papercusp cloud sign-in at ${origin} (HTTP ${started.status})`,
+      `Cannot start a Papercusp cloud sign-in at ${origin} (${detail}). ` +
+        "The cloud refused to start the sign-in; nothing on this machine caused it. " +
+        "Try again in a few minutes, and report it if it keeps happening.",
     );
   }
   deps.notice(`psu: to sign in, open ${grant.verificationUriComplete}`);

@@ -760,6 +760,36 @@ describe("pui through psu's saved connections (P-017)", () => {
     );
   });
 
+  it("names the cloud's refusal code when a sign-in cannot start, and says the fault is not local (WI-10003292)", async () => {
+    const home = tempHome();
+    const storePath = defaultPsuConnectionStorePath(home);
+    const portal = fakePortal({
+      "/api/hosted/cli/device/code": () => ({
+        status: 401,
+        body: { ok: false, error: "portal_auth_required" },
+      }),
+    });
+    const notice = vi.fn();
+    const failure = runPsuConnectionFrontController(["--connect-login", PORTAL], {
+      home,
+      storePath,
+      interactive: false,
+      hostname: "laptop",
+      fetch: portal.fetch,
+      sleep: async () => {},
+      openBrowser: vi.fn(),
+      output: vi.fn(),
+      notice,
+    });
+    await expect(failure).rejects.toThrow(
+      `Cannot start a Papercusp cloud sign-in at ${PORTAL} (HTTP 401 portal_auth_required).`,
+    );
+    await expect(failure).rejects.toThrow(/nothing on this machine caused it/);
+    // No code was printed: the user is never told to open a page that cannot work.
+    expect(notice).not.toHaveBeenCalled();
+    expect(portal.calls).toHaveLength(1);
+  });
+
   it("signs in and then opens pui on the new sign-in's workspace (PUI first-run, D-031)", async () => {
     const home = tempHome();
     const storePath = defaultPsuConnectionStorePath(home);
