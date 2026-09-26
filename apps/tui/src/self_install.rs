@@ -17,7 +17,9 @@
 //! ```
 //!
 //! The launcher `$PUI_BIN_DIR/pui` (default `~/.local/bin/pui`) links to
-//! `current/bin/pui`. User data lives in `~/.papercusp`; install, update and
+//! `current/bin/pui`; a release that ships psu (D-031) also gets
+//! `$PUI_BIN_DIR/psu` → `current/bin/psu`, unless a `psu` PUI did not create
+//! already holds that path. User data lives in `~/.papercusp`; install, update and
 //! rollback never write it (rollback restores a snapshot only when asked), and
 //! uninstall keeps it unless `--purge`.
 
@@ -71,7 +73,10 @@ snapshot taken before the update; --purge makes uninstall also remove it.
 
 Environment:
   PUI_HOME      release store (default $XDG_DATA_HOME/pui or ~/.local/share/pui)
-  PUI_BIN_DIR   where the `pui` launcher link lives (default ~/.local/bin)
+  PUI_BIN_DIR   where the `pui` and `psu` launcher links live (default ~/.local/bin)
+
+A release that ships psu also links $PUI_BIN_DIR/psu, unless a psu PUI did not
+create is already there (it is then left untouched).
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +137,124 @@ impl Layout {
     fn launcher_target(&self) -> PathBuf {
         self.current().join("bin").join("pui")
     }
+
+    /// `$PUI_BIN_DIR/psu`: the link to the psu a release unit ships (D-031).
+    pub fn psu_launcher(&self) -> PathBuf {
+        self.bin_dir.join("psu")
+    }
+
+    fn psu_launcher_target(&self) -> PathBuf {
+        self.current().join("bin").join("psu")
+    }
+}
+
+/// What activation does with `$PUI_BIN_DIR/psu` (D-031). PUI links the psu its
+/// release ships beside `pui`, but never takes over a `psu` it did not create:
+/// the desktop app's shim, a developer checkout's launcher or any other file
+/// keeps the path, and PUI's own sessions still use the bundled psu because
+/// PUI resolves psu beside the running `pui` first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", tag = "action")]
+pub enum PsuLink {
+    /// Create or keep the link to `current/bin/psu`.
+    Link { path: PathBuf },
+    /// Remove PUI's link: the release being activated ships no psu.
+    Remove { path: PathBuf },
+    /// Something PUI did not create holds the path; it is left untouched and
+    /// PUI's own sessions keep using `bundled`.
+    Foreign {
+        path: PathBuf,
+        holder: String,
+        bundled: PathBuf,
+    },
+    /// No psu in the release and no link of PUI's: nothing to do.
+    Untouched,
+}
+
+impl PsuLink {
+    pub fn preview(&self) -> Option<String> {
+        match self {
+            PsuLink::Link { path } => Some(format!("psu:      {}", path.display())),
+            PsuLink::Remove { path } => Some(format!(
+                "remove psu link: {} (this release ships no psu)",
+                path.display()
+            )),
+            PsuLink::Foreign {
+                path,
+                holder,
+                bundled,
+            } => Some(format!(
+                "psu:      {} is {holder}, not PUI's; left untouched (PUI's own sessions use {})",
+                path.display(),
+                bundled.display()
+            )),
+            PsuLink::Untouched => None,
+        }
+    }
+}
+
+/// Who holds `$PUI_BIN_DIR/psu` right now.
+enum PsuHolder {
+    Absent,
+    /// A link into `$PUI_HOME`, or a dangling link: PUI's to replace or remove.
+    Pui,
+    Foreign(String),
+}
+
+fn psu_holder(layout: &Layout) -> PsuHolder {
+    let path = layout.psu_launcher();
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => PsuHolder::Absent,
+        Err(error) => PsuHolder::Foreign(format!("unreadable ({error})")),
+        Ok(meta) if !meta.file_type().is_symlink() => {
+            PsuHolder::Foreign(if meta.is_dir() { "a directory" } else { "a file" }.to_string())
+        }
+        Ok(_) => match fs::read_link(&path) {
+            Ok(target) if target.starts_with(&layout.home) => PsuHolder::Pui,
+            // `metadata` follows the link from its own directory, so a relative
+            // target is judged correctly; a dangling link runs nothing.
+            Ok(_) if fs::metadata(&path).is_err() => PsuHolder::Pui,
+            Ok(target) => PsuHolder::Foreign(format!("a link to {}", target.display())),
+            Err(error) => PsuHolder::Foreign(format!("unreadable ({error})")),
+        },
+    }
+}
+
+/// Decide the psu link for activating a release whose root is `release_root`.
+fn plan_psu_link(layout: &Layout, release_root: &Path) -> PsuLink {
+    let path = layout.psu_launcher();
+    let ships_psu = release_root.join("bin").join("psu").is_file();
+    match (psu_holder(layout), ships_psu) {
+        (PsuHolder::Foreign(holder), true) => PsuLink::Foreign {
+            path,
+            holder,
+            bundled: layout.psu_launcher_target(),
+        },
+        (PsuHolder::Foreign(_), false) | (PsuHolder::Absent, false) => PsuLink::Untouched,
+        (PsuHolder::Pui, false) => PsuLink::Remove { path },
+        (PsuHolder::Absent | PsuHolder::Pui, true) => PsuLink::Link { path },
+    }
+}
+
+/// Apply the psu link for the now-current release. Ownership is re-checked
+/// here, so a `psu` that appeared after the preview is still never replaced.
+fn ensure_psu_link(layout: &Layout) -> Result<PsuLink> {
+    let decided = plan_psu_link(layout, &layout.current());
+    match &decided {
+        PsuLink::Link { path } => {
+            let target = layout.psu_launcher_target();
+            if !fs::read_link(path).is_ok_and(|existing| existing == target) {
+                fs::create_dir_all(&layout.bin_dir)
+                    .with_context(|| format!("create {}", layout.bin_dir.display()))?;
+                replace_symlink(path, &target)?;
+            }
+        }
+        PsuLink::Remove { path } => {
+            fs::remove_file(path).with_context(|| format!("remove {}", path.display()))?;
+        }
+        PsuLink::Foreign { .. } | PsuLink::Untouched => {}
+    }
+    Ok(decided)
 }
 
 /// A verified release unit: both artifacts hash to what its manifest records.
@@ -439,6 +562,8 @@ pub struct Status {
     pub home: PathBuf,
     pub launcher: PathBuf,
     pub launcher_target: Option<PathBuf>,
+    pub psu_launcher: PathBuf,
+    pub psu_launcher_target: Option<PathBuf>,
     pub current: Option<InstalledRelease>,
     pub previous: Option<InstalledRelease>,
     pub path_resolves_to: Option<PathBuf>,
@@ -484,6 +609,20 @@ pub fn status(layout: &Layout, path_var: Option<&std::ffi::OsStr>) -> Status {
             }
         }
     }
+    if current.is_some() {
+        if let PsuLink::Foreign {
+            path,
+            holder,
+            bundled,
+        } = plan_psu_link(layout, &layout.current())
+        {
+            notes.push(format!(
+                "{} is {holder}, not PUI's, so it was left in place; PUI's own sessions use its bundled psu ({})",
+                path.display(),
+                bundled.display()
+            ));
+        }
+    }
     let legacy_manifest = layout.data_dir.join(MANIFEST_NAME);
     if legacy_manifest.is_file() {
         notes.push(format!(
@@ -495,6 +634,8 @@ pub fn status(layout: &Layout, path_var: Option<&std::ffi::OsStr>) -> Status {
         home: layout.home.clone(),
         launcher,
         launcher_target,
+        psu_launcher: layout.psu_launcher(),
+        psu_launcher_target: fs::read_link(layout.psu_launcher()).ok(),
         current,
         previous,
         path_resolves_to,
@@ -519,6 +660,7 @@ pub struct ActivationPlan {
     pub to_version: String,
     pub release_dir: PathBuf,
     pub launcher: PathBuf,
+    pub psu: PsuLink,
     pub preserved_state: Vec<PathBuf>,
 }
 
@@ -537,6 +679,7 @@ impl ActivationPlan {
         }];
         lines.push(format!("release:  {}", self.release_dir.display()));
         lines.push(format!("launcher: {}", self.launcher.display()));
+        lines.extend(self.psu.preview());
         if self.preserved_state.is_empty() {
             lines.push("user data: none present; nothing to preserve".to_string());
         }
@@ -598,6 +741,7 @@ pub fn plan_activation(
         release_dir: layout.releases().join(&to),
         to,
         launcher: layout.launcher(),
+        psu: plan_psu_link(layout, &unit.root),
         preserved_state: existing_owned_state(layout),
     })
 }
@@ -616,6 +760,7 @@ pub fn apply_activation(layout: &Layout, unit: &ReleaseUnit, plan: &ActivationPl
     }
     replace_symlink(&layout.current(), &Path::new("releases").join(&plan.to))?;
     ensure_launcher(layout)?;
+    ensure_psu_link(layout)?;
     prune_releases(layout)?;
     Ok(())
 }
@@ -839,6 +984,7 @@ pub fn plan_rollback(layout: &Layout) -> Result<ActivationPlan> {
         from_version: current.and_then(|release| release.version),
         to: previous.id.clone(),
         to_version: previous.version.clone().unwrap_or_default(),
+        psu: plan_psu_link(layout, &previous.path),
         release_dir: previous.path,
         launcher: layout.launcher(),
         preserved_state: existing_owned_state(layout),
@@ -891,6 +1037,7 @@ pub fn apply_rollback(
     }
     replace_symlink(&layout.current(), &Path::new("releases").join(&plan.to))?;
     ensure_launcher(layout)?;
+    ensure_psu_link(layout)?;
     Ok(restored)
 }
 
@@ -899,6 +1046,8 @@ pub fn apply_rollback(
 pub struct UninstallPlan {
     pub home: PathBuf,
     pub launcher: Option<PathBuf>,
+    /// PUI's `psu` link, when PUI created it; a foreign `psu` is never listed.
+    pub psu_launcher: Option<PathBuf>,
     pub removed_state: Vec<PathBuf>,
     pub kept_state: Vec<PathBuf>,
 }
@@ -908,6 +1057,9 @@ impl UninstallPlan {
         let mut lines = vec![format!("remove releases: {}", self.home.display())];
         if let Some(launcher) = &self.launcher {
             lines.push(format!("remove launcher: {}", launcher.display()));
+        }
+        if let Some(psu) = &self.psu_launcher {
+            lines.push(format!("remove psu link: {}", psu.display()));
         }
         for path in &self.removed_state {
             lines.push(format!("remove (--purge): {}", path.display()));
@@ -941,7 +1093,13 @@ pub fn plan_uninstall(layout: &Layout, purge: bool) -> Result<UninstallPlan> {
         .ok()
         .filter(|target| target.starts_with(&layout.home))
         .map(|_| layout.launcher());
-    if !layout.home.exists() && launcher.is_none() {
+    // Only a link into `$PUI_HOME` is PUI's: a dangling link to elsewhere is
+    // left for its owner, since uninstall has nothing of its own to remove there.
+    let psu_launcher = fs::read_link(layout.psu_launcher())
+        .ok()
+        .filter(|target| target.starts_with(&layout.home))
+        .map(|_| layout.psu_launcher());
+    if !layout.home.exists() && launcher.is_none() && psu_launcher.is_none() {
         bail!(
             "PUI is not installed from a release here ({} does not exist); nothing to uninstall",
             layout.home.display()
@@ -965,14 +1123,18 @@ pub fn plan_uninstall(layout: &Layout, purge: bool) -> Result<UninstallPlan> {
     Ok(UninstallPlan {
         home: layout.home.clone(),
         launcher,
+        psu_launcher,
         removed_state,
         kept_state,
     })
 }
 
 pub fn apply_uninstall(layout: &Layout, plan: &UninstallPlan) -> Result<()> {
-    if let Some(launcher) = &plan.launcher {
-        fs::remove_file(launcher).with_context(|| format!("remove {}", launcher.display()))?;
+    for link in plan.launcher.iter().chain(&plan.psu_launcher) {
+        // Re-check at apply time: only a link still pointing into PUI's home goes.
+        if fs::read_link(link).is_ok_and(|target| target.starts_with(&layout.home)) {
+            fs::remove_file(link).with_context(|| format!("remove {}", link.display()))?;
+        }
     }
     if layout.home.exists() {
         fs::remove_dir_all(&layout.home)
@@ -1720,6 +1882,13 @@ pub fn run(args: &[String]) -> Result<()> {
                 );
             }
             println!("launcher: {}", status.launcher.display());
+            if status
+                .psu_launcher_target
+                .as_ref()
+                .is_some_and(|target| target.starts_with(&status.home))
+            {
+                println!("psu:      {}", status.psu_launcher.display());
+            }
             for note in &status.notes {
                 println!("note: {note}");
             }
@@ -2185,6 +2354,171 @@ mod tests {
         apply_uninstall(&layout, &purge).unwrap();
         assert!(!state.exists());
         assert!(operator.exists(), "operator.json is shared and never purged");
+    }
+
+    /// A unit that also ships `bin/psu` (D-031), answering `psu-of <version>`.
+    fn fake_unit_with_psu(dir: &Path, version: &str, sha: &str) -> PathBuf {
+        let root = fake_unit(dir, version, sha);
+        let psu = root.join("bin/psu");
+        fs::write(&psu, format!("#!/bin/sh\necho psu-of {version}\n")).unwrap();
+        fs::set_permissions(&psu, fs::Permissions::from_mode(0o755)).unwrap();
+        root
+    }
+
+    fn run_psu_link(layout: &Layout) -> String {
+        let output = Command::new(layout.psu_launcher()).output().unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn a_release_that_ships_psu_links_it_and_every_switch_follows_current() {
+        let dir = tempdir().unwrap();
+        let layout = layout(dir.path());
+        let update = ActivationKind::Update {
+            allow_downgrade: false,
+        };
+
+        let plan = activate(
+            &layout,
+            &fake_unit_with_psu(dir.path(), "0.1.0", "aaaaaaaaaaaaaaaa"),
+            ActivationKind::Install,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.psu,
+            PsuLink::Link {
+                path: layout.psu_launcher()
+            }
+        );
+        assert!(plan
+            .preview()
+            .contains(&format!("psu:      {}", layout.psu_launcher().display())));
+        assert_eq!(
+            fs::read_link(layout.psu_launcher()).unwrap(),
+            layout.psu_launcher_target()
+        );
+        assert_eq!(run_psu_link(&layout), "psu-of 0.1.0");
+
+        activate(
+            &layout,
+            &fake_unit_with_psu(dir.path(), "0.2.0", "bbbbbbbbbbbbbbbb"),
+            update,
+        )
+        .unwrap();
+        assert_eq!(run_psu_link(&layout), "psu-of 0.2.0", "update moves psu with current");
+
+        // A release without psu (older than D-031) must not leave a dangling link
+        // that would shadow a psu later on PATH.
+        let plan = activate(
+            &layout,
+            &fake_unit(dir.path(), "0.3.0", "cccccccccccccccc"),
+            update,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.psu,
+            PsuLink::Remove {
+                path: layout.psu_launcher()
+            }
+        );
+        assert!(fs::symlink_metadata(layout.psu_launcher()).is_err());
+
+        let rollback = plan_rollback(&layout).unwrap();
+        assert_eq!(
+            rollback.psu,
+            PsuLink::Link {
+                path: layout.psu_launcher()
+            },
+            "rolling back to a release that ships psu relinks it"
+        );
+        apply_rollback(&layout, &rollback, false).unwrap();
+        assert_eq!(run_psu_link(&layout), "psu-of 0.2.0");
+    }
+
+    #[test]
+    fn a_psu_that_pui_did_not_create_is_never_replaced_and_never_blocks_install() {
+        let dir = tempdir().unwrap();
+        let layout = layout(dir.path());
+        fs::create_dir_all(&layout.bin_dir).unwrap();
+        // The desktop app's shim, a developer launcher: any regular file.
+        let shim = b"#!/bin/sh\necho desktop shim\n";
+        fs::write(layout.psu_launcher(), shim).unwrap();
+
+        let plan = activate(
+            &layout,
+            &fake_unit_with_psu(dir.path(), "0.1.0", "aaaaaaaaaaaaaaaa"),
+            ActivationKind::Install,
+        )
+        .unwrap();
+
+        assert!(
+            matches!(&plan.psu, PsuLink::Foreign { holder, .. } if holder == "a file"),
+            "{:?}",
+            plan.psu
+        );
+        let preview = plan.preview().join("\n");
+        assert!(preview.contains("not PUI's; left untouched"), "{preview}");
+        assert_eq!(fs::read(layout.psu_launcher()).unwrap(), shim);
+        assert_eq!(
+            fs::read_link(layout.launcher()).unwrap(),
+            layout.launcher_target(),
+            "pui itself still installs"
+        );
+        let status = status(&layout, None);
+        assert!(
+            status.notes.iter().any(|note| note.contains("not PUI's")),
+            "{:?}",
+            status.notes
+        );
+
+        // A live link to a psu elsewhere (a developer checkout) is foreign too.
+        let checkout = dir.path().join("checkout-psu");
+        fs::write(&checkout, b"#!/bin/sh\n").unwrap();
+        fs::remove_file(layout.psu_launcher()).unwrap();
+        std::os::unix::fs::symlink(&checkout, layout.psu_launcher()).unwrap();
+        let update = ActivationKind::Update {
+            allow_downgrade: false,
+        };
+        activate(
+            &layout,
+            &fake_unit_with_psu(dir.path(), "0.2.0", "bbbbbbbbbbbbbbbb"),
+            update,
+        )
+        .unwrap();
+        assert_eq!(fs::read_link(layout.psu_launcher()).unwrap(), checkout);
+
+        // Uninstall removes only what PUI created.
+        let plan = plan_uninstall(&layout, false).unwrap();
+        assert_eq!(plan.psu_launcher, None);
+        apply_uninstall(&layout, &plan).unwrap();
+        assert_eq!(fs::read_link(layout.psu_launcher()).unwrap(), checkout);
+    }
+
+    #[test]
+    fn a_dangling_psu_link_is_replaced_and_uninstall_removes_puis_own_link() {
+        let dir = tempdir().unwrap();
+        let layout = layout(dir.path());
+        fs::create_dir_all(&layout.bin_dir).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("deleted-checkout/psu"), layout.psu_launcher())
+            .unwrap();
+
+        activate(
+            &layout,
+            &fake_unit_with_psu(dir.path(), "0.1.0", "aaaaaaaaaaaaaaaa"),
+            ActivationKind::Install,
+        )
+        .unwrap();
+        assert_eq!(run_psu_link(&layout), "psu-of 0.1.0");
+
+        let plan = plan_uninstall(&layout, false).unwrap();
+        assert_eq!(plan.psu_launcher, Some(layout.psu_launcher()));
+        assert!(plan
+            .preview()
+            .contains(&format!("remove psu link: {}", layout.psu_launcher().display())));
+        apply_uninstall(&layout, &plan).unwrap();
+        assert!(fs::symlink_metadata(layout.psu_launcher()).is_err());
+        assert!(fs::symlink_metadata(layout.launcher()).is_err());
+        assert!(!layout.home.exists());
     }
 
     #[test]

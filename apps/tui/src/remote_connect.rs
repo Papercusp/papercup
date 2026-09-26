@@ -199,4 +199,42 @@ mod tests {
         assert!(refuse_when_forwarded(None).is_ok());
         assert!(refuse_when_forwarded(Some("0")).is_ok());
     }
+
+    #[test]
+    fn the_psu_shipped_beside_pui_wins_over_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("releases/0.1.0-aaaa/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let pui = bin.join("pui");
+        std::fs::write(&pui, b"").unwrap();
+
+        assert_eq!(sibling_psu(&pui), None, "no psu beside pui: fall back to PATH");
+
+        let psu = bin.join("psu");
+        std::fs::write(&psu, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&psu, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(sibling_psu(&pui), None, "a non-executable file is not a psu");
+
+        std::fs::set_permissions(&psu, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(sibling_psu(&pui), Some(psu));
+
+        std::fs::remove_file(bin.join("psu")).unwrap();
+        std::fs::create_dir(bin.join("psu")).unwrap();
+        assert_eq!(sibling_psu(&pui), None, "a directory is not a psu");
+    }
+
+    #[test]
+    fn only_psu_is_resolved_beside_pui() {
+        // The test binary has no psu beside it, so psu falls back to PATH, and
+        // no other program is ever rewritten.
+        assert_eq!(pane_program("psu"), psu_program());
+        assert_eq!(pane_program("git"), "git");
+        assert_eq!(pane_program("pui"), "pui");
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(
+            psu_program(),
+            sibling_psu(&exe).map_or_else(|| PSU_PROGRAM.to_string(), |p| p.display().to_string())
+        );
+    }
 }

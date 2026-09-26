@@ -39,7 +39,8 @@ const RELEASE_TOOLING = [
   'apps/tui/release/psu',
 ];
 /** The only tools the sandboxed PATH offers: what install.sh and an archive update need. */
-const SANDBOX_TOOLS = ['sh', 'dirname', 'sha256sum', 'tar', 'gzip'];
+// `readlink` lets the shipped psu wrapper follow the ~/.local/bin/psu link to its unit.
+const SANDBOX_TOOLS = ['sh', 'dirname', 'readlink', 'sha256sum', 'tar', 'gzip'];
 /** Seeded into the PACKAGER's own environment: none may reach any byte of an archive. */
 const PACKAGING_SECRETS = {
   PAPERCUSP_API_TOKEN: 'P011-PACKAGING-API-TOKEN',
@@ -252,6 +253,60 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
       const at = pkg.lastIndexOf('@');
       expect(licenses, pkg).toContain(`| ${pkg.slice(0, at)} (npm) | ${pkg.slice(at + 1)} |`);
     }
+  });
+
+  test('AUTO-BAR-R-08-P-019: install links psu beside pui, never over a psu it does not own, pui runs its own psu first, and uninstall leaves no psu residue', { timeout: 300_000 }, () => {
+    const unit = unpack(B.archive, 'psu-link');
+    const psuTarget = (home: string) => path.join(home, '.local', 'share', 'pui', 'current', 'bin', 'psu');
+
+    // A clean HOME: install.sh links psu, and it runs through that link from PATH.
+    const home = freshHome('psu-link');
+    const env = sandboxEnv(home);
+    const bin = path.join(home, '.local', 'bin');
+    const installed = run(path.join(unit, 'install.sh'), ['--yes'], env, home);
+    expect(installed.status, output(installed)).toBe(0);
+    expect(installed.stdout).toContain(`psu:      ${path.join(bin, 'psu')}`);
+    expect(readlinkSync(path.join(bin, 'psu'))).toBe(psuTarget(home));
+    const viaLink = run('psu', ['--connect-list'], env, home);
+    expect(viaLink.status, output(viaLink)).toBe(0);
+    expect(viaLink.stdout).toContain('this computer');
+    // Sibling-first: with NO psu on PATH at all, the installed pui still hands
+    // `--connect` to the psu shipped beside it.
+    const noPsu = { ...env, PATH: TOOLS };
+    expect(run('sh', ['-c', 'command -v psu'], noPsu, home).status).not.toBe(0);
+    const handOff = run(path.join(bin, 'pui'), ['--connect-list'], noPsu, home);
+    expect(handOff.status, output(handOff)).toBe(0);
+    expect(handOff.stdout).toContain('this computer');
+
+    const uninstall = run(path.join(bin, 'pui'), ['self', 'uninstall', '--yes'], env, home);
+    expect(uninstall.status, output(uninstall)).toBe(0);
+    expect(uninstall.stdout).toContain(`remove psu link: ${path.join(bin, 'psu')}`);
+    expect(readdirSync(bin)).toEqual([]);
+    expect(run('sh', ['-c', 'command -v psu'], env, home).status).not.toBe(0);
+
+    // A psu PUI did not create (the desktop app's shim) is first on PATH: install
+    // still succeeds, says so, never replaces it — and pui's own hand-off still
+    // runs the bundled psu, not the shim.
+    const shimHome = freshHome('psu-foreign');
+    const shimEnv = sandboxEnv(shimHome);
+    const shimBin = path.join(shimHome, '.local', 'bin');
+    mkdirSync(shimBin, { recursive: true });
+    const shim = '#!/bin/sh\necho desktop shim\n';
+    writeFileSync(path.join(shimBin, 'psu'), shim, { mode: 0o755 });
+    const kept = run(path.join(unit, 'install.sh'), ['--yes'], shimEnv, shimHome);
+    expect(kept.status, output(kept)).toBe(0);
+    expect(kept.stdout).toContain("not PUI's; left untouched");
+    expect(readFileSync(path.join(shimBin, 'psu'), 'utf8')).toBe(shim);
+    expect(lstatSync(path.join(shimBin, 'psu')).isSymbolicLink()).toBe(false);
+    const own = run(path.join(shimBin, 'pui'), ['--connect-list'], shimEnv, shimHome);
+    expect(own.status, output(own)).toBe(0);
+    expect(own.stdout).toContain('this computer');
+    expect(own.stdout).not.toContain('desktop shim');
+    const removed = run(path.join(shimBin, 'pui'), ['self', 'uninstall', '--yes'], shimEnv, shimHome);
+    expect(removed.status, output(removed)).toBe(0);
+    expect(removed.stdout).not.toContain('remove psu link');
+    expect(readdirSync(shimBin)).toEqual(['psu']);
+    expect(readFileSync(path.join(shimBin, 'psu'), 'utf8')).toBe(shim);
   });
 
   test('AUTO-BAR-R-11-P-011: archives are reproducible, name their committed generation, and refuse tampering', { timeout: 2 * BUILD_TIMEOUT_MS }, () => {
