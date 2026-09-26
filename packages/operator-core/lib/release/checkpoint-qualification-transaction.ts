@@ -490,6 +490,41 @@ function runIdBoundToRunner(
   return Boolean(runner?.evidenceRefs?.includes(`checkpoint-run:${runId}`));
 }
 
+/**
+ * WI-10003215 — the verdict came from the attempt's own incumbent physical run: the producer's run
+ * id is the stored run id AND the live runner bound it at activation (`checkpoint-run:<runId>`).
+ * Run ids are unique per CLI invocation, and requiring the incumbent binding (not merely a stored
+ * id, which can be inherited history) rules out a late verdict from an earlier run.
+ */
+function verdictIsFromIncumbentRun(current: CheckpointQualificationTransaction, runId: string | null): boolean {
+  return Boolean(runId && current.runId === runId && runIdBoundToRunner(current.currentPhysicalRunner, runId));
+}
+
+/**
+ * The candidate half of the settle identity check. Two cases name the same judged code even though
+ * the stored and produced candidates differ:
+ *
+ * - WI-10002602: a repair-head verification is RESERVED against the head it verifies (the launcher
+ *   pins queue.repairHead as the run's candidate), but its verdict names the FROZEN candidate as
+ *   `candidate` and the verified head as `repairHead`. A stored candidate equal to the verdict's
+ *   repair head is the same identity. Comparing only `candidate` returned conflict for every
+ *   repair-head verdict, and the attempt wedged every later scheduled fire.
+ * - WI-10003215: the incumbent run re-resolved its target after reservation — a scheduled
+ *   reservation stores the quiet-cut tip, then the run resumes the frozen lineage and its own
+ *   lockfile convergence advances repairHead mid-run. Its verdict names the sha it actually judged
+ *   (and, once promotion retires the queue, no repair head). Refusing it DISCARDED a green that had
+ *   already promoted main, withheld every release:green wake, and left the attempt `running` under
+ *   a dead runner (attempt 1cf6ef83, run e787243b, 2026-09-26).
+ */
+function candidateIdentityConflicts(
+  current: CheckpointQualificationTransaction,
+  produced: { candidate: string | null; repairHead: string | null; runId: string | null },
+): boolean {
+  if (!current.candidate || !produced.candidate || current.candidate === produced.candidate) return false;
+  if (current.candidate === produced.repairHead) return false;
+  return !verdictIsFromIncumbentRun(current, produced.runId);
+}
+
 /** The stored run id is history: it is bound to a consumed runner, not the incumbent. */
 function storedRunIdIsFromEndedRunner(current: CheckpointQualificationTransaction): boolean {
   const runId = current.runId;
@@ -1218,18 +1253,8 @@ export function settleQualificationTransaction(
   const candidate = input.candidate?.trim() || null;
   const verifiedRepairHead = input.repairHead?.trim() || null;
   const runId = input.runId?.trim() || null;
-  // A repair-head verification is RESERVED against the head it verifies (the launcher pins
-  // queue.repairHead as the run's candidate), but its verdict names the FROZEN candidate as
-  // `candidate` and the verified head as `repairHead`. Both name the same judged code, so a
-  // stored candidate equal to the verdict's repair head is the same identity. Comparing only
-  // `candidate` returned conflict for every repair-head verdict: the verdict was discarded and
-  // the attempt stayed non-terminal, which wedged every later scheduled fire (WI-10002602).
-  if (
-    current.candidate &&
-    candidate &&
-    current.candidate !== candidate &&
-    current.candidate !== verifiedRepairHead
-  ) {
+  const sameRun = verdictIsFromIncumbentRun(current, runId);
+  if (candidateIdentityConflicts(current, { candidate, repairHead: verifiedRepairHead, runId })) {
     return { status: 'conflict', transaction: current };
   }
   if (current.runId && runId && current.runId !== runId && !storedRunIdIsFromEndedRunner(current)) {
@@ -1259,6 +1284,11 @@ export function settleQualificationTransaction(
   }
   const nowMs = input.nowMs ?? Date.now();
   const released = runIdOnRelease(current, runId);
+  // WI-10003215: when the incumbent run judged the pending admission handoff itself (the gate's
+  // in-run convergence moved repairHead and this same run verified the new head), that handoff
+  // is consumed here. Leaving it set would hand an already-judged head to the next attempt.
+  const judgedPending = sameRun && current.pendingRepairHead != null &&
+    (current.pendingRepairHead === candidate || current.pendingRepairHead === verifiedRepairHead);
   return {
     status: 'updated',
     transaction: {
@@ -1270,8 +1300,13 @@ export function settleQualificationTransaction(
       phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
       outcome,
       candidate: candidate ?? current.candidate,
-      repairHead: input.repairHead?.trim() || current.repairHead,
-      runId: released.runId,
+      repairHead: verifiedRepairHead || (judgedPending ? current.pendingRepairHead ?? null : current.repairHead),
+      ...(judgedPending ? { pendingRepairHead: null } : {}),
+      // A TERMINAL attempt pins the verdict's own run id even with no runner to bind it to: a
+      // terminal attempt refuses every later runner reservation, so the id can never be inherited
+      // (the WI-10003212 wedge was a non-terminal wait), and the pin is what makes a different
+      // run's replay conflict instead of reading as an idempotent `terminal`.
+      runId: runId ?? released.runId,
       blockers: [],
       currentPhysicalRunner: null,
       consumedPhysicalRuns: consumedRunner(current, outcome, nowMs, released.bind),
@@ -1344,17 +1379,17 @@ export function recoverQualificationScheduledTerminal(
  */
 export function describeQualificationSettleConflict(
   stored: CheckpointQualificationTransaction,
-  produced: { attemptId: string; candidate?: string | null; runId?: string | null },
+  produced: { attemptId: string; candidate?: string | null; repairHead?: string | null; runId?: string | null },
 ): string[] {
   const mismatches: string[] = [];
   if (stored.attemptId !== produced.attemptId) {
     mismatches.push(`attempt stored=${stored.attemptId} produced=${produced.attemptId}`);
   }
   const candidate = produced.candidate?.trim() || null;
-  if (stored.candidate && candidate && stored.candidate !== candidate) {
+  const runId = produced.runId?.trim() || null;
+  if (candidateIdentityConflicts(stored, { candidate, repairHead: produced.repairHead?.trim() || null, runId })) {
     mismatches.push(`candidate stored=${stored.candidate} produced=${candidate}`);
   }
-  const runId = produced.runId?.trim() || null;
   if (stored.runId && runId && stored.runId !== runId) {
     mismatches.push(`run stored=${stored.runId} produced=${runId}`);
   }

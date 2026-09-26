@@ -226,6 +226,78 @@ describe('logical checkpoint qualification transaction', () => {
     expect(otherHead).toMatchObject({ status: 'conflict', transaction: reserved });
   });
 
+  it('settles the incumbent run verdict for the sha it actually judged after re-resolving its target (WI-10003215)', () => {
+    // Incident shape (attempt 1cf6ef83, run e787243b): the scheduled reservation stored the quiet-cut
+    // tip, the run resumed the frozen lineage, its own lockfile convergence advanced repairHead
+    // (persisting pendingRepairHead), and the green verdict named the converged head with no repair
+    // head because promotion retired the queue. Before the fix this returned conflict: the green was
+    // DISCARDED, release:green wakes were withheld, and the attempt stayed running under a dead runner.
+    const placeholder = reserveQualificationRunner(
+      beginQualificationTransaction(null, {
+        attemptId: 'attempt-conv', requiredAncestorSha: 'tip-cut', candidate: 'tip-cut', nowMs: 100,
+      }).transaction,
+      { attemptId: 'attempt-conv', runnerId: 'gate-fire-conv', leaseDurationMs: 1_000, started: false, nowMs: 150 },
+    ).transaction;
+    const running = reserveQualificationRunner(placeholder, {
+      attemptId: 'attempt-conv', runnerId: 'gate-fire-conv', runId: 'run-conv', candidate: 'tip-cut',
+      pid: 42, pidIdentity: 'boot-a:42', leaseDurationMs: 2_000, started: true, nowMs: 200,
+      evidenceRefs: ['checkpoint-run:run-conv'],
+    }).transaction;
+    const converged = { ...running, pendingRepairHead: 'converged-head' };
+    expect(converged.currentPhysicalRunner?.evidenceRefs).toContain('checkpoint-run:run-conv');
+
+    const green = { attemptId: 'attempt-conv', candidate: 'converged-head', reason: 'advanced', green: true, nowMs: 300 };
+    const settled = settleQualificationTransaction(converged, { ...green, runId: 'run-conv' });
+    expect(settled.status).toBe('updated');
+    expect(settled.transaction).toMatchObject({
+      phase: 'terminal',
+      outcome: { kind: 'green' },
+      candidate: 'converged-head',
+      repairHead: 'converged-head',
+      pendingRepairHead: null,
+      currentPhysicalRunner: null,
+    });
+    expect(describeQualificationSettleConflict(converged, { ...green, runId: 'run-conv' })).toEqual([]);
+    // An exact replay of the same verdict is idempotent, not a second terminal event.
+    expect(settleQualificationTransaction(settled.transaction, { ...green, runId: 'run-conv' }).status).toBe('terminal');
+
+    // A red from the same run on a still-frozen queue names the frozen candidate plus the converged
+    // head; it settles too and consumes the handoff.
+    const red = settleQualificationTransaction(converged, {
+      attemptId: 'attempt-conv', candidate: 'frozen-candidate', repairHead: 'converged-head',
+      runId: 'run-conv', reason: 'not-green', green: false, nowMs: 300,
+    });
+    expect(red.transaction).toMatchObject({
+      phase: 'terminal', candidate: 'frozen-candidate', repairHead: 'converged-head', pendingRepairHead: null,
+    });
+
+    // A handoff the run did NOT judge (a later admission) survives for the successor attempt.
+    const laterAdmission = settleQualificationTransaction(
+      { ...running, pendingRepairHead: 'later-admission' },
+      { ...green, runId: 'run-conv' },
+    );
+    expect(laterAdmission.transaction).toMatchObject({ phase: 'terminal', pendingRepairHead: 'later-admission' });
+
+    // Identity is still enforced: a candidate mismatch settles ONLY for the incumbent's bound run.
+    for (const stale of [
+      { runId: 'run-other' },
+      { runId: null },
+    ]) {
+      expect(settleQualificationTransaction(converged, { ...green, ...stale })).toMatchObject({
+        status: 'conflict', transaction: converged,
+      });
+    }
+    // A stored run id the live runner never bound (inherited history) is not proof of the same run.
+    const unbound = {
+      ...converged,
+      currentPhysicalRunner: { ...converged.currentPhysicalRunner!, evidenceRefs: [] as string[] },
+    };
+    expect(settleQualificationTransaction(unbound, { ...green, runId: 'run-conv' }).status).toBe('conflict');
+    expect(describeQualificationSettleConflict(unbound, { ...green, runId: 'run-conv' })).toEqual([
+      'candidate stored=tip-cut produced=converged-head',
+    ]);
+  });
+
   it('pins the first terminal result to the exact candidate and run identity', () => {
     const current = reserveQualificationRunner(begin(), {
       attemptId: 'attempt-1',
@@ -613,6 +685,23 @@ describe('logical checkpoint qualification transaction', () => {
     });
     // Once a CLI has attached, single flight holds: a different run id against it conflicts.
     expect(attach(recovered.transaction, 'run-10', 100).status).toBe('conflict');
+  });
+
+  it('pins a terminal verdict to its own run id even when no runner was ever reserved', () => {
+    // WI-10003212 made WAITS refuse to store an unbound run id (a fresh runner inherited it). A
+    // terminal attempt refuses every later reservation, so its pin cannot be inherited — and
+    // without it a DIFFERENT run's replay reads as an idempotent `terminal` instead of a conflict.
+    const settled = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-terminal',
+      reason: 'not-green', green: false, nowMs: 200,
+    });
+    expect(settled).toMatchObject({ status: 'updated', transaction: { phase: 'terminal', runId: 'run-terminal' } });
+    const replay = { attemptId: 'attempt-1', candidate: 'candidate-1', reason: 'not-green', green: false, nowMs: 300 };
+    expect(settleQualificationTransaction(settled.transaction, { ...replay, runId: 'run-terminal' }).status).toBe('terminal');
+    expect(settleQualificationTransaction(settled.transaction, { ...replay, runId: 'run-other' }).status).toBe('conflict');
+    expect(reserveQualificationRunner(settled.transaction, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-late', leaseDurationMs: 1_000, started: false, nowMs: 400,
+    }).status).toBe('terminal');
   });
 
   it('never stores a released run id that no runner can carry (WI-10003212)', () => {

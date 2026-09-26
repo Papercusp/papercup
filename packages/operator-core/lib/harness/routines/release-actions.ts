@@ -2008,6 +2008,7 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
     const mismatches = describeQualificationSettleConflict(qualificationSettlement.transaction, {
       attemptId: transportedAttemptId,
       candidate: verdict.candidate ?? null,
+      repairHead: verdict.repairQueue?.repairHead ?? null,
       runId: verdict.runId ?? null,
     });
     console.error(
