@@ -61,6 +61,7 @@ import { isConversationAuditRequiredValue } from './agent-tools/plans/plan-activ
 import { assertCriterionCheckPathsResolve } from './rubrics-criterion-checks';
 import { assertAcceptanceRubricCitationPathsResolve } from './rubrics-citation-checks';
 import { acceptanceBarContractGaps } from './acceptance-bar-contract-completeness';
+import { classifyAmendmentAdditivity } from './acceptance-bar-amendment-additivity';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
 
 // Structured criterion grading-window (EI-12146): schema + the pure resolver live in
@@ -3475,7 +3476,7 @@ type AcceptanceBarApproverPreview = (
     }
 ) & {
   approvalRequired?: boolean;
-  reason?: 'no bar meaning changed';
+  reason?: 'no bar meaning changed' | 'every change is additive';
 };
 
 export interface AcceptanceBarAmendmentPreview {
@@ -3486,7 +3487,13 @@ export interface AcceptanceBarAmendmentPreview {
   changedBars: string[];
   projectionCount: number;
   approval: AcceptanceBarApproval;
+  /** False only when every change is mechanically additive (D-002); see approvalClassification. */
   approvalRequired: boolean;
+  /** Which changed BARs were proven additive, and why each other one keeps the review. */
+  approvalClassification: {
+    additiveBars: string[];
+    reviewedBars: Array<{ barKey: string; reason: string }>;
+  };
   sourceSnapshotHash: string;
   changes: import('./acceptance-bar-contract-snapshot').AcceptanceBarContractDiff['changes'];
   revisionMovement: { rubric: { from: number; to: number }; subject: { from: number; to: number } };
@@ -4121,6 +4128,16 @@ async function amendAcceptanceBarRubric(
       const changedBars = guard.changes
         .filter((change) => ['added', 'removed', 'meaning'].includes(change.kind))
         .map((change) => change.barKey);
+      // D-002 (review-routing-through-relevance-router-2026-09-26): an amendment whose every change
+      // only adds a check or grows required test layers skips the outside-lineage review; any
+      // removal, new BAR, or rewording keeps it. A supplied approval is still validated and recorded.
+      const additivity = classifyAmendmentAdditivity({
+        changes: guard.changes,
+        prior: stored.criteria as unknown as Array<Record<string, unknown>>,
+        next: guard.data.criteria as Array<Record<string, unknown>>,
+        barKeyOf: (criterion) => String(criterion.barKey ?? criterion.key),
+      });
+      const approvalRequired = changedBars.length > 0 && additivity.approvalRequired;
 
       if (!actorId) throw new Error(`invalid_args: acceptance BAR amendment requires an authenticated actor`);
       if (!reason) throw new Error(`invalid_args: acceptance BAR amendment requires a non-empty reason`);
@@ -4140,7 +4157,8 @@ async function amendAcceptanceBarRubric(
         })),
       };
       const shouldResolveApproval =
-        changedBars.length > 0 && (!preview || input.approvalRef !== undefined);
+        changedBars.length > 0 &&
+        (input.approvalRef !== undefined || (!preview && approvalRequired));
       const approval = shouldResolveApproval
         ? await resolveAcceptanceBarApproval(tx as never, {
             workspaceId: subjectScope.workspaceId,
@@ -4409,9 +4427,13 @@ async function amendAcceptanceBarRubric(
                   roles,
                   { sql: tx as never, workspaceId: subjectScope.workspaceId },
                 );
-            approverEligibility = changedBars.length > 0
+            approverEligibility = approvalRequired
               ? evaluation
-              : { ...evaluation, approvalRequired: false, reason: 'no bar meaning changed' };
+              : {
+                  ...evaluation,
+                  approvalRequired: false,
+                  reason: changedBars.length > 0 ? 'every change is additive' : 'no bar meaning changed',
+                };
           }
         }
         const proofPartition = partitionAmendmentProof(snapshot.bars, changedBars);
@@ -4454,7 +4476,11 @@ async function amendAcceptanceBarRubric(
             changedBars,
             projectionCount: candidate.bars.reduce((count, bar) => count + bar.mappings.length, 0),
             approval: approvalRequest,
-            approvalRequired: changedBars.length > 0,
+            approvalRequired,
+            approvalClassification: {
+              additiveBars: additivity.additiveBars,
+              reviewedBars: additivity.reviewedBars,
+            },
             sourceSnapshotHash: snapshot.contentHash,
             changes,
             revisionMovement: {
@@ -4513,7 +4539,9 @@ async function amendAcceptanceBarRubric(
               `Approval-Ref: ${approval.approvalRef}`,
               `Approved-At: ${approval.approvedAt}`,
             ]
-          : []),
+          : !approvalRequired
+            ? [`Approval: not required — every change is additive (${additivity.additiveBars.join(', ')})`]
+            : []),
         `Rubric revision: ${oldRubricRevision} → ${nextRubricRevision}`,
         `Subject plan revision: ${oldSubjectRevision} → ${nextSubjectRevision}`,
         `Changed BARs: ${changedBars.join(', ')}`,
