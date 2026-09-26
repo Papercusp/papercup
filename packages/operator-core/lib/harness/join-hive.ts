@@ -46,7 +46,7 @@ import {
   type SeedGitSyncRoutineOpts,
   type SeedGitSyncRoutineOutcome,
 } from './git-sync/git-sync-routine';
-import { getHiveByPubkey, upsertRemoteHiveIdentity } from '../hive-store';
+import { deleteHive, getHiveByPubkey, upsertRemoteHiveIdentity } from '../hive-store';
 import { adoptRepoKey } from '../sync/pot-git/repo-identity';
 import { hiveKeychainId } from '../identity/hive-keypair';
 
@@ -91,7 +91,12 @@ export interface JoinHiveResult {
 
 export interface JoinHiveDeps {
   /** The per-link join (default: the real route core + its real deps). */
-  joinLink?: (input: { slug: string; link: HarnessLink }) => Promise<{ ok: boolean; detail: string }>;
+  joinLink?: (input: {
+    slug: string;
+    link: HarnessLink;
+    /** WI-10003237: always true from step 1 — join-hive owns the Pot identity row. */
+    callerOwnsPotIdentity?: boolean;
+  }) => Promise<{ ok: boolean; detail: string }>;
   loadRegistry?: typeof loadHarnessRegistry;
   mutateRegistry?: typeof mutateHarnessRegistry;
   /** mkdir -p for the view's empty state dir. */
@@ -122,6 +127,10 @@ export interface JoinHiveDeps {
     workspaceId: string,
     pubkeyBase64: string,
   ) => Promise<{ homeSlug: string; canonicalHomeSlug: string; keychainId: string } | null>;
+  /** Delete one Pot identity row (default: hive-store deleteHive). Used ONLY by
+   *  step 2b's WI-10003237 heal, to remove a Pot identity misfiled under one of
+   *  THIS join's member slugs by a pre-fix join-link. */
+  deleteHive?: (workspaceId: string, homeSlug: string) => Promise<boolean>;
   /** Re-key a joined member's substrate IN PLACE so it re-resolves its swarm
    *  binding (default: boot-all's rekeyHarness, lazily imported). EI-681 step 2c
    *  — the per-member joins booted each substrate on the gh:<repo_id> topic
@@ -176,9 +185,10 @@ async function defaultResolveOwnerDevicePubkey(
 async function defaultJoinLink(input: {
   slug: string;
   link: HarnessLink;
+  callerOwnsPotIdentity?: boolean;
 }): Promise<{ ok: boolean; detail: string }> {
   const res = await handleJoinLink(
-    { slug: input.slug, link: input.link },
+    { slug: input.slug, link: input.link, callerOwnsPotIdentity: input.callerOwnsPotIdentity },
     realJoinLinkDeps as JoinLinkDeps,
   );
   const body = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
@@ -294,7 +304,9 @@ export async function joinHiveAsView(
       continue;
     }
     memberTaken.add(slug);
-    const res = await joinLink({ slug, link }).catch((e) => ({
+    // WI-10003237: `slug` is a MEMBER slug — step 2b owns the Pot identity row
+    // under the Pot's slug, so the per-link join must not write it here.
+    const res = await joinLink({ slug, link, callerOwnsPotIdentity: true }).catch((e) => ({
       ok: false,
       detail: e instanceof Error ? e.message : String(e),
     }));
@@ -438,12 +450,44 @@ export async function joinHiveAsView(
       (await resolveHivePubkey(opts.workspaceId, opts.potId).catch(() => null));
     identityPubkey = pubkeyBase64;
     if (pubkeyBase64) {
-      await upsertHiveIdentity({
-        workspaceId: opts.workspaceId,
-        homeSlug: potSlug,
-        pubkeyBase64,
-        keychainId: `remote:${opts.potId}`,
-      });
+      const writeIdentity = () =>
+        upsertHiveIdentity({
+          workspaceId: opts.workspaceId,
+          homeSlug: potSlug,
+          pubkeyBase64,
+          keychainId: `remote:${opts.potId}`,
+        });
+      try {
+        await writeIdentity();
+      } catch (first) {
+        // WI-10003237 heal: a pre-fix join-link (WI-10003134) wrote THIS Pot's
+        // identity under one of this join's MEMBER slugs, so the pubkey is taken
+        // and a re-join would collide forever. A remote:* row holding the Pot's
+        // pubkey under a member slug is misfiled by definition (the pubkey is
+        // UNIQUE and names the Pot, and remote:* rows are never owned keys) —
+        // remove it and write the row where it belongs. Anything else rethrows
+        // to the diagnostic logger below.
+        const memberSlugs = new Set(members.filter((m) => m.ok && m.slug).map((m) => m.slug));
+        const holder = await (deps.findHiveByPubkey ?? getHiveByPubkey)(
+          opts.workspaceId,
+          pubkeyBase64,
+        ).catch(() => null);
+        if (
+          !holder ||
+          holder.homeSlug === potSlug ||
+          !holder.keychainId.startsWith('remote:') ||
+          !memberSlugs.has(holder.homeSlug)
+        ) {
+          throw first;
+        }
+        await (deps.deleteHive ?? deleteHive)(opts.workspaceId, holder.homeSlug);
+        console.warn(
+          `[join-hive] step 2b: the Pot identity for ${opts.workspaceId}/${potSlug} was misfiled ` +
+            `under member slug ${holder.homeSlug} (keychain=${holder.keychainId}) — removed it and ` +
+            `re-materialized it under ${potSlug} (WI-10003237).`,
+        );
+        await writeIdentity();
+      }
     }
   } catch (e) {
     // Identity-view write is best-effort: never fail the join over it. But NEVER

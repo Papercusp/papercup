@@ -20,6 +20,7 @@ function fakes(initialProjects: HarnessRegistry['projects'] = []) {
     registry: [...initialProjects] as HarnessRegistry['projects'],
     dirs: [] as string[],
     seeded: [] as SeedGitSyncRoutineOpts[],
+    deleted: [] as Array<[string, string]>,
     identities: [] as Array<{
       workspaceId: string;
       homeSlug: string;
@@ -58,6 +59,11 @@ function fakes(initialProjects: HarnessRegistry['projects'] = []) {
     resolveOwnerDevicePubkey: async () => 'OD_directory',
     upsertHiveIdentity: async (input) => {
       calls.identities.push(input);
+    },
+    // Hermetic: the real default deletes from harness_shared.pots.
+    deleteHive: async (ws, slug) => {
+      calls.deleted.push([ws, slug]);
+      return true;
     },
   };
   return { deps, calls };
@@ -411,14 +417,15 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
   // that already holds the pubkey (a same-workspace slug race) or its absence (the
   // pubkey lives in another workspace).
   it('a pubkey-collision identity failure is logged with the row already holding the pubkey', async () => {
-    const { deps } = fakes();
+    const { deps, calls } = fakes();
     deps.upsertHiveIdentity = async () => {
       throw new Error('duplicate key value violates unique constraint "pots_public_key_key"');
     };
     const lookups: [string, string][] = [];
+    // A holder that is NOT one of this join's members — the heal must not touch it.
     deps.findHiveByPubkey = async (ws, pk) => {
       lookups.push([ws, pk]);
-      return { homeSlug: 'shop', canonicalHomeSlug: 'shop', keychainId: `remote:${pk}` };
+      return { homeSlug: 'other-pot', canonicalHomeSlug: 'other-pot', keychainId: `remote:${pk}` };
     };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
@@ -427,12 +434,92 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
         deps,
       );
       expect(res.ok).toBe(true);
-      expect(lookups).toEqual([['ws', HIVE_PUBKEY]]);
+      // one lookup by the heal (declines: not a member slug), one by the logger
+      expect(lookups).toEqual([
+        ['ws', HIVE_PUBKEY],
+        ['ws', HIVE_PUBKEY],
+      ]);
+      expect(calls.deleted).toEqual([]);
       const line = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes('[join-hive] step 2b'));
       expect(line).toBeDefined();
       expect(line).toContain('ws/shop-hive');
       expect(line).toContain('pots_public_key_key');
-      expect(line).toContain('same-workspace slug=shop canonical=shop');
+      expect(line).toContain('same-workspace slug=other-pot canonical=other-pot');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // WI-10003237 ROOT CAUSE: join-link's WI-10003134 identity upsert ran for every
+  // per-member join with the MEMBER slug, claiming the Pot's pubkey there, so step
+  // 2b's write under the Pot slug hit pots_public_key_key (cert 20260926-071526).
+  it('step 1 tells every per-member join-link that join-hive owns the Pot identity', async () => {
+    const { deps, calls } = fakes();
+    const flags: Array<boolean | undefined> = [];
+    const inner = deps.joinLink!;
+    deps.joinLink = async (input) => {
+      flags.push(input.callerOwnsPotIdentity);
+      return inner(input);
+    };
+    await joinHiveAsView(
+      { potId: 'shop-hive', memberLinks: [link('shop', 100), link('docs', 200)], workspaceId: 'ws' },
+      deps,
+    );
+    expect(flags).toEqual([true, true]);
+    expect(calls.identities.map((i) => i.homeSlug)).toEqual(['shop-hive']);
+  });
+
+  it('heals a Pot identity a pre-fix join-link misfiled under a member slug, then writes it under the Pot slug', async () => {
+    // The re-join case: the member is already registered from the buggy join.
+    const { deps, calls } = fakes([{ slug: 'shop', path: '/joined/shop', github_repository_id: 100 }]);
+    let attempts = 0;
+    deps.upsertHiveIdentity = async (input) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('duplicate key value violates unique constraint "pots_public_key_key"');
+      calls.identities.push(input);
+    };
+    deps.findHiveByPubkey = async () => ({
+      homeSlug: 'shop',
+      canonicalHomeSlug: 'shop',
+      keychainId: 'remote:shop-pot',
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await joinHiveAsView(
+        { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+        deps,
+      );
+      expect(res.ok).toBe(true);
+      expect(calls.deleted).toEqual([['ws', 'shop']]);
+      expect(attempts).toBe(2);
+      expect(calls.identities.map((i) => i.homeSlug)).toEqual(['shop-hive']);
+      const msgs = warn.mock.calls.map((c) => String(c[0]));
+      expect(msgs.some((m) => m.includes('misfiled under member slug shop'))).toBe(true);
+      expect(msgs.some((m) => m.includes('upsert FAILED'))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('never deletes an OWNED (non-remote) row holding the pubkey, even under a member slug', async () => {
+    const { deps, calls } = fakes();
+    deps.upsertHiveIdentity = async () => {
+      throw new Error('pots_public_key_key');
+    };
+    deps.findHiveByPubkey = async () => ({
+      homeSlug: 'shop',
+      canonicalHomeSlug: 'shop',
+      keychainId: 'hive:ws:shop',
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await joinHiveAsView(
+        { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+        deps,
+      );
+      expect(res.ok).toBe(true);
+      expect(calls.deleted).toEqual([]);
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('upsert FAILED'))).toBe(true);
     } finally {
       warn.mockRestore();
     }
