@@ -655,7 +655,7 @@ class PuiPane {
       // this reply: every mainstream terminal answers at once, a bare PTY never.
       if (!options.silentTerminal && /\u001b\[0?c/.test(chunk)) this.pty.write('\u001b[?62;22c');
       if (this.setupDriverArmed && !this.setupDriverRunning
-        && this.screen().includes('New SU session')) {
+        && this.screen().includes('New session')) {
         this.setupDriverArmed = false;
         this.setupDriverRunning = true;
         void completeNewSessionSetup(this).catch((error) => {
@@ -1058,16 +1058,16 @@ async function openAgentChat(pane: PuiPane): Promise<void> {
 }
 
 async function completeNewSessionSetup(pane: PuiPane): Promise<void> {
-  await pane.waitFor('New SU session — 1 Context');
+  await pane.waitFor('New session — 1 Context');
   pane.write('/');
   pane.write(HARNESS);
   pane.enter(); // finish search, not a launch
   await pane.waitFor(`> ${HARNESS}`);
   pane.enter(); // explicitly choose this project's stable identity
-  await pane.waitFor('New SU session — 2 Runtime');
+  await pane.waitFor('New session — 2 Runtime');
   await pane.waitFor('Runtime: Ready', { timeoutMs: 45_000 });
   pane.enter();
-  await pane.waitFor('New SU session — 3 Review');
+  await pane.waitFor('New session — 3 Review');
   pane.enter(); // sole launch action
 }
 
@@ -2630,27 +2630,27 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await openComposer(pane, false);
       pane.write(prompt);
       pane.enter();
-      await pane.waitFor('New SU session — 1 Context');
+      await pane.waitFor('New session — 1 Context');
       expect(launchRequests).toEqual([]);
       pane.write('/');
       pane.write(HARNESS);
       pane.enter();
       await pane.waitFor(`> ${HARNESS}`);
       pane.enter();
-      await pane.waitFor('New SU session — 2 Runtime');
+      await pane.waitFor('New session — 2 Runtime');
       await pane.waitFor('Runtime: Ready', { timeoutMs: 45_000 });
       expect(launchRequests).toEqual([]);
       for (const expected of ['Engine: Claude', 'Account: default', 'Server default model', 'Default effort', 'Mode: Manual']) {
         expect(pane.screen()).toContain(expected);
       }
       pane.enter();
-      await pane.waitFor('New SU session — 3 Review');
+      await pane.waitFor('New session — 3 Review');
       expect(pane.screen()).toContain(prompt);
       expect(launchRequests).toEqual([]);
       pane.write('\x1b[Z'); // Back preserves fields.
-      await pane.waitFor('New SU session — 2 Runtime');
+      await pane.waitFor('New session — 2 Runtime');
       pane.enter();
-      await pane.waitFor('New SU session — 3 Review');
+      await pane.waitFor('New session — 3 Review');
       expect(pane.screen()).toContain(prompt);
       pane.enter();
       await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
@@ -2692,7 +2692,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await openComposer(pane, false);
       pane.write(prompt);
       pane.enter();
-      await pane.waitFor('New SU session — 1 Context');
+      await pane.waitFor('New session — 1 Context');
       pane.write('e');
       await pane.waitFor('Operator connection');
       pane.write('\x15'); // Ctrl-U clears the address.
@@ -2732,7 +2732,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const cleanHome = mkdtempSync(path.join(tmpdir(), 'pui-onboarding-clean-'));
     const pane = new PuiPane(bin, closedPort, cleanHome, { args: ['workbench'], cols: 80, rows: 20 });
     try {
-      await pane.waitFor('New SU session — 1 Context', { timeoutMs: 20_000 });
+      await pane.waitFor('New session — 1 Context', { timeoutMs: 20_000 });
       await pane.waitFor('Connection: Unavailable');
       pane.enter();
       expect(launchRequests).toEqual([]);
@@ -2762,7 +2762,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     try {
       await pane.waitFor('Welcome to pui');
       pane.escape();
-      await pane.waitFor('New SU session — 1 Context');
+      await pane.waitFor('New session — 1 Context');
       await pane.waitFor('Connection: Connected');
       await pane.waitFor('No matching projects');
       expect(launchRequests).toEqual([]);
@@ -2784,7 +2784,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.enter();
       await pane.waitFor('Runtime: Ready', { timeoutMs: 45_000 });
       pane.enter();
-      await pane.waitFor('New SU session — 3 Review');
+      await pane.waitFor('New session — 3 Review');
       expect(pane.screen()).toContain(projectSlug);
       expect(pane.screen()).toContain('Permissions: native approval prompts');
       pane.enter();
@@ -2830,7 +2830,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         pane.escape();
         await pane.waitFor('i type · v speak');
         pane.write('i');
-        // Only the current binary shows the New SU session form. Completing it
+        // Only the current binary shows the New session form. Completing it
         // lets the calibration run reach its launch and fail on the trace
         // below, not on a launch that never happened.
         pane.reviewNextNewSession();
@@ -3158,12 +3158,12 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await pane.waitFor('Model — Enter select');
       pane.write('j'.repeat(executable + 1));
       pane.enter();
-      await pane.waitFor('New SU session — 1 Context');
+      await pane.waitFor('New session — 1 Context');
       await pane.waitFor('Applies to a new session');
       const routeFrame = pane.screen();
       expect(launches()).toBe(before);
       pane.escape();
-      await pane.waitForGone('New SU session');
+      await pane.waitForGone('New session');
       await pane.waitFor(prompt);
       // Nothing launched; the running conversation keeps its one SU session.
       expect(launches()).toBe(before);

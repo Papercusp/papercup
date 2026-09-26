@@ -140,7 +140,7 @@ fn public_release_ux_resolves_launcher_and_release_matrix() {
     let ux = std::fs::read_to_string(repo_root().join("apps/tui/PUBLIC_RELEASE_UX.md"))
         .expect("read public-release UX contract");
 
-    assert!(ux.contains("First run and Sessions > New open the same in-PUI New SU session form."));
+    assert!(ux.contains("First run and Sessions > New open the same in-PUI New session form."));
     assert!(ux.contains("Open advanced PSU launcher remains available under Advanced"));
 
     for row in [

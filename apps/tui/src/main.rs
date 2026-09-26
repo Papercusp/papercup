@@ -276,6 +276,10 @@ async fn main() -> Result<()> {
     // every `--connect*` cell, which PUI's own parser would misread as a
     // subcommand.
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    // Setup's `l` / `h` re-exec PUI into this TUI-free supervisor (P-021).
+    if let Some(sign_in) = remote_connect::parse_setup_connect(&raw_args) {
+        return remote_connect::supervise_setup_connect(sign_in).await;
+    }
     if remote_connect::requests_connection(&raw_args) {
         std::process::exit(remote_connect::hand_off(&raw_args)?);
     }
@@ -880,13 +884,7 @@ mod doctor_session_tests {
 /// A wide terminal shows the whole thing; a narrow one still shows the part
 /// that says where to look, and `pui doctor` prints it in full.
 fn operator_failure_status_line(endpoint_label: &str, error: &anyhow::Error) -> String {
-    let failure = http::RendezvousError::classify(endpoint_label, error);
-    format!(
-        "operator {} · {} — {}",
-        failure.kind.label(),
-        failure.endpoint,
-        failure.repair()
-    )
+    http::RendezvousError::classify(endpoint_label, error).status_line()
 }
 
 async fn run_doctor() -> Result<()> {
@@ -1238,6 +1236,10 @@ async fn run<B: Backend>(
     if let Some(draft) = setup_draft {
         std::env::remove_var(session_config::SETUP_DRAFT_ENV);
         app.restore_setup_draft(draft);
+    }
+    if let Some(note) = std::env::var(session_config::SETUP_NOTE_ENV).ok() {
+        std::env::remove_var(session_config::SETUP_NOTE_ENV);
+        app.set_setup_note(note);
     }
     spawn_input_listener(tx.clone());
     let sync_pane = PaneFetchScope {
@@ -2062,9 +2064,10 @@ async fn run<B: Backend>(
                     }
                 }
                 Action::ConnectSessionSetup { sign_in } => {
-                    // Like reconnect: psu replaces this process, so nothing of
-                    // this PUI keeps running beside the remote one.
-                    if let Err(error) = connect_setup_process(sign_in, kbd_enhanced) {
+                    // Like reconnect: a fresh process replaces this one, so no
+                    // reader of this TUI competes with psu for the terminal.
+                    let draft = app.session_setup.as_ref().map(|setup| setup.message.clone()).unwrap_or_default();
+                    if let Err(error) = connect_setup_process(sign_in, &draft, kbd_enhanced) {
                         if let Some(setup) = app.session_setup.as_mut() {
                             setup.note = Some(format!("Could not start psu: {error:#}. Your draft is retained."));
                         }
@@ -2702,15 +2705,21 @@ fn reconnect_setup_process(reconnect: &session_config::SetupReconnect, enhanced:
 }
 
 /// Setup's `l` / `h`: hand the terminal to the bundled psu (D-031), which signs
-/// in when asked and runs PUI on the chosen remote host.
-fn connect_setup_process(sign_in: bool, enhanced: bool) -> Result<()> {
-    exec_restoring_terminal(enhanced, || {
-        match remote_connect::hand_off(&remote_connect::setup_connect_args(sign_in)) {
-            // Only a non-Unix hand-off returns after psu ran; its status is ours.
-            Ok(code) => std::process::exit(code),
-            Err(error) => error,
-        }
-    })
+/// in when asked and runs PUI on the chosen remote host. PUI re-execs itself as
+/// the psu supervisor so a cancelled or failed sign-in returns here (P-021).
+fn connect_setup_process(sign_in: bool, draft: &str, enhanced: bool) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    let mut command = setup_connect_command(&std::env::current_exe()?, sign_in, draft);
+    exec_restoring_terminal(enhanced, || command.exec().into())
+}
+
+fn setup_connect_command(executable: &std::path::Path, sign_in: bool, draft: &str) -> std::process::Command {
+    let mut command = std::process::Command::new(executable);
+    command
+        .args(remote_connect::setup_connect_supervisor_args(sign_in))
+        .env(session_config::SETUP_DRAFT_ENV, draft)
+        .env_remove(session_config::SETUP_NOTE_ENV);
+    command
 }
 
 /// Leave the TUI's terminal modes, run `exec` (which only returns on failure),

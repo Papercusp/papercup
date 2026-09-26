@@ -91,6 +91,88 @@ pub fn setup_connect_args(sign_in: bool) -> Vec<String> {
     }
 }
 
+/// PUI's hidden subcommand for setup's `l` / `h` (P-021). Setup execs PUI with
+/// it instead of exec'ing psu directly, so a cancelled or failed sign-in comes
+/// back to setup rather than leaving the user at a shell prompt. The TUI itself
+/// cannot wait on psu: its terminal event reader would take psu's keystrokes.
+pub const SETUP_CONNECT_SUBCOMMAND: &str = "__setup-connect";
+
+/// The argv setup execs PUI with for `l` (sign in) or `h` (saved hosts).
+pub fn setup_connect_supervisor_args(sign_in: bool) -> [&'static str; 2] {
+    [SETUP_CONNECT_SUBCOMMAND, if sign_in { "sign-in" } else { "hosts" }]
+}
+
+/// `Some(sign_in)` when this command line is exactly the hidden subcommand.
+pub fn parse_setup_connect(args: &[String]) -> Option<bool> {
+    match args {
+        [command, choice] if command == SETUP_CONNECT_SUBCOMMAND => match choice.as_str() {
+            "sign-in" => Some(true),
+            "hosts" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// What setup says after psu returned without finishing, or `None` when psu
+/// succeeded: the remote PUI ran and exited, so this PUI exits too.
+pub fn setup_connect_note(
+    sign_in: bool,
+    outcome: &std::io::Result<std::process::ExitStatus>,
+) -> Option<String> {
+    let what = if sign_in { "Cloud sign-in" } else { "Connecting to a remote host" };
+    match outcome {
+        Ok(status) if status.success() => None,
+        // 130 is psu's own "cancelled"; no code at all means a signal ended it.
+        Ok(status) if matches!(status.code(), Some(130) | None) => Some(format!(
+            "{what} was cancelled. Press l to sign in to Papercusp cloud, or h for a saved host."
+        )),
+        Ok(status) => Some(format!(
+            "{what} did not finish: psu exited with status {}. Its message stays in this terminal after you quit PUI. Press l or h to try again.",
+            status.code().unwrap_or(1)
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(psu_missing().to_string()),
+        Err(error) => Some(format!("Could not start psu: {error}. Press l or h to try again.")),
+    }
+}
+
+/// The hidden subcommand's body: run psu for setup as a child of this TUI-free
+/// PUI. Ctrl-C reaches the whole foreground group, so this process listens for
+/// it (and SIGQUIT) instead of dying; exec restores the default for psu. On
+/// success PUI exits as psu did. Otherwise it execs `pui hud` back into setup
+/// with the retained draft and the note; that exec returns only on failure.
+pub async fn supervise_setup_connect(sign_in: bool) -> Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+    let _interrupt = signal(SignalKind::interrupt())?;
+    let _quit = signal(SignalKind::quit())?;
+    let note = match refuse_when_forwarded(std::env::var(FORWARDED_ENV).ok().as_deref()) {
+        Err(error) => Some(format!("{error:#}")),
+        Ok(()) => {
+            let outcome = tokio::process::Command::new(psu_program())
+                .args(psu_args(&setup_connect_args(sign_in)))
+                .status()
+                .await;
+            setup_connect_note(sign_in, &outcome)
+        }
+    };
+    let Some(note) = note else { std::process::exit(0) };
+    use std::os::unix::process::CommandExt;
+    let error = return_to_setup_command(std::env::current_exe()?, &note).exec();
+    eprintln!("pui: {note}");
+    Err(error).context("reopen PUI setup")
+}
+
+/// `pui hud` with the note, keeping the draft the TUI passed down (an absent
+/// draft still reopens setup).
+pub fn return_to_setup_command(executable: std::path::PathBuf, note: &str) -> Command {
+    let mut command = Command::new(executable);
+    command.arg("hud").env(crate::session_config::SETUP_NOTE_ENV, note);
+    if std::env::var_os(crate::session_config::SETUP_DRAFT_ENV).is_none() {
+        command.env(crate::session_config::SETUP_DRAFT_ENV, "");
+    }
+    command
+}
+
 /// Refuse a nested hand-off: a `pui` that psu already launched on a remote host
 /// connecting onward would stack one remote terminal inside another.
 pub fn refuse_when_forwarded(forwarded: Option<&str>) -> Result<()> {
@@ -261,5 +343,50 @@ mod tests {
             psu_program(),
             sibling_psu(&exe).map_or_else(|| PSU_PROGRAM.to_string(), |p| p.display().to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod setup_supervisor_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
+    fn exited(code: i32) -> std::io::Result<ExitStatus> {
+        Ok(ExitStatus::from_raw(code << 8))
+    }
+
+    #[test]
+    fn setup_choices_round_trip_through_the_hidden_subcommand() {
+        for sign_in in [true, false] {
+            let argv: Vec<String> = setup_connect_supervisor_args(sign_in).iter().map(|s| s.to_string()).collect();
+            assert_eq!(parse_setup_connect(&argv), Some(sign_in));
+            assert!(!requests_connection(&argv), "the supervisor must not be read as a --connect command line");
+        }
+        for other in [&["hud"][..], &[SETUP_CONNECT_SUBCOMMAND], &[SETUP_CONNECT_SUBCOMMAND, "cloud"], &[SETUP_CONNECT_SUBCOMMAND, "hosts", "x"]] {
+            let argv: Vec<String> = other.iter().map(|s| s.to_string()).collect();
+            assert_eq!(parse_setup_connect(&argv), None, "{argv:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_finished_hand_off_ends_pui_and_every_other_outcome_names_the_way_back() {
+        assert_eq!(setup_connect_note(true, &exited(0)), None);
+        let cancelled = setup_connect_note(true, &exited(130)).unwrap();
+        assert!(cancelled.starts_with("Cloud sign-in was cancelled.") && cancelled.contains("Press l"), "{cancelled}");
+        let signalled = setup_connect_note(false, &Ok(ExitStatus::from_raw(2))).unwrap();
+        assert!(signalled.starts_with("Connecting to a remote host was cancelled."), "{signalled}");
+        let failed = setup_connect_note(true, &exited(3)).unwrap();
+        assert!(failed.contains("psu exited with status 3") && failed.contains("try again"), "{failed}");
+        let missing = setup_connect_note(true, &Err(std::io::Error::from(std::io::ErrorKind::NotFound))).unwrap();
+        assert!(missing.contains("no bundled psu"), "{missing}");
+    }
+
+    #[test]
+    fn a_returning_hand_off_reopens_setup_with_its_note() {
+        let command = return_to_setup_command("/test/pui".into(), "Cloud sign-in was cancelled.");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), vec!["hud"]);
+        let env = command.get_envs().collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(env[std::ffi::OsStr::new(crate::session_config::SETUP_NOTE_ENV)].unwrap(), "Cloud sign-in was cancelled.");
     }
 }

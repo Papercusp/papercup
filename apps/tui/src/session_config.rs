@@ -74,6 +74,9 @@ pub struct SetupReconnect {
 }
 
 pub const SETUP_DRAFT_ENV: &str = "PUI_SETUP_DRAFT";
+/// Why setup reopened (P-021): set when a cancelled or failed `l` / `h`
+/// hand-off returns to setup, shown as setup's note.
+pub const SETUP_NOTE_ENV: &str = "PUI_SETUP_NOTE";
 
 /// New-session configuration is isolated from the currently bound chat.
 #[derive(Debug, Clone)]

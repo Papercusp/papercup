@@ -62,6 +62,14 @@ pub const CONV_STATES: [&str; 4] = ["open", "resolved", "closed", "all"];
 pub const CONV_KINDS: [&str; 3] = ["all", "question", "discussion"];
 /// Rows the comms detail popup scrolls per PageDown/PageUp (owner ask 2026-06-14).
 pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
+/// Setup's note when nothing answers at the selected address (P-021): the
+/// ordinary first run on a computer without Papercusp. `pui doctor` and the
+/// status bar keep the full operator repair.
+/// The composer's session line and the empty chat's hint while no operator
+/// answers (P-021): sending a message opens setup, which offers the cloud path.
+pub const SETUP_DISCONNECTED_LABEL: &str = "not connected to an operator · send a message to open setup";
+pub const CHAT_DISCONNECTED_HINT: &str = "Not connected — press i and send a message to open setup, where l signs in to Papercusp cloud.";
+pub const SETUP_UNREACHABLE_NOTE: &str = "Nothing answered at that address. Start the Papercusp desktop app on this computer, then press r to retry — or use l or h above to run PUI on a remote host.";
 
 /// What the run-loop should do after handling one event.
 /// (No `Eq`: `VoiceChan(VoiceCmd)` carries a `serde_json::Value` for prefs
@@ -5937,6 +5945,12 @@ impl App {
                 .map(|usage| format!("{label} · {usage}"))
                 .unwrap_or(label);
         }
+        // With no operator there is no project, role or backend to describe;
+        // the internal defaults read as a live selection and "backend
+        // loading" never resolves (P-021).
+        if self.backend_identity_error.is_some() {
+            return SETUP_DISCONNECTED_LABEL.to_string();
+        }
         let session = self
             .agent_chat_id
             .as_deref()
@@ -6875,6 +6889,16 @@ impl App {
         self.open_session_setup();
     }
 
+    /// Show why setup reopened (P-021: a cancelled or failed `l` / `h`).
+    pub fn set_setup_note(&mut self, note: String) {
+        if self.session_setup.is_none() {
+            self.open_session_setup();
+        }
+        if let Some(setup) = self.session_setup.as_mut() {
+            setup.note = Some(note);
+        }
+    }
+
     pub fn setup_projects(&self) -> Vec<String> {
         let query = self.session_setup.as_ref()
             .map(|setup| setup.project_query.to_lowercase()).unwrap_or_default();
@@ -6893,10 +6917,20 @@ impl App {
         if self.chat_streaming || self.su_pending_turn.is_some() {
             return Some("Finish or reconcile the current turn before starting a new session.".into());
         }
-        if let Some(error) = &self.backend_identity_error { return Some(format!("Operator unavailable: {error}")); }
+        if let Some(error) = &self.backend_identity_error {
+            // Nothing answering is the ordinary first run: setup already names
+            // the address and offers l / h, so say what to do here instead of
+            // the operator-debugging repair `pui doctor` prints (P-021).
+            if crate::http::RendezvousFailure::of_status_line(error)
+                == Some(crate::http::RendezvousFailure::Unreachable)
+            {
+                return Some(SETUP_UNREACHABLE_NOTE.into());
+            }
+            return Some(format!("Operator unavailable: {error}"));
+        }
         let Some(identity) = &self.backend_identity else { return Some("Checking operator connection…".into()); };
         if !identity.capabilities.attached_su_session {
-            return Some("Operator does not support windowless SU sessions; update it before starting.".into());
+            return Some("This operator cannot run sessions inside PUI; update it before starting.".into());
         }
         if !identity.capabilities.attached_su_session_approvals {
             return Some("Operator does not advertise safe native approvals. Update it before starting a new session.".into());
@@ -25136,5 +25170,60 @@ mod tests {
         // PageUp saturates at 0 (no underflow).
         a.update(ev(KeyCode::PageUp));
         assert_eq!(a.fleet_detail_scroll, 0);
+    }
+}
+
+#[cfg(test)]
+mod first_run_copy_tests {
+    use super::*;
+    use crate::http::{RendezvousError, RendezvousFailure};
+
+    fn unreachable_line() -> String {
+        RendezvousError::new(RendezvousFailure::Unreachable, "http://127.0.0.1:9", "refused").status_line()
+    }
+
+    #[test]
+    fn every_failure_kind_survives_the_status_line() {
+        for kind in RendezvousFailure::ALL {
+            let line = RendezvousError::new(kind, "https://op.example:9443", "d").status_line();
+            assert_eq!(RendezvousFailure::of_status_line(&line), Some(kind), "{line}");
+        }
+        assert_eq!(RendezvousFailure::of_status_line("sse subscribe: GET /api/x"), None);
+    }
+
+    #[test]
+    fn first_run_setup_with_nothing_answering_says_what_to_do_not_how_to_debug() {
+        let mut app = App::new();
+        app.open_session_setup();
+        app.backend_identity_error = Some(unreachable_line());
+        let note = app.setup_blocker().unwrap();
+        assert_eq!(note, SETUP_UNREACHABLE_NOTE);
+        for internal in ["curl", "PUI_OPERATOR", "silently fall back", "--connect-login"] {
+            assert!(!note.contains(internal), "{internal} in {note}");
+        }
+        // Other failures keep their specific repair: the user must act on it.
+        app.backend_identity_error = Some(
+            RendezvousError::new(RendezvousFailure::Auth, "https://op.example", "401").status_line(),
+        );
+        assert!(app.setup_blocker().unwrap().starts_with("Operator unavailable: operator auth"));
+    }
+
+    #[test]
+    fn a_disconnected_composer_does_not_describe_a_phantom_session() {
+        let mut app = App::new();
+        app.backend_identity_error = Some(unreachable_line());
+        assert_eq!(app.agent_chat_selection_label(), SETUP_DISCONNECTED_LABEL);
+        app.backend_identity_error = None;
+        assert!(app.agent_chat_selection_label().starts_with("pot "));
+    }
+
+    #[test]
+    fn a_returned_hand_off_note_reopens_setup_with_the_draft() {
+        let mut app = App::new();
+        app.restore_setup_draft("keep me".into());
+        app.set_setup_note("Cloud sign-in was cancelled.".into());
+        let setup = app.session_setup.as_ref().expect("setup reopened");
+        assert_eq!(setup.note.as_deref(), Some("Cloud sign-in was cancelled."));
+        assert_eq!(app.chat_input, "keep me");
     }
 }

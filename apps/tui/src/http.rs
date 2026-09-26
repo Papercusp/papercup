@@ -169,6 +169,14 @@ impl RendezvousFailure {
         Self::IdentityMismatch,
         Self::Protocol,
     ];
+
+    /// The kind a [`RendezvousError::status_line`] was rendered from. The app
+    /// receives the failure as that one line; setup reads the kind back to
+    /// choose wording for the screen it is on (P-021).
+    pub fn of_status_line(line: &str) -> Option<Self> {
+        let label = line.strip_prefix("operator ")?.split(" · ").next()?;
+        Self::ALL.into_iter().find(|kind| kind.label() == label)
+    }
 }
 
 /// A classified rendezvous failure: what kind, against which endpoint, and the
@@ -238,6 +246,12 @@ impl RendezvousError {
                  compatible with this pui."
             ),
         }
+    }
+
+    /// The one-line form the status bar and setup receive: the failure kind and
+    /// endpoint first, so a clipped line still says where to look.
+    pub fn status_line(&self) -> String {
+        format!("operator {} · {} — {}", self.kind.label(), self.endpoint, self.repair())
     }
 
     /// Classify a failed rendezvous against `endpoint`.

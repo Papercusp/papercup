@@ -54,7 +54,7 @@ an external PSU picker. That rule is superseded for ordinary PUI workflows.
 
 The release behavior is:
 
-1. First run and Sessions > New open the same in-PUI New SU session form.
+1. First run and Sessions > New open the same in-PUI New session form.
 2. PUI reads projects, endpoint state, engines, account routes, models, effort
    levels, and modes from the maintained server configuration. It does not
    hardcode provider menus.
@@ -199,7 +199,7 @@ Read-only history keeps the draft copyable and says:
 
 > Read-only — continue in a new session to send this draft.
 
-The selected action must open the in-PUI New SU session form with the source
+The selected action must open the in-PUI New session form with the source
 conversation/fork provenance already shown.
 
 Transcript selection uses y to copy the focused rendered block and Shift-Y to
@@ -247,7 +247,7 @@ Sessions is the exploratory destination. It keeps state, fleet, agent, and time
 facets, transcript preview, full-text search, and exact lifecycle markers.
 Ended and recorded sessions are first-class results, not omissions.
 
-Sessions n opens the in-PUI New SU session form. Conversation l switches among
+Sessions n opens the in-PUI New session form. Conversation l switches among
 existing chat records. Rename, archive, resume, continue, and fork act on the
 displayed stable identity and show capability-disabled reasons rather than
 silently disappearing.
@@ -392,10 +392,10 @@ Every row in NATIVE_CAPABILITIES.md has an explicit in-PUI interaction:
 | Code changes and diffs | Change cards open an in-PUI scrollable diff with file/path/hunk context and the same y/Shift-Y copy contract. |
 | Approvals and permission scope | Parked approval cards show exact scope; Ctrl-Y allows once, Ctrl-N denies, and remembered scope is a separately labelled choice. |
 | Interactive questions | Number/arrows select, Space toggles checkboxes, free text retains a draft, and Enter answers only the correlated card. |
-| New/switch/rename/archive sessions | Sessions n opens in-PUI New SU session; Ctrl-S switches; the Sessions destination owns rename/archive/resume. |
+| New/switch/rename/archive sessions | Sessions n opens in-PUI New session; Ctrl-S switches; the Sessions destination owns rename/archive/resume. |
 | Legacy history continuation and fork | Ended/recorded Sessions rows open read-only transcripts; Continue in new session and K preserve source provenance. |
 | Interrupt, end and recovery | Ctrl-X interrupts; R reconciles/resumes; K forks; E confirms end; unsupported controls remain visible with reasons. |
-| Model/account/effort/mode settings | l/m/e/a/u open live server-owned pickers; restart-required changes route through the in-PUI New SU session form. |
+| Model/account/effort/mode settings | l/m/e/a/u open live server-owned pickers; restart-required changes route through the in-PUI New session form. |
 | Context, usage and compaction | Context renders authoritative lifecycle/context/usage/carry measurements; missing values read Unknown; supported compaction is capability-checked. |
 | Commands, help, skills and plugins | : opens the one palette; live catalog/recipe search discovers commands, skills, plugins, and tools; ? and F1 explain the focused surface. |
 | Files and attachments | Composer @ opens the project-scoped picker and displays exact stable references before send. |
