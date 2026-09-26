@@ -193,6 +193,100 @@ export function classifyInteractionMeasure(
 }
 
 /**
+ * What a driver saw when ONE attempt's settle-wait expired — before it decides
+ * whether to move on to another candidate subject.
+ *
+ * THE DEFECT CLASS THIS KILLS. A driver that retries across candidate subjects
+ * (sidebar rows, fixtures) must discard attempts that never exercised the timed
+ * path (a plan that 404s, a click that never began timing). Treating EVERY
+ * expired wait that way is wrong: an attempt that began timing AND dispatched its
+ * timed work, then simply did not finish inside the window, is the slowest
+ * possible observation of the interaction. Discarding it retries onto the next
+ * subject until one is fast enough, and a run whose every attempt was slow
+ * reports "unmeasurable" instead of "slow". Either way the sample set is biased
+ * toward a pass. (Measured 2026-09-26, P-007: 3 of 10 native runs stalled >8s
+ * after dispatch and were each reported UNMEASURABLE rather than as breaches.)
+ */
+export interface AttemptTimeoutObservation {
+  /** Whether a `<name>:start` mark exists at the observation. */
+  startMarkPresent: boolean;
+  /** Age of the newest start mark, or null when absent. */
+  startMarkAgeMs: number | null;
+  /** The instrument's stale-start threshold (see InteractionMeasureObservation). */
+  staleStartMs: number;
+  /** Phase names already marked for this interaction (e.g. `request-started`). */
+  phasesSeen: readonly string[];
+  /**
+   * The phase that proves the attempt dispatched its timed work — after it, the
+   * subject is known to be on the path the budget covers.
+   */
+  dispatchPhase: string;
+  /**
+   * Text of a terminal, non-loading placeholder (not-found, server error), or
+   * null. A terminal placeholder means the subject cannot complete here at all.
+   */
+  terminalPlaceholder: string | null;
+}
+
+export interface AttemptTimeoutDiagnosis {
+  /**
+   * `slow` — the attempt is a real (breaching) sample and must be recorded, never
+   * retried away. `void` — the attempt never exercised the timed path; trying
+   * another subject is correct.
+   */
+  verdict: 'slow' | 'void';
+  /** One line naming why. */
+  reason: string;
+}
+
+/**
+ * Decide whether an expired settle-wait is a slow sample or a void attempt.
+ * Pure; never throws. Every `slow` verdict requires positive evidence that
+ * timing began for THIS gesture and its timed work was dispatched.
+ */
+export function classifyAttemptTimeout(
+  observation: AttemptTimeoutObservation,
+): AttemptTimeoutDiagnosis {
+  const {
+    startMarkPresent,
+    startMarkAgeMs,
+    staleStartMs,
+    phasesSeen,
+    dispatchPhase,
+    terminalPlaceholder,
+  } = observation;
+
+  if (terminalPlaceholder !== null && terminalPlaceholder.trim() !== '') {
+    return {
+      verdict: 'void',
+      reason: `the subject reached a terminal placeholder (${JSON.stringify(terminalPlaceholder.trim().slice(0, 80))}), so it cannot complete here`,
+    };
+  }
+  if (!startMarkPresent || startMarkAgeMs === null) {
+    return {
+      verdict: 'void',
+      reason: 'no start mark exists, so this attempt never began timing',
+    };
+  }
+  if (startMarkAgeMs > staleStartMs) {
+    return {
+      verdict: 'void',
+      reason: `the start mark is ${Math.round(startMarkAgeMs)}ms old (past the ${staleStartMs}ms stale threshold), so it cannot belong to this attempt`,
+    };
+  }
+  if (!phasesSeen.includes(dispatchPhase)) {
+    return {
+      verdict: 'void',
+      reason: `timing began but the "${dispatchPhase}" phase never marked, so the timed work was not dispatched`,
+    };
+  }
+  return {
+    verdict: 'slow',
+    reason: `timing began and "${dispatchPhase}" marked, yet no measure after ${Math.round(startMarkAgeMs)}ms — a slow sample, not a void attempt`,
+  };
+}
+
+/**
  * Render a diagnosis as a driver failure message: the symptom, then the named
  * cause and where to look.
  */
