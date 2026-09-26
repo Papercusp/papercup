@@ -18,7 +18,7 @@
  */
 import { listTasks } from './store';
 import { reconcileTick } from './reconcile-tick';
-import { defaultForeignSignature } from './scan';
+import { defaultForeignSignature, scanProcessesAsync } from './scan';
 import type { ExemptReason, ProcessScope } from './scope-class';
 import type { ScannedProcess } from './reconcile';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
@@ -460,6 +460,7 @@ async function runLiveScan(): Promise<LiveScanResult> {
   try {
     const tick = await reconcileTick({
       dryRun: true,
+      scan: scanProcessesAsync,
       scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
     });
     return {

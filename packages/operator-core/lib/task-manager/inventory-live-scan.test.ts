@@ -15,20 +15,27 @@ const H = vi.hoisted(() => ({
   syncReads: 0,
   asyncReads: [] as number[],
   scanned: [] as ScannedProcess[],
+  asyncScan: vi.fn(),
 }));
 
 vi.mock('./store', () => ({ listTasks: vi.fn(async () => []) }));
-vi.mock('./scan', () => ({ defaultForeignSignature: () => undefined }));
+vi.mock('./scan', () => ({
+  defaultForeignSignature: () => undefined,
+  scanProcessesAsync: H.asyncScan,
+}));
 vi.mock('../superuser-token', () => ({ readSuperuserToken: () => null }));
 vi.mock('./reconcile-tick', () => ({
-  reconcileTick: vi.fn(async () => ({
+  reconcileTick: vi.fn(async (deps: { scan?: unknown }) => {
+    if (deps.scan !== H.asyncScan) throw new Error('inventory must inject the nonblocking cgroup scan');
+    return {
     summary: { scanned: H.scanned.length },
     degraded: false,
     degradedReason: null,
     scan: {},
     result: { unaccounted: [] },
     scannedProcesses: H.scanned,
-  })),
+    };
+  }),
 }));
 vi.mock('../process-metadata', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../process-metadata')>();
