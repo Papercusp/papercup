@@ -918,17 +918,34 @@ function defaultGitRunner(repo: string, args: string[]): { ok: boolean; stdout: 
 }
 
 /**
- * Compare the release machinery in an isolated cut root against the INTEGRATION
- * BRANCH's pin of the same submodule.
+ * The branch whose submodule pin is the freshness REFERENCE for release machinery: the
+ * GREEN branch, i.e. machinery that has passed the gate.
  *
- * The reference is deliberately NOT a checkout path. It used to be `desktopRoot()`,
- * which resolves from `cwd` — and release:cut runs inside the :3070 operator, whose
- * cwd is the release checkout at green main. That is routinely the very sha a stale
- * cut root is pinned to, so the comparison read stale-vs-stale as 'current' and the
- * check was vacuous in exactly the case it exists for (WI-10002449, caught by a live
- * probe against the real paused root after every unit test was green). A cut root is a
- * linked worktree sharing the canonical .git, so the branch ref is readable from the
- * root itself and needs no path guess.
+ * It used to be the integration branch (`staging`). That made the check unpassable by
+ * construction: staging's desktop pin moves on every git-sync sweep, while a cut root is
+ * pinned to a green-main sha that is always behind it, so ANY staging edit to ANY bin/
+ * file — a federation test-rig script the cut never runs — re-blocked every exact-source
+ * cut. The 0.0.22-alpha cut was refused three times this way (EI-24294628776810491), the
+ * last time by a peer's nightly-channel commit landing one minute before preflight.
+ * Release machinery that has not passed the gate is not a "fix the cut must carry"; a cut
+ * from the latest green main reads 'current', and an older pin still reads 'behind'.
+ */
+export const RELEASE_TOOLING_REFERENCE_BRANCH = 'main';
+
+/**
+ * Compare the release machinery in an isolated cut root against the GREEN BRANCH's pin
+ * of the same submodule (see RELEASE_TOOLING_REFERENCE_BRANCH).
+ *
+ * The reference is deliberately a BRANCH REF, NOT a checkout path. It used to be
+ * `desktopRoot()`, which resolves from `cwd` — and release:cut runs inside the :3070
+ * operator, whose cwd is the release checkout at whatever green sha was last DEPLOYED.
+ * That is routinely the very sha a stale cut root is pinned to, so the comparison read
+ * stale-vs-stale as 'current' and the check was vacuous in exactly the case it exists
+ * for (WI-10002449, caught by a live probe against the real paused root after every unit
+ * test was green). The `main` ref advances on every green promotion regardless of
+ * whether a deploy followed, so a root frozen at an older green sha reads 'behind'. A cut
+ * root is a linked worktree sharing the canonical .git, so the branch ref is readable
+ * from the root itself and needs no path guess.
  *
  * The stale-file list is DERIVED from git rather than compared against a hand-kept
  * roster of "release-critical scripts" — such a roster rots silently, and a file
@@ -936,13 +953,13 @@ function defaultGitRunner(repo: string, args: string[]): { ok: boolean; stdout: 
  */
 export function releaseToolingDrift(args: {
   subjectDesktopRoot: string;
-  /** Default PAPERCUSP_INTEGRATION_BRANCH, else the same default release-config uses. */
-  integrationBranch?: string;
+  /** Default RELEASE_TOOLING_REFERENCE_BRANCH (the green branch). */
+  referenceBranch?: string;
   git?: GitRunner;
 }): ReleaseToolingDrift {
   const { subjectDesktopRoot } = args;
   const git = args.git ?? defaultGitRunner;
-  const branch = args.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging';
+  const branch = args.referenceBranch ?? RELEASE_TOOLING_REFERENCE_BRANCH;
   const superproject = path.dirname(subjectDesktopRoot);
   const submodule = path.basename(subjectDesktopRoot);
 
@@ -1149,9 +1166,9 @@ export function preflightCut(
         toolingOk = false;
         toolingDetail =
           `cut root's release machinery is STALE — ${targetStaleFiles.length} target-executed file(s) under papercusp-desktop/${RELEASE_TOOLING_SUBTREE} ` +
-          `are superseded (root ${shortPin(drift.subjectPin)} is an ancestor of canonical ${shortPin(drift.referencePin)}): ${targetStaleFiles.join(', ')}. ` +
+          `are superseded by green ${RELEASE_TOOLING_REFERENCE_BRANCH} (root ${shortPin(drift.subjectPin)} is an ancestor of ${RELEASE_TOOLING_REFERENCE_BRANCH}'s pin ${shortPin(drift.referencePin)}): ${targetStaleFiles.join(', ')}. ` +
           'This cut would re-execute those superseded scripts and rebuild any release bug they carried. ' +
-          're-pin the cut root with setup-release-checkout.sh against a commit carrying the fixes, then re-run preflight';
+          `re-pin the cut root with setup-release-checkout.sh at the latest green ${RELEASE_TOOLING_REFERENCE_BRANCH} commit, then re-run preflight`;
       } else if (drift.staleFiles.length > 0) {
         toolingDetail = `frozen root differs in ${drift.staleFiles.length} bin file(s) (${namedFiles}); the current release-local.sh is sourced and has no direct target-tree invocation of these files`;
       } else {

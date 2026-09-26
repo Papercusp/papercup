@@ -34,6 +34,7 @@ import {
   gatePath,
   readOrCreateGate,
   releaseToolingDrift,
+  RELEASE_TOOLING_REFERENCE_BRANCH,
   RELEASE_TOOLING_SUBTREE,
   type GitRunner,
   type ReleaseToolingDrift,
@@ -762,7 +763,7 @@ describe('release-tooling staleness', () => {
   const okv = (stdout = '') => ({ ok: true, stdout });
   const FAIL = { ok: false, stdout: '' };
 
-  function behindTable(staleFiles: string[], branch = 'staging') {
+  function behindTable(staleFiles: string[], branch = 'main') {
     return {
       [`${SUBJECT}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`),
       [`${SUPER}::rev-parse ${branch}:papercusp-desktop`]: okv(`${REFERENCE_PIN}\n`),
@@ -774,21 +775,42 @@ describe('release-tooling staleness', () => {
       [`${STORE}::merge-base --is-ancestor ${SUBJECT_PIN} ${REFERENCE_PIN}`]: okv(),
     };
   }
-  const drift = (table: Record<string, { ok: boolean; stdout: string }>, calls?: string[][], integrationBranch?: string) =>
-    releaseToolingDrift({ subjectDesktopRoot: SUBJECT, integrationBranch: integrationBranch ?? 'staging', git: fakeGit(table, calls) });
+  const drift = (table: Record<string, { ok: boolean; stdout: string }>, calls?: string[][], referenceBranch?: string) =>
+    releaseToolingDrift({ subjectDesktopRoot: SUBJECT, referenceBranch, git: fakeGit(table, calls) });
 
   describe('releaseToolingDrift', () => {
-    it('reads the reference from the INTEGRATION BRANCH pin, never from a checkout path', () => {
+    it('reads the reference from the GREEN BRANCH pin by default, never from a checkout path', () => {
       // Regression for the vacuous version: a checkout-path reference resolved to the
-      // :3070 release checkout at green main — the same sha as a stale cut root — so
-      // stale-vs-stale read 'current'. The reference must be the branch's gitlink.
+      // :3070 release checkout at the last DEPLOYED green sha — the same sha as a stale
+      // cut root — so stale-vs-stale read 'current'. The reference must be a branch ref.
       const calls: string[][] = [];
-      drift(behindTable(['bin/upload-release.sh']), calls);
-      expect(calls).toContainEqual([SUPER, 'rev-parse', 'staging:papercusp-desktop']);
+      const r = drift(behindTable(['bin/upload-release.sh']), calls);
+      expect(RELEASE_TOOLING_REFERENCE_BRANCH).toBe('main');
+      expect(calls).toContainEqual([SUPER, 'rev-parse', 'main:papercusp-desktop']);
+      expect(calls.some((c) => c.includes('staging:papercusp-desktop'))).toBe(false);
       expect(calls.some((c) => c[0] !== SUBJECT && c[1] === 'rev-parse' && c[2] === 'HEAD')).toBe(false);
+      expect(r.state).toBe('behind');
     });
 
-    it('honours an explicit integration branch', () => {
+    it('a root pinned at the latest green pin is CURRENT however far the integration tip has moved (EI-24294628776810491)', () => {
+      // The treadmill: staging's pin moved (a test-rig script edit) after the root was cut
+      // from green main. Measuring against staging refused every exact-source cut; the
+      // green pin is the reference, so staging's pin must never even be consulted.
+      const calls: string[][] = [];
+      const r = drift(
+        {
+          [`${SUBJECT}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`),
+          [`${SUPER}::rev-parse main:papercusp-desktop`]: okv(`${SUBJECT_PIN}\n`),
+          [`${SUPER}::rev-parse staging:papercusp-desktop`]: okv(`${REFERENCE_PIN}\n`),
+        },
+        calls,
+      );
+      expect(r.state).toBe('current');
+      expect(r.staleFiles).toEqual([]);
+      expect(calls.some((c) => c.includes('staging:papercusp-desktop'))).toBe(false);
+    });
+
+    it('honours an explicit reference branch', () => {
       const r = drift(behindTable(['bin/release-local.sh'], 'trunk'), undefined, 'trunk');
       expect(r.state).toBe('behind');
     });
@@ -796,7 +818,7 @@ describe('release-tooling staleness', () => {
     it('identical pins are current', () => {
       const r = drift({
         [`${SUBJECT}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`),
-        [`${SUPER}::rev-parse staging:papercusp-desktop`]: okv(`${SUBJECT_PIN}\n`),
+        [`${SUPER}::rev-parse main:papercusp-desktop`]: okv(`${SUBJECT_PIN}\n`),
       });
       expect(r.state).toBe('current');
       expect(r.staleFiles).toEqual([]);
