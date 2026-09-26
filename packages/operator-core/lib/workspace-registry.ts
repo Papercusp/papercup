@@ -490,6 +490,26 @@ export function ensureWorkspaceEntry(id: string, name?: string): WorkspaceRegist
   return reg;
 }
 
+/**
+ * Register `id` (idempotent; provisions its data dir) and make it the registry's
+ * `current` workspace. Registration comes FIRST on purpose: a `current` that names an
+ * unlisted id makes `isKnownWorkspace(current)` false, and the workspace-context
+ * middleware then answers `unknown_workspace` 400 to every /api call stamped with it
+ * (the 2026-07-07 packaged-.deb onboarding hang). No write when `id` is already current.
+ *
+ * The single register-then-make-current primitive: the dogfood home hive
+ * (`defaultSetHomeWorkspace`) and a hosted workspace host's bound customer workspace
+ * (WI-10003163) both route through it.
+ */
+export function ensureCurrentWorkspace(id: string, name?: string): WorkspaceRegistry {
+  const reg = ensureWorkspaceEntry(id, name);
+  if (reg.current !== id) {
+    reg.current = id;
+    writeRegistry(reg);
+  }
+  return reg;
+}
+
 export function setCompanyId(workspaceId: string, companyId: string | null): void {
   const reg = readRegistry();
   const ws = reg.workspaces.find((w) => w.id === workspaceId);
