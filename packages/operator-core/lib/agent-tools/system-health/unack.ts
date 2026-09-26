@@ -31,17 +31,12 @@ export default defineTool({
     const removed = await clearHealthAck(ws, args.panel);
     const health = removed ? await runSystemHealthTick(ws).catch(() => null) : null;
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            panel: args.panel,
-            removed,
-            overall: health?.overall ?? null,
-          }),
-        },
-      ],
+      data: {
+        ok: true,
+        panel: args.panel,
+        removed,
+        overall: health?.overall ?? null,
+      },
     };
   },
 });
