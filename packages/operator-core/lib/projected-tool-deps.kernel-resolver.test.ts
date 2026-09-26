@@ -189,6 +189,9 @@ describe('control-anchor kernel resolver (D-030)', () => {
     // WI-10002721: the anchor read carries the launch record's header, never its
     // body, and no longer serialises the whole adv_sessions row to reach it.
     const anchorSql = (template as readonly string[]).join(' ');
+    // The outer SELECT reads a.id; omitting s.id from this derived table makes
+    // every authority read fail closed before the tool can run.
+    expect(anchorSql).toMatch(/FULL JOIN \(\s*SELECT s\.id\b/);
     expect(anchorSql).toContain('ELSE jsonb_typeof(s.launch_spec) END AS launch_spec_type');
     expect(anchorSql).toContain("ELSE s.launch_spec->'workspaceId' END AS launch_spec_workspace_id");
     expect(anchorSql).toContain("ELSE s.launch_spec->'harnessSlug' END AS launch_spec_harness_slug");
