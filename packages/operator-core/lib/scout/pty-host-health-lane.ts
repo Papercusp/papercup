@@ -49,7 +49,11 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'headless-claude-onboarding-advanced' ||
     kind === 'claude-resume-compaction-summary-selected' ||
     kind === 'shutdown-accepted' ||
-    kind === 'host-teardown'
+    kind === 'host-teardown' ||
+    // A slow Codex composer paste still inside the kickoff delivery deadline.
+    // Its terminal outcome is recorded separately as `-confirmed` (routine) or
+    // `-unconfirmed` (failure), so counting this as a failure double-counts.
+    kind === 'launch-kickoff-marker-echo-pending'
   ) return 'routine';
 
   if (

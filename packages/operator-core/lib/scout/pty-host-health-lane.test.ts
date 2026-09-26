@@ -137,6 +137,10 @@ describe('PTY host event classification for Blender', () => {
     expect(classifyPtyHostEvent('control-payload-rejected')).toBe('failure');
     expect(classifyPtyHostEvent('persona-refresh-skipped')).toBe('failure');
     expect(classifyPtyHostEvent('headless-codex-model-choice-select-existing')).toBe('routine');
+    // Pending is a non-terminal slow-echo state; confirmed/unconfirmed carry the verdict.
+    expect(classifyPtyHostEvent('launch-kickoff-marker-echo-pending')).toBe('routine');
+    expect(classifyPtyHostEvent('launch-kickoff-marker-echo-confirmed')).toBe('routine');
+    expect(classifyPtyHostEvent('launch-kickoff-marker-echo-unconfirmed')).toBe('failure');
   });
 
   it('places persisted failures and recovered retries in the flattened ideator corpus', () => {
