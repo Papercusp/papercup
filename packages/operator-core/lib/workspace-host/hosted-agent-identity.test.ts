@@ -15,10 +15,13 @@ import {
 } from '@papercusp/deployment-driver';
 import {
   hostedCustomerAgentCommand,
+  hostedCustomerAgentIdentitySpec,
   hostedCustomerAgentSpawnTransform,
   installHostedCustomerAgentIdentity,
   type HostedCustomerAgentIdentityOptions,
 } from './hosted-agent-identity';
+import { hostedAgentIdentityPsuEnv, setHostedAgentIdentityPsuSpec } from './hosted-agent-identity-psu-env';
+import { AGENT_IDENTITY_SPEC_ENV, parseAgentIdentitySpec } from '@papercusp/papercusp-shared/agent';
 import { HOSTED_WORKSPACE_ACCOUNT_HOME, hostedWorkspacePtySpawnSpec, hostedWorkspaceSshArgs } from './hosted-session-host';
 
 // D-421 (byoc plan) / WI-10003195: on a hosted host the chat brain's agent CLI must run as the
@@ -172,5 +175,43 @@ describe('hosted customer agent identity (D-421)', () => {
     const ttyArgs = hostedWorkspaceSshArgs({ tty: true });
     expect(spec.args.slice(0, ttyArgs.length)).toEqual(ttyArgs);
     expect(ttyArgs).toContain('-tt');
+  });
+});
+
+// D-424 / P-326: New Session's psu keeps supervising as the service user; its agent CLI crosses to
+// the customer account through the spec below, built from the SAME vector/toolchain as D-423.
+describe('hosted New Session agent identity spec (D-424)', () => {
+  afterEach(() => {
+    setHostedAgentIdentityPsuSpec(undefined);
+  });
+
+  it('stages over the non-TTY vector and execs over the forced-TTY one, as the customer account', () => {
+    const spec = parseAgentIdentitySpec(hostedCustomerAgentIdentitySpec({ localHome: '/var/lib/papercusp', baseEnv: {} }));
+    expect(spec.identity).toBe(`${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}@127.0.0.1`);
+    expect(spec.stageTransport.args).toContain('-T');
+    expect(spec.stageTransport.args).not.toContain('-tt');
+    expect(spec.execTransport.args).toContain('-tt');
+    for (const args of [spec.stageTransport.args, spec.execTransport.args]) {
+      // Quiet diagnostics precede the destination, which stays last before the remote command.
+      expect(args.indexOf('LogLevel=ERROR')).toBeLessThan(args.indexOf('-l'));
+      expect(args.slice(-3)).toEqual(['-l', DEFAULT_WORKSPACE_HOST_WORKSPACE_USER, '127.0.0.1']);
+    }
+    expect(spec.nodePath).toBe(`${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}/node`);
+    expect(spec.remoteHome).toBe(HOSTED_WORKSPACE_ACCOUNT_HOME);
+    expect(spec.remotePath[0]).toBe(WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN);
+    // Only the operator's own state dir ships (psu's rendered prompt); its superuser token never crosses.
+    expect(spec.shipFileRoots).toEqual(['/var/lib/papercusp/.papercusp']);
+    expect(spec.forbiddenSecretFiles).toEqual(['/var/lib/papercusp/.papercusp/superuser-token']);
+  });
+
+  it('psu launches carry the spec only once the hosted runtime installed it', () => {
+    expect(hostedAgentIdentityPsuEnv()).toEqual({});
+    installHostedCustomerAgentIdentity({ localHome: '/var/lib/papercusp', forbiddenSecrets: [], baseEnv: {} });
+    const env = hostedAgentIdentityPsuEnv();
+    expect(Object.keys(env)).toEqual([AGENT_IDENTITY_SPEC_ENV]);
+    expect(parseAgentIdentitySpec(env[AGENT_IDENTITY_SPEC_ENV]!).identity).toBe(
+      `${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}@127.0.0.1`,
+    );
+    expect(agentSpawnTransformConfigured()).toBe(true);
   });
 });

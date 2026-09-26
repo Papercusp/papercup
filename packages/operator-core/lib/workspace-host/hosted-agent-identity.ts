@@ -24,12 +24,14 @@ import {
   AgentSpawnRefusedError,
   buildLoopbackIdentitySpawn,
   configureAgentSpawnTransform,
+  type AgentIdentitySpec,
   type AgentSpawnTransform,
 } from '@papercusp/papercusp-shared/agent';
 import {
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
   WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
 } from '@papercusp/deployment-driver';
+import { setHostedAgentIdentityPsuSpec } from './hosted-agent-identity-psu-env';
 import { HOSTED_WORKSPACE_ACCOUNT_HOME, hostedWorkspaceSshArgs } from './hosted-session-host';
 
 export interface HostedCustomerAgentIdentityOptions {
@@ -64,6 +66,62 @@ export function hostedCustomerAgentCommand(backend: string, toolchainBin: string
   return posix.join(toolchainBin, name);
 }
 
+/**
+ * The loopback SSH vector to the customer account. Quiet ssh diagnostics so the agent's stderr
+ * stays the agent's own; the option goes before `-l <user> <host>` so the destination stays last
+ * and the remote command follows it.
+ */
+function hostedIdentitySshArgs(tty: boolean): string[] {
+  const ssh = hostedWorkspaceSshArgs({ tty });
+  const destination = ssh.indexOf('-l');
+  return [...ssh.slice(0, destination), '-o', 'LogLevel=ERROR', ...ssh.slice(destination)];
+}
+
+const HOSTED_IDENTITY = `${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}@127.0.0.1`;
+const HOSTED_SPAWN_ROOT = posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.papercusp', 'agent-spawns');
+
+/** The customer's PATH: its toolchain first; the operator's PATH is never forwarded. */
+function hostedRemotePath(toolchainBin: string): string[] {
+  return [toolchainBin, posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.local', 'bin'), '/usr/local/bin', '/usr/bin', '/bin'];
+}
+
+// Each per-spawn config dir gets a link to the customer's own delivered credential (D-421/P-325):
+// runAgentChat links the OPERATOR's file into the local staged dir, and symlinks are not shipped.
+const HOSTED_HOME_LINKS = [
+  { envVar: 'CODEX_HOME', name: 'auth.json', homeRelative: '.codex/auth.json' },
+  { envVar: 'CLAUDE_CONFIG_DIR', name: '.credentials.json', homeRelative: '.claude/.credentials.json' },
+] as const;
+
+/**
+ * D-424 (P-326): the spec psu's PTY host uses to run a New Session's agent CLI as the customer
+ * account. psu itself stays the service-user supervisor; only the agent exec crosses. What may
+ * cross is psu's rendered system-prompt file (under the operator's state dir) and Claude/Codex
+ * behaviour env — never a credential-shaped name, never the operator superuser token.
+ */
+export function hostedCustomerAgentIdentitySpec(options: HostedCustomerAgentIdentityOptions = {}): AgentIdentitySpec {
+  const localHome = options.localHome ?? homedir();
+  const toolchainBin = options.toolchainBin ?? WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN;
+  const stateRoots = [join(localHome, '.papercusp')];
+  const papercuspHome = (options.baseEnv ?? process.env).PAPERCUSP_HOME?.trim();
+  if (papercuspHome && !stateRoots.includes(papercuspHome)) stateRoots.push(papercuspHome);
+  return {
+    v: 1,
+    identity: HOSTED_IDENTITY,
+    stageTransport: { command: '/usr/bin/ssh', args: hostedIdentitySshArgs(false) },
+    execTransport: { command: '/usr/bin/ssh', args: hostedIdentitySshArgs(true) },
+    nodePath: posix.join(toolchainBin, 'node'),
+    toolchainBin,
+    remoteHome: HOSTED_WORKSPACE_ACCOUNT_HOME,
+    spawnRoot: HOSTED_SPAWN_ROOT,
+    remotePath: hostedRemotePath(toolchainBin),
+    localHome,
+    shipFileRoots: stateRoots,
+    envAllowPrefixes: ['CLAUDE_CODE_', 'DISABLE_'],
+    homeLinks: HOSTED_HOME_LINKS,
+    forbiddenSecretFiles: [join(localHome, '.papercusp', 'superuser-token')],
+  };
+}
+
 /** The transform that runs agent CLIs as the customer workspace account. */
 export function hostedCustomerAgentSpawnTransform(
   options: HostedCustomerAgentIdentityOptions = {},
@@ -72,33 +130,18 @@ export function hostedCustomerAgentSpawnTransform(
   const toolchainBin = options.toolchainBin ?? WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN;
   const exists = options.exists ?? existsSync;
   const nodePath = posix.join(toolchainBin, 'node');
-  // Quiet ssh diagnostics so the agent's stderr stays the agent's own; the option goes before
-  // `-l <user> <host>` so the destination stays last and the remote command follows it.
-  const ssh = hostedWorkspaceSshArgs({ tty: false });
-  const destination = ssh.indexOf('-l');
   const inner = buildLoopbackIdentitySpawn({
     transportCommand: '/usr/bin/ssh',
-    transportArgs: [...ssh.slice(0, destination), '-o', 'LogLevel=ERROR', ...ssh.slice(destination)],
-    identity: `${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}@127.0.0.1`,
+    transportArgs: hostedIdentitySshArgs(false),
+    identity: HOSTED_IDENTITY,
     nodePath,
     remoteHome: HOSTED_WORKSPACE_ACCOUNT_HOME,
-    spawnRoot: posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.papercusp', 'agent-spawns'),
+    spawnRoot: HOSTED_SPAWN_ROOT,
     localHome,
     baseEnv: options.baseEnv ?? process.env,
     passthroughEnv: ['LANG', 'LC_ALL', 'TZ'],
-    remotePath: [
-      toolchainBin,
-      posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.local', 'bin'),
-      '/usr/local/bin',
-      '/usr/bin',
-      '/bin',
-    ],
-    // Each per-spawn config dir gets a link to the customer's own delivered credential (D-421/P-325):
-    // runAgentChat links the OPERATOR's file into the local staged dir, and symlinks are not shipped.
-    homeLinks: [
-      { envVar: 'CODEX_HOME', name: 'auth.json', homeRelative: '.codex/auth.json' },
-      { envVar: 'CLAUDE_CONFIG_DIR', name: '.credentials.json', homeRelative: '.claude/.credentials.json' },
-    ],
+    remotePath: hostedRemotePath(toolchainBin),
+    homeLinks: HOSTED_HOME_LINKS,
     forbiddenSecrets: options.forbiddenSecrets ?? readOperatorSuperuserToken(localHome),
   });
   return (request) => {
@@ -116,7 +159,12 @@ export function hostedCustomerAgentSpawnTransform(
   };
 }
 
-/** Install the transform process-wide. Called once when the hosted runtime starts. */
+/**
+ * Install process-wide, once when the hosted runtime starts: the transform (chat/converse
+ * spawns, D-421/D-423) and the psu spec (New Session's PTY agent, D-424) — one call, so the two
+ * agent paths cannot disagree about which account they run as.
+ */
 export function installHostedCustomerAgentIdentity(options: HostedCustomerAgentIdentityOptions = {}): void {
   configureAgentSpawnTransform(hostedCustomerAgentSpawnTransform(options));
+  setHostedAgentIdentityPsuSpec(hostedCustomerAgentIdentitySpec(options));
 }
