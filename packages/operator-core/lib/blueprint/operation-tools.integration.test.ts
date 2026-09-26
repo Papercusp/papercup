@@ -236,6 +236,11 @@ const OPERATION_SOURCE = {
     acceptance: { resultSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false } },
     signals: { note: { payloadSchema: { type: 'object', required: ['text'], properties: { text: { type: 'string' } } } } },
     waits: { approve: { responseSchema: { type: 'object', required: ['approved'], properties: { approved: { type: 'boolean' } } } } },
+  }, {
+    id: 'extract-program', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
+    execution: { kind: 'program' },
+    inputSchema: { type: 'object', required: ['value'], properties: { value: { type: 'string' } }, additionalProperties: false },
+    acceptance: { resultSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } }, additionalProperties: false } },
   }],
 };
 
@@ -517,5 +522,158 @@ describe('P-017 transport parity', () => {
     const foreign = new BlueprintOperationClient<Ops>(
       createProjectedBlueprintOperationPort(invoker('mcp', { principal: 'beta', client: 'pi:alpha' })), scope);
     await expect(foreign.status(handle)).rejects.toThrow('handle_mismatch');
+  });
+});
+
+describe.each<Transport>(['http', 'mcp'])('P-011 neutral consumers over %s', (transport) => {
+  it('uses one public lifecycle for independent schemas and scopes without creating plans', async () => {
+    const secondHarness = 'neutral-consumer-b';
+    const secondSource = {
+      id: 'neutral-consumer-b', workItem: { kind: 'feature' },
+      roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+      operations: [{
+        id: 'score', version: 'B', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'agent', role: 'worker' },
+        inputSchema: { type: 'object', required: ['count'],
+          properties: { count: { type: 'integer' } }, additionalProperties: false },
+        acceptance: { resultSchema: { type: 'object', required: ['score'],
+          properties: { score: { type: 'integer' } }, additionalProperties: false } },
+        signals: { adjust: { payloadSchema: { type: 'object', required: ['delta'],
+          properties: { delta: { type: 'integer' } } } } },
+        waits: { review: { responseSchema: { type: 'object', required: ['accepted'],
+          properties: { accepted: { type: 'boolean' } } } } },
+      }, {
+        id: 'score-program', version: 'B', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'program' },
+        inputSchema: { type: 'object', required: ['count'],
+          properties: { count: { type: 'integer' } }, additionalProperties: false },
+        acceptance: { resultSchema: { type: 'object', required: ['score'],
+          properties: { score: { type: 'integer' } }, additionalProperties: false } },
+      }],
+    };
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: 'other-ws', harnessSlug: secondHarness,
+      blueprint: BlueprintSchema.parse(secondSource),
+      specification: compileAgentSpecification({ source: secondSource }),
+    });
+
+    const first = (await ok<{ handle: BlueprintOperationHandle }>(call(transport, ALPHA, T.submit,
+      submitArgs('neutral-a', { value: 'alpha' })))).handle;
+    const secondArgs = { harness: secondHarness, operationId: 'score',
+      requestKey: 'neutral-b', input: { count: 7 }, title: 'Score' };
+    const second = (await ok<{ handle: BlueprintOperationHandle }>(call(transport,
+      { principal: 'gamma' }, T.submit, secondArgs))).handle;
+    expect(first.target.kind).toBe('work-item');
+    expect(second.target.kind).toBe('work-item');
+    expect(first).toMatchObject({ workspaceId: WORKSPACE, harnessSlug: HARNESS, operationId: 'extract' });
+    expect(second).toMatchObject({ workspaceId: 'other-ws', harnessSlug: secondHarness, operationId: 'score' });
+    expect((await ok<{ handle: unknown }>(call(transport, { principal: 'gamma' }, T.submit, secondArgs))).handle)
+      .toEqual(second);
+    expect((await refused(call(transport, { principal: 'gamma' }, T.submit,
+      { ...secondArgs, input: { count: 8 } }))).message).toContain('input_conflict');
+    expect((await refused(call(transport, { principal: 'gamma' }, T.submit,
+      { ...secondArgs, input: { value: 'wrong schema' }, requestKey: 'wrong-schema' }))).message)
+      .toMatch(/^invalid_payload: /);
+
+    for (const [caller, own, foreign] of [
+      [ALPHA, first, second], [{ principal: 'gamma' } as Caller, second, first],
+    ] as const) {
+      expect(await ok(call(transport, caller, T.status, { handle: own })))
+        .toMatchObject({ phase: 'accepted' });
+      for (const name of [T.status, T.result, T.events]) {
+        expect((await refused(call(transport, caller, name, { handle: foreign }))).message)
+          .toMatch(/scope_mismatch|handle_mismatch/);
+      }
+      expect((await refused(call(transport, caller, T.cancel,
+        { handle: foreign, requestKey: 'foreign-cancel', reason: 'foreign' }))).message)
+        .toMatch(/scope_mismatch|handle_mismatch/);
+      expect((await refused(call(transport, caller, T.resume,
+        { handle: foreign, token: 'foreign-wait', response: {}, requestKey: 'foreign-resume' }))).message)
+        .toMatch(/scope_mismatch|handle_mismatch/);
+    }
+    const signal = await ok<{ accepted: boolean }>(call(transport, { principal: 'gamma' }, T.signal,
+      { handle: second, channel: 'adjust', payload: { delta: 2 }, requestKey: 'adjust-1' }));
+    expect(signal.accepted).toBe(true);
+    await openBlueprintOperationWait(db.sql, second, 'pi:gamma', { waitName: 'review', token: 'review-1' });
+    expect(await ok(call(transport, { principal: 'gamma' }, T.resume,
+      { handle: second, token: 'review-1', response: { accepted: true }, requestKey: 'review-1' })))
+      .toMatchObject({ accepted: true });
+
+    if (first.target.kind !== 'work-item' || second.target.kind !== 'work-item') {
+      throw new Error('neutral direct consumers must create work items');
+    }
+    await settleWithOutput(first, 'alpha-result');
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET status = 'passed', authority = 'committed',
+             payload = payload || ${JSON.stringify({ blueprintResult: {
+               operationId: 'score', specificationRevision: second.specificationRevision,
+               output: { score: 9 }, evidenceRef: 'verification:neutral-consumer-b',
+             } })}::text::jsonb
+       WHERE workspace_id = ${'other-ws'} AND harness_slug = ${secondHarness}
+         AND feature_id = ${second.target.id}`;
+    expect(await ok(call(transport, ALPHA, T.result, { handle: first })))
+      .toMatchObject({ state: 'ready', output: { answer: 'alpha-result' } });
+    expect(await ok(call(transport, { principal: 'gamma' }, T.result, { handle: second })))
+      .toMatchObject({ state: 'ready', output: { score: 9 } });
+    const [counts] = await db.sql<Array<{ items: number; plans: number; runs: number }>>`
+      SELECT (SELECT count(*)::int FROM harness_shared.work_items
+               WHERE workspace_id IN (${WORKSPACE}, ${'other-ws'})) AS items,
+             (SELECT count(*)::int FROM harness_shared.harness_plans
+               WHERE workspace_id IN (${WORKSPACE}, ${'other-ws'})) AS plans,
+             (SELECT count(*)::int FROM harness_shared.plan_runs
+               WHERE workspace_id IN (${WORKSPACE}, ${'other-ws'})) AS runs`;
+    expect(counts).toEqual({ items: 2, plans: 0, runs: 0 });
+  });
+
+  it('admits different typed program roots through the same public tool without creating plans', async () => {
+    const secondHarness = 'neutral-consumer-b';
+    const secondSource = {
+      id: 'neutral-consumer-b', workItem: { kind: 'feature' },
+      roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+      operations: [{
+        id: 'score-program', version: 'B', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'program' },
+        inputSchema: { type: 'object', required: ['count'],
+          properties: { count: { type: 'integer' } }, additionalProperties: false },
+        acceptance: { resultSchema: { type: 'object', required: ['score'],
+          properties: { score: { type: 'integer' } }, additionalProperties: false } },
+      }],
+    };
+    await projectBlueprintToPg(db.sql, {
+      workspaceId: 'other-ws', harnessSlug: secondHarness,
+      blueprint: BlueprintSchema.parse(secondSource),
+      specification: compileAgentSpecification({ source: secondSource }),
+    });
+    const cases = [
+      { caller: ALPHA, harness: HARNESS, operationId: 'extract-program', input: { value: 'alpha' } },
+      { caller: { principal: 'gamma' } as Caller, harness: secondHarness,
+        operationId: 'score-program', input: { count: 7 } },
+    ];
+    for (const [index, fixture] of cases.entries()) {
+      const args = { harness: fixture.harness, operationId: fixture.operationId,
+        input: fixture.input, requestKey: `program-${index}`, title: `Program ${index}` };
+      const first = (await ok<{ handle: BlueprintOperationHandle }>(
+        call(transport, fixture.caller, T.submit, args))).handle;
+      expect(first.target.kind).toBe('work-item');
+      expect((await ok<{ handle: BlueprintOperationHandle }>(
+        call(transport, fixture.caller, T.submit, args))).handle).toEqual(first);
+      expect((await refused(call(transport, fixture.caller, T.submit,
+        { ...args, input: index === 0 ? { value: 'changed' } : { count: 8 } }))).message)
+        .toContain('input_conflict');
+      const [stored] = await db.sql<Array<{ execution_kind: string; item_kind: string }>>`
+        SELECT payload->'blueprintOperation'->'execution'->>'kind' AS execution_kind,
+               kind AS item_kind
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${first.workspaceId} AND harness_slug = ${first.harnessSlug}
+           AND feature_id = ${(first.target as { id: string }).id}`;
+      expect(stored?.execution_kind).toBe('program');
+      expect(stored?.item_kind).toBe('feature');
+    }
+    const [counts] = await db.sql<Array<{ items: number; plans: number; runs: number }>>`
+      SELECT (SELECT count(*)::int FROM harness_shared.work_items) AS items,
+             (SELECT count(*)::int FROM harness_shared.harness_plans) AS plans,
+             (SELECT count(*)::int FROM harness_shared.plan_runs) AS runs`;
+    expect(counts).toEqual({ items: 2, plans: 0, runs: 0 });
   });
 });
