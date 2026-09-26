@@ -22,6 +22,7 @@ import {
   resolveWorkspaceScope,
   resolvePtoolOperatorBase,
   resolvePtoolOperatorCandidates,
+  resolvePtoolInvocationCandidates,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
   resolveTokenPaths,
@@ -302,6 +303,19 @@ describe('ptool operator routing', () => {
       'http://127.0.0.1:3271',
       'http://127.0.0.1:3070',
     ]);
+  });
+
+  it('pins named calls to their selected operator while catalog browsing may recover', () => {
+    const env = {
+      PAPERCUSP_HONO_PORT: '3271',
+      PAPERCUSP_OPERATOR_URL: 'http://localhost:3271',
+    };
+    expect(resolvePtoolInvocationCandidates({ tool: 'plans:get-spec-evidence' }, env))
+      .toEqual(['http://127.0.0.1:3271']);
+    expect(resolvePtoolInvocationCandidates({ list: true }, env))
+      .toEqual(['http://127.0.0.1:3271', 'http://127.0.0.1:3070']);
+    expect(resolvePtoolInvocationCandidates({ tool: 'plans:get-spec-evidence', url: 'http://127.0.0.1:3170' }, env))
+      .toEqual(['http://127.0.0.1:3170']);
   });
 
   it('does not add a fallback for an explicit URL or the proxy-backed canonical host', () => {

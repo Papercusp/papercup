@@ -373,7 +373,8 @@ export async function bindLeaderBriefResult<T extends { data: Record<string, unk
       identityId: 'su.fleet-leader', contributionId: 'fleet-leader-brief', sourceTier: 'builtin',
       ...(omission ? { omission } : { value: data }),
       scope: { workspace: scope.workspace ?? null, harness: scope.harness ?? null,
-        fleet: typeof summary?.fleet === 'string' ? summary.fleet : scope.fleet ?? null },
+        fleet: typeof summary?.fleet === 'string' ? summary.fleet : scope.fleet ?? null,
+        sink: 'on-demand' },
       observedAt: new Date().toISOString(),
     });
     metadata?.({ identityContribution: receipt });

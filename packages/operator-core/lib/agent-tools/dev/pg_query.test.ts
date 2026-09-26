@@ -210,6 +210,23 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     });
   });
 
+  it('explains the exact-file fence instead of asking for already-present tenant predicates on test_runs', async () => {
+    advisoryMock.mockResolvedValue('⚠ harness_shared.test_runs: workspace_id/harness_slug are NULL-by-design for CI rows.');
+    const sql =
+      "SELECT id FROM harness_shared.test_runs WHERE workspace_id = 'papercusp-workspace' " +
+      "AND harness_slug = 'papercusp' AND file_path LIKE '%session-identity-attribution.integration.test.ts' LIMIT 5";
+    const res = await pgQueryTool.handler(
+      { sql, allowUnscoped: false } as never,
+      { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' } as never,
+    );
+    const payload = payloadOf(res as never);
+    expect(payload).toMatchObject({ reason: 'tenant_scope_required' });
+    expect(String(payload.error)).toContain('exact file_path = value');
+    expect(String(payload.error)).toContain('open-ended file_path LIKE');
+    expect(String(payload.error)).not.toContain('Add the tenant predicate(s)');
+    expect(pgReadQueryMock).not.toHaveBeenCalled();
+  });
+
   it('runs an explicitly allowed cross-tenant read and retains the advisory', async () => {
     advisoryMock.mockResolvedValue('⚠ tenant scope: …');
     const res = await pgQueryTool.handler(

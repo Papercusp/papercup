@@ -414,6 +414,20 @@ describe('plans:start BAR contract completeness before proof (P-003)', () => {
     expect(planLockMocks.withPlanLock).toHaveBeenCalled();
   });
 
+  it('admits an explicitly manual BAR before clauses are projected', async () => {
+    const bar = completeBar();
+    bar.check = { kind: 'instrument', instrumentKey: 'none' };
+    bar.requiredTestLayers = [];
+    bar.automatedProofRequired = false;
+    bar.mappings = [];
+    vi.mocked(readAcceptanceBarContractSnapshot).mockResolvedValue(postEpochSnapshot(bar));
+
+    const result = await run({ slug: 'mock', consulted: true });
+
+    expect(result.data.results[0]).not.toMatchObject({ code: 'acceptance_bar_contract_not_ready' });
+    expect(planLockMocks.withPlanLock).toHaveBeenCalled();
+  });
+
   it.each([
     { defect: 'no METHOD', patch: { method: '' }, code: 'bar_snapshot_method_missing', field: 'METHOD is empty' },
     { defect: 'no structured check', patch: { check: null }, code: 'bar_snapshot_check_missing', field: 'no structured check' },

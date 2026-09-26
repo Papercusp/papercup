@@ -13,6 +13,8 @@ import {
   LIFECYCLE_LAUNCHER_ENDED_GRACE_MS,
   enforceLifecycleVerdicts,
   evaluateLifecycleCandidates,
+  lifecycleCandidateSummary,
+  lifecycleJudgeBrief,
   lifecycleCandidateConditionKey,
   lifecycleJudgeIntervalKey,
   runLifecycleJudgementSweep,
@@ -185,6 +187,33 @@ describe('evaluateLifecycleCandidates', () => {
       ['unaccounted', ['unaccounted-residue']],
       ['terminal', ['terminal-residue']],
     ]);
+  });
+
+  it('gives unaccounted residue a discriminating exact-scope verification recipe', () => {
+    const candidate = evaluate({
+      rows: [row({ taskId: 'unaccounted', state: 'unaccounted', scopeUnit: 'pc-unaccounted.scope' })],
+      residue: ['unaccounted'],
+    }).candidates[0];
+    expect(candidate.scopeUnit).toBe('pc-unaccounted.scope');
+    const summary = lifecycleCandidateSummary(candidate);
+    expect(summary).toContain('processes:list { scopeUnit:"pc-unaccounted.scope", live:true }');
+    expect(summary).toContain('live.exactScopeUnitMatches');
+    expect(summary).toContain('taskId-filtered read cannot prove absence');
+    expect(summary).toContain('known-present positive control');
+
+    const escaped = lifecycleCandidateSummary({ ...candidate, scopeUnit: 'pc-"quoted.scope' });
+    expect(escaped).toContain('scopeUnit:"pc-\\"quoted.scope"');
+
+    const noScope = { ...candidate, scopeUnit: null };
+    expect(lifecycleCandidateSummary(noScope)).toContain('unfiltered processes:list { live:true }');
+    expect(lifecycleCandidateSummary(noScope)).toContain('complete live.unaccountedGroups');
+  });
+
+  it('warns the judge that a task-scoped read cannot clear unaccounted residue', () => {
+    const brief = lifecycleJudgeBrief([{ id: 'WI-1', taskId: 'unaccounted', harnessSlug: 'papercusp' }]);
+    expect(brief).toContain('live.exactScopeUnitMatches');
+    expect(brief).toContain('taskId-filtered processes:list result cannot prove absence');
+    expect(brief).toContain('known-present positive control');
   });
 
   it('excludes agent sessions and human-terminal auto-reap exemptions', () => {

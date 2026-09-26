@@ -4569,7 +4569,7 @@ export async function bindTurnStartIdentityOutputs(input: {
               ? { contributionId: 'goal-obligations', value: obligation.text }
               : { contributionId: 'goal-obligations', omission: input.state.obligations
                   ? { reason: 'unavailable', errorRef: 'turn-start:obligation-budget-trimmed' }
-                  : { reason: 'not-requested' } },
+                  : { reason: 'ineligible' } },
           ],
           scope: { workspace: input.workspaceId, ownerId: input.ownerId, sink: 'turn-start' },
           observedAt,

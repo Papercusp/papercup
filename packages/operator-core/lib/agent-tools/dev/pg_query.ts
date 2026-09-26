@@ -842,9 +842,16 @@ export default defineTool({
       };
       const tenantAdvisory = await buildTenantScopeAdvisory(sql, tenantScope).catch(() => null);
       if (tenantAdvisory && !args.allowUnscoped) {
+        // test_runs is deliberately different from an ordinary tenant table:
+        // CI rows have NULL tenant columns, and a LIKE suffix is not an exact
+        // local-file identity fence. Telling this caller to add tenant
+        // predicates (which may already be present) sends them in a loop.
+        const correction = tenantAdvisory.startsWith('⚠ harness_shared.test_runs:')
+          ? 'For a local reporter read, use an exact file_path = value with both tenant predicates and a bounded LIMIT, or an exact run_group_id; for CI/gate reads filter by source or commit_sha. An open-ended file_path LIKE does not establish local identity. Pass allowUnscoped: true only for a deliberate broader read.'
+          : 'Add the tenant predicate(s), or pass allowUnscoped: true for a deliberate cross-tenant read.';
         return jsonError(
           'tenant_scope_required',
-          `${tenantAdvisory} Add the tenant predicate(s), or pass allowUnscoped: true for a deliberate cross-tenant read.`,
+          `${tenantAdvisory} ${correction}`,
         );
       }
       const positiveControlTenantAdvisory = args.positiveControlSql

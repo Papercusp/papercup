@@ -3004,7 +3004,7 @@ export async function bindOrientOutputResult<T extends Record<string, unknown>>(
       identityId: 'su.practice',
       sourceTier: 'builtin',
       outputs: [{ contributionId: 'coord-orientation', value: result }],
-      scope,
+      scope: { ...scope, sink: 'on-demand' },
       observedAt: new Date().toISOString(),
     });
   } catch (error) {
@@ -3037,7 +3037,7 @@ export async function bindOrientOutputResult<T extends Record<string, unknown>>(
               currentPlanSlug: presence.currentPlanSlug,
             } },
           ],
-          scope,
+          scope: { ...scope, sink: 'on-demand' },
           observedAt: new Date().toISOString(),
         });
       }).catch((error) => ({

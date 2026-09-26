@@ -1303,6 +1303,77 @@ export interface OpenGradingCascadeParams {
 export interface OpenGradingCascadeResult {
   conversationId: string;
   woke: number;
+  status: 'active' | 'existing' | 'exhausted' | 'raced';
+}
+
+type GradingDispatchFailureEvent = {
+  ownerId: string;
+  kind: 'dispatch_failed';
+  at: string;
+  excerpt: string;
+};
+
+/**
+ * Walk the already-selected grading menu when a transcript cannot produce an
+ * answering session. This is the opening-dispatch counterpart of
+ * cascade-core's reply/decline/expiry advance: one unreachable transcript costs
+ * one menu slot, never the whole acceptance plan. Only a CAS-confirmed terminal
+ * write may report `exhausted`; a race is conservatively treated as an existing
+ * live cascade so a fresh judge cannot be launched over another dispatcher.
+ *
+ * @internal Exported for the regression test that guards the orchestration.
+ */
+export async function advanceUndispatchableGradingCascade(input: {
+  graders: readonly Pick<AssignedGrader, 'ownerId'>[];
+  initialQueued: number;
+  nowIso?: () => string;
+  advance: (input: {
+    cursor: number;
+    digest: GradingDispatchFailureEvent[];
+    event: GradingDispatchFailureEvent;
+  }) => Promise<{
+    advanced: boolean;
+    raced: boolean;
+    nextOwnerId: string | null;
+    queued: number;
+  }>;
+  markExhausted: (input: {
+    cursor: number;
+    digest: GradingDispatchFailureEvent[];
+  }) => Promise<boolean>;
+}): Promise<{ status: 'active' | 'exhausted' | 'raced'; woke: number }> {
+  if (input.initialQueued > 0) return { status: 'active', woke: input.initialQueued };
+
+  const nowIso = input.nowIso ?? (() => new Date().toISOString());
+  const digest: GradingDispatchFailureEvent[] = [];
+  let cursor = 0;
+  let ownerId = input.graders[0]?.ownerId ?? null;
+
+  while (ownerId) {
+    const event: GradingDispatchFailureEvent = {
+      ownerId,
+      kind: 'dispatch_failed',
+      at: nowIso(),
+      excerpt:
+        'Every allowed expert model was exhausted for this transcript; advancing to the next selected acceptance grader.',
+    };
+    const digestAfterFailure = [...digest, event];
+
+    if (cursor + 1 >= input.graders.length) {
+      const exhausted = await input.markExhausted({ cursor, digest: digestAfterFailure });
+      return exhausted ? { status: 'exhausted', woke: 0 } : { status: 'raced', woke: 0 };
+    }
+
+    const step = await input.advance({ cursor, digest: [...digest], event });
+    if (step.raced || !step.advanced || !step.nextOwnerId) return { status: 'raced', woke: 0 };
+    if (step.queued > 0) return { status: 'active', woke: step.queued };
+
+    digest.push(event);
+    cursor += 1;
+    ownerId = step.nextOwnerId;
+  }
+
+  return { status: 'raced', woke: 0 };
 }
 
 /**
@@ -1332,6 +1403,7 @@ async function prodOpenGradingCascade(
   const [
     { getOrgPg },
     { makeConsultReachDispatcher },
+    { advanceCascade },
     { resolveAgentIdentity },
     conversations,
     { PROCEED_EXPIRY_MS, stampAnsweringOwner },
@@ -1339,6 +1411,7 @@ async function prodOpenGradingCascade(
   ] = await Promise.all([
     import('@papercusp/db-org'),
     import('./consult/consult-dispatch'),
+    import('./consult/cascade-core'),
     import('./agent-tools/coordination/identity'),
     import('./agent-tools/coordination/conversations'),
     import('./consult/get-feedback-core'),
@@ -1361,6 +1434,7 @@ async function prodOpenGradingCascade(
       FROM harness_shared.consult_state
      WHERE workspace_id = ${params.workspaceId}
        AND closed_at IS NULL
+       AND state IN ('awaiting_responder', 'active')
        AND routing -> 'cascade' ->> 'flavor' = ${GRADING_CASCADE_FLAVOR}
        AND routing -> 'cascade' ->> 'planSlug' = ${params.planSlug}
        AND routing -> 'cascade' ->> 'rubricId' = ${params.rubricId}
@@ -1371,7 +1445,7 @@ async function prodOpenGradingCascade(
        )
      LIMIT 1
   `) as unknown as Array<{ conversation_id: string }>;
-  if (existing[0]) return { conversationId: existing[0].conversation_id, woke: 0 };
+  if (existing[0]) return { conversationId: existing[0].conversation_id, woke: 0, status: 'existing' };
 
   const head = params.graders[0]!;
   const brief =
@@ -1458,9 +1532,61 @@ async function prodOpenGradingCascade(
   // Backstop for a dispatcher that never called the hook; no-ops on absent.
   await stampAnsweringOwner(sql, params.workspaceId, conversationId, 0, res.answeringOwnerId);
   // `queued`, not `woke`: a launched-but-still-booting fork already owns the
-  // keyboard while reporting woke:0, and the caller reads this as "a grader is
-  // engaged". Reporting 0 there would re-recruit over a live grader.
-  return { conversationId, woke: res.queued };
+  // keyboard while reporting woke:0. When nothing was queued, use the SAME
+  // cascade-core advance as decline/reply/expiry to try the tail of the menu.
+  // If every transcript is undispatchable, make the row honestly terminal so
+  // resolveAcceptanceGrader can fall through to the lineage-safe fresh judge.
+  const dispatchState = await advanceUndispatchableGradingCascade({
+    graders: params.graders,
+    initialQueued: res.queued,
+    advance: async ({ cursor, digest, event }) => {
+      let nextDispatch: Awaited<ReturnType<typeof dispatch>> | undefined;
+      const advanced = await advanceCascade(
+        {
+          workspaceId: params.workspaceId,
+          conversationId,
+          question: brief,
+          latencyContract: 'proceed',
+          requesterId: identity.ownerId,
+          routing,
+          cascadeCursor: cursor,
+          digest,
+          event,
+          stateOnAdvance: 'awaiting_responder',
+          nowIso: event.at,
+        },
+        sql,
+        async (opts) => {
+          nextDispatch = await dispatch(opts);
+          return {
+            woke: nextDispatch.queued,
+            answeringOwnerId: nextDispatch.answeringOwnerId ?? null,
+          };
+        },
+      );
+      return {
+        advanced: advanced.advanced,
+        raced: advanced.raced,
+        nextOwnerId: advanced.next?.ownerId ?? null,
+        queued: nextDispatch?.queued ?? advanced.woke,
+      };
+    },
+    markExhausted: async ({ cursor, digest }) => {
+      const wrote = (await sql`
+        UPDATE harness_shared.consult_state
+           SET state = 'no_qualified_responder',
+               responder_id = NULL,
+               expires_at = NULL,
+               cascade_digest = ${sql.json(digest as never)},
+               updated_at = ${digest[digest.length - 1]!.at}::timestamptz
+         WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${conversationId}
+           AND cascade_cursor = ${cursor} AND state = 'awaiting_responder' AND closed_at IS NULL
+        RETURNING conversation_id
+      `) as unknown as Array<{ conversation_id: string }>;
+      return wrote.length > 0;
+    },
+  });
+  return { conversationId, woke: dispatchState.woke, status: dispatchState.status };
 }
 
 /**
@@ -1735,39 +1861,49 @@ export async function resolveAcceptanceGrader(
           },
           ctx,
         ).catch(() => null);
-        // { woke: 0 } is fine: the subscribe is durable — a parked grader reads
-        // the grading request on its next turn.
-        return {
-          state: 'assigned',
-          idempotencyKey: '',
-          label: '',
-          graders: selection.graders,
-          ...(opened ? { conversationId: opened.conversationId } : {}),
+        if (opened?.status === 'exhausted') {
+          discovery = {
+            excluded: selection.excluded,
+            ...(selection.partyCollapsed ? { partyCollapsed: selection.partyCollapsed } : {}),
+            eligibility: selection.eligibility,
+            ...(selection.escalation ? { escalation: selection.escalation } : {}),
+            freshReason: 'all_eligible_unselectable',
+          };
+        } else {
+          return {
+            state: 'assigned',
+            idempotencyKey: '',
+            label: '',
+            graders: selection.graders,
+            ...(opened ? { conversationId: opened.conversationId } : {}),
+            excluded: selection.excluded,
+            ...(selection.partyCollapsed ? { partyCollapsed: selection.partyCollapsed } : {}),
+            eligibility: selection.eligibility,
+            ...(selection.escalation ? { escalation: selection.escalation } : {}),
+            notified: {
+              woke: opened?.woke ?? 0,
+              // The instant delivery was enqueued — the baseline a LATER pickup
+              // observation compares the grader's own activity against
+              // (`observeGraderPickup`). Recorded only when a cascade actually
+              // opened: with no wake there is nothing for a pickup to post-date,
+              // and an instant recorded anyway would make every subsequent grader
+              // action look like a confirmed pickup.
+              ...(opened ? { wakeInstant: new Date().toISOString() } : {}),
+            },
+            reviewReservation,
+            ...(settlement ? { settlement } : {}),
+          };
+        }
+      }
+      if (!discovery) {
+        discovery = {
           excluded: selection.excluded,
           ...(selection.partyCollapsed ? { partyCollapsed: selection.partyCollapsed } : {}),
           eligibility: selection.eligibility,
           ...(selection.escalation ? { escalation: selection.escalation } : {}),
-          notified: {
-            woke: opened?.woke ?? 0,
-            // The instant delivery was enqueued — the baseline a LATER pickup
-            // observation compares the grader's own activity against
-            // (`observeGraderPickup`). Recorded only when a cascade actually
-            // opened: with no wake there is nothing for a pickup to post-date,
-            // and an instant recorded anyway would make every subsequent grader
-            // action look like a confirmed pickup.
-            ...(opened ? { wakeInstant: new Date().toISOString() } : {}),
-          },
-          reviewReservation,
-          ...(settlement ? { settlement } : {}),
+          freshReason: selection.freshReason ?? 'no_eligible_non_excluded',
         };
       }
-      discovery = {
-        excluded: selection.excluded,
-        ...(selection.partyCollapsed ? { partyCollapsed: selection.partyCollapsed } : {}),
-        eligibility: selection.eligibility,
-        ...(selection.escalation ? { escalation: selection.escalation } : {}),
-        freshReason: selection.freshReason ?? 'no_eligible_non_excluded',
-      };
     }
   } catch (err) {
     const msg = (err instanceof Error ? err.message : String(err)).slice(0, 500);

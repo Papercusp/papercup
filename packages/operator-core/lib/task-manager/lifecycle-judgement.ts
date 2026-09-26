@@ -73,6 +73,7 @@ export interface ProcessLifecycleVerdict {
 
 export interface LifecycleCandidate {
   taskId: string;
+  scopeUnit: string | null;
   workspaceId: string;
   harnessSlug: string | null;
   title: string;
@@ -448,6 +449,7 @@ export function evaluateLifecycleCandidates(input: {
     const probe = nextProbe ?? prior;
     candidates.push({
       taskId: row.taskId,
+      scopeUnit: row.scopeUnit ?? null,
       workspaceId: row.workspaceId,
       harnessSlug: row.harnessSlug ?? null,
       title: row.title,
@@ -490,10 +492,23 @@ export function lifecycleJudgeBrief(items: readonly OpenLifecycleCandidateItem[]
     '',
     ...refs,
     '',
-    'For each item: read and claim the work item; call processes:list with { taskId, live:true } and judge current evidence.',
+    'For each item: read and claim the work item, then inspect its processLifecycleCandidate kinds and scopeUnit. For unaccounted-residue, a taskId-filtered processes:list result cannot prove absence: use processes:list { scopeUnit, live:true } and inspect live.exactScopeUnitMatches. If scopeUnit is missing, use an unfiltered live census and inspect all live.unaccountedGroups; an omitted or truncated group list cannot prove absence. Require a known-present positive control before a gone verdict. For other kinds, use processes:list { taskId, live:true } and judge current evidence.',
     'You produce evidence and a verdict only. NEVER signal a process: do not call processes:kill, shell, systemctl, or any pid/name/pattern kill. Trusted task-manager code enforces a completed kill verdict later through the exact task/scope identity.',
     'Complete every item with assumptions:"none" and top-level outputPayload.processLifecycleVerdict = { taskId, decision:"keep"|"kill"|"gone", reason, keepCount, recheckAt, decidedAt }. A keep MUST give a future ISO recheckAt and increment prior keepCount; kill/gone use recheckAt:null. Record concrete processes:list evidence in completion. Then exit.',
   ].join('\n');
+}
+
+export function lifecycleCandidateSummary(candidate: LifecycleCandidate): string {
+  const verification = candidate.kinds.includes('unaccounted-residue')
+    ? candidate.scopeUnit
+      ? `For unaccounted residue, re-verify with processes:list { scopeUnit:${JSON.stringify(candidate.scopeUnit)}, live:true } and inspect live.exactScopeUnitMatches. A taskId-filtered read cannot prove absence.`
+      : 'For unaccounted residue with no recorded scopeUnit, re-verify with an unfiltered processes:list { live:true } and inspect the complete live.unaccountedGroups inventory. A taskId-filtered read cannot prove absence.'
+    : 'Re-verify with processes:list { taskId, live:true }.';
+  return (
+    `Task ${candidate.taskId} is a lifecycle candidate (${candidate.kinds.join(', ')}). ` +
+    `${candidate.reasons.join('; ')}. ${verification} ` +
+    'Before recording gone, require a known-present positive control and check that reconciliation is healthy and the relevant inventory is complete. Keep with a reason and future recheck date, kill only by taskId, or record gone.'
+  );
 }
 
 export interface LifecycleSweepResult {
@@ -666,6 +681,7 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
     const harness = candidate.harnessSlug ?? fallbackHarness;
     const payload = {
       taskId: candidate.taskId,
+      scopeUnit: candidate.scopeUnit,
       observedAt: new Date().toISOString(),
       taskClass: candidate.taskClass,
       state: candidate.state,
@@ -683,10 +699,7 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
       workspaceId: candidate.workspaceId,
       createdBy: 'system:task-lifecycle-judge',
       title: `Judge process lifecycle: ${candidate.taskId} — ${candidate.title}`.slice(0, 240),
-      summary:
-        `Task ${candidate.taskId} is a lifecycle candidate (${candidate.kinds.join(', ')}). ` +
-        `${candidate.reasons.join('; ')}. Re-verify with processes:list { taskId, live:true }; ` +
-        'keep with a reason and future recheck date, kill only by taskId, or record gone.',
+      summary: lifecycleCandidateSummary(candidate),
       payload: { [CANDIDATE_PAYLOAD_KEY]: payload },
     });
     if (result.id) {

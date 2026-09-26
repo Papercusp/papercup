@@ -826,6 +826,17 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       .not.toContain('bar_snapshot_proof_depth_missing');
   });
 
+  it('keeps an explicitly manual BAR manual before clauses are projected', () => {
+    const input = fixture(1);
+    input.rubrics.rows[0]!.criteria[0]!.check = { kind: 'instrument', instrumentKey: 'none' };
+    input.clauses.rows = [];
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.automatedProofRequired).toBe(false);
+    expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_proof_depth_missing');
+  });
+
   // ANTI-LOOPHOLE (both directions). The exemption is keyed to an explicit authored
   // instrument:'none'; an ordinary automated BAR keeps its floor, so this cannot become a
   // general way to skip proof depth.

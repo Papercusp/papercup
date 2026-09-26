@@ -384,7 +384,9 @@ export interface ProjectedClauseProofObligation {
  * A BAR whose author EXPLICITLY declared it manual (`check: {kind:'instrument',
  * instrumentKey:'none'}`) carries no automated proof obligation, whichever plane its record
  * lives on. Deliberately narrow, and fails closed: the criterion must itself declare no layers,
- * it must have clauses, and NO clause may declare a layer or a mutation obligation. Otherwise
+ * any clauses already projected may declare no layer or mutation obligation. Before
+ * plans:start projects clauses, an empty clause set cannot contradict the explicit
+ * manual declaration. Otherwise
  * any automated clause class, explicit layer or mutation keeps the automated floor.
  *
  * P-039 (review-system-rework-reduction-2026-09-23, R-9): extracted so the amendment dry run
@@ -401,7 +403,6 @@ export function projectedAutomatedProofRequired(input: {
   const explicitlyManual =
     input.instrumentKey === 'none' &&
     (input.criterionTestLayers?.length ?? 0) === 0 &&
-    input.clauses.length > 0 &&
     input.clauses.every((clause) => clause.requiredTestLayers.length === 0 && !clause.mutationRequired);
   // A tests check is an authored automated obligation even on a live/deployed
   // plane, whose generated clauses otherwise have the non-automated class.

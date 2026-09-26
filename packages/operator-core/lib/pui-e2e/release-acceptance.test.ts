@@ -34,10 +34,11 @@ describe('public cloud device-start release guard', () => {
       expect(JSON.stringify(passed)).not.toContain('PRIVATE');
       expect(requests).toEqual([{ method: 'POST', url: '/api/hosted/cli/device/code', body: '{}' }]);
 
-      // The actual ingress regression returned HTTP 404; a JSON ok flag must
-      // not disguise it. A login page with HTTP 200 must also fail closed.
-      status = 404;
-      expect(await runCloudDeviceStartSmoke(origin)).toMatchObject({ ok: false, status: 404 });
+      // The ingress regression required portal auth before granting a code.
+      // Neither that 401 nor a missing route may hide behind a JSON ok flag.
+      for (status of [401, 404]) {
+        expect(await runCloudDeviceStartSmoke(origin)).toMatchObject({ ok: false, status });
+      }
       status = 200;
       body = '<html>sign in</html>';
       expect(await runCloudDeviceStartSmoke(origin)).toMatchObject({ ok: false, status: 200 });

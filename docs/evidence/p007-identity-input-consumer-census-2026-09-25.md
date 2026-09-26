@@ -18,7 +18,7 @@ The source reference in every row is the named identity's `blueprint.yaml` and i
 | `su.mode-goal/goal-definition` | `mode:su.mode-goal:goal` | required fixed prompt, source change | SU stack prompt; `su-mode-identities.test.ts`, `mode-identity-binding.integration.test.ts` | C |
 | `su.mode-goal/current-mode-state` | `modes/store:agent_modes` | optional provider setting, turn; explicit omission during recovery | `goals/start.ts`, `turn-start-orientation.ts`; `source.test.ts`, `agent-obligation-planning.integration.test.ts` | C |
 | `su.mode-goal/goal-kickoff` | `agent-tools/goals/start:buildGoalKickoffBrief` | optional provider prompt, launch | `goals/start.ts`; `source.test.ts`, `goals/start.test.ts` | C |
-| `su.mode-goal/goal-portfolio` | `goal-launch-settings:renderGoalPortfolioBrief` | optional provider prompt, turn | `goals/start.ts`/turn-start omission; `source.test.ts`; refreshed native recovery pending | U |
+| `su.mode-goal/goal-portfolio` | `goal-launch-settings:renderGoalPortfolioBrief` | optional provider prompt, launch | `goals/start.ts`/turn-start omission; `source.test.ts`; refreshed native recovery pending | U |
 | `su.mode-goal/goal-obligations` | `agent-obligation-reader:projectAgentTurnStartObligationBrief` | optional provider prompt, turn | `turn-start-orientation.ts`; `agent-obligation-planning.integration.test.ts` | C |
 | `su.mode-grade/grade-definition` | `mode:su.mode-grade:grade` | required fixed prompt, source change | SU stack prompt; `su-mode-identities.test.ts`, `su-composition.test.ts` | C |
 | `su.mode-grade/current-mode-state` | `modes/store:agent_modes` | required provider setting, turn | `source.test.ts` catalog-wide compiler binding; host turn receipt pending | U |
