@@ -28,6 +28,7 @@ import {
   type GoalPlanningReview,
   type GoalPlanningReviewContext,
 } from '../../goal-planning-review';
+import type { GoalPlanFeedbackResult } from '../../scout/goal-feedback';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { softText, LIMITS } from '../limits';
 
@@ -67,6 +68,8 @@ export interface IdeatePassRecordSuccess {
   /** The harness the pass ran for (the tick's install_slug). */
   installSlug: string;
   goalReview?: GoalPlanningReview;
+  /** Per-plan ledger disposition for the review's goal-local plans (P-009). */
+  goalFeedback?: GoalPlanFeedbackResult[];
 }
 
 export type IdeatePassRecordResult = IdeatePassRecordSuccess | {
@@ -79,11 +82,18 @@ export type IdeatePassRecordResult = IdeatePassRecordSuccess | {
 export interface IdeatePassRecordDeps {
   recordTick: (input: RecordScoutTickInput) => Promise<void>;
   readGoalReviewContext: (workspaceId: string, ownerId: string) => Promise<GoalPlanningReviewContext | null>;
+  /** P-009: feed a recorded review's goal-local plans into the routed-idea ledger. */
+  recordGoalFeedback?: (input: {
+    workspaceId: string;
+    ownerId: string;
+    review: GoalPlanningReview;
+  }) => Promise<GoalPlanFeedbackResult[]>;
 }
 
 const defaultDeps: IdeatePassRecordDeps = {
   recordTick: recordScoutTick,
   readGoalReviewContext: readGoalPlanningReviewContext,
+  recordGoalFeedback: async (input) => (await import('../../scout/goal-feedback')).recordGoalReviewFeedback(input),
 };
 
 /**
@@ -134,6 +144,15 @@ export async function runIdeatePassRecord(
     detail: { owner: identity.ownerId, ...(notes ? { notes } : {}), ...(goalReview ? { goalReview } : {}) },
   });
 
+  // Best-effort AFTER the review is durable: ledger feedback is derived metadata,
+  // and a failure here must not un-record the review the caller just made.
+  let goalFeedback: GoalPlanFeedbackResult[] | undefined;
+  if (goalReview && workspaceId && goalReview.planRefs.length > 0 && deps.recordGoalFeedback) {
+    goalFeedback = await deps
+      .recordGoalFeedback({ workspaceId, ownerId: identity.ownerId, review: goalReview })
+      .catch(() => undefined);
+  }
+
   return {
     ok: true,
     origin: 'su-ideate',
@@ -144,6 +163,7 @@ export async function runIdeatePassRecord(
     owner: identity.ownerId,
     installSlug,
     ...(goalReview ? { goalReview } : {}),
+    ...(goalFeedback ? { goalFeedback } : {}),
   };
 }
 

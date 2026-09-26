@@ -217,6 +217,44 @@ describe('goal-local planning review', () => {
   });
 });
 
+describe('goal review → routed-idea ledger feedback (P-009)', () => {
+  const feedback = [{ planRef: 'plan:papercusp/existing-plan', action: 'existing-attribution' as const, ideaId: 'scout-1', origin: 'scout' }];
+
+  it('feeds the recorded review, with server-derived scope, into the ledger and echoes the disposition', async () => {
+    const recordGoalFeedback = vi.fn(async () => feedback);
+    const { deps, recordTick } = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), recordGoalFeedback });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(recordTick).toHaveBeenCalledTimes(1);
+    expect(recordGoalFeedback).toHaveBeenCalledTimes(1);
+    expect(recordGoalFeedback).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      ownerId: 'su-caller',
+      review: expect.objectContaining({ goalId: 'goal-1', planRefs: goalReview.planRefs, portfolioFingerprint: 'server-measured-portfolio' }),
+    });
+    expect(vi.mocked(recordTick).mock.invocationCallOrder[0]).toBeLessThan(recordGoalFeedback.mock.invocationCallOrder[0]!);
+    expect(out).toMatchObject({ ok: true, goalFeedback: feedback });
+  });
+
+  it('keeps the review recorded when ledger feedback fails, and skips feedback without plan refs or a review', async () => {
+    const failing = vi.fn(async () => { throw new Error('ledger down'); });
+    const { deps, recordTick } = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), recordGoalFeedback: failing });
+    const out = await runIdeatePassRecord({ ideasFiled: 0, goalReview }, { harnessSlug: 'papercusp' }, deps);
+    expect(recordTick).toHaveBeenCalledTimes(1);
+    expect(out.ok).toBe(true);
+    expect(out).not.toHaveProperty('goalFeedback');
+
+    const unused = vi.fn(async () => feedback);
+    const noRefs = makeDeps({ readGoalReviewContext: vi.fn(async () => reviewContext), recordGoalFeedback: unused });
+    await runIdeatePassRecord(
+      { ideasFiled: 0, goalReview: { ...goalReview, disposition: 'no-eligible-work', planRefs: [] } },
+      { harnessSlug: 'papercusp' },
+      noRefs.deps,
+    );
+    await runIdeatePassRecord({ ideasFiled: 1 }, { harnessSlug: 'papercusp' }, noRefs.deps);
+    expect(unused).not.toHaveBeenCalled();
+  });
+});
+
 describe('toToolResult', () => {
   it('wraps an ok result with no isError flag', () => {
     const env = toToolResult({

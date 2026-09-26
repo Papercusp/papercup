@@ -749,12 +749,28 @@ export default defineTool({
       `);
     }
 
+    // A goal-local plan also gets its origin row in Blender's routed-idea ledger
+    // (goal-brief-to-claimed-plan-work P-009), so its outcome feeds back like a
+    // Blender-origin plan's. recordGoalLocalPlanOrigin re-reads the stamped goal_id
+    // and writes nothing when another row already owns the plan's attribution.
     void stampPlanGoalProvenance({
       workspaceId: result.scope.workspaceId,
       harnessSlug: result.scope.harnessSlug,
       planSlug: value.slug,
       ownerId: creatorOwnerId,
-    });
+    })
+      .then(async (goalId) => {
+        if (!goalId || !creatorOwnerId) return;
+        const { recordGoalLocalPlanOrigin } = await import('../../scout/goal-feedback');
+        await recordGoalLocalPlanOrigin({
+          workspaceId: result.scope.workspaceId,
+          harnessSlug: result.scope.harnessSlug,
+          planSlug: value.slug,
+          goalId,
+          ownerId: creatorOwnerId,
+        });
+      })
+      .catch(() => {});
 
     return {
       content: [
