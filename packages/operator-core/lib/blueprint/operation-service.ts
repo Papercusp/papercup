@@ -5,7 +5,10 @@ import type { TransactionSql } from 'postgres';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import { operationFromSpecification } from '@papercusp/orchestrator/blueprint';
+import {
+  operationFromSpecification, pinnedOperationRubricPackage,
+  type CompiledAgentSpecification,
+} from '@papercusp/orchestrator/blueprint';
 import { normalizeModelId } from '@papercusp/model-pricing';
 import { readAcceptedBlueprintDirectWorkItem, type AcceptedOperationPin } from './operation-admission';
 import { readActiveOperationModelPolicy, type ActiveOperationAttestationContext } from './operation-worker-binding';
@@ -20,6 +23,7 @@ import {
   acceptBlueprintPlanRun,
 } from './operation-admission';
 import { readBlueprintHashFromPg, readBlueprintSpecificationSnapshot } from './project-to-pg';
+import { seedContentHash, type RubricSeedSource } from '../cupboard/rubric-store';
 
 const OperationHandleSchema = z.object({
   workspaceId: z.string().min(1),
@@ -519,11 +523,15 @@ export function recordDirectOperationModelAttestation(
 }
 
 async function declaredOperation(sql: Sql, handle: BlueprintOperationHandle) {
+  return (await declaredOperationWithSpecification(sql, handle)).operation;
+}
+
+async function declaredOperationWithSpecification(sql: Sql, handle: BlueprintOperationHandle) {
   const specification = await readBlueprintSpecificationSnapshot(
     sql, handle.workspaceId, handle.harnessSlug, handle.specificationRevision,
   );
   if (!specification) throw new Error('blueprint operation specification snapshot is missing');
-  return operationFromSpecification(specification, handle.operationId).operation;
+  return { operation: operationFromSpecification(specification, handle.operationId).operation, specification };
 }
 
 async function notifyControl(key: string, eventId: string, payload: unknown): Promise<boolean> {
@@ -692,7 +700,8 @@ export function resumeBlueprintOperation(
 export type BlueprintOperationResult =
   | { state: 'pending'; status: BlueprintOperationStatus }
   | { state: 'failed' | 'cancelled' | 'dropped' | 'unavailable'; status: BlueprintOperationStatus; reason: string }
-  | { state: 'ready'; status: BlueprintOperationStatus; output: unknown; evidenceRef: string };
+  | { state: 'ready'; status: BlueprintOperationStatus; output: unknown; evidenceRef: string;
+      acceptanceEvidenceRef?: string };
 
 /** A launch selector or a requested model cannot prove what served a turn.
  * Claude transcripts carry provider message ids. Codex turn_context carries
@@ -862,6 +871,97 @@ async function verifyDirectOperationModel(
   return null;
 }
 
+/** A scorecard grades this immutable result identity, not a mutable work item.
+ * The attempt stamp changes on reopen or re-claim, so an old grade cannot close
+ * a new attempt even when it emits byte-identical output. */
+export function blueprintOperationAcceptanceSubjectRef(input: {
+  targetRef: string; attemptRef: string; operationId: string;
+  specificationRevision: string; output: unknown;
+}): string {
+  return `blueprint-result:${createHash('sha256').update(canonicalJson(input)).digest('hex')}`;
+}
+
+type OperationAcceptanceVerdict =
+  | { ok: true; evidenceRef: string | null }
+  | { ok: false; reason: string };
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : null;
+}
+
+/** Reuse the scorecard ledger and the rubric's pinned package value. A current
+ * rubric lookup could silently change the accepted task's grading bar. */
+async function readOperationAcceptanceEvidence(
+  sql: Sql, workspaceId: string, operation: Parameters<typeof pinnedOperationRubricPackage>[0],
+  specification: CompiledAgentSpecification, subjectRef: string,
+  evidenceRef?: string,
+): Promise<OperationAcceptanceVerdict> {
+  const pinned = pinnedOperationRubricPackage(operation, specification.inputs);
+  if (!pinned) return { ok: true, evidenceRef: null };
+  const value = objectValue(pinned.value);
+  const criteria = value?.criteria;
+  if (!value || typeof value.characteristic !== 'string' ||
+      !Array.isArray(value.ratingScale) || !value.ratingScale.length ||
+      value.ratingScale.some((rating) => typeof rating !== 'string') ||
+      !Array.isArray(criteria) || !criteria.length ||
+      criteria.some((entry) => !objectValue(entry) ||
+        typeof objectValue(entry)?.key !== 'string' || !String(objectValue(entry)?.key).trim())) {
+    return { ok: false, reason: 'retained acceptance rubric has no valid criteria' };
+  }
+  if (new Set((criteria as Record<string, unknown>[]).map((entry) => String(entry.key))).size !== criteria.length) {
+    return { ok: false, reason: 'retained acceptance rubric repeats a criterion key' };
+  }
+  const expectedHash = seedContentHash(value as RubricSeedSource);
+  const rows = await sql<Array<{ issue_id: string; observation: unknown }>>`
+    SELECT card.issue_id, card.payload->'observation' AS observation
+      FROM harness_shared.engineer_issues AS card
+     WHERE card.workspace_id = ${workspaceId}
+       AND card.payload->'observation'->>'rubricRef' = ${pinned.ref}
+       AND card.payload->'observation'->'subject'->>'ref' = ${subjectRef}
+       AND ${evidenceRef ? sql`card.issue_id = ${evidenceRef}` : sql`TRUE`}
+       AND NOT EXISTS (
+         SELECT 1 FROM harness_shared.engineer_issues AS correction
+          WHERE correction.workspace_id = ${workspaceId}
+            AND correction.payload->'observation'->>'supersedes' = card.issue_id
+       )
+     ORDER BY card.created_at DESC, card.issue_id DESC
+     LIMIT 1
+  `;
+  const card = rows[0];
+  if (!card) return { ok: false, reason: `no current scorecard for pinned rubric ${pinned.ref} and result ${subjectRef}` };
+  const observation = objectValue(card.observation);
+  const ratings = objectValue(observation?.ratings);
+  if (!observation || observation.criteriaHash !== expectedHash ||
+      !Number.isSafeInteger(observation.rubricRevision) || Number(observation.rubricRevision) < 1 ||
+      typeof observation.evidenceFingerprint !== 'string' || !observation.evidenceFingerprint ||
+      observation.retracted || observation.provisional || !ratings) {
+    return { ok: false, reason: `scorecard ${card.issue_id} is stale, provisional, retracted or incomplete` };
+  }
+  const expectedKeys = new Set((criteria as Record<string, unknown>[]).map((entry) => String(entry.key)));
+  if (Object.keys(ratings).length !== expectedKeys.size ||
+      Object.keys(ratings).some((key) => !expectedKeys.has(key))) {
+    return { ok: false, reason: `scorecard ${card.issue_id} does not grade every pinned criterion exactly once` };
+  }
+  for (const criterion of criteria as Record<string, unknown>[]) {
+    const rating = objectValue(ratings[String(criterion.key)]);
+    const allowed = Array.isArray(criterion.passRatings) && criterion.passRatings.length
+      ? criterion.passRatings : ['pass', 'healthy', 'exemplary'];
+    if (!rating || typeof rating.rating !== 'string' ||
+        !allowed.some((value) => typeof value === 'string' && value.toLowerCase() === String(rating.rating).toLowerCase()) ||
+        typeof rating.evidence !== 'string' || !rating.evidence.trim()) {
+      return { ok: false, reason: `scorecard ${card.issue_id} does not pass pinned criterion ${String(criterion.key)}` };
+    }
+  }
+  const audit = objectValue(observation.gradingAudit);
+  if (audit?.state === 'failed') return { ok: false, reason: `scorecard ${card.issue_id} failed its grading audit` };
+  const rollup = objectValue(observation.rollup);
+  if (rollup && ['fail', 'severe', 'partial'].includes(String(rollup.verdict))) {
+    return { ok: false, reason: `scorecard ${card.issue_id} has a non-passing rollup` };
+  }
+  return { ok: true, evidenceRef: card.issue_id };
+}
+
 /** Prepare the result before a successful terminal state write. The state
  * writer merges this receipt with completion evidence in the same transaction;
  * a missing or incompatible actual model cannot become a successful close. */
@@ -870,9 +970,10 @@ export async function prepareDirectOperationCompletion(
   workspaceId: string,
   item: WorkItem,
   outputPayload: unknown,
-): Promise<{ operationId: string; specificationRevision: string; output: unknown; evidenceRef: string }> {
+): Promise<{ operationId: string; specificationRevision: string; output: unknown; evidenceRef: string;
+  acceptanceEvidenceRef?: string; acceptanceSubjectRef?: string; acceptanceAttemptStamp?: string }> {
   if (!item.harness) throw new Error('blueprint operation completion requires a harness');
-  const { pin, operation } = await readAcceptedBlueprintDirectWorkItem(sql, workspaceId, item);
+  const { pin, operation, specification } = await readAcceptedBlueprintDirectWorkItem(sql, workspaceId, item);
   if (pin.harnessSlug !== item.harness) throw new Error('blueprint operation completion harness differs from its pin');
   if (outputPayload === undefined) throw new Error('blueprint operation completion requires outputPayload');
   const output = exactJsonValue(outputPayload, 'output');
@@ -884,17 +985,34 @@ export async function prepareDirectOperationCompletion(
     );
     if (modelFailure) throw new Error(`blueprint operation model attestation failed: ${modelFailure}`);
   }
+  const acceptanceSubjectRef = operation.acceptance.rubric
+    ? blueprintOperationAcceptanceSubjectRef({
+      targetRef: item.id, attemptRef: item.updatedAt, operationId: pin.operationId,
+      specificationRevision: pin.specificationRevision, output,
+    }) : null;
+  const acceptance = acceptanceSubjectRef
+    ? await readOperationAcceptanceEvidence(sql, workspaceId, operation, specification, acceptanceSubjectRef)
+    : { ok: true as const, evidenceRef: null };
+  if (!acceptance.ok) {
+    throw new Error(`blueprint operation acceptance failed: ${acceptance.reason}; ` +
+      `grade the final output with scorecards:emit subject.ref '${acceptanceSubjectRef}'`);
+  }
   return {
     operationId: pin.operationId,
     specificationRevision: pin.specificationRevision,
     output,
     evidenceRef: `work-item:completion:${item.id}`,
+    ...(acceptance.evidenceRef ? {
+      acceptanceEvidenceRef: acceptance.evidenceRef,
+      acceptanceSubjectRef: acceptanceSubjectRef!,
+      acceptanceAttemptStamp: item.updatedAt,
+    } : {}),
   };
 }
 
 interface ValidatedCanonicalOperation {
   status: BlueprintOperationStatus;
-  result?: { output: unknown; evidenceRef: string };
+  result?: { output: unknown; evidenceRef: string; acceptanceEvidenceRef?: string };
   invalidReason?: string;
 }
 
@@ -904,7 +1022,12 @@ async function readValidatedCanonicalOperation(
   sql: Sql, handle: BlueprintOperationHandle, callerId: string,
 ): Promise<ValidatedCanonicalOperation> {
   const { status, items, run } = await readCanonicalOperation(sql, handle, callerId);
-  if (status.phase !== 'terminal' || status.outcome !== 'succeeded') return { status };
+  if (status.phase !== 'terminal' || status.outcome !== 'succeeded') {
+    const failedProgram = status.outcome === 'failed' && handle.target.kind === 'work-item' &&
+      items[0]?.terminalOwner === BLUEPRINT_PROGRAM_COMPLETION_OWNER;
+    return { status, ...(failedProgram && items[0]?.terminalCompletionEvidence?.summary
+      ? { invalidReason: items[0].terminalCompletionEvidence.summary } : {}) };
+  }
   const invalid = (reason: string): ValidatedCanonicalOperation => ({
     status: { ...status, outcome: 'unverified' }, invalidReason: reason,
   });
@@ -912,7 +1035,7 @@ async function readValidatedCanonicalOperation(
       items[0]?.completionAuthority !== 'committed' && items[0]?.completionAuthority !== 'validated') {
     return invalid('canonical completion has no validated authority for its operation output');
   }
-  const operation = await declaredOperation(sql, handle);
+  const { operation, specification } = await declaredOperationWithSpecification(sql, handle);
   if (operation.policy.model) {
     const pin = handle.target.kind === 'work-item' && items[0]?.payload &&
       typeof items[0].payload === 'object' && !Array.isArray(items[0].payload)
@@ -945,7 +1068,37 @@ async function readValidatedCanonicalOperation(
   }
   const validation = checkAgainstJsonSchema(operation.acceptance.resultSchema, output);
   if (!validation.ok) return invalid(`canonical target output is invalid: ${validation.errors.join('; ')}`);
-  return { status, result: { output, evidenceRef } };
+  let acceptanceEvidenceRef: string | undefined;
+  if (operation.acceptance.rubric) {
+    let subjectRef: string;
+    let namedEvidence: string | undefined;
+    if (handle.target.kind === 'work-item') {
+      if (typeof result.acceptanceSubjectRef !== 'string' ||
+          typeof result.acceptanceAttemptStamp !== 'string' ||
+          typeof result.acceptanceEvidenceRef !== 'string') {
+        return invalid('canonical completion has no pinned acceptance scorecard receipt');
+      }
+      subjectRef = blueprintOperationAcceptanceSubjectRef({
+        targetRef: handle.target.id, attemptRef: result.acceptanceAttemptStamp,
+        operationId: handle.operationId, specificationRevision: handle.specificationRevision, output,
+      });
+      if (subjectRef !== result.acceptanceSubjectRef) return invalid('acceptance scorecard subject differs from canonical output');
+      namedEvidence = result.acceptanceEvidenceRef;
+    } else {
+      subjectRef = blueprintOperationAcceptanceSubjectRef({
+        targetRef: `plan-run:${handle.target.runId}`, attemptRef: `plan-run:${handle.target.runId}`,
+        operationId: handle.operationId, specificationRevision: handle.specificationRevision, output,
+      });
+    }
+    const acceptance = await readOperationAcceptanceEvidence(
+      sql, handle.workspaceId, operation, specification, subjectRef, namedEvidence,
+    );
+    if (!acceptance.ok || !acceptance.evidenceRef) return invalid(
+      acceptance.ok ? 'canonical result has no acceptance scorecard' : acceptance.reason);
+    acceptanceEvidenceRef = acceptance.evidenceRef;
+  }
+  return { status, result: { output, evidenceRef,
+    ...(acceptanceEvidenceRef ? { acceptanceEvidenceRef } : {}) } };
 }
 
 /** Read a typed output from the canonical target only. */
