@@ -200,6 +200,56 @@ describe('consultExpiryDispatch', () => {
 });
 
 describe('consultExpiryFindSilentResponders', () => {
+  it('uses an empty thread and pickup grace for an unstamped dispatch without reading source liveness', async () => {
+    const now = new Date('2026-08-27T06:00:00.000Z');
+    const staleRoute = new Date(now.getTime() - 30 * 60_000).toISOString();
+    const freshRoute = new Date(now.getTime() - 30 * 60_000 + 1).toISOString();
+    const rows = [
+      { workspaceId: ROW_WS, conversationId: 'conv-unstamped', answeringOwnerId: null, routedAt: staleRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-recent', answeringOwnerId: null, routedAt: freshRoute },
+      { workspaceId: ROW_WS, conversationId: 'conv-posted', answeringOwnerId: null, routedAt: staleRoute },
+    ];
+    const threadReads: string[] = [];
+    const found = await consultExpiryFindSilentResponders({
+      getPresence: async () => { throw new Error('source presence must not be read'); },
+      resolveSessionStates: async () => { throw new Error('source liveness must not be read'); },
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
+        listRecentPosts: async (threadId) => {
+          threadReads.push(threadId);
+          return { total: threadId === 'thread-conv-posted' ? 1 : 0 };
+        },
+      }),
+      now: () => now,
+    })(rows);
+
+    expect(found).toEqual(new Set(['conv-unstamped']));
+    expect(threadReads).toEqual(['thread-conv-unstamped', 'thread-conv-posted']);
+  });
+
+  it('ignores a prior reviewer decline but fails closed on a current or unknown post', async () => {
+    const now = new Date('2026-08-27T06:00:00.000Z');
+    const routedAt = new Date(now.getTime() - 31 * 60_000).toISOString();
+    const rows = [
+      { workspaceId: ROW_WS, conversationId: 'conv-prior', answeringOwnerId: null, routedAt, priorResponderIds: ['su-prior'] },
+      { workspaceId: ROW_WS, conversationId: 'conv-current', answeringOwnerId: null, routedAt, priorResponderIds: ['su-prior'] },
+      { workspaceId: ROW_WS, conversationId: 'conv-unbounded', answeringOwnerId: null, routedAt, priorResponderIds: ['su-prior'] },
+    ];
+    const found = await consultExpiryFindSilentResponders({
+      getPresence: async () => { throw new Error('unstamped branch must not read presence'); },
+      resolveSessionStates: async () => { throw new Error('unstamped branch must not read liveness'); },
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
+        listRecentPosts: async (threadId) => threadId === 'thread-conv-unbounded'
+          ? { total: 21, posts: [{ author_id: 'su-prior' }] }
+          : { total: 1, posts: [{ author_id: threadId === 'thread-conv-prior' ? 'su-prior' : 'su-current' }] },
+      }),
+      now: () => now,
+    })(rows);
+
+    expect(found).toEqual(new Set(['conv-prior']));
+  });
+
   it('requires active-after-route + parked + zero posts, and reads each thread in its row workspace', async () => {
     const routedAt = '2026-08-27T05:00:00.000Z';
     const rows = [

@@ -520,7 +520,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
       routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork', 'resp-2-fork']),
     });
     const { deps, reachCalls } = makeDeps({ withReach: true });
-    const detectorCalls: Array<ReadonlyArray<{ conversationId: string; answeringOwnerId: string; routedAt: string }>> = [];
+    const detectorCalls: Array<ReadonlyArray<{ conversationId: string; answeringOwnerId: string | null; routedAt: string }>> = [];
     deps.findSilentResponders = async (rows) => {
       detectorCalls.push(rows);
       return new Set([id]);
@@ -642,29 +642,60 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     });
   });
 
-  it('does not infer a fork failure from the source when the answerer identity is unstamped', async () => {
+  it('does not infer an unstamped fork failure inside the pickup window', async () => {
     const id = await seedConsult({
       latency: 'hard-blocked',
       expiresAt: FUTURE,
-      updatedAt: PAST,
+      updatedAt: NOW.toISOString(),
       routing: menuSnapshot(['resp-1']),
     });
     const { deps } = makeDeps({ withReach: true });
     const detectorRows: string[] = [];
     deps.findSilentResponders = async (rows) => {
       detectorRows.push(...rows.map((row) => row.conversationId));
-      return new Set([id]);
+      return new Set();
     };
 
     await sweepExpiredConsults(deps);
 
-    expect(detectorRows).not.toContain(id);
+    expect(detectorRows).toContain(id);
     expect(await cascadeRow(id)).toMatchObject({
       state: 'awaiting_responder',
       closed_at: null,
       responder_id: 'resp-1',
       cascade_cursor: 0,
     });
+  });
+
+  it('advances an unstamped dispatch after the pickup window, without consulting source liveness', async () => {
+    const staleRoute = new Date(NOW.getTime() - 30 * 60_000).toISOString();
+    const freshRoute = new Date(NOW.getTime() - 30 * 60_000 + 1).toISOString();
+    const stale = await seedConsult({
+      expiresAt: FUTURE, updatedAt: staleRoute, routing: menuSnapshot(['resp-1', 'resp-2']),
+    });
+    const fresh = await seedConsult({
+      expiresAt: FUTURE, updatedAt: freshRoute, routing: menuSnapshot(['resp-1', 'resp-2']),
+    });
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    const detector = consultExpiryFindSilentResponders({
+      getPresence: async () => { throw new Error('no answering owner exists'); },
+      resolveSessionStates: async () => { throw new Error('source liveness is not dispatch proof'); },
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
+        listRecentPosts: async () => ({ total: 0 }),
+      }),
+      now: () => NOW,
+    });
+    deps.findSilentResponders = (rows) => detector(rows.filter((row) => row.conversationId === stale || row.conversationId === fresh));
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(result).toMatchObject({ advanced: 1, expired: 0 });
+    expect(await cascadeRow(stale)).toMatchObject({ responder_id: 'resp-2', cascade_cursor: 1 });
+    expect((await cascadeRow(stale)).cascade_digest).toMatchObject([{ kind: 'dispatch_failed' }]);
+    expect(await cascadeRow(fresh)).toMatchObject({ responder_id: 'resp-1', cascade_cursor: 0 });
+    expect(reachCalls.filter((call) => call.conversationId === stale)).toHaveLength(1);
+    expect(reachCalls.filter((call) => call.conversationId === fresh)).toHaveLength(0);
   });
 
   it('a due row with menu remaining ADVANCES instead of expiring: cursor+responder move under a fresh window, digest records the expiry, next selectee woken — NO park emit', async () => {
@@ -1092,6 +1123,33 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     expect(req.kind).toBe('acceptance-grading');
     expect(req.routing).toMatchObject({ cascade: { flavor: 'acceptance-grading', planSlug: 'plan-x' } });
     expect(result.converted).toContainEqual(expect.objectContaining({ conversationId: id, kind: 'acceptance-grading' }));
+  });
+
+  it('converts an unstamped acceptance dispatch after pickup grace before half TTL', async () => {
+    const id = await seedReview({ routing: GRADING, createdMin: -40, expiresMin: 200 });
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET cascade_cursor = 1, responder_id = 'resp-2'
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+    const { deps, filed, reachCalls } = withFiler();
+    const detector = consultExpiryFindSilentResponders({
+      getPresence: async () => { throw new Error('no answering owner exists'); },
+      resolveSessionStates: async () => { throw new Error('source liveness is not dispatch proof'); },
+      getThreadStore: () => ({
+        getThreadByParent: async (parent) => ({ thread_id: `thread-${parent.ref}` }) as never,
+        // The first grader's decline is a real post but not pickup by resp-2.
+        listRecentPosts: async () => ({ total: 1, posts: [{ author_id: 'resp-1' }] }),
+      }),
+      now: () => NOW,
+    });
+    deps.findSilentResponders = (rows) => detector(rows.filter((row) => row.conversationId === id));
+
+    const result = await sweepExpiredConsults(deps);
+
+    expect(result.converted).toContainEqual({ conversationId: id, workItemId: `WI-review-${id}`, kind: 'acceptance-grading' });
+    expect(filed.filter((request) => request.conversationId === id)).toHaveLength(1);
+    expect(await rowOf(id)).toMatchObject({ state: 'expired', closed_at: expect.anything() });
+    expect(reachCalls.filter((call) => call.conversationId === id)).toEqual([]);
   });
 
   it('leaves a review consult alone before half its TTL, once someone has engaged, or when it is not a review', async () => {

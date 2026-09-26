@@ -36,7 +36,7 @@
  * or mid-chain advances silently stop waking anyone.
  */
 import type { Sql } from 'postgres';
-import { consultParkKey } from './get-feedback-core';
+import { consultParkKey, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
 import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting } from './cascade-core';
 import { GRADING_CASCADE_FLAVOR } from './grading-cascade';
 import { RUBRIC_VETTING_POLICY } from './selection-policies';
@@ -122,16 +122,31 @@ export interface ReviewWorkItemRequest {
 export interface SilentResponderCandidate {
   workspaceId: string;
   conversationId: string;
-  answeringOwnerId: string;
+  /** Null means dispatch never stamped an answering session. After the pickup
+   * window, an empty thread is evidence of failed dispatch, not source silence. */
+  answeringOwnerId: string | null;
   routedAt: string;
+  /** Earlier cascade participants may have posted a decline to advance here.
+   * Their posts cannot establish pickup by this selection. */
+  priorResponderIds?: string[];
 }
 
-/** Missing or malformed cursor identity is not evidence that the source
- * responder is silent. Fail closed and let the configured expiry window run. */
-function currentAnsweringOwnerId(routing: unknown, cursor: number): string | null {
+/** A missing answerer on a VALID current selection is a possible dispatch
+ * failure. Malformed routing or a mismatched source is not: fail closed. */
+function currentSelectionAnswerer(
+  routing: unknown,
+  cursor: number,
+  responderId: string,
+): { answeringOwnerId: string | null; priorResponderIds: string[] } | null {
   try {
-    const ownerId = selectionFromRouting(routing)[cursor]?.answeringOwnerId;
-    return typeof ownerId === 'string' && ownerId.trim() ? ownerId.trim() : null;
+    const selections = selectionFromRouting(routing);
+    const selected = selections[cursor];
+    if (!selected || selected.ownerId !== responderId) return null;
+    const ownerId = selected.answeringOwnerId;
+    return {
+      answeringOwnerId: typeof ownerId === 'string' && ownerId.trim() ? ownerId.trim() : null,
+      priorResponderIds: selections.slice(0, cursor).map((entry) => entry.ownerId),
+    };
   } catch {
     return null;
   }
@@ -250,15 +265,19 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   const earlyCandidates = due
     .flatMap((row) => {
       if (row.is_due === true || row.state !== 'awaiting_responder' || row.responder_id == null) return [];
-      const answeringOwnerId = currentAnsweringOwnerId(row.routing, row.cascade_cursor);
-      if (!answeringOwnerId) return [];
+      const selection = currentSelectionAnswerer(row.routing, row.cascade_cursor, row.responder_id);
+      if (!selection) return [];
       return [{
         workspaceId: row.workspace_id,
         conversationId: row.conversation_id,
-        answeringOwnerId,
+        answeringOwnerId: selection.answeringOwnerId,
         routedAt: timestampToIso(row.updated_at),
+        ...(selection.priorResponderIds.length > 0 ? { priorResponderIds: selection.priorResponderIds } : {}),
       }];
     });
+  const unstampedCandidateIds = new Set(
+    earlyCandidates.filter((candidate) => candidate.answeringOwnerId === null).map((candidate) => candidate.conversationId),
+  );
   if (deps.findSilentResponders && earlyCandidates.length > 0) {
     try {
       silentResponderIds = new Set(await deps.findSilentResponders(earlyCandidates));
@@ -278,16 +297,19 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     const isDue = row.is_due === true;
 
     // P-014 / RSR-P-014-A: a silent REVIEW consult at half its TTL is converted to
-    // a pullable work item INSTEAD of cascading to the next (likely equally silent)
-    // responder. Runs before the cascade branch so a converted row never advances.
+    // pullable work. An unstamped dispatch with no thread after the bounded
+    // pickup window is already known to have produced no reviewer, so convert
+    // it at that point too. Runs before the cascade branch in both cases.
     const reviewKind = deps.fileReviewWorkItem ? reviewConsultKind(row.routing) : null;
+    const unstampedDispatchFailed =
+      unstampedCandidateIds.has(row.conversation_id) && silentResponderIds.has(row.conversation_id);
     if (
       reviewKind &&
       row.state === 'awaiting_responder' &&
       Number(row.exchanges_used ?? 0) === 0 &&
-      row.is_half_silent === true
+      (row.is_half_silent === true || unstampedDispatchFailed)
     ) {
-      const outcome = await convertReviewConsult(deps, sql, row, reviewKind, nowIso);
+      const outcome = await convertReviewConsult(deps, sql, row, reviewKind, nowIso, unstampedDispatchFailed);
       if (outcome.status === 'converted') {
         converted.push({ conversationId: row.conversation_id, workItemId: outcome.workItemId, kind: reviewKind });
         requesterAlerts.push(row.conversation_id);
@@ -509,6 +531,7 @@ async function convertReviewConsult(
   row: DueConsultRow,
   kind: ReviewConsultKind,
   nowIso: string,
+  unstampedDispatchFailed = false,
 ): Promise<ReviewConversionOutcome> {
   let workItemId: string;
   try {
@@ -554,7 +577,14 @@ async function convertReviewConsult(
            AND exchanges_used = 0
            AND cascade_cursor = ${row.cascade_cursor}
            AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
-           AND ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2
+           AND (
+             ${nowIso}::timestamptz >= created_at + (expires_at - created_at) / 2
+             OR (
+               ${unstampedDispatchFailed}::boolean
+               AND updated_at IS NOT DISTINCT FROM ${timestampToIso(row.updated_at)}::timestamptz
+               AND ${nowIso}::timestamptz >= updated_at + (${HARD_BLOCKED_EXPIRY_MS}::bigint * interval '1 millisecond')
+             )
+           )
         RETURNING conversation_id
       `) as unknown as Array<{ conversation_id: string }>;
       if (terminal.length === 0) return terminal;

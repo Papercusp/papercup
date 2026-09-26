@@ -20,8 +20,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-vi.setConfig({ testTimeout: 15_000 });
-
 const readLaunchSpecMock = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
 const requestSessionIdentityActivationMock = vi.hoisted(() =>
   vi.fn(async (_input: unknown) => ({ generation: 1 })),
