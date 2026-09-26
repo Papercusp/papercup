@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -58,6 +58,11 @@ beforeAll(async () => {
     'utf8',
   );
   await sql.unsafe(migration);
+  const operationMigration = path.join(
+    REPO,
+    'libs/papercusp/libs/db/sql/1228-blueprint-operation-automation-bindings.sql',
+  );
+  await sql.unsafe(readFileSync(existsSync(operationMigration) ? operationMigration : `${operationMigration}.DRAFT`, 'utf8'));
 });
 
 afterAll(async () => {
@@ -160,6 +165,74 @@ function startedPlanRun(triggerRunId: string, runId: number): ScheduledPlanFireS
 }
 
 describe('external trigger durable dispatch', () => {
+  it('replays one blueprint operation from the trigger receipt and never forwards private payload', async () => {
+    const operationAction = {
+      type: 'blueprint-operation',
+      operationHarnessSlug: 'papercusp',
+      operationId: 'triage-message',
+      input: { priority: 'normal' },
+    };
+    const bindings = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, event_pattern, event_filter, action, armed, storm_policy)
+      VALUES (${WS}, ${sourceId}, 'ext:gmail:message.*', '{}'::jsonb,
+              ${JSON.stringify(operationAction)}::text::jsonb, TRUE, '{}'::jsonb)
+      RETURNING id`;
+    const operationBindingId = bindings[0]!.id;
+    const triggerRunId = await seedTriggerRun({ bindingId: operationBindingId });
+    const handle = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      receiptId: 41,
+      operationId: 'triage-message',
+      specificationRevision: 'a'.repeat(64),
+      target: { kind: 'work-item' as const, id: 'WI-operation-41' },
+    };
+    const submitOperation = vi.fn(async () => handle);
+
+    await expect(dispatchPendingTriggerRuns(sql, { submitOperation })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+    });
+    expect(submitOperation).toHaveBeenCalledWith(sql, {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      callerId: `trigger-binding:${operationBindingId}`,
+      operationId: 'triage-message',
+      requestKey: `trigger-run:${triggerRunId}`,
+      input: {
+        priority: 'normal',
+        trigger: expect.objectContaining({
+          key: 'ext:gmail:message.received',
+          dedupeKey: 'gmail:dispatch-1',
+        }),
+      },
+    });
+    expect(JSON.stringify(submitOperation.mock.calls[0]![1])).not.toContain('Triage this');
+    expect(JSON.stringify(submitOperation.mock.calls[0]![1])).not.toContain('"payload"');
+
+    const first = await sql<Array<{ outcome: Record<string, unknown>; plan_run_ref: string | null }>>`
+      SELECT outcome, plan_run_ref FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(first[0]).toMatchObject({ outcome: { blueprintOperation: handle }, plan_run_ref: null });
+
+    // Simulate a lost status response after canonical operation admission. The
+    // same persisted occurrence must submit the same caller/request pair.
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET status = 'failed', outcome = '{}'::jsonb, error = 'lost response',
+             next_attempt_at = now() - interval '1 second', completed_at = now()
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    await expect(dispatchPendingTriggerRuns(sql, { submitOperation })).resolves.toMatchObject({ succeeded: 1 });
+    expect(submitOperation).toHaveBeenCalledTimes(2);
+    expect(submitOperation.mock.calls[1]![1]).toEqual(submitOperation.mock.calls[0]![1]);
+    const replay = await sql<Array<{ outcome: Record<string, unknown>; attempts: number }>>`
+      SELECT outcome, attempts FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(replay[0]).toMatchObject({ outcome: { blueprintOperation: handle }, attempts: 2 });
+  });
+
   it('launches the canonical plan run with trigger inputs and announces its work', async () => {
     const audit = {
       runWithLastEvent: {
@@ -170,8 +243,9 @@ describe('external trigger durable dispatch', () => {
       },
     };
     const triggerRunId = await seedTriggerRun({ outcome: audit });
+    const runPlan = vi.fn(async (): Promise<ScheduledPlanFireStartedResult> => startedPlanRun(triggerRunId, 4241));
     const announceRunWork = vi.fn(async () => undefined);
-    const result = await dispatchPendingTriggerRuns(sql, { announceRunWork });
+    const result = await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork });
 
     expect(result).toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
     expect(result.triggerRunIds).toEqual([triggerRunId]);
@@ -193,19 +267,15 @@ describe('external trigger durable dispatch', () => {
     expect(triggerRuns[0].outcome.runWithLastEvent).toEqual(audit.runWithLastEvent);
     expect(triggerRuns[0].plan_run_ref).toBe(String(triggerRuns[0].outcome.planRunId));
 
-    const planRuns = await sql<Array<{ trigger: string; inputs: Record<string, unknown> }>>`
-      SELECT trigger, inputs FROM harness_shared.plan_runs
-       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
-    expect(planRuns).toHaveLength(1);
-    expect(planRuns[0].trigger).toBe('event');
     // WI-2143575: plan-run inputs FEDERATE, so they carry the routing envelope
     // only. The private payload stays in trigger_runs.args (owner-local) and the
     // agent pulls it back with `triggers:read-payload` by planRunId.
-    expect(planRuns[0].inputs).toMatchObject({
-      trigger: { key: 'ext:gmail:message.received' },
-    });
-    expect((planRuns[0].inputs as { trigger: Record<string, unknown> }).trigger).not.toHaveProperty('payload');
-    expect(JSON.stringify(planRuns[0].inputs)).not.toContain('dispatch-1');
+    expect(runPlan).toHaveBeenCalledWith(sql, expect.objectContaining({
+      trigger: 'event',
+      inputs: { trigger: expect.objectContaining({ key: 'ext:gmail:message.received' }) },
+    }));
+    const inputs = runPlan.mock.calls[0]![1].inputs as { trigger: Record<string, unknown> };
+    expect(inputs.trigger).not.toHaveProperty('payload');
     expect(announceRunWork).toHaveBeenCalledWith(sql, WS, triggerRuns[0].outcome.planRunId);
   });
 
@@ -754,8 +824,16 @@ describe('external trigger durable dispatch', () => {
       .resolves.toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
     expect(runPlan).toHaveBeenCalledWith(sql, expect.objectContaining({
       trigger: 'event',
-      inputs: args,
+      inputs: {
+        trigger: expect.objectContaining({
+          key: 'ext:gcal:event-upcoming',
+          source: 'gcal',
+          externalId: 'calendar-event-7',
+        }),
+      },
     }));
+    const forwarded = runPlan.mock.calls[0]![1].inputs as { trigger: Record<string, unknown> };
+    expect(forwarded.trigger).not.toHaveProperty('payload');
   });
 });
 
@@ -1247,9 +1325,10 @@ describe('social platform dispatch (P-028 simulated acceptance)', () => {
 
   it('carries a social inbound event through binding -> plan run -> delivery ledger', async () => {
     const { triggerRunId } = await seedSocialChain();
+    const runPlan = vi.fn(async (): Promise<ScheduledPlanFireStartedResult> => startedPlanRun(triggerRunId, 5252));
     const announceRunWork = vi.fn(async () => undefined);
 
-    const result = await dispatchPendingTriggerRuns(sql, { announceRunWork });
+    const result = await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork });
 
     // The gmail fixture from beforeEach has no pending run, so exactly the
     // social one is claimed — if dispatch ever special-cased a source kind,
@@ -1274,19 +1353,18 @@ describe('social platform dispatch (P-028 simulated acceptance)', () => {
     // the agent drafting a reply resolves it server-side from the owner-local
     // trigger run via `triggers:read-payload`. A lossy hand-off now surfaces as
     // a missing routing field here, and as a not-found from that reader.
-    const planRuns = await sql<Array<{ trigger: string; inputs: Record<string, unknown> }>>`
-      SELECT trigger, inputs FROM harness_shared.plan_runs
-       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
-    expect(planRuns).toHaveLength(1);
-    expect(planRuns[0].trigger).toBe('event');
-    expect(planRuns[0].inputs).toMatchObject({
-      trigger: {
-        key: 'ext:bluesky:reply.created',
-        source: 'bluesky',
+    expect(runPlan).toHaveBeenCalledWith(sql, expect.objectContaining({
+      trigger: 'event',
+      inputs: {
+        trigger: expect.objectContaining({
+          key: 'ext:bluesky:reply.created',
+          source: 'bluesky',
+        }),
       },
-    });
-    expect((planRuns[0].inputs as { trigger: Record<string, unknown> }).trigger).not.toHaveProperty('payload');
-    expect(JSON.stringify(planRuns[0].inputs)).not.toContain('anyone else seeing this?');
+    }));
+    const inputs = runPlan.mock.calls[0]![1].inputs as { trigger: Record<string, unknown> };
+    expect(inputs.trigger).not.toHaveProperty('payload');
+    expect(JSON.stringify(inputs)).not.toContain('anyone else seeing this?');
     expect(announceRunWork).toHaveBeenCalledWith(sql, WS, triggerRuns[0].outcome.planRunId);
 
     // The ledger end of the trace: the delivery that caused this run is still

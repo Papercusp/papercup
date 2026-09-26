@@ -79,6 +79,18 @@ describe('setPlanSchedule', () => {
     expect(r.schedule_active).toBe(false); // authored, not armed (D-010)
   });
 
+  it('round-trips the registered operation reference and literal input', async () => {
+    const operation = { harnessSlug: HARNESS, operationId: 'daily-triage', input: { queue: 'support' } };
+    expect(await setPlanSchedule({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      slug: SLUG,
+      schedule: { kind: 'cron', cron: '0 9 * * *', operation },
+      sql,
+    })).toBe(true);
+    expect((await row()).schedule).toMatchObject({ kind: 'cron', cron: '0 9 * * *', operation });
+  });
+
   it('clears the schedule when passed schedule: null (un-schedule)', async () => {
     await setPlanSchedule({ workspaceId: WS, harnessSlug: HARNESS, slug: SLUG, schedule: { kind: 'cron', cron: '0 9 * * *' }, sql });
     expect((await row()).schedule).not.toBeNull();

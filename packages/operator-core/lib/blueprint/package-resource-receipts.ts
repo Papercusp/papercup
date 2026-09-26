@@ -31,7 +31,8 @@ export interface PackageExternalResource {
 
 export interface PackageResourceDriver {
   /** Only rows with this exact persisted operation key; no semantic matching.
-   * Recover the ORIGINAL write fingerprint, not a fingerprint of a later user edit. */
+   * Recover the ORIGINAL write fingerprint, not a fingerprint of a later user edit;
+   * flag an edited row with disposition:'changed' so it can never be adopted/deleted. */
   recover(writeKey: string): Promise<PackageExternalResource[]>;
   /** Must stamp writeKey atomically with the external write, including on errors. */
   create(writeKey: string): Promise<PackageExternalResource[]>;
@@ -94,6 +95,13 @@ export async function preparePackageResource(
   await sql.begin(async (tx) => {
     await lock(tx, address.workspaceId, 'dependent:' + dependentId);
     await lock(tx, address.workspaceId, key);
+    const [conflictingPin] = await tx`SELECT 1 FROM harness_shared.blueprint_package_dependents d
+      JOIN harness_shared.blueprint_package_resources r USING (workspace_id, resource_key)
+      WHERE d.workspace_id = ${address.workspaceId} AND d.dependent_id = ${dependentId}
+        AND d.phase <> 'released' AND r.memory_scope = ${address.memoryScope}
+        AND r.package_kind = ${address.packageKind} AND r.package_ref = ${address.packageRef}
+        AND (r.package_hash <> ${address.packageHash} OR r.package_version <> ${address.packageVersion}) LIMIT 1`;
+    if (conflictingPin) throw new Error('package-pin-conflict: installation already pins another exact version');
     await tx`INSERT INTO harness_shared.blueprint_package_resources
       (workspace_id, resource_key, memory_scope, package_kind, package_ref, package_version,
        package_hash, resource_kind, item_key, installed_hash)
@@ -104,6 +112,7 @@ export async function preparePackageResource(
     const receipt = (await readPackageResourceReceipt(tx, address.workspaceId, key))!;
     if (receipt.installed_hash !== address.installedHash) throw new Error('package resource content changed under an exact pin');
     if (receipt.phase === 'detached') throw new Error('package resource was edited; explicit review is required');
+    if (receipt.phase === 'cleanup_failed') throw new Error('package resource needs cleanup recovery before installation');
     if (receipt.phase === 'deleted') {
       // A fresh install starts a new operation; deleted history cannot be replayed as ready.
       await tx`UPDATE harness_shared.blueprint_package_resources
@@ -120,21 +129,28 @@ export async function preparePackageResource(
 
   try {
     return await sql.begin(async (tx) => {
-    await lock(tx, address.workspaceId, key);
-    const [dependent] = await tx<{ phase: string }[]>`SELECT phase FROM harness_shared.blueprint_package_dependents
-      WHERE workspace_id = ${address.workspaceId} AND dependent_id = ${dependentId} AND resource_key = ${key}`;
-    if (dependent.phase === 'released') throw new Error('installation was released before preparation finished');
-    const receipt = (await readPackageResourceReceipt(tx, address.workspaceId, key))!;
-    if (receipt.phase === 'ready') return receipt;
-    if (receipt.phase !== 'intent') throw new Error('package resource needs cleanup recovery before installation');
-    // A failed/ambiguous external response can have committed rows. Recover them
-    // before calling create, including after a lost PG commit acknowledgement.
-    const recovered = await driver.recover(receipt.write_key);
-    const refs = validateRefs(recovered.length ? recovered : await driver.create(receipt.write_key));
-    await tx`UPDATE harness_shared.blueprint_package_resources
-      SET phase = 'ready', external_refs = ${tx.json(refs)}, error = NULL, updated_at = now()
-      WHERE workspace_id = ${address.workspaceId} AND resource_key = ${key}`;
-    return { ...receipt, phase: 'ready' as const, external_refs: refs, error: null };
+      await lock(tx, address.workspaceId, key);
+      const [dependent] = await tx<{ phase: string }[]>`SELECT phase FROM harness_shared.blueprint_package_dependents
+        WHERE workspace_id = ${address.workspaceId} AND dependent_id = ${dependentId} AND resource_key = ${key}`;
+      if (dependent.phase === 'released') throw new Error('installation was released before preparation finished');
+      const receipt = (await readPackageResourceReceipt(tx, address.workspaceId, key))!;
+      if (receipt.phase === 'ready') {
+        const current = await driver.recover(receipt.write_key);
+        if (current.length !== receipt.external_refs.length || current.some((ref) => ref.disposition || ref.error) ||
+            receipt.external_refs.some((ref) => !current.some((row) => row.id === ref.id && row.fingerprint === ref.fingerprint))) {
+          throw new Error('prepared package resource changed; explicit review is required');
+        }
+        return receipt;
+      }
+      if (receipt.phase !== 'intent') throw new Error('package resource needs cleanup recovery before installation');
+      // A failed/ambiguous external response can have committed rows. Recover them
+      // before calling create, including after a lost PG commit acknowledgement.
+      const recovered = await driver.recover(receipt.write_key);
+      const refs = validateRefs(recovered.length ? recovered : await driver.create(receipt.write_key));
+      await tx`UPDATE harness_shared.blueprint_package_resources
+        SET phase = 'ready', external_refs = ${tx.json(refs.map((ref) => ({ ...ref })))}, error = NULL, updated_at = now()
+        WHERE workspace_id = ${address.workspaceId} AND resource_key = ${key}`;
+      return { ...receipt, phase: 'ready' as const, external_refs: refs, error: null };
     });
   } catch (error) {
     // Preserve ambiguous-outcome diagnostics without overwriting a peer's later
@@ -205,7 +221,7 @@ export async function releasePackageResource(
     const phase = errors.length ? 'cleanup_failed' : settled.some((ref) => ref.disposition === 'changed') ? 'detached' : 'deleted';
     const error = errors.length ? errors.join('; ') : null;
     await tx`UPDATE harness_shared.blueprint_package_resources
-      SET phase = ${phase}, external_refs = ${tx.json(settled)}, error = ${error}, updated_at = now()
+      SET phase = ${phase}, external_refs = ${tx.json(settled.map((ref) => ({ ...ref })))}, error = ${error}, updated_at = now()
       WHERE workspace_id = ${address.workspaceId} AND resource_key = ${key}`;
     return { ...receipt, phase, external_refs: settled, error };
   });

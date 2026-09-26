@@ -35,6 +35,7 @@ import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agen
 import { hardText, LIMITS } from '../limits';
 import { readIdentity } from '../locks/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { getOwnerDirective } from '../../owner-directives';
 import { readDeployStatus, launchDetachedDeploy, integrationRoot, type DeployStatus } from '../../release-deploy-launch';
 import { currentDiagnosticVintage } from '../../diagnostic-vintage';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
@@ -184,6 +185,28 @@ async function deployGateOwnershipReceipt(callerOwnerId: string) {
         unknownReason: error instanceof Error ? error.message : String(error),
       },
     };
+  }
+}
+
+async function validateForceOwnerSignoff(ref: string, commit: string): Promise<
+  { ok: true; directiveId: number; sourceTurnRef: string | null } |
+  { ok: false; reason: string }
+> {
+  const match = /^owner-directive:([1-9]\d*)$/.exec(ref);
+  if (!match) return { ok: false, reason: 'owner_signoff_reference_unverifiable' };
+  try {
+    const directive = await getOwnerDirective(Number(match[1]));
+    if (!directive || directive.workspaceId !== activeWorkspaceId() || !directive.capturedByHook) {
+      return { ok: false, reason: 'owner_signoff_not_owner_captured' };
+    }
+    const words = directive.verbatimText.toLowerCase();
+    if (!/\bforce\b/.test(words) || !/\bdeploy\b/.test(words) ||
+        !words.includes(commit.slice(0, 12).toLowerCase())) {
+      return { ok: false, reason: 'owner_signoff_does_not_name_force_target' };
+    }
+    return { ok: true, directiveId: directive.id, sourceTurnRef: directive.sourceTurnRef };
+  } catch {
+    return { ok: false, reason: 'owner_signoff_read_unavailable' };
   }
 }
 
@@ -563,6 +586,7 @@ export default defineTool({
       const accepted = await executeWithGateActionReceipt({
         action: 'release:deploy', actor, ownerId: identity.ownerId,
         conditionKey: gateOwnership.receipt.conditionKey ?? '',
+        allowUnowned: true,
         target: { op: 'trigger', greenPinSha: status.deploy.greenPinSha },
         run: () => launchDetachedDeploy({}),
         summarize: (effect) => ({ status: effect.launched ? 'detached-launch-accepted' : 'not-launched',
@@ -579,8 +603,7 @@ export default defineTool({
       ctx.metadata?.({ gateActionReceipt: {
         schemaVersion: 2, action: 'deploy-trigger', callerOwnerId: identity.ownerId,
         receiptId: accepted.receiptId,
-        ownership: { ...gateOwnership.receipt, ...accepted.ownership,
-          certainty: 'claim-row-locked-through-effect' }, target: { greenPinSha: status.deploy.greenPinSha },
+        ownership: { ...gateOwnership.receipt, ...accepted.ownership }, target: { greenPinSha: status.deploy.greenPinSha },
         effect: { status: launch.launched ? 'detached-launch-accepted' : 'not-launched', unit: launch.unit ?? null,
           reason: launch.reason ?? null, deployedSha: 'unknown' },
       } });
@@ -650,6 +673,14 @@ export default defineTool({
       return json({ ok: false, op: 'force', refused: true, ...stamp,
         reason: 'owner_signoff_reference_required', commit });
     }
+    const ownerSignoff = await validateForceOwnerSignoff(args.ownerSignoffRef, commit);
+    if (!ownerSignoff.ok) {
+      ctx.metadata?.({ gateActionReceipt: { schemaVersion: 2, action: 'deploy-force',
+        callerOwnerId: identity.ownerId, target: { commit, ownerSignoffRef: args.ownerSignoffRef },
+        effect: { status: 'refused-owner-signoff', reason: ownerSignoff.reason } } });
+      return json({ ok: false, op: 'force', refused: true, ...stamp,
+        reason: ownerSignoff.reason, commit });
+    }
     const gateOwnership = await deployGateOwnershipReceipt(identity.ownerId);
     if (gateOwnership.standDown) {
       ctx.metadata?.({ gateActionReceipt: {
@@ -664,7 +695,10 @@ export default defineTool({
     const accepted = await executeWithGateActionReceipt({
       action: 'release:deploy', actor, ownerId: identity.ownerId,
       conditionKey: gateOwnership.receipt.conditionKey ?? '',
-      target: { op: 'force', commit, ownerSignoffRef: args.ownerSignoffRef },
+      allowUnowned: true,
+      target: { op: 'force', commit, ownerSignoffRef: args.ownerSignoffRef,
+        ownerSignoffDirectiveId: ownerSignoff.directiveId,
+        ownerSignoffSourceTurnRef: ownerSignoff.sourceTurnRef },
       run: () => launchDetachedDeploy({ force: true, commit }),
       summarize: (effect) => ({ status: effect.launched ? 'detached-launch-accepted' : 'not-launched',
         unit: effect.unit ?? null, reason: effect.reason ?? null, deployedSha: 'unknown' }),
@@ -691,9 +725,10 @@ export default defineTool({
     ctx.metadata?.({ gateActionReceipt: {
       schemaVersion: 2, action: 'deploy-force', callerOwnerId: identity.ownerId,
       receiptId: accepted.receiptId,
-      ownership: { ...gateOwnership.receipt, ...accepted.ownership,
-        certainty: 'claim-row-locked-through-effect' }, target: { commit, ownerSignoffRef: args.ownerSignoffRef,
-        ownerSignoffAssessment: 'caller-supplied-unverified' },
+      ownership: { ...gateOwnership.receipt, ...accepted.ownership }, target: { commit, ownerSignoffRef: args.ownerSignoffRef,
+        ownerSignoffAssessment: 'owner-captured-target-matched',
+        ownerSignoffDirectiveId: ownerSignoff.directiveId,
+        ownerSignoffSourceTurnRef: ownerSignoff.sourceTurnRef },
       effect: { status: launch.launched ? 'detached-launch-accepted' : 'not-launched', unit: launch.unit ?? null,
         reason: launch.reason ?? null, deployedSha: 'unknown' },
     } });

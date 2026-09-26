@@ -279,7 +279,13 @@ function phaseSnapshotCodes(
     if (!deferred.has(code)) return true;
     if (phase === 'ship') return true;
     if (phase === 'pre-grading')
-      return code === 'bar_snapshot_vetting_missing' || code === 'bar_snapshot_vetting_stale';
+      return [
+        'bar_snapshot_vetting_missing', 'bar_snapshot_vetting_stale',
+        'bar_snapshot_proof_missing', 'bar_snapshot_proof_stale',
+        'bar_snapshot_proof_uncertain', 'bar_snapshot_proof_depth_missing',
+        'bar_snapshot_proof_inadequate', 'bar_snapshot_evidence_plane_unmet',
+        'bar_snapshot_evidence_runtime_unmet',
+      ].includes(code);
     return false;
   });
 }
@@ -350,7 +356,7 @@ function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecycl
   // An instrument:'none' check is the explicit manual contract. It still needs
   // a non-empty METHOD (checked above), while runnable checks carry their own
   // file/instrument/probe/cargo binding in the structured check.
-  if (phase === 'ship') {
+  if (phase === 'pre-grading' || phase === 'ship') {
     // WI-10003187: with no enforceable clause, proof is counted against nothing, so the
     // stale/depth/adequacy verdicts describe the lifecycle gap, not the proof. Mirror the
     // snapshot: name the gap instead. A pre-field snapshot (undefined) keeps the old codes.
@@ -379,7 +385,7 @@ function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecycl
     ) {
       addCode(codes, 'bar_snapshot_evidence_runtime_unmet');
     }
-    const gatesShipping = bar.role === 'outcome' && bar.mandatory === true;
+    const gatesShipping = phase === 'ship' && bar.role === 'outcome' && bar.mandatory === true;
     if (gatesShipping && (bar.grading.state === 'missing' || bar.grading.state === 'truncated'))
       addCode(codes, 'bar_snapshot_grading_missing');
     if (gatesShipping && bar.grading.state === 'stale') addCode(codes, 'bar_snapshot_grading_stale');

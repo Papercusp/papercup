@@ -61,6 +61,11 @@ export interface CreateExternalTriggerBindingInput {
   /** Direct bounded work-item target (P-018). Both fields are required together. */
   workItemHarnessSlug?: string | null;
   workItemKind?: string | null;
+  /** Registered blueprint-operation target (P-016). Both fields are paired. */
+  operationHarnessSlug?: string | null;
+  operationId?: string | null;
+  /** Literal input merged over the redacted event routing envelope at dispatch. */
+  operationInput?: Record<string, unknown>;
   eventPattern: string;
   eventFilter?: Record<string, unknown>;
   stormPolicy?: Record<string, unknown>;
@@ -161,8 +166,9 @@ export interface ExternalTriggerBindingAdminRow {
   sourceId: string;
   sourceKind: string;
   sourceStatus: string;
-  planHarnessSlug: string;
-  planSlug: string;
+  planHarnessSlug: string | null;
+  planSlug: string | null;
+  goalId: string | null;
   workItemHarnessSlug: string | null;
   workItemKind: string | null;
   eventPattern: string;
@@ -214,8 +220,9 @@ export interface ExternalTriggerRunVisibility {
   bindingId: string;
   sourceKind: string;
   eventPattern: string;
-  planHarnessSlug: string;
-  planSlug: string;
+  planHarnessSlug: string | null;
+  planSlug: string | null;
+  goalId: string | null;
   workItemHarnessSlug: string | null;
   workItemKind: string | null;
   status: string;
@@ -232,6 +239,17 @@ export interface ExternalTriggerRunVisibility {
   eventFilter: Record<string, unknown>;
   stormPolicy: Record<string, unknown>;
   redactedPayload: Record<string, unknown>;
+  action: Record<string, unknown>;
+  blueprintOperation: {
+    workspaceId: string;
+    harnessSlug: string;
+    receiptId: number;
+    operationId: string;
+    specificationRevision: string;
+    target:
+      | { kind: 'work-item'; id: string }
+      | { kind: 'plan'; runId: number; instanceSlug: string };
+  } | null;
   outcomeLinks: ExternalTriggerOutcomeLink[];
   timeline: ExternalTriggerTimelineStep[];
   planRun: {
@@ -353,8 +371,9 @@ interface BindingDbRow {
   sourceId: string;
   sourceKind: string;
   sourceStatus: string;
-  planHarnessSlug: string;
-  planSlug: string;
+  planHarnessSlug: string | null;
+  planSlug: string | null;
+  goalId: string | null;
   workItemHarnessSlug: string | null;
   workItemKind: string | null;
   eventPattern: string;
@@ -380,8 +399,9 @@ interface RunVisibilityDbRow {
   eventPattern: string;
   eventFilter: Record<string, unknown>;
   stormPolicy: Record<string, unknown>;
-  planHarnessSlug: string;
-  planSlug: string;
+  planHarnessSlug: string | null;
+  planSlug: string | null;
+  goalId: string | null;
   workItemHarnessSlug: string | null;
   workItemKind: string | null;
   status: string;
@@ -389,6 +409,7 @@ interface RunVisibilityDbRow {
   dedupeKey: string;
   args: Record<string, unknown>;
   outcome: Record<string, unknown>;
+  action: Record<string, unknown>;
   triggeredAt: Date | string;
   startedAt: Date | string | null;
   completedAt: Date | string | null;
@@ -535,12 +556,42 @@ function outcomeLinks(
   return result;
 }
 
+function blueprintOperationOutcome(outcome: Record<string, unknown>): ExternalTriggerRunVisibility['blueprintOperation'] {
+  const operation = object(outcome.blueprintOperation);
+  const target = object(operation.target);
+  const kind = text(target.kind);
+  const receiptId = finiteNumber(operation.receiptId);
+  const common = {
+    workspaceId: text(operation.workspaceId),
+    harnessSlug: text(operation.harnessSlug),
+    receiptId: receiptId === null ? 0 : Math.floor(receiptId),
+    operationId: text(operation.operationId),
+    specificationRevision: text(operation.specificationRevision),
+  };
+  if (!common.workspaceId || !common.harnessSlug || common.receiptId <= 0 || !common.operationId || !common.specificationRevision) {
+    return null;
+  }
+  if (kind === 'work-item') {
+    const id = text(target.id);
+    return id ? { ...common, target: { kind, id } } : null;
+  }
+  if (kind === 'plan') {
+    const runId = finiteNumber(target.runId);
+    const instanceSlug = text(target.instanceSlug);
+    return runId !== null && runId > 0 && instanceSlug
+      ? { ...common, target: { kind, runId: Math.floor(runId), instanceSlug } }
+      : null;
+  }
+  return null;
+}
+
 function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility {
   const args = object(row.args);
   const trigger = object(args.trigger);
   const rawPayload = row.deliveryPayload ?? object(trigger.payload);
   const redactedPayload = object(redactSensitiveValue(rawPayload));
   const outcome = object(row.outcome);
+  const blueprintOperation = blueprintOperationOutcome(outcome);
   const policy = externalTriggerDisposition(row.status, outcome, row.error);
   const total = Number(row.workItemTotal ?? 0);
   const passed = Number(row.workItemPassed ?? 0);
@@ -593,8 +644,12 @@ function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility
     {
       stage: 'launched',
       at: planRunLaunchedAt == null ? startedAt : iso(planRunLaunchedAt),
-      status: planRun ? 'done' : row.status === 'running' ? 'active' : 'pending',
-      detail: planRun ? `Plan run #${planRun.id} launched` : 'Plan run not launched',
+      status: blueprintOperation || planRun ? 'done' : row.status === 'running' ? 'active' : 'pending',
+      detail: blueprintOperation
+        ? `Blueprint operation ${blueprintOperation.harnessSlug}#${blueprintOperation.operationId} accepted`
+        : planRun
+          ? `Plan run #${planRun.id} launched`
+          : 'Target not launched',
     },
     {
       stage: 'completed',
@@ -616,6 +671,7 @@ function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility
     eventPattern: row.eventPattern,
     planHarnessSlug: row.planHarnessSlug,
     planSlug: row.planSlug,
+    goalId: row.goalId,
     workItemHarnessSlug: row.workItemHarnessSlug,
     workItemKind: row.workItemKind,
     status: row.status,
@@ -632,6 +688,8 @@ function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility
     eventFilter: object(redactSensitiveValue(row.eventFilter)),
     stormPolicy: object(row.stormPolicy),
     redactedPayload,
+    action: object(row.action),
+    blueprintOperation,
     outcomeLinks: outcomeLinks(outcome, row.sourceConfig),
     timeline,
     planRun,
@@ -662,6 +720,7 @@ export async function loadExternalTriggerRunVisibilities(
            b.storm_policy AS "stormPolicy",
            b.plan_harness_slug AS "planHarnessSlug",
            b.plan_slug AS "planSlug",
+           b.goal_id AS "goalId",
            b.work_item_harness_slug AS "workItemHarnessSlug",
            b.work_item_kind AS "workItemKind",
            tr.status,
@@ -669,6 +728,7 @@ export async function loadExternalTriggerRunVisibilities(
            tr.dedupe_key AS "dedupeKey",
            tr.args,
            tr.outcome,
+           b.action,
            tr.triggered_at AS "triggeredAt",
            tr.started_at AS "startedAt",
            tr.completed_at AS "completedAt",
@@ -806,17 +866,23 @@ export async function createExternalTriggerBinding(
   const workItemHarnessSlug = input.workItemHarnessSlug?.trim() || null;
   const workItemKind = input.workItemKind?.trim() || null;
   const directGiven = Boolean(workItemHarnessSlug || workItemKind);
+  const operationHarnessSlug = input.operationHarnessSlug?.trim() || null;
+  const operationId = input.operationId?.trim() || null;
+  const operationGiven = Boolean(operationHarnessSlug || operationId);
   // Exactly one target (mirrors migration 1016's CHECK, refused here so the
   // caller gets a named error instead of a constraint violation).
   const planGiven = Boolean(input.planSlug?.trim() || input.planHarnessSlug?.trim());
-  const targetCount = Number(planGiven) + Number(Boolean(goalId)) + Number(directGiven);
+  const targetCount = Number(planGiven) + Number(Boolean(goalId)) + Number(directGiven) + Number(operationGiven);
   if (targetCount > 1) throw new Error('external_trigger_binding_both_targets');
   if (targetCount === 0) throw new Error('external_trigger_binding_no_target');
   if (directGiven && (!workItemHarnessSlug || !workItemKind)) {
     throw new Error('external_trigger_direct_target_incomplete');
   }
-  const planHarnessSlug = goalId || directGiven ? null : required(input.planHarnessSlug, 'plan_harness_slug');
-  const planSlug = goalId || directGiven ? null : required(input.planSlug, 'plan_slug');
+  if (operationGiven && (!operationHarnessSlug || !operationId)) {
+    throw new Error('external_trigger_blueprint_operation_target_incomplete');
+  }
+  const planHarnessSlug = goalId || directGiven || operationGiven ? null : required(input.planHarnessSlug, 'plan_harness_slug');
+  const planSlug = goalId || directGiven || operationGiven ? null : required(input.planSlug, 'plan_slug');
   const eventPattern = required(input.eventPattern, 'event_pattern');
   const sources = await sql<Array<{ kind: string }>>`
     SELECT kind FROM harness_shared.trigger_sources
@@ -850,7 +916,7 @@ export async function createExternalTriggerBinding(
          WHERE workspace_id = ${ws} AND id = ${goalId}
       ) AS exists`;
     if (!goals[0]?.exists) throw new Error(`external_trigger_unknown_goal:${goalId}`);
-  } else {
+  } else if (!operationGiven) {
     const plans = await sql<Array<{ exists: boolean }>>`
       SELECT EXISTS (
         SELECT 1 FROM harness_shared.harness_plans
@@ -863,9 +929,20 @@ export async function createExternalTriggerBinding(
 
   const eventFilter = JSON.stringify(input.eventFilter ?? {});
   const execution = parseAgenticPlanExecutionTarget(input.execution);
-  if ((goalId || directGiven) && execution) throw new Error('external_trigger_non_plan_binding_execution_unsupported');
+  if ((goalId || directGiven || operationGiven) && execution) throw new Error('external_trigger_non_plan_binding_execution_unsupported');
   const action = JSON.stringify({
-    type: directGiven ? 'create-work-item' : goalId ? 'start-goal' : 'launch-plan',
+    type: operationGiven
+      ? 'blueprint-operation'
+      : directGiven
+        ? 'create-work-item'
+        : goalId
+          ? 'start-goal'
+          : 'launch-plan',
+    ...(operationGiven ? {
+      operationHarnessSlug,
+      operationId,
+      ...(input.operationInput ? { input: input.operationInput } : {}),
+    } : {}),
     ...(execution ? { execution } : {}),
   });
   // A binding with no explicit storm policy is UNBOUNDED under the landed
@@ -1189,6 +1266,7 @@ export async function loadExternalTriggerAdminSnapshot(
       sourceStatus: row.sourceStatus,
       planHarnessSlug: row.planHarnessSlug,
       planSlug: row.planSlug,
+      goalId: row.goalId,
       workItemHarnessSlug: row.workItemHarnessSlug,
       workItemKind: row.workItemKind,
       eventPattern: row.eventPattern,

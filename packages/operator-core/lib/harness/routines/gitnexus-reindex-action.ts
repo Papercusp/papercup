@@ -89,10 +89,38 @@ import {
   classifyIndexDisk,
   type IndexDiskVerdict,
 } from '../../code-intelligence/contracts';
+import { SELECTIVE_ACCEPTANCE_CORPUS, SELECTIVE_SOURCE_BLOBS } from '../../code-intelligence/selective-corpus';
 
 /** Registry alias this repo is indexed under (`analyze --name papercusp`). The alias
  *  disambiguates it from other checkouts on the box whose basename would collide. */
 export const GITNEXUS_REPO_NAME = 'papercusp';
+
+/** The exact-index failure fixture: this source was present in the indexed commit but
+ * omitted by GitNexus's 512 KiB walker default. Keep the path tied to the corpus so a
+ * source move updates both the acceptance case and the refresh guard. */
+const EXACT_INDEX_CASE = SELECTIVE_ACCEPTANCE_CORPUS.find((entry) => entry.id === 'selective-exact-index-symbol');
+if (!EXACT_INDEX_CASE?.expectedSites[0]) throw new Error('GitNexus exact-index acceptance case is missing');
+export const GITNEXUS_KNOWN_SOURCE_PATH = EXACT_INDEX_CASE.expectedSites[0].path;
+
+/** GitNexus 1.6.9/1.6.12 clamp the walker setting at tree-sitter's 32 MiB limit.
+ * Derive the required setting from the live files named by the existing corpus,
+ * instead of bumping a fixed limit whenever a source file grows. */
+export function selectiveSourceLimitKb(root: string): number {
+  let maxBytes = 512 * 1024;
+  for (const relativePath of Object.keys(SELECTIVE_SOURCE_BLOBS)) {
+    try {
+      maxBytes = Math.max(maxBytes, statSync(path.join(root, relativePath)).size);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      // A synthetic/mock root may lack corpus files. The post-build canary
+      // separately refuses a missing known source on the real repository.
+    }
+  }
+  if (maxBytes > 32 * 1024 * 1024) {
+    throw new Error(`GitNexus selective source exceeds tree-sitter's 32 MiB ceiling (${maxBytes} bytes)`);
+  }
+  return Math.ceil(maxBytes / 1024);
+}
 
 /**
  * Sized from the measured LIVE tick (D-004), not from an isolated measurement and not from the
@@ -666,7 +694,14 @@ export function analyzeEnv(
   base: NodeJS.ProcessEnv,
   heapMb: number = GITNEXUS_ANALYZE_HEAP_MB,
   semiSpaceMb: number = GITNEXUS_ANALYZE_SEMI_SPACE_MB,
+  sourceLimitKb?: number,
 ): NodeJS.ProcessEnv {
+  if (sourceLimitKb != null && base.GITNEXUS_MAX_FILE_SIZE != null) {
+    const configured = Number(base.GITNEXUS_MAX_FILE_SIZE);
+    if (!Number.isInteger(configured) || configured < sourceLimitKb) {
+      throw new Error(`GITNEXUS_MAX_FILE_SIZE=${base.GITNEXUS_MAX_FILE_SIZE}KB excludes a selective corpus source requiring ${sourceLimitKb}KB`);
+    }
+  }
   // The LadybugDB ceiling is pinned on every spawn, independent of the heap branch
   // below: an operator overriding the HEAP must not silently also drop the DB pin.
   // An explicit caller-supplied value still wins.
@@ -682,6 +717,7 @@ export function analyzeEnv(
   // node flag can influence them, so they must not depend on the heap branch either.
   const withDbCap: NodeJS.ProcessEnv = {
     ...base,
+    ...(sourceLimitKb == null ? {} : { GITNEXUS_MAX_FILE_SIZE: base.GITNEXUS_MAX_FILE_SIZE ?? String(sourceLimitKb) }),
     GITNEXUS_LBUG_MAX_DB_SIZE: base.GITNEXUS_LBUG_MAX_DB_SIZE ?? String(GITNEXUS_LBUG_MAX_DB_BYTES),
     GITNEXUS_LBUG_BUFFER_POOL_SIZE:
       base.GITNEXUS_LBUG_BUFFER_POOL_SIZE ?? String(GITNEXUS_LBUG_BUFFER_POOL_BYTES),
@@ -2052,6 +2088,8 @@ export interface CanaryInputs {
    * null ⇒ could not be attempted (no symbol to sample, or the read failed).
    */
   roundTripOk: boolean | null;
+  /** A source file pinned by the selective corpus must actually occur in the graph. */
+  knownSourceFileCount?: number | null;
   /** Embeddings present, from registry stats (`stats.embeddings`); null ⇒ not reported. */
   embeddings: number | null;
   /**
@@ -2111,6 +2149,15 @@ export function judgeCanary(i: CanaryInputs): CanaryVerdict {
     },
     vectorSearchProbe(i.embeddings, i.embeddingsExpected),
   ];
+  if (i.knownSourceFileCount !== undefined) {
+    probes.push({
+      name: 'known-source-coverage',
+      ok: i.knownSourceFileCount === 1,
+      detail: i.knownSourceFileCount == null
+        ? `${GITNEXUS_KNOWN_SOURCE_PATH}: coverage query failed`
+        : `${GITNEXUS_KNOWN_SOURCE_PATH}: ${i.knownSourceFileCount} indexed file nodes (expected 1)`,
+    });
+  }
   const failed = probes.filter((p) => !p.ok && !p.degraded);
   const degradedProbes = probes.filter((p) => !p.ok && p.degraded);
   const degradedNote =
@@ -2159,6 +2206,11 @@ export interface AnalyzeRunResult {
   timedOut: boolean;
 }
 
+/** A completed index is healthy only after its graph canary actually passed. */
+export function analyzeTickSucceeded(run: AnalyzeRunResult, canary: CanaryVerdict | null): boolean {
+  return !run.timedOut && run.code === 0 && canary?.healthy === true;
+}
+
 export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: number): Promise<AnalyzeRunResult> {
   return (async () => {
     const directCommand = process.env.GITNEXUS_NODE_BIN ?? process.execPath;
@@ -2184,7 +2236,15 @@ export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: nu
         spawnOptions: {
           cwd: root,
           // The spawn stamp is what lets a LATER host incarnation adopt this run (WI-2146015).
-          env: { ...analyzeEnv(process.env), [GITNEXUS_REINDEX_SPAWN_MARKER_ENV]: String(Date.now()) },
+          env: {
+            ...analyzeEnv(
+              process.env,
+              GITNEXUS_ANALYZE_HEAP_MB,
+              GITNEXUS_ANALYZE_SEMI_SPACE_MB,
+              selectiveSourceLimitKb(root),
+            ),
+            [GITNEXUS_REINDEX_SPAWN_MARKER_ENV]: String(Date.now()),
+          },
           detached: true,
         },
       },
@@ -2323,6 +2383,12 @@ export async function runCanary(
   //   MATCH ()-[r:CodeRelation]->() RETURN r.type AS t, count(r) AS n ORDER BY n DESC
   const callEdgeCount = await cypherScalar(bin, root, repoName, "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALLS' RETURN count(r) AS n", t);
   const defEdgeCount = await cypherScalar(bin, root, repoName, "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DEFINES' RETURN count(r) AS n", t);
+  const knownSourceFileCount = existsSync(path.join(root, GITNEXUS_KNOWN_SOURCE_PATH))
+    ? await cypherScalar(
+      bin, root, repoName,
+      `MATCH (f:File) WHERE f.filePath = '${GITNEXUS_KNOWN_SOURCE_PATH}' RETURN count(f) AS n`, t,
+    )
+    : null;
 
   // The round trip: sample a name OUT of the graph, then assert the graph can find that
   // same name again. No hardcoded symbol, so a rename can never false-alarm it.
@@ -2339,6 +2405,7 @@ export async function runCanary(
     callEdgeCount,
     defEdgeCount,
     roundTripOk,
+    knownSourceFileCount,
     embeddings,
     embeddingsExpected,
   });
@@ -2590,14 +2657,15 @@ async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
         console.warn(`[gitnexus-reindex] canary DEGRADED — ${canary.summary}`);
       }
     } catch (e) {
-      // Never let canary plumbing fail a tick that genuinely succeeded.
-      console.warn(`[gitnexus-reindex] canary could not run: ${e instanceof Error ? e.message : e}`);
+      // A clean analyze exit cannot certify an index whose graph could not be read.
+      // Keep the routine alive so the health ledger records a failed tick.
+      console.warn(`[gitnexus-reindex] CANARY FAILED: could not run: ${e instanceof Error ? e.message : e}`);
     }
   }
   // A successful analyze can grow the DB across the threshold during this very tick;
   // refresh immediately instead of waiting an hour for the next cadence.
   if (ranClean) await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);
-  const success = ranClean && (canary == null || canary.healthy);
+  const success = analyzeTickSucceeded(r, canary);
 
   // Read the incomplete-index marker on the FAILURE path only: on a success it is expected
   // to be absent, and on a failure it is the fact that separates a one-off from a wedged
@@ -2648,6 +2716,8 @@ async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
     );
   } else if (r.code !== 0) {
     console.warn(`[gitnexus-reindex] exited ${r.code} after ${elapsedSec}s — ${(r.stderr || r.stdout).slice(-500)}`);
+  } else if (!success) {
+    console.warn(`[gitnexus-reindex] CANARY FAILED after ${elapsedSec}s — ${canary?.summary ?? 'canary could not run'}`);
   } else {
     const adoptedNote = i.adopted
       ? ` (ADOPTED: pid ${i.adopted.pid} was spawned ${i.adopted.spawnedAt} by a previous host incarnation; elapsed is measured from that spawn)`
@@ -2685,7 +2755,7 @@ async function finishAnalyzeTick(i: FinishAnalyzeTickInput): Promise<void> {
         body:
           `system:gitnexus-reindex has now failed ${update.next.consecutiveFailures} consecutive time(s) on ` +
           `${ctx.installSlug}. gitnexus.query / gitnexus.context lookups may be erroring while this persists. ` +
-          `Latest failure: ${r.timedOut ? `timed out after ${timeoutMs}ms` : `exited ${r.code}`} — ` +
+          `Latest failure: ${r.timedOut ? `timed out after ${timeoutMs}ms` : r.code !== 0 ? `exited ${r.code}` : canary?.summary ?? 'canary could not run'} — ` +
           `${(r.stderr || r.stdout).slice(-300)}${strandedNote}`,
         importance: 'urgent',
         workspaceId: ctx.workspaceId,

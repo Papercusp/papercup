@@ -66,6 +66,24 @@ const detachedRunSnapshot = (runId: string, status: RunSnapshot['status'], exitC
 });
 
 describe('test-time evidence continuity', () => {
+  it.each([false, true])('keeps an observed unit run from settling a claimed integration binding (recovery=%s)', async (recovery) => {
+    const d = deps();
+    d.ledger.mockResolvedValue([{ id: 42, file_path: binding.testPath, status: 'pass',
+      finished_at: '2026-09-08T00:00:00Z',
+      execution_details: JSON.stringify({ schemaVersion: 1, testLayer: 'unit' }) }]);
+    const requested = { ...request, bindings: [{ ...binding, testLayer: 'integration' as const }] };
+    const prepared = await prepareTestEvidence(requested, runId, [binding.testPath], scope, d);
+    if (recovery) {
+      prepared[0].input.testRunId = 42;
+      prepared[0].input.details = { ...prepared[0].input.details,
+        testExecution: { phase: 'settled', runId, ledgerStatus: 'pass' } };
+    }
+    const bundle = await finishTestEvidence(prepared, runId, runId, scope, recovery ? undefined : result(), d);
+    expect(bundle.rows[0]).toMatchObject({ phase: 'layer-mismatch', outcome: 'unknown' });
+    expect(bundle.verificationFingerprint).toBeNull();
+    expect(d.bind.mock.calls[1][0].details.adequacy).toMatchObject({ testLayer: 'unit', outcome: 'unknown', executed: false });
+  });
+
   it('returns a bounded pending recovery bundle for foreground timeouts', () => {
     const detached = '1a40bd16-98ca-4092-8b88-5707ed6e0e64';
     const bundle = deferredTestEvidenceRecoveryBundle(request, runId, detached, scope.harnessSlug);

@@ -594,6 +594,35 @@ describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
     expect(release).toHaveBeenCalledWith(expect.objectContaining({ lockId: 'queued-exclusive-1' }));
   });
 
+  it.each([90, 130])('keeps the drain lease alive while a shared holder lasts %i seconds', async (sharedHolderSeconds) => {
+    // EI-24359373316570369: a 120s drain used a 60s lease, so the wait
+    // returned early when its exclusive disappeared. Model the two independent
+    // deadlines: lease expiry and the requested drain budget. A holder ending
+    // at 90s must permit restart; one still running at 130s must not.
+    const acquire = vi.fn<GitSyncRestartBarrierDeps['acquire']>(async ({ ttlSec, maxWaitSec }) => {
+      if (sharedHolderSeconds >= Math.min(ttlSec, maxWaitSec)) {
+        return {
+          ok: false,
+          reason: 'drain_timeout',
+          holders: [{ owner: 'system:git-sync:1:x', mode: 'shared', status: 'held' }],
+          lock_id: 'queued-exclusive-lease',
+        };
+      }
+      return { ok: true, lock_id: 'queued-exclusive-lease', expires_ts: new Date(ttlSec * 1000) };
+    });
+    const release = vi.fn(async () => {});
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({ acquire, release }), { maxDrainSec: 120 });
+
+    expect(result.acquired).toBe(sharedHolderSeconds < 120);
+    if (result.acquired) {
+      // The lease must also cover the existing post-acquisition kill handoff.
+      expect(acquire.mock.calls[0][0].ttlSec - 120).toBeGreaterThanOrEqual(GIT_SYNC_RESTART_BARRIER_TTL_SEC);
+      expect(release).not.toHaveBeenCalled();
+    } else {
+      expect(release).toHaveBeenCalledWith(expect.objectContaining({ lockId: 'queued-exclusive-lease' }));
+    }
+  });
+
   it('retries transient contention while releasing a timed-out queued exclusive', async () => {
     // EI-22627342911348772: a live restart timed out behind a shared git-sync
     // holder, then its one-shot cleanup lost the hot workspace transaction.

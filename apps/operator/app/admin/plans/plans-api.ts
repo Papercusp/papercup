@@ -2671,6 +2671,11 @@ export interface PlanScheduleSpec {
   concurrency?: "queue" | "skip" | "cancel-prev";
   catchup?: "skip-old" | "run-all-backlog";
   costCapCents?: number;
+  operation?: {
+    harnessSlug: string;
+    operationId: string;
+    input?: Record<string, unknown>;
+  };
 }
 
 export type PlanTriggerMutationResult = {

@@ -1642,8 +1642,8 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // everyone else→run/perRun (plan P-011, formerly baked in the engine).
   // P-018: a runtime per-(tool,role) override (quota:set_tool) is MERGED over the baked
   // rolesQuota[role] before the window/ceiling is resolved — empty override map ⇒ byte-identical.
-  computeQuotaWindow: (ctx, roleQuota, toolName) =>
-    papercuspComputeQuotaWindow(ctx, toolName ? mergeRoleQuota(roleQuota, toolName, ctx.role) : roleQuota),
+  computeQuotaWindow: (ctx, roleQuota, toolName, input) =>
+    papercuspComputeQuotaWindow(ctx, toolName ? mergeRoleQuota(roleQuota, toolName, ctx.role) : roleQuota, toolName, input),
   readQuotaState: readQuotaStateImpl,
   recordInvocation: recordInvocationImpl,
   overrideTool: overrideToolImpl,

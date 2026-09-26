@@ -588,6 +588,17 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', { expectedApplicable: true });
     });
 
+    it('does not recruit a grader while pre-grading proof remains inadequate', async () => {
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, phase === 'ship'
+        ? ['bar_snapshot_proof_inadequate', 'bar_snapshot_grading_missing']
+        : ['bar_snapshot_proof_inadequate']));
+      const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true });
+      expect(result).toMatchObject({
+        satisfied: false, code: 'acceptance_bar_contract_not_ready', blockingPhase: 'pre-grading',
+      });
+      expect(mockScorecards).not.toHaveBeenCalled();
+    });
+
     it('exposes the ungraded refusal when only a stale rubric-identity card exists', async () => {
       mockRubric.mockResolvedValue(acceptanceRubric({ revision: 3 }));
       mockScorecards.mockResolvedValue([

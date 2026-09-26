@@ -160,17 +160,30 @@ const RUN_COLUMNS = [
   },
   {
     key: "plan",
-    header: "Plan",
+    header: "Target",
     render: (run) => {
+      const operation = run.blueprintOperation;
       const instance = run.planRun?.instancePlanSlug;
       const progress = run.planRun?.workItems.total
         ? `${run.planRun.workItems.passed}/${run.planRun.workItems.total}`
         : null;
       return (
         <>
-          {instance ? (
+          {operation?.target.kind === "work-item" ? (
+            <a href={`/admin/work-items?item=${encodeURIComponent(operation.target.id)}`}>
+              {operation.harnessSlug}#{operation.operationId} → {operation.target.id}
+            </a>
+          ) : operation?.target.kind === "plan" ? (
+            <a href={`/admin/plans?plan=${encodeURIComponent(operation.target.instanceSlug)}`}>
+              {operation.harnessSlug}#{operation.operationId} → {operation.target.instanceSlug}
+            </a>
+          ) : instance ? (
             <a href={`/admin/plans?plan=${encodeURIComponent(instance)}`}>{instance}</a>
-          ) : `${run.planHarnessSlug}/${run.planSlug}`}
+          ) : run.workItemHarnessSlug && run.workItemKind ? (
+            `${run.workItemHarnessSlug}/${run.workItemKind}`
+          ) : run.goalId ? (
+            `goal ${run.goalId}`
+          ) : `${run.planHarnessSlug ?? "unknown"}/${run.planSlug ?? "unknown"}`}
           {run.planRun ? (
             <small>
               {[run.planRun.status, progress, run.planRun.agents.length ? `${run.planRun.agents.length} agent${run.planRun.agents.length === 1 ? "" : "s"}` : null]

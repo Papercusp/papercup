@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
@@ -16,6 +19,8 @@ import {
 const WS = 'papercusp-workspace';
 const HARNESS = 'papercusp';
 const PLAN = 'trigger-admin-fixture';
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const REPO = path.resolve(HERE, '../../../..');
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -25,6 +30,8 @@ let bindingId: string;
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
+  const operationMigration = path.join(REPO, 'libs/papercusp/libs/db/sql/1228-blueprint-operation-automation-bindings.sql');
+  await sql.unsafe(readFileSync(existsSync(operationMigration) ? operationMigration : `${operationMigration}.DRAFT`, 'utf8'));
 });
 
 afterAll(async () => {
@@ -493,6 +500,41 @@ describe('external-trigger admin shared seam', () => {
       action: { type: 'launch-plan' },
       stormPolicy: { maxRuns: 3, windowSeconds: 120 },
     });
+  });
+
+  it('creates an operation-targeted binding and exposes its target in the admin snapshot', async () => {
+    const source = await createExternalTriggerSource(sql, WS, { kind: 'slack' });
+    const binding = await createExternalTriggerBinding(sql, WS, {
+      sourceId: source.id,
+      operationHarnessSlug: HARNESS,
+      operationId: 'triage-message',
+      operationInput: { priority: 'normal' },
+      eventPattern: 'ext:slack:mention',
+      createdBy: 'agent-fixture',
+    });
+    expect(binding).toMatchObject({
+      planHarnessSlug: null,
+      planSlug: null,
+      goalId: null,
+      action: {
+        type: 'blueprint-operation',
+        operationHarnessSlug: HARNESS,
+        operationId: 'triage-message',
+        input: { priority: 'normal' },
+      },
+      armed: false,
+    });
+    const snapshot = await loadExternalTriggerAdminSnapshot(sql, WS);
+    expect(snapshot.bindings.find((row) => row.id === binding.id)).toMatchObject({
+      planHarnessSlug: null,
+      planSlug: null,
+      action: { type: 'blueprint-operation', operationId: 'triage-message' },
+    });
+    await expect(createExternalTriggerBinding(sql, WS, {
+      sourceId: source.id,
+      operationHarnessSlug: HARNESS,
+      eventPattern: 'ext:slack:mention',
+    })).rejects.toThrow('external_trigger_blueprint_operation_target_incomplete');
   });
 
   it('refuses a binding pattern for a different source kind', async () => {

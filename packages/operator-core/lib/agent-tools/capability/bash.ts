@@ -464,11 +464,20 @@ const bashResultSchema = z
     timeout_ms: z.number().int().nonnegative().optional(),
     deadline: z.string().optional(),
     advice: z.string().optional(),
+    process_table_notice: z.string().optional(),
     integration_env: z
       .record(z.string(), z.object({ source: z.string(), masked: z.string() }).passthrough())
       .optional(),
   })
   .passthrough();
+
+// A successful ps/pgrep exit is not evidence that a host process is absent:
+// capability:bash can run behind a private PID namespace. Keep the warning in
+// the result itself, where a kill-deciding caller sees it alongside the data.
+function processTableNotice(command: string): string | undefined {
+  if (!/\b(?:ps|pgrep|pidof|pstree)\b(?=\s|$)/.test(command)) return undefined;
+  return 'Process-table output may be limited to this shell\'s PID namespace. An empty ps/pgrep/pidof/pstree result does not prove a host process is gone. Use processes:list and, when deciding cgroup lifetime, verify the recorded scope under /sys/fs/cgroup.';
+}
 
 export default defineTool({
   name: 'capability:bash',
@@ -796,6 +805,7 @@ export default defineTool({
     const redactValues = resolvedIntegrationEntries.map((entry) => entry.value!);
     const integrationHeader =
       integrationEntries.length > 0 ? ` · integration_env ${JSON.stringify(integrationEnvView)}` : '';
+    const processNotice = processTableNotice(command);
 
     const provenance = await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, hive ?? null);
     const frozenRefusal = await frozenLineageRefusal();
@@ -861,6 +871,7 @@ export default defineTool({
         timeout_ms: job.timeoutMs,
         deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
         ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
+        ...(processNotice ? { process_table_notice: processNotice } : {}),
         advice:
           `Background shell started. Preserve durable task_id "${job.taskId}" across carry. ` +
           `Read output: capability:bash_output { task_id: "${job.taskId}" } ` +
@@ -913,6 +924,7 @@ export default defineTool({
         timeout_ms: job.timeoutMs,
         deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
         ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
+        ...(processNotice ? { process_table_notice: processNotice } : {}),
         advice:
           `Response window elapsed; the original shell ${
             r.status === 'running' ? 'is still running' : `has status ${r.status} and is finishing whole-tree cleanup`
@@ -947,7 +959,7 @@ export default defineTool({
         : '';
 
     return {
-      content: [{ type: 'text' as const, text: `${header}\n${r.output || '(no output)'}${timeoutHint}` }],
+      content: [{ type: 'text' as const, text: `${header}\n${processNotice ? `NOTICE: ${processNotice}\n` : ''}${r.output || '(no output)'}${timeoutHint}` }],
       isError,
       // EI-20066912585022608: the text above is the right answer for a MODEL reading
       // this result and the wrong one for a `code:run` script, which gets handed the
@@ -990,6 +1002,7 @@ export default defineTool({
               timeout_ms: job.timeoutMs,
               deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
               ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
+              ...(processNotice ? { process_table_notice: processNotice } : {}),
             },
           }
         : {}),

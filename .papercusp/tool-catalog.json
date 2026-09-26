@@ -21353,7 +21353,7 @@
           "POST"
         ]
       },
-      "description": "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft unedited through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. dryRun:true reports without filing.",
+      "description": "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
       "capabilities": [
         "coord:write"
       ],
@@ -26768,7 +26768,7 @@
       },
       "description": "Fetch one OR many reusable code:run RECIPEs by id — including the full script — so you can inspect what they do before recipes:run-ning them, including entity bindings and the current revision. Pass `id` for one or `ids` for several. Returns { ok, results:[{ ok, id, recipe? | error }], counts } — correlate by id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. Read-only. Recipes are global/fleet-wide; this tool accepts only `id`/`ids` and does not accept a `harness` argument.",
       "capabilities": [
-        "recipes:read"
+        "agent_tools:read"
       ],
       "agentRoles": [
         "scoper",
@@ -26842,7 +26842,7 @@
       },
       "description": "List reusable code:run RECIPES for your hive (most-run first). A recipe is a saved code:run script other agents authored; browse them to reuse instead of re-authoring. Low-value (≤1-tool / auto-titled) recipes are hidden by default — pass includeTrivial to see all. Read-only.",
       "capabilities": [
-        "recipes:read"
+        "agent_tools:read"
       ],
       "agentRoles": [
         "scoper",
@@ -26976,7 +26976,7 @@
       },
       "description": "Run saved code:run recipes by id under YOUR role-scoped tool envelope (not the author's); recipes carry no privilege. Use exact authority/runArgs from recipes:search or recipes:get; both are revalidated against the stored revision and YOUR live lane. Use dryRun:true before write-effect runs. Contracted recipes accept non-secret bindings:{ values:{…} } validated against the stored revision. Supports single { id,… }, homogeneous ids:[…], or heterogeneous items:[…]. Returns { ok, results, counts }; correlate by id; one failure does not fail others.",
       "capabilities": [
-        "capability:bash"
+        "agent_tools:read"
       ],
       "agentRoles": [
         "scoper",
@@ -27050,7 +27050,7 @@
       },
       "description": "Search reusable code:run RECIPES by intent (hybrid BM25 + embedding + tool-set overlap). Use BEFORE authoring a multi-step code:run to find a recipe that already does it. Entity-bound recipes are returned only when fleet/plan/harness/item/resource context matches; use each hit's runArgs unchanged. Read-only.",
       "capabilities": [
-        "recipes:read"
+        "agent_tools:read"
       ],
       "agentRoles": [
         "scoper",

@@ -66,6 +66,9 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('P-005 carry cohort dri
     });
     await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
     const port = (provider.address() as { port: number }).port;
+    let pilotAtRequestCount = -1;
+    const prepared: Array<{ sourceId: string; threadId: string; turnId: string }> = [];
+    const bound: string[] = [];
     const deps: CohortDeps = {
       openPeer: ({ home: peerHome, onMessage, onReceipt }) => startSuStdioPeer({ binary: 'codex', args: ['app-server'], cwd: peerHome,
         env: { PATH: process.env.PATH, CODEX_HOME: peerHome }, workspaceId: 'p005-driver-test', ownerId: 'su-p005-driver-test',
@@ -75,6 +78,22 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('P-005 carry cohort dri
       readTool: async (args, root) => await sourceReadTool.handler(args as never, { projectDir: root } as never) as never,
       now: () => processMonotonicClock.now(), sleep: ms => new Promise(resolve => setTimeout(resolve, ms)), log: () => {},
       admit: async () => ({ ok: true }),
+      afterPreparation: async input => { prepared.push(input); },
+      afterSourceBound: async ({ source }) => {
+        expect(source.sourceRef).toMatch(/^codex:[^/]+\/[^@]+@[a-f0-9]{64}$/);
+        expect(source.carry?.carrySha256).toMatch(/^[a-f0-9]{64}$/);
+        expect(source.history).toMatchObject({ inputTokens: 40_000, inBand: true });
+        bound.push(source.sourceId);
+        return { ok: true };
+      },
+      afterPilot: async ({ sourceId, taskId, arms }) => {
+        expect({ sourceId, taskId }).toEqual({ sourceId: 'S-I0', taskId: 'T1' });
+        expect(arms.map(arm => [arm.armId, arm.quality])).toEqual([
+          ['S-I0-T1:control', 'pass'], ['S-I0-T1:candidate', 'pass'],
+        ]);
+        pilotAtRequestCount = requests.length;
+        return { ok: true };
+      },
     };
     try {
       const result = await runCarryCohortSource(deps, { recipe, sourceId: 'S-I0', taskIds: ['T1', 'T2'], homeDir: join(home, 'S-I0'),
@@ -82,16 +101,22 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('P-005 carry cohort dri
           'name = "Unpaid loopback"', `base_url = "http://127.0.0.1:${port}/v1"`, 'wire_api = "responses"',
           'requires_openai_auth = false', 'supports_websockets = false', 'request_max_retries = 0', 'stream_max_retries = 0'] },
         transport: 'loopback-responses', authorizationScope: 'unpaid-fixture', fillerTokens: 1_500, windowMarginMs: 0, staggerMs: 50,
-        turnTimeoutMs: 60_000, modelContextWindow: 872_000, autoCompactTokenLimit: 850_000 });
+        turnTimeoutMs: 60_000, modelContextWindow: 872_000, autoCompactTokenLimit: 850_000,
+        sourceBindingRequired: true, pilotTaskId: 'T1' });
       expect(result.source.errors).toEqual([]);
       expect(result.stop).toBeNull();
       if (result.arms.some(arm => arm.quality !== 'pass')) console.log('P005_ARM_EVIDENCE', JSON.stringify(result.arms.map(arm =>
         ({ armId: arm.armId, evidence: arm.qualityEvidence, response: arm.response }))));
       expect(result.source.preparation).toMatchObject({ matches: true, trace: 'verified' });
+      expect(prepared).toEqual([{ sourceId: 'S-I0', threadId: result.source.threadId, turnId: result.source.turnId }]);
+      expect(bound).toEqual(['S-I0']);
       expect(result.source.history).toMatchObject({ inputTokens: 40_000, inBand: true });
       expect(result.arms.map(arm => [arm.armId, arm.quality, arm.completed, arm.errors])).toEqual([
         ['S-I0-T1:control', 'pass', true, []], ['S-I0-T1:candidate', 'pass', true, []],
         ['S-I0-T2:candidate', 'pass', true, []], ['S-I0-T2:control', 'pass', true, []]]);
+      expect(pilotAtRequestCount).toBeGreaterThan(0);
+      expect(requests.slice(0, pilotAtRequestCount).some(request => request.kind.startsWith('T2'))).toBe(false);
+      expect(requests.slice(pilotAtRequestCount).some(request => request.kind.startsWith('T2'))).toBe(true);
       expect(result.arms.find(arm => arm.armId === 'S-I0-T2:control')!.qualityEvidence).toMatchObject({ sourceRead: { status: 'verified' } });
       for (const arm of result.arms) {
         expect(arm.observedIdleMs).toBeGreaterThanOrEqual(0);
@@ -110,6 +135,21 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('P-005 carry cohort dri
       expect(requests.filter(r => r.kind === 'carry')).toHaveLength(2);
       expect(requests.filter(r => r.kind === 'carry').every(r => !r.input.includes(filler))).toBe(true);
       expect(requests.every(r => r.model === 'gpt-6-sol')).toBe(true);
+
+      const requestsBeforeRefusal = requests.length;
+      const { afterPreparation: _afterPreparation, afterSourceBound: _afterSourceBound, afterPilot: _afterPilot,
+        ...unboundDeps } = deps;
+      const refused = await runCarryCohortSource(unboundDeps, { recipe, sourceId: 'S-I0', taskIds: ['T1'],
+        homeDir: join(home, 'missing-binding'), provider: { providerId: 'loopback',
+          rootLines: ['model_provider = "loopback"'], tableLines: ['[model_providers.loopback]',
+            'name = "Unpaid loopback"', `base_url = "http://127.0.0.1:${port}/v1"`, 'wire_api = "responses"',
+            'requires_openai_auth = false', 'supports_websockets = false', 'request_max_retries = 0', 'stream_max_retries = 0'] },
+        transport: 'loopback-responses', authorizationScope: 'unpaid-fixture', fillerTokens: 1_500,
+        windowMarginMs: 0, staggerMs: 50, turnTimeoutMs: 60_000, modelContextWindow: 872_000,
+        autoCompactTokenLimit: 850_000, sourceBindingRequired: true });
+      expect(refused.stop).toBe('source-binding-refused:afterSourceBound hook is required');
+      expect(refused.arms).toEqual([]);
+      expect(requests.slice(requestsBeforeRefusal).map(request => request.kind)).toEqual(['preparation']);
     } finally {
       await new Promise<void>(resolve => provider.close(() => resolve()));
     }

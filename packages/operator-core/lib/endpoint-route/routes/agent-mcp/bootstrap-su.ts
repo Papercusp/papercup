@@ -1532,6 +1532,11 @@ const optionsGet = defineTool({
 export const bootstrapSu = defineTool({
   method: 'POST',
   path: '/agent-mcp/console/bootstrap-su',
+  // Bootstrap is an idempotency-keyed launch transaction. A slow first request
+  // may finish after the route stack's default 30s watchdog; aborting then
+  // converts its committed success into a 408 that psu cannot use. The psu
+  // client and MCP proxy own bounded transport waits and same-key recovery.
+  timeoutSec: null,
   auth: 'loopback',
   async handler(req) {
     const denied = await gatePrincipal(req.headers);

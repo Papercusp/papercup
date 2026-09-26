@@ -591,7 +591,8 @@ export function healedWakeText(ownerId: string, staleMins: number): string {
     `⚠ MCP transport auto-heal (mcp-dark-watchdog P-005): your papercusp-su MCP transport was DEAD ` +
     `(last successful tool call ~${staleMins}m before the heal) and was just reconnected in place via ` +
     `your host's /mcp macro — your terminal and context are intact. Everything registered on the OLD ` +
-    `transport died with it, so NOW: (1) loop:status — if your loop is not active, re-arm it; ` +
+    `transport died with it, so NOW: (1) loop:status — re-arm only when durable loop state/checkpoint says ` +
+    `the transport loss interrupted an active mission; do NOT re-arm a deliberately ended loop; ` +
     `(2) re-park unflushed state (loop:checkpoint / work_items:checkpoint / facts:assert); ` +
     `(3) resume what you were doing. If tools still fail, tell the owner to run /mcp in this window.`
   );

@@ -71,4 +71,37 @@ describe('papercuspComputeQuotaWindow', () => {
       papercuspComputeQuotaWindow(MAKE_CTX({ role: 'architect', chunkId: null }), undefined).limit,
     ).toBeNull();
   });
+
+  it('keeps release cut reads available after the write allowance is spent', () => {
+    const ctx = MAKE_CTX({ role: 'operator', chunkId: null, runId: 'long_cut' });
+    const quota: RolesQuota = { perRun: 10 };
+    for (const op of ['preflight', 'status', 'handoff']) {
+      expect(papercuspComputeQuotaWindow(ctx, quota, 'release:cut', { op })).toEqual({
+        key: 'run:long_cut:read',
+        limit: null,
+      });
+    }
+    for (const op of ['prepare-tag', 'run', 'run-leg', 'abort-leg', 'gate-status']) {
+      expect(papercuspComputeQuotaWindow(ctx, quota, 'release:cut', { op })).toEqual({
+        key: 'run:long_cut:write',
+        limit: 10,
+      });
+    }
+    expect(papercuspComputeQuotaWindow(ctx, quota, 'release:deploy', { op: 'status' })).toEqual({
+      key: 'run:long_cut',
+      limit: 10,
+    });
+  });
+
+  it('separates release cut reads for power-user session quotas too', () => {
+    const ctx = MAKE_CTX({ role: 'operator', isPowerUser: true, uiClientId: 'session_A' });
+    expect(papercuspComputeQuotaWindow(ctx, { perRun: 10 }, 'release:cut', { op: 'status' })).toEqual({
+      key: 'power-user:session_A:read',
+      limit: null,
+    });
+    expect(papercuspComputeQuotaWindow(ctx, { perRun: 10 }, 'release:cut', { op: 'run' })).toEqual({
+      key: 'power-user:session_A:write',
+      limit: 10,
+    });
+  });
 });

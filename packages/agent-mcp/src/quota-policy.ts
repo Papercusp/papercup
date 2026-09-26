@@ -27,21 +27,37 @@ import type { QuotaWindow, RolesQuota, UnifiedToolContext } from '@papercusp/too
 export function papercuspComputeQuotaWindow(
   ctx: UnifiedToolContext,
   roleQuota: RolesQuota | undefined,
+  toolName?: string,
+  input?: unknown,
 ): QuotaWindow {
+  let window: QuotaWindow;
   if (ctx.role === 'worker') {
-    return {
+    window = {
       key: ctx.chunkId ? `chunk:${ctx.chunkId}` : null,
       limit: roleQuota?.perChunk ?? null,
     };
-  }
-  if (ctx.isPowerUser && ctx.uiClientId) {
-    return {
+  } else if (ctx.isPowerUser && ctx.uiClientId) {
+    window = {
       key: `power-user:${ctx.uiClientId}`,
       limit: roleQuota?.perRun ?? null,
     };
+  } else {
+    window = {
+      key: ctx.runId ? `run:${ctx.runId}` : null,
+      limit: roleQuota?.perRun ?? null,
+    };
   }
-  return {
-    key: ctx.runId ? `run:${ctx.runId}` : null,
-    limit: roleQuota?.perRun ?? null,
-  };
+
+  // A release cut can take an hour. Its routine status and artifact handoff
+  // reads must remain available after the bounded mutating calls are spent.
+  // Distinct keys keep successful reads out of the write quota's count.
+  if (toolName === 'release:cut' && window.limit != null && window.key) {
+    const op = input && typeof input === 'object' && 'op' in input ? input.op : undefined;
+    const readOnly = op === 'preflight' || op === 'status' || op === 'handoff';
+    return {
+      key: `${window.key}:${readOnly ? 'read' : 'write'}`,
+      limit: readOnly ? null : window.limit,
+    };
+  }
+  return window;
 }

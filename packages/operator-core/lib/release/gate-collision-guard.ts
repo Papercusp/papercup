@@ -951,13 +951,17 @@ export async function acquireGitSyncRestartBarrier(
   const resource = GIT_SYNC_RESTART_BARRIER_RESOURCE;
   const coordinationDomain = d.resolveDomain(resource);
   const owner = d.newOwner();
+  const maxWaitSec = Math.max(0, opts?.maxDrainSec ?? 0);
   const result = await d.acquire({
     coordinationDomain,
     resource,
     owner,
     ownerLabel,
-    ttlSec: GIT_SYNC_RESTART_BARRIER_TTL_SEC,
-    maxWaitSec: Math.max(0, opts?.maxDrainSec ?? 0),
+    // The lease starts when the exclusive is QUEUED, not when it becomes held.
+    // Preserve it for the entire drain plus the existing kill-handoff window;
+    // otherwise a 120s drain loses its 60s lease and admits new git-sync fires.
+    ttlSec: Math.ceil(maxWaitSec) + GIT_SYNC_RESTART_BARRIER_TTL_SEC,
+    maxWaitSec,
   });
   if (!result.ok) {
     // RELEASE THE QUEUED EXCLUSIVE. A failed acquire that left a queue row behind is

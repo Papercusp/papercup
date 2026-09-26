@@ -293,6 +293,7 @@ describe('healedWakeText', () => {
   it('tells the healed session to re-arm its loop and re-park state', () => {
     const text = healedWakeText('su-x', 45);
     expect(text).toContain('loop:status');
+    expect(text).toContain('do NOT re-arm a deliberately ended loop');
     expect(text).toContain('re-park');
     expect(text).toContain('~45m');
   });
@@ -302,7 +303,8 @@ describe('healedWakeText', () => {
     try {
       const tagged = await taggedHealedWakeText('su-x', 45, { dir, nowMs: INOW });
       const parsed = parseEnvelope(tagged);
-      expect(parsed).toMatchObject({ origin: 'watchdog', payload: healedWakeText('su-x', 45) });
+      expect(parsed?.origin).toBe('watchdog');
+      expect(parsed?.payload.trimStart()).toBe(healedWakeText('su-x', 45));
 
       const ledger = readFileSync(join(dir, 'su-x.jsonl'), 'utf8')
         .trim()

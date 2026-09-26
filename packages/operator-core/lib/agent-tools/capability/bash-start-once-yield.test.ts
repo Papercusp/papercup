@@ -71,6 +71,16 @@ afterEach(() => {
 });
 
 describe('capability:bash — start once and yield the same durable job (P-002)', () => {
+  it('warns that an empty process table cannot prove a host process is gone', async () => {
+    const result = await bash.handler(
+      { command: 'ps -eo pid --no-headers', timeout: 5_000 },
+      makeCtx({ codeMode: true }),
+    );
+    expect(result.content[0]!.text).toContain('NOTICE: Process-table output may be limited');
+    expect(result.structuredContent?.process_table_notice).toContain('does not prove a host process is gone');
+    expect(result.content[0]!.text).toContain('processes:list');
+  });
+
   it('publishes a separate bounded response-window argument', () => {
     const args = (bashTool as unknown as { args: ArgsSchema }).args;
     expect(args.safeParse({ command: 'true', timeout: 60_000, yield_after_ms: 10 }).success).toBe(true);

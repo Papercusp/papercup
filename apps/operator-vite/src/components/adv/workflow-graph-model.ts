@@ -82,8 +82,8 @@ export interface WorkflowBindingInput {
   eventFilter: Record<string, unknown>;
   action: Record<string, unknown>;
   stormPolicy: Record<string, unknown>;
-  planSlug: string;
-  planHarnessSlug: string;
+  planSlug: string | null;
+  planHarnessSlug: string | null;
   armed: boolean;
   lastRun?: { status: string } | null;
 }
@@ -232,32 +232,56 @@ export function buildWorkflowGraph(input: BuildWorkflowGraphInput): WorkflowGrap
     previousId = filterId;
   }
 
-  // ── plan ──────────────────────────────────────────────────────────────────────────────
-  const planId = 'plan';
+  const actionType = workflowActionType(binding.action);
   const lastRunFailed = binding.lastRun?.status === 'failed';
-  nodes.push({
-    id: planId,
-    kind: 'plan',
-    label: input.workflowLabel?.trim() || binding.planSlug,
-    detail: `${binding.planHarnessSlug} · ${binding.planSlug}`,
-    meta: input.planChainable == null ? null : input.planChainable ? 'declares outputs' : 'no declared outputs',
-    state: lastRunFailed ? 'attention' : 'ok',
-  });
-  // The storm policy governs how often the trigger is allowed to reach the plan, so it
-  // annotates the hop INTO the plan rather than sitting on a node.
-  edges.push({
-    id: `${previousId}->${planId}`,
-    from: previousId,
-    to: planId,
-    label: describeStormPolicy(binding.stormPolicy),
-  });
-  previousId = planId;
+
+  if (actionType === 'blueprint-operation') {
+    const operationId = typeof binding.action.operationId === 'string'
+      ? binding.action.operationId
+      : 'unknown-operation';
+    const harnessSlug = typeof binding.action.operationHarnessSlug === 'string'
+      ? binding.action.operationHarnessSlug
+      : 'unknown-harness';
+    const operationNodeId = 'operation';
+    nodes.push({
+      id: operationNodeId,
+      kind: 'tool',
+      label: operationId,
+      detail: `${harnessSlug} · registered blueprint operation`,
+      meta: 'typed operation target',
+      state: lastRunFailed ? 'attention' : 'ok',
+    });
+    edges.push({
+      id: `${previousId}->${operationNodeId}`,
+      from: previousId,
+      to: operationNodeId,
+      label: describeStormPolicy(binding.stormPolicy),
+    });
+    previousId = operationNodeId;
+  } else if (binding.planHarnessSlug && binding.planSlug) {
+    // ── plan ────────────────────────────────────────────────────────────────
+    const planId = 'plan';
+    nodes.push({
+      id: planId,
+      kind: 'plan',
+      label: input.workflowLabel?.trim() || binding.planSlug,
+      detail: `${binding.planHarnessSlug} · ${binding.planSlug}`,
+      meta: input.planChainable == null ? null : input.planChainable ? 'declares outputs' : 'no declared outputs',
+      state: lastRunFailed ? 'attention' : 'ok',
+    });
+    edges.push({
+      id: `${previousId}->${planId}`,
+      from: previousId,
+      to: planId,
+      label: describeStormPolicy(binding.stormPolicy),
+    });
+    previousId = planId;
+  }
 
   // ── tool (only for a non-default action) ──────────────────────────────────────────────
   // 'launch-plan' IS the plan node already; emitting a second node for it would draw a hop
   // that does not exist.
-  const actionType = workflowActionType(binding.action);
-  if (actionType !== 'launch-plan') {
+  if (actionType !== 'launch-plan' && actionType !== 'blueprint-operation') {
     const toolId = 'action';
     nodes.push({
       id: toolId,

@@ -17,6 +17,7 @@ import {
   utimesSync,
   openSync,
   closeSync,
+  rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -26,6 +27,8 @@ import {
   canaryCypherArgv,
   buildAnalyzeInvocation,
   analyzeEnv,
+  selectiveSourceLimitKb,
+  GITNEXUS_KNOWN_SOURCE_PATH,
   analyzeNodeArgs,
   analyzeCliPath,
   GITNEXUS_ANALYZE_HEAP_MB,
@@ -76,6 +79,7 @@ import {
   processAgeMs,
   type OpenHandleProbe,
   judgeCanary,
+  analyzeTickSucceeded,
   GITNEXUS_HEALTH_DEFAULT,
   GITNEXUS_FAILURE_ALERT_THRESHOLD,
   decideGitnexusHealthUpdate,
@@ -91,6 +95,7 @@ import {
   judgeAdoptedRun,
   readIndexStatsForHealth,
 } from './gitnexus-reindex-action';
+import { SELECTIVE_SOURCE_BLOBS } from '../../code-intelligence/selective-corpus';
 
 const taskManager = vi.hoisted(() => ({
   managedSpawn: vi.fn(),
@@ -268,6 +273,28 @@ describe('analyzeEnv — the heap cap (P-004)', () => {
     const base: NodeJS.ProcessEnv = {};
     analyzeEnv(base);
     expect(base.NODE_OPTIONS).toBeUndefined();
+  });
+});
+
+describe('GitNexus selective source eligibility', () => {
+  it('sizes the walker from the live acceptance sources and preserves an explicit operator setting', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-source-limit-'));
+    try {
+      for (const relativePath of Object.keys(SELECTIVE_SOURCE_BLOBS)) {
+        const file = join(root, relativePath);
+        mkdirSync(dirname(file), { recursive: true });
+        writeFileSync(file, relativePath === GITNEXUS_KNOWN_SOURCE_PATH ? 'x'.repeat(525_617) : 'export const x = 1;\n');
+      }
+      const limit = selectiveSourceLimitKb(root);
+      expect(limit).toBe(514); // ceil(525617 / 1024), above the vendor's 512 KiB skip threshold
+      expect(analyzeEnv({}, undefined, undefined, limit).GITNEXUS_MAX_FILE_SIZE).toBe('514');
+      expect(analyzeEnv({ GITNEXUS_MAX_FILE_SIZE: '1024' }, undefined, undefined, limit).GITNEXUS_MAX_FILE_SIZE).toBe('1024');
+      expect(() => analyzeEnv({ GITNEXUS_MAX_FILE_SIZE: '512' }, undefined, undefined, limit)).toThrow(/excludes a selective corpus source/);
+      writeFileSync(join(root, GITNEXUS_KNOWN_SOURCE_PATH), 'x'.repeat(32 * 1024 * 1024 + 1));
+      expect(() => selectiveSourceLimitKb(root)).toThrow(/32 MiB ceiling/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2143,6 +2170,19 @@ describe('probeOpenHandles / classifyWriterLiveness — the open-handle discrimi
 // ---------------------------------------------------------------------------
 // P-004 — the semantic canary. Pure policy, no graph and no subprocess.
 // ---------------------------------------------------------------------------
+describe('analyzeTickSucceeded', () => {
+  const clean = { code: 0, timedOut: false, stdout: '', stderr: '' };
+  const passing = { healthy: true, degraded: false, probes: [], summary: 'canary OK' };
+
+  it('requires a completed run and a positive canary verdict', () => {
+    expect(analyzeTickSucceeded(clean, passing)).toBe(true);
+    expect(analyzeTickSucceeded(clean, null)).toBe(false); // canary threw or never ran
+    expect(analyzeTickSucceeded(clean, { ...passing, healthy: false })).toBe(false);
+    expect(analyzeTickSucceeded({ ...clean, code: 1 }, passing)).toBe(false);
+    expect(analyzeTickSucceeded({ ...clean, timedOut: true }, passing)).toBe(false);
+  });
+});
+
 describe('judgeCanary', () => {
   // Real measured values from the live graph, 2026-08-21 (counts) and 2026-09-05
   // (embeddings: 217,120 after the uncapped full pass, plan gitnexus-embeddings-enablement).
@@ -2239,6 +2279,15 @@ describe('judgeCanary', () => {
     const v = judgeCanary({ ...HEALTHY, roundTripOk: false });
     expect(v.healthy).toBe(false);
     expect(v.probes.find((p) => p.name === 'symbol-round-trip')!.detail).toContain('read path is broken');
+  });
+
+  it('fails a healthy-looking graph that omitted a known source file', () => {
+    const absent = judgeCanary({ ...HEALTHY, knownSourceFileCount: 0 });
+    expect(absent.healthy).toBe(false);
+    expect(absent.summary).toContain('known-source-coverage');
+    expect(absent.summary).toContain(GITNEXUS_KNOWN_SOURCE_PATH);
+    expect(judgeCanary({ ...HEALTHY, knownSourceFileCount: null }).healthy).toBe(false);
+    expect(judgeCanary({ ...HEALTHY, knownSourceFileCount: 1 }).healthy).toBe(true);
   });
 
   it('fails rather than passes when the round trip could not be attempted at all', () => {

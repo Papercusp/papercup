@@ -640,6 +640,21 @@ Preserve this plan body.
     expect(await rubrics.getRubric(rubricId, 7)).toBeNull();
   });
 
+  it('does not infer legacy historical versions even when sequence counters align', async () => {
+    const rubricId = 'aligned-legacy-standard';
+    await rubrics.proposeRubric({
+      rubricId, characteristic: 'hive-coordination', title: 'Legacy aligned',
+      criteria: sampleCriteria, by: 'author-a',
+    });
+    const current = await rubrics.ratifyRubric(rubricId, 'independent-reviewer');
+    await db.adminSql`
+      UPDATE harness_shared.plan_revisions
+         SET content_snapshot = regexp_replace(content_snapshot, '\n  "rubricRevision": [0-9]+,', '', 'g')
+       WHERE plan_slug = ${rubricId}`;
+    expect(await rubrics.getRubric(rubricId, 1)).toBeNull();
+    expect((await rubrics.getRubric(rubricId, 2))?.criteriaHash).toBe(current?.criteriaHash);
+  });
+
   it('reads an immutable historical rubric revision without falling back to current template_data', async () => {
     const rubricId = 'revision-addressed-rubric';
     await rubrics.proposeRubric({

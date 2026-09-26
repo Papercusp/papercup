@@ -267,6 +267,9 @@ import '../../blueprint/blueprint-run-action';
 // scheduled-recurring-plans-2026-06-16 P-007: `system:plan-run` — one fire of a
 // scheduled plan (instance plan → plan_runs row → run-scoped frontier work_items).
 import './plan-run-action';
+// blueprint-backed-work-item-execution P-016 / D-020: operation-backed plan
+// schedules materialize on demand and reuse the routine fire workflow id.
+import './blueprint-operation-action';
 // work-on-everything-goal-2026-08-23 P-020 (D-006 ruling 3): `system:goal-start` —
 // one scheduled activation of an existing goal via the startGoalById primitive.
 import './goal-start-action';

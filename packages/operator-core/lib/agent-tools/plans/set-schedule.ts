@@ -45,6 +45,15 @@ const scheduleSchema = z
       })
       .optional()
       .describe('Agentic app queue owner and durable stable agent-name for direct dispatch.'),
+    operation: z
+      .object({
+        harnessSlug: z.string().trim().min(1).max(120),
+        operationId: z.string().trim().min(1).max(200),
+        input: z.record(z.string(), z.unknown()).optional(),
+      })
+      .strict()
+      .optional()
+      .describe('Registered blueprint operation fired by this schedule; legacy schedules without it retain system:plan-run.'),
   })
   .describe('The recurrence set + policy. Omit/null to clear (un-schedule).');
 
@@ -65,7 +74,7 @@ export default defineTool({
     when: 'Turning a plan into a scheduled/recurring one, editing its cadence/expiry, or clearing its schedule.',
     notWhen:
       'Arming a saved schedule so it starts firing — that is the autonomy-gated arm step, not authoring. Flipping plan/item status uses plans:set-plan-status / plans:set-status.',
-    chaining: 'plans:set-schedule → (arm, autonomy-gated) → the routines engine fires system:plan-run; plans:run-now to fire one manually.',
+    chaining: 'plans:set-schedule → (arm, autonomy-gated) → the routines engine fires the configured blueprint operation (or legacy system:plan-run); plans:run-now to fire one legacy plan manually.',
     seeAlso: [
       'plans:arm-schedule (arm it after authoring — autonomy-gated)',
       'plans:run-now (fire one run now)',

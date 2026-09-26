@@ -58,6 +58,7 @@ import {
   isActionableFleetObservation,
   type FleetAdmissionObservation,
   type FleetDeadLatchEntry,
+  type FleetLeftLatchEntry,
   type FleetMemberObservation,
   type FleetTransitionEventsDeps,
 } from '../../fleet-transition-events';
@@ -88,12 +89,14 @@ let previousAdmissionObservations = new Map<string, number>();
  * per member per day (EI-22125312396899848).
  */
 let memberDeadLatch = new Map<string, FleetDeadLatchEntry>();
+let memberLeftLatch = new Map<string, FleetLeftLatchEntry>();
 
 /** Test-only: forget the previous snapshot so cases don't cross-contaminate. */
 export function __resetFleetTransitionSnapshotForTests(): void {
   previousObservations = new Map();
   previousAdmissionObservations = new Map();
   memberDeadLatch = new Map();
+  memberLeftLatch = new Map();
 }
 
 /**
@@ -171,6 +174,9 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
       contextPressure: pressure.get(a.agentId) ?? null,
       wakeable: a.wakeable ?? null,
       claimCount: a.claims.length,
+      claimKeys: a.claims.map((claim) => JSON.stringify([
+        claim.type, claim.harnessSlug, claim.planSlug, claim.id,
+      ])),
       stalled: loopStateKnown ? a.stalled === true : null,
       consecutiveRecoveryOnlyCycles:
         repeatedRecovery.get(a.agentId)?.status === 'measured'
@@ -297,6 +303,7 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   const observations = rawObservations.filter(isActionableFleetObservation);
   const edges = detectFleetTransitions(previousObservations, observations, {
     deadLatch: memberDeadLatch,
+    leftLatch: memberLeftLatch,
     nowMs: Date.now(),
   });
   const admissionEdges = detectFleetAdmissionTransitions(previousAdmissionObservations, admissionObservations);
@@ -313,11 +320,13 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   }
   let emitDeps = deps;
   const memberDeadEdges = edges.filter((edge) => edge.kind === 'member-dead');
+  const memberLeftEdges = edges.filter((edge) => edge.kind === 'member-left');
   const contextEdges = edges.filter((edge) => edge.kind === 'context-critical');
   const repeatedRecoveryEdges = edges.filter((edge) => edge.kind === 'repeated-recovery');
   const stalledEdges = edges.filter((edge) => edge.kind === 'member-stalled');
   if (
     (memberDeadEdges.length > 0 ||
+      memberLeftEdges.length > 0 ||
       contextEdges.length > 0 ||
       stalledEdges.length > 0 ||
       repeatedRecoveryEdges.length > 0) &&

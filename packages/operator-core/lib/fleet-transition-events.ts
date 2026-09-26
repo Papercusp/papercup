@@ -119,6 +119,8 @@ export interface FleetMemberObservation {
   wakeable?: boolean | null;
   /** Total active claims, including plan-item and work-item claims. */
   claimCount?: number;
+  /** Stable identities of those claims, independent of assignment row ordering. */
+  claimKeys?: readonly string[];
   /** Whether the current assignment read classifies this member as stalled. */
   stalled?: boolean | null;
   /** Measured consecutive checkpoint-bounded recovery-only cycles. Null means
@@ -196,6 +198,19 @@ export interface FleetDeadLatchEntry {
   firedAtMs: number;
   /** When the member was FIRST observed non-dead since that fire; null while it still reads dead. */
   aliveSinceMs: number | null;
+}
+
+/** A member-left notice stays latched across brief live/recorded flaps. */
+export interface FleetLeftLatchEntry {
+  claimSignature: string;
+  /** First continuously wakeable observation after the notice. */
+  recoveredSinceMs: number | null;
+  /** Used only to discard members absent from the roster for a full day. */
+  lastSeenAtMs: number;
+}
+
+function memberClaimSignature(o: FleetMemberObservation): string {
+  return JSON.stringify(o.claimKeys ? [...o.claimKeys].sort() : [o.claimCount ?? 0]);
 }
 
 /** A fleet-level admission-block crossing, ready to emit. */
@@ -282,13 +297,15 @@ export function detectFleetTransitions(
   opts: {
     /** Caller-owned member-dead latch (rule 3). Mutated in place; omit to disable latching. */
     deadLatch?: Map<string, FleetDeadLatchEntry>;
+    /** Caller-owned member-left latch; suppresses repeated notices for unchanged claims. */
+    leftLatch?: Map<string, FleetLeftLatchEntry>;
     /** Observation time. Required for the latch; the detector never reads a clock itself. */
     nowMs?: number;
     /** Override the re-arm dwell (tests). */
     rearmDwellMs?: number;
   } = {},
 ): FleetTransitionEdge[] {
-  const { deadLatch, rearmDwellMs = MEMBER_DEAD_REARM_DWELL_MS } = opts;
+  const { deadLatch, leftLatch, rearmDwellMs = MEMBER_DEAD_REARM_DWELL_MS } = opts;
   const nowMs = opts.nowMs ?? 0;
   const edges: FleetTransitionEdge[] = [];
   for (const o of next) {
@@ -296,6 +313,19 @@ export function detectFleetTransitions(
     const before = prev.get(key);
 
     const isDead = CONFIRMED_DEAD_SESSION_STATES.has(o.sessionState ?? '');
+
+    const left = leftLatch?.get(key);
+    if (left) {
+      left.lastSeenAtMs = nowMs;
+      if ((o.claimCount ?? 0) === 0 || left.claimSignature !== memberClaimSignature(o)) {
+        leftLatch?.delete(key); // changed work is a new actionable episode
+      } else if ((o.sessionState === 'live' || o.sessionState === 'parked') && o.wakeable === true) {
+        if (left.recoveredSinceMs === null) left.recoveredSinceMs = nowMs;
+        else if (nowMs - left.recoveredSinceMs >= rearmDwellMs) leftLatch?.delete(key);
+      } else {
+        left.recoveredSinceMs = null; // a short live flap is not recovery
+      }
+    }
 
     // Rule 3 bookkeeping runs on EVERY observation, including a first sighting —
     // the dwell that re-arms a latched member must keep accruing across a gap in
@@ -330,7 +360,8 @@ export function detectFleetTransitions(
       o.sessionState === 'recorded' && o.wakeable === false && (o.claimCount ?? 0) > 0;
     const hadUnwakeableClaims =
       before.sessionState === 'recorded' && before.wakeable === false && (before.claimCount ?? 0) > 0;
-    if (hasUnwakeableClaims && !hadUnwakeableClaims && !deadLatch?.has(key)) {
+    const claimsChanged = memberClaimSignature(o) !== memberClaimSignature(before);
+    if (hasUnwakeableClaims && (!hadUnwakeableClaims || claimsChanged) && !deadLatch?.has(key) && !leftLatch?.has(key)) {
       edges.push({
         kind: 'member-left',
         fleetSlug: o.fleetSlug,
@@ -338,6 +369,11 @@ export function detectFleetTransitions(
         to: 'recorded',
         from: before.sessionState,
         claimCount: o.claimCount ?? 0,
+      });
+      leftLatch?.set(key, {
+        claimSignature: memberClaimSignature(o),
+        recoveredSinceMs: null,
+        lastSeenAtMs: nowMs,
       });
     }
 
@@ -409,6 +445,11 @@ export function detectFleetTransitions(
   if (deadLatch) {
     for (const [k, entry] of deadLatch) {
       if (nowMs - entry.firedAtMs > MEMBER_DEAD_LATCH_TTL_MS) deadLatch.delete(k);
+    }
+  }
+  if (leftLatch) {
+    for (const [k, entry] of leftLatch) {
+      if (nowMs - entry.lastSeenAtMs > MEMBER_DEAD_LATCH_TTL_MS) leftLatch.delete(k);
     }
   }
   edges.sort(

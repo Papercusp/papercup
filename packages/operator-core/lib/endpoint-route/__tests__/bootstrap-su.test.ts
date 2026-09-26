@@ -533,7 +533,7 @@ const CTX: RouteContext = {
   signal: new AbortController().signal,
 };
 
-type Route = { method: string; handler: (req: Request, ctx: RouteContext) => Promise<Response> };
+type Route = { method: string; timeoutSec?: number | null; handler: (req: Request, ctx: RouteContext) => Promise<Response> };
 
 async function routesOf(): Promise<Route[]> {
   const mod = await import('../routes/agent-mcp/bootstrap-su');
@@ -590,6 +590,11 @@ beforeEach(() => {
 });
 
 describe('bootstrap-su', () => {
+  it('lets a committed slow bootstrap return its result past the generic route watchdog', async () => {
+    const post = (await routesOf()).find((route) => route.method === 'POST')!;
+    expect(post.timeoutSec).toBeNull();
+  });
+
   it.each(['grade', 'test'])('binds %s and AUTO into the first render and registry before returning a session', async (mode) => {
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', mode });
     expect(res.status).toBe(200);

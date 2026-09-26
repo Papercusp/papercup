@@ -19,6 +19,7 @@ import {
   indexObservations,
   isActionableFleetObservation,
   type FleetDeadLatchEntry,
+  type FleetLeftLatchEntry,
   type FleetMemberObservation,
   type FleetTransitionEdge,
 } from './fleet-transition-events';
@@ -129,6 +130,42 @@ describe('detectFleetTransitions', () => {
   it('does not repeat member-left while the recorded claim-bearing state persists', () => {
     const recorded = member({ sessionState: 'recorded', wakeable: false, claimCount: 2 });
     expect(detectFleetTransitions(indexObservations([recorded]), [recorded])).toEqual([]);
+  });
+
+  it('latches member-left across short live flaps with the same claims', () => {
+    const latch = new Map<string, FleetLeftLatchEntry>();
+    const live = member({ sessionState: 'live', wakeable: true, claimCount: 2, claimKeys: ['WI-1', 'WI-2'] });
+    const recorded = member({ sessionState: 'recorded', wakeable: false, claimCount: 2, claimKeys: ['WI-2', 'WI-1'] });
+    let previous = indexObservations([live]);
+    let notices = 0;
+    for (let i = 0; i < 4; i++) {
+      const edges = detectFleetTransitions(previous, [recorded], { leftLatch: latch, nowMs: i * 60_000 });
+      notices += edges.filter((edge) => edge.kind === 'member-left').length;
+      previous = indexObservations([recorded]);
+      expect(detectFleetTransitions(previous, [live], { leftLatch: latch, nowMs: i * 60_000 + 30_000 })).toEqual([]);
+      previous = indexObservations([live]);
+    }
+    expect(notices).toBe(1);
+  });
+
+  it('rearms member-left when the claim set changes even if its count stays constant', () => {
+    const latch = new Map<string, FleetLeftLatchEntry>();
+    const first = member({ sessionState: 'recorded', wakeable: false, claimCount: 2, claimKeys: ['WI-1', 'WI-2'] });
+    const changed = member({ sessionState: 'recorded', wakeable: false, claimCount: 2, claimKeys: ['WI-1', 'WI-3'] });
+    detectFleetTransitions(indexObservations([member({ sessionState: 'live', claimCount: 2 })]), [first], { leftLatch: latch, nowMs: 0 });
+    expect(detectFleetTransitions(indexObservations([first]), [changed], { leftLatch: latch, nowMs: 60_000 })).toEqual([
+      { kind: 'member-left', fleetSlug: 'push-not-poll', agentId: 'su-a', to: 'recorded', from: 'recorded', claimCount: 2 },
+    ]);
+  });
+
+  it('rearms member-left after sustained wakeable recovery', () => {
+    const latch = new Map<string, FleetLeftLatchEntry>();
+    const live = member({ sessionState: 'live', wakeable: true, claimCount: 1, claimKeys: ['WI-1'] });
+    const recorded = member({ sessionState: 'recorded', wakeable: false, claimCount: 1, claimKeys: ['WI-1'] });
+    detectFleetTransitions(indexObservations([live]), [recorded], { leftLatch: latch, nowMs: 0 });
+    detectFleetTransitions(indexObservations([recorded]), [live], { leftLatch: latch, nowMs: 60_000, rearmDwellMs: 120_000 });
+    detectFleetTransitions(indexObservations([live]), [live], { leftLatch: latch, nowMs: 180_000, rearmDwellMs: 120_000 });
+    expect(detectFleetTransitions(indexObservations([live]), [recorded], { leftLatch: latch, nowMs: 240_000 })).toHaveLength(1);
   });
 
   it('fires context-critical on the high → critical crossing', () => {

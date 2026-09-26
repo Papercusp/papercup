@@ -37,6 +37,7 @@ describe('workflow-graph-model — structural contract with operator-core', () =
       sourceStatus: 'connected',
       planHarnessSlug: 'papercusp',
       planSlug: 'meeting-prep-brief',
+      goalId: null,
       workItemHarnessSlug: null,
       workItemKind: null,
       eventPattern: 'calendar.event.starts-in-30m',
@@ -107,6 +108,28 @@ describe('buildWorkflowGraph — nodes trace to real binding fields', () => {
     const tool = graph.nodes.find((n) => n.kind === 'tool');
     expect(tool?.label).toBe('coord:send');
     expect(graph.edges.map((e) => `${e.from}->${e.to}`)).toContain('plan->action');
+  });
+
+  it('renders a registered blueprint operation as the target without inventing a plan node', () => {
+    const graph = buildWorkflowGraph({
+      binding: binding({
+        planHarnessSlug: null,
+        planSlug: null,
+        action: {
+          type: 'blueprint-operation',
+          operationHarnessSlug: 'papercusp',
+          operationId: 'triage-message',
+        },
+      }),
+    });
+    expect(graph.nodes.map((node) => node.kind)).toEqual(['trigger', 'tool']);
+    expect(graph.nodes[1]).toMatchObject({
+      label: 'triage-message',
+      detail: 'papercusp · registered blueprint operation',
+    });
+    expect(graph.edges).toEqual([
+      expect.objectContaining({ from: 'trigger', to: 'operation' }),
+    ]);
   });
 
   it('never invents a recipe or outcome node — neither has a binding field today', () => {

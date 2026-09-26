@@ -13,6 +13,12 @@ import '../cell-registrations-wiring';
 
 const auditUnsafeM = vi.hoisted(() => vi.fn());
 const gateOwnershipM = vi.hoisted(() => vi.fn());
+const ownerDirectiveM = vi.hoisted(() => vi.fn());
+
+vi.mock('../../owner-directives', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../owner-directives')>()),
+  getOwnerDirective: ownerDirectiveM,
+}));
 
 vi.mock('../../release-deploy-launch', () => ({
   readDeployStatus: vi.fn(),
@@ -180,6 +186,8 @@ beforeEach(() => {
     takenAt: '2026-09-26T18:00:00.000Z', eventKey: 'gate-red-streak:papercusp',
     holderSessionState: 'live', unknown: null, duplicates: [],
   });
+  ownerDirectiveM.mockResolvedValue({ id: 123, workspaceId: 'test-ws', capturedByHook: true,
+    sourceTurnRef: 'owner-turn:123', verbatimText: 'Force deploy feedface or bb694a6af028 now.' });
   fireGitSyncM.mockResolvedValue(undefined as never);
   auditUnsafeM.mockImplementation(async (query: string) => query.includes('SELECT w.feature_id')
     ? [{ work_item: 'WI-gate', holder: 'o', taken_at: '2026-09-26T18:00:00.000Z', expires_at: null }]
@@ -700,6 +708,19 @@ describe('release:deploy — force (owner-gated)', () => {
     expect(launchM).not.toHaveBeenCalled();
   });
 
+  it('refuses a forged or mismatched force signoff before effect', async () => {
+    statusM.mockResolvedValue(mkStatus({ state: 'gate-red',
+      deploy: { ...mkStatus().deploy, stagingHeadSha: 'feedface' } }));
+    ownerDirectiveM.mockResolvedValueOnce(null);
+    expect(body(await tool.handler(forceArgs as never, { role: 'operator' } as never)))
+      .toMatchObject({ refused: true, reason: 'owner_signoff_not_owner_captured' });
+    ownerDirectiveM.mockResolvedValueOnce({ id: 123, workspaceId: 'test-ws', capturedByHook: true,
+      sourceTurnRef: 'owner-turn:123', verbatimText: 'Force deploy a different commit.' });
+    expect(body(await tool.handler(forceArgs as never, { role: 'operator' } as never)))
+      .toMatchObject({ refused: true, reason: 'owner_signoff_does_not_name_force_target' });
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
   it('confirm:true fires force (un-green commit) AND notifies the owner', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red', deploy: { ...mkStatus().deploy, stagingHeadSha: 'feedface' } }));
     launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'force', commit: 'feedface', argv: [], logPath: '/tmp/x.log' });
@@ -710,8 +731,8 @@ describe('release:deploy — force (owner-gated)', () => {
     expect(notifyM).toHaveBeenCalledTimes(1); // loud owner notification
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
       gateActionReceipt: expect.objectContaining({
-        action: 'deploy-force', target: { commit: 'feedface', ownerSignoffRef: 'owner-directive:123',
-          ownerSignoffAssessment: 'caller-supplied-unverified' },
+        action: 'deploy-force', target: expect.objectContaining({ commit: 'feedface', ownerSignoffRef: 'owner-directive:123',
+          ownerSignoffAssessment: 'owner-captured-target-matched' }),
         effect: expect.objectContaining({ status: 'detached-launch-accepted', deployedSha: 'unknown' }),
       }),
     }));

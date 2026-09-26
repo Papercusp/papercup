@@ -118,11 +118,32 @@ export interface CohortDeps {
   log(line: string): void;
   /** Called once the idle window opens, immediately before any arm dispatch. */
   admit(input: { sourceId: string; armIds: string[] }): Promise<{ ok: boolean; reason?: string }>;
+  /** Observation hook after the predecessor is frozen but before a long idle
+   * wait can evict its request-stage/account receipt from the gateway ring. */
+  afterPreparation?(input: { sourceId: string; threadId: string; turnId: string }): Promise<void>;
+  /** D-063 runtime half of the pre-charge root manifest. Called after the
+   * exact native source and managed carry hashes exist, but before any
+   * control/candidate arm can dispatch. */
+  afterSourceBound?(input: { source: Readonly<CohortSourceRecord> }):
+    Promise<{ ok: boolean; reason?: string }>;
+  /** D-060 paid-pilot checkpoint. When a source names `pilotTaskId`, that
+   * control/candidate pair runs first against the source's one frozen cut.
+   * The remaining arms stay in the same app-server and start only after this
+   * hook accepts the observed pair. Omitting the hook fails closed. */
+  afterPilot?(input: { sourceId: string; taskId: string; arms: readonly CohortArmRecord[] }):
+    Promise<{ ok: boolean; reason?: string }>;
 }
 
 export interface CohortSourceInput {
   recipe: Recipe; sourceId: string; taskIds?: readonly string[]; homeDir: string; provider: CohortProvider;
   transport: string; authorizationScope: string; fillerTokens: number;
+  /** Run this task's two arms before any other task arm for the source. This
+   * keeps the pilot inside the registered 30 pairs and preserves the single
+   * source cut that evaluateCarryTaskPairs requires. */
+  pilotTaskId?: string;
+  /** Fail closed before every compared arm unless afterSourceBound accepts the
+   * exact source/carry binding. Paid D-063 runs always set this. */
+  sourceBindingRequired?: boolean;
   /** Dispatch offset after the idle window opens; arms are staggered by staggerMs. */
   windowMarginMs: number; staggerMs: number; turnTimeoutMs: number;
   modelContextWindow: number; autoCompactTokenLimit: number;
@@ -202,6 +223,10 @@ export async function runCarryCohortSource(deps: CohortDeps, input: CohortSource
   source: CohortSourceRecord; arms: CohortArmRecord[]; stop: string | null }> {
   const { recipe } = input;
   const plan = cohortArmPlan(recipe, input.sourceId, input.taskIds);
+  const pilotPlans = input.pilotTaskId ? plan.arms.filter(arm => arm.pair.taskId === input.pilotTaskId) : [];
+  if (input.pilotTaskId && pilotPlans.length !== 2) {
+    throw new Error(`pilot task ${input.pilotTaskId} must name exactly one control/candidate pair in ${input.sourceId}`);
+  }
   const stratum = input.sourceId.split('-')[0] as 'S' | 'L';
   mkdirSync(input.homeDir, { recursive: true, mode: 0o700 });
   // One fixed base shared by the predecessor and every arm; the managed carry
@@ -237,6 +262,9 @@ export async function runCarryCohortSource(deps: CohortDeps, input: CohortSource
     sourceRecord.sourceRef = preflight.sourceRef;
     sourceRecord.history = preflight.history; sourceRecord.idle = preflight.idle;
     deps.log(`${input.sourceId} history=${preflight.history?.inputTokens ?? 'unknown'} inBand=${preflight.history?.inBand ?? false}`);
+    if (deps.afterPreparation) {
+      await deps.afterPreparation({ sourceId: input.sourceId, threadId: sourceThreadId, turnId: prepared.turnId });
+    }
     // Mint the carry from the stopped source BEFORE any arm creates a newer rollout.
     const carry = deps.mintCarry({ home: input.homeDir, sourceThreadId, seedText: recipe.seedText });
     sourceRecord.carry = { launchContextPath: carry.launchContextPath, carrySha256: sha256(carry.carryText) };
@@ -247,6 +275,12 @@ export async function runCarryCohortSource(deps: CohortDeps, input: CohortSource
       filePath: source.filePath, byteOffset: readArgs.byte_offset, byteLength: readArgs.byte_limit,
       totalBytes: source.snapshot.completeBytes, sha256: sha256(sentinel) } : null;
     if (!window) sourceRecord.errors.push('source-sentinel-not-found');
+    const sourceBinding = deps.afterSourceBound
+      ? await deps.afterSourceBound({ source: structuredClone(sourceRecord) })
+      : input.sourceBindingRequired ? { ok: false, reason: 'afterSourceBound hook is required' } : { ok: true };
+    if (!sourceBinding.ok) {
+      return { source: sourceRecord, arms, stop: `source-binding-refused:${sourceBinding.reason ?? 'unknown'}` };
+    }
     const completedAt = preflight.idle?.completedAtMs ?? null;
     if (completedAt === null) throw new Error('predecessor completion receipt unavailable');
     const opensAt = completedAt + plan.source.idle.minMs + input.windowMarginMs;
@@ -257,11 +291,24 @@ export async function runCarryCohortSource(deps: CohortDeps, input: CohortSource
     // captureCompletedCarrySource closed the preparation peer (writer exclusion
     // before the cut is read). Arms run in one fresh app-server on the same home.
     live = await openLive(deps, input.homeDir);
-    const running = plan.arms.map((armPlan, index) => (async () => {
+    const runPlans = async (selected: typeof plan.arms) => await Promise.all(selected.map((armPlan, index) => (async () => {
       await deps.sleep(index * input.staggerMs);
       return await runArm(deps, live!, { input, armPlan, options, sourceThreadId, completedAt, preflight, carry, window, readArgs });
-    })());
-    arms.push(...await Promise.all(running));
+    })()));
+    if (input.pilotTaskId) {
+      const observedPilot = await runPlans(pilotPlans);
+      arms.push(...observedPilot);
+      const pilotSecurity = observedPilot.find(arm => arm.errors.some(error => error.startsWith('violation:')));
+      if (pilotSecurity) return { source: sourceRecord, arms, stop: `native-violation:${pilotSecurity.armId}` };
+      const verdict = deps.afterPilot
+        ? await deps.afterPilot({ sourceId: input.sourceId, taskId: input.pilotTaskId, arms: observedPilot })
+        : { ok: false, reason: 'afterPilot hook is required' };
+      if (!verdict.ok) return { source: sourceRecord, arms, stop: `pilot-refused:${verdict.reason ?? 'unknown'}` };
+      const pilotArmIds = new Set(pilotPlans.map(arm => arm.armId));
+      arms.push(...await runPlans(plan.arms.filter(arm => !pilotArmIds.has(arm.armId))));
+    } else {
+      arms.push(...await runPlans(plan.arms));
+    }
     const security = arms.find(a => a.errors.some(e => e.startsWith('violation:')));
     return { source: sourceRecord, arms, stop: security ? `native-violation:${security.armId}` : null };
   } catch (error) {

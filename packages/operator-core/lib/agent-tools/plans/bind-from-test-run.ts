@@ -41,6 +41,7 @@
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
+import { recordedTestLayer } from '@papercusp/test-config/execution-details';
 import { withWorkspace } from '@papercusp/db-org';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { resolveRelative, runtimeSpecifiers, stripComments } from '../../search/import-graph';
@@ -71,6 +72,9 @@ export const testRunBindingSchema = z
     sourcePaths: repoFilesEvidenceMeasurementSchema.shape.sourcePaths
       .optional()
       .describe("Override the derived subject files (default: the test file's relative imports)."),
+    canonicalTestPath: repoFilesEvidenceMeasurementSchema.shape.testPaths.unwrap().element
+      .optional()
+      .describe('Canonical repo-relative test path for a mutation-probe copy-out run whose temporary mirror is no longer a checkout.'),
     details: z.record(z.string(), z.unknown()).optional(),
     observedAt: z.string().datetime({ offset: true }).optional(),
   })
@@ -235,9 +239,11 @@ interface RunFacts {
   skipped: boolean;
   executed: boolean;
   outcome: string;
+  testLayer?: 'unit' | 'integration' | 'browser';
 }
 
 function runFacts(row: TestRunEvidenceRow, kind: DerivedTestRunBinding['evidenceKind']): RunFacts {
+  const testLayer = recordedTestLayer(row.execution_details);
   const status = String(row.status ?? '');
   const collectionFailed = executionDetails(row.execution_details).collectionFailed === true;
   const executed = status === 'pass' || status === 'fail';
@@ -247,6 +253,7 @@ function runFacts(row: TestRunEvidenceRow, kind: DerivedTestRunBinding['evidence
       : // A mutant run that FAILED is a caught mutant; one that PASSED survived.
         ({ fail: 'caught', pass: 'survived' } as Record<string, string>)[status] ?? status;
   return {
+    ...(testLayer ? { testLayer } : {}),
     collected: !collectionFailed && status !== 'error',
     skipped: status === 'skip',
     executed,
@@ -484,7 +491,37 @@ export async function expandTestRunBinding(
     };
   }
   const root = await deps.resolveRoot(scope);
-  const testPath = await recordedTestPath(root, row, deps.git);
+  let testPath = await recordedTestPath(root, row, deps.git);
+  if (input.canonicalTestPath) {
+    const recordedRelative = row.root && isAbsolute(row.root) && row.file_path
+      ? repoRelativeTestPath(row.root, row.file_path)
+      : null;
+    const matchingSuffix = recordedRelative && (
+      input.canonicalTestPath === recordedRelative || input.canonicalTestPath.endsWith(`/${recordedRelative}`)
+    );
+    // Copy-out mirrors are temporary and are intentionally not Git worktrees.
+    // Only an explicitly named canonical test in the same harness can replace
+    // their path; never use a caller-supplied path for another run source.
+    if (row.source !== 'mutation-probe' || !matchingSuffix || (testPath && testPath !== input.canonicalTestPath)) {
+      return {
+        ok: false,
+        error: 'test_run_file_outside_root',
+        testRunId,
+        message: `canonicalTestPath does not match mutation-probe run ${testRunId}'s recorded test path.`,
+      };
+    }
+    try {
+      readFileSync(resolve(root, input.canonicalTestPath));
+      testPath = input.canonicalTestPath;
+    } catch {
+      return {
+        ok: false,
+        error: 'test_run_file_outside_root',
+        testRunId,
+        message: `canonicalTestPath ${JSON.stringify(input.canonicalTestPath)} is not a readable test in this harness checkout.`,
+      };
+    }
+  }
   if (!testPath) {
     return {
       ok: false,
@@ -498,6 +535,7 @@ export async function expandTestRunBinding(
     Object.assign(result.binding.details.testRun as Record<string, unknown>, {
       recordedRoot: row.root ?? null,
       recordedFilePath: row.file_path,
+      ...(input.canonicalTestPath ? { canonicalTestPathOverride: input.canonicalTestPath } : {}),
     });
   }
   return result;

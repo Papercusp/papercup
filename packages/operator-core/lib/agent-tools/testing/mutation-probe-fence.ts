@@ -62,10 +62,43 @@ type Closure = { status: 'complete'; files: Map<string, Set<string>> } | { statu
 /**
  * An import esbuild could not follow. esbuild inlines every literal import it resolves and
  * keeps a quoted specifier for an external package, so an `import(`/`require(` left in the
- * bundle WITHOUT a string literal is an edge the metafile graph does not contain. esbuild does
- * not warn for a non-literal `import()` in ESM output, so this scan is the only signal.
+ * bundle without a plain string literal is an edge the metafile graph does not contain.
+ * Comments before a literal are trivia, while template literals can interpolate runtime paths.
+ * esbuild does not warn for a non-literal `import()` in ESM output, so this scan is the signal.
  */
-const UNFOLLOWED_IMPORT = /(?<![\w$.])(?:import|__require|require)\s*\(\s*(?!["'`])|\bcreateRequire\s*\(/;
+const IMPORT_CALL = /(?<![\w$.])(?:import|__require|require)\s*\(/g;
+const CREATE_REQUIRE = /\bcreateRequire\s*\(/;
+
+/** Skip comments as well as whitespace before classifying an import argument. */
+function importArgumentStart(text: string, start: number): number {
+  let at = start;
+  for (;;) {
+    while (/\s/.test(text[at] ?? '')) at++;
+    if (text.startsWith('/*', at)) {
+      const end = text.indexOf('*/', at + 2);
+      if (end < 0) return at;
+      at = end + 2;
+    } else if (text.startsWith('//', at)) {
+      const end = text.indexOf('\n', at + 2);
+      if (end < 0) return at;
+      at = end + 1;
+    } else {
+      return at;
+    }
+  }
+}
+
+function unfollowedImportAt(text: string): number | null {
+  const createRequire = CREATE_REQUIRE.exec(text);
+  if (createRequire) return createRequire.index;
+  IMPORT_CALL.lastIndex = 0;
+  for (const match of text.matchAll(IMPORT_CALL)) {
+    const at = importArgumentStart(text, match.index + match[0].length);
+    // esbuild keeps resolved external package imports as quoted specifiers.
+    if (text[at] !== '"' && text[at] !== "'") return match.index;
+  }
+  return null;
+}
 
 /**
  * The static module closure of each requested test file (absolute paths), computed by bundling
@@ -98,10 +131,10 @@ async function testImportClosures(root: string, tests: string[]): Promise<Closur
       return { status: 'incomplete', reason: `non-literal import${at}` };
     }
     for (const output of result.outputFiles) {
-      const match = UNFOLLOWED_IMPORT.exec(output.text);
-      if (!match) continue;
+      const matchAt = unfollowedImportAt(output.text);
+      if (matchAt === null) continue;
       const entry = result.metafile.outputs[relative(root, output.path)]?.entryPoint ?? relative(outdir, output.path);
-      return { status: 'incomplete', reason: `${entry} reaches an import esbuild cannot follow: ${JSON.stringify(output.text.slice(match.index, match.index + 60))}` };
+      return { status: 'incomplete', reason: `${entry} reaches an import esbuild cannot follow: ${JSON.stringify(output.text.slice(matchAt, matchAt + 60))}` };
     }
     metafile = result.metafile;
   } catch (error) {
@@ -134,6 +167,9 @@ async function reachReason(closure: Set<string>, test: string, probes: string[])
     if (!CODE_EXTENSIONS.has(extname(file))) continue;
     const text = await readFile(file, 'utf8').catch(() => null);
     if (text === null) return `could not read ${file}`;
+    // esbuild can expand a template import into a generated glob and erase the
+    // original call from its output. The raw reachable source must still refuse it.
+    if (unfollowedImportAt(text) !== null) return `${file} has an import esbuild cannot follow exactly`;
     const named = names.find((name) => text.includes(name));
     if (named) return `${file} names ${named}`;
     if ((file === test || TEST_SIDE_FILE.test(file)) && OUT_OF_GRAPH_ACCESS.test(text)) {

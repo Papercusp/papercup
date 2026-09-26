@@ -27,6 +27,14 @@ import { computeNextFireAt } from './cron';
 
 /** The system action a plan-schedule routine fires (registered in 7c). */
 export const PLAN_RUN_ACTION = 'system:plan-run';
+/** The on-demand operation action used by operation-backed schedules (P-016). */
+export const BLUEPRINT_OPERATION_ACTION = 'system:blueprint-operation';
+
+export interface BlueprintOperationRoutineTarget {
+  harnessSlug: string;
+  operationId: string;
+  input?: Record<string, unknown>;
+}
 
 /** Stable per-plan routine name (the upsert key under the harness install slug). */
 export function planScheduleRoutineName(templateSlug: string): string {
@@ -41,6 +49,8 @@ export interface MaterializePlanScheduleInput {
   templateSlug: string;
   /** Authored recurrence set (rrule|cron + policy). Omit for a pure one-shot. */
   schedule?: ScheduleTrigger | null;
+  /** Registered operation target. Omit to preserve the legacy system:plan-run path. */
+  operation?: BlueprintOperationRoutineTarget | null;
   /** One-shot fire time (drag-onto-a-day). When set with no recurrence, the routine
    *  fires once at this instant then deactivates (claim.ts one-shot path). */
   scheduledAt?: Date | null;
@@ -62,6 +72,12 @@ export async function materializePlanSchedule(
   const sql = input.sql ?? getOrgPg().sql;
   const workspaceId = input.workspaceId ?? activeWorkspaceId();
   const schedule = input.schedule ?? undefined;
+  const operation = input.operation ?? undefined;
+  const triggerConfig: Record<string, unknown> = schedule ? { ...schedule } : {};
+  // ArmPlanSchedule carries the operation alongside the recurrence in the
+  // authored schedule JSON. It belongs in payload_template, not in the cadence
+  // parser's trigger_config.
+  delete triggerConfig.operation;
 
   // First fire: an explicit one-shot time, else the schedule's next occurrence
   // (rrule or cron). Null ⇒ nothing to schedule (e.g. an already-expired rule).
@@ -74,9 +90,17 @@ export async function materializePlanSchedule(
       installSlug: input.harnessSlug,
       name: planScheduleRoutineName(input.templateSlug),
       triggerKind: 'cron', // time-scheduled / next_fire_at-driven (cron OR rrule), per listDueCronRoutines
-      triggerConfig: schedule ? { ...schedule } : {},
-      targetRole: PLAN_RUN_ACTION,
-      payloadTemplate: { templateSlug: input.templateSlug, harnessSlug: input.harnessSlug },
+      triggerConfig,
+      targetRole: operation ? BLUEPRINT_OPERATION_ACTION : PLAN_RUN_ACTION,
+      payloadTemplate: operation
+        ? {
+            templateSlug: input.templateSlug,
+            harnessSlug: input.harnessSlug,
+            operationHarnessSlug: operation.harnessSlug,
+            operationId: operation.operationId,
+            input: operation.input ?? {},
+          }
+        : { templateSlug: input.templateSlug, harnessSlug: input.harnessSlug },
       concurrency: input.concurrency ?? 'skip',
       active: input.active ?? true,
       nextFireAt: next, // explicit override — upsertRoutine only auto-derives from cron

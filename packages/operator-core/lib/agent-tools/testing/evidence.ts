@@ -12,7 +12,7 @@ import { getRunAsync, readHarnessTestRunEvidence, countUnattributedTestRunRows,
 import { resolveScenarioRerunScope } from './scenario-rerun-scope';
 import type { TestFilesCoreResult } from './run';
 import { SPEC_PROOF_OBLIGATION_ID_RE } from '../plans/spec-clauses-store';
-import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { parseTestRunExecutionDetails, recordedTestLayer } from '@papercusp/test-config/execution-details';
 
 const proofId = z.string().regex(SPEC_PROOF_OBLIGATION_ID_RE).max(200);
 const bindingSchema = z.object({
@@ -320,11 +320,13 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
   for (const row of prepared) {
     const matches = (ledger ?? []).filter(r => r.file_path === row.binding.testPath && r.finished_at !== null);
     const run = matches.length === 1 ? matches[0] : undefined;
+    const testLayer = recordedTestLayer(run?.execution_details);
+    const layerMismatch = testLayer !== undefined && testLayer !== row.binding.testLayer;
     const measured = await deps.measure(scope.root, row.measurement).catch(() => null);
     const sourceStable = measured !== null && measured.sourceFingerprint === row.input.sourceFingerprint && measured.testFingerprint === row.input.testFingerprint;
     const priorExecution = row.input.details?.testExecution as { phase?: string; runId?: string; ledgerStatus?: string } | undefined;
     const priorProof = row.input.details?.adequacy as { outcome?: string } | undefined;
-    if (!result && run && priorExecution?.phase === 'settled' && priorExecution.runId === runId
+    if (!result && run && !layerMismatch && priorExecution?.phase === 'settled' && priorExecution.runId === runId
       && row.input.testRunId === run.id && priorExecution.ledgerStatus === run.status) {
       rows.push({ specId: row.input.specId, specRevision: row.input.specRevision,
         evidenceRef: row.input.evidenceRef, testRunId: run.id, ledgerRunGroupId,
@@ -373,6 +375,7 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     const phase = terminalNoResult ? 'terminal-no-result' : !run
       ? attribution === 'unattributed' ? 'ledger-unattributed' : 'pending'
       : !sourceStable ? 'source-changed'
+        : layerMismatch ? 'layer-mismatch'
         : carryRefused ? 'stale-sibling-evidence'
           : !measuredResult || measuredResult.error ? 'review-required' : 'settled';
     const details = {
@@ -384,17 +387,20 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
           ledgerAttribution: attribution,
           ...(unattributedRows !== null ? { ledgerUnattributedRows: unattributedRows } : {}),
           measuredOutcome: outcome.outcome,
+          ...(testLayer ? { observedTestLayer: testLayer } : {}),
           ...(rerunScope ? { rerunScope } : {}),
           ...(siblingEvidence?.evidenceRef ? { siblingEvidenceRef: siblingEvidence.evidenceRef } : {}),
         ...(result?.error ? { resultError: result.error } : {}),
       },
       adequacy: { ...(row.input.details?.adequacy as object), ...outcome,
+        ...(testLayer ? { testLayer } : {}),
         // Missing/ambiguous or contradictory ledger attribution cannot establish execution.
         ...(!run || (outcome.outcome === 'pass' && run.status !== 'pass') || (outcome.outcome === 'killed' && run.status !== 'fail')
           ? { outcome: 'unknown', executed: false } : {}),
         // A refused carry is the same clamp for a different reason: the remaining matrix
         // was neither measured here nor currently proven elsewhere.
         ...(carryRefused ? { outcome: 'unknown', executed: false } : {}),
+        ...(layerMismatch ? { outcome: 'unknown', executed: false } : {}),
       },
     };
     if (terminalNoResult) {

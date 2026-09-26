@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
@@ -11,8 +10,6 @@ import {
 let db: OrgTestDb;
 beforeAll(async () => {
   db = await createOrgTestDb();
-  // Exercise the reserved draft against an isolated database before arming it.
-  await db.adminSql.unsafe(readFileSync(new URL('../../../../libs/papercusp/libs/db/sql/1230-blueprint-package-resource-receipts.sql.DRAFT', import.meta.url), 'utf8'));
 }, 180_000);
 afterAll(async () => { await db?.cleanup(); });
 
@@ -29,7 +26,8 @@ function externalStore() {
   let failDelete = false;
   const driver: PackageResourceDriver = {
     recover: vi.fn(async (key) => [...rows].filter(([, row]) => row.writeKey === key)
-      .map(([id, row]) => ({ id, fingerprint: row.original }))),
+      .map(([id, row]) => ({ id, fingerprint: row.original,
+        ...(row.current === row.original ? {} : { disposition: 'changed' as const }) }))),
     create: vi.fn(async (key) => {
       const id = `external-${rows.size}`;
       rows.set(id, { writeKey: key, original: hash('original'), current: hash('original') });
@@ -49,6 +47,19 @@ function externalStore() {
 }
 
 describe('blueprint package resource journal (real Postgres)', () => {
+  it('isolates both receipt tables by workspace for the application role', async () => {
+    for (const workspaceId of ['private-a', 'private-b']) {
+      await preparePackageResource(db.adminSql, { ...address('private'), workspaceId }, 'same-dependent', externalStore().driver);
+    }
+    await db.appSql.begin(async (tx) => {
+      await tx`SELECT set_config('app.workspace_id', 'private-a', true)`;
+      expect(await tx`SELECT workspace_id FROM harness_shared.blueprint_package_resources`)
+        .toEqual([{ workspace_id: 'private-a' }]);
+      expect(await tx`SELECT workspace_id FROM harness_shared.blueprint_package_dependents`)
+        .toEqual([{ workspace_id: 'private-a' }]);
+    });
+  });
+
   it('shares exact-version writes, waits for the final dependent and keeps versions separate', async () => {
     const store = externalStore();
     const v1 = address('shared');
@@ -56,6 +67,7 @@ describe('blueprint package resource journal (real Postgres)', () => {
     const one = await preparePackageResource(db.adminSql, v1, 'wearer-a', store.driver);
     const two = await preparePackageResource(db.adminSql, v1, 'wearer-b', store.driver);
     const newer = await preparePackageResource(db.adminSql, v2, 'wearer-c', store.driver);
+    await expect(preparePackageResource(db.adminSql, v2, 'wearer-a', store.driver)).rejects.toThrow(/package-pin-conflict/);
     expect(one.external_refs).toEqual(two.external_refs);
     expect(newer.resource_key).not.toBe(one.resource_key);
     expect(store.driver.create).toHaveBeenCalledTimes(2);
@@ -93,6 +105,10 @@ describe('blueprint package resource journal (real Postgres)', () => {
     const failed = await releasePackageResource(db.adminSql, input, 'failed-install', store.driver);
     expect(failed).toMatchObject({ phase: 'cleanup_failed', error: expect.stringContaining('external-1'),
       external_refs: [{ id: 'external-1', error: 'external cleanup unavailable' }] });
+    await expect(preparePackageResource(db.adminSql, input, 'cannot-pin-failed-cleanup', store.driver))
+      .rejects.toThrow(/cleanup recovery/);
+    expect(await db.adminSql`SELECT dependent_id FROM harness_shared.blueprint_package_dependents
+      WHERE workspace_id = ${input.workspaceId} AND dependent_id = 'cannot-pin-failed-cleanup'`).toHaveLength(0);
     store.rows.get('external-1')!.current = hash('user edit during recovery');
     store.failDelete(false);
     const retried = await releasePackageResource(db.adminSql, input, 'failed-install', store.driver);
@@ -136,6 +152,17 @@ describe('blueprint package resource journal (real Postgres)', () => {
     expect(await releasePackageResource(db.adminSql, input, 'retry-discovery', store.driver))
       .toMatchObject({ phase: 'deleted', error: null });
     expect(store.rows.size).toBe(0);
+  });
+
+  it('refuses adoption of an edited ready resource and preserves it during interrupted-write cleanup', async () => {
+    const store = externalStore();
+    const input = address('edited-ready');
+    await preparePackageResource(db.adminSql, input, 'original-user', store.driver);
+    store.rows.get('external-0')!.current = hash('edited');
+    await expect(preparePackageResource(db.adminSql, input, 'new-user', store.driver)).rejects.toThrow(/resource changed/);
+    await releasePackageResource(db.adminSql, input, 'new-user', store.driver);
+    expect(await releasePackageResource(db.adminSql, input, 'original-user', store.driver)).toMatchObject({ phase: 'detached' });
+    expect(store.rows.size).toBe(1);
   });
 
   it('serializes concurrent installers and release without duplicate writes or deleting a dependent', async () => {

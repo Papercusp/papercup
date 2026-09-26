@@ -311,6 +311,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   // ── spends ───────────────────────────────────────────────────────────────
   'system:blueprint-run': { spend: 'llm', why: 'Launches a blueprint agent (the Mug/Cup hive launch path)' },
   'system:plan-run': { spend: 'llm', why: 'Mints a plan run and dispatches its items to agents' },
+  'system:blueprint-operation': {
+    spend: 'llm',
+    why: 'Admits a registered operation whose declared target can mint agent work or a plan run',
+  },
   'system:external-trigger-dispatch': {
     spend: 'llm',
     why: 'Launches event-triggered plan runs and wakes their claimable work',

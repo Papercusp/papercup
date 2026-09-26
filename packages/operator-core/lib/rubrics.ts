@@ -1298,25 +1298,20 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
            AND plan_slug = ${rubricId}
       )
       SELECT * FROM scoped
-       WHERE seq = ${revision} OR seq = latest_seq
+       WHERE seq = latest_seq
           OR position(${versionMarker} in content_snapshot) > 0
-       ORDER BY seq DESC LIMIT 4`;
+       ORDER BY seq DESC LIMIT 3`;
     const candidates = snapshots.map((snapshot) => ({
       ...snapshot, parsed: parseRubricRevisionSnapshot(snapshot.content_snapshot),
     }));
     const explicit = candidates.filter((snapshot) => snapshot.parsed?.rubricRevision === revision);
-    if (explicit.length > 1 || snapshots.length === 4) return null;
+    if (explicit.length > 1 || snapshots.length === 3) return null;
     let parsedSnapshot = explicit[0]?.parsed;
     if (!parsedSnapshot) {
       const latest = candidates.find((snapshot) => Number(snapshot.seq) === Number(snapshot.latest_seq));
-      const legacy = candidates.find((snapshot) => Number(snapshot.seq) === revision);
-      // Preserve aligned legacy chains, but never interpret a stamped version
-      // as its coincidentally equal sequence. Diverged old history is unknown.
-      if (latest && Number(latest.seq) === Number(row.version) && legacy?.parsed &&
-          legacy.parsed.rubricRevision === undefined &&
-          (latest.parsed?.rubricRevision === undefined || latest.parsed.rubricRevision === Number(latest.seq))) {
-        parsedSnapshot = legacy.parsed;
-      } else if (revision === Number(row.version) && latest?.parsed &&
+      // Even equal counters do not prove legacy historical identity: an extra
+      // audit append can cancel a missing append. Never alias seq to version.
+      if (revision === Number(row.version) && latest?.parsed &&
           latest.parsed.rubricRevision === undefined &&
           latest.content_hash === row.content_hash &&
           isDeepStrictEqual(latest.parsed.templateData, row.template_data)) {

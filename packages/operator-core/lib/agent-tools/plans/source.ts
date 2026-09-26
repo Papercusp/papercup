@@ -39,6 +39,7 @@ import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { isTerminalItemStatus } from '../../fleet-drained-events';
 import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
+import type { BlueprintOperationRoutineTarget } from '../../harness/routines/materialize-plan-schedule';
 import { BLENDER_PLAN_SQL_PATTERN } from './plan-provenance';
 import { activeAcceptanceRubricsQuery } from './plan-lifecycle-derivation';
 
@@ -182,6 +183,8 @@ export interface PlanSchedule {
   executorKind?: 'feature' | 'chunk';
   /** Optional direct-execution target for agentic app plan templates. */
   execution?: AgenticPlanExecutionTarget;
+  /** Optional registered operation fired by this cadence instead of legacy system:plan-run. */
+  operation?: BlueprintOperationRoutineTarget;
 }
 
 export interface PlanRow {

@@ -484,6 +484,10 @@ export function normalizeOperatorBaseUrl(
   return fixed;
 }
 
+// Shared with ptool and the PTY host: only launcher-managed URLs may rediscover.
+export const OPERATOR_URL_PROVENANCE_ENV = "PAPERCUSP_OPERATOR_URL_PROVENANCE";
+export const LAUNCHER_OPERATOR_URL_PROVENANCE = "psu-launcher";
+
 export function resolveOperatorTarget({
   env = process.env,
   home = homedir(),
@@ -507,7 +511,12 @@ export function resolveOperatorTarget({
           `this session bypasses deploy-restart resilience (WI-1457). Unset the override (or point it at :${proxyPort}) to ride the proxy.`,
       );
     }
-    return { url: pinned, source: "env", startedAt: null };
+    return {
+      url: pinned,
+      source: env[OPERATOR_URL_PROVENANCE_ENV] === LAUNCHER_OPERATOR_URL_PROVENANCE
+        ? "managed-env" : "env",
+      startedAt: null,
+    };
   }
   // WI-3247: prefer the stable proxy over desktop operator.json when present.
   // operator.json carries a per-boot dynamic port; exporting it into a long-lived
@@ -558,12 +567,6 @@ export function resolveOperatorUrl(opts = {}) {
 let OPERATOR_TARGET = resolveOperatorTarget();
 let OPERATOR_URL = OPERATOR_TARGET.url;
 
-// This marker travels with the launcher-managed URL export. ptool must be able
-// to distinguish that handoff from a URL explicitly pinned by the caller: only
-// the former may rediscover after a wake-respawn finds a new operator port.
-export const OPERATOR_URL_PROVENANCE_ENV = "PAPERCUSP_OPERATOR_URL_PROVENANCE";
-export const LAUNCHER_OPERATOR_URL_PROVENANCE = "psu-launcher";
-
 /**
  * Apply the current launcher target to a child environment and preserve URL
  * provenance. An explicit PAPERCUSP_OPERATOR_URL source is a caller pin and
@@ -581,8 +584,8 @@ export function applyLauncherOperatorUrlEnv(env, target = OPERATOR_TARGET) {
 
 /**
  * The candidate ladder for HEALING a dead operator target mid-session — the
- * same ladder as resolveOperatorTarget MINUS the env pin (the env pin is
- * exactly what's being healed). Candidates are NOT liveness-checked here;
+ * same ladder as resolveOperatorTarget MINUS the inherited managed URL.
+ * Explicit caller pins never use this ladder. Candidates are NOT liveness-checked here;
  * fetchWithResilience health-checks each in order. Exported for tests.
  *
  * Why this exists (owner repro, mac VM 2026-07-07): every console/fleet
@@ -633,7 +636,7 @@ export function resolveFallbackOperatorTargets({
 export function adoptOperatorTarget(t) {
   OPERATOR_TARGET = t;
   OPERATOR_URL = t.url;
-  process.env.PAPERCUSP_OPERATOR_URL = t.url;
+  applyLauncherOperatorUrlEnv(process.env, t);
 }
 
 /**
@@ -7358,7 +7361,7 @@ export function storeClaudeOAuthToken(token, { home = homedir() } = {}) {
  * the body); throws a descriptive Error when every attempt fails.
  *
  * On repeated connection failure it additionally attempts ONE health-gated
- * FAILOVER to a different live operator (resolveFallbackOperatorTargets:
+ * FAILOVER for launcher-managed targets to a different live operator (resolveFallbackOperatorTargets:
  * proxy → fresh operator.json → dev default) and adopts it session-wide
  * (adoptOperatorTarget) — the stale-shell heal for terminals whose
  * PAPERCUSP_OPERATOR_URL outlived the per-boot desktop operator port.
@@ -7517,9 +7520,9 @@ export async function fetchWithResilience(
       // operatorUrl is never rebased), and only to a candidate that answers
       // /api/health right now — a mid-restart operator's candidates all fail
       // the health probe, so the normal ride-through behavior is unchanged.
-      // ('dev-default' is exempt: it's a bare-dev-box guess, not a recorded or
-      // pinned address — its ride-through semantics stay exactly as before.)
-      if (!failoverAttempted && target?.source !== "dev-default") {
+      // Explicit env pins remain on the chosen build even through an outage.
+      // Only known managed sources can heal; unknown provenance fails closed.
+      if (!failoverAttempted && ["managed-env", "discovery", "proxy"].includes(target?.source)) {
         failoverAttempted = true;
         const base = target?.url ?? null;
         if (base && url.startsWith(base)) {
@@ -7535,8 +7538,8 @@ export async function fetchWithResilience(
             }
             onNotice(
               `psu: ${base} is not answering but a live operator is at ${cand.url} (${cand.source}) — switching. ` +
-                (target?.source === "env"
-                  ? `This shell's PAPERCUSP_OPERATOR_URL pins a dead address (desktop operator ports change per boot); ` +
+                (target?.source === "managed-env"
+                  ? `This shell's launcher-managed PAPERCUSP_OPERATOR_URL is stale (desktop operator ports change per boot); ` +
                     `sessions launched from here now inherit the working one.\n`
                   : `Its recorded address was stale; continuing on the live one.\n`),
             );
@@ -7570,9 +7573,8 @@ export async function fetchWithResilience(
   if (target?.source === "env") {
     throw new Error(
       `the operator URL this shell pins via PAPERCUSP_OPERATOR_URL (${shownUrl}) refused connections for ` +
-        `${Math.ceil(effectiveConnectBudgetMs / 1000)}s and no live fallback operator answered either. ` +
-        `Desktop operator ports change per boot, so a terminal window can outlive its operator — open a fresh ` +
-        `terminal from the Papercusp app, or \`unset PAPERCUSP_OPERATOR_URL\` to use discovery (~/.papercusp/operator.json).`,
+        `${Math.ceil(effectiveConnectBudgetMs / 1000)}s. The explicit target was preserved; no other operator was tried. ` +
+        `Restore that operator, or \`unset PAPERCUSP_OPERATOR_URL\` to opt into discovery (~/.papercusp/operator.json).`,
     );
   }
   if (isDesktop) {

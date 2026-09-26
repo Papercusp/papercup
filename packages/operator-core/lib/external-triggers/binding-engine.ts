@@ -26,6 +26,11 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { createWorkItem, type CreateWorkItemInput, type WorkItem } from '../work-items';
 import { getDatatype } from '../datatype-registry-store';
 import { validateDatatypePayload } from '../datatype-payload-validation';
+import {
+  submitBlueprintOperation,
+  type BlueprintOperationHandle,
+  type SubmitBlueprintOperationInput,
+} from '../blueprint/operation-service';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -75,7 +80,12 @@ const EXTERNAL_TRIGGER_IDENTITY: AgentIdentity = {
  * second spawn path; `create-work-item` writes one bounded item through the
  * canonical work_items facade.
  */
-const SUPPORTED_TRIGGER_ACTIONS: ReadonlySet<string> = new Set(['launch-plan', 'start-goal', 'create-work-item']);
+const SUPPORTED_TRIGGER_ACTIONS: ReadonlySet<string> = new Set([
+  'launch-plan',
+  'start-goal',
+  'create-work-item',
+  'blueprint-operation',
+]);
 
 /** The Email direct-ingress contract owned by the registered datatype. */
 export const EMAIL_DRAFT_PROPOSAL_KIND = 'email-draft-proposal';
@@ -181,6 +191,11 @@ export interface TriggerDispatchDeps {
   resolveEscalation?: typeof resolveEscalation;
   /** Canonical work-item writer for direct bindings; injectable for isolated tests. */
   createWorkItem?: typeof createWorkItem;
+  /** Canonical blueprint-operation admission writer; injectable for integration seams. */
+  submitOperation?: (
+    sql: postgres.Sql,
+    input: SubmitBlueprintOperationInput,
+  ) => Promise<BlueprintOperationHandle>;
   batchSize?: number;
   staleAfterSeconds?: number;
 }
@@ -350,6 +365,28 @@ function triggerArgs(event: CanonicalExternalEvent): TriggerRunArgs {
 function actionType(action: Record<string, unknown>): string {
   const type = typeof action.type === 'string' ? action.type.trim() : '';
   return type || 'launch-plan';
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function blueprintOperationTarget(action: Record<string, unknown>): {
+  harnessSlug: string;
+  operationId: string;
+  input: Record<string, unknown>;
+} {
+  const harnessSlug = typeof action.operationHarnessSlug === 'string'
+    ? action.operationHarnessSlug.trim()
+    : '';
+  const operationId = typeof action.operationId === 'string' ? action.operationId.trim() : '';
+  if (!harnessSlug || !operationId) throw new Error('external_trigger_blueprint_operation_target_invalid');
+  if (action.input !== undefined && (action.input === null || Array.isArray(action.input) || typeof action.input !== 'object')) {
+    throw new Error('external_trigger_blueprint_operation_input_invalid');
+  }
+  return { harnessSlug, operationId, input: record(action.input) };
 }
 
 function directWorkItemTarget(row: Pick<BindingRow, 'workItemHarnessSlug' | 'workItemKind'>): DirectWorkItemTarget | null {
@@ -812,6 +849,7 @@ export async function dispatchPendingTriggerRuns(
   const startGoal = deps.startGoal ?? startGoalById;
   const announce = deps.announceRunWork ?? announceRunWork;
   const create = deps.createWorkItem ?? createWorkItem;
+  const submitOperation = deps.submitOperation ?? submitBlueprintOperation;
   const escalate = deps.openEscalation ?? openEscalation;
   const resolveEscalationFn = deps.resolveEscalation ?? resolveEscalation;
   const result: TriggerDispatchResult = {
@@ -828,6 +866,35 @@ export async function dispatchPendingTriggerRuns(
       const type = actionType(row.action);
       if (!SUPPORTED_TRIGGER_ACTIONS.has(type)) {
         throw new Error(`external_trigger_unsupported_action:${type}`);
+      }
+
+      // ── blueprint-operation (P-016 / D-020) ──────────────────────────────
+      // The event receipt is already durable and idempotent. Reuse its stable
+      // id as the operation request key, so a lost response or stale-running
+      // retry resolves the same canonical operation receipt and target.
+      if (type === 'blueprint-operation') {
+        const target = blueprintOperationTarget(row.action);
+        const routing = redactTriggerArgsForPlanInputs(row.args);
+        const handle = await submitOperation(sql, {
+          workspaceId: row.workspaceId,
+          harnessSlug: target.harnessSlug,
+          callerId: `trigger-binding:${row.bindingId}`,
+          operationId: target.operationId,
+          requestKey: `trigger-run:${row.id}`,
+          // Only the redacted routing envelope leaves trigger_runs. The
+          // authored literal overlay is configuration, never provider payload.
+          input: { ...routing, ...target.input },
+        });
+        await sql`
+          UPDATE harness_shared.trigger_runs
+             SET status = 'succeeded',
+                 plan_run_ref = ${handle.target.kind === 'plan' ? String(handle.target.runId) : null},
+                 outcome = outcome || ${JSON.stringify({ blueprintOperation: handle })}::text::jsonb,
+                 error = NULL, completed_at = now(), updated_at = now()
+           WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
+        result.succeeded += 1;
+        await resolveRetryEscalationIfRecovered(sql, row, resolveEscalationFn).catch(() => undefined);
+        continue;
       }
 
       // ── create-work-item (P-018): direct Email ingress ───────────────────

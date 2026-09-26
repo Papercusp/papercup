@@ -350,6 +350,10 @@ export function buildAutomationItems(input: BuildAutomationModelInput): Automati
   }
   const bindings = new Map<string, ExternalTriggerBindingAdminRow[]>();
   for (const row of input.external?.bindings ?? []) {
+    // Operation/goal/direct-item bindings have no plan key. They remain visible
+    // in the global trigger ledger and activity feed, but are not folded into a
+    // plan-owned workflow row.
+    if (!row.planHarnessSlug || !row.planSlug) continue;
     const key = planKey(row.planHarnessSlug, row.planSlug);
     const group = bindings.get(key) ?? [];
     group.push(row);
@@ -402,10 +406,16 @@ export function filterAutomationItems(
 export function buildAutomationActivity(input: BuildAutomationModelInput): AutomationActivityItem[] {
   const items: AutomationActivityItem[] = [];
   for (const run of input.external?.recentRuns ?? []) {
+    const operation = run.blueprintOperation;
+    const operationLabel = operation
+      ? `${operation.harnessSlug}#${operation.operationId}`
+      : null;
     items.push({
       id: `external-run:${run.id}`,
-      automationId: `plan:${planKey(run.planHarnessSlug, run.planSlug)}`,
-      label: `${run.planSlug} · ${run.sourceKind}`,
+      automationId: run.planHarnessSlug && run.planSlug
+        ? `plan:${planKey(run.planHarnessSlug, run.planSlug)}`
+        : null,
+      label: `${operationLabel ?? run.planSlug ?? run.workItemKind ?? run.goalId ?? 'automation'} · ${run.sourceKind}`,
       detail: run.error ?? run.eventPattern,
       status: run.status,
       at: parseTime(run.triggeredAt) ?? 0,

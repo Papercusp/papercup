@@ -19,6 +19,23 @@ export function compactTriggerJson(value: Record<string, unknown>): string {
   return Object.keys(value).length === 0 ? 'none' : JSON.stringify(value);
 }
 
+export function triggerBindingTarget(binding: ExternalTriggerBindingAdminRow): string {
+  if (binding.action.type === 'blueprint-operation') {
+    const harness = typeof binding.action.operationHarnessSlug === 'string'
+      ? binding.action.operationHarnessSlug
+      : 'unknown-harness';
+    const operation = typeof binding.action.operationId === 'string'
+      ? binding.action.operationId
+      : 'unknown-operation';
+    return `operation ${harness}#${operation}`;
+  }
+  if (binding.workItemHarnessSlug && binding.workItemKind) {
+    return `work item ${binding.workItemHarnessSlug}/${binding.workItemKind}`;
+  }
+  if (binding.goalId) return `goal ${binding.goalId}`;
+  return `plan ${binding.planHarnessSlug ?? 'unknown'}/${binding.planSlug ?? 'unknown'}`;
+}
+
 export function TriggerBindingCard({
   binding,
   busy,
@@ -47,11 +64,7 @@ export function TriggerBindingCard({
             {binding.sourceStatus}
           </span>
         </div>
-        {showPlan ? (
-          <div className="tr-meta">
-            → {binding.planHarnessSlug}/{binding.planSlug}
-          </div>
-        ) : null}
+        {showPlan ? <div className="tr-meta">→ {triggerBindingTarget(binding)}</div> : null}
         <div className="tr-meta">filter: {compactTriggerJson(binding.eventFilter)}</div>
         <div className="tr-meta">
           storm:{' '}

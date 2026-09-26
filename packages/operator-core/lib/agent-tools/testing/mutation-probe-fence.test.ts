@@ -94,6 +94,12 @@ describe('mutationProbeRefusal narrowing', () => {
     await expect(mutationProbeRefusal(dir, ['tests/other.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
   });
 
+  it('does not mistake a commented literal package import for a dynamic import', async () => {
+    const dir = checkout({ ...base,
+      'tests/commented.test.ts': "export const load = () => import(/* package name */ 'pkg');\n" });
+    await expect(mutationProbeRefusal(dir, ['tests/commented.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+  });
+
   it('refuses a test that imports the probed source, directly or transitively', async () => {
     const dir = checkout({ ...base,
       'tests/direct.test.ts': "import { subject } from '../src/subject';\nexport default subject;\n",
@@ -118,12 +124,16 @@ describe('mutationProbeRefusal narrowing', () => {
       'src/data.sql': 'select 1;\n',
       'src/loader.ts': "import { readFileSync } from 'node:fs';\nexport const text = () => readFileSync(`src/${'subject'}.ts`, 'utf8');\n",
       'tests/dynamic.test.ts': "export const load = (name: string) => import(name);\n",
+      'tests/commented-dynamic.test.ts': "export const load = (name: string) => import(/* runtime */ name);\n",
+      'tests/template-dynamic.test.ts': "export const load = (name: string) => import(`../src/${name}.ts`);\n",
       'tests/named.test.ts': "import { text } from '../src/loader';\nexport default text;\n",
       'tests/walks.test.ts': "import { readdirSync } from 'node:fs';\nexport default readdirSync('src');\n",
       'tests/unresolved.test.ts': "import { gone } from '../src/gone';\nexport default gone;\n",
       'tests/other.test.ts': "import { other } from '../src/other';\nexport default other;\n" });
     const cases: Array<[string, string, string]> = [
       ['tests/dynamic.test.ts', 'src/subject.ts', 'import closure could not be established'],
+      ['tests/commented-dynamic.test.ts', 'src/subject.ts', 'import closure could not be established'],
+      ['tests/template-dynamic.test.ts', 'src/subject.ts', 'has an import esbuild cannot follow exactly'],
       ['tests/named.test.ts', 'src/subject.ts', 'loader.ts names subject'],
       ['tests/walks.test.ts', 'src/subject.ts', 'reads the filesystem or spawns a process'],
       ['tests/unresolved.test.ts', 'src/subject.ts', 'import closure could not be established'],

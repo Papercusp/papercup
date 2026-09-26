@@ -14,7 +14,11 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { materializePlanSchedule, deactivatePlanSchedule } from './materialize-plan-schedule';
+import {
+  materializePlanSchedule,
+  deactivatePlanSchedule,
+  type BlueprintOperationRoutineTarget,
+} from './materialize-plan-schedule';
 import type { ScheduleTrigger } from './schedule-next';
 
 export interface ArmPlanScheduleInput {
@@ -34,7 +38,10 @@ export interface ArmPlanScheduleInput {
   harnessSlug: string;
   templateSlug: string;
   /** The plan's authored recurrence (from the schedule column). */
-  schedule?: ScheduleTrigger | null;
+  schedule?: (ScheduleTrigger & {
+    concurrency?: 'queue' | 'skip' | 'cancel-prev';
+    operation?: BlueprintOperationRoutineTarget;
+  }) | null;
   /** The plan's one-shot time (from the scheduled_at column). */
   scheduledAt?: Date | string | null;
   /** Overlap policy (from schedule.concurrency). */
@@ -68,8 +75,9 @@ export async function armPlanSchedule(input: ArmPlanScheduleInput): Promise<ArmR
     harnessSlug: input.harnessSlug,
     templateSlug: input.templateSlug,
     schedule: input.schedule ?? undefined,
+    operation: input.schedule?.operation,
     scheduledAt: input.scheduledAt ? new Date(input.scheduledAt) : undefined,
-    concurrency: input.concurrency,
+    concurrency: input.concurrency ?? input.schedule?.concurrency,
     active: true,
   });
   return { ok: true, routineId: mat.id, nextFireAt: mat.nextFireAt };

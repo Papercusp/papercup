@@ -139,6 +139,13 @@ describe('runFleetTransitionSweep', () => {
     expect(rounds).toEqual([[], ['fleet:member-left:push-not-poll'], [], []]);
   });
 
+  it('does not wake the leader repeatedly for live/recorded flaps with unchanged claims', async () => {
+    const live = member({ sessionState: 'live', wakeable: true, claimCount: 2, claimKeys: ['WI-1', 'WI-2'] });
+    const recorded = member({ sessionState: 'recorded', wakeable: false, claimCount: 2, claimKeys: ['WI-1', 'WI-2'] });
+    const rounds = await sweepRounds([[live], [recorded], [live], [recorded], [live], [recorded]]);
+    expect(rounds).toEqual([[], ['fleet:member-left:push-not-poll'], [], [], [], []]);
+  });
+
   it('does not fire on the FIRST sweep even when a member is already dead — the restart-storm guard', async () => {
     const rounds = await sweepRounds([[member({ sessionState: 'ended', contextPressure: 'critical' })]]);
     expect(rounds[0]).toEqual([]);

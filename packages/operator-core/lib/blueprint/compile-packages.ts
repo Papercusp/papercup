@@ -27,6 +27,8 @@ import { resolveLocalRecipe } from '../cupboard/recipe-store';
 import { operatorResolveExtends } from './installed-blueprints';
 import { blueprintRegistrySets } from './registry-sets.js';
 import { resolveLocalRubric } from '../cupboard/rubric-store';
+import { resolveLocalRule } from '../cupboard/rule-store';
+import { resolveInstalledEvent } from '../cupboard/event-store';
 import { loadKnowledgePack } from '../knowledge-packs/load-packs';
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
 import { resolvePotSlugsForHarnesses } from '../memory/hive-scope';
@@ -73,6 +75,18 @@ export const resolveLocalBlueprintPackage: BlueprintPackageResolver = async (req
     if (!asset) return null;
     const { dir, layer: _layer, source: _source, ...value } = asset;
     return snapshotPackageDirectory({ packageKind: 'rubric', ref: request.ref, revision: asset.version, dir, value });
+  }
+  if (request.kind === 'rule') {
+    const asset = resolveLocalRule(request.ref);
+    if (!asset) return null;
+    const { dir, layer: _layer, ...value } = asset;
+    return snapshotPackageDirectory({ packageKind: 'rule', ref: request.ref, revision: asset.version, dir, value });
+  }
+  if (request.kind === 'event') {
+    const asset = resolveInstalledEvent(request.ref);
+    if (!asset) return null;
+    const { dir, source: _source, ...value } = asset;
+    return snapshotPackageDirectory({ packageKind: 'event', ref: request.ref, revision: asset.version, dir, value });
   }
   if (request.kind === 'knowledge-pack') {
     const asset = await loadKnowledgePack(request.ref);

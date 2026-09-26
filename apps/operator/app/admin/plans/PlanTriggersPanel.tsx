@@ -57,6 +57,7 @@ function schedulePolicy(plan: NonNullable<PlanTriggerAdminResponse['plan']>): st
     `catch-up ${schedule.catchup ?? 'skip-old'}`,
   ];
   if (typeof schedule.costCapCents === 'number') parts.push(`cap $${(schedule.costCapCents / 100).toFixed(2)}`);
+  if (schedule.operation) parts.push(`target ${schedule.operation.harnessSlug}#${schedule.operation.operationId}`);
   return parts.join(' · ');
 }
 
@@ -415,6 +416,7 @@ function ScheduleComposer({
         tzid: tzid.trim() || undefined,
         concurrency,
         catchup: 'skip-old',
+        ...(existing?.operation ? { operation: existing.operation } : {}),
       };
       const result = await authorPlanSchedule(slug, {
         schedule,

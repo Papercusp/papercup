@@ -71,6 +71,42 @@ describe('armPlanSchedule / disarmPlanSchedule', () => {
     expect(rt.target).toBe('system:plan-run');
   });
 
+  it('arming preserves cadence and overlap while targeting the registered operation action', async () => {
+    const operationSchedule = {
+      ...SCHED,
+      concurrency: 'cancel-prev' as const,
+      operation: { harnessSlug: HARNESS, operationId: 'daily-triage', input: { queue: 'support' } },
+    };
+    const res = await armPlanSchedule({
+      sql,
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      templateSlug: SLUG,
+      schedule: operationSchedule,
+    });
+    expect(res.ok).toBe(true);
+    const rows = await sql<Array<{
+      target_role: string;
+      concurrency: string;
+      trigger_config: Record<string, unknown>;
+      payload_template: Record<string, unknown>;
+    }>>`
+      SELECT target_role, concurrency, trigger_config, payload_template
+        FROM harness_shared.routines
+       WHERE install_slug = ${HARNESS} AND name = ${planScheduleRoutineName(SLUG)}`;
+    expect(rows[0]).toMatchObject({
+      target_role: 'system:blueprint-operation',
+      concurrency: 'cancel-prev',
+      trigger_config: { kind: 'rrule', rrule: 'FREQ=DAILY' },
+      payload_template: {
+        operationHarnessSlug: HARNESS,
+        operationId: 'daily-triage',
+        input: { queue: 'support' },
+      },
+    });
+    expect(rows[0]!.trigger_config).not.toHaveProperty('operation');
+  });
+
   it('disarming sets schedule_active=false and deactivates the routine', async () => {
     await armPlanSchedule({ sql, workspaceId: WS, harnessSlug: HARNESS, templateSlug: SLUG, schedule: SCHED });
     const res = await disarmPlanSchedule({ sql, workspaceId: WS, harnessSlug: HARNESS, templateSlug: SLUG });

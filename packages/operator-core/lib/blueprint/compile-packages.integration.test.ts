@@ -39,6 +39,48 @@ const reference = ({ packageKind, ref, revision, contentHash }: ResolvedPackageI
 });
 
 describe('compileBlueprintWithPackages production composition (integration)', () => {
+  it.each(['rule', 'event'] as const)('pins an installed %s bundle and refuses changed versions', async (kind) => {
+    const root = mkdtempSync(join(tmpdir(), 'identity-reactive-package-'));
+    roots.push(root);
+    vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
+    const ref = `portable-${kind}-fixture`;
+    const dir = join(root, 'home', kind === 'rule' ? 'rules' : 'events', 'installed', ref);
+    mkdirSync(dir, { recursive: true });
+    const definition = kind === 'rule'
+      ? { id: ref, on: 'portable:completed', fire: 'class:notice.send@1.0.0#send', args: { text: 'done' } }
+      : { eventKey: 'portable:completed', keyPattern: 'portable:completed:*', tags: ['portable'] };
+    const manifest = { schemaVersion: 1, title: 'Portable fixture', description: 'Pinned reactive package',
+      version: '1.0.0', ...definition };
+    const listing = { kind, ref, version: '1.0.0', source: 'https://github.com/example/portable-fixtures' };
+    const manifestPath = join(dir, `${kind}.json`);
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+    writeFileSync(join(dir, 'listing.json'), JSON.stringify(listing));
+    writeFileSync(join(dir, 'guide.md'), 'Retain the complete package directory.');
+    const identity = { id: `portable-${kind}-identity`, extends: 'base', version: '1.0.0',
+      slots: [{ slot: 'domain' }], bundles: [{ kind, ref, version: '1.0.0' }] };
+    const compile = () => compileBlueprintWithPackages(identity, {
+      workspaceId: 'integration-workspace', harnessSlug: 'integration-harness',
+    });
+    const artifact = await compile();
+    const pin = artifact.inputs.find((entry): entry is ResolvedPackageInput =>
+      entry.kind === 'package' && entry.packageKind === kind && entry.ref === ref)!;
+    expect(pin).toMatchObject({ revision: '1.0.0', value: definition });
+    expect(pin.files.map((file) => file.path)).toEqual(['guide.md', 'listing.json', `${kind}.json`].sort());
+    const retained = JSON.stringify(artifact);
+
+    writeFileSync(manifestPath, JSON.stringify({ ...manifest, version: '2.0.0' }));
+    writeFileSync(join(dir, 'listing.json'), JSON.stringify({ ...listing, version: '2.0.0' }));
+    await expect(compile()).rejects.toThrow(/package-pin-conflict.*requires 1.0.0, selected 2.0.0/);
+    rmSync(root, { recursive: true, force: true });
+    expect(replayAgentSpecification(JSON.parse(retained))).toEqual(artifact);
+    await expect(compile()).rejects.toThrow(/package-missing/);
+
+    const corrupted = JSON.parse(retained);
+    corrupted.inputs.find((entry: { kind: string; ref: string }) => entry.kind === 'package' && entry.ref === ref)
+      .files.find((file: { path: string }) => file.path === 'guide.md').bytes = 'changed';
+    expect(() => replayAgentSpecification(corrupted)).toThrow(/package-hash-mismatch/);
+  });
+
   it('resolves an abstract identity resource through the existing recipe provisioner', async () => {
     const root = mkdtempSync(join(tmpdir(), 'identity-resource-integration-'));
     roots.push(root);

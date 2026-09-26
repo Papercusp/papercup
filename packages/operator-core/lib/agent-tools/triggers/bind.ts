@@ -8,9 +8,9 @@ export default defineTool({
   name: 'triggers:bind',
   profile: 'engineer',
   description:
-    'Install a disarmed external-event binding from one source to one target — a plan, a goal, or the canonical Email direct work-item kind — with an optional payload filter and storm policy.',
+    'Install a disarmed external-event binding from one source to one target — preferably a registered blueprint operation, or a legacy plan, goal, or canonical Email direct work-item kind — with an optional payload filter and storm policy.',
   guidance: {
-    when: 'Attach an existing external source event pattern (ext:<source>:<event>) to a plan ({ harness, plan }), a goal ({ goal }), or Email direct work-item ingress ({ workItemHarnessSlug:"email", workItemKind:"email-draft-proposal" }). The new binding is installed but DISARMED.',
+    when: 'Attach an existing external source event pattern (ext:<source>:<event>) to a blueprint operation ({ operationHarnessSlug, operationId, input? }), legacy plan ({ harness, plan }), goal ({ goal }), or Email direct work-item ingress. The new binding is installed but DISARMED.',
     notWhen:
       'To activate it use triggers:arm separately. For schedules use plans:set-schedule then plans:arm-schedule. For manual starts use plans:run-now.',
     chaining:
@@ -42,6 +42,22 @@ export default defineTool({
       .max(120)
       .optional()
       .describe('direct work-item target kind (P-018; currently `email-draft-proposal`, with workItemHarnessSlug)'),
+    operationHarnessSlug: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe('registered blueprint harness (with operationId); the standard P-016 automation target'),
+    operationId: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('registered blueprint operation id (with operationHarnessSlug)'),
+    input: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe('literal operation input overlaid on the redacted event routing envelope'),
     eventPattern: z.string().min(5).max(500).describe('ext:<source>:<event> key or anchored glob'),
     filter: dataConditionSchema.optional().describe('payload condition using the shared rules vocabulary'),
     stormPolicy: z
@@ -65,6 +81,9 @@ export default defineTool({
       goalId: args.goal ?? null,
       workItemHarnessSlug: args.workItemHarnessSlug ?? null,
       workItemKind: args.workItemKind ?? null,
+      operationHarnessSlug: args.operationHarnessSlug ?? null,
+      operationId: args.operationId ?? null,
+      operationInput: args.input,
       eventPattern: args.eventPattern,
       eventFilter: args.filter as Record<string, unknown> | undefined,
       stormPolicy: args.stormPolicy,

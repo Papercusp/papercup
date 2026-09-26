@@ -97,6 +97,14 @@ describe('subject files are the first ring of relative runtime imports', () => {
 });
 
 describe('deriveBindingFromTestRun', () => {
+  it('rejects integration testimony for an observed unit run, including JSON-string ledger details', () => {
+    const row = run({ execution_details: JSON.stringify({ schemaVersion: 1, testLayer: 'unit' }) });
+    expect(deriveBindingFromTestRun(input({ details: { adequacy: { testLayer: 'integration' } } }), row, root, 'run'))
+      .toMatchObject({ ok: false, error: 'run_contradicts_declared_adequacy' });
+    expect(deriveBindingFromTestRun(input(), row, root, 'run'))
+      .toMatchObject({ ok: true, binding: { details: { adequacy: { testLayer: 'unit' } } } });
+  });
+
   it('derives a test binding whose evidenceRef is the test path and whose adequacy facts come from the run', () => {
     const out = deriveBindingFromTestRun(input(), run(), root, 'run');
     expect(out).toMatchObject({
@@ -228,6 +236,38 @@ describe('expandTestRunBinding: harness attribution', () => {
         details: { testRun: { recordedRoot: nested, recordedFilePath: TEST } },
       },
     });
+  });
+
+  it('binds a copy-out mutation row through an explicit canonical test path after its mirror is removed', async () => {
+    const mirror = path.join(tmpdir(), 'mutation-probe-removed', 'mirror');
+    const canonical = `libs/generic/tooldef/${TEST}`;
+    await mkdir(path.join(root, 'libs/generic/tooldef/pkg/lib'), { recursive: true });
+    await writeFile(path.join(root, canonical), "import './subject';\n");
+    await writeFile(path.join(root, 'libs/generic/tooldef/pkg/lib/subject.ts'), 'export const subject = true;\n');
+    const { d } = deps(run({ root: mirror, source: 'mutation-probe', execution_details: { mutationPhase: 'mutant' } }));
+    expect(await expandTestRunBinding(input({ canonicalTestPath: canonical }), SCOPE, d)).toMatchObject({
+      ok: true,
+      binding: {
+        evidenceKind: 'mutation',
+        evidenceRef: canonical,
+        testRunId: 42,
+        measurement: {
+          testPaths: [canonical],
+          sourcePaths: ['libs/generic/tooldef/pkg/lib/subject.ts'],
+        },
+        details: { testRun: { recordedRoot: mirror, recordedFilePath: TEST, canonicalTestPathOverride: canonical } },
+      },
+    });
+  });
+
+  it('rejects a copy-out override that changes the recorded relative test or names a missing file', async () => {
+    const { d } = deps(run({ root: '/tmp/mutation-probe-removed/mirror', source: 'mutation-probe' }));
+    expect(await expandTestRunBinding(input({ canonicalTestPath: 'pkg/lib/other.test.ts' }), SCOPE, d))
+      .toMatchObject({ ok: false, error: 'test_run_file_outside_root' });
+    expect(await expandTestRunBinding(input({ canonicalTestPath: `missing/${TEST}` }), SCOPE, d))
+      .toMatchObject({ ok: false, error: 'test_run_file_outside_root' });
+    expect(await expandTestRunBinding(input({ canonicalTestPath: TEST }), SCOPE, deps(run({ root: '/tmp/other/mirror' })).d))
+      .toMatchObject({ ok: false, error: 'test_run_file_outside_root' });
   });
 
   it.each(['ci', 'admin-ui'])('never adopts a %s row (harness-NULL by design)', async (source) => {

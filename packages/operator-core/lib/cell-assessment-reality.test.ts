@@ -175,6 +175,9 @@ const WORK_SCOPE_CELLS = BUILTIN_CELLS.filter(
 const DIRECTIVE_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'orders:get',
 );
+const GATE_OWNERSHIP_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'dev:gate_ownership',
+);
 
 /**
  * Drives the REAL pipeline end to end — deriveDirectiveStatus() then the exported
@@ -1219,9 +1222,10 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
         CAPACITY_CELLS.length +
         ROLE_LAUNCH_CELLS.length +
         WORK_SCOPE_CELLS.length +
-        DIRECTIVE_CELLS.length,
+        DIRECTIVE_CELLS.length +
+        GATE_OWNERSHIP_CELLS.length,
     ).toBe(BUILTIN_CELLS.length);
-    expect(PIPELINE_CELLS).toHaveLength(12);
+    expect(PIPELINE_CELLS).toHaveLength(11);
     expect(GOAL_CELLS).toHaveLength(1);
     expect(PORTFOLIO_CELLS).toHaveLength(1);
     expect(HOST_MEMORY_CELLS).toHaveLength(2);
@@ -1231,6 +1235,7 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
     expect(ROLE_LAUNCH_CELLS).toHaveLength(1);
     expect(WORK_SCOPE_CELLS).toHaveLength(1);
     expect(DIRECTIVE_CELLS).toHaveLength(1);
+    expect(GATE_OWNERSHIP_CELLS).toHaveLength(1);
   });
 
   /**
@@ -1259,32 +1264,45 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
 });
 
 describe('P-004: every declared assessment path exists in a LIVE resolver payload', () => {
-  it.each(PIPELINE_CELLS.map((c) => [c.cell, c] as const))(
-    '%s — assessment + evidence paths arrive from dev:pipeline_position',
-    async (_id, spec) => {
-      // A `parameter`-relative cell is dispatched WITH its subject; a `global` one with
-      // `{}`. Reproducing that split matters — the per-path legs are unmeasured on a
-      // no-arg call.
-      const payload = await livePipelinePayload(
-        spec.callerRelativity.kind === 'parameter' ? 'packages/operator-core/lib/cell-registrations.ts' : undefined,
-      );
-      for (const { label, path } of assessmentPaths(spec)) {
-        // Match production assessmentFrom: a child path below an explicitly
-        // null optional leg is measured absence, not resolver/schema drift.
-        // A genuinely missing key still has neither `exists` nor a null
-        // terminator and therefore fails this reality check.
-        const r = pathExists(payload, path, { reportNullTermination: true });
-        expect(
-          r.exists || r.nullTerminatedAt !== undefined,
-          `${spec.cell}: declared ${label} "${path}" is ABSENT from the live resolver payload (missing at ` +
-            `"${r.missingAt}"). assessmentFrom DOWNGRADES the whole assessment to \`unavailable\` when any ` +
-            `declared evidence path does not arrive, so this cell would stop answering — silently, and on the ` +
-            `ordinary path. Either the resolver's shape changed or the declaration has a typo.`,
-        ).toBe(true);
-      }
-    },
-    20_000,
-  );
+  describe('dev:pipeline_position payloads', () => {
+    // These rows prove schema paths, not request latency. Fetch the two REAL
+    // request shapes once, concurrently, before their short assertion clocks
+    // start. A single live resolver read can exceed 20s under gate activity;
+    // timing out the first row used to turn every row sharing its promise red.
+    beforeAll(async () => {
+      await Promise.all([
+        livePipelinePayload(),
+        livePipelinePayload('packages/operator-core/lib/cell-registrations.ts'),
+      ]);
+    }, 120_000);
+
+    it.each(PIPELINE_CELLS.map((c) => [c.cell, c] as const))(
+      '%s — assessment + evidence paths arrive from dev:pipeline_position',
+      async (_id, spec) => {
+        // A `parameter`-relative cell is dispatched WITH its subject; a `global` one with
+        // `{}`. Reproducing that split matters — the per-path legs are unmeasured on a
+        // no-arg call.
+        const payload = await livePipelinePayload(
+          spec.callerRelativity.kind === 'parameter' ? 'packages/operator-core/lib/cell-registrations.ts' : undefined,
+        );
+        for (const { label, path } of assessmentPaths(spec)) {
+          // Match production assessmentFrom: a child path below an explicitly
+          // null optional leg is measured absence, not resolver/schema drift.
+          // A genuinely missing key still has neither `exists` nor a null
+          // terminator and therefore fails this reality check.
+          const r = pathExists(payload, path, { reportNullTermination: true });
+          expect(
+            r.exists || r.nullTerminatedAt !== undefined,
+            `${spec.cell}: declared ${label} "${path}" is ABSENT from the live resolver payload (missing at ` +
+              `"${r.missingAt}"). assessmentFrom DOWNGRADES the whole assessment to \`unavailable\` when any ` +
+              `declared evidence path does not arrive, so this cell would stop answering — silently, and on the ` +
+              `ordinary path. Either the resolver's shape changed or the declaration has a typo.`,
+          ).toBe(true);
+        }
+      },
+      20_000,
+    );
+  });
 
   it.each(COVERAGE_CELLS.map((c) => [c.cell, c] as const))(
     '%s — assessment + evidence paths arrive from the real testing:coverage handler',
@@ -1999,6 +2017,10 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
     ...ROLE_LAUNCH_CELLS,
     ...WORK_SCOPE_CELLS,
     ...DIRECTIVE_CELLS,
+    // The dedicated dev:gate_ownership handler test verifies its projected
+    // shape with an injected ownership result. Keep this sweep off the live
+    // single-fixer gate control plane; its pairing is checked structurally.
+    ...GATE_OWNERSHIP_CELLS,
   ];
 
   /**
@@ -2013,6 +2035,7 @@ describe('P-012: every hoisted count/list travels with its measured-ness flag', 
       'agent.goal',
       'agent.roleLaunch',
       'capacity.verdict',
+      'gate.greenCheckpoint.ownership',
       'goal.portfolioThroughput',
       // P-007: assessDirectiveStatus is pure over a derived status and needs no live store;
       // the sweep cannot obtain a payload for it because orders:get is per-directive-id.

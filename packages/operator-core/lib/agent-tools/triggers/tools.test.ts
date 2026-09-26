@@ -141,6 +141,23 @@ describe('triggers:* tool surface', () => {
     );
   });
 
+  it('maps the standard operation target and literal input through the shared bind seam', async () => {
+    await bindTool.handler({
+      sourceId: '00000000-0000-4000-8000-000000000002',
+      operationHarnessSlug: 'papercusp',
+      operationId: 'triage-message',
+      input: { priority: 'normal' },
+      eventPattern: 'ext:slack:mention',
+    } as never, ctx);
+    expect(createBinding).toHaveBeenCalledWith(expect.anything(), 'ws-1', expect.objectContaining({
+      operationHarnessSlug: 'papercusp',
+      operationId: 'triage-message',
+      operationInput: { priority: 'normal' },
+      planHarnessSlug: null,
+      planSlug: null,
+    }));
+  });
+
   it('arms and disarms only the named binding', async () => {
     const bindingId = '10000000-0000-4000-8000-000000000002';
     expect(body(await armTool.handler({ bindingId, confirm: true } as never, ctx))).toMatchObject({

@@ -485,6 +485,8 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
           bar({
             method: 'Run the manual replication drill.',
             check: { kind: 'instrument', instrumentKey: 'none' },
+            automatedProofRequired: false,
+            proof: { ...bar().proof, state: 'current', currentEvidence: 1 },
             readiness: { state: 'ready', codes: [], mapping: 'live', method: 'declared', workContract: 'current' },
           }),
         ],
@@ -494,7 +496,7 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
     expect(ready.satisfied).toBe(true);
   });
 
-  it('does not carry a complete-snapshot repair into a phase where that code is deferred', () => {
+  it('requires proof depth before recruiting a grader and ranks the actionable repair', () => {
     const verdict = evaluateAcceptanceBarLifecycle(
       snapshot({
         bars: [
@@ -523,8 +525,22 @@ describe('AcceptanceBarLifecycleEvaluator — phase-aware BAR contract', () => {
       'pre-grading',
     );
 
-    expect(verdict.codes).toEqual(['bar_snapshot_vetting_missing']);
-    expect(verdict.nextRepair).toMatchObject({ code: 'bar_snapshot_vetting_missing', barKey: null });
+    expect(verdict.codes).toContain('bar_snapshot_proof_depth_missing');
+    expect(verdict.nextRepair).toBeTruthy();
+  });
+
+  it('blocks grading on proof adequacy, freshness, and declared live plane/runtime', () => {
+    const trace = bar({
+      method: 'Verify live behavior.', check: { kind: 'instrument', instrumentKey: 'manual' },
+      requiredTestLayers: ['integration'], evidencePlane: 'live',
+      proof: { ...bar().proof, state: 'stale', adequacy: { state: 'fail' } } as AcceptanceBarTrace['proof'],
+    });
+    const verdict = evaluateAcceptanceBarLifecycle(snapshot({ bars: [trace] }), 'pre-grading');
+    expect(verdict.codes).toEqual(expect.arrayContaining([
+      'bar_snapshot_proof_inadequate', 'bar_snapshot_proof_stale',
+      'bar_snapshot_evidence_plane_unmet',
+    ]));
+    expect(verdict.satisfied).toBe(false);
   });
 
   it('P-004: at ship, an unvetted rubric with missing proof is told to VET first, with the full action', () => {

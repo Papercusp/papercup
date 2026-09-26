@@ -1,12 +1,12 @@
 /** Real-PG mode implication rows feeding the canonical built-in identity stack. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { stringify } from 'yaml';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { composeSuStackSource, layerContentHash, suSessionBinding } from '@papercusp/orchestrator/blueprint';
-import { bindSelectedIdentityOutputs, getIdentitySource, resolvePinnedIdentityLaunchSelection } from './agent-identities/source';
+import { bindSelectedIdentityOutputArtifact, bindSelectedIdentityOutputs, getIdentitySource, resolvePinnedIdentityLaunchSelection } from './agent-identities/source';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from './blueprint/installed-blueprints';
 import { commitBlueprintRelease, snapshotBlueprintReleaseSource } from './cupboard/blueprint-release';
 import { getModes, setMode } from './modes/store';
@@ -66,6 +66,43 @@ describe('installed identity pin and current SU mode source', () => {
   let db: OrgTestDb;
   beforeAll(async () => { db = await createOrgTestDb(); }, 120_000);
   afterAll(async () => { await db?.cleanup(); });
+
+  it('refuses an omitted required generated component after reading persisted mode state', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'p007-required-mode-output-'));
+    const identityId = 'provider-domain';
+    const identityDir = join(root, '.papercusp', 'blueprints', identityId);
+    const workspaceId = 'p007-required-mode-workspace';
+    const ownerId = 'su-p007-required-mode';
+    try {
+      mkdirSync(join(identityDir, 'prompts'), { recursive: true });
+      writeFileSync(join(identityDir, 'blueprint.yaml'), readFileSync(
+        process.env.PAPERCUSP_MUTATION_PROBE_SOURCE ??
+          new URL('./agent-identities/fixtures/required-provider-domain.yaml', import.meta.url), 'utf8'));
+      writeFileSync(join(identityDir, 'prompts', 'domain.md'), 'REQUIRED MODE PROVIDER\n');
+      expect((await setMode({ workspaceId, ownerId, modeId: 'ideate', enabled: true,
+        reason: 'P007 persisted producer fixture', setBy: ownerId, sql: db.adminSql })).ok).toBe(true);
+      const value = await getModes(workspaceId, ownerId, db.adminSql);
+      expect(value.map(row => row.mode)).toEqual(['ideate']);
+      const selected = { identityId, repoDir: root,
+        scope: { workspace: workspaceId, ownerId, harness: 'papercusp' },
+        observedAt: '2026-09-26T00:00:00.000Z' };
+      const bound = await bindSelectedIdentityOutputArtifact({ ...selected,
+        outputs: [{ contributionId: 'current-brief', value }] });
+      const launch = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: root, workspaceId, harnessSlug: 'papercusp', role: 'su',
+        stack: [`domain:${identityId}`], state: { schemaVersion: 1 }, renderStack: true,
+        producerBindings: [{ identityId, artifact: bound.artifact }],
+      });
+      expect(launch.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'setting', ref: 'current-brief', producerRef: 'existing.brief', value,
+      }));
+      // Same real source and selected identity, with only the required output omitted.
+      await expect(bindSelectedIdentityOutputArtifact({ ...selected, outputs: [] }))
+        .rejects.toThrow(/declared operational input is absent/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
   it('retains installed v1 instructions after v2 while the declared mode value refreshes', async () => {
     const root = mkdtempSync(join(tmpdir(), 'p006-mode-pin-'));

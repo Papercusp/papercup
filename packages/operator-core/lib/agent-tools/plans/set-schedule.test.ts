@@ -112,6 +112,18 @@ describe('plans:set-schedule persistence + result shaping', () => {
     expect(arg.schedule.execution).toEqual(execution);
   });
 
+  it('persists a registered operation target and authored input with the cadence', async () => {
+    const operation = {
+      harnessSlug: 'papercusp',
+      operationId: 'daily-triage',
+      input: { queue: 'support' },
+    };
+    const out = await call({ schedule: { kind: 'cron', cron: '0 9 * * *', operation } });
+    expect(out.isError).toBeUndefined();
+    const arg = setSched.mock.calls[0]![0] as unknown as { schedule: { operation: typeof operation } };
+    expect(arg.schedule.operation).toEqual(operation);
+  });
+
   it('maps a falsy write to not_found', async () => {
     setSched.mockResolvedValue(false);
     const out = await call({ schedule: { kind: 'rrule', rrule: 'FREQ=DAILY' } });

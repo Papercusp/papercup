@@ -76,6 +76,9 @@ const payload = {
       sourceStatus: "connected",
       planHarnessSlug: "papercusp",
       planSlug: "triage-mail",
+      goalId: null,
+      workItemHarnessSlug: null,
+      workItemKind: null,
       eventPattern: "ext:gmail:message.*",
       eventFilter: { label: "support" },
       action: { type: "launch-plan" },
@@ -125,7 +128,7 @@ describe("/admin/triggers client", () => {
   it("renders the URL-selected bindings view from the shared snapshot", async () => {
     renderClient();
     expect(await screen.findByText("ext:gmail:message.*")).toBeTruthy();
-    expect(screen.getByText("→ papercusp/triage-mail")).toBeTruthy();
+    expect(screen.getByText("→ plan papercusp/triage-mail")).toBeTruthy();
     expect(
       screen
         .getByRole("switch", { name: "Arm ext:gmail:message.*" })
@@ -231,6 +234,42 @@ describe("/admin/triggers client", () => {
     expect(screen.getByText("triage-mail@run-1")).toBeTruthy();
     expect(screen.getByText("done · 2/2 · 1 agent")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Re: Launch review" }).getAttribute("href")).toContain("drafts/draft-1");
+  });
+
+  it("links an operation-backed trigger run to its actual work-item target", async () => {
+    (payload.recentRuns as unknown[]).push({
+      id: "run-operation",
+      bindingId: BINDING_ID,
+      sourceKind: "gmail",
+      eventPattern: "ext:gmail:message.created",
+      planHarnessSlug: null,
+      planSlug: null,
+      goalId: null,
+      workItemHarnessSlug: null,
+      workItemKind: null,
+      status: "succeeded",
+      attempts: 1,
+      triggeredAt: "2026-08-22T18:00:00.000Z",
+      completedAt: "2026-08-22T18:00:01.000Z",
+      planRunRef: null,
+      error: null,
+      causeSummary: "Operation message",
+      policyDisposition: "ran",
+      policyDetail: "ran",
+      planRun: null,
+      blueprintOperation: {
+        workspaceId: "papercusp-workspace",
+        harnessSlug: "papercusp",
+        receiptId: 71,
+        operationId: "triage-message",
+        specificationRevision: "a".repeat(64),
+        target: { kind: "work-item", id: "WI-operation-71" },
+      },
+      outcomeLinks: [],
+    });
+    renderClient("?view=runs");
+    const link = await screen.findByRole("link", { name: "papercusp#triage-message → WI-operation-71" });
+    expect(link.getAttribute("href")).toContain("item=WI-operation-71");
   });
 
   it("surfaces aged trigger work that is waiting for manual review", async () => {

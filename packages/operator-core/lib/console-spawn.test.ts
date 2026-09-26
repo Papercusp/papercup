@@ -543,6 +543,32 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     expect(r).toMatchObject({ status: 'ok', kickoffProof: { persisted: false, reason: 'kickoff-proof-timeout' } });
   });
 
+  it('preserves a partial launch when cleanup of an unsubmitted kickoff fails', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7792));
+    taskControl.kill.mockRejectedValueOnce(new Error('task store unavailable'));
+    const r = await spawnHeadless({
+      envelope,
+      label: 'cleanup-failed',
+      kickoffProof: true,
+      kickoffProofProbes: {
+        windowMs: 0,
+        readReceipt: (_path, token) => JSON.stringify({
+          token,
+          persisted: false,
+          nativeRef: null,
+          reason: 'kickoff-not-submitted:kickoff-marker-echo-unconfirmed',
+        }),
+      },
+      bootProbes: { readLog: () => '', sleep: async () => {}, windowMs: 0 },
+      ...noSystemdRun,
+    });
+    expect(r).toMatchObject({
+      status: 'ok',
+      taskId: 'task1234',
+      kickoffProof: { persisted: false, reason: 'kickoff-not-submitted:kickoff-marker-echo-unconfirmed' },
+    });
+  });
+
   it('writes the envelope MCP config into the headless cwd when opted in', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'papercup-headless-mcp-'));
     const mcpJsonContents = '{"mcpServers":{"papercusp":{"url":"http://127.0.0.1"}}}';

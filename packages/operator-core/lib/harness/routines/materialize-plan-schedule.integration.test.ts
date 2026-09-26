@@ -16,6 +16,7 @@ import {
   deletePlanSchedule,
   planScheduleRoutineName,
   PLAN_RUN_ACTION,
+  BLUEPRINT_OPERATION_ACTION,
 } from './materialize-plan-schedule';
 
 let org: OrgTestDb;
@@ -93,6 +94,34 @@ describe('materializePlanSchedule', () => {
     expect(row!.trigger_config.cron).toBe('0 9 * * *');
     expect(row!.concurrency).toBe('queue');
     expect(row!.next_fire_at).not.toBeNull();
+  });
+
+  it('projects an operation-backed cadence onto the same routine row and strips target metadata from trigger_config', async () => {
+    const template = 'operation-schedule';
+    await materializePlanSchedule({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      templateSlug: template,
+      schedule: { kind: 'cron', cron: '0 9 * * *' },
+      operation: { harnessSlug: 'papercusp', operationId: 'daily-triage', input: { queue: 'support' } },
+      concurrency: 'cancel-prev',
+      sql,
+    });
+    const row = await routineRow(template);
+    expect(row).toMatchObject({
+      target_role: BLUEPRINT_OPERATION_ACTION,
+      trigger_config: { kind: 'cron', cron: '0 9 * * *' },
+      payload_template: {
+        templateSlug: template,
+        harnessSlug: HARNESS,
+        operationHarnessSlug: 'papercusp',
+        operationId: 'daily-triage',
+        input: { queue: 'support' },
+      },
+      concurrency: 'cancel-prev',
+      active: true,
+    });
+    expect(row!.trigger_config).not.toHaveProperty('operation');
   });
 
   it('expresses a one-shot (scheduled_at, no recurrence) as next_fire_at + empty trigger_config', async () => {

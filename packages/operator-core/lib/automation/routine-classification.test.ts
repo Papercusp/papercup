@@ -37,6 +37,7 @@ describe('spendForTargetRole', () => {
     for (const role of [
       'system:blueprint-run',
       'system:plan-run',
+      'system:blueprint-operation',
       'system:overwatch-launch',
       'system:gym-cycle',
       'system:improvement-implement',
