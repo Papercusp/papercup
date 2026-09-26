@@ -28,7 +28,7 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
 }));
 
 import bashTool from './bash';
-import { __resetBashJobs } from './bash-jobs';
+import { __resetBashJobs, getJob, waitForJobResponse } from './bash-jobs';
 import { generateToolFacadeTypes, lookupByMcpName } from '@papercusp/agent-mcp';
 import { unwrapToolResult } from '@papercusp/tooldef';
 
@@ -196,20 +196,24 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(String(seen.output)).toContain('X');
   });
 
-  // TEMPORARY QUARANTINE EI-23534775644576082: concurrent srt launches in one
-  // writable cwd race while mounting mandatory deny placeholders. Installed
-  // 0.0.74 and latest 0.0.77 both reproduced bwrap exit 1; restore this case
-  // when the owned SRT concurrency fix lands. The other nine cases stay active.
-  it.skip('agrees with its own background branch: both shapes are objects', async () => {
+  it('agrees with its own background branch: both shapes are objects', async () => {
     // The asymmetry WITHIN this tool is what made `.stdout` the natural thing to
     // write — an agent who used the background form first learned "it is an object".
     const bg = await bash.handler(
       { command: 'echo BG', run_in_background: true },
       makeCtx({ codeMode: true }),
     );
-    const fg = await bash.handler({ command: 'echo FG' }, makeCtx({ codeMode: true }));
-
     const bgSeen = unwrapToolResult(bg as never) as Record<string, unknown>;
+    // EI-23534775644576082: this test checks the two result shapes, not
+    // concurrent sandboxes. Separate launches in the same writable cwd race in
+    // SRT while it creates and removes mandatory-deny mount placeholders.
+    // Wait for the actual background process to close before starting FG.
+    const bgJob = getJob(String(bgSeen.bash_id));
+    expect(bgJob).toBeDefined();
+    expect(await waitForJobResponse(bgJob!, new AbortController().signal, 30_000)).toBe('terminal');
+    expect(bgJob!.status).toBe('completed');
+
+    const fg = await bash.handler({ command: 'echo FG' }, makeCtx({ codeMode: true }));
     const fgSeen = unwrapToolResult(fg as never) as Record<string, unknown>;
     expect(typeof bgSeen).toBe('object');
     expect(typeof fgSeen).toBe('object');
