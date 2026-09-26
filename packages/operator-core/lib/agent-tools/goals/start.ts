@@ -486,6 +486,12 @@ export default defineTool({
       .describe(
         'Harness slug to file the goal under and bootstrap the agent in. Required when the caller context is wildcard/unset.',
       ),
+    mcpTarget: z
+      .enum(['stable', 'spawn-host'])
+      .optional()
+      .describe(
+        "OPTIONAL, default stable — 'spawn-host' binds this goal holder's bootstrap and MCP to the operator handling this start (for a bounded current-build A/B check). The staging host may restart; ordinary long-lived holders use the stable proxy.",
+      ),
     agent: z.string().max(40).optional().describe("Which backend to launch (default 'claude')."),
     model: z.string().max(80).optional().describe('Model override for the spawned agent.'),
     account: z
@@ -821,10 +827,12 @@ export default defineTool({
 
     let base;
     try {
+      const spawnHostOperatorBaseUrl = resolveSpawnHostOperatorBaseUrl();
       base = await buildConsoleEnvelope({
         workspaceId,
         slug: installSlug,
-        operatorBaseUrl: resolveSpawnHostOperatorBaseUrl(),
+        operatorBaseUrl: spawnHostOperatorBaseUrl,
+        ...(args.mcpTarget === 'spawn-host' ? { agentMcpBaseUrl: spawnHostOperatorBaseUrl } : {}),
         // A launched AGENT is an MCP-connected console — it needs the
         // superuser .mcp.json (same call capability:launch-agent makes).
         skipMcpJson: false,

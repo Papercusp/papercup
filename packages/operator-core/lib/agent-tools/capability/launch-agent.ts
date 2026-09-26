@@ -449,6 +449,12 @@ export default defineTool({
         .describe(
           'Harness slug to bootstrap for an operator-scope launch. Required when the caller context is wildcard/unset; otherwise the caller harness is used.',
         ),
+      mcpTarget: z
+        .enum(['stable', 'spawn-host'])
+        .optional()
+        .describe(
+          "OPTIONAL, default stable — 'spawn-host' binds this agent's bootstrap and MCP to the operator handling this launch (for a bounded current-build A/B check). The staging host may restart; ordinary long-lived sessions use the stable proxy.",
+        ),
       workItem: z
         .string()
         .max(200)
@@ -1325,10 +1331,12 @@ export default defineTool({
 
     let base;
     try {
+      const spawnHostOperatorBaseUrl = resolveOperatorBaseUrl();
       base = await buildConsoleEnvelope({
         workspaceId,
         slug,
-        operatorBaseUrl: resolveOperatorBaseUrl(),
+        operatorBaseUrl: spawnHostOperatorBaseUrl,
+        ...(args.mcpTarget === 'spawn-host' ? { agentMcpBaseUrl: spawnHostOperatorBaseUrl } : {}),
         // A launched AGENT is an MCP-connected console (unlike capability:terminal,
         // which just runs a command) — it needs the superuser .mcp.json.
         skipMcpJson: false,

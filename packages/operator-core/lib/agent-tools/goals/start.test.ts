@@ -31,13 +31,14 @@ vi.mock('../../papercusp-root', async (orig) => ({
   papercuspPathForWorkspace: () => '/tmp/papercusp-ws',
 }));
 vi.mock('../../mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3070' }));
-vi.mock('../../console-launcher', () => ({
-  buildConsoleEnvelope: vi.fn(async () => ({
+const buildConsoleEnvelopeMock = vi.hoisted(() => vi.fn(async (_opts: unknown) => ({
     cwd: '/repo',
     env: { PAPERCUSP_SID: 'su-caller' },
     greetingCmd: '',
     mcpJsonContents: '',
-  })),
+  })));
+vi.mock('../../console-launcher', () => ({
+  buildConsoleEnvelope: (opts: unknown) => buildConsoleEnvelopeMock(opts),
 }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({
@@ -271,6 +272,15 @@ describe('the ordering predicate itself', () => {
 });
 
 describe('goals:start — the happy path', () => {
+  it('pins a bounded current-build holder to its spawn host and leaves the default stable', async () => {
+    expect(isError(await call({ mcpTarget: 'spawn-host' }))).toBe(false);
+    const abInput = buildConsoleEnvelopeMock.mock.calls[0]?.[0] as { operatorBaseUrl: string; agentMcpBaseUrl?: string };
+    expect(abInput.agentMcpBaseUrl).toBe(abInput.operatorBaseUrl);
+    buildConsoleEnvelopeMock.mockClear();
+    expect(isError(await call())).toBe(false);
+    expect(buildConsoleEnvelopeMock.mock.calls[0]?.[0]).not.toHaveProperty('agentMcpBaseUrl');
+  });
+
   it('writes the goal, stamps the mode, THEN spawns', async () => {
     const res = await call();
     expect(isError(res)).toBe(false);

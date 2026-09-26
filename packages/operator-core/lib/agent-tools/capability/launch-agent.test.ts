@@ -101,13 +101,14 @@ vi.mock('../../harness/routines/loop', async (orig) => ({
   getLoopStatus: (ownerId: string) => getLoopStatusMock(ownerId),
 }));
 
-vi.mock('../../console-launcher', () => ({
-  buildConsoleEnvelope: vi.fn(async () => ({
+const buildConsoleEnvelopeMock = vi.hoisted(() => vi.fn(async (_opts: unknown) => ({
     cwd: '/repo',
     env: { PAPERCUSP_SID: 'su-caller' },
     greetingCmd: '',
     mcpJsonContents: '',
-  })),
+  })));
+vi.mock('../../console-launcher', () => ({
+  buildConsoleEnvelope: (opts: unknown) => buildConsoleEnvelopeMock(opts),
 }));
 
 const armInboxWakeMock = vi.hoisted(() => vi.fn());
@@ -462,8 +463,10 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
       ceilings: { maxAgents: 12, maxPerFleet: 5 },
       headcount: { total: 1, fleet: null }, degraded: false, degradedReasons: [],
     });
-    const res = await launchAgent.handler({ brief: 'Verify the goal independently', goalVerifier, harness: 'papercusp' }, ctx);
+    const res = await launchAgent.handler({ brief: 'Verify the goal independently', goalVerifier, harness: 'papercusp', mcpTarget: 'spawn-host' }, ctx);
     expect(isError(res)).toBe(false);
+    const envelopeInput = buildConsoleEnvelopeMock.mock.calls[0]?.[0] as { operatorBaseUrl: string; agentMcpBaseUrl?: string };
+    expect(envelopeInput.agentMcpBaseUrl).toBe(envelopeInput.operatorBaseUrl);
     expect(goalLaunchResolveMock).toHaveBeenCalledWith(expect.objectContaining({ goalRole }));
     expect(spawnedCommand()).toContain(`--mode=${goalVerifier}`);
     expect(spawnedCommand()).toContain('--model=sonnet');
@@ -477,6 +480,12 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('active, attributed GOAL holder');
     expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the stable MCP target for an ordinary launch by default', async () => {
+    const res = await launchAgent.handler({ brief: 'Ordinary agent work', harness: 'papercusp' }, ctx);
+    expect(isError(res)).toBe(false);
+    expect(buildConsoleEnvelopeMock.mock.calls[0]?.[0]).not.toHaveProperty('agentMcpBaseUrl');
   });
 
   it('refuses plan-bound and raw-flag verifier launches before opening a process', async () => {
