@@ -139,8 +139,11 @@ export async function resolveAgentBinary(bin: string): Promise<string | null> {
   return (await whichAsync(bin)) ?? firstExecutableCandidate(bin);
 }
 
-/** Synchronous detection — kept for callers that are already sync
- *  (agent-config UI, setup-wizard pty route). */
+/** Synchronous detection — kept only for callers that are already sync
+ *  (setup-wizard pty route). It runs four serial blocking spawnSync('which')
+ *  calls, so never call it from a per-request operator handler: the
+ *  agent-config route used to and showed up in :3170 main-thread saturation
+ *  profiles (WI-10003266). Use `detectBinariesCached`/`detectBinariesAsync`. */
 export function detectBinaries(): DetectedBinaries {
   return {
     claude: resolveAgentBinarySync('claude'),
