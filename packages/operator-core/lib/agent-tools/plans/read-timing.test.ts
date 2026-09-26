@@ -3,9 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const state = vi.hoisted(() => ({ clock: 0, queryMs: 7, rows: [] as unknown[], workspaces: [] as string[] }));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...await original<typeof import('@papercusp/db-org')>(),
-  withWorkspace: async (workspace: string, fn: (tx: unknown) => Promise<unknown>) => {
+  withWorkspace: async (workspace: string, fn: (tx: unknown) => Promise<unknown>, opts?: {
+    onAcquisitionPhase?: (phase: 'begin' | 'ready') => void;
+  }) => {
     state.workspaces.push(workspace);
-    state.clock += 100; // acquisition + BEGIN + workspace setup
+    state.clock += 70; // pool wait, connection and BEGIN
+    opts?.onAcquisitionPhase?.('begin');
+    state.clock += 30; // transaction-local workspace setup
+    opts?.onAcquisitionPhase?.('ready');
     const result = await fn(() => ({
       // postgres templates are lazy: nested fragments do not execute a query.
       then(resolve: (rows: unknown[]) => unknown) {
@@ -46,7 +51,8 @@ describe('plan read phase attribution', () => {
     const result = await readPlanBySlug('timing', { workspaceId: 'timing-ws' }, timings);
     expect(result?.row.planSlug).toBe('timing');
     expect(state.workspaces).toEqual(['timing-ws']);
-    expect(timings).toEqual({ 'source.resolveScope': 0, 'source.acquireAndSetup': 100,
+    expect(timings).toEqual({ 'source.resolveScope': 0, 'source.waitForBegin': 70,
+      'source.workspaceSetup': 30, 'source.acquireAndSetup': 100,
       'source.query': queryMs, 'source.finishTransaction': 3, 'source.row': 0, 'source.parse': 11 });
     expect(JSON.stringify(result)).not.toContain('acquireAndSetup');
   });

@@ -214,8 +214,6 @@ export function shouldWriteHostDiagnostic({ bridgeTty, env }?: {
     bridgeTty?: boolean;
     env?: EnvironmentMap;
 }): boolean;
-/** The carry prompt's unique first line is the strongest cross-backend proof
- * that the fresh native transcript accepted THIS successor turn. */
 export function leadingTurnOriginMarker(text: any): string | null;
 /** WI-10002752: Codex has no system-prompt CLI flag, so a carry-respawn's carry
  * document rides in the first TYPED turn (`mintCarryRespawnArgs` returns it as

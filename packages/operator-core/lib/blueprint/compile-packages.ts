@@ -4,11 +4,14 @@
  * Nothing here installs another identity, changes a session stack or grants tools.
  */
 import type { Sql } from 'postgres';
+import { dirname, join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import {
   compileAgentSpecification,
   CompositionCompilerError,
   BlueprintSourceDocumentSchema,
+  loadBlueprintFromFile,
+  pinPackageInput,
   resolveBlueprintSource,
   snapshotPackageDirectory,
   validateAgentInputClosure,
@@ -21,6 +24,8 @@ import {
   type ResolvedPackageInput,
 } from '@papercusp/orchestrator/blueprint';
 import { resolveLocalRecipe } from '../cupboard/recipe-store';
+import { operatorResolveExtends } from './installed-blueprints';
+import { blueprintRegistrySets } from './registry-sets.js';
 import { resolveLocalRubric } from '../cupboard/rubric-store';
 import { loadKnowledgePack } from '../knowledge-packs/load-packs';
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
@@ -162,6 +167,39 @@ export async function compileBlueprintWithPackages(
     requests.push({ kind: 'knowledge-pack', ref: knowledge });
   }
   const packages = await resolveBlueprintPackageInputs(requests, options.resolvePackage);
+  const externalProgramPins: ResolvedPackageInput[] = [];
+  const selectedProgramRefs = new Map<string, { revision: string; contentHash: string }>();
+  const sourcePath = options.sourcePath ?? (isLoaded ? (loaded as LoadedBlueprint).sourcePath : null);
+  const fallbackResolve = operatorResolveExtends({
+    localDirs: sourcePath ? [join(dirname(sourcePath), 'blueprints')] : [],
+  });
+  for (const operation of blueprint.operations ?? []) {
+    const ref = operation.execution?.kind === 'program' ? operation.execution.blueprint : undefined;
+    if (!ref) continue;
+    const prior = selectedProgramRefs.get(ref.ref);
+    if (prior && (prior.revision !== ref.revision || prior.contentHash !== ref.contentHash)) {
+      throw new CompositionCompilerError('package-pin-conflict',
+        'operations require different revisions of the same external program', ref.ref);
+    }
+    if (prior) continue;
+    selectedProgramRefs.set(ref.ref, { revision: ref.revision, contentHash: ref.contentHash });
+    const packageRef = `operation:${ref.ref}`;
+    const supplied = options.input?.inputClosure?.some((entry) =>
+      entry.kind === 'package' && entry.packageKind === 'blueprint' && entry.ref === packageRef);
+    if (supplied) continue;
+    const path = (resolve?.(ref.ref) ?? fallbackResolve(ref.ref));
+    if (!path) throw new CompositionCompilerError('package-missing', 'external program blueprint is not installed', ref.ref);
+    const external = loadBlueprintFromFile(path, resolve ?? fallbackResolve, blueprintRegistrySets());
+    if (external.blueprint.id !== ref.ref || external.blueprint.version !== ref.revision ||
+        external.contentHash !== ref.contentHash) {
+      throw new CompositionCompilerError('package-pin-conflict',
+        'installed external program blueprint differs from its declared version or resolved content hash', ref.ref);
+    }
+    externalProgramPins.push(pinPackageInput({
+      packageKind: 'blueprint', ref: packageRef, revision: ref.revision,
+      files: [], dependencies: [], value: external.blueprint,
+    }));
+  }
   const requiredClasses = new Set(blueprint.grants?.requires ?? []);
   const optionalClasses = (blueprint.grants?.optional ?? [])
     .filter((ref) => !requiredClasses.has(ref));
@@ -222,6 +260,7 @@ export async function compileBlueprintWithPackages(
     inputClosure: [
       ...packages,
       ...capabilityProviders,
+      ...externalProgramPins,
       ...(options.input?.inputClosure ?? []),
     ],
     settings: [

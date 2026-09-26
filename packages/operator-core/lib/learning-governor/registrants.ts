@@ -43,7 +43,7 @@ import {
   type SettleLearningSpendInput,
   type SettleLearningSpendResult,
 } from './store';
-import type { ReservationRefusal, SpendAttemptKind } from './spend';
+import type { SpendAttemptKind } from './spend';
 
 /** Injectable IO seam (tests). Defaults = the real flag + store + pool. */
 export interface GovernorGlueDeps {
@@ -158,7 +158,7 @@ export interface GovernedSpendAttemptInput<T> {
 export type GovernedSpendAttemptOutcome<T> =
   | { ok: true; value: T; costUsd: number; reservationId: string; clamped: boolean; cancelled: boolean }
   /** The governor refused BEFORE the work ran — nothing was spent. */
-  | { ok: false; reason: 'refused'; refusal: ReservationRefusal; headroomUsd: number | null }
+  | { ok: false; reason: 'refused'; refusal: Extract<ReserveLearningSpendResult, { ok: false }>['reason']; headroomUsd: number | null }
   /** The governor is dark (kill-switch) — the work did not run. */
   | { ok: false; reason: 'governor-dark' }
   /** The work threw. The attempt is settled 'failed' with whatever it burned. */

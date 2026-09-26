@@ -1,5 +1,6 @@
 import http from 'node:http';
 import net from 'node:net';
+import { createHash } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -7,7 +8,9 @@ import { Agent } from 'undici';
 import { afterEach, expect, it } from 'vitest';
 import { resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { createFailoverPool } from './account-failover';
-import { createInferenceGateway, type GatewayStats } from './gateway';
+import { createInferenceGateway, type GatewayStats, type GatewayCarryTrialAttempt,
+  type GatewayCarryTrialBinding } from './gateway';
+import { processMonotonicClock } from '../process-monotonic-clock';
 import { CACHE_POLICY_VERSION } from './cache-policy';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
@@ -338,6 +341,219 @@ it('observes actual OAuth transport writes through a loopback-only test dispatch
     await gateway?.close(); gateway = undefined;
     await dispatcher.close();
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+const trialToken = 'PRIVATE_CONTROLLER_ISSUED_TRIAL_TOKEN';
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+const trialBinding = (authorizeAttempt: GatewayCarryTrialBinding['authorizeAttempt']): GatewayCarryTrialBinding => ({
+  manifestSha256: sha256('frozen unpaid fixture manifest'), armId: 'fixture-control',
+  requestTokenSha256: sha256(trialToken), authorizeAttempt,
+});
+const fixtureReservation = (attempt: GatewayCarryTrialAttempt) => ({
+  attemptId: attempt.attemptId, reservationRef: `fixture:${attempt.attemptId}`,
+  clockId: attempt.clockId, validUntilMonotonicMs: processMonotonicClock.now() + 5_000,
+});
+
+it.each(['missing-token', 'wrong-token', 'refused', 'threw', 'expired', 'wrong-clock', 'replayed-receipt'] as const)(
+  'carry trial prevents the first actual HTTP write for %s', async mode => {
+    let writes = 0, authorizations = 0;
+    upstream = http.createServer((req, res) => { req.resume(); writes++; res.end('{}'); });
+    const upstreamPort = await listen(upstream);
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`,
+      codexPool: createFailoverPool([{ accountId: 'actual-account', token: async () => 'PRIVATE_UPSTREAM_TOKEN' },
+        { accountId: 'must-not-rotate', token: async () => 'PRIVATE_OTHER_TOKEN' }]),
+      requestAbsorbMs: 0, selfHeal: { enabled: false },
+      carryTrial: trialBinding(async attempt => {
+        authorizations++;
+        if (mode === 'threw') throw new Error('PRIVATE_CONTROLLER_ERROR');
+        if (mode === 'refused') return null;
+        return { ...fixtureReservation(attempt),
+          ...(mode === 'expired' ? { validUntilMonotonicMs: 0 } : {}),
+          ...(mode === 'wrong-clock' ? { clockId: 'another-process' } : {}),
+          ...(mode === 'replayed-receipt' ? { attemptId: 'previous-attempt' } : {}),
+        };
+      }),
+    });
+    const port = await gateway.listen(0);
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-papercusp-owner': 'forged-owner',
+        ...(mode === 'missing-token' ? {} : { authorization: `Bearer ${mode === 'wrong-token' ? 'wrong' : trialToken}` }) },
+      body: JSON.stringify({ model: 'gpt-6-sol', input: 'PRIVATE_TASK',
+        client_metadata: { armId: 'fixture-control', dispatchAuthorized: true } }) });
+    expect(response.status).toBe(403);
+    expect(response.headers.get('x-should-retry')).toBe('false');
+    expect(await response.text()).not.toMatch(/PRIVATE_|forged-owner/);
+    expect(writes).toBe(0);
+    expect(authorizations).toBe(mode === 'missing-token' || mode === 'wrong-token' ? 0 : 1);
+  });
+
+it.each([true, false])('carry trial reauthorizes the final shaped bearer request on failover (allow=%s)', async allow => {
+  const attempts: GatewayCarryTrialAttempt[] = [], wire: Array<{ body: string; auth: string }> = [];
+  upstream = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    wire.push({ body: Buffer.concat(chunks).toString(), auth: String(req.headers.authorization) });
+    const failed = wire.length === 1;
+    res.writeHead(failed ? 429 : 200, { 'content-type': 'application/json', ...(failed ? { 'retry-after': '3600' } : {}) });
+    res.end(JSON.stringify(failed ? { error: { message: 'fixture throttle' } } : { id: 'resp_trial', output: [] }));
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+    openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    codexPool: createFailoverPool([{ accountId: 'account-a', token: async () => 'token-a' },
+      { accountId: 'account-b', token: async () => 'token-b' }]),
+    requestAbsorbMs: 0, selfHeal: { enabled: false },
+    carryTrial: trialBinding(async attempt => {
+      attempts.push(attempt);
+      return attempts.length === 2 && !allow ? null : fixtureReservation(attempt);
+    }),
+  });
+  const port = await gateway.listen(0);
+  const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+    body: JSON.stringify({ model: 'gpt-6-sol', input: 'fixture', max_output_tokens: 17 }) });
+  expect(response.status).toBe(allow ? 200 : 403); await response.text();
+  expect(attempts.map(a => a.accountId)).toEqual(['account-a', 'account-b']);
+  expect(new Set(attempts.map(a => a.attemptId)).size).toBe(2);
+  expect(wire).toHaveLength(allow ? 2 : 1);
+  wire.forEach((request, i) => {
+    expect(attempts[i]).toMatchObject({ transport: 'bearer-http', body: request.body,
+      bodySha256: sha256(request.body), credentialSha256: sha256(request.auth) });
+    expect(request.auth).not.toContain(trialToken);
+  });
+  expect(attempts[1]!.credentialSha256).toBe(sha256('Bearer token-b'));
+});
+
+it('carry trial refuses alternate inference routes and unobserved cli-exec', async () => {
+  let executed = false, authorized = false;
+  gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+    codexCliAccounts: () => [{ accountId: 'fixture-cli', home: '/tmp/unused-trial-home' }],
+    codexOAuthProxy: false,
+    codexCliRun: async () => { executed = true; return { text: 'unexpected', inputTokens: 1, outputTokens: 1 }; },
+    carryTrial: trialBinding(async attempt => { authorized = true; return fixtureReservation(attempt); }),
+    requestAbsorbMs: 0, selfHeal: { enabled: false },
+  });
+  const port = await gateway.listen(0);
+  for (const route of ['/v1/responses', '/v1/messages', '/v1/chat/completions', '/maintenance/summarize']) {
+    const response = await fetch(`http://127.0.0.1:${port}${route}`, { method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+      body: JSON.stringify({ model: 'gpt-6-sol', input: 'fixture' }) });
+    expect(response.status).toBe(403); await response.text();
+  }
+  expect(executed).toBe(false); expect(authorized).toBe(false);
+});
+
+it('carry trial cannot send after cancellation while reservation is pending', async () => {
+  let writes = 0;
+  let finishReservation!: () => void;
+  let entered!: () => void;
+  const authorized = new Promise<void>(resolve => { entered = resolve; });
+  const reservationWait = new Promise<void>(resolve => { finishReservation = resolve; });
+  let reservationReturned!: () => void;
+  const completed = new Promise<void>(resolve => { reservationReturned = resolve; });
+  let aborted!: () => void;
+  const signalAborted = new Promise<void>(resolve => { aborted = resolve; });
+  let observedAbort = false;
+  upstream = http.createServer((req, res) => { req.resume(); writes++; res.end('{}'); });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+    openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    codexPool: createFailoverPool([{ accountId: 'account', token: async () => 'token' }]),
+    requestAbsorbMs: 0, selfHeal: { enabled: false },
+    carryTrial: trialBinding(async attempt => {
+      attempt.signal.addEventListener('abort', aborted, { once: true });
+      entered(); await reservationWait;
+      observedAbort = attempt.signal.aborted;
+      reservationReturned(); return fixtureReservation(attempt);
+    }),
+  });
+  const port = await gateway.listen(0);
+  const controller = new AbortController();
+  const pending = fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST', signal: controller.signal,
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+    body: JSON.stringify({ model: 'gpt-6-sol', input: 'fixture' }) }).catch(() => null);
+  await authorized; controller.abort(); await pending;
+  await signalAborted;
+  finishReservation(); await completed;
+  // Drain the authorization continuation, including its final synchronous send check.
+  await new Promise(resolve => setImmediate(resolve));
+  expect(observedAbort).toBe(true); expect(writes).toBe(0);
+});
+
+it('carry trial refuses an HTTP redirect before it can create an unreserved send', async () => {
+  const paths: string[] = [];
+  let authorizations = 0;
+  upstream = http.createServer((req, res) => {
+    req.resume(); paths.push(req.url!);
+    if (req.url === '/v1/responses') {
+      res.writeHead(307, { location: '/unreserved-target' }); res.end();
+    } else res.end('{}');
+  });
+  const upstreamPort = await listen(upstream);
+  gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+    openaiUpstreamBase: `http://127.0.0.1:${upstreamPort}`,
+    codexPool: createFailoverPool([{ accountId: 'account', token: async () => 'token' }]),
+    carryTrial: trialBinding(async attempt => { authorizations++; return fixtureReservation(attempt); }),
+    requestAbsorbMs: 0, selfHeal: { enabled: false },
+  });
+  const port = await gateway.listen(0);
+  const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+    body: JSON.stringify({ model: 'gpt-6-sol', input: 'fixture' }) });
+  expect(response.status).toBe(502); await response.text();
+  expect(paths).toEqual(['/v1/responses']); expect(authorizations).toBe(1);
+});
+
+it('carry trial reauthorizes an OAuth token-refresh retry before a second inference send', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'gateway-trial-oauth-'));
+  const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const jwt = `${b64({ alg: 'none' })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+  const refreshed = jwt.replace('.sig', '.refreshed');
+  await writeFile(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {
+    access_token: jwt, refresh_token: 'PRIVATE_REFRESH', account_id: 'trial-oauth',
+  } }));
+  const attempts: GatewayCarryTrialAttempt[] = [];
+  let inferenceWrites = 0, refreshWrites = 0;
+  upstream = http.createServer(async (req, res) => {
+    for await (const _chunk of req) { /* exclusively local fixture */ }
+    if (req.url === '/oauth/token') {
+      refreshWrites++; res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ access_token: refreshed, refresh_token: 'PRIVATE_REFRESH' }));
+    } else {
+      inferenceWrites++; res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'fixture token expired' } }));
+    }
+  });
+  const upstreamPort = await listen(upstream);
+  const dispatcher = new Agent({ connect: (_options, callback) => {
+    const socket = net.connect(upstreamPort, '127.0.0.1');
+    const failed = (error: Error) => callback(error, null);
+    socket.once('error', failed);
+    socket.once('connect', () => { socket.off('error', failed); callback(null, socket); });
+  } });
+  try {
+    gateway = createInferenceGateway({ accountId: 'unused', token: async () => 'unused',
+      codexCliAccounts: () => [{ accountId: 'trial-oauth', home }], codexOAuthProxy: true,
+      fetchImpl: ((target, init) => fetch(target, { ...init, dispatcher } as RequestInit)) as typeof fetch,
+      carryTrial: trialBinding(async attempt => {
+        attempts.push(attempt); return attempts.length === 1 ? fixtureReservation(attempt) : null;
+      }),
+      requestAbsorbMs: 0, selfHeal: { enabled: false },
+    });
+    const port = await gateway.listen(0);
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, { method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${trialToken}` },
+      body: JSON.stringify({ model: 'gpt-6-sol', input: 'fixture', stream: true }) });
+    expect(response.status).toBe(403); await response.text();
+    expect(inferenceWrites).toBe(1); expect(refreshWrites).toBe(1);
+    expect(attempts.map(a => a.accountId)).toEqual(['trial-oauth', 'trial-oauth']);
+    expect(attempts.map(a => a.transport)).toEqual(['oauth-http', 'oauth-http']);
+    expect(attempts.map(a => a.credentialSha256)).toEqual([sha256(`Bearer ${jwt}`), sha256(`Bearer ${refreshed}`)]);
+    expect(attempts[0]!.attemptId).not.toBe(attempts[1]!.attemptId);
+  } finally {
+    await gateway?.close(); gateway = undefined;
+    await dispatcher.close(); await rm(home, { recursive: true, force: true });
   }
 });
 

@@ -17,7 +17,7 @@
  */
 import { browser } from "@wdio/globals";
 import { recordInteractionMs, recordMeasure } from "../perf-report";
-import { waitForAppMount } from "../app-mount";
+import { APP_MOUNT_TIMEOUT_MS, waitForAppMount, waitForPackagedAppUrl } from "../app-mount";
 // Imported by PATH for the same reason app-mount.ts imports it that way: this
 // runner sits outside the npm workspace set, so `@papercusp/gui-readiness` does
 // not resolve here. The module is a pure function with no dependencies.
@@ -84,19 +84,19 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
   it("opens a plan from the sidebar within the warm-render budget", async () => {
     // useWorkspaceId snapshots at mount. A private packaged SPA has no HTTP
     // bootstrap injection, so an explicit fixture scope must precede that mount.
+    const mountStartedAt = Date.now();
     const requestedWorkspace = process.env.PAPERCUSP_PERF_WORKSPACE_ID;
     if (requestedWorkspace) {
-      const scopedUrl = await browser.execute((workspace: string) => {
-        const url = new URL(location.href);
-        url.pathname = '/adv';
-        url.search = new URLSearchParams({ ws: workspace, opcv: 'plans' }).toString();
-        url.hash = '';
-        return url.toString();
-      }, requestedWorkspace);
-      await browser.url(scopedUrl);
+      const appUrl = await waitForPackagedAppUrl(browser);
+      const scopedUrl = new URL(appUrl);
+      scopedUrl.pathname = '/adv';
+      scopedUrl.search = new URLSearchParams({ ws: requestedWorkspace, opcv: 'plans' }).toString();
+      scopedUrl.hash = '';
+      await browser.url(scopedUrl.toString());
     }
     // 1. Wait for the operator UI to mount real app content.
-    await waitForAppMount(browser);
+    // URL discovery and the second navigation share one mount budget.
+    await waitForAppMount(browser, Math.max(1, APP_MOUNT_TIMEOUT_MS - (Date.now() - mountStartedAt)));
 
     // 2. Select the op-chat sidebar Plans face (?opcv=plans) — where the real
     //    "open a plan" interaction lives (WI-5547: the sidebar Plans view).

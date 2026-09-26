@@ -1879,7 +1879,7 @@ export const bootstrapSu = defineTool({
     // it launches WITH, so the FIRST render carries their identity layers. Both are read from
     // the same body fields `resolveFleet` / `syncLaunchModeToRegistry` consume below: a fresh
     // `--fleet-name` leads, a `--fleet` slug joins as member unless `--fleet-role` says
-    // otherwise; `--mode=drain` ⇒ auto + drain, `--auto` ⇒ auto, and a fleet MEMBER is
+    // otherwise; `--mode=drain|grade|test` ⇒ auto + named mode, `--auto` ⇒ auto, and a fleet MEMBER is
     // always AUTO (`ensureLaunchedWakeAuto` registers it). Resolution happens after this
     // build, and a requested fleet that fails to resolve refuses the launch outright (the
     // `fleetRequested` guard), so the render can never outlive a membership that did not
@@ -2521,7 +2521,7 @@ export const bootstrapSu = defineTool({
     // mode. The launcher sends `auto` in the body; when set we (a) inject a DURABLE
     // AUTO directive into the assembled system prompt (survives compaction) and
     // (b) prepend the same activation to the seeded kickoff so turn 1 enters AUTO.
-    // drain-mode-2026-07-03 P-003: `--mode=drain` → DRAIN mode. Unknown mode values
+    // Named modes enter before turn one. Unknown mode values
     // are refused loudly (a typo'd mode silently launching a plain session is the
     // failure this guards). DRAIN IMPLIES AUTO — force autoMode on.
     const modeRaw = body.mode?.trim() || null;
@@ -2573,6 +2573,9 @@ export const bootstrapSu = defineTool({
           : 'launch: --auto',
     });
     if (modeSyncErr) {
+      if (modeRaw === 'grade' || modeRaw === 'test') {
+        return jsonRes({ status: 'error', error: `verifier_mode_activation_failed: ${modeSyncErr}` }, 503);
+      }
       process.stderr.write(
         `[bootstrap-su] launch-time mode-registry sync failed (non-fatal — the kickoff prose ` +
           `may now disagree with the registry until the agent self-registers via mode:set): ${modeSyncErr}\n`,

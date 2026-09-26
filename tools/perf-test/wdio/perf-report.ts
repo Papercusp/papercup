@@ -109,10 +109,14 @@ export function desktopPerfRunPayload(
   env: NodeJS.ProcessEnv = process.env,
 ) {
   const workspaceId = env.PAPERCUSP_PERF_WORKSPACE_ID?.trim();
+  const namedProfile = runId?.trim() || null;
   return {
     measures,
-    gitSha,
-    runId,
+    // A named packaged run can combine a frozen shell, copied SPA and live API
+    // from different commits. The WDIO checkout HEAD is not that build. Keep
+    // checkout correlation only for ordinary unnamed runs.
+    gitSha: namedProfile ? null : gitSha,
+    runId: namedProfile,
     ...(workspaceId ? { workspaceId } : {}),
   };
 }

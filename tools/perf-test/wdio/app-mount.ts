@@ -117,6 +117,34 @@ export const APP_MOUNT_TIMEOUT_MS = Number(
   process.env.PAPERCUSP_PERF_MOUNT_TIMEOUT_MS ?? 180_000,
 );
 
+/** Wait for Tauri's actual document URL before a spec constructs a scoped route.
+ * A new WebDriver session can still report `about:blank`; changing its pathname
+ * produces `about:blank?ws=...`, which never mounts the packaged operator. */
+export async function waitForPackagedAppUrl(
+  browser: Browser,
+  timeoutMs = APP_MOUNT_TIMEOUT_MS,
+): Promise<string> {
+  const state = { appUrl: '' };
+  let lastUrl = '(unread)';
+  try {
+    await waitUntilOrFailOnTerminalSession(browser, async () => {
+      lastUrl = await browser.getUrl();
+      try {
+        const parsed = new URL(lastUrl);
+        if (!parsed.host || parsed.protocol === 'about:') return false;
+        state.appUrl = parsed.toString();
+        return true;
+      } catch {
+        return false;
+      }
+    }, { timeout: timeoutMs, interval: 500, timeoutMsg: 'packaged app URL did not become ready' });
+  } catch (error) {
+    throw new Error(`Packaged app URL unavailable; last URL ${lastUrl}: ${String(error)}`, { cause: error });
+  }
+  if (!state.appUrl) throw new Error(`Packaged app URL unavailable; last URL ${lastUrl}`);
+  return state.appUrl;
+}
+
 /**
  * Headroom the enclosing test framework must leave ON TOP of the mount wait,
  * so the diagnosis below can actually be produced and printed.
@@ -426,7 +454,10 @@ function isTerminalNonShellLanding(pathname: string): boolean {
  * Returns the mount evidence so a later probe can prove it is still looking at
  * the same document.
  */
-export async function waitForAppMount(browser: Browser): Promise<MountEvidence> {
+export async function waitForAppMount(
+  browser: Browser,
+  timeoutMs = APP_MOUNT_TIMEOUT_MS,
+): Promise<MountEvidence> {
   let last: MountEvidence | null = null;
   let progress: MountProgress = { ...INITIAL_MOUNT_PROGRESS };
   let terminal: MountVerdict | null = null;
@@ -450,7 +481,7 @@ export async function waitForAppMount(browser: Browser): Promise<MountEvidence> 
         terminal = step.verdict;
         return true;
       },
-      { timeout: APP_MOUNT_TIMEOUT_MS, interval: 500, timeoutMsg: "app mount timed out" },
+      { timeout: timeoutMs, interval: 500, timeoutMsg: "app mount timed out" },
     );
   } catch (error) {
     if (isTerminalWebDriverSessionError(error)) {

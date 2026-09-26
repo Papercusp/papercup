@@ -3,7 +3,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  pinPackageInput, resolveBlueprint, type ResolvedPackageInput,
+  compileAgentSpecification, loadBlueprintFromFile, pinPackageInput,
+  pinnedOperationProgramBlueprint, replayAgentSpecification, resolveBlueprint,
+  type ResolvedPackageInput,
 } from '@papercusp/orchestrator/blueprint';
 import {
   compileBlueprintWithPackages, provisionBlueprintPackages, resolveBlueprintPackageInputs, resolveLocalBlueprintPackage,
@@ -24,6 +26,56 @@ const blueprint = (bundles: { kind: string; ref: string; version?: string }[]) =
 });
 
 describe('P-006 operator package adapter', () => {
+  it('pins an external operation program from the installed blueprint resolver', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'operation-program-'));
+    const file = join(dir, 'blueprint.yaml');
+    try {
+      writeFileSync(file, [
+        'id: external-program', 'version: 1.0.0', 'workItem:', '  kind: feature',
+        'spine:', '  steps:', '    - id: aggregate', '      op: vote:aggregate',
+        '      args:', '        posts: []', '',
+      ].join('\n'));
+      const external = loadBlueprintFromFile(file);
+      const owner = resolveBlueprint({
+        id: 'program-owner', version: '1.0.0', workItem: { kind: 'feature' },
+        spine: { steps: [{ id: 'aggregate', op: 'vote:aggregate', args: { posts: [] } }] },
+        operations: [{
+          id: 'run', version: '1.0.0', target: { kind: 'work-item', itemKind: 'feature' },
+          execution: { kind: 'program', blueprint: { kind: 'blueprint',
+            ref: external.blueprint.id, revision: external.blueprint.version,
+            contentHash: external.contentHash } },
+          inputSchema: { type: 'object' }, acceptance: { resultSchema: { type: 'object' } },
+        }],
+      });
+      expect(() => compileAgentSpecification({ source: owner }))
+        .toThrow('external program blueprint has no retained package');
+      const artifact = await compileBlueprintWithPackages(owner, {
+        workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        resolve: (id) => id === external.blueprint.id ? file : null,
+      });
+      const operation = artifact.configuration.operations?.[0];
+      expect(operation).toBeDefined();
+      expect(pinnedOperationProgramBlueprint(operation!, artifact.inputs)).toEqual(external.blueprint);
+      expect(replayAgentSpecification(artifact).specificationRevision).toBe(artifact.specificationRevision);
+      const pin = artifact.inputs.find((entry) => entry.kind === 'package' &&
+        entry.packageKind === 'blueprint' && entry.ref === 'operation:external-program');
+      expect(pin).toMatchObject({ revision: '1.0.0', value: { id: 'external-program' } });
+
+      writeFileSync(file, [
+        'id: external-program', 'version: 2.0.0', 'workItem:', '  kind: feature',
+        'spine:', '  steps:', '    - id: changed', '      op: vote:aggregate',
+        '      args:', '        posts: []', '',
+      ].join('\n'));
+      expect(pinnedOperationProgramBlueprint(operation!, artifact.inputs)).toEqual(external.blueprint);
+      await expect(compileBlueprintWithPackages(owner, {
+        workspaceId: 'workspace-a', harnessSlug: 'harness-a',
+        resolve: (id) => id === external.blueprint.id ? file : null,
+      })).rejects.toThrow('differs from its declared version or resolved content hash');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('resolves a transitive diamond once and retains every exact content pin', async () => {
     const leaf = pin('leaf');
     const parent = pinPackageInput({ packageKind: 'rubric', ref: 'parent', revision: '1', files: [], dependencies: [reference(leaf)] });

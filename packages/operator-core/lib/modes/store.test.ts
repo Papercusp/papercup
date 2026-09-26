@@ -15,6 +15,22 @@ import {
 } from './store';
 import { MODES, modeById, axisKeyFor, modeIndexMarkdown } from './registry';
 
+describe('GOAL verifier identity separation', () => {
+  it('refuses GRADE and TEST on a GOAL holder and GOAL on an existing verifier', async () => {
+    const { sql } = mockSql();
+    const base = { workspaceId: 'ws', ownerId: 'su-holder', reason: 'verify', setBy: 'su-holder', sql };
+    expect((await setMode({ ...base, modeId: 'goal', subject: 'goal-1', enabled: true })).ok).toBe(true);
+    for (const modeId of ['grade', 'test']) {
+      const result = await setMode({ ...base, modeId, enabled: true });
+      expect(result).toMatchObject({ ok: false, error: 'goal_holder_self_verification_refused' });
+    }
+    const verifier = { ...base, ownerId: 'su-verifier', setBy: 'su-verifier' };
+    expect((await setMode({ ...verifier, modeId: 'test', enabled: true })).ok).toBe(true);
+    expect(await setMode({ ...verifier, modeId: 'goal', subject: 'goal-1', enabled: true }))
+      .toMatchObject({ ok: false, error: 'goal_holder_self_verification_refused' });
+  });
+});
+
 interface Row {
   workspace_id: string;
   owner_id: string;

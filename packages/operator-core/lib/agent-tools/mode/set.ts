@@ -26,7 +26,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { sendMessage } from '../coordination/messages';
 import { modeById, MODES, modeImpliesAutonomy, modeRequiresSubject, resolveImpliedModes } from '../../modes/registry';
 import { getSelectedModeDefinitions, type SelectedModeDefinition } from '../../agent-identities/source';
-import { setMode, getModeSubject } from '../../modes/store';
+import { setMode, getModeSubject, getModes } from '../../modes/store';
 import { goalHolderPolicyProblem, readGoalLaunchSettings } from '../../goal-launch-settings';
 import { assertFact, retractFact, FACT_BODY_MAX_CHARS } from '../../agent-facts/store';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -346,6 +346,20 @@ export default defineTool({
     // write: fixing only one would SPLIT a session's mode row and its instructions across
     // two workspaces, which is worse than being consistently wrong.
     const workspaceId = resolveConcreteWorkspaceId(ident.workspaceId);
+
+    // A GOAL holder owns the work being judged. Its own session cannot become
+    // the GRADE/TEST verifier; ordinary implementation tests remain available.
+    if (enabled && isSelf && (def.id === 'grade' || def.id === 'test')) {
+      let rows: Awaited<ReturnType<typeof getModes>>;
+      try {
+        rows = await getModes(workspaceId, target);
+      } catch (error) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'goal_verifier_authority_unreadable', detail: error instanceof Error ? error.message : String(error) }) }] };
+      }
+      if (rows.some((row) => row.mode === 'goal')) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'goal_holder_self_verification_refused', detail: `Launch a separate ${def.id.toUpperCase()} verifier with capability:launch-agent { goalVerifier:'${def.id}' }.` }) }] };
+      }
+    }
 
     // Capture the incumbent GOAL subject before clearing it. The mode row is
     // deleted by setMode, so this is the only point where the surrendered

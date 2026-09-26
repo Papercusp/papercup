@@ -9,6 +9,7 @@ import type { Browser } from "webdriverio";
 import { assertPrivateIpcFixture, desktopPerfRunPayload, hasRunOutcomeMeasure, type PerfMeasure } from "./perf-report";
 import {
   isTerminalWebDriverSessionError,
+  waitForPackagedAppUrl,
   waitUntilOrFailOnTerminalSession,
 } from "./app-mount";
 
@@ -58,6 +59,17 @@ test("ordinary transient wait errors still retry until the condition succeeds", 
     return true;
   });
   assert.equal(probes, 2);
+});
+
+test("workspace navigation waits past about:blank for the packaged app origin", async () => {
+  const urls = ["about:blank", "about:blank?ws=papercusp-workspace", "papercusp://localhost/adv"];
+  let reads = 0;
+  const browser = Object.assign(retryingBrowser(), {
+    async getUrl() { reads += 1; return urls.shift() ?? "papercusp://localhost/adv"; },
+  });
+
+  assert.equal(await waitForPackagedAppUrl(browser), "papercusp://localhost/adv");
+  assert.equal(reads, 3);
 });
 
 test('private IPC fixture rejects a stale default even with a fresh per-port record', async () => {
@@ -115,9 +127,14 @@ test("desktop perf receipts retain the measured workspace across the WDIO publis
     PAPERCUSP_PERF_WORKSPACE_ID: " papercusp-workspace ",
   }), {
     measures,
-    gitSha: "checkout-sha",
+    gitSha: null,
     runId: "named-profile",
     workspaceId: "papercusp-workspace",
+  });
+  assert.deepEqual(desktopPerfRunPayload(measures, "checkout-sha", null, {}), {
+    measures,
+    gitSha: "checkout-sha",
+    runId: null,
   });
   assert.equal("workspaceId" in desktopPerfRunPayload(measures, null, null, {}), false);
 });

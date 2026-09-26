@@ -83,8 +83,10 @@ import {
   type FreshLaunchSessionProbe,
   type LaunchMode,
   type MemberSpec,
+  normalizeLaunchMode,
   resolveLaunchMode,
 } from '../../agent-launch-core';
+import { declareCoupling } from '../../coord/couplings';
 import { nativeSessionHandleForAdvSession, type NativeSessionHandle } from '../../native-session-handles';
 // WI-37920 / P-002: check the backend in the env the WINDOW gets, not ours.
 import { preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
@@ -531,6 +533,10 @@ export default defineTool({
         .describe(
           "Keep a FRESH launch out of the caller's presence fleet. This only suppresses fresh caller-fleet inheritance; an explicit `fleet` still wins, and RESUME/FORK preserve the target session's durable membership.",
         ),
+      goalVerifier: z
+        .enum(['grade', 'test'])
+        .optional()
+        .describe('GOAL holder only: launch one independent GRADE or TEST session, bind its matching goal launch profile and mode before turn one, and couple the holder to the verifier.'),
       headless: z
         .boolean()
         .optional()
@@ -745,6 +751,21 @@ export default defineTool({
     } catch {
       callerOwnerId = null;
     }
+    if (args.goalVerifier) {
+      if (sourceAction || count !== 1 || args.fleet?.trim() || args.plan?.trim() ||
+          args.members?.length || args.extraArgs?.length || !callerOwnerId) {
+        return err('goalVerifier requires one fresh, attributable, fleetless brief with no plan, member overrides or raw psu flags. No agent was spawned.');
+      }
+      let callerModes: Awaited<ReturnType<typeof getModes>>;
+      try {
+        callerModes = await getModes(workspaceId, callerOwnerId);
+      } catch (error) {
+        return err(`goal_verifier_authority_unreadable: ${error instanceof Error ? error.message : String(error)}. No agent was spawned.`);
+      }
+      if (!callerModes.some((row) => row.mode === 'goal' && row.subject)) {
+        return err('goalVerifier requires an active, attributed GOAL holder. No agent was spawned.');
+      }
+    }
     // P-006 / A-04 alternate-entry guard. Pay the fresh authority read ONLY for
     // the ambiguous shape that can bypass canonical plan-fleet placement; all
     // diagnostic/ad-hoc and source-recovery launches retain their existing
@@ -782,7 +803,9 @@ export default defineTool({
     // DRAIN is a durable caller overlay. Resolve it before composing either a
     // fresh command or a resume/fork command so every capability launch path
     // carries the same mode into bootstrap-su.
-    const launchMode = await readCallerLaunchMode(workspaceId, callerOwnerId);
+    const launchMode = args.goalVerifier
+      ? normalizeLaunchMode({ mode: args.goalVerifier })
+      : await readCallerLaunchMode(workspaceId, callerOwnerId);
 
     // Resolve the resume/fork/successor target: an agent id (usual) or an exact
     // session uuid. D-007 keeps ordinary resume/fork behavior unchanged; the
@@ -1184,7 +1207,7 @@ export default defineTool({
           );
         }
       }
-    } else if (!args.independent && callerOwnerId) {
+    } else if (!args.independent && !args.goalVerifier && callerOwnerId) {
       try {
         const membership = (await fetchPresenceFleet([callerOwnerId])).get(callerOwnerId);
         if (membership?.fleetSlug) {
@@ -1333,7 +1356,7 @@ export default defineTool({
       launcherOwnerId: callerOwnerId ?? '',
       // No slot at the BATCH level — this tool has no top-level launch slot, and
       // the ceilings do not depend on one (D-016).
-      goalRole: null,
+      goalRole: args.goalVerifier === 'grade' ? 'grading' : args.goalVerifier === 'test' ? 'test' : null,
       fleetSlug,
       count,
       requested: {
@@ -1373,7 +1396,7 @@ export default defineTool({
       stack: args.stack ?? undefined,
       // A flat carry setting applies to every fresh member unless that member
       // supplies its own override in `members[i].carry`.
-      carry: args.carry ?? undefined,
+      carry: goalLaunch.effective.carry ?? args.carry ?? undefined,
       launchContext: persistedHeadcountProfile?.config.launchContext,
       extraArgs: args.extraArgs ?? undefined,
     };
@@ -1784,6 +1807,32 @@ export default defineTool({
     const openedOwnerIds = results.flatMap((result, i) =>
       result.status === 'ok' && memberOwnerIds[i] ? [memberOwnerIds[i]] : [],
     );
+    let verifierCoupling: { status: 'coupled' | 'failed' | 'not-opened'; holderId: string; verifierId: string | null; error?: string } | null = null;
+    if (args.goalVerifier && callerOwnerId) {
+      const verifierId = openedOwnerIds[0] ?? null;
+      if (!verifierId) {
+        verifierCoupling = { status: 'not-opened', holderId: callerOwnerId, verifierId };
+      } else {
+        try {
+          const edge = await declareCoupling({
+            agentA: callerOwnerId,
+            agentB: verifierId,
+            declaredBy: callerOwnerId,
+            reason: `GOAL ${args.goalVerifier.toUpperCase()} verification`,
+            ttlSec: 2 * 24 * 3600,
+            workspaceId,
+          });
+          verifierCoupling = edge
+            ? { status: 'coupled', holderId: callerOwnerId, verifierId }
+            : { status: 'failed', holderId: callerOwnerId, verifierId, error: 'coupling store returned no edge' };
+        } catch (error) {
+          verifierCoupling = { status: 'failed', holderId: callerOwnerId, verifierId, error: error instanceof Error ? error.message : String(error) };
+        }
+        if (verifierCoupling.status === 'failed') {
+          notes.push(`⚠ GOAL verifier ${verifierId} opened but coupling failed (${verifierCoupling.error}); couple the holder and verifier before treating this routing as complete.`);
+        }
+      }
+    }
     const kickoffProofFailures = results.flatMap((result, i) => {
       if (
         result.status !== 'ok' ||
@@ -1801,7 +1850,7 @@ export default defineTool({
         },
       ];
     });
-    const partialLaunch = kickoffProofFailures.length > 0 || (opened.length > 0 && failed.length > 0);
+    const partialLaunch = kickoffProofFailures.length > 0 || (opened.length > 0 && failed.length > 0) || verifierCoupling?.status === 'failed';
     for (const failure of kickoffProofFailures) {
       const keyNote = args.idempotencyKey?.trim()
         ? ` idempotencyKey ${JSON.stringify(args.idempotencyKey)} remains claimed; do not retry it without first inspecting the opened identity.`
@@ -2136,6 +2185,8 @@ export default defineTool({
       command,
       fleet: fleetSlug,
       independent: args.independent === true,
+      goalVerifier: args.goalVerifier ?? null,
+      verifierCoupling,
       headcountProfile: persistedHeadcountProfile
         ? {
             applied: true,

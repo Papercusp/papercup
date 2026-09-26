@@ -8,7 +8,7 @@
  * (the spend-until-exhausted lifecycle), and the ledger reads.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 import { provisionGymDatabase } from '../gym/gym-db-init';
@@ -64,6 +64,87 @@ afterAll(async () => {
   // Best-effort: the reused test container is shared across vitest processes
   // on the dev box — a concurrent suite's teardown can stop it first (404).
   if (!process.env.KEEP_TEST_PG) await teardownTestPg().catch(() => {});
+});
+
+describe('exact manifest-bound reservations', () => {
+  const binding = 'a'.repeat(64);
+  const register = async (budgetUsd = 10) => {
+    const loopId = `exact:${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetUsd,
+      meta: { reservationBinding: binding } });
+    return loopId;
+  };
+  const request = (loopId: string, requestedUsd: number, reservationId = randomUUID(), expectedBudgetUsd = 10) => ({
+    workspaceId: WS, loopId, requestedUsd, floorUsd: 0,
+    exact: { reservationId, binding, expectedBudgetUsd },
+  });
+
+  it('grants only one of two simultaneous requests that cannot both fit in full', async () => {
+    const loopId = await register();
+    const results = await Promise.all([reserveLearningSpend(sql, request(loopId, 6)),
+      reserveLearningSpend(sql, request(loopId, 6))]);
+    expect(results.filter(r => r.ok)).toHaveLength(1);
+    expect(results.find(r => !r.ok)).toMatchObject({ ok: false, reason: 'insufficient-headroom' });
+    const rows = await listLearningSpendReservations(sql, { workspaceId: WS, loopId });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ requestedUsd: 6, reservedUsd: 6, status: 'open' });
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(6);
+  });
+
+  it('refuses concurrent and settled replays instead of returning an old grant', async () => {
+    const loopId = await register();
+    const input = request(loopId, 1);
+    const results = await Promise.all([reserveLearningSpend(sql, input), reserveLearningSpend(sql, input)]);
+    expect(results.filter(r => r.ok)).toHaveLength(1);
+    expect(results.find(r => !r.ok)).toMatchObject({ ok: false, reason: 'already-reserved' });
+    const [row] = await listLearningSpendReservations(sql, { workspaceId: WS, loopId });
+    expect(row!.runRef).toBe(`manifest:${binding}/attempt:${input.exact.reservationId}`);
+    await settleLearningSpend(sql, { workspaceId: WS, reservationId: row!.id, disposition: 'used', usedUsd: 1 });
+    expect(await reserveLearningSpend(sql, input)).toMatchObject({ ok: false, reason: 'already-reserved' });
+  });
+
+  it('uses the existing global UUID key to prevent reuse across registration locks', async () => {
+    const loops = await Promise.all([register(), register()]);
+    const reservationId = randomUUID();
+    const results = await Promise.all(loops.map(loop => reserveLearningSpend(sql, request(loop, 1, reservationId))));
+    expect(results.filter(r => r.ok)).toHaveLength(1);
+    expect(results.find(r => !r.ok)).toMatchObject({ ok: false, reason: 'already-reserved' });
+  });
+
+  it('fails closed for missing/stale bindings, cap changes, disabled loops and legacy bypass', async () => {
+    const loopId = await register();
+    expect(await reserveLearningSpend(sql, { ...request(loopId, 1), exact: undefined }))
+      .toMatchObject({ ok: false, reason: 'binding-required' });
+    expect(await reserveLearningSpend(sql, { ...request(loopId, 1), exact: {
+      ...request(loopId, 1).exact, binding: 'b'.repeat(64) } })).toMatchObject({ ok: false, reason: 'stale-binding' });
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetUsd: 9 });
+    expect(await reserveLearningSpend(sql, request(loopId, 1))).toMatchObject({ ok: false, reason: 'stale-binding' });
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetUsd: 10, enabled: false });
+    expect(await reserveLearningSpend(sql, request(loopId, 1))).toMatchObject({ ok: false, reason: 'disabled' });
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, enabled: true, budgetKind: 'per-cycle' });
+    expect(await reserveLearningSpend(sql, request(loopId, 1)))
+      .toMatchObject({ ok: false, reason: 'unsupported-budget-kind' });
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetKind: 'lifetime', meta: {} });
+    expect(await reserveLearningSpend(sql, request(loopId, 1))).toMatchObject({ ok: false, reason: 'stale-binding' });
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toEqual([]);
+  });
+
+  it('uses exact microdollar headroom and refuses sub-microdollar input', async () => {
+    const loopId = await register(0.3);
+    expect((await reserveLearningSpend(sql, request(loopId, 0.1, randomUUID(), 0.3))).ok).toBe(true);
+    expect((await reserveLearningSpend(sql, request(loopId, 0.2, randomUUID(), 0.3))).ok).toBe(true);
+    expect(await reserveLearningSpend(sql, request(loopId, 0.000001, randomUUID(), 0.3)))
+      .toMatchObject({ ok: false, reason: 'insufficient-headroom' });
+    expect(await reserveLearningSpend(sql, request(loopId, 0.0000001, randomUUID(), 0.3)))
+      .toMatchObject({ ok: false, reason: 'invalid-exact-request' });
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(0.3);
+  });
+
+  it('requires a transaction-capable connection before reading or granting', async () => {
+    const input = request('does-not-exist', 1);
+    expect(await reserveLearningSpend({} as postgres.Sql, input))
+      .toMatchObject({ ok: false, reason: 'transaction-required' });
+  });
 });
 
 describe('registry — register/get/list', () => {

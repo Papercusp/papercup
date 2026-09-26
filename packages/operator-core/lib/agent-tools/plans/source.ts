@@ -775,6 +775,8 @@ export async function getPlanRow(
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   mark('resolveScope');
   try {
+    const acquisitionStartedAt = timings ? performance.now() : 0;
+    let beginAt = acquisitionStartedAt;
     const rows = await withWorkspace(workspaceId, async (tx) => {
       // Includes pool acquisition, BEGIN and workspace setup, not just pool wait.
       mark('acquireAndSetup');
@@ -795,7 +797,17 @@ export async function getPlanRow(
       `;
       mark('query');
       return rows;
-    });
+    }, timings ? { onAcquisitionPhase: (phase) => {
+      const now = performance.now();
+      if (phase === 'begin') {
+        // Includes pool wait, connection establishment and BEGIN. It does not
+        // assert which of those consumed the time.
+        timings['source.waitForBegin'] = Math.max(0, now - acquisitionStartedAt);
+        beginAt = now;
+      } else {
+        timings['source.workspaceSetup'] = Math.max(0, now - beginAt);
+      }
+    } } : undefined);
     mark('finishTransaction');
     const row = rows[0] ? rowFromDb(rows[0]) : null;
     mark('row');

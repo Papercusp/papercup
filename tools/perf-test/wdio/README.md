@@ -58,6 +58,14 @@ binary via WebDriver, and runs `specs/*.spec.ts`:
 > release. `npm run perf:desktop` writes each run's output (incl. the `[perf]
 > <interaction> = Nms` lines) to `results/run-<ts>.log`.
 
+For a packaged run that pairs a frozen shell, copied SPA and live API, set
+`PAPERCUSP_PERF_RUN_ID` to a name that identifies that build profile and set
+`PAPERCUSP_PERF_WORKSPACE_ID` to the workspace exercised by the spec. The
+publisher stores these as `run_id` and `workspace_id`. A named profile leaves
+`git_sha` empty because the WDIO checkout HEAD may differ from every component
+under test; unnamed runs retain that checkout correlation. Record the shell,
+SPA and API hashes alongside the run log for exact reproduction.
+
 ## Architecture vs the in-process `/tests` page
 
 | | Where it runs | Speed | Catches |

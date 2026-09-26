@@ -762,6 +762,15 @@ async function setModeCore(opts: SetModeOpts, control: { deferNotify?: boolean }
   const def = modeById(opts.modeId);
   if (!def) return { ok: false, error: `unknown mode '${opts.modeId}'` };
   const sql = pg(opts.sql);
+  // The same identity cannot own a GOAL and judge it. Put the refusal at the
+  // store boundary so mode:set, bootstrap and admin writes agree.
+  if (opts.enabled && (def.id === 'goal' || def.id === 'grade' || def.id === 'test')) {
+    const active = await getModes(opts.workspaceId, opts.ownerId, sql);
+    const conflicts = def.id === 'goal'
+      ? active.some((row) => row.mode === 'grade' || row.mode === 'test')
+      : active.some((row) => row.mode === 'goal');
+    if (conflicts) return { ok: false, mode: def, error: 'goal_holder_self_verification_refused' };
+  }
   const axisKey = axisKeyFor(def);
   const isSelf = opts.setBy === opts.ownerId;
   // Only a genuine self-set, or a tool-layer-VERIFIED owner-authority caller,

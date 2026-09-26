@@ -17,6 +17,7 @@
  *     gym_autoloop_config, so accumulating here would double-count).
  */
 import type { Sql, TransactionSql } from 'postgres';
+import { randomUUID } from 'node:crypto';
 import {
   checkLoopVerdict,
   LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
@@ -409,11 +410,24 @@ export interface ReserveLearningSpendInput {
   runRef?: string | null;
   note?: string | null;
   floorUsd?: number;
+  /** Exact, single-use reservation for a controller's frozen manifest. The
+   * registration must carry meta.reservationBinding with this SHA256, be
+   * enabled/lifetime, and still have the expected dollar cap. No partial grant
+   * or successful replay is possible. This is USD enforcement only: callers
+   * still own approval, source/auth/native bounds and non-dollar limits. */
+  exact?: {
+    reservationId: string;
+    binding: string;
+    expectedBudgetUsd: number;
+  };
 }
+
+type ExactReservationRefusal = 'invalid-exact-request' | 'transaction-required' | 'binding-required' |
+  'stale-binding' | 'disabled' | 'unsupported-budget-kind' | 'insufficient-headroom' | 'already-reserved';
 
 export type ReserveLearningSpendResult =
   | { ok: true; reservation: LearningSpendReservation; clamped: boolean; headroomUsd: number | null }
-  | { ok: false; reason: ReservationRefusal; requestedUsd: number; headroomUsd: number | null };
+  | { ok: false; reason: ReservationRefusal | ExactReservationRefusal; requestedUsd: number; headroomUsd: number | null };
 
 /**
  * Open one attempt. Refuses (fail-closed) on an unbudgeted registration, an
@@ -432,33 +446,75 @@ export async function reserveLearningSpend(
   sql: Sql,
   q: ReserveLearningSpendInput,
 ): Promise<ReserveLearningSpendResult> {
+  q = { ...q, ...(q.exact ? { exact: { ...q.exact } } : {}) };
+  const exact = q.exact;
+  const refuse = (reason: ReservationRefusal | ExactReservationRefusal, headroomUsd: number | null = null): ReserveLearningSpendResult =>
+    ({ ok: false, reason, requestedUsd: q.requestedUsd, headroomUsd });
+  // Work in integer microdollars on the exact path, not floating subtraction
+  // that can round remaining headroom UP. Reject non-microdollar input.
+  const micros = (value: number): number | null => {
+    const n = Math.round(value * 1_000_000);
+    return value >= 0 && Number.isSafeInteger(n) && n / 1_000_000 === value ? n : null;
+  };
+  const begin = (sql as unknown as { begin?: unknown }).begin;
+  if (exact && (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(exact.reservationId) ||
+    !/^[a-f0-9]{64}$/.test(exact.binding) || micros(exact.expectedBudgetUsd) === null ||
+    micros(q.requestedUsd) === null || micros(q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD) === null ||
+    q.runRef != null)) return refuse('invalid-exact-request');
+  // The legacy test seam may run without begin; exact grants must NEVER take
+  // a FOR UPDATE lock in autocommit and then insert outside its transaction.
+  if (exact && typeof begin !== 'function') return refuse('transaction-required');
   const run = async (tx: Sql | TransactionSql): Promise<ReserveLearningSpendResult> => {
     const regRows = (await tx`
       SELECT * FROM harness_shared.learning_governor_loops
        WHERE workspace_id = ${q.workspaceId} AND loop_id = ${q.loopId}
        FOR UPDATE`) as Row[];
     const reg = regRows[0] ? mapLoop(regRows[0]) : null;
+    if (reg?.meta?.reservationBinding != null && !exact) return refuse('binding-required');
+    if (exact) {
+      if (!reg || reg.budgetUsd === null) return refuse('unbudgeted');
+      if (!reg.enabled) return refuse('disabled');
+      if (reg.budgetKind !== 'lifetime') return refuse('unsupported-budget-kind');
+      if (reg.meta?.reservationBinding !== exact.binding || reg.budgetUsd !== exact.expectedBudgetUsd) {
+        return refuse('stale-binding');
+      }
+    }
     const openReserved = await sumOpenReservedUsd(tx as Sql, {
       workspaceId: q.workspaceId,
       loopId: q.loopId,
     });
-    const headroomUsd = reservationHeadroomUsd(
+    let headroomUsd = reservationHeadroomUsd(
       reg,
       openReserved,
       q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD,
     );
+    if (exact && reg) {
+      const cap = micros(reg.budgetUsd!), spent = micros(reg.spentUsd), open = micros(openReserved);
+      const floor = micros(q.floorUsd ?? LEARNING_GOVERNOR_BUDGET_FLOOR_USD);
+      if (cap === null || spent === null || open === null || floor === null ||
+        !Number.isSafeInteger(spent + open + floor)) return refuse('invalid-exact-request');
+      const remaining = cap - spent - open - floor;
+      headroomUsd = Math.max(0, remaining) / 1_000_000;
+      if (remaining < micros(q.requestedUsd)!) return refuse('insufficient-headroom', headroomUsd);
+    }
     const plan = planReservation({ requestedUsd: q.requestedUsd, headroomUsd });
     if (!plan.ok) {
       return { ok: false, reason: plan.reason ?? 'no-headroom', requestedUsd: q.requestedUsd, headroomUsd };
     }
     const rows = (await tx`
       INSERT INTO harness_shared.learning_spend_reservations
-        (workspace_id, loop_id, pot_slug, attempt_kind, requested_usd, reserved_usd,
+        (id, workspace_id, loop_id, pot_slug, attempt_kind, requested_usd, reserved_usd,
          status, signal_origin, run_ref, note)
-      VALUES (${q.workspaceId}, ${q.loopId}, ${q.potSlug === undefined ? (reg?.potSlug ?? null) : q.potSlug},
+      VALUES (${exact?.reservationId ?? randomUUID()}, ${q.workspaceId}, ${q.loopId}, ${q.potSlug === undefined ? (reg?.potSlug ?? null) : q.potSlug},
         ${q.attemptKind ?? 'cycle'}, ${q.requestedUsd}, ${plan.reservedUsd},
-        'open', ${q.signalOrigin ?? 'organic'}, ${q.runRef ?? null}, ${q.note ?? null})
+        'open', ${q.signalOrigin ?? 'organic'},
+        ${exact ? `manifest:${exact.binding}/attempt:${exact.reservationId.toLowerCase()}` : q.runRef ?? null}, ${q.note ?? null})
+      ON CONFLICT (id) DO NOTHING
       RETURNING *`) as Row[];
+    // A replay must not return an existing success: the caller could send a
+    // second paid request on the same reservation. PK also arbitrates callers
+    // using the same id under DIFFERENT registration-row locks.
+    if (!rows[0]) return refuse('already-reserved', headroomUsd);
     return {
       ok: true,
       reservation: mapReservation(rows[0]),
@@ -466,7 +522,6 @@ export async function reserveLearningSpend(
       headroomUsd,
     };
   };
-  const begin = (sql as unknown as { begin?: unknown }).begin;
   return typeof begin === 'function'
     ? ((await sql.begin(run)) as ReserveLearningSpendResult)
     : run(sql);

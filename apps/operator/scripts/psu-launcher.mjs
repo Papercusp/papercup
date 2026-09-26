@@ -12803,9 +12803,8 @@ export function freshSuBootstrapBody(
     ...(args.goalBootstrapSubject
       ? { goal_bootstrap_subject: args.goalBootstrapSubject }
       : {}),
-    // drain-mode P-003: forward the bounded named mode — bootstrap-su validates it
-    // (unknown → 400), forces autoMode on, and syncs the child registry + standing
-    // scope fact before baking the DRAIN directive into prompt + kickoff.
+    // Forward the bounded named mode. bootstrap-su validates it, enters AUTO,
+    // and registers the child mode before its first turn.
     ...(launchMode ? { mode: launchMode.mode } : {}),
     ...(launchMode?.subject ? { mode_subject: launchMode.subject } : {}),
     ...(launchMode?.instructions
