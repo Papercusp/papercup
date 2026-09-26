@@ -1053,6 +1053,32 @@ async function routinesTickImpl(): Promise<void> {
   // must never block the watchdog sweeps below.
   await runLoopRebaseSweep(sql);
 
+  // An accepted program receipt is durable launch intent. The normal submit
+  // path returns after admission; this bounded scan starts roots whose DBOS
+  // workflow was never recorded (including a lost launch response). DBOS owns
+  // execution recovery once its workflow row exists. Keep the scan distinct
+  // from routine claims so the canonical work item remains the only result.
+  try {
+    const { findUnstartedAcceptedCoordPrograms, startCoordProgram } =
+      await import('./coord-program-workflow');
+    const unstarted = await DBOS.runStep(
+      () => findUnstartedAcceptedCoordPrograms(sql, 16),
+      { name: 'accepted-coord-program-launch-scan' },
+    );
+    for (const input of unstarted) {
+      try {
+        await startCoordProgram(input);
+      } catch (error) {
+        // Two ticks can read the same receipt before either enqueue commits.
+        // The stable workflow ID makes that race a harmless duplicate.
+        if (/Duplicat/i.test(String(error))) continue;
+        console.warn(`[coord-program] accepted root launch failed for receipt ${input.acceptedOperation?.receiptId}: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+  } catch (error) {
+    console.warn(`[coord-program] accepted root launch scan failed: ${error instanceof Error ? error.message : error}`);
+  }
+
   // EI-19408412473830336: auto-resolve leg for the loop-death / loop-lifecycle-death
   // watchdog escalations opened above (via reconcileLoopRoutines's terminateDeadLoop /
   // classifyLoopLifecycleTurn paths) — see reconcile-loop-routines.ts's module-header

@@ -70,6 +70,48 @@ const definition = (version: string) => compileAgentSpecification({
 });
 
 describe('program child admission pins the root specification', () => {
+  it('bounds nested program operations by the retained recursion limit', async () => {
+    const specification = definition('bounded-nesting');
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: specification.configuration as Blueprint, specification });
+    const root = await submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'bounded-caller', operationId: 'root',
+      requestKey: 'bounded-root', input: {}, title: 'Bounded root',
+    });
+    const parent = (await findUnstartedAcceptedCoordPrograms(sql))
+      .find((entry) => entry.acceptedOperation?.receiptId === root.receiptId);
+    expect(parent).toBeDefined();
+    const child = await submitAcceptedCoordProgramChild(sql, parent!, {
+      stepId: 'op-inner', operationId: 'rootTask', input: {},
+    });
+    const childParent = (await findUnstartedAcceptedCoordPrograms(sql))
+      .find((entry) => entry.acceptedOperation?.receiptId === child.receiptId);
+    expect(childParent).toBeDefined();
+    await expect(submitAcceptedCoordProgramChild(sql, childParent!, {
+      stepId: 'op-nested', operationId: 'root', input: {},
+    })).rejects.toThrow('exceeds the accepted recursion depth');
+    const receipts = await sql<Array<{ id: string }>>`
+      SELECT id::text FROM harness_shared.blueprint_operation_invocations
+       WHERE workspace_id = ${workspaceId} AND request_key = ${`program:${child.receiptId}:op-nested`}
+    `;
+    expect(receipts).toHaveLength(0);
+  }, 90_000);
+
+  it('does not relaunch a legacy terminal issue-family program root', async () => {
+    const specification = definition('legacy-terminal');
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: specification.configuration as Blueprint, specification });
+    const root = await submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'terminal-caller', operationId: 'rootTask',
+      requestKey: 'legacy-terminal-root', input: {}, title: 'Legacy terminal root',
+    });
+    if (root.target.kind !== 'work-item') throw new Error('program root must be a work item');
+    await sql`UPDATE harness_shared.work_items SET status = 'resolved'
+      WHERE workspace_id = ${workspaceId} AND feature_id = ${root.target.id}`;
+    expect((await findUnstartedAcceptedCoordPrograms(sql))
+      .some((entry) => entry.acceptedOperation?.receiptId === root.receiptId)).toBe(false);
+  }, 90_000);
+
   it('replays a child step against its root receipt and refuses a stale root attempt', async () => {
     const first = definition('child-A');
     const second = definition('child-B');
