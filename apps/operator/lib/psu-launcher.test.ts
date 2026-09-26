@@ -3590,9 +3590,11 @@ describe("psu-launcher arg parsing", () => {
     expect(parseArgs(["--auto", "--no-auto"]).auto).toBe(false);
   });
 
-  it("parses --mode=drain; REFUSES any other mode loudly (drain-mode P-003)", () => {
+  it("parses DRAIN/GRADE/TEST and refuses unknown modes loudly", () => {
     expect(parseArgs([]).mode).toBeNull();
     expect(parseArgs(["--mode=drain"]).mode).toBe("drain");
+    expect(parseArgs(["--mode=grade"]).mode).toBe("grade");
+    expect(parseArgs(["--mode=test"]).mode).toBe("test");
     // A typo'd mode must fail the launch, not silently launch a plain session.
     expect(() => parseArgs(["--mode=burndown"])).toThrow(/not recognized/);
     expect(() => parseArgs(["--mode="])).toThrow(/not recognized/);
@@ -3637,6 +3639,14 @@ describe("psu-launcher arg parsing", () => {
     // Baseline unchanged without the flag.
     expect(effectiveAutoMode(parseArgs(["--no-auto"]))).toBe(false);
     expect(effectiveAutoMode(parseArgs([]))).toBe(false);
+  });
+
+  it('launches GRADE and TEST autonomously with their named mode in the bootstrap body', () => {
+    for (const mode of ['grade', 'test']) {
+      const args = parseArgs([`--mode=${mode}`]);
+      expect(effectiveAutoMode(args)).toBe(true);
+      expect(launchModeFromArgs(args)?.mode).toBe(mode);
+    }
   });
 
   it("parses --fork / --fork-session (resume-time branch); defaults false", () => {
