@@ -19,6 +19,8 @@ import {
 
 import { assertReleaseTaskIdentity, type ReleaseTaskLedger } from '../../../../scripts/lib/release-task-journal.mjs';
 import {
+  DISK_PREFLIGHT_REFUSAL_EXIT_CODE,
+  describeStepExit,
   WORKSPACE_HOST_BUILD_STAGE,
   WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE,
   WorkspaceHostCutStepError,
@@ -380,5 +382,32 @@ describe('CLI args', () => {
       expect(parseWorkspaceHostReleaseCutArgs(REQUIRED, { PAPERCUSP_CUPBOARD_URL: '   ' }).publisherArgs).toEqual([]);
       expect(cupboardBaseOverride({ PAPERCUSP_CUPBOARD_URL: '/' })).toBeUndefined();
     });
+  });
+});
+
+describe('step failure lines (EI-24283123732250788)', () => {
+  it('names a disk-preflight refusal as a disk shortage and says how to resume', () => {
+    const line = describeStepExit('bash', DISK_PREFLIGHT_REFUSAL_EXIT_CODE, '/w/logs/sidecar-build.log');
+    expect(line).toContain('bash exited 28 (log: /w/logs/sidecar-build.log)');
+    expect(line).toMatch(/disk preflight refused for lack of free space/);
+    expect(line).toMatch(/same --work-dir to resume/);
+  });
+
+  it('leaves every other exit status as the bare exit line', () => {
+    expect(describeStepExit('bash', 1, '/w/logs/x.log')).toBe('bash exited 1 (log: /w/logs/x.log)');
+    expect(describeStepExit('node', null)).toBe('node exited by signal');
+    expect(describeStepExit('bash', 2)).not.toMatch(/disk/);
+  });
+
+  it('matches the exit status the shared shell disk preflight actually returns on refusal', () => {
+    const preflight = readFileSync(
+      new URL('../../../../papercusp-desktop/bin/lib/disk-preflight.sh', import.meta.url),
+      'utf8',
+    );
+    const refusals = [...preflight.matchAll(/^\s*return (\d+)\b.*$/gm)]
+      .map((match) => Number(match[1]))
+      .filter((code) => code !== 0 && code !== 1);
+    expect(refusals.length).toBeGreaterThan(0);
+    expect(new Set(refusals)).toEqual(new Set([DISK_PREFLIGHT_REFUSAL_EXIT_CODE]));
   });
 });

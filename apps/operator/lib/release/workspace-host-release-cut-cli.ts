@@ -315,6 +315,28 @@ interface RunOptions {
   gatingExitCodes?: readonly number[];
 }
 
+/**
+ * Exit status papercusp-desktop/bin/lib/disk-preflight.sh returns when it refuses a build for lack of
+ * free space (ENOSPC's errno). build-desktop-sidecar.sh preserves it with `|| exit $?`.
+ */
+export const DISK_PREFLIGHT_REFUSAL_EXIT_CODE = 28;
+
+/**
+ * The failure line for a step that exited non-zero. A bare "bash exited 28" was read on 2026-09-26
+ * (EI-24283123732250788) as an opaque failure, and 28 is also curl's timeout code; name the disk
+ * shortage so the operator frees space and resumes instead of hunting a network fault.
+ */
+export function describeStepExit(command: string, code: number | null, logFile?: string): string {
+  const where = logFile ? ` (log: ${logFile})` : '';
+  const base = `${command} exited ${code ?? 'by signal'}${where}`;
+  if (code !== DISK_PREFLIGHT_REFUSAL_EXIT_CODE) return base;
+  return (
+    `${base}: the build's disk preflight refused for lack of free space on the work directory's filesystem ` +
+    '(the log names the GB needed and any space reserved by other builds). ' +
+    'Free space there, then rerun the same command with the same --work-dir to resume this operation'
+  );
+}
+
 async function runStep(step: string, command: string, args: readonly string[], options: RunOptions = {}): Promise<void> {
   const log = options.logFile ? await open(options.logFile, 'a') : null;
   const out = options.stdoutFile ? await open(options.stdoutFile, 'w') : null;
@@ -330,11 +352,7 @@ async function runStep(step: string, command: string, args: readonly string[], o
     });
     if (code !== 0) {
       const gating = code !== null && (options.gatingExitCodes ?? []).includes(code);
-      throw new WorkspaceHostCutStepError(
-        step,
-        gating,
-        `${command} exited ${code ?? 'by signal'}${options.logFile ? ` (log: ${options.logFile})` : ''}`,
-      );
+      throw new WorkspaceHostCutStepError(step, gating, describeStepExit(command, code, options.logFile));
     }
   } finally {
     await out?.close();
