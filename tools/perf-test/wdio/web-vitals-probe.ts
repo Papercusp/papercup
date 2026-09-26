@@ -183,8 +183,27 @@ export function buildWebVitalsBundle(): string {
           import { onINP, onLCP, onCLS, onFCP, onTTFB } from 'web-vitals';
           window.__wv = {};
           window.__wv_errors = [];
+          window.__wv_lcp = null;
+          window.__wv_lcp_error = null;
           var cap = function (name, fn, opts) {
-            try { fn(function (m) { window.__wv[name] = m.value; }, opts); }
+            try { fn(function (m) {
+              window.__wv[name] = m.value;
+              if (name === 'LCP') {
+                try {
+                  var entry = m.entries && m.entries[m.entries.length - 1];
+                  var element = entry && entry.element;
+                  window.__wv_lcp = entry ? {
+                    startMs: entry.startTime,
+                    renderMs: entry.renderTime,
+                    loadMs: entry.loadTime,
+                    size: entry.size,
+                    tag: element && element.tagName || null,
+                    id: element && typeof element.id === 'string' ? element.id.slice(0, 80) : null,
+                    testId: element && element.getAttribute ? element.getAttribute('data-testid')?.slice(0, 80) || null : null,
+                  } : null;
+                } catch (e) { window.__wv_lcp_error = String(e).slice(0, 160); }
+              }
+            }, opts); }
             catch (e) { window.__wv_errors.push(name + ': ' + String(e)); }
           };
           cap('TTFB', onTTFB);

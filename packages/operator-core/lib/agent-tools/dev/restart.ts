@@ -80,11 +80,7 @@ import { tryAcquireResource, tryReleaseResource, type ResourceHolder } from '../
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
 import { workspaceTxnOptionsForExclusiveWait } from '../locks/resource-acquire-wait';
-import {
-  probeServiceStart,
-  probeSystemdDaemonReloadNeed,
-  type ServiceStartInfo,
-} from './systemd-service-probe';
+import { probeServiceStart, probeSystemdDaemonReloadNeed, type ServiceStartInfo } from './systemd-service-probe';
 import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget } from './restart-preflight';
 import {
@@ -472,7 +468,8 @@ export const RESTART_TARGETS: Record<
     unit: RESTART_TARGET_UNITS['email-sidecar'],
     resource: 'email-sidecar',
     cooldownResource: 'email-sidecar-cooldown',
-    blastRadius: 'the Email app sidecar (:8791) — the Email app is unavailable until it is back; Gmail sync resumes on boot',
+    blastRadius:
+      'the Email app sidecar (:8791) — the Email app is unavailable until it is back; Gmail sync resumes on boot',
   },
   'calendar-sidecar': {
     unit: RESTART_TARGET_UNITS['calendar-sidecar'],
@@ -652,9 +649,7 @@ async function probeStagingListenerOwnership(pid: number): Promise<GatewayListen
  * an observed-but-still-starting execution; a unit that stays failed/unseen for
  * the bounded window is a failed restart and must not be reported as success.
  */
-export async function waitForStagingRestartReadiness(
-  before: ServiceStartInfo,
-): Promise<StagingRestartReadiness> {
+export async function waitForStagingRestartReadiness(before: ServiceStartInfo): Promise<StagingRestartReadiness> {
   const startedAt = Date.now();
   const deadline = startedAt + STAGING_RESTART_OBSERVE_MS;
   const previousPidKnown = isLiveMainPid(before.mainPid);
@@ -728,9 +723,7 @@ export async function waitForStagingRestartReadiness(
   };
 }
 
-export type StagingRestartReadinessReader = (
-  before: ServiceStartInfo,
-) => Promise<StagingRestartReadiness>;
+export type StagingRestartReadinessReader = (before: ServiceStartInfo) => Promise<StagingRestartReadiness>;
 const defaultStagingRestartReadinessReader: StagingRestartReadinessReader = waitForStagingRestartReadiness;
 let stagingRestartReadinessReader = defaultStagingRestartReadinessReader;
 
@@ -912,7 +905,17 @@ export default defineTool({
     confirm: z.boolean().optional(),
     max_drain_sec: z.number().int().nonnegative().max(MAX_DRAIN_SEC).optional(),
     target: z
-      .enum(['dev', 'staging', 'gateway', 'bg-host', 'embed-sidecar', 'mcp-proxy', 'email-sidecar', 'calendar-sidecar', 'desktop-dev'])
+      .enum([
+        'dev',
+        'staging',
+        'gateway',
+        'bg-host',
+        'embed-sidecar',
+        'mcp-proxy',
+        'email-sidecar',
+        'calendar-sidecar',
+        'desktop-dev',
+      ])
       .optional(),
     /** EI-18198340374286980: in-band alternative to the operator-process-env
      *  PAPERCUSP_ALLOW_DEV_RESTART=1 gate, which an agent cannot set for a
@@ -1466,6 +1469,10 @@ export default defineTool({
     }
 
     let restartScheduled = false;
+    // A staging restart kills this handler's own process. Run the detached
+    // handoff only after guardResource's finally has released staging-server;
+    // waiting for readiness inside that guard stranded the exclusive lease.
+    const stagingRestartAfterRelease: { run?: () => Promise<ReturnType<typeof json>> } = {};
     let barrierReleaseAttempted = false;
     const releaseGitSyncBarrierOnAbort = async () => {
       if (!gitSyncBarrier?.acquired || restartScheduled || barrierReleaseAttempted) return;
@@ -1646,33 +1653,82 @@ export default defineTool({
         // failed unit with no MainPID is also reset before the requested
         // restart. Ordinary active restarts keep their useful metadata.
         const resetFailedBeforeRestart =
-          before.ok &&
-          before.mainPid === 0 &&
-          (before.result === 'start-limit-hit' || before.activeState === 'failed');
+          before.ok && before.mainPid === 0 && (before.result === 'start-limit-hit' || before.activeState === 'failed');
         const scheduledRestartCmd = resetFailedBeforeRestart
           ? `systemctl --user reset-failed ${cfg.unit} && ${restartCmd}`
           : restartCmd;
-        let child;
-        try {
-          child = spawn('sh', ['-c', `sleep 1; ${scheduledRestartCmd}`], {
-            detached: true,
-            stdio: 'ignore',
-          });
-        } catch (error) {
-          throw error;
-        }
-        child.unref();
-        restartScheduled = true;
-        const gatewayReadiness =
-          target === 'gateway' ? await waitForGatewayRestartReadiness(before.mainPid ?? null) : null;
-        const stagingReadiness = target === 'staging' ? await stagingRestartReadinessReader(before) : null;
-        if (gatewayReadiness && !gatewayReadiness.ready) {
+        const performRestart = async () => {
+          let child;
+          try {
+            child = spawn('sh', ['-c', `sleep 1; ${scheduledRestartCmd}`], {
+              detached: true,
+              stdio: 'ignore',
+            });
+          } catch (error) {
+            throw error;
+          }
+          child.unref();
+          restartScheduled = true;
+          const gatewayReadiness =
+            target === 'gateway' ? await waitForGatewayRestartReadiness(before.mainPid ?? null) : null;
+          const stagingReadiness = target === 'staging' ? await stagingRestartReadinessReader(before) : null;
+          if (gatewayReadiness && !gatewayReadiness.ready) {
+            return json({
+              ok: false,
+              target,
+              drained: true,
+              restarted: false,
+              restartScheduled: true,
+              fence_seq: fence.seq,
+              restartedFromPid: before.mainPid ?? null,
+              enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
+              audited: true,
+              systemdDaemonReloaded,
+              ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
+              ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
+              ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
+              ...(gitSync?.overridden ? { gitSyncCollisionOverridden: { kind: gitSync.kind, ...gitSync.detail } } : {}),
+              ...(quiesce?.overridden ? { quiesceOverridden: { marker: quiesce.marker } } : {}),
+              gatewayReadiness,
+              verifyWith: `GET ${gatewayHealthUrl()} after a NEW MainPID (bounded wait ~${GATEWAY_RESTART_PID_WAIT_MS / 1000}s)`,
+              note:
+                `Gateway restart was scheduled (~1s), but readiness was NOT confirmed within the bounded wait. ` +
+                `Do not send requests yet; probe ${gatewayHealthUrl()} directly and retry only after the service is ready.` +
+                (gatewayReadiness.pidChanged
+                  ? ` MainPID changed to ${gatewayReadiness.observedPid}, but the listener probe failed: ${gatewayReadiness.health?.detail ?? 'unknown probe failure'}.`
+                  : ` A new live MainPID was not observed (last observed: ${gatewayReadiness.observedPid ?? 'none'}).`),
+            });
+          }
+          if (stagingReadiness && !stagingReadiness.ready) {
+            const starting = stagingReadiness.outcome === 'starting';
+            return json({
+              ok: starting,
+              target,
+              drained: true,
+              restarted: false,
+              restartScheduled: true,
+              restartObserved: stagingReadiness.observed,
+              fence_seq: fence.seq,
+              restartedFromPid: before.mainPid ?? null,
+              enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
+              audited: true,
+              systemdDaemonReloaded,
+              ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
+              ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
+              stagingReadiness,
+              verifyWith: restartVerificationHint(target, cfg.unit, before.mainPid ?? null),
+              note: starting
+                ? `Staging restart execution was observed, but :3170 is still starting; restarted remains false until the new MainPID owns the listener.`
+                : `Staging restart was scheduled, but no successful systemd/listener transition was observed within the bounded wait. The unit ended ${
+                    stagingReadiness.activeState ?? 'unknown'
+                  } with Result=${stagingReadiness.result ?? 'unknown'}; do not claim it restarted.`,
+            });
+          }
           return json({
-            ok: false,
+            ok: true,
             target,
             drained: true,
-            restarted: false,
-            restartScheduled: true,
+            restarted: true,
             fence_seq: fence.seq,
             restartedFromPid: before.mainPid ?? null,
             enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
@@ -1683,96 +1739,53 @@ export default defineTool({
             ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
             ...(gitSync?.overridden ? { gitSyncCollisionOverridden: { kind: gitSync.kind, ...gitSync.detail } } : {}),
             ...(quiesce?.overridden ? { quiesceOverridden: { marker: quiesce.marker } } : {}),
-            gatewayReadiness,
-            verifyWith: `GET ${gatewayHealthUrl()} after a NEW MainPID (bounded wait ~${GATEWAY_RESTART_PID_WAIT_MS / 1000}s)`,
-            note:
-              `Gateway restart was scheduled (~1s), but readiness was NOT confirmed within the bounded wait. ` +
-              `Do not send requests yet; probe ${gatewayHealthUrl()} directly and retry only after the service is ready.` +
-              (gatewayReadiness.pidChanged
-                ? ` MainPID changed to ${gatewayReadiness.observedPid}, but the listener probe failed: ${gatewayReadiness.health?.detail ?? 'unknown probe failure'}.`
-                : ` A new live MainPID was not observed (last observed: ${gatewayReadiness.observedPid ?? 'none'}).`),
+            ...(gitSyncBarrier?.acquired === true
+              ? {
+                  gitSyncRestartBarrier: {
+                    resource: gitSyncBarrier.resource,
+                    expiresAt: gitSyncBarrier.expiresAt,
+                    release: 'lease-expiry-after-systemctl-handoff',
+                  },
+                }
+              : {}),
+            ...(gatewayReadiness ? { gatewayReadiness } : {}),
+            ...(stagingReadiness ? { stagingReadiness } : {}),
+            verifyWith: gatewayReadiness
+              ? `GET ${gatewayHealthUrl()} after a NEW MainPID (observed ${gatewayReadiness.observedPid}; bounded wait ~${
+                  GATEWAY_RESTART_PID_WAIT_MS / 1000
+                }s)`
+              : restartVerificationHint(target, cfg.unit, before.mainPid ?? null),
+            note: gatewayReadiness
+              ? `Gateway restart completed: MainPID changed to ${gatewayReadiness.observedPid}; ${gatewayHealthUrl()} responded ${
+                  gatewayReadiness.health?.detail ?? 'successfully'
+                } after ${gatewayReadiness.waitedMs}ms.`
+              : stagingReadiness
+                ? `Staging restart completed: MainPID changed to ${stagingReadiness.observedPid} and owns :${
+                    stagingReadiness.listener?.port ?? RESTART_TARGET_PORTS.staging
+                  } after ${stagingReadiness.waitedMs}ms.${
+                    resetFailedBeforeRestart ? ' reset-failed cleared the prior failed/start-limited unit first.' : ''
+                  }`
+                : `Restart scheduled (~1s)${
+                    resetFailedBeforeRestart
+                      ? ` — systemd reported start-limit-hit; reset-failed will clear the latched failure before restart.`
+                      : ''
+                  }${
+                    phantomCoalesceBroken
+                      ? ' — this BROKE a phantom coalesce marker (the service had NOT actually restarted despite the marker being held)'
+                      : ''
+                  } — this connection will drop as the operator restarts.${
+                    target === 'bg-host'
+                      ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
+                      : ''
+                  }${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}${quiesce?.overridden ? ` ⚠ ${quiesce.note}` : ''}`,
           });
+        };
+        if (target === 'staging') {
+          stagingRestartAfterRelease.run = performRestart;
+          // The real result is produced after the guard releases its lease.
+          return json({ ok: true, target, handoffPending: true });
         }
-        if (stagingReadiness && !stagingReadiness.ready) {
-          const starting = stagingReadiness.outcome === 'starting';
-          return json({
-            ok: starting,
-            target,
-            drained: true,
-            restarted: false,
-            restartScheduled: true,
-            restartObserved: stagingReadiness.observed,
-            fence_seq: fence.seq,
-            restartedFromPid: before.mainPid ?? null,
-            enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
-            audited: true,
-            systemdDaemonReloaded,
-            ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
-            ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
-            stagingReadiness,
-            verifyWith: restartVerificationHint(target, cfg.unit, before.mainPid ?? null),
-            note: starting
-              ? `Staging restart execution was observed, but :3170 is still starting; restarted remains false until the new MainPID owns the listener.`
-              : `Staging restart was scheduled, but no successful systemd/listener transition was observed within the bounded wait. The unit ended ${
-                  stagingReadiness.activeState ?? 'unknown'
-                } with Result=${stagingReadiness.result ?? 'unknown'}; do not claim it restarted.`,
-          });
-        }
-        return json({
-          ok: true,
-          target,
-          drained: true,
-          restarted: true,
-          fence_seq: fence.seq,
-          restartedFromPid: before.mainPid ?? null,
-          enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
-          audited: true,
-          systemdDaemonReloaded,
-          ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
-          ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
-          ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
-          ...(gitSync?.overridden ? { gitSyncCollisionOverridden: { kind: gitSync.kind, ...gitSync.detail } } : {}),
-          ...(quiesce?.overridden ? { quiesceOverridden: { marker: quiesce.marker } } : {}),
-          ...(gitSyncBarrier?.acquired === true
-            ? {
-                gitSyncRestartBarrier: {
-                  resource: gitSyncBarrier.resource,
-                  expiresAt: gitSyncBarrier.expiresAt,
-                  release: 'lease-expiry-after-systemctl-handoff',
-                },
-              }
-            : {}),
-          ...(gatewayReadiness ? { gatewayReadiness } : {}),
-          ...(stagingReadiness ? { stagingReadiness } : {}),
-          verifyWith: gatewayReadiness
-            ? `GET ${gatewayHealthUrl()} after a NEW MainPID (observed ${gatewayReadiness.observedPid}; bounded wait ~${
-                GATEWAY_RESTART_PID_WAIT_MS / 1000
-              }s)`
-            : restartVerificationHint(target, cfg.unit, before.mainPid ?? null),
-          note: gatewayReadiness
-            ? `Gateway restart completed: MainPID changed to ${gatewayReadiness.observedPid}; ${gatewayHealthUrl()} responded ${
-                gatewayReadiness.health?.detail ?? 'successfully'
-              } after ${gatewayReadiness.waitedMs}ms.`
-            : stagingReadiness
-              ? `Staging restart completed: MainPID changed to ${stagingReadiness.observedPid} and owns :${
-                  stagingReadiness.listener?.port ?? RESTART_TARGET_PORTS.staging
-                } after ${stagingReadiness.waitedMs}ms.${
-                  resetFailedBeforeRestart ? ' reset-failed cleared the prior failed/start-limited unit first.' : ''
-                }`
-            : `Restart scheduled (~1s)${
-                resetFailedBeforeRestart
-                  ? ` — systemd reported start-limit-hit; reset-failed will clear the latched failure before restart.`
-                  : ''
-              }${
-                phantomCoalesceBroken
-                  ? ' — this BROKE a phantom coalesce marker (the service had NOT actually restarted despite the marker being held)'
-                  : ''
-              } — this connection will drop as the operator restarts.${
-                target === 'bg-host'
-                  ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
-                  : ''
-              }${gitSync?.overridden || gitSync?.kind === 'probe-failed' || gitSync?.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}${quiesce?.overridden ? ` ⚠ ${quiesce.note}` : ''}`,
-        });
+        return performRestart();
       },
     ).catch(async (error) => {
       await releaseGitSyncBarrierOnAbort();
@@ -1781,6 +1794,15 @@ export default defineTool({
     });
 
     if (outcome.acquired) {
+      if (stagingRestartAfterRelease.run) {
+        try {
+          return await stagingRestartAfterRelease.run();
+        } catch (error) {
+          await releaseGitSyncBarrierOnAbort();
+          await releaseCooldownOnAbort();
+          throw error;
+        }
+      }
       if (!restartScheduled) {
         await releaseGitSyncBarrierOnAbort();
         await releaseCooldownOnAbort();

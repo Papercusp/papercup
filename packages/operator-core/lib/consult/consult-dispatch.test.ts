@@ -20,13 +20,17 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  DISPATCH_RECORD_TEXT_MAX,
   DISPATCH_VERIFY_TIMEOUT_MS,
   consultDispatchBrief,
   dispatchConsultResponder,
+  dispatchRecordEntry,
+  launchLogFailureReason,
   makeConsultReachDispatcher,
   planDispatchOperation,
   type ConsultDispatchContext,
   type ConsultDispatchDeps,
+  type ConsultDispatchRecordInput,
 } from './consult-dispatch';
 import { buildAgentLaunchCommand, injectLaunchedByArg } from '../agent-launch-core';
 import {
@@ -67,14 +71,24 @@ interface Fakes {
     capacity: Array<{ agent: string; workspaceId: string }>;
     /** Task ids the dispatcher asked to stop after a failed rank. */
     stopped: Array<string | null | undefined>;
+    /** Launch logs the dispatcher read a failure reason from. */
+    logReads: Array<string | null | undefined>;
+    /** Every walk the dispatcher asked to persist (WI-10003197). */
+    recorded: ConsultDispatchRecordInput[];
   };
 }
 
 function makeFakes(
   over: Partial<Record<keyof ConsultDispatchDeps, unknown>> = {},
-  opts: { source?: Record<string, unknown>; spawnStatuses?: Array<'ok' | 'error' | 'no-proof'> } = {},
+  opts: {
+    source?: Record<string, unknown>;
+    /** `exit-N`: the spawn returns, then its child exits with status N before registering. */
+    spawnStatuses?: Array<'ok' | 'error' | 'no-proof' | 'exit-2'>;
+    /** What the launch-log reader reports for a failed rank. */
+    logReason?: string | null;
+  } = {},
 ): Fakes {
-  const calls: Fakes['calls'] = { spawn: [], verify: [], capacity: [], stopped: [] };
+  const calls: Fakes['calls'] = { spawn: [], verify: [], capacity: [], stopped: [], logReads: [], recorded: [] };
   let mintSeq = 0;
   let spawnSeq = 0;
   const statuses = opts.spawnStatuses ?? [];
@@ -110,13 +124,14 @@ function makeFakes(
         pid: 42,
         taskId: `task-${spawnSeq}`,
         terminal: 'headless',
-        logPath: '/logs/x.log',
+        logPath: `/logs/x-${spawnSeq}.log`,
         child: null,
         display: null,
         kickoffProof:
           status === 'no-proof'
             ? { persisted: false, nativeRef: null, reason: 'fixture-no-receipt' }
             : { persisted: true, nativeRef: '/native/answer.jsonl', reason: null },
+        ...(status === 'exit-2' ? { childExit: Promise.resolve({ code: 2, signal: null }) } : {}),
       };
     },
     fetchContextPressure: async () => new Map(),
@@ -132,6 +147,14 @@ function makeFakes(
     stopFailedLaunch: async (taskId: string | null | undefined) => {
       calls.stopped.push(taskId);
       return `stopped task ${taskId}`;
+    },
+    readLaunchLogReason: async (logPath: string | null | undefined) => {
+      calls.logReads.push(logPath);
+      return opts.logReason ?? null;
+    },
+    // Unit tests never reach Postgres: the default recorder is the real org pool.
+    recordDispatchAttempts: async (record: ConsultDispatchRecordInput) => {
+      calls.recorded.push(record);
     },
     loadRanks: async () => RANKS,
     ...over,
@@ -452,6 +475,232 @@ describe('dispatchConsultResponder — the walk', () => {
     await expect(dispatchConsultResponder(OPTS, CTX, deps)).resolves.toMatchObject({
       dispatched: false,
       detail: expect.stringContaining('dispatch threw: pg is down'),
+    });
+  });
+});
+
+/**
+ * WI-10003197: over 7 days, 545 of 1,168 answering-session launches were refused
+ * by psu within seconds, and the reason reached no table — only fleet-logs. These
+ * pin that every walk is persisted, and that a failed rank carries psu's words.
+ * The fixtures below are real launch-log lines (2026-09-25), control bytes kept.
+ */
+const FORK_REFUSAL_LOG = [
+  '\x1b]0;psu\x07papercusp superuser launcher (psu): launcher\r',
+  '/home/u/papercusp-staging/apps/operator/scripts/psu-launcher.mjs\r',
+  '\x1b[31mpsu: refusing unmanaged fork su-faca4604-e062-469a-85b6-cf551ea52752: tracked source session ' +
+    'd073dd42-6761-436e-b86c-df822ce3da38 could not recover adv row #29351.\x1b[0m\r',
+  '[papercusp] initial terminal command exited with status 2; headless launch exiting.\r',
+  '',
+].join('\n');
+
+const CONVERT_REFUSAL_LOG = [
+  'papercusp superuser launcher (psu): launcher',
+  // An informational psu line: NOT a failure, and must not be reported as one.
+  'psu: session 247965b5-922e-435b-95ad-f41db0232d81 is a psu-launched claude session — older than the ' +
+    'recent-session window; resuming from its per-session CLAUDE_CONFIG_DIR.',
+  'psu: cross-backend resume requires a psu-tracked source session; raw native sessions can only resume/fork in place',
+  '[papercusp] initial terminal command exited with status 1; headless launch exiting.',
+].join('\n');
+
+/** The CLI draws its wall inside TUI output with cursor moves, mid-way through the brief's own "line". */
+const WALL_LOG =
+  '🧭 CONSULT — the existing relevance router selected you as an independent audit candidate; ' +
+  'read the request in conversations:get { id:"conv-x" }. '.repeat(8) +
+  "\x1b[1B\x1b[49m\x1b[38;5;246m  ⎿  \x1b[38;5;211mYou've hit your weekly limit · resets Sep 26, 5am " +
+  '(America/New_York)\x1b[1B\x1b[39m \x1b[3G   \x1b[38;5;246m/usage-credits\n';
+
+describe('launchLogFailureReason (the launcher’s own words, from a real log)', () => {
+  it('reports psu’s fork refusal and the exit status, with control bytes stripped', () => {
+    expect(launchLogFailureReason(FORK_REFUSAL_LOG)).toBe(
+      'psu: refusing unmanaged fork su-faca4604-e062-469a-85b6-cf551ea52752: tracked source session ' +
+        'd073dd42-6761-436e-b86c-df822ce3da38 could not recover adv row #29351. · ' +
+        '[papercusp] initial terminal command exited with status 2',
+    );
+  });
+
+  it('reports the convert refusal, not the informational psu line before it', () => {
+    const reason = launchLogFailureReason(CONVERT_REFUSAL_LOG)!;
+    expect(reason).toMatch(/^psu: cross-backend resume requires a psu-tracked source session/);
+    expect(reason).toMatch(/exited with status 1$/);
+    expect(reason).not.toContain('older than the recent-session window');
+  });
+
+  it('extracts an account wall drawn mid-line, never the brief text it is drawn beside', () => {
+    // Keeping the whole rendered line would clip to its START — the consult
+    // brief — which is exactly what the first version of this parser reported.
+    expect(launchLogFailureReason(WALL_LOG)).toBe("You've hit your weekly limit · resets Sep 26, 5am (America/New_York)");
+  });
+
+  it('reports the LAST failure when a log holds several', () => {
+    const log = 'psu: tracked resume failed: first\npsu: refusing fork: second\n';
+    expect(launchLogFailureReason(log)).toBe('psu: refusing fork: second');
+  });
+
+  it('falls back to the exit status alone, and is null for a log with no failure', () => {
+    expect(launchLogFailureReason('booting\n[papercusp] initial terminal command exited with status 2\n')).toBe(
+      '[papercusp] initial terminal command exited with status 2',
+    );
+    expect(launchLogFailureReason('psu: resuming session abc\nready\n')).toBeNull();
+    expect(launchLogFailureReason('')).toBeNull();
+  });
+});
+
+describe('dispatchConsultResponder — every walk is persisted on its consult (WI-10003197)', () => {
+  it('records a DISPATCHED walk once, carrying the exact verdict it returned', async () => {
+    const { deps, calls } = makeFakes();
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(r.dispatched).toBe(true);
+    expect(calls.recorded).toEqual([
+      {
+        workspaceId: CTX.workspaceId,
+        conversationId: OPTS.conversationId,
+        sourceOwnerId: OPTS.sourceOwnerId,
+        result: r,
+      },
+    ]);
+  });
+
+  it('records an EXHAUSTED walk — the case that used to leave no trace at all', async () => {
+    const { deps, calls } = makeFakes({
+      probeBackendAvailable: async (agent: string) => ({ available: false, detail: `${agent} walled` }),
+    });
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(r.dispatched).toBe(false);
+    expect(calls.recorded).toHaveLength(1);
+    expect(calls.recorded[0]!.result.attempts.map((a) => a.reason)).toEqual(['account-walled', 'account-walled']);
+  });
+
+  it('records a walk refused BEFORE any rank, and one whose resolution threw', async () => {
+    const gone = makeFakes({
+      checkResumeTranscript: async () => ({ available: false, detail: 'native transcript unavailable (retired)' }),
+    });
+    await dispatchConsultResponder(OPTS, CTX, gone.deps);
+    expect(gone.calls.recorded).toHaveLength(1);
+    expect(gone.calls.recorded[0]!.result.detail).toContain('source transcript unavailable');
+
+    const threw = makeFakes({
+      resolveResumeTarget: async () => {
+        throw new Error('pg is down');
+      },
+    });
+    await dispatchConsultResponder(OPTS, CTX, threw.deps);
+    expect(threw.calls.recorded).toHaveLength(1);
+    expect(threw.calls.recorded[0]!.result.detail).toContain('dispatch threw: pg is down');
+  });
+
+  it('a recorder that THROWS never costs the dispatch its verdict', async () => {
+    const { deps } = makeFakes({
+      recordDispatchAttempts: async () => {
+        throw new Error('column "dispatch_attempts" does not exist');
+      },
+    });
+    await expect(dispatchConsultResponder(OPTS, CTX, deps)).resolves.toMatchObject({
+      dispatched: true,
+      answeringOwnerId: 'su-answer-1',
+    });
+  });
+
+  it('an unpersisted kickoff carries the launcher’s own reason, read from THAT rank’s log', async () => {
+    const reason = 'psu: refusing unmanaged fork su-answer-1: could not recover adv row #?.';
+    const { deps, calls } = makeFakes({}, { spawnStatuses: ['no-proof', 'ok'], logReason: reason });
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(calls.logReads).toEqual(['/logs/x-1.log']);
+    expect(r.attempts[0]).toMatchObject({ reason: 'kickoff-not-persisted', launchError: reason });
+    expect(r.attempts[0]!.detail).toContain(`launcher said: ${reason}`);
+    // and the persisted record carries it too, not just the in-memory verdict
+    expect(calls.recorded[0]!.result.attempts[0]!.launchError).toBe(reason);
+    expect(r).toMatchObject({ dispatched: true, agent: 'codex' });
+  });
+
+  it('a rank whose process EXITS before registering carries the launcher’s reason', async () => {
+    const reason = 'psu: cross-backend resume requires a psu-tracked source session';
+    let verifies = 0;
+    const { deps, calls } = makeFakes(
+      {
+        // Rank 1 never registers a host; its child exit must win the race.
+        verifyResumeStarted: () =>
+          ++verifies === 1 ? new Promise(() => {}) : Promise.resolve({ started: true, waitedMs: 5 }),
+      },
+      { spawnStatuses: ['exit-2', 'ok'], logReason: reason },
+    );
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(r.attempts[0]).toMatchObject({ rank: 1, outcome: 'failed', reason: 'launch-exited', launchError: reason });
+    expect(r.attempts[0]!.detail).toContain('exited with status 2');
+    expect(r.attempts[0]!.detail).toContain(`launcher said: ${reason}`);
+    expect(calls.stopped).toEqual(['task-1']);
+    expect(calls.logReads).toEqual(['/logs/x-1.log']);
+    expect(r).toMatchObject({ dispatched: true, agent: 'codex' });
+  });
+
+  it('with no recognisable log line, a failed rank has NO launchError key and no "launcher said" (CONTROL)', async () => {
+    const { deps } = makeFakes({}, { spawnStatuses: ['no-proof', 'ok'], logReason: null });
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(r.attempts[0]!.reason).toBe('kickoff-not-persisted');
+    expect(r.attempts[0]).not.toHaveProperty('launchError');
+    expect(r.attempts[0]!.detail).not.toContain('launcher said');
+  });
+
+  it('never reads a DISPATCHED rank’s log (CONTROL)', async () => {
+    const { deps, calls } = makeFakes({}, { logReason: 'psu: would be wrong to report' });
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(r.dispatched).toBe(true);
+    expect(calls.logReads).toEqual([]);
+    expect(r.attempts.some((a) => 'launchError' in a)).toBe(false);
+  });
+});
+
+describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
+  const base: ConsultDispatchRecordInput = {
+    workspaceId: 'ws',
+    conversationId: 'conv',
+    sourceOwnerId: 'su-src',
+    result: {
+      dispatched: false,
+      answeringOwnerId: null,
+      operation: null,
+      agent: null,
+      model: null,
+      verified: false,
+      detail: 'x'.repeat(5000),
+      attempts: [
+        {
+          rank: 1,
+          agent: 'claude',
+          model: 'opus',
+          operation: 'fork',
+          outcome: 'failed',
+          reason: 'launch-exited',
+          detail: 'y'.repeat(5000),
+          launchError: 'z'.repeat(1000),
+        },
+        { rank: 2, agent: 'codex', model: 'sol', operation: 'convert', outcome: 'skipped', detail: 'short' },
+      ],
+    },
+  };
+
+  it('clips every free-text field so a record is a pointer, never a log copy', () => {
+    const e = dispatchRecordEntry(base, '2026-09-26T00:00:00.000Z') as {
+      at: string;
+      detail: string;
+      attempts: Array<Record<string, unknown>>;
+    };
+    expect(e.at).toBe('2026-09-26T00:00:00.000Z');
+    expect(e.detail).toHaveLength(DISPATCH_RECORD_TEXT_MAX);
+    expect(e.detail.endsWith('…')).toBe(true);
+    expect((e.attempts[0]!.detail as string).length).toBe(DISPATCH_RECORD_TEXT_MAX);
+    expect((e.attempts[0]!.launchError as string).length).toBe(300);
+  });
+
+  it('omits reason and launchError when a rank has none, rather than writing null', () => {
+    const e = dispatchRecordEntry(base, '2026-09-26T00:00:00.000Z') as { attempts: Array<Record<string, unknown>> };
+    expect(e.attempts[1]).toEqual({
+      rank: 2,
+      agent: 'codex',
+      model: 'sol',
+      operation: 'convert',
+      outcome: 'skipped',
+      detail: 'short',
     });
   });
 });

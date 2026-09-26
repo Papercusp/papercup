@@ -39,6 +39,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import type { Sql } from 'postgres';
 import {
   buildAgentLaunchCommand,
   injectLaunchedByArg,
@@ -134,6 +135,13 @@ export interface ConsultDispatchAttempt {
   outcome: 'dispatched' | 'skipped' | 'failed';
   reason?: DispatchSkipReason;
   detail: string;
+  /**
+   * The launcher's own words for a spawned rank that did not survive, read from
+   * its launch log (e.g. psu's "refusing unmanaged fork …"). `reason` says only
+   * which dispatcher check failed; this says why psu or the CLI gave up.
+   * Absent when the log holds no recognisable failure line.
+   */
+  launchError?: string;
 }
 
 export interface ConsultDispatchResult {
@@ -191,6 +199,172 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
    * Returns a short outcome for the attempt record; never throws.
    */
   stopFailedLaunch: (taskId: string | null | undefined) => Promise<string>;
+  /**
+   * The failure line a spawned rank's launch log ends on, or null. Never throws.
+   * (WI-10003197: psu refusals were visible only by grepping fleet-logs.)
+   */
+  readLaunchLogReason: (logPath: string | null | undefined) => Promise<string | null>;
+  /**
+   * Persist this dispatch walk on its consult row. Best-effort: the dispatcher
+   * swallows a throw, because losing the record must never cost the dispatch.
+   */
+  recordDispatchAttempts: (record: ConsultDispatchRecordInput) => Promise<void>;
+}
+
+/** What {@link ConsultDispatchDeps.recordDispatchAttempts} persists for one walk. */
+export interface ConsultDispatchRecordInput {
+  workspaceId: string;
+  conversationId: string;
+  sourceOwnerId: string;
+  result: ConsultDispatchResult;
+}
+
+/** Newest dispatch records kept on `consult_state.dispatch_attempts` (migration 1225). */
+export const DISPATCH_RECORDS_MAX = 24;
+/** Per-string bound inside a persisted record — a pointer, never a log copy. */
+export const DISPATCH_RECORD_TEXT_MAX = 600;
+
+const clip = (s: string, max = DISPATCH_RECORD_TEXT_MAX): string =>
+  s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+
+/** The persisted shape of one dispatch walk (bounded strings, stamped time). */
+export function dispatchRecordEntry(input: ConsultDispatchRecordInput, nowIso: string): Record<string, unknown> {
+  const r = input.result;
+  return {
+    at: nowIso,
+    sourceOwnerId: input.sourceOwnerId,
+    dispatched: r.dispatched,
+    answeringOwnerId: r.answeringOwnerId,
+    operation: r.operation,
+    agent: r.agent,
+    model: r.model,
+    verified: r.verified,
+    detail: clip(r.detail),
+    attempts: r.attempts.map((a) => ({
+      rank: a.rank,
+      agent: a.agent,
+      model: a.model,
+      operation: a.operation,
+      outcome: a.outcome,
+      ...(a.reason ? { reason: a.reason } : {}),
+      detail: clip(a.detail),
+      ...(a.launchError ? { launchError: clip(a.launchError, 300) } : {}),
+    })),
+  };
+}
+
+/**
+ * Append one record to `consult_state.dispatch_attempts`, keeping the newest
+ * {@link DISPATCH_RECORDS_MAX} in append order. It deliberately leaves
+ * `updated_at` alone — expiry and staleness readers key on it, and recording
+ * evidence must not look like consult activity. Exported for the real-Postgres
+ * test; production calls it through {@link defaultRecordDispatchAttempts}.
+ */
+export async function appendDispatchRecord(
+  sql: Sql,
+  input: ConsultDispatchRecordInput,
+  nowIso: string,
+): Promise<void> {
+  // `::text` THEN `::jsonb`: typing the parameter as text makes postgres.js send
+  // the string as-is on ANY client. A bare `${entry}::jsonb` infers a jsonb param,
+  // and a client without the canonical hybrid serializer (restoreRawJsonbSerializer)
+  // JSON-encodes it again — storing a jsonb STRING, not an object (caught by
+  // consult-dispatch-record.integration.test.ts on a plain client). Not sql.json():
+  // the org pool has mishandled that in templates (EI-10445).
+  const entry = JSON.stringify(dispatchRecordEntry(input, nowIso));
+  await sql`
+    UPDATE harness_shared.consult_state
+       SET dispatch_attempts = (
+         SELECT COALESCE(jsonb_agg(e ORDER BY ord), '[]'::jsonb)
+           FROM (
+             SELECT e, ord
+               FROM jsonb_array_elements(dispatch_attempts || jsonb_build_array(${entry}::text::jsonb))
+                    WITH ORDINALITY AS t(e, ord)
+              ORDER BY ord DESC
+              LIMIT ${DISPATCH_RECORDS_MAX}
+           ) kept
+       )
+     WHERE workspace_id = ${input.workspaceId} AND conversation_id = ${input.conversationId}
+  `;
+}
+
+/** Default recorder: {@link appendDispatchRecord} through the org pool. */
+async function defaultRecordDispatchAttempts(input: ConsultDispatchRecordInput): Promise<void> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  await appendDispatchRecord(getOrgPg().sql as unknown as Sql, input, new Date().toISOString());
+}
+
+/** Strip terminal control sequences (CSI and OSC) and carriage returns. */
+function stripTerminalControl(text: string): string {
+  return text
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '');
+}
+
+/** psu prints its own refusals as whole `psu: …` lines, so the whole line is the reason. */
+const PSU_FAILURE_LINE =
+  /^psu(?:-pty-host)?: .*(?:refus|requires|could not|cannot|can only|failed|no session|not found|unavailable|DROPPED|still in progress)/i;
+/**
+ * The CLI's own failures arrive inside TUI output drawn with cursor-movement
+ * escapes, not newlines, so they sit mid-way through one long rendered "line"
+ * (which can open with the consult brief itself). Only the matched fragment is
+ * the reason — keeping the line would clip to its start and report the brief.
+ */
+const MIDLINE_FAILURES: RegExp[] = [
+  /You(?:'ve| have) hit your (?:session|weekly|usage) limit(?:\s*·\s*resets[^()\n·]{0,40}(?:\([^()\n]{0,40}\))?)?/gi,
+  /Tool reference \S+ not found/g,
+];
+const LAUNCH_EXIT_LINE = /^\[papercusp\] initial terminal command exited with status \d+/;
+
+/**
+ * The failure a launch log ends on: the LAST launcher failure (psu's own
+ * refusal, an account wall, a dropped kickoff), plus the terminal exit status
+ * when present. Pure, for tests; the default reader feeds it the log's tail.
+ */
+export function launchLogFailureReason(logText: string): string | null {
+  const lines = stripTerminalControl(logText)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  let failure: string | null = null;
+  let exit: string | null = null;
+  for (const line of lines) {
+    if (PSU_FAILURE_LINE.test(line)) {
+      failure = line;
+      continue;
+    }
+    if (LAUNCH_EXIT_LINE.test(line)) {
+      exit = line.replace(/; headless launch exiting\.?$/, '');
+      continue;
+    }
+    for (const re of MIDLINE_FAILURES) {
+      const hits = [...line.matchAll(re)];
+      if (hits.length) failure = hits[hits.length - 1]![0].trim();
+    }
+  }
+  if (!failure && !exit) return null;
+  return clip([failure, exit].filter(Boolean).join(' · '), 300);
+}
+
+/** Default reader: the last 64 KiB of the launch log. Never throws. */
+async function defaultReadLaunchLogReason(logPath: string | null | undefined): Promise<string | null> {
+  if (!logPath) return null;
+  try {
+    const { open } = await import('node:fs/promises');
+    const fh = await open(logPath, 'r');
+    try {
+      const { size } = await fh.stat();
+      const length = Math.min(size, 64 * 1024);
+      const buf = Buffer.alloc(length);
+      await fh.read(buf, 0, length, size - length);
+      return launchLogFailureReason(buf.toString('utf8'));
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -397,8 +571,32 @@ export async function dispatchConsultResponder(
     probeBackendAvailable: defaultProbeBackendAvailable,
     mintOwnerId: () => `su-${randomUUID()}`,
     stopFailedLaunch: defaultStopFailedLaunch,
+    readLaunchLogReason: defaultReadLaunchLogReason,
+    recordDispatchAttempts: defaultRecordDispatchAttempts,
     ...deps,
   };
+  const result = await walkConsultDispatch(opts, ctx, d);
+  // WI-10003197: every walk — dispatched, exhausted, or refused before any rank —
+  // lands on its consult, so a failed answering session is visible without
+  // searching fleet-logs. Best-effort: losing the record never costs the dispatch.
+  try {
+    await d.recordDispatchAttempts({
+      workspaceId: ctx.workspaceId,
+      conversationId: opts.conversationId,
+      sourceOwnerId: opts.sourceOwnerId,
+      result,
+    });
+  } catch {
+    /* evidence write failed; the dispatch verdict stands */
+  }
+  return result;
+}
+
+async function walkConsultDispatch(
+  opts: Parameters<typeof dispatchConsultResponder>[0],
+  ctx: ConsultDispatchContext,
+  d: ConsultDispatchDeps,
+): Promise<ConsultDispatchResult> {
   const attempts: ConsultDispatchAttempt[] = [];
   const give = (detail: string): ConsultDispatchResult => ({
     dispatched: false,
@@ -691,11 +889,14 @@ async function launchAnsweringSession(
     // The walk is about to launch another rank; this one must not outlive the
     // verdict (see defaultStopFailedLaunch).
     const stopped = await d.stopFailedLaunch(spawn.taskId);
-    return failed(
+    const launchError = await d.readLaunchLogReason(spawn.logPath);
+    const result = failed(
       'kickoff-not-persisted',
       `spawn did not persist its kickoff in the native transcript ` +
-        `(${spawn.kickoffProof?.reason ?? 'kickoff-proof-missing'}; log ${spawn.logPath ?? '?'}); ${stopped}`,
+        `(${spawn.kickoffProof?.reason ?? 'kickoff-proof-missing'}; log ${spawn.logPath ?? '?'}); ${stopped}` +
+        (launchError ? `; launcher said: ${launchError}` : ''),
     );
+    return launchError ? { ...result, record: { ...result.record, launchError } } : result;
   }
 
   // The brief is submitted and the session is running, so from HERE it can post
@@ -725,12 +926,16 @@ async function launchAnsweringSession(
         // The root died, but its scope can still hold descendants (MCP servers,
         // wrapper chains) — clear it before reporting the rank failed.
         await d.stopFailedLaunch(spawn.taskId);
+        const launchError = await d.readLaunchLogReason(spawn.logPath);
         return {
           record: {
             ...base,
             outcome: 'failed',
             reason: 'launch-exited',
-            detail: `${failure} before ${answeringOwnerId} registered a live host (log ${spawn.logPath ?? '?'})`,
+            detail:
+              `${failure} before ${answeringOwnerId} registered a live host (log ${spawn.logPath ?? '?'})` +
+              (launchError ? `; launcher said: ${launchError}` : ''),
+            ...(launchError ? { launchError } : {}),
           },
           answeringOwnerId: null,
           verified: false,

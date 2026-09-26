@@ -147,6 +147,75 @@ describe('persistent transcript accounting', () => {
     expect((await sql`SELECT id FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`)).toHaveLength(3);
   });
 
+  it.each(['claude-tiers', 'codex-context'] as const)(
+    'reconciles historical %s costs per request while preserving the original row exactly once', async (scenario) => {
+      const file = path.join(root, `${scenario}.jsonl`);
+      const timestamp = '2026-09-23T10:00:00.000Z';
+      const isClaude = scenario === 'claude-tiers';
+      const source = isClaude
+        ? [[1_000_000, 0], [0, 1_000_000], [750_000, 250_000]].map(([fiveMinute, oneHour], i) =>
+          line({ type: 'assistant', timestamp, message: { id: `tier-${i}`, model: 'claude-opus-4-8', usage: {
+            input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0,
+            cache_creation_input_tokens: fiveMinute + oneHour,
+            cache_creation: { ephemeral_5m_input_tokens: fiveMinute, ephemeral_1h_input_tokens: oneHour },
+          } } })).join('')
+        : context('gpt-6-luna') + [272_000, 272_001].map((input, i) => line({
+          type: 'event_msg', timestamp, payload: { type: 'token_count', info: {
+            total_token_usage: { input_tokens: i === 0 ? input : 544_001,
+              cached_input_tokens: 260_000 * (i + 1), output_tokens: 1000 * (i + 1) },
+            last_token_usage: { input_tokens: input, cached_input_tokens: 260_000,
+              cache_write_input_tokens: 10_000, output_tokens: 1000 },
+          } },
+        })).join('');
+      // Independent arithmetic, deliberately not costFromTokens/replay output:
+      // Claude: 5m = 1.25 * $5/MTok, 1h = 2 * $5/MTok.
+      // Luna: the 272000-input request stays short; only 272001 gets 2x input/1.5x output.
+      const expectedCosts = isClaude ? [6.25, 10, 7.1875] : [0.00455, 0.0088502];
+      const model = isClaude ? 'claude-opus-4-8' : 'gpt-6-luna';
+      const selectedAdapter = isClaude ? { name: 'claude', root, parse: parseTranscriptChunk } : adapter()[0];
+      await fs.writeFile(file, source);
+      await sql`INSERT INTO harness_shared.interactive_usage_files (workspace_id,file_path,byte_offset)
+        VALUES (${WS},${file},${Buffer.byteLength(source)})`;
+      await sql`INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id,ts,source,provider,bucket_key,model_class,session_id,model,input_tokens,cache_read_tokens,cache_creation_tokens,output_tokens,cost_usd)
+        VALUES (${WS},123,'interactive',${isClaude ? 'anthropic' : 'openai'},'legacy','default',${scenario},'gpt-5.5',800,1200,0,80,123)`;
+      const [before] = await sql`SELECT to_jsonb(s) AS original FROM harness_shared.agent_usage_samples s WHERE workspace_id=${WS}`;
+      const replay = await replayTranscriptPrefix({ filePath: file, byteOffset: Buffer.byteLength(source), adapter: selectedAdapter });
+      if (replay.status !== 'available') throw new Error(replay.reason);
+      const expectedTotal = expectedCosts.reduce((sum, cost) => sum + cost, 0);
+      expect(replay.models[model].estimatedUsd).toBeCloseTo(expectedTotal, 10);
+      expect(replay.models[model].pricedRequests).toBe(expectedCosts.length);
+      expect(await sql`SELECT to_jsonb(s) AS original FROM harness_shared.agent_usage_samples s WHERE workspace_id=${WS}`)
+        .toEqual([before]); // the dry run must not rewrite the old estimate
+      const historical = { filePath: file, byteOffset: replay.byteOffset, sourceSha256: replay.sourceSha256,
+        legacyFingerprint: await legacyUsageFingerprint(sql, WS, scenario), backupSnapshotId: backupId };
+      expect((await ingestInteractiveUsage({ adapters: [selectedAdapter], historical })).errors).toEqual([]);
+      const rows = await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}
+        ORDER BY (usage_provenance->>'byteOffset')::bigint`;
+      expect(rows).toHaveLength(expectedCosts.length);
+      rows.forEach((row, i) => {
+        expect(row.model).toBe(model);
+        expect(row.cost_source).toBe('estimated');
+        expect(row.cost_usd).toBeCloseTo(expectedCosts[i], 10);
+        expect(Number(row.event_ts)).toBe(Date.parse(timestamp));
+        expect(row.usage_provenance.reconciliation).toMatchObject({ sourceSha256: replay.sourceSha256,
+          byteOffset: Buffer.byteLength(source), backupSnapshotId: backupId, legacyFingerprint: historical.legacyFingerprint });
+      });
+      if (isClaude) {
+        expect(rows.map(row => [Number(row.cache_creation_5m_tokens), Number(row.cache_creation_1h_tokens)]))
+          .toEqual([[1_000_000, 0], [0, 1_000_000], [750_000, 250_000]]);
+      } else {
+        expect(rows.map(row => row.usage_provenance.inputTotalTokens)).toEqual([272_000, 272_001]);
+      }
+      expect(rows.flatMap(row => row.usage_provenance.reconciliation.originalRows ?? [])).toEqual([before.original]);
+      const repeated = await ingestInteractiveUsage({ adapters: [selectedAdapter], historical });
+      expect(repeated.errors).toEqual([]);
+      expect(repeated.samples).toBe(0);
+      expect(await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}
+        ORDER BY (usage_provenance->>'byteOffset')::bigint`).toEqual(rows);
+    },
+  );
+
   it('refuses historical replacement without a backup receipt, with unread bytes, or with ambiguous source mapping', async () => {
     const file = path.join(root, 'refuse.jsonl');
     const source = context('gpt-6-luna') + usage(1000);

@@ -1288,6 +1288,39 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     process.env.PAPERCUSP_ALLOW_DEV_RESTART = '1';
   });
 
+  it('releases the exclusive lease before a self-restart can kill its handler', async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-SELF-RESTART',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    });
+    mockResolvedTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 });
+    let leaseHeld = false;
+    mockImplementationTyped(guardM, async (_spec, run) => {
+      leaseHeld = true;
+      const result = await run(fenceOk() as FenceToken);
+      leaseHeld = false; // guardResource's finally has released staging-server
+      return { acquired: true, result, lock_id: 'L-self-restart' };
+    });
+    spawnM.mockImplementationOnce(() => {
+      expect(leaseHeld).toBe(false);
+      return { unref: vi.fn() } as never;
+    });
+    stagingReadinessM.mockImplementationOnce(async () => {
+      expect(leaseHeld).toBe(false);
+      throw new Error('transport closed when staging killed its own handler');
+    });
+
+    await expect(call({ confirm: true, target: 'staging' })).rejects.toThrow('transport closed');
+    expect(leaseHeld).toBe(false);
+    expect(spawnM).toHaveBeenCalledTimes(1);
+    expect(stagingReadinessM).toHaveBeenCalledTimes(1);
+  });
+
   it('claims the cooldown marker, drains+restarts, and does NOT release the cooldown on success', async () => {
     acquireM.mockResolvedValue({
       ok: true,

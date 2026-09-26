@@ -52,6 +52,9 @@ function depsFor(input: { ranks: AllowedExpertModel[]; resolved?: string[] }) {
     probeBackendAvailable: async () => ({ available: true, detail: 'headroom' }),
     mintOwnerId: () => `su-answer-${++minted}`,
     loadRanks: async () => input.ranks,
+    // Unit tier: the default recorder writes through the real org pool (WI-10003197).
+    readLaunchLogReason: async () => null,
+    recordDispatchAttempts: async () => {},
   };
   return { deps, launched, resolved };
 }
