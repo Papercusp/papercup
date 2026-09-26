@@ -4,15 +4,14 @@
   "name": "P-001 activation audit refuses an unresolved owner-turn reference and a missing plan target",
   "framework": "operational",
   "command": [
-    "plans:audit { slug:'su-mode-contract-identity-unification-2026-09-24', harness:'papercusp', phase:'activation', classRef:'plan-class-feature-ship', dryRun:true } with the complete recorded payload of 13 mappings and 4 sourceRanges (baseline)",
-    "Repeat the same dryRun with one added sourceRange for the nonexistent session 00000000-0000-7000-8000-000000000001 (turns 0-1) and one added ref session_turn:codex:00000000-0000-7000-8000-000000000001:0 on M-001",
-    "Repeat the same dryRun with one added planTarget P-999 on M-001",
+    "plans:audit { slug:'su-mode-contract-identity-unification-2026-09-24', harness:'papercusp', phase:'activation', classRef:'plan-class-feature-ship', dryRun:true } on the complete recorded payload of 13 mappings and 4 sourceRanges, with one added sourceRange for the nonexistent session 00000000-0000-7000-8000-000000000001 (turns 0-1) and one added ref session_turn:codex:00000000-0000-7000-8000-000000000001:0 on M-001",
+    "The same dryRun on the complete recorded payload with one added planTarget P-999 on M-001",
     "Operator :3070 build 7708e704d9. Every call used dryRun:true, so no audit, repair, clause or event rows were written."
   ],
   "startedAt": "2026-09-26T16:35:58Z",
   "finishedAt": "2026-09-26T16:37:28Z",
-  "exitCode": 0,
-  "summary": "The baseline activation audit passed validation on the complete payload. It resolved 32 source refs against plan version 47. Two single-fault variants each changed one element of that payload, and the audit refused both. An owner-turn ref to a session that does not exist was refused with source_refs_unresolved / session_turn_not_found. A mapping target P-999, which is absent from the plan, was refused with plan_targets_invalid / unknown_item. So the oracle behind this spec goes red on two of the three falsifier conditions.",
+  "exitCode": 1,
+  "summary": "Counterexample run: the activation audit oracle was run against two faulted inputs and refused both, so this run exits 1 (the counterexample was caught). An owner-turn ref to a session that does not exist was refused with source_refs_unresolved / session_turn_not_found. A mapping target P-999, which is absent from the plan, was refused with plan_targets_invalid / unknown_item. The unfaulted baseline for the same payload passed validation in the same window (32 refs resolved, plan version 47). The positive evidence is recorded separately in docs/evidence/p001-activation-audit-source-coverage-2026-09-26.json.",
   "assertions": [
     {
       "id": "baseline-passes",
