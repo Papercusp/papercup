@@ -37,11 +37,16 @@ owner's release approval.
 - In a terminal smaller than 80×20, PUI pauses behind a notice and keeps your
   unsent message; it continues once the window is large enough again.
 
-**Remote hosts**
+**Cloud and remote hosts**
 
+- With no operator on this computer, setup offers `l` to sign in to Papercusp
+  cloud in your browser and open PUI on one of your cloud workspaces, and `h`
+  to connect to a saved remote host. Cancelling or a failed sign-in returns
+  you to setup.
 - `pui --connect` runs PUI on a remote Papercusp host saved in `psu`, using the
-  same connections, picker and sign-in as `psu`. It needs `psu` installed on
-  this machine.
+  same connections, picker and sign-in as `psu`.
+- The archive ships `psu` on its own private Node runtime, so none of this
+  needs Node, npm or a separately installed `psu`.
 
 **Install and support**
 

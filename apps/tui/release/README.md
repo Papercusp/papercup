@@ -14,9 +14,11 @@ cd pui-<version>-<target>
 `install.sh` checks every file against `CONTENTS.sha256`, confirms `pui` starts
 on this machine, then runs `bin/pui self install`, which previews what it will
 change and asks before changing it. Nothing else is needed: no Rust toolchain,
-no python, no source checkout.
+no Node or npm, no python, no source checkout.
 
-It installs into `~/.local/share/pui` and links `~/.local/bin/pui`. Set
+It installs into `~/.local/share/pui` and links `~/.local/bin/pui` and
+`~/.local/bin/psu`. If you already have a `psu` there that PUI did not install,
+PUI leaves it alone; its own sessions still use the `psu` in this release. Set
 `PUI_HOME` or `PUI_BIN_DIR` to choose other (absolute) locations. If
 `~/.local/bin` is not on your `PATH`, add it.
 
@@ -29,14 +31,24 @@ publisher's public key.
 ## What PUI needs
 
 PUI connects to a Papercusp operator: the Papercusp desktop app, a Papercusp
-workspace host, or a remote operator URL. See `COMPATIBILITY.md`. With no
-operator configured, `pui` opens setup; `pui doctor` checks the installation
-and the selected operator.
+workspace host, a remote operator URL, or a Papercusp cloud workspace. See
+`COMPATIBILITY.md`. `pui doctor` checks the installation and the selected
+operator.
 
-To use PUI on a remote Papercusp host, run `pui --connect` (a picker) or
-`pui --connect=<name>`. PUI then runs on that host through the remote hosts
-`psu` has saved, so `psu` must be installed here; `pui --connect-list` shows
-them and `pui --connect-login` signs in to Papercusp cloud.
+**First launch.** With no operator on this computer, `pui` opens setup:
+
+- `l` signs in to Papercusp cloud in your browser, then opens PUI on one of
+  your cloud workspaces.
+- `h` connects to a remote host you have saved (a cloud sign-in or an SSH
+  host).
+- `e` enters the address of an operator you run yourself.
+
+Cancelling a sign-in (`Ctrl-C`) or a failed one brings you back to setup.
+
+The same connections work from the command line: `pui --connect` (a picker),
+`pui --connect=<name>`, `pui --connect-list`, and `pui --connect-login` to
+sign in. They use the `psu` shipped in this release, which runs on its own
+bundled Node.
 
 ## Using PUI
 
@@ -99,6 +111,9 @@ needs no download.
 | File | Purpose |
 | --- | --- |
 | `bin/pui` | the PUI binary |
+| `bin/psu` | the Papercusp launcher PUI uses for sessions, sign-in and remote hosts |
+| `lib/psu/` | psu's program files |
+| `lib/node/` | the private Node runtime psu runs on (not added to your `PATH`) |
 | `bin/zellij` | the terminal multiplexer PUI's workbench uses (version-matched) |
 | `pui-companion.wasm` | PUI's zellij plugin, built with the binary |
 | `pui-install.json` | the binary/companion generation manifest |
