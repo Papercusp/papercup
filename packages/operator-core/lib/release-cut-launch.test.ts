@@ -1,12 +1,17 @@
 /**
  * release-cut-launch.test.ts — the LOCAL desktop-release cutter's PURE primitives
- * (desktop-update-center-and-release-tooling P-5 Unit B). No real cut, no fs, no spawn:
- * every branch is exercised through injected deps + fake trees, per RELEASE-RUNBOOK D-007
+ * (desktop-update-center-and-release-tooling P-5 Unit B). No real cut; dependency-marker
+ * cases exercise the canonical reader against temporary files. Other branches use injected deps,
+ * per RELEASE-RUNBOOK D-007
  * (no claim of "verified" rests on a live VM/build run that did not happen).
  *
  * Run: cd packages/operator-core && npx vitest run lib/release-cut-launch.test.ts
  */
 import { describe, expect, it } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   isValidVersion,
   isValidChannel,
@@ -449,6 +454,9 @@ describe('collectHandoff', () => {
   });
 });
 
+const dependencySource = 'a'.repeat(64);
+const dependencyReady = { readDependencyGeneration: () => `v1-${dependencySource}` };
+
 describe('preflightCut', () => {
   const root = '/root/papercusp-desktop';
   const home = '/home/tester';
@@ -463,21 +471,22 @@ describe('preflightCut', () => {
   const allPresent = new Set([key, cutter, migrationLintEntrypoint, ...scripts]);
 
   it('go:true when key + cutter + scripts present and no cut in flight', () => {
-    const r = preflightCut({}, { root }, { home, exists: (p) => allPresent.has(p), isUnitActive: () => false });
+    const r = preflightCut({}, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p), isUnitActive: () => false });
     expect(r.go).toBe(true);
     expect(r.blockers).toEqual([]);
   });
   it('a missing cutter or signing key is a HARD blocker', () => {
-    const noCutter = preflightCut({}, { root }, { home, exists: (p) => allPresent.has(p) && p !== cutter, isUnitActive: () => false });
+    const noCutter = preflightCut({}, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p) && p !== cutter, isUnitActive: () => false });
     expect(noCutter.go).toBe(false);
     expect(noCutter.blockers.join()).toMatch(/cutter/);
 
-    const noKey = preflightCut({}, { root }, { home, exists: (p) => allPresent.has(p) && p !== key, isUnitActive: () => false });
+    const noKey = preflightCut({}, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p) && p !== key, isUnitActive: () => false });
     expect(noKey.go).toBe(false);
     expect(noKey.blockers.join()).toMatch(/signing-key/);
   });
   it('a source-only checkout missing the migration-lint runtime is a HARD blocker', () => {
     const r = preflightCut({}, { root }, {
+      ...dependencyReady,
       home,
       exists: (p) => allPresent.has(p) && p !== migrationLintEntrypoint,
       isUnitActive: () => false,
@@ -489,17 +498,17 @@ describe('preflightCut', () => {
     );
   });
   it('a missing verify script is WARN-only (cut can still run)', () => {
-    const r = preflightCut({}, { root }, { home, exists: (p) => allPresent.has(p) && p !== scripts[0], isUnitActive: () => false });
+    const r = preflightCut({}, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p) && p !== scripts[0], isUnitActive: () => false });
     expect(r.go).toBe(true); // warnOnly does not block
     expect(r.checks.find((c) => c.name.includes('verify-provenance'))!.ok).toBe(false);
   });
   it('a cut already in flight is a HARD blocker', () => {
-    const r = preflightCut({}, { root }, { home, exists: (p) => allPresent.has(p), isUnitActive: (u) => u === CUT_UNIT });
+    const r = preflightCut({}, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p), isUnitActive: (u) => u === CUT_UNIT });
     expect(r.go).toBe(false);
     expect(r.blockers.join()).toMatch(/no-cut-in-flight/);
   });
   it('requested mac/windows legs add an informational VM reminder', () => {
-    const r = preflightCut({ mac: true, windows: true }, { root }, { home, exists: (p) => allPresent.has(p), isUnitActive: () => false });
+    const r = preflightCut({ mac: true, windows: true }, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p), isUnitActive: () => false });
     expect(r.go).toBe(true);
     expect(r.checks.some((c) => c.name === 'leg:mac')).toBe(true);
     expect(r.checks.some((c) => c.name === 'leg:windows')).toBe(true);
@@ -507,14 +516,57 @@ describe('preflightCut', () => {
   it('a per-leg in-flight check looks at that platform\'s OWN unit, not the whole-cut one', () => {
     // The whole-cut unit is active, but we're preflighting the 'mac' LEG — a distinct unit —
     // so this must NOT be blocked by an unrelated whole-cut run.
-    const r = preflightCut({}, { root, platform: 'mac' }, { home, exists: (p) => allPresent.has(p), isUnitActive: (u) => u === CUT_UNIT });
+    const r = preflightCut({}, { root, platform: 'mac' }, { ...dependencyReady, home, exists: (p) => allPresent.has(p), isUnitActive: (u) => u === CUT_UNIT });
     expect(r.go).toBe(true);
     expect(r.checks.find((c) => c.name === 'no-cut-in-flight')!.detail).toContain('no cut in flight');
 
     // Conversely, the mac leg's OWN unit being active DOES block it.
-    const blocked = preflightCut({}, { root, platform: 'mac' }, { home, exists: (p) => allPresent.has(p), isUnitActive: (u) => u === cutUnitFor('mac') });
+    const blocked = preflightCut({}, { root, platform: 'mac' }, { ...dependencyReady, home, exists: (p) => allPresent.has(p), isUnitActive: (u) => u === cutUnitFor('mac') });
     expect(blocked.go).toBe(false);
     expect(blocked.blockers.join()).toMatch(/no-cut-in-flight/);
+  });
+});
+
+describe('preflight dependency-generation contract', () => {
+  const validMarker = `identity=v1-${dependencySource}\nsource=${dependencySource}\n`;
+  const orchestratorRoot = fileURLToPath(new URL('../../../papercusp-desktop', import.meta.url));
+
+  it.each([
+    ['missing', undefined, false],
+    ['empty', '', false],
+    ['malformed', 'identity=v1-invalid\nsource=invalid\n', false],
+    ['mismatched', `identity=v1-${'b'.repeat(64)}\nsource=${dependencySource}\n`, false],
+    ['duplicate identity', `${validMarker}identity=v1-${dependencySource}\n`, false],
+    ['duplicate source', `${validMarker}source=${dependencySource}\n`, false],
+    ['valid', validMarker, true],
+    ['valid CRLF', validMarker.replaceAll('\n', '\r\n'), true],
+  ] as const)('%s marker is checked before launching a cut', (_label, marker, expectedGo) => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-dependency-marker-'));
+    try {
+      if (marker !== undefined) {
+        fs.mkdirSync(path.join(workspace, 'node_modules'));
+        fs.writeFileSync(path.join(workspace, 'node_modules', '.papercusp-dependency-generation'), marker);
+      }
+      const result = preflightCut({}, { root: path.join(workspace, 'papercusp-desktop'), orchestratorRoot }, {
+        exists: () => true,
+        isUnitActive: () => false,
+        releaseToolingDrift: () => ({ state: 'current', staleFiles: [] }),
+      });
+      expect(result.go).toBe(expectedGo);
+      const check = result.checks.find((entry) => entry.name === 'dependency-generation');
+      expect(check?.ok).toBe(expectedGo);
+      expect(check?.warnOnly).toBeUndefined();
+      if (expectedGo) {
+        expect(check?.detail).toContain(`v1-${dependencySource}`);
+        expect(result.blockers).toEqual([]);
+      } else {
+        expect(result.blockers).toHaveLength(1);
+        expect(check?.detail).toContain('--prepare-existing --node-modules force --node-modules-copy copy --node-modules-generation required');
+        expect(check?.detail).toContain(workspace);
+      }
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
   });
 });
 
@@ -893,7 +945,7 @@ describe('release-tooling staleness', () => {
       `${root}/bin/vm-preflight.sh`,
       `${root}/bin/install-and-relaunch-verify.sh`,
     ]);
-    const base = { home, exists: (p: string) => present.has(p), isUnitActive: () => false };
+    const base = { ...dependencyReady, home, exists: (p: string) => present.has(p), isUnitActive: () => false };
     const withDrift = (d: Partial<ReleaseToolingDrift>, currentCutter = '') =>
       preflightCut(
         {},

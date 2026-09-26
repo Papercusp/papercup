@@ -1036,6 +1036,20 @@ export interface PreflightDeps {
   releaseToolingDrift?: (subjectDesktopRoot: string) => ReleaseToolingDrift;
   /** Exact current release-local.sh source; injected by pure tests. */
   readOrchestratorScript?: (scriptPath: string) => string;
+  /** Validate the cut workspace marker with the canonical release identity reader. */
+  readDependencyGeneration?: (workspace: string, identityScript: string) => string;
+}
+
+function readDependencyGeneration(workspace: string, identityScript: string): string {
+  // Run the existing CommonJS reader from the orchestrator tree, not a second
+  // parser or the frozen target's potentially stale release machinery.
+  return execFileSync(process.execPath, [
+    '-e',
+    'try { process.stdout.write(require(process.argv[1]).dependencyMarkerFields(process.argv[2]).identity); } ' +
+      'catch (error) { console.error(error.message); process.exitCode = 1; }',
+    identityScript,
+    workspace,
+  ], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000 }).trim();
 }
 
 /**
@@ -1103,6 +1117,28 @@ export function preflightCut(
         ' — release-local.sh runs migration lint before dependency preparation; materialize node_modules for the release checkout',
   });
 
+  // A hardlinked node_modules tree can satisfy migration lint but lacks the
+  // immutable generation marker required by every journalled platform leg.
+  // Validate its contents before launching the detached build.
+  const workspace = path.resolve(root, '..');
+  const marker = path.join(workspace, 'node_modules', '.papercusp-dependency-generation');
+  try {
+    const generation = (deps.readDependencyGeneration ?? readDependencyGeneration)(
+      workspace,
+      path.join(opts.orchestratorRoot ?? desktopRoot(), 'bin', 'lib', 'release-content-identity.js'),
+    );
+    checks.push({ name: 'dependency-generation', ok: true, detail: `${marker}: ${generation}` });
+  } catch (error) {
+    checks.push({
+      name: 'dependency-generation',
+      ok: false,
+      detail: `invalid or unreadable ${marker}: ${error instanceof Error ? error.message : String(error)}. ` +
+        'Re-materialize this cut workspace with setup-release-checkout.sh ' +
+        '--prepare-existing --node-modules force --node-modules-copy copy --node-modules-generation required, ' +
+        'keeping its --ref and --release target unchanged, then re-run preflight',
+    });
+  }
+
   for (const script of ['verify-provenance.sh', 'vm-preflight.sh', 'install-and-relaunch-verify.sh']) {
     const p = path.join(root, 'bin', script);
     checks.push({
@@ -1122,7 +1158,7 @@ export function preflightCut(
       : 'no cut in flight',
   });
 
-  // Every check above asks whether a file EXISTS. None asks what it CONTAINS, so a
+  // File availability alone cannot establish release-tooling freshness: a
   // root frozen weeks ago with superseded release scripts satisfied all of them and
   // returned go:true (WI-10002449). An isolated cut root is frozen on purpose, so the
   // fix cannot be "refuse anything behind canonical" — it has to separate the product
