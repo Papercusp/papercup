@@ -243,6 +243,20 @@ describe.runIf(gitAvailable)('title/summary stalePathRefs (EI-20049758099997696)
     expect(timings['stalePaths.scan']).toBeGreaterThanOrEqual(0);
   });
 
+  it('uses a known repository root without spawning Git for a plan citation scan', async () => {
+    const originalPath = process.env.PATH;
+    const noGitDir = mkdtempSync(join(tmpdir(), 'stale-path-no-git-'));
+    try {
+      process.env.PATH = noGitDir;
+      await expect(getStalePathRefsForSubjects(
+        [{ id: 'P-001', summary: 'Delete packages/retired/no-longer-here.ts' }], repo,
+      )).resolves.toEqual({ 'P-001': ['packages/retired/no-longer-here.ts'] });
+    } finally {
+      process.env.PATH = originalPath;
+      rmSync(noGitDir, { recursive: true, force: true });
+    }
+  });
+
   it('shares one claim-time advisory with payload pathHints without conflating the fields', async () => {
     writeFileAt(repo, 'old/moved.ts', 'export {};\n');
     sh(repo, ['add', '.']);

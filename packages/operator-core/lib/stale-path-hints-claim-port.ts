@@ -74,7 +74,14 @@ function isContainedRepoPath(root: string, path: string): boolean {
 
 async function resolveRepoRoot(repoRoot?: string): Promise<string | null> {
   const defaultRoot = process.env.PAPERCUSP_INTEGRATION_ROOT || process.cwd();
-  return (await git(['rev-parse', '--show-toplevel'], resolve(repoRoot ?? defaultRoot)))?.trim() || null;
+  const candidate = resolve(repoRoot ?? defaultRoot);
+  // The integration root and explicit fixture roots are already repository
+  // roots. A worktree has a .git file there; an ordinary checkout has a .git
+  // directory. Avoid forking `git rev-parse` for every plans:get full read,
+  // where the caller asks this advisory to check many plan-item citations.
+  // Nested caller paths still take the Git fallback to find their actual root.
+  if (existsSync(join(candidate, '.git'))) return candidate;
+  return (await git(['rev-parse', '--show-toplevel'], candidate))?.trim() || null;
 }
 
 /**
