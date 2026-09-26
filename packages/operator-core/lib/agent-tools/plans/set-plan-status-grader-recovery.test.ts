@@ -44,7 +44,11 @@ describe('acceptanceGraderRecovery', () => {
     expect(recovery!.instruction).toMatch(/will not re-dispatch or escalate/);
     // A deliberate hold must never be "fixed" by re-arming the LLM-spending loop.
     expect(recovery!.instruction).toMatch(/Do not re-arm the sweep/);
-    expect(recovery!.instruction).toMatch(/live non-implementer/);
+    // D-001 (review-routing-through-relevance-router-2026-09-26): the route out is the
+    // recruiter, never a grader the shipper picks.
+    expect(recovery!.instruction).toMatch(/Do not pick a grader yourself/);
+    expect(recovery!.instruction).toMatch(/retry plans:set-plan-status/i);
+    expect(recovery!.instruction).not.toMatch(/Have a live non-implementer/);
     expect(recovery!.instruction).toContain('Do not self-grade or launch a parallel reviewer.');
     expect(recovery!.instruction).not.toMatch(/sweep own/i);
   });
@@ -55,7 +59,10 @@ describe('acceptanceGraderRecovery', () => {
       PAUSED,
     );
     expect(recovery!.instruction).toContain('held by su-independent');
-    expect(recovery!.instruction).toContain('coord:send');
+    // Wait on the routed request; never message the holder (D-001).
+    expect(recovery!.instruction).toContain('events:await work-item:done:WI-live');
+    expect(recovery!.instruction).toContain('work_items:release WI-live');
+    expect(recovery!.instruction).not.toContain('coord:send');
   });
 
   it('tells a launched-but-never-started judge to retry, since nothing else will', () => {

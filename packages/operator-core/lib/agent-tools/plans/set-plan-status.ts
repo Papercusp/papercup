@@ -403,11 +403,16 @@ export function acceptanceGraderRecovery(
       const holder = lifecycle.existingWorkItemAssignee;
       route = !id
         ? `This ship deduped onto an existing grader launch; confirm it is taking turns, and if it is not, ${RETRY}.`
+        // review-routing-through-relevance-router-2026-09-26 D-001: the recruiter
+        // owns who grades. The remedy waits on the routed request or re-runs the
+        // recruiter; it never tells the shipper to message or pick a grader.
         : holder
-          ? `This ship deduped onto grading request ${id}, held by ${holder}. coord:send ${holder} to confirm they are ` +
-            `grading it; if they are not live, have a live non-implementer outside the author lineage take ${id} and grade with scorecards:emit.`
-          : `This ship deduped onto grading request ${id}, which is unassigned. Have a live non-implementer outside the ` +
-            `author lineage claim ${id} and grade with scorecards:emit.`;
+          ? `This ship deduped onto grading request ${id}, held by ${holder}. Do not message the holder or pick ` +
+            `another grader: if ${holder} is live, events:await work-item:done:${id}; if that session has ended, ` +
+            `work_items:release ${id} so the request goes unheld, and once it has sat unheld past the recruiter's ` +
+            `grace window, ${RETRY}.`
+          : `This ship deduped onto grading request ${id}, which is unassigned. Do not pick a grader yourself: the ` +
+            `recruiter stops deduping onto an unheld request after its grace window, so ${RETRY} then.`;
       break;
     }
     case 'assigned': {
