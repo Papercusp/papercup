@@ -1424,6 +1424,8 @@ export async function defaultRelaunchDrainFleet(
     model: composeLaunchModelSpec(resolved.effective.model, resolved.effective.effort),
     account: resolved.effective.account,
     contextSize: resolved.effective.contextSize,
+    carry: resolved.effective.carry,
+    compactionLimit: resolved.effective.compactionLimit,
     headless: true,
     fleet: fleetSlug,
     label: `goal-drain · ${goal.title.slice(0, 40)}`,
