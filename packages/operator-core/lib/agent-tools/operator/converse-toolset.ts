@@ -79,6 +79,12 @@ export interface ConverseMcpMountInput {
   superuserToken: string;
   /** The per-user boundary's bearer — public trust only. */
   principalToken: string | null;
+  /**
+   * D-421 (WI-10003195): the brain's agent CLI runs as the hosted customer workspace
+   * account (the spawn transform is installed). That account must never hold the
+   * operator superuser token, so the owner mount is withheld and the brain runs tool-less.
+   */
+  agentRunsAsCustomer?: boolean;
 }
 
 export interface ConverseMcpMount {
@@ -100,7 +106,7 @@ export function buildConverseMcpMount(input: ConverseMcpMountInput): ConverseMcp
     `&tools=${encodeURIComponent(toolsParam)}` +
     (input.uiClientId ? `&client=${encodeURIComponent(input.uiClientId)}` : '');
   if (input.hostTrust === 'owner') {
-    if (!input.superuserToken) return null;
+    if (!input.superuserToken || input.agentRunsAsCustomer) return null;
     return { url: `${input.baseUrl}/api/mcp?superuser=1&${common}`, bearer: input.superuserToken };
   }
   // Public trust: no superuser param, no disk token — ever. The per-user

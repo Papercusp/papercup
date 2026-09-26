@@ -82,4 +82,16 @@ describe('buildConverseMcpMount', () => {
     const m = buildConverseMcpMount({ ...base, uiClientId: null, hostTrust: 'owner', superuserToken: 't', principalToken: null });
     expect(m!.url).not.toContain('client=');
   });
+
+  it('D-421: owner trust withholds the superuser mount when the agent runs as the hosted customer account', () => {
+    // The customer workspace account must never hold the operator superuser token, even when
+    // one is on disk and would otherwise be mounted.
+    expect(
+      buildConverseMcpMount({ ...base, hostTrust: 'owner', superuserToken: 'su-tok', principalToken: null, agentRunsAsCustomer: true }),
+    ).toBeNull();
+    // Unchanged when the agent runs as the operator itself.
+    expect(
+      buildConverseMcpMount({ ...base, hostTrust: 'owner', superuserToken: 'su-tok', principalToken: null, agentRunsAsCustomer: false })?.bearer,
+    ).toBe('su-tok');
+  });
 });
