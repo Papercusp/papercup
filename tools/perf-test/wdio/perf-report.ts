@@ -32,27 +32,70 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 
+export interface PrivateIpcFixture {
+  pid: number;
+  port: number;
+  socketPath: string;
+  socketDevice: number;
+  socketInode: number;
+}
+
 /** Explicit Linux current-build fixtures use the same default discovery as Rust.
  * Validate before spawning: a dead default alongside a fresh per-port advert
  * otherwise silently falls back to HTTP and measures the wrong transport. */
 export function assertPrivateIpcFixture(
   env: NodeJS.ProcessEnv = process.env,
   platform = process.platform,
-): void {
-  if (platform !== 'linux' || !env.PAPERCUSP_HOME || !env.PAPERCUSP_DEV_API_TARGET) return;
+): PrivateIpcFixture | null {
+  if (platform !== "linux" || !env.PAPERCUSP_HOME) return null;
+  if (!env.PAPERCUSP_DEV_API_TARGET) {
+    if (env.PAPERCUSP_PERF_RUN_ID?.trim()) {
+      throw new Error(
+        "Named Linux native runs with PAPERCUSP_HOME require PAPERCUSP_DEV_API_TARGET for IPC fixture validation.",
+      );
+    }
+    return null;
+  }
   const port = Number(env.PAPERCUSP_DEV_API_TARGET);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(
+      `Invalid PAPERCUSP_DEV_API_TARGET: ${env.PAPERCUSP_DEV_API_TARGET}`,
+    );
+  }
   const file = path.join(env.PAPERCUSP_HOME, 'endpoint-ipc.json');
   try {
     const record = JSON.parse(readFileSync(file, 'utf8')) as { pid?: number; port?: number; socketPath?: string };
+    const socket = typeof record.socketPath === 'string' ? statSync(record.socketPath) : null;
     if (!Number.isInteger(record.pid) || record.pid! <= 0 || record.port !== port ||
-        typeof record.socketPath !== 'string' || !statSync(record.socketPath).isSocket()) {
+        !socket?.isSocket()) {
       throw new Error('default discovery has a missing socket or mismatched PID/port');
     }
     process.kill(record.pid!, 0);
+    return {
+      pid: record.pid!,
+      port,
+      socketPath: record.socketPath!,
+      socketDevice: socket.dev,
+      socketInode: socket.ino,
+    };
   } catch (error) {
     throw new Error(`Invalid private native IPC fixture at ${file}: ${String(error)}. ` +
       `Refresh endpoint-ipc.json from the verified live endpoint-ipc.${port}.json before measuring.`);
+  }
+}
+
+/** A valid fixture at both ends is insufficient: it may point to a new API. */
+export function assertPrivateIpcFixtureUnchanged(
+  expected: PrivateIpcFixture | null,
+  env: NodeJS.ProcessEnv = process.env,
+  platform = process.platform,
+): void {
+  const current = assertPrivateIpcFixture(env, platform);
+  if (expected === null && current === null) return;
+  if (!expected || !current || expected.pid !== current.pid || expected.port !== current.port ||
+      expected.socketPath !== current.socketPath || expected.socketDevice !== current.socketDevice ||
+      expected.socketInode !== current.socketInode) {
+    throw new Error('Private native IPC fixture changed during the measured run');
   }
 }
 

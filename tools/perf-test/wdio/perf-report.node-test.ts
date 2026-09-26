@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import type { Browser } from "webdriverio";
 
-import { assertPrivateIpcFixture, desktopPerfRunPayload, hasRunOutcomeMeasure, type PerfMeasure } from "./perf-report";
+import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, desktopPerfRunPayload, hasRunOutcomeMeasure, type PerfMeasure } from "./perf-report";
 import {
   isTerminalWebDriverSessionError,
   waitForPackagedAppUrl,
@@ -75,22 +75,77 @@ test("workspace navigation waits past about:blank for the packaged app origin", 
 test('private IPC fixture rejects a stale default even with a fresh per-port record', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'native-ipc-preflight-'));
   const socketPath = path.join(dir, 'operator.sock');
+  const replacementSocketPath = path.join(dir, 'replacement.sock');
   const server = createServer();
+  const replacementServer = createServer();
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
+  await new Promise<void>((resolve, reject) => { replacementServer.once('error', reject); replacementServer.listen(replacementSocketPath, resolve); });
   try {
     const live = { pid: process.pid, port: 3170, socketPath };
-    const env = { PAPERCUSP_HOME: dir, PAPERCUSP_DEV_API_TARGET: '3170' };
-    writeFileSync(path.join(dir, 'endpoint-ipc.3170.json'), JSON.stringify(live));
-    writeFileSync(path.join(dir, 'endpoint-ipc.json'), JSON.stringify({ ...live, socketPath: path.join(dir, 'gone.sock') }));
-    assert.throws(() => assertPrivateIpcFixture(env, 'linux'), /Invalid private native IPC fixture/);
-    writeFileSync(path.join(dir, 'endpoint-ipc.json'), JSON.stringify(live));
-    assert.doesNotThrow(() => assertPrivateIpcFixture(env, 'linux'));
-    assert.throws(() => assertPrivateIpcFixture({ ...env, PAPERCUSP_DEV_API_TARGET: '3070' }, 'linux'), /mismatched/);
-    writeFileSync(path.join(dir, 'endpoint-ipc.json'), JSON.stringify({ ...live, pid: 2147483647 }));
-    assert.throws(() => assertPrivateIpcFixture(env, 'linux'), /Invalid private native IPC fixture/);
-    assert.doesNotThrow(() => assertPrivateIpcFixture({}, 'linux'));
+    const env = { PAPERCUSP_HOME: dir, PAPERCUSP_DEV_API_TARGET: "3170" };
+    writeFileSync(
+      path.join(dir, "endpoint-ipc.3170.json"),
+      JSON.stringify(live),
+    );
+    writeFileSync(
+      path.join(dir, "endpoint-ipc.json"),
+      JSON.stringify({ ...live, socketPath: path.join(dir, "gone.sock") }),
+    );
+    assert.throws(
+      () => assertPrivateIpcFixture(env, "linux"),
+      /Invalid private native IPC fixture/,
+    );
+    writeFileSync(path.join(dir, "endpoint-ipc.json"), JSON.stringify(live));
+    assert.doesNotThrow(() => assertPrivateIpcFixture(env, "linux"));
+    const preflight = assertPrivateIpcFixture(env, "linux");
+    writeFileSync(path.join(dir, "endpoint-ipc.json"), JSON.stringify({ ...live, socketPath: replacementSocketPath }));
+    assert.doesNotThrow(() => assertPrivateIpcFixture(env, "linux"));
+    assert.throws(() => assertPrivateIpcFixtureUnchanged(preflight, env, "linux"), /changed during the measured run/);
+    writeFileSync(path.join(dir, "endpoint-ipc.json"), JSON.stringify(live));
+    assert.doesNotThrow(() => assertPrivateIpcFixtureUnchanged(preflight, env, "linux"));
+    // A named run must not silently skip this guard when the target was omitted.
+    assert.throws(
+      () =>
+        assertPrivateIpcFixture(
+          {
+            PAPERCUSP_HOME: dir,
+            PAPERCUSP_PERF_RUN_ID: "named-profile",
+          },
+          "linux",
+        ),
+      /PAPERCUSP_DEV_API_TARGET/,
+    );
+    assert.throws(
+      () =>
+        assertPrivateIpcFixture(
+          {
+            ...env,
+            PAPERCUSP_DEV_API_TARGET: "invalid",
+          },
+          "linux",
+        ),
+      /Invalid PAPERCUSP_DEV_API_TARGET/,
+    );
+    assert.throws(
+      () =>
+        assertPrivateIpcFixture(
+          { ...env, PAPERCUSP_DEV_API_TARGET: "3070" },
+          "linux",
+        ),
+      /mismatched/,
+    );
+    writeFileSync(
+      path.join(dir, "endpoint-ipc.json"),
+      JSON.stringify({ ...live, pid: 2147483647 }),
+    );
+    assert.throws(
+      () => assertPrivateIpcFixture(env, "linux"),
+      /Invalid private native IPC fixture/,
+    );
+    assert.doesNotThrow(() => assertPrivateIpcFixture({}, "linux"));
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => replacementServer.close(() => resolve()));
     rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -146,6 +201,19 @@ test("the runner resets stale measures before any preflight can throw", () => {
   assert(reset >= 0);
   assert(reset < onPrepare.indexOf("assertNativeWebDriverAvailable();"));
   assert(reset < onPrepare.indexOf("assertInstallationComplete();"));
+});
+
+test("named native publishing checks fixture continuity before sending a receipt", () => {
+  const config = readFileSync(path.join(__dirname, "wdio.conf.ts"), "utf8");
+  const publish = config.slice(
+    config.indexOf("async function publishMeasures()"),
+    config.indexOf("function resolveDriverPort"),
+  );
+  assert(publish.includes("assertPrivateIpcFixtureUnchanged(initialPrivateIpcFixture);"));
+  assert(
+    publish.indexOf("assertPrivateIpcFixtureUnchanged(initialPrivateIpcFixture);") <
+      publish.indexOf("await fetch(url"),
+  );
 });
 
 test("the root perf command preserves WDIO failures through tee", () => {

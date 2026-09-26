@@ -20,12 +20,14 @@ import os from "node:os";
 import path from "node:path";
 import {
   assertPrivateIpcFixture,
+  assertPrivateIpcFixtureUnchanged,
   desktopPerfRunPayload,
   hasRunOutcomeMeasure,
   operatorBaseUrl,
   readMeasures,
   recordHostPressure,
   resetMeasures,
+  type PrivateIpcFixture,
 } from "./perf-report";
 import { SPEC_TIMEOUT_MS } from "./app-mount";
 
@@ -414,6 +416,8 @@ function isDebugBinary(): boolean {
   return /(^|\/)debug\//.test(TAURI_APP_PATH);
 }
 
+let initialPrivateIpcFixture: PrivateIpcFixture | null = null;
+
 async function publishMeasures(): Promise<void> {
   const measures = readMeasures();
   if (!hasRunOutcomeMeasure(measures)) {
@@ -451,6 +455,21 @@ async function publishMeasures(): Promise<void> {
     return;
   }
 
+  // A named Linux fixture can be valid at preflight and lose its target while
+  // WebDriver is measuring. Do not publish a receipt spanning two API processes.
+  // Compare the live PID and socket identity with the preflight snapshot before
+  // the POST; a restart makes the recorded build profile unmeasurable.
+  if (process.env.PAPERCUSP_PERF_RUN_ID?.trim()) {
+    try {
+      assertPrivateIpcFixtureUnchanged(initialPrivateIpcFixture);
+    } catch (error) {
+      resetMeasures();
+      throw new Error(
+        `[perf-report] UNMEASURABLE named native run: ${String(error)}`,
+      );
+    }
+  }
+
   // The ingest route requires a trusted bearer; the superuser token is the local
   // operator credential (resolves to trust:'trusted' — packages/agent-mcp/src/auth.ts).
   const tokenPath = path.join(os.homedir(), ".papercusp", "superuser-token");
@@ -484,10 +503,17 @@ async function publishMeasures(): Promise<void> {
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify(desktopPerfRunPayload(
-        measures, gitSha, process.env.PAPERCUSP_PERF_RUN_ID ?? null,
-      )),
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(
+        desktopPerfRunPayload(
+          measures,
+          gitSha,
+          process.env.PAPERCUSP_PERF_RUN_ID ?? null,
+        ),
+      ),
     });
     if (!res.ok) {
       // eslint-disable-next-line no-console
@@ -570,9 +596,10 @@ export const config: WebdriverIO.Config = {
     // stale measures survive until then, its host-pressure stamp can make an old
     // crashed run look like a fresh green one.
     resetMeasures();
+    initialPrivateIpcFixture = null;
     assertNativeWebDriverAvailable();
     assertInstallationComplete();
-    assertPrivateIpcFixture();
+    initialPrivateIpcFixture = assertPrivateIpcFixture();
     // Announce WHAT is being measured, with its age. This is the detector that was
     // missing: the resolver silently fell back to a six-week-old in-tree debug
     // binary for this suite's entire existence (see cargoTargetDir), and nothing in
