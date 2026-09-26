@@ -650,6 +650,5 @@ case "$MODE" in
     ;;
   handoff)
     handoff
-    install_reconcile_units
     ;;
 esac

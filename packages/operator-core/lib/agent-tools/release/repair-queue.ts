@@ -60,6 +60,7 @@ import {
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import { claimRepairManifestLeg, renderAdmitCommand } from '../../release/repair-manifest';
 import { readIdentity } from '../locks/identity';
+import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 
 const json = (payload: unknown) => ({ data: payload });
 const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
@@ -725,6 +726,40 @@ export default defineTool({
         callerAuthorization,
       });
     }
+    let callerOwnerId: string | null = null;
+    try {
+      callerOwnerId = readIdentity(ctx).ownerId;
+    } catch {
+      // The action receipt remains explicitly unknown if identity cannot be resolved.
+    }
+    let ownership: Awaited<ReturnType<typeof readGateOwnership>> | null = null;
+    try {
+      ownership = await readGateOwnership({ harness: inspected.target.installSlug });
+    } catch {
+      // A failed observation cannot be promoted to ownership proof.
+    }
+    const gateOwnershipReceipt = ownership?.claimState === 'held' && ownership.workItem
+      ? { certainty: 'prelaunch-observation' as const, workItem: ownership.workItem,
+          holder: ownership.takenBy, assessment: ownership.assessment }
+      : { certainty: 'unknown' as const, workItem: ownership?.workItem ?? null,
+          holder: ownership?.takenBy ?? null, reason: ownership?.unknown?.code ?? 'no-held-condition' };
+    const stampActionEffect = (effect: Record<string, unknown>) => ctx.metadata?.({
+      gateActionReceipt: {
+        schemaVersion: 1,
+        action: `repair-queue:${args.op}`,
+        callerOwnerId,
+        ownership: gateOwnershipReceipt,
+        target: { candidate: inspected.queue?.candidate ?? null, repairHead: inspected.queue?.repairHead ?? null },
+        effect,
+      },
+    });
+    stampActionEffect({ status: 'unknown', reason: 'no-settled-effect-receipt' });
+    if (args.op !== 'record-edit' && callerAuthorization.status !== 'authorized-delegate' &&
+        ownership && shouldStandDownForLivePeer(ownership, callerOwnerId)) {
+      stampActionEffect({ status: 'refused-live-peer' });
+      return json({ ok: false, op: args.op, refused: true, verdict: 'refused',
+        reason: 'gate_condition_claimed_by_live_peer', ownership: gateOwnershipReceipt });
+    }
     if (args.op === 'record-edit') {
       // P-019 (D-008 layer 1). The hook only calls this while the marker file exists, so the
       // common case never reaches here; when it does and nothing is frozen (a race with a
@@ -785,6 +820,8 @@ export default defineTool({
       const subject = new Set((queue.manifest?.rows ?? []).flatMap((row) => row.subjectPaths.map(normalizeRepoPath)));
       const inRepairRadius = failing.has(outcome.path) || subject.has(outcome.path);
       const suppliedCandidate = args.candidate?.toLowerCase();
+      stampActionEffect({ status: 'edit-recorded', recorded: true, inserted: outcome.inserted,
+        ledgerId: outcome.id, path: outcome.path });
       return json({
         ok: true,
         recorded: true,
@@ -1518,6 +1555,8 @@ export default defineTool({
         ...(retracted === null ? {} : { retracted }),
       });
       const judgedSha = persisted ? outcome.commit : queue.repairHead;
+      stampActionEffect({ status: persisted ? 'repair-head-published' : 'publish-failed',
+        persisted, retracted, from: queue.repairHead, to: outcome.commit, auditRecorded });
       return json({
         ok: persisted,
         admitted: persisted,
@@ -1678,6 +1717,8 @@ export default defineTool({
         persisted,
       });
       const released = release && persisted;
+      stampActionEffect({ status: persisted ? (release ? 'leg-released' : 'leg-claimed') : 'persist-failed',
+        persisted, leg: legId, auditRecorded });
       return json({
         ok: persisted,
         claimed: persisted && !release,
@@ -1799,6 +1840,8 @@ export default defineTool({
       retired: result.retired,
       casMiss,
     });
+    stampActionEffect({ status: result.retired ? 'queue-retired' : 'cas-miss',
+      retired: result.retired, casMiss, auditRecorded });
     // A CAS miss is a storage outcome, not a liveness refusal. The nested `current`
     // diagnostic describes the row after the failed write; it must not become the
     // operation's headline reason.

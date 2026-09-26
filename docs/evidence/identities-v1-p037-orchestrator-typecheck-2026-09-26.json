@@ -7,12 +7,14 @@
     "npx",
     "tsc",
     "--noEmit",
+    "--incremental",
+    "false",
     "-p",
     "libs/papercusp/packages/orchestrator/tsconfig.json"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-26T16:37:31Z",
-  "finishedAt": "2026-09-26T16:37:32Z",
+  "startedAt": "2026-09-26T18:46:30Z",
+  "finishedAt": "2026-09-26T18:46:31Z",
   "summary": "Full, non-incremental tsc --noEmit over the orchestrator package project, run from the canonical staging tree while every P-037 subject was under the D-131 freeze lock (no concurrent edits). The project's include is src/**/*.ts, so the program covers both the P-037 sources (blueprint/schema.ts, loader.ts, composition-compiler.ts, stack-mutation.ts) and their tests (blueprint/contracts.test.ts, loader.layers.test.ts, loader.test.ts). tsc printed zero diagnostics and exited 0. A census via --listFilesOnly confirmed that 207 orchestrator src files were in the program, so this is not a zero-file vacuous pass.",
   "testLayer": "typecheck",
   "planSlug": "identities-v1-2026-08-30",
@@ -23,14 +25,14 @@
   "workItemId": "WI-2144483",
   "subjectRepo": {
     "path": "libs/papercusp",
-    "head": "1d8482e95124bca6026d332d6f44192ddba337ac",
+    "head": "c9dec14bb90bb2508432afd1e0bc2b4d706d474c",
     "orchestratorPackageDirty": false
   },
   "assertions": [
     {
       "id": "tsc-exit-zero-no-diagnostics",
       "passed": true,
-      "evidence": "tsc --noEmit -p libs/papercusp/packages/orchestrator/tsconfig.json exited 0 and wrote 0 output lines (stdout+stderr captured to a file, wc -l = 0)."
+      "evidence": "npx tsc --noEmit --incremental false -p libs/papercusp/packages/orchestrator/tsconfig.json exited 0 at 18:46:31Z and emitted no diagnostics in the captured command output."
     },
     {
       "id": "program-covers-p037-subjects",
@@ -40,7 +42,7 @@
     {
       "id": "subject-tree-clean-and-frozen",
       "passed": true,
-      "evidence": "git -C libs/papercusp status --porcelain -- packages/orchestrator was empty at libs/papercusp HEAD 1d8482e951. The D-131 freeze locks (libs lock 3eeaf588, superproject lock 84c5f567, both held by su-52c6aaea) covered the P-037 sources and sibling tests for the run."
+      "evidence": "git -C libs/papercusp status --porcelain -- packages/orchestrator was empty at libs/papercusp HEAD c9dec14bb90bb2508432afd1e0bc2b4d706d474c. The D-131 freeze holds carried by su-d652716d (libs 7400f4ff-83f4-469b-8281-1f361c40b6bc, superproject 57ebf67f-2bb8-4229-b9ca-9ed555613407, expiry 19:21Z) cover the source subjects. The fresh run follows the composition-compiler explicit-domain fix."
     }
   ]
 }

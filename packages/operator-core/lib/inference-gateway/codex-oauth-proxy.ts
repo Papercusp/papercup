@@ -39,6 +39,7 @@ import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { parseBridgeModel } from './codex-cli-bridge';
 import { parseProviderReset } from './provider-reset';
+import { CODEX_MODEL_REFUSAL_RE } from './codex-model-refusals';
 
 /** The ChatGPT backend that serves codex Responses for ChatGPT-subscription auth. */
 export const CODEX_CHATGPT_BACKEND_BASE =
@@ -793,7 +794,7 @@ export type CodexModelPreflight =
 
 /** Matches the ChatGPT backend's definitive model refusal, e.g.
  *  `"detail":"The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account."` */
-const MODEL_REFUSAL_RE = /model is not supported|unsupported model|unknown model/i;
+const MODEL_REFUSAL_RE = CODEX_MODEL_REFUSAL_RE; // one detector for preflight + live failover (WI-10003306)
 
 /**
  * EI-20362893066852316: ONE tiny streaming request against the ChatGPT codex backend to answer

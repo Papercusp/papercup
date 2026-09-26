@@ -498,7 +498,8 @@ describe('release:checkpoint-run', () => {
     }));
 
     const { default: tool } = await import('./checkpoint-run');
-    const result = await tool.handler({}, MAKE_CTX());
+    const metadata = vi.fn();
+    const result = await tool.handler({}, MAKE_CTX('operator', { metadata }));
 
     expect(launchSpy).toHaveBeenCalledTimes(1);
     expect(parse(result as never)).toMatchObject({
@@ -506,6 +507,16 @@ describe('release:checkpoint-run', () => {
       launched: true,
       unit: 'papercup-green-checkpoint-manual',
     });
+    expect(metadata).toHaveBeenLastCalledWith(expect.objectContaining({
+      gateActionReceipt: expect.objectContaining({
+        action: 'checkpoint-run',
+        effect: expect.objectContaining({
+          status: 'detached-launch-accepted',
+          unit: 'papercup-green-checkpoint-manual',
+          publishedVerdict: 'unknown',
+        }),
+      }),
+    }));
   });
 
   it('routes a subject-harness manual fire through its tooling root, subject root, env, and verdict target', async () => {
@@ -2363,7 +2374,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({ logicalAttemptId: storeAttemptId }));
   });
 
-  it('force:true bypasses the gate and launches', async () => {
+  it('force:true bypasses candidate preflight and launches when no peer owns the condition', async () => {
     // Deliberately NOT mocking the assessor: under `force` the real one short-circuits before
     // it touches git or systemd, so this exercises the actual wiring rather than a stand-in.
     const launchSpy = mockLaunch();
@@ -2372,6 +2383,29 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     expect(launchSpy).toHaveBeenCalledTimes(1);
     expect(b.ok).toBe(true);
     expect(b.reason).toBeUndefined();
+  });
+
+  it('force:true cannot launch over a live peer gate claim', async () => {
+    const launchSpy = mockLaunch();
+    vi.doMock('../../coord/gate-ownership', () => ({
+      readGateOwnership: vi.fn(async () => ({
+        claimState: 'held', workItem: 'WI-38026', takenBy: 'su-live-holder',
+        holderSessionState: 'live', assessment: 'held-live', unknown: null,
+      })),
+      shouldStandDownForLivePeer: vi.fn(() => true),
+      ownershipNeedsLivenessConfirmation: vi.fn(() => false),
+      ownershipContradicted: vi.fn(() => false),
+    }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'papercusp-workspace' })),
+    }));
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ force: true }, MAKE_CTX())) as never);
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false, launched: false, reason: 'condition_claimed_even_with_force',
+      work_item: 'WI-38026', taken_by: 'su-live-holder',
+    });
   });
 
   it('EI-20208253097914491: stamps a condition_claimed refusal before returning', async () => {

@@ -12,6 +12,7 @@ import type { DeployStatus } from '../../release-deploy-launch';
 import '../cell-registrations-wiring';
 
 const auditUnsafeM = vi.hoisted(() => vi.fn());
+const gateOwnershipM = vi.hoisted(() => vi.fn());
 
 vi.mock('../../release-deploy-launch', () => ({
   readDeployStatus: vi.fn(),
@@ -30,6 +31,10 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('../../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../workspace-registry')>()),
   activeWorkspaceId: () => 'test-ws',
+}));
+vi.mock('../../coord/gate-ownership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../coord/gate-ownership')>()),
+  readGateOwnership: gateOwnershipM,
 }));
 vi.mock('../locks/identity', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../locks/identity')>()),
@@ -168,6 +173,9 @@ function checkpointRun(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  gateOwnershipM.mockResolvedValue({
+    assessment: 'unowned', claimState: 'no-object', workItem: null, takenBy: null, unknown: null,
+  });
   fireGitSyncM.mockResolvedValue(undefined as never);
   auditUnsafeM.mockResolvedValue(undefined);
   launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'trigger', argv: [], logPath: '/tmp/x.log' });
@@ -469,9 +477,29 @@ describe('release:deploy — trigger', () => {
     statusM.mockResolvedValue(
       mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false, deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2 } }),
     );
-    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
+    const metadata = vi.fn();
+    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator', metadata } as never));
     expect(b).toMatchObject({ ok: true, launched: true });
     expect(launchM).toHaveBeenCalledWith({}); // green deploy — no force/commit
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      gateActionReceipt: expect.objectContaining({
+        action: 'deploy-trigger',
+        ownership: expect.objectContaining({ certainty: 'unknown' }),
+        effect: expect.objectContaining({ status: 'detached-launch-accepted', deployedSha: 'unknown' }),
+      }),
+    }));
+  });
+
+  it('refuses a confirmed trigger while a live peer owns the gate condition', async () => {
+    statusM.mockResolvedValue(mkStatus({ state: 'green-deployable', canTriggerGreen: true, nothingToDeploy: false,
+      deploy: { ...mkStatus().deploy, deployedBehindGreenPin: 2 } }));
+    gateOwnershipM.mockResolvedValue({
+      assessment: 'held-live', claimState: 'held', workItem: 'WI-38026', takenBy: 'su-live-peer',
+      holderSessionState: 'live', unknown: null, duplicates: [],
+    });
+    const b = body(await tool.handler({ op: 'trigger', confirm: true } as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, refused: true, reason: 'gate_condition_claimed_by_live_peer' });
+    expect(launchM).not.toHaveBeenCalled();
   });
 
   it('returns the launch receipt without waiting for a post-launch audit insert', async () => {
@@ -652,10 +680,17 @@ describe('release:deploy — force (owner-gated)', () => {
   it('confirm:true fires force (un-green commit) AND notifies the owner', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red', deploy: { ...mkStatus().deploy, stagingHeadSha: 'feedface' } }));
     launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'force', commit: 'feedface', argv: [], logPath: '/tmp/x.log' });
-    const b = body(await tool.handler(forceArgs as never, { role: 'operator' } as never));
+    const metadata = vi.fn();
+    const b = body(await tool.handler(forceArgs as never, { role: 'operator', metadata } as never));
     expect(b).toMatchObject({ ok: true, launched: true, op: 'force', commit: 'feedface' });
     expect(launchM).toHaveBeenCalledWith({ force: true, commit: 'feedface' });
     expect(notifyM).toHaveBeenCalledTimes(1); // loud owner notification
+    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
+      gateActionReceipt: expect.objectContaining({
+        action: 'deploy-force', target: { commit: 'feedface', ownerSignoffRef: 'unknown' },
+        effect: expect.objectContaining({ status: 'detached-launch-accepted', deployedSha: 'unknown' }),
+      }),
+    }));
   });
 
   it('an explicit immutable force commit launches without waiting for git-sync', async () => {

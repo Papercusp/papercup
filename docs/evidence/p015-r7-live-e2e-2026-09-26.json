@@ -10,7 +10,7 @@
   "rubricCriterion": "AUTO-BAR-R-7-P-036@6",
   "journeyId": "r7-journey-20260926",
   "observer": "su-d652716d-b3f5-44e8-ac34-044f1fbd12f2",
-  "command": "source <verifier-work>/env.sh; R7_OWNER=su-27cf695e-55bb-45ce-8762-84e332763fc8 R7_JOURNEY_ID=r7-journey-20260926 R7_OUT=.papercusp/scratch/r7/ui-run-0926-d652 node scripts/verify-identities-r7.mjs",
+  "command": ["source <verifier-work>/env.sh; R7_OWNER=su-27cf695e-55bb-45ce-8762-84e332763fc8 R7_JOURNEY_ID=r7-journey-20260926 R7_OUT=.papercusp/scratch/r7/ui-run-0926-d652 node scripts/verify-identities-r7.mjs"],
   "startedAt": "2026-09-26T18:23:34.907Z",
   "finishedAt": "2026-09-26T18:25:12.312Z",
   "capturedAt": "2026-09-26T18:25:12.312Z",

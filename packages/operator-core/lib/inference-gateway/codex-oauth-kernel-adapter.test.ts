@@ -138,6 +138,8 @@ interface HarnessOverrides {
   siblingEgressAvailable?: CodexOAuthAdapterOptions['siblingEgressAvailable'];
   dispatcherFor?: CodexOAuthAdapterOptions['dispatcherFor'];
   rateReset?: CodexOAuthAdapterOptions['rateReset'];
+  /** WI-10003306 model-refusal wiring (model / onModelRefused / onModelServed / selectAlternate). */
+  extra?: Partial<CodexOAuthAdapterOptions>;
 }
 
 function harness(fetchImpl: CodexOAuthAdapterOptions['fetch'], overrides: HarnessOverrides = {}) {
@@ -190,6 +192,7 @@ function harness(fetchImpl: CodexOAuthAdapterOptions['fetch'], overrides: Harnes
     dispatcherFor: overrides.dispatcherFor ?? (() => undefined),
     fetch: fetchImpl,
     rateReset: overrides.rateReset ?? (() => ({ resetAt: null, retryAfterMs: null })),
+    ...overrides.extra,
   });
 
   const observedAdapter: typeof adapter = {
@@ -558,5 +561,137 @@ describe('codex OAuth kernel adapter — rotation, credentials, and pool discipl
     expect(result.status).toBe(429);
     expect(started[0]?.metadata.accountId).toBe('chatgpt-a');
     expect(pool.exhaustedCalls).toEqual([]);
+  });
+});
+
+/**
+ * WI-10003306 — a ChatGPT account that refuses the request MODEL. The live incident: two
+ * subscriptions answered every premium model with this 400 while four siblings served it, the
+ * gateway forwarded the 400 as final, and sessions failed "intermittently, on all models".
+ */
+describe('codex OAuth kernel adapter — model refusal fails over without parking (WI-10003306)', () => {
+  const REFUSAL = `{"detail":"The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account."}`;
+  const byAccount =
+    (responses: Record<string, () => CodexOAuthFetchResponse>): CodexOAuthAdapterOptions['fetch'] =>
+    async (_url, init) =>
+      responses[init.diagnosticAccountId ?? '']!();
+
+  it('moves the SAME request to a non-refusing account, records the refusal, and never parks the refuser', async () => {
+    const pool = makePool([{ accountId: 'chatgpt-b' }]);
+    const refused: Array<{ accountId: string; model: string; status: number }> = [];
+    const served: Array<{ accountId: string; model: string }> = [];
+    const excludes: string[][] = [];
+    const { options, started, written } = harness(
+      byAccount({
+        'chatgpt-a': () => upstream(400, { 'content-type': 'application/json' }, sseBody(REFUSAL)),
+        'chatgpt-b': () => upstream(200, {}, sseBody('data: ok\n\n')),
+      }),
+      {
+        accounts: [cli('chatgpt-a'), cli('chatgpt-b')],
+        pool,
+        extra: {
+          model: 'gpt-6-sol',
+          onModelRefused: ({ accountId, model, status }) => refused.push({ accountId, model, status }),
+          onModelServed: (info) => served.push(info),
+          selectAlternate: (exclude) => {
+            excludes.push([...exclude]);
+            return { accountId: 'chatgpt-b' };
+          },
+        },
+      },
+    );
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result).toMatchObject({ status: 200, failovers: 1 });
+    expect(started).toHaveLength(1);
+    expect(started[0]?.metadata.accountId).toBe('chatgpt-b');
+    expect(written.join('')).toBe('data: ok\n\n');
+    expect(refused).toEqual([{ accountId: 'chatgpt-a', model: 'gpt-6-sol', status: 400 }]);
+    expect(served).toEqual([{ accountId: 'chatgpt-b', model: 'gpt-6-sol' }]);
+    expect(excludes).toEqual([['chatgpt-a']]);
+    // A model refusal says nothing about capacity for OTHER models: the refuser is not parked.
+    expect(pool.exhaustedCalls).toEqual([]);
+  });
+
+  it('forwards the truthful 400 (body intact) when no account can serve the model', async () => {
+    const refused: string[] = [];
+    const { options, started, written } = harness(
+      byAccount({ 'chatgpt-a': () => upstream(400, {}, sseBody(REFUSAL)) }),
+      {
+        accounts: [cli('chatgpt-a'), cli('chatgpt-b')],
+        pool: makePool([{ accountId: 'chatgpt-b' }]),
+        extra: {
+          model: 'gpt-6-sol',
+          onModelRefused: ({ accountId }) => refused.push(accountId),
+          selectAlternate: () => null,
+        },
+      },
+    );
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result.status).toBe(400);
+    expect(started[0]?.metadata).toMatchObject({ accountId: 'chatgpt-a', modelRefusal: expect.stringContaining('gpt-6-sol') });
+    expect(written.join('')).toBe(REFUSAL);
+    expect(refused).toEqual(['chatgpt-a']);
+  });
+
+  it('keeps a hard pin strict: the refusal is recorded and forwarded, never rotated', async () => {
+    const selectAlternate = vi.fn(() => ({ accountId: 'chatgpt-b' }));
+    const refused: string[] = [];
+    const { options, started } = harness(
+      byAccount({
+        'chatgpt-a': () => upstream(400, {}, sseBody(REFUSAL)),
+        'chatgpt-b': () => upstream(200, {}, sseBody('ok')),
+      }),
+      {
+        accounts: [cli('chatgpt-a'), cli('chatgpt-b')],
+        pool: makePool([{ accountId: 'chatgpt-b' }]),
+        pin: { accountId: 'chatgpt-a', mode: 'hard' },
+        extra: { model: 'gpt-6-sol', onModelRefused: ({ accountId }) => refused.push(accountId), selectAlternate },
+      },
+    );
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result.status).toBe(400);
+    expect(started[0]?.metadata.accountId).toBe('chatgpt-a');
+    expect(selectAlternate).not.toHaveBeenCalled();
+    expect(refused).toEqual(['chatgpt-a']);
+  });
+
+  it('does not treat an ordinary 400 (a malformed request) as a model refusal', async () => {
+    const selectAlternate = vi.fn(() => ({ accountId: 'chatgpt-b' }));
+    const onModelRefused = vi.fn();
+    const { options, written } = harness(
+      byAccount({ 'chatgpt-a': () => upstream(400, {}, sseBody('{"detail":"Input must be a list"}')) }),
+      {
+        accounts: [cli('chatgpt-a'), cli('chatgpt-b')],
+        pool: makePool([{ accountId: 'chatgpt-b' }]),
+        extra: { model: 'gpt-6-sol', onModelRefused, selectAlternate },
+      },
+    );
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result).toMatchObject({ status: 400, failovers: 0 });
+    expect(written.join('')).toBe('{"detail":"Input must be a list"}');
+    expect(onModelRefused).not.toHaveBeenCalled();
+    expect(selectAlternate).not.toHaveBeenCalled();
+  });
+
+  it('without a request model keeps the legacy behaviour: the refusal is forwarded as final', async () => {
+    const selectAlternate = vi.fn(() => ({ accountId: 'chatgpt-b' }));
+    const { options } = harness(byAccount({ 'chatgpt-a': () => upstream(400, {}, sseBody(REFUSAL)) }), {
+      accounts: [cli('chatgpt-a'), cli('chatgpt-b')],
+      pool: makePool([{ accountId: 'chatgpt-b' }]),
+      extra: { selectAlternate },
+    });
+
+    const result = await executeGatewayRequestKernel(options);
+
+    expect(result.status).toBe(400);
+    expect(selectAlternate).not.toHaveBeenCalled();
   });
 });

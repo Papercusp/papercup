@@ -44,7 +44,7 @@ import { recentPipelineEvents } from '../../harness/git-sync/pipeline-events';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import { statePlaneForDoor } from '../state-plane-door';
 import { deployTriggerRefusalReason } from '../../release/deploy-trigger-refusal';
-import { readGateOwnership, type CellOwnership } from '../../coord/gate-ownership';
+import { readGateOwnership, shouldStandDownForLivePeer, type CellOwnership } from '../../coord/gate-ownership';
 import {
   projectGateWaitOperationalBrief,
   renderGateWaitFactLines,
@@ -163,6 +163,38 @@ async function recordDeployAudit(op: string, actor: string, details: Record<stri
   } catch (err) {
 
     console.warn('[release:deploy] audit write failed:', (err as Error)?.message);
+  }
+}
+
+/** A pre-launch observation is useful audit evidence, but is not an atomic claim receipt. */
+async function deployGateOwnershipReceipt(callerOwnerId: string) {
+  try {
+    const ownership = await readGateOwnership();
+    return {
+      standDown: shouldStandDownForLivePeer(ownership, callerOwnerId),
+      receipt: {
+        certainty: ownership.claimState === 'held' && ownership.workItem
+          ? 'prelaunch-observation' as const
+          : 'unknown' as const,
+        observedAt: new Date().toISOString(),
+        workItem: ownership.workItem,
+        holder: ownership.takenBy,
+        assessment: ownership.assessment,
+        unknownReason: ownership.unknown?.code ?? (ownership.workItem ? null : 'no-held-condition'),
+      },
+    };
+  } catch (error) {
+    return {
+      standDown: false,
+      receipt: {
+        certainty: 'unknown' as const,
+        observedAt: new Date().toISOString(),
+        workItem: null,
+        holder: null,
+        assessment: null,
+        unknownReason: error instanceof Error ? error.message : String(error),
+      },
+    };
   }
 }
 
@@ -527,7 +559,22 @@ export default defineTool({
           status: statusBrief(status),
         });
       }
+      const gateOwnership = await deployGateOwnershipReceipt(identity.ownerId);
+      if (gateOwnership.standDown) {
+        ctx.metadata?.({ gateActionReceipt: {
+          schemaVersion: 1, action: 'deploy-trigger', callerOwnerId: identity.ownerId,
+          ownership: gateOwnership.receipt, effect: { status: 'refused-live-peer' },
+        } });
+        return json({ ok: false, op: 'trigger', refused: true, ...stamp,
+          reason: 'gate_condition_claimed_by_live_peer', ownership: gateOwnership.receipt });
+      }
       const launch = await launchDetachedDeploy({});
+      ctx.metadata?.({ gateActionReceipt: {
+        schemaVersion: 1, action: 'deploy-trigger', callerOwnerId: identity.ownerId,
+        ownership: gateOwnership.receipt, target: { greenPinSha: status.deploy.greenPinSha },
+        effect: { status: launch.launched ? 'detached-launch-accepted' : 'not-launched', unit: launch.unit ?? null,
+          reason: launch.reason ?? null, deployedSha: 'unknown' },
+      } });
       // EI-20536291988678536: systemd has already accepted the detached deploy here.  Do not
       // put the launch receipt behind another unbounded I/O hop: this process is the operator
       // the deploy will restart, so a slow audit INSERT can otherwise hold the MCP response
@@ -599,6 +646,15 @@ export default defineTool({
           'FORCE ships an UN-GREEN commit past the gate (KNOWN-BROKEN code). This is the rare no-users-window escape — prefer fixing the reds. Pass confirm:true to fire; the action is loudly audited + notifies the owner.',
       });
     }
+    const gateOwnership = await deployGateOwnershipReceipt(identity.ownerId);
+    if (gateOwnership.standDown) {
+      ctx.metadata?.({ gateActionReceipt: {
+        schemaVersion: 1, action: 'deploy-force', callerOwnerId: identity.ownerId,
+        ownership: gateOwnership.receipt, effect: { status: 'refused-live-peer' },
+      } });
+      return json({ ok: false, op: 'force', refused: true, ...stamp,
+        reason: 'gate_condition_claimed_by_live_peer', ownership: gateOwnership.receipt });
+    }
     // Fire: loud audit + owner notification BEFORE the detached deploy (which then broadcasts its own outcome).
     await recordDeployAudit('force', actor, {
       mode: 'force',
@@ -606,6 +662,7 @@ export default defineTool({
       acknowledgeRedTests: args.acknowledgeRedTests,
       reason: args.reason,
       gateAtForce: statusBrief(status),
+      gateOwnership: gateOwnership.receipt,
     });
     try {
       const { notifyAttention } = await import('../../attention-notify');
@@ -620,6 +677,12 @@ export default defineTool({
       console.warn('[release:deploy] force notifyAttention failed:', (err as Error)?.message);
     }
     const launch = await launchDetachedDeploy({ force: true, commit });
+    ctx.metadata?.({ gateActionReceipt: {
+      schemaVersion: 1, action: 'deploy-force', callerOwnerId: identity.ownerId,
+      ownership: gateOwnership.receipt, target: { commit, ownerSignoffRef: 'unknown' },
+      effect: { status: launch.launched ? 'detached-launch-accepted' : 'not-launched', unit: launch.unit ?? null,
+        reason: launch.reason ?? null, deployedSha: 'unknown' },
+    } });
     return json({
       ok: launch.launched,
       op: 'force',

@@ -75,6 +75,11 @@ const mocks = vi.hoisted(() => ({
   precheckFactory: vi.fn(),
   canonicalRoot: vi.fn(),
   transition: vi.fn(),
+  gateOwnership: vi.fn(),
+}));
+vi.mock('../../coord/gate-ownership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../coord/gate-ownership')>()),
+  readGateOwnership: mocks.gateOwnership,
 }));
 vi.mock('../../harness/routines/release-actions', () => ({
   applyFrozenCandidateRepairQueueTransition: mocks.transition,
@@ -209,6 +214,9 @@ const body = (value: unknown) => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.gateOwnership.mockResolvedValue({
+    assessment: 'unowned', claimState: 'no-object', workItem: null, takenBy: null, unknown: null,
+  });
   mocks.read.mockResolvedValue(queue);
   mocks.readState.mockResolvedValue({ status: 'value', queue });
   mocks.alive.mockResolvedValue(false);
@@ -240,6 +248,17 @@ beforeEach(() => {
 });
 
 describe('release:repair-queue', () => {
+  it('refuses a queue mutation by a nonowner while a live gate fixer holds the condition', async () => {
+    mocks.gateOwnership.mockResolvedValue({
+      assessment: 'held-live', claimState: 'held', workItem: 'WI-38026', takenBy: 'su-live-peer',
+      holderSessionState: 'live', unknown: null, duplicates: [],
+    });
+    const result = body(await tool.handler({ op: 'claim-leg', leg: manifestRow.legId } as never,
+      { role: 'su' } as never));
+    expect(result).toMatchObject({ ok: false, refused: true, reason: 'gate_condition_claimed_by_live_peer' });
+    expect(mocks.write).not.toHaveBeenCalled();
+  });
+
   it('makes its workspace-global scope explicit to prevent caller harness arguments', () => {
     expect(tool.description).toContain('Workspace-global');
     expect(tool.description).toContain('omit harness/workspace');
@@ -493,6 +512,7 @@ describe('release:repair-queue', () => {
 
   it('confirm:true publishes, marks the queue ADMITTED (repairHead moved, phase ready-to-verify, ledger entry), persists and audits', async () => {
     mocks.admit.mockReturnValue(admissionOf(true));
+    const metadata = vi.fn();
     const result = body(
       await tool.handler(
         {
@@ -502,7 +522,7 @@ describe('release:repair-queue', () => {
           reason: 'gate red on this file',
           workItem: 'WI-10000288',
         } as never,
-        { role: 'su' } as never,
+        { role: 'su', metadata } as never,
       ),
     );
     // R6 two-phase: the LAST admission call is the publish (the first is the measured build).
@@ -532,6 +552,14 @@ describe('release:repair-queue', () => {
       expect.objectContaining({ path: 'lib/red.test.ts', containedInJudgedSha: true }),
     ]);
     expect(result.nextAction).toMatch(/Do NOT fire release:checkpoint-run/);
+    expect(metadata).toHaveBeenLastCalledWith(expect.objectContaining({
+      gateActionReceipt: expect.objectContaining({
+        action: 'repair-queue:admit',
+        ownership: expect.objectContaining({ certainty: 'unknown' }),
+        target: { candidate: queue.candidate, repairHead: queue.repairHead },
+        effect: expect.objectContaining({ status: 'repair-head-published', persisted: true }),
+      }),
+    }));
     expect(mocks.retract).not.toHaveBeenCalled();
     // The audit row names the admission, never a tip.
     const auditDetails = JSON.parse(mocks.audit.mock.calls[0]![1][5]);
