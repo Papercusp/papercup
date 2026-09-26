@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 907,
+  "count": 908,
   "tools": [
     {
       "name": "ablation:report",
@@ -5713,6 +5713,45 @@
         "when": "You were routed a consult (a 🧭 wake naming a conversation) and are answering/clarifying from your own transcript — or you are the requester following up.",
         "notWhen": "Your context does not cover it but another reviewer might → consult:decline (cheap, honest). Settled, or the QUESTION is void (duplicate, inadmissible, already settled) → consult:close { outcome:'cant_help', reason }: terminal and non-advancing, where EVERY reply kind advances and spends the next reviewer. A non-consult conversation → conversations:post.",
         "chaining": "READ THE THREAD FIRST: conversations:get { id } — there is NO consult:read, and a wrong-door read returns EMPTY, which looks exactly like a thread with no replies (a reviewer answered without the requester's posts that way). → validate relevance (sessions:read the cited evidence) → consult:reply { kind } → when settled, consult:close { outcome }."
+      }
+    },
+    {
+      "name": "consult:routing-health",
+      "http": {
+        "path": "/api/agent-tools/consult/routing-health",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Is review routing working? Per selection policy, the answering sessions the router launched in a window, and what became of each: answered, declined, failed (by reason), hung past its answer window, or still pending, plus skipped ranks by reason. The window is a launch cohort (default: the last 24 h).",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "release-fixer",
+        "content-fixer",
+        "judge"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "You need the answer rate or failure reasons of routed reviews/consults (rubric vetting, acceptance grading, grading-integrity audits, ordinary consults) — instead of hand-written SQL over consult_state.",
+        "notWhen": "One consult’s own history → conversations:get on its conversation id. Asking a peer a question → consult:get_feedback.",
+        "chaining": "Read bounded.truncatedByLimit and consultsWithoutDispatchRecords before trusting a zero: consults routed before the dispatch recorder shipped carry no records."
       }
     },
     {
