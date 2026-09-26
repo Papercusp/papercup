@@ -25,6 +25,7 @@ function externalStore() {
   let loseReply = false;
   let failDelete = false;
   const driver: PackageResourceDriver = {
+    cancel: vi.fn(async () => {}),
     recover: vi.fn(async (key) => [...rows].filter(([, row]) => row.writeKey === key)
       .map(([id, row]) => ({ id, fingerprint: row.original,
         ...(row.current === row.original ? {} : { disposition: 'changed' as const }) }))),

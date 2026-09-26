@@ -36,6 +36,8 @@ export interface PackageResourceDriver {
   recover(writeKey: string): Promise<PackageExternalResource[]>;
   /** Must stamp writeKey atomically with the external write, including on errors. */
   create(writeKey: string): Promise<PackageExternalResource[]>;
+  /** Persist a fence even when recovery is empty. No later create may land. */
+  cancel(writeKey: string): Promise<void>;
   /** Must compare AND remove atomically; a get-then-forget adapter is unsafe. */
   removeIfUnchanged(resource: PackageExternalResource): Promise<'removed' | 'absent' | 'changed'>;
 }
@@ -199,6 +201,7 @@ export async function releasePackageResource(
     // intent can mean process death after an external commit, before the receipt.
     let refs: PackageExternalResource[];
     try {
+      await driver.cancel(receipt.write_key);
       refs = receipt.phase === 'intent' || !receipt.external_refs.length
         ? await driver.recover(receipt.write_key) : receipt.external_refs;
     } catch (error) {
