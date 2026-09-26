@@ -1,0 +1,98 @@
+{
+ "schemaVersion": 1,
+ "kind": "psu-pty-host-live-production-observation",
+ "plan": "psu-pty-host-recent-errors-2026-09-24",
+ "bars": [
+  "R-3"
+ ],
+ "evidencePlane": "live",
+ "evidenceRuntime": "psu-pty-host",
+ "capturedAt": "2026-09-26T17:18:00.000Z",
+ "capturedBy": "su-2ca547ec-717f-47ea-ac03-6ae90418a7fa",
+ "host": {
+  "ownerId": "su-2ca547ec-717f-47ea-ac03-6ae90418a7fa",
+  "advSessionId": "30753",
+  "pid": 596589,
+  "process": "node apps/operator/scripts/psu-launcher.mjs (imports ./psu-pty-host.mjs)",
+  "processStartedAt": "2026-09-26T14:48:09Z",
+  "ledger": "~/.papercusp/psu-pty/su-2ca547ec-717f-47ea-ac03-6ae90418a7fa.events.jsonl"
+ },
+ "codeAtHostStart": {
+  "note": "Fix blobs committed before the host started, so the long-lived host runs the repaired code. A later unrelated additive change (389a5adf1c, 16:40:15Z, BYOC resolveAgentPtyTarget, no-op without the identity-spec env) postdates the process start and does not affect these paths.",
+  "files": [
+   {
+    "path": "apps/operator/scripts/psu-pty-host.mjs",
+    "blob": "45d33cee92",
+    "committedAt": "2026-09-26T04:21:33Z",
+    "commit": "8d58bce7aa"
+   },
+   {
+    "path": "apps/operator/scripts/psu-launcher.mjs",
+    "blob": "f3e1091789",
+    "committedAt": "2026-09-26T04:21:33Z",
+    "commit": "8d58bce7aa"
+   },
+   {
+    "path": "packages/operator-core/lib/role-codex-home.ts",
+    "blob": "bc54c6b7c1",
+    "committedAt": "2026-09-25T16:56:42Z",
+    "commit": "3fa54fee98"
+   }
+  ]
+ },
+ "summary": {
+  "window": {
+   "from": "2026-09-26T15:21:28.431Z",
+   "to": "2026-09-26T17:07:34.541Z"
+  },
+  "rows": 36,
+  "turnDelivered": 6,
+  "turnDeliveredResubmitsZero": 6,
+  "turnDeliveredConfirmedNative": 6,
+  "carryRespawns": 3,
+  "carryDeliveredFirstAttemptVerified": 3,
+  "busyGateExpired": 1,
+  "wakeRearmDelivered": 1,
+  "duplicateDeliveryIdSuppressed": 5,
+  "turnSubmitUnverified": 0
+ },
+ "verdict": "pass: every owner/wake/carry turn on the long-lived production host was delivered once (resubmits:0, confirmed native); every carry-respawn was delivered on the first attempt with turnStartVerified; the busy-gate expiry re-armed and delivered its wake instead of dropping it; duplicate delivery ids were suppressed; no unverified-submit or model-turn-absent rows.",
+ "rows": [
+  {"ts":"2026-09-26T15:21:28.431Z","kind":"turn-delivered","label":"turn inject","polls":1,"resubmits":0,"confirmed":"native"},
+  {"ts":"2026-09-26T15:28:57.915Z","kind":"respawned","mode":"carry-respawn","nativeId":"8ffd3698-94e0-4bcf-82fd-a1890befcbb2","launchContextPath":"~/.papercusp/launch-context/carry-su-2ca547ec-717f-47ea-ac03-6ae90418a7fa-8ffd3698-94e0-4bcf-82fd-a1890befcbb2.md","firstPrompt":true,"capMs":600000,"personaRefreshed":true},
+  {"ts":"2026-09-26T15:28:58.330Z","kind":"startup-turn-written","label":"recycle carry-note","authorizedBy":"prompt-ready","msSinceFirstOutput":214,"msSinceBackendFirstFrame":null,"promptReady":true,"startupReady":true},
+  {"ts":"2026-09-26T15:29:03.331Z","kind":"submit-verify-human-input-retry","label":"recycle carry-note","polls":1,"resubmits":0,"msRemaining":594593},
+  {"ts":"2026-09-26T15:29:08.363Z","kind":"turn-delivered","label":"recycle carry-note","polls":1,"resubmits":0,"confirmed":"native"},
+  {"ts":"2026-09-26T15:29:08.368Z","kind":"respawn-carry-delivered","mode":"carry-respawn","nativeId":"8ffd3698-94e0-4bcf-82fd-a1890befcbb2","attempts":1,"outputSeen":true,"turnStartVerified":true,"nativeRef":"~/.papercusp/session-claude/su-2ca547ec-717f-47ea-ac03-6ae90418a7fa/projects/<munged-repo-cwd>/8ffd3698-94e0-4bcf-82fd-a1890befcbb2.jsonl"},
+  {"ts":"2026-09-26T15:52:36.327Z","kind":"respawned","mode":"carry-respawn","nativeId":"ae6d6b0d-1ccd-4966-9371-0a9c45592797","launchContextPath":"~/.papercusp/launch-context/carry-su-2ca547ec-717f-47ea-ac03-6ae90418a7fa-ae6d6b0d-1ccd-4966-9371-0a9c45592797.md","firstPrompt":true,"capMs":600000,"personaRefreshed":true},
+  {"ts":"2026-09-26T15:52:37.099Z","kind":"startup-turn-written","label":"recycle carry-note","authorizedBy":"prompt-ready","msSinceFirstOutput":461,"msSinceBackendFirstFrame":null,"promptReady":true,"startupReady":true},
+  {"ts":"2026-09-26T15:52:42.104Z","kind":"submit-verify-human-input-retry","label":"recycle carry-note","polls":1,"resubmits":0,"msRemaining":594372},
+  {"ts":"2026-09-26T15:52:47.394Z","kind":"turn-delivered","label":"recycle carry-note","polls":1,"resubmits":0,"confirmed":"native"},
+  {"ts":"2026-09-26T15:52:47.414Z","kind":"respawn-carry-delivered","mode":"carry-respawn","nativeId":"ae6d6b0d-1ccd-4966-9371-0a9c45592797","attempts":1,"outputSeen":true,"turnStartVerified":true,"nativeRef":"~/.papercusp/session-claude/su-2ca547ec-717f-47ea-ac03-6ae90418a7fa/projects/<munged-repo-cwd>/ae6d6b0d-1ccd-4966-9371-0a9c45592797.jsonl"},
+  {"ts":"2026-09-26T16:10:05.576Z","kind":"duplicate-delivery-id","state":"pending","mode":"turn","refreshedPendingTurn":false},
+  {"ts":"2026-09-26T16:10:51.661Z","kind":"duplicate-delivery-id","state":"pending","mode":"turn","refreshedPendingTurn":false},
+  {"ts":"2026-09-26T16:11:49.284Z","kind":"duplicate-delivery-id","state":"pending","mode":"turn","refreshedPendingTurn":false},
+  {"ts":"2026-09-26T16:11:49.303Z","kind":"duplicate-delivery-id","state":"pending","mode":"turn","refreshedPendingTurn":false},
+  {"ts":"2026-09-26T16:12:19.042Z","kind":"busy-gate-expired","mode":"turn","capMs":180000,"observedMaxQuietMs":356,"quietMs":1500,"verifier":"supported"},
+  {"ts":"2026-09-26T16:12:19.467Z","kind":"wake-rearm-queued","mode":"turn","reason":"busy-gate-expired","capMs":360000,"deliveryId":"378989"},
+  {"ts":"2026-09-26T16:12:19.469Z","kind":"wake-rearm-scheduled","mode":"turn","verdict":"queued","capMs":180000,"verifier":"supported"},
+  {"ts":"2026-09-26T16:12:36.676Z","kind":"wake-turn-deferred-for-pending-respawn","reason":"carry-respawn-pending"},
+  {"ts":"2026-09-26T16:12:36.677Z","kind":"wake-turn-deferred-for-pending-respawn","reason":"carry-respawn-pending"},
+  {"ts":"2026-09-26T16:13:23.062Z","kind":"wake-turn-deferred-for-pending-respawn","reason":"carry-respawn-pending"},
+  {"ts":"2026-09-26T16:13:23.062Z","kind":"wake-turn-deferred-for-pending-respawn","reason":"carry-respawn-pending"},
+  {"ts":"2026-09-26T16:14:11.133Z","kind":"wake-turn-deferred-for-pending-respawn","reason":"carry-respawn-pending"},
+  {"ts":"2026-09-26T16:14:11.198Z","kind":"wake-turn-deferred-for-pending-respawn","reason":"carry-respawn-pending"},
+  {"ts":"2026-09-26T16:14:57.938Z","kind":"wake-turn-deferred-for-pending-respawn","reason":"carry-respawn-pending"},
+  {"ts":"2026-09-26T16:14:57.944Z","kind":"wake-turn-deferred-for-pending-respawn","reason":"carry-respawn-pending"},
+  {"ts":"2026-09-26T16:19:46.880Z","kind":"turn-delivered","label":"turn re-arm","polls":1,"resubmits":0,"confirmed":"native"},
+  {"ts":"2026-09-26T16:19:46.928Z","kind":"wake-rearm-delivered","mode":"turn","reason":"delivered","capMs":360000,"deliveryId":"378989","rearmed":true,"observedMaxQuietMs":16798,"attempts":2,"deliveryIds":["378989"]},
+  {"ts":"2026-09-26T16:23:45.625Z","kind":"persona-refresh-skipped","mode":"carry-respawn","reason":"error: The operation was aborted due to timeout"},
+  {"ts":"2026-09-26T16:23:56.452Z","kind":"respawned","mode":"carry-respawn","nativeId":"0387fc28-4274-4cab-8f9d-033cae31766b","launchContextPath":"~/.papercusp/launch-context/carry-su-2ca547ec-717f-47ea-ac03-6ae90418a7fa-0387fc28-4274-4cab-8f9d-033cae31766b.md","firstPrompt":true,"capMs":600000,"personaRefreshed":false},
+  {"ts":"2026-09-26T16:24:02.234Z","kind":"startup-turn-written","label":"recycle carry-note","authorizedBy":"prompt-ready","msSinceFirstOutput":4606,"msSinceBackendFirstFrame":null,"promptReady":true,"startupReady":true},
+  {"ts":"2026-09-26T16:24:07.560Z","kind":"submit-verify-human-input-retry","label":"recycle carry-note","polls":1,"resubmits":0,"msRemaining":588933},
+  {"ts":"2026-09-26T16:24:12.589Z","kind":"turn-delivered","label":"recycle carry-note","polls":1,"resubmits":0,"confirmed":"native"},
+  {"ts":"2026-09-26T16:24:12.634Z","kind":"respawn-carry-delivered","mode":"carry-respawn","nativeId":"0387fc28-4274-4cab-8f9d-033cae31766b","attempts":1,"outputSeen":true,"turnStartVerified":true,"nativeRef":"~/.papercusp/session-claude/su-2ca547ec-717f-47ea-ac03-6ae90418a7fa/projects/<munged-repo-cwd>/0387fc28-4274-4cab-8f9d-033cae31766b.jsonl"},
+  {"ts":"2026-09-26T17:06:54.454Z","kind":"turn-delivered","label":"turn inject","polls":1,"resubmits":0,"confirmed":"native"},
+  {"ts":"2026-09-26T17:07:34.541Z","kind":"duplicate-delivery-id","state":"completed","mode":"turn","refreshedPendingTurn":false}
+ ]
+}
