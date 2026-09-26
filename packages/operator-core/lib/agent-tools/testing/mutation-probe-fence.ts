@@ -4,6 +4,8 @@ import { readFile, realpath } from 'node:fs/promises';
 import { isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { getuid } from 'node:process';
 import { build, type Metafile, type Plugin } from 'esbuild';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 
@@ -209,6 +211,18 @@ export async function mutationProbeRefusal(
     };
   }
   if (probePaths.length === 0) return null;
+  // The in-tree probe publishes its immutable original before changing the
+  // subject. Every testing:run child enters the admission wrapper, which holds
+  // a shared flock through the whole test and binds this copy over the mutant.
+  // A legacy probe without that snapshot still needs the closure fence below.
+  const admissionKey = createHash('sha256').update(realRoot).digest('hex');
+  const manifestPath = join('/tmp', `papercusp-mutation-probe-${getuid?.() ?? 0}-${admissionKey}`, 'original.manifest');
+  const manifest = await readFile(manifestPath).catch(() => null);
+  if (manifest) {
+    const fields = manifest.toString('utf8').split('\0');
+    if (fields.length === 5 && fields[4] === '' && fields[0] === realRoot && probePaths.length === 1
+      && fields[1] === resolve(realRoot, probePaths[0]!)) return null;
+  }
   const refuse = (why: string): MutationProbeRefusal => ({
     error: 'mutation_probe_active',
     hint: `no test process was started because this checkout has an active mutation probe on ${probePaths.join(', ')} and ${why}; retry after the probe restores its source`,

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { createHash } from 'node:crypto';
 
 vi.mock('../locks/su-lock-store', () => ({
   ensureBootstrap: vi.fn(async () => undefined),
@@ -92,6 +93,23 @@ describe('mutationProbeRefusal narrowing', () => {
     const dir = checkout({ ...base,
       'tests/other.test.ts': "import { other } from '../src/other';\nimport { value } from 'pkg';\nimport { join } from 'node:path';\nexport default [other, value, join];\n" });
     await expect(mutationProbeRefusal(dir, ['tests/other.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+  });
+
+  it('admits an untraceable dynamic import only while a matching original-byte overlay is published', async () => {
+    const dir = checkout({ ...base,
+      'tests/dynamic.test.ts': 'export const load = (name: string) => import(name);\n',
+    });
+    const manifestDir = join('/tmp', `papercusp-mutation-probe-${process.getuid?.() ?? 0}-${createHash('sha256').update(dir).digest('hex')}`);
+    mkdirSync(manifestDir, { mode: 0o700 });
+    try {
+      writeFileSync(join(manifestDir, 'original.manifest'),
+        `${dir}\0${join(dir, 'src/subject.ts')}\0${join(dir, 'snapshot.ts')}\0${process.pid}\0`);
+      await expect(mutationProbeRefusal(dir, ['tests/dynamic.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+      await expect(mutationProbeRefusal(dir, ['tests/dynamic.test.ts'], probe('src/other.ts')))
+        .resolves.toMatchObject({ error: 'mutation_probe_active' });
+    } finally {
+      rmSync(manifestDir, { recursive: true, force: true });
+    }
   });
 
   it('does not mistake a commented literal package import for a dynamic import', async () => {
