@@ -30,9 +30,14 @@ publisher's public key.
 
 ## What PUI needs
 
-PUI connects to a Papercusp operator: the Papercusp desktop app, a Papercusp
-workspace host, a remote operator URL, or a Papercusp cloud workspace. See
-`COMPATIBILITY.md`. `pui doctor` checks the installation and the selected
+PUI is a client. It needs a Papercusp server to run agents, but it does not
+need the desktop app. For a local setup, get the separate **Papercusp Server**
+installer from the Papercusp release download page supplied with this PUI
+archive: the Server `.deb` on Linux, `.dmg` on macOS, or setup `.zip` on
+Windows. Install and start Server, then run `pui`; the desktop GUI is optional.
+The current Server installers are listed separately from the GUI on that page.
+You can also connect to a remote operator or a Papercusp cloud workspace.
+See `COMPATIBILITY.md`. `pui doctor` checks the installation and the selected
 operator.
 
 **First launch.** With no operator on this computer, `pui` opens setup:
@@ -41,7 +46,8 @@ operator.
   your cloud workspaces.
 - `h` connects to a remote host you have saved (a cloud sign-in or an SSH
   host).
-- `e` enters the address of an operator you run yourself.
+- `e` enters the address of a Papercusp Server you run yourself, locally or
+  elsewhere.
 
 Cancelling a sign-in (`Ctrl-C`) or a failed one brings you back to setup.
 
