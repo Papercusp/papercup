@@ -55,6 +55,8 @@ function depsFor(input: { ranks: AllowedExpertModel[]; resolved?: string[] }) {
     // Unit tier: the default recorder writes through the real org pool (WI-10003197).
     readLaunchLogReason: async () => null,
     recordDispatchAttempts: async () => {},
+    // Likewise the cool-down reader (WI-10003198): no history ⇒ no cool-down.
+    readSourceDispatchRecords: async () => [],
   };
   return { deps, launched, resolved };
 }

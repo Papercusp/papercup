@@ -28,10 +28,18 @@ import {
   launchLogFailureReason,
   makeConsultReachDispatcher,
   planDispatchOperation,
+  SOURCE_COOLDOWN_MS,
+  SOURCE_FAILURE_LOOKBACK_MS,
+  SOURCE_LAUNCH_FAILURE_THRESHOLD,
+  sourceCooldownFrom,
   type ConsultDispatchContext,
   type ConsultDispatchDeps,
   type ConsultDispatchRecordInput,
+  type PersistedDispatchRecord,
 } from './consult-dispatch';
+
+/** The cool-down clock every fake dispatch runs at. */
+const NOW_MS = Date.parse('2026-09-26T12:00:00.000Z');
 import { buildAgentLaunchCommand, injectLaunchedByArg } from '../agent-launch-core';
 import {
   DEFAULT_EXPERT_MODEL_ALLOWLIST,
@@ -86,6 +94,8 @@ function makeFakes(
     spawnStatuses?: Array<'ok' | 'error' | 'no-proof' | 'exit-2'>;
     /** What the launch-log reader reports for a failed rank. */
     logReason?: string | null;
+    /** The source's persisted dispatch walks the cool-down reads (WI-10003198). */
+    sourceRecords?: PersistedDispatchRecord[];
   } = {},
 ): Fakes {
   const calls: Fakes['calls'] = { spawn: [], verify: [], capacity: [], stopped: [], logReads: [], recorded: [] };
@@ -156,6 +166,9 @@ function makeFakes(
     recordDispatchAttempts: async (record: ConsultDispatchRecordInput) => {
       calls.recorded.push(record);
     },
+    // Same for the cool-down reader (WI-10003198): no history ⇒ no cool-down.
+    readSourceDispatchRecords: async () => opts.sourceRecords ?? [],
+    nowMs: () => NOW_MS,
     loadRanks: async () => RANKS,
     ...over,
   } as unknown as Partial<ConsultDispatchDeps>;
@@ -880,5 +893,117 @@ describe('buildAgentLaunchCommand ownerId rule (the pre-pin this dispatch depend
         ownerId: 'su-new',
       }),
     ).toThrow(/same-backend resume/);
+  });
+});
+
+describe('source cool-down (WI-10003198 — a source whose launches keep failing is not relaunched)', () => {
+  const at = (minutesAgo: number) => new Date(NOW_MS - minutesAgo * 60_000).toISOString();
+  /** One persisted walk that launched and lost both ranks, shaped as dispatchRecordEntry writes it. */
+  const failedWalk = (minutesAgo: number): PersistedDispatchRecord => ({
+    at: at(minutesAgo),
+    sourceOwnerId: 'su-expert',
+    dispatched: false,
+    attempts: [
+      { outcome: 'failed', reason: 'kickoff-not-persisted', agent: 'claude', model: 'opus', launchError: 'psu: refusing unmanaged fork' },
+      { outcome: 'failed', reason: 'launch-exited', agent: 'codex', model: 'sol' },
+    ],
+  });
+
+  it('a source past the failure threshold is skipped with a concrete reason, and nothing is launched', async () => {
+    const { deps, calls } = makeFakes({}, { sourceRecords: [failedWalk(5), failedWalk(20)] });
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(r.dispatched).toBe(false);
+    expect(r.attempts).toEqual([]);
+    expect(r.detail).toMatch(/su-expert is cooling down until 2026-09-26T12:55:00\.000Z/);
+    expect(r.detail).toMatch(/last 4 answering-session launches failed \(newest: kickoff-not-persisted on claude\/opus: psu: refusing unmanaged fork\)/);
+    expect(calls.spawn).toHaveLength(0);
+    expect(calls.capacity).toHaveLength(0);
+    // The refusal itself is persisted, so the consult shows why it was skipped.
+    expect(calls.recorded).toHaveLength(1);
+    expect(calls.recorded[0].result.detail).toMatch(/cooling down/);
+  });
+
+  it('launches again once the cool-down has elapsed', async () => {
+    const minutesPastCooldown = SOURCE_COOLDOWN_MS / 60_000 + 1;
+    const { deps, calls } = makeFakes({}, { sourceRecords: [failedWalk(minutesPastCooldown), failedWalk(minutesPastCooldown + 5)] });
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(r.dispatched).toBe(true);
+    expect(calls.spawn).toHaveLength(1);
+  });
+
+  it('a reader failure fails open — the cool-down never blocks a dispatch', async () => {
+    const { deps, calls } = makeFakes({
+      readSourceDispatchRecords: async () => {
+        throw new Error('pool exhausted');
+      },
+    });
+    const r = await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(r.dispatched).toBe(true);
+    expect(calls.spawn).toHaveLength(1);
+  });
+
+  it('asks for exactly the lookback window of this source in this workspace', async () => {
+    const seen: unknown[][] = [];
+    const { deps } = makeFakes({
+      readSourceDispatchRecords: async (...args: unknown[]) => {
+        seen.push(args);
+        return [];
+      },
+    });
+    await dispatchConsultResponder(OPTS, CTX, deps);
+    expect(seen).toEqual([[CTX.workspaceId, 'su-expert', new Date(NOW_MS - SOURCE_FAILURE_LOOKBACK_MS).toISOString()]]);
+  });
+
+  describe('sourceCooldownFrom (pure)', () => {
+    const failedOnce = (minutesAgo: number): PersistedDispatchRecord => ({
+      at: at(minutesAgo),
+      dispatched: false,
+      attempts: [{ outcome: 'failed', reason: 'launch-failed', agent: 'claude', model: 'opus' }],
+    });
+
+    it('starts at the threshold, not before', () => {
+      const below = Array.from({ length: SOURCE_LAUNCH_FAILURE_THRESHOLD - 1 }, (_, i) => failedOnce(i + 1));
+      expect(sourceCooldownFrom(below, NOW_MS)).toBeNull();
+      const at_ = Array.from({ length: SOURCE_LAUNCH_FAILURE_THRESHOLD }, (_, i) => failedOnce(i + 1));
+      expect(sourceCooldownFrom(at_, NOW_MS)).toMatchObject({
+        failures: SOURCE_LAUNCH_FAILURE_THRESHOLD,
+        until: new Date(NOW_MS - 60_000 + SOURCE_COOLDOWN_MS).toISOString(),
+      });
+    });
+
+    it('a successful dispatch resets the count; failures before it do not count', () => {
+      const records = [
+        failedOnce(1),
+        { at: at(2), dispatched: true, attempts: [{ outcome: 'dispatched' }] },
+        failedOnce(3),
+        failedOnce(4),
+        failedOnce(5),
+      ];
+      expect(sourceCooldownFrom(records, NOW_MS)).toBeNull();
+    });
+
+    it('skips (walls, pressure, unsupported) and launch-less walks neither count nor reset', () => {
+      const records: PersistedDispatchRecord[] = [
+        failedOnce(1),
+        { at: at(2), dispatched: false, attempts: [{ outcome: 'skipped', reason: 'account-walled' }] },
+        { at: at(3), dispatched: false, attempts: [] },
+        failedOnce(4),
+        failedOnce(5),
+      ];
+      expect(sourceCooldownFrom(records, NOW_MS)).toMatchObject({ failures: 3 });
+    });
+
+    it('failures older than the lookback do not count, and order is by time, not array position', () => {
+      const old = SOURCE_FAILURE_LOOKBACK_MS / 60_000 + 10;
+      expect(sourceCooldownFrom([failedOnce(old), failedOnce(1), failedOnce(old + 1)], NOW_MS)).toBeNull();
+      // Unsorted input: the newest failure still anchors the cool-down end.
+      expect(sourceCooldownFrom([failedOnce(30), failedOnce(1), failedOnce(10)], NOW_MS)?.until).toBe(
+        new Date(NOW_MS - 60_000 + SOURCE_COOLDOWN_MS).toISOString(),
+      );
+    });
+
+    it('ignores records with no parseable time', () => {
+      expect(sourceCooldownFrom([{ at: 'not-a-time' } as PersistedDispatchRecord, failedOnce(1)], NOW_MS)).toBeNull();
+    });
   });
 });

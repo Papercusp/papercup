@@ -209,6 +209,18 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
    * swallows a throw, because losing the record must never cost the dispatch.
    */
   recordDispatchAttempts: (record: ConsultDispatchRecordInput) => Promise<void>;
+  /**
+   * The source's persisted dispatch walks since `sinceIso`, for the cool-down
+   * (WI-10003198). A throw fails OPEN: the cool-down only prevents repeat
+   * launches, so losing it must never block a dispatch.
+   */
+  readSourceDispatchRecords: (
+    workspaceId: string,
+    sourceOwnerId: string,
+    sinceIso: string,
+  ) => Promise<PersistedDispatchRecord[]>;
+  /** Clock seam for the cool-down. */
+  nowMs: () => number;
 }
 
 /** What {@link ConsultDispatchDeps.recordDispatchAttempts} persists for one walk. */
@@ -292,6 +304,136 @@ export async function appendDispatchRecord(
 async function defaultRecordDispatchAttempts(input: ConsultDispatchRecordInput): Promise<void> {
   const { getOrgPg } = await import('@papercusp/db-org');
   await appendDispatchRecord(getOrgPg().sql as unknown as Sql, input, new Date().toISOString());
+}
+
+// ── Source cool-down (WI-10003198, plan review-routing-through-relevance-router P-002) ──
+//
+// Measured 2026-09-26: one source (fa2b9674, an earlier incarnation of
+// su-5078d176) was launched 144 times — 72 forks, 72 converts — and psu refused
+// every one within seconds, because each new consult routed to it re-ran the
+// same doomed walk. A source whose launches keep failing is therefore skipped
+// for a cool-down instead of launched again. The state is DERIVED from the
+// persisted walks on consult_state.dispatch_attempts (migration 1225), not kept
+// in a second table: those records are already the ground truth for what was
+// launched and how it ended, so nothing can drift.
+
+/** Consecutive failed launches (since the source's last dispatch) that start a cool-down. */
+export const SOURCE_LAUNCH_FAILURE_THRESHOLD = 3;
+/** How long a source is skipped after its latest failed launch once the threshold is met. */
+export const SOURCE_COOLDOWN_MS = 60 * 60_000;
+/** How far back failed launches still count toward the threshold. */
+export const SOURCE_FAILURE_LOOKBACK_MS = 6 * 60 * 60_000;
+
+/** Attempt reasons that mean a session was actually launched (or its launch
+ *  composed) and did not survive. Skips — walls, pressure, unsupported
+ *  operations — launch nothing and are never counted. */
+const LAUNCH_FAILURE_REASONS: ReadonlySet<string> = new Set<DispatchSkipReason>([
+  'launch-failed',
+  'kickoff-not-persisted',
+  'launch-exited',
+]);
+
+/** The fields of a persisted walk ({@link dispatchRecordEntry}) the cool-down reads. */
+export interface PersistedDispatchRecord {
+  at: string;
+  sourceOwnerId?: string;
+  dispatched?: boolean;
+  attempts?: Array<{ outcome?: string; reason?: string; agent?: string; model?: string; launchError?: string; detail?: string }>;
+}
+
+export interface SourceCooldown {
+  /** Failed launches counted, newest first, back to the last dispatch. */
+  failures: number;
+  /** ISO time the cool-down ends. */
+  until: string;
+  /** The newest counted failure, for the refusal detail. */
+  lastFailure: string;
+}
+
+/**
+ * The cool-down a source is in, or null. Pure. Walks the source's persisted
+ * walks newest first and counts failed launches until it meets one that
+ * dispatched (a success resets the count). A walk that launched nothing — a
+ * refusal, an all-skipped walk, or an earlier cool-down — neither counts nor
+ * resets, so a cool-down never extends itself.
+ */
+export function sourceCooldownFrom(
+  records: readonly PersistedDispatchRecord[],
+  nowMs: number,
+  {
+    threshold = SOURCE_LAUNCH_FAILURE_THRESHOLD,
+    cooldownMs = SOURCE_COOLDOWN_MS,
+    lookbackMs = SOURCE_FAILURE_LOOKBACK_MS,
+  } = {},
+): SourceCooldown | null {
+  const sorted = [...records]
+    .filter((r) => typeof r?.at === 'string' && Number.isFinite(Date.parse(r.at)))
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  let failures = 0;
+  let newestFailureAt: number | null = null;
+  let lastFailure = '';
+  for (const record of sorted) {
+    const at = Date.parse(record.at);
+    if (nowMs - at > lookbackMs) break;
+    if (record.dispatched === true) break;
+    for (const attempt of record.attempts ?? []) {
+      if (attempt?.outcome !== 'failed' || !attempt.reason || !LAUNCH_FAILURE_REASONS.has(attempt.reason)) continue;
+      failures += 1;
+      if (newestFailureAt == null) {
+        newestFailureAt = at;
+        lastFailure =
+          `${attempt.reason} on ${attempt.agent ?? '?'}/${attempt.model ?? '?'}` +
+          (attempt.launchError ? `: ${clip(attempt.launchError, 200)}` : '');
+      }
+    }
+  }
+  if (failures < threshold || newestFailureAt == null) return null;
+  const until = newestFailureAt + cooldownMs;
+  if (nowMs >= until) return null;
+  return { failures, until: new Date(until).toISOString(), lastFailure };
+}
+
+/**
+ * The source's persisted walks since `sinceIso`, newest first, across every
+ * consult in the workspace. Exported for the real-Postgres test; production
+ * calls it through {@link defaultReadSourceDispatchRecords}.
+ */
+export async function readSourceDispatchRecords(
+  sql: Sql,
+  workspaceId: string,
+  sourceOwnerId: string,
+  sinceIso: string,
+  limit = 60,
+): Promise<PersistedDispatchRecord[]> {
+  // The consult bound is the lookback plus the longest a consult stays open
+  // (measured 2026-09-26: p99 8 h, max 32 h over 1,300 consults), so a walk
+  // appended to a long-lived consult is still seen. Records carry an ISO `at`
+  // from toISOString(), which compares correctly as text.
+  const rows = await sql<Array<{ e: unknown }>>`
+    SELECT r.e
+      FROM harness_shared.consult_state c
+     CROSS JOIN LATERAL jsonb_array_elements(c.dispatch_attempts) AS r(e)
+     WHERE c.workspace_id = ${workspaceId}
+       AND c.created_at >= ${sinceIso}::timestamptz - interval '2 days'
+       AND jsonb_array_length(c.dispatch_attempts) > 0
+       AND r.e->>'sourceOwnerId' = ${sourceOwnerId}
+       AND r.e->>'at' >= ${sinceIso}
+     ORDER BY r.e->>'at' DESC
+     LIMIT ${limit}
+  `;
+  return rows
+    .map((row) => (typeof row.e === 'string' ? (JSON.parse(row.e) as unknown) : row.e))
+    .filter((e): e is PersistedDispatchRecord => !!e && typeof e === 'object' && typeof (e as { at?: unknown }).at === 'string');
+}
+
+/** Default reader: {@link readSourceDispatchRecords} through the org pool. */
+async function defaultReadSourceDispatchRecords(
+  workspaceId: string,
+  sourceOwnerId: string,
+  sinceIso: string,
+): Promise<PersistedDispatchRecord[]> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  return readSourceDispatchRecords(getOrgPg().sql as unknown as Sql, workspaceId, sourceOwnerId, sinceIso);
 }
 
 /** Strip terminal control sequences (CSI and OSC) and carriage returns. */
@@ -573,6 +715,8 @@ export async function dispatchConsultResponder(
     stopFailedLaunch: defaultStopFailedLaunch,
     readLaunchLogReason: defaultReadLaunchLogReason,
     recordDispatchAttempts: defaultRecordDispatchAttempts,
+    readSourceDispatchRecords: defaultReadSourceDispatchRecords,
+    nowMs: () => Date.now(),
     ...deps,
   };
   const result = await walkConsultDispatch(opts, ctx, d);
@@ -610,6 +754,29 @@ async function walkConsultDispatch(
   });
 
   try {
+    // WI-10003198: a source whose launches keep failing is not launched again
+    // until its cool-down ends. Checked first: it is the cheapest refusal, and
+    // everything after it (resolve, preflight, pressure, walls) is wasted on a
+    // source that will be refused anyway.
+    let cooldown: SourceCooldown | null = null;
+    try {
+      const nowMs = d.nowMs();
+      const records = await d.readSourceDispatchRecords(
+        ctx.workspaceId,
+        opts.sourceOwnerId,
+        new Date(nowMs - SOURCE_FAILURE_LOOKBACK_MS).toISOString(),
+      );
+      cooldown = sourceCooldownFrom(records, nowMs);
+    } catch {
+      /* fail open — see ConsultDispatchDeps.readSourceDispatchRecords */
+    }
+    if (cooldown) {
+      return give(
+        `source ${opts.sourceOwnerId} is cooling down until ${cooldown.until}: its last ${cooldown.failures} ` +
+          `answering-session launches failed (newest: ${cooldown.lastFailure}), so no session was launched`,
+      );
+    }
+
     const evidenceSource = selectConsultEvidenceSource(opts.evidence);
     const target = await d.resolveResumeTarget(
       evidenceSource ? { sessionId: evidenceSource.sessionId } : { agentId: opts.sourceOwnerId },
