@@ -116,6 +116,23 @@ describe('plan frontier before a main wait', () => {
       .toMatchObject({ allowWait: true, readyItems: [] });
   });
 
+  it('names the missing predicate when a deployed wait reason is refused', () => {
+    const snapshot: MainWaitPlanSnapshot = {
+      slug: 'plan-a',
+      items: [item('P-001', 'blocked', [], { heldByCaller: true, text: 'Verify released artifact on main' })],
+    };
+    const review = reviewMainWaitPlan(
+      snapshot,
+      'deployed-only R-4 serving provenance; staging cannot exercise the released artifact',
+    );
+    expect(review).toMatchObject({ allowWait: false, reasonAccepted: false });
+    expect(review?.message).toContain("'deployed-only' token: present");
+    expect(review?.message).toContain('staging limitation: present');
+    expect(review?.message).toContain('concrete reason: MISSING');
+    expect(reviewMainWaitPlan(snapshot, `${reason}; because its live pin differs`))
+      .toMatchObject({ allowWait: true, reasonAccepted: true });
+  });
+
   it('does not offer an item held back by the plan spec gate as staging-ready', () => {
     const snapshot: MainWaitPlanSnapshot = {
       slug: 'plan-a',

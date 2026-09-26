@@ -101,7 +101,7 @@ export function nestedProjectionContext(
     sourceProjection: spec,
     requestedFormat: projectionMaterializationFormat(
       ctx.requestedFormat,
-      needsFullSource || needsStructuredSource,
+      needsStructuredSource,
     ),
   };
 }

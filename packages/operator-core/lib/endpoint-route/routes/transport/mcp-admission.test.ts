@@ -65,6 +65,28 @@ function post(body: string): Request {
 
 const judgeRequestUrl = 'http://127.0.0.1:3070/api/mcp?superuser=1&role=judge';
 
+describe('judge terminal scorecard admission', () => {
+  it('reserves a bounded grading-integrity emit under critical pressure only with the judge routing hint', async () => {
+    const body = toolsCall(51, 'scorecards:emit', {
+      rubricRef: 'grading-integrity',
+      terminal: true,
+      subject: { kind: 'scorecard', ref: 'EI-24351558442836441' },
+    });
+    const judge = new Request(judgeRequestUrl, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    expect(classifyMcpRequest(body, judge.url)).toBe('diagnostic');
+    expect(await evaluateAdmission(judge, 'critical', true)).toBeNull();
+
+    const unhinted = post(body);
+    expect(classifyMcpRequest(body, unhinted.url)).toBe('ordinary');
+    const shed = await evaluateAdmission(unhinted, 'critical', true);
+    expect((await shed!.json()).error.data).toMatchObject({ reason: 'loop_pressure_critical' });
+  });
+});
+
 describe('classifyMcpBody — only a tools/call is sheddable', () => {
   it('flags a tools/call and echoes its id', () => {
     expect(classifyMcpBody(toolsCall(42))).toEqual({ sheddable: true, id: 42 });

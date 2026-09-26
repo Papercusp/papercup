@@ -11539,7 +11539,7 @@
           "POST"
         ]
       },
-      "description": "Assert (upsert by key) a STANDING FACT. Body writes above 1200 characters are refused unless acceptTruncation:true; the 4000-character schema limit is transport headroom. A durable, scoped conclusion is folded VERBATIM into every relevant future brief/orient until it expires or is retracted. ⚠ You MUST declare a lifetime — there is no default: ttlSec for a claim about CURRENT CODE/STATE (expiry is what forces a re-check), kind:'convention' for a standing rule (permanent). A wall:/dead-end:/guard-rail: slot and confidence:'provisional'|'suspected' also declare one. Re-asserting a key refreshes body + TTL. At the cap a write evicts the lowest-ranked live fact, but is REFUSED if the victim is another author's verified fact. Typed slots and conventions take no cap seat.",
+      "description": "Upsert a STANDING FACT by key; scoped conclusions fold VERBATIM into future briefs/orients until expiry or retraction. Bodies over 1200 chars are refused unless acceptTruncation:true; the 4000-char schema limit is transport headroom. ⚠ Declare a lifetime: ttlSec for CURRENT CODE/STATE (forces re-check), kind:'convention' for permanent rules, or a wall:/dead-end:/guard-rail: slot or provisional/suspected confidence. Re-asserting refreshes body + TTL. At the cap, the lowest-ranked fact is evicted unless it belongs to another author and is verified; typed slots and conventions use no cap seat.",
       "capabilities": [
         "coord:write"
       ],

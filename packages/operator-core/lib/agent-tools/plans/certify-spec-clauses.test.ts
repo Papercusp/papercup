@@ -57,6 +57,7 @@ vi.mock('../../build-info', async (importOriginal) => ({
 }));
 
 const getRubric = vi.fn();
+const getRubricEvidenceIdentity = vi.fn();
 const getRubricPlanRevision = vi.fn();
 const readRubricPlanRevision = vi.fn();
 const listScorecards = vi.fn();
@@ -65,6 +66,7 @@ const captureImprovement = vi.fn();
 vi.mock('../../rubrics', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../rubrics')>()),
   getRubric: (...args: unknown[]) => getRubric(...args),
+  getRubricEvidenceIdentity: (...args: unknown[]) => getRubricEvidenceIdentity(...args),
   getRubricPlanRevision: (...args: unknown[]) => getRubricPlanRevision(...args),
   readRubricPlanRevision: (...args: unknown[]) => readRubricPlanRevision(...args),
 }));
@@ -85,6 +87,7 @@ vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async (
 
 import certifyTool from './certify-spec-clauses';
 import { validateGradingAuditReplayConsistency } from '../scorecards/emit';
+import { specTestAdequacySubjectRef } from './spec-test-adequacy';
 import { asStructuredObservation } from '../../harness/improvements/observation-types';
 import evaluatorTool, { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
 import { listSpecClauses } from './spec-clauses-store';
@@ -253,6 +256,7 @@ beforeEach(async () => {
   if (!bundled) throw new Error('rubrics/spec-test-adequacy/rubric.json must resolve');
   getRubric.mockResolvedValue({
     rubricId: 'spec-test-adequacy',
+    revision: 7,
     workspaceId: 'workspace-test',
     kind: 'standard',
     characteristic: 'plan-proof',
@@ -267,6 +271,7 @@ beforeEach(async () => {
     ratifiedBy: null,
   });
   getRubricPlanRevision.mockResolvedValue(7);
+  getRubricEvidenceIdentity.mockResolvedValue({ revision: 7, criteriaHash: null, meaningRevision: null });
   readRubricPlanRevision.mockResolvedValue({ ok: true, revision: 7 });
   listScorecards.mockResolvedValue([]);
   let seq = 0;
@@ -289,6 +294,36 @@ describe('plans:certify-spec-clauses', () => {
     expect(captureImprovement).toHaveBeenCalledTimes(1);
     expect(dispatchTool).toHaveBeenCalledTimes(1);
     expect(dispatchTool.mock.calls[0]![1]).toMatchObject({ specIds: ['SPEC-PASS'], replaySnapshot: true });
+  });
+
+  it('EI-24340389297788793: the refusal remedy is accepted and reaches scorecards:emit', async () => {
+    const first = await certify({ specIds: ['SPEC-PASS'] });
+    expect(first.counts).toMatchObject({ filed: 1 });
+    const persisted = (captureImprovement.mock.calls[0]![0] as { payloadExtra: { observation: unknown } })
+      .payloadExtra.observation;
+    const prior = asStructuredObservation(persisted);
+    expect(prior).toBeTruthy();
+    listScorecards.mockResolvedValue([{
+      issueId: 'EI-PRIOR-INDEPENDENT',
+      rubricRef: 'spec-test-adequacy',
+      rubricRevision: 7,
+      subject: { kind: 'plan', ref: specTestAdequacySubjectRef(PLAN, 'SPEC-PASS', 1) },
+      createdBy: 'su-peer',
+      missingKeys: [],
+      extraKeys: [],
+      rubricResolved: true,
+      synthesized: false,
+    }]);
+
+    const refused = await certify({ specIds: ['SPEC-PASS'] });
+    expect(refused).toMatchObject({
+      ok: false,
+      clauses: [{ card: { status: 'refused', code: 'existing_independent_scorecards' } }],
+    });
+
+    const acknowledged = await certify({ specIds: ['SPEC-PASS'], acknowledgeExisting: true });
+    expect(acknowledged).toMatchObject({ ok: true, counts: { filed: 1, refused: 0 } });
+    expect(captureImprovement).toHaveBeenCalledTimes(2);
   });
 
   // Clause RSR-P-005-A: "A card emitted by the evaluate-and-emit verb passes the auditor

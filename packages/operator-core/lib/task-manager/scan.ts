@@ -26,10 +26,12 @@
  */
 
 import { linuxProcessIdentityFromStat, linuxStartTicksFromProcStat } from '../process-identity';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import {
   CGROUP_ROOT,
   absCgroupDir,
   nodeCgroupFs,
+  parseCgroupProcs,
   parseProcCgroup,
   parseProcCmdline,
   relCgroupPath,
@@ -40,9 +42,12 @@ import { TASK_ROOT_SLICE, deriveUserManagerRoot } from './types';
 import { classifyScope, isTerminalWindowScope } from './scope-class';
 import { readTerminalAppPids, terminalWindowAlive } from './terminal-window';
 import type { ScannedProcess } from './reconcile';
+import { mapWithConcurrency } from '../gym/concurrency';
 
 export interface ScanOptions {
   fs?: CgroupFs;
+  /** Test seam for the nonblocking inventory scan; omitted in production. */
+  asyncFs?: AsyncCgroupFs;
   cgroupRoot?: string;
   /** Kernel-relative path of the systemd user manager root. Derived from our own
    *  cgroup when omitted. */
@@ -82,6 +87,76 @@ export interface ScanOptions {
   maxForeignProcesses?: number;
   /** Our own pid, excluded from the foreign pass (we are not foreign to ourselves). */
   selfPid?: number;
+}
+
+/** Same failure semantics as CgroupFs, but no kernel IO on the request thread. */
+export interface AsyncCgroupFs {
+  readFile(path: string): Promise<string | null>;
+  readDir(path: string): Promise<string[]>;
+  isDir(path: string): Promise<boolean>;
+}
+
+const nodeAsyncCgroupFs: AsyncCgroupFs = {
+  readFile: (path) => readFile(path, 'utf8').catch(() => null),
+  readDir: (path) => readdir(path).catch(() => []),
+  isDir: (path) => stat(path).then((s) => s.isDirectory(), () => false),
+};
+
+/**
+ * Inventory's kernel snapshot. Reuse the SAME scanner and classification rules
+ * against an in-memory CgroupFs; only the IO changes. Prefetch both cgroup
+ * passes and procfs facts with bounded concurrency, including the terminal
+ * window's application pid set. A failed read stays null/unknown as in the
+ * synchronous reconciler. Production reconciliation keeps its own scan path.
+ */
+export async function scanProcessesAsync(opts: ScanOptions = {}): Promise<ScanResult> {
+  if (opts.fs && opts.fs !== nodeCgroupFs && !opts.asyncFs) return scanProcesses(opts);
+  const source = opts.asyncFs ?? nodeAsyncCgroupFs;
+  const root = opts.cgroupRoot ?? CGROUP_ROOT;
+  const selfPid = opts.selfPid ?? process.pid;
+  const files = new Map<string, string | null>();
+  const directories = new Map<string, string[]>();
+  const file = async (path: string): Promise<string | null> => {
+    const value = await source.readFile(path);
+    files.set(path, value);
+    return value;
+  };
+  const selfCgroup = await file(`/proc/${selfPid}/cgroup`);
+  const manager = opts.userManagerRoot ?? deriveUserManagerRoot(parseProcCgroup(selfCgroup ?? ''));
+  const owned = absCgroupDir(manager ? `${manager}/${TASK_ROOT_SLICE}` : `/${TASK_ROOT_SLICE}`, root);
+  const roots = manager ? [owned, absCgroupDir(manager, root)] : [owned];
+  const pending = roots.map((dir) => ({ dir, depth: 0 }));
+  const visited = new Set<string>();
+  const pids = new Set<number>();
+  while (pending.length) {
+    const batch = pending.splice(0, 32).filter(({ dir }) => !visited.has(dir));
+    for (const { dir } of batch) visited.add(dir);
+    const nodes = await mapWithConcurrency(batch, 16, async ({ dir, depth }) => {
+      if (!(await source.isDir(dir))) return { dir, depth, children: [] as string[] };
+      const [names, content] = await Promise.all([source.readDir(dir), file(`${dir}/cgroup.procs`)]);
+      directories.set(dir, names);
+      for (const pid of parseCgroupProcs(content ?? '')) pids.add(pid);
+      if (depth >= 32) return { dir, depth, children: [] as string[] };
+      const children = await mapWithConcurrency(names, 16, async (name) => {
+        const child = `${dir}/${name}`;
+        return (await source.isDir(child)) ? child : null;
+      });
+      return { dir, depth, children: children.filter((x): x is string => x !== null) };
+    });
+    for (const node of nodes) {
+      for (const child of node.children) pending.push({ dir: child, depth: node.depth + 1 });
+    }
+  }
+  await Promise.all([file('/proc/sys/kernel/random/boot_id'), file('/proc/uptime')]);
+  await mapWithConcurrency([...pids], 32, async (pid) => {
+    await Promise.all([file(`/proc/${pid}/stat`), file(`/proc/${pid}/cmdline`)]);
+  });
+  const snapshot: CgroupFs = {
+    readFile: (path) => files.get(path) ?? null,
+    readDir: (path) => directories.get(path) ?? [],
+    isDir: (path) => directories.has(path),
+  };
+  return scanProcesses({ ...opts, fs: snapshot });
 }
 
 const DEFAULT_MAX_OWNED = 4000;

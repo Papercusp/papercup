@@ -20,6 +20,7 @@ import { withBoundedTimeout } from './bounded-timeout';
 import {
   hasNarrowDeployedMainException,
   isLiveGateOperationText,
+  narrowExceptionDiagnosis,
 } from './agent-tools/plans/staging-first-activation-guard';
 
 /** Event keys whose only meaning is "the release operator received new code". */
@@ -117,7 +118,7 @@ export function reviewMainWaitPlan(
       : 'No downstream blocked-by path was found from the waiting item.',
     reasonAccepted
       ? ''
-      : 'To wait for a deployed-only property, name that property, state what staging/current-build cannot exercise, and give a concrete reason in the wait note or goal.',
+      : narrowExceptionDiagnosis(text, 'the wait note or goal'),
     descendantsReviewed
       ? ''
       : `Name each reviewed downstream item (${downstreamItems.map(({ item }) => item).join(', ')}) in that explanation and state why it truly needs the deployed result.`,

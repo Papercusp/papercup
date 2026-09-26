@@ -11,7 +11,8 @@
  * AUDITOR-REPRODUCIBLE BY CONSTRUCTION: this verb adds no grading logic of its own.
  *   1. It runs the REAL `plans:evaluate-spec-test-adequacy` handler, with no caller-supplied
  *      `current` — freshness comes only from the server's own measurement.
- *   2. It files each passing row's `scorecardDraft` UNEDITED (plus `terminal:true`) through
+ *   2. It files each passing row's `scorecardDraft` UNEDITED (plus `terminal:true` and an
+ *      explicit `acknowledgeExisting:true` retry when the caller requests one) through
  *      `emitScorecardForToolContext`, the exact body of the scorecards:emit handler, so the
  *      card crosses the same exact-replay gate an auditor's replay does. A card this verb
  *      files is therefore one the evaluator has just reproduced.
@@ -39,6 +40,7 @@ const argsSchema = z.object({
   includeDraft: z.boolean().optional(),
   limit: z.number().int().min(1).max(1000).optional(),
   dryRun: z.boolean().optional().describe('Grade and report which clauses WOULD be filed, without filing any card.'),
+  acknowledgeExisting: z.boolean().optional().describe('Explicitly acknowledge existing independent cards when filing another current-evidence card.'),
 });
 
 type EvaluatorRow = {
@@ -68,7 +70,7 @@ function stringList(value: unknown): string[] {
 export default defineTool({
   name: 'plans:certify-spec-clauses',
   description:
-    "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft unedited through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. dryRun:true reports without filing.",
+    "Evaluate spec-test adequacy and file a terminal spec-test-adequacy card for every PASSING clause in one call. Runs plans:evaluate-spec-test-adequacy on the server's own measurement, then files each passing draft through the scorecards:emit path, including its exact-replay gate. Clauses that do not pass are reported with their wouldBlock criteria and never filed. dryRun:true reports without filing. If an existing_independent_scorecards refusal calls for a new sample, re-run with acknowledgeExisting:true.",
   guidance: {
     when: 'Certifying spec-covered work before work_items:complete, instead of evaluating and then emitting each draft by hand.',
     notWhen:
@@ -152,7 +154,11 @@ export default defineTool({
         row.scorecardDraft && typeof row.scorecardDraft === 'object' && !Array.isArray(row.scorecardDraft)
           ? (row.scorecardDraft as Record<string, unknown>)
           : null;
-      const parsed = draft ? scorecardEmitArgs.safeParse({ ...draft, terminal: true }) : null;
+      const parsed = draft ? scorecardEmitArgs.safeParse({
+        ...draft,
+        terminal: true,
+        ...(args.acknowledgeExisting === true ? { acknowledgeExisting: true } : {}),
+      }) : null;
       if (!parsed?.success) {
         clauses.push({
           ...base,

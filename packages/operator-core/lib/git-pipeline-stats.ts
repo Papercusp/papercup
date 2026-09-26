@@ -1276,12 +1276,13 @@ export function selectActiveCheckpointRoot(input: {
   projectPaths: readonly string[];
   defaultPipeline: string;
   defaultRoot: string;
+  canonicalRoot?: string;
 }): string | null {
-  // The operator-home pipeline already carries its authoritative integration root.  Do not
-  // make that root contingent on the registry's project-path list: the registry can contain
-  // several worktrees with the same basename (or be temporarily unreadable), while the release
-  // status surface must still inspect the one root that owns its routines and run-lock.
-  if (input.pipeline === input.defaultPipeline) return input.defaultRoot;
+  // A staging operator serves from a mirror but the manual checkpoint unit and run-lock
+  // belong to the canonical edit tree. Hashing the mirror path probes a different unit and
+  // can report idle while the canonical checkpoint is active. Keep the registry out of this
+  // default-pipeline choice: it may contain several worktrees with the same basename.
+  if (input.pipeline === input.defaultPipeline) return input.canonicalRoot?.trim() || input.defaultRoot;
   const matchingRoots = [...new Set(input.projectPaths.filter((root) => pipelineName(root) === input.pipeline))];
   if (matchingRoots.length === 1) return matchingRoots[0] ?? null;
   return null;
@@ -1606,7 +1607,13 @@ export async function gitPipelineSnapshot(
       // turn a live run-lock into a false null. Non-default pipelines still require the
       // registry mapping to avoid attaching one harness's checkpoint process to another.
       if (slug === DEFAULT_SLUG) {
-        resolvedActiveRunRoot = deploy.integrationRoot;
+        resolvedActiveRunRoot = selectActiveCheckpointRoot({
+          pipeline: slug,
+          projectPaths: [],
+          defaultPipeline: DEFAULT_SLUG,
+          defaultRoot: deploy.integrationRoot,
+          canonicalRoot: process.env.PAPERCUSP_CANONICAL_TREE,
+        });
       } else {
         const registry = await loadHarnessRegistry();
         resolvedActiveRunRoot = selectActiveCheckpointRoot({

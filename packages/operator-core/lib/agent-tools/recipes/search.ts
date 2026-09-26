@@ -46,7 +46,7 @@ export default defineTool({
       'recipes:run (execute the matched recipe)',
     ],
   },
-  capability: 'recipes:read',
+  capability: 'agent_tools:read',
   requirePrincipal: false,
   // EI-20226779878046151: recipe search owns its read path and never reads
   // ctx.tx. The orient awareness fold must not pin an org-app slot during the

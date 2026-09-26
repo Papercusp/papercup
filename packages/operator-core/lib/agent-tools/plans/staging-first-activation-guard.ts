@@ -156,7 +156,7 @@ export function isLiveGateOperationText(text: string): boolean {
  * runtime-writer-vintage blocker was refused twice verbatim). Name each predicate's
  * status and the exact token contract, so one refusal is enough to self-repair.
  */
-function narrowExceptionDiagnosis(text: string, scope: string): string {
+export function narrowExceptionDiagnosis(text: string, scope: string): string {
   const checks = [
     EXPLICIT_DEPLOYED_ONLY_RE.test(text)
       ? `'deployed-only' token: present`

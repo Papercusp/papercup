@@ -29,6 +29,7 @@ import { isAutoReapExempt, isTerminalState, type TaskRow } from './types';
 export const LIFECYCLE_LAUNCHER_ENDED_GRACE_MS = 15 * 60_000;
 export const LIFECYCLE_OLD_TASK_MS = 6 * 60 * 60_000;
 export const LIFECYCLE_IDLE_QUIET_MS = 6 * 60 * 60_000;
+export const LIFECYCLE_UNACCOUNTED_RESIDUE_GRACE_MS = 15 * 60_000;
 export const LIFECYCLE_TERMINAL_RESIDUE_GRACE_MS = 15 * 60_000;
 export const LIFECYCLE_JUDGE_INTERVAL_MS = 60 * 60_000;
 export const LIFECYCLE_SWEEP_INTERVAL_MS = 5 * 60_000;
@@ -363,8 +364,13 @@ export function evaluateLifecycleCandidates(input: {
     let nextProbe = prior;
 
     if (row.state === 'unaccounted' && confirmedResidue) {
-      kinds.push('unaccounted-residue');
-      reasons.push('kernel residue persisted across consecutive healthy reconcile scans with no live owning row');
+      const startedAtMs = parsedMs(row.startedAt);
+      // Reconcile's consecutive scans can both occur while a freshly enrolled
+      // scope is still booting. Confirmation alone is not an age floor.
+      if (startedAtMs !== null && input.nowMs - startedAtMs >= LIFECYCLE_UNACCOUNTED_RESIDUE_GRACE_MS) {
+        kinds.push('unaccounted-residue');
+        reasons.push('kernel residue persisted across consecutive healthy reconcile scans with no live owning row');
+      }
     } else if (isTerminalState(row.state) && confirmedResidue) {
       const endedAtMs = parsedMs(row.endedAt) ?? parsedMs(row.lastSeenAt);
       if (endedAtMs !== null && input.nowMs - endedAtMs >= LIFECYCLE_TERMINAL_RESIDUE_GRACE_MS) {

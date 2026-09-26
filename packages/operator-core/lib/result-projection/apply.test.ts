@@ -20,6 +20,8 @@ import {
   proposePickRepairs,
 } from './apply';
 import { parseProjection } from './parse';
+import { nestedProjectionContext } from './nested-dispatch';
+import type { UnifiedToolContext } from '@papercusp/tooldef';
 
 const textResult = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 
@@ -55,6 +57,14 @@ const reportOf = (r: { content?: unknown; _meta?: Record<string, unknown> }) =>
   };
 
 describe('projection materialization format', () => {
+  it('keeps implicit TOON for line projections but uses JSON for structured picks', () => {
+    const context = { requestedFormat: undefined } as UnifiedToolContext;
+    const lines = nestedProjectionContext(context, {}, spec({ pipe: [{ op: 'grep', pattern: 'ERROR' }] }));
+    const fields = nestedProjectionContext(context, {}, spec({ pick: ['entries[].id'] }));
+    expect(lines.requestedFormat).toBeUndefined();
+    expect(fields.requestedFormat).toBe('json');
+  });
+
   it('forces JSON for the implicit MCP compact source', () => {
     expect(projectionMaterializationFormat(undefined, true)).toBe('json');
     expect(projectionMaterializationFormat('compact', true)).toBe('json');

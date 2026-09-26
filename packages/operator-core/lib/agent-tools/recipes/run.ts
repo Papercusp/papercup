@@ -183,10 +183,11 @@ export default defineTool({
       'code:run (author a fresh script when no recipe fits)',
     ],
   },
-  // Same gate as code:run: as powerful as the shell capability (it can call any of
-  // the REUSER's write tools), open to ALL ROLES (owner directive 2026-06-25 — in lockstep
-  // with code:run). The role-scoped facade is the privilege boundary — the recipe carries none.
-  capability: 'capability:bash',
+  // Match code:run's orchestration entry gate. Evidence-only principals such as
+  // judges may reuse recipes containing only their authorized reads; every inner
+  // call still passes through the caller's role-scoped facade and dispatcher.
+  capability: 'agent_tools:read',
+  effect: 'write',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z

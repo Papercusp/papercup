@@ -9,6 +9,7 @@ import {
   jsonSourceKind,
   readJsonArgs,
   resolveMcpClientId,
+  resolveMcpRole,
   resolveMcpWorkspace,
   resolveCandidatePorts,
   resolveMcpProxyPort,
@@ -302,6 +303,23 @@ describe('mcp-call result-format contract', () => {
     expect(parseSse(`data: ${JSON.stringify(response)}\n\n`)).toEqual({
       error: response.result,
     });
+  });
+
+  it('preserves a JSON admission shed instead of reporting a missing SSE frame', () => {
+    const error = {
+      code: -32000,
+      message: 'operator MCP admission is saturated — request shed, retry shortly',
+      data: { retryable: true, reason: 'loop_pressure_critical' },
+    };
+    expect(parseSse(JSON.stringify({ jsonrpc: '2.0', id: 1, error }))).toEqual({ error });
+  });
+
+  it('carries the launched judge role into the admission routing query', () => {
+    const role = resolveMcpRole({ PAPERCUSP_ROLE: 'judge', PAPERCUSP_AGENT_ROLE: 'worker' });
+    const query = buildMcpSessionQuery({ client: 'judge-session', workspace: 'papercusp-workspace', role });
+    expect(query.get('role')).toBe('judge');
+    expect(resolveMcpRole({ PAPERCUSP_AGENT_ROLE: 'judge' })).toBe('judge');
+    expect(resolveMcpRole({})).toBeUndefined();
   });
 
   it('pins JSON so the maintained vmcall driver can validate successful output', () => {

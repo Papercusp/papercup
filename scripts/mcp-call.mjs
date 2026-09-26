@@ -240,7 +240,7 @@ export function readJsonArgs(
 }
 
 /**
- * Extract the JSON-RPC result from an SSE response body (exported shape for clarity).
+ * Extract the JSON-RPC result from an SSE stream or a JSON response body.
  *
  * The stream carries frames we did NOT ask for: the server emits
  * `notifications/tools/list_changed` (and friends) BEFORE the response to our
@@ -255,11 +255,14 @@ export function readJsonArgs(
  */
 export function parseSse(raw, requestId = 1) {
   let sawFrame = false;
-  for (const line of raw.split('\n')) {
-    const s = line.trim();
-    if (!s.startsWith('data:')) continue;
+  // Admission sheds are HTTP 429 JSON-RPC bodies, not SSE frames. Parse both
+  // transport shapes so the caller sees the retryable reason from the server.
+  const frames = raw.trimStart().startsWith('{')
+    ? [raw.trim()]
+    : raw.split('\n').map((line) => line.trim()).filter((line) => line.startsWith('data:')).map((line) => line.slice(5).trim());
+  for (const frame of frames) {
     let d;
-    try { d = JSON.parse(s.slice(5).trim()); } catch { continue; }
+    try { d = JSON.parse(frame); } catch { continue; }
     sawFrame = true;
     // A notification has no id and never answers our call — skip it.
     if (d.id === undefined || d.id === null) continue;
@@ -353,8 +356,10 @@ export function isRecoverableAuthorityDenial(raw) {
  * Pin JSON at the transport boundary instead of depending on that mutable
  * default; otherwise a successful tool call becomes non-JSON output that the
  * maintained VM-rig driver correctly rejects.
+ * Forward the launched role as an admission hint for bounded judge calls;
+ * signed principal verification remains the authorization boundary.
  */
-export function buildMcpSessionQuery({ client, workspace, harness, allWorkspaces = false }) {
+export function buildMcpSessionQuery({ client, workspace, harness, role, allWorkspaces = false }) {
   const qs = new URLSearchParams({
     superuser: '1',
     client,
@@ -362,6 +367,7 @@ export function buildMcpSessionQuery({ client, workspace, harness, allWorkspaces
     format: 'json',
   });
   if (harness) qs.set('harness', harness);
+  if (role) qs.set('role', role);
   return qs;
 }
 
@@ -422,6 +428,13 @@ export function resolveMcpClientId(
   return `mcp-call-${pid}`;
 }
 
+/** Role is an admission routing hint; signed principal checks still run downstream. */
+export function resolveMcpRole(env = process.env) {
+  return [env.PAPERCUSP_ROLE, env.PAPERCUSP_AGENT_ROLE]
+    .map((value) => String(value ?? '').trim())
+    .find(Boolean);
+}
+
 /**
  * Decide whether this module is the launched script after resolving filesystem
  * aliases. macOS exposes `/tmp` as a symlink to `/private/tmp`; the VM-rig
@@ -480,6 +493,7 @@ async function main() {
     client,
     workspace,
     harness: flags.harness,
+    role: resolveMcpRole(),
     allWorkspaces: flags.allWorkspaces,
   });
   // EI-20182275617587040: PAPERCUSP_HONO_PORT can OUTLIVE the process it described

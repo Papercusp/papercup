@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scanProcesses, deriveUserManagerRoot, defaultForeignSignature } from './scan';
+import { scanProcesses, scanProcessesAsync, deriveUserManagerRoot, defaultForeignSignature } from './scan';
 import type { CgroupFs } from './cgroup-read';
 import { isTerminalWindowScope } from './scope-class';
 
@@ -60,6 +60,60 @@ describe('deriveUserManagerRoot', () => {
   it('returns null for a shape it does not recognise — degrade, never guess', () => {
     expect(deriveUserManagerRoot('/system.slice/papercup.service')).toBeNull();
     expect(deriveUserManagerRoot(null)).toBeNull();
+  });
+});
+
+describe('scanProcessesAsync — inventory IO', () => {
+  it('matches owned/foreign/window classification while yielding all kernel IO', async () => {
+    const fs = box({
+      cgroups: {
+        [OURS]: [],
+        [`${OURS}/pc-aaa111.scope`]: [10],
+        [`${MGR}/app.slice/app-gnome-terminal.slice/gnome-terminal-server.service`]: [500],
+        [`${MGR}/app.slice/app-gnome-terminal.slice/vte-spawn-0e0e-4a4a.scope`]: [600, 601],
+      },
+      cmdlines: { 601: 'node /repo/bin/agent', 600: 'bash' },
+      ppids: { 600: 500, 601: 600 },
+    });
+    let syncReads = 0;
+    const forbidden: CgroupFs = {
+      readFile: () => { syncReads++; throw new Error('sync kernel read'); },
+      readDir: () => { syncReads++; throw new Error('sync directory read'); },
+      isDir: () => { syncReads++; throw new Error('sync stat'); },
+    };
+    const asyncFs = {
+      readFile: async (path: string) => fs.readFile(path),
+      readDir: async (path: string) => fs.readDir(path),
+      isDir: async (path: string) => fs.isDir(path),
+    };
+    const opts = { selfPid: 999, foreignSignature: /repo/, cgroupRoot: ROOT };
+    const expected = scanProcesses({ ...opts, fs });
+    const actual = await scanProcessesAsync({ ...opts, fs: forbidden, asyncFs });
+    expect(actual).toEqual(expected);
+    expect(syncReads).toBe(0);
+    expect(actual.processes.find((p) => p.pid === 601)?.exemptReason).toBe('human-terminal');
+  });
+
+  it('does not block the event loop while a procfs read is pending', async () => {
+    const fs = box({ cgroups: { [`${OURS}/pc-aaa111.scope`]: [10] } });
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const scan = scanProcessesAsync({
+      selfPid: 999,
+      asyncFs: {
+        readFile: async (path) => {
+          if (path === '/proc/10/stat') await pending;
+          return fs.readFile(path);
+        },
+        readDir: async (path) => fs.readDir(path),
+        isDir: async (path) => fs.isDir(path),
+      },
+    });
+    let ticked = false;
+    await new Promise<void>((resolve) => setTimeout(() => { ticked = true; resolve(); }, 0));
+    expect(ticked).toBe(true);
+    release();
+    expect((await scan).processes.map((p) => p.pid)).toEqual([10]);
   });
 });
 

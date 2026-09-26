@@ -26,7 +26,10 @@ vi.mock("../../service-health", () => ({
 // EI-13221: probeServiceStart shells out to `systemctl`/`ps` — stub it so the
 // handler tests never touch the real OS; default "not determinable" (ok:false)
 // means the new restart-recency overlay is a no-op unless a test opts in.
-vi.mock("./systemd-service-probe", () => ({ probeServiceStart: vi.fn(async () => ({ ok: false })) }));
+vi.mock("./systemd-service-probe", () => ({
+  probeServiceStart: vi.fn(async () => ({ ok: false })),
+  probeUnitStates: vi.fn(),
+}));
 vi.mock("../../projected-tool-deps", () => ({
   getTelemetryHealth: vi.fn(() => ({
     droppedRows: 2,
@@ -66,6 +69,7 @@ import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
 import { spawnerSidecarSupervisionStatus } from "../../fleet/spawner-sidecar-spawn";
+import { probeUnitStates } from "./systemd-service-probe";
 import {
   buildMcpProxyTransportBlock,
   buildServiceHealthDiagnostic,
@@ -82,6 +86,7 @@ import {
 /** Fixed clock for the transport-block tests — the summarizer windows on it. */
 const NOW_MS = Date.parse("2026-08-02T12:00:00.000Z");
 const probeM = vi.mocked(probeAll);
+const unitM = vi.mocked(probeUnitStates);
 const mcpHandshakeM = vi.mocked(probeMcpHandshake);
 const supervisionM = vi.mocked(supervisionSnapshot);
 const substrateM = vi.mocked(substrateSidecarSupervisionStatus);
@@ -109,6 +114,19 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("dev:service_health handler", () => {
+  it("starts fixed and supervision probes while a requested unit read is still pending", async () => {
+    let resolveUnits!: (value: Awaited<ReturnType<typeof probeUnitStates>>) => void;
+    unitM.mockReturnValueOnce(new Promise((resolve) => { resolveUnits = resolve; }));
+    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 1 }] as never);
+
+    const response = tool.handler({ units: ["papercusp-staging-api"], scope: "user" } as never, {} as never);
+    expect(probeM).toHaveBeenCalledTimes(1);
+    expect(mcpHandshakeM).toHaveBeenCalledTimes(1);
+    resolveUnits({ states: [], unitsUnknown: ["papercusp-staging-api.service"], scopesUnavailable: [] });
+    const result = body((await response) as Out);
+    expect(result.unitsUnknown).toEqual(["papercusp-staging-api.service"]);
+  });
+
   it("opts out of the ambient workspace transaction because health probes are DB-independent", () => {
     expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });

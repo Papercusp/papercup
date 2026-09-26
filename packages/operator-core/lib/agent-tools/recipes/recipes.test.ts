@@ -158,7 +158,15 @@ describe('recipes:* registration (P-005, P-013)', () => {
     });
   }
 
-  it('recipes:run is write-effect (capability:bash) — itself dry-run-gateable', () => {
+  it('lets evidence-only callers discover and reuse recipes without a shell grant', () => {
+    for (const name of ['recipes:list', 'recipes:get', 'recipes:search', 'recipes:run']) {
+      const tool = findTool(name);
+      expect(tool.capabilities, name).toEqual(['agent_tools:read']);
+      expect(tool.capabilities, name).not.toContain('capability:bash');
+      expect(tool.agentRoles, name).toContain('judge');
+    }
+    // The wrapper can orchestrate writes, but its own effect remains visible to
+    // dry-run gates. Inner calls retain their separate capability checks.
     expect(findTool('recipes:run').effect).toBe('write');
   });
 
@@ -489,7 +497,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       status: 'active',
       tags: [],
       bindingSchema: null,
-      capabilityManifest: emptyManifest(['lifecycle:durable']),
+      capabilityManifest: emptyManifest(['tools:unavailable:recipe-tool']),
     });
 
     const res = await findTool('recipes:run').fn({ id: 'durable-unavailable' }, mkCtx('worker'));
@@ -500,7 +508,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
       phase: 'preflight',
       executed: false,
       error: 'capability_unavailable',
-      diagnostic: { capability: 'lifecycle:durable' },
+      diagnostic: { capability: 'tools:unavailable:recipe-tool' },
     });
     expect(runOrchestrationMock).not.toHaveBeenCalled();
   });

@@ -86,8 +86,9 @@ describe('installed identity pin and current SU mode source', () => {
       const selected = { identityId, repoDir: root,
         scope: { workspace: workspaceId, ownerId, harness: 'papercusp' },
         observedAt: '2026-09-26T00:00:00.000Z' };
+      const guidance = { contributionId: 'current-guidance', value: 'P007 CURRENT GUIDANCE' };
       const bound = await bindSelectedIdentityOutputArtifact({ ...selected,
-        outputs: [{ contributionId: 'current-brief', value }] });
+        outputs: [{ contributionId: 'current-brief', value }, guidance] });
       const launch = await compileLaunchSpecificationArtifact({
         promptText: 'SU KERNEL', cwd: root, workspaceId, harnessSlug: 'papercusp', role: 'su',
         stack: [`domain:${identityId}`], state: { schemaVersion: 1 }, renderStack: true,
@@ -97,7 +98,7 @@ describe('installed identity pin and current SU mode source', () => {
         kind: 'setting', ref: 'current-brief', producerRef: 'existing.brief', value,
       }));
       // Same real source and selected identity, with only the required output omitted.
-      await expect(bindSelectedIdentityOutputArtifact({ ...selected, outputs: [] }))
+      await expect(bindSelectedIdentityOutputArtifact({ ...selected, outputs: [guidance] }))
         .rejects.toThrow(/declared operational input is absent/);
     } finally {
       rmSync(root, { recursive: true, force: true });

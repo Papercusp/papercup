@@ -11,6 +11,7 @@ import {
   LIFECYCLE_JUDGE_INTERVAL_MS,
   LIFECYCLE_JUDGE_ROLE,
   LIFECYCLE_LAUNCHER_ENDED_GRACE_MS,
+  LIFECYCLE_UNACCOUNTED_RESIDUE_GRACE_MS,
   enforceLifecycleVerdicts,
   evaluateLifecycleCandidates,
   lifecycleCandidateSummary,
@@ -187,6 +188,31 @@ describe('evaluateLifecycleCandidates', () => {
       ['unaccounted', ['unaccounted-residue']],
       ['terminal', ['terminal-residue']],
     ]);
+  });
+
+  it('does not file a confirmed unaccounted scope during its first 15 minutes', () => {
+    const young = row({
+      taskId: 'young-unaccounted',
+      rootTaskId: 'young-unaccounted',
+      state: 'unaccounted',
+      startedAt: new Date(NOW - 91_000).toISOString(),
+      pidsCurrent: 25,
+    });
+    const unknownAge = row({
+      taskId: 'unknown-age',
+      rootTaskId: 'unknown-age',
+      state: 'unaccounted',
+      startedAt: 'invalid',
+    });
+    const confirmed = ['young-unaccounted', 'unknown-age'];
+    expect(evaluate({ rows: [young, unknownAge], residue: confirmed }).candidates).toEqual([]);
+
+    const mature = evaluate({
+      rows: [young],
+      residue: confirmed,
+      nowMs: NOW + LIFECYCLE_UNACCOUNTED_RESIDUE_GRACE_MS - 91_000,
+    });
+    expect(mature.candidates.map((candidate) => candidate.kinds)).toEqual([['unaccounted-residue']]);
   });
 
   it('gives unaccounted residue a discriminating exact-scope verification recipe', () => {

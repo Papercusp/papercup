@@ -50,7 +50,9 @@ export default defineTool({
       'recipes:list (browse the recipe library)',
     ],
   },
-  capability: 'recipes:read',
+  // Reading a reusable script is part of the same caller-scoped orchestration
+  // flow as code:run. Its own execution still checks every nested tool.
+  capability: 'agent_tools:read',
   requirePrincipal: false,
   // ALL ROLES (owner directive 2026-06-25) — in lockstep with code:run's audience.
   agentRoles: [...AGENT_ROLES],

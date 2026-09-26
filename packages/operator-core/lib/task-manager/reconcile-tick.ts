@@ -42,7 +42,7 @@ import {
 import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow, type TaskState } from './types';
 
 export interface ReconcileTickDeps {
-  scan?: (opts: ScanOptions) => ScanResult;
+  scan?: (opts: ScanOptions) => ScanResult | Promise<ScanResult>;
   listLive?: (workspaceId?: string) => Promise<TaskRow[]>;
   fs?: CgroupFs;
   now?: () => number;
@@ -109,7 +109,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
   const scanFn = deps.scan ?? scanProcesses;
   const listLive = deps.listLive ?? listLiveTasks;
 
-  const scan = scanFn({ fs, ...(deps.scanOptions ?? {}) });
+  const scan = await scanFn({ fs, ...(deps.scanOptions ?? {}) });
   const live = await listLive(deps.workspaceId);
 
   // D-018: for a live row whose scope is NOT visible in this scan — i.e. about to

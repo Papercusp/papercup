@@ -691,15 +691,22 @@ export default defineTool({
     // unit up" and "what is the state of everything" are usually asked in the
     // same breath and a second round-trip for the other half is the cost this
     // whole plan exists to remove.
-    const unitStates = units?.length ? await probeUnitStates(units, scope ?? "user") : null;
-    const [rawServices, mcpHandshake] = await Promise.all([probeAll(), probeMcpHandshake()]);
-    const supervision = await overlaySystemdRestartRecency(
+    // These reads do not depend on one another. A slow systemd/spawner-sidecar
+    // request must not serialize two more probe phases past the MCP deadline.
+    const unitStatesPromise = units?.length ? probeUnitStates(units, scope ?? "user") : Promise.resolve(null);
+    const supervisionPromise = overlaySystemdRestartRecency(
       overlayNodeChildSupervision(
         supervisionSnapshot(),
         substrateSidecarSupervisionStatus(),
         spawnerSidecarSupervisionStatus(),
       ),
     );
+    const [unitStates, rawServices, mcpHandshake, supervision] = await Promise.all([
+      unitStatesPromise,
+      probeAll(),
+      probeMcpHandshake(),
+      supervisionPromise,
+    ]);
     // EI-19934795546523351: reconcile the bg-host-ticker verdict against this SAME
     // response's supervision block BEFORE it can drive a contradictory rootCause/
     // nextVerb — see reconcileBgHostTicker's doc comment.

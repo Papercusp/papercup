@@ -42,7 +42,13 @@ import {
 /** The postgres-js client type the org handle exposes (same alias pg-read-query uses). */
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
-type CancelableQuery = { cancel?: () => void | Promise<unknown> };
+type CancelableQuery = {
+  cancel?: () => void | Promise<unknown>;
+  /** postgres.js Query objects expose these; test doubles may omit them. */
+  executed?: boolean;
+  active?: boolean;
+  catch?: (onRejected: (reason: unknown) => void) => Promise<unknown>;
+};
 
 /**
  * Wrap a postgres-js transaction client so an abandoned caller can cancel every
@@ -68,18 +74,26 @@ function cancellableTransaction(
   let cancelled = signal.aborted;
   let removeAbortListener: (() => void) | undefined;
   const abortReason = () => signal.reason ?? Object.assign(new Error('boundedOrgTxn aborted'), { name: 'AbortError' });
+  const cancelQuery = (query: CancelableQuery) => {
+    // postgres.js returns a lazy Query for BOTH executable statements and SQL
+    // fragments. Cancelling an unexecuted fragment rejects its own promise with
+    // 57014 even though nobody awaited it; that unhandled rejection killed the
+    // operator host. A completed query also has nothing left to cancel.
+    if (query.executed === false || query.active === false) return;
+    try {
+      // Query.cancel() returns void: it is the original Query promise, not the
+      // return value of cancel(), that rejects when PostgreSQL acknowledges the
+      // cancellation. Observe it before sending the cancellation request.
+      void query.catch?.(() => undefined);
+      void Promise.resolve(query.cancel?.()).catch(() => undefined);
+    } catch {
+      // Cancellation is best-effort; the original abort/error remains authoritative.
+    }
+  };
   const cancelActive = () => {
     cancelled = true;
     for (const query of active) {
-      try {
-        // postgres.js may reject the cancellation promise with 57014 after
-        // PostgreSQL acknowledges it. The abort race already carries the
-        // authoritative error; leaving this sibling rejection unobserved can
-        // terminate the Node host under its default unhandled-rejection policy.
-        void Promise.resolve(query.cancel?.()).catch(() => undefined);
-      } catch {
-        // Cancellation is best-effort; the original abort/error remains authoritative.
-      }
+      cancelQuery(query);
     }
   };
   const assertNotAborted = () => {
@@ -97,11 +111,7 @@ function cancellableTransaction(
     // it only when the caller awaits the completed outer query.
     active.add(candidate);
     if (cancelled) {
-      try {
-        void Promise.resolve(candidate.cancel?.()).catch(() => undefined);
-      } catch {
-        // See the cancellation catch above.
-      }
+      cancelQuery(candidate);
     }
     return query;
   };

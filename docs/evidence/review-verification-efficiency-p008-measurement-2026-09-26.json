@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-008 current-build completion controls and bounded workflow-cost slice",
+  "framework": "operational",
+  "command": [
+    "work_items:complete validateOnly on :3170",
+    "work_items:get WI-10000985 after both controls",
+    "dev:pg_query scoped tool_invocations cohort",
+    "npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-coverage-accounting.test.ts"
+  ],
+  "startedAt": "2026-09-26T20:40:00.000Z",
+  "finishedAt": "2026-09-26T21:10:42.000Z",
+  "exitCode": 0,
+  "summary": "Two current-build validateOnly inputs and one focused coverage-accounting suite behaved as expected. A predeclared seven-day dispatch slice was measured, but its population is not comparable to the frozen P-001 baseline, so no causal efficiency improvement or no-sprawl verdict is asserted. Deployed-only certification remains unmeasured by this artifact.",
+  "population": {
+    "checked": [
+      "WI-10000985 complete-shaped feature evidence under work_items:complete validateOnly on :3170",
+      "WI-10000985 deliberately partial feature evidence under work_items:complete validateOnly on :3170",
+      "WI-10000985 post-control state and completion read",
+      "2026-09-19T21:07:00Z through 2026-09-26T21:07:00Z agent-origin Papercusp tool_invocations for five declared workflow verbs",
+      "affected-tests-coverage-accounting.test.ts at clean named test-path HEAD 411d591c47"
+    ],
+    "notChecked": [
+      "Historical P-001 completion cohort with the same live query and population",
+      "Representative workflow acceptance wait and justified rerun totals",
+      "Escaped or reopened defect census for the declared cohort",
+      "Standing schedule, routine, watch and ledger inventory diff against a P-001 baseline",
+      "Final green-checkpoint content containment and deployed release identity"
+    ],
+    "notApplicable": [
+      "Aggregate test-file duration as elapsed plan time",
+      "A randomized verification-free counterfactual"
+    ],
+    "residue": [
+      "No matched historical live rows or inventory snapshot was established for a like-for-like P-001 comparison.",
+      "A separate live gate owner must supply final deployment identity for the deployed-only clause."
+    ]
+  },
+  "measurements": {
+    "predeclaredCohort": {
+      "declarationPost": "thread-post:1147621",
+      "workflowSet": [
+        "work_items:complete causal and validateOnly submissions",
+        "consult selection, pickup, decline and expiry",
+        "failed-scenario testing:run and recovery",
+        "scorecards:emit exact-reference acceptance and independent vetting",
+        "current-build acceptance separated from delivered-only certification"
+      ]
+    },
+    "completionDispatch": {
+      "writer": "packages/operator-core/lib/projected-tool-deps.ts: telemetry row construction and batched tool_invocations INSERT; packages/operator-core/lib/telemetry-call-origin.ts: agent-origin classification",
+      "window": "2026-09-19T21:07:00Z/2026-09-26T21:07:00Z",
+      "population": "workspace_id=papercusp-workspace, harness_slug=papercusp, call_origin=agent, tool_name=work_items:complete",
+      "calls": 2547,
+      "status": {
+        "ok": 2243,
+        "invalid-input": 298,
+        "role-not-allowed": 4,
+        "error": 1,
+        "replayed": 1
+      },
+      "distinctCoordOwners": 248,
+      "dispatchMedianMs": 1217.0,
+      "dispatchP95Ms": 35293.6,
+      "grammarLikeInvalidInputMessages": 0,
+      "causalTestResultLikeInvalidInputMessages": 164,
+      "interpretation": "Status and error-message buckets are dispatcher telemetry, not adjudicated false rejections. Replayed means the tool did not rerun. The latency measures individual dispatch settlement, not elapsed plan time."
+    },
+    "otherDeclaredToolCalls": {
+      "consult:get_feedback": 204,
+      "scorecards:emit": 1289,
+      "testing:run": 3207,
+      "plans:set-plan-status": 266,
+      "interpretation": "Counts share the completionDispatch window and agent-origin filter. They are mechanical submissions, not successful workflow totals."
+    },
+    "historicalBaseline": {
+      "evidenceFile": "docs/evidence/review-verification-efficiency-p008-measurement-2026-09-13.json",
+      "sourceWorkItem": "WI-10000978",
+      "snapshotWindow": "2026-09-02T00:00:00Z/2026-09-09T00:00:00Z",
+      "snapshotCompletionCalls": 9140,
+      "snapshotNonOk": 1833,
+      "snapshotSentenceGrammarRefusals": 1429,
+      "limitation": "The historical snapshot is preserved, but a scoped current query returned no baseline rows for an undetermined reason. Window lengths, serving builds and cohort populations differ; no same-instrument improvement percentage follows."
+    },
+    "coverageAccountingTest": {
+      "path": "packages/operator-core/lib/__tests__/affected-tests-coverage-accounting.test.ts",
+      "testsPassed": 15,
+      "testsFailed": 0,
+      "testsSkipped": 0,
+      "testedHead": "411d591c47",
+      "namedTestPathCleanBeforeAndAfter": true,
+      "scopeLimit": "The router stamped only the named test path; this does not prove the full imported source graph remained unchanged."
+    }
+  },
+  "assertions": [
+    {
+      "id": "complete-shaped-validate-only",
+      "passed": true,
+      "evidence": "On current-build :3170, complete-shaped feature evidence returned completion contract v2 and completionAuthority=committed in validateOnly mode; this predicts an authorization verdict, not a completion write. See WI-10000985 thread-post:1147563."
+    },
+    {
+      "id": "partial-validate-only",
+      "passed": true,
+      "evidence": "Deliberately partial evidence returned proposed and countsTowardBurnDown=false. See WI-10000985 thread-post:1147563."
+    },
+    {
+      "id": "validate-only-no-write",
+      "passed": true,
+      "evidence": "After both controls, WI-10000985 remained open with unchanged updatedAt 2026-09-26T20:30:28.307Z, null completion and hasCompletionEvidence=false. This proves no write for those inputs, not causal truth."
+    },
+    {
+      "id": "terminal-coverage-accounting-regression",
+      "passed": true,
+      "evidence": "The focused project Vitest router matched one requested file and passed all 15 tests at clean named test-path HEAD 411d591c47, including executed/skipped/unreadable result accounting."
+    }
+  ],
+  "sourceRefs": {
+    "workItem": "WI-10000985",
+    "plan": "review-verification-efficiency-2026-09-09",
+    "formalMeasurementPost": "thread-post:1147663",
+    "controlPost": "thread-post:1147563",
+    "controlCorrectionPost": "thread-post:1147564",
+    "baselineReport": "docs/evidence/review-verification-efficiency-p008-measurement-2026-09-13.json",
+    "completionHandler": "packages/operator-core/lib/agent-tools/work_items/complete.ts",
+    "completionTelemetryWriter": "packages/operator-core/lib/projected-tool-deps.ts",
+    "verifiedVia": "current-build :3170, read-only durable ledgers and focused Vitest"
+  }
+}
