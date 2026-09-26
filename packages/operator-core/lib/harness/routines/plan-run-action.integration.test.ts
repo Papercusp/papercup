@@ -12,13 +12,14 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
-import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { BlueprintSchema, compileAgentSpecification, pinPackageInput } from '@papercusp/orchestrator/blueprint';
 import { projectBlueprintToPg } from '../../blueprint/project-to-pg';
 import { acceptBlueprintPlanRun } from '../../blueprint/operation-admission';
 import {
   awaitAcceptedCoordProgramChild, loadAcceptedCoordProgramChild, submitAcceptedCoordProgramChild,
 } from '../../dbos/coord-program-workflow';
-import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus, openBlueprintOperationWait, resumeBlueprintOperation, signalBlueprintOperation, submitBlueprintOperation } from '../../blueprint/operation-service';
+import { blueprintOperationAcceptanceSubjectRef, cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus, openBlueprintOperationWait, resumeBlueprintOperation, signalBlueprintOperation, submitBlueprintOperation } from '../../blueprint/operation-service';
+import { seedContentHash } from '../../cupboard/rubric-store';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
 import { runScheduledPlanFire } from './plan-run-action';
@@ -209,6 +210,13 @@ async function completeExecutionWorkItem(id: string, actor: string): Promise<Rec
 
 describe('runScheduledPlanFire (system:plan-run)', () => {
   it('lets an accepted program invoke a pinned plan child and wait for the canonical plan outcome', async () => {
+    const rubric = { rubricId: 'plan-child-result-quality', characteristic: 'quality',
+      description: 'Final plan output quality', methodRef: null,
+      ratingScale: ['pass', 'partial', 'fail', 'unknown'],
+      criteria: [{ key: 'complete', title: 'Complete', model: 'Plan output is complete',
+        method: 'Read the final outputs', driftMarkers: 'Missing count' }] };
+    const rubricPin = pinPackageInput({ packageKind: 'rubric', ref: rubric.rubricId,
+      revision: '1.0.0', files: [], dependencies: [], value: rubric });
     const source = {
       id: 'program-plan-child', version: '1', workItem: { kind: 'feature' },
       roles: [{ id: 'worker' }],
@@ -224,12 +232,15 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
         } },
         inputSchema: { type: 'object', required: ['segment'],
           properties: { segment: { type: 'string' } } },
-        acceptance: { resultSchema: { type: 'object' } },
+        acceptance: { resultSchema: { type: 'object' }, rubric: {
+          kind: 'rubric', ref: rubric.rubricId, revision: rubricPin.revision,
+          contentHash: rubricPin.contentHash,
+        } },
       }],
     };
     const blueprint = BlueprintSchema.parse(source);
     await projectBlueprintToPg(sql, { workspaceId: WS, harnessSlug: HARNESS, blueprint,
-      specification: compileAgentSpecification({ source }) });
+      specification: compileAgentSpecification({ source, inputClosure: [rubricPin] }) });
     const root = await submitBlueprintOperation(sql, {
       workspaceId: WS, harnessSlug: HARNESS, callerId: 'program-plan-caller',
       operationId: 'root', requestKey: 'plan-child-root', input: {}, title: 'Program root',
@@ -260,6 +271,31 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       UPDATE harness_shared.plan_runs
          SET status = 'done', outcome = 'success', outputs = ${JSON.stringify({ count: 2 })}::text::jsonb
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND id = ${child.target.runId}
+    `;
+    expect(await getBlueprintOperationResult(sql, child, parent.callerId))
+      .toMatchObject({ state: 'unavailable', status: { outcome: 'unverified' } });
+    await expect(awaitAcceptedCoordProgramChild(sql, parent, {
+      invokeStepId: 'plan', operationId: 'run-monitor',
+      deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+    }, async () => { throw new Error('settled child must not sleep'); }))
+      .rejects.toThrow('settled without validated success: unavailable');
+    const subjectRef = blueprintOperationAcceptanceSubjectRef({
+      targetRef: `plan-run:${child.target.runId}`, attemptRef: `plan-run:${child.target.runId}`,
+      operationId: child.operationId, specificationRevision: child.specificationRevision,
+      output: { count: 2 },
+    });
+    await sql`
+      INSERT INTO harness_shared.engineer_issues
+        (workspace_id, issue_id, kind, scope, title, body, severity, source,
+         state, payload, created_by, signal_origin, created_at, updated_at)
+      VALUES (${WS}, 'EI-plan-child-result-grade', 'change', ${`harness:${HARNESS}`},
+        'plan child output grade', '', 'minor', 'test', 'done',
+        ${JSON.stringify({ observation: { rubricRef: rubric.rubricId, rubricRevision: 1,
+          criteriaHash: seedContentHash(rubric), evidenceFingerprint: 'fixture-plan-child',
+          subject: { ref: subjectRef },
+          ratings: { complete: { rating: 'pass', evidence: 'Final count is present' } },
+        } })}::text::jsonb,
+        'su-grader', 'organic', now(), now())
     `;
     expect(await awaitAcceptedCoordProgramChild(sql, parent, {
       invokeStepId: 'plan', operationId: 'run-monitor',
