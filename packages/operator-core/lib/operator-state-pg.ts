@@ -202,19 +202,27 @@ type StateTable =
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //
-// `harness_registry` is read via readOperatorState on hot request paths (the audit
-// found ~13.8M seq-scans / window via loadHarnessRegistry) but written rarely (a
-// harness create/remove). A tiny per-(table, workspace) cache cuts that round-trip
-// volume — easing both the PG pool (R1) and the event loop the psu incident exposed.
+// `harness_registry` and `operator_account_pool` are read via readOperatorState on
+// hot request paths. The original audit found ~13.8M registry seq-scans/window;
+// P-008 later measured 1,434,412 account-pool reads since the 2026-09-07 stats
+// reset (~51/min, 8,715s cumulative) against a 6.2KB row. Both rows are written
+// through the invalidating helpers below and change far less often than they are
+// read. A tiny per-(table, workspace) cache cuts that round-trip volume — easing
+// both the PG pool and the event loop the psu incident exposed.
 //
 // SAFETY: only an ALLOWLIST of read-mostly tables is cached. The SAME process that
 // writes invalidates its entry immediately (writeOperatorState / updateOperatorState
 // below), so a write-then-read in one process is never stale. ACROSS processes (the
 // cluster) staleness is bounded to the short TTL — acceptable for the registry, whose
-// changes are rare and tolerate a couple seconds to propagate. Disable entirely with
-// PAPERCUSP_OPSTATE_CACHE_MS=0 (the kill-switch). Encrypted tables are NOT allowlisted
-// (no in-process plaintext caching of secrets).
-const CACHEABLE_STATE_TABLES: ReadonlySet<StateTable> = new Set<StateTable>(['harness_registry']);
+// changes are rare and tolerate a couple seconds to propagate. Account-pool
+// writes also publish `accounts.pool` invalidation; the TTL is the fail-safe for
+// a process that misses that advisory event, never a second source of truth.
+// Disable entirely with PAPERCUSP_OPSTATE_CACHE_MS=0 (the kill-switch).
+// Encrypted tables are NOT allowlisted (no in-process plaintext caching of secrets).
+const CACHEABLE_STATE_TABLES: ReadonlySet<StateTable> = new Set<StateTable>([
+  'harness_registry',
+  'operator_account_pool',
+]);
 
 function opStateCacheTtlMs(): number {
   const raw = Number(process.env.PAPERCUSP_OPSTATE_CACHE_MS);

@@ -1,11 +1,12 @@
 /**
  * operator-state-cache.test.ts — the readOperatorState cache
  * (infra-perf-robustness-audit-2026-06-18 P-004). harness_registry is read on hot
- * paths (~13.8M seq-scans/window) but written rarely; a tiny per-(table,ws) TTL
- * cache cuts the round-trips. These pin: (a) a cache HIT avoids a 2nd SELECT,
- * (b) a write INVALIDATES so the same process never reads stale (read-after-write),
- * (c) only the allowlist (harness_registry) is cached, (d) PAPERCUSP_OPSTATE_CACHE_MS=0
- * is the kill-switch.
+ * paths (~13.8M seq-scans/window) but written rarely; P-008 measured the same
+ * amplification on operator_account_pool (1.43M reads / ~19.5 days for one
+ * 6.2KB row). A tiny per-(table,ws) TTL cache cuts the round-trips. These pin:
+ * (a) a cache HIT avoids a 2nd SELECT, (b) a write INVALIDATES so the same
+ * process never reads stale (read-after-write), (c) only the explicit allowlist
+ * is cached, (d) PAPERCUSP_OPSTATE_CACHE_MS=0 is the kill-switch.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -61,6 +62,7 @@ beforeEach(() => {
   delete process.env.PAPERCUSP_OPSTATE_CACHE_MS;
   // Start each test with a clean cache for the keys it uses.
   invalidateOperatorStateCache('harness_registry' as never, 'ws');
+  invalidateOperatorStateCache('operator_account_pool' as never, 'ws');
   invalidateOperatorStateCache('operator_budget' as never, 'ws');
 });
 afterEach(() => {
@@ -84,6 +86,19 @@ describe('readOperatorState cache (P-004)', () => {
     const after = await readOperatorState<{ projects: { slug: string }[] }>('harness_registry'); // select #2
     expect(after).toEqual({ projects: [{ slug: 'new' }] });
     expect(counters.selects).toBe(2); // not served stale from cache
+  });
+
+  it('caches the hot account-pool row and invalidates it on a same-process write', async () => {
+    store.set('operator_account_pool:ws', { accounts: [{ id: 'a' }] });
+    const first = await readOperatorState<{ accounts: { id: string }[] }>('operator_account_pool');
+    const cached = await readOperatorState<{ accounts: { id: string }[] }>('operator_account_pool');
+    expect(cached).toEqual(first);
+    expect(counters.selects).toBe(1);
+
+    await writeOperatorState('operator_account_pool', { accounts: [{ id: 'b' }] });
+    const after = await readOperatorState<{ accounts: { id: string }[] }>('operator_account_pool');
+    expect(after).toEqual({ accounts: [{ id: 'b' }] });
+    expect(counters.selects).toBe(2);
   });
 
   it('does NOT cache a non-allowlisted table (always SELECTs)', async () => {
