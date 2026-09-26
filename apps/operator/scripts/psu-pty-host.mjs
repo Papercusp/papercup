@@ -7252,6 +7252,19 @@ export function hostThroughPty(o) {
           const steps = controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env, {
             bracketedPaste: childBracketedPaste,
           });
+          const kickoffMarker = verifyKickoffMarkerEcho ? leadingTurnOriginMarker(text) : null;
+          if (kickoffMarker && text.length > kickoffMarker.length) {
+            // Prove the short prefix while it is still visible. A long Codex
+            // composer can render only the tail of an intact paste, making a
+            // full-payload echo check wait forever before sending Enter.
+            // Append the unchanged remainder only AFTER the exact marker echo;
+            // native transcript proof below still verifies actual submission.
+            const paste = (part) => childBracketedPaste ? bracketedPasteFrame(part) : part;
+            steps.splice(0, 1,
+              { data: paste(kickoffMarker), delayMs: 0 },
+              { data: paste(text.slice(kickoffMarker.length)), delayMs: 0 },
+            );
+          }
           let markerEchoFailureReason = null;
           for (let stepIndex = 0; stepIndex < steps.length; stepIndex++) {
             const step = steps[stepIndex];
