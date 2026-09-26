@@ -673,6 +673,7 @@ async function getJson<T>(
   verb: string,
   params?: Record<string, string | boolean | readonly string[] | undefined>,
   signal?: AbortSignal,
+  onHeaders?: () => void,
 ): Promise<T> {
   const url = new URL(`${BASE}/${verb}`, window.location.origin);
   if (params) {
@@ -690,6 +691,7 @@ async function getJson<T>(
     }
   }
   const r = await fetch(url.toString(), signal ? { signal } : undefined);
+  onHeaders?.();
   if (!r.ok) {
     const text = await r.text().catch(() => "");
     throw new Error(`plans:${verb} → ${r.status}: ${text.slice(0, 200)}`);
@@ -758,6 +760,11 @@ export function fetchPlan(
     "get",
     { slug, mode: "full", ...(harnessSlug ? { harness: harnessSlug } : {}) },
     actualSignal,
+    () => {
+      if (!actualSignal?.aborted) {
+        markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, "response-headers");
+      }
+    },
   ).then((result) => {
     // A superseded/closed popup must not credit its old response to a new
     // interaction. getJson resolves only after the response body is parsed.

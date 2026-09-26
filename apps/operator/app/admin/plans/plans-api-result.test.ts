@@ -34,15 +34,30 @@ afterEach(() => {
 });
 
 describe('popup plan read phases', () => {
-  it('marks request start and parsed response without changing the plan result', async () => {
+  it('separates response headers from body parsing without changing the plan result', async () => {
     vi.stubGlobal('window', { location: { origin: 'http://localhost:3170' } });
-    const fetchSpy = vi.fn(async (_url: string) => new Response(JSON.stringify({ slug: 'p', raw: '# Body' }), { status: 200 }));
+    const response = new Response(JSON.stringify({ slug: 'p', raw: '# Body' }), { status: 200 });
+    let releaseBody!: () => void;
+    const bodyGate = new Promise<void>((resolve) => { releaseBody = resolve; });
+    vi.spyOn(response, 'json').mockImplementation(async () => {
+      await bodyGate;
+      return { slug: 'p', raw: '# Body' };
+    });
+    const fetchSpy = vi.fn(async (_url: string) => response);
     vi.stubGlobal('fetch', fetchSpy);
-    const result = await fetchPlan('p', 'papercusp');
+    const pending = fetchPlan('p', 'papercusp');
+    await vi.waitFor(() => expect(phaseSpy).toHaveBeenCalledWith('plan-popup-open', 'response-headers'));
+    expect(phaseSpy.mock.calls).toEqual([
+      ['plan-popup-open', 'request-started'],
+      ['plan-popup-open', 'response-headers'],
+    ]);
+    releaseBody();
+    const result = await pending;
     expect(result).toEqual({ slug: 'p', raw: '# Body' });
     expect(fetchSpy.mock.calls[0]?.[0]).toContain('/api/admin/plans/get?slug=p&mode=full&harness=papercusp');
     expect(phaseSpy.mock.calls).toEqual([
       ['plan-popup-open', 'request-started'],
+      ['plan-popup-open', 'response-headers'],
       ['plan-popup-open', 'response-ready'],
     ]);
   });

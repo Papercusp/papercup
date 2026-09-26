@@ -24,6 +24,7 @@ import {
   WorkspaceHostCutStepError,
   buildWorkspaceHostPublicationInput,
   buildWorkspaceHostReleaseJournalSeed,
+  cupboardBaseOverride,
   packDeterministically,
   parseWorkspaceHostReleaseCutArgs,
   runWorkspaceHostReleaseCut,
@@ -349,9 +350,35 @@ describe('publication input', () => {
 describe('CLI args', () => {
   it('passes publisher flags through and rejects unknown flags', () => {
     expect(
-      parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x', '--base', 'https://b', '--plan-only']),
+      parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x', '--base', 'https://b', '--plan-only'], {}),
     ).toMatchObject({ sourceSha: SHA, publish: true, publisherArgs: ['--base', 'https://b', '--plan-only'] });
-    expect(() => parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--nope', 'x'])).toThrow(/unknown flag/);
-    expect(() => parseWorkspaceHostReleaseCutArgs(['--version', VERSION, '--work-dir', '/tmp/x'])).toThrow(/--source-sha/);
+    expect(() => parseWorkspaceHostReleaseCutArgs(['--source-sha', SHA, '--nope', 'x'], {})).toThrow(/unknown flag/);
+    expect(() => parseWorkspaceHostReleaseCutArgs(['--version', VERSION, '--work-dir', '/tmp/x'], {})).toThrow(/--source-sha/);
+  });
+
+  // WI-10003172: from a box that SNI-blackholes the branded Cupboard (EI-16742) the cut
+  // died at publish.multipart.initiate because the sourced PAPERCUSP_CUPBOARD_URL override
+  // was never forwarded to the publisher.
+  describe('Cupboard base when --base is absent', () => {
+    const REQUIRED = ['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x'];
+
+    it('forwards the PAPERCUSP_CUPBOARD_URL override, normalized like resolveCupboardBaseUrl', () => {
+      expect(
+        parseWorkspaceHostReleaseCutArgs(REQUIRED, { PAPERCUSP_CUPBOARD_URL: '  https://worker.example.dev//  ' }).publisherArgs,
+      ).toEqual(['--base', 'https://worker.example.dev']);
+    });
+
+    it('lets an explicit --base win over the override', () => {
+      expect(
+        parseWorkspaceHostReleaseCutArgs([...REQUIRED, '--base', 'https://explicit'], { PAPERCUSP_CUPBOARD_URL: 'https://worker.example.dev' })
+          .publisherArgs,
+      ).toEqual(['--base', 'https://explicit']);
+    });
+
+    it('passes no --base when the override is unset or blank, so the publisher keeps its branded default', () => {
+      expect(parseWorkspaceHostReleaseCutArgs(REQUIRED, {}).publisherArgs).toEqual([]);
+      expect(parseWorkspaceHostReleaseCutArgs(REQUIRED, { PAPERCUSP_CUPBOARD_URL: '   ' }).publisherArgs).toEqual([]);
+      expect(cupboardBaseOverride({ PAPERCUSP_CUPBOARD_URL: '/' })).toBeUndefined();
+    });
   });
 });

@@ -902,8 +902,28 @@ export interface WorkspaceHostReleaseCutCliArgs {
   publisherArgs: string[];
 }
 
-/** Parse strictly; an unknown flag is an error rather than silently ignored. */
-export function parseWorkspaceHostReleaseCutArgs(argv: readonly string[]): WorkspaceHostReleaseCutCliArgs {
+/**
+ * The Cupboard base to hand the publisher when `--base` is absent: the local
+ * `PAPERCUSP_CUPBOARD_URL` override, normalized exactly as operator-core's
+ * `resolveCupboardBaseUrl()` does, or `undefined` so the publisher keeps its branded
+ * default. The override lives in gitignored `.env.local` (which the cut sources) because
+ * a box that SNI-blackholes the branded host (EI-16742) can only reach the worker's own
+ * origin; without this the cut dies at publish.multipart.initiate (WI-10003172). Reading
+ * env keeps the account-bearing worker origin out of shipped code (WI-38321).
+ */
+export function cupboardBaseOverride(env: NodeJS.ProcessEnv): string | undefined {
+  const raw = env.PAPERCUSP_CUPBOARD_URL?.trim().replace(/\/+$/, '');
+  return raw ? raw : undefined;
+}
+
+/**
+ * Parse strictly; an unknown flag is an error rather than silently ignored. An explicit
+ * `--base` wins; otherwise the `PAPERCUSP_CUPBOARD_URL` override is forwarded.
+ */
+export function parseWorkspaceHostReleaseCutArgs(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv = process.env,
+): WorkspaceHostReleaseCutCliArgs {
   const values: Record<string, string> = {};
   const valueFlags = new Set(['source-sha', 'version', 'work-dir', 'task-id', 'operation-id', 'base', 'token']);
   let publish = true;
@@ -923,8 +943,9 @@ export function parseWorkspaceHostReleaseCutArgs(argv: readonly string[]): Works
   for (const required of ['source-sha', 'version', 'work-dir']) {
     if (!values[required]) throw new Error(`--${required} is required`);
   }
+  const base = values.base ?? cupboardBaseOverride(env);
   const publisherArgs = [
-    ...(values.base ? ['--base', values.base] : []),
+    ...(base ? ['--base', base] : []),
     ...(values.token ? ['--token', values.token] : []),
     ...(planOnly ? ['--plan-only'] : []),
   ];

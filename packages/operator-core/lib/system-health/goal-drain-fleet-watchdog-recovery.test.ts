@@ -108,9 +108,15 @@ describe('P-014 delegated drain recovery', () => {
 
   it('fills only the missing worker when delegated leadership is live', async () => {
     observed.set('su-leader', verdict('su-leader', 'live'));
+    policyMock.mockResolvedValueOnce({
+      refusal: null,
+      effective: { agent: 'claude', model: 'sonnet', account: 'default', carry: 'cold', compactionLimit: 180_000 },
+      degradedReasons: [],
+    });
     const result = await defaultRelaunchDrainFleet(sql, alert, goal);
     expect(launchMock).toHaveBeenCalledTimes(1);
     expect(policyMock).toHaveBeenCalledWith(expect.objectContaining({ goalRole: 'drain-fleet-member' }));
+    expect(launchMock).toHaveBeenCalledWith(expect.objectContaining({ carry: 'cold', compactionLimit: 180_000 }));
     expect(result.actions).toMatchObject({ leaderLaunched: false, memberLaunched: true });
     expect(couplingMock).not.toHaveBeenCalled();
   });

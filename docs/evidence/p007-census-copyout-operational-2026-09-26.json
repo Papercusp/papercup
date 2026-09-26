@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-007 census guard catches a missing built-in SU contribution row",
+  "framework": "operational",
+  "command": [
+    "npm --prefix packages/operator-core test -- lib/agent-identities/source.test.ts -t 'reconciles every built-in SU contribution'",
+    "Repeat the same Vitest case with PAPERCUSP_MUTATION_PROBE_SOURCE pointing to a temporary copy of the census with only the su/current-mode-state row removed"
+  ],
+  "startedAt": "2026-09-26T00:08:20.172798Z",
+  "finishedAt": "2026-09-26T00:09:24.083773Z",
+  "exitCode": 0,
+  "summary": "The committed real-suite census guard passed on the unchanged 24-row document and failed on a temporary 23-row copy-out mutant. The failure identified the omitted su/current-mode-state row at source.test.ts:38. The original census and test files were clean before and after the probe.",
+  "assertions": [
+    {
+      "id": "baseline-passes",
+      "passed": true,
+      "evidence": "The focused Vitest case passed 1/1 on the original census; the command exited 0. The committed census SHA-256 was cc914edfc6ccced9e2222ab03349d72c4f87cf50a7630e626f7b6c748f91eac6."
+    },
+    {
+      "id": "missing-row-mutant-caught",
+      "passed": true,
+      "evidence": "Removing only the su/current-mode-state table row produced temporary mutant SHA-256 4e59d618f9ad68dad70a3f94b906279a630ddc0610db2dfcecd968358a566df2. The same focused Vitest case exited 1 and showed the missing key in the expected 24 versus received 23 comparison at source.test.ts:38."
+    },
+    {
+      "id": "source-preserved",
+      "passed": true,
+      "evidence": "The probe used a temporary copy through PAPERCUSP_MUTATION_PROBE_SOURCE and did not edit the canonical census or test. Both paths were git-clean; source.test.ts SHA-256 was a11df5e6797514b38dfacd60c9de2b9619a915db65a7c5cea42d5cecf6cbf746."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-007",
+  "workItem": "WI-10002964",
+  "operatorPlane": "canonical staging Vitest case with temporary copy-out input",
+  "limitation": "This proves the census population detector. It does not by itself verify the 24 consumers or their live host effects; those require separate conventional and native receipts."
+}
