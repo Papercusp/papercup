@@ -2118,6 +2118,14 @@
               "kind": "shell",
               "cmd": "bash",
               "args": [
+                "papercusp-desktop/bin/lib/b6-concurrent.selftest.sh"
+              ],
+              "label": "concurrent_lww adapter: a failing run keeps its PHASE2 failure-time diagnostics in the transcript (WI-10003114)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
                 "papercusp-desktop/bin/lib/matrix-scenario-adapters.selftest.sh"
               ],
               "label": "live-matrix sibling adapters: failing runs retain every passing assertion in the transcript (EI-21116501794646084)"
