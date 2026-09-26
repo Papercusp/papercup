@@ -3,14 +3,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// Fixed by WI-10003045's diagnosed incident census. Keep this list independent
-// of the report so deleting a row cannot shrink the expected population.
+// WI-10003045's incident census plus the two P-004 proof defects. Keep this
+// list independent of the report so deleting a row cannot shrink the population.
 const DIAGNOSED_CLASS_IDS = [
   'PTY-SUBMIT-MARKER',
   'PTY-WAKE-REARM',
   'PTY-HOME-RECOVERY',
   'PTY-STARTUP-MENU',
   'PTY-CARRY-FIRST-TURN',
+  'PTY-OWNER-CARRY-PROOF',
+  'PTY-COLON-ORIGIN',
 ] as const;
 
 const REPORT = process.env.PTY_INCIDENT_REPORT_PATH ?? join(
@@ -35,7 +37,7 @@ function reportCoverage(report: string): { missing: string[]; unexpected: string
 describe('PTY incident verification report coverage', () => {
   const report = readFileSync(REPORT, 'utf8');
 
-  it('records a measured current-build outcome for every diagnosed class', () => {
+  it('records a test-run reference for every diagnosed class', () => {
     expect(reportCoverage(report)).toEqual({ missing: [], unexpected: [], incomplete: [] });
   });
 
