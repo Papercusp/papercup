@@ -2941,6 +2941,13 @@ export function buildWorkspaceHostBootstrap(
     // material at 0600 in its own home. Assert the negative directly rather than inferring it
     // from the 0700 mode, because a later group change would defeat the mode silently.
     'runuser -u "$WORKSPACE_USER" -- test ! -r "$AGENT_HOME" || die "workspace SSH user can read the agent credential home"',
+    // D-421/P-325: customer-supplied agent credentials are delivered into the customer's OWN home,
+    // because that account runs every customer-driven agent. The mirror of the assertion above:
+    // the customer can use its home, and neither the operator service account (whose state a
+    // compromised agent must not reach, D-417) nor the platform agent identity can traverse it.
+    'runuser -u "$WORKSPACE_USER" -- test -w "/home/$WORKSPACE_USER" || die "workspace SSH user cannot write its own home, where its agent credentials are delivered"',
+    'runuser -u "$SERVICE_USER" -- test ! -x "/home/$WORKSPACE_USER" || die "operator service account can traverse the customer home that holds its agent credentials"',
+    'runuser -u "$AGENT_USER" -- test ! -x "/home/$WORKSPACE_USER" || die "platform agent identity can traverse the customer home that holds its agent credentials"',
     // The agent identity is confined in every direction the SSH account is: it reads the signed
     // runtime and writes the workspace, and nothing else. Runtime WRITE is the property the old
     // read assertion was actually standing in for, and it is asserted for both accounts.

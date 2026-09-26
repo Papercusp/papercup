@@ -1023,3 +1023,167 @@ describe("workspace-host sealed agent-home bundle", () => {
     }
   });
 });
+
+// D-421 / P-325: customer-driven agents run as the customer workspace account, so delivered
+// material moves from the platform agent home (D-248) into the customer's own home.
+describe("workspace-host agent-home legacy-home migration (D-421)", () => {
+  const CUSTOMER = "/home/papercusp-workspace";
+  const LEGACY = HOME;
+  const FAMILY = "agent-encrypted-reference" as const;
+
+  function customerConsumer(
+    filesystem: MemoryAgentHomeFilesystem,
+  ): WorkspaceHostAgentHomeConsumer {
+    return new WorkspaceHostAgentHomeConsumer({
+      filesystem,
+      materialRoot: ROOT,
+      agentHome: CUSTOMER,
+      agentUser: "papercusp-workspace",
+      agentGroup: "papercusp-workspace",
+      legacyHomes: [{ home: LEGACY }],
+    });
+  }
+
+  /** A host as r46–r51 left it: generation `generation` installed into the platform agent home. */
+  async function legacyInstall(
+    filesystem: MemoryAgentHomeFilesystem,
+    generation: number,
+  ): Promise<void> {
+    await consumer(filesystem).install(
+      FAMILY,
+      generation,
+      encodeWorkspaceHostAgentHomeBundle(files),
+    );
+  }
+
+  it("migrates a legacy install into the customer home on the next bind, adopting hand-placed files and leaving no legacy copy", async () => {
+    const filesystem = new MemoryAgentHomeFilesystem();
+    await legacyInstall(filesystem, 3);
+    const legacyPaths = workspaceHostAgentHomePaths(LEGACY);
+    const customerPaths = workspaceHostAgentHomePaths(CUSTOMER);
+    // Unmanaged bytes an operator copied in by hand before this release (owner #589).
+    filesystem.files.set(customerPaths.claude, Buffer.from('{"hand":"placed"}'));
+    filesystem.files.set(customerPaths.codex, Buffer.from('{"hand":"placed"}'));
+
+    // Same generation: the binding did not change, only where it has to live.
+    await expect(
+      customerConsumer(filesystem).install(
+        FAMILY,
+        3,
+        encodeWorkspaceHostAgentHomeBundle(files),
+      ),
+    ).resolves.toMatchObject({ generation: 3, present: true, home: CUSTOMER });
+
+    expect(filesystem.files.get(customerPaths.claude)).toEqual(files.claude);
+    expect(filesystem.files.get(customerPaths.codex)).toEqual(files.codex);
+    expect(filesystem.files.get(customerPaths.omp)).toEqual(files.omp);
+    for (const path of Object.values(legacyPaths)) {
+      expect(filesystem.files.has(path)).toBe(false);
+    }
+    const state = JSON.parse(
+      filesystem.files.get(workspaceHostAgentHomeStatePath(ROOT))!.toString("utf8"),
+    );
+    expect(state.home).toBe(CUSTOMER);
+    // The customer account owns what it now runs with; nothing is left root-pinned.
+    expect(
+      filesystem.ownership.filter((entry) => entry.path === customerPaths.codex).at(-1),
+    ).toEqual({ path: customerPaths.codex, owner: "papercusp-workspace", group: "papercusp-workspace" });
+    await expect(
+      customerConsumer(filesystem).verify(FAMILY, 3, encodeWorkspaceHostAgentHomeBundle(files)),
+    ).resolves.toMatchObject({ generation: 3, home: CUSTOMER });
+  });
+
+  it("keeps generations monotonic across the migration", async () => {
+    const filesystem = new MemoryAgentHomeFilesystem();
+    await legacyInstall(filesystem, 5);
+    await expect(
+      customerConsumer(filesystem).install(FAMILY, 4, encodeWorkspaceHostAgentHomeBundle(files)),
+    ).rejects.toThrow(/older than active generation 5/);
+  });
+
+  it("refuses to verify a generation still sitting in the legacy home, naming the repair", async () => {
+    const filesystem = new MemoryAgentHomeFilesystem();
+    await legacyInstall(filesystem, 2);
+    await expect(
+      customerConsumer(filesystem).verify(FAMILY, 2, encodeWorkspaceHostAgentHomeBundle(files)),
+    ).rejects.toThrow(/legacy home \/home\/papercusp-agent; bind a credential generation again/);
+  });
+
+  it("revokes a legacy generation from the legacy home only, never touching the customer's own files", async () => {
+    const filesystem = new MemoryAgentHomeFilesystem();
+    await legacyInstall(filesystem, 2);
+    const customerCodex = workspaceHostAgentHomePaths(CUSTOMER).codex;
+    filesystem.files.set(customerCodex, Buffer.from('{"hand":"placed"}'));
+
+    await customerConsumer(filesystem).revoke(FAMILY, 2);
+
+    for (const path of Object.values(workspaceHostAgentHomePaths(LEGACY))) {
+      expect(filesystem.files.has(path)).toBe(false);
+    }
+    expect(filesystem.files.has(workspaceHostAgentHomeStatePath(ROOT))).toBe(false);
+    expect(filesystem.files.get(customerCodex)).toEqual(Buffer.from('{"hand":"placed"}'));
+    await expect(customerConsumer(filesystem).verifyRevoked(FAMILY, 2)).resolves.toMatchObject({
+      present: false,
+    });
+  });
+
+  it("sweeps a legacy copy an interrupted migration left behind when the current generation is revoked", async () => {
+    const filesystem = new MemoryAgentHomeFilesystem();
+    await customerConsumer(filesystem).install(FAMILY, 1, encodeWorkspaceHostAgentHomeBundle(files));
+    // Simulate a copy that survived in the platform agent home.
+    const legacyClaude = workspaceHostAgentHomePaths(LEGACY).claude;
+    filesystem.files.set(legacyClaude, files.claude);
+
+    await customerConsumer(filesystem).revoke(FAMILY, 1);
+
+    expect(filesystem.files.has(legacyClaude)).toBe(false);
+    for (const path of Object.values(workspaceHostAgentHomePaths(CUSTOMER))) {
+      expect(filesystem.files.has(path)).toBe(false);
+    }
+  });
+
+  it("still fails closed on a record naming a home that is neither current nor legacy", async () => {
+    const filesystem = new MemoryAgentHomeFilesystem();
+    filesystem.files.set(
+      workspaceHostAgentHomeStatePath(ROOT),
+      encodeWorkspaceHostAgentHomeState(FAMILY, 1, "/var/lib/unrelated-home"),
+    );
+    await expect(customerConsumer(filesystem).revoke(FAMILY, 1)).rejects.toThrow(
+      /different agent home/,
+    );
+    await expect(
+      customerConsumer(filesystem).install(FAMILY, 2, encodeWorkspaceHostAgentHomeBundle(files)),
+    ).rejects.toThrow(/different agent home/);
+  });
+
+  it("refuses a legacy sweep through a symlinked credential directory", async () => {
+    class KindFilesystem extends MemoryAgentHomeFilesystem {
+      async pathKind(path: string): Promise<"missing" | "directory" | "file" | "symlink" | "other"> {
+        if (path === `${LEGACY}/.claude`) return "symlink";
+        if (this.files.has(path)) return "file";
+        if (path === LEGACY || path.startsWith(`${LEGACY}/`) || path.startsWith(`${CUSTOMER}`)) {
+          return path.endsWith(".json") || path.endsWith(".yml") ? "missing" : "directory";
+        }
+        return "missing";
+      }
+    }
+    const filesystem = new KindFilesystem();
+    await expect(
+      customerConsumer(filesystem).install(FAMILY, 1, encodeWorkspaceHostAgentHomeBundle(files)),
+    ).rejects.toThrow(/legacy agent-home directory '\/home\/papercusp-agent\/\.claude' is not a real directory/);
+    // The record is committed last, so a refused sweep leaves no half-migrated state behind.
+    expect(filesystem.files.has(workspaceHostAgentHomeStatePath(ROOT))).toBe(false);
+  });
+
+  it("refuses a legacy home equal to the install home", () => {
+    expect(
+      () =>
+        new WorkspaceHostAgentHomeConsumer({
+          filesystem: new MemoryAgentHomeFilesystem(),
+          materialRoot: ROOT,
+          agentHome: CUSTOMER,
+          legacyHomes: [{ home: CUSTOMER }],
+        }),
+    ).toThrow(/legacy agent home cannot be the home this consumer installs into/);
+  });
+});

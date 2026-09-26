@@ -878,22 +878,41 @@ export function parseWorkspaceHostAgentHomeState(
   };
 }
 
+/**
+ * A home a previous release installed agent credentials into and this one no longer targets.
+ *
+ * D-248 put customer-supplied Claude/Codex material in the platform agent identity's home. D-421
+ * moved every customer-driven agent onto the customer workspace account, so that material now
+ * belongs in the customer's home, and a copy left in the old home is a credential no revoke would
+ * ever reach. The consumer therefore still recognizes an active record naming a legacy home (as a
+ * migration, not a tampered record) and removes the managed native files it finds there.
+ */
+export interface WorkspaceHostAgentHomeLegacyHome {
+  readonly home: string;
+}
+
 export interface WorkspaceHostAgentHomeConsumerOptions {
   readonly filesystem: WorkspaceHostAgentHomeFilesystem;
   readonly materialRoot: string;
   /**
-   * Home of the identity that RUNS the agents — `papercusp-agent`, not the SSH login (D-248).
+   * Home of the identity that RUNS the customer-driven agents, and the owner of the delivered
+   * material. Since D-421 that is the customer workspace account, the one identity D-043 keeps
+   * away from the Papercusp runtime; between D-248 and D-421 it was `papercusp-agent`.
    *
-   * These three were named `workspaceHome`/`workspaceUser`/`workspaceGroup` while the SSH
-   * account was the agent-running identity. That naming is what made the conflation invisible:
-   * the delivered Claude/Codex material landed in the customer's own login home, owned 0600 by
-   * the customer, and nothing in the type read as wrong. Named for what they are, a future
-   * caller passing the SSH account here has to type the mismatch out.
+   * The field keeps the `agent` name on purpose: it names the ROLE (whoever runs the agents), so a
+   * caller has to decide which account plays it rather than inherit one from a field name.
    */
   readonly agentHome: string;
   readonly agentUser?: string;
   readonly agentGroup?: string;
+  /** Homes earlier releases installed into; an active record naming one is migrated, never trusted. */
+  readonly legacyHomes?: readonly WorkspaceHostAgentHomeLegacyHome[];
 }
+
+/** The active record, marked when it still names a home this consumer only migrates away from. */
+type WorkspaceHostAgentHomeActiveState = WorkspaceHostAgentHomeState & {
+  readonly legacy: boolean;
+};
 
 export interface WorkspaceHostAgentHomeConsumerEvidence {
   readonly family: WorkspaceHostAgentHomeFamily;
@@ -926,6 +945,7 @@ export class WorkspaceHostAgentHomeConsumer {
   private readonly agentHome: string;
   private readonly agentUser?: string;
   private readonly agentGroup?: string;
+  private readonly legacyHomes: readonly string[];
 
   constructor(options: WorkspaceHostAgentHomeConsumerOptions) {
     this.filesystem = options.filesystem;
@@ -941,21 +961,71 @@ export class WorkspaceHostAgentHomeConsumer {
     }
     this.agentUser = options.agentUser;
     this.agentGroup = options.agentGroup;
+    this.legacyHomes = (options.legacyHomes ?? []).map((legacy) => {
+      const home = requireExplicitWorkspaceHostHome(legacy.home);
+      if (home === this.agentHome) {
+        throw new WorkspaceHostAgentHomeBundleError(
+          "a legacy agent home cannot be the home this consumer installs into",
+        );
+      }
+      return home;
+    });
   }
 
-  private async readState(): Promise<WorkspaceHostAgentHomeState | null> {
+  private async readState(): Promise<WorkspaceHostAgentHomeActiveState | null> {
     const raw = await this.filesystem.readFileIfPresent(
       workspaceHostAgentHomeStatePath(this.materialRoot),
     );
     if (raw === null) return null;
     const state = parseWorkspaceHostAgentHomeState(raw);
-    if (state.home !== this.agentHome) {
-      throw new WorkspaceHostAgentHomeStateError(
-        "active agent-home state names a different agent home",
-        { family: state.family, generation: state.generation },
-      );
+    if (state.home === this.agentHome) return { ...state, legacy: false };
+    // A record from a release that installed into an earlier home is a migration to perform, not
+    // a redirect to follow: the consumer never writes there again, it only removes what it left.
+    if (this.legacyHomes.includes(state.home)) return { ...state, legacy: true };
+    throw new WorkspaceHostAgentHomeStateError(
+      "active agent-home state names a different agent home",
+      { family: state.family, generation: state.generation },
+    );
+  }
+
+  /**
+   * Remove every managed native credential file from each legacy home (D-421 migration).
+   *
+   * Runs on every install and revoke, not only when the active record names a legacy home: an
+   * install that committed its new record and then died before this sweep would otherwise leave a
+   * copy that no later operation looks for. Removal is idempotent and never creates anything in
+   * the legacy home — a home that is absent, or a credential directory that is absent, is already
+   * clean. Parents are lstat-checked so a symlinked credential directory cannot steer the root
+   * consumer's unlink into another account's files.
+   */
+  private async sweepLegacyHomes(
+    family: WorkspaceHostAgentHomeFamily,
+    generation: number,
+  ): Promise<void> {
+    for (const home of this.legacyHomes) {
+      const paths = workspaceHostAgentHomePaths(home);
+      for (const path of Object.values(paths)) {
+        if (this.filesystem.pathKind) {
+          let parentMissing = false;
+          for (const directory of workspaceHostAgentHomeDirectories(home)) {
+            if (!path.startsWith(`${directory}/`)) continue;
+            const kind = await this.filesystem.pathKind(directory);
+            if (kind === "missing") {
+              parentMissing = true;
+              break;
+            }
+            if (kind !== "directory") {
+              throw new WorkspaceHostAgentHomeStateError(
+                `legacy agent-home directory '${directory}' is not a real directory`,
+                { family, generation },
+              );
+            }
+          }
+          if (parentMissing) continue;
+        }
+        await this.removeNativeFile(path, family, generation);
+      }
     }
-    return state;
   }
 
   private async own(path: string): Promise<void> {
@@ -1135,10 +1205,10 @@ export class WorkspaceHostAgentHomeConsumer {
     if (
       current &&
       current.generation === generation &&
-      (current.family !== family || current.home !== this.agentHome)
+      current.family !== family
     ) {
       throw new WorkspaceHostAgentHomeStateError(
-        `agent-home generation ${generation} is already active for another family or home`,
+        `agent-home generation ${generation} is already active for another family`,
         { family, generation },
       );
     }
@@ -1158,7 +1228,10 @@ export class WorkspaceHostAgentHomeConsumer {
       // A native CLI may have refreshed its credentials since this generation was installed.
       // Rebinding the immutable seed must not discard those bytes. Check every credential
       // before any write, and require a newer generation instead of accepting changed material.
-      if (current?.generation === generation) {
+      // A migration is exempt: this generation was installed into the LEGACY home, so whatever
+      // sits at this home's paths was never managed (e.g. files an operator placed by hand) and
+      // is replaced by the delivered material rather than protected as a CLI refresh.
+      if (current?.generation === generation && !current.legacy) {
         for (const { label, existing } of nativeFiles) {
           const expected = bundle.files[label];
           if (
@@ -1214,6 +1287,10 @@ export class WorkspaceHostAgentHomeConsumer {
           await this.ensureLocalOmpModelsConfig(family, generation),
         );
       }
+      // D-421: a copy in a legacy home is unreachable by any later revoke once the record below
+      // names this home, so it goes before the commit. A crash between the two leaves the legacy
+      // record in place, and the next install or revoke repeats the sweep.
+      await this.sweepLegacyHomes(family, generation);
       // State is the commit marker and is intentionally written after every native file succeeds.
       await this.filesystem.ensureDirectory(join(this.materialRoot, "active"));
       await this.filesystem.writePrivateFile(
@@ -1267,6 +1344,15 @@ export class WorkspaceHostAgentHomeConsumer {
       async () => {
         const bundle = parseWorkspaceHostAgentHomeBundle(material);
         const current = await this.readState();
+        if (current?.legacy) {
+          // Verified bytes in a home no customer-driven agent reads would be a pass that proves
+          // nothing about the product path (D-421). Name the repair instead of the symptom.
+          throw new WorkspaceHostAgentHomeStateError(
+            `agent-home generation ${current.generation} is installed in the legacy home ${current.home}; ` +
+              "bind a credential generation again to migrate it into the agent-running identity's home",
+            { family, generation },
+          );
+        }
         if (
           !current ||
           current.family !== family ||
@@ -1337,15 +1423,10 @@ export class WorkspaceHostAgentHomeConsumer {
     return await this.withLock(
       family,
       async () => {
-        const current = await this.readState();
         // A malformed/tampered state that names another canonical home is never a reason for a
-        // root consumer to remove files there. Fail closed instead of treating it as a stale no-op.
-        if (current && current.home !== this.agentHome) {
-          throw new WorkspaceHostAgentHomeStateError(
-            "active agent-home state names a different agent home",
-            { family: current.family, generation: current.generation },
-          );
-        }
+        // root consumer to remove files there: readState() fails closed on any home that is
+        // neither this one nor a configured legacy home.
+        const current = await this.readState();
         // A stale revoke is deliberately a no-op: a newer generation owns these same paths now.
         if (
           !current ||
@@ -1359,12 +1440,25 @@ export class WorkspaceHostAgentHomeConsumer {
             home: this.agentHome,
           };
         }
+        if (current.legacy) {
+          // The revoked generation lives only in the legacy home. Leave this home alone: nothing
+          // here was installed for it, and it may hold material the customer placed themselves.
+          await this.sweepLegacyHomes(family, generation);
+          await this.removeNativeFile(
+            workspaceHostAgentHomeStatePath(this.materialRoot),
+            family,
+            generation,
+          );
+          return { family, generation, present: false, home: this.agentHome };
+        }
         const securedDirectories = await this.secureHomeLayout();
         try {
           const paths = workspaceHostAgentHomePaths(this.agentHome);
           for (const path of Object.values(paths)) {
             await this.removeNativeFile(path, family, generation);
           }
+          // Also covers a legacy copy an interrupted migration left behind (sweepLegacyHomes).
+          await this.sweepLegacyHomes(family, generation);
           await this.removeNativeFile(
             workspaceHostAgentHomeStatePath(this.materialRoot),
             family,

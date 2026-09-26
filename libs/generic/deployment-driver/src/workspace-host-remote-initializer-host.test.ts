@@ -22,7 +22,10 @@ import {
   type WorkspaceHostCommandInput,
   type WorkspaceHostSystem,
 } from "./workspace-host-remote-initializer-host";
-import { WORKSPACE_HOST_DATA_ROOT } from "./workspace-host-bootstrap";
+import {
+  WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
+  WORKSPACE_HOST_DATA_ROOT,
+} from "./workspace-host-bootstrap";
 import {
   encodeWorkspaceHostAgentHomeBundle,
   workspaceHostAgentHomePaths,
@@ -810,9 +813,14 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent credential consumer
       generation: 7,
     });
 
-    // The AGENT identity's home (D-248). Before the split this was the SSH login's own home, so
-    // the customer owned and could read the platform's Claude/Codex credentials at 0600.
-    const paths = workspaceHostAgentHomePaths("/home/papercusp-agent");
+    // The CUSTOMER workspace account's home (D-421): that account runs every customer-driven
+    // agent, so its own credential lives there. Between D-248 and D-421 this was the platform
+    // agent home, which no customer-driven agent reads; nothing may be left there.
+    const paths = workspaceHostAgentHomePaths("/home/papercusp-workspace");
+    for (const legacy of Object.values(
+      workspaceHostAgentHomePaths("/home/papercusp-agent"),
+    ))
+      expect(system.files.has(legacy)).toBe(false);
     expect(system.files.get(paths.claude)).toEqual(
       Buffer.from(
         // Claude's refresh credential is NEUTRALIZED (empty) exactly like Codex's below, and
@@ -862,7 +870,7 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
     expect(report.allReady).toBe(false);
   });
 
-  it("runs the probes as the AGENT identity with only explicit variables, never the SSH login and never ambient controller credentials (D-248)", async () => {
+  it("runs the probes as the CUSTOMER workspace account with only explicit variables, never the platform agent identity and never ambient controller credentials (D-421)", async () => {
     const invocations: WorkspaceHostAgentProbeInvocation[] = [];
     const runner: WorkspaceHostAgentProbeRunner = {
       async run(invocation) {
@@ -882,20 +890,22 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
     }).host;
     await host.probeAgentVerification();
     for (const invocation of invocations) {
-      // The identity here decides which account the bootstrap must grant runtime read to, and
-      // D-043 rules that it cannot be the SSH login. Asserting the negative alongside the
-      // positive because the two were the same string until D-248 split them, so an accidental
-      // revert reads as a passing test unless the wrong value is named explicitly.
+      // The probe runs as the identity every customer-driven agent runs as (D-421), so a pass
+      // proves the product path. D-043 still holds because its PATH reaches only the customer
+      // toolchain, never the release bin. The negative is asserted alongside the positive: the
+      // platform agent identity is what this was between D-248 and D-421, and an accidental
+      // revert would otherwise read as a passing test.
       expect(invocation.env).toEqual({
-        HOME: "/home/papercusp-agent",
-        USER: "papercusp-agent",
-        LOGNAME: "papercusp-agent",
-        PATH: "/opt/papercusp/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        HOME: "/home/papercusp-workspace",
+        USER: "papercusp-workspace",
+        LOGNAME: "papercusp-workspace",
+        PATH: `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       });
+      expect(invocation.env?.PATH).not.toContain("/opt/papercusp");
       expect(invocation.env).not.toHaveProperty("ANTHROPIC_API_KEY");
       expect(invocation.env).not.toHaveProperty("OPENAI_API_KEY");
-      expect(invocation.runAsUser).toBe("papercusp-agent");
-      expect(invocation.runAsUser).not.toBe("papercusp-workspace");
+      expect(invocation.runAsUser).toBe("papercusp-workspace");
+      expect(invocation.runAsUser).not.toBe("papercusp-agent");
     }
   });
 
@@ -905,11 +915,18 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
       codex: "/home/papercusp-agent/.papercusp/runtime/node_modules/.bin/codex",
       omp: "/home/papercusp-agent/.local/bin/omp",
     };
+    // D-423: the attested installs live in the platform agent home, which the probing customer
+    // account cannot read, so each attested CLI is executed from its customer-toolchain copy.
+    const toolchain = {
+      claude: `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}/claude`,
+      codex: `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}/codex`,
+      omp: `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}/omp`,
+    };
     const invocations: WorkspaceHostAgentProbeInvocation[] = [];
     const runner: WorkspaceHostAgentProbeRunner = {
       async run(invocation) {
         invocations.push(invocation);
-        return invocation.command === vendor.omp
+        return invocation.command === toolchain.omp
           ? { exitCode: 0, stdout: '{"account":"can…001"}' }
           : { exitCode: 0, stdout: "logged in as canary@example.test" };
       },
@@ -944,17 +961,17 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
     // EVERY spec of an agent, so a regression that reverted only the second one would show up
     // here as a bare name in this list.
     expect(invocations.map((invocation) => invocation.command)).toEqual([
-      vendor.claude,
-      vendor.codex,
-      vendor.codex,
-      vendor.omp,
+      toolchain.claude,
+      toolchain.codex,
+      toolchain.codex,
+      toolchain.omp,
     ]);
-    // The probe PATH still leads with the release bin, and that is fine — the point is that the
-    // command is no longer a bare name for that path to resolve. Asserting both together is what
-    // pins the fix: a regression restores the bare name while this env stays identical.
+    // Neither the attested agent-home path nor a release-bin wrapper is ever executed: the first
+    // is unreadable to the customer account, the second is Papercusp code D-043 keeps from it.
     for (const invocation of invocations) {
+      expect(Object.values(vendor)).not.toContain(invocation.command);
       expect(invocation.env?.PATH).toBe(
-        `${WORKSPACE_HOST_RELEASE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
+        `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
       );
       expect(
         invocation.command.startsWith(WORKSPACE_HOST_RELEASE_BIN_DIR),

@@ -73,6 +73,7 @@ import {
 import {
   DEFAULT_WORKSPACE_HOST_AGENT_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
   WORKSPACE_HOST_DATA_ROOT,
   WORKSPACE_HOST_RUNTIME_ROOT,
   WORKSPACE_HOST_STATE_ROOT,
@@ -94,11 +95,13 @@ export const WORKSPACE_HOST_DEFAULT_WORKSPACE_ROOT = WORKSPACE_HOST_DATA_ROOT;
 export const WORKSPACE_HOST_DEFAULT_WORKSPACE_HOME = `/home/${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}`;
 
 /**
- * Default native home of the AGENT identity — where delivered Claude/Codex/OMP material lives.
+ * Default native home of the platform AGENT identity (D-248).
  *
- * A separate constant from the workspace home on purpose: the two were the same path until
- * D-248, which is exactly why the credential exposure was invisible. Keep them distinct even if
- * a future caller wants to override one.
+ * Between D-248 and D-421 delivered Claude/Codex/OMP material lived here. Since D-421 every
+ * customer-driven agent runs as the customer workspace account, so delivered material goes to
+ * {@link WORKSPACE_HOST_DEFAULT_WORKSPACE_HOME} and this home is only a LEGACY install location
+ * the credential consumer migrates away from. The identity itself remains: bootstrap still
+ * installs the vendor CLIs as it, and the customer toolchain is copied from there (D-423).
  */
 export const WORKSPACE_HOST_DEFAULT_AGENT_HOME = `/home/${DEFAULT_WORKSPACE_HOST_AGENT_USER}`;
 
@@ -116,8 +119,14 @@ export const WORKSPACE_HOST_RELEASE_BIN_DIR = `${WORKSPACE_HOST_RUNTIME_ROOT}/cu
 /** Where bootstrap writes the attestation this adapter reads its vendor runtime paths from. */
 export const WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE = `${WORKSPACE_HOST_STATE_ROOT}/bootstrap-attestation.json`;
 
-/** Exact PATH passed to agent probes; no controller process environment is inherited. */
-export const WORKSPACE_HOST_DEFAULT_AGENT_PROBE_PATH = `${WORKSPACE_HOST_RELEASE_BIN_DIR}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
+/**
+ * Exact PATH passed to agent probes; no controller process environment is inherited.
+ *
+ * Led by the customer agent toolchain, not the release bin: the probes run as the customer
+ * workspace account (D-421), which D-043 bars from the release tree, so a release-bin entry would
+ * only ever produce EACCES (D-423).
+ */
+export const WORKSPACE_HOST_DEFAULT_AGENT_PROBE_PATH = `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`;
 
 /** Default bundled CLI used for pair/import. `sidecar/bin` is on the runtime PATH. */
 export const WORKSPACE_HOST_DEFAULT_WORKSPACE_COMMAND = "papercup";
@@ -373,6 +382,8 @@ export interface ProductionWorkspaceHostOptions {
    * Overridable so a test can point at a fixture; production always uses the real host path.
    */
   readonly agentRuntimeAttestationPath?: string;
+  /** Customer agent toolchain bin the probes execute from (D-423); overridable for tests. */
+  readonly customerAgentToolchainBin?: string;
 }
 
 interface WorkspaceHostGitCredentialBinding {
@@ -712,6 +723,7 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
   private readonly agentGroup: string;
   private readonly agentProbePath: string;
   private readonly agentRuntimeAttestationPath: string;
+  private readonly customerAgentToolchainBin: string;
 
   constructor(options: ProductionWorkspaceHostOptions = {}) {
     this.system = options.system ?? new NodeWorkspaceHostSystem();
@@ -771,6 +783,9 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
     this.agentRuntimeAttestationPath =
       options.agentRuntimeAttestationPath ??
       WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_FILE;
+    this.customerAgentToolchainBin = requireExplicitWorkspaceHostHome(
+      options.customerAgentToolchainBin ?? WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
+    );
     this.gitCredentialBindings =
       options.gitCredentialBindings ??
       new WorkspaceHostGitCredentialBindingRegistry(
@@ -1087,26 +1102,38 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
       runner: this.agentProbeRunner,
       requestedAgents,
       now: this.now,
-      // D-259 Defect 2. Without this the probe execs a BARE NAME against `agentProbePath`, whose
-      // first entry is the release bin — so it measured a psu wrapper, which does not implement
-      // `auth status`, and reported a credential fault on a host whose credentials were fine.
-      // The vendor path is read from the attestation rather than recomputed here because the
-      // resolve that produced it ran ON this host, as the agent identity, after the install.
-      runtimePaths: await this.readAttestedAgentRuntimePaths(),
-      // The AGENT identity, not the SSH login (D-248). This line is the one that decides which
-      // account has to be able to read `$RUNTIME_ROOT`: whoever the probes run as is the account
-      // the bootstrap must grant runtime read to, and D-043 rules that it cannot be the workspace
-      // user. HOME travels with it — the delivered Claude/Codex material lives under the agent's
-      // 0700 home, so a probe with the SSH user's HOME would look for credentials that are not
-      // there and fail identically to a genuine credential fault.
+      // D-259 Defect 2: exec an explicit path, never a bare name a wrapper could answer. The
+      // attestation says WHICH vendor CLIs bootstrap installed; the path executed is that CLI's
+      // copy in the customer agent toolchain (D-423), because the attested install lives in the
+      // platform agent home, which the account running these probes cannot read.
+      runtimePaths: this.customerToolchainRuntimePaths(
+        await this.readAttestedAgentRuntimePaths(),
+      ),
+      // The CUSTOMER workspace account (D-421), the identity every customer-driven agent runs
+      // as — so a passing probe proves the product path, not a platform-only one. HOME travels
+      // with it: the delivered Claude/Codex material lives in that account's 0700 home, and a
+      // probe with any other HOME would look for credentials that are not there and fail
+      // identically to a genuine credential fault. D-043 is intact because this account reaches
+      // only the toolchain, never `$RUNTIME_ROOT`.
       env: {
-        HOME: this.agentHome,
-        USER: this.agentUser,
-        LOGNAME: this.agentUser,
+        HOME: this.workspaceHome,
+        USER: this.workspaceUser,
+        LOGNAME: this.workspaceUser,
         PATH: this.agentProbePath,
       },
-      runAsUser: this.agentUser,
+      runAsUser: this.workspaceUser,
     });
+  }
+
+  /** Map each attested vendor CLI onto its customer-toolchain copy (D-423). */
+  private customerToolchainRuntimePaths(
+    attested: Partial<Record<WorkspaceHostCanaryAgent, string>>,
+  ): Partial<Record<WorkspaceHostCanaryAgent, string>> {
+    const paths: Partial<Record<WorkspaceHostCanaryAgent, string>> = {};
+    for (const agent of Object.keys(attested) as WorkspaceHostCanaryAgent[]) {
+      paths[agent] = join(this.customerAgentToolchainBin, agent);
+    }
+    return paths;
   }
 
   /**
@@ -1477,9 +1504,11 @@ export function createProductionWorkspaceHostCredentialMaterializers(
     new WorkspaceHostAgentHomeConsumer({
       filesystem: system,
       materialRoot,
-      agentHome: WORKSPACE_HOST_DEFAULT_AGENT_HOME,
-      agentUser: DEFAULT_WORKSPACE_HOST_AGENT_USER,
-      agentGroup: DEFAULT_WORKSPACE_HOST_AGENT_USER,
+      // D-421: the customer workspace account runs every customer-driven agent.
+      agentHome: WORKSPACE_HOST_DEFAULT_WORKSPACE_HOME,
+      agentUser: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+      agentGroup: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+      legacyHomes: [{ home: WORKSPACE_HOST_DEFAULT_AGENT_HOME }],
     });
   // Enumerated explicitly rather than mapped over WORKSPACE_HOST_CREDENTIAL_FAMILIES: adding a
   // family should be a decision that lands here deliberately, not one that silently acquires a
@@ -1546,29 +1575,35 @@ export function createProductionWorkspaceHostRemoteInitializerDeps(
   const gitCredentialBindings =
     options.gitCredentialBindings ??
     new WorkspaceHostGitCredentialBindingRegistry(system, materialRoot);
-  // The delivered Claude/Codex/OMP material lands in the AGENT identity's 0700 home, not the SSH
-  // login's. This wiring is the whole of the credential half of D-248: everything downstream
-  // (ownership, the probe's HOME, what the customer can read over SSH) follows from these three.
-  const agentHomeConsumer = new WorkspaceHostAgentHomeConsumer({
-    filesystem: system,
-    materialRoot,
+  // The delivered Claude/Codex/OMP material lands in the CUSTOMER workspace account's 0700 home
+  // (D-421): that account runs every customer-driven agent, and the probe runs as it, so a pass
+  // proves the product path. The platform agent identity's home is where D-248 put the material;
+  // it is a legacy location now, migrated away from on the next bind and swept on every revoke.
+  //
+  // The host is built FIRST: its constructor owns the identity-collapse refusal (agentUser ===
+  // workspaceUser), which must win over the consumer's weaker "legacy home equals install home".
+  const host = new ProductionWorkspaceHostRemoteInitializerHost({
+    ...options,
+    system,
+    credentialMaterialRoot: materialRoot,
+    workspaceHome,
+    workspaceUser,
+    workspaceGroup,
     agentHome,
     agentUser,
     agentGroup,
+    gitCredentialBindings,
+  });
+  const agentHomeConsumer = new WorkspaceHostAgentHomeConsumer({
+    filesystem: system,
+    materialRoot,
+    agentHome: workspaceHome,
+    agentUser: workspaceUser,
+    agentGroup: workspaceGroup,
+    legacyHomes: [{ home: agentHome }],
   });
   return {
-    host: new ProductionWorkspaceHostRemoteInitializerHost({
-      ...options,
-      system,
-      credentialMaterialRoot: materialRoot,
-      workspaceHome,
-      workspaceUser,
-      workspaceGroup,
-      agentHome,
-      agentUser,
-      agentGroup,
-      gitCredentialBindings,
-    }),
+    host,
     credentials: new WorkspaceHostCredentialResolver(
       createProductionWorkspaceHostCredentialMaterializers(
         system,

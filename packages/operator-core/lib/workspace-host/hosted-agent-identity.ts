@@ -93,7 +93,12 @@ export function hostedCustomerAgentSpawnTransform(
       '/usr/bin',
       '/bin',
     ],
-    homeLinks: [{ envVar: 'CODEX_HOME', name: 'auth.json', homeRelative: '.codex/auth.json' }],
+    // Each per-spawn config dir gets a link to the customer's own delivered credential (D-421/P-325):
+    // runAgentChat links the OPERATOR's file into the local staged dir, and symlinks are not shipped.
+    homeLinks: [
+      { envVar: 'CODEX_HOME', name: 'auth.json', homeRelative: '.codex/auth.json' },
+      { envVar: 'CLAUDE_CONFIG_DIR', name: '.credentials.json', homeRelative: '.claude/.credentials.json' },
+    ],
     forbiddenSecrets: options.forbiddenSecrets ?? readOperatorSuperuserToken(localHome),
   });
   return (request) => {
