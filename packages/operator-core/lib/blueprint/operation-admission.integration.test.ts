@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { compileAgentSpecification, type Blueprint } from '@papercusp/orchestrator/blueprint';
+import { blueprintHash, compileAgentSpecification, pinPackageInput, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { projectBlueprintToPg } from './project-to-pg';
 import {
@@ -70,6 +70,50 @@ const definition = (version: string) => compileAgentSpecification({
 });
 
 describe('program child admission pins the root specification', () => {
+  it('launches a pinned external program after the owner blueprint pointer moves', async () => {
+    const external = compileAgentSpecification({ source: {
+      id: 'retained-external-program', version: 'external-A', workItem: { kind: 'feature' },
+      spine: { steps: [{ id: 'aggregate', op: 'vote:aggregate', args: { posts: [] } }] },
+    } });
+    const externalBlueprint = external.configuration as Blueprint;
+    const owner = compileAgentSpecification({
+      source: {
+        id: 'external-program-owner', version: 'owner-A', workItem: { kind: 'feature' },
+        spine: { steps: [{ id: 'open', op: 'coord:thread-open', args: { title: 'Owner program' } }] },
+        operations: [{
+          id: 'rootExternal', version: 'owner-A',
+          target: { kind: 'work-item', itemKind: 'feature' },
+          execution: { kind: 'program', blueprint: { kind: 'blueprint',
+            ref: externalBlueprint.id, revision: externalBlueprint.version,
+            contentHash: blueprintHash(externalBlueprint) } },
+          inputSchema: { type: 'object' }, acceptance: { resultSchema: { type: 'object' } },
+        }],
+      },
+      inputClosure: [pinPackageInput({
+        packageKind: 'blueprint', ref: `operation:${externalBlueprint.id}`,
+        revision: externalBlueprint.version, value: externalBlueprint,
+        files: [], dependencies: [],
+      })],
+    });
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: owner.configuration as Blueprint, specification: owner });
+    const accepted = await submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'external-program-caller', operationId: 'rootExternal',
+      requestKey: 'external-root', input: {}, title: 'External root',
+    });
+    const moved = definition('external-pointer-B');
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: moved.configuration as Blueprint, specification: moved });
+    const pending = (await findUnstartedAcceptedCoordPrograms(sql))
+      .find((entry) => entry.acceptedOperation?.receiptId === accepted.receiptId);
+    expect(pending?.blueprintId).toBe(externalBlueprint.id);
+    expect(pending?.acceptedOperation?.specificationRevision).toBe(owner.specificationRevision);
+    const program = await loadAcceptedCoordProgramBlueprint(sql, accepted, 'external-program-caller');
+    expect(program.id).toBe(externalBlueprint.id);
+    expect(program.version).toBe('external-A');
+    expect(program.spine.steps?.[0]?.op).toBe('vote:aggregate');
+  }, 90_000);
+
   it('bounds nested program operations by the retained recursion limit', async () => {
     const specification = definition('bounded-nesting');
     await projectBlueprintToPg(sql, { workspaceId, harnessSlug,

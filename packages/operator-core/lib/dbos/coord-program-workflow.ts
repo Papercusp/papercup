@@ -24,8 +24,8 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
-import { BlueprintSchema, loadBuiltinBlueprint, operationFromSpecification, type Blueprint } from '@papercusp/orchestrator/blueprint';
-import { ANY_FAMILY_TERMINAL_STATES, FEATURE_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { BlueprintSchema, loadBuiltinBlueprint, operationFromSpecification, pinnedOperationProgramBlueprint, type Blueprint } from '@papercusp/orchestrator/blueprint';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { runWithWorkspace } from '../workspace-als';
 import '../coord-ops/index.js'; // register every coord op
 import '../blueprint-steps/index.js'; // register every deterministic step-op (P-010)
@@ -98,10 +98,8 @@ export async function loadAcceptedCoordProgramBlueprint(
     if (operation.target.kind !== 'work-item' || operation.execution?.kind !== 'program') {
       throw new Error('accepted blueprint operation is not a work-item program');
     }
-    if (operation.execution.blueprint) {
-      throw new Error('accepted coord program references an unretained external blueprint');
-    }
-    const blueprint = BlueprintSchema.parse(specification.configuration);
+    const blueprint = pinnedOperationProgramBlueprint(operation, specification.inputs) ??
+      BlueprintSchema.parse(specification.configuration);
     if (!blueprint.spine.steps) throw new Error('accepted coord program has no program spine');
     return blueprint;
   });
@@ -141,6 +139,31 @@ async function requireCurrentAcceptedCoordProgramRoot(
   });
 }
 
+/** A child program's receipt points at its parent receipt in its request key.
+ * Count that durable lineage before creating another program root, so a chain
+ * of different operation IDs cannot reset the spine's recursion limit. */
+async function acceptedProgramDepth(sql: Sql, root: BlueprintOperationHandle): Promise<number> {
+  const seen = new Set<number>();
+  let receiptId = root.receiptId;
+  let depth = 0;
+  for (;;) {
+    if (seen.has(receiptId) || depth > 16) throw new Error('program receipt ancestry is cyclic or too deep');
+    seen.add(receiptId);
+    const rows = await sql<Array<{ request_key: string }>>`
+      SELECT request_key FROM harness_shared.blueprint_operation_invocations
+       WHERE id = ${receiptId} AND workspace_id = ${root.workspaceId}
+         AND harness_slug = ${root.harnessSlug}
+    `;
+    const key = rows[0]?.request_key;
+    if (!key) throw new Error('program receipt ancestry is missing');
+    const parent = /^program:([1-9][0-9]*):[a-zA-Z][a-zA-Z0-9_-]{0,79}$/.exec(key);
+    if (!parent) return depth;
+    receiptId = Number(parent[1]);
+    if (!Number.isSafeInteger(receiptId)) throw new Error('program receipt ancestry is invalid');
+    depth++;
+  }
+}
+
 /** Invoke a declared child against the root's retained specification. The
  * receipt ID and authored step ID are the durable child identity: repeating a
  * DBOS step after a lost reply recovers the same direct item or plan run. */
@@ -157,12 +180,16 @@ export async function submitAcceptedCoordProgramChild(
     throw new Error('program child invocation requires a distinct declared operation');
   }
   return runWithWorkspace(root.workspaceId, async () => {
-    await loadAcceptedCoordProgramBlueprint(sql, root, parent.callerId);
+    const blueprint = await loadAcceptedCoordProgramBlueprint(sql, root, parent.callerId);
     const specification = await readBlueprintSpecificationSnapshot(
       sql, root.workspaceId, root.harnessSlug, root.specificationRevision,
     );
     if (!specification) throw new Error('program root specification snapshot is missing');
-    operationFromSpecification(specification, child.operationId);
+    const { operation } = operationFromSpecification(specification, child.operationId);
+    if (operation.execution?.kind === 'program' &&
+        await acceptedProgramDepth(sql, root) >= Math.min(blueprint.recursion?.maxDepth ?? 1, 16)) {
+      throw new Error('program child invocation exceeds the accepted recursion depth');
+    }
     return submitBlueprintOperation(sql, {
       workspaceId: root.workspaceId, harnessSlug: root.harnessSlug,
       callerId: parent.callerId, operationId: child.operationId,
@@ -260,7 +287,8 @@ export async function findUnstartedAcceptedCoordPrograms(sql: Sql, limit = 32): 
     SELECT i.id::text AS receipt_id, i.workspace_id, i.harness_slug,
            i.caller_id, i.operation_id, i.specification_revision,
            wi.feature_id AS work_item_id,
-           s.artifact->'configuration'->>'id' AS blueprint_id,
+           COALESCE(op->'execution'->'blueprint'->>'ref',
+                    s.artifact->'configuration'->>'id') AS blueprint_id,
            wi.payload->'blueprintOperation'->'input' AS input,
            wi.updated_ts
       FROM harness_shared.blueprint_operation_invocations i
@@ -271,21 +299,18 @@ export async function findUnstartedAcceptedCoordPrograms(sql: Sql, limit = 32): 
       JOIN harness_shared.blueprint_specifications s
         ON s.workspace_id = i.workspace_id AND s.harness_slug = i.harness_slug
        AND s.specification_revision = i.specification_revision
+      CROSS JOIN LATERAL jsonb_array_elements(s.artifact->'configuration'->'operations') op
       LEFT JOIN dbos.workflow_status wf
         ON wf.workflow_uuid = 'coord-program:operation:' || i.workspace_id || ':' || i.id::text
      WHERE i.target_kind = 'work-item'
-       AND wi.status <> ALL(${FEATURE_TERMINAL_STATES as string[]}::text[])
+       AND wi.status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
        AND wf.workflow_uuid IS NULL
        AND wi.payload->'blueprintOperation'->>'operationId' = i.operation_id
        AND wi.payload->'blueprintOperation'->>'specificationRevision' = i.specification_revision
        AND jsonb_typeof(wi.payload->'blueprintOperation'->'input') = 'object'
-       AND EXISTS (
-         SELECT 1 FROM jsonb_array_elements(s.artifact->'configuration'->'operations') op
-          WHERE op->>'id' = i.operation_id
-            AND op->'execution'->>'kind' = 'program'
-            AND op->'target'->>'kind' = 'work-item'
-            AND NOT (op->'execution' ? 'blueprint')
-       )
+       AND op->>'id' = i.operation_id
+       AND op->'execution'->>'kind' = 'program'
+       AND op->'target'->>'kind' = 'work-item'
      ORDER BY i.id LIMIT ${limit}
   `;
   return rows.map((row) => {
@@ -423,12 +448,6 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
   // Top-level runOp: each op is a checkpointed DBOS step (durable + replay-safe).
   // The step name is the program-unique `op-<id>` / `gate-<op>` label.
   const runOp: RunOp = async (call, c) => {
-    if (accepted) {
-      const status = await getBlueprintOperationStatus(getOrgPg().sql, accepted, input.callerId);
-      if (status.phase === 'terminal' || status.cancellationRequested) {
-        throw new Error('accepted coord program is terminal or cancellation was requested');
-      }
-    }
     if (accepted && call.op === 'blueprint:invoke-child') {
       const parsed = invokeChildArgsSchema.parse(call.args);
       return DBOS.runStep(
@@ -448,6 +467,14 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
     }
     return DBOS.runStep(
       async () => {
+        // A live cancellation check must be inside the checkpointed step:
+        // replay must first consume its recorded step name and output.
+        if (accepted) {
+          const status = await getBlueprintOperationStatus(getOrgPg().sql, accepted, input.callerId);
+          if (status.phase === 'terminal' || status.cancellationRequested) {
+            throw new Error('accepted coord program is terminal or cancellation was requested');
+          }
+        }
         const op = requireCoordOp(call.op);
         const parsed = op.argsSchema.parse(call.args);
         return op.run(parsed, c);
@@ -461,12 +488,19 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
     outcome = await runProgramCore({ blueprint, payload: input.payload, ctx, runOp });
   } catch (error) {
     if (!accepted) throw error;
-    console.warn(`[coord-program] accepted root ${accepted.receiptId} failed: ${error instanceof Error ? error.message : error}`);
-    outcome = { outcome: 'failed', resolved: false };
+    const status = await getBlueprintOperationStatus(getOrgPg().sql, accepted, input.callerId);
+    if (status.cancellationRequested) outcome = { outcome: 'cancelled', resolved: false };
+    else {
+      console.warn(`[coord-program] accepted root ${accepted.receiptId} failed: ${error instanceof Error ? error.message : error}`);
+      outcome = { outcome: 'failed', resolved: false };
+    }
   }
   if (accepted) {
-    await DBOS.runStep(() => settleAcceptedCoordProgram(getOrgPg().sql, input, outcome),
+    const terminal = await DBOS.runStep(() => settleAcceptedCoordProgram(getOrgPg().sql, input, outcome),
       { name: 'settle-accepted-root' });
+    if (terminal.outcome !== 'succeeded') {
+      return { outcome: terminal.outcome ?? 'failed', resolved: false };
+    }
   }
   // Drop the (potentially large) scope from the durable workflow's recorded
   // output — the decision + outcome are what matters to the caller.
