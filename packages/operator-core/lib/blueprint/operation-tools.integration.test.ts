@@ -23,6 +23,7 @@ import {
   assembleOpenApiDocument,
   handleHttpToolRequest,
   listAllProjectedTools,
+  listMcpProjections,
   lookupByHttpPath,
   lookupByMcpName,
   type HttpToolHostExtras,
@@ -329,12 +330,14 @@ describe('P-017 blueprint:* registration and contract projection', () => {
     }
     // The typed RESULT contract projects to MCP `outputSchema` (the OpenAPI assembler
     // references a generic ToolResult for Event.done, so output fields never reach
-    // the document). The MCP listing advertises only an object-typed schema.
+    // the document). Assert what tools/list actually advertises — including
+    // blueprint:result, whose state-discriminated union roots at `anyOf`.
+    const listings = new Map(listMcpProjections().map((listing) => [listing.name, listing]));
     for (const name of names) {
-      const output = lookupByMcpName(name)?.outputJsonSchema;
-      expect(output?.type, `${name} output schema`).toBe('object');
+      expect(listings.get(name)?.outputSchema?.type, `${name} advertised outputSchema`).toBe('object');
     }
-    expect(JSON.stringify(lookupByMcpName(T.status)?.outputJsonSchema)).toContain('"cancellationRequested"');
+    expect(JSON.stringify(listings.get(T.status)?.outputSchema)).toContain('"cancellationRequested"');
+    expect(JSON.stringify(listings.get(T.result)?.outputSchema)).toContain('"evidenceRef"');
   });
 });
 
