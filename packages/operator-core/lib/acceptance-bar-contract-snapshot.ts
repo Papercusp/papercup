@@ -96,6 +96,15 @@ export type AcceptanceBarSnapshotCode =
   | 'bar_snapshot_mapping_missing'
   | 'bar_snapshot_mapping_dropped_only'
   | 'bar_snapshot_projection_stale'
+  /**
+   * WI-10003187: the BAR IS mapped, but no mapped clause is enforceable (every one is
+   * `draft`/`exempt`/`superseded`/`retired`, never promoted to `accepted`/`active`). AUTO-BAR
+   * clauses are seeded `draft`, so this is the normal state of a freshly seeded or amended
+   * BAR. Proof is only ever counted against enforceable clauses, so this state used to
+   * surface as `proof_stale` + `proof_inadequate` with a "re-prove" repair that could never
+   * clear it — the bound proof was current all along; the clause was simply never accepted.
+   */
+  | 'bar_snapshot_clause_not_accepted'
   | 'bar_snapshot_method_missing'
   | 'bar_snapshot_work_contract_missing'
   | 'bar_snapshot_work_contract_stale'
@@ -326,6 +335,12 @@ export interface AcceptanceBarTrace {
     mapping: 'live' | 'dropped-only' | 'missing';
     method: 'declared' | 'missing';
     workContract: 'current' | 'stale' | 'missing';
+    /**
+     * WI-10003187: whether any mapped clause is enforceable. `not-accepted` means proof
+     * cannot be judged yet, so readers must not render the stale/inadequate proof codes for
+     * it. Absent on snapshots written before this field existed.
+     */
+    clauseAcceptance?: 'accepted' | 'not-accepted' | 'unmapped';
   };
 }
 
@@ -693,6 +708,11 @@ export const ACCEPTANCE_BAR_REPAIR_ORDER = [
     'bar_snapshot_check_invalid',
     'bar_snapshot_vetting_missing',
     'bar_snapshot_vetting_stale',
+    // WI-10003187: accept the vetted clause projection before any proof/grading repair.
+    // After vetting because a vetting critique usually amends, and an amendment re-seeds
+    // the changed BAR's clause as draft, so accepting earlier would be spent twice.
+    // Before proof because every proof code is meaningless until a clause is enforceable.
+    'bar_snapshot_clause_not_accepted',
     'bar_snapshot_work_contract_missing',
     'bar_snapshot_work_contract_stale',
     'bar_snapshot_proof_missing',
@@ -762,6 +782,11 @@ export function nextRepair(
     bar_snapshot_mapping_missing: 'Map the BAR to at least one live P-NNN projection.',
     bar_snapshot_mapping_dropped_only: 'Map the outstanding BAR to a live replacement item or amend the BAR.',
     bar_snapshot_projection_stale: 'Regenerate the clause projection from the current BAR revision.',
+    bar_snapshot_clause_not_accepted:
+      'Accept the mapped clause: plans:get-specs, then plans:set-specs with lifecycleStatus:"active", '
+      + 'expectedRevision set to its current revision, and every other field unchanged (keep the sourceBar pin). '
+      + 'That lifecycle-only promotion carries the bound proof and work-item contracts forward. Do NOT re-prove or '
+      + 'amend the rubric on this code: the proof is not stale, the clause was never accepted.',
     bar_snapshot_method_missing: 'Fill the BAR METHOD/check contract before vetting or grading.',
     bar_snapshot_work_contract_missing: 'Promote the BAR/spec revision into the relevant work-item contract.',
     bar_snapshot_work_contract_stale: 'Rebind the open work-item contract to the current spec revision.',
@@ -1039,6 +1064,11 @@ export function projectAcceptanceBarContractSnapshot(
       .filter((clause) => clause.sourceBar?.barKey === barKey)
       .sort((a, b) => a.specId.localeCompare(b.specId));
     const enforceableClauses = clauses.filter((clause) => isEnforceableSpecLifecycle(clause.lifecycleStatus));
+    // WI-10003187: mapped, but nothing enforceable yet. Every proof judgement below counts
+    // only enforceable clauses, so for this BAR `currentEvidence` is empty by construction
+    // and the adequacy checks have nothing to evaluate. Name the actual gap instead.
+    const clauseAcceptance: NonNullable<AcceptanceBarTrace['readiness']['clauseAcceptance']> =
+      clauses.length === 0 ? 'unmapped' : enforceableClauses.length > 0 ? 'accepted' : 'not-accepted';
     const clauseBehaviorClasses = [...new Set(enforceableClauses.map((clause) => clause.behaviorClass))];
     const behaviorClass: SpecBehaviorClass | null = clauseBehaviorClasses.length === 1
       ? clauseBehaviorClasses[0]!
@@ -1311,9 +1341,16 @@ export function projectAcceptanceBarContractSnapshot(
     if (!criterion.method?.trim()) addCode('bar_snapshot_method_missing');
     if (workContractState === 'missing') addCode('bar_snapshot_work_contract_missing');
     if (workContractState === 'stale') addCode('bar_snapshot_work_contract_stale');
+    // A never-accepted clause REPLACES the stale/depth/adequacy verdicts rather than joining
+    // them: those are judged against enforceable clauses only, so here they describe the
+    // lifecycle gap, not the proof. `proof_missing` stays (no evidence at all is a real
+    // obligation, and a lifecycle-only promotion carries whatever is bound), as does
+    // truncation (an incomplete read is never a lifecycle fact).
+    if (clauseAcceptance === 'not-accepted') addCode('bar_snapshot_clause_not_accepted');
     if (proofState === 'missing') addCode('bar_snapshot_proof_missing');
-    if (proofState === 'stale' || proofState === 'truncated') addCode('bar_snapshot_proof_stale');
-    if (criterion.role === 'outcome' && automatedProofRequired) {
+    if (proofState === 'truncated' || (proofState === 'stale' && clauseAcceptance !== 'not-accepted'))
+      addCode('bar_snapshot_proof_stale');
+    if (criterion.role === 'outcome' && automatedProofRequired && clauseAcceptance !== 'not-accepted') {
       if (adequacyState === 'undeclared') addCode('bar_snapshot_proof_depth_missing');
       else if (adequacyState !== 'pass') addCode('bar_snapshot_proof_inadequate');
     }
@@ -1456,6 +1493,7 @@ export function projectAcceptanceBarContractSnapshot(
         mapping: mappingState,
         method: criterion.method?.trim() ? 'declared' : 'missing',
         workContract: workContractState,
+        clauseAcceptance,
       },
     });
   }
