@@ -1383,15 +1383,21 @@ function durableFilesystemStartupScript(dataDeviceName: string, hostBootstrapScr
     // identity owns its native agent homes. Keeping either on the image loses authentication on
     // every routine upgrade even though the workspace data itself survives.
     //
-    // Seed only an empty durable home so introducing this bind on an existing machine preserves
-    // any homes already on its boot disk. Once the durable copy has content it is authoritative;
-    // a later image must never merge its own /home population into customer state.
-    'install -d -m 0755 "$data_mount/home"',
-    'home_seed="$(find "$data_mount/home" -mindepth 1 -maxdepth 1 -print -quit)"',
-    'if [[ -z "$home_seed" ]]; then cp -a /home/. "$data_mount/home"/; fi',
+    // First adoption must use repair (which retains the boot disk) before a destructive upgrade.
+    // Publish the first copy by same-filesystem rename: a failed/interrupted copy must never be
+    // mistaken for a complete home on retry. Existing durable content, even empty, wins forever.
+    // This state must be on disk: it is mounted before the bootstrap or database can start.
+    '[[ -d /home && ! -L /home ]] || { echo "workspace home mount target is not a real directory" >&2; exit 1; }',
+    'if [[ ! -e "$data_mount/home" && ! -L "$data_mount/home" ]]; then',
+    '  home_seed="$(mktemp -d "$data_mount/.home-seed.XXXXXX")"',
+    '  cp -a /home/. "$home_seed"/',
+    '  mv -T -- "$home_seed" "$data_mount/home"',
+    'fi',
+    '[[ -d "$data_mount/home" && ! -L "$data_mount/home" ]] || { echo "durable home is not a real directory" >&2; exit 1; }',
     "install -d -m 0755 '/home'",
     'grep -q " /home none bind" /etc/fstab || printf "%s /home none bind 0 0\\n" "$data_mount/home" >> /etc/fstab',
     "mountpoint -q '/home' || mount --bind \"$data_mount/home\" '/home'",
+    '[[ "$(stat -c %d:%i /home)" == "$(stat -c %d:%i "$data_mount/home")" ]] || { echo "workspace home is not backed by the durable directory" >&2; exit 1; }',
     // ⛔ CUSTOMER WORKSPACES MUST LAND ON THE DURABLE DISK (WI-2143796, proven on canary-14).
     //
     // WORKSPACE_HOST_DATA_ROOT is `/srv/papercusp/workspaces` — a path on the BOOT disk, which

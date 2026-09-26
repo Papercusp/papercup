@@ -987,10 +987,10 @@ describe('buildWorkspaceHostBootstrap', () => {
     const script = buildWorkspaceHostBootstrap(input());
 
     expect(script).toContain('repair_persisted_home_ownership() {');
-    expect(script).toContain('chown -R -h --from="$current_uid" "$expected_uid" -- "$home"');
-    expect(script).toContain('chown -R -h --from=":$current_gid" ":$expected_gid" -- "$home"');
-    expect(script).toContain('die "persisted home has unexpected root owner: $home"');
-    expect(script).toContain('die "persisted home has unexpected root group: $home"');
+    expect(script).toContain('chown -R -h --from="$current_uid" "$expected_uid" -- "$target_home"');
+    expect(script).toContain('chown -R -h --from=":$current_gid" ":$expected_gid" -- "$target_home"');
+    expect(script).toContain('die "persisted home has unexpected root owner: $target_home"');
+    expect(script).toContain('die "persisted home has unexpected root group: $target_home"');
     expect(script).toContain(
       'repair_persisted_home_ownership "$WORKSPACE_USER" "$WORKSPACE_GROUP" "/home/$WORKSPACE_USER"',
     );
@@ -1010,6 +1010,51 @@ describe('buildWorkspaceHostBootstrap', () => {
     expect(script.indexOf('repair_persisted_home_ownership "$AGENT_USER"')).toBeLessThan(
       script.indexOf('install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0700'),
     );
+  });
+
+  it('executes ownership repair only after validating both IDs and rejects linked homes', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+    const start = script.indexOf('repair_persisted_home_ownership() {');
+    const end = script.indexOf('\n}', start) + 2;
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const root = mkdtempSync(join(tmpdir(), 'persisted-home-owner-'));
+    const homePath = join(root, 'customer');
+    mkdirSync(homePath);
+    const run = (uid: string, gid: string, path = homePath) => spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'die() { echo "$*" >&2; exit 1; }',
+      'id() { echo 1002; }',
+      'getent() { echo customer:x:1003:; }',
+      'stat() { if [[ "$2" == "%u" ]]; then echo "$OLD_UID"; else echo "$OLD_GID"; fi; }',
+      'chown() { printf "chown"; printf " <%s>" "$@"; printf "\\n"; }',
+      script.slice(start, end),
+      'repair_persisted_home_ownership customer customer "$TEST_HOME"',
+    ].join('\n')], {
+      encoding: 'utf8', timeout: 5000,
+      env: { ...process.env, OLD_UID: uid, OLD_GID: gid, TEST_HOME: path },
+    });
+    try {
+      const changed = run('1000', '1001');
+      expect(changed.status, changed.stderr).toBe(0);
+      expect(changed.stdout.trim().split('\n')).toEqual([
+        `chown <-R> <-h> <--from=1000> <1002> <--> <${homePath}>`,
+        `chown <-R> <-h> <--from=:1001> <:1003> <--> <${homePath}>`,
+      ]);
+      const unchanged = run('1002', '1003');
+      expect(unchanged.status, unchanged.stderr).toBe(0);
+      expect(unchanged.stdout).toBe('');
+      for (const [uid, gid] of [['0', '1001'], ['1000', '0']]) {
+        const refused = run(uid!, gid!);
+        expect(refused.status).toBe(1);
+        expect(refused.stdout).toBe('');
+      }
+      const linkedHome = join(root, 'link');
+      symlinkSync(homePath, linkedHome);
+      expect(run('1000', '1001', linkedHome).status).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   /**

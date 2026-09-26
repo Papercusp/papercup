@@ -1,3 +1,7 @@
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   WORKSPACE_HOST_DATA_ROOT,
@@ -792,9 +796,8 @@ describe('GCP workspace-host provider planning', () => {
     ).request;
     const script = instance.metadata.items.find(({ key }) => key === 'startup-script')?.value ?? '';
 
-    expect(script).toContain('install -d -m 0755 "$data_mount/home"');
-    expect(script).toContain('home_seed="$(find "$data_mount/home" -mindepth 1 -maxdepth 1 -print -quit)"');
-    expect(script).toContain('if [[ -z "$home_seed" ]]; then cp -a /home/. "$data_mount/home"/; fi');
+    expect(script).toContain('cp -a /home/. "$home_seed"/');
+    expect(script).toContain('mv -T -- "$home_seed" "$data_mount/home"');
     expect(script).toContain('grep -q " /home none bind" /etc/fstab');
     expect(script).toContain(`mountpoint -q '/home' || mount --bind "$data_mount/home" '/home'`);
 
@@ -803,6 +806,50 @@ describe('GCP workspace-host provider planning', () => {
     expect(homeBindAt).toBeGreaterThan(-1);
     expect(bootstrapAt).toBeGreaterThan(-1);
     expect(homeBindAt).toBeLessThan(bootstrapAt);
+  });
+
+  it('atomically adopts boot-disk homes, retries a failed copy, and preserves the durable copy thereafter', async () => {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'home-copy', idempotencyKey: 'home-copy', desired: desired() },
+      context(),
+    );
+    const instance = (plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }).request;
+    const script = instance.metadata.items.find(({ key }) => key === 'startup-script')!.value;
+    const start = script.indexOf('[[ -d /home');
+    const end = script.indexOf("install -d -m 0755 '/home'");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const root = mkdtempSync(join(tmpdir(), 'gcp-home-copy-'));
+    const source = join(root, 'boot-home');
+    const data = join(root, 'data');
+    const durable = join(data, 'home');
+    mkdirSync(join(source, 'customer'), { recursive: true });
+    mkdirSync(data);
+    writeFileSync(join(source, 'customer', '.auth-fixture'), 'customer-login');
+    const run = (prefix = '') => spawnSync('bash', ['-c', [
+      'set -euo pipefail', prefix,
+      script.slice(start, end).replaceAll('/home', source).replaceAll('$data_mount' + source, '$data_mount/home'),
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, data_mount: data }, timeout: 5000 });
+    try {
+      // A partial copy must not publish a directory that a subsequent boot trusts.
+      const failed = run('cp() { command cp "$@"; return 42; }');
+      expect(failed.status).toBe(42);
+      expect(existsSync(durable)).toBe(false);
+      const first = run();
+      expect(first.status, first.stderr).toBe(0);
+      expect(readFileSync(join(durable, 'customer', '.auth-fixture'), 'utf8')).toBe('customer-login');
+      writeFileSync(join(source, 'customer', '.auth-fixture'), 'new-image-default');
+      const retry = run();
+      expect(retry.status, retry.stderr).toBe(0);
+      expect(readFileSync(join(durable, 'customer', '.auth-fixture'), 'utf8')).toBe('customer-login');
+      // An existing symlink is not a trusted persistent home.
+      rmSync(durable, { recursive: true });
+      symlinkSync(source, durable);
+      expect(run().status).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('binds the customer workspace root onto the DURABLE disk, before the bootstrap runs', async () => {
