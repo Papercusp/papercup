@@ -59,7 +59,7 @@ import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, type AccountBurnAction } 
 import { selectAffectedOwners } from './affected-owners';
 import { CLAUDE_CONTEXT_1M_BETA, withOAuthBeta, scrubSecrets } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
-import { createCodexModelRefusalRegistry } from './codex-model-refusals';
+import { createCodexModelRefusalRegistry, type CodexModelRefusalEntry } from './codex-model-refusals';
 import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';
 import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
@@ -1627,6 +1627,9 @@ export interface GatewayStats {
   codexHealthyAccounts?: number;
   /** Total configured Codex/OpenAI accounts, including temporarily parked accounts. */
   codexTotalAccounts?: number;
+  /** WI-10003306: (account, model) pairs routed around because the ChatGPT backend refused that
+   *  model for that account. The accounts stay in the pool; each entry lapses or clears on a 2xx. */
+  codexModelRefusals?: CodexModelRefusalEntry[];
   /**
    * Pool-wide Codex recovery horizon: 0 while an account can serve now, an epoch-ms instant
    * when every account is out but one has a known return, or null when no return is known.
@@ -3626,16 +3629,20 @@ export function createInferenceGateway(deps: GatewayDeps) {
     source: AccountPool | undefined,
     pinned: ActiveAccount,
     hardPin: boolean,
+    model?: string | null,
   ): { selected: ActiveAccount; yieldedFrom: string | null } => {
     if (!source || hardPin) return { selected: pinned, yieldedFrom: null };
     const at = Date.now();
+    // WI-10003306: a pinned account that has refused the request model is unserviceable FOR THIS
+    // REQUEST — the soft pin yields exactly as it does for a paused account, and resumes on recovery.
+    const refused = (account: ActiveAccount) => !!model && codexModelRefusals.isRefused(account.accountId, model);
     const inRotation = source.healthyCount ? source.healthyCount((id) => id === pinned.accountId) > 0 : true;
-    if (inRotation && accountHealthKey(pinned, at) < Infinity) {
+    if (inRotation && !refused(pinned) && accountHealthKey(pinned, at) < Infinity) {
       return { selected: pinned, yieldedFrom: null };
     }
     try {
-      const selected = healthAwareCodexPool(source).active();
-      if (selected.accountId === pinned.accountId || accountHealthKey(selected, at) === Infinity) {
+      const selected = healthAwareCodexPool(source, model).active();
+      if (selected.accountId === pinned.accountId || refused(selected) || accountHealthKey(selected, at) === Infinity) {
         return { selected: pinned, yieldedFrom: null };
       }
       log(
@@ -4176,6 +4183,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       },
       codexHealthyAccounts,
       codexTotalAccounts: codexAccountCount(),
+      /** WI-10003306: (account, model) pairs currently routed around because the backend refused
+       *  the model for that account. In the pool, not parked; each lapses or clears on a 2xx. */
+      codexModelRefusals: codexModelRefusals.snapshot(),
       codexEarliestRecoveryAt: Number.isFinite(codexEarliestRecoveryAt) ? codexEarliestRecoveryAt : null,
       beeFacing503: { egressExhausted: beeEgressExhausted, tokenStall: beeTokenStall },
       // EI-535 (gateway-healthz-stale-latch fix): `snap.unified` freezes at its last-observed value once
@@ -7779,6 +7789,42 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // The hidden reserve tier is an upstream model substitution. A bound
         // operation waits/refuses when its accepted model has no capacity.
         reserveModel: acceptedOperation ? undefined : codexReserveModelFor(bodyModel),
+        // WI-10003306: automatic per-(account, model) availability. A model refusal is recorded,
+        // the request moves to a non-refusing sibling, and a later 2xx (or the TTL) clears the mark.
+        model: bodyModel || null,
+        onModelRefused: ({ accountId, model, status, detail }) => {
+          if (codexModelRefusals.record(accountId, model, detail)) {
+            log(
+              'warn',
+              `inference-gateway: Codex account '${accountId}' REFUSED model '${model}' (${status}: ${detail}) — marked unavailable for that model and routed around (stays in the pool; rechecked automatically)`,
+            );
+          }
+        },
+        onModelServed: ({ accountId, model }) => {
+          if (codexModelRefusals.clear(accountId, model)) {
+            log('warn', `inference-gateway: Codex account '${accountId}' serves model '${model}' again — refusal mark cleared`);
+          }
+        },
+        selectAlternate: (exclude) => {
+          if (!codexCliPool || !bodyModel) return null;
+          const at = Date.now();
+          let best: ActiveAccount | null = null;
+          let bestParked = Infinity;
+          let bestKey = Infinity;
+          for (const account of codexCliPool.entries?.() ?? []) {
+            if (exclude.has(account.accountId) || codexModelRefusals.isRefused(account.accountId, bodyModel)) continue;
+            // Prefer an unparked, healthy account; a parked or saturated one is still better than
+            // forwarding a false "model not supported" — its own 429 path then answers truthfully.
+            const parked = codexCliPool.parkState?.(account.accountId) ? 1 : 0;
+            const key = accountHealthKey(account, at);
+            if (!best || parked < bestParked || (parked === bestParked && key < bestKey)) {
+              best = account;
+              bestParked = parked;
+              bestKey = key;
+            }
+          }
+          return best;
+        },
         tokenTimeoutMs,
         failoverBackoffMs: bare429FailoverBackoffMs,
         ipCooldownMaxMs: IP_COOLDOWN_MAX_MS,
@@ -7856,7 +7902,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (attemptsUsed > 0) reconcileParksWithStore();
       if (attemptsUsed > 0 && !routing.hardPin && codexCliPool) {
         try {
-          const candidateId = healthAwareCodexPool(codexCliPool).active().accountId;
+          const candidateId = healthAwareCodexPool(codexCliPool, bodyModel || null).active().accountId;
           cli = codexCliAccounts().find((account) => account.accountId === candidateId) ?? cli;
         } catch {
           /* all accounts still exhausted — the adapter will make the truthful terminal decision */
@@ -8528,7 +8574,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         cli = pin;
         return;
       }
-      const resolved = resolveCodexSoftPin(codexCliPool, poolPin, hardPin);
+      const resolved = resolveCodexSoftPin(codexCliPool, poolPin, hardPin, requestModel);
       const selected = cliList.find((account) => account.accountId === resolved.selected.accountId);
       cli = selected ?? pin;
       cliInitialPinYieldedFrom = selected ? resolved.yieldedFrom : null;
@@ -8549,7 +8595,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (!cli) {
           let selectedId: string | undefined;
           try {
-            selectedId = codexCliPool ? healthAwareCodexPool(codexCliPool).active().accountId : undefined;
+            selectedId = codexCliPool ? healthAwareCodexPool(codexCliPool, requestModel).active().accountId : undefined;
           } catch {
             /* unavailable pool; fall back to list */
           }
@@ -8594,7 +8640,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           if (!cli) {
             let selectedId: string | undefined;
             try {
-              selectedId = codexCliPool ? healthAwareCodexPool(codexCliPool).active().accountId : undefined;
+              selectedId = codexCliPool ? healthAwareCodexPool(codexCliPool, requestModel).active().accountId : undefined;
             } catch {
               /* unavailable pool; fall back to list */
             }
@@ -9723,6 +9769,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         aimd: s.aimd,
         codexAimd: s.codexAimd,
         codexHealthyAccounts: s.codexHealthyAccounts,
+        codexModelRefusals: s.codexModelRefusals,
         // THE CONTRADICTION THIS ENDPOINT USED TO WITHHOLD. `admission.maxConcurrent` and `aimd.effective`
         // were both forwarded while `clamp` — the only field that explains a gap between them — was not, so
         // gateway:status showed `maxConcurrent: 4` beside `effective: 24` with nothing connecting the two.
