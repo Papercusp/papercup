@@ -863,6 +863,31 @@ export interface PreflightResult {
  */
 export const RELEASE_TOOLING_SUBTREE = 'bin';
 
+/** These changed scripts are either the current sourced cutter/producer or
+ * optional diagnostics outside the local artifact cut. A future target-tree
+ * invocation of one of them revokes the exception at preflight time. Unknown
+ * changed scripts remain hard blockers. */
+const CURRENT_CUT_TOOLING = new Set([
+  'bin/release-local.sh',
+  'bin/build-desktop-sidecar.sh',
+  'bin/install-and-relaunch-verify.sh',
+  'bin/lib/federation-asserts.selftest.sh',
+  'bin/live-federation-gate.sh',
+  'bin/vm-rig/boot-headless-current.sh',
+]);
+
+function targetExecutedStaleTooling(staleFiles: string[], currentCutter: string | null): string[] {
+  if (currentCutter === null) return staleFiles; // unreadable current cutter is unmeasured
+  const targetReferences = new Set<string>();
+  for (const line of currentCutter.split('\n')) {
+    if (line.trimStart().startsWith('#')) continue;
+    for (const match of line.matchAll(/\$(?:ROOT|\{ROOT\})\/(bin\/[A-Za-z0-9_./-]+)/g)) {
+      targetReferences.add(match[1]!);
+    }
+  }
+  return staleFiles.filter((file) => !CURRENT_CUT_TOOLING.has(file) || targetReferences.has(file));
+}
+
 /** Runs git in `repo`. `ok` reflects the EXIT STATUS, which is the answer itself for
  * predicates like `merge-base --is-ancestor` that communicate through exit code and
  * write nothing to stdout. */
@@ -992,6 +1017,8 @@ export interface PreflightDeps {
   /** Override the release-tooling staleness probe (tests inject; default compares the
    * cut root against its integration branch's pin of the same submodule). */
   releaseToolingDrift?: (subjectDesktopRoot: string) => ReleaseToolingDrift;
+  /** Exact current release-local.sh source; injected by pure tests. */
+  readOrchestratorScript?: (scriptPath: string) => string;
 }
 
 /**
@@ -1004,7 +1031,7 @@ export interface PreflightDeps {
  */
 export function preflightCut(
   legs: CutLegs = {},
-  opts: { root?: string; platform?: Platform } = {},
+  opts: { root?: string; platform?: Platform; orchestratorRoot?: string } = {},
   deps: PreflightDeps = {},
 ): PreflightResult {
   const root = opts.root ?? desktopRoot();
@@ -1054,7 +1081,8 @@ export function preflightCut(
     ok: migrationLintReady,
     detail: migrationLintReady
       ? migrationLintEntrypoint
-      : 'missing ' + migrationLintEntrypoint +
+      : 'missing ' +
+        migrationLintEntrypoint +
         ' — release-local.sh runs migration lint before dependency preparation; materialize node_modules for the release checkout',
   });
 
@@ -1095,6 +1123,17 @@ export function preflightCut(
           detail: `${path.join(subjectDesktopRoot, '.git')} not found — cut root is not a git checkout, so its release machinery cannot be dated`,
         };
   const drift = (deps.releaseToolingDrift ?? defaultDrift)(root);
+  let currentCutter: string | null = null;
+  if (drift.staleFiles.length > 0) {
+    try {
+      currentCutter = (deps.readOrchestratorScript ?? ((scriptPath) => fs.readFileSync(scriptPath, 'utf8')))(
+        path.join(opts.orchestratorRoot ?? desktopRoot(), 'bin', 'release-local.sh'),
+      );
+    } catch {
+      // A missing/unreadable current script cannot prove which frozen scripts execute.
+    }
+  }
+  const targetStaleFiles = targetExecutedStaleTooling(drift.staleFiles, currentCutter);
   const shortPin = (pin: string | undefined) => (pin ? pin.slice(0, 12) : '?');
   const namedFiles = drift.staleFiles.slice(0, 6).join(', ') + (drift.staleFiles.length > 6 ? ', …' : '');
   let toolingOk = true;
@@ -1102,16 +1141,19 @@ export function preflightCut(
   let toolingDetail: string;
   switch (drift.state) {
     case 'current':
-      toolingDetail = drift.detail ?? `release machinery matches the canonical checkout (${shortPin(drift.subjectPin)})`;
+      toolingDetail =
+        drift.detail ?? `release machinery matches the canonical checkout (${shortPin(drift.subjectPin)})`;
       break;
     case 'behind':
-      if (drift.staleFiles.length > 0) {
+      if (targetStaleFiles.length > 0) {
         toolingOk = false;
         toolingDetail =
-          `cut root's release machinery is STALE — ${drift.staleFiles.length} file(s) under papercusp-desktop/${RELEASE_TOOLING_SUBTREE} ` +
-          `are superseded (root ${shortPin(drift.subjectPin)} is an ancestor of canonical ${shortPin(drift.referencePin)}): ${namedFiles}. ` +
+          `cut root's release machinery is STALE — ${targetStaleFiles.length} target-executed file(s) under papercusp-desktop/${RELEASE_TOOLING_SUBTREE} ` +
+          `are superseded (root ${shortPin(drift.subjectPin)} is an ancestor of canonical ${shortPin(drift.referencePin)}): ${targetStaleFiles.join(', ')}. ` +
           'This cut would re-execute those superseded scripts and rebuild any release bug they carried. ' +
           're-pin the cut root with setup-release-checkout.sh against a commit carrying the fixes, then re-run preflight';
+      } else if (drift.staleFiles.length > 0) {
+        toolingDetail = `frozen root differs in ${drift.staleFiles.length} bin file(s) (${namedFiles}); the current release-local.sh is sourced and has no direct target-tree invocation of these files`;
       } else {
         toolingDetail = `root is behind canonical but no file under papercusp-desktop/${RELEASE_TOOLING_SUBTREE} differs — product-source drift only, which an isolated pin is supposed to have`;
       }

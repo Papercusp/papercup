@@ -872,11 +872,16 @@ describe('release-tooling staleness', () => {
       `${root}/bin/install-and-relaunch-verify.sh`,
     ]);
     const base = { home, exists: (p: string) => present.has(p), isUnitActive: () => false };
-    const withDrift = (d: Partial<ReleaseToolingDrift>) =>
-      preflightCut({}, { root }, {
-        ...base,
-        releaseToolingDrift: () => ({ state: 'current', staleFiles: [], ...d }) as ReleaseToolingDrift,
-      });
+    const withDrift = (d: Partial<ReleaseToolingDrift>, currentCutter = '') =>
+      preflightCut(
+        {},
+        { root },
+        {
+          ...base,
+          releaseToolingDrift: () => ({ state: 'current', staleFiles: [], ...d }) as ReleaseToolingDrift,
+          readOrchestratorScript: () => currentCutter,
+        },
+      );
     const check = (r: ReturnType<typeof preflightCut>) =>
       r.checks.find((c) => c.name === 'release-tooling-current')!;
 
@@ -899,6 +904,43 @@ describe('release-tooling staleness', () => {
       expect(r.go).toBe(true);
       expect(check(r).ok).toBe(true);
       expect(check(r).detail).toMatch(/product-source drift only/);
+    });
+
+    it('exact-source cut accepts known frozen scripts only when the current cutter does not execute them', () => {
+      const staleFiles = [
+        'bin/build-desktop-sidecar.sh',
+        'bin/install-and-relaunch-verify.sh',
+        'bin/lib/federation-asserts.selftest.sh',
+        'bin/live-federation-gate.sh',
+        'bin/release-local.sh',
+        'bin/vm-rig/boot-headless-current.sh',
+      ];
+      const current = withDrift(
+        { state: 'behind', staleFiles },
+        'PAPERCUSP_DESKTOP_TARGET_ROOT="$ROOT" bash "$ORCHESTRATOR_HERE/build-desktop-sidecar.sh"\n',
+      );
+      expect(current.go).toBe(true);
+      expect(check(current).detail).toMatch(/no direct target-tree invocation of these files/);
+
+      const frozen = withDrift({ state: 'behind', staleFiles }, 'bash "$ROOT/bin/build-desktop-sidecar.sh"\n');
+      expect(frozen.go).toBe(false);
+      expect(frozen.blockers.join()).toContain('bin/build-desktop-sidecar.sh');
+    });
+
+    it('cannot waive a frozen script when the current cutter source is unreadable', () => {
+      const r = preflightCut(
+        {},
+        { root },
+        {
+          ...base,
+          releaseToolingDrift: () => ({ state: 'behind', staleFiles: ['bin/build-desktop-sidecar.sh'] }),
+          readOrchestratorScript: () => {
+            throw new Error('unreadable');
+          },
+        },
+      );
+      expect(r.go).toBe(false);
+      expect(r.blockers.join()).toContain('bin/build-desktop-sidecar.sh');
     });
 
     it('DIVERGED is warn-only, so a deliberate pin is surfaced without being refused', () => {
