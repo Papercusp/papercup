@@ -82,8 +82,11 @@ describe('the vetting/grading escape route is documented, not only in the source
     expect(text).toMatch(/vettingWorkItem/);
     expect(text).toMatch(/current revision/i);
     expect(text).toContain('meta-acceptance-rubric');
-    // How to actually find someone outside your lineage.
-    expect(text).toMatch(/coord:presence/);
+    // How to actually get a critic outside your lineage: the router picks and
+    // screens one (review-routing-through-relevance-router-2026-09-26 D-001).
+    // Hand-recruiting through coord:presence/coord:dispatch was the old route.
+    expect(text).toMatch(/consult:get_feedback \{ policy:'rubric-vetting'/);
+    expect(text).not.toMatch(/`coord:presence` for a live session/);
   });
 
   it('names what LOOKS like the escape and is not', () => {

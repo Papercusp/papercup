@@ -16,9 +16,11 @@ documents:
   - "packages/operator-core/lib/rubrics-criterion-checks.ts"
   - "packages/operator-core/lib/consult/get-feedback-core.ts"
   - "packages/operator-core/lib/consult/selection-policies.ts"
+  - "packages/operator-core/lib/agent-tools/scorecards/grader-eligibility.ts"
 plans:
   - "consult-min-max-and-rubric-vetting-2026-08-17"
   - "unified-responder-selection-critique-and-grading-2026-08-30"
+  - "review-routing-through-relevance-router-2026-09-26"
 normative: true
 ---
 
@@ -94,9 +96,9 @@ Refused before, refused after — so the natural conclusion is that the rule is 
 
 **The route out, concretely:**
 
-1. **Recruit a critic outside your lineage.** `coord:presence` for a live session that is not in your spawn/rebind lineage, then `coord:dispatch` — or `work_items:create` with `assign_to` naming them, which is born-admitted and claimable in the same write.
+1. **Request a critic through the router — never recruit one yourself.** `consult:get_feedback { policy:'rubric-vetting', question:<a critique of the rubric at its CURRENT revision> }`. The router picks and screens the critic, and its answering session sits outside your spawn/rebind lineage. Do not pick a live session and message it, dispatch it, or assign it a work-item: that hand-recruiting route has no lineage screen and no fallback when the person you chose does not answer.
 2. **Have that critic vet the rubric at its CURRENT revision** and record the attestation with `scorecards:emit` against `meta-acceptance-rubric`.
-3. **Use the OTHER channel from the one already recorded.** `scorecards:emit` accepts exactly one of `vettingConsult` / `vettingWorkItem` per attestation, so a second critic cannot be recorded alongside the first on the same channel. If your own vetting went in as a consult, theirs goes in as a work-item, and vice versa.
+3. **Cite the consult as `vettingConsult`.** Each attestation cites exactly one of `vettingConsult` / `vettingWorkItem`, but the guard unions critics across EVERY current-revision attestation on either channel, so a second consult-backed attestation counts alongside the first. (`vettingWorkItem` remains valid for a critique that already happened on a work-item thread.)
 4. **Re-attempt the grading emit.** The guard now sees a recorded critic who is not you, and the refusal lifts.
 
 **Three things that look like the escape and are not:**
