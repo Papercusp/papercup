@@ -2961,6 +2961,52 @@ describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', 
     expect(waitForMarker).not.toHaveBeenCalled();
     expect(writeCr).not.toHaveBeenCalled();
   });
+
+  it('proves an untagged Claude owner-request carry only from the exact fresh native user row', async () => {
+    const root = nodeFs.mkdtempSync(pathJoin(nodeOs.tmpdir(), 'owner-request-native-proof-'));
+    const nativeId = '76973a84-0188-4ff9-9394-c4b1b04d3b29';
+    const otherId = '11111111-2222-4333-8444-555555555555';
+    const dir = pathJoin(root, 'projects', 'session');
+    const transcript = pathJoin(dir, `${nativeId}.jsonl`);
+    const otherTranscript = pathJoin(dir, `${otherId}.jsonl`);
+    const text = 'The following owner requests remain unresolved across this context boundary. Address every request.\n\n[Unresolved owner request 1]\nPlease finish the report.';
+    const sinceMs = Date.now() - 1000;
+    const row = (type, content, timestamp = new Date().toISOString()) =>
+      JSON.stringify({ type, timestamp, message: { role: type, content } });
+    const opts = {
+      agent: 'claude', env: { CLAUDE_CONFIG_DIR: root }, text, sinceMs,
+      home: root, nativeId, requireNativeId: true, timeoutMs: 0,
+    };
+    const writeCr = vi.fn();
+    try {
+      nodeFs.mkdirSync(dir, { recursive: true });
+      // Neither an assistant echo nor an exact row in a different native id
+      // can certify this successor. An old exact row also fails the time fence.
+      nodeFs.writeFileSync(transcript, `${row('assistant', text)}\n`);
+      nodeFs.writeFileSync(otherTranscript, `${row('user', text)}\n`);
+      await expect(verifyNativeTurnStartWithRetry({ ...opts, writeCr })).resolves.toMatchObject({
+        persisted: false, reason: 'native-turn-prompt-timeout',
+      });
+      nodeFs.writeFileSync(transcript, `${row('user', text, new Date(sinceMs - 60_000).toISOString())}\n`);
+      await expect(verifyNativeTurnStartWithRetry(opts)).resolves.toMatchObject({
+        persisted: false, reason: 'native-turn-prompt-timeout',
+      });
+      nodeFs.writeFileSync(transcript, `${row('user', text)}\n`);
+      writeCr.mockClear();
+      await expect(verifyNativeTurnStartWithRetry({ ...opts, writeCr })).resolves.toEqual({
+        persisted: true, nativeRef: transcript, retried: false, reason: null,
+      });
+      expect(writeCr).not.toHaveBeenCalled();
+      const sharedDir = pathJoin(root, '.claude', 'projects', 'session');
+      nodeFs.mkdirSync(sharedDir, { recursive: true });
+      nodeFs.writeFileSync(pathJoin(sharedDir, `${nativeId}.jsonl`), `${row('user', text)}\n`);
+      await expect(verifyNativeTurnStartWithRetry({ ...opts, env: {}, writeCr })).resolves.toMatchObject({
+        persisted: false, reason: 'native-turn-prompt-timeout',
+      });
+    } finally {
+      nodeFs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('shouldRetryCarryOnFreshEpoch (WI-10001987)', () => {
@@ -2970,6 +3016,10 @@ describe('shouldRetryCarryOnFreshEpoch (WI-10001987)', () => {
     expect(shouldRetryCarryOnFreshEpoch({
       reason: 'turn-start-unverified',
       proofReason: 'native-turn-marker-timeout',
+    })).toBe(true);
+    expect(shouldRetryCarryOnFreshEpoch({
+      reason: 'turn-start-unverified',
+      proofReason: 'native-turn-prompt-timeout',
     })).toBe(true);
     expect(shouldRetryCarryOnFreshEpoch({
       reason: 'turn-start-unverified',
