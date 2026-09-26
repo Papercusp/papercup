@@ -59,7 +59,8 @@ let adminUri = '';
 // Vitest reads a case's timeout when it registers the test. Count the very SQL
 // corpus resolveSqlDir will replay, including an explicit exact-source override.
 const replaySqlDir = resolveSqlDir();
-const seededReplayTimeoutMs = migrationReplayTestTimeoutMs(
+// All three cases replay the whole corpus, so all three take this budget.
+const replayTimeoutMs = migrationReplayTestTimeoutMs(
   replaySqlDir ? readdirSync(replaySqlDir).filter((f) => f.endsWith('.sql')).length : 0,
 );
 
@@ -93,24 +94,43 @@ beforeAll(async () => {
   bootClient = postgres(url.toString(), { max: 1, prepare: false, onnotice: () => {} });
 }, 120_000);
 
+// WI-10003218: on PG 15+ DROP DATABASE requests an IMMEDIATE|FORCE|WAIT checkpoint and
+// blocks until it completes. On the fleet-shared test container that checkpoint's fsync
+// phase measured 720.9s over 11,162 files (2026-09-26), so the awaited DROP in a case's
+// cleanup ran out its 300s budget after the replay itself had finished, and the
+// preflight aborted a nightly cut. Cleanup must never decide the verdict: wait a bounded
+// time, then detach. The server still completes the DROP once the checkpoint lands; at
+// worst a test database leaks.
+const DROP_DATABASE_WAIT_MS = 20_000;
+
+async function dropTestDatabase(name: string): Promise<void> {
+  const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
+  try {
+    await admin
+      .unsafe(
+        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${name}' AND pid <> pg_backend_pid()`,
+      )
+      .catch(() => {});
+    // WI-4311: WITH (FORCE) — pg_terminate_backend above only SIGNALS; FORCE
+    // terminates remaining connections in the same statement.
+    const drop = admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`).then(
+      () => {},
+      () => {},
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, DROP_DATABASE_WAIT_MS);
+    });
+    await Promise.race([drop, waited]);
+    clearTimeout(timer);
+  } finally {
+    await admin.end({ timeout: 5 }).catch(() => {});
+  }
+}
+
 afterAll(async () => {
   await bootClient?.end({ timeout: 5 }).catch(() => {});
-  if (dbName && adminUri) {
-    const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
-    try {
-      await admin
-        .unsafe(
-          `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${dbName}' AND pid <> pg_backend_pid()`,
-        )
-        .catch(() => {});
-      // WI-4311: WITH (FORCE) — pg_terminate_backend above only SIGNALS; a plain
-      // DROP can still block on a not-yet-closed backend (parked 6s-267s+ under
-      // fleet load). FORCE terminates remaining connections in the same statement.
-      await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`).catch(() => {});
-    } finally {
-      await admin.end({ timeout: 5 });
-    }
-  }
+  if (dbName && adminUri) await dropTestDatabase(dbName);
 });
 
 describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
@@ -139,7 +159,7 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
     // Sanity: this really replayed the full set, not a no-op against a pre-migrated DB.
     expect(appliedCount).toBe(totalKnown);
     expect(appliedCount).toBeGreaterThan(500);
-  }, 300_000);
+  }, replayTimeoutMs);
 
   /**
    * THE BLIND SPOT IN THE CASE ABOVE, and why it needed its own test.
@@ -272,20 +292,9 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
     } finally {
       await client?.end({ timeout: 5 }).catch(() => {});
       if (stageDir) await rm(stageDir, { recursive: true, force: true }).catch(() => {});
-      const cleanup = postgres(adminUri, { max: 1, onnotice: () => {} });
-      try {
-        await cleanup
-          .unsafe(
-            `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${seededDb}' AND pid <> pg_backend_pid()`,
-          )
-          .catch(() => {});
-        // WI-4311: WITH (FORCE) — see the note on the dbName teardown above.
-        await cleanup.unsafe(`DROP DATABASE IF EXISTS "${seededDb}" WITH (FORCE)`).catch(() => {});
-      } finally {
-        await cleanup.end({ timeout: 5 });
-      }
+      await dropTestDatabase(seededDb);
     }
-  }, seededReplayTimeoutMs);
+  }, replayTimeoutMs);
 
   /**
    * EI-18748424931934157 — THE HOLE 678 FELL THROUGH.
@@ -438,18 +447,7 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
       await client?.end({ timeout: 5 }).catch(() => {});
       if (stageDir) await rm(stageDir, { recursive: true, force: true }).catch(() => {});
       if (prereqDir) await rm(prereqDir, { recursive: true, force: true }).catch(() => {});
-      const cleanup = postgres(adminUri, { max: 1, onnotice: () => {} });
-      try {
-        await cleanup
-          .unsafe(
-            `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${depDb}' AND pid <> pg_backend_pid()`,
-          )
-          .catch(() => {});
-        // WI-4311: WITH (FORCE) — see the note on the dbName teardown above.
-        await cleanup.unsafe(`DROP DATABASE IF EXISTS "${depDb}" WITH (FORCE)`).catch(() => {});
-      } finally {
-        await cleanup.end({ timeout: 5 });
-      }
+      await dropTestDatabase(depDb);
     }
-  }, 300_000);
+  }, replayTimeoutMs);
 });
