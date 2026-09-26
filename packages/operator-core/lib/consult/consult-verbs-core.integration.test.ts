@@ -1001,6 +1001,110 @@ describe('cascade advance (D-005/P-013)', () => {
   });
 });
 
+// EI-24351703367365896: a refused launch must not buy an empty seat a new TTL.
+describe.each(['selected', 'refill'] as const)('failed cascade dispatch — %s menu', (menu) => {
+  function routingFor(others: string[]) {
+    const snap = menuSnapshot([RESPONDER, ...others]);
+    return menu === 'selected' ? snap : {
+      ...snap,
+      selection: { min: others.length, selected: snap.selection.selected.slice(0, 1) },
+    };
+  }
+
+  it('skips a refused launch and delivers the decline plus failure digest to the next expert', async () => {
+    const id = await seedConsult({ routing: routingFor(['unlaunchable', 'available']) });
+    const { deps, dispatchCalls, emits } = makeDeps();
+    deps.dispatch = async (o) => {
+      dispatchCalls.push(o);
+      return o.responder === 'unlaunchable'
+        ? { woke: 0 }
+        : { woke: 1, answeringOwnerId: 'available-fork' };
+    };
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'conflict of interest' }, deps,
+    );
+    expect(r).toMatchObject({ cascade: { advanced_to: 'available', exhausted: false, woke: 1 } });
+    expect(dispatchCalls.map((o) => o.responder)).toEqual(['unlaunchable', 'available']);
+    expect(dispatchCalls[1].body).toContain('unlaunchable (dispatch_failed)');
+    const row = await stateRow(id);
+    expect(row).toMatchObject({ responder_id: 'available', cascade_cursor: 2, closed_at: null });
+    expect(row.cascade_digest).toMatchObject([
+      { ownerId: RESPONDER, kind: 'decline' }, { ownerId: 'unlaunchable', kind: 'dispatch_failed' },
+    ]);
+    expect(emits).toEqual([]);
+  });
+
+  it('exhausts refused launches and closes honestly without waiting for another expiry', async () => {
+    const id = await seedConsult({ routing: routingFor(['unlaunchable', 'also-unlaunchable']) });
+    const { deps, dispatchCalls, emits } = makeDeps();
+    deps.dispatch = async (o) => { dispatchCalls.push(o); return { woke: 0 }; };
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'conflict of interest' }, deps,
+    );
+    expect(r).toMatchObject({ state: 'declined', cascade: { exhausted: true } });
+    expect(dispatchCalls.map((o) => o.responder)).toEqual(['unlaunchable', 'also-unlaunchable']);
+    const row = await stateRow(id);
+    expect(row.closed_at).not.toBeNull();
+    expect(row.cascade_digest).toMatchObject([
+      { ownerId: RESPONDER, kind: 'decline' },
+      { ownerId: 'unlaunchable', kind: 'dispatch_failed' },
+      { ownerId: 'also-unlaunchable', kind: 'dispatch_failed' },
+    ]);
+    if (menu === 'refill') {
+      expect(row.routing).toMatchObject({ selection: { underFilled: { answers: 0, min: 2, reason: 'refill-spent' } } });
+    }
+    expect(emits).toHaveLength(1);
+  });
+
+  it.each(['return', 'early stamp'] as const)('retains a booting answering session identified by %s', async (identity) => {
+    const id = await seedConsult({ routing: routingFor(['booting', 'unused']) });
+    const { deps, dispatchCalls } = makeDeps();
+    deps.dispatch = async (o) => {
+      dispatchCalls.push(o);
+      if (identity === 'early stamp') await o.onAnsweringOwner?.('booting-fork');
+      return { woke: 0, ...(identity === 'return' ? { answeringOwnerId: 'booting-fork' } : {}) };
+    };
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'conflict' }, deps,
+    );
+    expect(r).toMatchObject({ cascade: { advanced_to: 'booting', exhausted: false, woke: 0 } });
+    expect(dispatchCalls).toHaveLength(1);
+    const row = await stateRow(id);
+    expect(row).toMatchObject({ responder_id: 'booting', cascade_cursor: 1, closed_at: null });
+    expect((row.routing as { selection: { selected: Array<{ answeringOwnerId?: string }> } }).selection.selected[1])
+      .toMatchObject({ answeringOwnerId: 'booting-fork' });
+    expect(row.cascade_digest).toHaveLength(1);
+  });
+
+  it.each(['cursor', 'expiry'] as const)('preserves concurrent %s progress instead of dispatching or terminal-closing over it', async (race) => {
+    const id = await seedConsult({ routing: routingFor(['unlaunchable', 'concurrent-winner']) });
+    const { deps, dispatchCalls, emits } = makeDeps();
+    const refreshedExpiry = new Date(NOW.getTime() + 86_400_000);
+    deps.dispatch = async (o) => {
+      dispatchCalls.push(o);
+      if (race === 'cursor') {
+        await rootSql`UPDATE harness_shared.consult_state SET cascade_cursor = 2,
+          responder_id = 'concurrent-winner' WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+      } else {
+        await rootSql`UPDATE harness_shared.consult_state SET expires_at = ${refreshedExpiry.toISOString()}::timestamptz
+          WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+      }
+      return { woke: 0 };
+    };
+    const r = await consultDeclineCore(
+      { workspaceId: WS, authorId: RESPONDER, conversationId: id, reason: 'conflict' }, deps,
+    );
+    expect(r).toMatchObject({ cascade: { advanced_to: null, exhausted: false, woke: 0 } });
+    expect(dispatchCalls).toHaveLength(1);
+    const row = await stateRow(id);
+    expect(row.closed_at).toBeNull();
+    expect(row.cascade_digest).toHaveLength(1);
+    if (race === 'cursor') expect(row.responder_id).toBe('concurrent-winner');
+    else expect(new Date(row.expires_at as string).getTime()).toBe(refreshedExpiry.getTime());
+    expect(emits).toEqual([]);
+  });
+});
+
 // ── WI-39862 honest expiry (late disposition) + WI-39861 refill via decline ──
 describe('consultCloseCore — late disposition on an expired consult (WI-39862 / EI-20824019943814803)', () => {
   async function seedExpired(opts: { digest?: unknown[]; outcome?: unknown } = {}): Promise<string> {

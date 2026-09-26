@@ -14,6 +14,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { acquireSnapshot } from '@papercusp/db-org';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
 // Keep the contention regression fast. The production default remains 8s; this
@@ -98,6 +99,14 @@ async function rowCount(): Promise<number> {
 const LOOP = { harness: 'papercusp', ownerId: 'su-94b69' } as const;
 
 describe('su-loop carry-note read/write round-trip (P-002)', () => {
+  it('records the production admin-pool acquisition for a bounded loop write', async () => {
+    const before = acquireSnapshot('org-admin').totalAcquired;
+    const result = await setLoopCarryNoteWithPrior(LOOP, 'diagnostic checkpoint');
+
+    expect(result.stored).toBe('diagnostic checkpoint');
+    expect(acquireSnapshot('org-admin').totalAcquired).toBeGreaterThan(before);
+  });
+
   it('write → read round-trips; replace-on-write keeps ONE row', async () => {
     expect(await getLoopCarryNote(LOOP)).toBeNull(); // fresh
     expect(await setLoopCarryNote(LOOP, '  did X; next Y  ')).toBe('did X; next Y'); // trimmed
@@ -521,6 +530,20 @@ async function attestRow(scope: string): Promise<AttestRow> {
 }
 
 describe('P-007/R-06 unchanged attestation — freshness without a rewrite', () => {
+  it('records the production admin-pool acquisition for a bounded attestation', async () => {
+    const scope = workItemScope('h1', 'WI-attest-acquire');
+    await setCarryNote({ scope }, 'stable body', { journal: false });
+    const before = acquireSnapshot('org-admin').totalAcquired;
+
+    const result = await attestCarryNoteUnchanged({ scope }, {
+      contentHash: shortCarryHash('stable body'),
+      bounded: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(acquireSnapshot('org-admin').totalAcquired).toBeGreaterThan(before);
+  });
+
   it('refreshes freshness while leaving the body byte-identical (updated_ts moves, body_ts does not)', async () => {
     const scope = workItemScope('h1', 'WI-attest-happy');
     const body = 'did: read the gate code. left: tests. next: write them.';

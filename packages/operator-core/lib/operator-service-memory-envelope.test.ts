@@ -52,9 +52,8 @@ describe('papercup-dev-api service memory envelope (EI-20340243384897336)', () =
     expect(directive(dropIn, 'MemoryAccounting')).toBe('yes');
     expect(highGiB).toBe(48);
     expect(maxGiB).toBe(64);
-    expect(swapMaxGiB).toBe(16);
+    expect(swapMaxGiB).toBe(0);
     expect(highGiB).toBeLessThan(maxGiB);
-    expect(swapMaxGiB).toBeLessThan(highGiB);
   });
 
   it('caps the cluster so every process at its recycle ceiling stays below MemoryHigh', () => {
@@ -73,5 +72,33 @@ describe('papercup-dev-api service memory envelope (EI-20340243384897336)', () =
       ),
     ).toBe(workers);
     expect(highMiB - aggregateRecycleCeilingMiB).toBeGreaterThanOrEqual(4 * 1024);
+  });
+});
+
+/**
+ * WI-10003355 — interactive request services must keep their heap in RAM.
+ * Under host-wide pressure a non-zero swap allowance let 225-407 MB of each
+ * :3070 worker's heap reach swap; GC over swapped pages then stalled the event
+ * loop for seconds, and the slowest probes coincided with 600+ major faults/s.
+ * Each drop-in below is the versioned source a fresh machine installs.
+ */
+describe('interactive operator services never swap (WI-10003355)', () => {
+  const systemdDir = new URL('../../../apps/operator/scripts/systemd/', import.meta.url);
+  const noSwapDropIns = [
+    'papercup-dev-api.service.d/55-memory-envelope.conf',
+    'papercup-staging-api.service.d/55-no-swap.conf',
+    'papercup-mcp-proxy.service.d/55-no-swap.conf',
+  ];
+
+  it.each(noSwapDropIns)('%s sets MemorySwapMax=0 under [Service]', (relativePath) => {
+    const text = readFileSync(fileURLToPath(new URL(relativePath, systemdDir)), 'utf8');
+    const lines = text.split('\n').map((line) => line.trim());
+    const serviceIndex = lines.indexOf('[Service]');
+    const swapIndex = lines.findIndex((line) => line.startsWith('MemorySwapMax='));
+
+    expect(serviceIndex).toBeGreaterThanOrEqual(0);
+    expect(swapIndex).toBeGreaterThan(serviceIndex);
+    expect(directive(text, 'MemorySwapMax')).toBe('0');
+    expect(lines.filter((line) => line.startsWith('MemorySwapMax='))).toHaveLength(1);
   });
 });

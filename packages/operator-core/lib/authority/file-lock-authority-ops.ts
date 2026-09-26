@@ -135,7 +135,7 @@ export interface FileLockAcquireResult {
   /** paths that were busy when ok=false. */
   busy?: Array<{ path: string; owner: string }>;
   /** Present when the authority could not establish a stable holder snapshot. */
-  reason?: FileLockAcquireRetryReason;
+  reason?: FileLockAcquireRetryReason | 'queued_waiter';
   retryable?: boolean;
   /** Paths newly acquired by this call. Same-owner refreshes can return a
    * subset (or an empty list), so automatic guards never release a

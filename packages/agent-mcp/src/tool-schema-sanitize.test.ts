@@ -1,5 +1,10 @@
-import { describe, it, expect } from "vitest";
-import { sanitizeToolSchema } from "./tool-schema-sanitize";
+import { beforeEach, describe, it, expect } from "vitest";
+import {
+  resetToolSchemaSanitizeCache,
+  sanitizeToolSchema,
+  sanitizeToolSchemaCached,
+  TOOL_SCHEMA_SANITIZE_CACHE_MAX_ENTRIES,
+} from "./tool-schema-sanitize";
 
 describe("sanitizeToolSchema", () => {
   it("objectifies a boolean property value (z.unknown() → true)", () => {
@@ -311,5 +316,71 @@ describe("sanitizeToolSchema position:'output' (EI-22064217935223876)", () => {
     expect(sanitizeToolSchema(schema)).toEqual(
       sanitizeToolSchema(schema, "input"),
     );
+  });
+});
+
+describe("sanitizeToolSchemaCached", () => {
+  beforeEach(() => resetToolSchemaSanitizeCache());
+
+  it("reuses one immutable sanitized tree for an unchanged registry revision and variant", () => {
+    const first = sanitizeToolSchemaCached("rev-7:plans:get:full", {
+      type: "object",
+      properties: { payload: true },
+    });
+    const second = sanitizeToolSchemaCached("rev-7:plans:get:full", {
+      type: "object",
+      properties: { payload: true },
+    });
+
+    expect(second).toBe(first);
+    expect(second).toEqual({
+      type: "object",
+      properties: {
+        payload: {
+          type: "object",
+          additionalProperties: true,
+          description: "matches any object value",
+        },
+      },
+    });
+  });
+
+  it("separates registry revisions, listing variants, and input/output semantics", () => {
+    const schema = { type: "object", properties: { payload: true } };
+    const full = sanitizeToolSchemaCached("rev-7:plans:get:full", schema);
+    const compact = sanitizeToolSchemaCached("rev-7:plans:get:compact", schema);
+    const nextRevision = sanitizeToolSchemaCached("rev-8:plans:get:full", schema);
+    const output = sanitizeToolSchemaCached("rev-7:plans:get:full", schema, "output");
+
+    expect(compact).not.toBe(full);
+    expect(nextRevision).not.toBe(full);
+    expect(output).not.toBe(full);
+    expect((output as any).properties.payload).toEqual({
+      description: "matches any value",
+    });
+  });
+
+  it("stays bounded across registry revisions", () => {
+    const originalOldest = sanitizeToolSchemaCached("revision-0:tool:full", {
+      type: "object",
+      properties: { value: { const: 0 } },
+    });
+    for (let i = 1; i <= TOOL_SCHEMA_SANITIZE_CACHE_MAX_ENTRIES; i += 1) {
+      sanitizeToolSchemaCached(`revision-${i}:tool:full`, {
+        type: "object",
+        properties: { value: { const: i } },
+      });
+    }
+
+    const rebuiltOldest = sanitizeToolSchemaCached("revision-0:tool:full", {
+      type: "object",
+      properties: { value: { const: 0 } },
+    });
+    const rebuiltOldestAgain = sanitizeToolSchemaCached("revision-0:tool:full", {
+      type: "object",
+      properties: { value: { const: 0 } },
+    });
+    expect(rebuiltOldest).not.toBe(originalOldest);
+    expect(rebuiltOldestAgain).toBe(rebuiltOldest);
   });
 });

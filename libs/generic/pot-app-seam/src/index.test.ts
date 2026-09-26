@@ -1,18 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { createPotAppSeam, type PotAppSeamHost, type IngestEvent } from './index';
+import {
+  createPotAppSeam,
+  operationDraftFromPlanRun,
+  type BlueprintOperationHandle,
+  type IngestEvent,
+  type PotAppSeamHost,
+} from './index';
 
 function host(): PotAppSeamHost & {
   markers: Map<string, string>;
   pots: string[];
   runs: string[];
+  operations: Map<string, BlueprintOperationHandle>;
 } {
   const markers = new Map<string, string>();
   const pots: string[] = [];
   const runs: string[] = [];
+  const operations = new Map<string, BlueprintOperationHandle>();
   return {
     markers,
     pots,
     runs,
+    operations,
     readBootstrapMarker: (marker) => markers.get(marker) ?? null,
     writeBootstrapMarker: (marker, fingerprint) => {
       markers.set(marker, fingerprint);
@@ -37,6 +46,42 @@ function host(): PotAppSeamHost & {
         },
       };
     },
+    submitBlueprintOperation: (draft) => {
+      const key = `${draft.harnessSlug}:${draft.operationId}:${draft.requestKey}`;
+      const prior = operations.get(key);
+      if (prior) return prior;
+      const handle: BlueprintOperationHandle = {
+        workspaceId: 'workspace-fixture',
+        harnessSlug: draft.harnessSlug,
+        receiptId: operations.size + 1,
+        operationId: draft.operationId,
+        specificationRevision: 'a'.repeat(64),
+        target: { kind: 'plan', runId: operations.size + 1, instanceSlug: `review@run-${operations.size + 1}` },
+      };
+      operations.set(key, handle);
+      return handle;
+    },
+    readBlueprintOperationStatus: (handle) => ({
+      handle,
+      phase: 'terminal',
+      outcome: 'succeeded',
+      items: [],
+      planRun: { status: 'done', outcome: 'success' },
+      cancellationRequested: false,
+      wait: null,
+    }),
+    readBlueprintOperationResult: (handle) => ({
+      state: 'pending',
+      status: {
+        handle,
+        phase: 'dispatched',
+        outcome: null,
+        items: [],
+        planRun: { status: 'running', outcome: null },
+        cancellationRequested: false,
+        wait: null,
+      },
+    }),
   };
 }
 
@@ -90,6 +135,85 @@ describe('createPotAppSeam', () => {
       dispatch: { status: 'delivered', wakeAcknowledged: true },
     });
     expect(h.runs).toEqual(['candidate-review:shop-reviewer']);
+  });
+
+  it('maps a legacy plan draft to one operation request without changing replay identity or input', () => {
+    const request = operationDraftFromPlanRun({
+      templateSlug: 'candidate-review',
+      input: { candidateId: 'a' },
+      provenance: { eventId: 'evt-a' },
+      execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
+      dedupeKey: 'candidate:a',
+    }, 'review-candidate');
+    expect(request).toEqual({
+      harnessSlug: 'shop',
+      operationId: 'review-candidate',
+      requestKey: 'candidate:a',
+      input: { candidateId: 'a' },
+    });
+    expect(() => operationDraftFromPlanRun({
+      templateSlug: 'candidate-review',
+      input: { candidateId: 'a' },
+      provenance: { eventId: 'evt-a' },
+      execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
+    }, 'review-candidate')).toThrow(/requires dedupeKey/);
+  });
+
+  it('submits one durable operation handle on replay and returns payload only when ready', async () => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const request = {
+      harnessSlug: 'shop',
+      operationId: 'review-candidate',
+      requestKey: 'candidate:a',
+      input: { candidateId: 'a' },
+    } as const;
+    const first = await seam.submitOperations([request]);
+    const replay = await seam.submitOperations([request]);
+    expect(replay[0]).toEqual(first[0]);
+    expect(h.operations).toHaveLength(1);
+
+    h.readBlueprintOperationResult = (handle) => ({
+      state: 'ready',
+      status: {
+        handle,
+        phase: 'terminal',
+        outcome: 'succeeded',
+        items: [],
+        planRun: { status: 'done', outcome: 'success' },
+        cancellationRequested: false,
+        wait: null,
+      },
+      output: { candidateId: 'a', verdict: 'accepted' },
+      evidenceRef: 'plan-run:1',
+    });
+    await expect(seam.operationResult<{ candidateId: string; verdict: string }>(first[0]!)).resolves.toMatchObject({
+      state: 'ready',
+      output: { candidateId: 'a', verdict: 'accepted' },
+    });
+  });
+
+  it('refuses a non-ready result that smuggles an output payload', async () => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([{
+      harnessSlug: 'shop', operationId: 'review-candidate', requestKey: 'candidate:a', input: {},
+    }]);
+    h.readBlueprintOperationResult = (sameHandle) => ({
+      state: 'failed',
+      reason: 'plan failed',
+      output: { shouldNotExist: true },
+      status: {
+        handle: sameHandle,
+        phase: 'terminal',
+        outcome: 'failed',
+        items: [],
+        planRun: { status: 'failed', outcome: 'failed' },
+        cancellationRequested: false,
+        wait: null,
+      },
+    } as never);
+    await expect(seam.operationResult(handle!)).rejects.toThrow(/must not carry output/);
   });
 
   it('parses and stores ingest events with resumable cursors', async () => {

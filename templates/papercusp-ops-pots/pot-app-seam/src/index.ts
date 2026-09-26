@@ -70,6 +70,55 @@ export interface LaunchedPlanRun {
   };
 }
 
+export type BlueprintOperationTarget =
+  | { readonly kind: 'work-item'; readonly id: string }
+  | { readonly kind: 'plan'; readonly runId: number; readonly instanceSlug: string };
+
+/** The durable handle returned by the public `blueprint:submit` contract. */
+export interface BlueprintOperationHandle {
+  readonly workspaceId: string;
+  readonly harnessSlug: string;
+  readonly receiptId: number;
+  readonly operationId: string;
+  readonly specificationRevision: string;
+  readonly target: BlueprintOperationTarget;
+}
+
+export interface BlueprintOperationStatus {
+  readonly handle: BlueprintOperationHandle;
+  readonly phase: 'accepted' | 'dispatched' | 'waiting' | 'terminal';
+  readonly outcome: 'succeeded' | 'unverified' | 'failed' | 'cancelled' | 'dropped' | null;
+  readonly items: readonly { readonly id: string; readonly state: string; readonly assignee: string | null }[];
+  readonly planRun: { readonly status: string; readonly outcome: string | null } | null;
+  readonly cancellationRequested: boolean;
+  readonly wait: { readonly name: string; readonly token: string } | null;
+}
+
+export type BlueprintOperationResult<TOutput = unknown> =
+  | { readonly state: 'pending'; readonly status: BlueprintOperationStatus }
+  | {
+      readonly state: 'failed' | 'cancelled' | 'dropped' | 'unavailable';
+      readonly status: BlueprintOperationStatus;
+      readonly reason: string;
+    }
+  | {
+      readonly state: 'ready';
+      readonly status: BlueprintOperationStatus;
+      readonly output: TOutput;
+      readonly evidenceRef: string;
+      readonly acceptanceEvidenceRef?: string;
+    };
+
+export interface BlueprintOperationDraft<TInput extends JsonObject = JsonObject> {
+  readonly harnessSlug: string;
+  readonly operationId: string;
+  /** Stable replay identity. Reusing it with different input must be refused by the host. */
+  readonly requestKey: string;
+  readonly input: TInput;
+  readonly title?: string;
+  readonly summary?: string;
+}
+
 export interface IngestEvent {
   readonly id: string;
   readonly payload: unknown;
@@ -102,11 +151,31 @@ export interface PotAppSeamHost {
    * must never translate this call into a bare work_items:create.
    */
   launchPlanRun(draft: PlanRunDraft): Promise<LaunchedPlanRun> | LaunchedPlanRun;
+  /** Adapter for the public blueprint:submit tool/HTTP contract. */
+  submitBlueprintOperation(
+    draft: BlueprintOperationDraft,
+  ): Promise<BlueprintOperationHandle> | BlueprintOperationHandle;
+  /** Adapter for blueprint:status. */
+  readBlueprintOperationStatus(
+    handle: BlueprintOperationHandle,
+  ): Promise<BlueprintOperationStatus> | BlueprintOperationStatus;
+  /** Adapter for blueprint:result. Only state=ready may carry output. */
+  readBlueprintOperationResult(
+    handle: BlueprintOperationHandle,
+  ): Promise<BlueprintOperationResult> | BlueprintOperationResult;
 }
 
 export interface PotAppSeam {
   bootstrapPots(input: BootstrapPotsInput): Promise<BootstrapPotsResult>;
+  /** Compatibility-only direct plan launch. New reusable task bindings submit operations. */
   launchPlanRuns(runs: readonly PlanRunDraft[]): Promise<readonly LaunchedPlanRun[]>;
+  submitOperations(
+    operations: readonly BlueprintOperationDraft[],
+  ): Promise<readonly BlueprintOperationHandle[]>;
+  operationStatus(handle: BlueprintOperationHandle): Promise<BlueprintOperationStatus>;
+  operationResult<TOutput = unknown>(
+    handle: BlueprintOperationHandle,
+  ): Promise<BlueprintOperationResult<TOutput>>;
   startIngestLoop<TParsed>(input: StartIngestLoopInput<TParsed>): IngestSubscription;
 }
 
@@ -136,6 +205,36 @@ function fingerprintPots(pots: readonly PotSpec[]): string {
 
 function defaultMarker(pots: readonly PotSpec[]): string {
   return `pot-app-seam:${pots.map((h) => h.slug).sort().join('+')}`;
+}
+
+function sameOperationHandle(left: BlueprintOperationHandle, right: BlueprintOperationHandle): boolean {
+  return left.workspaceId === right.workspaceId &&
+    left.harnessSlug === right.harnessSlug &&
+    left.receiptId === right.receiptId &&
+    left.operationId === right.operationId &&
+    left.specificationRevision === right.specificationRevision &&
+    stableJson(left.target as unknown as JsonValue) === stableJson(right.target as unknown as JsonValue);
+}
+
+/**
+ * Compatibility bridge for an app migrating one legacy launchPlanRuns caller.
+ * The operation declaration must target the same plan template; the template
+ * remains the owner of its DAG and stable-agent execution contract.
+ */
+export function operationDraftFromPlanRun<TInput extends JsonObject>(
+  draft: PlanRunDraft<TInput>,
+  operationId: string,
+): BlueprintOperationDraft<TInput> {
+  assertNonEmpty(operationId, 'operationId');
+  if (!draft.dedupeKey?.trim()) {
+    throw new Error('legacy plan run migration requires dedupeKey so replay identity is preserved');
+  }
+  return {
+    harnessSlug: draft.execution.appHarnessSlug,
+    operationId,
+    requestKey: draft.dedupeKey,
+    input: draft.input,
+  };
 }
 
 export function createPotAppSeam(host: PotAppSeamHost): PotAppSeam {
@@ -178,6 +277,43 @@ export function createPotAppSeam(host: PotAppSeamHost): PotAppSeam {
         out.push(launched);
       }
       return out;
+    },
+
+    async submitOperations(operations) {
+      const out: BlueprintOperationHandle[] = [];
+      for (const operation of operations) {
+        assertNonEmpty(operation.harnessSlug, 'operation.harnessSlug');
+        assertNonEmpty(operation.operationId, 'operation.operationId');
+        assertNonEmpty(operation.requestKey, 'operation.requestKey');
+        const handle = await host.submitBlueprintOperation(operation);
+        if (handle.harnessSlug !== operation.harnessSlug || handle.operationId !== operation.operationId) {
+          throw new Error(
+            `operation handle ${handle.harnessSlug}#${handle.operationId} does not match ` +
+              `${operation.harnessSlug}#${operation.operationId}`,
+          );
+        }
+        out.push(handle);
+      }
+      return out;
+    },
+
+    async operationStatus(handle) {
+      const status = await host.readBlueprintOperationStatus(handle);
+      if (!sameOperationHandle(status.handle, handle)) {
+        throw new Error('blueprint operation status returned a different durable handle');
+      }
+      return status;
+    },
+
+    async operationResult<TOutput>(handle: BlueprintOperationHandle) {
+      const result = await host.readBlueprintOperationResult(handle);
+      if (!sameOperationHandle(result.status.handle, handle)) {
+        throw new Error('blueprint operation result returned a different durable handle');
+      }
+      if (result.state !== 'ready' && Object.prototype.hasOwnProperty.call(result, 'output')) {
+        throw new Error(`blueprint operation ${result.state} result must not carry output`);
+      }
+      return result as BlueprintOperationResult<TOutput>;
     },
 
     startIngestLoop(input) {

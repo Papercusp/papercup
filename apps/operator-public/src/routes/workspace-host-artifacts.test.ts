@@ -209,7 +209,7 @@ function authedEnv(): { env: Env; r2: FakeR2 } {
 async function upload(
   env: Env,
   bundleSha256: string,
-  file: 'server.tgz' | 'server.tgz.minisig' | 'manifest.json',
+  file: 'server.tgz' | 'server.tgz.minisig' | 'manifest.json' | 'sbom.cdx.json',
   bytes: Uint8Array,
   declaredSha256: string,
 ): Promise<Response> {
@@ -353,6 +353,43 @@ async function finalize(env: Env, bundleSha256: string): Promise<Response> {
 }
 
 describe('workspace-host artifact publication', () => {
+  it('attaches only the SBOM bound by a finalized manifest without rewriting the release', async () => {
+    const sbom = new TextEncoder().encode(JSON.stringify({ bomFormat: 'CycloneDX', components: [] }));
+    const sbomSha = await sha256Hex(sbom);
+    const value = await fixture((manifest) => {
+      const evidence = (manifest.trustReport as { evidence: Array<Record<string, unknown>> }).evidence;
+      evidence.find((entry) => entry.kind === 'sbom')!.documentSha256 = sbomSha;
+      evidence.find((entry) => entry.kind === 'vulnerability-scan')!.sbomSha256 = sbomSha;
+    });
+    const { env, r2 } = authedEnv();
+    expect((await upload(env, value.bundleSha256, 'sbom.cdx.json', sbom, sbomSha)).status).toBe(409);
+    await uploadFixture(env, value);
+    expect((await finalize(env, value.bundleSha256)).status).toBe(201);
+    const before = new Map(r2.data);
+    const path = `/artifacts/workspace-host/sha256/${value.bundleSha256}/sbom.cdx.json`;
+    expect((await api.request(path, {}, env)).status).toBe(404);
+
+    const wrong = new TextEncoder().encode('unbound evidence');
+    expect((await upload(env, value.bundleSha256, 'sbom.cdx.json', wrong, await sha256Hex(wrong))).status).toBe(409);
+    expect((await upload(env, value.bundleSha256, 'sbom.cdx.json', wrong, sbomSha)).status).toBe(400);
+    expect((await upload(env, value.bundleSha256, 'sbom.cdx.json', sbom, sbomSha)).status).toBe(201);
+    const retry = await upload(env, value.bundleSha256, 'sbom.cdx.json', sbom, sbomSha);
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ deduped: true });
+    const publicBytes = await api.request(path, {}, env);
+    expect(publicBytes.status).toBe(200);
+    expect(publicBytes.headers.get('x-artifact-sha256')).toBe(sbomSha);
+    expect(new Uint8Array(await publicBytes.arrayBuffer())).toEqual(sbom);
+    expect((await api.request(path, { method: 'HEAD' }, env)).headers.get('content-length')).toBe(String(sbom.length));
+    for (const [key, object] of before) expect(r2.data.get(key)).toEqual(object);
+    expect(r2.data.size).toBe(before.size + 1);
+
+    // A manifest altered behind the immutable descriptor cannot authorize public evidence.
+    const manifestKey = `${WORKSPACE_HOST_ARTIFACT_PREFIX}/${value.bundleSha256}/manifest.json`;
+    r2.data.set(manifestKey, new TextEncoder().encode('{}'));
+    expect((await api.request(path, {}, env)).status).toBe(404);
+  });
+
   it('requires a valid allowlisted GitHub operator before storing bytes', async () => {
     const value = await fixture();
     stubGithub({ user: { error: 401 } });

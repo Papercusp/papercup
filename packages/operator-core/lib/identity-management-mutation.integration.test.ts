@@ -26,7 +26,7 @@
  *     module with its own tests; they contribute no rows this path writes.
  */
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyMigrationForTest,
@@ -136,7 +136,12 @@ vi.mock('./agent-orders-notify', async (importOriginal) => ({
 }));
 
 import { restoreRawJsonbSerializer } from '@papercusp/db-org';
-import { mutateIdentityStack } from './identity-management';
+import { mutateIdentityStack as mutateCurrentIdentityStack } from './identity-management';
+
+// Reuse the standard copy-out probe without mutating the shared identity writer.
+const mutateIdentityStack: typeof mutateCurrentIdentityStack = process.env.PAPERCUSP_MUTATION_PROBE_SOURCE
+  ? (await import(pathToFileURL(process.env.PAPERCUSP_MUTATION_PROBE_SOURCE).href)).mutateIdentityStack
+  : mutateCurrentIdentityStack;
 
 const artifactFor = h.artifactFor;
 

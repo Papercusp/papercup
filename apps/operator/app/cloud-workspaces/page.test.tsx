@@ -25,6 +25,7 @@
 
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 import {
   cleanup,
   fireEvent,
@@ -85,7 +86,7 @@ vi.mock("nuqs", async () => {
   };
 });
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
 vi.mock("@/app/harness/Select", () => ({
   Select: ({
@@ -445,6 +446,36 @@ describe("CloudWorkspacesPage — rail and step routing", () => {
 });
 
 describe("CloudWorkspacesPage — mutation seam", () => {
+  it("reconciles a timed-out validation from the later connection row without a false failure", async () => {
+    H.rows = [connectionRow];
+    H.queryDefaults = { step: "connect", connection: connectionRow.id };
+    H.mutate.mockRejectedValueOnce(
+      Object.assign(new Error("scheduler task timed out after 20000ms"), {
+        name: "OriginSchedulerError",
+        code: "timeout",
+      }),
+    );
+    vi.mocked(toast.success).mockClear();
+    vi.mocked(toast.error).mockClear();
+    vi.mocked(toast.info).mockClear();
+    const view = render(<CloudWorkspacesPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Validate Google Cloud connection" }));
+    await waitFor(() => expect(toast.info).toHaveBeenCalledWith(
+      "Validation response timed out; checking connection status. It may still complete.",
+    ));
+    expect(H.invalidate).toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+
+    H.rows = [{ ...connectionRow, lastValidatedAt: "2026-08-22T05:01:00.000Z" }];
+    view.rerender(<CloudWorkspacesPage />);
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith(
+      "Production GCP connection status updated: connected",
+    ));
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["gcp-main", "Production GCP"],
     ["gcp-secondary", "Selected GCP"],

@@ -72,6 +72,60 @@ describe('managed-pty integration evidence isolation', () => {
 });
 
 describe('plain launch kickoff turn-start proof', () => {
+  it('preserves and submits a long Codex kickoff when the composer only renders its tail', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-codex-viewport-'));
+    const codexHome = join(root, 'codex-home');
+    const nativeFile = join(codexHome, 'sessions', '2026', '09', '26', 'rollout.jsonl');
+    const submitFile = join(root, 'submitted.txt');
+    const ownerId = 'su-codex-viewport-' + process.pid + '-' + Math.floor(performance.now());
+    const sock = socketPathFor(ownerId);
+    const marker = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧';
+    const kickoff = marker + '\n' + 'Inspect the exact stored evidence without replacing it.\n'.repeat(100);
+    const { captured, io } = fakeIo();
+    // Model a bounded composer viewport, not input loss: the complete paste is
+    // retained, but a single long paste never paints its first line. Advertise
+    // bracketed paste and parse real paste boundaries before handling Enter.
+    const childCode = [
+      "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "let wire='',composer='',submitted=false,paint;const start='\x1b[200~',end='\x1b[201~';",
+      "process.stdout.write('\x1b[?2004hmodel: GPT-5.6-Sol high\\nReady · GPT-5.6-Sol high · Context 100% left\\n');",
+      "function repaint(){clearTimeout(paint);paint=setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+composer.slice(-160)+'\\n'),30);}",
+      "function submit(){if(submitted)return;submitted=true;fs.writeFileSync(process.env.SUBMIT_FILE,composer);fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'viewport-1'}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id:'viewport-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));process.stdout.write('SUBMITTED\\n');}",
+      "process.stdin.on('data',d=>{if(d.includes('\x04'))process.exit(0);wire+=d;while(wire){if(wire.startsWith(start)){const at=wire.indexOf(end,start.length);if(at<0)break;composer+=wire.slice(start.length,at);wire=wire.slice(at+end.length);repaint();continue;}if(start.startsWith(wire))break;const next=wire.indexOf(start);const take=next<0?wire.length:next;const text=wire.slice(0,take);wire=wire.slice(take);for(const c of text){if(c==='\\r')submit();else composer+=c;}repaint();}});",
+      'setTimeout(()=>process.exit(0),4000);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath, args: ['-e', childCode], cwd: root,
+        env: {
+          ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, SUBMIT_FILE: submitFile,
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
+          PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '1000',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+          TERM: 'xterm-256color',
+        },
+        ownerId, io, bridgeTty: false, kickoff,
+        nativePersistenceTimeoutMs: 500,
+        signalSource: new EventEmitter(), onExit: () => undefined,
+      });
+      await vi.waitFor(() => expect(existsSync(submitFile), captured()).toBe(true), { timeout: 2500 });
+      expect(readFileSync(submitFile, 'utf8')).toBe(kickoff);
+      expect(captured()).toContain('COMPOSER_ECHO:' + marker);
+      expect(readFileSync(nativeFile, 'utf8')).toContain(marker);
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, '\x04');
+      await done?.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 7000);
+
   it('passes the Codex model offer by keeping the configured model before seeding the first turn', async () => {
     const root = mkdtempSync(join(tmpdir(), 'psu-codex-model-choice-'));
     const codexHome = join(root, 'codex-home');
@@ -91,7 +145,7 @@ describe('plain launch kickoff turn-start proof', () => {
       "let input='',chosen=false,echoed=false,submitted=false,ticksStarted=false;",
       "process.stdout.write('\\x1b[6nOpenAI Codex (v0.156.1)\\nmodel: loading\\nMeet GPT-6 Sol\\n› 1. Try new model\\n2. Use existing model\\n');",
       "process.stdin.on('data',d=>{input+=d;if(!chosen){const at=input.indexOf('\\x1b[B\\r');if(at<0)return;chosen=true;fs.writeFileSync(process.env.CHOICE_FILE,'existing');input=input.slice(at+4);process.stdout.write('model: GPT-5.6-Sol high\\nReady · gpt-5.6-sol high · Context 100% left\\n');}",
-      "if(!echoed&&input.includes('BEGIN_MODEL_CHOICE')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}",
+      "if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}",
       "if(echoed&&!submitted&&d.includes('\\r')){submitted=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const ts=new Date().toISOString();const rows=[{type:'response_item',timestamp:ts,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:ts,payload:{type:'task_started',turn_id:'choice-1'}},{type:'response_item',timestamp:ts,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]}},{type:'event_msg',timestamp:ts,payload:{type:'task_complete',turn_id:'choice-1'}}];fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));setTimeout(()=>process.stdout.write('KICKOFF_COUNT_1\\n'),75);}else if(submitted&&d.includes('\\r')){setTimeout(()=>process.stdout.write('RESUBMIT_ACK\\n'),75);}if(input.includes('QUIT'))process.exit(0);});",
       "process.stdin.on('data',()=>{if(!submitted||ticksStarted)return;ticksStarted=true;let n=0;const timer=setInterval(()=>{process.stdout.write('MODEL_TICK_'+(++n)+'\\n');if(n===15)clearInterval(timer);},50);});",
       'setTimeout(()=>process.exit(0),7000);',
@@ -153,7 +207,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const childCode = [
       "const fs=require('fs'),path=require('path');",
       "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
-      "let markerEchoed=false;process.stdin.on('data',d=>{if(!markerEchoed&&d.includes('BEGIN_FAST_KICKOFF')){markerEchoed=true;echoScheduled=true;process.stdout.write('COMPOSER_ECHO:'+d+'\\n');}});",
+      "let markerEchoed=false;process.stdin.on('data',d=>{if(!markerEchoed&&d.includes('⟧')){markerEchoed=true;echoScheduled=true;process.stdout.write('COMPOSER_ECHO:'+d+'\\n');}});",
       "let input='',seen=0,echoScheduled=false;process.stdout.write('62% context left\\n');",
       "process.stdin.on('data',d=>{input+=d;const matches=input.match(/BEGIN_FAST_KICKOFF/g)||[];if(!echoScheduled&&matches.length){echoScheduled=true;const echo=input;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+echo+'\\n'),75);}while(seen<matches.length){seen++;if(seen===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const at=new Date().toISOString();const turn='fast-'+seen;const rows=[{type:'response_item',timestamp:at,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}},{type:'event_msg',timestamp:at,payload:{type:'task_started',turn_id:turn}},{type:'response_item',timestamp:at,payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'done'}]}},{type:'event_msg',timestamp:at,payload:{type:'task_complete',turn_id:turn}}];fs.appendFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));}fs.appendFileSync(process.env.COUNT_FILE,seen+'\\n');process.stdout.write('KICKOFF_COUNT_'+seen+'\\n');}if(seen>0&&d.includes('\\r'))process.stdout.write('RESUBMIT_ACK\\n');if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),5000);',
@@ -221,7 +275,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const childCode = [
       "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
       "let input='',echoed=false;process.stdout.write('62% context left\\n');",
-      "process.stdin.on('data',d=>{input+=d;if(!echoed&&input.includes('BEGIN_TRUNCATED_ECHO')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input.slice(34)+'\\n');}if(d.includes('\\r')){require('fs').appendFileSync(process.env.SUBMIT_FILE,'submitted\\n');process.stdout.write('SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
+      "process.stdin.on('data',d=>{input+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input.slice(34)+'\\n');}if(d.includes('\\r')){require('fs').appendFileSync(process.env.SUBMIT_FILE,'submitted\\n');process.stdout.write('SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),2000);',
     ].join('');
     let done;
@@ -282,7 +336,7 @@ describe('plain launch kickoff turn-start proof', () => {
     const childCode = [
       "const fs=require('fs');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
       "let input='',echoScheduled=false;process.stdout.write('62% context left\\n');",
-      "process.stdin.on('data',d=>{input+=d;if(!echoScheduled&&input.includes('BEGIN_DELAYED_ECHO')){echoScheduled=true;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+input+'\\n'),2500);}if(d.includes('\\r')){fs.appendFileSync(process.env.SUBMIT_FILE,'submitted\\n');process.stdout.write('SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
+      "process.stdin.on('data',d=>{input+=d;if(!echoScheduled&&input.includes('⟧')){echoScheduled=true;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+input+'\\n'),2500);}if(d.includes('\\r')){fs.appendFileSync(process.env.SUBMIT_FILE,'submitted\\n');process.stdout.write('SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
       'setTimeout(()=>process.exit(0),7000);',
     ].join('');
     let done;
@@ -1173,7 +1227,7 @@ describe('hostThroughPty real round-trip', () => {
         "const fs=require('fs'),path=require('path');",
         "process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
         "let b='',echoed=false;process.stdout.write('62% context left\\n');",
-        "process.stdin.on('data',d=>{b+=d;if(!b.includes('BEGIN_PROOF_KICKOFF'))return;if(!echoed){echoed=true;process.stdout.write('COMPOSER_ECHO:'+b+'\\n');}if(!b.includes('\\r'))return;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({role:'user',text:process.env.KICKOFF_MARKER})+'\\n');process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);});",
+        "process.stdin.on('data',d=>{b+=d;if(!b.includes('⟧'))return;if(!echoed){echoed=true;process.stdout.write('COMPOSER_ECHO:'+b+'\\n');}if(!b.includes('\\r'))return;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({role:'user',text:process.env.KICKOFF_MARKER})+'\\n');process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);});",
         'setTimeout(()=>process.exit(2),5000);',
       ].join('');
       let done;

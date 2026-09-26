@@ -284,27 +284,32 @@ describe('ADC-backed GCP workspace-host API client', () => {
       if (!url.searchParams.has('pageToken')) {
         return json({
           items: {
-            [`zones/${ZONE}`]: { machineTypes: [
-              { name: 'n2-standard-2', guestCpus: 2, memoryMb: 8192, deprecated: { state: 'DEPRECATED' } },
-            ] },
+            [`zones/${ZONE}`]: {
+              machineTypes: [
+                { name: 'n2-standard-2', guestCpus: 2, memoryMb: 8192, deprecated: { state: 'DEPRECATED' } },
+              ],
+            },
           },
           nextPageToken: 'next+page/=2',
         });
       }
       expect(url.searchParams.get('pageToken')).toBe('next+page/=2');
-      return json({ items: {
-        'zones/us-central1-b': { machineTypes: [
-          { name: 'n2-standard-2', guestCpus: 2, memoryMb: 8192 },
-          { name: 'e2-standard-4', guestCpus: 4, memoryMb: 16384 },
-        ] },
-        'zones/europe-west1-b': { machineTypes: [
-          { name: 'outside-region', guestCpus: 1, memoryMb: 1024 },
-        ] },
-      } });
+      return json({
+        items: {
+          'zones/us-central1-b': {
+            machineTypes: [
+              { name: 'n2-standard-2', guestCpus: 2, memoryMb: 8192 },
+              { name: 'e2-standard-4', guestCpus: 4, memoryMb: 16384 },
+            ],
+          },
+          'zones/europe-west1-b': { machineTypes: [{ name: 'outside-region', guestCpus: 1, memoryMb: 1024 }] },
+        },
+      });
     }) as typeof fetch;
 
     const sizes = await makeClient(fetchImpl).listSizes(
-      { scope: { kind: 'project', id: PROJECT }, region: REGION }, connection(),
+      { scope: { kind: 'project', id: PROJECT }, region: REGION },
+      connection(),
     );
     expect(sizes).toEqual([
       { id: 'e2-standard-4', label: 'e2-standard-4', cpuCount: 4, memoryMiB: 16384, available: true },
@@ -317,29 +322,41 @@ describe('ADC-backed GCP workspace-host API client', () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = new URL(String(input));
       expect(url.searchParams.has('filter')).toBe(false);
-      return json(url.searchParams.has('pageToken') ? {
-        items: { [`zones/${ZONE}`]: { machineTypes: [
-          { name: 'e2-standard-4', guestCpus: 4, memoryMb: 16384 },
-        ] } },
-      } : { items: {}, nextPageToken: 'next' });
+      return json(
+        url.searchParams.has('pageToken')
+          ? {
+              items: {
+                [`zones/${ZONE}`]: { machineTypes: [{ name: 'e2-standard-4', guestCpus: 4, memoryMb: 16384 }] },
+              },
+            }
+          : { items: {}, nextPageToken: 'next' },
+      );
     }) as typeof fetch;
-    await expect(makeClient(fetchImpl).listSizes({ scope: { kind: 'project', id: PROJECT } }, connection()))
-      .resolves.toMatchObject([{ id: 'e2-standard-4' }]);
+    await expect(
+      makeClient(fetchImpl).listSizes({ scope: { kind: 'project', id: PROJECT } }, connection()),
+    ).resolves.toMatchObject([{ id: 'e2-standard-4' }]);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('refuses a repeated machine-type page token instead of looping or returning a partial catalog', async () => {
     const fetchImpl = vi.fn(async () => json({ items: {}, nextPageToken: 'same-token' })) as typeof fetch;
-    await expect(makeClient(fetchImpl).listSizes({ scope: { kind: 'project', id: PROJECT } }, connection()))
-      .rejects.toThrow('gcp_machine_type_pagination_cycle');
+    await expect(
+      makeClient(fetchImpl).listSizes({ scope: { kind: 'project', id: PROJECT } }, connection()),
+    ).rejects.toThrow('gcp_machine_type_pagination_cycle');
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it('refuses region expressions that could widen the GCP catalog filter', async () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
-    await expect(makeClient(fetchImpl).listSizes({
-      scope: { kind: 'project', id: PROJECT }, region: 'us-central1|.*',
-    }, connection())).rejects.toThrow('invalid_region');
+    await expect(
+      makeClient(fetchImpl).listSizes(
+        {
+          scope: { kind: 'project', id: PROJECT },
+          region: 'us-central1|.*',
+        },
+        connection(),
+      ),
+    ).rejects.toThrow('invalid_region');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -505,6 +522,27 @@ describe('ADC-backed GCP workspace-host API client', () => {
       }).validateConnection(hostedConnection),
     ).resolves.toMatchObject({ ok: true, identity: 'delegated' });
     expect(acquireAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('shares auth only within one explicitly scoped inspection client', async () => {
+    const acquireAuth = vi.fn(async () => ({
+      accessToken: TOKEN,
+      projectId: PROJECT,
+      identity: 'operator@example.com',
+    }));
+    const fetchImpl = vi.fn(async (input: string | URL | Request) =>
+      json(String(input).includes('/regions?') ? { items: [] } : { name: PROJECT }),
+    ) as typeof fetch;
+    const options = { acquireAuth, fetch: fetchImpl, now: () => NOW, reuseAuthWithinInstance: true };
+
+    const first = new GoogleComputeWorkspaceHostApiClient(options);
+    await expect(first.validateConnection(connection())).resolves.toMatchObject({ ok: true });
+    await expect(first.listRegions({ scope: { kind: 'project', id: PROJECT } }, connection())).resolves.toEqual([]);
+    expect(acquireAuth).toHaveBeenCalledTimes(1);
+
+    const second = new GoogleComputeWorkspaceHostApiClient(options);
+    await expect(second.validateConnection(connection())).resolves.toMatchObject({ ok: true });
+    expect(acquireAuth).toHaveBeenCalledTimes(2);
   });
 
   it('resolves a configured Papercusp family but exposes only its immutable member to consumers', async () => {
@@ -985,9 +1023,13 @@ describe('ADC-backed GCP workspace-host API client', () => {
     });
 
     expect(inventory.complete).toBe(true);
-    expect(vi.mocked(fetchImpl).mock.calls.filter(([input]) =>
-      /\/(?:aggregated\/(?:instances|disks)|global\/snapshots)\?/.test(String(input)),
-    )).toHaveLength(6);
+    expect(
+      vi
+        .mocked(fetchImpl)
+        .mock.calls.filter(([input]) =>
+          /\/(?:aggregated\/(?:instances|disks)|global\/snapshots)\?/.test(String(input)),
+        ),
+    ).toHaveLength(6);
     expect(inventory.inventoryEvidence.map(({ kind }) => kind)).toEqual([
       'vm',
       'disk',
@@ -1014,23 +1056,31 @@ describe('ADC-backed GCP workspace-host API client', () => {
     ).toMatchObject({ inventoryComplete: true, clean: true, untracked: [], missing: [], labelMismatches: [] });
   });
 
-  it.each(['instances', 'disks', 'snapshots'])('rejects a repeated inventory cursor for %s rather than claiming completeness', async (collection) => {
-    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
-      const url = new URL(String(input));
-      if (url.pathname.endsWith(`/${collection}`)) return json({ nextPageToken: 'cycle' });
-      if (url.pathname.includes('/aggregated/') || url.pathname.endsWith('/snapshots')) return json({});
-      return json({ error: { code: 404 } }, 404);
-    }) as typeof fetch;
-    await expect(makeClient(fetchImpl).inventoryManagedResources({
-      projectId: PROJECT,
-      region: REGION,
-      workspaceId: 'workspace-1',
-      deterministicNames: {
-        networks: ['pc-host-net'], subnetworks: ['pc-host-subnet'], firewalls: ['pc-host-iap'],
-        routers: ['pc-host-router'], nats: [{ routerName: 'pc-host-router', name: 'pc-host-nat' }],
-      },
-    })).rejects.toThrow('gcp_inventory_pagination_cycle');
-  });
+  it.each(['instances', 'disks', 'snapshots'])(
+    'rejects a repeated inventory cursor for %s rather than claiming completeness',
+    async (collection) => {
+      const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith(`/${collection}`)) return json({ nextPageToken: 'cycle' });
+        if (url.pathname.includes('/aggregated/') || url.pathname.endsWith('/snapshots')) return json({});
+        return json({ error: { code: 404 } }, 404);
+      }) as typeof fetch;
+      await expect(
+        makeClient(fetchImpl).inventoryManagedResources({
+          projectId: PROJECT,
+          region: REGION,
+          workspaceId: 'workspace-1',
+          deterministicNames: {
+            networks: ['pc-host-net'],
+            subnetworks: ['pc-host-subnet'],
+            firewalls: ['pc-host-iap'],
+            routers: ['pc-host-router'],
+            nats: [{ routerName: 'pc-host-router', name: 'pc-host-nat' }],
+          },
+        }),
+      ).rejects.toThrow('gcp_inventory_pagination_cycle');
+    },
+  );
 
   it('wires the explicit ADC production composition without changing injected-client fail-closed construction', async () => {
     const fetchImpl = vi.fn(async () => json({ name: PROJECT })) as typeof fetch;

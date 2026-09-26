@@ -10,10 +10,17 @@ import { EMBEDDER_DIM_SPECS } from '../../../../libs/generic/memory/src/embedder
 import { MEMORY_VECTOR_STORAGE_PROFILES } from '../../../../libs/generic/memory/src/vec-write';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { packageMemoryDriver } from './package-memory-driver';
+import { prepareKnowledgePackageResources, releaseKnowledgePackageResources } from './package-knowledge-resources';
+import { pinPackageInput, resolveBlueprint } from '@papercusp/orchestrator/blueprint';
+import { compileBlueprintWithPackages } from './compile-packages';
+import { applySessionPackageResources, sessionPackageDependentId } from './session-package-resources';
+import { provisionLaunchIdentityResources } from '../role-launch-spec';
 import { preparePackageResource, releasePackageResource, type PackageResourceAddress } from './package-resource-receipts';
 
 let db: OrgTestDb;
 let pool: Pool;
+let selectedBackend: Mem0Backend;
+vi.mock('../memory/backend', () => ({ getMemoryBackend: () => selectedBackend }));
 const stores: CanonicalVectorStore[] = [];
 const scope = 'harness:managed-write-tests';
 const vector = Array(EMBEDDER_DIM_SPECS.local.targetDims).fill(0.1);
@@ -56,6 +63,90 @@ function address(name: string): PackageResourceAddress {
 }
 
 describe('real canonical backend package resources', () => {
+  it('atomically applies the complete exact wearer pin set and rolls back a partial preparation', async () => {
+    const pin = pinPackageInput({ packageKind: 'knowledge-pack', ref: 'atomic-pack', revision: '1.0.0', files: [],
+      value: { manifest: { id: 'atomic-pack', version: '1.0.0', title: 'Atomic', description: 'Test' }, items: [
+        { id: 'one', title: 'First', text: 'First item', kind: 'reference', appliesTo: ['any'] },
+        { id: 'two', title: 'Second', text: 'Second item', kind: 'reference', appliesTo: ['any'] },
+      ] } });
+    const source = resolveBlueprint({ id: 'atomic-resource-host', bundles: [{ kind: 'knowledge-pack', ref: pin.ref }],
+      workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } });
+    const artifact = await compileBlueprintWithPackages(source, { workspaceId: 'atomic-test', harnessSlug: 'atomic-target',
+      memoryTarget: { kind: 'harness', slug: 'atomic-target' }, knowledgeSelection: { shapes: [], domains: [] },
+      resolvePackage: async () => pin });
+    const revision = { specificationRevision: artifact.specificationRevision, stateRevision: 'atomic-state' };
+    const ownerId = 'atomic-wearer';
+    const dependentId = sessionPackageDependentId(ownerId, revision);
+    selectedBackend = backend();
+    await provisionLaunchIdentityResources({ ...revision, specificationArtifact: artifact,
+      resourceArtifacts: [artifact], stack: [], promptText: '', compositionSource: 'blueprint' }, db.adminSql, { ownerId });
+    const prepared = await db.adminSql<Array<{ resource_key: string }>>`SELECT resource_key
+      FROM harness_shared.blueprint_package_dependents WHERE workspace_id = 'atomic-test' AND dependent_id = ${dependentId}`;
+    const input = { ownerId, workspaceId: 'atomic-test', revision, artifact };
+    await expect(db.adminSql.begin(async (tx) => {
+      await applySessionPackageResources(tx, input);
+      throw new Error('host transaction failed');
+    })).rejects.toThrow('host transaction failed');
+    expect(await db.adminSql`SELECT phase FROM harness_shared.blueprint_package_dependents
+      WHERE workspace_id = 'atomic-test' AND dependent_id = ${dependentId}`)
+      .toEqual([{ phase: 'prepared' }, { phase: 'prepared' }]);
+    await db.adminSql.begin((tx) => applySessionPackageResources(tx, input));
+    expect(await db.adminSql`SELECT phase FROM harness_shared.blueprint_package_dependents
+      WHERE workspace_id = 'atomic-test' AND dependent_id = ${dependentId}`)
+      .toEqual([{ phase: 'applied' }, { phase: 'applied' }]);
+    await db.adminSql`DELETE FROM harness_shared.blueprint_package_dependents
+      WHERE workspace_id = 'atomic-test' AND dependent_id = ${dependentId} AND resource_key = ${prepared[0]!.resource_key}`;
+    await expect(db.adminSql.begin((tx) => applySessionPackageResources(tx, input))).rejects.toThrow(/complete applied pin set/);
+    expect(sessionPackageDependentId('another-wearer', revision)).not.toBe(dependentId);
+  });
+
+  it('prepares exact pack versions with ordinary seed provenance and recovers cleanup from the journal', async () => {
+    const pin = (version: string) => pinPackageInput({ packageKind: 'knowledge-pack', ref: 'fenced-pack', revision: version,
+      value: { manifest: { id: 'fenced-pack', version, title: 'Pack', description: 'Test' }, items: [
+        { id: 'one', title: 'First', text: version, kind: 'reference', appliesTo: ['any'] },
+        { id: 'two', title: 'Second', text: version, kind: 'reference', appliesTo: ['any'] },
+        { id: 'ui', title: 'UI', text: version, kind: 'reference', appliesTo: ['ui'] },
+      ] }, files: [] });
+    const pg = backend();
+    const input = { pin: pin('1.0.0'), workspaceId: 'pack-test', harnessSlug: 'pack-target',
+      memoryTarget: { kind: 'harness' as const, slug: 'pack-target' }, shapes: [], domains: [], dependentId: 'pack-a' };
+    const first = await prepareKnowledgePackageResources(db.adminSql, input, pg);
+    expect(first).toHaveLength(2);
+    const shared = await prepareKnowledgePackageResources(db.adminSql, { ...input, dependentId: 'pack-b' }, pg);
+    expect(shared.map((r) => r.external_refs)).toEqual(first.map((r) => r.external_refs));
+    const next = await prepareKnowledgePackageResources(db.adminSql, { ...input, pin: pin('2.0.0'), dependentId: 'pack-c' }, pg);
+    expect(next).toHaveLength(2);
+    const [row] = await db.adminSql`SELECT payload FROM harness_shared.memory_canonical WHERE id = ${first[0]!.external_refs[0]!.id}`;
+    expect(row.payload).toMatchObject({ data: 'First — 1.0.0', source: 'pack', pack_id: 'fenced-pack',
+      pack_version: '1.0.0', pack_item_id: 'one', user_id: 'harness:pack-target', workspace_id: 'pack-test',
+      identity_package_resource: first[0]!.resource_key, shareable: false });
+    expect((await releaseKnowledgePackageResources(db.adminSql, input.workspaceId, 'pack-a', pg)).every((r) => r.phase === 'ready')).toBe(true);
+    expect((await releaseKnowledgePackageResources(db.adminSql, input.workspaceId, 'pack-b', pg)).every((r) => r.phase === 'deleted')).toBe(true);
+    expect(await pg.managedWrites!.recover(next[0]!.write_key, 'harness:pack-target')).toHaveLength(1);
+    await expect(prepareKnowledgePackageResources(db.adminSql, { ...input, pin: { ...pin('1.0.0'), contentHash: hash('tamper') }, dependentId: 'tamper' }, pg))
+      .rejects.toThrow(/package-hash-mismatch/);
+  });
+
+  it('serializes conditional cleanup against a committed user edit', async () => {
+    const key = randomUUID();
+    const [ref] = await writes().create(key, 'editable', opts);
+    let locked!: () => void;
+    let commit!: () => void;
+    const rowLocked = new Promise<void>((resolve) => { locked = resolve; });
+    const allowCommit = new Promise<void>((resolve) => { commit = resolve; });
+    const editing = db.adminSql.begin(async (tx) => {
+      await tx`UPDATE harness_shared.memory_canonical SET payload = payload || '{"data":"edited under lock"}'::jsonb WHERE id = ${key}`;
+      locked();
+      await allowCommit;
+    });
+    await rowLocked;
+    const removing = writes().removeIfUnchanged(ref!, scope);
+    commit();
+    await editing;
+    expect(await removing).toBe('changed');
+    expect((await canonicalStore().get(key))?.payload.data).toBe('edited under lock');
+  });
+
   it('creates once under concurrent retries and keeps prepared content out of lexical/vector/list recall', async () => {
     const key = randomUUID();
     const store = canonicalStore();

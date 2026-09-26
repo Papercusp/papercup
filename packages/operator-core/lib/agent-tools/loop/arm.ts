@@ -888,7 +888,12 @@ export default defineTool({
     const explicitHarnessRequested = isConcreteHarness(innerHarness);
     const requestScopeHarnessAvailable = isConcreteHarness(requestedHarness);
     const onlyWorkspaceScope = !requestScopeHarnessAvailable && !isConcreteHarness(ctx.harnessSlug);
-    let harness: string | null = null;
+    // An inner harness is the caller's explicit install-scope choice. Resolve it
+    // before consulting the session brief or workspace home, which can describe
+    // a different active plan and otherwise silently move a cold carry-note.
+    let harness: string | null = explicitHarnessRequested
+      ? resolvePotHomeSlug(innerHarness, undefined)
+      : null;
     // EI-20245033088778955 / EI-21481296218316052: an ACTIVE routine's install
     // scope is authoritative whenever the caller OMITS args.harness — not only
     // through a wildcard transport. A concrete ctx harness describes where this

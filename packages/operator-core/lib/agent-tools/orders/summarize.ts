@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { COORD_ROLES } from '../coordination/roles';
+import { COORD_REPLY_ROLES } from '../coordination/roles';
 import {
   OWNER_DIRECTIVE_SUMMARY_MAX,
   OWNER_DIRECTIVE_VERBATIM_CAP,
@@ -28,7 +28,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_REPLY_ROLES],
   args: z.object({
     id: z.number().int().positive().describe('The directive id.'),
     summary: z

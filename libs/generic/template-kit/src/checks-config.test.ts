@@ -31,6 +31,15 @@ const valid = {
     },
     invalidOutput: { itemId: 42, candidates: [] },
     agentBlueprint: "blueprints/purchase-agent/blueprint.yaml",
+    operation: {
+      id: "research-purchase",
+      version: "1",
+      planTemplate: {
+        ref: "purchase-research",
+        revision: "7",
+        contentHash: "a".repeat(64),
+      },
+    },
   },
   boot: {
     mode: "attach",
@@ -167,8 +176,25 @@ describe("validateChecksConfig", () => {
     expect(errors).toContain(
       "seam.parseOutputExport: required non-empty string",
     );
+    expect(errors).toContain("seam.agentBlueprint: required non-empty string");
+    expect(errors).toContain("seam.operation: required object");
     expect(errors).toContain("seam.validInput: required object fixture");
     expect(errors).toContain("seam.invalidOutput: required object fixture");
+  });
+
+  it("rejects an unpinned seam operation declaration", () => {
+    const errors = validateChecksConfig({
+      ...valid,
+      seam: {
+        ...valid.seam,
+        operation: {
+          id: "research-purchase",
+          version: "1",
+          planTemplate: { ref: "purchase-research", revision: "7", contentHash: "not-a-hash" },
+        },
+      },
+    });
+    expect(errors).toContain("seam.operation.planTemplate.contentHash: must be sha256 hex");
   });
 
   it("validates tagged composition decision answers when present", () => {
@@ -348,6 +374,7 @@ describe("validateChecksConfig", () => {
     expect(parseChecksConfig(valid).seam?.agentBlueprint).toBe(
       "blueprints/purchase-agent/blueprint.yaml",
     );
+    expect(parseChecksConfig(valid).seam?.operation.id).toBe("research-purchase");
   });
 
   it("the committed worked-example reference config validates", () => {

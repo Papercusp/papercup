@@ -100,7 +100,12 @@ export async function inspectWorkspaceHostConnection(input: {
   if (input.connection.target !== 'gcp') {
     throw new Error(`workspace_host_connection_target_${input.connection.target}_unsupported`);
   }
-  const provider = createConfiguredGcpWorkspaceHostProvider(input.connection);
+  // This provider exists for this inspection only. Catalog discovery makes
+  // several REST calls; acquire the same short-lived authority once for them.
+  // A later validation creates a new provider and resolves credentials again.
+  const provider = createConfiguredGcpWorkspaceHostProvider(input.connection, {
+    reuseAuthWithinInstance: true,
+  });
   const context = {
     workspaceId: input.workspaceId,
     requestId: `connection:${input.connectionId}`,

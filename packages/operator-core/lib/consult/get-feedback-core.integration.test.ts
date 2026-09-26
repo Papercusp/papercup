@@ -2196,6 +2196,59 @@ describe('getFeedbackCore — dispatch walk (D-002/D-004)', () => {
     expect(sel?.selected?.[0]?.answeringOwnerId).toBeUndefined();
   });
 
+  it('EI-24351703367365896: skipping multiple refused launches stamps only the expert that actually launched', async () => {
+    const second = cand('expert-b', { score: 0.65 });
+    const third = cand('expert-c', { score: 0.6 });
+    const { deps, reached } = makeDispatchDeps(routeOf([deadExpert, second, third]), [0, 0, 1]);
+    const res = asOk(await getFeedbackCore({ ...baseReq, maxResponders: 3 }, deps));
+    expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'expert-b', 'expert-c']);
+    expect(res.responder?.ownerId).toBe('expert-c');
+    const row = await stateRow(res.conversation_id);
+    expect(row).toMatchObject({ responder_id: 'expert-c', cascade_cursor: 2 });
+    const selected = (row.routing as { selection: { selected: Array<Record<string, unknown>> } }).selection.selected;
+    expect(selected[0].answeringOwnerId).toBeUndefined();
+    expect(selected[1].answeringOwnerId).toBeUndefined();
+    expect(selected[2].answeringOwnerId).toBe('expert-c-fork');
+    expect(row.cascade_digest).toMatchObject([
+      { ownerId: 'dead-x', kind: 'dispatch_failed' }, { ownerId: 'expert-b', kind: 'dispatch_failed' },
+    ]);
+  });
+
+  it('EI-24351703367365896: creation reports a launched refill expert outside its initial menu', async () => {
+    const second = cand('expert-b', { score: 0.65 });
+    const { deps, reached } = makeDispatchDeps(
+      routeOf([deadExpert, second], { all: [deadExpert, second, liveLow] }), [0, 0, 1],
+    );
+    const res = asOk(await getFeedbackCore({ ...baseReq, minResponders: 2, maxResponders: 2 }, deps));
+    expect(reached.map((d) => d.responder)).toEqual(['dead-x', 'expert-b', 'live-low']);
+    expect(res.responder?.ownerId).toBe('live-low');
+    expect(res.responder_via).toBe('minimum');
+    expect(await stateRow(res.conversation_id)).toMatchObject({ responder_id: 'live-low', cascade_cursor: 2 });
+  });
+
+  it('EI-24351703367365896: creation preserves a concurrent winner after a refused failover', async () => {
+    const second = cand('expert-b', { score: 0.65 });
+    const third = cand('expert-c', { score: 0.6 });
+    const { deps } = makeDispatchDeps(routeOf([deadExpert, second, third]));
+    const reached: string[] = [];
+    deps.reach = async (o) => {
+      reached.push(o.responder);
+      if (o.responder === 'expert-b') {
+        await rootSql`UPDATE harness_shared.consult_state
+          SET cascade_cursor = 2, responder_id = 'expert-c'
+          WHERE workspace_id = ${WS} AND conversation_id = ${o.conversationId}`;
+      }
+      return { queued: 0, woke: 0, pickupConfirmed: false };
+    };
+    const res = asOk(await getFeedbackCore({ ...baseReq, maxResponders: 3 }, deps));
+    expect(reached).toEqual(['dead-x', 'expert-b']);
+    expect(res.responder?.ownerId).toBe('expert-c');
+    expect(res.reason).not.toBe('no_available_responder');
+    expect(await stateRow(res.conversation_id)).toMatchObject({
+      state: 'awaiting_responder', responder_id: 'expert-c', cascade_cursor: 2, closed_at: null,
+    });
+  });
+
   it('every selectee exhausted — the honest terminal is no_available_responder, settled NOW rather than left to expiry', async () => {
     const second = cand('expert-b', { score: 0.65 });
     const { deps, reached } = makeDispatchDeps(routeOf([deadExpert, second]), [0, 0]);

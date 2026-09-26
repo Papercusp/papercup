@@ -18,7 +18,12 @@
  *     validInput: object          // a payload.in fixture the gate must ACCEPT
  *     validOutput: object         // a payload.out fixture the gate must ACCEPT
  *     invalidOutput: object       // a payload.out fixture the gate must REJECT
- *     agentBlueprint?: string     // stable app-agent blueprint — cross-checks workItem.kind
+ *     agentBlueprint: string      // stable app-agent blueprint — cross-checks workItem.kind
+ *     operation: {                // registered plan-target operation declared by that blueprint
+ *       id: string
+ *       version: string
+ *       planTemplate: { ref: string, revision: string, contentHash: sha256 }
+ *     }
  *     roundTripCommand: string[]  // REQUIRED: the app's own full plan-run→ingest
  *     roundTripCwd?: string       //   integration leg (spawned, must exit 0)
  *     roundTripTimeoutMs?: number //   default 300000
@@ -61,12 +66,26 @@ interface SeamSection {
   validInput: Record<string, unknown>;
   validOutput: Record<string, unknown>;
   invalidOutput: Record<string, unknown>;
-  agentBlueprint?: string;
+  agentBlueprint: string;
+  operation: {
+    id: string;
+    version: string;
+    planTemplate: { ref: string; revision: string; contentHash: string };
+  };
   roundTripCommand?: string[];
   roundTripCwd?: string;
   roundTripTimeoutMs?: number;
 }
 const section = config?.seam as SeamSection | undefined;
+
+const declaresTypedSchema = (value: unknown): boolean => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const schema = value as Record<string, unknown>;
+  return schema.type !== undefined || schema.const !== undefined ||
+    (Array.isArray(schema.anyOf) && schema.anyOf.length > 0) ||
+    (Array.isArray(schema.oneOf) && schema.oneOf.length > 0) ||
+    (Array.isArray(schema.enum) && schema.enum.length > 0);
+};
 
 describe.skipIf(!section)("seam-round-trip", () => {
   let contracts: Record<string, unknown>;
@@ -112,12 +131,33 @@ describe.skipIf(!section)("seam-round-trip", () => {
     expect(() => parseOut(section!.invalidOutput)).toThrow();
   });
 
-  it("the stable app-agent blueprint declares the same seam kind", () => {
-    if (!section!.agentBlueprint) return;
+  it("the stable app-agent blueprint declares the same seam kind and pinned plan operation", () => {
     const doc = parse(readFileSync(inApp(section!.agentBlueprint), "utf8")) as {
       workItem?: { kind?: string };
+      operations?: Array<{
+        id?: string;
+        version?: string;
+        target?: {
+          kind?: string;
+          template?: { kind?: string; ref?: string; revision?: string; contentHash?: string };
+        };
+        inputSchema?: unknown;
+        acceptance?: { resultSchema?: unknown };
+      }>;
     };
     expect(doc.workItem?.kind).toBe(section!.workItemKind);
+    const operation = doc.operations?.find((candidate) => candidate.id === section!.operation.id);
+    expect(operation, `missing operations[] declaration ${section!.operation.id}`).toBeDefined();
+    expect(operation?.version).toBe(section!.operation.version);
+    expect(operation?.target).toEqual({
+      kind: "plan",
+      template: { kind: "plan-template", ...section!.operation.planTemplate },
+    });
+    expect(declaresTypedSchema(operation?.inputSchema), "operation inputSchema is untyped").toBe(true);
+    expect(
+      declaresTypedSchema(operation?.acceptance?.resultSchema),
+      "operation acceptance.resultSchema is untyped",
+    ).toBe(true);
   });
 
   it(

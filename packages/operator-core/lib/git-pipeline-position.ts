@@ -4879,7 +4879,11 @@ const realReadDeployInFlight = (): Promise<DeployInFlight> => readDeployInFlight
 // unearned YES, so the derivation is a fallback for hosts without /proc, never a
 // preference. Preference order + rationale live on the helper.
 const realProbeUnitStart = async (unit: string): Promise<{ pid: number | null; startedAtMs: number | null } | null> =>
-  resolveServiceStartMs(await probeServiceStart(unit), Date.now());
+  // EI-24356772206513832: this diagnostic already keeps its release Git reads
+  // local. A failed spawner-sidecar startup otherwise adds its 10s timeout to
+  // the systemd probe before it falls back to the same local command. Several
+  // unit probes share this read, so use the bounded local exec path directly.
+  resolveServiceStartMs(await probeServiceStart(unit, (command, args, options) => pexec(command, args, options)), Date.now());
 
 /**
  * WI-2141731 — the release operator's own `/api/health` origin.

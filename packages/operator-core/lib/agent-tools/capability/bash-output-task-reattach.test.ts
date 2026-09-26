@@ -515,6 +515,31 @@ describe('capability:bash_output — durable task attachment', () => {
     }
   });
 
+  it('trusts a durable JOB END when the ledger only knows the process ended unobserved', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-unobserved-with-end-marker-'));
+    const logPath = join(stateDir, 'terminal.log');
+    try {
+      writeFileSync(logPath, `publication complete${formatJobLogEndMarker('completed', 0, Date.UTC(2026, 8, 19, 13, 15, 33))}`);
+      store.getTask.mockResolvedValue(taskRow({ state: 'ended_unobserved', exitCode: null, logPath }));
+      jobs.getJob.mockReturnValue(null);
+
+      const result = await bashOutput.handler({ task_id: 'task-carry-1' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+
+      expect(result.isError).toBeUndefined();
+      expect(payload).toMatchObject({
+        ok: true,
+        status: 'completed',
+        exit_code: 0,
+        recovered_from_log_marker: true,
+      });
+      expect(payload).not.toHaveProperty('reason', 'job_process_gone');
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
   it('uses a failed JOB END marker to resolve a stale nonterminal ledger row as an error', async () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'bash-stale-marker-failure-'));
     const logPath = join(stateDir, 'stale.log');

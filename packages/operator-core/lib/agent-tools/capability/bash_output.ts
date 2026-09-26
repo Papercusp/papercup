@@ -1300,11 +1300,15 @@ export default defineTool({
         // stale/non-terminal task-ledger row. The marker is appended from the
         // child close handler, so once it is present the job has a recoverable
         // terminal verdict even though the in-memory BashJob and/or its ledger
-        // update may have been lost. A terminal ledger row is stronger still:
-        // it is the durable task-manager verdict, so it must win when a later
-        // marker conflicts with the recorded exit (for example, a successful
-        // extractor followed by a failed operator-normalized marker).
-        if (strandedLog.terminal && ledgerVerdict.kind !== 'confirmed_dead') {
+        // update may have been lost. An OBSERVED terminal ledger exit is stronger
+        // still and wins a conflict with a later marker. `stranded` and
+        // `ended_unobserved` prove only that the process is gone: they carry no
+        // observed shell exit, so a durable JOB END must win over their generic
+        // job_process_gone/re-run advice (EI-23696035248162547).
+        if (
+          strandedLog.terminal &&
+          (ledgerVerdict.kind !== 'confirmed_dead' || isLedgerConfirmedUnobservedDeath(ledgerVerdict.state))
+        ) {
           const markerOk = strandedLog.terminal.status === 'completed';
           return {
             content: [

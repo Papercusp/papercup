@@ -270,3 +270,49 @@ export function sanitizeToolSchema<T>(
 ): T {
   return sanitizeToolSchemaNode(node, new Set(), position);
 }
+
+/**
+ * A bounded process-local cache for tools/list schemas whose caller can prove
+ * are immutable for a stable revision key. Sanitizing walks and clones the
+ * complete schema tree; doing that for every unchanged tool on every MCP
+ * reconnect creates enough short-lived objects to become visible as GC and
+ * `sanitizeToolSchemaNode` time in event-loop saturation profiles.
+ *
+ * The caller owns the key contract: include the tool-registry revision and any
+ * listing variant (for example full vs compact). Do NOT use this for a schema
+ * that receives a live overlay after registration (entity-ref enums are the
+ * current example); those callers must keep using {@link sanitizeToolSchema}.
+ * Cached values are shared and must be treated as immutable.
+ */
+export const TOOL_SCHEMA_SANITIZE_CACHE_MAX_ENTRIES = 2_048;
+
+const SANITIZED_SCHEMA_CACHE = new Map<string, unknown>();
+
+export function sanitizeToolSchemaCached<T>(
+  cacheKey: string,
+  node: T,
+  position: SanitizePosition = "input",
+): T {
+  const key = `${position}\u0000${cacheKey}`;
+  if (SANITIZED_SCHEMA_CACHE.has(key)) {
+    const cached = SANITIZED_SCHEMA_CACHE.get(key) as T;
+    // Refresh insertion order so the bound behaves as a small LRU rather than
+    // evicting a frequently-used early registry entry after later revisions.
+    SANITIZED_SCHEMA_CACHE.delete(key);
+    SANITIZED_SCHEMA_CACHE.set(key, cached);
+    return cached;
+  }
+
+  const sanitized = sanitizeToolSchema(node, position);
+  SANITIZED_SCHEMA_CACHE.set(key, sanitized);
+  if (SANITIZED_SCHEMA_CACHE.size > TOOL_SCHEMA_SANITIZE_CACHE_MAX_ENTRIES) {
+    const oldest = SANITIZED_SCHEMA_CACHE.keys().next().value as string | undefined;
+    if (oldest !== undefined) SANITIZED_SCHEMA_CACHE.delete(oldest);
+  }
+  return sanitized;
+}
+
+/** Test/process-reload seam; production invalidation is revision-keyed. */
+export function resetToolSchemaSanitizeCache(): void {
+  SANITIZED_SCHEMA_CACHE.clear();
+}

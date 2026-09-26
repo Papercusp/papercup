@@ -491,6 +491,7 @@ export async function applyPendingMigrationsNow(
       backupMigrationLockHeld = true;
     } else {
       let migrationFiles: string[] | null = null;
+      let pendingMigrationFiles: string[] | null = null;
       try {
         migrationFiles = (await readdir(sqlDir))
           .filter((file) => file.endsWith('.sql'))
@@ -498,7 +499,8 @@ export async function applyPendingMigrationsNow(
         const appliedRows = await client<{ filename: string }[]>`
           SELECT filename FROM harness_shared.schema_migrations`;
         const applied = new Set(appliedRows.map((row) => row.filename));
-        if (migrationFiles.some((file) => !applied.has(file))) migrationFiles = null;
+        pendingMigrationFiles = migrationFiles.filter((file) => !applied.has(file));
+        if (pendingMigrationFiles.length > 0) migrationFiles = null;
       } catch (error) {
         console.warn(
           `[boot-migrate] could not prove the busy backup rendezvous is a no-op; waiting safely: ${
@@ -514,10 +516,21 @@ export async function applyPendingMigrationsNow(
           `[boot-migrate] backup rendezvous busy, but all ${migrationFiles.length} migration(s) in this tree are already applied — continuing without a migration lock`,
         );
       } else {
+        // Request-only hosts cannot open HTTP until this safety wait finishes.
+        // Name the barrier before entering the intentionally unbounded wait so
+        // a desktop startup deadline does not look like an unexplained hang.
+        console.log(
+          `[boot-migrate] waiting for backup migration rendezvous; ${
+            pendingMigrationFiles
+              ? `pending migrations: ${pendingMigrationFiles.join(', ')}`
+              : 'pending migration set could not be determined'
+          } — waiting for the current lock holder to finish`,
+        );
         await client`SET lock_timeout = '0'`;
         await client`SET statement_timeout = '0'`;
         await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
         backupMigrationLockHeld = true;
+        console.log('[boot-migrate] backup migration rendezvous acquired — resuming migration preflight');
       }
     }
     await client`SET lock_timeout = '15s'`;

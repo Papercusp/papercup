@@ -410,11 +410,14 @@ export const defaultTestRunBindingDeps: TestRunBindingDeps = {
   async loadRun(scope, testRunId) {
     return withWorkspace(scope.workspaceId, async (tx) => {
       const rows = await tx<TestRunEvidenceRow[]>`
-        SELECT id, root, file_path, status, source, harness_slug, workspace_id, commit_sha,
+        SELECT id, file_path, status, source, harness_slug, workspace_id, commit_sha,
                worktree_dirty, execution_details, finished_at
           FROM harness_shared.test_runs
          WHERE id = ${testRunId}`;
-      return rows[0] ?? null;
+      const row = rows[0];
+      if (!row) return null;
+      const recordedRoot = executionDetails(row.execution_details).root;
+      return { ...row, root: typeof recordedRoot === 'string' ? recordedRoot : null };
     });
   },
   async adoptRun(scope, testRunId) {

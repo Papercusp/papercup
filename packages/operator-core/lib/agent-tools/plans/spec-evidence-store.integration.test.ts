@@ -1877,6 +1877,38 @@ describe('plans:bind-spec-evidence { fromTestRun } derives the binding from a re
     });
   });
 
+  it('binds a mutation-probe copy-out row using its JSON execution root and canonical test path', async () => {
+    await specs.setSpecClause(clause());
+    const mirror = '/tmp/mutation-probe-removed/mirror';
+    const [row] = await db.sql<{ id: number }[]>`
+      INSERT INTO harness_shared.test_runs
+        (workspace_id, harness_slug, file_path, status, finished_at, commit_sha, worktree_dirty, source, execution_details)
+      VALUES (
+        ${WORKSPACE}, ${HARNESS}, ${DERIVE_TEST}, 'fail', now(), 'c0ffee1234567890', false,
+        'mutation-probe', ${db.sql.json({ root: mirror, mutationPhase: 'mutant', collectionFailed: false })})
+      RETURNING id`;
+    const out = (await bindTool.handler(
+      {
+        harness: HARNESS,
+        slug: 'reconnect-plan',
+        binding: {
+          workItemId: 'WI-101', specId: 'SPEC-003-01', fromTestRun: Number(row.id),
+          canonicalTestPath: DERIVE_TEST, details: { adequacy: { targeted: 'spec-003-01' } },
+        },
+      } as never,
+      CTX,
+    )) as { data: { results: Array<Record<string, unknown>> } };
+    if (!out.data.results[0]?.ok) throw new Error(JSON.stringify(out.data.results[0]));
+    expect(out.data.results[0]).toMatchObject({
+      ok: true,
+      derivedFromTestRun: {
+        testRunId: Number(row.id),
+        evidenceKind: 'mutation',
+        measurement: { sourcePaths: EXPECTED_SOURCES, testPaths: [DERIVE_TEST] },
+      },
+    });
+  });
+
   it('binds a run recorded with no harness under the caller harness instead of refusing it', async () => {
     await specs.setSpecClause(clause());
     const runId = await recordRun({ workspaceId: null, harnessSlug: null, source: 'mutation-probe' });

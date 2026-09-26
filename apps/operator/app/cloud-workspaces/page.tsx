@@ -158,6 +158,25 @@ export default function CloudWorkspacesPage() {
     () => new Set(),
   );
   const inFlightKeysRef = useRef(new Set<string>());
+  const uncertainValidationsRef = useRef(new Map<string, string | undefined>());
+
+  // The origin scheduler can stop waiting at 20 seconds while the server keeps
+  // inspecting and later persists the result. Reconcile against the canonical
+  // connection row instead of reporting that an unknown outcome failed.
+  useEffect(() => {
+    for (const connection of connections) {
+      if (!uncertainValidationsRef.current.has(connection.id)) continue;
+      const before = uncertainValidationsRef.current.get(connection.id);
+      const after = connection.lastValidatedAt;
+      if (!after || (before && Date.parse(after) <= Date.parse(before))) continue;
+      uncertainValidationsRef.current.delete(connection.id);
+      if (connection.status === "connected") {
+        toast.success(`${connection.label} connection status updated: connected`);
+      } else {
+        toast.error(`${connection.label} connection status updated: ${connection.status}`);
+      }
+    }
+  }, [connections]);
 
   /* ── Catalog selection ──────────────────────────────────────────────────── */
 
@@ -311,10 +330,26 @@ export default function CloudWorkspacesPage() {
       });
       try {
         const response = await mutate(args);
+        if (args.action === "validate-connection") {
+          uncertainValidationsRef.current.delete(args.connectionId);
+        }
         toast.success(response.message || successMessage);
         await control.invalidate?.();
         return true;
       } catch (error) {
+        if (
+          args.action === "validate-connection" &&
+          error instanceof Error &&
+          error.name === "OriginSchedulerError" &&
+          "code" in error &&
+          error.code === "timeout"
+        ) {
+          const previous = connections.find((row) => row.id === args.connectionId);
+          uncertainValidationsRef.current.set(args.connectionId, previous?.lastValidatedAt);
+          toast.info("Validation response timed out; checking connection status. It may still complete.");
+          await control.invalidate?.();
+          return false;
+        }
         toast.error(
           error instanceof Error
             ? error.message
@@ -331,7 +366,7 @@ export default function CloudWorkspacesPage() {
         });
       }
     },
-    [control, mutate],
+    [connections, control, mutate],
   );
 
   /* ── Handlers ───────────────────────────────────────────────────────────── */

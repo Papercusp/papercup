@@ -44,8 +44,18 @@ export interface ChecksSeamSection {
   validOutput: Record<string, unknown>;
   /** A payload.out fixture the gate must REJECT (throw). */
   invalidOutput: Record<string, unknown>;
-  /** Stable app-agent blueprint.yaml — cross-checked: workItem.kind === workItemKind. */
-  agentBlueprint?: string;
+  /** Stable app-agent blueprint.yaml — cross-checked against work kind and operation declaration. */
+  agentBlueprint: string;
+  /** The standard reusable task declaration that targets the app-owned plan template. */
+  operation: {
+    id: string;
+    version: string;
+    planTemplate: {
+      ref: string;
+      revision: string;
+      contentHash: string;
+    };
+  };
   /** The app's own full enqueue→ingest integration leg (must exit 0). */
   roundTripCommand?: string[];
   roundTripCwd?: string;
@@ -431,6 +441,7 @@ export function validateChecksConfig(value: unknown): string[] {
         "contractModule",
         "parseInputExport",
         "parseOutputExport",
+        "agentBlueprint",
       ] as const) {
         if (!isNonEmptyString(value.seam[f]))
           errors.push(`seam.${f}: required non-empty string`);
@@ -438,6 +449,28 @@ export function validateChecksConfig(value: unknown): string[] {
       for (const f of ["validInput", "validOutput", "invalidOutput"] as const) {
         if (!isRecord(value.seam[f]))
           errors.push(`seam.${f}: required object fixture`);
+      }
+      if (!isRecord(value.seam.operation))
+        errors.push("seam.operation: required object");
+      else {
+        for (const f of ["id", "version"] as const) {
+          if (!isNonEmptyString(value.seam.operation[f]))
+            errors.push(`seam.operation.${f}: required non-empty string`);
+        }
+        if (!isRecord(value.seam.operation.planTemplate))
+          errors.push("seam.operation.planTemplate: required object");
+        else {
+          for (const f of ["ref", "revision", "contentHash"] as const) {
+            if (!isNonEmptyString(value.seam.operation.planTemplate[f]))
+              errors.push(`seam.operation.planTemplate.${f}: required non-empty string`);
+          }
+          if (
+            isNonEmptyString(value.seam.operation.planTemplate.contentHash) &&
+            !/^[0-9a-f]{64}$/.test(value.seam.operation.planTemplate.contentHash)
+          ) {
+            errors.push("seam.operation.planTemplate.contentHash: must be sha256 hex");
+          }
+        }
       }
       if (value.seam.roundTripCommand !== undefined)
         requireStringArray(

@@ -30,7 +30,8 @@ export const WORKSPACE_HOST_ARTIFACT_FILES = [
 ] as const;
 export const WORKSPACE_HOST_PUBLIC_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 
-type WorkspaceHostArtifactFile = (typeof WORKSPACE_HOST_ARTIFACT_FILES)[number];
+type WorkspaceHostCoreArtifactFile = (typeof WORKSPACE_HOST_ARTIFACT_FILES)[number];
+type WorkspaceHostArtifactFile = WorkspaceHostCoreArtifactFile | 'sbom.cdx.json';
 
 const FINALIZATION_FILE = '.finalized.json';
 const PUBLICATION_SCHEMA_VERSION = 1;
@@ -52,11 +53,13 @@ const MAX_BYTES: Readonly<Record<WorkspaceHostArtifactFile, number>> = {
   'server.tgz': 64 * 1024 * 1024,
   'server.tgz.minisig': 64 * 1024,
   'manifest.json': 1024 * 1024,
+  'sbom.cdx.json': 16 * 1024 * 1024,
 };
 const CONTENT_TYPE: Readonly<Record<WorkspaceHostArtifactFile, string>> = {
   'server.tgz': 'application/gzip',
   'server.tgz.minisig': 'text/plain; charset=utf-8',
   'manifest.json': 'application/json; charset=utf-8',
+  'sbom.cdx.json': 'application/vnd.cyclonedx+json; charset=utf-8',
 };
 const REQUIRED_TRUST_EVIDENCE = [
   'signature',
@@ -76,7 +79,7 @@ interface FinalizationRecord {
   kind: typeof FINALIZATION_KIND;
   bundleSha256: string;
   manifestSha256: string;
-  files: Record<WorkspaceHostArtifactFile, StoredFileDescriptor>;
+  files: Record<WorkspaceHostCoreArtifactFile, StoredFileDescriptor>;
   finalizedAt: string;
   finalizedByGithubUserId: number;
 }
@@ -124,7 +127,7 @@ function isRecord(value: unknown): value is JsonRecord {
 function isArtifactFile(value: unknown): value is WorkspaceHostArtifactFile {
   return (
     typeof value === 'string' &&
-    (WORKSPACE_HOST_ARTIFACT_FILES as readonly string[]).includes(value)
+    ((WORKSPACE_HOST_ARTIFACT_FILES as readonly string[]).includes(value) || value === 'sbom.cdx.json')
   );
 }
 
@@ -760,7 +763,7 @@ function fileDescriptor(value: unknown, expectedName: string): StoredFileDescrip
 function validatePublicationManifest(
   value: unknown,
   bundleSha256: string,
-  stored: Record<WorkspaceHostArtifactFile, StoredFileDescriptor>,
+  stored: Record<WorkspaceHostCoreArtifactFile, StoredFileDescriptor>,
 ): string[] {
   const errors: string[] = [];
   if (!isRecord(value)) return ['manifest must be a JSON object'];
@@ -854,7 +857,7 @@ function parseFinalizationRecord(value: unknown, bundleSha256: string): Finaliza
   ) {
     return null;
   }
-  const files = {} as Record<WorkspaceHostArtifactFile, StoredFileDescriptor>;
+  const files = {} as Record<WorkspaceHostCoreArtifactFile, StoredFileDescriptor>;
   for (const file of WORKSPACE_HOST_ARTIFACT_FILES) {
     const raw = value.files[file];
     if (!isRecord(raw) || !isHexSha256(raw.sha256) || !Number.isSafeInteger(raw.sizeBytes) || Number(raw.sizeBytes) <= 0) {
@@ -905,6 +908,29 @@ async function finalizationObjectsMatch(env: Env, record: FinalizationRecord): P
   return true;
 }
 
+/** Supplementary evidence is already pinned by the immutable manifest. Attaching
+ * its exact bytes must never replace that manifest or its three-object marker. */
+async function finalizedSbomDigest(env: Env, bundleSha256: string): Promise<string | null> {
+  const record = await readFinalizationRecord(env, bundleSha256);
+  if (!record) return null;
+  const object = await env.ARTIFACTS.get(artifactKey(bundleSha256, 'manifest.json'));
+  if (!descriptorMatches(object, 'manifest.json', bundleSha256, record.files['manifest.json'])) return null;
+  const bytes = await object!.arrayBuffer();
+  if (bytes.byteLength !== record.files['manifest.json'].sizeBytes ||
+      await sha256Hex(bytes) !== record.manifestSha256) return null;
+  try {
+    const manifest: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (!isRecord(manifest) || !isRecord(manifest.trustReport) ||
+        !Array.isArray(manifest.trustReport.evidence)) return null;
+    const sboms = manifest.trustReport.evidence.filter((entry) => isRecord(entry) && entry.kind === 'sbom');
+    const sbom = sboms[0];
+    return sboms.length === 1 && isRecord(sbom) && sbom.subjectSha256 === bundleSha256 &&
+      sbom.format === 'cyclonedx-json' && isHexSha256(sbom.documentSha256) ? sbom.documentSha256 : null;
+  } catch {
+    return null;
+  }
+}
+
 async function uploadArtifact(c: Context<{ Bindings: Env }>): Promise<Response> {
   const operator = await requireOperator(c);
   if (operator instanceof Response) return operator;
@@ -948,6 +974,11 @@ async function uploadArtifact(c: Context<{ Bindings: Env }>): Promise<Response> 
     }
   }
 
+  if (file === 'sbom.cdx.json') {
+    const boundDigest = await finalizedSbomDigest(c.env, bundleSha256);
+    if (!boundDigest) return c.json({ error: 'finalized_sbom_binding_required' }, 409);
+    if (declaredSha256 !== boundDigest) return c.json({ error: 'sbom_binding_mismatch' }, 409);
+  }
   const key = artifactKey(bundleSha256, file);
   const expected = { sha256: declaredSha256, sizeBytes: declaredSize };
   const existing = await c.env.ARTIFACTS.head(key);
@@ -957,7 +988,7 @@ async function uploadArtifact(c: Context<{ Bindings: Env }>): Promise<Response> 
     }
     return c.json({ error: 'artifact_conflict', file }, 409);
   }
-  if (await c.env.ARTIFACTS.head(finalizationKey(bundleSha256))) {
+  if (file !== 'sbom.cdx.json' && await c.env.ARTIFACTS.head(finalizationKey(bundleSha256))) {
     return c.json({ error: 'artifact_finalized' }, 409);
   }
 
@@ -1553,7 +1584,7 @@ async function finalizeArtifact(c: Context<{ Bindings: Env }>): Promise<Response
     return c.json({ ok: true, bundleSha256, manifestSha256: existing.manifestSha256, deduped: true });
   }
 
-  const stored = {} as Record<WorkspaceHostArtifactFile, StoredFileDescriptor>;
+  const stored = {} as Record<WorkspaceHostCoreArtifactFile, StoredFileDescriptor>;
   const missing: WorkspaceHostArtifactFile[] = [];
   for (const file of WORKSPACE_HOST_ARTIFACT_FILES) {
     const descriptor = descriptorFromObject(await c.env.ARTIFACTS.head(artifactKey(bundleSha256, file)), file, bundleSha256);
@@ -1625,10 +1656,13 @@ async function serveArtifact(
 
   const key = artifactKey(bundleSha256, rawFile);
   const object = headOnly ? await c.env.ARTIFACTS.head(key) : await c.env.ARTIFACTS.get(key);
-  if (!descriptorMatches(object, rawFile, bundleSha256, record.files[rawFile])) {
+  const sbomDigest = rawFile === 'sbom.cdx.json' ? await finalizedSbomDigest(c.env, bundleSha256) : null;
+  const descriptor = rawFile === 'sbom.cdx.json'
+    ? (sbomDigest && object ? { sha256: sbomDigest, sizeBytes: object.size } : null)
+    : record.files[rawFile];
+  if (!descriptor || !descriptorMatches(object, rawFile, bundleSha256, descriptor)) {
     return c.json({ error: 'not_found' }, 404);
   }
-  const descriptor = record.files[rawFile];
   const headers = new Headers();
   object!.writeHttpMetadata(headers);
   headers.set('cache-control', WORKSPACE_HOST_PUBLIC_CACHE_CONTROL);

@@ -544,6 +544,7 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
     });
     let boot: Promise<Awaited<ReturnType<typeof applyPendingMigrationsNow>>> | undefined;
     let lockReleased = false;
+    const bootLog = vi.spyOn(console, 'log');
     try {
       await holder`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
       h.bootSqlDir = dir;
@@ -574,6 +575,11 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       expect(waiting).toBe(true);
+      // The HTTP listener cannot start until this wait settles. Its boot log
+      // must identify the safety barrier and pending file while still blocked.
+      expect(bootLog).toHaveBeenCalledWith(expect.stringContaining(
+        `waiting for backup migration rendezvous; pending migrations: ${filename}`,
+      ));
 
       const beforeRelease = await rootSql<{ filename: string }[]>`
         SELECT filename FROM harness_shared.schema_migrations WHERE filename = ${filename}`;
@@ -597,6 +603,7 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
       // settle the boot promise before closing the test connection.
       await boot?.catch(() => {});
       await holder.end({ timeout: 5 });
+      bootLog.mockRestore();
     }
   });
 });

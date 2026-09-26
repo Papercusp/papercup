@@ -7,7 +7,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { COORD_ROLES } from '../coordination/roles';
+import { COORD_REPLY_ROLES } from '../coordination/roles';
 import { dispositionOwnerDirective, type OwnerDirectiveDisposition } from '../../owner-directives';
 import { directiveActionVerdict } from '../../owner-directive-agenda';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -40,7 +40,7 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_REPLY_ROLES],
   args: z
     .object({
       id: entry.shape.id.optional(),

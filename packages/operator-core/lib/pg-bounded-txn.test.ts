@@ -212,6 +212,70 @@ describe('boundedOrgTxn', () => {
     expect(child.stderr).toBe('');
   });
 
+  it('does not cancel an unexecuted SQL fragment or crash the Node host on abort', () => {
+    const childEnv = { ...process.env };
+    delete childEnv.VITEST;
+    delete childEnv.NODE_OPTIONS;
+    const child = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+          import { boundedOrgTxn } from ${JSON.stringify(BOUNDED_TXN_MODULE)};
+          const controller = new AbortController();
+          let fragment;
+          let started;
+          const startedPromise = new Promise((resolve) => { started = resolve; });
+          const tag = (strings, ...values) => {
+            if (strings.join('').includes('set_config')) return Promise.resolve([]);
+            if (!strings.join('').includes('SELECT slow_query')) {
+              fragment = Object.assign(new Promise(() => {}), {
+                executed: false,
+                active: false,
+                cancel() {
+                  return Promise.reject(Object.assign(new Error('canceling statement due to user request'), { code: '57014' }));
+                },
+              });
+              return fragment;
+            }
+            started();
+            return Object.assign(new Promise(() => {}), {
+              executed: true,
+              active: true,
+              cancel() { return Promise.resolve(); },
+            });
+          };
+          const transaction = boundedOrgTxn(async (tx) => {
+            const condition = tx\`(last_released_by IS NULL)\`;
+            await tx\`SELECT slow_query() WHERE \${condition}\`;
+          }, { client: { begin: async (cb) => cb(tag) }, signal: controller.signal });
+          await startedPromise;
+          controller.abort();
+          await transaction.then(
+            () => { throw new Error('expected abort'); },
+            (error) => { if (error?.name !== 'AbortError') throw error; },
+          );
+          await new Promise((resolve) => setImmediate(resolve));
+          if (!fragment || fragment.executed !== false) throw new Error('fragment was executed');
+        `,
+      ],
+      {
+        cwd: REPO_ROOT,
+        env: childEnv,
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      },
+    );
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(0);
+    expect(child.signal).toBeNull();
+    expect(child.stderr).toBe('');
+  });
+
   it('does not execute tagged or unsafe SQL fragments while tracking cancellable queries', async () => {
     const executed: string[] = [];
     const makeQuery = (text: string) => {

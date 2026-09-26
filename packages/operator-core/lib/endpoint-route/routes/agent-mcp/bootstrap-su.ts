@@ -2860,7 +2860,7 @@ export const bootstrapSu = defineTool({
         }
       }
       if (launchArtifact.resourceArtifacts.length > 0) {
-        await provisionLaunchIdentityResources(launchArtifact, getOrgPg().sql);
+        await provisionLaunchIdentityResources(launchArtifact, getOrgPg().sql, { ownerId: sid });
       }
       promptText = launchArtifact.promptText;
     } catch (e: any) {

@@ -5832,7 +5832,10 @@ except Exception:
 # runs, so it cannot hold a slot) — so it DENIES a *new* heavy run when host
 # load is already past the pathological threshold, pointing the caller at
 # scripts/pc-heavy.sh (a flock counting-semaphore that WAITS for a free slot
-# instead of failing) or a retry once load drops. The green-checkpoint gate and
+# instead of failing) or a retry once load drops. Raw tsc is denied at EVERY
+# load level: its measured 11.2 GiB RSS needs the wrapper's memory budget,
+# and reclaim can lower load1 while memory pressure rises (WI-10003344).
+# The green-checkpoint gate and
 # capability:inspect run server-side / as MCP tools and never reach this bash
 # hook, so they are exempt by construction; only raw, uncoordinated agent shell
 # runs get staggered.
@@ -6113,6 +6116,23 @@ def _heavy_admission():
     # admission gate while still allowing the blessed wrapper above through.
     if not heavy_re.search(_pc_lead):
         return
+    # WI-10003344: raw TypeScript compiles can consume 11.2 GiB EACH while
+    # load1 still looks healthy (reclaim stalls lower it). The load threshold
+    # below cannot protect memory, and a raw compile never enters pc-heavy's
+    # MemAvailable/PSI semaphore. Require the existing wrapper or root lint:tsc
+    # entrypoint for compiler-shaped commands at every load level.
+    raw_tsc_re = re.compile(anchor + r'(?:npx\s+)?tsc(?=\s|$)', re.IGNORECASE)
+    if raw_tsc_re.search(_pc_lead):
+        _pc_heavy_root = _canonical_tree_root() or os.path.realpath(
+            os.environ.get('PAPERCUSP_CANONICAL_TREE')
+            or os.path.join(os.path.expanduser('~/papercupai-workspace'), 'papercusp')
+        )
+        _pc_heavy = shlex.quote(os.path.join(_pc_heavy_root, 'scripts', 'pc-heavy.sh'))
+        deny(
+            f'heavy-command admission (WI-10003344): bare tsc bypasses the memory '
+            f'slot budget even when host load is low. Run it under `{_pc_heavy} -- '
+            f'<your command>` or use the self-throttling root `npm run lint:tsc` entrypoint.'
+        )
     # Local load signal — captures ALL contributors (vitest+tsc+onnx+…), more
     # robust than counting only wrapped runs. Env overrides for tests.
     try:

@@ -502,6 +502,8 @@ interface RawImage extends RawResource {
 
 export interface GcpWorkspaceHostApiClientOptions {
   acquireAuth?: () => Promise<GcpResolvedAuth>;
+  /** Use only for a client created for one short inspection; never share it across operations. */
+  reuseAuthWithinInstance?: boolean;
   /** Exact hosted resolver reference bound to acquireAuth; never a wildcard scheme grant. */
   credentialRef?: string;
   fetch?: typeof fetch;
@@ -708,7 +710,13 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
   private readonly imageFamily: { project: string; family: string; label?: string };
 
   constructor(options: GcpWorkspaceHostApiClientOptions = {}) {
-    this.acquireAuth = options.acquireAuth ?? acquireGcpAdcAuth;
+    const resolveAuth = options.acquireAuth ?? acquireGcpAdcAuth;
+    if (options.reuseAuthWithinInstance) {
+      let inspectionAuth: Promise<GcpResolvedAuth> | undefined;
+      this.acquireAuth = () => (inspectionAuth ??= resolveAuth());
+    } else {
+      this.acquireAuth = resolveAuth;
+    }
     this.boundCredentialRef = options.credentialRef?.trim() || undefined;
     this.fetchImpl = options.fetch ?? fetch;
     this.now = options.now ?? (() => new Date().toISOString());

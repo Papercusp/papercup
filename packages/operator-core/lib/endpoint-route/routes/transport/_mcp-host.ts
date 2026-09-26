@@ -53,6 +53,7 @@ import {
   applyToolManifest,
   papercuspGateBypass,
   sanitizeToolSchema,
+  sanitizeToolSchemaCached,
   serializeToolResponse,
   formatOptsFromCtx,
   isSlashPromptName,
@@ -174,6 +175,7 @@ import { INSIGHTS_DIR } from '../../../memory/knowledge-read';
 import { getSessionUserOrDefault } from '../../../auth';
 import { advertisedArgsSchema } from '@papercusp/result-encoding';
 import {
+  collectEntityRefs,
   compactInputSchema,
   summaryGuidanceDescription,
   type ResultDoorSkipReason,
@@ -211,6 +213,28 @@ export function ensureOperatorToolsLoaded(): Promise<void> {
       });
   }
   return operatorToolsLoad;
+}
+
+const ENTITY_REF_SCHEMA_PRESENCE = new WeakMap<object, boolean>();
+
+function hasEntityRefSchema(argsSchema: unknown): boolean {
+  if (!argsSchema || typeof argsSchema !== 'object') return false;
+  const cached = ENTITY_REF_SCHEMA_PRESENCE.get(argsSchema);
+  if (cached !== undefined) return cached;
+  const present = collectEntityRefs(argsSchema).length > 0;
+  ENTITY_REF_SCHEMA_PRESENCE.set(argsSchema, present);
+  return present;
+}
+
+function listingRegistryRevision(listing: unknown): string {
+  const meta =
+    listing && typeof listing === 'object'
+      ? (listing as { _meta?: Record<string, unknown> })._meta
+      : undefined;
+  const revision = meta?.['papercusp/toolRegistryRevision'];
+  return typeof revision === 'string' || typeof revision === 'number'
+    ? String(revision)
+    : 'unknown';
 }
 
 // `tools:invoke` returns the target's MCP-shaped result through the wrapper
@@ -2108,7 +2132,7 @@ function projectionMaterializationContext(
     // `pick` classifies the materialized text as JSON. MCP's implicit compact
     // default may select TOON, so force JSON only for this in-process source;
     // the caller's explicit format remains the final wire-format choice.
-    requestedFormat: projectionMaterializationFormat(ctx.requestedFormat, true),
+    requestedFormat: projectionMaterializationFormat(ctx.requestedFormat, needsStructuredSource),
     ...promoted,
   };
 }
@@ -2897,6 +2921,8 @@ export function registerMcpHost(server: McpServer): void {
           // spread above so registry metadata in `_meta` survives while
           // adding the effect-derived hint to the standard field.
           const projected = typeof tt.name === 'string' ? lookupByMcpName(tt.name) : undefined;
+          const registryRevision = listingRegistryRevision(t);
+          const listingVariant = projected && tt.inputSchema === projected.inputSchema ? 'full' : 'derived';
           if (projected?.effect) {
             const existingAnnotations =
               out.annotations && typeof out.annotations === 'object' && !Array.isArray(out.annotations)
@@ -2926,8 +2952,20 @@ export function registerMcpHost(server: McpServer): void {
             // carries the already-converted JSON `inputSchema`, a different object
             // that was never entityRef()-marked, so it can never match here.
             const def = typeof tt.name === 'string' ? lookupToolDefinitionByName(tt.name) : null;
-            if (def?.args) await applyEntityRefEnums(def.args, advertised);
-            out.inputSchema = sanitizeToolSchema(advertised);
+            const hasLiveEntityOverlay = Boolean(def?.args && hasEntityRefSchema(def.args));
+            if (hasLiveEntityOverlay) {
+              // Enum fragments can change while the process stays live, so this
+              // deliberately remains uncached. It is a small minority of the
+              // catalog; caching the static majority removes the reconnect-time
+              // deep-clone/GC burst without serving a stale vocabulary.
+              await applyEntityRefEnums(def!.args, advertised);
+              out.inputSchema = sanitizeToolSchema(advertised);
+            } else {
+              out.inputSchema = sanitizeToolSchemaCached(
+                `${registryRevision}:${tt.name ?? '(anonymous)'}:${listingVariant}`,
+                advertised,
+              );
+            }
           }
           // outputSchema (P-010) gets the same boolean-subschema objectification,
           // but with position:'output' (EI-22064217935223876): unlike inputSchema,
@@ -2935,7 +2973,13 @@ export function registerMcpHost(server: McpServer): void {
           // REAL return value, so it must NOT force `type: 'object'` onto a
           // z.unknown()/z.any() result field whose actual value is a string, number,
           // array, or boolean — see tool-schema-sanitize.ts's `SanitizePosition` doc.
-          if (tt.outputSchema) out.outputSchema = sanitizeToolSchema(tt.outputSchema, 'output');
+          if (tt.outputSchema) {
+            out.outputSchema = sanitizeToolSchemaCached(
+              `${registryRevision}:${tt.name ?? '(anonymous)'}:output`,
+              tt.outputSchema,
+              'output',
+            );
+          }
           return out;
         }),
       ),

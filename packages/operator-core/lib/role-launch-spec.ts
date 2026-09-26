@@ -359,10 +359,12 @@ export interface LaunchArtifactResult {
 
 /** Provision only after the caller has chosen an actual launch or activation.
  * Identity previews compile and pin resources without writing to their stores. */
-export async function provisionLaunchIdentityResources(result: LaunchArtifactResult, sql: Sql): Promise<void> {
+export async function provisionLaunchIdentityResources(result: LaunchArtifactResult, sql: Sql, wearer?: { ownerId: string }): Promise<void> {
   if (result.resourceArtifacts.length === 0) return;
   const { provisionBlueprintPackages, blueprintPackageProvisioners } = await import('./blueprint/compile-packages');
-  const provisioners = blueprintPackageProvisioners(sql);
+  const { sessionPackageDependentId } = await import('./blueprint/session-package-resources');
+  const provisioners = blueprintPackageProvisioners(sql, wearer
+    ? { dependentId: sessionPackageDependentId(wearer.ownerId, result) } : undefined);
   for (const artifact of result.resourceArtifacts) {
     await provisionBlueprintPackages(artifact, provisioners);
   }
@@ -913,7 +915,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   }
   if (compiled.resourceArtifacts.length > 0) {
     const { getOrgPg } = await import('@papercusp/db-org');
-    await provisionLaunchIdentityResources(compiled, getOrgPg().sql);
+    await provisionLaunchIdentityResources(compiled, getOrgPg().sql, { ownerId: sid });
   }
   promptText = compiled.promptText;
 

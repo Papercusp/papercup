@@ -143,7 +143,12 @@ export {
 } from '@papercusp/tooldef';
 export type { SlashPromptListing } from '@papercusp/tooldef';
 export { resolveBearer, lookupSystemPrincipalCapabilitiesByRole } from './auth';
-export { sanitizeToolSchema } from './tool-schema-sanitize';
+export {
+  sanitizeToolSchema,
+  sanitizeToolSchemaCached,
+  resetToolSchemaSanitizeCache,
+  TOOL_SCHEMA_SANITIZE_CACHE_MAX_ENTRIES,
+} from './tool-schema-sanitize';
 export { fuzzyEnum, fuzzyEnumAsync, nearestByLevenshtein, type FuzzyEnumOpts } from './fuzzy-enum';
 export {
   onWorkspaceSwitch,

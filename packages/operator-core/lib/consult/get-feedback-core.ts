@@ -35,7 +35,7 @@ import type { Sql } from 'postgres';
 import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
-import { advanceCascade, digestFromRow, makeDigestEntry } from './cascade-core';
+import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting } from './cascade-core';
 import { selectConsultEvidenceSource } from './consult-dispatch';
 import { consultResponderVerbMenu } from './responder-verb-menu';
 import { sourceAuditCascadeMetaFromRouting, sourceAuditWakeCopy, type SourceAuditCascadeMeta } from './grading-cascade';
@@ -1302,9 +1302,9 @@ export async function getFeedbackCore(
     //     expiry use, recording the exhausted head in the digest, and dispatch
     //     the next selectee. This is R-6 in the general case: a walled backend
     //     costs one expert, never the consult.
-    let cursor = 0;
-    while (queued === 0 && cursor + 1 < finalSelected.length) {
-      const failedOwner = finalSelected[cursor]!.candidate.ownerId;
+    let cascadeContinues = false;
+    if (queued === 0 && finalSelected.length > 1) {
+      const failedOwner = finalSelected[0]!.candidate.ownerId;
       let failoverReach: Awaited<ReturnType<GetFeedbackDeps['reach']>> | undefined;
       const advanced = await advanceCascade(
         {
@@ -1314,7 +1314,7 @@ export async function getFeedbackCore(
           latencyContract: latency,
           requesterId: req.requesterId,
           routing: route.snapshot,
-          cascadeCursor: cursor,
+          cascadeCursor: 0,
           digest: [],
           event: makeDigestEntry(
             failedOwner,
@@ -1338,32 +1338,36 @@ export async function getFeedbackCore(
           };
         },
       );
-      if (!advanced.advanced || !advanced.next) break;
-      const nextSelected = finalSelected.find((s) => s.candidate.ownerId === advanced.next?.ownerId);
-      if (!nextSelected) break;
-      cursor += 1;
-      finalChosen = nextSelected.candidate;
-      finalChosenVia = nextSelected.via;
-      queued = failoverReach?.queued ?? failoverReach?.woke ?? advanced.woke;
-      pickupConfirmed = failoverReach?.pickupConfirmed ?? false;
-      woke = pickupConfirmed ? queued : 0;
-      if (queued > 0) {
-        await stampAnsweringOwner(
-          sql,
-          req.workspaceId,
-          opened.conversation_id,
-          cursor,
-          failoverReach?.answeringOwnerId ?? null,
-        );
-        dispatchProvenance = {
-          sourceOwnerId: finalChosen.ownerId,
-          answeringOwnerId: failoverReach?.answeringOwnerId ?? null,
-          operation: failoverReach?.dispatch?.operation ?? null,
-          agent: failoverReach?.dispatch?.agent ?? null,
-          model: failoverReach?.dispatch?.model ?? null,
-          verified: failoverReach?.dispatch?.verified ?? null,
-          detail: failoverReach?.dispatch?.detail ?? '',
-        };
+      // The cascade owns the complete failed-dispatch walk, including refill
+      // and answering-id stamps. Do not count local loop iterations as cursor
+      // positions: one advance may now skip several unlaunchable experts.
+      cascadeContinues = advanced.advanced || advanced.raced;
+      if (advanced.advanced && advanced.next) {
+        finalChosen = route.snapshot.candidates.find((c) => c.ownerId === advanced.next!.ownerId) ?? null;
+        finalChosenVia = advanced.next.via;
+        queued = failoverReach?.queued ?? failoverReach?.woke ?? advanced.woke;
+        pickupConfirmed = failoverReach?.pickupConfirmed ?? false;
+        woke = pickupConfirmed ? queued : 0;
+        if (finalChosen) {
+          dispatchProvenance = {
+            sourceOwnerId: finalChosen.ownerId,
+            answeringOwnerId: failoverReach?.answeringOwnerId ?? null,
+            operation: failoverReach?.dispatch?.operation ?? null,
+            agent: failoverReach?.dispatch?.agent ?? null,
+            model: failoverReach?.dispatch?.model ?? null,
+            verified: failoverReach?.dispatch?.verified ?? null,
+            detail: failoverReach?.dispatch?.detail ?? '',
+          };
+        }
+      } else if (advanced.raced) {
+        // A concurrent writer owns the outcome; preserve its row and report
+        // its selected expert rather than the failed head of our stale menu.
+        const current = await sql<{ responder_id: string | null; routing: unknown }[]>`
+          SELECT responder_id, routing FROM harness_shared.consult_state
+          WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}`;
+        finalChosen = route.snapshot.candidates.find((c) => c.ownerId === current[0]?.responder_id) ?? null;
+        finalChosenVia = selectionFromRouting(current[0]?.routing)
+          .find((entry) => entry.ownerId === finalChosen?.ownerId)?.via ?? null;
       }
     }
 
@@ -1372,7 +1376,7 @@ export async function getFeedbackCore(
     //     session was launched, so nothing is coming, and the requester's only
     //     useful next move is the retrieval fallback. This is the one honest
     //     terminal the old code could not express — it had a revival to try.
-    if (queued === 0) {
+    if (queued === 0 && !cascadeContinues) {
       reason = 'no_available_responder';
       state = 'no_qualified_responder';
       expiresAt = null;

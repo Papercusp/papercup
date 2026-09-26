@@ -249,7 +249,7 @@ describe('expandTestRunBinding: harness attribution', () => {
       ok: true,
       binding: {
         evidenceKind: 'mutation',
-        evidenceRef: canonical,
+        evidenceRef: expect.stringContaining(canonical),
         testRunId: 42,
         measurement: {
           testPaths: [canonical],

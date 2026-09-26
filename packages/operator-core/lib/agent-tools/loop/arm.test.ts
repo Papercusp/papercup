@@ -1265,6 +1265,22 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'papercusp' }));
   });
 
+  it('EI-24357920053367503: explicit harness beats an active plan brief during a cold re-arm', async () => {
+    mockPriorLoopOnce({ harnessSlug: 'papercusp', goal: 'continue the loop' });
+    briefM.mockResolvedValue({ currentPlanSlug: 'papercusp-plan', harnessSlug: 'papercusp' });
+    potHomeM.mockImplementation((explicit, ctxSlug) => explicit ?? ctxSlug ?? null);
+
+    const out = (await tool.handler(
+      { harness: 'sb-devboard-hive', carry: 'cold', goal: 'continue the loop' } as never,
+      { harnessSlug: 'papercusp', workspaceId: 'ws-1' } as never,
+    )) as Out;
+    const b = body(out);
+
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'sb-devboard-hive', carry: 'cold' } });
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'sb-devboard-hive' }));
+    expect(briefM).not.toHaveBeenCalled();
+  });
+
   it('EI-21542193720279374 part (a): the resolved harness is now WIRED into computeLoopOverwriteNote — an explicit harness move, goal preserved, surfaces priorLoopOverwrite.harnessChanged through the handler', async () => {
     mockPriorLoopOnce({ harnessSlug: 'sb-devboard-hive' });
 

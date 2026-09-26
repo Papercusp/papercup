@@ -1784,9 +1784,22 @@ describe('heavy-command admission control (WI-3821)', () => {
   it.each([
     ['npm run test:affected', 'npm run test:affected'],
     ['path-invoked vitest', '../../node_modules/.bin/vitest run app/x.test.ts'],
-    ['tsc --noEmit', 'tsc --noEmit'],
   ])('allows %s when the host is UNDER the load threshold', (_label, command) => {
     expectAllow(runGate(bashCmd(command), { ...AGENT, ...UNDER }));
+  });
+
+  it.each([
+    ['bare tsc', 'tsc --noEmit'],
+    ['npx tsc', 'npx tsc -p packages/operator-core/tsconfig.json'],
+    ['path-invoked tsc', 'node_modules/.bin/tsc -p packages/operator-core/tsconfig.json'],
+    ['pinned native tsc', 'node_modules/@typescript/typescript-linux-x64/lib/tsc -p packages/operator-core/tsconfig.json'],
+    ['compound', 'echo ready && npx tsc --noEmit'],
+  ])('denies raw compiler %s even UNDER the load threshold (WI-10003344)', (_label, command) => {
+    expectHeavyDeny(runGate(bashCmd(command), { ...AGENT, ...UNDER }));
+  });
+
+  it('allows a raw compiler when it is explicitly wrapped by pc-heavy at low load', () => {
+    expectAllow(runGate(bashCmd('scripts/pc-heavy.sh -- npx tsc -p packages/operator-core/tsconfig.json'), { ...AGENT, ...UNDER }));
   });
 
   // The ROOT entrypoints wrapped in scripts/pc-heavy.sh inside package.json are

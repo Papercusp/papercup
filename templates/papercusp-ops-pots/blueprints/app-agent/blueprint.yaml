@@ -56,6 +56,39 @@ roles:
       - coord:send
       - "{{SAFE_DOMAIN_TOOL}}"
 
+# The deterministic app submits this reusable operation through blueprint:submit.
+# It targets the existing plan template rather than copying its DAG. The pinned
+# ref makes a receipt replay resolve the same definition even after later edits.
+operations:
+  - id: "{{OPERATION_ID}}"
+    version: "{{OPERATION_VERSION}}"
+    description: >-
+      Run {{PLAN_TEMPLATE_SLUG}} for one typed {{WORK_UNIT_NOUN}} request and
+      return its validated {{CONTRACT_NAME}} output.
+    target:
+      kind: plan
+      template:
+        kind: plan-template
+        ref: "{{PLAN_TEMPLATE_SLUG}}"
+        revision: "{{PLAN_TEMPLATE_REVISION}}"
+        contentHash: "{{PLAN_TEMPLATE_CONTENT_HASH_SHA256}}"
+    inputSchema:
+      type: object
+      properties:
+        "{{OPERATION_INPUT_FIELD}}":
+          type: string
+      required:
+        - "{{OPERATION_INPUT_FIELD}}"
+      additionalProperties: false
+    acceptance:
+      resultSchema:
+        type: object
+        properties:
+          "{{OPERATION_RESULT_FIELD}}": {}
+        required:
+          - "{{OPERATION_RESULT_FIELD}}"
+        additionalProperties: false
+
 gym:
   collectTrace: work-item-output
   signals:
@@ -68,8 +101,9 @@ knobs:
   harnessKind: "{{APP_HARNESS_SLUG}}"
   requiresRepo: false
 
-# No triggers: external bindings and plan schedules carry
-# execution { appHarnessSlug, agentName } and direct-dispatch this live adopter.
+# No blueprint triggers: external bindings and plan schedules invoke the
+# declared operation. The referenced plan template retains
+# schedule.execution { appHarnessSlug, agentName } and direct-dispatches this adopter.
 dependencies:
   tools:
     - plan_items:adopt_name

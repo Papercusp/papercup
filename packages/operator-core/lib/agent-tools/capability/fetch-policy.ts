@@ -97,9 +97,12 @@ function defaultPinnedDispatcher(address: ResolvedFetchAddress): PinnedFetchDisp
   // hostname as servername, so certificate verification is not weakened.
   const pinnedLookup = ((
     _hostname: string,
-    _options: unknown,
-    callback: (error: NodeJS.ErrnoException | null, address: string, family: number) => void,
-  ) => callback(null, address.address, address.family)) as unknown as LookupFunction;
+    options: { all?: boolean },
+    callback: (error: NodeJS.ErrnoException | null, address: string | ResolvedFetchAddress[], family?: number) => void,
+  ) => {
+    if (options.all) callback(null, [address]);
+    else callback(null, address.address, address.family);
+  }) as unknown as LookupFunction;
   const dispatcher = new Agent({ connect: buildConnector({ lookup: pinnedLookup }) });
   return {
     dispatcher,

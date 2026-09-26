@@ -74,6 +74,7 @@ import {
 } from '@papercusp/operator-core/lib/resource-governor/execution';
 import { agentMcpBootstrapFailureCode } from '@papercusp/operator-core/lib/endpoint-route/routes/transport/_mcp-uds-error';
 import { dedupeInFlight } from '@papercusp/operator-core/lib/dedupe-in-flight';
+import { withBoundedTimeout } from '@papercusp/operator-core/lib/bounded-timeout';
 
 /**
  * All of this module's mutable state, pinned together at module scope ONCE.
@@ -297,7 +298,27 @@ export async function waitForBootMigrationGate(timeoutMs = 20_000): Promise<void
       'request-only-boot-migration',
       async () => {
         const { applyPendingMigrationsAtBoot } = await import('@papercusp/operator-core/lib/db-boot-migrate');
-        const migrationResult = await applyPendingMigrationsAtBoot();
+        const migrationAttempt = await withBoundedTimeout(
+          () => applyPendingMigrationsAtBoot(),
+          {
+            fallback: null,
+            timeoutMs,
+            label: 'request-only boot migration preflight',
+          },
+        );
+        if (migrationAttempt.degraded) {
+          if (migrationAttempt.reason === 'error') {
+            throw migrationAttempt.error instanceof Error
+              ? migrationAttempt.error
+              : new Error(
+                  `[host-bootstrap] request-only migration preflight failed: ${migrationAttempt.errorMessage ?? 'unknown error'}`,
+                );
+          }
+          throw new Error(
+            `[host-bootstrap] request-only migration preflight ${migrationAttempt.reason ?? 'degraded'} after ${timeoutMs}ms`,
+          );
+        }
+        const migrationResult = migrationAttempt.value;
         if (!migrationResult || migrationResult.failed.length > 0) {
           const failureSummary = migrationResult
             ? `${migrationResult.failed.length} migration(s) remain pending: ${migrationResult.failed

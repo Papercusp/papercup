@@ -171,6 +171,23 @@ describe('loop-pressure signal (P5-1)', () => {
     expect(isLoopElevated()).toBe(false);
   });
 
+  it('does not shed on an isolated delay before the p95 window matures', async () => {
+    const h = startEventLoopLagMonitor({ intervalMs: 10_000, warnP95Ms: 1000 });
+    try {
+      // Let the native 20ms sampler arm before blocking its next tick.
+      await new Promise((r) => setTimeout(r, 30));
+      blockFor(700);
+      await new Promise((r) => setTimeout(r, 30));
+      const sample = h.sample();
+      expect(sample.p95Ms).toBeGreaterThanOrEqual(600);
+      expect(sample.windowMature).toBe(false);
+      expect(loopPressure()).toBe('ok');
+      expect(isLoopSaturated()).toBe(false);
+    } finally {
+      h.stop();
+    }
+  });
+
   it('isLoopElevated() is true for elevated AND critical, false for ok', () => {
     // Driven via classifyLoopPressure to verify the full pressure → elevated mapping
     // without needing a live monitor (pure classification logic tested here).

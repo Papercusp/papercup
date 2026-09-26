@@ -378,6 +378,24 @@ describe('locks:acquire — outcome branches', () => {
     expect(String(b.advice)).toMatch(/do NOT queue wake_on_grant/i);
   });
 
+  it('identifies the queued waiter on the fast path', async () => {
+    routeM.mockResolvedValue({
+      value: {
+        ok: false,
+        reason: 'queued_waiter',
+        busy: [{ path: 'a.ts', owner: 'queued', owner_label: 'QUEUED', intent: 'edit', expires_ts: new Date(Date.now() + 60_000) }],
+      },
+      via: 'local-authority',
+    });
+    const b = body(await call({}));
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'queued_waiter',
+      busy: [{ path: 'a.ts', owner: 'queued' }],
+    });
+    expect(String(b.advice)).toMatch(/queued agent/);
+  });
+
   it('a WorkspaceContendedError degrades to a structured TRANSIENT workspace_contended (never a false holder, never a raw PG leak) — EI-9478', async () => {
     // Mirrors the real WorkspaceContendedError shape (`.name` set) so this
     // exercises the EI-13189 contention-retry path (below) before degrading —

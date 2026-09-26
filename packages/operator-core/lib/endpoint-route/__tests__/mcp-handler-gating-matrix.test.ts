@@ -1724,6 +1724,22 @@ describe('projection — the caller-specified reduction stage at the dispatch la
     expect(res._meta?.resultProjection).toMatchObject({ applied: true, linesIn: 1, linesOut: 1 });
   });
 
+  it('keeps the default rendering for line projections and requests JSON for picks', async () => {
+    await callTool(
+      'gatingtest:parity_rows',
+      { projection: { pipe: [{ op: 'grep', pattern: 'WI-1' }] } },
+      scoped('ws-test'),
+    );
+    expect(parityCalls.at(-1)?.ctx.requestedFormat).toBeUndefined();
+
+    await callTool(
+      'gatingtest:parity_rows',
+      { projection: { pick: ['[0].id'] } },
+      scoped('ws-test'),
+    );
+    expect(parityCalls.at(-1)?.ctx.requestedFormat).toBe('json');
+  });
+
   it('materializes an implicit compact direct result as JSON before structured pick', async () => {
     const res = await callTool(
       'gatingtest:invoke_target',

@@ -63,6 +63,21 @@ describe('capability fetch boundary — real socket', () => {
     }
   });
 
+  it('uses the pinned address for an Undici all-address DNS lookup', async () => {
+    const request = await fetchWithCapabilityPolicy({
+      url: `${baseUrl.replace('127.0.0.1', 'localhost')}/echo`,
+      method: 'GET',
+      signal: new AbortController().signal,
+      profile: trusted,
+    });
+    try {
+      expect(request.resolvedAddress.address).toBe('127.0.0.1');
+      await expect(request.response.json()).resolves.toMatchObject({ method: 'GET' });
+    } finally {
+      await request.release();
+    }
+  });
+
   it('rejects the same loopback destination for confined work before the server sees it', async () => {
     const before = effects;
     await expect(fetchWithCapabilityPolicy({

@@ -48,6 +48,7 @@ const PART_BYTES = 32 * 1024 * 1024;
 const MIN_PART_BYTES = 5 * 1024 * 1024;
 const MAX_PARTS = 1024;
 const DIRECT_MAX = { 'server.tgz.minisig': 64 * 1024, 'manifest.json': 1024 * 1024 };
+const SBOM_MAX_BYTES = 16 * 1024 * 1024;
 const SENSITIVE_KEY = /(?:access[_-]?token|api[_-]?key|authorization|credential|password|private[_-]?key|secret|signature|token|upload[-_]?id)/i;
 const SENSITIVE_QUERY = /(?:access[_-]?token|api[_-]?key|authorization|credential|password|private[_-]?key|secret|signature|token|upload[-_]?id)/i;
 const SENSITIVE_ASSIGNMENT = new RegExp(
@@ -83,7 +84,7 @@ const DEFAULT_BASE = 'https://cupboard.papercusp.com';
 
 export const USAGE = `Usage:
   npm run release:publish-workspace-host-artifacts -- \\
-    --dir <publication-dir> [--base <url>] [--token <bearer>] [--plan-only]
+    --dir <publication-dir> [--base <url>] [--token <bearer>] [--plan-only] [--evidence-only]
 `;
 
 export function parseArgs(argv, env = process.env) {
@@ -96,6 +97,7 @@ export function parseArgs(argv, env = process.env) {
     else if (a === '--task-id') out.taskId = argv[++i];
     else if (a === '--operation-id') out.operationId = argv[++i];
     else if (a === '--plan-only') out.planOnly = true;
+    else if (a === '--evidence-only') out.evidenceOnly = true;
     else if (a === '--concurrency') out.concurrency = Number(argv[++i]);
     else if (a === '--help' || a === '-h') out.help = true;
     else throw new Error(`unknown argument: ${a}`);
@@ -691,6 +693,13 @@ export async function publishWorkspaceHostArtifacts(args, injected = {}) {
   if (!args.planOnly && !deps.ledger) deps.ledger = await loadDefaultReleaseLedger();
   const log = deps.log;
   const ctx = args.planOnly ? null : releaseContext(args, deps);
+  if (args.evidenceOnly) {
+    const manifestRaw = await readFile(join(args.dir, 'manifest.json'));
+    const manifest = JSON.parse(manifestRaw.toString('utf8'));
+    const sbom = await readPublicationSbom(args.dir, manifest);
+    if (args.planOnly) return { planOnly: true, evidenceOnly: true, sha256: sbom.sha256 };
+    return publishSbomEvidence(args, deps, ctx, manifestRaw, manifest, sbom);
+  }
   const bundlePath = join(args.dir, 'server.tgz');
 
   log('=== [1/6] verify bootstrap executables + hash bundle + build part plan ===');
@@ -707,6 +716,7 @@ export async function publishWorkspaceHostArtifacts(args, injected = {}) {
   // silently does not run is indistinguishable from one that passed.
   const manifestRaw = await readFile(join(args.dir, 'manifest.json'));
   const manifest = JSON.parse(manifestRaw.toString('utf8'));
+  const sbom = await readPublicationSbom(args.dir, manifest);
   const claimed = manifest?.files?.bundle?.sha256;
   const claimedRelease = manifest?.artifact?.release?.bundleSha256;
   if (typeof claimed !== 'string' || typeof claimedRelease !== 'string') {
@@ -1076,6 +1086,7 @@ export async function publishWorkspaceHostArtifacts(args, injected = {}) {
     throw new Error(`public object is ${len}B, expected ${plan.size}B`);
   }
   log(`  public HEAD ${headRes.status}, content-length ${len ?? '(absent)'}`);
+  await publishSbomEvidence(args, deps, release, manifestRaw, manifest, sbom);
 
   log('');
   log(`PUBLISH_VERDICT=PASS`);
@@ -1083,6 +1094,64 @@ export async function publishWorkspaceHostArtifacts(args, injected = {}) {
   log(`BUNDLE_BYTES=${plan.size}`);
   log(`PUBLIC_URL=${pub}`);
   return { plan, publicUrl: pub, manifestSha256: expectedManifestSha };
+}
+
+async function readPublicationSbom(dir, manifest) {
+  const evidence = manifest?.trustReport?.evidence;
+  const matches = Array.isArray(evidence) ? evidence.filter((entry) => entry.kind === 'sbom') : [];
+  const bound = matches[0];
+  if (matches.length !== 1 || bound.format !== 'cyclonedx-json' ||
+      bound.subjectSha256 !== manifest?.files?.bundle?.sha256 ||
+      !/^[a-f0-9]{64}$/.test(bound.documentSha256)) {
+    throw new Error('manifest must bind exactly one CycloneDX SBOM to this bundle');
+  }
+  const bytes = await readFile(join(dir, 'evidence', 'sbom.cdx.json'));
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  if (!bytes.byteLength || bytes.byteLength > SBOM_MAX_BYTES || sha256 !== bound.documentSha256) {
+    throw new Error('SBOM bytes do not match the manifest binding or size limit');
+  }
+  return { bytes, sha256, sizeBytes: bytes.byteLength };
+}
+
+async function publishSbomEvidence(args, deps, ctx, manifestRaw, manifest, sbom) {
+  const bundleSha256 = manifest.files.bundle.sha256;
+  const manifestSha256 = createHash('sha256').update(manifestRaw).digest('hex');
+  const { journal } = await readReleaseJournal(ctx.ledger, ctx.taskId, ctx.operationId);
+  assertPublicationJournalIdentity(journal, manifest, { sha256: bundleSha256 });
+  const finalizationHash = releaseStageInputHash({ bundleSha256, manifestSha256 });
+  if (!journal.receipts.some((r) => r.stage === 'publish.finalize' && r.state === 'committed' &&
+      r.inputHash === finalizationHash)) throw new Error('SBOM publication requires this exact committed finalization');
+  const publicRoot = `${args.base}/artifacts/workspace-host/sha256/${bundleSha256}`;
+  const publicManifest = await request(`${publicRoot}/manifest.json`, {}, 4, 'public manifest', deps.fetch, deps.sleep);
+  if (!publicManifest.ok || createHash('sha256').update(Buffer.from(await publicManifest.arrayBuffer())).digest('hex') !== manifestSha256) {
+    throw new Error('public manifest bytes do not match the finalized release');
+  }
+  const token = resolveToken(args.token);
+  ctx.credentialGeneration ??= `github-token-sha256:${createHash('sha256').update(token).digest('hex')}`;
+  const name = 'sbom.cdx.json';
+  const url = `${publicRoot}/${name}`;
+  await runJournaledMutation(ctx, {
+    stage: `publish.evidence.${name}`,
+    input: { bundleSha256, manifestSha256, name, sha256: sbom.sha256, sizeBytes: sbom.sizeBytes },
+    intentEvidenceRefs: [`artifact:sha256:${sbom.sha256}:${sbom.sizeBytes}`],
+    mutate: async () => {
+      const response = await request(`${args.base}/admin/artifacts/workspace-host/sha256/${bundleSha256}/${name}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'x-artifact-sha256': sbom.sha256,
+          'x-artifact-size': String(sbom.sizeBytes), 'content-length': String(sbom.sizeBytes) },
+        body: sbom.bytes,
+      }, 1, 'publish SBOM', deps.fetch, deps.sleep);
+      return { value: await parseResponse(response, name),
+        evidenceRefs: [`provider:artifact:${name}:${sbom.sha256}:${sbom.sizeBytes}`] };
+    },
+    reconcile: (requestIdentity) => headArtifact(ctx, deps, url, sbom, requestIdentity),
+  });
+  const response = await request(url, {}, 4, 'public SBOM', deps.fetch, deps.sleep);
+  if (!response.ok || createHash('sha256').update(Buffer.from(await response.arrayBuffer())).digest('hex') !== sbom.sha256) {
+    throw new Error('public SBOM bytes do not match the manifest binding');
+  }
+  deps.log(`SBOM_PUBLIC_BYTES=PASS sha256=${sbom.sha256} url=${url}`);
+  return { evidenceOnly: true, publicUrl: url, manifestSha256, sbomSha256: sbom.sha256 };
 }
 
 async function main() {

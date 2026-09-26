@@ -251,15 +251,17 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     );
     const dedupe = bootSrc.indexOf('return dedupeInFlight(', requestOnly);
     const store = bootSrc.indexOf('BOOTSTRAP_STATE.requestMigrationGateFlights', dedupe);
-    const apply = bootSrc.indexOf('const migrationResult = await applyPendingMigrationsAtBoot()', store);
+    const timeout = bootSrc.indexOf('const migrationAttempt = await withBoundedTimeout(', store);
+    const apply = bootSrc.indexOf('() => applyPendingMigrationsAtBoot()', timeout);
 
     expect(requestOnly).toBeGreaterThan(-1);
     expect(dedupe).toBeGreaterThan(requestOnly);
     expect(store).toBeGreaterThan(dedupe);
-    expect(apply).toBeGreaterThan(store);
+    expect(timeout).toBeGreaterThan(store);
+    expect(apply).toBeGreaterThan(timeout);
     expect(bootSrc).toContain('requestMigrationGateFlights: Map<string, Promise<void>>');
     expect(bootSrc).toContain('requestMigrationGateFlights: new Map()');
-    expect(bootSrc.match(/const migrationResult = await applyPendingMigrationsAtBoot\(\)/g))
+    expect(bootSrc.match(/\(\) => applyPendingMigrationsAtBoot\(\)/g))
       .toHaveLength(1); // the request-only single-flight body; the background owner goes through awaitBootMigrationGate
     expect(bootSrc.match(/applyAtBoot: applyPendingMigrationsAtBoot,/g)).toHaveLength(1);
   });
@@ -268,17 +270,42 @@ describe('request-only hosts apply migrations before opening HTTP', () => {
     const requestOnly = bootSrc.indexOf(
       'if (!backgroundWorkersEnabled()) {\n    // runBootstrap',
     );
-    const apply = bootSrc.indexOf('const migrationResult = await applyPendingMigrationsAtBoot()', requestOnly);
-    const failure = bootSrc.indexOf('request-only migration preflight failed', apply);
+    const apply = bootSrc.indexOf('() => applyPendingMigrationsAtBoot()', requestOnly);
+    const result = bootSrc.indexOf('const migrationResult = migrationAttempt.value;', apply);
+    const failure = bootSrc.indexOf(
+      'if (!migrationResult || migrationResult.failed.length > 0)',
+      result,
+    );
     const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', apply);
 
     expect(requestOnly).toBeGreaterThan(-1);
     expect(apply).toBeGreaterThan(requestOnly);
-    expect(failure).toBeGreaterThan(apply);
+    expect(result).toBeGreaterThan(apply);
+    expect(failure).toBeGreaterThan(result);
     expect(requestGate).toBeGreaterThan(failure);
     expect(bootSrc.slice(requestOnly, requestGate)).toMatch(
       /if\s*\(!migrationResult\s*\|\|\s*migrationResult\.failed\.length\s*>\s*0\)[\s\S]*?throw new Error\(/,
     );
+  });
+
+  it('bounds the request-only preflight and fails before listener startup when it stalls', () => {
+    const requestOnly = bootSrc.indexOf(
+      'if (!backgroundWorkersEnabled()) {\n    // runBootstrap',
+    );
+    const timeout = bootSrc.indexOf('const migrationAttempt = await withBoundedTimeout(', requestOnly);
+    const budget = bootSrc.indexOf('timeoutMs,', timeout);
+    const degraded = bootSrc.indexOf('if (migrationAttempt.degraded) {', timeout);
+    const timeoutFailure = bootSrc.indexOf('request-only migration preflight ${migrationAttempt.reason', degraded);
+    const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', timeout);
+
+    expect(bootSrc).toContain(
+      "import { withBoundedTimeout } from '@papercusp/operator-core/lib/bounded-timeout';",
+    );
+    expect(timeout).toBeGreaterThan(requestOnly);
+    expect(budget).toBeGreaterThan(timeout);
+    expect(degraded).toBeGreaterThan(budget);
+    expect(timeoutFailure).toBeGreaterThan(degraded);
+    expect(requestGate).toBeGreaterThan(timeoutFailure);
   });
 
   it('fails closed when the request migration preflight rejects instead of serving anyway', () => {

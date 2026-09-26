@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
+import '../../index';
 import tool from './gate_ownership';
 import { readGateOwnership } from '../../coord/gate-ownership';
 import { gitPipelinePosition } from '../../git-pipeline-position';
@@ -11,6 +13,10 @@ vi.mock('../../coord/gate-ownership', async (importOriginal) => ({
 vi.mock('../../git-pipeline-position', () => ({ gitPipelinePosition: vi.fn() }));
 
 describe('dev:gate_ownership', () => {
+  it('is registered by the operator tool index that serves the ownership cell', () => {
+    expect(lookupByMcpName('dev:gate_ownership')).toBeDefined();
+  });
+
   it('resolves the ownership cell without entering an unrelated slow pipeline leg', async () => {
     vi.mocked(gitPipelinePosition).mockImplementation(() => new Promise(() => {}));
     const ownership = { assessment: 'held-live', claimState: 'held', takenBy: 'su-live' };

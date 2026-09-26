@@ -538,7 +538,7 @@ export async function mutateIdentityStack(input: IdentityMutationInput): Promise
       nudge: { queued: false, reason: null },
     };
   }
-  await provisionLaunchIdentityResources(rebuilt.artifact, sql);
+  await provisionLaunchIdentityResources(rebuilt.artifact, sql, { ownerId: input.ownerId });
   const nextRecord: SuLaunchSpecRecord = {
     ...record,
     stack: rebuilt.artifact.stack,

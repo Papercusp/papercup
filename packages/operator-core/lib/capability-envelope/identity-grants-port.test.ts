@@ -1,11 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { pathToFileURL } from 'node:url';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { compileAgentSpecification, type ResolvedCapabilityProviderInput } from '@papercusp/orchestrator/blueprint';
 import type { KernelEnforcementRequest } from '@papercusp/agent-mcp';
-import { appliedIdentityArtifact, checkIdentityGrantKernel, launchRecordAdmitsApplied, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
+import { appliedIdentityArtifact, checkIdentityGrantKernel as checkCurrentIdentityGrantKernel, launchRecordAdmitsApplied, IDENTITY_BREAK_GLASS, IDENTITY_RESOLUTION_CACHE_MAX, IDENTITY_RESOLUTION_CACHE_TTL_MS, readIdentityGrantPolicy, validateIdentityInstallGrants, type IdentityGrantPolicy } from './identity-grants-port';
 import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 import { isLazyIdentityLaunchRecord, lazyIdentityLaunchRecord } from './lazy-launch-record';
 import { carryIdentityReceiptForControlActivation, type SuLaunchSpecRecord } from '../su-persona-render';
+
+// Reuse the standard copy-out probe for the runtime authority checks.
+const checkIdentityGrantKernel: typeof checkCurrentIdentityGrantKernel = process.env.PAPERCUSP_MUTATION_PROBE_SOURCE
+  ? (await import(pathToFileURL(process.env.PAPERCUSP_MUTATION_PROBE_SOURCE).href)).checkIdentityGrantKernel
+  : checkCurrentIdentityGrantKernel;
 
 const io = vi.hoisted(() => ({
   state: vi.fn(), binding: vi.fn(), load: vi.fn(), source: vi.fn(), flag: vi.fn(), tools: vi.fn(), replay: vi.fn(),

@@ -365,11 +365,12 @@ export function classifyLoopPressure(
   return 'ok';
 }
 
-/** Current loop pressure band from the live p95. 'ok' when no monitor is running
- *  (absence of signal must never cause shedding). */
+/** Current loop pressure band from a mature live p95. A partial window with
+ * fewer than 20 observations can make one isolated delay its p95; treating that
+ * as sustained critical pressure sheds unrelated MCP requests. */
 export function loopPressure(): LoopPressure {
   const s = _liveRead?.();
-  if (!s) return 'ok';
+  if (!s?.windowMature) return 'ok';
   return classifyLoopPressure(s.p95Ms);
 }
 

@@ -8,7 +8,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { COORD_ROLES } from '../coordination/roles';
+import { COORD_READ_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
   alsoSentToNote,
@@ -34,7 +34,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_READ_ROLES],
   args: z.object({
     open: z.boolean().optional().describe('true = only open; false = only dispositioned; omit = all.'),
     state: z

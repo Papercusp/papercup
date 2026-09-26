@@ -35,10 +35,11 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
   scope: "aspect",
   category: "agentic",
   summary:
-    "The agentic work plane: app-owned plan templates promote through Papercusp's canonical " +
-    "plan-to-work-item path, preserve their blocked-by DAG, assign only the actionable frontier to a " +
-    "configured stable app agent, and durably wake its live adopting session. Work crosses into the " +
-    "deterministic app at exactly ONE typed seam; confinement is enforced at install and the app's " +
+    "The agentic work plane: typed blueprint operations target app-owned plan templates, which promote " +
+    "through Papercusp's canonical plan-to-work-item path, preserve their blocked-by DAG, assign only " +
+    "the actionable frontier to a configured stable app agent, and durably wake its live adopting " +
+    "session. Validated operation results cross into the deterministic app at exactly ONE typed seam; " +
+    "confinement is enforced at install and the app's " +
     "blueprints/README.md states the rule.",
   components: [
     { id: "pot-app-seam", version: "0.1.0" },
@@ -60,6 +61,11 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
       id: "plan-template",
       prompt:
         "Which app-owned plan template defines the run inputs and blocked-by DAG for this work, and which external binding or schedule starts it?",
+    },
+    {
+      id: "operation-contract",
+      prompt:
+        "What stable operation id/version, pinned plan-template revision/hash, typed input schema, typed result schema, and request-key source expose that plan as one reusable task?",
     },
     {
       id: "execution-target",
@@ -115,8 +121,13 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
   musts: [
     {
       id: "canonical-plan-work-plane",
-      rule: "Every external or scheduled agentic run uses an app-owned plan template and canonical plan-item promotion; never raw work-item inserts, direct work_items:create, or a parallel scheduler",
+      rule: "Every reusable external or scheduled agentic run invokes a declared blueprint operation that targets an app-owned plan template and canonical plan-item promotion; never raw work-item inserts, direct work_items:create, a copied DAG, or a parallel scheduler",
       enforcedBy: "prose-only",
+    },
+    {
+      id: "operation-first-task-binding",
+      rule: "Every new reusable task binding names a typed, versioned operation and stable request key; only blueprint:result state=ready may carry output across the app parse gate, while legacy launch-plan bindings stay operational until individually parity-tested",
+      enforcedBy: "seam-round-trip",
     },
     {
       id: "stable-agent-direct-dispatch",
@@ -130,7 +141,7 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
     },
     {
       id: "seam-only-crossing",
-      rule: "Every judgment-plane crossing composes @papercusp/pot-app-seam (bootstrap, work-items transport, ingest loop) — never hand-rolled calls against /api/harness/*",
+      rule: "Every judgment-plane crossing composes @papercusp/pot-app-seam (bootstrap, operation submit/status/result, compatibility plan launch, ingest loop) — never hand-rolled calls against /api/harness/*",
       enforcedBy: "seam-round-trip",
     },
     {

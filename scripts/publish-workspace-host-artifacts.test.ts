@@ -204,6 +204,7 @@ async function publicationFixture(options: {
   const bundle = await readFile(bundlePath);
   const signature = Buffer.from('trusted minisign signature');
   const bundleSha256 = sha256(bundle);
+  const sbom = Buffer.from(JSON.stringify({ bomFormat: 'CycloneDX', components: [] }));
   const manifest = {
     schemaVersion: 1,
     kind: 'papercusp-workspace-host-release',
@@ -220,11 +221,15 @@ async function publicationFixture(options: {
         sizeBytes: signature.byteLength,
       },
     },
+    trustReport: { evidence: [{ kind: 'sbom', format: 'cyclonedx-json',
+      subjectSha256: bundleSha256, documentSha256: sha256(sbom) }] },
   };
+  await mkdir(join(dir, 'evidence'));
   await Promise.all([
     writeFile(join(dir, 'server.tgz'), bundle),
     writeFile(join(dir, 'server.tgz.minisig'), signature),
     writeFile(join(dir, 'manifest.json'), JSON.stringify(manifest)),
+    writeFile(join(dir, 'evidence', 'sbom.cdx.json'), sbom),
   ]);
   return { dir, bundle, bundleSha256, signature, manifest };
 }
@@ -306,6 +311,7 @@ function json(value: unknown, status = 200) {
 function createArtifactProvider({ loseResponses = [] }: { loseResponses?: string[] } = {}) {
   const uploads = new Map<string, MultipartUpload>();
   const direct = new Map<string, ArtifactDescriptor>();
+  const directBytes = new Map<string, Uint8Array>();
   const losses = new Set(loseResponses);
   const counters = {
     initiate: 0,
@@ -314,6 +320,7 @@ function createArtifactProvider({ loseResponses = [] }: { loseResponses?: string
     minisig: 0,
     manifest: 0,
     finalize: 0,
+    sbom: 0,
   };
   let bundle: ArtifactDescriptor | null = null;
   let finalized = false;
@@ -406,7 +413,7 @@ function createArtifactProvider({ loseResponses = [] }: { loseResponses?: string
         );
       }
 
-      const directMatch = url.pathname.match(/\/sha256\/([a-f0-9]{64})\/(server\.tgz\.minisig|manifest\.json)$/);
+      const directMatch = url.pathname.match(/\/sha256\/([a-f0-9]{64})\/(server\.tgz\.minisig|manifest\.json|sbom\.cdx\.json)$/);
       if (directMatch && method === 'PUT') {
         const name = directMatch[2];
         const expected = {
@@ -419,12 +426,13 @@ function createArtifactProvider({ loseResponses = [] }: { loseResponses?: string
             ? json({ ok: true, file: name, sha256: prior.sha256, bytes: prior.sizeBytes, deduped: true })
             : json({ error: 'artifact_conflict' }, 409);
         }
-        const stage = `publish.direct.${name}`;
+        const stage = `publish.${name === 'sbom.cdx.json' ? 'evidence' : 'direct'}.${name}`;
         return respond(
           stage,
           () => {
-            counters[name === 'manifest.json' ? 'manifest' : 'minisig'] += 1;
+            counters[name === 'manifest.json' ? 'manifest' : name === 'sbom.cdx.json' ? 'sbom' : 'minisig'] += 1;
             direct.set(name, expected);
+            directBytes.set(name, new Uint8Array(init.body as Uint8Array));
             return true;
           },
           () => json({ ok: true, file: name, sha256: expected.sha256, bytes: expected.sizeBytes, deduped: false }, 201),
@@ -446,12 +454,13 @@ function createArtifactProvider({ loseResponses = [] }: { loseResponses?: string
         );
       }
 
-      const publicMatch = url.pathname.match(/\/artifacts\/workspace-host\/sha256\/[a-f0-9]{64}\/(server\.tgz|server\.tgz\.minisig|manifest\.json)$/);
-      if (publicMatch && method === 'HEAD') {
+      const publicMatch = url.pathname.match(/\/artifacts\/workspace-host\/sha256\/[a-f0-9]{64}\/(server\.tgz|server\.tgz\.minisig|manifest\.json|sbom\.cdx\.json)$/);
+      if (publicMatch && (method === 'HEAD' || method === 'GET')) {
         if (!finalized) return new Response(null, { status: 404 });
         const name = publicMatch[1];
         const descriptor = (name === 'server.tgz' ? bundle : direct.get(name))!;
-        return new Response(null, {
+        if (!descriptor) return new Response(null, { status: 404 });
+        return new Response(method === 'GET' ? directBytes.get(name)?.slice().buffer as ArrayBuffer : null, {
           status: 200,
           headers: {
             'x-artifact-sha256': descriptor.sha256,
@@ -609,6 +618,7 @@ test('lost accepted responses plus a restart after every stage produce zero dupl
     'publish.direct.server.tgz.minisig',
     'publish.direct.manifest.json',
     'publish.finalize',
+    'publish.evidence.sbom.cdx.json',
   ];
   const provider = createArtifactProvider({ loseResponses: stages });
   const interrupted = new Set();
@@ -653,10 +663,11 @@ test('lost accepted responses plus a restart after every stage produce zero dupl
       minisig: 1,
       manifest: 1,
       finalize: 1,
+      sbom: 1,
     });
 
     const journal = ledger.task.detail.release;
-    assert.equal(journal.currentStage, 'publish.finalize');
+    assert.equal(journal.currentStage, 'publish.evidence.sbom.cdx.json');
     assert.equal(journal.currentState, 'committed');
     assert.equal(new Set(journal.spentOperationIds).size, stages.length);
     for (const stage of stages) {
@@ -703,7 +714,42 @@ test('lost accepted responses plus a restart after every stage produce zero dupl
       minisig: 1,
       manifest: 1,
       finalize: 1,
+      sbom: 1,
     });
+  } finally {
+    await rm(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test('evidence-only recovery reads the exact public manifest and never replays core publication', async () => {
+  const fixture = await publicationFixture();
+  const ledger = createLedger();
+  const provider = createArtifactProvider();
+  const args = { dir: fixture.dir, base: 'https://cupboard.example.test', token: 'fixture-token',
+    taskId: TASK_ID, operationId: OPERATION_ID, concurrency: 4 };
+  const injected = { ledger, fetch: provider.fetch, env: {}, sleep: async () => {}, log: () => {} };
+  try {
+    await assert.rejects(publishWorkspaceHostArtifacts({ ...args, evidenceOnly: true }, injected),
+      /requires this exact committed finalization/);
+    await assert.rejects(publishWorkspaceHostArtifacts(args, { ...injected,
+      afterStage(stage: string) { if (stage === 'publish.finalize') throw new Error('stop after finalization'); },
+    }), /stop after finalization/);
+    const before = { ...provider.counters };
+    await rm(join(fixture.dir, 'server.tgz'));
+    await rm(join(fixture.dir, 'server.tgz.minisig'));
+    await assert.rejects(publishWorkspaceHostArtifacts({ ...args, evidenceOnly: true }, { ...injected,
+      fetch: async (url: string, init?: RequestInit) => url.endsWith('/manifest.json')
+        ? new Response('{}') : provider.fetch(url, init),
+    }), /public manifest bytes do not match/);
+    assert.deepEqual(provider.counters, before);
+    const result = await publishWorkspaceHostArtifacts({ ...args, evidenceOnly: true }, injected);
+    assert.equal(result.sbomSha256, fixture.manifest.trustReport.evidence[0].documentSha256);
+    await publishWorkspaceHostArtifacts({ ...args, evidenceOnly: true }, injected);
+    assert.deepEqual(provider.counters, { ...before, sbom: 1 });
+    await writeFile(join(fixture.dir, 'evidence', 'sbom.cdx.json'), '{}');
+    await assert.rejects(publishWorkspaceHostArtifacts({ ...args, evidenceOnly: true }, injected),
+      /SBOM bytes do not match/);
+    assert.deepEqual(provider.counters, { ...before, sbom: 1 });
   } finally {
     await rm(fixture.dir, { recursive: true, force: true });
   }

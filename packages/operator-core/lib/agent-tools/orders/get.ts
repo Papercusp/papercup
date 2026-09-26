@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { COORD_ROLES } from '../coordination/roles';
+import { COORD_READ_ROLES } from '../coordination/roles';
 import { directiveNeedsSummary, getOwnerDirective } from '../../owner-directives';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { assessDirectiveStatus, deriveDirectiveStatus } from '../../owner-directive-status';
@@ -23,7 +23,7 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
-  agentRoles: [...COORD_ROLES],
+  agentRoles: [...COORD_READ_ROLES],
   args: z.object({
     // COERCED, not merely numeric: this tool backs the `owner.directive.status`
     // state cell, and `cell-read.ts` passes a caller-relative subject through as

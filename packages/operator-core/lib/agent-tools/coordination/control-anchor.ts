@@ -810,7 +810,7 @@ export async function acknowledgeControlTransition(
 ): Promise<boolean> {
   if (!Number.isSafeInteger(generation) || generation < 0) return false;
   if (activationRevision) {
-    const { launchRecordAdmitsApplied } = await import('../../capability-envelope/identity-grants-port');
+    const { launchRecordAdmitsApplied, appliedIdentityArtifact } = await import('../../capability-envelope/identity-grants-port');
     return await sql.begin(async (tx) => {
       const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId);
       if (!launchRecordAdmitsApplied(launchSpec, activationRevision)) return false;
@@ -840,6 +840,9 @@ export async function acknowledgeControlTransition(
       if (recorded === 'missing') {
         throw new Error('session_identity_activation_applied_not_recorded');
       }
+      const { applySessionPackageResources } = await import('../../blueprint/session-package-resources');
+      await applySessionPackageResources(tx, { ownerId, workspaceId, revision: activationRevision,
+        artifact: appliedIdentityArtifact(launchSpec, activationRevision) });
       return true;
     });
   }
@@ -936,6 +939,10 @@ export async function convergeActivationToLaunchRecord(
     if (recorded === 'missing') {
       throw new Error('session_identity_activation_applied_not_recorded');
     }
+    const { applySessionPackageResources } = await import('../../blueprint/session-package-resources');
+    const { appliedIdentityArtifact } = await import('../../capability-envelope/identity-grants-port');
+    await applySessionPackageResources(tx, { ownerId, workspaceId, revision,
+      artifact: appliedIdentityArtifact(launchSpec, revision) });
     return true;
   });
 }

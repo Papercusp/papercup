@@ -108,6 +108,9 @@ export function adaptSuLockStore(): FileLockCoordinator {
       return {
         ok: false,
         busy: r.busy.map((b) => ({ path: b.path, owner: b.owner })),
+        ...('reason' in r && r.reason === 'queued_waiter'
+          ? { reason: r.reason }
+          : {}),
         ...('retryable' in r && r.retryable
           ? { reason: r.reason, retryable: true }
           : {}),

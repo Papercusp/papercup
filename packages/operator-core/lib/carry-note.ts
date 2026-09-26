@@ -3006,7 +3006,10 @@ export async function setCarryNoteWithPrior(
   // the successor loses its only durable carry anchor. Work-item checkpoints
   // retain their existing transaction policy and use the unbounded branch here.
   const result = opts?.bounded
-    ? await boundedOrgTxn(write, { client: sql, acquireTimeoutMs: 8_000 })
+    // `sql` above is getOrgPg().sql, not an injected backend. Let boundedOrgTxn
+    // resolve that same pool itself so its acquire ticket is tagged org-admin.
+    // Passing it as `client` hid queue/held measurements on a timeout.
+    ? await boundedOrgTxn(write, { acquireTimeoutMs: 8_000 })
     : await sql.begin(write);
   return result as SetCarryNoteResult;
 }
@@ -3158,7 +3161,7 @@ export async function attestCarryNoteUnchanged(
   // the historical unbounded default for the shared substrate's existing callers;
   // callers that need the interactive guarantee opt in explicitly.
   const result = opts.bounded
-    ? await boundedOrgTxn(attest, { client: sql, acquireTimeoutMs: 8_000 })
+    ? await boundedOrgTxn(attest, { ...(opts.sql ? { client: opts.sql } : {}), acquireTimeoutMs: 8_000 })
     : await sql.begin(attest);
   return result as CarryNoteAttestationResult;
 }

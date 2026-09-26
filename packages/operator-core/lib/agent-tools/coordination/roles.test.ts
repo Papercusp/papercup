@@ -20,6 +20,26 @@ import {
 } from './roles';
 
 describe('COORD_ROLES', () => {
+  test('acceptance judge can read and settle its own owner directives without general coordination writes', async () => {
+    const [get, list, summarize, disposition, record] = await Promise.all([
+      import('../orders/get.js'),
+      import('../orders/list.js'),
+      import('../orders/summarize.js'),
+      import('../orders/disposition.js'),
+      import('../orders/record.js'),
+    ]);
+    for (const [name, tool] of [
+      ['orders:get', get.default],
+      ['orders:list', list.default],
+      ['orders:summarize', summarize.default],
+      ['orders:disposition', disposition.default],
+    ] as const) {
+      expect(tool.agentRoles, `${name} must admit judge`).toContain('judge');
+    }
+    expect(record.default.agentRoles).not.toContain('judge');
+    expect(COORD_ROLES).not.toContain('judge');
+  });
+
   test('acceptance judge can consume coordination reads without becoming a general coordinator', async () => {
     const [{ default: inbox }, { default: read }, { default: orient }, { default: cupMail }] = await Promise.all([
       import('./tools/inbox.js'),

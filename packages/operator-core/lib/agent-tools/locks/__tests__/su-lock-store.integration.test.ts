@@ -1007,6 +1007,38 @@ describe('readQueue', () => {
 });
 
 describe('head-waiter blocks new acquires (anti-starvation)', () => {
+  it('identifies a queued waiter when no file holder remains', async () => {
+    const ws = nextWs();
+    const sql = getTxPool();
+    await sql`
+      INSERT INTO agent_lock_waiters
+        (coordination_domain, owner, owner_label, paths, intent, ttl_sec, wait_until)
+      VALUES
+        (${ws}, 'queued', 'QUEUED', ${['hot.ts']}, 'queued edit', 60,
+         clock_timestamp() + interval '1 minute')
+    `;
+
+    const blocked = await inWorkspaceTxn(ws, 'newcomer', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'newcomer', ownerLabel: 'NEWCOMER',
+        paths: ['hot.ts'], intent: 'new edit', ttlSec: 60,
+      }),
+    );
+    expect(blocked).toMatchObject({
+      ok: false,
+      reason: 'queued_waiter',
+      busy: [{ path: 'hot.ts', owner: 'queued', intent: 'queued edit' }],
+    });
+
+    const free = await inWorkspaceTxn(ws, 'newcomer', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'newcomer', ownerLabel: 'NEWCOMER',
+        paths: ['free.ts'], intent: 'free edit', ttlSec: 60,
+      }),
+    );
+    expect(free.ok).toBe(true);
+  });
+
   it('new acquirer cannot jump an older waiter on the same path', async () => {
     const ws = nextWs();
     // A holds, B queues, C tries to acquire — C must be blocked (busy)

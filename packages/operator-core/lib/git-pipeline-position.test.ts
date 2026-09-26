@@ -16,9 +16,10 @@ vi.mock('./agent-tools/dev/systemd-service-probe', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./agent-tools/dev/systemd-service-probe')>();
   return {
     ...actual,
-    probeServiceStart: async () => ({ ok: true, mainPid: 4242, secondsSinceStart: 60, activeState: 'active' }),
+    probeServiceStart: vi.fn(async () => ({ ok: true, mainPid: 4242, secondsSinceStart: 60, activeState: 'active' })),
   };
 });
+import { probeServiceStart } from './agent-tools/dev/systemd-service-probe';
 import {
   gitPipelinePosition,
   assessPipelinePosition,
@@ -383,6 +384,17 @@ const snap = (
   }) as GitPipelineSnapshot;
 
 describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () => {
+  it('EI-24356772206513832: the default unit probes supply a local exec path', async () => {
+    const probe = vi.mocked(probeServiceStart);
+    probe.mockClear();
+    await gitPipelinePosition(
+      { path: 'packages/operator-core/lib/cell-registrations.ts' },
+      { git: fakeGit({}), loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    expect(probe).toHaveBeenCalled();
+    expect(probe.mock.calls.every(([, exec]) => typeof exec === 'function')).toBe(true);
+  });
+
   it('keeps the default release readers on local git instead of the spawner sidecar', () => {
     const source = readFileSync(new URL('./git-pipeline-position.ts', import.meta.url), 'utf8');
 

@@ -502,6 +502,15 @@ export default defineTool({
       return await upsertRace(first.busy);
     }
 
+    if ('reason' in first && first.reason === 'queued_waiter' && maxWaitSec === 0 && !args.wake_on_grant) {
+      return jsonResult({
+        ok: false,
+        reason: 'queued_waiter',
+        busy: await enrichBusy(first.busy, { ownerId }),
+        advice: 'A queued agent is ahead for this path. Coordinate with that owner or use wake_on_grant:true to join the queue.',
+      });
+    }
+
     // ── wake_on_grant: queue + sleep instead of block/poll ──────────────
     // (await-event-primitive-2026-06-05 D-005/P-008.) Insert a long-window
     // waiter ticket + a one-shot wake await on its grant key, return NOW.
@@ -1144,13 +1153,16 @@ function decodeRemoteAcquire(
     intent: '',
     expires_ts: fallbackExpiry,
   }));
-  if (r.retryable && r.reason) {
+  if (r.retryable && r.reason === 'upsert_race') {
     return {
       ok: false,
       busy: busyRows,
       reason: r.reason,
       retryable: true,
     };
+  }
+  if (r.reason === 'queued_waiter') {
+    return { ok: false, busy: busyRows, reason: 'queued_waiter' };
   }
   return { ok: false, busy: busyRows };
 }
