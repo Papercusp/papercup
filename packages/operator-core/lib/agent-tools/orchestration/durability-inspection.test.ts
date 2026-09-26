@@ -29,7 +29,7 @@ describe('orchestration durability inspection', () => {
         { tool: 'plans:set-status', replay: 'idempotent', argsStatic: true },
       ],
       replayCandidate: true,
-      durableExecutionAvailable: false,
+      durableExecutionAvailable: true,
       diagnostics: [],
     });
     expect((await inspectDurability({ ...input, bindings: { ...bindings, inputs: { item: 'WI-2' } } })).pin.bindingsSha256)

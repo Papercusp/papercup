@@ -25,90 +25,9 @@ use std::sync::mpsc as smpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Whisper's native sample rate — the capture pipeline's output rate.
-pub const WHISPER_RATE: u32 = 16_000;
-
-// ─────────────────────────── pure DSP (unit-tested) ───────────────────────────
-
-/// Interleaved multi-channel f32 → mono by averaging each frame's channels.
-pub fn mix_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
-    let ch = channels.max(1) as usize;
-    if ch == 1 {
-        return samples.to_vec();
-    }
-    samples
-        .chunks(ch)
-        .map(|frame| frame.iter().sum::<f32>() / frame.len() as f32)
-        .collect()
-}
-
-/// Resample mono f32 to 16 kHz. Integer downsample ratios use boxcar-average
-/// decimation (the averaging doubles as a crude anti-alias low-pass — plenty
-/// for PTT speech into Whisper); everything else uses linear interpolation.
-pub fn resample_to_16k(mono: &[f32], src_rate: u32) -> Vec<f32> {
-    if mono.is_empty() || src_rate == 0 {
-        return Vec::new();
-    }
-    if src_rate == WHISPER_RATE {
-        return mono.to_vec();
-    }
-    if src_rate > WHISPER_RATE && src_rate.is_multiple_of(WHISPER_RATE) {
-        let ratio = (src_rate / WHISPER_RATE) as usize;
-        return mono
-            .chunks(ratio)
-            .map(|c| c.iter().sum::<f32>() / c.len() as f32)
-            .collect();
-    }
-    let ratio = src_rate as f64 / WHISPER_RATE as f64;
-    let out_len = (mono.len() as f64 / ratio).floor() as usize;
-    (0..out_len)
-        .map(|i| {
-            let pos = i as f64 * ratio;
-            let i0 = pos.floor() as usize;
-            let frac = (pos - i0 as f64) as f32;
-            let a = mono[i0.min(mono.len() - 1)];
-            let b = mono[(i0 + 1).min(mono.len() - 1)];
-            a + (b - a) * frac
-        })
-        .collect()
-}
-
-/// Encode mono f32 (−1..1) as a PCM16 WAV byte buffer at `rate`.
-pub fn encode_wav_pcm16(samples: &[f32], rate: u32) -> Vec<u8> {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut cur = std::io::Cursor::new(Vec::new());
-    {
-        // In-memory writer can't fail on IO; unwraps are spec-correctness only.
-        let mut w = hound::WavWriter::new(&mut cur, spec).expect("wav writer");
-        for &s in samples {
-            let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-            w.write_sample(v).expect("wav sample");
-        }
-        w.finalize().expect("wav finalize");
-    }
-    cur.into_inner()
-}
-
-/// Synthesize a sine tone (test/smoke helper).
-pub fn sine(freq: f32, secs: f32, rate: u32, amp: f32) -> Vec<f32> {
-    let n = (secs * rate as f32) as usize;
-    (0..n)
-        .map(|i| (i as f32 / rate as f32 * freq * std::f32::consts::TAU).sin() * amp)
-        .collect()
-}
-
-/// Root-mean-square level of a chunk (the mic meter's unit).
-pub fn rms(chunk: &[f32]) -> f32 {
-    if chunk.is_empty() {
-        return 0.0;
-    }
-    (chunk.iter().map(|s| s * s).sum::<f32>() / chunk.len() as f32).sqrt()
-}
+#[path = "voice_dsp.rs"]
+mod dsp;
+pub use dsp::*;
 
 // ─────────────────────────────── capture side ───────────────────────────────
 
@@ -319,20 +238,6 @@ fn capture_thread(
 }
 
 // ───────────────── continuous capture (realtime voice, P-004) ─────────────────
-
-/// Convert a drained interleaved f32 window into 16 kHz mono PCM16 LE bytes —
-/// the exact `pcm_16000` chunk shape EL's `user_audio_chunk` wants
-/// (voice-realtime-tui-2026-06-05 D-006). Pure — unit-tested.
-pub fn f32_chunk_to_pcm16le(raw: &[f32], channels: u16, src_rate: u32) -> Vec<u8> {
-    let mono = mix_to_mono(raw, channels);
-    let s16k = resample_to_16k(&mono, src_rate);
-    let mut out = Vec::with_capacity(s16k.len() * 2);
-    for s in s16k {
-        let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
-        out.extend_from_slice(&v.to_le_bytes());
-    }
-    out
-}
 
 /// Continuous mic capture: the same device pipeline as the PTT path, but
 /// streaming ~`chunk_ms` windows of 16 kHz mono PCM16 LE to a channel instead
@@ -545,13 +450,110 @@ pub fn list_devices() -> (Vec<String>, Vec<String>) {
 
 // ─────────────────────────────── playback side ───────────────────────────────
 
+/// Device-only capture. The caller drains native interleaved f32 blocks and
+/// performs DSP in PUI. The bounded callback queue reports overflow explicitly.
+pub struct RawCapture {
+    pub info: crate::audio_proto::CaptureInfo,
+    pub chunks: smpsc::Receiver<Vec<f32>>,
+    pub error: Arc<Mutex<Option<String>>>,
+    _stream: cpal::Stream,
+}
+
+impl RawCapture {
+    pub fn stop(self) -> smpsc::Receiver<Vec<f32>> {
+        drop(self._stream);
+        self.chunks
+    }
+}
+
+pub fn start_raw_capture() -> Result<RawCapture> {
+    let host = cpal::default_host();
+    let device = pick_device(
+        host.input_devices().context("enumerate input devices")?,
+        host.default_input_device(),
+        std::env::var("PUI_VOICE_INPUT").ok().as_deref(),
+    )
+    .ok_or_else(|| anyhow!("no input (mic) device available"))?;
+    let name = device.name().unwrap_or_else(|_| "<unknown>".into());
+    let config = device.default_input_config().context("input config")?;
+    let info = crate::audio_proto::CaptureInfo {
+        device: name,
+        rate: config.sample_rate().0,
+        channels: config.channels(),
+    };
+    let (tx, chunks) = smpsc::sync_channel(16);
+    let block_samples = 4096 * usize::from(info.channels);
+    let error = Arc::new(Mutex::new(None));
+    let queue_error = error.clone();
+    let push = move |samples: Vec<f32>| {
+        for block in samples.chunks(block_samples) {
+            if tx.try_send(block.to_vec()).is_err() {
+                if let Ok(mut slot) = queue_error.lock() {
+                    *slot = Some("audio capture consumer fell behind; recording stopped".into());
+                }
+                break;
+            }
+        }
+    };
+    let stream_error = error.clone();
+    let on_error = move |failure: cpal::StreamError| {
+        if let Ok(mut slot) = stream_error.lock() {
+            *slot = Some(format!("audio capture: {failure}"));
+        }
+    };
+    let stream_config = config.clone().into();
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => device.build_input_stream(
+            &stream_config,
+            move |data: &[f32], _| push(data.to_vec()),
+            on_error,
+            None,
+        ),
+        cpal::SampleFormat::I16 => device.build_input_stream(
+            &stream_config,
+            move |data: &[i16], _| push(data.iter().map(|&s| s as f32 / 32768.0).collect()),
+            on_error,
+            None,
+        ),
+        cpal::SampleFormat::U16 => device.build_input_stream(
+            &stream_config,
+            move |data: &[u16], _| {
+                push(
+                    data.iter()
+                        .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                        .collect(),
+                )
+            },
+            on_error,
+            None,
+        ),
+        other => return Err(anyhow!("unsupported sample format {other:?}")),
+    }
+    .context("open input stream")?;
+    stream.play().context("start input stream")?;
+    Ok(RawCapture {
+        info,
+        chunks,
+        error,
+        _stream: stream,
+    })
+}
+
 enum PlayerCmd {
+    Prepare(smpsc::Sender<Result<()>>),
+    AppendRealtimePcm {
+        samples: Vec<i16>,
+        rate: u32,
+    },
     /// Decode + play these audio bytes (wav/mp3), replacing anything playing.
     Play(Vec<u8>),
     /// APPEND raw mono PCM16 to the live queue (gap-free streaming TTS — the
     /// realtime Conv-AI `audio` events, voice-realtime-tui P-004). Starts a
     /// sink when none is live; never replaces what's already queued.
-    AppendPcm { samples: Vec<i16>, rate: u32 },
+    AppendPcm {
+        samples: Vec<i16>,
+        rate: u32,
+    },
     /// APPEND an encoded chunk (mp3/wav) to the live queue (non-PCM agent
     /// output formats).
     AppendEncoded(Vec<u8>),
@@ -569,6 +571,19 @@ pub struct Player {
 }
 
 impl Player {
+    /// Confirm the actual output device and sink before stream playback starts.
+    pub fn prepare(&self) -> Result<()> {
+        let (tx, rx) = smpsc::channel();
+        self.tx
+            .send(PlayerCmd::Prepare(tx))
+            .context("playback worker stopped")?;
+        rx.recv_timeout(Duration::from_secs(5))
+            .context("output device did not become ready")?
+    }
+
+    pub fn append_realtime_pcm(&self, samples: Vec<i16>, rate: u32) {
+        let _ = self.tx.send(PlayerCmd::AppendRealtimePcm { samples, rate });
+    }
     /// Spawn the playback thread. The output device opens lazily on first
     /// play (so a missing sound card only breaks playback, not startup).
     pub fn spawn() -> Player {
@@ -700,6 +715,27 @@ fn player_thread(
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(PlayerCmd::Prepare(ready)) => {
+                if !ensure_output(&mut output, &set_err) {
+                    let message = last_error
+                        .lock()
+                        .ok()
+                        .and_then(|s| s.clone())
+                        .unwrap_or_else(|| "output device unavailable".into());
+                    let _ = ready.send(Err(anyhow!(message)));
+                    continue;
+                }
+                let handle = &output.as_ref().expect("output opened").1;
+                match rodio::Sink::try_new(handle) {
+                    Ok(s) => {
+                        sink = Some(s);
+                        let _ = ready.send(Ok(()));
+                    }
+                    Err(e) => {
+                        let _ = ready.send(Err(anyhow!("audio sink: {e}")));
+                    }
+                }
+            }
             Ok(PlayerCmd::Play(bytes)) => {
                 // Replace semantics: anything queued stops first.
                 if let Some(s) = sink.take() {
@@ -714,7 +750,19 @@ fn player_thread(
                     Err(e) => set_err(Some(format!("decode audio: {e}"))),
                 }
             }
-            Ok(PlayerCmd::AppendPcm { samples, rate }) => {
+            Ok(command @ (PlayerCmd::AppendPcm { .. } | PlayerCmd::AppendRealtimePcm { .. })) => {
+                let (samples, rate, realtime) = match command {
+                    PlayerCmd::AppendPcm { samples, rate } => (samples, rate, false),
+                    PlayerCmd::AppendRealtimePcm { samples, rate } => (samples, rate, true),
+                    _ => unreachable!(),
+                };
+                if rate == 0 {
+                    set_err(Some("audio sample rate must be positive".into()));
+                    continue;
+                }
+                if realtime && sink.as_ref().is_some_and(|s| s.len() > 6) {
+                    continue;
+                }
                 if !ensure_output(&mut output, &set_err) {
                     continue;
                 }

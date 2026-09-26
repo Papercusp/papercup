@@ -101,6 +101,24 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     if (parsed.success) expect(parsed.data.criteria?.[0]?.bar).toBe(criterion.bar);
   });
 
+  it('accepts a serving runtime in a complete BAR amendment', () => {
+    const parsed = rubricsAmendArgs.safeParse({
+      rubricRef: 'acceptance-example',
+      criteria: [{ ...criterion, evidencePlane: 'live', evidenceRuntime: 'staging-operator' }],
+      dryRun: true,
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.criteria?.[0]?.evidenceRuntime).toBe('staging-operator');
+
+    expect(
+      rubricsAmendArgs.safeParse({
+        rubricRef: 'acceptance-example',
+        criteria: [{ ...criterion, evidencePlane: 'live', evidenceRuntime: 'unknown-runtime' }],
+        dryRun: true,
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects approval authorization without an amendment patch', () => {
     const parsed = rubricsAmendArgs.safeParse({
       rubricRef: 'acceptance-example',

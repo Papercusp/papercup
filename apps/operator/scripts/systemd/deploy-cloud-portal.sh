@@ -10,6 +10,10 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TEMPLATE="${PAPERCUSP_CLOUD_PORTAL_TEMPLATE:-$SCRIPT_DIR/papercusp-cloud-portal.service.in}"
+RECONCILE_SERVICE_TEMPLATE="$SCRIPT_DIR/papercusp-cloud-portal-reconcile.service.in"
+RECONCILE_TIMER_TEMPLATE="$SCRIPT_DIR/papercusp-cloud-portal-reconcile.timer.in"
+RECONCILE_SERVICE="papercusp-cloud-portal-reconcile.service"
+RECONCILE_TIMER="papercusp-cloud-portal-reconcile.timer"
 PROXY_SOURCE="${PAPERCUSP_CLOUD_PORTAL_PROXY_SOURCE:-$SCRIPT_DIR/papercusp-cloud-portal-proxy.mjs}"
 LAUNCHER_SOURCE="${PAPERCUSP_CLOUD_PORTAL_LAUNCHER_SOURCE:-$SCRIPT_DIR/portal-hosted-launcher.ts}"
 
@@ -124,6 +128,8 @@ validate_inputs() {
   require_absolute OPERATOR_ENV_FILE "$OPERATOR_ENV_FILE"
   require_absolute TSX_BIN "$TSX_BIN"
   [[ -f "$TEMPLATE" ]] || die "unit template is missing: $TEMPLATE"
+  [[ -f "$RECONCILE_SERVICE_TEMPLATE" && -f "$RECONCILE_TIMER_TEMPLATE" ]] ||
+    die "portal reconcile unit templates are missing"
   [[ -f "$PROXY_SOURCE" ]] || die "portal proxy source is missing: $PROXY_SOURCE"
   [[ -f "$LAUNCHER_SOURCE" ]] || die "portal hosted launcher source is missing: $LAUNCHER_SOURCE"
   [[ -f "$HOSTED_ENV_FILE" ]] || die "hosted env file is missing: $HOSTED_ENV_FILE"
@@ -171,6 +177,7 @@ unit_escape() {
 }
 
 render_unit() {
+  local template="${1:-$TEMPLATE}"
   local root runtime_root node next start_web node_dir launcher integration_root hosted_env operator_env tsx
   root="$(unit_escape "$PORTAL_ROOT")"
   runtime_root="$(unit_escape "$PORTAL_RUNTIME_ROOT")"
@@ -199,7 +206,7 @@ render_unit() {
     line=${line//@OPERATOR_ENV_FILE@/$operator_env}
     line=${line//@TSX@/$tsx}
     printf '%s\n' "$line"
-  done < "$TEMPLATE"
+  done < "$template"
 }
 
 verify_unit_path() {
@@ -283,6 +290,27 @@ systemctl_user() {
 reload_and_enable() {
   systemctl_user daemon-reload
   systemctl_user enable "$UNIT_NAME"
+}
+
+install_reconcile_units() {
+  local name template temp
+  for name in "$RECONCILE_SERVICE" "$RECONCILE_TIMER"; do
+    if [[ "$name" == "$RECONCILE_SERVICE" ]]; then
+      template="$RECONCILE_SERVICE_TEMPLATE"
+    else
+      template="$RECONCILE_TIMER_TEMPLATE"
+    fi
+    temp="$(mktemp "$TEMP_DIR/.${name}.tmp.XXXXXX.${name##*.}")"
+    render_unit "$template" > "$temp"
+    chmod 0644 "$temp"
+    if ! verify_unit_path "$temp"; then
+      rm -f -- "$temp"
+      return 1
+    fi
+    mv -f -- "$temp" "$UNIT_DIR/$name"
+  done
+  systemctl_user daemon-reload
+  systemctl_user enable --now "$RECONCILE_TIMER"
 }
 
 health_check() {
@@ -622,5 +650,6 @@ case "$MODE" in
     ;;
   handoff)
     handoff
+    install_reconcile_units
     ;;
 esac

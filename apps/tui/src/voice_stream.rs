@@ -356,36 +356,21 @@ pub struct MicHandle {
 }
 
 pub fn start_mic(vs: Arc<VoiceStream>) -> Result<MicHandle> {
-    let mut capture = crate::voice::start_stream_capture(20)?;
-    let chunks = capture
-        .take_chunks()
-        .context("pui-audio capture did not expose its stream")?;
-    std::thread::Builder::new()
-        .name("pui-voice-stream-capture".into())
-        .spawn(move || {
-            while let Ok(bytes) = chunks.recv() {
-                let samples: Vec<f32> = bytes
-                    .chunks_exact(2)
-                    .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 32768.0)
-                    .collect();
-                if vs.push_pcm(&samples, 1, crate::voice::WHISPER_RATE).is_err() {
-                    return;
-                }
-            }
-        })
-        .context("spawn voice capture")?;
+    let capture = crate::voice::start_raw_stream(move |samples, channels, rate| {
+        vs.push_pcm(samples, channels, rate)
+    })?;
     Ok(MicHandle { _capture: capture })
 }
 
 /// Spawn the playback thread: mixed frames → rodio sink. Returns when the
 /// output device is open. The thread ends when the mix channel closes.
 pub fn start_playback(mix_rx: Receiver<Vec<i16>>) -> Result<()> {
-    let player = crate::voice::Player::spawn();
+    let player = crate::voice::Player::spawn_ready()?;
     std::thread::Builder::new()
         .name("pui-voice-stream-playback".into())
         .spawn(move || {
             while let Ok(frame) = mix_rx.recv() {
-                player.append_pcm(frame, VOICE_RATE);
+                player.append_realtime_pcm(frame, VOICE_RATE);
             }
         })
         .context("spawn voice playback")?;

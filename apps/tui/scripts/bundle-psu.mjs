@@ -128,6 +128,11 @@ class CommittedTree {
 const tree = new CommittedTree(ROOT, SHA, process.env, '.');
 const lockBytes = tree.read('package-lock.json') ?? fail(`${SHA} has no package-lock.json`);
 const LOCK = JSON.parse(lockBytes.toString('utf8')).packages ?? fail('package-lock.json has no packages map');
+const operatorManifest = JSON.parse((tree.read('apps/operator/package.json')
+  ?? fail(`${SHA} has no apps/operator/package.json`)).toString('utf8'));
+if (typeof operatorManifest.version !== 'string' || !operatorManifest.version) {
+  fail(`apps/operator/package.json at ${SHA} has no version`);
+}
 const posix = (p) => p.split(path.sep).join('/');
 const repoRel = (abs) => {
   const rel = path.relative(ROOT, abs);
@@ -156,7 +161,7 @@ const esbuild = requireFromRoot('esbuild');
 // ── the committed-source loader ─────────────────────────────────────────────
 const LOADERS = { '.ts': 'ts', '.mts': 'ts', '.cts': 'ts', '.tsx': 'tsx', '.js': 'js', '.mjs': 'js', '.cjs': 'js', '.jsx': 'jsx', '.json': 'json' };
 const NODE_MODULES = `${path.sep}node_modules${path.sep}`;
-const firstParty = new Set();
+const firstParty = new Set(['apps/operator/package.json']);
 const npmDirs = new Set();
 
 const committedSource = {
@@ -196,6 +201,11 @@ await esbuild.build({
   plugins: [committedSource],
   logLevel: 'warning',
 });
+// Preserve the package identity the launcher's --version reads when the source
+// checkout and build environment are absent. Do not ship source dependencies.
+writeFileSync(path.join(OUT, 'package.json'), `${JSON.stringify({
+  name: operatorManifest.name, version: operatorManifest.version, type: 'module', private: true,
+}, null, 2)}\n`);
 
 const { nativeBuilds } = await import(pathToFileURL(path.resolve(args['native-builds'])).href);
 if (typeof nativeBuilds !== 'function') fail(`${args['native-builds']} does not export nativeBuilds(root, outDir)`);
@@ -313,7 +323,7 @@ shipped.set(`${platformPkg.name}@${platformPkg.version}`, {
 // ── outputs must not name the build host ────────────────────────────────────
 const home = homedir();
 const outputs = {};
-for (const name of ['psu.mjs', 'native-client.cjs', 'native-extension.mjs']) {
+for (const name of ['psu.mjs', 'native-client.cjs', 'native-extension.mjs', 'package.json']) {
   const bytes = readFileSync(path.join(OUT, name));
   for (const hostPath of [ROOT, home].filter((p) => p.length > 4)) {
     const at = bytes.indexOf(hostPath);

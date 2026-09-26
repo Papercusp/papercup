@@ -71,6 +71,18 @@ describe('orchestrate:run server-script adapter', () => {
     expect(serverScriptRunArgsSchema.parse({ recipe: { id: 'saved' } })).toMatchObject({
       recipe: { id: 'saved' },
     });
+    expect(serverScriptRunArgsSchema.safeParse({
+      script: { source: 'return "durable";' },
+      execution: { lifecycle: 'background', durability: 'durable' },
+      timeoutSec: 120,
+    }).success).toBe(true);
+    expect(serverScriptRunArgsSchema.safeParse({
+      script: { source: 'return "foreground";' },
+      timeoutSec: 120,
+    }).success).toBe(false);
+    expect(serverScriptRunArgsSchema.safeParse({
+      durableControl: { workflowId: 'orchestrate-durable:ws:run', action: 'cancel' },
+    }).success).toBe(true);
 
     const runCode = vi.fn<ServerScriptRunDeps['runCode']>();
     const result = await runOrchestration(
@@ -237,6 +249,128 @@ describe('orchestrate:run server-script adapter', () => {
       error: { code: 'lifecycle_unavailable' },
       metrics: { phase: 'preflight', executed: false },
     });
+  });
+
+  it('admits a pinned durable script as one background DBOS run without invoking code:run', async () => {
+    const script = { source: 'return "durable";' };
+    const execution = { lifecycle: 'background' as const, durability: 'durable' as const };
+    const ctx = {
+      workspaceId: 'ws-durable',
+      harnessSlug: 'papercusp',
+      role: 'su',
+      uiClientId: 'su-durable',
+      idempotencyKey: 'request-1',
+    } as UnifiedToolContext;
+    const inspected = await inspectOrchestration({ script, execution }, ctx);
+    const pin = ((inspected as ToolResult & { data?: unknown }).data as {
+      normalized: { durability: { pin: { sourceSha256: string; bindingsSha256: string } } };
+    }).normalized.durability.pin;
+    const runCode = vi.fn<ServerScriptRunDeps['runCode']>();
+    const startDurable = vi.fn().mockResolvedValue({
+      workflowId: 'orchestrate-durable:ws-durable:run-1',
+    });
+
+    const result = await runOrchestration(
+      { script, execution, inspectionPin: pin, timeoutSec: 120, workItemId: 'WI-1' },
+      ctx,
+      {
+        server: {
+          runCode,
+          startDurable,
+          durableRunKey: () => 'run-1',
+        },
+      },
+    );
+
+    expect(runCode).not.toHaveBeenCalled();
+    expect(startDurable).toHaveBeenCalledWith({
+      runKey: 'run-1',
+      script: script.source,
+      inputs: {},
+      pin,
+      caller: {
+        ownerId: 'su-durable',
+        workspaceId: 'ws-durable',
+        harnessSlug: 'papercusp',
+        role: 'su',
+      },
+      timeoutSec: 120,
+      link: { workItemId: 'WI-1' },
+    });
+    const body = envelope(result);
+    expect(body).toMatchObject({
+      state: 'complete',
+      metrics: { backend: 'dbos', lifecycle: 'background', durability: 'durable' },
+    });
+    expect(JSON.parse(body.summary)).toEqual({
+      durableRun: { workflowId: 'orchestrate-durable:ws-durable:run-1', status: 'admitted' },
+    });
+  });
+
+  it('refuses durable admission on runtime-owned nondeterminism before DBOS enqueue', async () => {
+    const script = { source: 'return Date.now();' };
+    const execution = { lifecycle: 'background' as const, durability: 'durable' as const };
+    const ctx = {
+      workspaceId: 'ws-durable', role: 'su', uiClientId: 'su-durable',
+    } as UnifiedToolContext;
+    const inspected = await inspectOrchestration({ script, execution }, ctx);
+    const pin = ((inspected as ToolResult & { data?: unknown }).data as {
+      normalized: { durability: { pin: { sourceSha256: string; bindingsSha256: string } } };
+    }).normalized.durability.pin;
+    const startDurable = vi.fn();
+
+    const result = await runOrchestration(
+      { script, execution, inspectionPin: pin },
+      ctx,
+      { server: { runCode: vi.fn(), startDurable } },
+    );
+
+    expect(startDurable).not.toHaveBeenCalled();
+    expect(envelope(result)).toMatchObject({
+      state: 'error',
+      error: { code: 'durable_replay_unsafe', message: expect.stringContaining('wall-clock') },
+      metrics: { phase: 'preflight', executed: false },
+    });
+  });
+
+  it('routes durable cancel and signal controls through DBOS and scopes them to the workspace', async () => {
+    const workflowId = 'orchestrate-durable:ws-durable:run-1';
+    const durableControl = vi.fn().mockResolvedValue(undefined);
+    const ctx = { workspaceId: 'ws-durable' } as UnifiedToolContext;
+
+    const result = await runOrchestration(
+      {
+        durableControl: {
+          workflowId,
+          action: 'signal',
+          topic: 'approved',
+          message: { by: 'test' },
+          idempotencyKey: 'signal-1',
+        },
+      },
+      ctx,
+      { durableControl },
+    );
+
+    expect(durableControl).toHaveBeenCalledWith({
+      workflowId,
+      action: 'signal',
+      topic: 'approved',
+      message: { by: 'test' },
+      idempotencyKey: 'signal-1',
+    });
+    expect(JSON.parse(envelope(result).summary)).toEqual({
+      durableControl: { workflowId, action: 'signal', accepted: true },
+    });
+
+    durableControl.mockClear();
+    const denied = await runOrchestration(
+      { durableControl: { workflowId: 'orchestrate-durable:other:run-1', action: 'cancel' } },
+      ctx,
+      { durableControl },
+    );
+    expect(durableControl).not.toHaveBeenCalled();
+    expect(envelope(denied)).toMatchObject({ error: { code: 'capability_denied' } });
   });
 
   it('rejects an oversized authored summary without truncating or auto-summarizing it', async () => {

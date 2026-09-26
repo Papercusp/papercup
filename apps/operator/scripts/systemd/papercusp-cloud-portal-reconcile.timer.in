@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Papercusp Cloud Portal compiled sources
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+Persistent=true
+Unit=papercusp-cloud-portal-reconcile.service
+
+[Install]
+WantedBy=timers.target

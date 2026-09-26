@@ -94,6 +94,7 @@ vi.mock('../harness/routines/configure-per-workspace', () => ({}));
 import { fireLoopWake } from '../harness/routines/loop-fire';
 import { registerSystemAction } from '../harness/routines/system-actions';
 import {
+  createRoutineDispatchController,
   evaluateRoutineDispatchEpoch,
   orderDueRoutinesByAge,
   ROUTINE_FIRE_QUEUES,
@@ -137,6 +138,43 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     if (!found) throw new Error(`missing ${queueName} decision`);
     return found;
   };
+
+  it('regains git-sync dispatch capacity within the freshness window after a cold bg-host restart', () => {
+    const controller = createRoutineDispatchController();
+    const windows = Array.from({ length: 12 }, (_, tick) =>
+      queue(
+        evaluateRoutineDispatchEpoch({
+          pressure: 'ok',
+          probeMs: 4,
+          inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 0 },
+          activeQueues: [ROUTINES_CRITICAL_QUEUE],
+          controller,
+          atMs: START + tick * 30_000,
+        }),
+        ROUTINES_CRITICAL_QUEUE,
+      ),
+    );
+    // A cold scheduler stays bounded while feedback is delayed, then reaches
+    // the capacity needed to revisit 67 installs within a three-minute cycle.
+    expect(windows.slice(0, 2).map((lane) => lane.availableStarts)).toEqual([1, 1]);
+    expect(windows[11].availableStarts).toBeGreaterThanOrEqual(12);
+
+    const critical = queue(
+      evaluateRoutineDispatchEpoch({
+        pressure: 'critical',
+        probeMs: 2_800,
+        inFlightByQueue: { [ROUTINES_CRITICAL_QUEUE]: 0 },
+        activeQueues: [ROUTINES_CRITICAL_QUEUE],
+        controller,
+        atMs: START + 12 * 30_000,
+      }),
+      ROUTINES_CRITICAL_QUEUE,
+    );
+    expect(critical.availableStarts).toBe(1);
+    // A zero-occupancy class has no attributed database demand to contract;
+    // the explicit critical floor still prevents a recovered window bursting.
+    expect(critical.desiredWindow).toBe(windows[11].desiredWindow);
+  });
 
   it('bounds a many-clean-probe delayed-signal burst to current feedback credit', () => {
     const epoch = evaluateRoutineDispatchEpoch({

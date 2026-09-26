@@ -36,6 +36,8 @@ export const CUT_DONE = `/tmp/${CUT_UNIT}.done`;
 /** Written when the detached wrapper starts. If the unit later disappears without a
  *  DONE sentinel, this marker distinguishes an interrupted cut from a never-launched one. */
 export const CUT_STARTED = `/tmp/${CUT_UNIT}.started`;
+/** Shared manual/nightly policy: identity scans authorize reuse for at most one day. */
+export const RELEASE_REUSE_MAX_AGE_SEC = 24 * 60 * 60;
 
 export type Channel = 'stable' | 'beta' | 'alpha';
 export const CHANNELS: readonly Channel[] = ['stable', 'beta', 'alpha'] as const;
@@ -256,6 +258,9 @@ export function buildCutEnv(
   if (releaseTaskId && releaseOperationId) {
     env.PAPERCUSP_RELEASE_TASK_ID = releaseTaskId;
     env.PAPERCUSP_RELEASE_OPERATION_ID = releaseOperationId;
+    // Receipt commit requires a bounded expiry even for newly built bytes.
+    // Leaving this unset defaults the cutter to 0 and fails after the build.
+    env.PAPERCUSP_RELEASE_REUSE_MAX_AGE_SEC = String(RELEASE_REUSE_MAX_AGE_SEC);
     const enqueuedAtMs = runtime.enqueuedAtMs;
     if (Number.isSafeInteger(enqueuedAtMs) && (enqueuedAtMs as number) > 0) {
       env.PAPERCUSP_RELEASE_ENQUEUED_AT_MS = String(enqueuedAtMs);

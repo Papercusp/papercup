@@ -1,10 +1,11 @@
 import { AGENT_ROLES, defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import type { ToolResult } from '@papercusp/tooldef';
+import { durableRuntimeTools, type ToolResult } from '@papercusp/tooldef';
 import type { ProjectedTool } from '@papercusp/tooldef';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import type { CapabilityManifestV1, RecipeBindingSchemaV1 } from '../../recipe-contract';
 import { inspectScriptContract } from './contract-preflight';
 import { inspectDurability } from './durability-inspection';
+import { getDurableOrchestrationStatus } from '../../dbos/durable-orchestration-workflow';
 import {
   orchestrationPolicyFailure,
   orchestrationSourceArgsSchema,
@@ -31,10 +32,39 @@ export async function inspectOrchestration(
     recipes?: SavedRecipeAdapter;
     inspectScript?: typeof inspectScriptContract;
     projectedTools?: readonly ProjectedTool[];
+    durableStatus?: typeof getDurableOrchestrationStatus;
   } = {},
 ): Promise<ToolResult> {
-  const policyFailure = orchestrationPolicyFailure(args);
+  const policyFailure = orchestrationPolicyFailure(args, 'inspect');
   if (policyFailure) return dataResult(policyFailure);
+  if (args.durableRun) {
+    const workspaceId = ctx.workspaceId;
+    if (!workspaceId || !args.durableRun.workflowId.startsWith(`orchestrate-durable:${workspaceId}:`)) {
+      return dataResult({
+        ok: false,
+        phase: 'preflight',
+        executed: false,
+        error: {
+          code: 'capability_denied',
+          message: 'durable run does not belong to the current workspace',
+          path: 'durableRun.workflowId',
+        },
+      });
+    }
+    const status = await (deps.durableStatus ?? getDurableOrchestrationStatus)(args.durableRun.workflowId);
+    return status
+      ? dataResult({ ok: true, durableRun: status })
+      : dataResult({
+          ok: false,
+          phase: 'preflight',
+          executed: false,
+          error: {
+            code: 'durable_run_not_found',
+            message: 'no DBOS durable orchestration run exists for this workflowId',
+            path: 'durableRun.workflowId',
+          },
+        });
+  }
   const adapter = deps.recipes ?? savedRecipeAdapterFor(ctx);
   const inspectScript = deps.inspectScript ?? inspectScriptContract;
 
@@ -75,11 +105,13 @@ export async function inspectOrchestration(
     ctx,
   });
   if (!checked.ok) return dataResult(checked);
+  const durable = args.execution?.durability === 'durable';
+  const projectedTools = deps.projectedTools ?? listAllProjectedTools();
   const durability = await inspectDurability({
     script: script.source,
     bindings: checked.contract.bindings,
     calls: checked.staticCalls,
-    tools: deps.projectedTools ?? listAllProjectedTools(),
+    tools: durable ? [...projectedTools, ...durableRuntimeTools()] : projectedTools,
     ...(args.recipe && typeof continuation?.recipe === 'object' && continuation.recipe !== null
       ? { recipeRevision: (continuation.recipe as { revision: string }).revision }
       : {}),
@@ -108,8 +140,9 @@ export async function inspectOrchestration(
         requestedMode: args.execution?.mode ?? 'server',
         mode: 'server',
         deprecatedAuto: args.execution?.mode === 'auto',
-        lifecycle: 'foreground',
-        timeoutSec: args.timeoutSec ?? 30,
+        lifecycle: args.execution?.lifecycle ?? 'foreground',
+        ...(durable ? { durability: 'durable' } : {}),
+        timeoutSec: args.timeoutSec ?? (durable ? 3_600 : 30),
       },
       capture: {
         mode: args.recipe ? 'reuse' : (args.capture?.mode ?? 'auto'),
@@ -124,11 +157,11 @@ export async function inspectOrchestration(
 const orchestrateInspectTool = defineTool({
   name: 'orchestrate:inspect',
   description:
-    'Side-effect-free normalization and current-caller preflight for one fresh script or saved recipe. Revalidates bindings, recipe revision/authority, tools, capabilities, topology, lifecycle and timeout without dispatching nested tools.',
+    'Side-effect-free normalization and current-caller preflight for one fresh script or saved recipe, or status inspection for one durable run. Revalidates bindings, recipe revision/authority, tools, capabilities, topology, lifecycle and timeout without dispatching nested tools.',
   guidance: {
     when: 'Before running an unfamiliar saved recipe or a capability-declaring/bound script.',
     notWhen: 'You only need recipe discovery; use orchestrate:search.',
-    chaining: 'orchestrate:inspect { script|recipe } → orchestrate:run with the same exact source and bindings',
+    chaining: 'orchestrate:inspect { script|recipe } → orchestrate:run with the same exact source and bindings; inspect durableRun.workflowId for status/result',
     seeAlso: ['orchestrate:search', 'orchestrate:run'],
   },
   capability: 'recipes:read',

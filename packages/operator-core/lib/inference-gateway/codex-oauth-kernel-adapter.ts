@@ -44,6 +44,11 @@ import type { AccountPool, ActiveAccount } from './provider-contracts';
 import type { CodexCliAccount } from './codex-cli-bridge';
 import { rewriteCodexRequestModel, type CodexAuth } from './codex-oauth-proxy';
 import {
+  CODEX_REFUSAL_BODY_MAX_BYTES,
+  codexModelRefusalDetail,
+  isCodexModelRefusal,
+} from './codex-model-refusals';
+import {
   GatewayRequestKernelError,
   withPromiseDeadline,
   type GatewayKernelAdapter,
@@ -92,6 +97,9 @@ export interface CodexOAuthResponseMetadata {
   pinYieldedFrom: string | null;
   /** Egress key that served, so the caller can clear its transport-fail streak. */
   egressKey: string;
+  /** Set when this attempt was the backend refusing the request MODEL for this account
+   *  (WI-10003306) — the backend's `detail` text. Drives a model-aware failover. */
+  modelRefusal?: string | null;
 }
 
 export interface CodexOAuthPreparedAttempt {
@@ -177,7 +185,56 @@ export interface CodexOAuthAdapterOptions {
   onEgressAttempt?(accountId: string): void;
   /** Per-account transport-FAILURE tally. */
   onEgressFailure?(accountId: string): void;
+  /**
+   * The request's public model id (WI-10003306). When set, a definitive model refusal
+   * (`400 "The '<model>' model is not supported when using Codex with a ChatGPT account."`) is
+   * classified, reported through `onModelRefused`, and failed over through `selectAlternate`
+   * instead of being forwarded as final. Absent ⇒ legacy behaviour (every such 4xx forwarded).
+   */
+  model?: string | null;
+  /** A public-model attempt was refused for this account. Fire-and-forget bookkeeping. */
+  onModelRefused?(info: { accountId: string; model: string; status: number; detail: string }): void;
+  /** A public-model attempt got a 2xx on this account — the pair is serviceable again. */
+  onModelServed?(info: { accountId: string; model: string }): void;
+  /**
+   * Pick an account to retry a MODEL-REFUSED request on, skipping `exclude` (accounts already
+   * tried) and any account known to refuse the model. Must NOT park anything: a model refusal says
+   * nothing about the account's capacity for other models, so `pool.onExhausted` is the wrong
+   * tool here. Null ⇒ no account can serve the model; the refusal is forwarded truthfully.
+   */
+  selectAlternate?(exclude: ReadonlySet<string>): { accountId: string } | null;
   now?(): number;
+}
+
+/** Drain at most `max` bytes of an upstream error body so it can be classified, then hand the
+ *  kernel an equivalent replayable body. Error bodies are tiny; the cap only bounds a hostile one. */
+async function bufferErrorBody(
+  body: CodexOAuthFetchResponse['body'],
+  max: number,
+): Promise<{ text: string; body: CodexOAuthFetchResponse['body'] }> {
+  if (!body) return { text: '', body };
+  const chunks: Buffer[] = [];
+  let size = 0;
+  try {
+    for await (const chunk of body) {
+      const buf = Buffer.from(chunk);
+      chunks.push(buf);
+      size += buf.length;
+      if (size >= max) break;
+    }
+  } catch {
+    /* a truncated error body is still forwarded as far as it was read */
+  }
+  const bytes = Buffer.concat(chunks);
+  const replay = {
+    async *[Symbol.asyncIterator]() {
+      if (bytes.length) yield new Uint8Array(bytes);
+    },
+    cancel() {
+      /* already drained */
+    },
+  };
+  return { text: bytes.toString('utf8'), body: replay };
 }
 
 export type CodexOAuthKernelAdapter = GatewayKernelAdapter<
@@ -320,6 +377,21 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       // A 401 is recoverable ONLY by refresh. Once refreshed, the live handler
       // forwards it rather than rotating, so decline instead of routing around.
       if (context.lastResponse?.status === 401) return null;
+
+      // WI-10003306: the backend refused the MODEL for this account. Move the SAME request to an
+      // account that is not known to refuse it — without parking the current account, which may
+      // still serve other models. No candidate ⇒ decline, and the truthful 400 is forwarded.
+      if (context.lastResponse?.metadata?.modelRefusal) {
+        const next = opts.selectAlternate?.(triedAccounts) ?? null;
+        if (!next || triedAccounts.has(next.accountId)) return null;
+        const account = opts.accounts().find((candidate) => candidate.accountId === next.accountId);
+        if (!account) return null;
+        triedAccounts.add(account.accountId);
+        auth = undefined;
+        authAccount = '';
+        return routeFor(account, 'rotate', 'public');
+      }
+
       if (!opts.pool) return null;
 
       const current = currentRoute.value.account.accountId;
@@ -445,14 +517,46 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
       const pinYieldedFrom =
         pinnedAccountId && pinnedAccountId !== account.accountId ? pinnedAccountId : null;
 
+      // WI-10003306: classify a public-model 4xx as a MODEL refusal. Only the non-auth,
+      // non-rate-limit 4xx range is read (a few hundred bytes); 2xx streams are never touched.
+      let body = upstream.body;
+      let modelRefusal: string | null = null;
+      const model = opts.model?.trim();
+      if (
+        model &&
+        modelMode === 'public' &&
+        upstream.status >= 400 &&
+        upstream.status < 500 &&
+        upstream.status !== 401 &&
+        upstream.status !== 403 &&
+        upstream.status !== 429
+      ) {
+        const buffered = await bufferErrorBody(upstream.body, CODEX_REFUSAL_BODY_MAX_BYTES);
+        body = buffered.body;
+        if (isCodexModelRefusal(upstream.status, buffered.text)) {
+          modelRefusal = codexModelRefusalDetail(buffered.text) || `model '${model}' refused`;
+          try {
+            opts.onModelRefused?.({ accountId: account.accountId, model, status: upstream.status, detail: modelRefusal });
+          } catch {
+            /* bookkeeping must never break the request */
+          }
+        }
+      } else if (model && modelMode === 'public' && upstream.status >= 200 && upstream.status < 300) {
+        try {
+          opts.onModelServed?.({ accountId: account.accountId, model });
+        } catch {
+          /* bookkeeping must never break the request */
+        }
+      }
+
       return {
         // Request-derived, as the live handler's span is: an error response to a
         // streaming request is still a streaming request.
         streaming: opts.streaming,
         status: upstream.status,
         transport: OAUTH_TRANSPORT,
-        metadata: { accountId: account.accountId, headers, pinYieldedFrom, egressKey: egress.key },
-        body: upstream.body,
+        metadata: { accountId: account.accountId, headers, pinYieldedFrom, egressKey: egress.key, modelRefusal },
+        body,
         // 401 is retryable via REFRESH; 429 and 5xx via a sibling IP or account
         // rotation. A definitive 4xx from the hidden reserve model is also
         // retryable once so the adapter can restore the public Luna request for
@@ -462,8 +566,10 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
           upstream.status === 401 ||
           upstream.status === 429 ||
           upstream.status >= 500 ||
-          (modelMode === 'reserve' && upstream.status >= 400 && upstream.status < 500),
-        discard: upstream.body?.cancel ? () => upstream.body?.cancel?.() : undefined,
+          (modelMode === 'reserve' && upstream.status >= 400 && upstream.status < 500) ||
+          // WI-10003306: a model refusal is account-specific — another subscription may serve it.
+          modelRefusal !== null,
+        discard: body?.cancel ? () => body?.cancel?.() : undefined,
       };
     },
   };

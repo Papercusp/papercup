@@ -19,12 +19,13 @@ import { managedSpawn } from '../../task-manager/managed-spawn';
 import { newTaskId } from '../../task-manager/types';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { RELEASE_REUSE_MAX_AGE_SEC } from '../../release-cut-launch';
 
 export const NIGHTLY_RELEASE_ACTION = 'nightly-release-cut';
 export const NIGHTLY_RELEASE_LOCK_PATH = path.join(os.tmpdir(), 'papercusp-nightly-release-cut.lock');
 export const NIGHTLY_RELEASE_RUNTIME_MAX_SEC = 3 * 60 * 60;
 export const NIGHTLY_RELEASE_MEMORY_MAX_BYTES = 24 * 1024 ** 3;
-export const NIGHTLY_RELEASE_REUSE_MAX_AGE_SEC = 24 * 60 * 60;
+export const NIGHTLY_RELEASE_REUSE_MAX_AGE_SEC = RELEASE_REUSE_MAX_AGE_SEC;
 
 const VERSION_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9a-z.-]+))?$/;
 

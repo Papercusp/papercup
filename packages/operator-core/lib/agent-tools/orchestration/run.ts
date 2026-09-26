@@ -1,6 +1,11 @@
 import { Buffer } from 'node:buffer';
+import { createHash, randomUUID } from 'node:crypto';
 import { AGENT_ROLES, defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import type { ToolResult } from '@papercusp/tooldef';
+import {
+  durableRuntimeTools,
+  type OrchestrationInputs,
+  type ToolResult,
+} from '@papercusp/tooldef';
 import {
   buildOutputEnvelope,
   DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS,
@@ -19,6 +24,10 @@ import { inspectDurability } from './durability-inspection';
 import { inspectOrchestration } from './inspect';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import type { ProjectedTool } from '@papercusp/tooldef';
+import {
+  controlDurableOrchestration,
+  startDurableOrchestration,
+} from '../../dbos/durable-orchestration-workflow';
 import {
   orchestrationPolicyFailure,
   orchestrationSourceArgsSchema,
@@ -98,6 +107,8 @@ export interface ServerScriptRunDeps {
    * omit this and preflight against the live current-caller registry. */
   inspectScript?: typeof inspectScriptContract;
   projectedTools?: readonly ProjectedTool[];
+  startDurable?: typeof startDurableOrchestration;
+  durableRunKey?: (ctx: UnifiedToolContext) => string;
 }
 
 function pinMatches(
@@ -116,7 +127,23 @@ const DEFAULT_DEPS: ServerScriptRunDeps = {
       withCodeRunCaptureMode(ctx, captureMode) as never,
     ) as Promise<CodeRunToolResult>;
   },
+  startDurable: startDurableOrchestration,
 };
+
+const DURABLE_ADMISSION_HAZARDS = new Set([
+  'wall-clock',
+  'random-control',
+  'uncheckpointed-wait',
+  'ambient-environment',
+]);
+
+function defaultDurableRunKey(ctx: UnifiedToolContext): string {
+  const requestKey = ctx.idempotencyKey?.trim();
+  if (!requestKey) return randomUUID();
+  return createHash('sha256')
+    .update(`${ctx.workspaceId ?? ''}\0${ctx.uiClientId ?? ctx.principal?.slug ?? ''}\0${requestKey}`)
+    .digest('hex');
+}
 
 function isTextContent(value: unknown): value is TextContent {
   return (
@@ -280,7 +307,13 @@ function stampOrchestrationRow(
 ): void {
   const { envelope, args } = input;
   const requested = args.execution?.mode ?? 'server';
-  const source: 'script' | 'recipe' = args.script ? 'script' : 'recipe';
+  const source = args.script
+    ? 'script'
+    : args.recipe
+      ? 'recipe'
+      : args.durableControl
+        ? 'durable-control'
+        : 'durable-run';
   ctx.metadata?.({
     backend: 'server',
     // A requested mode the server did not honour is one of gap 4's HARD rollback triggers
@@ -364,7 +397,7 @@ export async function runServerScriptAdapter(
   ctx: UnifiedToolContext,
   deps: ServerScriptRunDeps = DEFAULT_DEPS,
 ): Promise<ToolResult> {
-  const policyFailure = orchestrationPolicyFailure(args);
+  const policyFailure = orchestrationPolicyFailure(args, 'run');
   if (policyFailure) return preflightError(policyFailure.error.code, policyFailure.error.message, args, ctx);
 
   const checked = await (deps.inspectScript ?? inspectScriptContract)({
@@ -376,14 +409,87 @@ export async function runServerScriptAdapter(
   if (!checked.ok) return preflightError(checked.error.code, checked.error.message, args, ctx);
 
   if (args.inspectionPin) {
+    const durable = args.execution?.durability === 'durable';
+    const projectedTools = deps.projectedTools ?? listAllProjectedTools();
     const durability = await inspectDurability({
       script: args.script.source,
       bindings: checked.contract.bindings,
       calls: checked.staticCalls,
-      tools: deps.projectedTools ?? listAllProjectedTools(),
+      tools: durable ? [...projectedTools, ...durableRuntimeTools()] : projectedTools,
     });
     if (!pinMatches(args.inspectionPin, durability.pin)) {
       return preflightError('inspection_pin_stale', 'script or validated bindings changed since orchestrate:inspect', args, ctx);
+    }
+    if (durable) {
+      const hazards = durability.diagnostics
+        .map((diagnostic) => diagnostic.code)
+        .filter((code) => DURABLE_ADMISSION_HAZARDS.has(code));
+      if (hazards.length > 0) {
+        return preflightError(
+          'durable_replay_unsafe',
+          `durable admission refused nondeterminism hazard(s): ${[...new Set(hazards)].join(', ')}`,
+          args,
+          ctx,
+        );
+      }
+      const ownerId = ctx.uiClientId ?? ctx.principal?.slug ?? ctx.spawnId ?? ctx.runId;
+      if (!ctx.workspaceId || !ctx.role || !ownerId) {
+        return preflightError(
+          'capability_denied',
+          'durable admission requires current workspace, role and owner identity context',
+          args,
+          ctx,
+        );
+      }
+      const timeoutSec = args.timeoutSec ?? 3_600;
+      try {
+        const admitted = await (deps.startDurable ?? startDurableOrchestration)({
+          runKey: (deps.durableRunKey ?? defaultDurableRunKey)(ctx),
+          script: args.script.source,
+          inputs: checked.contract.bindings.inputs as OrchestrationInputs,
+          pin: {
+            sourceSha256: durability.pin.sourceSha256,
+            bindingsSha256: durability.pin.bindingsSha256,
+          },
+          caller: {
+            ownerId,
+            workspaceId: ctx.workspaceId,
+            ...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),
+            role: ctx.role,
+          },
+          timeoutSec,
+          ...(args.workItemId ? { link: { workItemId: args.workItemId } } : {}),
+        });
+        const envelope = buildOutputEnvelope({
+          summary: JSON.stringify({ durableRun: { workflowId: admitted.workflowId, status: 'admitted' } }),
+          metrics: {
+            backend: 'dbos',
+            phase: 'admission',
+            executed: true,
+            lifecycle: 'background',
+            durability: 'durable',
+            timeoutSec,
+          },
+        });
+        const serialized = JSON.stringify(envelope);
+        stampOrchestrationRow(ctx, {
+          envelope,
+          serializedBytes: Buffer.byteLength(serialized, 'utf8'),
+          durationMs: 0,
+          phase: 'execution',
+          executed: true,
+          args,
+          extra: { backend: 'dbos', durability: 'durable', durableWorkflowId: admitted.workflowId },
+        });
+        return { content: [{ type: 'text', text: serialized }] } as ToolResult;
+      } catch (error) {
+        return preflightError(
+          'durable_admission_failed',
+          error instanceof Error ? error.message : String(error),
+          args,
+          ctx,
+        );
+      }
     }
   }
 
@@ -600,10 +706,70 @@ function recipeRunEnvelope(
 export async function runOrchestration(
   args: OrchestrationSourceArgs,
   ctx: UnifiedToolContext,
-  deps: { server?: ServerScriptRunDeps; recipes?: SavedRecipeAdapter } = {},
+  deps: {
+    server?: ServerScriptRunDeps;
+    recipes?: SavedRecipeAdapter;
+    durableControl?: typeof controlDurableOrchestration;
+  } = {},
 ): Promise<ToolResult> {
-  const policyFailure = orchestrationPolicyFailure(args);
+  const policyFailure = orchestrationPolicyFailure(args, 'run');
   if (policyFailure) return preflightError(policyFailure.error.code, policyFailure.error.message, args, ctx);
+  if (args.durableControl) {
+    const { workflowId } = args.durableControl;
+    if (!ctx.workspaceId || !workflowId.startsWith(`orchestrate-durable:${ctx.workspaceId}:`)) {
+      return preflightError(
+        'capability_denied',
+        'durable run does not belong to the current workspace',
+        args,
+        ctx,
+      );
+    }
+    try {
+      await (deps.durableControl ?? controlDurableOrchestration)(
+        args.durableControl.action === 'cancel'
+          ? { workflowId, action: 'cancel' }
+          : {
+              workflowId,
+              action: 'signal',
+              topic: args.durableControl.topic,
+              message: args.durableControl.message ?? null,
+              ...(args.durableControl.idempotencyKey
+                ? { idempotencyKey: args.durableControl.idempotencyKey }
+                : {}),
+            },
+      );
+      const envelope = buildOutputEnvelope({
+        summary: JSON.stringify({
+          durableControl: { workflowId, action: args.durableControl.action, accepted: true },
+        }),
+        metrics: {
+          backend: 'dbos',
+          phase: 'control',
+          executed: true,
+          lifecycle: 'background',
+          durability: 'durable',
+        },
+      });
+      const serialized = JSON.stringify(envelope);
+      stampOrchestrationRow(ctx, {
+        envelope,
+        serializedBytes: Buffer.byteLength(serialized, 'utf8'),
+        durationMs: 0,
+        phase: 'execution',
+        executed: true,
+        args,
+        extra: { backend: 'dbos', durability: 'durable', durableWorkflowId: workflowId },
+      });
+      return { content: [{ type: 'text', text: serialized }] } as ToolResult;
+    } catch (error) {
+      return preflightError(
+        'durable_control_failed',
+        error instanceof Error ? error.message : String(error),
+        args,
+        ctx,
+      );
+    }
+  }
   if (args.script) {
     return runServerScriptAdapter(args as ServerScriptRunArgs, ctx, deps.server ?? DEFAULT_DEPS);
   }
@@ -659,12 +825,12 @@ export async function runOrchestration(
 const orchestrateRunTool = defineTool({
   name: 'orchestrate:run',
   description:
-    'Preferred execution door for exactly one fresh script or saved recipe. Runs on the server under the current caller and returns one bounded authored-summary envelope.',
+    'Preferred execution door for exactly one fresh script or saved recipe, plus explicit durable-run cancel/signal control. Foreground runs execute on the server; pinned durable scripts run as background DBOS workflows under the current caller.',
   guidance: {
     when: 'After orchestrate:search/inspect, run one fresh script or exact saved-recipe continuation.',
     notWhen: 'You need a single direct tool call or must use a native compatibility door explicitly.',
     chaining:
-      'orchestrate:search { query } → orchestrate:inspect { recipe|script } → orchestrate:run { recipe|script }',
+      'orchestrate:search { query } → orchestrate:inspect { recipe|script } → orchestrate:run { recipe|script }; use durableControl for cancel/signal',
     seeAlso: ['orchestrate:search', 'orchestrate:inspect', 'code:run (compatibility door)', 'recipes:run (compatibility door)'],
   },
   // The wrapper only needs the read-only facade capability: inner tools retain their own

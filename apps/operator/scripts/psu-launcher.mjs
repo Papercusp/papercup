@@ -15202,13 +15202,17 @@ async function launchHostHandoff(handoff) {
 
 function psuClientVersion() {
   if (process.env.PAPERCUSP_BUILD_ID) return String(process.env.PAPERCUSP_BUILD_ID);
-  try {
-    const manifest = JSON.parse(
-      readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"),
-    );
-    if (typeof manifest.version === "string" && manifest.version) return manifest.version;
-  } catch {
-    // A source-less packaged launcher can still identify the protocol as unknown.
+  // Release bundles carry a minimal adjacent manifest; the source launcher is
+  // under scripts/ and reads the operator package one directory above it.
+  for (const relative of ["./package.json", "../package.json"]) {
+    try {
+      const manifest = JSON.parse(
+        readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8"),
+      );
+      if (typeof manifest.version === "string" && manifest.version) return manifest.version;
+    } catch {
+      // Try the other supported layout before reporting an unknown protocol.
+    }
   }
   return "unknown";
 }

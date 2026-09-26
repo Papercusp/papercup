@@ -59,6 +59,7 @@ import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT, type AccountBurnAction } 
 import { selectAffectedOwners } from './affected-owners';
 import { CLAUDE_CONTEXT_1M_BETA, withOAuthBeta, scrubSecrets } from './credential-store';
 import { classifyCredential401Streak, DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD } from './credential-health';
+import { createCodexModelRefusalRegistry } from './codex-model-refusals';
 import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';
 import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
@@ -2670,6 +2671,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  fire the loud `onCredentialDead` side-channel ONCE per episode. RESET on the next successful auth (a 2xx
    *  for that account — see the 2xx success path), which re-arms the alert for a later episode. */
   const credential401Streak = new Map<string, number>();
+  /** WI-10003306: Codex (account, model) pairs the ChatGPT backend has refused. Selection routes
+   *  around them per model; entries lapse on a TTL and clear on the next 2xx, so an account marked
+   *  here is never removed from the pool and never needs a manual flip to come back. */
+  const codexModelRefusals = createCodexModelRefusalRegistry();
   const orgDisallowedStreak = new Map<string, number>();
   // ── Per-account egress IP POOL rotation (gateway-per-account-egress-ip-pool-2026-06-30) ──────────────
   // An account can carry a POOL of egress IPs (ActiveAccount.egressPool). The gateway round-robins an
@@ -3578,8 +3583,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
   /** Request-local view of a Codex pool: pins remain strict through select(), while every unpinned
    *  initial pick and post-failure rotation asks the pool to rank with the shared health key. */
-  const healthAwareCodexPool = (source: AccountPool): AccountPool => {
-    const keyOf = (account: ActiveAccount) => accountHealthKey(account, Date.now());
+  const healthAwareCodexPool = (source: AccountPool, model?: string | null): AccountPool => {
+    // WI-10003306: with a request model, an account that has refused THAT model scores Infinity,
+    // so it is never the health-ranked pick while a non-refusing sibling exists.
+    const keyOf = (account: ActiveAccount) =>
+      model && codexModelRefusals.isRefused(account.accountId, model) ? Infinity : accountHealthKey(account, Date.now());
     return {
       active: (override) => source.active(override ?? keyOf),
       onExhausted: (accountId, resetAt, override) => source.onExhausted(accountId, resetAt, override ?? keyOf),

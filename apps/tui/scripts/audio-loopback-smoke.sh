@@ -42,6 +42,10 @@ echo "[audio-smoke] module $MODID → sink=$SINK  monitor=$SINK.monitor"
 cd "$(dirname "$0")/.."  # apps/tui
 export PUI_LIVE_AUDIO=1
 
+# The device stack lives in a sibling executable; the tests below exercise the
+# PUI proxy through that freshly built process, not only the backend in isolation.
+cargo build --bins || exit $?
+
 # Route the test process at the null-sink: cpal's ALSA host exposes a `pulse`
 # device (in + out) that honors PULSE_SINK/PULSE_SOURCE per-process. Playback →
 # the null-sink; capture ← its monitor → a real loopback with zero audible sound.

@@ -199,7 +199,7 @@ describe('orchestrate:inspect', () => {
         execution: { lifecycle: 'foreground' },
         durability: {
           replayCandidate: false,
-          durableExecutionAvailable: false,
+          durableExecutionAvailable: true,
           steps: [
             { tool: 'coord:presence', effect: 'read', replay: 'read-only' },
             { tool: 'mail:send', effect: 'write', replay: 'uncertain' },
@@ -208,5 +208,63 @@ describe('orchestrate:inspect', () => {
         },
       },
     });
+  });
+
+  it('inspects an explicit durable background script and returns its admission pin', async () => {
+    const result = await inspectOrchestration(
+      {
+        script: { source: 'return await tools.runtime.now({});' },
+        execution: { lifecycle: 'background', durability: 'durable' },
+        timeoutSec: 120,
+      },
+      { workspaceId: 'ws-durable', role: 'su' } as UnifiedToolContext,
+    );
+
+    expect(payload(result)).toMatchObject({
+      ok: true,
+      normalized: {
+        execution: {
+          lifecycle: 'background',
+          durability: 'durable',
+          timeoutSec: 120,
+        },
+        durability: {
+          pin: { sourceSha256: expect.any(String), bindingsSha256: expect.any(String) },
+          durableExecutionAvailable: true,
+          steps: [{ tool: 'runtime:now', replay: 'read-only' }],
+        },
+      },
+    });
+  });
+
+  it('reads durable DBOS status only inside the current workspace', async () => {
+    const workflowId = 'orchestrate-durable:ws-durable:run-1';
+    const durableStatus = vi.fn().mockResolvedValue({
+      workflowId,
+      status: 'SUCCESS',
+      outcome: { status: 'succeeded', summary: 'done', steps: [] },
+      steps: [],
+    });
+    const ctx = { workspaceId: 'ws-durable' } as UnifiedToolContext;
+
+    const result = await inspectOrchestration(
+      { durableRun: { workflowId } },
+      ctx,
+      { durableStatus },
+    );
+    expect(durableStatus).toHaveBeenCalledWith(workflowId);
+    expect(payload(result)).toMatchObject({
+      ok: true,
+      durableRun: { workflowId, status: 'SUCCESS', outcome: { status: 'succeeded' } },
+    });
+
+    durableStatus.mockClear();
+    const denied = await inspectOrchestration(
+      { durableRun: { workflowId: 'orchestrate-durable:other-workspace:run-1' } },
+      ctx,
+      { durableStatus },
+    );
+    expect(durableStatus).not.toHaveBeenCalled();
+    expect(payload(denied)).toMatchObject({ error: { code: 'capability_denied' } });
   });
 });

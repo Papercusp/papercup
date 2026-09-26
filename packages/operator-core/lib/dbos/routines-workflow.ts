@@ -238,10 +238,21 @@ export interface RoutineDispatchAdmissionEpoch {
  * could restore stale optimistic credit after a host failure. Each evaluated epoch
  * is nevertheless a DBOS step output, so replay of that tick uses the exact decision.
  */
-const routineDispatchController = new CaplessAdaptiveController({
-  initialWindow: 1,
-  minimumWindow: 1,
-});
+export function createRoutineDispatchController(): CaplessAdaptiveController {
+  return new CaplessAdaptiveController({
+    initialWindow: 1,
+    minimumWindow: 1,
+    // EI-24202587238356894: a bg-host restart resets this process-local window.
+    // With 67 git-sync installs, +1 every third 30-second tick takes over 16m to
+    // regain the roughly 12 starts/tick needed for their three-minute cadence.
+    // Grow by three after three healthy observations: the first two cold ticks
+    // still admit only one start. Critical pool feedback still limits this
+    // queue to one start and contracts an occupied, attributable class.
+    increaseStep: 3,
+  });
+}
+
+const routineDispatchController = createRoutineDispatchController();
 
 /**
  * Read actual queued/running routine-fire occupancy from DBOS's partial in-flight

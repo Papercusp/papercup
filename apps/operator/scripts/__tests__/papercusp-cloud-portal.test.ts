@@ -411,6 +411,11 @@ esac
       expect(result.stdout).toContain("running a stale command; restarting onto the standalone artifact");
       expect(result.stdout).toContain("runs the standalone production artifact and passed health check");
       expect(readFileSync(files.logPath, "utf8")).toContain("--user restart papercusp-cloud-portal.service\n");
+      expect(readFileSync(files.logPath, "utf8")).toContain("--user enable --now papercusp-cloud-portal-reconcile.timer\n");
+      expect(readFileSync(join(files.unitDir, "papercusp-cloud-portal-reconcile.service"), "utf8"))
+        .toContain("reconcile-cloud-portal.mjs");
+      expect(readFileSync(join(files.unitDir, "papercusp-cloud-portal-reconcile.timer"), "utf8"))
+        .toContain("OnUnitInactiveSec=5min");
     } finally {
       rmSync(files.dir, { recursive: true, force: true });
     }

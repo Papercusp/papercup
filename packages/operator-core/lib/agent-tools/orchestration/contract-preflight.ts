@@ -1,5 +1,6 @@
 import {
   checkScript,
+  durableRuntimeTools,
   ensureParseCheckReady,
   type ProjectedTool,
 } from '@papercusp/tooldef';
@@ -45,8 +46,16 @@ export function currentCallerRecipeCatalog(
   allowedTools: ReadonlySet<string>,
 ): CurrentCallerCapabilityCatalog {
   const allTools = projectedNames(tools);
-  const availableCapabilities = new Set<LogicalCapability>(['content:image', 'content:audio']);
-  const allowedCapabilities = new Set<LogicalCapability>(['content:image', 'content:audio']);
+  const availableCapabilities = new Set<LogicalCapability>([
+    'content:image',
+    'content:audio',
+    'lifecycle:durable',
+  ]);
+  const allowedCapabilities = new Set<LogicalCapability>([
+    'content:image',
+    'content:audio',
+    'lifecycle:durable',
+  ]);
   const families: Array<{ capability: LogicalCapability; tools: string[] }> = [
     { capability: 'execution:shell', tools: ['capability:bash'] },
     {
@@ -97,9 +106,18 @@ export interface OrchestrationCallerSurface {
   catalog: CurrentCallerCapabilityCatalog;
 }
 
-export function orchestrationCallerSurface(ctx: UnifiedToolContext): OrchestrationCallerSurface {
-  const tools = listAllProjectedTools();
-  const allowed = roleScopedToolNames(tools, ctx.role, ORCHESTRATION_RECURSION_EXCLUSIONS);
+export function orchestrationCallerSurface(
+  ctx: UnifiedToolContext,
+  options: { durable?: boolean } = {},
+): OrchestrationCallerSurface {
+  const projected = listAllProjectedTools();
+  const runtimeTools = options.durable ? durableRuntimeTools() : [];
+  const tools = [...projected, ...runtimeTools];
+  const allowed = new Set(roleScopedToolNames(projected, ctx.role, ORCHESTRATION_RECURSION_EXCLUSIONS));
+  for (const tool of runtimeTools) {
+    const name = tool.expose.mcp?.name;
+    if (name) allowed.add(name);
+  }
   return { tools, allowed, catalog: currentCallerRecipeCatalog(tools, allowed) };
 }
 
@@ -139,7 +157,9 @@ export async function inspectScriptContract(input: {
    * calls omit this and always rebuild the live current-caller surface. */
   surface?: OrchestrationCallerSurface;
 }): Promise<ScriptContractInspection | RecipeContractFailure> {
-  const surface = input.surface ?? orchestrationCallerSurface(input.ctx);
+  const surface = input.surface ?? orchestrationCallerSurface(input.ctx, {
+    durable: input.lifecycle === 'background',
+  });
   await ensureParseCheckReady();
   const catalogAnalysis = checkScript(input.script.source, surface.tools);
   if (!catalogAnalysis.ok) {
@@ -178,11 +198,22 @@ export async function inspectScriptContract(input: {
     for (const requirement of input.script.requires ?? []) {
       requirements.set(requirement.capability, requirement);
     }
+    if (input.lifecycle === 'background') {
+      requirements.set('lifecycle:durable', { capability: 'lifecycle:durable' });
+    }
     manifest = {
       ...derived,
       requirements: [...requirements.values()].sort((a, b) =>
         a.capability.localeCompare(b.capability)),
-      replay: { class: runtimeRecipeReplayClass(staticToolNames, surface.tools) },
+      ...(input.lifecycle === 'background'
+        ? {
+            lifecycle: { allowed: ['background'] as const, default: 'background' as const },
+            replay: {
+              class: 'checkpointed' as const,
+              reason: 'durable orchestration checkpoints each nested tool call in the runtime',
+            },
+          }
+        : { replay: { class: runtimeRecipeReplayClass(staticToolNames, surface.tools) } }),
     } satisfies CapabilityManifestV1;
   }
 
@@ -192,7 +223,9 @@ export async function inspectScriptContract(input: {
     bindings: input.bindings,
     staticToolNames,
     lifecycle: input.lifecycle ?? 'foreground',
-    derivedReplayClass: runtimeRecipeReplayClass(staticToolNames, surface.tools),
+    derivedReplayClass: input.lifecycle === 'background'
+      ? 'checkpointed'
+      : runtimeRecipeReplayClass(staticToolNames, surface.tools),
     catalog: surface.catalog,
   });
   if (!contract.ok) return contract;

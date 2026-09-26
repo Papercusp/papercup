@@ -153,8 +153,9 @@ export async function inspectDurability(input: {
     pin,
     steps,
     replayCandidate: diagnostics.length === 0,
-    // P-018 inspects policy. P-019 owns persistence and replay.
-    durableExecutionAvailable: false,
+    // P-019 supplies the explicit DBOS-backed persistence/replay path. A
+    // non-candidate script may still be refused at durable admission below.
+    durableExecutionAvailable: true,
     diagnostics,
   };
 }

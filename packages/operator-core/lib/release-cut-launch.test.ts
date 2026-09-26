@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import {
   isValidVersion,
   isValidChannel,
@@ -1107,6 +1108,42 @@ describe('buildCutEnv — managed-release journal identity', () => {
       });
       expect(env).not.toHaveProperty('PAPERCUSP_RELEASE_ENQUEUED_AT_MS');
       expect(env.PAPERCUSP_RELEASE_OPERATION_ID).toBe('op-1');
+    }
+  });
+});
+
+describe('managed manual cut reuse evidence', () => {
+  const cutter = fs.readFileSync(fileURLToPath(new URL('../../../papercusp-desktop/bin/release-local.sh', import.meta.url)), 'utf8');
+  const from = cutter.indexOf('release_task_audit_reuse_expiry() {');
+  const to = cutter.indexOf('\nrelease_task_json_field()', from);
+
+  it.each(['fresh', 'expired', 'missing'] as const)('checks %s scan evidence with the actual manual launch environment', (state) => {
+    expect(from).toBeGreaterThanOrEqual(0);
+    expect(to).toBeGreaterThan(from);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'manual-cut-expiry-'));
+    const passedAtUtc = new Date(Date.now() - (state === 'expired' ? 2 * 86_400_000 : 60_000)).toISOString();
+    try {
+      if (state !== 'missing') {
+        const sidecar = path.join(root, 'src-tauri', 'sidecar');
+        fs.mkdirSync(sidecar, { recursive: true });
+        fs.writeFileSync(path.join(sidecar, '.sidecar-build-stamp'), JSON.stringify({
+          releaseIdentityAudit: { schemaVersion: 1, passed: true, scanner: 'audit-release-bundle.py --scan-dir', passedAtUtc },
+        }));
+      }
+      const env = buildCutEnv({}, '1'.repeat(40), { ownerName: 'Test Owner', releaseTaskId: 'test-task', releaseOperationId: 'test-op' });
+      const result = spawnSync('bash', ['-c', `set -euo pipefail\nROOT="$1"\n${cutter.slice(from, to)}\nrelease_task_audit_reuse_expiry`, 'test', root], {
+        encoding: 'utf8',
+        env: { ...process.env, ...env, PAPERCUSP_RELEASE_REUSE_MAX_AGE_SEC: env.PAPERCUSP_RELEASE_REUSE_MAX_AGE_SEC ?? '' },
+      });
+      if (state === 'fresh') {
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe(new Date(Date.parse(passedAtUtc) + 86_400_000).toISOString());
+      } else {
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(state === 'expired' ? /identity scan expired/ : /ENOENT/);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });
