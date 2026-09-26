@@ -74,6 +74,7 @@ async function insertAgentSessionTask(input: {
 beforeAll(async () => {
   db = await createFreshPgDb('task-ledger-store');
   h.sql = db.sql;
+  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '632-event-key-fire-latch.sql'));
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '696-task-ledger.sql'));
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '700-task-ledger-bash-job-id-idx.sql'));
   await db.sql`
@@ -585,6 +586,136 @@ describe('P-012 terminal provenance writer', () => {
       }),
     ).resolves.toBe(false);
     expect((await store.getTask(row.taskId))?.state).toBe('running');
+  });
+});
+
+describe('persistFailedTaskUnitTerminal fallback collector', () => {
+  function failedTerminal(scopeUnit: string): TaskTerminalProvenance {
+    return {
+      capturedAt: '2026-09-26T20:00:00.000Z',
+      scopeUnit,
+      cgroupPath: null,
+      invocationId: `invocation-${scopeUnit}`,
+      loadState: 'loaded',
+      activeState: 'failed',
+      serviceResult: 'exit-code',
+      execMainCode: 1,
+      execMainStatus: 3,
+      memoryMaxBytes: null,
+      peakMemoryBytes: 7_700_480,
+      peakMemorySource: 'systemd',
+    };
+  }
+
+  it('reconstructs a missing ledger row, closes it with terminal evidence, then authorizes reset', async () => {
+    const emitTerminal = vi.fn();
+    const result = await store.persistFailedTaskUnitTerminal(
+      failedTerminal('pc-recovered1.service'),
+      { workspaceId: WS, harnessSlug: 'papercusp' },
+      undefined,
+      { emitTerminal },
+    );
+
+    expect(result).toEqual({ durable: true, outcome: 'created-and-closed', taskId: 'recovered1' });
+    const row = await store.getTask('recovered1');
+    expect(row).toMatchObject({
+      workspaceId: WS,
+      harnessSlug: 'papercusp',
+      class: 'bash-job',
+      launchedBy: 'system:task-reconcile',
+      scopeUnit: 'pc-recovered1.service',
+      confined: true,
+      state: 'exited',
+      exitCode: 3,
+      exitReason: 'exit-code',
+      terminalProvenance: expect.objectContaining({
+        scopeUnit: 'pc-recovered1.service',
+        invocationId: 'invocation-pc-recovered1.service',
+        peakMemoryBytes: 7_700_480,
+      }),
+    });
+    expect(row?.detail.recoveredFailedUnit).toMatchObject({ source: 'task-reconcile-fallback' });
+    expect(emitTerminal).toHaveBeenCalledOnce();
+  });
+
+  it('augments an already-terminal row without rewriting its observed terminal verdict', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, scope_unit, confined, state, exit_reason, ended_at, detail
+      ) VALUES (
+        'legacyterm1', ${WS}, 'legacyterm1', 'bash-job', 'legacy close', '[]'::jsonb,
+        'su-original', 'pc-legacyterm1.service', true, 'stranded', 'observed owner exit', now(),
+        '{"keep":"yes"}'::jsonb
+      )
+    `;
+
+    const result = await store.persistFailedTaskUnitTerminal(failedTerminal('pc-legacyterm1.service'), {
+      workspaceId: 'another-workspace',
+      harnessSlug: 'other',
+    });
+
+    expect(result).toEqual({ durable: true, outcome: 'augmented-terminal', taskId: 'legacyterm1' });
+    const row = await store.getTask('legacyterm1');
+    expect(row).toMatchObject({
+      workspaceId: WS,
+      state: 'stranded',
+      exitReason: 'observed owner exit',
+      peakMemoryBytes: 7_700_480,
+      terminalProvenance: expect.objectContaining({ scopeUnit: 'pc-legacyterm1.service' }),
+      detail: expect.objectContaining({ keep: 'yes' }),
+    });
+  });
+
+  it('refuses a task-id collision whose existing scope identity differs', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, scope_unit, confined, state, detail
+      ) VALUES (
+        'collision1', ${WS}, 'collision1', 'bash-job', 'different unit', '[]'::jsonb,
+        'su-original', 'pc-different1.service', true, 'running', '{}'::jsonb
+      )
+    `;
+
+    await expect(
+      store.persistFailedTaskUnitTerminal(failedTerminal('pc-collision1.service'), { workspaceId: WS }),
+    ).resolves.toEqual({ durable: false, outcome: 'refused', taskId: 'collision1' });
+    expect((await store.getTask('collision1'))?.state).toBe('running');
+  });
+
+  it('is idempotent after terminal evidence is already durable', async () => {
+    const terminal = failedTerminal('pc-idempotent1.service');
+    await store.persistFailedTaskUnitTerminal(terminal, { workspaceId: WS });
+    await expect(store.persistFailedTaskUnitTerminal(terminal, { workspaceId: WS })).resolves.toEqual({
+      durable: true,
+      outcome: 'already-recorded',
+      taskId: 'idempotent1',
+    });
+  });
+
+  it('refuses to reset a reused unit name when its invocation differs from durable evidence', async () => {
+    const scopeUnit = 'pc-reusedunit1.service';
+    const recorded = failedTerminal(scopeUnit);
+    await db.sql`
+      INSERT INTO harness_shared.task_ledger (
+        task_id, workspace_id, root_task_id, class, title, argv,
+        launched_by, scope_unit, confined, state, exit_reason, ended_at, detail
+      ) VALUES (
+        'reusedunit1', ${WS}, 'reusedunit1', 'bash-job', 'prior invocation', '[]'::jsonb,
+        'su-original', ${scopeUnit}, true, 'stranded', 'prior failure', now(),
+        ${JSON.stringify({ terminalProvenance: recorded })}::text::jsonb
+      )
+    `;
+    const current = { ...recorded, invocationId: 'different-invocation' };
+
+    await expect(store.persistFailedTaskUnitTerminal(current, { workspaceId: WS })).resolves.toEqual({
+      durable: false,
+      outcome: 'refused',
+      taskId: 'reusedunit1',
+    });
+    expect((await store.getTask('reusedunit1'))?.terminalProvenance?.invocationId)
+      .toBe(recorded.invocationId);
   });
 });
 

@@ -60,6 +60,7 @@ import {
 } from '../../task-manager/agent-session-progress-census';
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
 import { nodeResidueLivenessProbe } from '../../task-manager/residue-liveness-probe';
+import { collectStaleFailedTaskUnits } from '../../task-manager/failed-unit-collector';
 import { sweepA11yBuses } from '../../desktop/a11y-bus-sweep';
 import { sweepHost } from '../../desktop/a11y-bus-sweep-io';
 import {
@@ -160,6 +161,15 @@ let lastA11ySweepAtMs: number | null = null;
 const REAPER_INTERVAL_MS = 5 * 60_000;
 let lastReaperAtMs: number | null = null;
 
+/**
+ * Fallback collection for failed transient services which lost their immediate
+ * close path. Five minutes keeps the systemd listing cheap while the collector's
+ * own one-hour evidence window preserves fresh failures for normal provenance.
+ */
+const FAILED_UNIT_SWEEP_INTERVAL_MS = 5 * 60_000;
+let lastFailedUnitSweepAtMs: number | null = null;
+let failedUnitSweepCursor = 0;
+
 /** Re-notify throttle for the enforcement alarm (P-006). Shorter than the
  *  dead-window census's 6h: that one reports a POPULATION worth watching, this
  *  one reports that enforcement has STOPPED WORKING, which is actionable now. */
@@ -185,6 +195,34 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
   });
 
   const nowMs = Date.now();
+
+  if (isMaintDue({ lastAtMs: lastFailedUnitSweepAtMs, nowMs, intervalMs: FAILED_UNIT_SWEEP_INTERVAL_MS })) {
+    // Stamp before awaiting so overlapping ticks cannot race evidence persistence
+    // against reset-failed. The collector itself contains per-unit failures and
+    // refuses reset unless terminal provenance is already durable.
+    lastFailedUnitSweepAtMs = nowMs;
+    try {
+      const collected = await collectStaleFailedTaskUnits({
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.installSlug,
+        cursor: failedUnitSweepCursor,
+      });
+      failedUnitSweepCursor = collected.nextCursor;
+      if (collected.candidates > 0 || collected.errors > 0 || collected.refused > 0) {
+        const summary =
+          `[failed-task-unit-collector] listed=${collected.listed} inspected=${collected.inspected} ` +
+          `old=${collected.candidates} evidence=${collected.evidenceDurable} reset=${collected.reset} ` +
+          `refused=${collected.refused} reset_failed=${collected.resetFailed} errors=${collected.errors}` +
+          (collected.truncated ? ' (bounded pass; more remain)' : '');
+        if (collected.errors > 0 || collected.refused > 0 || collected.resetFailed > 0) console.warn(summary);
+        else console.info(summary);
+      }
+    } catch (err) {
+      // This maintenance pass may preserve a failed unit for the next attempt;
+      // it must never suppress the kernel/ledger reconcile that carries it.
+      console.warn('[failed-task-unit-collector] sweep failed', err);
+    }
+  }
 
   if (isMaintDue({ lastAtMs: lastLifecycleSweepAtMs, nowMs, intervalMs: LIFECYCLE_SWEEP_INTERVAL_MS })) {
     // Stamp before awaiting so overlapping/replayed routine ticks cannot fan out

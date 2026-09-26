@@ -5,6 +5,7 @@ import {
   parseActiveStateValues,
   parseTaskUnitTerminalSnapshots,
   resetFailedTaskUnit,
+  scanStaleFailedTaskUnitTerminals,
   type ExecFileFn,
 } from './scope-terminal-state';
 
@@ -210,6 +211,117 @@ describe('parseActiveStateValues (WI-38163)', () => {
     // get classified `ended_unobserved`.
     expect(BUGGY_LEGACY_PARSE('inactive\n', 1)).toEqual(['inactive']);
     expect(parseActiveStateValues('inactive\n', 1)).toEqual(['inactive']);
+  });
+});
+
+describe('stale failed task-unit discovery (EI-24354227978007755)', () => {
+  const terminalBlock = (unit: string, inactiveAtUsec: number, activeState = 'failed') =>
+    [
+      'Result=exit-code',
+      'ExecMainCode=1',
+      'ExecMainStatus=3',
+      'ControlGroup=',
+      'MemoryPeak=4096',
+      'MemoryMax=infinity',
+      `Id=${unit}`,
+      'LoadState=loaded',
+      `ActiveState=${activeState}`,
+      `InactiveEnterTimestampMonotonic=${inactiveAtUsec}`,
+      `InvocationID=invocation-${unit}`,
+    ].join('\n');
+
+  function failedUnitExec(input: {
+    units: string[];
+    inactiveAtUsec: Record<string, number>;
+    activeState?: Record<string, string>;
+  }): ExecFileFn {
+    return vi.fn(async (_file: string, args: readonly string[]) => {
+      if (args.includes('list-units')) {
+        return {
+          // A command/description may itself mention a unit-looking token. Only
+          // list-units' first column is the unit identity.
+          stdout:
+            input.units.map((unit) => `${unit} loaded failed failed sample pc-9999look.service`).join('\n') +
+            '\n',
+          stderr: '',
+        };
+      }
+      const units = args.slice(4);
+      return {
+        stdout:
+          units
+            .map((unit) => terminalBlock(unit, input.inactiveAtUsec[unit] ?? 0, input.activeState?.[unit] ?? 'failed'))
+            .join('\n\n') + '\n',
+        stderr: '',
+      };
+    });
+  }
+
+  it('returns only old loaded failures and preserves their terminal evidence', async () => {
+    const nowUsec = 10_000_000_000;
+    const old = 'pc-0000old1.service';
+    const young = 'pc-0000young.service';
+    const recovered = 'pc-0000live1.service';
+    const exec = failedUnitExec({
+      units: [young, 'not-ours.service', recovered, old],
+      inactiveAtUsec: {
+        [old]: nowUsec - 2 * 60 * 60 * 1_000_000,
+        [young]: nowUsec - 30 * 60 * 1_000_000,
+        [recovered]: nowUsec - 2 * 60 * 60 * 1_000_000,
+      },
+      activeState: { [recovered]: 'inactive' },
+    });
+
+    const out = await scanStaleFailedTaskUnitTerminals({
+      execFn: exec,
+      minAgeMs: 60 * 60_000,
+      nowMonotonicUsec: () => nowUsec,
+      now: () => new Date('2026-09-26T20:00:00.000Z'),
+    });
+
+    expect(out).toMatchObject({ listed: 3, inspected: 3, truncated: false, nextCursor: 0 });
+    expect(out.terminals).toEqual([
+      expect.objectContaining({
+        scopeUnit: old,
+        capturedAt: '2026-09-26T20:00:00.000Z',
+        activeState: 'failed',
+        serviceResult: 'exit-code',
+        execMainStatus: 3,
+      }),
+    ]);
+    expect(exec).toHaveBeenCalledTimes(2);
+  });
+
+  it('rotates a bounded property window so one uncollectable prefix cannot starve the tail', async () => {
+    const units = ['pc-0000aaaa.service', 'pc-0000bbbb.service', 'pc-0000cccc.service'];
+    const nowUsec = 20_000_000_000;
+    const exec = failedUnitExec({
+      units,
+      inactiveAtUsec: Object.fromEntries(units.map((unit) => [unit, nowUsec - 2 * 60 * 60 * 1_000_000])),
+    });
+
+    const out = await scanStaleFailedTaskUnitTerminals({
+      execFn: exec,
+      limit: 2,
+      cursor: 1,
+      nowMonotonicUsec: () => nowUsec,
+    });
+
+    expect(out.terminals.map((terminal) => terminal.scopeUnit)).toEqual(units.slice(1));
+    expect(out).toMatchObject({ listed: 3, inspected: 2, truncated: true, nextCursor: 0 });
+  });
+
+  it('fails closed when either systemctl read fails', async () => {
+    const exec = vi.fn(async () => {
+      throw new Error('user manager unavailable');
+    });
+    await expect(scanStaleFailedTaskUnitTerminals({ execFn: exec as unknown as ExecFileFn })).resolves.toEqual({
+      terminals: [],
+      listed: 0,
+      inspected: 0,
+      truncated: false,
+      nextCursor: 0,
+    });
   });
 });
 

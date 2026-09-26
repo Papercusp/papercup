@@ -23,6 +23,7 @@
  */
 
 import { execFile } from 'node:child_process';
+import { uptime } from 'node:os';
 import { promisify } from 'node:util';
 import type { TaskTerminalProvenance } from './types';
 
@@ -132,6 +133,24 @@ const TERMINAL_SHOW_PROPERTIES = [
   'InvocationID',
 ] as const;
 
+const FAILED_UNIT_AGE_PROPERTY = 'InactiveEnterTimestampMonotonic';
+
+function parseSystemdPropertyBlocks(stdout: string): ReadonlyMap<string, ReadonlyMap<string, string>> {
+  const found = new Map<string, ReadonlyMap<string, string>>();
+  for (const block of stdout.trim().split(/\n\s*\n/)) {
+    if (!block.trim()) continue;
+    const properties = new Map<string, string>();
+    for (const line of block.split('\n')) {
+      const equal = line.indexOf('=');
+      if (equal <= 0) continue;
+      properties.set(line.slice(0, equal), line.slice(equal + 1));
+    }
+    const unit = properties.get('Id');
+    if (unit) found.set(unit, properties);
+  }
+  return found;
+}
+
 function terminalInteger(raw: string | undefined): number | null {
   if (!raw || raw === 'infinity' || raw === '[not set]') return null;
   const value = Number(raw);
@@ -155,16 +174,8 @@ export function parseTaskUnitTerminalSnapshots(
 ): ReadonlyMap<string, TaskTerminalProvenance> {
   const requested = new Set(requestedUnits);
   const found = new Map<string, TaskTerminalProvenance>();
-  for (const block of stdout.trim().split(/\n\s*\n/)) {
-    if (!block.trim()) continue;
-    const properties = new Map<string, string>();
-    for (const line of block.split('\n')) {
-      const equal = line.indexOf('=');
-      if (equal <= 0) continue;
-      properties.set(line.slice(0, equal), line.slice(equal + 1));
-    }
-    const scopeUnit = properties.get('Id');
-    if (!scopeUnit || !requested.has(scopeUnit)) continue;
+  for (const [scopeUnit, properties] of parseSystemdPropertyBlocks(stdout)) {
+    if (!requested.has(scopeUnit)) continue;
     const loadState = terminalText(properties.get('LoadState'));
     const unitNotFound = loadState === 'not-found';
     const peakMemoryBytes = terminalInteger(properties.get('MemoryPeak'));
@@ -215,6 +226,126 @@ export async function inspectTaskUnitTerminals(
 }
 
 const MANAGED_TASK_UNIT = /^pc-[0-9a-z]{4,64}(?:--[A-Za-z0-9._-]{1,60})?\.(?:scope|service)$/;
+const MANAGED_FAILED_SERVICE = /^pc-[0-9a-z]{4,64}(?:--[A-Za-z0-9._-]{1,60})?\.service$/;
+
+export interface StaleFailedTaskUnitScan {
+  /** Old-enough failed services whose terminal evidence is still readable. */
+  terminals: TaskTerminalProvenance[];
+  /** Total managed failed-service names returned by systemd before bounding. */
+  listed: number;
+  /** Names inspected in the bounded property-read batch. */
+  inspected: number;
+  /** More managed failed services existed than this pass inspected. */
+  truncated: boolean;
+  /** Rotation cursor for the next bounded pass; opaque to callers. */
+  nextCursor: number;
+}
+
+export interface StaleFailedTaskUnitScanOptions {
+  /** Preserve fresh failure evidence for this long before it becomes collectible. */
+  minAgeMs?: number;
+  /** Max units whose properties one invocation reads. Hard-capped at 128. */
+  limit?: number;
+  /** Rotation cursor returned by the previous pass. */
+  cursor?: number;
+  execFn?: ExecFileFn;
+  /** Linux CLOCK_BOOTTIME-compatible microseconds; injected for deterministic tests. */
+  nowMonotonicUsec?: () => number;
+  now?: () => Date;
+}
+
+const EMPTY_STALE_FAILED_SCAN: StaleFailedTaskUnitScan = {
+  terminals: [],
+  listed: 0,
+  inspected: 0,
+  truncated: false,
+  nextCursor: 0,
+};
+
+/**
+ * Discover old failed `pc-*.service` units without resetting anything.
+ *
+ * This is the fallback half of WI-10003338/EI-24354227978007755. The ordinary
+ * close path snapshots and resets a failed service immediately, but a lost or
+ * already-terminal ledger row has no live-row reconcile candidate and otherwise
+ * leaves `CollectMode=inactive` evidence loaded forever. Discovery is deliberately
+ * separate from reset: the caller must first make the returned terminal snapshot
+ * durable, then call {@link resetFailedTaskUnit}.
+ *
+ * Age is measured in systemd's monotonic boot clock, not by parsing a localized
+ * wall timestamp. Names are handled in a rotating bounded window so one corrupt
+ * unit cannot permanently starve every newer candidate. Every failure returns an
+ * empty scan; absence of readable evidence is never permission to reset a unit.
+ */
+export async function scanStaleFailedTaskUnitTerminals(
+  options: StaleFailedTaskUnitScanOptions = {},
+): Promise<StaleFailedTaskUnitScan> {
+  if (process.platform !== 'linux') return { ...EMPTY_STALE_FAILED_SCAN };
+  const execFn: ExecFileFn = options.execFn ?? execFileAsync;
+  const minAgeMs = Math.max(0, options.minAgeMs ?? 60 * 60_000);
+  const limit = Math.min(Math.max(Math.floor(options.limit ?? 64), 1), 128);
+  const nowMonotonicUsec = options.nowMonotonicUsec ?? (() => Math.floor(uptime() * 1_000_000));
+  const now = options.now ?? (() => new Date());
+
+  try {
+    const { stdout: listedStdout } = await execFn(
+      'systemctl',
+      ['--user', 'list-units', '--type=service', '--state=failed', '--all', '--plain', '--no-legend', 'pc-*.service'],
+      { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const units = [
+      ...new Set(
+        listedStdout
+          .split('\n')
+          .map((line) => line.trim().split(/\s+/, 1)[0] ?? '')
+          .filter((unit) => MANAGED_FAILED_SERVICE.test(unit))
+          .filter(Boolean),
+      ),
+    ].sort();
+    if (units.length === 0) return { ...EMPTY_STALE_FAILED_SCAN };
+
+    const start = Math.abs(Math.floor(options.cursor ?? 0)) % units.length;
+    const inspectedUnits: string[] = [];
+    for (let i = 0; i < Math.min(limit, units.length); i++) {
+      inspectedUnits.push(units[(start + i) % units.length]!);
+    }
+    const nextCursor = (start + inspectedUnits.length) % units.length;
+    const properties = [...TERMINAL_SHOW_PROPERTIES, FAILED_UNIT_AGE_PROPERTY].join(',');
+    const { stdout } = await execFn(
+      'systemctl',
+      ['--user', 'show', '--no-pager', `--property=${properties}`, ...inspectedUnits],
+      { timeout: 10_000, maxBuffer: 4 * 1024 * 1024 },
+    );
+    const blocks = parseSystemdPropertyBlocks(stdout);
+    const terminalByUnit = parseTaskUnitTerminalSnapshots(stdout, inspectedUnits, now().toISOString());
+    const monotonicNow = nowMonotonicUsec();
+    const terminals: TaskTerminalProvenance[] = [];
+    for (const unit of inspectedUnits) {
+      const inactiveAt = terminalInteger(blocks.get(unit)?.get(FAILED_UNIT_AGE_PROPERTY));
+      const terminal = terminalByUnit.get(unit);
+      if (
+        inactiveAt == null ||
+        inactiveAt <= 0 ||
+        inactiveAt > monotonicNow ||
+        monotonicNow - inactiveAt < minAgeMs * 1_000 ||
+        terminal?.loadState !== 'loaded' ||
+        terminal.activeState !== 'failed'
+      ) {
+        continue;
+      }
+      terminals.push(terminal);
+    }
+    return {
+      terminals,
+      listed: units.length,
+      inspected: inspectedUnits.length,
+      truncated: units.length > inspectedUnits.length,
+      nextCursor,
+    };
+  } catch {
+    return { ...EMPTY_STALE_FAILED_SCAN };
+  }
+}
 
 /**
  * Release one failed task unit only AFTER its terminal snapshot is durable.

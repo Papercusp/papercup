@@ -26,6 +26,7 @@ import {
   newTaskId,
   serviceUnitForTask,
   scopeUnitForTask,
+  taskIdFromScopeUnit,
   taskTerminalProvenanceFromDetail,
   type TaskMetrics,
   type TaskRow,
@@ -466,6 +467,168 @@ export async function closeTask(
     exitReason: classified.exitReason ?? null,
   });
   return true;
+}
+
+export type PersistFailedTaskUnitTerminalOutcome =
+  | 'created-and-closed'
+  | 'closed-existing'
+  | 'augmented-terminal'
+  | 'already-recorded'
+  | 'refused';
+
+export interface PersistFailedTaskUnitTerminalResult {
+  /** True means the systemd snapshot is durable and reset-failed may now erase it. */
+  durable: boolean;
+  outcome: PersistFailedTaskUnitTerminalOutcome;
+  taskId: string | null;
+}
+
+function sameFailedUnitInvocation(
+  recorded: TaskTerminalProvenance | null | undefined,
+  current: TaskTerminalProvenance,
+): boolean {
+  return recorded?.scopeUnit === current.scopeUnit && recorded.invocationId === current.invocationId;
+}
+
+/**
+ * Make one orphaned failed transient service's disappearing evidence durable.
+ *
+ * The ordinary close/reconcile paths already persist terminal provenance before
+ * reset-failed. This is their age-bounded fallback for the cases those paths can
+ * no longer revisit: registration never produced a row, a foreign-workspace row
+ * is outside the current reconcile input, or the row already became terminal
+ * without consuming its retained service.
+ *
+ * The unit name carries the task id, so a missing row can be reconstructed without
+ * a cmdline guess. Existing identity always wins: a row whose scope_unit differs is
+ * refused and the failed unit remains loaded. Already-terminal rows are augmented
+ * but never reclassified; a prior observed exit remains more authoritative than a
+ * later fallback sweep. Callers may reset the unit only when `durable` is true.
+ */
+export async function persistFailedTaskUnitTerminal(
+  terminal: TaskTerminalProvenance,
+  opts: { workspaceId?: string; harnessSlug?: string | null } = {},
+  inject?: Sql,
+  effects: CloseTaskEffects = {},
+): Promise<PersistFailedTaskUnitTerminalResult> {
+  const taskId = taskIdFromScopeUnit(terminal.scopeUnit);
+  if (
+    !taskId ||
+    !terminal.scopeUnit.endsWith('.service') ||
+    terminal.loadState !== 'loaded' ||
+    terminal.activeState !== 'failed'
+  ) {
+    return { durable: false, outcome: 'refused', taskId };
+  }
+
+  const sql = sqlOf(inject);
+  const ws = opts.workspaceId ?? activeWorkspaceId();
+  const inserted = await sql<Array<{ task_id: string }>>`
+    INSERT INTO harness_shared.task_ledger (
+      task_id, workspace_id, harness_slug, root_task_id, class, title, argv,
+      launched_by, scope_unit, cgroup_path, confined, state,
+      memory_max_bytes, peak_memory_bytes, detail
+    ) VALUES (
+      ${taskId}, ${ws}, ${opts.harnessSlug ?? null}, ${taskId}, 'bash-job',
+      ${`Recovered failed transient service ${terminal.scopeUnit}`},
+      '[]'::jsonb, 'system:task-reconcile', ${terminal.scopeUnit}, ${terminal.cgroupPath}, true,
+      'unaccounted', ${terminal.memoryMaxBytes}, ${terminal.peakMemoryBytes},
+      jsonb_build_object(
+        'recoveredFailedUnit',
+        jsonb_build_object('at', now(), 'source', 'task-reconcile-fallback')
+      )
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING task_id
+  `;
+
+  let existing = await getTask(taskId, inject);
+  if (!existing || existing.scopeUnit !== terminal.scopeUnit) {
+    return { durable: false, outcome: 'refused', taskId };
+  }
+  if (existing.terminalProvenance) {
+    return sameFailedUnitInvocation(existing.terminalProvenance, terminal)
+      ? { durable: true, outcome: 'already-recorded', taskId }
+      : { durable: false, outcome: 'refused', taskId };
+  }
+
+  if (!existing.endedAt) {
+    const closed = await closeTask(
+      taskId,
+      {
+        state: 'ended_unobserved',
+        terminalProvenance: terminal,
+      },
+      inject,
+      effects,
+    );
+    if (closed) {
+      return {
+        durable: true,
+        outcome: inserted.length > 0 ? 'created-and-closed' : 'closed-existing',
+        taskId,
+      };
+    }
+    // A competing close can win between the read and closeTask. Re-read before
+    // deciding whether its write made the evidence durable.
+    existing = await getTask(taskId, inject);
+    if (!existing || existing.scopeUnit !== terminal.scopeUnit) {
+      return { durable: false, outcome: 'refused', taskId };
+    }
+    if (existing.terminalProvenance) {
+      return sameFailedUnitInvocation(existing.terminalProvenance, terminal)
+        ? { durable: true, outcome: 'already-recorded', taskId }
+        : { durable: false, outcome: 'refused', taskId };
+    }
+  }
+
+  if (!existing.endedAt || !isTerminalState(existing.state)) {
+    return { durable: false, outcome: 'refused', taskId };
+  }
+
+  // Preserve the existing terminal STATE/reason. The fallback snapshot fills only
+  // evidence/metrics that were missing; it must not rewrite an exit observed by
+  // the owning spawn path into a later inferred classification.
+  const normalized = classifyTerminalClose(
+    {
+      state: existing.state as CloseTaskInput['state'],
+      exitCode: existing.exitCode,
+      exitReason: existing.exitReason,
+      terminalProvenance: terminal,
+    },
+    existing,
+  );
+  const terminalJson = JSON.stringify(normalized.terminalProvenance);
+  const rows = await sql<Array<{ task_id: string }>>`
+    UPDATE harness_shared.task_ledger
+       SET exit_code = COALESCE(exit_code, ${normalized.exitCode ?? null}),
+           exit_reason = COALESCE(exit_reason, ${normalized.exitReason ?? null}),
+           memory_max_bytes = COALESCE(${normalized.terminalProvenance?.memoryMaxBytes ?? null}, memory_max_bytes),
+           peak_memory_bytes = CASE
+             WHEN ${normalized.terminalProvenance?.peakMemoryBytes ?? null}::bigint IS NULL THEN peak_memory_bytes
+             WHEN peak_memory_bytes IS NULL THEN ${normalized.terminalProvenance?.peakMemoryBytes ?? null}::bigint
+             ELSE GREATEST(peak_memory_bytes, ${normalized.terminalProvenance?.peakMemoryBytes ?? null}::bigint)
+           END,
+           detail = detail || jsonb_build_object('terminalProvenance', ${terminalJson}::text::jsonb),
+           updated_at = now()
+     WHERE task_id = ${taskId}
+       AND ended_at IS NOT NULL
+       AND scope_unit = ${terminal.scopeUnit}
+       AND (
+         NOT (detail ? 'terminalProvenance')
+         OR (
+           detail #>> '{terminalProvenance,scopeUnit}' = ${terminal.scopeUnit}
+           AND detail #>> '{terminalProvenance,invocationId}' IS NOT DISTINCT FROM ${terminal.invocationId}
+         )
+       )
+    RETURNING task_id
+  `;
+  if (rows.length > 0) return { durable: true, outcome: 'augmented-terminal', taskId };
+
+  existing = await getTask(taskId, inject);
+  return sameFailedUnitInvocation(existing?.terminalProvenance, terminal)
+    ? { durable: true, outcome: 'already-recorded', taskId }
+    : { durable: false, outcome: 'refused', taskId };
 }
 
 /** Bulk liveness + metrics refresh, one statement for the whole scan. */
