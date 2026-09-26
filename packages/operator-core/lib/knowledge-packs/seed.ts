@@ -20,7 +20,7 @@
  * creation-time seeding into an EMPTY pool needs none).
  */
 
-import { getMemoryBackend, type MemoryBackend } from '../memory/backend';
+import { getMemoryBackend, type MemoryBackend, type RememberOptions } from '../memory/backend';
 import { hiveScopeKey } from '../memory/hive-scope';
 import {
   filterByDomains,
@@ -96,17 +96,19 @@ const SEED_CONCURRENCY = 4;
  * shared by creation-time seeding (below) and the install/upgrade verbs
  * (./manage). Returns the new ids.
  */
-export async function rememberPackItem(opts: {
+export interface PackItemWriteInput {
   workspaceId: string;
   potSlug: string;
   pack: KnowledgePack;
   item: KnowledgePack['items'][number];
   createdBy?: string;
   memoryTarget?: KnowledgePackMemoryTarget;
-}, deps: { backend?: MemoryBackend } = {}): Promise<string[]> {
-  const backend = deps.backend ?? getMemoryBackend();
+}
+
+/** Shared exact payload for ordinary seeding and fenced identity resources. */
+export function packItemMemoryWrite(opts: PackItemWriteInput): { text: string; options: RememberOptions } {
   const target: KnowledgePackMemoryTarget = opts.memoryTarget ?? { kind: 'hive', slug: opts.potSlug };
-  const { ids } = await backend.remember(memoryTextOf(opts.item), {
+  return { text: memoryTextOf(opts.item), options: {
     scope: knowledgePackMemoryScope(target),
     kind: opts.item.kind,
     verbatim: true,
@@ -118,7 +120,13 @@ export async function rememberPackItem(opts: {
       applies_to: opts.item.appliesTo,
       ...provenanceOf(opts.pack, opts.item),
     },
-  });
+  } };
+}
+
+export async function rememberPackItem(opts: PackItemWriteInput, deps: { backend?: MemoryBackend } = {}): Promise<string[]> {
+  const backend = deps.backend ?? getMemoryBackend();
+  const write = packItemMemoryWrite(opts);
+  const { ids } = await backend.remember(write.text, write.options);
   if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== 'string' || !id.trim())) {
     throw new Error('knowledge-pack write returned no usable resource IDs');
   }
