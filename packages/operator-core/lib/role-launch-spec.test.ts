@@ -298,6 +298,54 @@ describe('buildRoleLaunchSpec', () => {
     }
   });
 
+  it('replaces an inherited exclusive domain while retaining the pot source and configuration', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'role-launch-domain-replacement-'));
+    const blueprintDir = join(dir, '.papercusp', 'blueprints');
+    try {
+      mkdirSync(join(blueprintDir, 'first-domain'), { recursive: true });
+      mkdirSync(join(blueprintDir, 'second-domain'), { recursive: true });
+      writeFileSync(join(blueprintDir, 'first-domain', 'blueprint.yaml'), [
+        'id: first-domain', 'extends: base', 'version: 1.0.0',
+        'slots:', '  - slot: domain',
+        'knobs:', '  aiBackend:', '    default:', '      model: original-model', '',
+      ].join('\n'));
+      writeFileSync(join(blueprintDir, 'second-domain', 'blueprint.yaml'), [
+        'id: second-domain', 'extends: base', 'version: 1.0.0',
+        'slots:', '  - slot: domain',
+        'knobs:', '  aiBackend:', '    default:', '      model: selected-model', '',
+      ].join('\n'));
+      mkdirSync(join(dir, '.papercusp'), { recursive: true });
+      writeFileSync(join(dir, '.papercusp', 'blueprint.yaml'), [
+        'id: fixture-pot', 'extends: first-domain', 'kind: pot', 'version: 1.0.0',
+        'workItem:', '  kind: feature', '  idPrefix: WI',
+        'spine:', '  decider: su', '  claimModel: self-claim-priority',
+        '  default: { to: idle }',
+        'roles:', '  - id: su', '    description: Fixture su.', '',
+      ].join('\n'));
+
+      const selected = await compileLaunchSpecificationArtifact({
+        promptText: 'SU KERNEL', cwd: dir, workspaceId: 'fixture-workspace',
+        harnessSlug: 'fixture', role: 'su', stack: ['domain:second-domain'],
+        state: { schemaVersion: 1 },
+      });
+      expect(selected.specificationArtifact.configuration.workItem?.idPrefix).toBe('WI');
+      expect(selected.specificationArtifact.configuration.spine?.decider).toBe('su');
+      expect(selected.specificationArtifact.configuration.knobs?.aiBackend?.default?.model)
+        .toBe('selected-model');
+      expect(selected.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: 'fixture-pot',
+      }));
+      expect(selected.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: 'second-domain',
+      }));
+      expect(selected.specificationArtifact.inputs).not.toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: 'first-domain',
+      }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps an existing SU mode producer binding out of the resource artifact', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'su-mode-launch-artifact-'));
     try {

@@ -487,7 +487,8 @@ async function selectedLaunchCompositionSource(
   producerBindings: readonly { identityId: string; artifact: CompiledAgentSpecification }[] = [],
   compositionRootId?: string | null,
 ) : Promise<EffectiveLaunchSource> {
-  const [{ BlueprintSourceDocumentSchema, replayAgentSpecification, resolveBlueprint, resolveBlueprintSource, stackBindingFromRefs },
+  const [{ BlueprintSourceDocumentSchema, layerSourceDocument, mergeByRules, replayAgentSpecification,
+    resolveBlueprint, resolveBlueprintSource, slotSpec, stackBindingFromRefs },
     { getIdentitySource, localDirs, resolveNamedIdentityCompositionSelection }, { operatorResolveExtends }] =
     await Promise.all([
       import('@papercusp/orchestrator/blueprint'),
@@ -615,9 +616,50 @@ async function selectedLaunchCompositionSource(
   // SU-specific fields into unrelated identities. A real harness blueprint
   // remains runnable and receives the same selected peer layers.
   const raw = { id: `effective-launch-${source.loaded?.blueprint.id ?? 'identity'}`, extends: parents };
-  const resolved = source.loaded
-    ? resolveBlueprint(raw, { resolve })
-    : resolveBlueprintSource(raw, { resolve });
+  // The pot root can inherit an exclusive identity (papercusp extends
+  // papercusp-engineer), while an explicit stack has already swapped that
+  // slot. Reassemble only that inherited chain without its displaced layer.
+  // Keep the original pot and selected source layers in the compiler closure:
+  // their authored documents and hashes remain pinned to the resulting artifact.
+  const selectedHolders = new Map<string, string>(stackBindingFromRefs(stack).layers
+    .filter((layer) => slotSpec(layer.slot)?.cardinality === 'exclusive')
+    .map((layer) => [layer.slot, layer.id]));
+  const displacedIndexes = new Set(source.loaded?.layers.flatMap((layer, index, layers) =>
+    index === layers.length - 1 || !layer.slots.some((slot) =>
+      selectedHolders.has(slot) && selectedHolders.get(slot) !== layer.id)
+      ? [] : [index]) ?? []);
+  const resolved = displacedIndexes.size === 0
+    ? source.loaded ? resolveBlueprint(raw, { resolve }) : resolveBlueprintSource(raw, { resolve })
+    : (() => {
+      const composed = resolveBlueprintSource(raw, { resolve });
+      const originalLayers = source.loaded!.layers;
+      if (!originalLayers.every((layer, index) =>
+        composed.layers[index]?.id === layer.id &&
+        composed.layers[index]?.contentHash === layer.contentHash)) {
+        throw new Error('pot launch source changed before identity replacement');
+      }
+      const replacedSlots = new Set([...displacedIndexes].flatMap((index) => originalLayers[index]!.slots));
+      const unexpected = composed.validation.errors.filter((error) => {
+        const slot = error.code === 'slot-exclusive-conflict'
+          ? /^exclusive slot "([^"]+)"/.exec(error.message)?.[1] : null;
+        return !slot || !replacedSlots.has(slot);
+      });
+      if (unexpected.length > 0) {
+        throw new Error(`selected launch identity composition has validation errors: ${unexpected.map((e) => e.message).join('; ')}`);
+      }
+      const layers = composed.layers.filter((_, index) => !displacedIndexes.has(index));
+      let effective: Record<string, unknown> = {};
+      for (const layer of layers) {
+        const document = layerSourceDocument(layer);
+        if (!document) throw new Error(`launch source ${JSON.stringify(layer.id)} has no pinned document`);
+        const { extends: _consumed, ...own } = document;
+        effective = mergeByRules(effective, own, {
+          mode: 'peer-assembly', childSources: [layer.id],
+        });
+      }
+      const validated = resolveBlueprint(effective);
+      return { ...validated, layers };
+    })();
   if (!resolved.validation.ok) {
     throw new Error('selected launch identity composition has validation errors');
   }
