@@ -10,6 +10,7 @@ import {
   FROM_TEST_RUN_MAX_SOURCE_PATHS,
   isTestInfrastructurePath,
   repoRelativeTestPath,
+  recordedTestPath,
   testRunBindingSchema,
   type TestRunBindingDeps,
   type TestRunEvidenceRow,
@@ -213,6 +214,22 @@ describe('expandTestRunBinding: harness attribution', () => {
     expect(calls.adopt).toBe(1);
   });
 
+  it('uses the recorded nested workspace before a same-named root file and derives its actual imports', async () => {
+    const nested = path.join(root, 'libs/child');
+    await mkdir(path.join(nested, 'pkg/lib'), { recursive: true });
+    await writeFile(path.join(nested, TEST), "import './nested-subject';\n");
+    await writeFile(path.join(nested, 'pkg/lib/nested-subject.ts'), 'export const nested = true;\n');
+    const { d } = deps(run({ root: nested }));
+    expect(await expandTestRunBinding(input(), SCOPE, d)).toMatchObject({
+      ok: true,
+      binding: {
+        evidenceRef: `libs/child/${TEST}`,
+        measurement: { testPaths: [`libs/child/${TEST}`], sourcePaths: ['libs/child/pkg/lib/nested-subject.ts'] },
+        details: { testRun: { recordedRoot: nested, recordedFilePath: TEST } },
+      },
+    });
+  });
+
   it.each(['ci', 'admin-ui'])('never adopts a %s row (harness-NULL by design)', async (source) => {
     const { d, calls } = deps(run({ harness_slug: null, workspace_id: null, source }));
     expect(await expandTestRunBinding(input(), SCOPE, d)).toMatchObject({ ok: false, error: 'test_run_not_adoptable' });
@@ -234,6 +251,35 @@ describe('expandTestRunBinding: harness attribution', () => {
       error: 'test_run_out_of_scope',
     });
     expect(await expandTestRunBinding(input(), SCOPE, deps(null).d)).toMatchObject({ ok: false, error: 'test_run_not_found' });
+  });
+});
+
+describe('recorded test paths across worktrees', () => {
+  const canonical = '/repos/main';
+  const checkpoint = '/repos/checkpoint';
+  const nested = `${checkpoint}/libs/child`;
+  const git = async (cwd: string, args: readonly string[]) => {
+    const command = args.join(' ');
+    if (command === 'rev-parse --path-format=absolute --git-common-dir') {
+      return cwd === nested ? `${canonical}/.git/modules/child` : `${canonical}/.git`;
+    }
+    if (cwd === nested && command === 'rev-parse --show-superproject-working-tree') return checkpoint;
+    if (cwd === checkpoint && command === 'rev-parse --show-toplevel') return checkpoint;
+    throw new Error(`unexpected git probe: ${cwd} ${command}`);
+  };
+
+  it('preserves the nested prefix when a recorded worktree shares the harness superproject', async () => {
+    expect(await recordedTestPath(canonical, { root: nested, file_path: TEST }, git)).toBe(`libs/child/${TEST}`);
+    expect(await recordedTestPath(canonical, { root: nested, file_path: `${nested}/${TEST}` }, git)).toBe(`libs/child/${TEST}`);
+  });
+
+  it('rejects unrelated repositories, missing checkout identity and workspace escapes', async () => {
+    const foreignGit = async (_cwd: string, args: readonly string[]) =>
+      args.includes('--git-common-dir') ? `/unrelated/${_cwd === canonical ? 'a' : 'b'}/.git` : '';
+    expect(await recordedTestPath(canonical, { root: nested, file_path: TEST }, foreignGit)).toBeNull();
+    expect(await recordedTestPath(canonical, { root: nested, file_path: TEST }, async () => { throw new Error('missing'); })).toBeNull();
+    expect(await recordedTestPath(canonical, { root: nested, file_path: `../${TEST}` }, git)).toBeNull();
+    expect(await recordedTestPath(canonical, { root: nested, file_path: `${canonical}/${TEST}` }, git)).toBeNull();
   });
 });
 

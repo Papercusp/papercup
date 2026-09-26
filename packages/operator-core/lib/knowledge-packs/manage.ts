@@ -27,6 +27,7 @@
  * unit tests with zero PG/LLM.
  */
 
+import { createHash } from 'node:crypto';
 import { getMemoryBackend, type MemoryBackend, type MemoryEntry } from '../memory/backend';
 import { hiveScopeKey } from '../memory/hive-scope';
 import { checkConflicts, type LlmJudge } from '../memory/conflict-check';
@@ -242,6 +243,18 @@ export async function classifyPackInstall(
   };
 }
 
+/** Exact writes, retained even when a later item fails. Skipped/organic rows are never owned. */
+export interface PackResourceWriteReceipt {
+  packId: string;
+  packVersion: string;
+  itemId: string;
+  memoryScope: string;
+  memoryIds: string[];
+  installedText: string;
+  /** SHA-256 of the exact UTF-8 text passed to the verbatim writer. */
+  installedHash: string;
+}
+
 export interface ApplyInstallResult {
   ok: boolean;
   packId: string;
@@ -250,6 +263,8 @@ export interface ApplyInstallResult {
   skipped: number;
   replaced: number;
   failed: number;
+  resources: PackResourceWriteReceipt[];
+  failures: Array<{ itemId: string; error: string }>;
   error?: string;
 }
 
@@ -274,12 +289,25 @@ export async function applyPackInstall(
   if (opts.review.memoryScope && opts.review.memoryScope !== scope) {
     throw new Error('knowledge-pack review belongs to a different memory scope');
   }
+  if (opts.review.packId !== opts.pack.manifest.id || opts.review.packVersion !== opts.pack.manifest.version) {
+    throw new Error('knowledge-pack review belongs to a different package or version');
+  }
+  // Validate the entire reviewed selection before a replace can delete anything.
+  // Upgrade reviews intentionally contain only the package's new items.
+  for (const reviewed of opts.review.items) {
+    const item = opts.pack.items.find((candidate) => candidate.id === reviewed.itemId);
+    if (!item || memoryTextOf(item) !== reviewed.incoming) {
+      throw new Error(`knowledge-pack review is stale for item ${reviewed.itemId}; review the current content again`);
+    }
+  }
   const backend = deps.backend ?? getMemoryBackend();
   const byId = new Map(opts.resolutions?.map((r) => [r.itemId, r.action]) ?? []);
   let installed = 0;
   let skipped = 0;
   let replaced = 0;
   let failed = 0;
+  const resources: PackResourceWriteReceipt[] = [];
+  const failures: ApplyInstallResult['failures'] = [];
 
   for (const c of opts.review.items) {
     // A provenance-present item is NEVER re-written, even if a resolution asks
@@ -303,17 +331,24 @@ export async function applyPackInstall(
         await backend.forget(c.existing.id);
         replaced += 1;
       }
-      await rememberPackItem({
+      const memoryIds = await rememberPackItem({
         workspaceId: opts.workspaceId,
         potSlug: opts.potSlug,
         pack: opts.pack,
         item,
         memoryTarget: opts.memoryTarget,
         ...(opts.createdBy ? { createdBy: opts.createdBy } : {}),
+      }, { backend });
+      resources.push({
+        packId: opts.pack.manifest.id, packVersion: opts.pack.manifest.version,
+        itemId: item.id, memoryScope: scope, memoryIds: [...memoryIds],
+        installedText: c.incoming,
+        installedHash: createHash('sha256').update(c.incoming, 'utf8').digest('hex'),
       });
       installed += 1;
     } catch (e) {
       failed += 1;
+      failures.push({ itemId: c.itemId, error: e instanceof Error ? e.message : String(e) });
       console.warn(
         `[knowledge-packs] install write failed (${opts.pack.manifest.id}/${c.itemId}): ${e instanceof Error ? e.message : e}`,
       );
@@ -337,6 +372,8 @@ export async function applyPackInstall(
     skipped,
     replaced,
     failed,
+    resources,
+    failures,
     ...(failed > 0 ? { error: `${failed} write(s) failed` } : {}),
   };
 }

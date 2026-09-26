@@ -115,11 +115,28 @@ BACKUP_MIGRATION_LOCK_IN_FD=''
 BACKUP_MIGRATION_LOCK_OUT_FD=''
 BACKUP_MIGRATION_LOCK_HELD=false
 
-# Generous but finite. A 29 GB parallel dump measures in minutes; this is the
-# ceiling past which we declare the dump wedged rather than let it hold locks
-# forever. Overridable for a one-off large restore-test.
+# The first deadline is a STALL floor, not an unconditional kill. The transcript
+# tier legitimately grew from ~98 GiB to ~105 GiB and a single-worker scheduled
+# dump crossed 2700s while its output was still advancing (2026-09-26,
+# EI-24357465999459516). Killing it at that instant converted a healthy producer
+# into a stale-backup incident. Extend only when the directory archive grows,
+# and never beyond the absolute ceiling below. A genuinely stuck dump still
+# dies at the original floor.
 TIMEOUT_SEC="${PC_BACKUP_TIMEOUT_SEC:-2700}"
+TIMEOUT_MAX_SEC="${PC_BACKUP_TIMEOUT_MAX_SEC:-5400}"
+PROGRESS_STALE_SEC="${PC_BACKUP_PROGRESS_STALE_SEC:-300}"
+KILL_GRACE_SEC="${PC_BACKUP_KILL_GRACE_SEC:-5}"
 JOBS="${PC_BACKUP_JOBS:-4}"
+
+if ! [[ "$TIMEOUT_SEC" =~ ^[1-9][0-9]*$ ]] ||
+   ! [[ "$TIMEOUT_MAX_SEC" =~ ^[1-9][0-9]*$ ]] ||
+   ! [[ "$PROGRESS_STALE_SEC" =~ ^[1-9][0-9]*$ ]] ||
+   ! [[ "$KILL_GRACE_SEC" =~ ^[0-9]+$ ]] ||
+   [ "$TIMEOUT_MAX_SEC" -lt "$TIMEOUT_SEC" ]; then
+  printf '[%s] FATAL: invalid backup watchdog bounds: floor=%ss max=%ss stale=%ss grace=%ss\n' \
+    "$(date -Iseconds)" "$TIMEOUT_SEC" "$TIMEOUT_MAX_SEC" "$PROGRESS_STALE_SEC" "$KILL_GRACE_SEC" >&2
+  exit 1
+fi
 
 # ── DISK HEADROOM ───────────────────────────────────────────────────────────
 # Until 2026-09-03 this script never looked at free space AT ALL, and the shape
@@ -260,8 +277,11 @@ log "headroom ok: ${PC_FREE_GB} GiB free (floor ${PC_BACKUP_MIN_FREE_GB} GiB)"
 # reap_own_stragglers (because a table lock is held by the BACKEND — killing the
 # client alone proves nothing). Never a name/pattern kill: we hold the real PID.
 run_bounded_watched() {
-  local secs="$1"; shift
-  local rc=0 dump_pid watch_pid
+  local floor_secs="$1" max_secs="$2" progress_path="$3"; shift 3
+  local rc=0 dump_pid watch_pid start_epoch now_epoch elapsed
+  local last_bytes=0 last_progress_epoch=0 current_bytes=0
+  start_epoch=$(date +%s)
+  last_progress_epoch="$start_epoch"
   "$@" &
   dump_pid=$!
   (
@@ -276,6 +296,30 @@ run_bounded_watched() {
         reap_own_stragglers
         return 0
       fi
+
+      now_epoch=$(date +%s)
+      elapsed=$(( now_epoch - start_epoch ))
+      current_bytes=$(du -sb "$progress_path" 2>/dev/null | cut -f1)
+      current_bytes=${current_bytes:-0}
+      if [ "$current_bytes" -gt "$last_bytes" ]; then
+        last_bytes="$current_bytes"
+        last_progress_epoch="$now_epoch"
+      fi
+
+      if [ "$elapsed" -ge "$max_secs" ]; then
+        log "ABORTING DUMP: absolute watchdog ceiling ${max_secs}s reached (output ${last_bytes} bytes); killing bounded producer"
+      elif [ "$elapsed" -ge "$floor_secs" ] &&
+           [ $(( now_epoch - last_progress_epoch )) -ge "$PROGRESS_STALE_SEC" ]; then
+        log "ABORTING DUMP: no archive growth for ${PROGRESS_STALE_SEC}s after ${floor_secs}s floor (output ${last_bytes} bytes); killing stalled producer"
+      else
+        continue
+      fi
+
+      kill -TERM "$dump_pid" 2>/dev/null
+      sleep "$KILL_GRACE_SEC"
+      kill -KILL "$dump_pid" 2>/dev/null
+      reap_own_stragglers
+      return 0
     done
   ) &
   watch_pid=$!
@@ -504,7 +548,7 @@ dump_one() {
   fi
 
   dumperr=$(mktemp -t "pcbackup-$label-XXXXXX.err")
-  if run_bounded_watched "$TIMEOUT_SEC" timeout --kill-after=20s "$TIMEOUT_SEC" \
+  if run_bounded_watched "$TIMEOUT_SEC" "$TIMEOUT_MAX_SEC" "$out.tmp" \
         sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
         pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none "$@" -f "$out.tmp" "$db" 2>"$dumperr"; then
 
@@ -567,8 +611,8 @@ dump_one() {
     # days. An unresolved OR is not a diagnosis: record the exit code and the
     # actual error text.
     detail=$(tr '\n' ' ' <"$dumperr" 2>/dev/null | tail -c 400)
-    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
-      log "$label FAIL — TIMEOUT after ${TIMEOUT_SEC}s (exit $rc); previous dump left intact${detail:+ — stderr: $detail}"
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ] || [ "$rc" -eq 143 ]; then
+      log "$label FAIL — watchdog stopped dump after ${TIMEOUT_SEC}s floor / ${TIMEOUT_MAX_SEC}s max (exit $rc); previous dump left intact${detail:+ — stderr: $detail}"
     else
       log "$label FAIL — pg_dump exit $rc; previous dump left intact${detail:+ — stderr: $detail}"
     fi

@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-008 native TEST mode emission on the stable pre-ACK handler",
+  "framework": "operational",
+  "command": [
+    "Read modes and exact-owner session_briefs baseline; enable TEST through mode:set while retaining owner-sticky AUTO.",
+    "Allow the actual native Codex turn-start hook to emit CTRL generation 8 and the TEST definition. Do not manually confirm a delivery token.",
+    "Read exact generation-8 session_identity_activation_events and compare recorded_at with the native transcript developer-message timestamp.",
+    "Read sanitized PAPERCUSP_OPERATOR_URL origin, HTTP health build identities, and the serving endpoint acknowledgment branch.",
+    "Disable TEST through mode:set, and verify mode:get returns AUTO only."
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-09-26T19:56:58.675906Z",
+  "finishedAt": "2026-09-26T20:20:48.000Z",
+  "summary": "The changed mode state was emitted in the real native session, but stable handler 7708e704d9 recorded Applied before the native developer message. The release source still acknowledges while rendering; the canonical staging handler contains the later token-proof fix. This is a bounded failed acceptance observation on the old serving build, not a regression verdict on the current source.",
+  "assertions": [
+    {
+      "id": "native-test-definition-emitted",
+      "passed": true,
+      "evidence": "Native developer message at 2026-09-26T20:09:19.062Z includes CTRL generation 8 and the TEST definition. Text SHA256 1d753fa022ae078c98540338bc44f6c9b0534b4652465761a0b88115518f4db8."
+    },
+    {
+      "id": "applied-follows-native-emission",
+      "passed": false,
+      "evidence": "Generation8 Prepared event22210 at20:09:17.345693Z and Applied event22211 at20:09:17.361242Z precede observable native emission20:09:19.062Z. The prior Applied state6d031d remained until this hook; the new Applied state is2c565c."
+    },
+    {
+      "id": "serving-handler-explains-premature-ack",
+      "passed": true,
+      "evidence": "Process PAPERCUSP_OPERATOR_URL origin9071 reaches stable3070; health reports7708e704d9. Serving release turn-start-memory.ts calls acknowledgeControlTransition after markControlTransitionPrepared before returning text. Staging3170 reports79462650cd; canonical source uses confirmedDelivery token proof."
+    },
+    {
+      "id": "temporary-mode-cleared-from-registry-and-native-stack",
+      "passed": true,
+      "evidence": "mode:set test=false succeeded, controlGeneration9. mode:get returned only owner-directed AUTO. Actual native developer input at2026-09-26T20:23:14.166Z contains CTRL9 and TEST DETACHED; text SHA25693137298729f076137c066e0dca1156567e5e2344472741f7adf17017b799059. Exact-owner row subsequently isgen9/delivered8, modes=[auto], stack=[autonomy:su.mode-auto], status=prepared, Applied still the TEST state2c565c. Registry and native layer cleanup are verified; cleanup acknowledgment remains pending."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-008",
+  "workItem": "WI-10002965",
+  "knownDefect": "WI-10003297",
+  "operatorTargetFollowup": "EI-24356648119658142",
+  "subject": {
+    "ownerId": "su-4c4c4024-9f3c-448a-80a0-4932cd65c1e7",
+    "nativeSessionId": "01a0df1d-cde3-74b3-8156-721873c2355d",
+    "generation": 8,
+    "specificationRevision": "059d00d000d7fc7103d7f6954708e3f34adf8cb3c9bd87e97f8671a9d39ffe10",
+    "previousStateRevision": "6d031da47dd39792a88f48637eea526c61d72bc60e1aed220260b074ae15a25f",
+    "stateRevision": "2c565c8c548f704963982da9cd6b77c540a84cbf49a05515a11a018f4cecd58b",
+    "nativeTranscriptRelativeToCodexHome": "sessions/2026/09/26/rollout-2026-09-26T15-07-47-01a0df1d-cde3-74b3-8156-721873c2355d.jsonl"
+  },
+  "limitations": [
+    "Specification revision stayed pinned; only the mutable state revision changed.",
+    "This native successor routes to stable9071/3070. It is not a current-build3170 positive acceptance run.",
+    "The exact cause of original3170 target changing to9071 across continuation is not established; parent launcher failover is a source-supported hypothesis, tracked separately.",
+    "Registry and native generation9 detach are verified; its acknowledgment is pending. Cleanup observation timestamp is later than the failed trial finishedAt.",
+    "No generic/GUI/new-specification/deployed-fix acceptance or plan shipment is claimed."
+  ]
+}

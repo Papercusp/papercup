@@ -1093,6 +1093,44 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', dependencyPath, importerPath)).toBe('');
   });
 
+  it('EI-24269368801794879: a locked tracked exporter holds back a dirty importer of its new symbol', async () => {
+    const exporterPath = 'exporter.ts';
+    const importerPath = 'importer.ts';
+    const controlPath = 'control.ts';
+    writeFileSync(join(repo, exporterPath), 'export const oldValue = 1;\n');
+    writeFileSync(join(repo, importerPath), "import { oldValue } from './exporter';\nexport const value = oldValue;\n");
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed exporter and importer');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(join(repo, exporterPath), 'export const oldValue = 1;\nexport const newValue = 2;\n');
+    writeFileSync(join(repo, importerPath), "import { newValue } from './exporter';\nexport const value = newValue;\n");
+    writeFileSync(join(repo, controlPath), 'export const control = true;\n');
+
+    const first = await runGitSync('test', {
+      repoPath: repo,
+      runGit: directRunGit,
+      config: cfg,
+      liveLockHoldings: [{ path: exporterPath, owner: 'su-peer', intent: 'editing exporter' }],
+    });
+
+    expect(first.status).toBe('synced');
+    expect(first.contentErrors).toContainEqual(expect.objectContaining({
+      file: importerPath,
+      detectorKey: 'quarantined-importer',
+      error: expect.stringContaining('live-lock exclusion'),
+    }));
+    expect(git(originDir, 'show', `main:${exporterPath}`)).not.toContain('newValue');
+    expect(git(originDir, 'show', `main:${importerPath}`)).not.toContain('newValue');
+    expect(git(originDir, 'show', `main:${controlPath}`)).toBe('export const control = true;');
+
+    const second = await runGitSync('test', { repoPath: repo, runGit: directRunGit, config: cfg });
+    expect(second.status).toBe('synced');
+    expect(git(originDir, 'show', `main:${exporterPath}`)).toContain('newValue');
+    expect(git(originDir, 'show', `main:${importerPath}`)).toContain('newValue');
+    expect(git(repo, 'status', '--porcelain', '--', exporterPath, importerPath)).toBe('');
+  });
+
   it('WI-40770: a repo with only live-held dirty paths still reports skipped-locked', async () => {
     writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
 

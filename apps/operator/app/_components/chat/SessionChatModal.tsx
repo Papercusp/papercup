@@ -36,7 +36,7 @@
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
-import { useSyncQuery } from '@papercusp/sync';
+import { useSyncPrefetch, useSyncQuery } from '@papercusp/sync';
 import { Modal } from '../../harness/Modal';
 import { Tooltip } from '../../harness/Tooltip';
 import { OperatorChat } from '../OperatorChat';
@@ -1492,6 +1492,13 @@ export default function SessionChatModal({
   onSelectPeer?: (ownerId: string) => void;
 }) {
   const open = sessionOwnerId !== null;
+  const prefetchSync = useSyncPrefetch();
+  useEffect(() => {
+    if (!open || !sessionOwnerId) return;
+    // Warm the exact key AgentOrders reads, including when the narrow layout
+    // keeps its rail collapsed. The rail itself remains unsubscribed until open.
+    prefetchSync({ queryName: 'agentOrders.byOwner', args: { ownerId: sessionOwnerId } });
+  }, [open, sessionOwnerId, prefetchSync]);
   // P-008: this owner's pending coord-escalation(s) — the same `plans.attention`
   // feed InboxPane/the Queue read, SCOPED to this agent.
   //
@@ -1882,10 +1889,9 @@ export default function SessionChatModal({
      needs to make sense of the transcript they just opened, so the popup pays
      the gather by default.
 
-     `ordersVisible` below is still what gates the fetch — a reader who CLOSES
-     the panel must stop paying for it, which is the half of the original
-     rationale that survives. Keep the query separate from agentDetail.byOwner
-     for that reason.
+     `ordersVisible` below still gates the live subscription. A collapsed rail
+     gets one cache prefetch on modal open, then pays no ongoing query cost.
+     Keep the query separate from agentDetail.byOwner for that reason.
 
      ── Why the default is DERIVED rather than a plain withDefault(true) ──────
      (WI-35470, D-009.) There is no width at which "expanded" and "not covering
@@ -1981,7 +1987,7 @@ export default function SessionChatModal({
      is NOT part of this answer — the panel shows in every mode, and the only
      thing that hides it is the user closing it. This still GATES THE FETCH:
      `agentOrders.byOwner` runs the carry-brief gather, so a closed panel must
-     cost nothing. */
+     not keep a live subscription. */
   const ordersVisible = open && ordersOpen;
   // Moving between the edge strip and header remounts the control. Keep
   // keyboard focus on that same action after its URL state changes.

@@ -21,6 +21,7 @@ vi.mock('../../../task-manager/enabled', () => ({
 
 vi.mock('../../../task-manager/store', () => ({
   listTasks: vi.fn(async () => []),
+  residueTaskId: vi.fn((path: string) => `residue:${path}`),
 }));
 
 vi.mock('../../../task-manager/reconcile-tick', () => ({
@@ -643,6 +644,53 @@ describe('processes:list structured output', () => {
         pids: [21, 22],
       }),
     ]);
+  });
+
+  it('joins live unaccounted scope PIDs onto its task row without treating an absent scan as zero', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    const orphan: TaskRow = {
+      taskId: 'orphan123', workspaceId: 'default', rootTaskId: 'orphan123',
+      class: 'other', title: 'orphan', argv: [], launchedBy: 'unknown',
+      workItemId: null, planSlug: null, parentTaskId: null, confined: false,
+      state: 'unaccounted', startedAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(),
+      lastMemoryBytes: null, peakMemoryBytes: null, cpuUsec: null, pidsCurrent: null,
+      scopeUnit: 'pc-orphan123.scope', memoryMaxBytes: null, deadlineAt: null,
+      exitCode: null, exitReason: null, logPath: null, detail: {},
+    };
+    vi.mocked(listTasks).mockResolvedValueOnce([orphan]);
+    vi.mocked(reconcileTick).mockResolvedValueOnce({
+      summary: { unaccounted: 1, unaccountedPids: 2 },
+      result: { unaccounted: [{
+        cgroupPath: '/user.slice/papercusp.slice/pc-orphan123.scope',
+        scopeUnit: 'pc-orphan123.scope',
+        pids: [11, 12], sampleCmdline: 'node orphan',
+      }] },
+      degraded: false, scan: { processes: 2, foreignTruncated: false },
+    } as never);
+    const context = {
+      log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+      workspaceId: 'default', runId: 'unaccounted-pids-live', role: 'operator',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp', requestedFormat: 'json', requestedStructured: true, tx: makeTx(),
+    } as const;
+    const measured = await dispatchProjectedTool(projected, 'processes:list',
+      { taskId: 'orphan123', live: true }, context, {});
+    expect(measured.ok).toBe(true);
+    expect((measured.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0])
+      .toMatchObject({ state: 'unaccounted', pids: 2, livePids: [11, 12] });
+
+    vi.mocked(listTasks).mockResolvedValueOnce([orphan]);
+    vi.mocked(reconcileTick).mockResolvedValueOnce({
+      summary: { unaccounted: 0 }, result: { unaccounted: [] },
+      degraded: true, degradedReason: 'incomplete kernel scan',
+      scan: { processes: 0, foreignTruncated: true },
+    } as never);
+    const unknown = await dispatchProjectedTool(projected, 'processes:list',
+      { taskId: 'orphan123', live: true }, context, {});
+    expect(unknown.ok).toBe(true);
+    expect((unknown.result?.structuredContent as { tasks: Array<Record<string, unknown>> }).tasks[0])
+      .toMatchObject({ pids: null, livePids: null });
   });
 
   it('redacts credential assignments in live groups and persisted task titles', async () => {

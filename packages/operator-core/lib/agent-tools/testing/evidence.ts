@@ -94,6 +94,8 @@ async function pinFor(root: string, measurement: RepoFilesEvidenceMeasurement,
  * itself failed, which is not evidence that nothing ran.
  */
 type LedgerAttribution = 'attributed' | 'unattributed' | 'absent' | 'ambiguous' | 'unknown';
+// The ref names the original evidence attempt. Timeout recovery may run under a
+// detached group, so callers must use ledgerRunGroupId (or testRunId) to join the ledger.
 const refFor = (runId: string, index: number) => `test-run-group:${runId}:${index}`;
 const succeeded = (status: string) => status === 'created' || status === 'unchanged';
 
@@ -325,7 +327,7 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
     if (!result && run && priorExecution?.phase === 'settled' && priorExecution.runId === runId
       && row.input.testRunId === run.id && priorExecution.ledgerStatus === run.status) {
       rows.push({ specId: row.input.specId, specRevision: row.input.specRevision,
-        evidenceRef: row.input.evidenceRef, testRunId: run.id,
+        evidenceRef: row.input.evidenceRef, testRunId: run.id, ledgerRunGroupId,
         phase: sourceStable ? 'settled' : 'source-changed', outcome: priorProof?.outcome ?? 'unknown', bindingStatus: 'unchanged' });
       continue;
     }
@@ -401,7 +403,7 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
           `without an attributed result for ${row.binding.testPath}; this attempt cannot settle and must be rerun.`, deps);
       collectRetirement(retirement);
       rows.push({ specId: row.input.specId, specRevision: row.input.specRevision,
-        evidenceRef: row.input.evidenceRef, testRunId: null, phase, outcome: 'unknown',
+        evidenceRef: row.input.evidenceRef, testRunId: null, ledgerRunGroupId: null, phase, outcome: 'unknown',
         bindingStatus: retirement.failures.length > 0 ? 'retirement-incomplete' : 'not-bound' });
       continue;
     }
@@ -414,7 +416,8 @@ export async function finishTestEvidence(prepared: Prepared[], originRunId: stri
       if (retirement.failures.length > 0) bindingStatus = 'retirement-incomplete';
     }
     rows.push({ specId: row.input.specId, specRevision: row.input.specRevision,
-      evidenceRef: row.input.evidenceRef, testRunId: run?.id ?? null, phase,
+      evidenceRef: row.input.evidenceRef, testRunId: run?.id ?? null,
+      ledgerRunGroupId: run ? ledgerRunGroupId : null, phase,
       outcome: (details.adequacy as { outcome: string }).outcome, bindingStatus });
   }
   const retiredIds = [...retiredPendingBindingIds].sort((a, b) => a - b);
@@ -461,6 +464,7 @@ export function deferredTestEvidenceRecoveryBundle(
       specRevision: binding.specRevision,
       evidenceRef: evidenceRefs[index],
       testRunId: null,
+      ledgerRunGroupId: null,
       phase: 'pending' as const,
       outcome: 'unknown' as const,
     })),

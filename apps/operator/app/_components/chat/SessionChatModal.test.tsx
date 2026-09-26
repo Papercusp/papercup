@@ -159,6 +159,7 @@ vi.mock('@papercusp/sse', () => ({
 // (pre-P-008) test in this file keeps rendering with zero pending escalations.
 const H = vi.hoisted(() => ({
   results: {} as Record<string, { data: unknown[]; loading: boolean; fetching: boolean; error: unknown; invalidate: ReturnType<typeof vi.fn> }>,
+  prefetch: vi.fn(),
 }));
 const attentionInvalidate = vi.fn();
 vi.mock('@papercusp/sync', () => ({
@@ -169,6 +170,7 @@ vi.mock('@papercusp/sync', () => ({
     'bulk',
   ],
   onSyncBusEvent: () => () => {},
+  useSyncPrefetch: () => H.prefetch,
   useSyncQuery: ({ queryName }: { queryName: string }) =>
     H.results[queryName] ?? { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() },
 }));
@@ -254,6 +256,7 @@ beforeEach(() => {
     observe() {} unobserve() {} disconnect() {}
   });
   H.results = {};
+  H.prefetch.mockClear();
   attentionInvalidate.mockClear();
   lastWorkItemPopupProps = {};
   lastPlanPopupProps = null;
@@ -270,6 +273,7 @@ describe('SessionChatModal', () => {
   it('renders nothing (closed) when sessionOwnerId is null', () => {
     const { container } = render(<SessionChatModal sessionOwnerId={null} onClose={vi.fn()} />);
     expect(screen.queryByText(/Chat —/)).toBeNull();
+    expect(H.prefetch).not.toHaveBeenCalled();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
   });
 
@@ -2501,9 +2505,13 @@ describe('SessionChatModal', () => {
       stubViewportMatching(NARROW_ORDERS_MQ);
       await renderResolved();
       expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
-      // …and the gather must not fire either — the whole point of not mounting it.
+      // The live rail stays unsubscribed while its exact owner query is warmed.
       expect(screen.queryByTestId('agent-orders-stub')).toBeNull();
       expect(lastAgentOrdersProps).toBeNull();
+      expect(H.prefetch).toHaveBeenCalledExactlyOnceWith({
+        queryName: 'agentOrders.byOwner',
+        args: { ownerId: 'su-live-1' },
+      });
       // The way back is still offered; this is a default, not a removal.
       expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();
     });
@@ -2525,9 +2533,13 @@ describe('SessionChatModal', () => {
       await renderResolved();
       expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
       expect(screen.queryByTestId('agent-orders-stub')).toBeNull();
+      expect(H.prefetch).toHaveBeenCalledExactlyOnceWith({
+        queryName: 'agentOrders.byOwner',
+        args: { ownerId: 'su-live-1' },
+      });
     });
 
-    it('closing it stops the gather — the panel is still what gates the fetch', async () => {
+    it('closing it stops the live subscription after the one-time prefetch', async () => {
       // The half of the pre-2026-08-03 opt-in rationale that outlived the
       // default flip, and the reason agentOrders.byOwner stays a SEPARATE named
       // query rather than another leg on agentDetail.byOwner: a reader who
@@ -2540,6 +2552,7 @@ describe('SessionChatModal', () => {
       rerenderOpen(rerender);
       expect(screen.queryByTestId('session-chat-orders-rail')).toBeNull();
       expect(screen.queryByTestId('agent-orders-stub')).toBeNull();
+      expect(H.prefetch).toHaveBeenCalledTimes(1);
       // The toggle survives the panel — a reader who closed it must be able to
       // get it back.
       expect(screen.getByTestId('session-chat-orders-toggle')).toBeTruthy();

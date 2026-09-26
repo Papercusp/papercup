@@ -671,22 +671,32 @@ export function classifyAcceptanceGraderTerminalFailure(
   // repair. Require the refusal, its concrete tool-surface cause, and the
   // completed-turn footer. Only controlled grading-audit briefs opt in: a
   // general grader may quote the same prose in frozen evidence.
+  const lastAssistantAnswer = normalized.slice(normalized.lastIndexOf('●'));
   const toolSurfaceRefusal = allowToolSurfaceRefusal
-    ? normalized.match(
+    ? lastAssistantAnswer.match(
         /(?:(?:didn't|did not)\s+grade scorecard\s+EI-[A-Za-z0-9-]+[\s\S]{0,300}?(?:didn't|did not)\s+emit a\s+grading-integrity audit|haven(?:'|’)t\s+graded or emitted anything for scorecard\s+EI-[A-Za-z0-9-]+)[\s\S]{0,1800}?(?:platform tools (?:aren't|are not) loaded|no platform tools loaded|no way to reach the\s+platform)[\s\S]{0,6000}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,
       )
     : null;
-  if (toolSurfaceRefusal) {
+  // WI-10003331: PTY redraws can join words and damage the duration prose
+  // (observed: "Crunched fo 12s ·done2:29 PM"). The duration is not evidence
+  // of refusal. Require the latest assistant's explicit no-audit/no-scorecard
+  // statement, a concrete missing-tools cause, and the completed-turn marker.
+  // Earlier refusals cannot retire an auditor that has since resumed.
+  const compactAnswer = lastAssistantAnswer.replace(/\s+/g, '');
+  const compactToolSurfaceRefusal = allowToolSurfaceRefusal &&
+    /^●Ihaven(?:'|’)t(?:audited|graded)scorecardEI-[A-Za-z0-9-]+andemittednoscorecard\./i.test(compactAnswer) &&
+    /(?:sessiondoesn(?:'|’)thavethetools|noplatformtoolsloaded|nowaytoreachtheplatform|toolsearchfoundnothing)/i.test(compactAnswer) &&
+    /✻[^●✻❯]{1,160}·done(?=\d|❯|$)/u.test(compactAnswer);
+  if (toolSurfaceRefusal || compactToolSurfaceRefusal) {
     return {
       code: 'tool_surface_unavailable',
-      evidence: toolSurfaceRefusal[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+      evidence: (toolSurfaceRefusal?.[0] ?? lastAssistantAnswer).replace(/\s+/g, ' ').trim().slice(0, 400),
     };
   }
   // A one-shot auditor may explicitly finish without an emit while its PTY and
   // task-ledger heartbeat stay live. The controlled audit brief cannot contain
   // this final answer. Require the auditor's own answer marker and completed
   // turn footer; a quoted error or a still-working turn is not terminal proof.
-  const lastAssistantAnswer = normalized.slice(normalized.lastIndexOf('●'));
   const gradingAuditRefusal = allowGradingAuditRefusal
     ? lastAssistantAnswer.match(
         /●\s+I (?:didn't|did not) emit an audit\b(?:(?!●\s)[\s\S]){0,6000}?\b(?:server refused|audit would be refused|Why I stopped)\b(?:(?!●\s)[\s\S]){0,6000}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,

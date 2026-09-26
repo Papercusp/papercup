@@ -263,7 +263,8 @@ export function deliveredGoalPlacementRows(input: {
     const parsed = rowSchema.safeParse({ goalId: row.scope.goalId, planSlug: row.scope.planSlug,
       planRef: row.action.targetRef, obligationId: row.id, sourceGeneration: row.sourceGeneration,
       ruleRevision: row.ruleRevision,
-      ...(row.action.kind === 'delegate' && row.action.tool === 'fleet:launch-on-plan' &&
+      ...(((row.action.kind === 'delegate' && row.action.tool === 'fleet:launch-on-plan') ||
+        (row.action.kind === 'repair' && row.action.tool === undefined)) &&
         typeof row.action.args?.name === 'string' && row.action.args?.plan === row.scope.planSlug &&
         row.action.targetRef === `plan:${row.action.args?.harness}/${row.scope.planSlug}`
         ? { launch: { fleetSlug: row.action.args.name, requestedSeats: row.action.args.count ?? 1 } } : {}) });
@@ -405,7 +406,7 @@ export function qualifyGoalPlacementTurn(input: {
   const eligibleAtOffer = admissionEligibility(offer);
   let eligibleAtCompletion: boolean | null;
   if (row.status === 'unknown') return null;
-  if (row.status !== 'due' || row.applicableDemand <= 0 || row.actionKind !== 'delegate') {
+  if (row.status !== 'due' || row.applicableDemand <= 0 || !['delegate', 'repair'].includes(row.actionKind ?? '')) {
     eligibleAtCompletion = false;
   } else {
     if (row.obligationId !== receipt.obligationId || row.sourceGeneration !== receipt.sourceGeneration) return null;

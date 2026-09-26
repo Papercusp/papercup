@@ -4,8 +4,42 @@ import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
-import { disqualification, HARNESS_TAG, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
+import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
 import { runCloudDeviceStartSmoke, runReleaseAcceptance } from './release-acceptance-run';
+
+describe('release acceptance test-process verdict', () => {
+  it('refuses a failed or interrupted leg even when every required evidence row passes', () => {
+    const required = loadRequiredMatrix();
+    const matrix = loadAcceptanceMatrix();
+    const candidate: Candidate = {
+      sourceSha: 'f'.repeat(40), artifact: 'linux-x86_64', archive: '/fixture/pui.tar.gz',
+      archiveSha256: 'c'.repeat(64), installRoot: '/fixture/install', installedBinarySha256: 'a'.repeat(64),
+      advertise: [{ platform: 'Linux x86_64', backend: 'Claude' }],
+    };
+    const row = (tag: string, engine: string): EvidenceRow => ({
+      tag, engine, test: tag, module: 'fixture', state: 'passed', harness: { operator: 'production' },
+      platform: 'Linux x86_64', model: engine === 'claude' ? 'sonnet' : null,
+      binary: '/fixture/install/bin/pui', binaryRealpath: '/fixture/install/bin/pui',
+      binarySha256: candidate.installedBinarySha256, correlation: null,
+    });
+    const rows = [
+      ...Object.values(matrix.capabilities).flat().map((tag) => row(tag, 'scripted')),
+      ...matrix.backends.Claude.journeys.map((tag) => row(tag, matrix.backends.Claude.engine)),
+    ];
+    const check = (legs: Array<{ engine: string; status: number | null }>) =>
+      checkReleaseAcceptance(required, matrix, candidate, rows, legs);
+    expect(check([{ engine: 'scripted', status: 0 }, { engine: 'claude', status: 0 }]).ok).toBe(true);
+    for (const engine of ['scripted', 'claude']) {
+      for (const status of [1, null]) {
+        const verdict = check(['scripted', 'claude'].map((name) => ({ engine: name, status: name === engine ? status : 0 })));
+        expect(verdict.evidence.every((entry) => entry.qualifies)).toBe(true);
+        expect(verdict.ok).toBe(false);
+        expect(verdict.refusals).toContain(`installed-product ${engine} test leg did not exit successfully (status ${status})`);
+      }
+    }
+    expect(check([])).toMatchObject({ ok: false, refusals: ['no installed-product acceptance legs ran'] });
+  });
+});
 
 describe('public cloud device-start release guard', () => {
   it('requires a usable grant through HTTP and never records its credentials', async () => {

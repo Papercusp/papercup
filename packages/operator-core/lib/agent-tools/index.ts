@@ -535,6 +535,7 @@ import './dev/embed_latency';
 import './dev/build_status';
 // git-sync-dx-hardening-2026-06-17 P-002 — "where is my change / is it live?" probe
 import './dev/pipeline_position';
+import './dev/gate_ownership';
 // P-019 agent-operability: one exact-SHA projection over pipeline/gate/deploy/await truth.
 import './release/trace';
 // EI-7349 — "why is nothing shipping?" causal-chain explainer (gate -> deploy -> pool)

@@ -13,8 +13,26 @@ import {
   healTerminalRenderEnv,
   nativeDeferralReachable,
   terminalRenderEnv,
+  applyLauncherOperatorUrlEnv,
+  resolveOperatorTarget,
 } from '../scripts/psu-launcher.mjs';
 import { HOST_HANDOFF_ENV_KEYS } from '../scripts/psu-pty-host.mjs';
+
+describe('host-code handoff operator target provenance', () => {
+  it.each(['discovery', 'env'])('retains the %s target policy through the handoff allowlist', (source) => {
+    const before: Record<string, string> = {};
+    applyLauncherOperatorUrlEnv(before, {
+      url: 'http://127.0.0.1:24689', source, startedAt: null,
+    });
+    const carried = Object.fromEntries(Object.entries(before)
+      .filter(([key]) => HOST_HANDOFF_ENV_KEYS.includes(key)));
+    const resolved = resolveOperatorTarget({ env: carried, probe: () => false });
+    expect(resolved.url).toBe(before.PAPERCUSP_OPERATOR_URL);
+    expect(resolved.source).toBe(source === 'env' ? 'env' : 'managed-env');
+    applyLauncherOperatorUrlEnv(carried, resolved);
+    expect(carried).toEqual(before);
+  });
+});
 
 // P-007: ENABLE_TOOL_SEARCH is now DERIVED from whether the ToolSearch deny leaves claude's
 // native schema deferral reachable, so the claude key set is a duo while the 2026-09-11 lockout

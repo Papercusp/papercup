@@ -13822,17 +13822,51 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
     ).toHaveLength(1);
   });
 
-  // ── stale-shell heal (mac VM owner repro 2026-07-07): a dead env-pinned
+  // ── stale-shell heal (mac VM owner repro 2026-07-07): a dead managed
   //    target fails over to a health-checked live operator instead of burning
   //    the whole budget on a port the terminal window outlived. ──
 
   const envTarget = {
     url: "http://127.0.0.1:59999",
-    source: "env",
+    source: "managed-env",
     startedAt: null,
   };
 
-  it("dead env pin + healthy discovery fallback → switches, adopts, and succeeds on the live operator", async () => {
+  it.each([undefined, "unknown"])("keeps an explicit env pin fixed on connection refusal (provenance %s)", async (provenance) => {
+    const clock = fakeClock();
+    const target = resolveOperatorTarget({
+      env: {
+        PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3170",
+        ...(provenance ? { PAPERCUSP_OPERATOR_URL_PROVENANCE: provenance } : {}),
+      },
+      probe: () => false,
+    });
+    const resolveFallback = vi.fn(() => [
+      { url: "http://127.0.0.1:9071", source: "proxy", startedAt: null },
+    ]);
+    const onFailover = vi.fn();
+    const seen: string[] = [];
+    await expect(fetchWithResilience(`${target.url}/x`, {}, {
+      target,
+      fetchImpl: async (url: string) => {
+        seen.push(url);
+        if (url.startsWith(target.url)) connFail();
+        return { ok: true } as Response;
+      },
+      now: clock.now,
+      sleep: clock.sleep,
+      onNotice: () => {},
+      connectBudgetMs: 5_000,
+      resolveFallback,
+      onFailover,
+    })).rejects.toThrow(/PAPERCUSP_OPERATOR_URL.*refused connections/s);
+    expect(seen.length).toBeGreaterThan(1); // retries stay on the chosen build
+    expect(new Set(seen)).toEqual(new Set([`${target.url}/x`]));
+    expect(resolveFallback).not.toHaveBeenCalled();
+    expect(onFailover).not.toHaveBeenCalled();
+  });
+
+  it("dead managed env + healthy discovery fallback → switches, adopts, and succeeds on the live operator", async () => {
     const clock = fakeClock();
     const seen: string[] = [];
     const fetchImpl = async (u: string) => {
@@ -13903,9 +13937,7 @@ describe("fetchWithResilience (psu connection-retry hardening)", () => {
           onFailover: (t: { url: string }) => adopted.push(t.url),
         },
       ),
-    ).rejects.toThrow(
-      /PAPERCUSP_OPERATOR_URL \(.*\) refused connections .*`unset PAPERCUSP_OPERATOR_URL`/s,
-    );
+    ).rejects.toThrow(/could not reach the operator/s);
     expect(adopted).toEqual([]); // never adopted an unhealthy target
   });
 
@@ -13998,6 +14030,18 @@ describe("resolveFallbackOperatorTargets (stale-shell heal candidate ladder)", (
 });
 
 describe("applyLauncherOperatorUrlEnv (wake-respawn URL provenance)", () => {
+  it("preserves managed provenance through child launch and target resolution", () => {
+    const env: Record<string, string> = {};
+    applyLauncherOperatorUrlEnv(env, {
+      url: "http://127.0.0.1:24689", source: "discovery", startedAt: null,
+    });
+    const inherited = resolveOperatorTarget({ env, probe: () => false });
+    expect(inherited.source).toBe("managed-env");
+    applyLauncherOperatorUrlEnv(env, inherited);
+    expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe("psu-launcher");
+    expect(resolveOperatorTarget({ env, probe: () => false })).toEqual(inherited);
+  });
+
   it("marks discovered targets as launcher-managed", () => {
     const env: Record<string, string> = {};
     applyLauncherOperatorUrlEnv(env, {

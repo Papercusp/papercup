@@ -138,6 +138,17 @@ describe('completed eligibility joined on existing activity and cursor stores', 
     expect((await f.settle()).recorded).toBe(false);
     expect((await read())?.opportunities).toBe(0);
   });
+  it('persists the second repair bound from real qualified repair receipts and survives replay', async () => {
+    for (const n of [1, 2, 3, 4]) {
+      const f = proof(n);
+      if (n > 2) f.end.rows[0]!.actionKind = 'repair';
+      await f.append('end', f.end); await f.append('turn', f.receipt);
+      expect((await f.settle()).recorded).toBe(true);
+    }
+    expect(await read()).toMatchObject({ opportunities: 2, repairOpportunities: 2, stalledAt: at(5) });
+    expect(await reconcileConfirmedGoalPlacementTurns({ ownerId: OWNER, workspaceId: WS, goalId: 'goal' })).toBe(0);
+    expect(await read()).toMatchObject({ repairOpportunities: 2, stalledAt: at(5) });
+  });
   it('does not count missing, wrong-token, foreign-session or unknown admission proof', async () => {
     const f = proof(1); await f.append('turn', f.receipt);
     expect((await f.settle()).recorded).toBe(false);

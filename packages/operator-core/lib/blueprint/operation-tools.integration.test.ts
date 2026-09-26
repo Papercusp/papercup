@@ -437,10 +437,10 @@ describe.each<Transport>(['http', 'mcp'])('P-017 blueprint:* lifecycle over %s',
       [T.signal, { handle, channel: 'note', payload: { text: 'x' }, requestKey: 'x-note' }],
       [T.resume, { handle, token: 'x', response: { approved: true }, requestKey: 'x-resume' }],
     ];
-    // The shared identity resolver returns a principal's transport client id
-    // verbatim — the precondition that makes the forged case below meaningful.
+    // The shared identity resolver and operation rail both bind an unverified
+    // transport client id beneath the authenticated principal.
     expect(resolveAgentIdentity({ principal: { slug: 'pi:beta', workspaceId: WORKSPACE, capabilities: new Set() },
-      uiClientId: 'pi:alpha' } as never).ownerId).toBe('pi:alpha');
+      uiClientId: 'pi:alpha' } as never).ownerId).toBe('pi:beta/pi:alpha');
     for (const [name, args] of handleCalls) {
       // Another caller in the same workspace cannot read or drive the handle…
       expect(await refused(call(transport, { principal: 'beta' }, name, args)), `${name} beta`).toEqual(mismatch);

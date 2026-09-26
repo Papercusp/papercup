@@ -14664,6 +14664,35 @@ export async function augmentWithRepairTickLegs<T extends CheckpointResult>(
  * Public result boundary. New producers always stamp candidate provenance, while the
  * compatibility `diagnostic` field keeps older recorders fail-closed during version skew.
  */
+export const DERIVED_FREEZE_DISPOSITION_DEADLINE_MS = 30_000;
+
+/** The derived disposition is observational. Once a suite verdict exists, a stuck
+ * state writer must not retain the checkpoint tree and suppress the next tick. */
+export async function recordDerivedFreezeDispositionWithDeadline(
+  write: () => Promise<void>,
+  log: (line: string) => void,
+  deadlineMs = DERIVED_FREEZE_DISPOSITION_DEADLINE_MS,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  log(`derived freeze-disposition write started (deadline ${deadlineMs}ms)`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const completed = await Promise.race([
+      write().then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), deadlineMs);
+      }),
+    ]);
+    log(`derived freeze-disposition write ${completed ? 'completed' : 'deadline-exceeded'} in ${Date.now() - startedAt}ms`);
+    return completed;
+  } catch (error) {
+    log(`derived freeze-disposition write failed: ${error instanceof Error ? error.message : error}`);
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function runGreenCheckpoint(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -14770,14 +14799,18 @@ export async function runGreenCheckpoint(
   // in-flight-retriage recursion both call this function, and a backstop wired at the
   // entrypoint would miss both. The implementation no-ops when a branch already recorded a
   // disposition, so the recursion's own (inner, final) record wins over the outer frame's.
-  await deps.recordDerivedFreezeDisposition?.({
-    flagEnabled:
-      (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
-    repairQueue: finalResult.repairQueue ?? null,
-    repairQueueRead: finalResult.repairQueueRead,
-    summary: finalResult.summary ?? null,
-    green: finalResult.green ?? null,
-  });
+  if (deps.recordDerivedFreezeDisposition) {
+    await recordDerivedFreezeDispositionWithDeadline(async () => {
+      await deps.recordDerivedFreezeDisposition?.({
+        flagEnabled:
+          (await deps.freezeAndConvergeEnabled?.().catch(() => true)) ?? true,
+        repairQueue: finalResult.repairQueue ?? null,
+        repairQueueRead: finalResult.repairQueueRead,
+        summary: finalResult.summary ?? null,
+        green: finalResult.green ?? null,
+      });
+    }, deps.log);
+  }
   // P-009: an `awaiting-fixer` hold tick renders no suite verdict for hours — keep the
   // cheap non-test legs MEASURED at repairHead so gate_health/failingTests stays fresh
   // and the hold's ledger row names the failing legs. Additive + fail-safe (see helper).

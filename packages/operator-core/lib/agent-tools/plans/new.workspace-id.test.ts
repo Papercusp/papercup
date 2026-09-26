@@ -28,6 +28,7 @@ vi.mock('../_harness-scope', async (orig) => ({
   harnessScopedCtx: (_h: string, ctx: unknown) => ctx,
 }));
 vi.mock('./source', () => ({ listPlanIndexRows: vi.fn(async () => []) }));
+vi.mock('./semantic-dedup', () => ({ confirmSimilarPlans: vi.fn(async () => ({ verdict: false })) }));
 vi.mock('./revisions', () => ({
   planRevisionCapture: vi.fn(() => ({ recorded: { current: null }, afterWrite: vi.fn() })),
 }));
@@ -64,6 +65,7 @@ vi.mock('./with-plan-lock', () => ({
 }));
 
 const { withPlanLock } = await import('./with-plan-lock');
+const { listPlanIndexRows } = await import('./source');
 const withPlanLockM = vi.mocked(withPlanLock);
 const tool = (await import('./new')).default;
 
@@ -77,10 +79,22 @@ const call = (extra: Record<string, unknown> = {}) =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(listPlanIndexRows).mockResolvedValue([]);
   withPlanLockM.mockResolvedValue(appliedResult());
 });
 
 describe('plans:new workspaceId opt-in (EI-1543)', () => {
+  it('refuses an existing suitable plan before any write, including a different proposed slug', async () => {
+    vi.mocked(listPlanIndexRows).mockResolvedValue([{
+      planSlug: 'demo-existing-2026-09-23', title: 'Demo checkout recovery', status: 'active', archived: false,
+    }] as Awaited<ReturnType<typeof listPlanIndexRows>>);
+    const result = await call({ force: false, slug: 'demo-continuation-2026-09-26', title: 'Demo checkout recovery' });
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0]!.text)).toMatchObject({ error: 'similar_exists' });
+    expect(result.content[0]!.text).toContain('demo-existing-2026-09-23');
+    expect(withPlanLockM).not.toHaveBeenCalled();
+  });
+
   it('omits workspaceId from withPlanLock opts when not passed (unchanged default behavior)', async () => {
     await call();
     const opts = withPlanLockM.mock.calls[0]?.[1] as unknown as Record<string, unknown>;

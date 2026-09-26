@@ -228,7 +228,8 @@ describe('test-time evidence continuity', () => {
 
     const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
       originRunId: runId, runId: detached }, scope, d);
-    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42,
+      evidenceRef: `test-run-group:${runId}:0`, ledgerRunGroupId: runId });
     expect(d.bind.mock.calls.at(-1)![0].details.testExecution).toMatchObject({
       runId: detached, ledgerRunGroupId: runId, ledgerAttribution: 'attributed' });
 
@@ -256,7 +257,8 @@ describe('test-time evidence continuity', () => {
 
     const bundle = await recoverTestEvidence({ workItemId: 'WI-1', planSlug: 'p1',
       originRunId: runId, runId: detached }, scope, d);
-    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42 });
+    expect(bundle.rows[0]).toMatchObject({ phase: 'settled', outcome: 'pass', testRunId: 42,
+      evidenceRef: `test-run-group:${runId}:0`, ledgerRunGroupId: detached });
     expect(d.bind.mock.calls.at(-1)![0].details.testExecution).toMatchObject({
       runId: detached, originRunId: runId, ledgerRunGroupId: detached, ledgerAttribution: 'attributed' });
     expect(prepared).toHaveLength(1);

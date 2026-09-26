@@ -8,8 +8,8 @@
  * restart then took the session's MCP tools and its owner-directive capture down.
  *
  * The rule under test is deliberately narrow, and both halves matter:
- *   - a pin that REFUSES the connection (nothing listening) is replaced by the local
- *     MCP proxy, when the proxy is healthy;
+ *   - a managed pin that REFUSES the connection is replaced by a healthy local proxy;
+ *   - an explicit pin stays authoritative even when it refuses connections;
  *   - a pin that answers at all — even with an error, even slowly — is ALIVE and stays
  *     authoritative, so a live staging session is never silently moved to green.
  *
@@ -56,12 +56,13 @@ async function deadPort(): Promise<number> {
 }
 
 describe('healDeadOperatorPin (EI-24091823697677465)', () => {
-  it('a pin that REFUSES the connection is replaced by the healthy proxy', async () => {
+  it('a managed pin that REFUSES the connection is replaced by the healthy proxy', async () => {
     const proxyPort = await healthyProxy();
     const pinned = `http://localhost:${await deadPort()}`;
     const env: Record<string, string> = {
       PAPERCUSP_OPERATOR_URL: pinned,
       PAPERCUSP_MCP_PROXY_PORT: String(proxyPort),
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
     };
 
     const healed = await healDeadOperatorPin(env);
@@ -73,6 +74,19 @@ describe('healDeadOperatorPin (EI-24091823697677465)', () => {
     expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
   });
 
+  it.each([undefined, 'unknown'])('preserves a refused explicit pin with provenance %s', async (provenance) => {
+    const proxyPort = await healthyProxy();
+    const pinned = `http://127.0.0.1:${await deadPort()}`;
+    const env: Record<string, string> = {
+      PAPERCUSP_OPERATOR_URL: pinned,
+      PAPERCUSP_MCP_PROXY_PORT: String(proxyPort),
+      ...(provenance ? { PAPERCUSP_OPERATOR_URL_PROVENANCE: provenance } : {}),
+    };
+    const before = { ...env };
+    expect(await healDeadOperatorPin(env)).toBeNull();
+    expect(env).toEqual(before);
+  });
+
   it('a pin that ANSWERS with an error is alive and stays', async () => {
     const proxyPort = await healthyProxy();
     const pinPort = await serve((_req, res) => {
@@ -82,11 +96,12 @@ describe('healDeadOperatorPin (EI-24091823697677465)', () => {
     const env: Record<string, string> = {
       PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${pinPort}`,
       PAPERCUSP_MCP_PROXY_PORT: String(proxyPort),
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
     };
 
     expect(await healDeadOperatorPin(env)).toBeNull();
     expect(env.PAPERCUSP_OPERATOR_URL).toBe(`http://127.0.0.1:${pinPort}`);
-    expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBeUndefined();
+    expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
   });
 
   it('a pin that is merely SLOW (times out) is alive and stays', async () => {
@@ -97,6 +112,7 @@ describe('healDeadOperatorPin (EI-24091823697677465)', () => {
     const env: Record<string, string> = {
       PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${pinPort}`,
       PAPERCUSP_MCP_PROXY_PORT: String(proxyPort),
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
     };
 
     expect(await healDeadOperatorPin(env, { timeoutMs: 200 })).toBeNull();
@@ -108,6 +124,7 @@ describe('healDeadOperatorPin (EI-24091823697677465)', () => {
     const env: Record<string, string> = {
       PAPERCUSP_OPERATOR_URL: pinned,
       PAPERCUSP_MCP_PROXY_PORT: String(await deadPort()),
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
     };
 
     expect(await healDeadOperatorPin(env)).toBeNull();
@@ -123,6 +140,7 @@ describe('healDeadOperatorPin (EI-24091823697677465)', () => {
       {},
     ];
     for (const env of cases) {
+      env.PAPERCUSP_OPERATOR_URL_PROVENANCE = 'psu-launcher';
       const before = { ...env };
       expect(await healDeadOperatorPin(env, { fetchImpl: fetchImpl as unknown as typeof fetch })).toBeNull();
       expect(env).toEqual(before);

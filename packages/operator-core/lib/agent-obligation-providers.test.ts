@@ -23,6 +23,9 @@ import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goa
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey,
   type GoalPlacementProgressState } from './goal-placement-progress';
 import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
+import { AGENT_OBLIGATION_SCHEMA_VERSION, formatAgentObligationLine } from './agent-obligations';
+import { projectAgentTurnStartObligationBrief } from './agent-obligation-reader';
+import { deliveredGoalPlacementRows } from './goal-placement-turn-receipts';
 
 const NOW = '2026-09-05T20:00:00.000Z';
 const base = { workspaceId: 'ws', ownerId: 'su-goal', observedAt: NOW, sourceGeneration: 'rev-42' };
@@ -406,6 +409,32 @@ describe('persisted placement effect clock', () => {
     expect(repair).toMatchObject({ status: 'due', action: { kind: 'repair', targetRef: unplaced.ref } });
     expect(repair.action?.tool).toBeUndefined();
     expect(repair.episode).toContain('stalled:');
+    const repairBrief = projectAgentTurnStartObligationBrief({ schemaVersion: AGENT_OBLIGATION_SCHEMA_VERSION,
+      evaluatedAt: NOW, sourceGeneration: base.sourceGeneration, evaluations: [repair], primary: [repair], conflicts: [] });
+    expect(deliveredGoalPlacementRows({ ownerId: base.ownerId, workspaceId: base.workspaceId,
+      brief: repairBrief, block: formatAgentObligationLine(repair, 'action') }))
+      .toMatchObject([{ launch: { fleetSlug: 'plan-a-fleet', requestedSeats: 1 } }]);
+    // A later eligible repair decision must eventually change the action, not
+    // repeat the first repair forever. Reads and excluded decisions cannot do so.
+    let repaired = stalled.state;
+    for (const n of [1, 2]) {
+      const offeredAt = `2026-09-05T20:0${n * 2}:00.000Z`;
+      const completedAt = `2026-09-05T20:0${n * 2 + 1}:00.000Z`;
+      repaired = advanceGoalPlacementProgress({ scopeKey, previous: repaired, now: completedAt,
+        opportunity: { deliveryToken: `repair-${n}`, completedTurnRef: `repair-turn-${n}`,
+          offeredAt, completedAt, eligibleAtOffer: true, eligibleAtCompletion: true } }).state;
+      const repairInput = { ...input(unplaced), observedAt: completedAt };
+      if (repairInput.read.status !== 'known') throw new Error('expected known repair input');
+      repairInput.read.value.progress = { [unplaced.ref]: repaired };
+      const result = planPlacementObligation(repairInput);
+      if (n === 1) expect(result.action?.kind).toBe('repair');
+      else {
+        expect(result.action?.kind).toBe('report');
+        expect(result.action?.summary).toMatch(/stop repeating.*reassign.*existing authority.*escalate/i);
+        expect(result.action?.tool).toBeUndefined();
+        expect(result.episode).toContain('repair-exhausted:');
+      }
+    }
     const refused = planPlacementObligation(input(unplaced, launch({ refusal: {
       reason: 'goal_budget_unmeasurable', current: null, limit: 10_000, requested: 1,
       currentScope: 'goal-pots', message: 'authoritative spend is unknown',

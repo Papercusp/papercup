@@ -581,6 +581,65 @@ Preserve this plan body.
     expect(ratifyRev.content_hash).toBe(activePlan.content_hash);
   });
 
+  it('addresses committed rubric versions independently of the audit sequence', async () => {
+    const rubricId = 'offset-standard-rubric';
+    await insertRubricPlan(rubricId, { version: 7 });
+    const proposed = await rubrics.proposeRubric({
+      rubricId, characteristic: 'hive-coordination', title: 'Offset standard',
+      criteria: sampleCriteria, by: 'author-a',
+    });
+    expect(proposed.revision).toBe(8);
+    const ratified = await rubrics.ratifyRubric(rubricId, 'independent-reviewer');
+    expect(ratified?.revision).toBe(9);
+    const before = await db.adminSql<{ seq: number; content_snapshot: string }[]>`
+      SELECT seq, content_snapshot FROM harness_shared.plan_revisions
+       WHERE plan_slug = ${rubricId} ORDER BY seq`;
+    expect(before.map((row) => row.seq)).toEqual([1, 2]);
+    expect((await rubrics.getRubric(rubricId, 8))?.criteria).toEqual(proposed.criteria);
+    expect((await rubrics.getRubric(rubricId, 9))?.criteriaHash).toBe(ratified?.criteriaHash);
+    expect(await rubrics.getRubric(rubricId, 1)).toBeNull();
+
+    const changed = sampleCriteria.map((criterion, i) => i === 0
+      ? { ...criterion, method: 'A scoped gap review may find existing plans sufficient; no new-idea quota.' }
+      : criterion);
+    await rubrics.proposeRubric({
+      rubricId, characteristic: 'hive-coordination', title: 'Offset standard',
+      criteria: changed, by: 'author-a',
+    });
+    expect((await rubrics.getRubric(rubricId, 8))?.criteria).toEqual(proposed.criteria);
+    expect((await rubrics.getRubric(rubricId, 9))?.criteriaHash).toBe(ratified?.criteriaHash);
+    const preserved = await db.adminSql<{ seq: number; content_snapshot: string }[]>`
+      SELECT seq, content_snapshot FROM harness_shared.plan_revisions
+       WHERE plan_slug = ${rubricId} AND seq <= 2 ORDER BY seq`;
+    expect(preserved).toEqual(before);
+  });
+
+  it('resolves only a proved current legacy snapshot when version and sequence diverge', async () => {
+    const rubricId = 'legacy-offset-standard';
+    const initial = await rubrics.proposeRubric({
+      rubricId, characteristic: 'hive-coordination', title: 'Legacy offset',
+      criteria: sampleCriteria, status: 'active', by: 'author-a',
+    });
+    // Simulate a pre-version-stamp enriched snapshot and an unrecorded version
+    // bump. The body and structured data still have independent immutable proof.
+    await db.adminSql`
+      UPDATE harness_shared.plan_revisions
+         SET content_snapshot = regexp_replace(content_snapshot, '\n  "rubricRevision": [0-9]+,', '', 'g')
+       WHERE plan_slug = ${rubricId}`;
+    await db.adminSql`UPDATE harness_shared.harness_plans SET version = 7 WHERE plan_slug = ${rubricId}`;
+    const current = await rubrics.getRubric(rubricId, 7);
+    expect(current?.criteriaHash).toBe(initial.criteriaHash);
+    expect(current?.revision).toBe(7);
+    // A legacy sequence number is not proof that this was rubric version 1.
+    expect(await rubrics.getRubric(rubricId, 1)).toBeNull();
+    // A matching markdown hash alone cannot prove structured grading content.
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET template_data = jsonb_set(template_data, '{criteria,0,method}', '"Unrecorded new instructions"')
+       WHERE plan_slug = ${rubricId}`;
+    expect(await rubrics.getRubric(rubricId, 7)).toBeNull();
+  });
+
   it('reads an immutable historical rubric revision without falling back to current template_data', async () => {
     const rubricId = 'revision-addressed-rubric';
     await rubrics.proposeRubric({
@@ -641,7 +700,7 @@ Preserve this plan body.
       '## Structured rubric data (`template_data`)\n\n' +
       '~~~json\n' +
       JSON.stringify(
-        { schemaVersion: 2, templateData: currentPlanRow.template_data, criteriaHash: pinnedHash },
+        { schemaVersion: 2, rubricRevision: 3, templateData: currentPlanRow.template_data, criteriaHash: pinnedHash },
         null,
         2,
       ) +

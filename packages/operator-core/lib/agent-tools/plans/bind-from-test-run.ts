@@ -45,6 +45,7 @@ import { withWorkspace } from '@papercusp/db-org';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { resolveRelative, runtimeSpecifiers, stripComments } from '../../search/import-graph';
 import { repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
+import { defaultGitRunner, type GitRunner } from './evidence-measurement-pin';
 
 /** Same bound as a hand-built `repo-files` measurement. */
 export const FROM_TEST_RUN_MAX_SOURCE_PATHS = 32;
@@ -82,6 +83,7 @@ export type TestRunBindingInput = z.infer<typeof testRunBindingSchema>;
 
 export interface TestRunEvidenceRow {
   id: number | string;
+  root?: string | null;
   file_path: string | null;
   status: string | null;
   source: string | null;
@@ -190,6 +192,42 @@ export function repoRelativeTestPath(root: string, filePath: string): string | n
   const rel = isAbsolute(filePath) ? relative(root, filePath) : filePath.replace(/^\.\//, '');
   if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
   return rel.split(sep).join('/');
+}
+
+/** Rebase recorded nested-workspace paths only across proven views of the same repository. */
+export async function recordedTestPath(
+  root: string,
+  row: Pick<TestRunEvidenceRow, 'root' | 'file_path'>,
+  git: GitRunner = defaultGitRunner,
+): Promise<string | null> {
+  if (!row.file_path) return null;
+  if (!row.root) return repoRelativeTestPath(root, row.file_path);
+  if (!isAbsolute(row.root)) return null;
+  const file = resolve(row.root, row.file_path);
+  // A recorded workspace cannot lend evidence for a sibling via ../ or an absolute escape.
+  if (!repoRelativeTestPath(row.root, file)) return null;
+  const local = repoRelativeTestPath(root, file);
+  if (local) return local;
+  try {
+    const common = (await git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
+    if (!isAbsolute(common)) return null;
+    let recordedRoot = row.root;
+    const visited = new Set<string>();
+    for (let depth = 0; depth < 16 && !visited.has(recordedRoot); depth += 1) {
+      visited.add(recordedRoot);
+      const recordedCommon = (await git(recordedRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
+      if (isAbsolute(recordedCommon) && resolve(recordedCommon) === resolve(common)) {
+        const top = (await git(recordedRoot, ['rev-parse', '--show-toplevel'])).trim();
+        return isAbsolute(top) ? repoRelativeTestPath(top, file) : null;
+      }
+      const parent = (await git(recordedRoot, ['rev-parse', '--show-superproject-working-tree'])).trim();
+      if (!isAbsolute(parent) || !repoRelativeTestPath(parent, file)) return null;
+      recordedRoot = parent;
+    }
+  } catch {
+    // Missing historical checkout or unverifiable repository identity is unknown, never a filename match.
+  }
+  return null;
 }
 
 interface RunFacts {
@@ -358,13 +396,14 @@ export interface TestRunBindingDeps {
   /** Conditionally stamp a still-unattributed run with the caller's scope; true when this call (or a racer) did. */
   adoptRun(scope: TestRunBindingScope, testRunId: number): Promise<boolean>;
   resolveRoot(scope: TestRunBindingScope): Promise<string>;
+  git?: GitRunner;
 }
 
 export const defaultTestRunBindingDeps: TestRunBindingDeps = {
   async loadRun(scope, testRunId) {
     return withWorkspace(scope.workspaceId, async (tx) => {
       const rows = await tx<TestRunEvidenceRow[]>`
-        SELECT id, file_path, status, source, harness_slug, workspace_id, commit_sha,
+        SELECT id, root, file_path, status, source, harness_slug, workspace_id, commit_sha,
                worktree_dirty, execution_details, finished_at
           FROM harness_shared.test_runs
          WHERE id = ${testRunId}`;
@@ -444,5 +483,22 @@ export async function expandTestRunBinding(
       message: `test-run ${testRunId} ran under harness '${row.harness_slug}'; bind it with harness '${row.harness_slug}'.`,
     };
   }
-  return deriveBindingFromTestRun(input, row, await deps.resolveRoot(scope), attribution);
+  const root = await deps.resolveRoot(scope);
+  const testPath = await recordedTestPath(root, row, deps.git);
+  if (!testPath) {
+    return {
+      ok: false,
+      error: 'test_run_file_outside_root',
+      testRunId,
+      message: `test-run ${testRunId} file ${JSON.stringify(row.file_path)} at recorded root ${JSON.stringify(row.root)} cannot be mapped to this harness checkout (${root}).`,
+    };
+  }
+  const result = deriveBindingFromTestRun(input, { ...row, file_path: testPath }, root, attribution);
+  if (result.ok) {
+    Object.assign(result.binding.details.testRun as Record<string, unknown>, {
+      recordedRoot: row.root ?? null,
+      recordedFilePath: row.file_path,
+    });
+  }
+  return result;
 }

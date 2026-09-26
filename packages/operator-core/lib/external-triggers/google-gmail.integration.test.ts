@@ -85,14 +85,17 @@ describe('Google Gmail adapter with the real delivery ledger and Personal Vault 
           JSON.stringify({
             history:
               historyCall === 1
-                ? [{ messagesAdded: [{ message: { id: 'mail-1' } }] }]
-                : [{ messagesAdded: [{ message: { id: 'mail-1' } }] }],
+                ? [{ id: 'history-record-1', messagesAdded: [{ message: { id: 'mail-1' } }] }]
+                : [{ id: 'history-record-2', messagesAdded: [{ message: { id: 'mail-1' } }] }],
             historyId: historyCall === 1 ? 'history-new' : 'history-newer',
           }),
+          { headers: { 'content-type': 'application/json' } },
         );
       }
       if (url.pathname.endsWith('/messages/mail-1')) {
-        return new Response(JSON.stringify(gmailMessage));
+        return new Response(JSON.stringify(gmailMessage), {
+          headers: { 'content-type': 'application/json' },
+        });
       }
       throw new Error(`unexpected Gmail request ${url}`);
     }) as unknown as typeof fetch;

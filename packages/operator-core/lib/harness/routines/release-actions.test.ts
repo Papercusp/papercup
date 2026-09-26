@@ -250,6 +250,7 @@ import {
   annotateFailingTestsWithFlakeStats,
   releaseToolingStatus,
   publishSignedGateVerdicts,
+  publishSignedGateVerdictsWithDeadline,
   DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX,
   resolveGreenCheckpointDbPoolMax,
   RELEASE_FIXER_DEDUP_MS,
@@ -3649,6 +3650,42 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
 describe('P-303: signed gate-verdict producer', () => {
   const candidate = 'a'.repeat(40);
   const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+
+  it('WI-10003241: a stalled optional shard publisher releases the gate tail at its deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const logs: string[] = [];
+      const running = publishSignedGateVerdictsWithDeadline(
+        () => new Promise(() => {}),
+        (line) => logs.push(line),
+        30,
+      );
+      await vi.advanceTimersByTimeAsync(30);
+      expect(await running).toEqual({ published: 0, skipped: 0, reason: 'deadline-exceeded' });
+      expect(logs).toEqual([
+        'signed gate shard publication started (deadline 30ms)',
+        'signed gate shard publication deadline-exceeded in 30ms',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('WI-10003241: a completed shard publication retains its result and clears the deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const logs: string[] = [];
+      expect(await publishSignedGateVerdictsWithDeadline(
+        async () => ({ published: 2, skipped: 1 }),
+        (line) => logs.push(line),
+        30,
+      )).toEqual({ published: 2, skipped: 1 });
+      expect(logs[1]).toBe('signed gate shard publication completed in 0ms');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   function deps(overrides: Partial<import('./release-actions').SignedGateVerdictPublishDeps> = {}) {
     const inserted: Array<{ target: typeof target; hiveHomeSlug: string | null; signed: import('../../sync/pot-git/gate/verdicts').GateVerdict; verdictId: string }> = [];

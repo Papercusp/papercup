@@ -3758,25 +3758,17 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         );
       }
     }
-    // EI-22485648475962061: a live lock can protect a newly-created module that is
-    // absent from HEAD while a dirty importer remains otherwise stageable. Reuse
-    // the quarantine-import fixed-point guard so the importer (and any importer
-    // chain) is held back too. A tracked dirty dependency remains resolvable from
-    // HEAD and is filtered out by the existing HEAD probe, so this does not turn
-    // ordinary source/test edits into false positives.
+    // A live lock can protect either a new module or a changed export in a
+    // tracked module. In both cases, publishing a dirty importer alone can
+    // produce an incomplete HEAD. Hold dirty importers and their transitive
+    // chain whenever their dependency is excluded by a live lock. Unlike the
+    // content guard above, resolving the old module at HEAD is not enough:
+    // its old exports may not satisfy the importer's new symbols.
     if (atomicExclusions.paths.length > 0) {
-      const priorQuarantined = [
-        ...new Set([
-          ...preDeletionQuarantined,
-          ...contentErrors.map((error) => error.file),
-          ...atomicExclusions.paths,
-        ]),
-      ];
       const liveLockImporterErrors = await detectQuarantineImporters({
         readText: (rel) => o.readText(repoPath, rel),
         dirtyFiles: dirty,
-        alreadyQuarantined: priorQuarantined,
-        isResolvableAtHead: (rel) => isModuleResolvableAtHead(runGit, repoPath, rel, o.log),
+        alreadyQuarantined: atomicExclusions.paths,
         exclusionLabel: 'live-lock exclusion',
         log: o.log,
       });

@@ -11,6 +11,49 @@ const rubricsMocks = vi.hoisted(() => ({
 }));
 
 const reviewMocks = vi.hoisted(() => ({ openAcceptanceBarAmendmentReview: vi.fn() }));
+const receiptDb = vi.hoisted(() => {
+  type Row = { idempotency_key: string; rubric_ref: string; state: string; started_at: Date; finished_at: Date | null; result_json: Record<string, unknown> | null; error: string | null };
+  const rows = new Map<string, Row>();
+  const sql = vi.fn(async (parts: TemplateStringsArray, ...values: unknown[]) => {
+    const query = parts.join('?');
+    if (query.includes('DELETE FROM harness_shared.rubric_amend_receipts')) return [];
+    if (query.includes('INSERT INTO harness_shared.rubric_amend_receipts')) {
+      const [workspace, rubric, key] = values as string[];
+      const id = `${workspace}:${rubric}:${key}`;
+      if (rows.has(id)) return [];
+      rows.set(id, { idempotency_key: key!, rubric_ref: rubric!, state: 'running', started_at: new Date(), finished_at: null, result_json: null, error: null });
+      return [{ idempotency_key: key }];
+    }
+    if (query.includes('SELECT idempotency_key')) {
+      const [workspace, rubric, key] = values as string[];
+      const row = rows.get(`${workspace}:${rubric}:${key}`);
+      return row ? [row] : [];
+    }
+    if (query.includes('UPDATE harness_shared.rubric_amend_receipts')) {
+      const success = query.includes('result_json =');
+      const [workspace, rubric, key] = (success ? values.slice(3) : values.slice(1)) as string[];
+      const row = rows.get(`${workspace}:${rubric}:${key}`);
+      if (row) {
+        row.state = success ? String(values[0]) : 'failed';
+        row.result_json = success ? JSON.parse(String(values[1])) : null;
+        row.error = success ? values[2] as string | null : String(values[0]);
+        row.finished_at = new Date();
+      }
+      return [];
+    }
+    throw new Error(`unexpected receipt SQL: ${query}`);
+  });
+  return { rows, sql };
+});
+
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@papercusp/db-org')>(),
+  getOrgPg: () => ({ sql: receiptDb.sql }),
+}));
+vi.mock('../../workspace-registry', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../workspace-registry')>(),
+  activeWorkspaceId: () => 'ws-amend-test',
+}));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'amend-test', workspaceId: 'ws-amend-test' }),
@@ -36,7 +79,6 @@ vi.mock('../../detached-imports', () => ({
 
 import amendTool, { rubricsAmendArgs } from './amend';
 import amendStatusTool from './amend-status';
-import { __resetAmendReceiptsForTest } from './amend-receipts';
 
 type ToolOutput = { content: Array<{ text: string }> };
 const body = async (args: unknown) =>
@@ -376,7 +418,8 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
   };
 
   beforeEach(() => {
-    __resetAmendReceiptsForTest();
+    receiptDb.rows.clear();
+    rubricsMocks.findAmendmentDecisionByKey.mockResolvedValue(null);
     rubricsMocks.rubricCompleteness.mockReturnValue({ complete: true });
     rubricsMocks.getRubric.mockResolvedValue({ revision: 3 });
     process.env.PAPERCUSP_RUBRICS_AMEND_FOREGROUND_MS = '20';
@@ -427,6 +470,42 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
         result: { ok: true, rubric: { rubricId: 'acceptance-example' } },
       });
     });
+  });
+
+  it('a different worker reads the running receipt and a same-key retry does not start another amend', async () => {
+    const slow = deferred<unknown>();
+    rubricsMocks.amendRubric.mockReturnValue(slow.promise);
+    const first = await body({ ...amendArgs, idempotencyKey: 'shared-key' });
+    expect(first.pending).toBe(true);
+
+    // A fresh module registry models a second worker. The mocked PG rows survive
+    // independently of either module's process-local state.
+    vi.resetModules();
+    const workerB = (await import('./amend-status')).default;
+    const status = JSON.parse(((await workerB.handler({ rubricRef: 'acceptance-example', idempotencyKey: 'shared-key' } as never, {} as never)) as ToolOutput).content[0]!.text);
+    expect(status).toMatchObject({ state: 'running', source: 'receipt' });
+
+    const retry = await body({ ...amendArgs, idempotencyKey: 'shared-key' });
+    expect(retry.pending).toBe(true);
+    expect(rubricsMocks.amendRubric).toHaveBeenCalledTimes(1);
+    slow.resolve({ rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
+    await vi.waitFor(async () => {
+      expect(await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: 'shared-key' }))
+        .toMatchObject({ state: 'committed', source: 'receipt' });
+    });
+  });
+
+  it('reports a committed Decision when its worker left a running receipt behind', async () => {
+    const slow = deferred<unknown>();
+    rubricsMocks.amendRubric.mockReturnValue(slow.promise);
+    const first = await body({ ...amendArgs, idempotencyKey: 'stranded-key' });
+    expect(first.pending).toBe(true);
+    rubricsMocks.findAmendmentDecisionByKey.mockResolvedValue({
+      decisionId: 'D-42', subjectPlan: 'example-plan',
+    });
+    expect(await statusBody({ rubricRef: 'acceptance-example', idempotencyKey: 'stranded-key' }))
+      .toMatchObject({ state: 'committed', source: 'decision', decisionId: 'D-42' });
+    slow.resolve({ rubricId: 'acceptance-example', kind: 'standard', criteria: [] });
   });
 
   it('a slow amend that then fails polls to failed with the error, never to committed', async () => {

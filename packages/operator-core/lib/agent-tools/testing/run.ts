@@ -3065,7 +3065,7 @@ export default defineTool({
     evidence: testEvidenceSchema
       .optional()
       .describe(
-        'Declare exact work-item/spec/test/correction mappings once; persisted before execution and returned as ledger-backed evidence for independent review.',
+        'Declare exact work-item/spec/test/correction mappings once; persisted before execution and returned as ledger-backed evidence for independent review. evidenceRef uses the original attempt ID and stays stable across timeout recovery; join testing:runs through rows[].testRunId or rows[].ledgerRunGroupId, which may name a detached group.',
       ),
     recoverEvidence: recoverTestEvidenceSchema
       .optional()

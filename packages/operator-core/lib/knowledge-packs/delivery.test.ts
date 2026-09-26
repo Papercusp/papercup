@@ -53,6 +53,8 @@ const deps = (over: Partial<DeliveryTickDeps> = {}): DeliveryTickDeps => ({
     skipped: 0,
     replaced: 0,
     failed: 0,
+    resources: [],
+    failures: [],
   }),
   ...over,
 });

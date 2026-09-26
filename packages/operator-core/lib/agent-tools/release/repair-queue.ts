@@ -61,6 +61,7 @@ import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import { claimRepairManifestLeg, renderAdmitCommand } from '../../release/repair-manifest';
 import { readIdentity } from '../locks/identity';
 import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
+import { executeWithGateActionReceipt } from '../../release/gate-action-receipt';
 
 const json = (payload: unknown) => ({ data: payload });
 const target = () => ({ workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() });
@@ -748,12 +749,14 @@ export default defineTool({
       : { certainty: 'unknown' as const, observedAt: ownershipObservedAt,
           conditionKey: ownership?.eventKey ?? null, workItem: ownership?.workItem ?? null,
           holder: ownership?.takenBy ?? null, reason: ownership?.unknown?.code ?? 'no-held-condition' };
+    let effectReceipt: { receiptId: string; ownership: Record<string, unknown> } | null = null;
     const stampActionEffect = (effect: Record<string, unknown>) => ctx.metadata?.({
       gateActionReceipt: {
-        schemaVersion: 1,
+        schemaVersion: effectReceipt ? 2 : 1,
         action: `repair-queue:${args.op}`,
         callerOwnerId,
-        ownership: gateOwnershipReceipt,
+        ...(effectReceipt ? { receiptId: effectReceipt.receiptId } : {}),
+        ownership: effectReceipt?.ownership ?? gateOwnershipReceipt,
         delegate: {
           status: callerAuthorization.status,
           authorized: callerAuthorization.authorized,
@@ -1200,7 +1203,9 @@ export default defineTool({
             ...(wholeBlob ? { enforceSourceCohort: true } : {}),
           }),
         });
-      let outcome = buildAdmission(dryRun || precheckApplies);
+      // Build the immutable candidate first. Publication is the effect boundary,
+      // and must happen only while the condition claim row is locked below.
+      let outcome = buildAdmission(true);
       let precheck: FixPrecheckVerdict | null = null;
       if (precheckApplies && outcome.ok) {
         const builtCommit = outcome.commit;
@@ -1390,9 +1395,32 @@ export default defineTool({
                 'Repair the runner/setup failure, or deliberately opt out with skipPrecheck:true + precheckReason.',
           });
         }
-        // Phase 2: publish. Same inputs ⇒ the same tree onto the same parent; a peer's
-        // concurrent admission moves the lineage ref and this rebuild refuses on the CAS.
-        outcome = buildAdmission(false);
+      }
+      if (!dryRun && outcome.ok) {
+        // Phase 2: publish. The durable intent predates the ref movement; the
+        // linked claim row remains locked until this exact publication settles.
+        const admitted = await executeWithGateActionReceipt({
+          action: 'release:repair-queue', actor: identity.ownerId,
+          ownerId: identity.ownerId, conditionKey: ownership?.eventKey ?? '',
+          allowUnowned: true,
+          delegate: { authorized: callerAuthorization.status === 'authorized-delegate',
+            callerSpawnId: callerAuthorization.callerSpawnId,
+            queueFixerSpawnId: callerAuthorization.queueFixerSpawnId },
+          target: { op: 'admit', candidate: queue.candidate, repairHead: queue.repairHead,
+            builtCommit: outcome.commit },
+          run: async () => buildAdmission(false),
+          summarize: (effect) => ({ status: effect.ok ? 'lineage-ref-published' : 'not-published',
+            ...(effect.ok ? { commit: effect.commit } : { reason: effect.code }) }),
+        });
+        if (!admitted.ok) {
+          stampActionEffect({ status: admitted.effectMayHaveRun ? 'unknown' : 'refused',
+            reason: admitted.reason, receiptId: admitted.receiptId });
+          return json({ ok: false, admitted: false, refused: !admitted.effectMayHaveRun,
+            verdict: 'refused', reason: admitted.reason, receiptId: admitted.receiptId,
+            effectMayHaveRun: admitted.effectMayHaveRun, ...base });
+        }
+        effectReceipt = { receiptId: admitted.receiptId, ownership: admitted.ownership };
+        outcome = admitted.effect;
       }
       const precheckEntry = precheckRecordOf(precheck, { skipPrecheck, precheckReason, dryRun, population });
       const hunksRecord: Record<string, { applied: number; agents: string[] }> | null = hunkExact
@@ -1695,14 +1723,36 @@ export default defineTool({
         });
       }
       const next: FrozenCandidateRepairQueue = { ...queue, manifest: outcome.manifest };
-      let persisted = true;
-      try {
-        await writeFrozenCandidateRepairQueue(inspected.target, next, {
-          expectedUpdatedAtMs: queue.updatedAtMs,
-        });
-      } catch {
-        persisted = false;
+      const claimed = await executeWithGateActionReceipt({
+        action: 'release:repair-queue', actor: identity.ownerId, ownerId: identity.ownerId,
+        conditionKey: ownership?.eventKey ?? '', allowUnowned: true,
+        delegate: { authorized: callerAuthorization.status === 'authorized-delegate',
+          callerSpawnId: callerAuthorization.callerSpawnId,
+          queueFixerSpawnId: callerAuthorization.queueFixerSpawnId },
+        target: { op: 'claim-leg', candidate: queue.candidate, repairHead: queue.repairHead,
+          leg: legId, release },
+        run: async () => {
+          try {
+            await writeFrozenCandidateRepairQueue(inspected.target, next, {
+              expectedUpdatedAtMs: queue.updatedAtMs,
+            });
+            return { persisted: true };
+          } catch {
+            return { persisted: false };
+          }
+        },
+        summarize: (effect) => ({ status: effect.persisted
+          ? (release ? 'leg-released' : 'leg-claimed') : 'persist-failed', persisted: effect.persisted }),
+      });
+      if (!claimed.ok) {
+        stampActionEffect({ status: claimed.effectMayHaveRun ? 'unknown' : 'refused',
+          reason: claimed.reason, receiptId: claimed.receiptId });
+        return json({ ...base, ok: false, claimed: false, refused: !claimed.effectMayHaveRun,
+          reason: claimed.reason, receiptId: claimed.receiptId,
+          effectMayHaveRun: claimed.effectMayHaveRun });
       }
+      effectReceipt = { receiptId: claimed.receiptId, ownership: claimed.ownership };
+      const persisted = claimed.effect.persisted;
       // Claiming a leg claims its paths: publish them as the caller's current files. Best-effort —
       // the claim itself is on the queue row; presence is the peer-visible mirror of it.
       let presenceFiles: string[] | null = null;
@@ -1807,7 +1857,25 @@ export default defineTool({
       });
     }
 
-    const result = await retireFrozenCandidateRepairQueue(inspected.target, inspected.queue);
+    const identity = readIdentity(ctx);
+    const retired = await executeWithGateActionReceipt({
+      action: 'release:repair-queue', actor: identity.ownerId, ownerId: identity.ownerId,
+      conditionKey: ownership?.eventKey ?? '', allowUnowned: true,
+      target: { op: 'retire', candidate: inspected.queue.candidate,
+        repairHead: inspected.queue.repairHead, updatedAtMs: inspected.queue.updatedAtMs },
+      run: () => retireFrozenCandidateRepairQueue(inspected.target, inspected.queue!),
+      summarize: (effect) => ({ status: effect.retired ? 'queue-retired' : 'not-retired',
+        refusal: effect.refusal ?? null }),
+    });
+    if (!retired.ok) {
+      stampActionEffect({ status: retired.effectMayHaveRun ? 'unknown' : 'refused',
+        reason: retired.reason, receiptId: retired.receiptId });
+      return json({ ok: false, op: 'retire', retired: false,
+        refused: !retired.effectMayHaveRun, reason: retired.reason,
+        receiptId: retired.receiptId, effectMayHaveRun: retired.effectMayHaveRun });
+    }
+    effectReceipt = { receiptId: retired.receiptId, ownership: retired.ownership };
+    const result = retired.effect;
     const currentFixerAlive =
       result.fixerAlive !== undefined ? result.fixerAlive : await inspectFixerLiveness(result.current);
     const currentDiagnostic = result.current
@@ -1842,7 +1910,6 @@ export default defineTool({
       });
     }
     const casMiss = !result.retired;
-    const identity = readIdentity(ctx);
     const auditRecorded = await recordAudit(identity.ownerId, {
       reason: args.reason,
       expectedCandidate: args.expectedCandidate,

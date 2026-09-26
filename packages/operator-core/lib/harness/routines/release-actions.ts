@@ -1322,7 +1322,38 @@ export interface SignedGateVerdictPublishResult {
     | 'repo-unreadable'
     | 'identity-unreadable'
     | 'manifest-unreadable'
-    | 'no-test-rows';
+    | 'no-test-rows'
+    | 'deadline-exceeded';
+}
+
+/** The signed shard ledger is additive evidence, so it cannot own the checkpoint run lock
+ * after the aggregate verdict is known. A timed-out publisher may finish its idempotent
+ * inserts later; the caller must still record gate health and release the run lock now. */
+export const SIGNED_GATE_VERDICT_PUBLISH_DEADLINE_MS = 30_000;
+
+export async function publishSignedGateVerdictsWithDeadline(
+  publish: () => Promise<SignedGateVerdictPublishResult>,
+  log: (line: string) => void,
+  deadlineMs = SIGNED_GATE_VERDICT_PUBLISH_DEADLINE_MS,
+): Promise<SignedGateVerdictPublishResult> {
+  const startedAt = Date.now();
+  log(`signed gate shard publication started (deadline ${deadlineMs}ms)`);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([
+      publish(),
+      new Promise<SignedGateVerdictPublishResult>((resolve) => {
+        timer = setTimeout(
+          () => resolve({ published: 0, skipped: 0, reason: 'deadline-exceeded' }),
+          deadlineMs,
+        );
+      }),
+    ]);
+    log(`signed gate shard publication ${result.reason ?? 'completed'} in ${Date.now() - startedAt}ms`);
+    return result;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 interface GateTestRunRow {
@@ -2052,7 +2083,10 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
   // the recordability + pinned-diagnostic guards. The publisher is fail-closed and
   // additive: absent/ambiguous evidence writes no signed fact and never changes the
   // ordinary gate-health verdict below.
-  const signedVerdicts = await publishSignedGateVerdicts(target, verdict);
+  const signedVerdicts = await publishSignedGateVerdictsWithDeadline(
+    () => publishSignedGateVerdicts(target, verdict),
+    (line) => console.log(`${orchestratorStdoutTag()} ${line}`),
+  );
   if (signedVerdicts.published > 0) {
     console.log(
       `${orchestratorStdoutTag()} published ${signedVerdicts.published} signed gate shard verdict(s)` +

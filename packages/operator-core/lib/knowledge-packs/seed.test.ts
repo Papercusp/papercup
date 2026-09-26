@@ -4,6 +4,7 @@
  * undo, and the degraded paths (unavailable store, partial write failure).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
 vi.mock('../memory/backend', () => ({
   getMemoryBackend: vi.fn(),

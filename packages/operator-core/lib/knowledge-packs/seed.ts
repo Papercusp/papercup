@@ -20,7 +20,7 @@
  * creation-time seeding into an EMPTY pool needs none).
  */
 
-import { getMemoryBackend } from '../memory/backend';
+import { getMemoryBackend, type MemoryBackend } from '../memory/backend';
 import { hiveScopeKey } from '../memory/hive-scope';
 import {
   filterByDomains,
@@ -103,8 +103,8 @@ export async function rememberPackItem(opts: {
   item: KnowledgePack['items'][number];
   createdBy?: string;
   memoryTarget?: KnowledgePackMemoryTarget;
-}): Promise<string[]> {
-  const backend = getMemoryBackend();
+}, deps: { backend?: MemoryBackend } = {}): Promise<string[]> {
+  const backend = deps.backend ?? getMemoryBackend();
   const target: KnowledgePackMemoryTarget = opts.memoryTarget ?? { kind: 'hive', slug: opts.potSlug };
   const { ids } = await backend.remember(memoryTextOf(opts.item), {
     scope: knowledgePackMemoryScope(target),
@@ -119,6 +119,9 @@ export async function rememberPackItem(opts: {
       ...provenanceOf(opts.pack, opts.item),
     },
   });
+  if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== 'string' || !id.trim())) {
+    throw new Error('knowledge-pack write returned no usable resource IDs');
+  }
   return ids;
 }
 
@@ -165,7 +168,7 @@ export async function seedPackIntoHive(input: SeedPackInput): Promise<SeedPackRe
             item,
             memoryTarget: input.memoryTarget,
             ...(input.createdBy ? { createdBy: input.createdBy } : {}),
-          });
+          }, { backend });
         } catch (e) {
           console.warn(
             `[knowledge-packs] seed write failed (${pack.manifest.id}/${item.id}): ${e instanceof Error ? e.message : e}`,

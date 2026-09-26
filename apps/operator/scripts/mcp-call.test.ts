@@ -137,6 +137,17 @@ describe('mcp-call argument parsing', () => {
     });
   });
 
+  it('gives independent CLI requests independent result-door cohorts without changing tool arguments', () => {
+    const first = buildMcpCallParams('scorecards:get', { id: 'card-1' }, { outputGroupId: 'request-1' });
+    const second = buildMcpCallParams('scorecards:get', { id: 'card-1' }, { outputGroupId: 'request-2' });
+    expect(first).toEqual({
+      name: 'scorecards:get',
+      arguments: { id: 'card-1' },
+      _meta: { outputGroupId: 'request-1' },
+    });
+    expect(second._meta).toEqual({ outputGroupId: 'request-2' });
+  });
+
   it('accepts --all-workspaces as the explicit unscoped transport flag', () => {
     const parsed = parseArgs(['knowledge_packs:list', '--all-workspaces']);
     expect(parsed.flags.allWorkspaces).toBe(true);

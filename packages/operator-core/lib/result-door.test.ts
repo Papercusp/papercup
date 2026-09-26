@@ -1290,13 +1290,29 @@ describe('applyResultDoor', () => {
       expect(envelope.incomplete).not.toHaveProperty('omittedItems');
       expect(envelope.incomplete.recoverable).toBe(true);
       expect(envelope.incomplete.spilledItems).toBe(1);
-      // The note must name the CAUSE (sibling calls), because that is the only
-      // fact that makes the next move — re-issue this call alone — derivable.
-      expect(envelope.incomplete.note).toMatch(/sibling/i);
+      // The note must not promise that another request in this cohort succeeds.
+      expect(envelope.incomplete.note).toMatch(/explicit output cohort/i);
+      expect(envelope.incomplete.note).toMatch(/new output cohort/i);
+      expect(envelope.incomplete.note).toMatch(/same cohort can spill again/i);
       expect(envelope.incomplete.note).toMatch(/nothing was lost/i);
       // ...and it must not be too large on its own, which the caller cannot
       // otherwise tell apart from a genuinely oversized result.
       expect(envelope.incomplete.note).toMatch(/not too large on its own/i);
+    });
+
+    it('does not misidentify sequential compatibility requests as parallel siblings', () => {
+      const opts = { toolName: 'scorecards:get', workspaceId: 'ws-1', runId: RUN_ID };
+      let overflowed: DoorableResult | undefined;
+      for (const startedAtMs of [1_000, 1_100, 1_200]) {
+        overflowed = applyResultDoor(medium(), {
+          ...opts,
+          aggregateScope: beginResultDoorAggregate({ sessionKey: 'sequential-cli', startedAtMs }),
+        });
+      }
+      const envelope = JSON.parse((overflowed!.content[0] as { text: string }).text);
+      expect(envelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
+      expect(envelope.incomplete.note).toMatch(/2-second compatibility cohort/i);
+      expect(envelope.incomplete.note).toMatch(/does not prove they were parallel siblings/i);
     });
 
     // The sibling reason reaches the same route but has the OPPOSITE retry

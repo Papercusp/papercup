@@ -34,7 +34,9 @@ const { buildWorkspaceHostHealthLane } = await import('./workspace-host-health-l
 const { buildSystemHealthFlapLane } = await import('./system-health-flap-lane');
 const { buildBrowserCrashHealthLane } = await import('./browser-crash-health-lane');
 const { synthesizeStateOfHive } = await import('./corpus-digest');
-const { flattenDigest } = await import('./lenses');
+// Copy-out mutation probes exercise the real corpus oracle without ever mutating
+// the shared production tree. Ordinary CI always loads the canonical module.
+const { flattenDigest } = await import(process.env.PAPERCUSP_LENSES_MODULE_PROBE || './lenses');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 const { createIssue } = await import('../issues-engineer');
 const { OBSERVATION_TOPIC } = await import('../harness/improvements/read-items');

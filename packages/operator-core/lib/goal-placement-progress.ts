@@ -39,6 +39,8 @@ export interface GoalPlacementProgressState {
   lastCompletedAt: string | null;
   /** Saturated at the two-opportunity repair threshold. */
   opportunities: number;
+  /** Eligible completed repair decisions after stalledAt; absent on older v1 receipts. */
+  repairOpportunities?: number;
   stalledAt: string | null;
 }
 
@@ -79,6 +81,11 @@ export function advanceGoalPlacementProgress(input: {
   if (!Number.isInteger(state.opportunities) || state.opportunities < 0 || state.opportunities > 2) {
     return view('Stored progress counter is invalid.');
   }
+  const repairs = state.repairOpportunities ?? 0;
+  if (!Number.isInteger(repairs) || repairs < 0 || repairs > 2 ||
+    (repairs > 0 && state.opportunities !== 2)) {
+    return view('Stored repair counter is invalid.');
+  }
   const storedTimes = [state.firstEligibleAt, state.lastCompletedAt, state.stalledAt, state.lastEffect?.at ?? null];
   if (storedTimes.some((at) => at !== null && (!Number.isFinite(time(at)) || time(at) > now)) ||
     (state.lastEffect && (!EFFECT_KINDS.has(state.lastEffect.kind) || !nonempty(state.lastEffect.ref))) ||
@@ -103,6 +110,7 @@ export function advanceGoalPlacementProgress(input: {
   if (effect && (!state.lastEffect || (effect.ref !== state.lastEffect.ref && time(effect.at) > time(state.lastEffect.at)))) {
     state.lastEffect = { ...effect };
     state.opportunities = 0;
+    delete state.repairOpportunities;
     state.stalledAt = null;
   }
   if (!opportunity) return view();
@@ -118,6 +126,11 @@ export function advanceGoalPlacementProgress(input: {
   if (!opportunity.eligibleAtOffer || !opportunity.eligibleAtCompletion) return view();
   if (state.lastEffect && time(opportunity.offeredAt) <= time(state.lastEffect.at)) return view();
   state.firstEligibleAt ??= opportunity.offeredAt;
+  // Only a fresh, completed, eligible offer AFTER the initial stall can spend
+  // the repair bound. Reads, live calls and excluded receipts never reach here.
+  if (state.stalledAt && time(opportunity.offeredAt) > time(state.stalledAt)) {
+    state.repairOpportunities = Math.min(2, (state.repairOpportunities ?? 0) + 1);
+  }
   state.opportunities = Math.min(2, state.opportunities + 1);
   if (state.opportunities === 2) state.stalledAt ??= opportunity.completedAt;
   return view();

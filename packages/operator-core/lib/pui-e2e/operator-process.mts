@@ -123,7 +123,7 @@ const server = createAdaptorServer({
         method: request.method, rpcMethod: mcpRequest?.method,
         headerProtocol: request.headers.get('mcp-protocol-version'),
         offeredProtocol: mcpRequest?.method === 'initialize' ? mcpRequest.params?.protocolVersion : undefined,
-        status: response.status,
+        status: response.status, requestedAt, respondedAt: new Date().toISOString(),
       }] });
       if (mcpRequest?.method === 'initialize' && response.ok) {
         void response.clone().text().then((text) => {

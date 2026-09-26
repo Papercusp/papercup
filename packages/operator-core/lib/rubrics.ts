@@ -28,6 +28,7 @@
  * migration. Versioning falls out of the plan revision spine (no separate machinery).
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { isDeepStrictEqual } from 'node:util';
 import { parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
 import { runWithWorkspaceIfConcrete } from './workspace-als';
@@ -102,7 +103,7 @@ import { setFrontmatterScalar } from './agent-tools/plans/transfer-owner';
 import { deriveIndexFromContent } from './agent-tools/plans/source';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
 import { summarizeForcedPast } from './agent-tools/plans/forced-past-stamp';
-import { getPlanRevisionSnapshot, recordPlanRevision } from './agent-tools/plans/revisions';
+import { recordPlanRevision } from './agent-tools/plans/revisions';
 import {
   applyPlanRevisionSnapshotRepair,
   readPlanRevisionRepairTarget,
@@ -645,6 +646,7 @@ const RUBRIC_REVISION_SNAPSHOT_SCHEMA_VERSION = 2;
 
 interface ParsedRubricRevisionSnapshot {
   templateData: unknown;
+  rubricRevision?: number;
   /** Hash captured when the revision was written; absent on legacy snapshots. */
   criteriaHash?: string | null;
   schemaVersion?: number;
@@ -655,6 +657,7 @@ export type RubricRevisionSnapshotKind = 'enriched' | 'legacy-structured' | 'mar
 export interface RubricRevisionSnapshotInspection {
   kind: RubricRevisionSnapshotKind;
   templateData?: unknown;
+  rubricRevision?: number;
   /** Hash captured by the enriched writer; absent on legacy snapshots. */
   criteriaHash?: string | null;
   schemaVersion?: number;
@@ -700,10 +703,16 @@ export function inspectRubricRevisionSnapshot(snapshot: string): RubricRevisionS
         schemaVersion: number;
         templateData: unknown;
         criteriaHash?: unknown;
+        rubricRevision?: unknown;
       };
+      if (envelope.rubricRevision !== undefined &&
+          (typeof envelope.rubricRevision !== 'number' || !Number.isSafeInteger(envelope.rubricRevision) || envelope.rubricRevision <= 0)) {
+        return { kind: 'malformed' };
+      }
       return {
         kind: 'enriched',
         schemaVersion: envelope.schemaVersion,
+        ...(typeof envelope.rubricRevision === 'number' ? { rubricRevision: envelope.rubricRevision } : {}),
         templateData: envelope.templateData,
         criteriaHash: typeof envelope.criteriaHash === 'string' ? envelope.criteriaHash : null,
       };
@@ -726,6 +735,7 @@ function parseRubricRevisionSnapshot(snapshot: string): ParsedRubricRevisionSnap
     return {
       ...(inspected.schemaVersion !== undefined ? { schemaVersion: inspected.schemaVersion } : {}),
       templateData: inspected.templateData,
+      ...(inspected.rubricRevision !== undefined ? { rubricRevision: inspected.rubricRevision } : {}),
       ...(inspected.criteriaHash !== undefined ? { criteriaHash: inspected.criteriaHash } : {}),
     };
   }
@@ -1262,9 +1272,9 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
   if (!Number.isInteger(revision) || revision <= 0) return null;
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<RubricPlanRow[]>`
+    const rows = await sql<(RubricPlanRow & { content_hash: string })[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
-             version, owner, archived, template_data
+             version, owner, archived, template_data, content_hash
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
@@ -1274,12 +1284,48 @@ async function getRubricAtRevision(rubricId: string, revision: number): Promise<
     const row = rows.find((candidate) => candidate.plan_slug === rubricId);
     if (!row) return null;
 
-    const snapshot = await getPlanRevisionSnapshot(rubricId, revision, {
-      workspaceId: row.workspace_id,
-      harnessSlug: row.harness_slug,
-    });
-    if (!snapshot) return null;
-    const parsedSnapshot = parseRubricRevisionSnapshot(snapshot.contentSnapshot);
+    // A plan version is NOT an audit seq: writes can predate tracking or lose a
+    // best-effort audit append. New snapshots carry the exact committed version.
+    // Bound the candidates before returning large snapshot bodies from Postgres.
+    const versionMarker = `"rubricRevision": ${revision},`;
+    const snapshots = await sql<{
+      seq: number; latest_seq: number; content_hash: string; content_snapshot: string;
+    }[]>`
+      WITH scoped AS (
+        SELECT seq, content_hash, content_snapshot, max(seq) OVER () AS latest_seq
+          FROM harness_shared.plan_revisions
+         WHERE workspace_id = ${row.workspace_id} AND harness_slug = ${row.harness_slug}
+           AND plan_slug = ${rubricId}
+      )
+      SELECT * FROM scoped
+       WHERE seq = ${revision} OR seq = latest_seq
+          OR position(${versionMarker} in content_snapshot) > 0
+       ORDER BY seq DESC LIMIT 4`;
+    const candidates = snapshots.map((snapshot) => ({
+      ...snapshot, parsed: parseRubricRevisionSnapshot(snapshot.content_snapshot),
+    }));
+    const explicit = candidates.filter((snapshot) => snapshot.parsed?.rubricRevision === revision);
+    if (explicit.length > 1 || snapshots.length === 4) return null;
+    let parsedSnapshot = explicit[0]?.parsed;
+    if (!parsedSnapshot) {
+      const latest = candidates.find((snapshot) => Number(snapshot.seq) === Number(snapshot.latest_seq));
+      const legacy = candidates.find((snapshot) => Number(snapshot.seq) === revision);
+      // Preserve aligned legacy chains, but never interpret a stamped version
+      // as its coincidentally equal sequence. Diverged old history is unknown.
+      if (latest && Number(latest.seq) === Number(row.version) && legacy?.parsed &&
+          legacy.parsed.rubricRevision === undefined &&
+          (latest.parsed?.rubricRevision === undefined || latest.parsed.rubricRevision === Number(latest.seq))) {
+        parsedSnapshot = legacy.parsed;
+      } else if (revision === Number(row.version) && latest?.parsed &&
+          latest.parsed.rubricRevision === undefined &&
+          latest.content_hash === row.content_hash &&
+          isDeepStrictEqual(latest.parsed.templateData, row.template_data)) {
+        // For the exact CURRENT legacy version, independently equal immutable
+        // body + raw structured data prove the contract without rewriting it.
+        parsedSnapshot = latest.parsed;
+      }
+    }
+    if (!parsedSnapshot) return null;
     const parsed = rubricTemplateDataSchema.safeParse(parsedSnapshot?.templateData);
     if (!parsed.success) return null;
 
@@ -2624,11 +2670,13 @@ export function formatRubricRevisionSnapshot(
   writtenBody: string,
   templateData: unknown,
   criteriaHash: string | null,
+  rubricRevision?: number,
 ): string {
   if (templateData === null || templateData === undefined) return writtenBody;
   const serialized = JSON.stringify(
     {
       schemaVersion: RUBRIC_REVISION_SNAPSHOT_SCHEMA_VERSION,
+      ...(rubricRevision !== undefined ? { rubricRevision } : {}),
       templateData,
       criteriaHash,
     },
@@ -2862,6 +2910,7 @@ function rubricRevisionAfterWrite(
   writtenBody: string,
   scope: { workspaceId: string; harnessSlug: string },
   committedTemplateData: unknown,
+  committedVersion?: number,
 ) => Promise<void> {
   const identity: AgentIdentity = {
     ownerId: by ?? 'rubrics:system',
@@ -2872,7 +2921,7 @@ function rubricRevisionAfterWrite(
     workspaceId: null,
     userId: null,
   };
-  return async (writtenBody, scope, committedTemplateData) => {
+  return async (writtenBody, scope, committedTemplateData, committedVersion) => {
     const snapshotTemplateData =
       committedTemplateData !== undefined ? committedTemplateData : fallbackTemplateData;
     const criteriaHash = await rubricRevisionCriteriaHash(snapshotTemplateData, scope);
@@ -2890,6 +2939,7 @@ function rubricRevisionAfterWrite(
         writtenBody,
         snapshotTemplateData,
         criteriaHash,
+        committedVersion,
       ),
       // The revision hash remains the canonical plan-body fingerprint used by
       // activation/current-revision comparisons. Only content_snapshot is
@@ -4827,7 +4877,8 @@ async function amendAcceptanceBarRubric(
           planSlug: input.rubricId,
           harnessSlug: rubricScope.harnessSlug,
           workspaceId: rubricScope.workspaceId,
-          content: formatRubricRevisionSnapshot(txResult.rubricBody, txResult.templateData, criteriaHash),
+          content: formatRubricRevisionSnapshot(txResult.rubricBody, txResult.templateData, criteriaHash, txResult.rubricRevision),
+          contentHash: hashPlanContent(txResult.rubricBody),
           rationale: `acceptance BAR amendment ${txResult.idempotencyKey}`,
           identity,
         })

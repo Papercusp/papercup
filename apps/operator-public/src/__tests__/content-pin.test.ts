@@ -155,7 +155,40 @@ describe('P-001 content pin at publish', () => {
     });
     const res = await publish(api, env, { ...BASE, listing_kind: 'plan', listing_ref: 'leaky' });
     expect(res.status).toBe(422);
-    expect(await res.json()).toMatchObject({ error: 'identity_leak', commitSha: STUB_HEAD_SHA });
+    expect(await res.json()).toMatchObject({
+      error: 'identity_leak', commitSha: STUB_HEAD_SHA,
+      hits: [{ path: 'leaky/listing.json', pattern: 'identity-value', occurrences: 2 }],
+    });
+    expect(store.tables.harnesses).toHaveLength(0);
+  });
+
+  it('P-003 names each offending blob and pattern without returning a secret or identity value', async () => {
+    const { env, store } = makeEnv();
+    const identity = 'publisher-handle-42';
+    const secret = 'abcdefghijklmnop';
+    const listing = JSON.stringify({ account: identity });
+    const readme = `notify ${identity}\napi_key: ${secret}`;
+    const entries = [
+      { path: 'leaky/listing.json', sha: '8'.repeat(40), size: listing.length },
+      { path: 'leaky/README.md', sha: '9'.repeat(40), size: readme.length },
+    ];
+    stubGithub({
+      ...USER, repo: REPO, head: { sha: STUB_HEAD_SHA }, tree: { entries },
+      blobs: {
+        [entries[0]!.sha]: { content: btoa(listing) },
+        [entries[1]!.sha]: { content: btoa(readme) },
+      },
+    });
+    const res = await publish(api, env, { ...BASE, listing_kind: 'plan', listing_ref: 'leaky' });
+    expect(res.status).toBe(422);
+    const response = await res.json() as { hits: Array<{ path: string; pattern: string; occurrences: number }> };
+    expect(response.hits).toEqual([
+      { path: 'leaky/listing.json', pattern: 'identity-value', occurrences: 1 },
+      { path: 'leaky/README.md', pattern: 'identity-value', occurrences: 1 },
+      { path: 'leaky/README.md', pattern: 'secret', occurrences: 1 },
+    ]);
+    expect(JSON.stringify(response)).not.toContain(identity);
+    expect(JSON.stringify(response)).not.toContain(secret);
     expect(store.tables.harnesses).toHaveLength(0);
   });
 

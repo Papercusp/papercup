@@ -6,9 +6,13 @@
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 
 export type GateActionResult<T> =
-  | { ok: true; receiptId: string; effect: T; ownership: { workItem: string; holder: string; takenAt: string | null } }
+  | { ok: true; receiptId: string; effect: T; ownership: {
+      certainty: 'claim-row-locked-through-effect' | 'no-linked-condition-observed';
+      workItem: string | null; holder: string | null; takenAt: string | null;
+    } }
   | { ok: false; receiptId: string | null; reason: string; effectMayHaveRun: boolean };
 
 /**
@@ -20,14 +24,21 @@ export async function executeWithGateActionReceipt<T>(input: {
   actor: string;
   ownerId: string;
   conditionKey: string;
+  /** A signed queue delegate may act for the locked claim holder. */
+  delegate?: { authorized: boolean; callerSpawnId: string | null; queueFixerSpawnId: string | null };
+  /** Green actions may have no open incident to claim; retain unknown ownership honestly. */
+  allowUnowned?: boolean;
   target: Record<string, unknown>;
   run: () => Promise<T>;
   summarize: (effect: T) => Record<string, unknown>;
 }): Promise<GateActionResult<T>> {
+  if (!input.conditionKey.trim()) {
+    return { ok: false, receiptId: null, reason: 'gate_condition_unmeasured', effectMayHaveRun: false };
+  }
   const sql = getOrgPg().sql;
   const workspaceId = activeWorkspaceId();
   const receiptId = `gate-action-${randomUUID()}`;
-  const base = { schemaVersion: 1, phase: 'intent', conditionKey: input.conditionKey,
+  const base = { schemaVersion: 2, phase: 'intent', conditionKey: input.conditionKey,
     ownerId: input.ownerId, target: input.target, effect: { status: 'unknown' } };
   try {
     await sql.unsafe(
@@ -48,18 +59,36 @@ export async function executeWithGateActionReceipt<T>(input: {
         work_item: string; holder: string | null; taken_at: string | null; expires_at: string | null;
       }[]>(
         `SELECT w.feature_id AS work_item, w.taken_by AS holder,
-                w.taken_at AS taken_at, w.expires_at AS expires_at
+                w.taken_at::text AS taken_at, w.expires_at::text AS expires_at
            FROM harness_shared.coord_links l
            JOIN harness_shared.work_items w
              ON w.feature_id = l.src_ref AND w.workspace_id = l.workspace_id
           WHERE l.workspace_id = $1 AND l.src_kind = 'issue' AND l.dst_kind = 'event'
             AND l.rel = 'about' AND l.dst_ref = $2
-            AND (w.status IS NULL OR w.status NOT IN ('done', 'resolved', 'dropped', 'deprecated'))
+            AND (w.status IS NULL OR w.status <> ALL($3::text[]))
           LIMIT 2 FOR UPDATE OF w`,
-        [workspaceId, input.conditionKey],
+        [workspaceId, input.conditionKey, ANY_FAMILY_TERMINAL_STATES as string[]],
       );
       const row = rows.length === 1 ? rows[0] : null;
-      const claimValid = row?.holder === input.ownerId &&
+      if (rows.length === 0 && input.allowUnowned) {
+        const ownershipObservedAt = new Date().toISOString();
+        effectStarted = true;
+        const effect = await input.run();
+        const effectReturnedAt = new Date().toISOString();
+        const ownership = { certainty: 'no-linked-condition-observed' as const,
+          workItem: null, holder: null, takenAt: null };
+        await tx.unsafe(
+          `UPDATE harness_shared.audit_log SET details = $2::jsonb WHERE id = $1 AND workspace_id = $3`,
+          [receiptId, JSON.stringify({ ...base, phase: 'settled', ownership,
+            ownershipObservedAt, effect: input.summarize(effect), effectReturnedAt,
+            settledAt: new Date().toISOString() }), workspaceId],
+        );
+        return { ok: true, receiptId, effect, ownership };
+      }
+      const delegateValid = input.delegate?.authorized === true &&
+        input.delegate.callerSpawnId !== null &&
+        input.delegate.callerSpawnId === input.delegate.queueFixerSpawnId;
+      const claimValid = !!row && (row.holder === input.ownerId || delegateValid) &&
         (!row.expires_at || Date.parse(row.expires_at) > Date.now());
       if (!claimValid) {
         const reason = rows.length !== 1 ? 'gate_condition_ownership_ambiguous' : 'gate_condition_not_held_by_caller';
@@ -69,14 +98,19 @@ export async function executeWithGateActionReceipt<T>(input: {
         );
         return { ok: false, receiptId, reason, effectMayHaveRun: false };
       }
-      const ownership = { workItem: row.work_item, holder: input.ownerId, takenAt: row.taken_at };
+      const ownership = { certainty: 'claim-row-locked-through-effect' as const,
+        workItem: row.work_item, holder: row.holder, takenAt: row.taken_at };
+      const claimLockedAt = new Date().toISOString();
       effectStarted = true;
       const effect = await input.run();
+      const effectReturnedAt = new Date().toISOString();
       await tx.unsafe(
         `UPDATE harness_shared.audit_log SET details = $2::jsonb WHERE id = $1 AND workspace_id = $3`,
         [receiptId, JSON.stringify({ ...base, phase: 'settled', ownership,
-          ownershipCertainty: 'claim-row-locked-through-effect',
-          effect: input.summarize(effect), settledAt: new Date().toISOString() }), workspaceId],
+          ...(delegateValid ? { delegate: input.delegate } : {}),
+          ownershipCertainty: ownership.certainty,
+          claimLockedAt, effect: input.summarize(effect), effectReturnedAt,
+          settledAt: new Date().toISOString() }), workspaceId],
       );
       return { ok: true, receiptId, effect, ownership };
     });

@@ -2550,9 +2550,9 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
     "if(line==='QUIT'){process.exit(0);}}});" +
     'setTimeout(()=>process.exit(0),15000);';
 
-  it(
-    'a pin that REFUSES connections is replaced by the live MCP proxy in the respawned child',
-    async () => {
+  it.each([true, false])(
+    'a refused pin changes in the respawned child only when managed=%s',
+    async (managed) => {
       const proxy = createServer((req, res) => {
         res.writeHead(req.url === '/api/health' ? 200 : 404);
         res.end('ok');
@@ -2577,6 +2577,8 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
       delete env.PAPERCUSP_PSU_REEXEC;
       delete env.PAPERCUSP_PSU_REEXEC_PPID;
       delete env.PAPERCUSP_MCP_PROXY;
+      if (managed) env.PAPERCUSP_OPERATOR_URL_PROVENANCE = 'psu-launcher';
+      else delete env.PAPERCUSP_OPERATOR_URL_PROVENANCE;
 
       const done = hostThroughPty({
         command: execPath,
@@ -2600,10 +2602,17 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
         await controlInject(sock, 'recycle', '');
         await sleep(2500);
 
-        expect(captured()).toContain(`BOOT:http://127.0.0.1:${proxyPort}`);
-        expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
         const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
-        expect(events).toContain('"kind":"operator-pin-healed"');
+        if (managed) {
+          expect(captured()).toContain(`BOOT:http://127.0.0.1:${proxyPort}`);
+          expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
+          expect(events).toContain('"kind":"operator-pin-healed"');
+        } else {
+          expect(captured().split(`BOOT:http://localhost:${deadPort}`).length - 1).toBe(2);
+          expect(captured()).not.toContain(`BOOT:http://127.0.0.1:${proxyPort}`);
+          expect(env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBeUndefined();
+          expect(events).not.toContain('"kind":"operator-pin-healed"');
+        }
 
         await rawInject(sock, 'QUIT\n');
         await done;

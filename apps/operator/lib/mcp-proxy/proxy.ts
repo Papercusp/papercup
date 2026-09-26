@@ -930,6 +930,7 @@ export function prepareForward(
     keyingEnabled: boolean;
     readonlyRetryEnabled?: boolean;
     genKey: () => string;
+    requestPath?: string;
   },
 ): PreparedForward {
   if (method !== "POST" || body.length === 0)
@@ -939,6 +940,14 @@ export function prepareForward(
     parsed = JSON.parse(body.toString("utf8"));
   } catch {
     return { body, headers, klass: "opaque", hasCodeRunWrapper: false, rpcMethods: [] }; // non-JSON — cannot classify → safe default
+  }
+  // bootstrap-su is a REST mutation, not a JSON-RPC handshake. Its JSON has no
+  // tools/call, which otherwise makes prepareForward label it "idempotent" and
+  // abort/replay the upstream after the handshake's 8s no-header limit. Keep
+  // proxy replay off even when the body has a bootstrap idempotency key: the
+  // route's ledger can fail open, so only psu's typed same-key retry may recover.
+  if (opts.requestPath?.split("?")[0]?.replace(/\/+$/, "") === "/api/agent-mcp/console/bootstrap-su") {
+    return { body, headers, klass: "opaque", hasCodeRunWrapper: false, rpcMethods: [] };
   }
   const msgs = Array.isArray(parsed) ? parsed : [parsed];
   const rpcMethods = recordedRpcMethods(msgs);
@@ -4163,7 +4172,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             req.method ?? "GET",
             req.headers,
             rawBody,
-            { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID },
+            { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID, requestPath: req.url },
           );
           const traceId = requestTraceId;
           fwd.headers = withDataPlaneDegradedHeader(

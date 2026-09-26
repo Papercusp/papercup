@@ -88,12 +88,20 @@ describe('resolveAgentIdentity — principal (in-process) caller', () => {
     expect(id.workspaceId).toBe('ws-1');
   });
 
-  it('prefers uiClientId over principal.slug when both are present', () => {
+  it('keeps an unverified client id inside its authenticated principal namespace', () => {
     const id = resolveAgentIdentity({
       uiClientId: 'sess-xyz',
       principal: { kind: 'user', slug: 'alice', workspaceId: 'ws-1' },
     });
-    expect(id.ownerId).toBe('sess-xyz');
+    expect(id.ownerId).toBe('alice/sess-xyz');
+    expect(resolveAgentIdentity({
+      uiClientId: 'alice',
+      principal: { kind: 'user', slug: 'alice', workspaceId: 'ws-1' },
+    }).ownerId).toBe('alice');
+    expect(resolveAgentIdentity({
+      uiClientId: 'pi:alpha',
+      principal: { kind: 'pi', slug: 'pi:beta', workspaceId: 'ws-1' },
+    }).ownerId).toBe('pi:beta/pi:alpha');
   });
 });
 

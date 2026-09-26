@@ -4,6 +4,15 @@ import { checkpointRootMirror } from '../../release-checkpoint-launch';
 import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
 import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
 
+vi.mock('../../release/gate-action-receipt', () => ({
+  executeWithGateActionReceipt: vi.fn(async (input: { run: () => Promise<unknown>; ownerId: string }) => ({
+    ok: true, receiptId: 'test-repair-queue-receipt',
+    ownership: { certainty: 'claim-row-locked-through-effect', workItem: 'WI-gate',
+      holder: input.ownerId, takenAt: '2026-09-26T18:00:00.000Z' },
+    effect: await input.run(),
+  })),
+}));
+
 const queue = {
   schemaVersion: 3 as const,
   phase: 'awaiting-fixer' as const,
@@ -555,7 +564,7 @@ describe('release:repair-queue', () => {
     expect(metadata).toHaveBeenLastCalledWith(expect.objectContaining({
       gateActionReceipt: expect.objectContaining({
         action: 'repair-queue:admit',
-        ownership: expect.objectContaining({ certainty: 'unknown' }),
+        ownership: expect.objectContaining({ certainty: 'claim-row-locked-through-effect' }),
         target: { candidate: queue.candidate, repairHead: queue.repairHead },
         effect: expect.objectContaining({ status: 'repair-head-published', persisted: true }),
       }),

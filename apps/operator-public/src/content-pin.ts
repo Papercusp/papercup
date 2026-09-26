@@ -17,7 +17,7 @@ import {
   canonicalTreeDigest,
   collectIdentityValues,
   scanIdentityLeaks,
-  type ContentIdentityLeakHit,
+  type ContentIdentityLeakKind,
   type TreeDigestEntry,
 } from '@papercusp/artifact-registry';
 import type { ListingKind } from './db.ts';
@@ -49,6 +49,12 @@ export interface ContentPin {
   byteCount: number;
 }
 
+export interface ContentIdentityLeakSite {
+  path: string;
+  pattern: ContentIdentityLeakKind;
+  occurrences: number;
+}
+
 export type ContentPinRefusal =
   /** GitHub could not tell us the head or the tree — the publisher's token or
    *  the repo state is at fault, not the package; same class as
@@ -62,7 +68,7 @@ export type ContentPinRefusal =
    *  partial view. */
   | { ok: false; code: 'tree_truncated'; commitSha: string }
   | { ok: false; code: 'github_blob_unreachable'; commitSha: string; path: string; status: number }
-  | { ok: false; code: 'identity_leak'; commitSha: string; hits: ContentIdentityLeakHit[] }
+  | { ok: false; code: 'identity_leak'; commitSha: string; hits: ContentIdentityLeakSite[] }
   | {
       ok: false;
       code: 'listing_ref_too_large';
@@ -149,7 +155,7 @@ export async function pinListingContent(input: PinListingContentInput): Promise<
   // tree shape. Harvest identity-bearing JSON fields first, then scan every
   // serialized blob so a copied handle in prose cannot pass by hiding outside
   // the structured key that revealed it.
-  const packageParts: string[] = [];
+  const packageParts: Array<{ path: string; text: string }> = [];
   const identityValues = new Set<string>();
   for (const entry of entries) {
     const blobRes = await fetchImpl(`${repo}/git/blobs/${seg(entry.sha)}`, { headers });
@@ -167,7 +173,7 @@ export async function pinListingContent(input: PinListingContentInput): Promise<
     } catch {
       return { ok: false, code: 'github_blob_unreachable', commitSha, path: entry.path, status: blobRes.status };
     }
-    packageParts.push(`${entry.path}\n${text}`);
+    packageParts.push({ path: entry.path, text });
     if (/\.json$/i.test(entry.path)) {
       try {
         for (const value of collectIdentityValues(JSON.parse(text))) identityValues.add(value);
@@ -176,7 +182,12 @@ export async function pinListingContent(input: PinListingContentInput): Promise<
       }
     }
   }
-  const leaks = scanIdentityLeaks(packageParts.join('\n'), { knownIdentityValues: [...identityValues], osUser: null });
+  // Keep findings scoped to the blob that contains them. Never echo the
+  // matched value in an HTTP response: it may itself be a credential.
+  const leaks = packageParts.flatMap(({ path, text }) =>
+    scanIdentityLeaks(text, { knownIdentityValues: [...identityValues], osUser: null })
+      .map(({ kind, occurrences }) => ({ path, pattern: kind, occurrences })),
+  );
   if (leaks.length > 0) return { ok: false, code: 'identity_leak', commitSha, hits: leaks };
 
   const treeDigest = await canonicalTreeDigest(entries);

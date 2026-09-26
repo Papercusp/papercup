@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   compileAgentSpecification, loadBlueprintFromFile, pinPackageInput,
   pinnedOperationProgramBlueprint, pinnedOperationRubricPackage,
@@ -9,10 +10,16 @@ import {
   type ResolvedPackageInput,
 } from '@papercusp/orchestrator/blueprint';
 import {
-  compileBlueprintWithPackages, provisionBlueprintPackages, resolveBlueprintPackageInputs, resolveLocalBlueprintPackage,
+  compileBlueprintWithPackages, provisionBlueprintPackages,
+  resolveBlueprintPackageInputs as resolveCurrentBlueprintPackageInputs, resolveLocalBlueprintPackage,
 } from './compile-packages';
 vi.mock('../memory/hive-scope', () => ({ resolvePotSlugsForHarnesses: vi.fn(async () => ['parent-pot']) }));
 vi.mock('../hive-settings-store', () => ({ getHiveSetting: vi.fn(async () => ({ value: ['research'] })) }));
+
+// Reuse the standard copy-out mutation probe without changing the shared compiler.
+const resolveBlueprintPackageInputs: typeof resolveCurrentBlueprintPackageInputs = process.env.PAPERCUSP_MUTATION_PROBE_SOURCE
+  ? (await import(pathToFileURL(process.env.PAPERCUSP_MUTATION_PROBE_SOURCE).href)).resolveBlueprintPackageInputs
+  : resolveCurrentBlueprintPackageInputs;
 
 const pin = (ref: string, packageKind: 'recipe' | 'rubric' | 'knowledge-pack' = 'recipe') => pinPackageInput({
   packageKind, ref, revision: '1.0.0', files: [{ path: 'manifest.json', bytes: ref }],
@@ -246,7 +253,7 @@ describe('P-006 operator package adapter', () => {
   });
 
   it('refuses schema-valid bundle kinds that have no installed consumer instead of only naming them', async () => {
-    for (const kind of ['plan', 'goal', 'datatype', 'event', 'rule'] as const) {
+    for (const kind of ['plan', 'goal', 'datatype'] as const) {
       const source = { id: `unsupported-${kind}`, slots: [{ slot: 'domain' }],
         bundles: [{ kind, ref: `selected-${kind}` }] };
       await expect(compileBlueprintWithPackages(source, {

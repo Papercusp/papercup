@@ -77,6 +77,7 @@ import { readManualRunAdmission, readQualificationAdmission } from '../../releas
 import { resolveCheckpointRouting } from '../../harness/routines/hive-release-env';
 import { GATE_VERDICT_CELL } from '../../cell-registrations';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { executeWithGateActionReceipt } from '../../release/gate-action-receipt';
 import {
   armPausedCheckpointTransition,
   readCheckpointSerializerAuthority,
@@ -1794,41 +1795,45 @@ export default defineTool({
         ],
       };
     }
-    const result = await launchDetachedCheckpoint({
-      root: toolingRoot,
-      integrationRoot: checkpointRoot,
-      extraEnv: routing.extraEnv,
-      clearEnv: routing.clearEnv,
-      target: verdictTarget,
-      force: args.force,
-      replaceStale: args.replaceStale,
-      ...(launchCandidate ? { candidate: launchCandidate } : {}),
-      candidateSource: launchCandidateSource,
-      logicalAttemptId,
+    const accepted = await executeWithGateActionReceipt({
+      action: 'release:checkpoint-run', actor: gateCallerOwnerId ?? 'unknown',
+      ownerId: gateCallerOwnerId ?? '', conditionKey: gateOwnershipAtDispatch?.eventKey ?? '',
+      allowUnowned: true,
+      target: { candidate: launchCandidate, repairHead: frozenLineageCas.liveIdentity?.repairHead ?? null,
+        logicalAttemptId },
+      run: () => launchDetachedCheckpoint({
+        root: toolingRoot, integrationRoot: checkpointRoot,
+        extraEnv: routing.extraEnv, clearEnv: routing.clearEnv,
+        target: verdictTarget, force: args.force, replaceStale: args.replaceStale,
+        ...(launchCandidate ? { candidate: launchCandidate } : {}),
+        candidateSource: launchCandidateSource, logicalAttemptId,
+      }),
+      summarize: (effect) => ({ status: effect.launched ? 'detached-launch-accepted' : 'not-launched',
+        unit: effect.unit ?? null, reason: effect.reason ?? null, publishedVerdict: 'unknown' }),
     });
+    if (!accepted.ok) {
+      recordMetadata({ gateActionReceipt: { schemaVersion: 2, action: 'checkpoint-run',
+        callerOwnerId: gateCallerOwnerId, receiptId: accepted.receiptId,
+        effect: { status: accepted.effectMayHaveRun ? 'unknown' : 'refused', reason: accepted.reason } } });
+      return { content: [{ type: 'text', text: serializeResponse({ ok: false, launched: false,
+        reason: accepted.reason, receiptId: accepted.receiptId,
+        effectMayHaveRun: accepted.effectMayHaveRun, logical_attempt_id: logicalAttemptId }) }] };
+    }
+    const result = accepted.effect;
     // Stamp at the launch boundary: refusal and already-running paths return
     // before the later containment diagnostics, and those diagnostics can fail.
     // A transport-success row must still carry the actual launch effect.
     const transportedCandidateSha = launchCandidate ?? result.willJudge?.candidate ?? null;
     recordMetadata({
       gateActionReceipt: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         action: 'checkpoint-run',
+        receiptId: accepted.receiptId,
         callerOwnerId: gateCallerOwnerId,
-        ownership: gateOwnershipAtDispatch?.claimState === 'held' && gateOwnershipAtDispatch.workItem
-          ? {
-              certainty: 'prelaunch-observation',
-              observedAt: gateOwnershipObservedAt,
-              conditionKey: gateOwnershipAtDispatch.eventKey,
-              workItem: gateOwnershipAtDispatch.workItem,
-              holder: gateOwnershipAtDispatch.takenBy,
-              takenAt: gateOwnershipAtDispatch.takenAt,
-              claimState: gateOwnershipAtDispatch.claimState,
-              assessment: gateOwnershipAtDispatch.assessment,
-            }
-          : { certainty: 'unknown', observedAt: gateOwnershipObservedAt,
-              conditionKey: gateOwnershipAtDispatch?.eventKey ?? null,
-              reason: gateOwnershipAtDispatch?.unknown?.code ?? 'no-held-condition' },
+        ownership: { ...accepted.ownership, observedAt: gateOwnershipObservedAt,
+          conditionKey: gateOwnershipAtDispatch?.eventKey ?? null,
+          observedClaimState: gateOwnershipAtDispatch?.claimState ?? null,
+          observedAssessment: gateOwnershipAtDispatch?.assessment ?? null },
         target: { candidate: transportedCandidateSha, repairHead: frozenLineageCas.liveIdentity?.repairHead ?? null },
         effect: {
           status: result.launched ? 'detached-launch-accepted' : 'not-launched',

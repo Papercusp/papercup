@@ -334,7 +334,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   }
 
   const verdict: Verdict = contract && matrixText
-    ? checkReleaseAcceptance(parseRequiredMatrix(contract), JSON.parse(matrixText) as AcceptanceMatrixFile, candidate, rows)
+    ? checkReleaseAcceptance(parseRequiredMatrix(contract), JSON.parse(matrixText) as AcceptanceMatrixFile, candidate, rows, legs)
     : { ok: false, candidate, refusals: [], cells: [], capabilities: [], evidence: judgeEvidence(rows, candidate) };
   verdict.refusals.unshift(...extra);
   verdict.ok = verdict.refusals.length === 0;

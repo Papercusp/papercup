@@ -399,6 +399,7 @@ describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () =
       skipMcpJson: true,
     });
     expect(envelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
+    expect(envelope.env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
   });
 
   it('routes the child env through the resilient proxy when PAPERCUSP_MCP_PROXY_BASE is set — a console/fleet/capability:terminal launch must NOT permanently pin :3070 past a spawned session (the exact WI-1773 regression: an inherited PAPERCUSP_OPERATOR_URL override silently disables psu-launcher\'s proxy-first default)', async () => {
@@ -433,6 +434,8 @@ describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () =
       skipMcpJson: true,
     });
     expect(abEnvelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://localhost:3170');
+    expect(envelope.env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('psu-launcher');
+    expect(abEnvelope.env.PAPERCUSP_OPERATOR_URL_PROVENANCE).toBe('');
   });
 });
 

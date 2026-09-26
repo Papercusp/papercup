@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { linuxProcStateFromStat } from "@papercusp/operator-core/lib/process-identity";
 import {
   runGreenCheckpoint,
+  recordDerivedFreezeDispositionWithDeadline,
   emitInconclusiveCheckpointVerdict,
   checkpointVerdictSiblingKeys,
   checkpointCandidateProvenance,
@@ -182,6 +183,26 @@ import {
 import type { TickFreezeObservation } from "@papercusp/operator-core/lib/release/freeze-disposition";
 
 const testRequire = createRequire(import.meta.url);
+
+it("WI-10003241: a stalled optional freeze disposition cannot retain the checkpoint tree", async () => {
+  vi.useFakeTimers();
+  try {
+    const logs: string[] = [];
+    const running = recordDerivedFreezeDispositionWithDeadline(
+      () => new Promise(() => {}),
+      (line) => logs.push(line),
+      30,
+    );
+    await vi.advanceTimersByTimeAsync(30);
+    expect(await running).toBe(false);
+    expect(logs).toEqual([
+      "derived freeze-disposition write started (deadline 30ms)",
+      "derived freeze-disposition write deadline-exceeded in 30ms",
+    ]);
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 let repo: string;
 async function commit(

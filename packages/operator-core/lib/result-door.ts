@@ -701,17 +701,18 @@ type SpillReason =
  * there while every reporter below read the envelope, saw the word "omitted",
  * and concluded the bytes were gone (EI-21954450841272611 and friends).
  *
- * The aggregate advice is derived, not guessed: the cohort budget is
+ * The aggregate size diagnosis is derived: the cohort budget is
  * `resultEach * resultSlots` chars, a single result is charged at most
  * `resultEach` (`reserveAggregateBytes`' `chargedBytes` is
  * `min(sourceBytes, budgetChars)`), and `resultSlots` is a positive integer —
  * so a call that is FIRST in its cohort can never exceed the budget. Reaching
- * this reason therefore PROVES sibling calls in the same turn had already
- * consumed it, and that this result was not oversized on its own.
+ * this reason proves earlier calls in the SAME COHORT consumed it, and that
+ * this result was not oversized on its own. A compatibility cohort is only
+ * a 2s start-time heuristic; it does NOT prove a shared model turn.
  */
 function spillRecoveryNote(
   reason: SpillReason,
-  input: { upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[] } = {},
+  input: { upstreamProjection?: boolean; innerTruncationMarkers?: readonly string[]; aggregateMode?: ResultDoorAggregateScope['mode'] } = {},
 ): string {
   const recoverable =
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ';
@@ -733,9 +734,11 @@ function spillRecoveryNote(
   }
   if (reason === 'aggregate-output-budget-exceeded') {
     return (
-      `${recoverable}This result was NOT too large on its own; the shared per-turn fan-out budget had ` +
-      'already been consumed by SIBLING tool calls in the same turn. Re-issuing this one call by ' +
-      'itself returns it inline.'
+      `${recoverable}This result was NOT too large on its own; earlier calls in the same ` +
+      `${input.aggregateMode === 'compatibility' ? '2-second compatibility cohort' : 'explicit output cohort'} ` +
+      'consumed the shared budget. This does not prove they were parallel siblings. ' +
+      'Read the spill in bounded byte pages, or retry in a NEW output cohort; reissuing ' +
+      'within the same cohort can spill again.'
     );
   }
   if (reason === 'explicit-full-request-overflow') {
@@ -872,6 +875,7 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
             note: spillRecoveryNote(input.reason, {
               upstreamProjection: Boolean(upstreamProjection?.truncated),
               innerTruncationMarkers,
+              aggregateMode: input.aggregate?.mode,
             }),
           },
         },

@@ -737,7 +737,7 @@ describe('S4: handleGitSync ticks a seeded member end-to-end', () => {
     const originTip = await git(['rev-parse', 'main'], bare4a);
     expect(originTip).toBe(head);
     const subject = await git(['log', '-1', '--format=%s'], work4a);
-    expect(subject).toBe(`chore(git-sync): auto-commit ${M4A} [skip ci]`);
+    expect(subject).toBe('sync(root): notes.txt (1 file, +1/-0) [skip ci]');
     expect(await git(['status', '--porcelain'], work4a)).toBe('');
 
     // Routine metadata recorded the outcome.

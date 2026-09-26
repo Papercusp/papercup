@@ -169,7 +169,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
           detectorKey: 'quarantined-importer',
           error:
             `imports '${spec}' → '${target}', which is EXCLUDED from this commit (${exclusionLabel}). ` +
-            `Committing this file alone would leave an unresolvable import at HEAD (EI-19932544083689229) — ` +
+            `Committing this file alone could leave HEAD without the dependency changes its import needs — ` +
             `holding it back until '${target}' is resolved.`,
           fixerRole: 'content-fixer',
         });

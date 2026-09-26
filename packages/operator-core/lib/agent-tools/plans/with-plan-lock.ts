@@ -246,6 +246,8 @@ export interface WithPlanLockOpts<T = unknown> {
      * without re-reading a potentially newer concurrent revision.
      */
     writtenTemplateData: unknown,
+    /** Version committed by this write; audit sequence numbers are independent. */
+    writtenVersion?: number,
   ) => Promise<void>;
   /**
    * Optional strict revision hook. Unlike afterWrite, this runs on the
@@ -893,7 +895,7 @@ export async function withPlanLock<T>(
         priorBody: string | null;
       };
       if (writtenBody !== null && opts.afterWrite) {
-        await opts.afterWrite(writtenBody, { workspaceId, harnessSlug }, writtenTemplateData);
+        await opts.afterWrite(writtenBody, { workspaceId, harnessSlug }, writtenTemplateData, applied.version);
       }
       let activationAudit: ActivationAuditEditNotice | null = null;
       if (writtenBody !== null) {

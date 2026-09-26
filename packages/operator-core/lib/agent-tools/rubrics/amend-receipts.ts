@@ -1,30 +1,6 @@
-/**
- * rubrics:amend receipts (review-system-rework-reduction-2026-09-23 P-008, clause
- * RSR-P-008-C: "rubrics:amend that would exceed its timeout returns a pollable
- * receipt"; falsifier: "the caller receives a timeout error with an unknown commit
- * state").
- *
- * WHY. An acceptance-BAR amendment rebinds contracts and invalidates evidence
- * atomically, and it can run past the MCP transport deadline: in the 14 days before
- * this change 18 amends timed out (8 beyond 50s, the longest 223s) and 11 more
- * succeeded only after 30s. A timed-out caller could not tell whether the amendment
- * had landed, so the safe next step (re-read, compare, maybe retry) cost several
- * round-trips and sometimes a duplicate attempt.
- *
- * WHAT THIS HOLDS. The outcome of each amend the handler started, keyed by its
- * idempotency key, so `rubrics:amend-status` can answer running / committed /
- * failed while the operator process that ran it is alive.
- *
- * ⚠ PROCESS-LOCAL, like in-flight-calls.ts, and deliberately so. The DURABLE truth
- * for a BAR-changing amendment is its subject-plan Decision carrying
- * `Amendment-Id: <key>` (findAmendmentDecisionByKey), which commits atomically with
- * the rubric revision. This registry only adds what durable state cannot say —
- * "still running" and "failed with this error" — and both of those die with the
- * process anyway: an amendment in flight across a restart rolls back, which is
- * exactly the not-committed case a same-key retry handles safely. Entries are
- * bounded by age and count so a long-lived process cannot accumulate them.
- */
-import { pinModuleState } from '@papercusp/module-singleton';
+/** Shared receipts: status polls may land on any operator worker. */
+import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 export type AmendReceiptState = 'running' | 'committed' | 'previewed' | 'failed';
 
@@ -39,67 +15,98 @@ export interface AmendReceiptEntry {
   error?: string;
 }
 
-/** How long a finished outcome stays readable. Long enough for a caller to poll
- *  after a slow amend; a running entry is kept until it settles. */
 export const AMEND_RECEIPT_RETENTION_MS = 60 * 60 * 1000;
-/** Hard ceiling on retained entries; the oldest finished ones go first. */
-const MAX_ENTRIES = 500;
+interface ReceiptRow {
+  idempotency_key: string;
+  rubric_ref: string;
+  state: AmendReceiptState;
+  started_at: Date | string;
+  finished_at: Date | string | null;
+  result_json: Record<string, unknown> | null;
+  error: string | null;
+}
 
-const state = pinModuleState('@papercusp/operator-core.rubrics-amend-receipts', () => ({
-  entries: new Map<string, AmendReceiptEntry>(),
-}));
-
-function sweep(now: number): void {
-  for (const [key, entry] of state.entries) {
-    if (entry.state !== 'running' && entry.finishedAt !== undefined && now - entry.finishedAt > AMEND_RECEIPT_RETENTION_MS) {
-      state.entries.delete(key);
-    }
-  }
-  if (state.entries.size <= MAX_ENTRIES) return;
-  const finished = [...state.entries.values()]
-    .filter((entry) => entry.state !== 'running')
-    .sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0));
-  for (const entry of finished) {
-    if (state.entries.size <= MAX_ENTRIES) break;
-    state.entries.delete(entry.idempotencyKey);
-  }
+function asEntry(row: ReceiptRow): AmendReceiptEntry {
+  return {
+    idempotencyKey: row.idempotency_key,
+    rubricRef: row.rubric_ref,
+    state: row.state,
+    startedAt: new Date(row.started_at).getTime(),
+    ...(row.finished_at ? { finishedAt: new Date(row.finished_at).getTime() } : {}),
+    ...(row.result_json ? { result: row.result_json } : {}),
+    ...(row.error ? { error: row.error } : {}),
+  };
 }
 
 /**
- * Record an amend the handler started and track it to completion. `run` resolves
- * with the payload the synchronous call returns; an `ok:false` payload (no such
- * rubric) and a thrown error are both recorded as failed.
+ * Reserve the key before invoking the amend. A same-key request on another
+ * worker reads the shared row rather than starting duplicate work.
  */
-export function trackAmendRun(
+export async function trackAmendRun(
   idempotencyKey: string,
   rubricRef: string,
-  run: Promise<Record<string, unknown>>,
-  now: number = Date.now(),
+  run: () => Promise<Record<string, unknown>>,
 ): Promise<Record<string, unknown>> {
-  sweep(now);
-  const entry: AmendReceiptEntry = { idempotencyKey, rubricRef, state: 'running', startedAt: now };
-  state.entries.set(idempotencyKey, entry);
-  return run.then(
-    (result) => {
-      entry.finishedAt = Date.now();
-      entry.result = result;
-      entry.state = result.ok === true ? (result.dryRun === true ? 'previewed' : 'committed') : 'failed';
-      if (entry.state === 'failed') entry.error = typeof result.error === 'string' ? result.error : 'amend returned ok:false';
-      return result;
-    },
-    (error: unknown) => {
-      entry.finishedAt = Date.now();
-      entry.state = 'failed';
-      entry.error = error instanceof Error ? error.message : String(error);
-      throw error;
-    },
-  );
+  const { sql } = getOrgPg();
+  const workspaceId = activeWorkspaceId();
+  // Finished previews/failures have no Decision fallback. Retain them for one
+  // hour, then bound the shared table opportunistically on the next amend.
+  await sql`
+    DELETE FROM harness_shared.rubric_amend_receipts
+     WHERE workspace_id = ${workspaceId}
+       AND finished_at < now() - interval '1 hour' AND state <> 'running'
+  `;
+  const inserted = await sql<Array<{ idempotency_key: string }>>`
+    INSERT INTO harness_shared.rubric_amend_receipts
+      (workspace_id, rubric_ref, idempotency_key, state)
+    VALUES (${workspaceId}, ${rubricRef}, ${idempotencyKey}, 'running')
+    ON CONFLICT (workspace_id, rubric_ref, idempotency_key) DO NOTHING
+    RETURNING idempotency_key
+  `;
+  if (inserted.length === 0) {
+    const existing = await getAmendReceipt(rubricRef, idempotencyKey);
+    if (!existing) throw new Error('rubric amend receipt disappeared during same-key retry');
+    if (existing.result) return existing.result;
+    if (existing.state === 'failed') throw new Error(existing.error ?? 'previous rubric amendment failed');
+    return { ok: true, pending: true, idempotencyKey, receipt: { rubricRef, idempotencyKey } };
+  }
+  let result: Record<string, unknown>;
+  try {
+    result = await run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await sql`
+      UPDATE harness_shared.rubric_amend_receipts
+         SET state = 'failed', error = ${message}, finished_at = now()
+       WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
+         AND idempotency_key = ${idempotencyKey} AND state = 'running'
+    `;
+    throw error;
+  }
+  // A persistence failure after the amend committed must never reclassify it as
+  // failed. The atomic Decision remains the source of truth for applied BARs.
+  const state: AmendReceiptState = result.ok === true
+    ? (result.dryRun === true ? 'previewed' : 'committed') : 'failed';
+  const error = state === 'failed'
+    ? (typeof result.error === 'string' ? result.error : 'amend returned ok:false') : null;
+  await sql`
+    UPDATE harness_shared.rubric_amend_receipts
+       SET state = ${state}, result_json = ${JSON.stringify(result)}::text::jsonb,
+           error = ${error}, finished_at = now()
+     WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
+       AND idempotency_key = ${idempotencyKey}
+  `;
+  return result;
 }
 
-export function getAmendReceipt(idempotencyKey: string): AmendReceiptEntry | undefined {
-  return state.entries.get(idempotencyKey.trim());
-}
-
-export function __resetAmendReceiptsForTest(): void {
-  state.entries.clear();
+export async function getAmendReceipt(rubricRef: string, idempotencyKey: string): Promise<AmendReceiptEntry | undefined> {
+  const { sql } = getOrgPg();
+  const rows = await sql<ReceiptRow[]>`
+    SELECT idempotency_key, rubric_ref, state, started_at, finished_at, result_json, error
+      FROM harness_shared.rubric_amend_receipts
+     WHERE workspace_id = ${activeWorkspaceId()}
+       AND rubric_ref = ${rubricRef}
+       AND idempotency_key = ${idempotencyKey.trim()}
+  `;
+  return rows[0] ? asEntry(rows[0]) : undefined;
 }

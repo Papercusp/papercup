@@ -341,6 +341,9 @@ export async function buildConsoleEnvelope(
     // restoring the system login (EI-21575557995965463).
     PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default',
     PAPERCUSP_OPERATOR_URL: resolveAgentMcpBaseUrl(agentMcpBaseUrl),
+    // A selected A/B/current-build endpoint is a pin. Clear any inherited managed
+    // marker; automatically resolved desktop/proxy endpoints retain rediscovery.
+    PAPERCUSP_OPERATOR_URL_PROVENANCE: opts.agentMcpBaseUrl != null ? '' : 'psu-launcher',
     // Scope HOME to the SELECTED workspace — using the global papercuspPath()
     // here was the latent bug that let a spawned agent carry
     // PAPERCUSP_WORKSPACE=<picked> alongside PAPERCUSP_HOME=<active>.

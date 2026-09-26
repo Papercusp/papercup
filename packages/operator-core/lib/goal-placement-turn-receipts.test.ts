@@ -119,6 +119,14 @@ describe('exact completed-opportunity proof join', () => {
     const { launch: _launch, ...legacy } = f.receipt;
     expect(qualifyGoalPlacementTurn({ receipt: legacy, turnEnd: f.end, nativeSessionId: 'native-1' })).toBeNull();
   });
+  it('qualifies a completed repair only with the same exact admission evidence as delegation', () => {
+    const f = proof(); f.end.rows[0]!.actionKind = 'repair';
+    expect(f.qualify()).toMatchObject({ eligibleAtOffer: true, eligibleAtCompletion: true });
+    f.end.admissions[0]!.admission.governor = 'restricted';
+    expect(f.qualify()?.eligibleAtCompletion).toBe(false);
+    f.end.admissions[0]!.admission.governor = 'unknown';
+    expect(f.qualify()).toBeNull();
+  });
   it('excludes actual admission activity and keeps unknown measurement unknown', () => {
     const f = proof(); f.end.admissions[0]!.admission.attempts = 'present';
     expect(f.qualify()?.eligibleAtCompletion).toBe(false);

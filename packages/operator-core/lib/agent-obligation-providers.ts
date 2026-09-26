@@ -23,7 +23,7 @@ import type { PlanAcceptanceGateCode, PlanAcceptanceGateVerdict } from './plan-a
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
 import type { ExactPlanAdmission, ExactPlanAdmissionReason } from './agent-tools/plans/plan-admission-preflight';
 
-export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v4';
+export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v5';
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
@@ -456,6 +456,7 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
   const selected = selectGoalPlacementPlan(portfolio, input.read.value.admissions);
   const progressPlan = selected ?? applicablePlans[0];
   let progressStalledAt: string | null = null;
+  let repairExhausted = false;
   if (progressPlan && input.read.value.progress) {
     const state = input.read.value.progress[progressPlan.ref];
     const view = advanceGoalPlacementProgress({
@@ -478,6 +479,7 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
     }
     ageMs = view.status === 'known' ? view.ageMs ?? undefined : undefined;
     progressStalledAt = selected && view.stalled ? view.state.stalledAt : null;
+    repairExhausted = !!progressStalledAt && view.state.repairOpportunities === 2;
   }
   const portfolioReadFailure = portfolio.degradedReasons.find((reason) => /portfolio read failed/i.test(reason));
   if (portfolioReadFailure) {
@@ -680,18 +682,25 @@ export function planPlacementObligation(input: PlanPlacementProviderInput): Agen
   if (progressStalledAt && placement.state === 'unplaced') {
     return defineAgentObligation({
       ...common,
-      title: `Diagnose stalled goal plan placement for ${selected.slug}`,
+      title: `${repairExhausted ? 'Escalate exhausted repair' : 'Diagnose stalled goal plan placement'} for ${selected.slug}`,
       scope: { ...scope, planSlug: selected.slug },
-      episode: `stalled:${selected.slug}:${progressStalledAt}`,
+      episode: `${repairExhausted ? 'repair-exhausted' : 'stalled'}:${selected.slug}:${progressStalledAt}`,
       status: 'due',
-      reason: 'two distinct delivered, completed, eligible decisions produced no verified placement effect',
+      reason: repairExhausted
+        ? 'two additional delivered, completed, eligible repair decisions produced no verified effect'
+        : 'two distinct delivered, completed, eligible decisions produced no verified placement effect',
       causalRank: 1,
       applicableDemand: applicablePlans.length,
       evidence: placementEvidence(input, selected),
       action: {
-        kind: 'repair',
-        summary: `inspect the canonical launch transaction, admission refusal, fleet and member claims for ${selected.slug}; repair the failed leg before retrying placement`,
+        kind: repairExhausted ? 'report' : 'repair',
+        summary: repairExhausted
+          ? `stop repeating the failed placement repair for ${selected.slug}; reassign the repair within existing authority or escalate its exact blocker and evidence; do not relaunch or widen budget/admission authority`
+          : `inspect the canonical launch transaction, admission refusal, fleet and member claims for ${selected.slug}; repair the failed leg before retrying placement`,
         targetRef: selected.ref,
+        // Retain the canonical target for receipt/admission measurement only.
+        // No tool is offered: a repair must not become an executable relaunch.
+        ...(!repairExhausted && toolCall?.tool === 'fleet:launch-on-plan' ? { args: toolCall.args } : {}),
       },
       ...(ageMs == null ? {} : { ageMs }),
     });

@@ -268,8 +268,15 @@ export function checkReleaseAcceptance(
   matrix: AcceptanceMatrixFile,
   candidate: Candidate,
   rows: EvidenceRow[],
+  legs?: ReadonlyArray<{ engine: string; status: number | null }>,
 ): Verdict {
   const refusals = matrixDrift(required, matrix);
+  // A passing tagged journey cannot hide a failure elsewhere in its test
+  // process. Null is an interrupted/timed-out process, never a successful leg.
+  if (legs?.length === 0) refusals.push('no installed-product acceptance legs ran');
+  for (const leg of legs ?? []) {
+    if (leg.status !== 0) refusals.push(`installed-product ${leg.engine} test leg did not exit successfully (status ${leg.status})`);
+  }
   const qualifying = rows.filter((row) => disqualification(row, candidate) === null);
   const proven = (tag: string, platform: string, engine?: string) =>
     qualifying.some((row) => row.tag === tag && row.platform === platform && (engine === undefined || row.engine === engine));

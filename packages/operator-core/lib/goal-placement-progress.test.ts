@@ -77,6 +77,28 @@ describe('effect-based goal placement progress', () => {
     const three = advanceGoalPlacementProgress({ scopeKey, previous: two.state, now: at(7), opportunity: receipt(3) });
     expect(three.state).toMatchObject({ opportunities: 2, stalledAt: at(5), firstEligibleAt: at(2), lastEffect: null });
   });
+  it('bounds repair only by two new eligible completed opportunities after the stall', () => {
+    const one = advanceGoalPlacementProgress({ scopeKey, previous: null, now: at(3), opportunity: receipt(1) });
+    const stalled = advanceGoalPlacementProgress({ scopeKey, previous: one.state, now: at(5), opportunity: receipt(2) });
+    // Legacy v1 receipts have no repair counter and remain valid. An overlapping
+    // pre-repair offer and an excluded completion must not spend the repair bound.
+    let state = advanceGoalPlacementProgress({ scopeKey, previous: stalled.state, now: at(7),
+      opportunity: { ...receipt(3), offeredAt: at(4) } }).state;
+    state = advanceGoalPlacementProgress({ scopeKey, previous: state, now: at(9),
+      opportunity: { ...receipt(4), eligibleAtCompletion: false } }).state;
+    expect(state.repairOpportunities ?? 0).toBe(0);
+    const first = advanceGoalPlacementProgress({ scopeKey, previous: state, now: at(11), opportunity: receipt(5) });
+    expect(first.state).toMatchObject({ repairOpportunities: 1, stalledAt: at(5) });
+    expect(advanceGoalPlacementProgress({ scopeKey, previous: first.state, now: at(20) }).state).toEqual(first.state);
+    expect(advanceGoalPlacementProgress({ scopeKey, previous: first.state, now: at(20), opportunity: receipt(5) }).state).toEqual(first.state);
+    const exhausted = advanceGoalPlacementProgress({ scopeKey, previous: first.state, now: at(13), opportunity: receipt(6) });
+    expect(exhausted.state).toMatchObject({ opportunities: 2, repairOpportunities: 2, stalledAt: at(5) });
+    expect(advanceGoalPlacementProgress({ scopeKey, previous: exhausted.state, now: at(15), opportunity: receipt(7) }).state)
+      .toMatchObject({ repairOpportunities: 2, stalledAt: at(5) });
+    const reset = advanceGoalPlacementProgress({ scopeKey, previous: exhausted.state, now: at(14), effect: effect(14) });
+    expect(reset.state).toMatchObject({ opportunities: 0, stalledAt: null });
+    expect(reset.state.repairOpportunities ?? 0).toBe(0);
+  });
   it('rejects cross-scope and future evidence without mutating the prior state', () => {
     const previous = initial().state;
     for (const patch of [{ scopeKey: 'another-goal' }, { effect: effect(20) }, { opportunity: receipt(20) }]) {
@@ -93,6 +115,9 @@ describe('effect-based goal placement progress', () => {
     expect(result.state).toEqual(previous);
   });
   it.each([
+    { repairOpportunities: 1 },
+    { repairOpportunities: -1 },
+    { repairOpportunities: 3 },
     { opportunities: 2, stalledAt: at(2) },
     { lastEffect: effect(40) },
     { firstEligibleAt: 'not-a-time' },

@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../memory/backend', () => ({ getMemoryBackend: vi.fn() }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 vi.mock('../hive-settings-store', () => ({
   getHiveSetting: vi.fn(async () => settingRec),
   setHiveSetting: vi.fn(async (input: { value: unknown }) => {
@@ -232,6 +233,63 @@ describe('classifyPackInstall', () => {
 });
 
 describe('applyPackInstall', () => {
+  it('returns exact write receipts across a partial failure and uses the reviewed backend', async () => {
+    const { backend } = fakeBackend({});
+    const review = await classifyPackInstall({ potSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
+    backend.remember
+      .mockResolvedValueOnce({ ids: ['memory-a-1', 'memory-a-2'] })
+      .mockRejectedValueOnce(new Error('storage unavailable'))
+      .mockResolvedValueOnce({ ids: ['memory-c'] });
+    // Changing the global backend after review must not redirect the writes.
+    const other = fakeBackend({});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await applyPackInstall({ workspaceId: 'ws', potSlug: 'h', pack, review },
+        { backend: backend as never });
+      expect(result).toMatchObject({ ok: false, installed: 2, failed: 1,
+        resources: [
+          { itemId: 'a', memoryIds: ['memory-a-1', 'memory-a-2'], memoryScope: 'hive:h',
+            packId: 'rails-pack', packVersion: '2.0.0', installedText: 'A — always do a' },
+          { itemId: 'c', memoryIds: ['memory-c'], installedText: 'C — always do c' },
+        ],
+        failures: [{ itemId: 'b', error: 'storage unavailable' }],
+      });
+      expect(result.resources.every((receipt) => /^[a-f0-9]{64}$/.test(receipt.installedHash))).toBe(true);
+      expect(other.backend.remember).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+
+  it('refuses a successful write without resource IDs instead of reporting an untraceable install', async () => {
+    const { backend } = fakeBackend({});
+    const review = await classifyPackInstall({ potSlug: 'h', pack }, { backend: backend as never, judge: noConflictJudge });
+    backend.remember.mockResolvedValue({ ids: [] });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await applyPackInstall({ workspaceId: 'ws', potSlug: 'h', pack, review }, { backend: backend as never });
+      expect(result).toMatchObject({ ok: false, installed: 0, failed: 3, resources: [] });
+      expect(result.failures.map((failure) => failure.itemId)).toEqual(['a', 'b', 'c']);
+    } finally { warn.mockRestore(); }
+  });
+
+  it('refuses a review reused for a different package version or changed bytes before writing', async () => {
+    const { backend } = fakeBackend({});
+    const review = await classifyPackInstall({ potSlug: 'h', pack }, { judge: noConflictJudge });
+    const changedPacks: KnowledgePack[] = [
+      { ...pack, manifest: { ...pack.manifest, id: 'another-pack' } },
+      { ...pack, manifest: { ...pack.manifest, version: '3.0.0' } },
+      { ...pack, items: [{ ...pack.items[0]!, text: 'changed after review' }, ...pack.items.slice(1)] },
+    ];
+    for (const changed of changedPacks) {
+      await expect(applyPackInstall({ workspaceId: 'ws', potSlug: 'h', pack: changed, review },
+        { backend: backend as never })).rejects.toThrow(/knowledge-pack review/);
+    }
+    expect(backend.remember).not.toHaveBeenCalled();
+    expect(backend.forget).not.toHaveBeenCalled();
+    // The original exact package remains installable through the same guard.
+    await expect(applyPackInstall({ workspaceId: 'ws', potSlug: 'h', pack, review },
+      { backend: backend as never })).resolves.toMatchObject({ ok: true, installed: 3 });
+  });
+
   it('honors per-item resolutions; replace forgets the clashing row first', async () => {
     const { backend, forgotten, remembered } = fakeBackend({
       neighborsFor: {

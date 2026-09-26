@@ -228,7 +228,7 @@ describe('real load (integration against installed binaries)', () => {
     });
     // If this ever fails, the installed better-sqlite3 binary is broken for the
     // test's Node ABI — exactly the 2026-06-19 outage condition.
-    expect(r.ok).toBe(true);
+    expect(r.ok, formatReport(r)).toBe(true);
   });
 });
 

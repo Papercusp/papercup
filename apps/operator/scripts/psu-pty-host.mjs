@@ -1841,6 +1841,7 @@ export const HOST_HANDOFF_ENV_KEYS = Object.freeze([
   'PAPERCUSP_ACCOUNT_ID',
   'PAPERCUSP_ACCOUNT_ROUTING_MODE',
   'PAPERCUSP_OPERATOR_URL',
+  'PAPERCUSP_OPERATOR_URL_PROVENANCE',
   'PAPERCUSP_AGENT_SESSION',
   'PAPERCUSP_AUTO_MODE',
   'PAPERCUSP_DRAIN_MODE',
@@ -6102,10 +6103,11 @@ export function injectTurn(sock, text, ownerId) {
  * console carried http://localhost:3170 through every carry-respawn, and each staging
  * restart took its MCP tools and its owner-directive capture down with it.
  *
- * The pin is replaced only when it REFUSES the connection — a port with nothing
- * listening. A slow or erroring operator is alive and stays authoritative, so a live
- * staging pin is never silently moved to green (the rule resolveOmpOperatorUrl in the
- * launcher also follows). The replacement is the local MCP proxy, and only when it
+ * Only launcher-managed URLs may heal, using the existing provenance marker shared
+ * with ptool. An explicit target stays authoritative even when its server is down:
+ * a refusal does not authorize moving a current-build session to stable code.
+ * A managed pin is replaced only when it REFUSES the connection. A slow or erroring
+ * operator stays authoritative. The replacement is the local MCP proxy, and only when it
  * answers /api/health. Mutates `env` in place and returns `{ from, to }` when it
  * healed, otherwise null. Never throws.
  *
@@ -6114,6 +6116,7 @@ export function injectTurn(sock, text, ownerId) {
  */
 export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 3_000 } = {}) {
   try {
+    if (env.PAPERCUSP_OPERATOR_URL_PROVENANCE !== 'psu-launcher') return null;
     const pinned = String(env.PAPERCUSP_OPERATOR_URL || '').trim().replace(/\/+$/, '');
     if (!pinned || env.PAPERCUSP_MCP_PROXY === '0') return null;
     let pinnedUrl;
@@ -9811,6 +9814,11 @@ export function hostThroughPty(o) {
             const value = env[key];
             if (typeof value === 'string' && value.length > 0) handoffEnv[key] = value;
           }
+          // Missing/empty provenance is an explicit pin, not permission to inherit
+          // a managed marker from the shim's original environment.
+          if (handoffEnv.PAPERCUSP_OPERATOR_URL) {
+            handoffEnv.PAPERCUSP_OPERATOR_URL_PROVENANCE = env.PAPERCUSP_OPERATOR_URL_PROVENANCE ?? '';
+          }
           if (advSessionId != null && !handoffEnv.PAPERCUSP_ADV_SESSION_ID) {
             handoffEnv.PAPERCUSP_ADV_SESSION_ID = String(advSessionId);
           }
@@ -9956,8 +9964,8 @@ export function hostThroughPty(o) {
         freshChildOwnerInputGeneration = systemPromptAddendum
           ? ownerInputGeneration
           : null;
-        // EI-24091823697677465: the successor inherits `env`, so a dead operator pin
-        // must be healed HERE or it outlives every respawn. Best-effort: a probe
+        // The successor inherits `env`; heal dead managed targets here while
+        // preserving explicit target provenance. Best-effort: a probe
         // failure must never cost the respawn.
         try {
           const healed = await healOperatorPin(env);

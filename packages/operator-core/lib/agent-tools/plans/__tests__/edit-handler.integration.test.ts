@@ -26,6 +26,8 @@ import type postgres from 'postgres';
 import editTool from '../edit';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
 import { setupPlanPgFixture, seedPlan, cleanupPlans, type PlanPgFixture } from './_pg-tool-fixture';
+import { recordGoalLocalPlanOrigin, recordGoalReviewFeedback } from '../../../scout/goal-feedback';
+import { recordRoutedIdea } from '../../../scout/routed-ledger';
 
 const HARNESS = `zzz-edit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SLUG = 'zzz-edit-plan-2026-06-04';
@@ -104,17 +106,71 @@ beforeAll(async () => {
 }, 180_000);
 
 afterAll(async () => {
+  await admin`DELETE FROM harness_shared.scout_routed_ideas
+    WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
   await fx?.dispose();
 });
 
 beforeEach(async () => {
   // Fresh single plan row, no revisions, for every case.
+  await admin`DELETE FROM harness_shared.scout_routed_ideas
+    WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
   await cleanupPlans(admin, WS, HARNESS).catch(() => {});
   await seedPlan(admin, WS, HARNESS, SLUG, validPlan());
 });
 
 describe('plans:edit handler — successful edit', () => {
+  it.each(['goal-local', 'blender'] as const)('preserves %s lineage and immutable amendment history through feedback', async (origin) => {
+    const goalId = `goal-${HARNESS}`;
+    const ownerId = 'su-goal-plan-history';
+    const planRef = `plan:${HARNESS}/${SLUG}`;
+    await admin`UPDATE harness_shared.harness_plans SET goal_id = ${goalId}
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+    if (origin === 'goal-local') {
+      expect(await recordGoalLocalPlanOrigin({ workspaceId: WS, harnessSlug: HARNESS,
+        planSlug: SLUG, goalId, ownerId })).toMatchObject({ action: 'recorded' });
+    } else {
+      await recordRoutedIdea({ workspaceId: WS, harnessSlug: HARNESS,
+        ideaId: `blender-${HARNESS}`, origin: 'scout', lens: 'analogical', rail: 'plan', routedRef: planRef });
+    }
+    const lineage = () => admin`SELECT idea_id, routed_ref, origin, created_by FROM harness_shared.scout_routed_ideas
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} ORDER BY idea_id`;
+    const history = () => admin`SELECT seq, content_hash, content_snapshot, author_id, rationale
+      FROM harness_shared.plan_revisions WHERE workspace_id = ${WS}
+        AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG} ORDER BY seq`;
+    const originalLineage = await lineage();
+    expect(originalLineage).toHaveLength(1);
+    expect(originalLineage[0].origin).toBe(origin === 'goal-local' ? 'su-ideate' : 'scout');
+    expect((await runEdit({ old_string: 'The next concrete action.', new_string: 'Implement the scoped need.',
+      rationale: 'Retain the adopted plan identity.' })).isError).toBe(false);
+    const firstHistory = await history();
+    expect(firstHistory).toHaveLength(1);
+    const feedback = () => recordGoalReviewFeedback({ workspaceId: WS, ownerId,
+      review: { goalId, planRefs: [planRef], evidenceRefs: ['WI-201'] } });
+    await feedback();
+    expect((await runEdit({ old_string: 'Implement the scoped need.', new_string: 'Verify the revised scoped need.',
+      rationale: 'Revise execution details without replacing origin.' })).isError).toBe(false);
+    await feedback();
+    // A foreign goal cannot acquire ownership through the feedback writer.
+    expect(await recordGoalReviewFeedback({ workspaceId: WS, ownerId: 'su-foreign',
+      review: { goalId: 'foreign-goal', planRefs: [planRef], evidenceRefs: ['WI-202'] } }))
+      .toMatchObject([{ action: 'not-goal-local' }]);
+    expect(await lineage()).toEqual(originalLineage);
+    const amendedHistory = await history();
+    expect(amendedHistory).toHaveLength(2);
+    expect(amendedHistory[0]).toEqual(firstHistory[0]);
+    expect(amendedHistory[1]).toMatchObject({ seq: 2,
+      content_snapshot: expect.stringContaining('Verify the revised scoped need.'),
+      rationale: 'Revise execution details without replacing origin.' });
+    expect(amendedHistory[1].content_hash).not.toBe(firstHistory[0].content_hash);
+    // Enumerate the entire isolated harness, not only the expected slug: a
+    // cloned sibling plan would otherwise evade a same-slug assertion.
+    const plans = await admin`SELECT plan_slug, goal_id FROM harness_shared.harness_plans
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} ORDER BY plan_slug`;
+    expect([...plans]).toEqual([{ plan_slug: SLUG, goal_id: goalId }]);
+  });
+
   it('records exactly ONE plan_revisions row and returns revision.seq', async () => {
     expect(await revisionCount()).toBe(0);
     const before = await liveVersion();

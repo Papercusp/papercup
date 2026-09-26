@@ -312,7 +312,7 @@ export default defineTool({
     };
     if (args.dryRun) {
       const receiptKey = 'preview-' + randomUUID();
-      const run = trackAmendRun(receiptKey, args.rubricRef, (async (): Promise<Record<string, unknown>> => {
+      const run = trackAmendRun(receiptKey, args.rubricRef, async (): Promise<Record<string, unknown>> => {
         const preview = await previewAcceptanceBarAmendment(input);
         if (preview === null) {
           return {
@@ -347,7 +347,7 @@ export default defineTool({
           launchCtx: ctx,
         });
         return { ok: true, dryRun: true, preview, review };
-      })());
+      });
       const settled = await settleWithin(run, amendForegroundBudgetMs());
       if (settled.kind === 'rejected') throw settled.error;
       const payload = settled.kind === 'resolved'
@@ -378,7 +378,7 @@ export default defineTool({
     const run = trackAmendRun(
       idempotencyKey,
       args.rubricRef,
-      executeAmend({ ...input, idempotencyKey }, args.rubricRef),
+      () => executeAmend({ ...input, idempotencyKey }, args.rubricRef),
     );
     const settled = await settleWithin(run, amendForegroundBudgetMs());
     if (settled.kind === 'rejected') throw settled.error;

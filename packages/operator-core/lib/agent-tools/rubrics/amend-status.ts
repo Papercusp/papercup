@@ -3,13 +3,13 @@
  * (review-system-rework-reduction-2026-09-23 P-008, clause RSR-P-008-C).
  *
  * Answers in the order of certainty:
- *  1. the in-process receipt (amend-receipts.ts): running / committed / failed,
+ *  1. the shared receipt (amend-receipts.ts): running / committed / failed,
  *     with the exact payload the synchronous call would have returned;
  *  2. the durable Decision a BAR-changing acceptance amendment commits
- *     atomically (`Amendment-Id: <key>`): committed, even after a restart;
- *  3. neither: not_found. Because an amendment is atomic and keyed, re-issuing
- *     the same rubrics:amend with the same idempotencyKey is then safe — it
- *     replays if the amendment landed and applies it if it did not.
+ *     atomically (`Amendment-Id: <key>`): committed, even if a worker died
+ *     before it could finish its running receipt;
+ *  3. neither: not_found. A same-key retry is safe after checking durable
+ *     state because receipt registration precedes amendment execution.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -56,8 +56,20 @@ export default defineTool({
     const reply = (payload: Record<string, unknown>) => ({
       content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...payload }) }],
     });
-    const receipt = getAmendReceipt(args.idempotencyKey);
-    if (receipt && receipt.rubricRef === args.rubricRef) {
+    const receipt = await getAmendReceipt(args.rubricRef, args.idempotencyKey);
+    // A worker can die after the amendment commits but before it updates the
+    // receipt. In that case the atomic Decision outranks a stranded "running".
+    if (receipt?.state === 'running' && !args.idempotencyKey.startsWith('preview-')) {
+      const decision = await findAmendmentDecisionByKey(args.rubricRef, args.idempotencyKey);
+      if (decision) {
+        return reply({
+          state: 'committed', source: 'decision', decisionId: decision.decisionId,
+          subjectPlan: decision.subjectPlan,
+          note: 'Committed; read the new revision with rubrics:get.',
+        });
+      }
+    }
+    if (receipt) {
       return reply({
         state: receipt.state,
         source: 'receipt',
@@ -81,8 +93,8 @@ export default defineTool({
       source: 'none',
       note:
         args.idempotencyKey.startsWith('preview-')
-          ? 'No dry-run preview with this receipt is running or retained in this process. dryRun is read-only; issue rubrics:amend with dryRun:true again for a fresh preview.'
-          : 'No amendment with this key is running in this operator process and no committed Decision carries it. ' +
+          ? 'No dry-run preview with this receipt is running or retained in the shared store. dryRun is read-only; issue rubrics:amend with dryRun:true again for a fresh preview.'
+          : 'No amendment with this key is retained in the shared store and no committed Decision carries it. ' +
             'The amendment is atomic and keyed, so re-issuing the same rubrics:amend with this idempotencyKey is safe.',
     });
   },

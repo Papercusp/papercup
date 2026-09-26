@@ -28,6 +28,7 @@ import { UnauthorizedToolError } from '@papercusp/agent-mcp';
 import { InvalidInputError } from '@papercusp/tooldef';
 import type { Sql } from 'postgres';
 import { isAllHarnessSentinel } from '../_harness-scope';
+import { operationCallerId } from '../coordination/identity';
 import { isBlueprintOperationRefusal } from '../../blueprint/operation-refusal';
 import type { BlueprintOperationHandle } from '../../blueprint/operation-service';
 
@@ -50,11 +51,6 @@ function concrete(value: string | null | undefined): string | null {
 
 /** The operation caller: the authenticated principal, optionally narrowed to
  * one of its own sessions by the transport client id. */
-export function operationCallerId(principalSlug: string, uiClientId: string | null | undefined): string {
-  const client = uiClientId?.trim();
-  return client && client !== principalSlug ? `${principalSlug}/${client}` : principalSlug;
-}
-
 export function resolveOperationScope(ctx: OperationToolContext): OperationScope {
   const slug = ctx.principal?.slug?.trim();
   if (!slug) throw new UnauthorizedToolError('blueprint operations require an authenticated principal');

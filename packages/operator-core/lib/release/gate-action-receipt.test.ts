@@ -49,6 +49,34 @@ describe('durable gate action receipt', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it('preserves an unowned green action without inventing claim proof', async () => {
+    unsafe.mockImplementation(async (query: string) => query.includes('SELECT w.feature_id') ? [] : []);
+    const run = vi.fn(async () => ({ launched: true }));
+    expect(await executeWithGateActionReceipt({ ...input(run), allowUnowned: true })).toMatchObject({
+      ok: true, ownership: { certainty: 'no-linked-condition-observed', holder: null },
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts only a matching signed delegate and retains the actual holder', async () => {
+    unsafe.mockImplementation(async (query: string) => query.includes('SELECT w.feature_id')
+      ? [{ work_item: 'WI-gate', holder: 'owner-b', taken_at: null, expires_at: null }]
+      : []);
+    const run = vi.fn(async () => ({ launched: true }));
+    const delegated = { ...input(run), delegate: { authorized: true,
+      callerSpawnId: 'fixer-1', queueFixerSpawnId: 'fixer-1' } };
+    expect(await executeWithGateActionReceipt(delegated)).toMatchObject({
+      ok: true, ownership: { holder: 'owner-b', certainty: 'claim-row-locked-through-effect' },
+    });
+    expect(run).toHaveBeenCalledTimes(1);
+    run.mockClear();
+    expect(await executeWithGateActionReceipt({ ...delegated,
+      delegate: { ...delegated.delegate, queueFixerSpawnId: 'fixer-2' } })).toMatchObject({
+      ok: false, reason: 'gate_condition_not_held_by_caller',
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it('fails closed when the intent write fails', async () => {
     unsafe.mockRejectedValueOnce(new Error('audit unavailable'));
     const run = vi.fn(async () => ({ launched: true }));

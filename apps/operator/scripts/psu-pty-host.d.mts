@@ -2362,10 +2362,11 @@ export function injectTurn(sock: string, text: string, ownerId?: string): Promis
  * console carried http://localhost:3170 through every carry-respawn, and each staging
  * restart took its MCP tools and its owner-directive capture down with it.
  *
- * The pin is replaced only when it REFUSES the connection — a port with nothing
- * listening. A slow or erroring operator is alive and stays authoritative, so a live
- * staging pin is never silently moved to green (the rule resolveOmpOperatorUrl in the
- * launcher also follows). The replacement is the local MCP proxy, and only when it
+ * Only launcher-managed URLs may heal, using the existing provenance marker shared
+ * with ptool. An explicit target stays authoritative even when its server is down:
+ * a refusal does not authorize moving a current-build session to stable code.
+ * A managed pin is replaced only when it REFUSES the connection. A slow or erroring
+ * operator stays authoritative. The replacement is the local MCP proxy, and only when it
  * answers /api/health. Mutates `env` in place and returns `{ from, to }` when it
  * healed, otherwise null. Never throws.
  *

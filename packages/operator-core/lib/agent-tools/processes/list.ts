@@ -13,14 +13,14 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { listTasks } from '../../task-manager/store';
+import { listTasks, residueTaskId } from '../../task-manager/store';
 import { resolveTaskConfinement } from '../../task-manager/confinement';
 import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick, type ReconcileTickResult } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { cpuBusyPercent } from '../../task-manager/inventory-shared';
 import { REPO_ROOT } from '../docs/_repo-paths';
-import { TASK_STATES } from '../../task-manager/types';
+import { TASK_STATES, taskIdFromScopeUnit } from '../../task-manager/types';
 import type { TaskRow } from '../../task-manager/types';
 import { redactSensitiveText } from '../../sensitive-text';
 import { readSuperuserToken } from '../../superuser-token';
@@ -122,6 +122,7 @@ const taskResultSchema = z.object({
       cpuSec: z.number().int().nonnegative().nullable(),
       cpuBusyPercent: z.number().nonnegative().nullable(),
       pids: z.number().int().nonnegative().nullable(),
+      livePids: z.array(z.number().int().positive()).nullable(),
       confined: z.boolean(),
       scopeUnit: z.string().nullable().optional(),
       // P-023/D-111. Flat here because a result schema describes the wire shape; the
@@ -341,6 +342,16 @@ export default defineTool({
     // row disappeared from the kernel while the persistence tick has not yet
     // written its terminal state. Show that proof in this authoritative read.
     const displayRows = args.live && liveTick ? overlayReconcileTerminalVerdicts(rows, liveTick) : rows;
+    // Unaccounted rows are not enrolled task processes: their stored
+    // pids_current is normally null even while the cgroup is populated. Join
+    // the SAME authoritative dry-run scan used above to each residue row.
+    // A missing/degraded scan is unknown (null), never an empty PID set.
+    const unaccountedPids = new Map(
+      (args.live && liveTick && !liveTick.degraded ? liveTick.result.unaccounted : []).map((group) => [
+        (group.scopeUnit && taskIdFromScopeUnit(group.scopeUnit)) || residueTaskId(group.cgroupPath),
+        group.pids,
+      ]),
+    );
 
     const byState: Record<string, number> = {};
     const byClass: Record<string, number> = {};
@@ -375,7 +386,14 @@ export default defineTool({
                 peakRssMb: mb(r.peakMemoryBytes),
                 cpuSec: r.cpuUsec == null ? null : Math.round(r.cpuUsec / 1_000_000),
                 cpuBusyPercent: currentCpuBusyPercent(r.taskId, r.cpuUsec, sampledAtMs),
-                pids: r.pidsCurrent,
+                pids: r.state === 'unaccounted' && args.live
+                  ? unaccountedPids.get(r.taskId)?.length ?? null
+                  : r.pidsCurrent,
+                // A measured empty group is []/0; null says the live scan
+                // could not establish this row's processes.
+                livePids: r.state === 'unaccounted' && args.live
+                  ? unaccountedPids.get(r.taskId) ?? null
+                  : null,
                 confined: r.confined,
                 scopeUnit: r.scopeUnit,
                 // P-023: "what confines this, and therefore what can kill it" — DERIVED

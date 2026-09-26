@@ -42,7 +42,7 @@ import {
 /** The postgres-js client type the org handle exposes (same alias pg-read-query uses). */
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
-type CancelableQuery = { cancel?: () => void };
+type CancelableQuery = { cancel?: () => void | Promise<unknown> };
 
 /**
  * Wrap a postgres-js transaction client so an abandoned caller can cancel every
@@ -72,7 +72,11 @@ function cancellableTransaction(
     cancelled = true;
     for (const query of active) {
       try {
-        query.cancel?.();
+        // postgres.js may reject the cancellation promise with 57014 after
+        // PostgreSQL acknowledges it. The abort race already carries the
+        // authoritative error; leaving this sibling rejection unobserved can
+        // terminate the Node host under its default unhandled-rejection policy.
+        void Promise.resolve(query.cancel?.()).catch(() => undefined);
       } catch {
         // Cancellation is best-effort; the original abort/error remains authoritative.
       }
@@ -94,7 +98,7 @@ function cancellableTransaction(
     active.add(candidate);
     if (cancelled) {
       try {
-        candidate.cancel?.();
+        void Promise.resolve(candidate.cancel?.()).catch(() => undefined);
       } catch {
         // See the cancellation catch above.
       }

@@ -10,6 +10,15 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 
+vi.mock('../../release/gate-action-receipt', () => ({
+  executeWithGateActionReceipt: vi.fn(async (input: {
+    run: () => Promise<unknown>; ownerId: string;
+  }) => ({ ok: true, receiptId: 'test-gate-action-receipt',
+    ownership: { certainty: 'claim-row-locked-through-effect', workItem: 'WI-gate',
+      holder: input.ownerId, takenAt: '2026-09-26T18:00:00.000Z' },
+    effect: await input.run() })),
+}));
+
 vi.mock('../../release/checkpoint-serializer-authority', () => ({
   readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none', reason: 'routine-not-paused' })),
   armPausedCheckpointTransition: vi.fn(async () => ({ status: 'unreadable', error: 'not configured in this test' })),

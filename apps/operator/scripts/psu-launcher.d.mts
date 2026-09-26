@@ -141,8 +141,8 @@ export function applyLauncherOperatorUrlEnv(env: any, target?: {
 }): any;
 /**
  * The candidate ladder for HEALING a dead operator target mid-session — the
- * same ladder as resolveOperatorTarget MINUS the env pin (the env pin is
- * exactly what's being healed). Candidates are NOT liveness-checked here;
+ * same ladder as resolveOperatorTarget MINUS the inherited managed URL.
+ * Explicit caller pins never use this ladder. Candidates are NOT liveness-checked here;
  * fetchWithResilience health-checks each in order. Exported for tests.
  *
  * Why this exists (owner repro, mac VM 2026-07-07): every console/fleet
@@ -2090,7 +2090,7 @@ export function storeClaudeOAuthToken(token: any, { home }?: {
  * the body); throws a descriptive Error when every attempt fails.
  *
  * On repeated connection failure it additionally attempts ONE health-gated
- * FAILOVER to a different live operator (resolveFallbackOperatorTargets:
+ * FAILOVER for launcher-managed targets to a different live operator (resolveFallbackOperatorTargets:
  * proxy → fresh operator.json → dev default) and adopts it session-wide
  * (adoptOperatorTarget) — the stale-shell heal for terminals whose
  * PAPERCUSP_OPERATOR_URL outlived the per-boot desktop operator port.

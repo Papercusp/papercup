@@ -24,13 +24,13 @@
  *     here too ctx.uiClientId is the resolved id — the route did the
  *     tier work upstream.
  *
- *   - in-process callers (operator chat, autoloop) carry a bearer
- *     principal but no uiClientId; they fall back to principal.slug.
+ *   - bearer principals are attributed to their authenticated slug.
+ *     A transport client id can distinguish sessions only within that
+ *     principal's namespace; it cannot name another coordination owner.
  *
- * Because the per-transport route already populates ctx.uiClientId
- * correctly per tier, this function is a typed read + label
- * construction; the tier-awareness is reflected in the `source` field
- * and in which ctx fields carry the workspace / user.
+ * The resolver must keep unverified bearer-client ids inside their
+ * authenticated principal's namespace; transport tiers populate the other
+ * identities before calling it.
  *
  * NEVER derive identity from ctx.runId / ctx.spawnId — both regenerate
  * on every MCP call (omp-power-user-bundle-brief-2026-05-20.md §3).
@@ -63,6 +63,8 @@ export interface ResolveIdentityCtx {
    * signed-spawn attribution for client=-less invoke-route agents.
    */
   sigVerifiedSpawn?: boolean;
+  /** Present only on an internally constructed event-reaction context. */
+  reactionCause?: unknown;
 }
 
 export type IdentitySource =
@@ -311,6 +313,12 @@ function looksLikeBareUuid(id: string): boolean {
   return UUID_RE.test(id);
 }
 
+/** A caller-chosen transport client is only a sub-identity of its bearer. */
+export function operationCallerId(principalSlug: string, uiClientId: string | null | undefined): string {
+  const client = uiClientId?.trim();
+  return client && client !== principalSlug ? `${principalSlug}/${client}` : principalSlug;
+}
+
 /**
  * Resolve the calling agent's coordination identity. Throws when the
  * ctx carries no attributable identity at all — coordination writes
@@ -374,12 +382,16 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
     // queen/overwatch running?" while both were live in the roster, 2026-07-01).
     // Labels are display-only, never keyed on (see module header).
     const sysRole = /^system:(.+)$/.exec(principal.slug)?.[1];
-    const source: IdentitySource =
-      principal.slug === 'system:event-reaction' || principal.slug.startsWith('plugin:event-reaction:')
-        ? 'event-reaction'
-        : 'principal';
+    const isReaction = ctx.reactionCause != null &&
+      (principal.slug === 'system:event-reaction' || principal.slug.startsWith('plugin:event-reaction:'));
+    const source: IdentitySource = isReaction ? 'event-reaction' : 'principal';
     return {
-      ownerId: uiClientId ?? principal.slug,
+      // Event reactions deliberately speak as their trigger agent. Ordinary
+      // bearer clients are unverified and must stay inside the principal's
+      // namespace (HTTP header/query and MCP client= are caller-controlled).
+      ownerId: source === 'event-reaction'
+        ? uiClientId ?? principal.slug
+        : operationCallerId(principal.slug, uiClientId),
       ownerLabel: sysRole
         ? `${sysRole} · ${ctx.harnessSlug ?? 'system'}`
         : `${principal.kind ?? 'principal'} · ${principal.slug}`,

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  advanceUndispatchableGradingCascade,
   acceptanceGraderLabelPrefix,
   buildAssignedAcceptanceGraderBrief,
   classifyAcceptanceGraderStartupStall,
@@ -14,6 +15,58 @@ import {
   resolveAcceptanceGrader,
   selectableGraderLiveness,
 } from './acceptance-grader';
+
+describe('advanceUndispatchableGradingCascade (EI-23939542953304626)', () => {
+  const graders = ['su-a', 'su-b', 'su-c'].map((ownerId) => ({ ownerId }));
+
+  it('advances through undispatchable transcripts until one answering session is queued', async () => {
+    const advance = vi
+      .fn()
+      .mockResolvedValueOnce({ advanced: true, raced: false, nextOwnerId: 'su-b', queued: 0 })
+      .mockResolvedValueOnce({ advanced: true, raced: false, nextOwnerId: 'su-c', queued: 1 });
+    const markExhausted = vi.fn(async () => true);
+
+    const result = await advanceUndispatchableGradingCascade({
+      graders,
+      initialQueued: 0,
+      nowIso: () => '2026-09-26T19:00:00.000Z',
+      advance,
+      markExhausted,
+    });
+
+    expect(result).toEqual({ status: 'active', woke: 1 });
+    expect(advance).toHaveBeenCalledTimes(2);
+    expect(advance.mock.calls.map(([call]) => call.event.ownerId)).toEqual(['su-a', 'su-b']);
+    expect(markExhausted).not.toHaveBeenCalled();
+  });
+
+  it('reports exhaustion only after the terminal CAS records every failed grader', async () => {
+    const advance = vi.fn().mockResolvedValueOnce({
+      advanced: true,
+      raced: false,
+      nextOwnerId: 'su-b',
+      queued: 0,
+    });
+    const markExhausted = vi.fn(async () => true);
+
+    const result = await advanceUndispatchableGradingCascade({
+      graders: graders.slice(0, 2),
+      initialQueued: 0,
+      nowIso: () => '2026-09-26T19:00:00.000Z',
+      advance,
+      markExhausted,
+    });
+
+    expect(result).toEqual({ status: 'exhausted', woke: 0 });
+    expect(markExhausted).toHaveBeenCalledWith({
+      cursor: 1,
+      digest: [
+        expect.objectContaining({ ownerId: 'su-a', kind: 'dispatch_failed' }),
+        expect.objectContaining({ ownerId: 'su-b', kind: 'dispatch_failed' }),
+      ],
+    });
+  });
+});
 
 describe('WI-10002156: a reaped session must not be selectable as a grader', () => {
   // MEASURED 2026-09-21 on su-ce0b634c-004b-438e-ab1d-cd677fd5c604: NO
@@ -1383,6 +1436,36 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
       conditionKey: 'acceptance-review-target:v1:test-key',
       id: 'WI-review-target',
     });
+  });
+
+  it('falls through to a fresh judge when every selected transcript is undispatchable', async () => {
+    const launch = freshLaunch();
+    const openCascade = vi.fn(async () => ({
+      conversationId: 'conv-exhausted',
+      woke: 0,
+      status: 'exhausted' as const,
+    }));
+    const graders = [
+      { ownerId: 'su-ended', score: 0.71, liveness: 'ended', via: 'floor' as const },
+      { ownerId: 'su-declined', score: 0.62, liveness: 'parked', via: 'floor' as const },
+    ];
+
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      discover: vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders,
+        routing: { selection: { min: 1, max: 2, selected: [] } },
+        excluded: ['su-implementer'],
+      })),
+      openCascade: openCascade as never,
+    });
+
+    expect(result.state).toBe('launched');
+    expect(result.freshReason).toBe('all_eligible_unselectable');
+    expect(result.excluded).toEqual(['su-implementer']);
+    expect(openCascade).toHaveBeenCalledTimes(1);
+    expect(launch).toHaveBeenCalledTimes(1);
   });
 
   it('reserves the typed target once and carries it into a fresh-judge brief', async () => {

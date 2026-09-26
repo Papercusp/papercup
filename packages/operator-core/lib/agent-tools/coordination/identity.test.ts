@@ -80,6 +80,7 @@ describe('resolveAgentIdentity — event-reaction principals', () => {
   it('keeps a first-party reaction attributable to its trigger agent', () => {
     const id = resolveAgentIdentity({
       uiClientId: 'agent-1',
+      reactionCause: {},
       principal: { kind: 'system', slug: 'system:event-reaction', workspaceId: 'ws-1' },
     });
     expect(id.ownerId).toBe('agent-1');
@@ -90,6 +91,7 @@ describe('resolveAgentIdentity — event-reaction principals', () => {
   it('classifies a capability-scoped reaction principal the same way', () => {
     const id = resolveAgentIdentity({
       uiClientId: 'agent-1',
+      reactionCause: {},
       principal: {
         kind: 'system',
         slug: 'plugin:event-reaction:plugin:foo:emit',
@@ -105,6 +107,15 @@ describe('resolveAgentIdentity — event-reaction principals', () => {
       uiClientId: 'agent-1',
       principal: { kind: 'system', slug: 'system:autoloop', workspaceId: 'ws-1' },
     });
+    expect(id.source).toBe('principal');
+  });
+
+  it('does not trust a reaction-named bearer without an internal reaction cause', () => {
+    const id = resolveAgentIdentity({
+      uiClientId: 'agent-1',
+      principal: { kind: 'system', slug: 'system:event-reaction', workspaceId: 'ws-1' },
+    });
+    expect(id.ownerId).toBe('system:event-reaction/agent-1');
     expect(id.source).toBe('principal');
   });
 });

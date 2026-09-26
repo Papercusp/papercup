@@ -31,6 +31,7 @@
  * sent as transport metadata (`_meta.idempotencyKey`), not as a tool argument.
  */
 import { readFileSync, realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -372,11 +373,13 @@ export function buildMcpSessionQuery({ client, workspace, harness, allWorkspaces
  * ignored or rejected as an unrecognized tool argument instead of enabling
  * result replay after an unknown outcome.
  */
-export function buildMcpCallParams(tool, args, { idempotencyKey } = {}) {
+export function buildMcpCallParams(tool, args, { idempotencyKey, outputGroupId } = {}) {
   return {
     name: tool,
     arguments: args,
-    ...(idempotencyKey !== undefined ? { _meta: { idempotencyKey } } : {}),
+    ...(idempotencyKey !== undefined || outputGroupId !== undefined
+      ? { _meta: { ...(idempotencyKey !== undefined ? { idempotencyKey } : {}), ...(outputGroupId !== undefined ? { outputGroupId } : {}) } }
+      : {}),
   };
 }
 
@@ -500,7 +503,13 @@ async function main() {
       jsonrpc: '2.0',
       id: REQUEST_ID,
       method: 'tools/call',
-      params: buildMcpCallParams(tool, args, { idempotencyKey: flags.idempotencyKey }),
+      // Each CLI invocation is a standalone MCP request, even when several
+      // processes share one agent SID and start within the 2s legacy cohort
+      // window. Do not let a previous process consume this request's budget.
+      params: buildMcpCallParams(tool, args, {
+        idempotencyKey: flags.idempotencyKey,
+        outputGroupId: randomUUID(),
+      }),
     }),
   };
 

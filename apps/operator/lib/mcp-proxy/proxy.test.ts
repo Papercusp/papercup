@@ -266,6 +266,24 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.rpcMethods).toEqual(["tools/list"]);
     expect(r.body).toBe(body);
   });
+  it('keeps a bootstrap REST mutation opaque even when it carries an idempotency key', () => {
+    const body = Buffer.from(JSON.stringify({ bootstrap_idempotency_key: 'fleet-member-1' }));
+    const r = prepareForward('POST', {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+      requestPath: '/api/agent-mcp/console/bootstrap-su?client=psu',
+    });
+    expect(r.klass).toBe('opaque');
+    expect(r.body).toBe(body);
+    for (const key of [undefined, '', 'x'.repeat(201)]) {
+      const unkeyed = prepareForward('POST', {}, Buffer.from(JSON.stringify({ bootstrap_idempotency_key: key })), {
+        keyingEnabled: true,
+        genKey: gen,
+        requestPath: '/api/agent-mcp/console/bootstrap-su',
+      });
+      expect(unkeyed.klass).toBe('opaque');
+    }
+  });
   it("a batch [tools/call, tools/list] → keyed, key injected only into the call", () => {
     const body = Buffer.from(
       JSON.stringify([
@@ -4040,6 +4058,36 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       expect((await heldPreflight).status).toBe(200);
     },
   );
+
+  it('returns one late bootstrap result without replaying it as a handshake', async () => {
+    let hits = 0;
+    const upstream = track(http.createServer((_req, res) => {
+      hits += 1;
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"status":"ok"}');
+      }, 120);
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: '127.0.0.1',
+      targetPort: port(upstream),
+      retryWindowMs: 500,
+      handshakeTimeoutMs: 40,
+      log: () => {},
+    }));
+    await listen(proxy);
+
+    const result = await request(
+      port(proxy),
+      JSON.stringify({ bootstrap_idempotency_key: 'fleet-member-1' }),
+      '/api/agent-mcp/console/bootstrap-su',
+    );
+    expect(result.status).toBe(200);
+    expect(JSON.parse(result.body)).toEqual({ status: 'ok' });
+    expect(hits).toBe(1);
+  });
 
   it("keeps the full reserved pool available when ordinary traffic reaches its ceiling, then enforces the hard ceiling", async () => {
     let releaseUpstream: () => void = () => {};
