@@ -22,6 +22,7 @@ import { APP_MOUNT_TIMEOUT_MS, waitForAppMount, waitForPackagedAppUrl } from "..
 // runner sits outside the npm workspace set, so `@papercusp/gui-readiness` does
 // not resolve here. The module is a pure function with no dependencies.
 import {
+  classifyAttemptTimeout,
   classifyInteractionMeasure,
   describeInteractionMeasureFailure,
 } from "../../../../libs/generic/gui-readiness/src/interaction-measure";
@@ -31,6 +32,11 @@ const INTERACTION_NAME = "plan-popup-open";
 /** Mirrors perf-marks.ts STALE_START_MS — a start older than this is discarded. */
 const STALE_START_MS = 30_000;
 const MEASURE_WAIT_MS = 8_000;
+/**
+ * plans-api.ts marks this phase when the plan request is dispatched. An attempt
+ * past it is on the budgeted path, so its timeout is a slow sample.
+ */
+const DISPATCH_PHASE = "request-started";
 const DASHBOARD_WAIT_MS = 20_000;
 const PRELOAD_WAIT_MS = 30_000;
 /** Emitted only after PlanDashboard's Vditor/Lute preloader really succeeds. */
@@ -470,9 +476,97 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
             .filter((entry) => entry.name.startsWith(`${name}:phase:`))
             .map((entry) => ({ name: entry.name, ms: Math.round(entry.duration) })),
           placeholder: document.querySelector('[data-testid="plan-popup-body"] .pc-plans__placeholder')?.textContent?.trim() ?? null,
+          startMarkAgeMs: (() => {
+            const mark = performance.getEntriesByName(`${name}:start`, 'mark').at(-1);
+            return mark ? performance.now() - mark.startTime : null;
+          })(),
         };
       }, INTERACTION_NAME);
       console.log('[perf] plan-popup unfinished', JSON.stringify({ outcome, ...unfinished }));
+
+      // A timed-out attempt that already DISPATCHED the plan request is a slow
+      // sample, not a void one — retrying it onto the next row would keep only
+      // the attempts fast enough to finish (classifyAttemptTimeout, P-007).
+      if (outcome === "timeout") {
+        const attemptDiagnosis = classifyAttemptTimeout({
+          startMarkPresent: unfinished.startMarkAgeMs !== null,
+          startMarkAgeMs: unfinished.startMarkAgeMs,
+          staleStartMs: STALE_START_MS,
+          phasesSeen: unfinished.phases.map((p) =>
+            p.name.slice(`${INTERACTION_NAME}:phase:`.length),
+          ),
+          dispatchPhase: DISPATCH_PHASE,
+          terminalPlaceholder:
+            unfinished.placeholder && !/^Loading\b/i.test(unfinished.placeholder)
+              ? unfinished.placeholder
+              : null,
+        });
+        console.log('[perf] plan-popup attempt timeout', JSON.stringify(attemptDiagnosis));
+        if (attemptDiagnosis.verdict === "slow") {
+          // endInteraction discards a start older than STALE_START_MS, so a
+          // measure can still land until then: wait for the TRUE duration.
+          const settleProbe = () =>
+            browser.execute((name) => {
+              const mark = performance.getEntriesByName(`${name}:start`, 'mark').at(-1);
+              return {
+                measured: performance.getEntriesByName(name, 'measure').length > 0,
+                startMarkAgeMs: mark ? performance.now() - mark.startTime : null,
+              };
+            }, INTERACTION_NAME);
+          let last = { measured: false, startMarkAgeMs: unfinished.startMarkAgeMs };
+          await browser
+            .waitUntil(
+              async () => {
+                last = await settleProbe();
+                return last.measured;
+              },
+              {
+                timeout: Math.max(1, STALE_START_MS - (unfinished.startMarkAgeMs ?? 0)),
+                interval: 250,
+                timeoutMsg: "pending",
+              },
+            )
+            .catch(() => undefined);
+          if (last.measured) {
+            // The normal path below records the real (breaching) duration.
+            opened = candidate;
+            break;
+          }
+          // Still unmeasured inside the stale window: publish a CENSORED breach.
+          // Each probe saw no measure at age A, so the true duration is >= A.
+          const lowerBoundMs = Math.round(
+            Math.max(last.startMarkAgeMs ?? 0, unfinished.startMarkAgeMs ?? 0),
+          );
+          recordInteractionMs(INTERACTION_NAME, lowerBoundMs, PLAN_POPUP_OPEN_BUDGET_MS);
+          if (process.env.PAPERCUSP_PERF_LAYOUT_DIAGNOSTIC === '1') {
+            const gaps = await browser.execute((ageMs) => {
+              const probe = (window as unknown as {
+                __perfEventLoopProbe?: { stop(): {
+                  gaps: Array<{ from: number; to: number; delayMs: number }>;
+                } };
+              }).__perfEventLoopProbe?.stop();
+              const start = performance.now() - ageMs;
+              return (probe?.gaps ?? [])
+                .filter((gap) => gap.to >= start)
+                .map((gap) => ({
+                  fromMs: Math.round(gap.from - start),
+                  toMs: Math.round(gap.to - start),
+                  delayMs: Math.round(gap.delayMs),
+                }));
+            }, lowerBoundMs).catch(() => []);
+            console.log('[perf] event loop gaps (censored)', JSON.stringify({ gaps }));
+          }
+          throw new Error(
+            [
+              `SLOW: "${INTERACTION_NAME}" on ${candidate.slug} [${candidate.harness ?? "?"}] did not settle ` +
+                `within the ${STALE_START_MS}ms stale window; recorded as a censored breach >= ${lowerBoundMs}ms ` +
+                `(budget ${PLAN_POPUP_OPEN_BUDGET_MS}ms). This IS a perf verdict, not an unmeasurable run.`,
+              attemptDiagnosis.reason,
+              `phases: ${JSON.stringify(unfinished.phases)}`,
+            ].join("\n  "),
+          );
+        }
+      }
 
       if (process.env.PAPERCUSP_PERF_LAYOUT_DIAGNOSTIC === '1') {
         await browser.execute(() => {

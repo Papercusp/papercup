@@ -22,7 +22,13 @@ import { defaultForeignSignature } from './scan';
 import type { ExemptReason, ProcessScope } from './scope-class';
 import type { ScannedProcess } from './reconcile';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
-import { formatProcessStartTime, projectProcessMetadata, readProcessMetadata } from '../process-metadata';
+import {
+  formatProcessStartTime,
+  projectProcessMetadata,
+  readProcessMetadataAsync,
+  type StableProcessMetadata,
+} from '../process-metadata';
+import { mapWithConcurrency } from '../gym/concurrency';
 import { redactSensitiveText } from '../sensitive-text';
 import { readSuperuserToken } from '../superuser-token';
 
@@ -220,12 +226,15 @@ function localDiagnosticSecrets(): readonly string[] {
   return token ? [token] : [];
 }
 
-/** Pure projection for a `/proc` row crossing into a task-manager client. */
+/**
+ * Pure projection for a `/proc` row crossing into a task-manager client.
+ * `metadata` defaults to the cmdline-only projection; the live scan supplies the
+ * procfs-read one via {@link projectLiveProcesses}.
+ */
 export function projectLiveProcess(
   p: ScannedProcess,
-  _knownSecrets: readonly string[] = [],
+  metadata: StableProcessMetadata = projectProcessMetadata({ cmdline: p.cmdline }),
 ): LiveProcessRow {
-  const metadata = readProcessMetadata(p.pid, p.cmdline);
   return {
     pid: p.pid,
     startedAt: formatProcessStartTime(p.startedAtMs),
@@ -235,6 +244,27 @@ export function projectLiveProcess(
     scope: p.scope,
     exemptReason: p.exemptReason,
   };
+}
+
+/**
+ * Procfs metadata reads in flight at once. Bounded so a 4000-row scan cannot
+ * monopolise the 4-thread libuv pool every other fs call in this process shares.
+ */
+const METADATA_READ_CONCURRENCY = 8;
+
+/**
+ * Project live rows with their procfs metadata, reading OFF the event loop.
+ *
+ * This used to be a synchronous readlinkSync + readFileSync per process on the
+ * request-serving main thread: ~13% of main-thread self time during the P-007
+ * popup stalls (EI-24342043796392664). The reads are async and bounded now.
+ */
+export async function projectLiveProcesses(
+  rows: readonly ScannedProcess[],
+): Promise<LiveProcessRow[]> {
+  return mapWithConcurrency(rows, METADATA_READ_CONCURRENCY, async (p) =>
+    projectLiveProcess(p, await readProcessMetadataAsync(p.pid, p.cmdline)),
+  );
 }
 
 /**
@@ -257,7 +287,17 @@ export function projectLiveProcess(
 const LIVE_SCAN_TTL_MS = 5_000;
 let liveScanMemo: { at: number; promise: Promise<LiveScanResult> } | null = null;
 
-type LiveScanResult = { live: unknown; liveProcesses: LiveProcessRow[] };
+/**
+ * `rows` is LAZY and memoised with the scan: the header pill (`countsOnly`, on
+ * every tab, every 5s) needs only the totals and must never pay for per-process
+ * metadata, while pane readers inside one TTL share one projection.
+ */
+type LiveScanResult = { live: unknown; rows: () => Promise<LiveProcessRow[]> };
+
+function lazyProjection(scanned: readonly ScannedProcess[]): () => Promise<LiveProcessRow[]> {
+  let projected: Promise<LiveProcessRow[]> | null = null;
+  return () => (projected ??= projectLiveProcesses(scanned));
+}
 
 /** Test seam — drop the memo so a test never reads another test's scan. */
 export function resetLiveScanMemoForTest(): void {
@@ -444,16 +484,17 @@ async function runLiveScan(): Promise<LiveScanResult> {
       // the rows that carry the alarm and leave the pane reporting a clean gap it
       // simply could not see. The cap is not biting today at 4000 — this keeps the
       // property true if it ever does (EI-19325095302441792).
-      liveProcesses: tick.scannedProcesses
-        .slice()
-        .sort((a, b) => scopeRank(a.scope) - scopeRank(b.scope) || a.pid - b.pid)
-        .slice(0, MAX_LIVE_PROCESS_ROWS)
-        .map((process) => projectLiveProcess(process, diagnosticSecrets)),
+      rows: lazyProjection(
+        tick.scannedProcesses
+          .slice()
+          .sort((a, b) => scopeRank(a.scope) - scopeRank(b.scope) || a.pid - b.pid)
+          .slice(0, MAX_LIVE_PROCESS_ROWS),
+      ),
     };
   } catch (e) {
     return {
       live: { error: safeDisplayText((e as Error).message, 300, diagnosticSecrets) },
-      liveProcesses: [],
+      rows: async () => [],
     };
   }
 }
@@ -484,7 +525,7 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
     // true process count, but shipping 4000 process rows to a control that renders one
     // short string would put the whole process table behind every tab of the app.
     // Same memoised scan either way — this drops only the payload.
-    liveProcesses = opts.countsOnly ? [] : scanned.liveProcesses;
+    liveProcesses = opts.countsOnly ? [] : await scanned.rows();
   }
 
   // `?? null` on every nullable field is load-bearing, not defensive noise: the

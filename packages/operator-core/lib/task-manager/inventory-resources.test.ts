@@ -30,7 +30,7 @@ describe('public process projection', () => {
       exemptReason: null,
     };
 
-    const projected = projectLiveProcess(row, [localBearer]);
+    const projected = projectLiveProcess(row);
     expect(projected).toMatchObject({
       pid: 42,
       startedAt: null,

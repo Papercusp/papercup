@@ -15,8 +15,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  classifyAttemptTimeout,
   classifyInteractionMeasure,
   describeInteractionMeasureFailure,
+  type AttemptTimeoutObservation,
   type InteractionMeasureObservation,
 } from './interaction-measure.js';
 
@@ -198,5 +200,57 @@ describe('describeInteractionMeasureFailure', () => {
       classifyInteractionMeasure(obs({ settleContentPresent: false })),
     );
     expect(a).not.toBe(b);
+  });
+});
+
+describe('classifyAttemptTimeout — slow sample vs void attempt', () => {
+  /** An attempt that began timing, dispatched its request, and is still loading. */
+  const DISPATCHED_AND_STUCK: AttemptTimeoutObservation = {
+    startMarkPresent: true,
+    startMarkAgeMs: 8_200,
+    staleStartMs: 30_000,
+    phasesSeen: ['request-started'],
+    dispatchPhase: 'request-started',
+    terminalPlaceholder: null,
+  };
+  const attempt = (patch: Partial<AttemptTimeoutObservation>) =>
+    classifyAttemptTimeout({ ...DISPATCHED_AND_STUCK, ...patch });
+
+  it('CALIBRATION: a dispatched attempt that did not settle is a slow sample', () => {
+    const d = attempt({});
+    expect(d.verdict).toBe('slow');
+    expect(d.reason).toContain('8200ms');
+  });
+
+  it('a later phase alongside the dispatch phase is still slow (the stall can be downstream)', () => {
+    expect(
+      attempt({ phasesSeen: ['request-started', 'response-ready', 'detail-mounted'] }).verdict,
+    ).toBe('slow');
+  });
+
+  // Each pair differs from the calibration in ONE field and must flip the verdict.
+  it('DISCRIMINATES: a terminal placeholder voids the attempt', () => {
+    const d = attempt({ terminalPlaceholder: 'Plan not found.' });
+    expect(d.verdict).toBe('void');
+    expect(d.reason).toContain('Plan not found.');
+  });
+
+  it('DISCRIMINATES: a whitespace-only placeholder is not terminal', () => {
+    expect(attempt({ terminalPlaceholder: '   ' }).verdict).toBe('slow');
+  });
+
+  it('DISCRIMINATES: no start mark means nothing was timed', () => {
+    expect(attempt({ startMarkPresent: false, startMarkAgeMs: null }).verdict).toBe('void');
+  });
+
+  it('DISCRIMINATES: a stale start mark cannot belong to this attempt', () => {
+    expect(attempt({ startMarkAgeMs: 30_001 }).verdict).toBe('void');
+    expect(attempt({ startMarkAgeMs: 30_000 }).verdict).toBe('slow');
+  });
+
+  it('DISCRIMINATES: timing began but the dispatch phase never marked', () => {
+    const d = attempt({ phasesSeen: ['detail-mounted'] });
+    expect(d.verdict).toBe('void');
+    expect(d.reason).toContain('"request-started"');
   });
 });

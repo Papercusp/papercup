@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "identities-v1 P-037 orchestrator typecheck (source-kind contracts, D-131 freeze)",
+  "framework": "shell",
+  "command": [
+    "npx",
+    "tsc",
+    "--noEmit",
+    "-p",
+    "libs/papercusp/packages/orchestrator/tsconfig.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-26T16:37:31Z",
+  "finishedAt": "2026-09-26T16:37:32Z",
+  "summary": "Full, non-incremental tsc --noEmit over the orchestrator package project, run from the canonical staging tree while every P-037 subject was under the D-131 freeze lock (no concurrent edits). The project's include is src/**/*.ts, so the program covers both the P-037 sources (blueprint/schema.ts, loader.ts, composition-compiler.ts, stack-mutation.ts) and their tests (blueprint/contracts.test.ts, loader.layers.test.ts, loader.test.ts). tsc printed zero diagnostics and exited 0. A census via --listFilesOnly confirmed that 207 orchestrator src files were in the program, so this is not a zero-file vacuous pass.",
+  "testLayer": "typecheck",
+  "planSlug": "identities-v1-2026-08-30",
+  "specIds": [
+    "identities.p037.contracts.failure",
+    "identities.p037.source-kind.boundary"
+  ],
+  "workItemId": "WI-2144483",
+  "subjectRepo": {
+    "path": "libs/papercusp",
+    "head": "1d8482e95124bca6026d332d6f44192ddba337ac",
+    "orchestratorPackageDirty": false
+  },
+  "assertions": [
+    {
+      "id": "tsc-exit-zero-no-diagnostics",
+      "passed": true,
+      "evidence": "tsc --noEmit -p libs/papercusp/packages/orchestrator/tsconfig.json exited 0 and wrote 0 output lines (stdout+stderr captured to a file, wc -l = 0)."
+    },
+    {
+      "id": "program-covers-p037-subjects",
+      "passed": true,
+      "evidence": "tsc --listFilesOnly over the same project lists 207 files under packages/orchestrator/src/, including src/blueprint/loader.ts, composition-compiler.ts and stack-mutation.ts, and the tests src/blueprint/contracts.test.ts, loader.layers.test.ts and loader.test.ts. tsconfig include = src/**/*.ts, bin/**/*.ts and the vitest configs, so blueprint/schema.ts (imported by contracts.test.ts) is also type-checked."
+    },
+    {
+      "id": "subject-tree-clean-and-frozen",
+      "passed": true,
+      "evidence": "git -C libs/papercusp status --porcelain -- packages/orchestrator was empty at libs/papercusp HEAD 1d8482e951. The D-131 freeze locks (libs lock 3eeaf588, superproject lock 84c5f567, both held by su-52c6aaea) covered the P-037 sources and sibling tests for the run."
+    }
+  ]
+}

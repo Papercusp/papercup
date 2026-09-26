@@ -70,9 +70,12 @@ export type {
   InteractionMeasureObservation,
   InteractionMeasureVerdict,
   InteractionMeasureDiagnosis,
+  AttemptTimeoutObservation,
+  AttemptTimeoutDiagnosis,
 } from './interaction-measure.js';
 export {
   classifyInteractionMeasure,
+  classifyAttemptTimeout,
   describeInteractionMeasureFailure,
 } from './interaction-measure.js';
 export type {

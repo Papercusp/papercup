@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "_about": "Curated support record rendered into every release unit's COMPATIBILITY.md by apps/tui/scripts/package-release.sh (P-011 / D-016). No target may read 'verified' here: this file is committed before the candidate it ships in exists, so it cannot hold that candidate's installed-product evidence, and the packager refuses it (R-10, D-017). Verified targets are advertised per candidate at the release stage (P-012). Runtime requirements are NOT recorded here: the packager measures them from each built binary.",
   "backend": {
-    "requirement": "A Papercusp operator endpoint: the Papercusp desktop app on this machine, a Papercusp workspace host, or a remote operator URL. PUI is the client; the operator runs the agents.",
+    "requirement": "A Papercusp operator endpoint: the Papercusp desktop app on this machine, a Papercusp workspace host, a remote operator URL, or a Papercusp cloud workspace (setup's cloud sign-in, through the psu bundled in this archive). PUI is the client; the operator runs the agents.",
     "packaging": "The operator is packaged by the Papercusp desktop and workspace-host release bundles, which carry their own install and rollback. This archive does not duplicate it.",
     "check": "`pui doctor` reports the selected endpoint and whether its source generation matches this PUI; with no endpoint, `pui` opens setup."
   },

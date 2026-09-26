@@ -291,6 +291,75 @@ describe('P-009 activation span views', () => {
     expect(row).toEqual({ delivered: '59', applied: relaunched.revision, status: 'applied' });
   });
 
+  // P-008 (identity-native-applied-revision-proof) failed-injection negative control
+  // on REAL Postgres. The launch record runs `desired` in every case, so the ONLY
+  // thing separating Applied from refused is whether the host actually prepared
+  // (injected) that revision. The unit tests mock this SQL and can only string-match
+  // the `prepared = revision` guard; here Postgres evaluates it.
+  describe('reports Applied only after the host injected the selected revision', () => {
+    async function seedInjection(suffix: string, id: number, generation: number, injection: {
+      prepared: 'revision' | null; status: 'desired' | 'prepared' | 'failed'; failure?: string;
+    }) {
+      const owner = `${OWNER}-inject-${suffix}`;
+      const selected = compiledLaunch(`inject-${suffix}`);
+      const previous = compiledLaunch(`inject-${suffix}-previous`).revision;
+      await db.sql`INSERT INTO harness_shared.adv_sessions (id,workspace_id,coord_owner_id,session_id,started_at,launch_spec)
+        VALUES (${id},${WS},${owner},${`native-inject-${suffix}`},'2026-09-26T00:00:00Z',${JSON.stringify(selected.launchSpec)}::text::jsonb)`;
+      const activation = {
+        schemaVersion: 1,
+        attribution: { actorId: 'actor-stable', principalId: 'principal-stable', sessionId: 'session-stable' },
+        desired: selected.revision,
+        prepared: injection.prepared === 'revision' ? selected.revision : null,
+        applied: previous,
+        status: injection.status,
+        ...(injection.failure ? { failure: injection.failure } : {}),
+      };
+      await db.sql`
+        INSERT INTO harness_shared.session_briefs
+          (owner_id,workspace_id,native_session_id,control_generation,control_delivered_generation,control_state)
+        VALUES (${owner},${WS},${`native-inject-${suffix}`},${generation},${generation - 1},
+          ${JSON.stringify({ activation, stack: ['domain:researcher'] })}::text::jsonb)`;
+      return { owner, revision: selected.revision, previous };
+    }
+
+    async function readBack(owner: string) {
+      const [brief] = await db.sql<Array<{ delivered: string; applied: unknown; status: string }>>`
+        SELECT control_delivered_generation::text AS delivered,
+               control_state->'activation'->'applied' AS applied,
+               control_state #>> '{activation,status}' AS status
+          FROM harness_shared.session_briefs
+         WHERE owner_id = ${owner}`;
+      const events = await db.sql<Array<{ phase: string; specification_revision: string }>>`
+        SELECT phase, specification_revision
+          FROM harness_shared.session_identity_activation_events
+         WHERE owner_id = ${owner} AND phase = 'applied'`;
+      return { brief, events };
+    }
+
+    it.each([
+      ['staged (desired, never prepared)', 'staged', 9301, 81, { prepared: null, status: 'desired' }],
+      ['failed (render failed, prepare skipped)', 'failed', 9302, 82, { prepared: null, status: 'failed', failure: 'render failed' }],
+    ] as const)('refuses a %s injection: applied, watermark and receipts stay unchanged', async (_label, suffix, id, generation, injection) => {
+      const seeded = await seedInjection(suffix, id, generation, injection);
+
+      await expect(acknowledgeControlTransition(seeded.owner, WS, generation, db.sql, seeded.revision)).resolves.toBe(false);
+
+      const { brief, events } = await readBack(seeded.owner);
+      expect(brief).toEqual({ delivered: String(generation - 1), applied: seeded.previous, status: injection.status });
+      expect(events).toEqual([]);
+    });
+
+    it('positive control: the same launch record with a prepared injection IS acknowledged and receipted', async () => {
+      const seeded = await seedInjection('prepared', 9303, 83, { prepared: 'revision', status: 'prepared' });
+
+      await expect(acknowledgeControlTransition(seeded.owner, WS, 83, db.sql, seeded.revision)).resolves.toBe(true);
+
+      const { brief, events } = await readBack(seeded.owner);
+      expect(brief).toEqual({ delivered: '83', applied: seeded.revision, status: 'applied' });
+      expect(events).toEqual([{ phase: 'applied', specification_revision: seeded.revision.specificationRevision }]);
+    });
+  });
+
   it('rolls back applied state and watermark when the event insert fails', async () => {
     const owner = `${OWNER}-atomic`;
     const previous = { specificationRevision: SPEC_A, stateRevision: 'previous' };
