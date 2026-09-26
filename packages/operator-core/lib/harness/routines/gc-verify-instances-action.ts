@@ -12,6 +12,8 @@
  *                     `.papercusp/tmp`. Scanning /tmp alone missed 20GB of cross-device
  *                     source snapshots on 2026-09-23 (WI-10002867).
  *   - `dry_run`     — report matches without killing or deleting.
+ * A managed verifier task that ended is eligible after a short teardown grace;
+ * this hourly sweep therefore clears deadline-killed scratch on its next tick.
  *
  * HOST-LOCAL, not workspace-scoped: it reaps files and processes on the machine the
  * tick runs on. `ctx.workspaceId` is deliberately unused — nothing here is
@@ -22,6 +24,8 @@
  */
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { gcVerifyInstances } from './gc-verify-instances';
+import { getTask } from '../../task-manager/store';
+import { isTerminalState } from '../../task-manager/types';
 
 function gib(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)}GiB`;
@@ -36,6 +40,10 @@ registerSystemAction('gc-verify-instances', async (ctx: SystemActionCtx) => {
     : [];
   const result = await gcVerifyInstances({
     dryRun: cfg.dry_run === true,
+    isTaskTerminal: async (taskId) => {
+      const row = await getTask(taskId);
+      return Boolean(row && row.endedAt && isTerminalState(row.state));
+    },
     ...(roots.length > 0 ? { roots } : {}),
     ...(Number.isFinite(ttlHours) && ttlHours > 0 ? { ttlHours } : {}),
     ...(Number.isFinite(maxPerRun) && maxPerRun > 0 ? { maxPerRun } : {}),

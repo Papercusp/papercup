@@ -21,6 +21,8 @@ import {
   parseStopScriptDisplay,
   PROTECTED_DISPLAYS,
   runMarkerIsLive,
+  runMarkerTaskId,
+  VERIFY_TERMINAL_TASK_GRACE_MS,
   VERIFY_INSTANCE_TTL_HOURS_DEFAULT,
 } from './gc-verify-instances';
 
@@ -116,6 +118,44 @@ describe('gc-verify-instances — refusals (the safety surface)', () => {
 });
 
 describe('gc-verify-instances — reaping', () => {
+  it('reclaims a deadline-killed managed task after its ledger closes and the grace passes', async () => {
+    const dir = await makeInstance('deadline', { ageHours: 1, bytes: 1000 });
+    await writeFile(join(dir, '.papercusp-run'), 'pid=999999999\ntask_id=0muiljsj1vqd0otcqcr\n');
+    utimesSync(dir, hoursAgo(1), hoursAgo(1));
+    const stop = vi.fn(async () => {});
+    const terminal = vi.fn(async (taskId: string) => taskId === '0muiljsj1vqd0otcqcr');
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop, isTaskTerminal: terminal });
+    expect(terminal).toHaveBeenCalledWith('0muiljsj1vqd0otcqcr');
+    expect(stop).toHaveBeenCalledOnce();
+    expect(result.reaped).toBe(1);
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it('keeps young managed scratch while the task is live, unknown, or inside teardown grace', async () => {
+    const dir = await makeInstance('live-task', { ageHours: 1 });
+    await writeFile(join(dir, '.papercusp-run'), 'pid=999999999\ntask_id=abcd1234\n');
+    utimesSync(dir, hoursAgo(1), hoursAgo(1));
+    const stop = vi.fn(async () => {});
+    const live = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop, isTaskTerminal: async () => false });
+    const unknown = await gcVerifyInstances({ roots: [root], now: NOW, runStopScript: stop, isTaskTerminal: async () => { throw new Error('ledger unavailable'); } });
+    const grace = await gcVerifyInstances({ roots: [root], now: NOW - 3_600_000 + VERIFY_TERMINAL_TASK_GRACE_MS - 1, runStopScript: stop, isTaskTerminal: async () => true });
+    expect([live.reaped, unknown.reaped, grace.reaped]).toEqual([0, 0, 0]);
+    expect(stop).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+    expect(await runMarkerTaskId(dir)).toBe('abcd1234');
+  });
+
+  it('keeps a young tree when its marker owner is alive even if the ledger says terminal', async () => {
+    const dir = await makeInstance('owner-alive', { ageHours: 1 });
+    await writeFile(join(dir, '.papercusp-run'), `pid=${process.pid}\nstart_ticks=${ownStartTicks()}\ntask_id=abcd1234\n`);
+    utimesSync(dir, hoursAgo(1), hoursAgo(1));
+    const terminal = vi.fn(async () => true);
+    const result = await gcVerifyInstances({ roots: [root], now: NOW, isTaskTerminal: terminal });
+    expect(result.reaped).toBe(0);
+    expect(terminal).not.toHaveBeenCalled();
+    expect(existsSync(dir)).toBe(true);
+  });
+
   it('runs the dir\'s OWN stop.sh and then removes it', async () => {
     const dir = await makeInstance('stale', { ageHours: 200, bytes: 1000 });
     const stop = vi.fn(async () => {});

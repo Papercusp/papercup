@@ -59,8 +59,9 @@
  *   - REFUSE a stop.sh whose display is :0/:1/:2 (:0 is the owner's real desktop) —
  *     a defensive parse, since a well-formed stop.sh always targets its own high
  *     display, but a malformed or hand-edited one must not be trusted.
- *   - NEVER touch a dir younger than the TTL. A `-- <cmd>` run lives <10 min; the TTL
- *     defaults to 6h so even a long interactive --boot-only session is safe.
+ *   - Before the TTL, only touch a dir whose operator-issued task id is terminal,
+ *     marker owner is gone, and teardown grace has elapsed. Otherwise the 6h TTL
+ *     protects long interactive --boot-only sessions.
  *   - BOUND every run, and support dryRun that names what it WOULD reap (a bare count
  *     hides destruction — see the gen-gallery.py lesson).
  *
@@ -119,6 +120,9 @@ export const VERIFY_WORK_DIR_PREFIX = 'verify-tauri-headless.';
  * session that may legitimately stay up while someone works against it.
  */
 export const VERIFY_INSTANCE_TTL_HOURS_DEFAULT = 6;
+
+/** Let a terminal task's own teardown settle before reclaiming its scratch. */
+export const VERIFY_TERMINAL_TASK_GRACE_MS = 3 * 60_000;
 
 /** Never reap more than this in one pass — a runaway sweep should be slow, not total. */
 export const VERIFY_INSTANCE_MAX_PER_RUN_DEFAULT = 50;
@@ -227,6 +231,17 @@ export async function runMarkerIsLive(dir: string): Promise<boolean> {
   return (await processStartTicks(pid)) === expected;
 }
 
+/** An operator-issued task id from the run marker, if one was recorded. */
+export async function runMarkerTaskId(dir: string): Promise<string | null> {
+  try {
+    const raw = await readFile(join(dir, '.papercusp-run'), 'utf8');
+    const taskId = raw.split('\n').find((line) => line.startsWith('task_id='))?.slice('task_id='.length);
+    return taskId && /^[0-9a-z]{4,64}$/.test(taskId) ? taskId : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface GcVerifyInstancesOptions {
   /** Roots to scan (default {@link defaultVerifyScanRoots}). Injected by the tests. */
   roots?: string[];
@@ -238,6 +253,8 @@ export interface GcVerifyInstancesOptions {
   now?: number;
   /** Injectable teardown, so tests never exec a real stop.sh. */
   runStopScript?: (stopScriptPath: string) => Promise<void>;
+  /** Confirm terminal ledger state before the ordinary age TTL; unavailable means false. */
+  isTaskTerminal?: (taskId: string) => Promise<boolean>;
 }
 
 export interface ReapedInstance {
@@ -364,8 +381,24 @@ export async function gcVerifyInstances(
       ...extra,
     });
 
-    // ── REFUSAL 1: too young. A live run must never be reaped out from under itself.
-    if (ageHours < ttlHours) {
+    // A deadline reap kills the verifier before its EXIT trap can remove the
+    // large snapshot. Its managed task id is recorded in both scratch roots.
+    // Permit early cleanup only after the ledger is terminal, the marker owner
+    // is gone, and a short grace has allowed normal teardown to finish.
+    let terminalTask = false;
+    if (ageHours < ttlHours && ageHours * 3_600_000 >= VERIFY_TERMINAL_TASK_GRACE_MS && opts.isTaskTerminal) {
+      const taskId = await runMarkerTaskId(dir);
+      if (taskId && !(await runMarkerIsLive(dir))) {
+        try {
+          terminalTask = await opts.isTaskTerminal(taskId);
+        } catch {
+          // A ledger read failure cannot authorize deletion.
+        }
+      }
+    }
+
+    // ── REFUSAL 1: too young and no confirmed terminal managed task.
+    if (ageHours < ttlHours && !terminalTask) {
       skipped += 1;
       instances.push(record({ skipped: `younger than ttl (${ttlHours}h)` }));
       continue;

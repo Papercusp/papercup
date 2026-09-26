@@ -885,6 +885,11 @@ write_run_marker() {
   {
     printf 'pid=%s\n' "$pid"
     [ -n "$start_ticks" ] && printf 'start_ticks=%s\n' "$start_ticks"
+    # The external GC can release this tree after the managed bash task reaches
+    # a terminal ledger state, even when a deadline kill bypasses our EXIT trap.
+    if [[ "${PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID:-}" =~ ^[0-9a-z]{4,64}$ ]]; then
+      printf 'task_id=%s\n' "$PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID"
+    fi
   } >"$marker_tmp" 2>/dev/null || return 1
   mv -f "$marker_tmp" "$WORK/.papercusp-run" 2>/dev/null || {
     rm -f "$marker_tmp" 2>/dev/null || true
