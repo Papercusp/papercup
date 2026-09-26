@@ -629,6 +629,24 @@ fi
 
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/mutation-probe.XXXXXX")" || die "could not create scratch dir"
 readonly SCRATCH
+# Admission is serialized with testing:run's router wrapper. A complete
+# original-byte manifest is published before any in-tree mutation, and removed
+# only after restoration. The lock is not held during the guard itself.
+PROBE_ADMISSION_FD=""
+PROBE_MANIFEST=""
+if [ "$IN_TREE" -eq 1 ]; then
+  command -v bwrap >/dev/null || die "--in-tree requires bwrap to isolate concurrent testing:run children"
+  ADMISSION_ROOT="$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel)" ||
+    die "--in-tree requires a tracked checkout for mutation admission"
+  ADMISSION_ROOT="$(realpath -e "$ADMISSION_ROOT")" || die "cannot resolve mutation checkout"
+  ADMISSION_KEY="$(printf '%s' "$ADMISSION_ROOT" | sha256sum | cut -d' ' -f1)"
+  ADMISSION_DIR="/tmp/papercusp-mutation-probe-$(id -u)-$ADMISSION_KEY"
+  mkdir -p -m 700 "$ADMISSION_DIR" || die "cannot create probe admission directory"
+  PROBE_MANIFEST="$ADMISSION_DIR/original.manifest"
+  exec {PROBE_ADMISSION_FD}>"$ADMISSION_DIR/admission.lock"
+  flock -x "$PROBE_ADMISSION_FD" || die "cannot acquire mutation admission lock"
+  [ ! -e "$PROBE_MANIFEST" ] || die "another mutation probe has an active or orphaned snapshot: $PROBE_MANIFEST"
+fi
 BASE="$SCRATCH/$(basename "$FILE").orig"
 cp "$FILE" "$BASE" || die "could not snapshot $FILE"
 
@@ -698,6 +716,8 @@ finish() {
   # respect to FILE, and the old ordering did not wait for it to exit before
   # copying anyway, so deferring the copy bought no race protection.
   if [ "$IN_TREE" = "1" ]; then
+    # Restore must not wait for a slow unrelated test. Already admitted children
+    # hold a bwrap bind to the immutable original snapshot.
     cp "$BASE" "$FILE" 2>/dev/null || true
   fi
   # Once the shared-tree invariant is restored, reap the probe's own child and
@@ -721,6 +741,11 @@ finish() {
     trap - EXIT
     exit 3
   fi
+  if [ -n "$PROBE_ADMISSION_FD" ]; then
+    flock -x "$PROBE_ADMISSION_FD" || exit 3
+    rm -f -- "$PROBE_MANIFEST"
+    flock -u "$PROBE_ADMISSION_FD"
+  fi
   # Only discard the scratch dir once integrity is proven; if anything went
   # wrong the pristine copy is the operator's recovery path, so it stays.
   rm -rf "$SCRATCH"
@@ -729,6 +754,11 @@ finish() {
 trap 'finish "$?"' EXIT
 trap 'finish 130' INT
 trap 'finish 143' TERM
+if [ "$IN_TREE" -eq 1 ]; then
+  printf '%s\0%s\0%s\0%s\0' "$ADMISSION_ROOT" "$FILE" "$BASE" "$$" >"$PROBE_MANIFEST" ||
+    die "cannot publish original-byte mutation snapshot"
+  flock -u "$PROBE_ADMISSION_FD" || die "cannot release mutation admission lock"
+fi
 
 CURRENT_SNAPSHOT=""
 HISTORICAL_SNAPSHOT=""
