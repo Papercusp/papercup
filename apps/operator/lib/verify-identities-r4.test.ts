@@ -41,8 +41,8 @@ describe("P-015 R-4 maintained identity UI verifier", () => {
     const clicks: string[] = [];
     let settled = 0;
     const scanned = selectIdentityInCatalog("research-steward", "select", {
-      readPage: (_selector, page) => pages[page - 1],
-      click: (selector) => clicks.push(selector),
+      readPage: (_selector: string, page: number) => pages[page - 1],
+      click: (selector: string) => clicks.push(selector),
       settle: () => { settled++; },
     });
     expect(scanned).toBe(2);
