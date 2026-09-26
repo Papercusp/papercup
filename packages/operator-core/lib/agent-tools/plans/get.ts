@@ -756,6 +756,14 @@ export default defineTool({
             stagesMs[name] = Math.max(0, performance.now() - started);
           }
         };
+        const timeDetail = async <T>(name: string, read: () => Promise<T>): Promise<T> => {
+          const started = performance.now();
+          try {
+            return await read();
+          } finally {
+            detailMs[name] = Math.max(0, performance.now() - started);
+          }
+        };
         return cachedRead(
           ctx as CachedReadCtx,
           {
@@ -848,26 +856,33 @@ export default defineTool({
             // These reads depend only on the plan row. Start them alongside the
             // item enrichments so a slow rubric or audit lookup does not add a
             // second wait to a full plan read.
-            const rubricAndAuditRead = requestedDecisionIds || args.heading || mode === 'meta'
-              ? Promise.resolve([null, null] as const)
-              : timeStage('rubricAndAudit', () => Promise.all([
-              getAcceptanceRubricForPlan(row.planSlug, { harnessSlug: row.harnessSlug })
-                .then((r) =>
-                  r
-                    ? {
-                        rubricId: r.rubricId,
-                        status: r.status,
-                        criteriaCount: r.criteria.length,
-                        ...(r.classRef ? { classRef: r.classRef } : {}),
-                      }
-                    : null,
-                )
-                .catch(() => null),
-              // An audit's citation harness may differ from the plan's home.
-              getLatestPlanAudit(row.planSlug, {
-                workspaceId: row.workspaceId,
-              }),
-              ]));
+            const rubricAndAuditRead =
+              requestedDecisionIds || args.heading || mode === 'meta'
+                ? Promise.resolve([null, null] as const)
+                : timeStage('rubricAndAudit', () =>
+                    Promise.all([
+                      timeDetail('rubricAndAudit.rubric', () =>
+                        getAcceptanceRubricForPlan(row.planSlug, { harnessSlug: row.harnessSlug })
+                          .then((r) =>
+                            r
+                              ? {
+                                  rubricId: r.rubricId,
+                                  status: r.status,
+                                  criteriaCount: r.criteria.length,
+                                  ...(r.classRef ? { classRef: r.classRef } : {}),
+                                }
+                              : null,
+                          )
+                          .catch(() => null),
+                      ),
+                      // An audit's citation harness may differ from the plan's home.
+                      timeDetail('rubricAndAudit.audit', () =>
+                        getLatestPlanAudit(row.planSlug, {
+                          workspaceId: row.workspaceId,
+                        }),
+                      ),
+                    ]),
+                  );
 
             // engineer-issues D-005: overlay OPEN issue blocks (coord_links rel='blocks',
             // dst=plan_item) onto effectiveStatus AFTER the pure resolver — an item blocked
@@ -880,7 +895,7 @@ export default defineTool({
             // can show live feature status badges next to each P-NNN item.
             const harnessSlug = resolveEffectiveHarnessSlug(sctx);
             const linkedFeaturesRead = timeStage('linkedFeatures', async () => {
-              let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
+            let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
               // P-003: the newest transition across work-items linked to this
               // plan — one of the two measurable freshness sources. Taken from
               // the query below rather than a second one: it already selects
@@ -888,19 +903,27 @@ export default defineTool({
               // column instead of a round-trip.
               let linkedWorkItemUpdatedAt: string | null = null;
               try {
-                const rows = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-                  return tx<
-                    {
-                      feature_id: string;
-                      status: string;
-                      source_plan_slug: string | null;
-                      source_plan_item_ids: string[] | null;
-                      stamped_plan_slug: string | null;
-                      stamped_item_id: string | null;
-                      harness_slug: string;
-                      updated_ts: string | number | null;
-                    }[]
-                  >`
+                const acquisitionStarted = performance.now();
+                let beganAt: number | null = null;
+                let callbackEndedAt: number | null = null;
+                const rows = await withWorkspace(
+                  DEFAULT_WORKSPACE_ID,
+                  async (tx) => {
+                    try {
+                      return await timeDetail(
+                        'linkedFeatures.query',
+                        () => tx<
+                          {
+                            feature_id: string;
+                            status: string;
+                            source_plan_slug: string | null;
+                            source_plan_item_ids: string[] | null;
+                            stamped_plan_slug: string | null;
+                            stamped_item_id: string | null;
+                            harness_slug: string;
+                            updated_ts: string | number | null;
+                          }[]
+                        >`
                 SELECT feature_id, status, source_plan_slug, source_plan_item_ids,
                        payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
                        payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
@@ -909,8 +932,27 @@ export default defineTool({
                  WHERE workspace_id = ${DEFAULT_WORKSPACE_ID}
                    AND (source_plan_slug = ${slug}
                         OR payload -> 'plan_item' ->> 'plan_slug' = ${slug})
-              `;
-                });
+              `,
+                      );
+                    } finally {
+                      callbackEndedAt = performance.now();
+                    }
+                  },
+                  {
+                    onAcquisitionPhase: (phase) => {
+                      const at = performance.now();
+                      if (phase === 'begin') {
+                        beganAt = at;
+                        detailMs['linkedFeatures.waitForBegin'] = Math.max(0, at - acquisitionStarted);
+                      } else {
+                        detailMs['linkedFeatures.workspaceSetup'] = Math.max(0, at - (beganAt ?? acquisitionStarted));
+                      }
+                    },
+                  },
+                );
+                if (callbackEndedAt !== null) {
+                  detailMs['linkedFeatures.finishTransaction'] = Math.max(0, performance.now() - callbackEndedAt);
+                }
                 for (const row of rows) {
                   // P-003 freshness: newest linked work-item write. Taken over
                   // ALL linked rows, including ones whose plan-item provenance
@@ -946,32 +988,62 @@ export default defineTool({
             const testCoverageRead = timeStage('testCoverage', async () => {
               let planItemTests: Record<string, PlanItemTestStatus> = {};
               try {
-                planItemTests = await withWorkspace(DEFAULT_WORKSPACE_ID, async (tx) => {
-                  const assertions = await tx<
-                    {
-                      val_id: string;
-                      item_id: string;
-                      requires_test: boolean;
-                    }[]
-                  >`
+                const acquisitionStarted = performance.now();
+                let beganAt: number | null = null;
+                let callbackEndedAt: number | null = null;
+                planItemTests = await withWorkspace(
+                  DEFAULT_WORKSPACE_ID,
+                  async (tx) => {
+                    try {
+                      const assertions = await timeDetail(
+                        'testCoverage.assertionsQuery',
+                        () => tx<
+                          {
+                            val_id: string;
+                            item_id: string;
+                            requires_test: boolean;
+                          }[]
+                        >`
                 SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
                  WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
-              `;
-                  if (assertions.length === 0) return {};
-                  const testRows = await tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
+              `,
+                      );
+                      if (assertions.length === 0) return {};
+                      const testRows = await timeDetail(
+                        'testCoverage.testsQuery',
+                        () => tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
                 SELECT status, payload FROM harness_shared.harness_tests
                  WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
-              `;
-                  return computePlanItemTestStatus(
-                    assertions,
-                    testRows.map((r) => ({
-                      status: r.status,
-                      coversVALs: Array.isArray(r.payload?.coversVALs)
-                        ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
-                        : [],
-                    })),
-                  );
-                });
+              `,
+                      );
+                      return computePlanItemTestStatus(
+                        assertions,
+                        testRows.map((r) => ({
+                          status: r.status,
+                          coversVALs: Array.isArray(r.payload?.coversVALs)
+                            ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
+                            : [],
+                        })),
+                      );
+                    } finally {
+                      callbackEndedAt = performance.now();
+                    }
+                  },
+                  {
+                    onAcquisitionPhase: (phase) => {
+                      const at = performance.now();
+                      if (phase === 'begin') {
+                        beganAt = at;
+                        detailMs['testCoverage.waitForBegin'] = Math.max(0, at - acquisitionStarted);
+                      } else {
+                        detailMs['testCoverage.workspaceSetup'] = Math.max(0, at - (beganAt ?? acquisitionStarted));
+                      }
+                    },
+                  },
+                );
+                if (callbackEndedAt !== null) {
+                  detailMs['testCoverage.finishTransaction'] = Math.max(0, performance.now() - callbackEndedAt);
+                }
               } catch {
                 // Non-fatal — UI degrades to no coverage badges.
               }
