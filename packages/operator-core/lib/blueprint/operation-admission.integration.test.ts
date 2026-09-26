@@ -5,7 +5,8 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { projectBlueprintToPg } from './project-to-pg';
 import {
   BLUEPRINT_PROGRAM_COMPLETION_OWNER, blueprintProgramCompletionRef,
-  blueprintOperationAcceptanceSubjectRef, getBlueprintOperationResult, getBlueprintOperationStatus,
+  blueprintOperationAcceptanceSubjectRef, cancelBlueprintOperation,
+  getBlueprintOperationResult, getBlueprintOperationStatus,
   submitBlueprintOperation,
 } from './operation-service';
 import { seedContentHash } from '../cupboard/rubric-store';
@@ -445,6 +446,118 @@ describe('program child admission pins the root specification', () => {
     expect(cancelled?.state).toBe('dropped');
     expect(await getBlueprintOperationStatus(sql, accepted, 'program-caller'))
       .toMatchObject({ phase: 'terminal', outcome: 'cancelled' });
+  }, 90_000);
+
+  it('passes root cancellation to an accepted child before reporting the root cancelled', async () => {
+    const specification = definition('cancel-child');
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: specification.configuration as Blueprint, specification });
+    const root = await submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'cancel-child-caller', operationId: 'root',
+      requestKey: 'cancel-child-root', input: {}, title: 'Root with running child',
+    });
+    const parent = (await findUnstartedAcceptedCoordPrograms(sql))
+      .find((entry) => entry.acceptedOperation?.receiptId === root.receiptId);
+    expect(parent).toBeDefined();
+    const child = await submitAcceptedCoordProgramChild(sql, parent!, {
+      stepId: 'op-create-leaf', operationId: 'leaf', input: { value: 'running' },
+    });
+    expect((await getBlueprintOperationStatus(sql, child, 'cancel-child-caller')).cancellationRequested)
+      .toBe(false);
+    await cancelBlueprintOperation(sql, root, 'cancel-child-caller', {
+      requestKey: 'cancel-root-once', reason: 'stop the whole program',
+    });
+    expect(await settleAcceptedCoordProgram(sql, parent!, { outcome: 'done', resolved: true }))
+      .toMatchObject({ phase: 'terminal', outcome: 'cancelled' });
+    expect(await getBlueprintOperationStatus(sql, child, 'cancel-child-caller'))
+      .toMatchObject({ cancellationRequested: true });
+  }, 90_000);
+
+  it('cascades cancellation through nested programs without duplicating child requests on replay', async () => {
+    const specification = definition('cancel-nested');
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: specification.configuration as Blueprint, specification });
+    const root = await submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'nested-cancel-caller', operationId: 'root',
+      requestKey: 'nested-cancel-root', input: {}, title: 'Nested cancellation root',
+    });
+    const accepted = await findUnstartedAcceptedCoordPrograms(sql);
+    const parent = accepted.find((entry) => entry.acceptedOperation?.receiptId === root.receiptId);
+    expect(parent).toBeDefined();
+    const nested = await submitAcceptedCoordProgramChild(sql, parent!, {
+      stepId: 'op-nested', operationId: 'rootTask', input: {},
+    });
+    const nestedParent = (await findUnstartedAcceptedCoordPrograms(sql))
+      .find((entry) => entry.acceptedOperation?.receiptId === nested.receiptId);
+    expect(nestedParent).toBeDefined();
+    const leaf = await submitAcceptedCoordProgramChild(sql, nestedParent!, {
+      stepId: 'op-leaf', operationId: 'leaf', input: { value: 'running' },
+    });
+
+    await cancelBlueprintOperation(sql, root, 'nested-cancel-caller', {
+      requestKey: 'cancel-nested-once', reason: 'stop all nested work',
+    });
+    expect(await settleAcceptedCoordProgram(sql, parent!, { outcome: 'done', resolved: true }))
+      .toMatchObject({ outcome: 'cancelled' });
+    expect(await getBlueprintOperationStatus(sql, nested, 'nested-cancel-caller'))
+      .toMatchObject({ cancellationRequested: true });
+    expect(await settleAcceptedCoordProgram(sql, nestedParent!, { outcome: 'done', resolved: true }))
+      .toMatchObject({ outcome: 'cancelled' });
+    expect(await getBlueprintOperationStatus(sql, leaf, 'nested-cancel-caller'))
+      .toMatchObject({ cancellationRequested: true });
+    expect(await settleAcceptedCoordProgram(sql, parent!, { outcome: 'done', resolved: true }))
+      .toMatchObject({ outcome: 'cancelled' });
+    const [cancelEvents] = await sql<Array<{ count: string }>>`
+      SELECT count(*)::text AS count FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId} AND surface = 'blueprint-operation'
+         AND writer_key = ${`receipt:${nested.receiptId}`} AND body->>'kind' = 'cancel'
+    `;
+    expect(Number(cancelEvents.count)).toBe(1);
+  }, 90_000);
+
+  it('cancels children beyond the first receipt page', async () => {
+    const specification = definition('cancel-many');
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: specification.configuration as Blueprint, specification });
+    const root = await submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'many-cancel-caller', operationId: 'root',
+      requestKey: 'many-cancel-root', input: {}, title: 'Many child operations',
+    });
+    const parent = (await findUnstartedAcceptedCoordPrograms(sql))
+      .find((entry) => entry.acceptedOperation?.receiptId === root.receiptId);
+    expect(parent).toBeDefined();
+    const child = await submitAcceptedCoordProgramChild(sql, parent!, {
+      stepId: 'op-page-0', operationId: 'leaf', input: { value: 'running' },
+    });
+    // Clone only the receipt rows to exercise the keyset cursor. Repeated full
+    // operation admissions would test provisioning cost rather than paging.
+    const clones = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.blueprint_operation_invocations
+        (workspace_id, harness_slug, caller_id, operation_id, request_key,
+         request_fingerprint, specification_revision, target_kind, target_ref)
+      SELECT i.workspace_id, i.harness_slug, i.caller_id, i.operation_id,
+             ${`program:${root.receiptId}:op-page-`} || gs.n::text,
+             i.request_fingerprint, i.specification_revision, i.target_kind, i.target_ref
+        FROM harness_shared.blueprint_operation_invocations i
+        CROSS JOIN generate_series(1, 8) AS gs(n)
+       WHERE i.id = ${child.receiptId}
+      RETURNING id::text
+    `;
+    expect(clones).toHaveLength(8);
+    await cancelBlueprintOperation(sql, root, 'many-cancel-caller', {
+      requestKey: 'cancel-many-once', reason: 'stop every child',
+    });
+    expect(await settleAcceptedCoordProgram(sql, parent!, { outcome: 'done', resolved: true }))
+      .toMatchObject({ outcome: 'cancelled' });
+    expect(await getBlueprintOperationStatus(sql, child, 'many-cancel-caller'))
+      .toMatchObject({ cancellationRequested: true });
+    const [lastPage] = await sql<Array<{ count: string }>>`
+      SELECT count(*)::text AS count FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId} AND surface = 'blueprint-operation'
+         AND writer_key = ${`receipt:${clones.at(-1)!.id}`}
+         AND body->>'kind' = 'cancel'
+    `;
+    expect(Number(lastPage.count)).toBe(1);
   }, 90_000);
 
   it('stores a typed result on a canonical issue-family program root', async () => {
