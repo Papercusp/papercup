@@ -41,7 +41,7 @@ type Route = { method: string; path: string; handler: (request: Request) => Prom
 const EARLIER = 'fa2b9674-2646-42fa-9135-3909f93fcd9a';
 
 async function get(query: string): Promise<{ status: number; body: Record<string, unknown> }> {
-  const routes = (await import('../routes/adv/sessions')).default as Route[];
+  const routes = (await import('../routes/adv/sessions')).default as unknown as Route[];
   const route = routes.find((r) => r.method === 'GET' && r.path === '/adv/sessions/resumable');
   if (!route) throw new Error('resumable route was not registered');
   const res = await route.handler(new Request(`http://localhost:3170/api/adv/sessions/resumable${query}`));

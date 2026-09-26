@@ -18,7 +18,10 @@ import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config/pg';
 import {
   DISPATCH_RECORDS_MAX,
+  SOURCE_LAUNCH_FAILURE_THRESHOLD,
   appendDispatchRecord,
+  readSourceDispatchRecords,
+  sourceCooldownFrom,
   type ConsultDispatchRecordInput,
 } from './consult-dispatch';
 
@@ -195,5 +198,69 @@ describe('appendDispatchRecord (real Postgres)', () => {
     const [rec] = await readRecords('conv-escape');
     expect(rec!.detail).toBe(tricky);
     expect((rec!.attempts as Array<Record<string, unknown>>)[0]!.launchError).toBe(tricky);
+  });
+});
+
+// WI-10003198 (P-002): the source cool-down is DERIVED from these records, so
+// the read that feeds it is one SQL statement over the same column. If it read
+// nothing (a wrong key, a double-encoded element, a bad `at` comparison), the
+// cool-down would fail open and the relaunch storm would return without any
+// error. Only real Postgres can show the statement selects what it claims to.
+describe('readSourceDispatchRecords (real Postgres) — the cool-down read', () => {
+  const OTHER_WS = 'ws-dispatch-record-other';
+  const SINCE = '2026-09-26T00:00:00.000Z';
+
+  function walk(conversationId: string, sourceOwnerId: string, workspaceId = WS): ConsultDispatchRecordInput {
+    return { ...input(conversationId, `walk-${conversationId}`), workspaceId, sourceOwnerId };
+  }
+
+  beforeAll(async () => {
+    await seed('conv-cd-a');
+    await seed('conv-cd-b');
+    await sql`
+      INSERT INTO harness_shared.consult_state (workspace_id, conversation_id, requester_id, question)
+      VALUES (${OTHER_WS}, 'conv-cd-other-ws', 'su-requester', 'why?')
+    `;
+    // In scope: su-cooling, this workspace, at/after SINCE, spread across two consults.
+    await appendDispatchRecord(sql, walk('conv-cd-a', 'su-cooling'), '2026-09-26T03:00:00.000Z');
+    await appendDispatchRecord(sql, walk('conv-cd-b', 'su-cooling'), '2026-09-26T03:05:00.000Z');
+    await appendDispatchRecord(sql, walk('conv-cd-a', 'su-cooling'), '2026-09-26T03:10:00.000Z');
+    // Out of scope, one axis each.
+    await appendDispatchRecord(sql, walk('conv-cd-a', 'su-cooling'), '2026-09-25T23:59:59.999Z'); // before SINCE
+    await appendDispatchRecord(sql, walk('conv-cd-b', 'su-someone-else'), '2026-09-26T03:20:00.000Z'); // other source
+    await appendDispatchRecord(sql, walk('conv-cd-other-ws', 'su-cooling', OTHER_WS), '2026-09-26T03:30:00.000Z'); // other workspace
+  });
+
+  it("returns only that source's walks in that workspace since the cut-off, newest first, across consults", async () => {
+    const records = await readSourceDispatchRecords(sql, WS, 'su-cooling', SINCE);
+    expect(records.map((r) => r.at)).toEqual([
+      '2026-09-26T03:10:00.000Z',
+      '2026-09-26T03:05:00.000Z',
+      '2026-09-26T03:00:00.000Z',
+    ]);
+    for (const r of records) {
+      expect(typeof r).toBe('object');
+      expect(r.sourceOwnerId).toBe('su-cooling');
+    }
+  });
+
+  it('honours the row limit, keeping the newest', async () => {
+    const records = await readSourceDispatchRecords(sql, WS, 'su-cooling', SINCE, 2);
+    expect(records.map((r) => r.at)).toEqual(['2026-09-26T03:10:00.000Z', '2026-09-26T03:05:00.000Z']);
+  });
+
+  it('returns nothing for a source with no walks — no cool-down, not an error', async () => {
+    await expect(readSourceDispatchRecords(sql, WS, 'su-never-routed', SINCE)).resolves.toEqual([]);
+  });
+
+  it('feeds sourceCooldownFrom records it can count: three failed launches start the cool-down', async () => {
+    expect(SOURCE_LAUNCH_FAILURE_THRESHOLD).toBe(3);
+    const records = await readSourceDispatchRecords(sql, WS, 'su-cooling', SINCE);
+    const cooldown = sourceCooldownFrom(records, Date.parse('2026-09-26T03:15:00.000Z'));
+    expect(cooldown).toMatchObject({
+      failures: 3,
+      until: '2026-09-26T04:10:00.000Z',
+    });
+    expect(cooldown!.lastFailure).toMatch(/^launch-exited on claude\/opus/);
   });
 });
