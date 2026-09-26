@@ -330,6 +330,9 @@ export function createCodexBearerKernelAdapter(opts: CodexBearerAdapterOptions):
       } catch (error) {
         // Transport failure (dead/hanging proxy or network) → route around
         // to another account, mirroring the live handler.
+        // A terminal pre-send admission refusal is not a broken credential or
+        // network: preserve it before invalidating or selecting another account.
+        if (error instanceof GatewayRequestKernelError && !error.retryable) throw error;
         account.invalidateToken?.();
         throw new GatewayRequestKernelError(
           `inference-gateway: Codex upstream failed: ${(error as Error).message}`,

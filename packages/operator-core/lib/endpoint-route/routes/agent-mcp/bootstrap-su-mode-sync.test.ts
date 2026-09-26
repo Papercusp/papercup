@@ -123,6 +123,16 @@ describe('syncLaunchModeToRegistry (EI-11110 / WI-5976)', () => {
     expect(refreshControlAnchorMock).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['grade', 'test'] as const)('registers AUTO and %s before the verifier first turn', async (namedMode) => {
+    const err = await syncLaunchModeToRegistry({
+      workspaceId: 'ws', ownerId: 'su-verifier', autoMode: true,
+      drainMode: false, namedMode, reason: `launch: --mode=${namedMode}`,
+    });
+    expect(err).toBeNull();
+    expect(setModeMock.mock.calls.map((c) => (c[0] as { modeId: string }).modeId)).toEqual(['auto', namedMode]);
+    expect(refreshControlAnchorMock).toHaveBeenCalledTimes(1);
+  });
+
   it('propagates the bounded DRAIN subject and exact standing instruction fact', async () => {
     const err = await syncLaunchModeToRegistry({
       workspaceId: 'ws',

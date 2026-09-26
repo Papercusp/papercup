@@ -135,12 +135,12 @@ export function injectAccountArg(
 /**
  * Launch-time mode overlay carried across a scripted spawn boundary.
  *
- * DRAIN is the only mode with a psu launch spelling today. Keep this payload
+ * Keep this payload
  * deliberately small and closed: a caller may propagate the leader's durable
  * mode row + standing instructions, but it must never smuggle arbitrary mode
  * prose or an unbounded value into a shell command / bootstrap body.
  */
-export type LaunchModeId = 'drain';
+export type LaunchModeId = 'drain' | 'grade' | 'test';
 
 export const LAUNCH_MODE_SUBJECT_MAX_CHARS = 200;
 export const LAUNCH_MODE_INSTRUCTIONS_MAX_CHARS = 500;
@@ -162,9 +162,9 @@ function boundedLaunchModeText(value: unknown, maxChars: number): string | null 
 export function normalizeLaunchMode(value: unknown): LaunchMode | null {
   if (!value || typeof value !== 'object') return null;
   const input = value as Record<string, unknown>;
-  if (input.mode !== 'drain') return null;
+  if (input.mode !== 'drain' && input.mode !== 'grade' && input.mode !== 'test') return null;
   return {
-    mode: 'drain',
+    mode: input.mode,
     subject: boundedLaunchModeText(input.subject, LAUNCH_MODE_SUBJECT_MAX_CHARS),
     instructions: boundedLaunchModeText(input.instructions, LAUNCH_MODE_INSTRUCTIONS_MAX_CHARS),
     ownerDirected: input.ownerDirected === true,

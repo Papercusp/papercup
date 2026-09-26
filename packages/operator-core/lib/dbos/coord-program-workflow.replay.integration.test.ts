@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
-import { compileAgentSpecification, type Blueprint } from '@papercusp/orchestrator/blueprint';
+import { blueprintHash, compileAgentSpecification, pinPackageInput, type Blueprint } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
 const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
@@ -113,5 +113,53 @@ describe('accepted program on real DBOS persistence', () => {
       .toMatchObject({ outcome: 'failed', resolved: false });
     expect(await service.getBlueprintOperationResult(sql, handle, 'program-replay-caller'))
       .toMatchObject({ state: 'failed', status: { phase: 'terminal', outcome: 'failed' } });
+  }, 90_000);
+
+  it('executes a retained external program after the mutable owner pointer moves', async () => {
+    const { projectBlueprintToPg } = await import('../blueprint/project-to-pg');
+    const external = compileAgentSpecification({ source: {
+      id: 'dbos-external-program', version: '1', workItem: { kind: 'feature' },
+      spine: { steps: [{ id: 'aggregate', op: 'vote:aggregate', args: { posts: [] } }] },
+    } });
+    const body = external.configuration as Blueprint;
+    const owner = compileAgentSpecification({
+      source: {
+        id: 'dbos-external-owner', version: '1', workItem: { kind: 'feature' },
+        spine: { steps: [{ id: 'open', op: 'coord:thread-open', args: { title: 'Not selected' } }] },
+        operations: [{
+          id: 'externalRoot', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
+          execution: { kind: 'program', blueprint: { kind: 'blueprint', ref: body.id,
+            revision: body.version, contentHash: blueprintHash(body) } },
+          inputSchema: { type: 'object' }, acceptance: { resultSchema: { type: 'object' } },
+        }],
+      },
+      inputClosure: [pinPackageInput({ packageKind: 'blueprint', ref: `operation:${body.id}`,
+        revision: body.version, value: body, files: [], dependencies: [] })],
+    });
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: owner.configuration as Blueprint, specification: owner });
+    const handle = await service.submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'program-replay-caller', operationId: 'externalRoot',
+      requestKey: 'external-root', input: {}, title: 'Retained external root',
+    });
+    const moved = compileAgentSpecification({ source: {
+      id: 'moved-owner-pointer', version: '2', workItem: { kind: 'feature' },
+      spine: { steps: [{ id: 'other', op: 'vote:aggregate', args: { posts: [] } }] },
+      operations: [{
+        id: 'root', version: '2', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'program' }, inputSchema: { type: 'object' },
+        acceptance: { resultSchema: { type: 'object' } },
+      }],
+    } });
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: moved.configuration as Blueprint, specification: moved });
+    const input = (await workflow.findUnstartedAcceptedCoordPrograms(sql))
+      .find((candidate) => candidate.acceptedOperation?.receiptId === handle.receiptId);
+    expect(input?.blueprintId).toBe(body.id);
+    const workflowId = await workflow.startCoordProgram(input!);
+    expect(await DBOS.getResult(workflowId, 30))
+      .toMatchObject({ outcome: 'done', resolved: true });
+    expect(await service.getBlueprintOperationResult(sql, handle, 'program-replay-caller'))
+      .toMatchObject({ state: 'ready', output: { outcome: 'done', resolved: true } });
   }, 90_000);
 });

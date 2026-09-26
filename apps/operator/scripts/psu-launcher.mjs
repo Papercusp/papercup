@@ -274,7 +274,7 @@ Fleet and execution:
   --seat=<ref>                       Consume a delegated fleet seat
   --headless                         Launch without a desktop window
   --auto, --no-auto                  Set AUTO mode explicitly
-  --mode=drain                       Start in DRAIN mode (implies AUTO)
+  --mode=drain|grade|test            Start in a named mode (launches autonomously)
   --mode-subject=<text>              DRAIN subject
   --mode-instructions=<text>         DRAIN instructions
   --mode-owner-directed              Mark the DRAIN mode owner-directed
@@ -1222,9 +1222,9 @@ export function parseArgs(argv) {
     // session — same throw-to-main() pattern as the --model guard (WI-1979).
     else if (a.startsWith("--mode=")) {
       const rawMode = a.slice("--mode=".length);
-      if (rawMode !== "drain") {
+      if (!["drain", "grade", "test"].includes(rawMode)) {
         throw new Error(
-          `--mode=${rawMode} is not recognized — the only supported mode is \`drain\` (psu --mode=drain: drain the work queue to terminal; implies AUTO).`,
+          `--mode=${rawMode} is not recognized — supported modes are drain, grade, test.`,
         );
       }
       out.mode = rawMode;
@@ -12569,7 +12569,7 @@ export function forkBootstrapBody(
     // server-side (resolveAccountPin) into the new launch envelope — the same path
     // a fresh psu launch takes. Omitted → no `account` key (byte-identical).
     ...(account ? { account } : {}),
-    ...(launchMode?.mode === "drain" ? { mode: "drain" } : {}),
+    ...(launchMode ? { mode: launchMode.mode } : {}),
     ...(launchMode?.subject ? { mode_subject: launchMode.subject } : {}),
     ...(launchMode?.instructions
       ? { mode_instructions: launchMode.instructions }
@@ -12589,7 +12589,7 @@ export function forkBootstrapBody(
 export function effectiveAutoMode(args) {
   // drain-mode P-003: DRAIN IMPLIES AUTO — a drain launch is autonomous by definition,
   // and this is NOT overridable by --no-auto (a non-auto drain is a contradiction).
-  if (args.mode === "drain") return true;
+  if (["drain", "grade", "test"].includes(args.mode)) return true;
   return args.auto ?? Boolean(args.fleet);
 }
 
@@ -12609,9 +12609,9 @@ function boundedLaunchModeText(value, maxChars) {
  * independent of the operator-core module graph.
  */
 export function launchModeFromArgs(args = {}) {
-  if (args.mode !== "drain") return null;
+  if (!["drain", "grade", "test"].includes(args.mode)) return null;
   return {
-    mode: "drain",
+    mode: args.mode,
     subject: boundedLaunchModeText(
       args.modeSubject,
       LAUNCH_MODE_SUBJECT_MAX_CHARS,
@@ -12806,7 +12806,7 @@ export function freshSuBootstrapBody(
     // drain-mode P-003: forward the bounded named mode — bootstrap-su validates it
     // (unknown → 400), forces autoMode on, and syncs the child registry + standing
     // scope fact before baking the DRAIN directive into prompt + kickoff.
-    ...(launchMode?.mode === "drain" ? { mode: "drain" } : {}),
+    ...(launchMode ? { mode: launchMode.mode } : {}),
     ...(launchMode?.subject ? { mode_subject: launchMode.subject } : {}),
     ...(launchMode?.instructions
       ? { mode_instructions: launchMode.instructions }

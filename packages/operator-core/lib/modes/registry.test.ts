@@ -1039,8 +1039,8 @@ describe('modeIndexMarkdown', () => {
  * it.
  */
 describe('launchable modes', () => {
-  it('is exactly {auto, drain} — the two postures psu has a flag for', () => {
-    expect([...LAUNCHABLE_MODE_IDS].sort()).toEqual(['auto', 'drain']);
+  it('includes the named verifier postures psu can bind before turn one', () => {
+    expect([...LAUNCHABLE_MODE_IDS].sort()).toEqual(['auto', 'drain', 'grade', 'test']);
   });
 
   it('every launchable id is a real registered mode', () => {

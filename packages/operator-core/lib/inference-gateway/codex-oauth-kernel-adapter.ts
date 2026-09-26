@@ -430,6 +430,9 @@ export function createCodexOAuthKernelAdapter(opts: CodexOAuthAdapterOptions): C
           dispatcher: prepared.dispatcher,
         });
       } catch (error) {
+        // Local terminal admission decisions must not penalize the egress or
+        // turn into a retryable upstream failure.
+        if (error instanceof GatewayRequestKernelError && !error.retryable) throw error;
         opts.onEgressFailure?.(account.accountId);
         opts.coolIp(egress.key, opts.transportCooldownMs);
         throw new GatewayRequestKernelError(

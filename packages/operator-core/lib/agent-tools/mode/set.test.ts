@@ -85,6 +85,7 @@ const h = vi.hoisted(() => ({
   // subject-requiring mode, so this binding must exist on the mock or the named
   // import breaks at module load rather than in a test.
   getModeSubject: vi.fn(async (..._args: unknown[]) => null as string | null),
+  getModes: vi.fn(async (..._args: unknown[]) => [] as Array<{ mode: string; subject: string | null }>),
   // P-003: the attach guard reads the target goal's launch settings. Shaped like
   // the real return so `budget: null` can mean "no such goal" — the distinction
   // the guard uses to avoid guessing in its refusal message.
@@ -108,7 +109,7 @@ const h = vi.hoisted(() => ({
   })),
 }));
 
-vi.mock('../../modes/store', () => ({ setMode: h.setMode, getModeSubject: h.getModeSubject }));
+vi.mock('../../modes/store', () => ({ setMode: h.setMode, getModeSubject: h.getModeSubject, getModes: h.getModes }));
 vi.mock('../../agent-identities/source', () => ({
   getSelectedModeDefinitions: h.getSelectedModeDefinitions,
 }));
@@ -232,11 +233,28 @@ beforeEach(() => {
     timedOutTargets: [],
   });
   h.getModeSubject.mockClear().mockResolvedValue(null);
+  h.getModes.mockClear().mockResolvedValue([]);
   // Default: the goal exists and HAS declared a policy, so the pre-P-003 tests
   // above observe exactly the behaviour they always did.
   h.readGoalLaunchSettings
     .mockClear()
     .mockResolvedValue({ settings: { holder: { requireLive: true } }, budget: {}, error: null });
+});
+
+describe('GOAL holder cannot enter its own verifier mode', () => {
+  it.each(['grade', 'test'])('refuses self %s while GOAL is active', async (mode) => {
+    h.getModes.mockResolvedValue([{ mode: 'goal', subject: 'goal-1' }]);
+    const res = parse(await run({ mode, reason: 'verify my goal' }));
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe('goal_holder_self_verification_refused');
+    expect(h.setMode).not.toHaveBeenCalled();
+  });
+
+  it('allows a separate session to enter TEST', async () => {
+    const res = parse(await run({ mode: 'test', reason: 'verify delegated work' }));
+    expect(res.ok).toBe(true);
+    expect(h.setMode).toHaveBeenCalledWith(expect.objectContaining({ modeId: 'test' }));
+  });
 });
 
 describe('mode:set selected definition delivery', () => {

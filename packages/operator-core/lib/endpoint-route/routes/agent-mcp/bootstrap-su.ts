@@ -908,29 +908,31 @@ export async function syncLaunchModeToRegistry(opts: {
   ownerId: string;
   autoMode: boolean;
   drainMode: boolean;
+  namedMode?: LaunchMode['mode'] | null;
   reason: string;
-  /** Bounded DRAIN overlay fields forwarded by psu/capability launchers. */
+  /** Bounded named-mode fields forwarded by psu/capability launchers. */
   subject?: string | null;
   instructions?: string | null;
   ownerDirected?: boolean;
 }): Promise<string | null> {
-  if (!opts.autoMode) return null;
+  const namedMode = opts.namedMode ?? (opts.drainMode ? 'drain' : null);
+  if (!opts.autoMode && !namedMode) return null;
   try {
     const { setMode } = await import('../../../modes/store');
     const { refreshControlAnchorAfterMutation } = await import(
       '../../../agent-tools/coordination/control-anchor'
     );
-    const launchMode: LaunchMode | null = opts.drainMode
+    const launchMode: LaunchMode | null = namedMode
       ? normalizeLaunchMode({
-          mode: 'drain',
+          mode: namedMode,
           subject: opts.subject,
           instructions: opts.instructions,
           ownerDirected: opts.ownerDirected,
         })
       : null;
-    for (const modeId of opts.drainMode ? ['auto', 'drain'] : ['auto']) {
-      const drainFields =
-        modeId === 'drain' && (opts.subject !== undefined || opts.ownerDirected !== undefined)
+    for (const modeId of [...(opts.autoMode ? ['auto'] : []), ...(namedMode ? [namedMode] : [])]) {
+      const namedFields =
+        modeId === namedMode && (opts.subject !== undefined || opts.ownerDirected !== undefined)
           ? {
               ...(opts.subject !== undefined ? { subject: launchMode?.subject ?? null } : {}),
               ...(opts.ownerDirected !== undefined ? { ownerDirected: launchMode?.ownerDirected === true } : {}),
@@ -943,7 +945,7 @@ export async function syncLaunchModeToRegistry(opts: {
         enabled: true,
         reason: opts.reason,
         setBy: opts.ownerId,
-        ...drainFields,
+        ...namedFields,
       });
       if (!res.ok && !res.stickyConflict) {
         // A genuine write failure (not the benign already-owner-directed case,
@@ -956,10 +958,10 @@ export async function syncLaunchModeToRegistry(opts: {
     // second time: callers read the already-rendered fact from the parent, and
     // duplicating the prefix would alter the operative instruction on every
     // resumption. A supplied empty value deliberately retracts stale scope.
-    if (opts.drainMode && opts.instructions !== undefined) {
+    if (namedMode && opts.instructions !== undefined) {
       const { assertFact, retractFact } = await import('../../../agent-facts/store');
       const { modeInstructionsFactKey } = await import('../../../agent-tools/mode/set');
-      const key = modeInstructionsFactKey('drain');
+      const key = modeInstructionsFactKey(namedMode);
       if (launchMode?.instructions) {
         await assertFact({
           scope: 'owner',
@@ -973,7 +975,7 @@ export async function syncLaunchModeToRegistry(opts: {
           // right lifetime — permanent, and out of the cap-eviction population. A drain
           // fleet outliving a week would otherwise silently lose its instructions.
           kind: 'convention',
-          sourceRef: `bootstrap-su:launch-mode 'drain' by ${opts.ownerId}`,
+          sourceRef: `bootstrap-su:launch-mode '${namedMode}' by ${opts.ownerId}`,
           createdBy: opts.ownerId,
           workspaceId: opts.workspaceId,
         });
@@ -983,7 +985,7 @@ export async function syncLaunchModeToRegistry(opts: {
           scopeRef: opts.ownerId,
           key,
           retractedBy: opts.ownerId,
-          reason: "bootstrap-su: launch-mode 'drain' instructions cleared",
+          reason: `bootstrap-su: launch-mode '${namedMode}' instructions cleared`,
           workspaceId: opts.workspaceId,
         });
       }
@@ -1884,11 +1886,14 @@ export const bootstrapSu = defineTool({
     // happen — and the registry write that follows is the same set, so the kickoff prose
     // and the live `agent_modes` rows agree from turn 1 (EI-11110 / WI-5976).
     const launchFleetRole = body.fleet_name?.trim() ? 'leader' : body.fleet?.trim() ? body.fleet_role?.trim() || 'member' : null;
-    const launchDrain = (body.mode?.trim() || null) === 'drain';
-    const launchAuto = body.auto === true || launchDrain || launchFleetRole === 'member';
+    const launchNamedMode = body.mode?.trim() || null;
+    const launchDrain = launchNamedMode === 'drain';
+    const launchAuto = body.auto === true || Boolean(launchNamedMode) || launchFleetRole === 'member';
     const launchModes: string[] | null = goalBootstrapSubject
       ? ['goal', 'auto', 'ideate']
-      : launchAuto ? (launchDrain ? ['auto', 'drain'] : ['auto']) : null;
+      : launchAuto || launchNamedMode
+        ? [...(launchAuto ? ['auto'] : []), ...(launchNamedMode ? [launchNamedMode] : [])]
+        : null;
     let spec;
     try {
       spec = await buildLaunchSpec({
@@ -2520,22 +2525,22 @@ export const bootstrapSu = defineTool({
     // are refused loudly (a typo'd mode silently launching a plain session is the
     // failure this guards). DRAIN IMPLIES AUTO — force autoMode on.
     const modeRaw = body.mode?.trim() || null;
-    if (modeRaw && modeRaw !== 'drain') {
+    if (modeRaw && modeRaw !== 'drain' && modeRaw !== 'grade' && modeRaw !== 'test') {
       return jsonRes(
         {
           status: 'error',
-          error: `unknown mode '${modeRaw.slice(0, 32)}' — the only recognized value is 'drain' (psu --mode=drain)`,
+          error: `unknown mode '${modeRaw.slice(0, 32)}' — recognized values: drain, grade, test`,
         },
         400,
       );
     }
     const drainMode = modeRaw === 'drain';
-    const autoMode = body.auto === true || drainMode || Boolean(goalBootstrapSubject);
+    const autoMode = body.auto === true || Boolean(modeRaw) || Boolean(goalBootstrapSubject);
 
     // Normalize before either registry/fact writes or prompt assembly. The
     // shared core is the single bound for subject/instructions, so a direct
     // loopback POST cannot smuggle an unbounded scope into a child session.
-    const launchMode = drainMode
+    const launchMode = modeRaw
       ? normalizeLaunchMode({
           mode: modeRaw,
           subject: body.mode_subject,
@@ -2553,6 +2558,7 @@ export const bootstrapSu = defineTool({
       ownerId: sid,
       autoMode,
       drainMode,
+      namedMode: launchMode?.mode ?? null,
       ...(launchMode?.subject !== null && launchMode?.subject !== undefined
         ? { subject: launchMode.subject }
         : body.mode_subject !== undefined
@@ -2560,8 +2566,8 @@ export const bootstrapSu = defineTool({
           : {}),
       ...(body.mode_instructions !== undefined ? { instructions: body.mode_instructions } : {}),
       ...(body.mode_owner_directed !== undefined ? { ownerDirected: launchMode?.ownerDirected === true } : {}),
-      reason: drainMode
-        ? 'fleet launch: --mode=drain (DRAIN implies AUTO)'
+      reason: modeRaw
+        ? `launch: --mode=${modeRaw}`
         : fleetPin.fleetSlug
           ? 'fleet launch: --auto'
           : 'launch: --auto',

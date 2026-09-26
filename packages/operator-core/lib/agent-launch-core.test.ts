@@ -22,6 +22,7 @@ import {
   injectAccountArg,
   injectKickoffAfterResume,
   memberLaunchCommand,
+  normalizeLaunchMode,
   nativeSessionIdFromHost,
   probeFreshLaunchSessions,
   resolvedNativeSessionId,
@@ -34,6 +35,14 @@ import {
 } from './agent-launch-core';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
+
+describe('typed verifier launch modes', () => {
+  it('accepts GRADE and TEST while refusing an unregistered mode', () => {
+    expect(normalizeLaunchMode({ mode: 'grade' })?.mode).toBe('grade');
+    expect(normalizeLaunchMode({ mode: 'test' })?.mode).toBe('test');
+    expect(normalizeLaunchMode({ mode: 'goal' })).toBeNull();
+  });
+});
 
 describe('GOAL allocation in every member brief (P-020)', () => {
   it('carries the holder width after a custom brief without replacing the fleet target', () => {

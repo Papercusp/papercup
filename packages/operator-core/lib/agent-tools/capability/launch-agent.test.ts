@@ -23,6 +23,11 @@ vi.mock('@papercusp/orchestrator/role-prompt', async (orig) => ({
 
 const goalContextSqlMock = vi.hoisted(() => vi.fn(async () => []));
 const goalLaunchResolveMock = vi.hoisted(() => vi.fn());
+const declareCouplingMock = vi.hoisted(() => vi.fn());
+vi.mock('../../coord/couplings', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  declareCoupling: (...args: unknown[]) => declareCouplingMock(...args),
+}));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   // resolveGoalLaunch now reads the holder-authority fence before resolving
@@ -298,6 +303,7 @@ const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
 beforeEach(() => {
   vi.clearAllMocks();
   goalLaunchResolveMock.mockReset();
+  declareCouplingMock.mockReset().mockResolvedValue({ agentA: 'su-caller', agentB: 'su-verifier' });
   rmSync(HEADLESS_RESUME_LOG_PATH, { force: true });
   assembleRolePromptMock.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/repo' } });
   readPsuLaunchLogTailMock.mockReturnValue(null);
@@ -446,6 +452,43 @@ describe('GOAL alternate plan-placement entry guard (P-006 / A-04)', () => {
     expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(dataOf(res)?.launch).toMatchObject({ fleet: null, independent: true, mode: 'fresh' });
+  });
+
+  it.each([['grade', 'grading'], ['test', 'test']] as const)('launches a GOAL %s verifier with its profile, first-turn mode and holder coupling', async (goalVerifier, goalRole) => {
+    getModesMock.mockResolvedValue([{ mode: 'goal', subject: 'goal-1', ownerDirected: true }]);
+    goalLaunchResolveMock.mockResolvedValueOnce({
+      goalId: 'goal-1', settings: null,
+      effective: { account: 'default', model: 'sonnet', carry: 'cold' }, refusal: null, budget: null, goalBrief: null,
+      ceilings: { maxAgents: 12, maxPerFleet: 5 },
+      headcount: { total: 1, fleet: null }, degraded: false, degradedReasons: [],
+    });
+    const res = await launchAgent.handler({ brief: 'Verify the goal independently', goalVerifier, harness: 'papercusp' }, ctx);
+    expect(isError(res)).toBe(false);
+    expect(goalLaunchResolveMock).toHaveBeenCalledWith(expect.objectContaining({ goalRole }));
+    expect(spawnedCommand()).toContain(`--mode=${goalVerifier}`);
+    expect(spawnedCommand()).toContain('--model=sonnet');
+    expect(spawnedCommand()).toContain('--carry=cold');
+    expect(dataOf(res)?.launch).toMatchObject({ fleet: null, goalVerifier, verifierCoupling: { status: 'coupled', holderId: 'su-caller' } });
+    expect(declareCouplingMock).toHaveBeenCalledWith(expect.objectContaining({ agentA: 'su-caller', declaredBy: 'su-caller', workspaceId: 'ws-test' }));
+  });
+
+  it('refuses a GOAL verifier without holder authority before opening a process', async () => {
+    const res = await launchAgent.handler({ brief: 'Grade my goal', goalVerifier: 'grade' }, ctx);
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('active, attributed GOAL holder');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses plan-bound and raw-flag verifier launches before opening a process', async () => {
+    getModesMock.mockResolvedValue([{ mode: 'goal', subject: 'goal-1', ownerDirected: true }]);
+    for (const args of [
+      { plan: 'plan-a' },
+      { extraArgs: ['--mode=drain'] },
+    ]) {
+      const res = await launchAgent.handler({ brief: 'Verify independently', goalVerifier: 'test', ...args }, ctx);
+      expect(isError(res)).toBe(true);
+    }
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 });
 

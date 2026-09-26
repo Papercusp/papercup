@@ -86,7 +86,7 @@ export interface ModeDef {
    * bug at NewSessionLauncher.tsx:467-477).
    *
    * NOT launchable, and deliberately so: `goal` requires a subject and has its
-   * own atomic surface (GoalComposer); `ideate` / `grade` / `test` /
+   * own atomic surface (GoalComposer); `ideate` /
    * `cold-auto` have no psu flag, so offering them would promise something the
    * launcher cannot execute.
    *
@@ -149,6 +149,7 @@ const MODE_POLICY_DEFS: readonly ModeDef[] = [
     id: 'grade',
     axis: 'overlay',
     implies: ['auto'],
+    launchable: true,
     ...builtinModeText('grade'),
   },
   {
@@ -161,6 +162,7 @@ const MODE_POLICY_DEFS: readonly ModeDef[] = [
   {
     id: 'test',
     axis: 'overlay',
+    launchable: true,
     ...builtinModeText('test'),
   },
   {

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-006 current-source installed v1/v2 warm and fresh Codex carry",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=pinned-source-stale scripts/verify-tauri-headless.sh -- bash -s",
+    "Inside the disposable host: install attested v1, bootstrap selected Codex, run a model turn, install v2, repair the generated home, enable IDEATE, resume the same model thread, render buildCarryDoc, enable AUTO after the stamp, and start a fresh Codex context with the carry document"
+  ],
+  "startedAt": "2026-09-26T00:36:29.127Z",
+  "finishedAt": "2026-09-26T00:42:59Z",
+  "exitCode": 0,
+  "summary": "An isolated current-source operator and migrated PostgreSQL kept an installed v1 identity definition pinned after a real v2 update. A warm Codex resume used v1 and current IDEATE. The actual carry builder then stamped IDEATE; AUTO was enabled afterward, and a distinct fresh Codex context received a generation-mismatch full resync and replied with the v1 definition plus AUTO and IDEATE. The verifier completed teardown with exit 0.",
+  "assertions": [
+    {
+      "id": "frozen-current-source",
+      "passed": true,
+      "evidence": "The verifier froze the canonical source before the run. The frozen and canonical agent-identities/source.ts SHA-256 both equaled f686a5c811ad385129d79ee752b67165464ff13abd4cb14a33e902ada3e3cecf; last source-path commit was 73079b162ace759a9f18a3dcef2f1c4c86b21e34. The sidecar resolved its admin database to disposable PostgreSQL on port 41679."
+    },
+    {
+      "id": "installed-v1-retained-after-v2",
+      "passed": true,
+      "evidence": "Cupboard returned install v1 then update v2 with retainedVersions=[1.0.1,1.0.0]. Native ensure-codex-home returned repaired=true, promptRepaired=true, reason=pinned-source-stale and preservedSpecificationRevision=5a689f76db39848f2fb149d105db7b7bb1024b090015f93ed01e72390bfef419. The saved selected root retained sourceRevision=2e036f854fb7e550daf545c60770dabb4d6acf95eb6f2268e2e3c07eef8a3ce4."
+    },
+    {
+      "id": "warm-model-current-mode",
+      "passed": true,
+      "evidence": "Codex thread 01a0db27-d6b2-76e2-95ea-d24df7ebb473 completed its first and resumed turns. First reply quoted P006 INSTALLED V1 DEFINITION; resumed reply quoted the same line and named ideate. Native mode:set and coord:orient recorded IDEATE after v2. CLI JSONL SHA-256: first c5df755461587667706ce9918134458c93f337cc3417f9ccf21fa250e0fd9aba, resumed 9d728c10124c612e73cf9423937c5f9935e448d3e2738b4106efc0402330a1d6."
+    },
+    {
+      "id": "fresh-carry-post-stamp-mode",
+      "passed": true,
+      "evidence": "buildCarryDoc was complete with modes=[ideate] at control generation 3; rendered document SHA-256 f78b426f864a5d903ab315ef5a15683d1d93b6b217b13affd4f542176023ae7c. AUTO was enabled after stamping. Distinct Codex thread 01a0db29-4712-7b03-8879-4cf526a80735 received full-resync reason=generation-mismatch, previousGeneration=2, generation=4, modes=[auto,ideate]. Its completed reply quoted P006 INSTALLED V1 DEFINITION and listed auto and ideate, without a v2 marker. CLI JSONL SHA-256 bb1a99b576ec4d67b8cf93864bd63fe18dfa777ab361e3cea1a5a2720ae385fc; native session JSONL SHA-256 d70112803b8d863c9f6f6dd835651f8a6262b7ee73f9b44ad8a6c4a61e164769."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-006",
+  "workItem": "WI-10002963",
+  "operatorPlane": "immutable current-source host snapshot, isolated Tauri/PostgreSQL, native Codex warm and fresh model contexts",
+  "limitation": "The fresh Codex context was invoked directly with the actual buildCarryDoc output. This run does not exercise the automatic cold-loop scheduler or host respawn command, Claude carry, fleet/GOAL holder replacement, generic identity isolation, or final deployed main acceptance. Disposable transcripts are identified by hashes but are not retained as repository artifacts."
+}
