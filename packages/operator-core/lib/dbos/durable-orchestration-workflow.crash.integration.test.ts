@@ -42,7 +42,7 @@ beforeAll(async () => {
       run_key text NOT NULL,
       tool text NOT NULL,
       mode text NOT NULL,
-      args jsonb,
+      args text,
       idempotency_key text
     )`);
 }, 120_000);
@@ -84,12 +84,19 @@ function runChild(mode: 'crash' | 'recover', scenario: Scenario) {
   });
 }
 
-async function calls(runKey: string): Promise<Array<{ tool: string; mode: string; args: unknown; key: string | null }>> {
+async function calls(runKey: string): Promise<Array<{ tool: string; mode: string; args: Record<string, unknown>; key: string | null }>> {
   const rows = await sql.unsafe(
     'SELECT tool, mode, args, idempotency_key FROM test_durable.calls WHERE run_key = $1 ORDER BY seq',
     [runKey],
   );
-  return rows.map((row) => ({ tool: row.tool, mode: row.mode, args: row.args, key: row.idempotency_key }));
+  // `args` is stored as the tool's own JSON.stringify text; parse it here so no driver-side
+  // json coercion can hand back a string whose prototype methods masquerade as fields.
+  return rows.map((row) => ({
+    tool: row.tool,
+    mode: row.mode,
+    args: JSON.parse(String(row.args)) as Record<string, unknown>,
+    key: row.idempotency_key,
+  }));
 }
 
 async function stepNames(runKey: string): Promise<string[]> {
@@ -146,14 +153,16 @@ describe('durable tool orchestration survives real producer death (P-019)', () =
     ]);
     // Recorded time is replayed: both attempts of the write saw the SAME runtime:now value.
     const puts = all.filter((row) => row.tool === 'probe:put');
-    expect((puts[0]!.args as { at: number }).at).toBe((puts[1]!.args as { at: number }).at);
+    const firstAt = puts[0]!.args.at;
+    expect(typeof firstAt).toBe('number');
+    expect(puts[1]!.args.at).toBe(firstAt);
     // The nested idempotency identity is stable across recovery, so a registered-idempotent
     // write dedupes against its first attempt.
     expect(puts[0]!.key).toBeTruthy();
     expect(puts[1]!.key).toBe(puts[0]!.key);
 
     expect(outcome.status).toBe('succeeded');
-    expect(outcome.summary).toEqual({ at: (puts[0]!.args as { at: number }).at, a: 'probe:read', b: 'probe:put', c: 'probe:after' });
+    expect(outcome.summary).toEqual({ at: firstAt, a: 'probe:read', b: 'probe:put', c: 'probe:after' });
     expect(status.status).toBe('SUCCESS');
     // One checkpointed DBOS step per nested call — never the whole script as one step.
     const names = await stepNames(scenario.runKey);
