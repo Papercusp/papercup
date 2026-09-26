@@ -5,8 +5,11 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { projectBlueprintToPg } from './project-to-pg';
 import {
   BLUEPRINT_PROGRAM_COMPLETION_OWNER, blueprintProgramCompletionRef,
-  getBlueprintOperationResult, getBlueprintOperationStatus, submitBlueprintOperation,
+  blueprintOperationAcceptanceSubjectRef, getBlueprintOperationResult, getBlueprintOperationStatus,
+  submitBlueprintOperation,
 } from './operation-service';
+import { seedContentHash } from '../cupboard/rubric-store';
+import { getRubric, provisionPinnedRubric } from '../rubrics';
 import { getWorkItem, setWorkItemState } from '../work-items';
 import { runWithWorkspace } from '../workspace-als';
 import {
@@ -19,6 +22,11 @@ const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: connection.sql }),
+  withWorkspace: async <T>(workspace: string, fn: (tx: Sql) => Promise<T>) =>
+    (connection.sql as Sql).begin(async (tx) => {
+      await tx`SELECT set_config('app.workspace_id', ${workspace}, true)`;
+      return fn(tx as unknown as Sql);
+    }) as Promise<T>,
 }));
 
 const workspaceId = 'program-child-pin-it';
@@ -70,6 +78,124 @@ const definition = (version: string) => compileAgentSpecification({
 });
 
 describe('program child admission pins the root specification', () => {
+  it('requires a passing scorecard for the pinned rubric and exact current program result', async () => {
+    const rubric = {
+      rubricId: 'operation-result-quality', title: 'Operation result quality',
+      characteristic: 'quality', description: 'Final output quality',
+      methodRef: null, ratingScale: ['pass', 'partial', 'fail', 'unknown'],
+      criteria: [{ key: 'correct', title: 'Correct', model: 'Output is correct',
+        method: 'Check the final output', driftMarkers: 'Wrong answer' }],
+    };
+    const rubricPin = pinPackageInput({ packageKind: 'rubric', ref: rubric.rubricId,
+      revision: '1.0.0', files: [], dependencies: [], value: rubric });
+    await provisionPinnedRubric(rubric, workspaceId);
+    expect((await runWithWorkspace(workspaceId, () => getRubric(rubric.rubricId)))?.criteriaHash)
+      .toBe(seedContentHash(rubric));
+    const specification = compileAgentSpecification({
+      source: {
+        id: 'graded-program', version: '1', workItem: { kind: 'feature' },
+        spine: { steps: [{ id: 'open', op: 'coord:thread-open', args: { title: 'Graded program' } }] },
+        operations: [{ id: 'root', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
+          execution: { kind: 'program' }, inputSchema: { type: 'object' },
+          acceptance: { resultSchema: { type: 'object' }, rubric: {
+            kind: 'rubric', ref: rubric.rubricId, revision: rubricPin.revision,
+            contentHash: rubricPin.contentHash,
+          } } }],
+      },
+      inputClosure: [rubricPin],
+    });
+    await projectBlueprintToPg(sql, { workspaceId, harnessSlug,
+      blueprint: specification.configuration as Blueprint, specification });
+    const handle = await submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'graded-program-caller', operationId: 'root',
+      requestKey: 'graded-program-root', input: {}, title: 'Graded program root',
+    });
+    if (handle.target.kind !== 'work-item') throw new Error('program root must be a work item');
+    const rootId = handle.target.id;
+    const item = await runWithWorkspace(workspaceId, () => getWorkItem(rootId, harnessSlug));
+    if (!item) throw new Error('accepted work item is missing');
+    const output = { answer: 'correct' };
+    const subjectRef = blueprintOperationAcceptanceSubjectRef({
+      targetRef: item.id, attemptRef: item.updatedAt, operationId: handle.operationId,
+      specificationRevision: handle.specificationRevision, output,
+    });
+    const [row] = await sql<Array<{ updated_ts: number | string }>>`
+      SELECT updated_ts FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND feature_id = ${item.id}`;
+    const attempt = { workspaceId, harnessSlug, workItemId: item.id,
+      receiptId: handle.receiptId, operationId: handle.operationId,
+      specificationRevision: handle.specificationRevision,
+      updatedTs: Number(row.updated_ts), requireUncancelled: true };
+    const close = () => runWithWorkspace(workspaceId, () => setWorkItemState(item.id, 'done', {
+      harness: harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
+      completionRef: blueprintProgramCompletionRef(handle, 'succeeded'),
+      completionAuthority: 'validated', outputPayload: output, acceptedProgramAttempt: attempt,
+    }));
+    await expect(close()).rejects.toThrow(`scorecards:emit subject.ref '${subjectRef}'`);
+    const [ungraded] = await sql<Array<{ status: string; result: unknown }>>`
+      SELECT status, payload->'blueprintResult' AS result
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND feature_id = ${item.id}
+    `;
+    expect(ungraded.status).toBe('open');
+    expect(ungraded.result).toBeNull();
+    const fileCard = async (suffix: string, criteriaHash: string, rating: string) => {
+      const id = `EI-graded-program-${suffix}`;
+      const payload = { observation: { rubricRef: rubric.rubricId, rubricRevision: 1,
+        criteriaHash, evidenceFingerprint: `fixture-${suffix}`, subject: { ref: subjectRef },
+        ratings: { correct: { rating, evidence: 'Verified the exact final answer' } } } };
+      await sql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source,
+           state, payload, created_by, signal_origin, created_at, updated_at)
+        VALUES (${workspaceId}, ${id}, 'change', ${`harness:${harnessSlug}`}, 'graded result', '',
+          'minor', 'test', 'done', ${JSON.stringify(payload)}::text::jsonb,
+          'su-grader', 'organic', now(), now())
+      `;
+      return id;
+    };
+    await fileCard('stale', 'a'.repeat(64), 'pass');
+    await expect(close()).rejects.toThrow('stale, provisional, retracted or incomplete');
+    await fileCard('failed', seedContentHash(rubric), 'fail');
+    await expect(close()).rejects.toThrow('does not pass pinned criterion correct');
+    const cardId = await fileCard('passed', seedContentHash(rubric), 'pass');
+    expect((await close())?.state).toBe('done');
+    const [graded] = await sql<Array<{ status: string; result: { output: unknown; acceptanceEvidenceRef: string } }>>`
+      SELECT status, payload->'blueprintResult' AS result
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND feature_id = ${item.id}
+    `;
+    expect(graded.status).toBe('done');
+    expect(graded.result).toMatchObject({ output, acceptanceEvidenceRef: cardId });
+    expect(await getBlueprintOperationResult(sql, handle, 'graded-program-caller'))
+      .toMatchObject({ state: 'ready', output, acceptanceEvidenceRef: cardId });
+    await sql`
+      UPDATE harness_shared.engineer_issues
+         SET payload = jsonb_set(payload, '{observation,retracted}', '{"reason":"withdrawn"}'::jsonb)
+       WHERE workspace_id = ${workspaceId} AND issue_id = ${cardId}
+    `;
+    expect(await getBlueprintOperationResult(sql, handle, 'graded-program-caller'))
+      .toMatchObject({ state: 'unavailable', status: { outcome: 'unverified' } });
+
+    const rejected = await submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'graded-program-caller', operationId: 'root',
+      requestKey: 'graded-program-no-scorecard', input: {}, title: 'Ungraded program root',
+    });
+    if (rejected.target.kind !== 'work-item') throw new Error('program root must be a work item');
+    const [rejectedRow] = await sql<Array<{ updated_ts: number | string }>>`
+      SELECT updated_ts FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND feature_id = ${rejected.target.id}`;
+    const failed = await settleAcceptedCoordProgram(sql, {
+      blueprintId: 'graded-program', payload: {}, callerId: 'graded-program-caller',
+      workspaceId, harnessSlug, workItemId: rejected.target.id,
+      runId: 'graded-program-no-scorecard', acceptedOperation: rejected,
+      acceptedAttemptUpdatedTs: Number(rejectedRow.updated_ts),
+    }, { outcome: 'done', resolved: true });
+    expect(failed.outcome).toBe('failed');
+    expect(await getBlueprintOperationResult(sql, rejected, 'graded-program-caller'))
+      .toMatchObject({ state: 'failed', reason: expect.stringContaining('blueprint operation acceptance failed:') });
+  }, 90_000);
+
   it('launches a pinned external program after the owner blueprint pointer moves', async () => {
     const external = compileAgentSpecification({ source: {
       id: 'retained-external-program', version: 'external-A', workItem: { kind: 'feature' },

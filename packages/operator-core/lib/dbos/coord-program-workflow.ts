@@ -369,6 +369,7 @@ export async function settleAcceptedCoordProgram(
       acceptedProgramAttempt: { ...attempt, requireUncancelled: false },
     });
     let closed = current.cancellationRequested ? await cancel() : null;
+    let rejectedResult: string | null = null;
     if (!current.cancellationRequested) {
       if (outcome.resolved) {
         const output = { outcome: outcome.outcome, resolved: true,
@@ -381,7 +382,10 @@ export async function settleAcceptedCoordProgram(
             acceptedProgramAttempt: attempt,
           });
         } catch (error) {
-          if (!(error instanceof Error) || !error.message.startsWith('blueprint operation output is invalid:')) throw error;
+          if (!(error instanceof Error) ||
+              (!error.message.startsWith('blueprint operation output is invalid:') &&
+               !error.message.startsWith('blueprint operation acceptance failed:'))) throw error;
+          rejectedResult = error.message;
         }
       }
       if (!closed) {
@@ -393,6 +397,7 @@ export async function settleAcceptedCoordProgram(
             harness: handle.harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
             completionRef: blueprintProgramCompletionRef(handle, 'failed'),
             completionAuthority: 'validated', acceptedProgramAttempt: attempt,
+            ...(rejectedResult ? { completionEvidence: { summary: rejectedResult } } : {}),
           });
         }
       }
