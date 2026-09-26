@@ -17,7 +17,9 @@
  *     stamps and emits exactly one op (no under-federation);
  *   - an observation promoted back to work still federates (lane is generated from
  *     payload, which is on the wire);
- *   - the feature family and other stamp_local_federated_write tables are unchanged.
+ *   - a feature-family write to an APPLIED column still stamps (feature content is pinned
+ *     separately by mig 1226 / feature-wire-clock.integration.test.ts, WI-10002882);
+ *   - other stamp_local_federated_write tables are unchanged.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
@@ -201,7 +203,7 @@ describe('engineer-issue wire row drives the stamp clock (WI-10002875, mig 1208,
     expect(r.same).toBe(true);
   });
 
-  it('the feature family is unchanged: a local-only column write still stamps and emits', async () => {
+  it('a feature-family write to an APPLIED column (attempts) still stamps and emits', async () => {
     const id = nextId('F');
     await insertItem(id, 'feature');
     const before = await clockOf(id);

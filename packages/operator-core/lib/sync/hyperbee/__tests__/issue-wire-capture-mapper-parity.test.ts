@@ -219,6 +219,39 @@ describe('issue-family CDC wire row — capture SQL covers every key the mapper 
     ).toBe(true);
   });
 
+  it('capture and stamp judge FEATURE content with ONE projection: the columns writeToPg applies (WI-10002882)', () => {
+    // A feature row ships to_jsonb(the whole row), but a peer APPLIES only writeToPg's
+    // INSERT columns. If the stamp judged content over more than that, a write to a
+    // column no peer applies would mint a wire version (the WI-10003230 feedback loop);
+    // if over less, a real change would keep its clock and never federate.
+    const FEATURE_WIRE_ROW_FN = 'harness_shared.feature_wire_row';
+    const def = latestDefinitionOf(FEATURE_WIRE_ROW_FN);
+    const sqlKeys = [...functionBodyAt(def.sql, def.at).matchAll(/'([a-z_]+)'\s*,/g)].map((m) => m[1]);
+
+    const projection = readFileSync(resolve(HERE, '../projections/harness-features.ts'), 'utf8');
+    const insert = /INSERT INTO harness_shared\.work_items\s*\(([^)]*)\)\s*VALUES/.exec(projection);
+    expect(insert, 'harness-features.ts writeToPg INSERT column list not found').not.toBeNull();
+    const applied = insert![1].split(',').map((c) => c.trim()).filter(Boolean);
+
+    expect(applied.length).toBeGreaterThan(40); // positive control: the parse found the real list
+    expect(new Set(sqlKeys).size, `${def.file}: duplicate key in ${FEATURE_WIRE_ROW_FN}`).toBe(sqlKeys.length);
+    expect([...sqlKeys].sort(), `${def.file}: ${FEATURE_WIRE_ROW_FN} must list exactly writeToPg's columns`).toEqual(
+      [...applied].sort(),
+    );
+
+    const capture = latestCaptureMigration();
+    const featureBranch = capture.sql.slice(capture.sql.indexOf(`v_tbl  := 'harness_features_consolidated'`));
+    expect(
+      featureBranch.includes('feature_wire_row('),
+      `${capture.file}: the capture's feature branch must skip unchanged rows with ${FEATURE_WIRE_ROW_FN}`,
+    ).toBe(true);
+    const stamp = latestDefinitionOf('harness_shared.stamp_local_federated_write');
+    expect(
+      functionBodyAt(stamp.sql, stamp.at).includes('feature_wire_row('),
+      `${stamp.file}: stamp_local_federated_write must decide feature-family content with ${FEATURE_WIRE_ROW_FN}`,
+    ).toBe(true);
+  });
+
   it('the mapper never fabricates created_ts — a guard must not be fed a synthesized value', () => {
     // The class fix. `created_at` may be defaulted (it only feeds an INSERT default),
     // but `created_ts` drives a REFUSE-THE-WRITE decision, so an op that did not carry
