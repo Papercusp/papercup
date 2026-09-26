@@ -30,6 +30,7 @@ import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
 import sessionsRead from '../sessions/read';
 import capabilityRead from '../capability/read';
+import factsAssert from '../facts/assert';
 import agentReview from '../improvements/agent-review';
 import captureTool from '../improvements/capture';
 import rubricsPropose from '../rubrics/propose';
@@ -1038,6 +1039,15 @@ describe('handler — graceful degrade + result shape', () => {
     // registered structural projection rather than its authored prose clause.
     expect(self?.returns).toContain('hits?');
     expect(self?.returnsSource).toBe('registered-output-schema');
+  });
+
+  it('shows the facts body storage cap in compact discovery', async () => {
+    expect(factsAssert.name).toBe('facts:assert');
+    const out = await callHandler({ query: 'facts:assert', limit: 1 });
+    const hit = out.hits.find((candidate) => candidate.tool === 'facts:assert');
+    expect(hit?.argSchema).toContain('body:string(1-4000)');
+    expect(hit?.description).toContain('1200 characters are refused');
+    expect(hit?.description).toContain('acceptTruncation:true');
   });
 
   it('returns null when a matched tool has no declared response shape', async () => {
