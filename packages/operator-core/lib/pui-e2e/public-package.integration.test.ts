@@ -34,6 +34,9 @@ const RELEASE_TOOLING = [
   'apps/tui/release/install.sh',
   'apps/tui/scripts/package-release.sh',
   'apps/tui/scripts/license-inventory.py',
+  // D-031 / P-018: psu on a private Node is part of every generation the packager builds.
+  'apps/tui/scripts/bundle-psu.mjs',
+  'apps/tui/release/psu',
 ];
 /** The only tools the sandboxed PATH offers: what install.sh and an archive update need. */
 const SANDBOX_TOOLS = ['sh', 'dirname', 'sha256sum', 'tar', 'gzip'];
@@ -204,6 +207,51 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     expect(version.stdout.trim()).toBe(`pui ${B.version}`);
     expect(stamp(launcher, env, home).sourceSha).toBe(HEAD);
     expect(statusJson(launcher, env, home).current).toMatchObject({ id: releaseId(B), problem: null });
+  });
+
+  test('AUTO-BAR-R-08-P-018: the archive ships psu on its own pinned Node — it runs in a HOME with no node, npm or checkout', { timeout: 300_000 }, () => {
+    const home = freshHome('psu');
+    const env = sandboxEnv(home);
+    // Positive control: the sandbox really has no Node toolchain of its own.
+    for (const absent of ['node', 'npm', 'npx']) {
+      expect(run('sh', ['-c', `command -v ${absent}`], env, home).status, absent).not.toBe(0);
+    }
+    const unit = unpack(B.archive, 'psu');
+    const provenance = JSON.parse(readFileSync(path.join(unit, 'PROVENANCE.json'), 'utf8')) as {
+      bundled: {
+        node: { version: string; sha256: string };
+        psu: { sourcePins: Record<string, string>; outputs: Record<string, string>; npmPackages: string[] };
+      };
+    };
+    const psu = path.join(unit, 'bin', 'psu');
+    const help = run(psu, ['--help'], env, home);
+    expect(help.status, output(help)).toBe(0);
+    expect(help.stdout).toContain('--connect-login');
+    const hosts = run(psu, ['--connect-list'], env, home);
+    expect(hosts.status, output(hosts)).toBe(0);
+    expect(hosts.stdout).toContain('local');
+
+    // Independent oracles: the private Node reports the pinned version, the bundle
+    // and native artifacts hash to what PROVENANCE names, and psu was built from HEAD.
+    const node = path.join(unit, 'lib', 'node', 'node');
+    const version = run(node, ['--version'], env, home);
+    expect(version.stdout.trim(), output(version)).toBe(provenance.bundled.node.version);
+    for (const [name, digest] of Object.entries(provenance.bundled.psu.outputs)) {
+      expect(sha256(path.join(unit, 'lib', 'psu', name)), name).toBe(digest);
+    }
+    expect(provenance.bundled.psu.sourcePins['.']).toBe(HEAD);
+    // node-pty — psu's only external, loaded on the pty-host path — resolves beside the bundle.
+    const pty = run(node, ['-e', "console.log(typeof require('module').createRequire(process.argv[1])('@lydell/node-pty').spawn)",
+      path.join(unit, 'lib', 'psu', 'psu.mjs')], env, home);
+    expect(pty.stdout.trim(), output(pty)).toBe('function');
+
+    const licenses = readFileSync(path.join(unit, 'THIRD_PARTY_LICENSES.md'), 'utf8');
+    expect(licenses).toContain(`| node | ${provenance.bundled.node.version} | MIT |`);
+    expect(provenance.bundled.psu.npmPackages.some((pkg) => pkg.startsWith('@lydell/node-pty-linux-x64@'))).toBe(true);
+    for (const pkg of provenance.bundled.psu.npmPackages) {
+      const at = pkg.lastIndexOf('@');
+      expect(licenses, pkg).toContain(`| ${pkg.slice(0, at)} (npm) | ${pkg.slice(at + 1)} |`);
+    }
   });
 
   test('AUTO-BAR-R-11-P-011: archives are reproducible, name their committed generation, and refuse tampering', { timeout: 2 * BUILD_TIMEOUT_MS }, () => {

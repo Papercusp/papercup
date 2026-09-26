@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "PTY incident report missing-class copy-out mutation (re-run after report commit d93d3ec40f)",
+  "framework": "shell",
+  "command": [
+    "PAPERCUSP_TEST_RUN_HARNESS=papercusp",
+    "scripts/mutation-probe.sh",
+    "--file scratchpad/pty-host-incident-verification-2026-09-25.md",
+    "--mutate 's/^\\| \\x60PTY-WAKE-REARM\\x60 \\|.*$//'",
+    "--test 'PTY_INCIDENT_REPORT_PATH={} node scripts/test-files.mjs apps/operator/lib/pty-host-incident-verification.test.ts'",
+    "--expect caught"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-26T15:30:18.768Z",
+  "finishedAt": "2026-09-26T15:30:55Z",
+  "sourceCommit": "d93d3ec40fe9e1ec90f71ec896764a0f03a424d4",
+  "testRuns": {
+    "canonicalBaseline": { "id": 19648041, "status": "pass" },
+    "unmutatedCopyBaseline": { "id": 19648043, "status": "pass" },
+    "mutant": { "id": 19648044, "status": "fail" }
+  },
+  "summary": "This repeats the 2026-09-25 counterexample after the report and guard changed (report commit d93d3ec40f). The canonical report and an unmutated relocated copy each passed the two-test project Vitest guard (test_runs 19648041 and 19648043). Removing the PTY-WAKE-REARM row from the copied report made the guard fail with missing: [PTY-WAKE-REARM] (test_run 19648044). mutation-probe reported verdict=caught, expected=caught, target=copy-out, baseline_exit=0, guard_exit=1. It verified that the canonical report remained byte-identical. Markdown mutant syntax was not checked.",
+  "assertions": [
+    {
+      "id": "canonical-and-relocated-baselines-pass",
+      "passed": true,
+      "evidence": "The canonical and the unmutated relocated report each produced 2 passing tests, exit 0 (test_runs 19648041, 19648043)."
+    },
+    {
+      "id": "missing-class-mutant-caught",
+      "passed": true,
+      "evidence": "The mutant removed the copied report's PTY-WAKE-REARM row, and the coverage assertion failed with missing: [PTY-WAKE-REARM] (test_run 19648044). MUTATION_PROBE_RESULT verdict=caught expected=caught target=copy-out baseline_exit=0 guard_exit=1."
+    },
+    {
+      "id": "canonical-report-unchanged",
+      "passed": true,
+      "evidence": "mutation-probe reported tree integrity VERIFIED: the canonical report was byte-identical to its pre-probe state."
+    }
+  ],
+  "supersedes": "docs/evidence/pty-incident-report-coverage-mutation-2026-09-25.json",
+  "workItemId": "WI-10003055",
+  "specId": "PTY-INCIDENT-VERIFICATION",
+  "testFile": "apps/operator/lib/pty-host-incident-verification.test.ts",
+  "sourceFile": "scratchpad/pty-host-incident-verification-2026-09-25.md"
+}

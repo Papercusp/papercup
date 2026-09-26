@@ -4,10 +4,13 @@
 #
 # The unit is the same one the desktop sidecar ships (bin/pui + pui-companion.wasm
 # + a release-relative pui-install.json, built with the sidecar's stamps and
-# remap flags), plus the version-matched zellij, the documents and a digest of
-# every file. Everything that goes into the archive — sources, templates and
-# the manifest/license tooling — is read from `git archive <sha>`, never from
-# the working tree, so an uncommitted edit cannot reach a release.
+# remap flags), plus the version-matched zellij, psu on a private pinned Node
+# (bin/psu → lib/node + lib/psu, D-031), the documents and a digest of every
+# file. Everything that goes into the archive — sources, templates and the
+# manifest/license tooling — is read from `git archive <sha>`, never from the
+# working tree, so an uncommitted edit cannot reach a release. psu is bundled
+# by bundle-psu.mjs, which serves every first-party byte from git at <sha> and
+# checks every npm package against that commit's package-lock.json.
 #
 # Reproducible by construction: SOURCE_DATE_EPOCH is the commit time, the
 # source tree is exported to one constant absolute path, paths are remapped,
@@ -64,7 +67,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 OUT="${OUT:-$ROOT/dist/pui}"
-for tool in cargo git python3 sha256sum tar gzip; do
+for tool in cargo git python3 node curl sha256sum tar gzip; do
   command -v "$tool" >/dev/null || die "missing required tool: $tool"
 done
 
@@ -76,21 +79,31 @@ TARGET="${TARGET:-$host_os-$host_arch}"
 # exactly. Digests are of the zellij BINARY and equal the upstream-published
 # zellij-<triple>.sha256sum (cross-checked 2026-09-23 for all three).
 ZJ_VER=0.44.3
+# Node — the private runtime psu runs on (D-031), the same pin as the desktop
+# sidecar (build-desktop-sidecar.sh NODE_VERSION). Digests are of the upstream
+# tarballs and equal nodejs.org's SHASUMS256.txt for this version (2026-09-26).
+NODE_VER=v24.18.1
 case "$TARGET" in
   linux-x86_64)
     RUST_TRIPLE=x86_64-unknown-linux-gnu
     ZJ_TRIPLE=x86_64-unknown-linux-musl
     ZJ_SHA256=397481870c4fc3bae646cd7613cde3a1cebdc204558a6cb9a7c603d4c852fc90
+    NODE_PLATFORM=linux-x64
+    NODE_SHA256=9f5eb6ac21845a66c493c91a253b1da32fd684e89e9b7202d4936982336be4ca
     ;;
   macos-aarch64)
     RUST_TRIPLE=aarch64-apple-darwin
     ZJ_TRIPLE=aarch64-apple-darwin
     ZJ_SHA256=99700a8c0afcf58f05651ccf543f9a84101dd2ea222c8e1cb06b57689425d693
+    NODE_PLATFORM=darwin-arm64
+    NODE_SHA256=eb02f7fab96d3d67de40c5ec8566096fcb4c2026728787683ae5a97eb612b941
     ;;
   macos-x86_64)
     RUST_TRIPLE=x86_64-apple-darwin
     ZJ_TRIPLE=x86_64-apple-darwin
     ZJ_SHA256=42dca16e7c852dd9c45485bb73457e090463b41ba8fade272b779ac33d54e642
+    NODE_PLATFORM=darwin-x64
+    NODE_SHA256=6fb20fceacbb157c2f95825b80df4a454a0f6d81cdcd7bb81eeae9147e0e76ec
     ;;
   *) die "unsupported target $TARGET (linux-x86_64 | macos-aarch64 | macos-x86_64)" ;;
 esac
@@ -136,9 +149,11 @@ trap cleanup EXIT
 rm -rf "$WORK" "$SRC" || die "could not clear $SRC (owned by another user?)"
 mkdir -p "$WORK" "$SRC"
 git -C "$ROOT" archive --format=tar "$SHA" apps/tui apps/pui-zellij-plugin apps/pui-companion-proto \
+    apps/operator/bin/bundle-host-common.sh packages/omp-plugin/build-native.mjs \
   | tar -x -C "$SRC"
-for required in apps/tui/release/install.sh apps/tui/release/compatibility.json \
-                apps/tui/scripts/write-install-manifest.py apps/tui/scripts/license-inventory.py; do
+for required in apps/tui/release/install.sh apps/tui/release/compatibility.json apps/tui/release/psu \
+                apps/tui/scripts/write-install-manifest.py apps/tui/scripts/license-inventory.py \
+                apps/tui/scripts/bundle-psu.mjs; do
   [[ -f "$SRC/$required" ]] || die "$required is not in commit $SHA; commit the release tooling first"
 done
 # git archive records a submodule as a gitlink and cannot export files inside it.
@@ -228,6 +243,21 @@ fi
 [[ "$(sha256sum "$ZJ_CACHE/LICENSE.md" | cut -d' ' -f1)" == "$ZJ_LICENSE_SHA256" ]] \
   || die "zellij's LICENSE.md does not match its pinned digest"
 
+# ── Node, pinned ────────────────────────────────────────────────────────────
+NODE_DIST="node-$NODE_VER-$NODE_PLATFORM"
+NODE_TARBALL="$CARGO_TARGET_DIR/$NODE_DIST.tar.gz"
+if [[ ! -f "$NODE_TARBALL" ]] || [[ "$(sha256sum "$NODE_TARBALL" | cut -d' ' -f1)" != "$NODE_SHA256" ]]; then
+  echo "→ fetching Node $NODE_VER ($NODE_PLATFORM)…"
+  curl -fsSL -o "$NODE_TARBALL.tmp" "https://nodejs.org/dist/$NODE_VER/$NODE_DIST.tar.gz"
+  mv -f "$NODE_TARBALL.tmp" "$NODE_TARBALL"
+fi
+[[ "$(sha256sum "$NODE_TARBALL" | cut -d' ' -f1)" == "$NODE_SHA256" ]] \
+  || die "Node $NODE_VER ($NODE_PLATFORM) does not match its pinned digest $NODE_SHA256"
+NODE_CACHE="$WORK/$NODE_DIST"
+mkdir -p "$NODE_CACHE"
+tar -xzf "$NODE_TARBALL" -C "$NODE_CACHE" --strip-components=1 "$NODE_DIST/bin/node" "$NODE_DIST/LICENSE"
+[[ -f "$NODE_CACHE/bin/node" && -f "$NODE_CACHE/LICENSE" ]] || die "$NODE_DIST.tar.gz lacks bin/node or LICENSE"
+
 # ── stage the unit ──────────────────────────────────────────────────────────
 STAGE="$WORK/stage"
 UNIT="$STAGE/$NAME"
@@ -240,6 +270,20 @@ install -m 0644 "$SRC/apps/tui/release/README.md" "$UNIT/README.md"
 install -m 0644 "$SRC/apps/tui/release/RELEASE_NOTES.md" "$UNIT/RELEASE_NOTES.md"
 install -m 0644 "$WORK/PUI_LICENSE" "$UNIT/LICENSE"
 
+# psu on the private Node: bin/psu runs lib/psu/psu.mjs with lib/node/node.
+mkdir -p "$UNIT/lib/node"
+install -m 0755 "$NODE_CACHE/bin/node" "$UNIT/lib/node/node"
+install -m 0644 "$NODE_CACHE/LICENSE" "$UNIT/lib/node/LICENSE"
+install -m 0755 "$SRC/apps/tui/release/psu" "$UNIT/bin/psu"
+echo "→ bundling psu from ${SHA:0:12}…"
+# The banner (ESM require/__dirname shims) is the one the desktop sidecar uses, read from this commit.
+# shellcheck source=/dev/null
+source "$SRC/apps/operator/bin/bundle-host-common.sh"
+HOST_BANNER="$HOST_BANNER" node "$SRC/apps/tui/scripts/bundle-psu.mjs" \
+  --root "$ROOT" --sha "$SHA" --target "$TARGET" --out "$UNIT/lib/psu" \
+  --summary "$WORK/psu-summary.json" --native-builds "$SRC/packages/omp-plugin/build-native.mjs" \
+  --cache "$CARGO_TARGET_DIR"
+
 python3 "$SRC/apps/tui/scripts/write-install-manifest.py" write \
   --manifest "$UNIT/pui-install.json" \
   --source-sha "$SHA" --source-dirty 0 --built-at-epoch "$EPOCH" \
@@ -251,7 +295,9 @@ python3 "$SRC/apps/tui/scripts/license-inventory.py" \
   --out "$UNIT/THIRD_PARTY_LICENSES.md" \
   --crate "$SRC/apps/tui/Cargo.toml=$RUST_TRIPLE" \
   --crate "$SRC/apps/pui-zellij-plugin/Cargo.toml=wasm32-wasip1" \
-  --component "zellij=$ZJ_VER=MIT=https://github.com/zellij-org/zellij=$ZJ_CACHE/LICENSE.md"
+  --component "zellij=$ZJ_VER=MIT=https://github.com/zellij-org/zellij=$ZJ_CACHE/LICENSE.md" \
+  --component "node=$NODE_VER=MIT=https://nodejs.org/dist/$NODE_VER/$NODE_DIST.tar.gz=$NODE_CACHE/LICENSE" \
+  --npm-packages "$WORK/psu-summary.json"
 
 # Runtime requirements are MEASURED from the built binary, never asserted.
 GLIBC_FLOOR=""
@@ -267,6 +313,7 @@ P_UNIT="$UNIT" P_COMPAT="$SRC/apps/tui/release/compatibility.json" P_ROOT="$ROOT
 P_EPOCH="$EPOCH" P_TARGET="$TARGET" P_VERSION="$VERSION" P_RUST_TRIPLE="$RUST_TRIPLE" \
 P_NEEDED="$NEEDED" P_GLIBC_FLOOR="$GLIBC_FLOOR" P_GLIBC_REQUEST="$GLIBC_REQUEST" \
 P_ZIG_VERSION="$ZIG_VERSION" P_ZJ_VER="$ZJ_VER" P_ZJ_TRIPLE="$ZJ_TRIPLE" P_ZJ_SHA256="$ZJ_SHA256" \
+P_NODE_VER="$NODE_VER" P_NODE_DIST="$NODE_DIST" P_NODE_SHA256="$NODE_SHA256" P_PSU_SUMMARY="$WORK/psu-summary.json" \
 python3 - <<'PY'
 import json, os, subprocess
 from pathlib import Path
@@ -277,6 +324,8 @@ target, version = env["P_TARGET"], env["P_VERSION"]
 needed = [lib for lib in env["P_NEEDED"].split(",") if lib]
 glibc = env["P_GLIBC_FLOOR"] or None
 zj_ver, zj_triple = env["P_ZJ_VER"], env["P_ZJ_TRIPLE"]
+node_ver, node_dist = env["P_NODE_VER"], env["P_NODE_DIST"]
+psu = json.loads(Path(env["P_PSU_SUMMARY"]).read_text())
 
 def tree(path):
     return subprocess.run(["git", "-C", env["P_ROOT"], "rev-parse", env["P_SHA"] + ":" + path],
@@ -312,6 +361,22 @@ provenance = {
             "upstream": f"https://github.com/zellij-org/zellij/releases/download/v{zj_ver}/zellij-{zj_triple}.tar.gz",
             "sha256": env["P_ZJ_SHA256"],
         },
+        "node": {
+            "version": node_ver,
+            "upstream": f"https://nodejs.org/dist/{node_ver}/{node_dist}.tar.gz",
+            "sha256": env["P_NODE_SHA256"],
+            "path": "lib/node/node",
+        },
+        "psu": {
+            "entry": psu["entry"],
+            "path": "lib/psu/psu.mjs",
+            "launcher": "bin/psu",
+            "esbuild": psu["esbuild"],
+            "sourcePins": psu["sourcePins"],
+            "firstPartyInputs": psu["firstPartyInputs"],
+            "outputs": {name: out["sha256"] for name, out in psu["outputs"].items()},
+            "npmPackages": [f"{p['name']}@{p['version']}" for p in psu["npmPackages"]],
+        },
     },
     "runtime": {
         "measuredOn": "this archive's bin/pui (readelf/objdump)" if needed else None,
@@ -335,6 +400,7 @@ lines = [
     "## This archive",
     "",
     f"- Runs on: {', '.join(entry['platforms'])}.",
+    f"- `psu` (bin/psu) runs on the bundled Node {node_ver} (lib/node/node); no system Node, npm or checkout is needed.",
     f"- Build-time verification: **{entry['status']}**"
     + (f" — evidence: {entry['evidence']}" if entry.get("evidence") else "")
     + ".",
