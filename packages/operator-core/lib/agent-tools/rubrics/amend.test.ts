@@ -10,7 +10,14 @@ const rubricsMocks = vi.hoisted(() => ({
   findAmendmentDecisionByKey: vi.fn(),
 }));
 
-vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'amend-test' }) }));
+const reviewMocks = vi.hoisted(() => ({ openAcceptanceBarAmendmentReview: vi.fn() }));
+
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({ ownerId: 'amend-test', workspaceId: 'ws-amend-test' }),
+}));
+vi.mock('../../consult/acceptance-bar-amendment-review', () => ({
+  openAcceptanceBarAmendmentReview: reviewMocks.openAcceptanceBarAmendmentReview,
+}));
 vi.mock('../../rubrics', () => ({
   AMENDABLE_CRITERION_FIELDS: ['title', 'model', 'method', 'driftMarkers', 'replication'],
   amendRubric: rubricsMocks.amendRubric,
@@ -69,11 +76,12 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(rendered).toContain('omit legacy aliases');
   });
 
-  it('documents a writable-thread handoff for outside-lineage approval JSON', () => {
+  it('documents the routed review for outside-lineage approval JSON', () => {
     const rendered = JSON.stringify({ description: amendTool.description, guidance: amendTool.guidance });
 
     expect(rendered).toContain('work_items:comment');
-    expect(rendered).toContain('any existing writable thread');
+    expect(rendered).toContain("reviewPreviewPost:'thread-post:");
+    expect(rendered).toContain('relevance router');
     expect(rendered).toContain('workspace/id');
     expect(rendered).toMatch(/do not create a counter-sign work-item/i);
     expect(rendered).toContain("approvalRef:'thread-post:");
@@ -250,6 +258,87 @@ describe('rubrics:amend complete acceptance criteria input', () => {
 // would exceed its timeout returns a pollable receipt. Falsifier: the caller
 // receives a timeout error with an unknown commit state. Probe: run amend with a
 // slow stub, assert the receipt, then poll it.
+describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review)', () => {
+  const patchArgs = {
+    rubricRef: 'acceptance-demo',
+    dryRun: true,
+    reason: 'Tighten the falsifier.',
+    criterion: { key: 'r-1', field: 'driftMarkers' as const, mode: 'append' as const, text: 'Also fails when X.' },
+  };
+  const approvalRequired = {
+    approvalRequired: true,
+    approval: { schemaVersion: 1, rubricRef: 'acceptance-demo', bars: [] },
+    changes: [{ barKey: 'R-1', kinds: ['bar-meaning'], fields: ['falsifier'] }],
+  };
+
+  it('an approval-required dry run with its preview post returns a routed review reference', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    reviewMocks.openAcceptanceBarAmendmentReview.mockResolvedValue({
+      state: 'routed',
+      conversationId: 'conv-review-1',
+      responderId: 'outside-expert',
+      screenedOut: [],
+      previewPostRef: 'thread-post:42',
+      next: "events:await { event:'consult:reply:conv-review-1' }",
+    });
+
+    const result = await body({ ...patchArgs, reviewPreviewPost: 'thread-post:42' });
+
+    expect(result).toMatchObject({
+      ok: true,
+      dryRun: true,
+      review: { state: 'routed', conversationId: 'conv-review-1', previewPostRef: 'thread-post:42' },
+    });
+    const call = reviewMocks.openAcceptanceBarAmendmentReview.mock.calls[0]![0];
+    expect(call).toMatchObject({
+      rubricRef: 'acceptance-demo',
+      previewPostRef: 'thread-post:42',
+      reason: 'Tighten the falsifier.',
+      workspaceId: 'ws-amend-test',
+      patch: { criterion: patchArgs.criterion },
+      preview: approvalRequired,
+    });
+    expect(Object.keys(call.patch)).toEqual(['criterion']);
+  });
+
+  it('an approval-required dry run without a preview post says how to open the routed review, not whom to message', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+
+    const result = await body(patchArgs);
+
+    expect(result.review.state).toBe('not-requested');
+    expect(result.review.next).toContain("reviewPreviewPost:'thread-post:");
+    expect(result.review.next).not.toMatch(/coord:send/);
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
+  });
+
+  it('a dry run that needs no approval carries no review', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue({ ...approvalRequired, approvalRequired: false });
+
+    const result = await body(patchArgs);
+
+    expect(result).toEqual({ ok: true, dryRun: true, preview: { ...approvalRequired, approvalRequired: false } });
+  });
+
+  it('refuses reviewPreviewPost outside a dry run', () => {
+    const { dryRun: _dryRun, ...applyArgs } = patchArgs;
+    const parsed = rubricsAmendArgs.safeParse({ ...applyArgs, reviewPreviewPost: 'thread-post:42' });
+    expect(parsed.success).toBe(false);
+    expect(JSON.stringify(parsed.error?.issues)).toContain('requires dryRun:true');
+  });
+
+  it('no amend or check-approver guidance tells the implementer to message a reviewer directly (D-001)', async () => {
+    const { default: checkApproverTool } = await import('./check-approver');
+    const rendered = JSON.stringify([
+      { description: amendTool.description, guidance: amendTool.guidance, args: z.toJSONSchema(amendTool.args as never) },
+      { description: checkApproverTool.description, guidance: checkApproverTool.guidance },
+    ]);
+    expect(rendered).not.toContain('coord:send');
+    expect(rendered).not.toMatch(/send (it|its post id|the post|a pointer)[^.]*reviewer/i);
+    expect(rendered).not.toMatch(/route only eligible candidates/i);
+  });
+});
+
 describe('rubrics:amend receipts (RSR-P-008-C)', () => {
   const statusBody = async (args: unknown) =>
     JSON.parse(((await amendStatusTool.handler(args as never, {} as never)) as ToolOutput).content[0]!.text);

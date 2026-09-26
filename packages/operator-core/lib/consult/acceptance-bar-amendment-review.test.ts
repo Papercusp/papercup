@@ -9,7 +9,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { selectionPolicy } from '@papercusp/ranked-selection';
 import type { RouteResult } from './relevance-router';
 import {
+  buildAmendmentReviewBrief,
   filterAmendmentReviewRoute,
+  openAcceptanceBarAmendmentReview,
   routeAcceptanceBarAmendmentReview,
   type AmendmentReviewerScreen,
 } from './acceptance-bar-amendment-review';
@@ -183,5 +185,86 @@ describe('routeAcceptanceBarAmendmentReview', () => {
 
   it('registers the amendment policy with one reviewer per attempt', () => {
     expect(selectionPolicy(ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY)).toEqual({ min: 1, max: 1 });
+  });
+});
+
+describe('openAcceptanceBarAmendmentReview (P-006)', () => {
+  const approval = { schemaVersion: 1, kind: 'acceptance-bar-approval', rubricRef: 'acceptance-demo', bars: [{ barKey: 'R-1' }] };
+  const baseInput = {
+    rubricRef: 'acceptance-demo',
+    previewPostRef: 'thread-post:42',
+    preview: {
+      approvalRequired: true,
+      approval,
+      changes: [{ barKey: 'R-1', kinds: ['bar-meaning'], fields: ['falsifier'] }],
+    },
+    reason: 'Tighten the falsifier.',
+    patch: { criterion: { key: 'r-1', field: 'driftMarkers', mode: 'append', text: 'Also fails when X.' } },
+    identity: { ownerId: 'su-implementer', workspaceId: 'ws' },
+    workspaceId: 'ws',
+  } as unknown as Parameters<typeof openAcceptanceBarAmendmentReview>[0];
+
+  it('routes nothing when the preview needs no approval', async () => {
+    const verifyPreviewPost = vi.fn();
+    const route = vi.fn();
+    const result = await openAcceptanceBarAmendmentReview(
+      { ...baseInput, preview: { ...baseInput.preview, approvalRequired: false } },
+      { verifyPreviewPost, route },
+    );
+    expect(result.state).toBe('not-required');
+    expect(verifyPreviewPost).not.toHaveBeenCalled();
+    expect(route).not.toHaveBeenCalled();
+  });
+
+  it('refuses a preview post the apply resolver rejects, before spending a routed reviewer', async () => {
+    const route = vi.fn();
+    const verifyPreviewPost = vi.fn().mockRejectedValue(new Error('acceptance_bar_approval_stale_or_mismatched: R-1 hash mismatch'));
+    await expect(openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost, route })).rejects.toThrow(
+      /acceptance_bar_amendment_review_preview_invalid: thread-post:42 .*stale_or_mismatched/,
+    );
+    expect(verifyPreviewPost).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42', approval });
+    expect(route).not.toHaveBeenCalled();
+  });
+
+  it('refuses a preview reference that is not thread-post:<id>', async () => {
+    await expect(
+      openAcceptanceBarAmendmentReview({ ...baseInput, previewPostRef: 'WI-12' }, { verifyPreviewPost: vi.fn(), route: vi.fn() }),
+    ).rejects.toThrow(/reviewPreviewPost must be thread-post:<id>/);
+  });
+
+  it('opens the routed review for the preview post and returns its reference', async () => {
+    const route = vi.fn().mockResolvedValue({ state: 'routed', conversationId: 'conv-1', responderId: 'su-outsider', screenedOut: [] });
+    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route });
+
+    expect(result).toMatchObject({ state: 'routed', conversationId: 'conv-1', previewPostRef: 'thread-post:42' });
+    expect(result.next).toContain("consult:reply:conv-1");
+    const routed = route.mock.calls[0]![0];
+    expect(routed).toMatchObject({ rubricRef: 'acceptance-demo', workspaceId: 'ws', identity: baseInput.identity });
+    expect(routed.brief).toBe(buildAmendmentReviewBrief({ ...baseInput }));
+  });
+
+  it('carries no routed reference when no eligible reviewer exists', async () => {
+    const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: null, reason: 'no_qualified_responder', screenedOut: [] });
+    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route });
+    expect(result).toMatchObject({ state: 'no-eligible-reviewer', previewPostRef: 'thread-post:42' });
+    expect(result.next).not.toContain('consult:reply');
+  });
+
+  it('the brief carries what the reviewer signs and the one line the apply guard accepts', () => {
+    const brief = buildAmendmentReviewBrief(baseInput);
+    expect(brief).toContain(JSON.stringify(approval));
+    expect(brief).toContain(JSON.stringify(baseInput.patch));
+    expect(brief).toContain('R-1 (bar-meaning: falsifier)');
+    expect(brief).toContain('Tighten the falsifier.');
+    // The apply resolver accepts exactly /^approve thread-post:(\d+)$/ on the reviewer's post.
+    expect(brief.split('\n')).toContain('To approve, answer this consult with exactly one line: approve thread-post:42');
+    expect(/^approve thread-post:([1-9][0-9]*)$/.test('approve thread-post:42')).toBe(true);
+    expect(brief).not.toContain('coord:send');
+  });
+
+  it('clips an oversized patch instead of routing an unbounded brief', () => {
+    const brief = buildAmendmentReviewBrief({ ...baseInput, patch: { criteria: ['x'.repeat(10_000)] } });
+    expect(brief.length).toBeLessThan(6_000);
+    expect(brief).toMatch(/chars clipped\]/);
   });
 });
