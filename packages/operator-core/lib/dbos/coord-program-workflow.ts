@@ -20,6 +20,7 @@
  * plumbing and the workflow stays directly testable.
  */
 import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
@@ -36,7 +37,8 @@ import { buildCoordOpCtx, setProgramBlueprintResolver, type ProgramBlueprintReso
 import type { ProgramOutcome } from '../coord-ops/types.js';
 import {
   BLUEPRINT_PROGRAM_COMPLETION_OWNER, blueprintProgramCompletionRef,
-  getBlueprintOperationResult, getBlueprintOperationStatus, submitBlueprintOperation,
+  cancelBlueprintOperation, getBlueprintOperationResult, getBlueprintOperationStatus,
+  submitBlueprintOperation,
   type BlueprintOperationHandle, type BlueprintOperationStatus,
 } from '../blueprint/operation-service.js';
 import { readBlueprintSpecificationSnapshot } from '../blueprint/project-to-pg.js';
@@ -245,13 +247,14 @@ export async function loadAcceptedCoordProgramChild(
   });
 }
 
-/** Canonical reads are deliberately outside DBOS.runStep so a replay sees a
- * reopened child or a newly requested root cancellation. DBOS.sleep provides
- * the durable interval between observations. */
+/** Canonical reads are deliberately outside DBOS.runStep so replay sees a
+ * reopened child or newly cancelled root. The delay is not a DBOS operation:
+ * recording a conditional DBOS.sleep would make replay diverge when current
+ * state changes across a crash. DBOS recovers the workflow and re-reads state. */
 export async function awaitAcceptedCoordProgramChild(
   sql: Sql, parent: CoordProgramInput,
   child: { invokeStepId: string; operationId: string; deadlineAt: string },
-  sleep: (ms: number) => Promise<void> = (ms) => DBOS.sleep(ms),
+  sleep: (ms: number) => Promise<void> = (ms) => delay(ms),
 ): Promise<{ state: 'ready'; output: unknown; evidenceRef: string }> {
   const deadline = Date.parse(child.deadlineAt);
   if (!Number.isFinite(deadline)) throw new Error('program child wait requires an absolute deadline');
@@ -271,6 +274,60 @@ export async function awaitAcceptedCoordProgramChild(
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error(`program child ${child.invokeStepId} did not settle before its deadline`);
     await sleep(Math.min(10_000, remaining));
+  }
+}
+
+/** A cancelled root owns the cancellation handoff to children it already
+ * accepted. The receipt request key identifies direct children even after a
+ * lost DBOS step response. Nested programs repeat this for their own children. */
+async function cancelAcceptedCoordProgramChildren(sql: Sql, input: CoordProgramInput): Promise<void> {
+  const root = input.acceptedOperation;
+  if (!root || root.target.kind !== 'work-item' || !input.workspaceId || !input.harnessSlug ||
+      root.workspaceId !== input.workspaceId || root.harnessSlug !== input.harnessSlug ||
+      root.target.id !== input.workItemId) {
+    throw new Error('program child cancellation requires the accepted root');
+  }
+  const prefix = `program:${root.receiptId}:op-`;
+  let afterId = 0;
+  for (;;) {
+    const children = await runWithWorkspace(root.workspaceId, () => sql<Array<{
+      receipt_id: string; request_key: string; operation_id: string;
+    }>>`
+      SELECT i.id::text AS receipt_id, i.request_key, i.operation_id
+        FROM harness_shared.blueprint_operation_invocations i
+       WHERE i.workspace_id = ${root.workspaceId} AND i.harness_slug = ${root.harnessSlug}
+         AND i.caller_id = ${input.callerId}
+         AND i.specification_revision = ${root.specificationRevision}
+         AND i.request_key LIKE ${`${prefix}%`} AND i.id > ${afterId}
+       ORDER BY i.id LIMIT 8
+    `);
+    if (children.length === 0) return;
+    for (const child of children) {
+      const receiptId = Number(child.receipt_id);
+      if (!Number.isSafeInteger(receiptId) || receiptId <= afterId) {
+        throw new Error('program child cancellation found an invalid receipt id');
+      }
+      afterId = receiptId;
+      const invokeStepId = child.request_key.slice(prefix.length);
+      if (!child.request_key.startsWith(prefix) || !/^[a-zA-Z][a-zA-Z0-9_-]{0,79}$/.test(invokeStepId)) {
+        throw new Error('program child cancellation found an invalid receipt key');
+      }
+      const handle = await loadAcceptedCoordProgramChild(sql, input, invokeStepId, child.operation_id);
+      const status = await getBlueprintOperationStatus(sql, handle, input.callerId);
+      if (status.phase === 'terminal') continue;
+      try {
+        await cancelBlueprintOperation(sql, handle, input.callerId, {
+          requestKey: `program-parent:${root.receiptId}:cancel`,
+          reason: `parent program ${root.receiptId} was cancelled`,
+        });
+      } catch (error) {
+        // A child can settle after the status read. Its completed result is
+        // already canonical, and a cancellation must not rewrite it.
+        if (!(error instanceof Error) || error.message !== 'cannot cancel a terminal blueprint operation') {
+          throw error;
+        }
+      }
+    }
   }
 }
 
@@ -355,7 +412,10 @@ export async function settleAcceptedCoordProgram(
   const rootId = handle.target.id;
   return runWithWorkspace(handle.workspaceId, async () => {
     const current = await getBlueprintOperationStatus(sql, handle, input.callerId);
-    if (current.phase === 'terminal') return current;
+    if (current.phase === 'terminal') {
+      if (current.outcome === 'cancelled') await cancelAcceptedCoordProgramChildren(sql, input);
+      return current;
+    }
     const attempt = {
       workspaceId: handle.workspaceId, harnessSlug: handle.harnessSlug,
       workItemId: rootId, receiptId: handle.receiptId,
@@ -403,7 +463,9 @@ export async function settleAcceptedCoordProgram(
       }
     }
     if (!closed) throw new Error('accepted coord program root attempt changed before terminal settlement');
-    return getBlueprintOperationStatus(sql, handle, input.callerId);
+    const terminal = await getBlueprintOperationStatus(sql, handle, input.callerId);
+    if (terminal.outcome === 'cancelled') await cancelAcceptedCoordProgramChildren(sql, input);
+    return terminal;
   });
 }
 
@@ -437,6 +499,9 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
       return output as ProgramOutcome;
     }
     if (prior.status.phase === 'terminal') {
+      if (prior.status.outcome === 'cancelled') {
+        await cancelAcceptedCoordProgramChildren(getOrgPg().sql, input);
+      }
       return { outcome: prior.status.outcome ?? prior.state, resolved: false };
     }
   }
