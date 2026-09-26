@@ -1247,9 +1247,11 @@ describe('emitScorecard', () => {
       code: 'grader_in_implementer_lineage',
       error: expect.stringContaining('spawn/rebind lineage'),
     });
-    expect((r as { error?: string }).error).toContain('existing unrelated live session');
-    expect((r as { error?: string }).error).toContain('assign_to');
-    expect((r as { error?: string }).error).toContain('Do NOT file it unassigned');
+    // The remedy routes grading through the plan ship recruiter (plans:set-plan-status),
+    // never a hand-picked or hand-assigned peer (grader-eligibility.ts, 68e81197f0).
+    expect((r as { error?: string }).error).toContain('Do not recruit a grader yourself');
+    expect((r as { error?: string }).error).toContain("status:'shipped'");
+    expect((r as { error?: string }).error).toContain('mints a lineage-safe judge');
     expect((r as { error?: string }).error).toMatch(/never launch a grader from this lineage/i);
     expect((r as { error?: string }).error).not.toContain('launch or assign a lineage-independent grader');
     expect(captureM).not.toHaveBeenCalled();
@@ -1835,9 +1837,9 @@ describe('acceptance-grader eligibility is answerable BEFORE the grading work (E
     const refusal = (preflight as {
       graderEligibility?: { refusal?: { error?: string } };
     }).graderEligibility?.refusal;
-    expect(refusal?.error).toContain('existing unrelated live session');
-    expect(refusal?.error).toContain('assign_to');
-    expect(refusal?.error).toContain('Do NOT file it unassigned');
+    expect(refusal?.error).toContain('Do not recruit a grader yourself');
+    expect(refusal?.error).toContain("status:'shipped'");
+    expect(refusal?.error).toContain('mints a lineage-safe judge');
     expect(refusal?.error).toMatch(/never launch a grader from this lineage/i);
     await expect(
       emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS }, { createdBy: 'su-relative' }),
