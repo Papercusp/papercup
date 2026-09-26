@@ -38,6 +38,41 @@ export const SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS = [
   '--property=CollectMode=inactive-or-failed',
 ] as const;
 
+/**
+ * Can a `systemd-run --user` client started with `env` reach a USER manager at all?
+ *
+ * `systemd-run` being on PATH says nothing about this. A hosted workspace host runs
+ * the operator as a SYSTEM service with no login session, so there is no user
+ * manager and no user bus; `systemd-run --user` then exits 1 with
+ * "Failed to connect to bus: No medium found" before the payload ever execs
+ * (WI-10003189: every New Session on avi-test r50 died at boot this way).
+ *
+ * This mirrors systemd's own user-bus address resolution rather than guessing:
+ * the client tries `$XDG_RUNTIME_DIR/systemd/private`, then the session bus from
+ * `$DBUS_SESSION_BUS_ADDRESS`, then `$XDG_RUNTIME_DIR/bus`; with neither variable
+ * set it returns -ENOMEDIUM (the "No medium found" above). Both variables unset is
+ * therefore a definite "no"; a runtime dir whose sockets do not exist is a "no" too.
+ * A non-`unix:path=` session address (abstract socket, tcp) cannot be stat'ed, so it
+ * is deferred to systemd as a "yes"; the live scope probe
+ * (`task-manager/managed-spawn.ts` `probeScopeSupport`) remains the authority for
+ * everything this cheap check cannot see.
+ *
+ * Pure given `env` + `exists`; exported for tests.
+ */
+export function userManagerBusReachable(
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  const runtimeDir = env.XDG_RUNTIME_DIR?.trim();
+  if (runtimeDir && (exists(join(runtimeDir, 'systemd', 'private')) || exists(join(runtimeDir, 'bus')))) {
+    return true;
+  }
+  const sessionAddress = env.DBUS_SESSION_BUS_ADDRESS?.trim();
+  if (!sessionAddress) return false;
+  const unixPath = /(?:^|;)unix:(?:[^;]*,)?path=([^,;]+)/.exec(sessionAddress)?.[1];
+  return unixPath ? exists(unixPath) : true;
+}
+
 /** Static, dependency-free runner used after systemd has accepted a payload. */
 export const SYSTEMD_ENV_RUNNER_PATH = fileURLToPath(new URL('./systemd-scope-env-runner.mjs', import.meta.url));
 /** Credential id is deliberately boring: it is visible to systemd, never a secret. */

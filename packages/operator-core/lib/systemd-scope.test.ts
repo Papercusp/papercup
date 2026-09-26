@@ -14,6 +14,7 @@ import {
   SYSTEMD_ENV_RUNNER_PATH,
   TASK_DEADLINE_EPOCH_MS_ENV,
   taskDeadlineEnv,
+  userManagerBusReachable,
 } from './systemd-scope';
 import {
   isDirectSystemdScopeEnvRunnerInvocation,
@@ -21,6 +22,42 @@ import {
   SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
   SYSTEMD_RUNNER_REDACTIONS_ENV,
 } from './systemd-scope-env-runner.mjs';
+
+describe('userManagerBusReachable — can `systemd-run --user` reach a user manager (WI-10003189)', () => {
+  // A path set standing in for the filesystem, so no case depends on the box's real
+  // /run/user state (the class of flake WI-6960 was about).
+  const fs = (...present: string[]) => (p: string) => present.includes(p);
+
+  it('is false with neither XDG_RUNTIME_DIR nor DBUS_SESSION_BUS_ADDRESS — the hosted-operator case systemd reports as "No medium found"', () => {
+    expect(userManagerBusReachable({}, fs('/run/user/1000/systemd/private', '/run/user/1000/bus'))).toBe(false);
+    expect(userManagerBusReachable({ XDG_RUNTIME_DIR: '  ', DBUS_SESSION_BUS_ADDRESS: '' }, fs())).toBe(false);
+  });
+
+  it("is true when the runtime dir holds the manager's private socket or the user bus socket", () => {
+    expect(userManagerBusReachable({ XDG_RUNTIME_DIR: '/run/user/1000' }, fs('/run/user/1000/systemd/private'))).toBe(
+      true,
+    );
+    expect(userManagerBusReachable({ XDG_RUNTIME_DIR: '/run/user/1000' }, fs('/run/user/1000/bus'))).toBe(true);
+  });
+
+  it('is false when XDG_RUNTIME_DIR is set but no user manager socket exists and no session bus is named', () => {
+    expect(userManagerBusReachable({ XDG_RUNTIME_DIR: '/run/user/999' }, fs())).toBe(false);
+  });
+
+  it('falls back to a unix:path session bus address, checking that its socket exists', () => {
+    const env = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/tmp/dbus-sock,guid=abc' };
+    expect(userManagerBusReachable(env, fs('/tmp/dbus-sock'))).toBe(true);
+    expect(userManagerBusReachable(env, fs())).toBe(false);
+    // An address whose unix: entry carries other keys before path= still resolves.
+    expect(
+      userManagerBusReachable({ DBUS_SESSION_BUS_ADDRESS: 'tcp:host=x;unix:guid=g,path=/tmp/s2' }, fs('/tmp/s2')),
+    ).toBe(true);
+  });
+
+  it('defers a non-stat-able session address (abstract socket) to systemd rather than refusing it', () => {
+    expect(userManagerBusReachable({ DBUS_SESSION_BUS_ADDRESS: 'unix:abstract=/tmp/dbus-XYZ' }, fs())).toBe(true);
+  });
+});
 
 describe('systemd scope environment runner entrypoint', () => {
   it('executes only the copied runner basename, never an importing host bundle', () => {

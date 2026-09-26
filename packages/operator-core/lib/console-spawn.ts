@@ -62,7 +62,11 @@ import { CLIENT_SERVER_TERMINALS, PROCESS_PER_WINDOW_TERMINALS } from './linux-t
 import { beginSyncEnrolment, completeSyncEnrolment } from './task-manager/enroll-sync';
 import { scopeUnitForTask, sliceForClass } from './task-manager/types';
 import { warmScopeProbe } from './task-manager/managed-spawn';
-import { agentSpawnScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
+import {
+  agentSpawnScopeMemoryMaxG,
+  SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+  userManagerBusReachable,
+} from './systemd-scope';
 
 /** Shared with psu-pty-host.mjs; kept as a literal here because this TypeScript
  * module is also imported by the launcher-side plain-ESM boundary. */
@@ -2365,7 +2369,14 @@ function buildScopedSpawnArgv(
   memoryMaxBytes?: number | null,
 ): { bin: string; args: string[]; scopeUnit: string | null } {
   const platform = probes.platform ?? process.platform;
-  const hasSystemdRun = probes.hasSystemdRun ?? (() => isOnPath('systemd-run'));
+  // WI-10003189: PATH presence is necessary but NOT sufficient. A hosted workspace
+  // host runs the operator as a system service with no user manager, so
+  // `systemd-run --user` is installed yet cannot work — it exits 1 with "Failed to
+  // connect to bus: No medium found" and the wrapped member never starts. Require a
+  // reachable user bus too; without one there is no scope to escape into, and the
+  // plain detached child below is the correct (only) launch.
+  const hasSystemdRun =
+    probes.hasSystemdRun ?? (() => isOnPath('systemd-run') && userManagerBusReachable(process.env));
   if (platform === 'linux' && hasSystemdRun()) {
     const safeLabel =
       label.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'member';
@@ -2594,10 +2605,21 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
     const taskScope = enrolment.confined
       ? { unit: scopeUnitForTask(enrolment.taskId, label), slice: sliceForClass('agent-session') }
       : null;
+    // WI-10003189: `no-scope-support` means the task manager's live probe already
+    // RAN `systemd-run --user --scope -- true` on this host and it failed. Wrapping
+    // the member in that same command fails the same way (on a hosted host: "Failed
+    // to connect to bus: No medium found", exit 1, New Session dead at boot), so the
+    // probe's verdict outranks PATH presence. The other unconfined reasons say
+    // nothing about systemd itself (flag-off, a caller veto, a probe still pending),
+    // so they keep the EI-9748 cgroup escape.
+    const spawnCommandProbes =
+      enrolment.unconfinedReason === 'no-scope-support'
+        ? { ...opts.spawnCommandProbes, hasSystemdRun: () => false }
+        : opts.spawnCommandProbes;
     const { bin, args, scopeUnit } = buildHeadlessSpawnCommand(
       oneliner,
       label,
-      opts.spawnCommandProbes,
+      spawnCommandProbes,
       taskScope,
     );
     const child = spawn(bin, args, {
