@@ -1,7 +1,8 @@
 /** Independent P002 intent oracles; optional subject is a copy-out mutant, never an in-tree edit. */
 import { describe, expect, it } from 'vitest';
 import { pathToFileURL } from 'node:url';
-import { compileGoalPlanPlacement, type GoalPortfolioBrief } from './goal-launch-settings';
+import { compileGoalPlanPlacement, type GoalLaunchRefusal, type GoalPortfolioBrief } from './goal-launch-settings';
+import type { ExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
 import { goalPlanningPortfolioFingerprint, type GoalPlanningReview } from './goal-planning-review';
 import type { GoalPlanningProviderInput } from './agent-obligation-providers';
 
@@ -89,4 +90,62 @@ describe('P002 goal planning behavioral falsifiers', () => {
     expect(agenda.primary[0]?.action?.tool).toBe(ready ? 'fleet:launch-on-plan' : undefined);
     expect(agenda.primary.findIndex((r) => r.family === 'planning-needed')).toBeGreaterThan(0);
   });
+});
+
+/**
+ * P005 AUTO-BAR-R-5 falsifiers (scenario ids in the test names). Independent
+ * oracles over the same env-overridable subject, so a copy-out mutant of the
+ * provider's refusal mapping is measurable without touching the shared tree.
+ */
+describe('P005 refusal-to-action falsifiers', () => {
+  function placementRead(p: GoalPortfolioBrief, extra: { refusal?: GoalLaunchRefusal | null;
+    admissions?: Record<string, ExactPlanAdmission | null> }) {
+    return { ...base, read: { status: 'known' as const, value: { portfolio: p, evidenceRef: 'fixture:placement', alert: null,
+      ...(extra.admissions ? { admissions: extra.admissions } : {}),
+      launch: { goalId: base.goalId, settings: null, goalBrief: null, effective: {}, ceilings: p.launch.ceilings,
+        headcount: p.launch.headcount, budget: null, refusal: extra.refusal ?? null, degraded: false, degradedReasons: [] } } } };
+  }
+  const refusal = (reason: GoalLaunchRefusal['reason']): GoalLaunchRefusal => ({ reason,
+    current: reason === 'goal_budget_unmeasurable' ? null : 10, limit: 10, requested: 1,
+    currentScope: 'fixture:typed-refusal', message: `Refused: ${reason}` });
+  // Headcount remedies must never answer an unmeasured spend. A ceiling may be
+  // named only inside the explicit prohibition ("do not ... raise a ceiling").
+  const HEADCOUNT_REMEDY = /headcount|free (?:an )?agent|reallocate|within the declared/i;
+
+  it('budget.unmeasured: unknown spend asks for measurement repair, never headcount or ceiling relief', () => {
+    const row = subject.planPlacementObligation(placementRead(portfolio(true), { refusal: refusal('goal_budget_unmeasurable') }));
+    expect(row).toMatchObject({ status: 'blocked', action: { kind: 'repair', targetRef: `goal:${base.goalId}` } });
+    expect(row.action?.tool).toBeUndefined();
+    expect(row.title).toMatch(/budget measurement/i);
+    expect(row.action?.summary).toMatch(/repair the authoritative goal spend measurement/i);
+    expect(row.action?.summary).toMatch(/unknown spend is not available headroom/i);
+    expect(`${row.title} ${row.action?.summary}`).not.toMatch(HEADCOUNT_REMEDY);
+    expect(row.action?.summary).toMatch(/do not [^;]*raise a ceiling/i);
+  });
+  it('budget.exceeded: a measured overrun asks for owner budget direction and does not raise the cap', () => {
+    const row = subject.planPlacementObligation(placementRead(portfolio(true), { refusal: refusal('goal_budget_exceeded') }));
+    expect(row).toMatchObject({ status: 'blocked', action: { kind: 'repair' } });
+    expect(row.action?.tool).toBeUndefined();
+    expect(row.action?.summary).toMatch(/owner budget direction/i);
+    expect(row.action?.summary).toMatch(/do not increase the cap autonomously/i);
+    expect(row.title).not.toMatch(/headcount/i);
+  });
+  it.each(['goal_max_agents', 'fleet_max_agents'] as const)('capacity.full: %s reallocates within the ceiling without a duplicate launch', (reason) => {
+    const row = subject.planPlacementObligation(placementRead(portfolio(true), { refusal: refusal(reason) }));
+    expect(row).toMatchObject({ status: 'blocked', action: { kind: 'repair' } });
+    expect(row.action?.tool).toBeUndefined();
+    expect(row.title).toMatch(reason === 'goal_max_agents' ? /goal headcount/i : /fleet headcount/i);
+    expect(row.action?.summary).toMatch(/do not duplicate a launch or raise the ceiling/i);
+    expect(`${row.title} ${row.action?.summary}`).not.toMatch(/budget|spend/i);
+  });
+  it.each(['floor-gated', 'insufficient-executable-width', 'promotion-lag'] as const)(
+    'admission.blocked: exact-plan %s is repaired before any launch is offered', (reason) => {
+      const p = portfolio(true);
+      const admission = { ready: false, status: 'blocked', reason, message: `measured ${reason}`, plan: 'existing',
+        requestedSeats: 1, executableWidth: 0 } as unknown as ExactPlanAdmission;
+      const row = subject.planPlacementObligation(placementRead(p, { admissions: { [p.worklist[0]!.ref]: admission } }));
+      expect(row).toMatchObject({ status: 'blocked', action: { kind: 'repair', targetRef: p.worklist[0]!.ref } });
+      expect(row.action?.tool).toBeUndefined();
+      expect(row.reason).toContain(reason);
+    });
 });
