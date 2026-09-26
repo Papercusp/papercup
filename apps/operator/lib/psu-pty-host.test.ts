@@ -5,7 +5,15 @@
  * (spawn → socket-inject → cleanup) lives in psu-pty-host.integration.test.ts.
  */
 import { describe, it, expect, vi, afterAll } from 'vitest';
-import {
+import * as realHost from '../scripts/psu-pty-host.mjs';
+
+// PSU_PTY_HOST_MODULE_PATH lets scripts/mutation-probe.sh (copy-out mode) point this
+// suite at a MUTATED copy of the host without dirtying the tracked file. It defaults
+// to the real module; an unset variable changes nothing. (Source-text assertions
+// below still read the real file by URL.)
+const hostOverride = process.env.PSU_PTY_HOST_MODULE_PATH;
+const host: typeof realHost = hostOverride ? await import(hostOverride) : realHost;
+const {
   sanitizeKey,
   socketPathFor,
   metaPathFor,
@@ -116,7 +124,7 @@ import {
   mcpConnectedVerdict,
   runMcpReconnectMacro,
   shutdownRefusalReason,
-} from '../scripts/psu-pty-host.mjs';
+} = host;
 import * as nodeFs from 'node:fs';
 import * as nodeOs from 'node:os';
 import { join as pathJoin } from 'node:path';
