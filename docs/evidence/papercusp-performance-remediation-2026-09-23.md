@@ -2413,3 +2413,47 @@ replaces both tooldef FNV loops with a bit-exact 16-bit-limb version
 (102 tests pass, including a BigInt reference kept as control; same output,
 11.5× faster on a 224,671-char body). Its effect on the staging main thread is
 not yet measured. P-007 acceptance remains open.
+
+### P-007 ten-run set after the fnv1a64 + agent-config fixes — 2026-09-26 16:32Z
+
+Staging API `7d787f2c51` carries both fixes: agent-config route blob
+`f09e3dfa13` (WI-10003266) and tooldef gitlink `43bb505` (WI-10003260).
+staging-sync advanced to it from the local committed `staging`. All runs below
+used one process (PID 2509156, started 16:14:39Z), frozen shell `e41628`,
+fixture SPA `61b3e2`, and plan `goal-agent-behavior-feedback-2026-09-06`.
+Runner: `~/.papercusp/perf/p007-native-current/run-native-popup-batch.sh`
+(pins the PID and stops on a restart).
+
+| run | popup ms | request-started | response-headers | preview-rendered | receipt |
+| --- | ---: | ---: | ---: | ---: | --- |
+| r31 | 856 | 321 | 520 | 847 | perfrun-1790439427667-tj3rz8 |
+| r32 | 1212 | | | | perfrun-1790439529371-6bsk1i |
+| r33 | **>8000** | 301 | 422 | (response-ready 28298) | none |
+| r34 | 1378 | | | | perfrun-1790439610521-lvyl46 |
+| r35 | 1179 | | | | perfrun-1790439632679-zco33k |
+| r36 | **>8000** | 369 | none in 8s | — | none |
+| r37 | 1083 | | | | perfrun-1790439701674-m7e207 |
+| r38 | 1440 | | | | perfrun-1790439743838-0cqdc1 |
+| r39 | 788 | | | | perfrun-1790439783997-fc3liu |
+| r40 | **>8000** | 1947 | 8071 | — | none |
+
+**Verdict: 7/10 within 1500ms, 3/10 over 8000ms. Ten-run acceptance FAILS on
+tail latency.** The median improved sharply (r28 was 2296ms before the fixes).
+
+**Instrument defect.** The harness reported r33/r36/r40 as `UNMEASURABLE: no
+dashboard plan opened`. Each of those clicks did happen: the popup stayed on
+`Loading goal-agent-behavior-feedback…` past the 8s `MEASURE_WAIT_MS`.
+`plan-popup-open.perf.spec.ts` maps a post-click measure timeout (`.catch(() =>
+"timeout")`) to "row not opened", so slow popups are dropped from the verdict
+and no receipt is published. Left uncorrected, this biases every ten-run set
+toward a pass.
+
+**Tail cause (partial).** The three slow runs coincide with :3170 main-thread
+stalls from its lag monitor: maxMs 5104 (16:20:49Z), 3737 (16:21:00Z),
+**20669** (16:21:27Z), and 3565 (16:23:32Z). The saturation profile from that
+window (`loop-saturation-1790439654103-pid2509156-p95_666ms`, 97.8% busy)
+attributes about 13% of self time to the task-manager live scan's synchronous
+`/proc/<pid>/exe` + `/proc/<pid>/environ` reads (`runLiveScan` →
+`projectLiveProcess` → `readProcessMetadata`), filed as EI-24342043796392664.
+GC takes 16% and tool-catalog projection about 7%. Profiles show the old BigInt
+`fnv1a64` gone (the fast version is 2.3%) and `spawn` down from 12–14% to 1–4%.
