@@ -18,8 +18,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  __repoCitationSyncSpawnsForTests,
   __repoCitationTrackingCacheStatsForTests,
   __resetRepoCitationTrackingCacheForTests,
+  prewarmRepoCitationTracking,
   citationBlobSha,
   citationBlobShaAt,
   foldEffectiveItemAudits,
@@ -684,6 +686,55 @@ describe('repoCitationDeps — audited commit blob provenance (EI-22457360430270
       expect(citationBlobSha(citation, deps)).toBe(gitBlobSha(citedBody));
       expect(citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
     } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // P-007 / WI-10002829: a loop-saturation profile of the :3170 request host attributed
+  // 28% of real main-thread work in the window that stalled the first native plan-popup to
+  // this resolver's synchronous `git` children. After the async prewarm, the tracked and
+  // gitlink answers come from the warm index snapshots, and commit-addressed lookups are
+  // memoized — so a repeated acceptance evaluation forks nothing on the event loop.
+  it('answers tracked + gitlink checks from an async prewarm and memoizes commit-addressed lookups', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-prewarm-'));
+    const childRoot = path.join(root, 'child');
+    const superprojectRoot = path.join(root, 'superproject');
+    const citedBody = 'export const prewarmed = true;\n';
+    __resetRepoCitationTrackingCacheForTests();
+    try {
+      fs.mkdirSync(path.join(childRoot, 'src'), { recursive: true });
+      fs.mkdirSync(superprojectRoot, { recursive: true });
+      fs.writeFileSync(path.join(childRoot, 'src', 'index.ts'), citedBody);
+      for (const repo of [childRoot, superprojectRoot]) {
+        git(repo, 'init', '-q');
+        git(repo, 'config', 'user.email', 'plan-audits-test@example.com');
+        git(repo, 'config', 'user.name', 'Plan Audits Test');
+      }
+      git(childRoot, 'add', '--', 'src/index.ts');
+      git(childRoot, 'commit', '-qm', 'child source');
+      git(superprojectRoot, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', childRoot, 'libs/child');
+      git(superprojectRoot, 'commit', '-qm', 'pin child');
+      const auditedSha = git(superprojectRoot, 'rev-parse', 'HEAD').trim();
+      const citation = code('libs/child/src/index.ts');
+
+      await prewarmRepoCitationTracking([superprojectRoot], [citation]);
+      // Both the submodule's index and its superproject's (gitlink lookup) were warmed.
+      expect(__repoCitationTrackingCacheStatsForTests()).toEqual({ roots: 2, loads: 2 });
+
+      const deps = repoCitationDeps(superprojectRoot);
+      expect(resolveCitation(citation, deps)).toEqual({ ok: true });
+      expect(deps.isTracked?.('libs/child/src/index.ts')).toBe(true);
+      expect(__repoCitationSyncSpawnsForTests()).toBe(0);
+
+      // First commit-addressed lookup forks (ls-tree + rev-parse); the same lookup from a
+      // NEW resolver context is served from the immutable memo with no further spawn.
+      expect(citationBlobShaAt(citation, auditedSha, deps)).toBe(gitBlobSha(citedBody));
+      const afterFirst = __repoCitationSyncSpawnsForTests();
+      expect(afterFirst).toBe(2);
+      expect(citationBlobShaAt(citation, auditedSha, repoCitationDeps(superprojectRoot))).toBe(gitBlobSha(citedBody));
+      expect(__repoCitationSyncSpawnsForTests()).toBe(afterFirst);
+    } finally {
+      __resetRepoCitationTrackingCacheForTests();
       fs.rmSync(root, { recursive: true, force: true });
     }
   });

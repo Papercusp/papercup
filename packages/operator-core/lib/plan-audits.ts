@@ -40,7 +40,7 @@
  */
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -58,6 +58,7 @@ import {
   type HarnessRegistry,
 } from './harness-registry';
 import { discoverKnownHiveCheckoutRoots } from './agent-tools/testing/run';
+import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
 import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 // The monorepo-root walk-up lives in the docs tool helper only because that is where
 // it was first needed; it is imported rather than re-derived so there stays exactly
@@ -708,11 +709,21 @@ export function registeredCitationRepoRoots(
 interface TrackedRepoSnapshot {
   indexIdentity: string;
   tracked: ReadonlySet<string>;
+  /** Index entries with mode 160000 (submodule gitlinks), from the same listing. */
+  gitlinks: ReadonlySet<string>;
 }
 
 interface RepoCitationTrackingCacheState {
   snapshots: Map<string, TrackedRepoSnapshot>;
   loads: number;
+  /**
+   * Commit-addressed Git lookups (`<full-sha>:<path>` objects and gitlink pins at a
+   * full SHA). Their answers cannot change, so a positive result is memoized forever
+   * (bounded) instead of re-forking Git on every acceptance sweep.
+   */
+  immutable: Map<string, string>;
+  /** Child processes spawned SYNCHRONOUSLY by the citation resolver (test observability). */
+  syncSpawns: number;
 }
 
 // WI-2146577: `repoCitationDeps()` is constructed repeatedly while one acceptance
@@ -724,10 +735,59 @@ interface RepoCitationTrackingCacheState {
 // while repeated resolver contexts pay no child-process spawn at all.
 const __repoCitationTrackingCache = pinModuleState<RepoCitationTrackingCacheState>(
   '@papercusp/operator-core.repoCitationTrackingCache',
-  () => ({ snapshots: new Map(), loads: 0 }),
+  () => ({ snapshots: new Map(), loads: 0, immutable: new Map(), syncSpawns: 0 }),
 );
 const TRACKED_REPO_SNAPSHOT_MAX_ROOTS = 16;
 const TRACKED_REPO_SNAPSHOT_MAX_BUFFER = 32 * 1024 * 1024;
+const IMMUTABLE_GIT_LOOKUP_MAX = 4096;
+const FULL_OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+
+/**
+ * P-007 (papercusp-log-performance-remediation-2026-09-23): memoize a commit-addressed
+ * lookup. Only a FULL object id is immutable (an abbreviation can become ambiguous), and
+ * only a positive answer is kept (a missing object can arrive with a later fetch).
+ */
+function memoImmutableGitLookup(
+  key: string,
+  ref: string,
+  compute: () => string | null,
+): string | null {
+  if (!FULL_OBJECT_ID_RE.test(ref)) return compute();
+  const hit = __repoCitationTrackingCache.immutable.get(key);
+  if (hit !== undefined) return hit;
+  const value = compute();
+  if (value !== null) {
+    const cache = __repoCitationTrackingCache.immutable;
+    cache.set(key, value);
+    if (cache.size > IMMUTABLE_GIT_LOOKUP_MAX) {
+      const oldest = cache.keys().next().value as string | undefined;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+  }
+  return value;
+}
+
+/** Parse `git ls-files -s -z --full-name`: `<mode> <object> <stage>\t<path>\0`. */
+function parseStagedListing(stdout: string): { tracked: Set<string>; gitlinks: Set<string> } {
+  const tracked = new Set<string>();
+  const gitlinks = new Set<string>();
+  for (const record of stdout.split('\0')) {
+    const tab = record.indexOf('\t');
+    if (tab < 0) continue;
+    const file = record.slice(tab + 1);
+    if (!file) continue;
+    tracked.add(file);
+    if (record.startsWith('160000 ')) gitlinks.add(file);
+  }
+  return { tracked, gitlinks };
+}
+
+/** The cached snapshot for `root`, only while it still matches the live index. */
+function currentTrackedSnapshot(root: string, gitDir: string): TrackedRepoSnapshot | null {
+  const cached = __repoCitationTrackingCache.snapshots.get(root);
+  if (!cached) return null;
+  return cached.indexIdentity === gitIndexIdentity(gitDir) ? cached : null;
+}
 
 function gitDirForRoot(root: string): string | null {
   const marker = path.join(root, '.git');
@@ -762,6 +822,13 @@ function gitRootForFile(abs: string): { root: string; gitDir: string; rel: strin
  * cannot become an option.
  */
 function gitObjectShaAt(root: string, ref: string, rel: string): string | null {
+  return memoImmutableGitLookup(`object\0${root}\0${ref}\0${rel}`, ref, () =>
+    gitObjectShaAtUncached(root, ref, rel),
+  );
+}
+
+function gitObjectShaAtUncached(root: string, ref: string, rel: string): string | null {
+  __repoCitationTrackingCache.syncSpawns += 1;
   try {
     const object = execFileSync(
       'git',
@@ -792,6 +859,19 @@ function gitlinkCommitAt(
   auditedSha: string,
   gitlinkRel: string,
 ): string | null {
+  return memoImmutableGitLookup(
+    `gitlink\0${superprojectRoot}\0${auditedSha}\0${gitlinkRel}`,
+    auditedSha,
+    () => gitlinkCommitAtUncached(superprojectRoot, auditedSha, gitlinkRel),
+  );
+}
+
+function gitlinkCommitAtUncached(
+  superprojectRoot: string,
+  auditedSha: string,
+  gitlinkRel: string,
+): string | null {
+  __repoCitationTrackingCache.syncSpawns += 1;
   try {
     const output = execFileSync(
       'git',
@@ -821,6 +901,11 @@ function gitlinkParentForRepo(
   if (!parent || parent.root === repoRoot) return null;
   const gitlinkRel = path.relative(parent.root, repoRoot).split(path.sep).join('/');
   if (!gitlinkRel || gitlinkRel.startsWith('../') || path.isAbsolute(gitlinkRel)) return null;
+  // P-007: a warm snapshot of the parent index already carries every gitlink, so the
+  // common (prewarmed) path answers without forking Git on the request host.
+  const warm = currentTrackedSnapshot(parent.root, parent.gitDir);
+  if (warm) return warm.gitlinks.has(gitlinkRel) ? { superprojectRoot: parent.root, gitlinkRel } : null;
+  __repoCitationTrackingCache.syncSpawns += 1;
   try {
     const indexEntry = execFileSync(
       'git',
@@ -887,8 +972,9 @@ function trackedFromRepoSnapshot(abs: string): boolean | null {
     return cached.tracked.has(repo.rel);
   }
 
+  __repoCitationTrackingCache.syncSpawns += 1;
   try {
-    const probe = spawnSync('git', ['-C', repo.root, 'ls-files', '-z', '--full-name'], {
+    const probe = spawnSync('git', ['-C', repo.root, ...TRACKED_LISTING_ARGS], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5_000,
@@ -900,16 +986,87 @@ function trackedFromRepoSnapshot(abs: string): boolean | null {
     // answer from a mixed generation. The existing per-path probe below remains
     // the fail-soft fallback for this rare race.
     if (probe.status !== 0 || typeof probe.stdout !== 'string' || after !== before) return null;
-    const snapshot: TrackedRepoSnapshot = {
-      indexIdentity: before,
-      tracked: new Set(probe.stdout.split('\0').filter(Boolean)),
-    };
+    const snapshot: TrackedRepoSnapshot = { indexIdentity: before, ...parseStagedListing(probe.stdout) };
     __repoCitationTrackingCache.loads += 1;
     touchTrackedRepoSnapshot(repo.root, snapshot);
     return snapshot.tracked.has(repo.rel);
   } catch {
     return null;
   }
+}
+
+const TRACKED_LISTING_ARGS = ['ls-files', '-s', '-z', '--full-name'] as const;
+
+/**
+ * Run a read-only `git -C <root> <args>` WITHOUT blocking the event loop: through the
+ * spawner sidecar when enabled for this host (no fork of the large request process),
+ * otherwise an async local child. Null on any failure — callers keep the sync path.
+ */
+async function readGitOutputAsync(root: string, args: readonly string[]): Promise<string | null> {
+  const argv = ['-C', root, ...args];
+  if (gitSidecarEnabled('PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR')) {
+    try {
+      const result = await runGitViaSpawnerSidecar(argv, root, 5_000, process.env);
+      if (result.code === 0) return result.stdout;
+    } catch (e) {
+      noteSidecarFallback('plan-audits', e);
+    }
+  }
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      argv,
+      { encoding: 'utf8', timeout: 5_000, killSignal: 'SIGKILL', maxBuffer: TRACKED_REPO_SNAPSHOT_MAX_BUFFER },
+      (error, stdout) => resolve(error ? null : stdout),
+    );
+  });
+}
+
+async function loadTrackedRepoSnapshotAsync(root: string, gitDir: string): Promise<void> {
+  const before = gitIndexIdentity(gitDir);
+  if (!before) return;
+  if (__repoCitationTrackingCache.snapshots.get(root)?.indexIdentity === before) return;
+  const stdout = await readGitOutputAsync(root, TRACKED_LISTING_ARGS);
+  // Same mixed-generation rule as the sync loader: an index rewritten mid-read is not cached.
+  if (stdout === null || gitIndexIdentity(gitDir) !== before) return;
+  __repoCitationTrackingCache.loads += 1;
+  touchTrackedRepoSnapshot(root, { indexIdentity: before, ...parseStagedListing(stdout) });
+}
+
+/**
+ * P-007 / WI-10002829: warm, asynchronously, every index snapshot the SYNCHRONOUS
+ * citation resolver is about to consult — the Git root of each cited file under each
+ * candidate root, plus that root's containing superproject (the submodule gitlink
+ * check). Measured on the :3170 request host (loop-saturation profile, pid 2058561):
+ * `trackedFromRepoSnapshot`'s spawnSync was 28% of real main-thread work in the window
+ * that stalled the first native plan-popup. Best-effort: a miss leaves the existing
+ * sync path to answer exactly as before.
+ */
+export async function prewarmRepoCitationTracking(
+  roots: readonly string[],
+  citations: readonly AuditCitation[],
+): Promise<void> {
+  const gitRoots = new Map<string, string>();
+  const note = (repo: { root: string; gitDir: string } | null): void => {
+    if (repo && !gitRoots.has(repo.root)) gitRoots.set(repo.root, repo.gitDir);
+  };
+  for (const root of new Set(roots.map((entry) => path.resolve(entry)))) {
+    const rootWithSep = root.endsWith(path.sep) ? root : root + path.sep;
+    for (const citation of citations) {
+      const rel = isVerifyingCitation(citation) ? citation.path?.trim() : undefined;
+      if (!rel) continue;
+      const abs = path.resolve(root, rel);
+      if (!abs.startsWith(rootWithSep) || !fs.existsSync(abs)) continue;
+      const repo = gitRootForFile(abs);
+      if (!repo || gitRoots.has(repo.root)) continue;
+      note(repo);
+      const parent = gitRootForFile(repo.root);
+      if (parent && parent.root !== repo.root) note(parent);
+    }
+  }
+  await Promise.all(
+    [...gitRoots].map(([root, gitDir]) => loadTrackedRepoSnapshotAsync(root, gitDir).catch(() => undefined)),
+  );
 }
 
 /** Test-only observability for the spawn-collapse and index-invalidation contract. */
@@ -920,9 +1077,16 @@ export function __repoCitationTrackingCacheStatsForTests(): { roots: number; loa
   };
 }
 
+/** Test-only: synchronous Git child processes the citation resolver has spawned. */
+export function __repoCitationSyncSpawnsForTests(): number {
+  return __repoCitationTrackingCache.syncSpawns;
+}
+
 export function __resetRepoCitationTrackingCacheForTests(): void {
   __repoCitationTrackingCache.snapshots.clear();
   __repoCitationTrackingCache.loads = 0;
+  __repoCitationTrackingCache.immutable.clear();
+  __repoCitationTrackingCache.syncSpawns = 0;
 }
 
 /** Real-filesystem deps rooted at the monorepo, plus admitted sibling/registered repos. */
@@ -1194,7 +1358,13 @@ export async function repoCitationContextForHarness(
   harnessSlug: string | null | undefined,
   citations: readonly AuditCitation[] = [],
 ): Promise<RepoCitationContext | null> {
+  // P-007: every root below is resolved by SYNCHRONOUS deps; warm their Git index
+  // snapshots off the event loop first (roots' parents cover admitted sibling repos).
+  const prewarm = (roots: readonly string[]): Promise<void> =>
+    prewarmRepoCitationTracking([...roots, ...roots.map((root) => path.dirname(root))], citations)
+      .catch(() => undefined);
   if (!harnessSlug || harnessSlug === '*') {
+    await prewarm([REPO_ROOT]);
     return { repoRoot: REPO_ROOT, deps: repoCitationDeps(REPO_ROOT), rootSource: 'canonical-repo' };
   }
   try {
@@ -1204,6 +1374,8 @@ export async function repoCitationContextForHarness(
     const fallbackRoots = project?.harness_kind === 'hive' && !project.self_repo
       ? discoverKnownHiveCheckoutRoots()
       : [];
+    const canonicalRoot = harnessCitationRepoRoot(reg, harnessSlug);
+    await prewarm([...(canonicalRoot ? [canonicalRoot] : []), ...fallbackRoots, REPO_ROOT]);
     const selected = selectHarnessCitationRepoRoot(
       reg,
       harnessSlug,

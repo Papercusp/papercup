@@ -33,6 +33,8 @@ const ENABLED_ON_REQUEST_HOSTS = new Set([
   'PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR',
   'PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR',
   'PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR',
+  // P-007: plan-audits citation prewarm (`git ls-files -s`) — measured on the :3170 loop profile.
+  'PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR',
 ]);
 
 /**
