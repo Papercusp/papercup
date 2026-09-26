@@ -9,8 +9,16 @@ import {
   planAgentSpawn,
   type AgentSpawnRequest,
 } from '@papercusp/papercusp-shared/agent';
-import { DEFAULT_WORKSPACE_HOST_WORKSPACE_USER } from '@papercusp/deployment-driver';
-import { hostedCustomerAgentSpawnTransform, installHostedCustomerAgentIdentity } from './hosted-agent-identity';
+import {
+  DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
+} from '@papercusp/deployment-driver';
+import {
+  hostedCustomerAgentCommand,
+  hostedCustomerAgentSpawnTransform,
+  installHostedCustomerAgentIdentity,
+  type HostedCustomerAgentIdentityOptions,
+} from './hosted-agent-identity';
 import { HOSTED_WORKSPACE_ACCOUNT_HOME, hostedWorkspacePtySpawnSpec, hostedWorkspaceSshArgs } from './hosted-session-host';
 
 // D-421 (byoc plan) / WI-10003195: on a hosted host the chat brain's agent CLI must run as the
@@ -29,6 +37,11 @@ function codexRequest(extraEnv: NodeJS.ProcessEnv = {}): AgentSpawnRequest {
     env: { PATH: `${serviceHome}/.local/bin:/opt/papercusp/current/bin:/usr/bin:/bin`, CODEX_HOME: stagedCodexHome, ...extraEnv },
     stagedDirs: [{ path: stagedCodexHome, persistent: false }],
   };
+}
+
+/** Options for a host whose customer agent toolchain is fully installed. */
+function withToolchain(extra: HostedCustomerAgentIdentityOptions = {}): HostedCustomerAgentIdentityOptions {
+  return { localHome: serviceHome, baseEnv: {}, forbiddenSecrets: [], exists: () => true, ...extra };
 }
 
 function header(prelude: Buffer | undefined) {
@@ -55,7 +68,7 @@ afterEach(() => {
 
 describe('hosted customer agent identity (D-421)', () => {
   it('runs the agent over the pinned loopback SSH vector as the customer account, without a TTY', () => {
-    const plan = hostedCustomerAgentSpawnTransform({ localHome: serviceHome, baseEnv: {}, forbiddenSecrets: [] })(codexRequest());
+    const plan = hostedCustomerAgentSpawnTransform(withToolchain())(codexRequest());
     expect(plan.command).toBe('/usr/bin/ssh');
     const args = [...plan.args];
     expect(args).toContain('-T');
@@ -70,26 +83,63 @@ describe('hosted customer agent identity (D-421)', () => {
   });
 
   it('materializes CODEX_HOME under the customer home and links the customer credential, not the operator one', () => {
-    const plan = hostedCustomerAgentSpawnTransform({ localHome: serviceHome, baseEnv: {}, forbiddenSecrets: [] })(codexRequest());
+    const plan = hostedCustomerAgentSpawnTransform(withToolchain())(codexRequest());
     const h = header(plan.stdinPrelude);
     expect(h.env.HOME).toBe(HOSTED_WORKSPACE_ACCOUNT_HOME);
     expect(h.env.CODEX_HOME.startsWith(`${HOSTED_WORKSPACE_ACCOUNT_HOME}/.papercusp/agent-spawns/`)).toBe(true);
     expect(h.links).toEqual([{ path: `${h.env.CODEX_HOME}/auth.json`, target: `${HOSTED_WORKSPACE_ACCOUNT_HOME}/.codex/auth.json` }]);
     // The service account's own PATH entries never cross.
     expect(h.env.PATH.split(':')).not.toContain(`${serviceHome}/.local/bin`);
-    expect(h.env.PATH.split(':')[0]).toBe(`${HOSTED_WORKSPACE_ACCOUNT_HOME}/.local/bin`);
+  });
+
+  // D-423: the customer account cannot read the Papercusp runtime (D-043), so neither the
+  // release's Node nor its psu wrappers may appear anywhere in what crosses to that account.
+  it('runs the wrapper Node and the agent CLI from the customer toolchain, never the release tree', () => {
+    const plan = hostedCustomerAgentSpawnTransform(withToolchain())(codexRequest());
+    const remoteCommand = plan.args[plan.args.length - 1]!;
+    expect(remoteCommand.startsWith(`exec '${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}/node' -e `)).toBe(true);
+    const h = header(plan.stdinPrelude);
+    expect(h.argv[0]).toBe(`${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}/codex`);
+    expect(h.argv.slice(1)).toEqual(['exec', '--json', '-s', 'danger-full-access', '-']);
+    const path = h.env.PATH.split(':');
+    expect(path[0]).toBe(WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN);
+    expect(path).toContain(`${HOSTED_WORKSPACE_ACCOUNT_HOME}/.local/bin`);
+    // The operator PATH carried the release bin (the psu wrappers); it must not be forwarded.
+    expect(JSON.stringify({ argv: h.argv, path })).not.toContain('/opt/papercusp');
+    expect(remoteCommand).not.toContain('/opt/papercusp');
+  });
+
+  it('maps every chat backend onto its toolchain executable by backend, not by requested command', () => {
+    const bin = '/toolchain/bin';
+    expect(hostedCustomerAgentCommand('codex', bin)).toBe('/toolchain/bin/codex');
+    expect(hostedCustomerAgentCommand('claude-code', bin)).toBe('/toolchain/bin/claude');
+    expect(hostedCustomerAgentCommand('omp', bin)).toBe('/toolchain/bin/omp');
+  });
+
+  it('refuses by name when the host has no customer agent toolchain', () => {
+    const missing = `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}/codex`;
+    const transform = hostedCustomerAgentSpawnTransform(withToolchain({ exists: (p) => p !== missing }));
+    let caught: unknown;
+    try {
+      transform(codexRequest());
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AgentSpawnRefusedError);
+    expect((caught as AgentSpawnRefusedError).code).toBe('agent_toolchain_missing');
+    expect((caught as Error).message).toContain(missing);
   });
 
   it('refuses when the operator superuser token would reach the customer account', () => {
     writeFileSync(join(serviceHome, '.papercusp', 'superuser-token'), 'su-token-0123456789abcdef');
     writeFileSync(join(stagedCodexHome, 'config.toml'), 'headers = { Authorization = "Bearer su-token-0123456789abcdef" }\n');
-    const transform = hostedCustomerAgentSpawnTransform({ localHome: serviceHome, baseEnv: {} });
+    const transform = hostedCustomerAgentSpawnTransform({ localHome: serviceHome, baseEnv: {}, exists: () => true });
     expect(() => transform(codexRequest())).toThrow(AgentSpawnRefusedError);
   });
 
   it('once installed, every planned agent spawn is routed away from the service account', () => {
     expect(agentSpawnTransformConfigured()).toBe(false);
-    installHostedCustomerAgentIdentity({ localHome: serviceHome, baseEnv: {}, forbiddenSecrets: [] });
+    installHostedCustomerAgentIdentity(withToolchain());
     expect(agentSpawnTransformConfigured()).toBe(true);
     const plan = planAgentSpawn(codexRequest());
     expect(plan.command).toBe('/usr/bin/ssh');

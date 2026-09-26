@@ -9,28 +9,40 @@
  * uses (`hostedWorkspaceSshArgs`), without a TTY. The customer's own agent credential is
  * linked from that account's home into the per-spawn CODEX_HOME, and the operator's
  * superuser token is refused outright if it would cross to the customer account.
+ *
+ * D-423: the customer account cannot read the Papercusp runtime (D-043), so neither the
+ * release's Node nor its psu wrappers are usable there. The wrapper's Node and the agent CLI
+ * both come from the host's customer agent toolchain (`WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN`),
+ * the remote PATH is set explicitly rather than forwarded from the operator, and a host whose
+ * bootstrap predates the toolchain gets a NAMED refusal instead of a bare EACCES.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, posix } from 'node:path';
 import {
+  AgentSpawnRefusedError,
   buildLoopbackIdentitySpawn,
   configureAgentSpawnTransform,
   type AgentSpawnTransform,
 } from '@papercusp/papercusp-shared/agent';
-import { DEFAULT_WORKSPACE_HOST_WORKSPACE_USER } from '@papercusp/deployment-driver';
+import {
+  DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
+} from '@papercusp/deployment-driver';
 import { HOSTED_WORKSPACE_ACCOUNT_HOME, hostedWorkspaceSshArgs } from './hosted-session-host';
 
 export interface HostedCustomerAgentIdentityOptions {
-  /** Node binary the customer account runs the inline wrapper with. */
-  readonly nodePath?: string;
+  /** Customer agent toolchain bin dir (Node plus the vendor agent CLIs). */
+  readonly toolchainBin?: string;
   /** The operator service account's home (its PATH entries are not forwarded). */
   readonly localHome?: string;
   /** Operator environment to diff the spawn env against. */
   readonly baseEnv?: NodeJS.ProcessEnv;
   /** Operator secrets that must never reach the customer account. */
   readonly forbiddenSecrets?: readonly string[];
+  /** Existence probe for toolchain entries; injectable for tests. */
+  readonly exists?: (path: string) => boolean;
 }
 
 function readOperatorSuperuserToken(localHome: string): string[] {
@@ -42,28 +54,61 @@ function readOperatorSuperuserToken(localHome: string): string[] {
   }
 }
 
+/**
+ * The toolchain executable for a chat backend. Keyed by BACKEND, not by the requested command:
+ * the operator may resolve the command to a release wrapper path (`AGENT_CMD`), which the
+ * customer account can neither read nor execute.
+ */
+export function hostedCustomerAgentCommand(backend: string, toolchainBin: string): string {
+  const name = backend === 'omp' ? 'omp' : backend === 'codex' ? 'codex' : 'claude';
+  return posix.join(toolchainBin, name);
+}
+
 /** The transform that runs agent CLIs as the customer workspace account. */
 export function hostedCustomerAgentSpawnTransform(
   options: HostedCustomerAgentIdentityOptions = {},
 ): AgentSpawnTransform {
   const localHome = options.localHome ?? homedir();
+  const toolchainBin = options.toolchainBin ?? WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN;
+  const exists = options.exists ?? existsSync;
+  const nodePath = posix.join(toolchainBin, 'node');
   // Quiet ssh diagnostics so the agent's stderr stays the agent's own; the option goes before
   // `-l <user> <host>` so the destination stays last and the remote command follows it.
   const ssh = hostedWorkspaceSshArgs({ tty: false });
   const destination = ssh.indexOf('-l');
-  return buildLoopbackIdentitySpawn({
+  const inner = buildLoopbackIdentitySpawn({
     transportCommand: '/usr/bin/ssh',
     transportArgs: [...ssh.slice(0, destination), '-o', 'LogLevel=ERROR', ...ssh.slice(destination)],
     identity: `${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}@127.0.0.1`,
-    nodePath: options.nodePath ?? process.execPath,
+    nodePath,
     remoteHome: HOSTED_WORKSPACE_ACCOUNT_HOME,
     spawnRoot: posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.papercusp', 'agent-spawns'),
     localHome,
     baseEnv: options.baseEnv ?? process.env,
     passthroughEnv: ['LANG', 'LC_ALL', 'TZ'],
+    remotePath: [
+      toolchainBin,
+      posix.join(HOSTED_WORKSPACE_ACCOUNT_HOME, '.local', 'bin'),
+      '/usr/local/bin',
+      '/usr/bin',
+      '/bin',
+    ],
     homeLinks: [{ envVar: 'CODEX_HOME', name: 'auth.json', homeRelative: '.codex/auth.json' }],
     forbiddenSecrets: options.forbiddenSecrets ?? readOperatorSuperuserToken(localHome),
   });
+  return (request) => {
+    const command = hostedCustomerAgentCommand(request.backend, toolchainBin);
+    for (const required of [nodePath, command]) {
+      if (!exists(required)) {
+        throw new AgentSpawnRefusedError(
+          'agent_toolchain_missing',
+          `cannot run ${request.backend} as the customer workspace account: the customer agent toolchain has no ${required} ` +
+            '(this host was bootstrapped before D-423 or without that agent installed; upgrade the workspace host)',
+        );
+      }
+    }
+    return inner({ ...request, command });
+  };
 }
 
 /** Install the transform process-wide. Called once when the hosted runtime starts. */

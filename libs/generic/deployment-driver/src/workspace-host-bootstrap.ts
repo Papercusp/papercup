@@ -299,6 +299,20 @@ export const WORKSPACE_HOST_AGENT_NODE_SHA256: Readonly<Record<'x64' | 'arm64', 
 };
 
 /**
+ * Third-party agent toolchain the CUSTOMER workspace account runs its agents from (plan
+ * byoc-cloud-workspaces-gcp-aws-azure-2026-08-22 D-421/D-423, WI-10003195).
+ *
+ * Customer-driven agents (the portal chat brain, New Session) run as the workspace account, and
+ * D-043 makes the Papercusp runtime unreadable to that account — so neither the release's Node nor
+ * its psu wrappers are usable there. This directory holds root-owned, world-executable copies of
+ * the open-source Node and the vendor agent CLIs the agent identity installed (the same bytes a
+ * customer gets from npm / the vendor installer), and NOTHING else: no Papercusp code, and no
+ * credential. It sits outside `WORKSPACE_HOST_RUNTIME_ROOT` on purpose.
+ */
+export const WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT = '/usr/local/lib/papercusp-agent-toolchain';
+export const WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN = `${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT}/bin`;
+
+/**
  * The pinned local-inference runtime (D-266).
  *
  * OMP is credential-free BY CONTRACT — the agent-home bundle sets `files.omp: null` because
@@ -1739,6 +1753,82 @@ function workspaceOmpRuntimeInstallLines(
 }
 
 /**
+ * Publish the customer agent toolchain (D-423, WI-10003195) — see
+ * {@link WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT}.
+ *
+ * Runs after the agent-identity installs and resolves above, and copies FROM them: the pinned Node
+ * (a standalone binary), codex's npm `node_modules` tree (the `bin/codex.js` shim plus its
+ * per-platform binary), and claude's resolved native executable. OMP is already published at
+ * `/usr/local/bin/omp` and is linked in. The tree is staged at `.next`, owned by root, made
+ * world-readable-and-executable, and swapped in whole, so a replay or an upgrade never leaves a
+ * half-written toolchain behind.
+ *
+ * The verify half is the point: the customer account must be able to EXECUTE each published CLI,
+ * and must NOT be able to read the Papercusp release or the platform agent home (D-043). A copy
+ * that dragged a credential file along dies here instead of publishing it.
+ */
+function customerAgentToolchainInstallLines(
+  installs: readonly WorkspaceHostAgentRuntimeInstall[],
+): string[] {
+  if (installs.length === 0) return [];
+  const has = (agent: WorkspaceHostAgentRuntimeInstall['agent']) =>
+    installs.some((install) => install.agent === agent);
+  const customerRun = (command: string) =>
+    `runuser -u "$WORKSPACE_USER" -- env HOME="/home/$WORKSPACE_USER" PATH="$TOOLCHAIN_ROOT/bin:/usr/local/bin:/usr/bin:/bin" timeout 120 ${command}`;
+  const lines: string[] = [
+    '',
+    '# D-423: customer-driven agents run as the workspace account (D-421), which D-043 bars from the',
+    '# Papercusp runtime. Publish root-owned copies of the open-source Node and the vendor agent CLIs',
+    '# OUTSIDE the runtime root — never Papercusp code, never a credential.',
+    `TOOLCHAIN_ROOT=${shellQuote(WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT)}`,
+    'TOOLCHAIN_NEXT="$TOOLCHAIN_ROOT.next"',
+    'rm -rf --one-file-system -- "$TOOLCHAIN_NEXT"',
+    'install -d -m 0755 -o root -g root -- "$TOOLCHAIN_NEXT" "$TOOLCHAIN_NEXT/bin"',
+    '[[ -f "$AGENT_HOME/.local/bin/node" && ! -L "$AGENT_HOME/.local/bin/node" ]] || die "agent Node runtime is not the expected standalone executable"',
+    'install -m 0755 -o root -g root -- "$AGENT_HOME/.local/bin/node" "$TOOLCHAIN_NEXT/bin/node"',
+  ];
+  if (has('codex')) {
+    lines.push(
+      '[[ "$AGENT_RUNTIME_CODEX" == "$AGENT_HOME/.papercusp/runtime/node_modules/.bin/codex" ]] || die "vendor codex did not resolve inside the agent npm runtime prefix"',
+      'mkdir -p -- "$TOOLCHAIN_NEXT/codex"',
+      'cp -R -P -- "$AGENT_HOME/.papercusp/runtime/node_modules" "$TOOLCHAIN_NEXT/codex/node_modules"',
+      'ln -s ../codex/node_modules/.bin/codex "$TOOLCHAIN_NEXT/bin/codex"',
+    );
+  }
+  if (has('claude')) {
+    lines.push(
+      'CLAUDE_REAL="$(readlink -f -- "$AGENT_RUNTIME_CLAUDE")"',
+      '[[ "$CLAUDE_REAL" == "$AGENT_HOME/"* && -f "$CLAUDE_REAL" ]] || die "vendor claude did not resolve to a file inside the agent home"',
+      'install -m 0755 -o root -g root -- "$CLAUDE_REAL" "$TOOLCHAIN_NEXT/bin/claude"',
+    );
+  }
+  if (has('omp')) {
+    lines.push('ln -s /usr/local/bin/omp "$TOOLCHAIN_NEXT/bin/omp"');
+  }
+  lines.push(
+    'chown -R -h root:root -- "$TOOLCHAIN_NEXT"',
+    'chmod -R go-w,a+rX -- "$TOOLCHAIN_NEXT"',
+    'if find "$TOOLCHAIN_NEXT" \\( -name auth.json -o -name .credentials.json \\) -print -quit | grep -q .; then die "customer agent toolchain would publish an agent credential file"; fi',
+    'rm -rf --one-file-system -- "$TOOLCHAIN_ROOT.previous"',
+    'if [[ -e "$TOOLCHAIN_ROOT" ]]; then mv -T -- "$TOOLCHAIN_ROOT" "$TOOLCHAIN_ROOT.previous"; fi',
+    'mv -T -- "$TOOLCHAIN_NEXT" "$TOOLCHAIN_ROOT"',
+    'rm -rf --one-file-system -- "$TOOLCHAIN_ROOT.previous"',
+    `${customerRun('node --version')} >/dev/null || die "customer cannot execute the agent toolchain Node"`,
+  );
+  if (has('codex')) {
+    lines.push(`${customerRun('codex --version')} >/dev/null || die "customer cannot execute codex from the agent toolchain"`);
+  }
+  if (has('claude')) {
+    lines.push(`${customerRun('claude --version')} >/dev/null || die "customer cannot execute claude from the agent toolchain"`);
+  }
+  lines.push(
+    'runuser -u "$WORKSPACE_USER" -- test ! -r "$RELEASE_DIR" || die "customer account can read the Papercusp release (D-043)"',
+    'runuser -u "$WORKSPACE_USER" -- test ! -r "$AGENT_HOME" || die "customer agent toolchain path exposes the platform agent home"',
+  );
+  return lines;
+}
+
+/**
  * Install the local-inference runtime OMP proves its readiness against (D-266).
  *
  * Gated on OMP actually being installed: a host that runs no OMP has nothing to prove by local
@@ -2616,6 +2706,7 @@ export function buildWorkspaceHostBootstrap(
     ...agentRuntimeInstallLines(agentRuntimeInstalls),
     ...localInferenceRuntimeInstallLines(agentRuntimeInstalls),
     ...workspaceOmpRuntimeInstallLines(agentRuntimeInstalls),
+    ...customerAgentToolchainInstallLines(agentRuntimeInstalls),
     "",
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[4]}'`,
     '"$RELEASE_DIR/$MIGRATE_ENTRYPOINT" --database-root "$STATE_ROOT/embedded-pg" --migration-id "$MIGRATION_ID"',

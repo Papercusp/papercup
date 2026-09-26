@@ -26,6 +26,8 @@ import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_PHASES,
   WORKSPACE_HOST_AGENT_NODE_SHA256,
+  WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN,
+  WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT,
   WORKSPACE_HOST_AGENT_NODE_VERSION,
   WORKSPACE_HOST_OLLAMA_SHA256,
   WORKSPACE_HOST_DATA_ROOT,
@@ -253,6 +255,68 @@ describe('buildWorkspaceHostBootstrap agent runtime installs (D-259)', () => {
     expect(script).toContain('runuser -u "$WORKSPACE_USER" -- env HOME="/home/$WORKSPACE_USER"');
     expect(script).toContain('runuser -u "$WORKSPACE_USER" -- test ! -r "$AGENT_HOME"');
     expect(buildWorkspaceHostBootstrap(input())).not.toContain('customer OMP model registry install failed');
+  });
+
+  /**
+   * D-423 (WI-10003195). Customer-driven agents run as the workspace account, which D-043 bars from
+   * the Papercusp runtime, so their Node and agent CLIs come from a root-owned toolchain OUTSIDE the
+   * runtime root. What must hold: it is published only after the vendor runtimes resolved, it copies
+   * from the agent identity's installs (never the release tree), it refuses to publish a credential,
+   * and the verify half proves the customer can execute it while still unable to read the release.
+   */
+  it('publishes a customer agent toolchain outside the runtime root and verifies it as the customer (D-423)', () => {
+    const script = buildWorkspaceHostBootstrap(input({ agentRuntimeInstalls: [...AGENT_RUNTIME_INSTALLS] }));
+    expect(WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT.startsWith('/opt/papercusp')).toBe(false);
+    expect(WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN).toBe(`${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT}/bin`);
+    expect(script).toContain(`TOOLCHAIN_ROOT='${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_ROOT}'`);
+
+    // Ordered after every resolve AND after the OMP publish it links to.
+    const lastResolve = script.lastIndexOf('agent runtime did not resolve after install');
+    const ompPublish = script.indexOf('/usr/local/bin/omp', script.indexOf('AGENT_RUNTIME_OMP="$(runuser'));
+    const toolchainAt = script.indexOf('TOOLCHAIN_ROOT=');
+    expect(lastResolve).toBeGreaterThan(-1);
+    expect(toolchainAt).toBeGreaterThan(lastResolve);
+    expect(toolchainAt).toBeGreaterThan(ompPublish);
+
+    // Copies FROM the agent identity's own installs, root-owned; never from the release tree.
+    expect(script).toContain('install -m 0755 -o root -g root -- "$AGENT_HOME/.local/bin/node" "$TOOLCHAIN_NEXT/bin/node"');
+    expect(script).toContain('cp -R -P -- "$AGENT_HOME/.papercusp/runtime/node_modules" "$TOOLCHAIN_NEXT/codex/node_modules"');
+    expect(script).toContain('install -m 0755 -o root -g root -- "$CLAUDE_REAL" "$TOOLCHAIN_NEXT/bin/claude"');
+    expect(script).toContain('ln -s /usr/local/bin/omp "$TOOLCHAIN_NEXT/bin/omp"');
+    const section = script.slice(toolchainAt, script.indexOf('customer agent toolchain path exposes the platform agent home'));
+    expect(section).not.toContain('RELEASE_DIR/');
+    expect(section).toContain('chown -R -h root:root -- "$TOOLCHAIN_NEXT"');
+    expect(section).toContain('die "customer agent toolchain would publish an agent credential file"');
+    // Swapped in whole, never edited in place.
+    expect(section).toContain('mv -T -- "$TOOLCHAIN_NEXT" "$TOOLCHAIN_ROOT"');
+
+    // Verify half: the customer executes each CLI, and still cannot read the release or agent home.
+    for (const cli of ['node', 'codex', 'claude']) {
+      expect(script).toContain(
+        `runuser -u "$WORKSPACE_USER" -- env HOME="/home/$WORKSPACE_USER" PATH="$TOOLCHAIN_ROOT/bin:/usr/local/bin:/usr/bin:/bin" timeout 120 ${cli} --version >/dev/null`,
+      );
+    }
+    expect(script).toContain('runuser -u "$WORKSPACE_USER" -- test ! -r "$RELEASE_DIR" || die "customer account can read the Papercusp release (D-043)"');
+
+    const syntax = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });
+    expect(syntax.status, syntax.stderr).toBe(0);
+  });
+
+  it('publishes no customer agent toolchain on a host that installs no vendor runtime', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+    expect(script).not.toContain('TOOLCHAIN_ROOT=');
+    expect(script).not.toContain('customer cannot execute codex from the agent toolchain');
+  });
+
+  it('publishes only the toolchain entries for the agents actually installed', () => {
+    const script = buildWorkspaceHostBootstrap(
+      input({ agentRuntimeInstalls: AGENT_RUNTIME_INSTALLS.filter((install) => install.agent === 'codex') }),
+    );
+    expect(script).toContain('ln -s ../codex/node_modules/.bin/codex "$TOOLCHAIN_NEXT/bin/codex"');
+    expect(script).not.toContain('CLAUDE_REAL=');
+    expect(script).not.toContain('"$TOOLCHAIN_NEXT/bin/omp"');
+    const syntax = spawnSync('bash', ['-n'], { input: script, encoding: 'utf8' });
+    expect(syntax.status, syntax.stderr).toBe(0);
   });
 
   /**
