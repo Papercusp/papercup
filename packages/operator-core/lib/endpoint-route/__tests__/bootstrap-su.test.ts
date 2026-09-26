@@ -242,6 +242,7 @@ vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('.
 }));
 vi.mock('../../agent-tools/coordination/control-anchor', () => ({
   requestSessionIdentityActivation: vi.fn(async () => ({ generation: 1 })),
+  refreshControlAnchorAfterMutation: vi.fn(async () => ({ generation: 2 })),
 }));
 vi.mock('../../session-port/store', () => ({
   assertSessionPortStorageReady: vi.fn(async () => undefined),
@@ -276,9 +277,11 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({
 // replacing the PG-backed reconciler with a deterministic no-op.
 const reconcileImpliedModesMock = vi.fn(async () => [] as Array<{ status: string }>);
 const getModesMock = vi.fn(async () => [] as Array<{ mode: string; subject: string | null; impliedBy: { mode: string; subject: string | null } | null }>);
+const setModeMock = vi.fn(async (_opts: unknown) => ({ ok: true, noop: false }));
 vi.mock('../../modes/store', () => ({
   reconcileImpliedModes: (...a: unknown[]) => reconcileImpliedModesMock(...(a as [])),
   getModes: (...a: unknown[]) => getModesMock(...(a as [])),
+  setMode: (...a: unknown[]) => setModeMock(...(a as [unknown])),
 }));
 vi.mock('../../role-launch-spec', () => ({
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
@@ -575,6 +578,7 @@ beforeEach(() => {
   recordAgentLaunchResultMock.mockReset().mockResolvedValue(undefined);
   releaseAgentLaunchClaimMock.mockReset().mockResolvedValue(true);
   recordAdvSessionMock.mockResolvedValue(42);
+  setModeMock.mockReset().mockResolvedValue({ ok: true, noop: false });
   getSessionPortMock.mockResolvedValue(null);
   reserveSessionPortTargetMock.mockClear();
   readSessionPortBootstrapDispositionMock.mockClear();
@@ -586,6 +590,20 @@ beforeEach(() => {
 });
 
 describe('bootstrap-su', () => {
+  it.each(['grade', 'test'])('binds %s and AUTO into the first render and registry before returning a session', async (mode) => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', mode });
+    expect(res.status).toBe(200);
+    expect(buildLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ modes: ['auto', mode] }));
+    expect(setModeMock.mock.calls.map((call) => (call[0] as { modeId: string }).modeId)).toEqual(['auto', mode]);
+  });
+
+  it('refuses a verifier launch when its durable mode cannot be activated', async () => {
+    setModeMock.mockRejectedValueOnce(new Error('mode store unavailable'));
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', mode: 'test' });
+    expect(res.status).toBe(503);
+    expect((await res.json()).error).toContain('verifier_mode_activation_failed');
+  });
+
   it('waits for the attached GOAL cascade and refuses wrong provenance before returning a runnable session', async () => {
     const goal = { mode: 'goal', subject: 'goal-1', impliedBy: null };
     const auto = { mode: 'auto', subject: null, impliedBy: { mode: 'goal', subject: 'goal-1' } };
