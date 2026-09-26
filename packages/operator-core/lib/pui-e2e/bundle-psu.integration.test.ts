@@ -80,7 +80,9 @@ afterAll(() => {
 describe.sequential('bundle-psu.mjs builds psu from the committed generation', () => {
   test('AUTO-BAR-R-11-P-018: committed bytes reach psu.mjs; the working tree does not', { timeout: 240_000 }, () => {
     const marker = `P018-COMMITTED-ONLY-${randomBytes(8).toString('hex')}`;
-    const committedEntry = `${git('show', `${HEAD}:${ENTRY}`)}\nglobalThis.__p018CommittedMarker = ${JSON.stringify(marker)};\n`;
+    // Commit the launcher under test into the fixture store so local launcher
+    // fixes are exercised before git-sync; the marker still exists only there.
+    const committedEntry = `${readFileSync(path.join(REPO_ROOT, ENTRY), 'utf8')}\nglobalThis.__p018CommittedMarker = ${JSON.stringify(marker)};\n`;
     // Positive control: the marker exists only in the commit, never on disk.
     expect(readFileSync(path.join(REPO_ROOT, ENTRY), 'utf8')).not.toContain(marker);
     const sha = variant({ [ENTRY]: committedEntry });
@@ -97,6 +99,15 @@ describe.sequential('bundle-psu.mjs builds psu from the committed generation', (
     }
     expect(existsSync(path.join(out, 'lib', 'psu', 'node_modules', '@lydell', 'node-pty', 'package.json'))).toBe(true);
     expect(existsSync(path.join(out, 'lib', 'psu', 'node_modules', '@lydell', 'node-pty-linux-x64', 'package.json'))).toBe(true);
+
+    // A downloaded bundle has neither the source package.json nor a build-id
+    // environment. Its version must still come from this committed generation.
+    const expectedVersion = JSON.parse(git('show', `${HEAD}:apps/operator/package.json`)).version;
+    const version = spawnSync(process.execPath, [path.join(out, 'lib', 'psu', 'psu.mjs'), '--version'], {
+      cwd: WORK, env: { HOME: WORK, PATH: '/usr/bin:/bin' }, encoding: 'utf8', timeout: 5_000,
+    });
+    expect(version.status, output(version)).toBe(0);
+    expect(version.stdout).toBe(`psu ${expectedVersion}\n`);
 
     const summary = JSON.parse(readFileSync(path.join(out, 'summary.json'), 'utf8')) as {
       sourcePins: Record<string, string>;
