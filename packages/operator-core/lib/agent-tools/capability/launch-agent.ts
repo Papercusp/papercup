@@ -1383,7 +1383,10 @@ export default defineTool({
       // caller just made for one member.
       agent: isSuccessor && resumeAgent ? resumeAgent : (goalLaunch.effective.agent ?? args.agent ?? 'claude'),
       account: goalLaunch.effective.account ?? args.account ?? undefined,
-      model: goalLaunch.effective.model ?? args.model ?? undefined,
+      model: goalLaunch.effective.model ?? args.model ?? (isSuccessor && resumeAgent === 'codex' ? resumeModel ?? undefined : undefined),
+      modelSource: isSuccessor && resumeAgent === 'codex'
+        ? (goalLaunch.effective.model || args.model ? 'explicit' : resumeModelSource ?? undefined)
+        : undefined,
       effort: goalLaunch.effective.effort ?? undefined,
       contextSize: goalLaunch.effective.contextSize ?? persistedHeadcountProfile?.config.contextSize ?? undefined,
       compactionLimit: persistedHeadcountProfile?.config.compactionLimit,
@@ -1409,7 +1412,10 @@ export default defineTool({
       extraArgs: args.extraArgs ?? undefined,
     };
     const foldedConfigs: FleetMemberDefaults[] = Array.from({ length: count }, (_v, i) => {
-      if (sourceAction) return flatBase;
+      // A successor is a fresh process even though it has a source identity.
+      // Apply the same Codex model policy as an ordinary fresh launch; otherwise
+      // a model-less predecessor reaches the command builder and cannot wake.
+      if (sourceAction && !isSuccessor) return flatBase;
       // D-016 (WI-38048): this used to fold `settings.roles[memberSpecs[i].role]`
       // — i.e. it looked the goal's launch profiles up by psu `--role`. That is
       // the defect, not a feature that was lost here: a launch SLOT is a function
@@ -1632,6 +1638,33 @@ export default defineTool({
       if (failure) {
         await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey });
         return err(failure);
+      }
+    }
+
+    if (isSuccessor && resumeOwnerId) {
+      // A fresh successor keeps the coord owner but replaces its native context.
+      // Clear the predecessor's scheduler reading before opening the child: its
+      // first turn can pull work before this launch call returns. The ordinary
+      // session-respawned report does this for carry-respawns, but capability
+      // successors do not pass through that report.
+      try {
+        const { clearContextEstimate } = await import('../coordination/presence');
+        await clearContextEstimate(resumeOwnerId);
+      } catch (error) {
+        await releaseAgentLaunchClaim({ workspaceId, idempotencyKey: args.idempotencyKey });
+        return err(`Cannot start successor: failed to invalidate predecessor context pressure (${String(error)}). No process was opened.`);
+      }
+      try {
+        const { clearContextUsage } = await import('../../system-health/context-usage-cache');
+        clearContextUsage(resumeOwnerId);
+      } catch {
+        /* the persisted scheduler reading above is authoritative */
+      }
+      try {
+        const { clearContextAnchor } = await import('../../compaction-usage');
+        clearContextAnchor(resumeOwnerId);
+      } catch {
+        /* the successor's native transcript will reseed the render cache */
       }
     }
 

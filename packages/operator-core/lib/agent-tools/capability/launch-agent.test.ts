@@ -217,6 +217,12 @@ vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: (ids: string[]) => fetchContextPressureMock(ids),
 }));
 
+const clearContextEstimateMock = vi.hoisted(() => vi.fn(async (_ownerId: string) => {}));
+vi.mock('../coordination/presence', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  clearContextEstimate: (ownerId: string) => clearContextEstimateMock(ownerId),
+}));
+
 const buildCarryBriefMock = vi.hoisted(() => vi.fn());
 const renderCarryBriefTextMock = vi.hoisted(() => vi.fn());
 vi.mock('../../carry-brief', async (orig) => ({
@@ -325,6 +331,7 @@ beforeEach(() => {
   fetchPresenceFleetMock.mockResolvedValue(new Map());
   latestFleetMembershipMock.mockResolvedValue(null);
   fetchContextPressureMock.mockResolvedValue(new Map());
+  clearContextEstimateMock.mockReset().mockResolvedValue(undefined);
   buildCarryBriefMock.mockResolvedValue({ ownerId: 'su-a1a71' });
   renderCarryBriefTextMock.mockReturnValue('');
   verifyFreshLaunchStartedMock.mockResolvedValue({
@@ -1398,6 +1405,68 @@ describe('resume + fork (D-004/D-007)', () => {
       },
     });
     expect(textOf(res)).toContain("agent's first turn");
+  });
+
+  it('starts an ended Codex cold-loop successor without resuming its critical transcript', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex' });
+    const pressure = new Map<string, 'critical'>([['su-a1a71', 'critical']]);
+    fetchContextPressureMock.mockImplementation(async () => pressure);
+    clearContextEstimateMock.mockImplementation(async (ownerId) => { pressure.delete(ownerId); });
+    renderCarryBriefTextMock.mockReturnValue('checkpoint: continue the held claim');
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-cold-successor', successfulCalls: 1 }],
+      note: 'cold successor verified',
+    });
+
+    const res = await launchAgent.handler(
+      {
+        successor: { agentId: 'su-a1a71' },
+        brief: 'continue the cold loop wake',
+        headless: true,
+        carry: 'cold',
+        idempotencyKey: 'cold-wake:123',
+      },
+      ctx,
+    );
+
+    expect(isError(res), textOf(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    const command = spawnedCommand(spawnHeadlessMock);
+    expect(command).toContain('--agent=codex');
+    expect(command).toContain('--owner-id=su-a1a71');
+    expect(command).toContain('--carry=cold');
+    expect(command).not.toContain('--resume=');
+    expect(spawnedEnv(spawnHeadlessMock).PAPERCUSP_KICKOFF_PROMPT).toContain('checkpoint: continue the held claim');
+    expect(clearContextEstimateMock).toHaveBeenCalledWith('su-a1a71');
+    expect(clearContextEstimateMock.mock.invocationCallOrder[0]).toBeLessThan(spawnHeadlessMock.mock.invocationCallOrder[0]);
+    expect((await fetchContextPressureMock(['su-a1a71'])).get('su-a1a71')).toBeUndefined();
+    expect(dataOf(res)?.launch).toMatchObject({
+      mode: 'successor',
+      resumedOwnerId: 'su-a1a71',
+      agentStarted: true,
+      tasks: [{ ownerId: 'su-a1a71', headless: true }],
+    });
+  });
+
+  it('does not open a successor when predecessor context pressure cannot be invalidated', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex' });
+    clearContextEstimateMock.mockRejectedValueOnce(new Error('presence unavailable'));
+
+    const res = await launchAgent.handler(
+      { successor: { agentId: 'su-a1a71' }, headless: true, idempotencyKey: 'cold-wake:failed-clear' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('failed to invalidate predecessor context pressure');
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-test', idempotencyKey: 'cold-wake:failed-clear',
+    });
   });
 
   it('inherits the recorded Codex model and provenance on an exact resume', async () => {
