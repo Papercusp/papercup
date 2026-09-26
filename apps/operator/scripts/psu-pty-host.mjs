@@ -631,7 +631,7 @@ function nativeTranscriptRoot(agent, env, home) {
 // Match the canonical turn-provenance envelope grammar's origin and nonce
 // alphabet. `coord-inject:owner` is valid; a narrower host-only parser falsely
 // reports its native carry as missing provenance.
-const LEADING_TURN_ORIGIN_RE = /^⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧$/i;
+const LEADING_TURN_ORIGIN_RE = /^⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧$/;
 export function leadingTurnOriginMarker(text) {
   const firstLine = String(text ?? '').replace(/\r\n?/g, '\n').split('\n', 1)[0].trim();
   return LEADING_TURN_ORIGIN_RE.test(firstLine)

@@ -354,9 +354,13 @@ describe('apiPortForTarget (EI-190 mapping, mirrors env_switch.rs)', () => {
 
 describe('resolveDesktopIpcDiscovery (EI-7760: don\'t trust the racy last-writer-wins singleton)', () => {
   const savedPort = process.env.PAPERCUSP_HONO_PORT;
+  const savedPapercuspHome = process.env.PAPERCUSP_HOME;
 
   beforeEach(async () => {
     h.home = await mkdtemp(join(tmpdir(), 'desktop-health-'));
+    // Discovery now honors PAPERCUSP_HOME. Keep its files in this test's temp
+    // home even when the test runner itself has a scoped Papercusp home.
+    process.env.PAPERCUSP_HOME = join(h.home, '.papercusp');
   });
 
   afterEach(async () => {
@@ -365,6 +369,8 @@ describe('resolveDesktopIpcDiscovery (EI-7760: don\'t trust the racy last-writer
     await rm(home, { recursive: true, force: true });
     if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
     else process.env.PAPERCUSP_HONO_PORT = savedPort;
+    if (savedPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+    else process.env.PAPERCUSP_HOME = savedPapercuspHome;
   });
 
   async function writeBuildTarget(port: number, name = 'dev') {
@@ -441,10 +447,12 @@ describe('resolveDesktopIpcDiscovery (EI-7760: don\'t trust the racy last-writer
 // desktop DOWN — realIpcConnectable retries once after a short delay before giving up.
 describe('realIpcConnectable (EI-18131725582506957: restart-window false-DOWN)', () => {
   const savedPort = process.env.PAPERCUSP_HONO_PORT;
+  const savedPapercuspHome = process.env.PAPERCUSP_HOME;
   let servers: net.Server[] = [];
 
   beforeEach(async () => {
     h.home = await mkdtemp(join(tmpdir(), 'desktop-health-ipc-'));
+    process.env.PAPERCUSP_HOME = join(h.home, '.papercusp');
   });
 
   afterEach(async () => {
@@ -453,6 +461,8 @@ describe('realIpcConnectable (EI-18131725582506957: restart-window false-DOWN)',
     await rm(home, { recursive: true, force: true });
     if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
     else process.env.PAPERCUSP_HONO_PORT = savedPort;
+    if (savedPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+    else process.env.PAPERCUSP_HOME = savedPapercuspHome;
     await Promise.all(servers.map((s) => new Promise((r) => s.close(() => r(undefined)))));
     servers = [];
   });

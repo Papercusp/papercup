@@ -41,8 +41,8 @@ describe('capability:fetch superuser-gate doc-claim', () => {
     const tool = lookupByMcpName('capability:fetch');
     const prose = `${tool!.description ?? ''}\n${tool!.guidance?.when ?? ''}`;
     // Expressed independently of the judge, so a bug in the judge cannot hide drift.
-    expect(prose).toContain('~/.papercusp/superuser-token');
-    expect(SUPERUSER_TOKEN_PATH.endsWith('/.papercusp/superuser-token')).toBe(true);
+    expect(prose).toContain('$PAPERCUSP_HOME/superuser-token');
+    expect(SUPERUSER_TOKEN_PATH.endsWith('/superuser-token')).toBe(true);
   });
 
   // ---- CONTROLS: each must be CAUGHT, or the claim above is vacuous ----
@@ -116,5 +116,23 @@ describe('capability:fetch superuser-gate doc-claim', () => {
       { tokenPath: GOOD_PATH, homeDir: HOME },
     );
     expect(verdict.ok).toBe(true);
+  });
+
+  it('resolves $PAPERCUSP_HOME against the scoped token home', () => {
+    const verdict = judgeFetchSuperuserGateClaim(
+      { description: 'Bearer from $PAPERCUSP_HOME/superuser-token for ?superuser=1.' },
+      { tokenPath: `${HOME}/scoped/superuser-token`, homeDir: HOME, papercuspHome: `${HOME}/scoped` },
+    );
+    expect(verdict.violations).toEqual([]);
+    expect(verdict.tokenPathsNamed).toEqual(['$PAPERCUSP_HOME/superuser-token']);
+  });
+
+  it('catches a scoped-home path whose expansion does not match the token reader', () => {
+    const verdict = judgeFetchSuperuserGateClaim(
+      { description: 'Bearer from $PAPERCUSP_HOME/superuser-token for ?superuser=1.' },
+      { tokenPath: GOOD_PATH, homeDir: HOME, papercuspHome: `${HOME}/other` },
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.violations.join(' ')).toContain('SUPERUSER_TOKEN_PATH');
   });
 });

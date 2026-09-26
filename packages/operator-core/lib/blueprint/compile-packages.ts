@@ -166,6 +166,13 @@ export async function compileBlueprintWithPackages(
   if (knowledge && !requests.some((request) => request.kind === 'knowledge-pack' && request.ref === knowledge)) {
     requests.push({ kind: 'knowledge-pack', ref: knowledge });
   }
+  for (const operation of blueprint.operations ?? []) {
+    const ref = operation.acceptance.rubric;
+    if (!ref || requests.some((request) => request.kind === 'rubric' && request.ref === ref.ref) ||
+        options.input?.inputClosure?.some((entry) =>
+          entry.kind === 'package' && entry.packageKind === 'rubric' && entry.ref === ref.ref)) continue;
+    requests.push({ kind: 'rubric', ref: ref.ref, version: ref.revision });
+  }
   const packages = await resolveBlueprintPackageInputs(requests, options.resolvePackage);
   const externalProgramPins: ResolvedPackageInput[] = [];
   const selectedProgramRefs = new Map<string, { revision: string; contentHash: string }>();

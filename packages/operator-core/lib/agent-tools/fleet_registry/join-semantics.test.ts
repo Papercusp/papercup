@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   setPresenceFleet: vi.fn(),
   recolorCallerTerminal: vi.fn(),
   takeFleetLeadership: vi.fn(),
+  getModeSubject: vi.fn(),
 }));
 
 vi.mock('../../agent-fleets-store', () => ({
@@ -48,6 +49,9 @@ vi.mock('./_shared', () => ({
 vi.mock('./take-leadership-core', () => ({
   takeFleetLeadership: (...args: unknown[]) => h.takeFleetLeadership(...args),
 }));
+vi.mock('../../modes/store', () => ({
+  getModeSubject: (...args: unknown[]) => h.getModeSubject(...args),
+}));
 
 import tool from './join';
 
@@ -64,6 +68,7 @@ beforeEach(() => {
   h.setPresenceFleet.mockResolvedValue(undefined);
   h.recolorCallerTerminal.mockResolvedValue(undefined);
   h.takeFleetLeadership.mockResolvedValue({ leader: 'su-me', previousLeader: 'su-leader', notified: true });
+  h.getModeSubject.mockResolvedValue(null);
 });
 
 describe('fleet:join — member branch (the default path)', () => {
@@ -159,5 +164,21 @@ describe('fleet:join — unknown fleet', () => {
     expect(h.setPresenceFleet).not.toHaveBeenCalled();
     expect(h.heartbeatPresence).not.toHaveBeenCalled();
     expect(h.recolorCallerTerminal).not.toHaveBeenCalled();
+  });
+});
+
+describe('fleet:join — GOAL holder boundary', () => {
+  it.each(['member', 'leader'])('refuses a GOAL holder joining as %s before touching the execution fleet', async (as) => {
+    h.getModeSubject.mockResolvedValue('goal-1');
+
+    const res = await invoke({ fleet: 'alpha', as });
+
+    expect(res.isError).toBe(true);
+    expect(parse(res)).toMatchObject({ ok: false, error: as === 'leader'
+      ? 'goal_plan_fleet_self_leadership'
+      : 'goal_execution_fleet_membership_forbidden' });
+    expect(h.getFleet).not.toHaveBeenCalled();
+    expect(h.heartbeatPresence).not.toHaveBeenCalled();
+    expect(h.takeFleetLeadership).not.toHaveBeenCalled();
   });
 });

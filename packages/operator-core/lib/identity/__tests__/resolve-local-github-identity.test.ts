@@ -15,7 +15,7 @@ describe('resolveLocalGithubIdentity', () => {
       getToken: async () => ({ kind: 'missing' }),
       getUser: async () => { throw new Error('should not be called'); },
     });
-    expect(r).toEqual({ kind: 'gh_auth_required' });
+    expect(r).toEqual({ kind: 'gh_auth_required', reason: 'no gh token' });
   });
 
   it('returns gh_auth_required when GET /user yields no user', async () => {
@@ -23,7 +23,7 @@ describe('resolveLocalGithubIdentity', () => {
       getToken: async () => ({ kind: 'ok', token: 'tok' }),
       getUser: async () => null,
     });
-    expect(r).toEqual({ kind: 'gh_auth_required' });
+    expect(r).toEqual({ kind: 'gh_auth_required', reason: 'GET /user returned no user' });
   });
 
   it('returns gh_auth_required when GET /user throws', async () => {
@@ -33,7 +33,7 @@ describe('resolveLocalGithubIdentity', () => {
         throw new Error('Connect Timeout Error');
       },
     });
-    expect(r).toEqual({ kind: 'gh_auth_required' });
+    expect(r).toEqual({ kind: 'gh_auth_required', transient: true, reason: 'GET /user failed: Connect Timeout Error' });
   });
 });
 

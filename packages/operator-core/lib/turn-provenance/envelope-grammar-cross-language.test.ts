@@ -198,6 +198,23 @@ describe('turn-origin envelope grammar — one definition across four languages'
     expect(vectorFor((s) => re.test(s))).toEqual(CANONICAL_VECTOR);
   });
 
+  it('3b. psu-pty-host.mjs accepts exactly a canonical marker as its first line', () => {
+    const literal = extractJsLiteral(read(PTY_HOST), 'LEADING_TURN_ORIGIN_RE', 'psu-pty-host.mjs');
+    const host = new RegExp(literal);
+    const canonicalLine = new RegExp(ENVELOPE_PATTERN_SOURCE + '$');
+    const lines = [
+      formatEnvelope('wake-pump', 'acc293aaced4a1d8'),
+      formatEnvelope('coord-inject:owner', 'abcdef01'),
+      formatEnvelope('a.b_c@d-e', 'a'.repeat(64)),
+      '⟦turn-origin:x nonce:ABCDEF01⟧',
+      '⟦turn-origin:x nonce:abcdef0⟧',
+      `⟦turn-origin:x nonce:${'a'.repeat(65)}⟧`,
+      'x⟦turn-origin:wake-pump nonce:acc293aaced4a1d8⟧',
+      '⟦turn-origin:wake-pump nonce:acc293aaced4a1d8⟧ trailing body',
+    ];
+    expect(lines.map((line) => host.test(line))).toEqual(lines.map((line) => canonicalLine.test(line)));
+  });
+
   it('4. the python-in-shell hook agrees — run through REAL python3, not re-simulated in JS', () => {
     const src = read(HOOK);
     const literal = extractPythonLiteral(src, 'userpromptsubmit-provenance.sh');
@@ -414,6 +431,7 @@ describe('turn-origin envelope grammar — one definition across four languages'
     const allowed = new Set([
       'packages/operator-core/lib/turn-provenance/envelope-grammar.ts', // canonical
       'apps/operator/scripts/psu-launcher.mjs', // → test 3
+      'apps/operator/scripts/psu-pty-host.mjs', // → test 3b
       'apps/operator/scripts/hooks/cc/userpromptsubmit-provenance.sh', // → test 4
       'packages/operator-core/lib/adv-agent-detail.ts', // → test 5a (POSIX/SQL literals)
       'packages/operator-core/lib/turn-provenance/envelope-grammar-cross-language.test.ts',

@@ -34,8 +34,8 @@ function testSourcesBelow(dir: string): string[] {
  * A full vi.mock replaces every runtime export. goal-launch-settings builds its
  * fleetType schema from FLEET_TYPES at module scope, so omitting the value makes
  * any newly-connected import path fail during collection before a test can run.
- * Partial importOriginal/actual mocks keep the real export and are intentionally
- * exempt. This is the central recurrence guard for the strand that red-pinned
+ * Partial importOriginal/actual/load mocks keep the real export and are
+ * intentionally exempt. This is the central recurrence guard for the strand that red-pinned
  * unrelated fleet, capability, bootstrap and coordination test files.
  */
 function fullStoreMocksWithoutFleetTypes(): string[] {
@@ -52,7 +52,7 @@ function fullStoreMocksWithoutFleetTypes(): string[] {
       continue;
     }
     for (const call of calls) {
-      if (/importOriginal|\.\.\.actual/.test(call)) continue;
+      if (/importOriginal|\.\.\.actual|\.\.\.\s*\(\s*await\s+load\b/.test(call)) continue;
       if (!call.includes('FLEET_TYPES')) offenders.push(file);
     }
   }

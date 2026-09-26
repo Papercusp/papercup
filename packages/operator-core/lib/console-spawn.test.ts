@@ -683,6 +683,74 @@ describe('spawnHeadless — no-window managed-pty launch (headless-fleet-launch 
     const [bin] = spawnMock.mock.calls[0];
     expect(bin).toBe('bash');
   }, 10_000);
+
+  // WI-10003189: on a hosted workspace host `systemd-run` is installed but there is no
+  // user manager, so the task manager's live scope probe fails and enrolment reports
+  // `no-scope-support`. Wrapping the member in `systemd-run --user --scope` anyway made
+  // every New Session die at boot with "Failed to connect to bus: No medium found".
+  it('WI-10003189: launches plain bash when the live scope probe has already failed (no-scope-support), even with systemd-run on PATH', async () => {
+    taskEnrolment.begin.mockReturnValueOnce({
+      taskId: 'task1234',
+      confined: false,
+      scopeUnit: null,
+      unconfinedReason: 'no-scope-support',
+    } as ReturnType<typeof taskEnrolment.begin>);
+    spawnMock.mockImplementation(() => fakeChild(7781));
+    const r = await spawnHeadless({
+      envelope,
+      label: 'hl',
+      logDir: null,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => true },
+    });
+    expect(r.status).toBe('ok');
+    const [bin, args] = spawnMock.mock.calls[0];
+    expect(bin).toBe('bash');
+    expect(args[0]).toBe('-lc');
+    expect(args).not.toContain('--user');
+  }, 10_000);
+
+  it('WI-10003189 control: a PENDING probe keeps the EI-9748 cgroup escape — only a failed probe drops it', async () => {
+    taskEnrolment.begin.mockReturnValueOnce({
+      taskId: 'task1234',
+      confined: false,
+      scopeUnit: null,
+      unconfinedReason: 'probe-pending',
+    } as ReturnType<typeof taskEnrolment.begin>);
+    spawnMock.mockImplementation(() => fakeChild(7782));
+    const r = await spawnHeadless({
+      envelope,
+      label: 'hl',
+      logDir: null,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => true },
+    });
+    expect(r.status).toBe('ok');
+    const [bin] = spawnMock.mock.calls[0];
+    expect(bin).toBe('systemd-run');
+  }, 10_000);
+});
+
+describe('buildHeadlessSpawnCommand — default probe requires a reachable USER manager, not just systemd-run on PATH (WI-10003189)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('does not wrap in systemd-run --user when neither XDG_RUNTIME_DIR nor DBUS_SESSION_BUS_ADDRESS is set (a system-service operator)', () => {
+    // The exact environment of the hosted operator on avi-test r50. No hasSystemdRun
+    // injected: this exercises the DEFAULT probe, which is what production uses.
+    vi.stubEnv('XDG_RUNTIME_DIR', undefined);
+    vi.stubEnv('DBUS_SESSION_BUS_ADDRESS', undefined);
+    const { bin, args, scopeUnit } = buildHeadlessSpawnCommand('exec psu --headless', 'hl', { platform: 'linux' });
+    expect(bin).toBe('bash');
+    expect(args).toEqual(['-lc', 'exec psu --headless']);
+    expect(scopeUnit).toBeNull();
+  });
+
+  it('the visible-console builder shares the same default probe', () => {
+    vi.stubEnv('XDG_RUNTIME_DIR', undefined);
+    vi.stubEnv('DBUS_SESSION_BUS_ADDRESS', undefined);
+    const { bin } = buildConsoleScopedSpawnCommand('xterm', ['-e', 'bash'], 'hl', { platform: 'linux' });
+    expect(bin).toBe('xterm');
+  });
 });
 
 describe('normalizeHeadlessAgentEnv — interactive CLI TERM contract', () => {

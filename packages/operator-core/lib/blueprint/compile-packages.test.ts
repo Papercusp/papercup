@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   compileAgentSpecification, loadBlueprintFromFile, pinPackageInput,
-  pinnedOperationProgramBlueprint, replayAgentSpecification, resolveBlueprint,
+  pinnedOperationProgramBlueprint, pinnedOperationRubricPackage,
+  replayAgentSpecification, resolveBlueprint,
   type ResolvedPackageInput,
 } from '@papercusp/orchestrator/blueprint';
 import {
@@ -74,6 +75,39 @@ describe('P-006 operator package adapter', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('resolves an operation acceptance rubric into the same immutable closure', async () => {
+    const rubric = pinPackageInput({
+      packageKind: 'rubric', ref: 'judge', revision: '1.0.0', files: [], dependencies: [],
+      value: { rubricId: 'judge', characteristic: 'quality', description: 'review',
+        methodRef: null, ratingScale: ['pass', 'fail'], criteria: [{ key: 'complete',
+          title: 'Complete', model: 'All required work is present', method: 'Review output', driftMarkers: 'Missing work' }] },
+    });
+    const source = resolveBlueprint({
+      id: 'rubric-owner', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } },
+      roles: [{ id: 'worker' }],
+      operations: [{
+        id: 'review', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'agent', role: 'worker' },
+        inputSchema: { type: 'object' }, acceptance: { resultSchema: { type: 'object' }, rubric: {
+          kind: 'rubric', ref: 'judge', revision: rubric.revision, contentHash: rubric.contentHash,
+        } },
+      }],
+    });
+    const resolvePackage = vi.fn(async ({ ref }: { ref: string }) => ref === 'judge' ? rubric : null);
+    const specification = await compileBlueprintWithPackages(source, {
+      workspaceId: 'workspace-a', harnessSlug: 'harness-a', resolvePackage,
+    });
+    expect(resolvePackage).toHaveBeenCalledTimes(1);
+    expect(pinnedOperationRubricPackage(specification.configuration.operations![0], specification.inputs))
+      .toMatchObject({ ref: 'judge', contentHash: rubric.contentHash });
+    expect(replayAgentSpecification(specification).specificationRevision).toBe(specification.specificationRevision);
+    await expect(compileBlueprintWithPackages(source, {
+      workspaceId: 'workspace-a', harnessSlug: 'harness-a', resolvePackage: async () =>
+        pinPackageInput({ packageKind: 'rubric', ref: 'judge', revision: '1.0.0', files: [], dependencies: [],
+          value: { ...rubric.value as Record<string, unknown>, description: 'changed' } }),
+    })).rejects.toThrow('rubric differs from its declared version or content hash');
   });
 
   it('resolves a transitive diamond once and retains every exact content pin', async () => {

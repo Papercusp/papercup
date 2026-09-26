@@ -33,9 +33,10 @@
  * this forbids is prose that is CONFIDENTLY WRONG about a fact the code owns.
  */
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 
-/** A superuser-token path as written in prose (`~/…`, `$HOME/…`, or absolute). */
-const TOKEN_PATH_IN_PROSE = /(?:~|\$HOME|\/[\w.-]+)(?:\/[\w.-]+)*\/superuser-token\b/g;
+/** A superuser-token path as written in prose, including the scoped home. */
+const TOKEN_PATH_IN_PROSE = /(?:~|\$HOME|\$PAPERCUSP_HOME|\/[\w.-]+)(?:\/[\w.-]+)*\/superuser-token\b/g;
 
 /** The clause vocabulary for the credential gate, so unrelated prose is not judged. */
 const CREDENTIAL_CLAUSE = /superuser_invalid_bearer|superuser-token|\?superuser=1/i;
@@ -55,9 +56,10 @@ function clauses(text: string): string[] {
     .filter(Boolean);
 }
 
-function expandHome(prosePath: string, homeDir: string): string {
+function expandHome(prosePath: string, homeDir: string, papercuspHome: string): string {
   if (prosePath.startsWith('~')) return homeDir + prosePath.slice(1);
   if (prosePath.startsWith('$HOME')) return homeDir + prosePath.slice('$HOME'.length);
+  if (prosePath.startsWith('$PAPERCUSP_HOME')) return papercuspHome + prosePath.slice('$PAPERCUSP_HOME'.length);
   return prosePath;
 }
 
@@ -84,9 +86,10 @@ export interface FetchProseSurfaces {
  */
 export function judgeFetchSuperuserGateClaim(
   surfaces: FetchProseSurfaces,
-  opts: { readonly tokenPath: string; readonly homeDir?: string },
+  opts: { readonly tokenPath: string; readonly homeDir?: string; readonly papercuspHome?: string },
 ): FetchGateClaimVerdict {
   const homeDir = opts.homeDir ?? homedir();
+  const papercuspHome = opts.papercuspHome ?? process.env.PAPERCUSP_HOME ?? join(homeDir, '.papercusp');
   const texts = [surfaces.description, ...(surfaces.when === undefined ? [] : [surfaces.when])];
   const allProse = texts.join('\n');
 
@@ -99,7 +102,7 @@ export function judgeFetchSuperuserGateClaim(
   const violations: string[] = [];
 
   for (const named of tokenPathsNamed) {
-    const expanded = expandHome(named, homeDir);
+    const expanded = expandHome(named, homeDir, papercuspHome);
     if (expanded !== opts.tokenPath) {
       violations.push(
         `capability:fetch's prose names the superuser token at ${JSON.stringify(named)} ` +

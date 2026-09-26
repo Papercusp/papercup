@@ -75,6 +75,7 @@ import {
   type ConverseSessionUser,
   type OperatorConverseInput,
 } from './converse-prompt';
+import { brainNoOutputMessage } from './converse-failure';
 
 const MessageSchema = z.object({
   role: z.union([z.literal('user'), z.literal('assistant'), z.literal('system')]),
@@ -516,11 +517,15 @@ export default defineTool({
     // Announce what will ACTUALLY run before the first model event — the same
     // chat-protocol `provenance` frame the agent-chats route emits, so the
     // shared PapercupChat shows one provenance line on both hosts (D-008).
+    const brainEngine = resolveBackend({ promptText: '', backend: operatorBackend });
     emitChatEvent(ctx, {
       type: 'provenance',
-      engine: resolveBackend({ promptText: '', backend: operatorBackend }),
+      engine: brainEngine,
       model: operatorModel,
     });
+    // WI-10003188: the backend's own reason for a failed attempt, so a turn that ends
+    // with no output can say WHY instead of a fixed "agent backend failure".
+    let lastBackendError: string | null = null;
 
     // The agent backend (omp → codex/anthropic) intermittently produces
     // an empty turn: a transient upstream model error, or omp exiting 0
@@ -618,6 +623,7 @@ export default defineTool({
             // included) for host-log visibility; fall through to the
             // empty-output retry check below rather than throwing, so a
             // transient backend error still gets a second attempt.
+            lastBackendError = ev.message;
             const detail = ev.stderr
               ? `${ev.message}\n--- stderr ---\n${ev.stderr}`
               : ev.message;
@@ -649,7 +655,7 @@ export default defineTool({
       console.error(
         `[operator:converse] agent backend produced no output after ${MAX_BRAIN_ATTEMPTS} attempts.`,
       );
-      throw new Error('operator brain produced no output (agent backend failure)');
+      throw new Error(brainNoOutputMessage({ engine: brainEngine, model: operatorModel, lastBackendError }));
     }
 
     // WI-5071: output committed on a session-backed turn — bump the marker so

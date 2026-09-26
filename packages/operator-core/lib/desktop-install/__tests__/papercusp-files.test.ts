@@ -195,10 +195,13 @@ describe('installPapercuspFiles', () => {
     delete process.env.PAPERCUSP_INTEGRATION_ROOT;
     try {
       const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
-      const baseEnv = { ...process.env, PAPERCUSP_RELEASE_ROOT: releaseRoot };
+      // The test runner may itself be a psu session with an explicit launcher.
+      // That override outranks both roots and would execute the real agent CLI.
+      const baseEnv = { ...process.env, PAPERCUSP_PSU_LAUNCHER: '', PAPERCUSP_RELEASE_ROOT: releaseRoot };
 
       const integration = await execFileAsync(result.psuPath, [], {
         env: { ...baseEnv, PAPERCUSP_INTEGRATION_ROOT: integrationRoot },
+        timeout: 5_000,
       });
       expect(integration.stdout.trim()).toBe('integration');
       expect(integration.stderr).toContain(integrationLauncher);
@@ -209,6 +212,7 @@ describe('installPapercuspFiles', () => {
           PAPERCUSP_INTEGRATION_ROOT: '',
           PAPERCUSP_RELEASE_ROOT: '',
         },
+        timeout: 5_000,
       });
       expect(releaseFallback.stdout.trim()).toBe('release');
       expect(releaseFallback.stderr).toContain(releaseLauncher);

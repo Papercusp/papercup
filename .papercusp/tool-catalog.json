@@ -2860,7 +2860,7 @@
           "POST"
         ]
       },
-      "description": "Make an outbound HTTP(S) request and return status, headers, and a bounded body. The server-resolved boundary profile validates every destination, DNS answer, and redirect; confined callers cannot target private addresses, mutate, or forward credentials. Bodies spill only within a hard streamed-download ceiling. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406. A local ?superuser=1 MCP endpoint also needs Authorization: Bearer <contents of ~/.papercusp/superuser-token>: without it initialize STILL SUCCEEDS, while tools/list and tools/call are refused as HTTP 200 carrying superuser_invalid_bearer in the body — so ok:true is not proof the call was accepted.",
+      "description": "Make an outbound HTTP(S) request and return status, headers, and a bounded body. The server-resolved boundary profile validates every destination, DNS answer, and redirect; confined callers cannot target private addresses, mutate, or forward credentials. Bodies spill only within a hard streamed-download ceiling. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406. A local ?superuser=1 MCP endpoint also needs Authorization: Bearer <contents of $PAPERCUSP_HOME/superuser-token>, with PAPERCUSP_HOME defaulting to ~/.papercusp: without it initialize STILL SUCCEEDS, while tools/list and tools/call are refused as HTTP 200 carrying superuser_invalid_bearer in the body — so ok:true is not proof the call was accepted.",
       "capabilities": [
         "capability:net"
       ],
