@@ -678,6 +678,8 @@ export async function markAdvSessionLaunched(id: number): Promise<boolean> {
 export async function adoptStartingTerminalLaunch(opts: {
   id: number;
   sessionId: string | null;
+  role?: string | null;
+  feature?: string | null;
   planSlug?: string | null;
   label?: string | null;
   cwd?: string | null;
@@ -689,6 +691,8 @@ export async function adoptStartingTerminalLaunch(opts: {
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
          SET session_id = ${opts.sessionId},
+             role       = COALESCE(${opts.role ?? null}, role),
+             feature    = COALESCE(${opts.feature ?? null}, feature),
              plan_slug  = COALESCE(${opts.planSlug ?? null}, plan_slug),
              label      = COALESCE(${opts.label ?? null}, label),
              cwd        = COALESCE(${opts.cwd ?? null}, cwd),
