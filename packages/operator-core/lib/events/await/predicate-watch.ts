@@ -583,6 +583,9 @@ export interface ReadOnlyDispatchEnv {
   spawnId: string;
   /** Optional caller-owned cancellation. The dispatch remains unbounded when omitted. */
   signal?: AbortSignal;
+  /** An interactive wearer supplies their real authority. Unlike internal watches,
+   * this path keeps capability, quota and kernel gates enabled. */
+  callerContext?: UnifiedToolContext;
 }
 
 /**
@@ -624,7 +627,29 @@ export async function dispatchReadOnlyTool(
       `tool "${tool}" is not read-only (effect=${projected.effect ?? 'unset'})`,
     );
   }
+  const caller = env.callerContext;
+  if (caller && (!caller.principal || caller.workspaceId !== env.workspaceId ||
+      caller.principal.workspaceId !== env.workspaceId || caller.role !== env.role ||
+      (caller.harnessSlug ?? null) !== env.harnessSlug)) {
+    throw new ReadOnlyDispatchError('capability_denied', 'cell reader authority does not match its dispatch scope');
+  }
+  if (env.signal?.aborted || caller?.signal.aborted) {
+    throw new ReadOnlyDispatchError('dispatch_failed', 'cell read was cancelled before dispatch');
+  }
   const result = await withWorkspace(env.workspaceId, async (tx) => {
+    if (caller) {
+      // Never inherit an internal caller's bypass flags, nor replace the wearer
+      // with a system principal. The normal dispatcher rechecks live authority.
+      const ctx: UnifiedToolContext = {
+        ...caller,
+        ...INTERNAL_MACHINE_DISPATCH_PAYLOAD_CONTEXT,
+        gateBypass: undefined,
+        isSuperuser: false,
+        signal: env.signal ?? caller.signal,
+        tx,
+      };
+      return dispatchProjectedTool(projected, tool, args, ctx, PROJECTED_DEPS);
+    }
     const ctx: UnifiedToolContext = {
       workspaceId: env.workspaceId,
       harnessSlug: env.harnessSlug ?? '*',

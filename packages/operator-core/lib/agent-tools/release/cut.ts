@@ -750,8 +750,31 @@ export default defineTool({
 
       const channel = args.channel as Channel;
       const selected = await resolveCutRoot(args.root);
-      if (!selected.ok) return json({ ok: false, op: 'prepare-tag', refused: true, reason: selected.reason });
       const tag = desktopReleaseTag(args.version, channel);
+      if (!selected.ok) {
+        // An implicit auto-managed checkout is unsafe for the write, but a
+        // dry-run can still show the exact ref and command shape needed to
+        // prepare an isolated root. Explicit invalid roots remain refusals.
+        if (!args.confirm && args.root === undefined && selected.reason.startsWith('root_not_isolated')) {
+          return json({
+            ok: true,
+            op: 'prepare-tag',
+            dry_run: true,
+            ready: false,
+            version: args.version,
+            channel,
+            sourceSha: args.sourceSha,
+            tag,
+            remoteRefWrite: true,
+            githubRelease: false,
+            artifactUpload: false,
+            wouldRun: prepareTagPreview('<registered-isolated-worktree>/papercusp-desktop', args.version, channel, args.sourceSha),
+            blocker: selected.reason,
+            note: 'Prepare and register a dedicated exact-SHA worktree, then pass its root to preview or confirm the tag write.',
+          });
+        }
+        return json({ ok: false, op: 'prepare-tag', refused: true, reason: selected.reason });
+      }
       const wouldRun = prepareTagPreview(selected.desktopRoot, args.version, channel, args.sourceSha);
       if (!args.confirm) {
         return json({

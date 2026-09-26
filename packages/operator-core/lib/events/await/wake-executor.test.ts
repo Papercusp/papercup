@@ -321,7 +321,7 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // Hermetic by default: the P-013 cold-park inbox-wake fallback's real binding fires
     // a live wake key. queued:0 = "nobody watches the key", so the cold no-host branch
     // parks exactly as before the fallback existed.
-    fireColdParkInboxWake: vi.fn(async () => ({ queued: 0 })),
+    launchColdFreshSuccessor: vi.fn(async () => false),
     // Hermetic by default: the P-013 wake re-home decision's real binding reads the
     // account-pool projection from PG. `keep` = resume exactly as before re-homing existed.
     resolveWakeRehome: vi.fn(async () => ({ action: 'keep' as const, reason: 'test default' })),
@@ -3642,12 +3642,9 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     });
   });
 
-  // P-013 / RSR-P-013-B (review-system-rework-reduction-2026-09-23), EI-24023838400909760:
-  // a parked cold fire used to leave the session with no pending wake until a peer's
-  // coord:send wake:required revived it. It now takes that same inbox-wake path itself.
-  describe('P-013: a cold no-host fire falls back to the inbox-wake path', () => {
-    it('fires the subscriber inbox-wake and settles the loop row on the non-turn inbox channel', async () => {
-      const fireColdParkInboxWake = vi.fn(async () => ({ queued: 1 }));
+  describe('cold no-host fresh successor', () => {
+    it('replaces an exited cold owner with a fresh same-owner context and burns one turn', async () => {
+      const launchColdFreshSuccessor = vi.fn(async () => true);
       const recordColdNoHostPark = vi.fn(async () => ({ action: 'tracked' as const, streak: 1 }));
       const spawnDetached = vi.fn(() => 4321);
       const out = await executeWake(
@@ -3655,64 +3652,52 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
         coldDeps({
           findPsuHost: vi.fn(() => null) as never,
           alive: vi.fn(() => false),
-          fireColdParkInboxWake,
+          launchColdFreshSuccessor,
           recordColdNoHostPark,
           spawnDetached,
         }),
       );
 
-      expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
-      expect(fireColdParkInboxWake).toHaveBeenCalledTimes(1);
-      const [input] = fireColdParkInboxWake.mock.calls[0] as unknown as [
-        { subscriberId: string; workspaceId: string; summary: string; source: string; payload: unknown },
-      ];
-      expect(input.subscriberId).toBe('su-abc');
-      // A loop: source bypasses the manual wake-mode gate, as the loop self-wake does.
-      expect(input.source).toBe('loop:loop-su-abc');
-      expect(input.summary).toMatch(/re-routed via inbox-wake/);
-      // The fallback payload must NOT itself be a cold loop marker, or it would park too.
-      expect(input.payload).toEqual({
-        coldParkFallback: { fromDeliveryId: expect.any(Number), routineId: 'loop-su-abc', wakeCount: 7 },
-      });
-      expect(input.payload).not.toHaveProperty('carry');
-      expect(input.payload).not.toHaveProperty('wakeCount');
-      expect(input.payload).not.toHaveProperty('routineId');
-      // A fire that was carried is not a limbo streak, and the executor itself never
-      // resumes the cold transcript — the inbox-wake delivery owns that turn.
+      expect(out).toEqual({ kind: 'delivered', channel: 'cold-fresh-successor' });
+      expect(launchColdFreshSuccessor).toHaveBeenCalledWith(expect.objectContaining({
+        subscriberId: 'su-abc', workspaceId: 'ws', harness: 'papercusp', deliveryId: expect.any(Number),
+      }));
       expect(recordColdNoHostPark).not.toHaveBeenCalled();
       expect(spawnDetached).not.toHaveBeenCalled();
     });
 
-    it('with no inbox-wake watcher (queued 0) parks and streaks exactly as before', async () => {
+    it('failed successor parks and streaks without falling through to transcript resume', async () => {
       const recordColdNoHostPark = vi.fn(async () => ({ action: 'tracked' as const, streak: 1 }));
+      const spawnDetached = vi.fn(() => 4321);
       const out = await executeWake(
         work({ wakeHandle: advHandle(), payload: coldPayload({ routineId: 'loop-su-abc', wakeCount: 8 }) }),
         coldDeps({
           findPsuHost: vi.fn(() => null) as never,
           alive: vi.fn(() => false),
-          fireColdParkInboxWake: vi.fn(async () => ({ queued: 0 })),
+          launchColdFreshSuccessor: vi.fn(async () => false),
           recordColdNoHostPark,
+          spawnDetached,
         }),
       );
       expect(out).toMatchObject({ kind: 'park' });
       expect(recordColdNoHostPark).toHaveBeenCalledTimes(1);
+      expect(spawnDetached).not.toHaveBeenCalled();
     });
 
-    it('a throwing fallback never changes the park behavior (fail-soft)', async () => {
-      // The bounded-timeout wrapper reports the failure loudly; assert it, don't hide it.
+    it('a throwing successor never resumes the old transcript', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const out = await executeWake(
         work({ wakeHandle: advHandle(), payload: coldPayload({ routineId: 'loop-su-abc', wakeCount: 9 }) }),
         coldDeps({
           findPsuHost: vi.fn(() => null) as never,
           alive: vi.fn(() => false),
-          fireColdParkInboxWake: vi.fn(async () => {
-            throw new Error('pump unavailable');
+          launchColdFreshSuccessor: vi.fn(async () => {
+            throw new Error('launch unavailable');
           }),
         }),
       );
       expect(out).toMatchObject({ kind: 'park' });
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('cold-park inbox-wake fallback/su-abc'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('cold fresh successor failed for su-abc'));
       warn.mockRestore();
     });
   });

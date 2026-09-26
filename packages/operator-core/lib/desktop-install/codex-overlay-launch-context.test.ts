@@ -47,6 +47,9 @@ const CODEX_GUIDANCE = [
   'preserve the **whole returned envelope**',
   'every returned `session_id`',
   'Never map a nested response to `output` alone',
+  // MCP server verbs have qualified method names inside functions.exec.
+  'tools.mcp__papercusp_su__tools_find({ query:',
+  '`tools.find` and',
 ] as const;
 
 describe('codex overlay reaches live launch context (P-010)', () => {

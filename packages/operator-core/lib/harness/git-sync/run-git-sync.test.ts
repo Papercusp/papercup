@@ -791,6 +791,40 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
   });
 
+  it('EI-24356165312897992: commits released locks while retaining current locks and explicit exclusions', async () => {
+    writeFileSync(join(repo, 'file.txt'), 'completed edit\n');
+    writeFileSync(join(repo, 'explicit.txt'), 'explicitly excluded\n');
+    writeFileSync(join(repo, 'new-lock.txt'), 'still being edited\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const currentLock = { path: 'new-lock.txt', owner: 'su-current', intent: 'editing now' };
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      excludePaths: ['explicit.txt'],
+      liveLockHoldings: ['file.txt', 'explicit.txt'].map((path) => ({
+        path, owner: 'su-finished', intent: 'released during the preflight',
+      })),
+      refreshLiveLockHoldings: async () => {
+        // This path became dirty after the initial census. It still needs a
+        // staging exclusion even though it cannot appear in skippedPaths yet.
+        writeFileSync(join(repo, 'late-lock.txt'), 'new edit during preflight\n');
+        return [currentLock, { path: 'late-lock.txt', owner: 'su-late', intent: 'editing now' }];
+      },
+    });
+
+    expect(out.status).toBe('synced');
+    expect(out.skippedPaths).toEqual([{ scope: 'superproject', ...currentLock }]);
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('completed edit');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    const committedPaths = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(committedPaths).not.toContain('explicit.txt');
+    expect(committedPaths).not.toContain('new-lock.txt');
+    expect(committedPaths).not.toContain('late-lock.txt');
+    expect(readFileSync(join(repo, 'explicit.txt'), 'utf8')).toBe('explicitly excluded\n');
+    expect(readFileSync(join(repo, 'new-lock.txt'), 'utf8')).toBe('still being edited\n');
+  });
+
   it('EI-22435583452728403: fails closed when the commit-time live-lock refresh rejects', async () => {
     writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
     const refreshLiveLockHoldings = vi.fn(async () => {

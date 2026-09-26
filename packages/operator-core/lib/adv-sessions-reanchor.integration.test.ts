@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import {
+  adoptStartingTerminalLaunch,
   markAdvSessionEnded,
   readSuLaunchSpecByOwner,
   reanchorAdvSessionNativeId,
@@ -78,6 +79,25 @@ beforeEach(async () => {
 });
 
 describe('grant-bearing role receipt and activation (canonical PostgreSQL client)', () => {
+  it('adopts the launch row with its reserved owner and role metadata, without a duplicate', async () => {
+    const id = await seedAdv({ coordOwnerId: OWNER });
+    await admin`UPDATE harness_shared.adv_sessions SET display = 'terminal' WHERE id = ${id}`;
+    expect(await adoptStartingTerminalLaunch({
+      id, sessionId: FRESH_ID, role: 'worker', feature: 'WI-1', mode: 'console',
+    })).toBe(true);
+    const rows = await admin<{ id: number; coord_owner_id: string; session_id: string; role: string; feature: string }[]>`
+      SELECT id, coord_owner_id, session_id, role, feature
+        FROM harness_shared.adv_sessions WHERE coord_owner_id = ${OWNER}
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id, coord_owner_id: OWNER, session_id: FRESH_ID, role: 'worker', feature: 'WI-1' });
+    expect(await adoptStartingTerminalLaunch({ id, sessionId: DEAD_ID, role: 'reviewer' })).toBe(false);
+    const [unchanged] = await admin<{ session_id: string; role: string }[]>`
+      SELECT session_id, role FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    expect(unchanged).toEqual({ session_id: FRESH_ID, role: 'worker' });
+  });
+
   it('persists a readable artifact before recording the launch activation', async () => {
     const id = await seedAdv({ coordOwnerId: OWNER });
     const revision = { specificationRevision: 'a'.repeat(64), stateRevision: 'b'.repeat(64) };
@@ -364,7 +384,13 @@ describe('setAdvSessionPid workspace override (WI-10002854, real PG)', () => {
 
 describe('bootstrap-role receipt through the route and real PostgreSQL', () => {
   it('records the accepted operation and activates its grant-bearing identity before returning', async () => {
-    const sid = 'role-receipt-route-integration';
+    const sid = 'su-receipt-route-integration';
+    const nativeSessionId = 'f7e30bb4-772b-4994-a10b-e257afbb12ce';
+    const startingId = await seedAdv({ coordOwnerId: sid });
+    await admin`
+      UPDATE harness_shared.adv_sessions SET display = 'terminal', workspace_id = ${activeWorkspaceId()}
+       WHERE id = ${startingId}
+    `;
     const cwd = mkdtempSync(join(tmpdir(), 'bootstrap-role-receipt-'));
     const priorLaunchContextDir = process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR;
     process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = cwd;
@@ -394,20 +420,22 @@ describe('bootstrap-role receipt through the route and real PostgreSQL', () => {
     }));
     vi.doMock('./role-launch-spec', async (orig) => ({
       ...(await orig<typeof import('./role-launch-spec')>()),
+      mintRoleLaunchIdentity: () => ({ sid: 'role-new-unpinned', nativeSessionId }),
       buildRoleLaunchSpec: async (input: { acceptedOperation?: unknown }) => ({
         role: 'worker', runId: 'worker-F-route-receipt-1', spawnId: 'sp-route-receipt',
         harnessSlug: 'papercusp', featureId: acceptedOperation.workItemId, cwd,
         promptText: 'RESTRICTED WORKER', promptFile: join(cwd, 'role.md'),
         mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=test',
         mcpJsonContents: JSON.stringify({ mcpServers: { papercusp: { url: 'http://localhost:3070/api/mcp?role=worker&sig=test' } } }),
-        sid, nativeSessionId: 'f7e30bb4-772b-4994-a10b-e257afbb12ce',
+        sid, nativeSessionId,
         claudeConfigDir: join(cwd, 'claude'), sessionMcpDir: join(cwd, 'mcp'),
         contextSize: 'trimmed', stack: acceptedOperation.stack,
         acceptedOperation: input.acceptedOperation,
         specificationArtifact: artifact, ...revision, compositionSource: 'blueprint',
       }),
     }));
-    vi.doMock('./blueprint/operation-worker-binding', () => ({
+    vi.doMock('./blueprint/operation-worker-binding', async (orig) => ({
+      ...(await orig<typeof import('./blueprint/operation-worker-binding')>()),
       resolveAcceptedOperationWorkerBinding: vi.fn(async () => acceptedOperation),
     }));
     vi.doMock('./spawn-config', async (orig) => ({
@@ -440,11 +468,16 @@ describe('bootstrap-role receipt through the route and real PostgreSQL', () => {
       const post = routes.find((route) => route.method === 'POST')!;
       const response = await post.handler(new Request('http://localhost:3070/api/agent-mcp/console/bootstrap-role', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ role: 'worker', agent: 'claude', harness_slug: 'papercusp', feature: acceptedOperation.workItemId }),
+        body: JSON.stringify({ role: 'worker', agent: 'claude', harness_slug: 'papercusp', feature: acceptedOperation.workItemId, owner_id: sid }),
       }), { principal: null, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal });
-      expect(response.status).toBe(200);
       const launch = await response.json();
+      expect(response.status, JSON.stringify(launch)).toBe(200);
       expect(launch.envelopeEnv.PAPERCUSP_SID).toBe(sid);
+      expect(launch.sessionId).toBe(Number(startingId));
+      const ownerRows = await admin<{ role: string; feature: string }[]>`
+        SELECT role, feature FROM harness_shared.adv_sessions WHERE coord_owner_id = ${sid}
+      `;
+      expect(ownerRows).toEqual([{ role: 'worker', feature: acceptedOperation.workItemId }]);
       const [stored] = await admin<{ value_kind: string; launch_spec: unknown }[]>`
         SELECT jsonb_typeof(launch_spec) AS value_kind, launch_spec
           FROM harness_shared.adv_sessions WHERE id = ${launch.sessionId}

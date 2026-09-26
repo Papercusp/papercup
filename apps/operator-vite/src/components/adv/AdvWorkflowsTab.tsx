@@ -441,9 +441,19 @@ export default function AdvWorkflowsTab() {
   const inspected = selectedRow ? items.find((item) => item.id === selectedRow.id) ?? null : null;
 
   const inspectedBinding = useMemo(() => {
-    if (!inspected?.planSlug || !external) return null;
-    return external.bindings.find((binding) => binding.planSlug === inspected.planSlug) ?? null;
-  }, [external, inspected?.planSlug]);
+    if (!inspected || !external) return null;
+    return (
+      external.bindings.find((binding) =>
+        inspected.operation
+          ? binding.action?.type === "blueprint-operation" &&
+            binding.action.operationHarnessSlug ===
+              inspected.operation.harnessSlug &&
+            binding.action.operationId === inspected.operation.operationId
+          : inspected.planSlug != null &&
+            binding.planSlug === inspected.planSlug,
+      ) ?? null
+    );
+  }, [external, inspected]);
 
   const [inputs, setInputs] = useState<PlanInputSchemaInfo | null>(null);
   useEffect(() => {
@@ -590,7 +600,6 @@ export default function AdvWorkflowsTab() {
   }, [confirm, refreshAll]);
 
   const pauseAutomaticTriggers = useCallback(async (item: AutomationItem) => {
-    if (!item.planSlug) return;
     const automatic = item.triggers.filter((trigger) => trigger.armed === true);
     if (automatic.length === 0) return;
     if (!(await confirm({
@@ -603,6 +612,8 @@ export default function AdvWorkflowsTab() {
     try {
       for (const trigger of automatic) {
         if (trigger.kind === 'schedule') {
+          if (!item.planSlug)
+            throw new Error("Scheduled workflow has no plan target");
           const result = await runScheduleTool('plans:disarm-schedule', {
             slug: item.planSlug,
             ...(item.harness ? { harness: item.harness } : {}),
@@ -700,9 +711,19 @@ export default function AdvWorkflowsTab() {
   // The expansion (D-002). A `wfId` that resolves to nothing (a stale URL) falls through to
   // the frame rather than rendering an empty shell.
   const expandedWorkflow = wfId ? items.find((item) => item.id === wfId) ?? null : null;
-  const expandedBinding = expandedWorkflow?.planSlug && external
-    ? external.bindings.find((binding) => binding.planSlug === expandedWorkflow.planSlug) ?? null
-    : null;
+  const expandedBinding =
+    expandedWorkflow && external
+      ? (external.bindings.find((binding) =>
+          expandedWorkflow.operation
+            ? binding.action?.type === "blueprint-operation" &&
+              binding.action.operationHarnessSlug ===
+                expandedWorkflow.operation.harnessSlug &&
+              binding.action.operationId ===
+                expandedWorkflow.operation.operationId
+            : expandedWorkflow.planSlug != null &&
+              binding.planSlug === expandedWorkflow.planSlug,
+        ) ?? null)
+      : null;
 
   if (expandedWorkflow) {
     const armBusyKey = expandedBinding ? `binding:${expandedBinding.id}` : null;
@@ -715,18 +736,37 @@ export default function AdvWorkflowsTab() {
           harnessSlug={expandedWorkflow.harness ?? null}
           binding={expandedBinding}
           bindingLoaded={external !== null}
-          lastFiredLabel={expandedWorkflow.lastAt == null ? null : `last fired ${relativeTime(expandedWorkflow.lastAt)}`}
-          lastTestRunId={lastTestRun?.workflowId === expandedWorkflow.id ? lastTestRun.runId : null}
-          busy={armBusyKey !== null && busy === armBusyKey
-            ? 'arm'
-            : busy === `run:${expandedWorkflow.id}` ? 'test' : null}
+          operationTarget={expandedWorkflow.operation?.target ?? null}
+          lastFiredLabel={
+            expandedWorkflow.lastAt == null
+              ? null
+              : `last fired ${relativeTime(expandedWorkflow.lastAt)}`
+          }
+          lastTestRunId={
+            lastTestRun?.workflowId === expandedWorkflow.id
+              ? lastTestRun.runId
+              : null
+          }
+          busy={
+            armBusyKey !== null && busy === armBusyKey
+              ? "arm"
+              : busy === `run:${expandedWorkflow.id}`
+                ? "test"
+                : null
+          }
           onBack={() => void setWfId(null)}
-          onToggleArm={() => expandedBinding && void setBindingArmed(expandedBinding.id, !expandedBinding.armed)}
-          onTest={() => expandedBinding && void runWithLastEvent(
-            expandedWorkflow.id,
-            expandedWorkflow.label,
-            expandedBinding.id,
-          )}
+          onToggleArm={() =>
+            expandedBinding &&
+            void setBindingArmed(expandedBinding.id, !expandedBinding.armed)
+          }
+          onTest={() =>
+            expandedBinding &&
+            void runWithLastEvent(
+              expandedWorkflow.id,
+              expandedWorkflow.label,
+              expandedBinding.id,
+            )
+          }
         />
       </section>
     );

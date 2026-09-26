@@ -878,6 +878,8 @@ export interface TransactionalAcceptanceBarSeedSuccess {
   barSetHash: string;
   bars: number;
   projectionEdges: number;
+  /** Canonical clause identities for test/evidence binding; BAR keys alone are not spec IDs. */
+  projections: Array<{ barKey: string; planItemId: string; specId: string }>;
   rubricChanged: boolean;
   preview?: { priorRubricRevision: number; nextRubricRevision: number; priorBarSetHash: string | null;
     nextBarSetHash: string; mappings: ParsedBarMapping[]; changes: import('./acceptance-bar-contract-snapshot').AcceptanceBarContractDiff['changes'];
@@ -1178,7 +1180,10 @@ export async function seedAcceptanceBarsInTransaction(
       })),
     });
     return { ok: true, rubricSlug, rubricRevision, barSetHash: built.barSetHash,
-      bars: built.criteria.length, projectionEdges: built.projections.length, rubricChanged,
+      bars: built.criteria.length, projectionEdges: built.projections.length,
+      projections: built.projections.map(({ specId, planItemId, sourceBar }) => ({
+        barKey: sourceBar!.barKey, planItemId, specId,
+      })), rubricChanged,
       preview: { priorRubricRevision: existingRevision, nextRubricRevision: rubricRevision,
         priorBarSetHash: existingTemplate?.success ? existingTemplate.data.barSetHash ?? null : null,
         nextBarSetHash: built.barSetHash, mappings: built.mappings,
@@ -1260,6 +1265,9 @@ export async function seedAcceptanceBarsInTransaction(
     barSetHash: built.barSetHash,
     bars: built.criteria.length,
     projectionEdges: built.projections.length,
+    projections: built.projections.map(({ specId, planItemId, sourceBar }) => ({
+      barKey: sourceBar!.barKey, planItemId, specId,
+    })),
     rubricChanged,
   };
 }

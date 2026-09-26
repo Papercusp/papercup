@@ -455,6 +455,10 @@ describe('migration 938 activation-audit ledger', () => {
         rubricRevision: 1,
         bars: 2,
         projectionEdges: 3,
+        projections: expect.arrayContaining([
+          { barKey: 'R-1', planItemId: 'P-001', specId: 'AUTO-BAR-R-1-P-001' },
+          { barKey: 'R-2', planItemId: 'P-002', specId: 'AUTO-BAR-R-2-P-002' },
+        ]),
         rubricChanged: true,
       },
     });

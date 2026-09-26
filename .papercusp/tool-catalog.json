@@ -18658,7 +18658,7 @@
           "POST"
         ]
       },
-      "description": "Enter/exit an official session mode (auto | cold-auto | ideate | drain | grade | goal | test | audit) for yourself or a peer. { mode, reason, enabled?, instructions?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract; an owner-directed incumbent REFUSES a peer override (stickyConflict:true — downgraded to a request message). Self-set returns the full binding contract — read it. Audited in agent_mode_changes.",
+      "description": "Enter/exit an official session mode (audit | auto | cold-auto | drain | goal | grade | ideate | test) for yourself or a peer. { mode, reason, enabled?, instructions?, agent?, ownerDirected? }. Same-axis modes AUTO-SWITCH (result carries switchedFrom); cross-axis modes stack. Peer-set: reason is delivered to the target with the mode contract; an owner-directed incumbent REFUSES a peer override (stickyConflict:true — downgraded to a request message). Self-set returns the full binding contract — read it. Audited in agent_mode_changes.",
       "capabilities": [
         "coord:write"
       ],
@@ -31924,7 +31924,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Attach an existing external source event pattern (ext:<source>:<event>) to a blueprint operation ({ operationHarnessSlug, operationId, input? }), legacy plan ({ harness, plan }), goal ({ goal }), or Email direct work-item ingress. The new binding is installed but DISARMED.",
+        "when": "Attach an existing external source event pattern (ext:<source>:<event>) to a blueprint operation ({ operationHarnessSlug, operationId, input? }), legacy plan ({ harness, plan }), goal ({ goal }), or Email direct work-item ingress. For compatibility migration, pass migrateFromBindingId plus the operation target: source/filter/storm policy are copied exactly and the replacement remains DISARMED.",
         "notWhen": "To activate it use triggers:arm separately. For schedules use plans:set-schedule then plans:arm-schedule. For manual starts use plans:run-now.",
         "chaining": "triggers:list → triggers:bind → inspect the returned disarmed binding → triggers:arm { bindingId, confirm:true }."
       }

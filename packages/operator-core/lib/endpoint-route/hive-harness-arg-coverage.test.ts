@@ -246,6 +246,21 @@ describe('the clamp SWEEP is wired (not just the module)', () => {
 });
 
 describe('collectHarnessSlugArgs — the clamp runtime seam', () => {
+  it('does not route a workspace work-scope policy set through its allow-list', () => {
+    expect(
+      collectHarnessSlugArgs(
+        { op: 'set', allowHarnesses: ['papercusp', 'portal'], harnessSlug: 'other-hive' },
+        { toolName: 'workspace:work_scope' },
+      ),
+    ).toEqual([{ arg: 'harnessSlug', slug: 'other-hive' }]);
+    expect(
+      collectHarnessSlugArgs(
+        { op: 'set', allowHarnesses: ['papercusp'] },
+        { toolName: 'unrelated:tool' },
+      ),
+    ).toEqual([{ arg: 'allowHarnesses', slug: 'papercusp' }]);
+  });
+
   it('yields new spellings the clamp never had a branch for', () => {
     expect(collectHarnessSlugArgs({ harnessSlug: 'other-hive' })).toEqual([
       { arg: 'harnessSlug', slug: 'other-hive' },

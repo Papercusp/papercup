@@ -356,6 +356,48 @@ describe('GatewayRequestTelemetry', () => {
     expect(telemetry.snapshotForOwner('su-test').recent[0].cache.tools!.sha256).not.toBe('corrupted-caller-copy');
   });
 
+  it('fingerprints the native Codex developer prefix while excluding dynamic turns', () => {
+    const telemetry = new GatewayRequestTelemetry();
+    const body = (toolDescription: string, instruction: string, userText: string) => Buffer.from(JSON.stringify({
+      input: [
+        { type: 'additional_tools', role: 'developer', tools: [{ name: 'synthetic', description: toolDescription }] },
+        { type: 'message', role: 'developer', content: [{ type: 'input_text', text: instruction }] },
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: userText }] },
+        { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'late dynamic guidance' }] },
+      ],
+    }));
+    const capture = (tools: string, instructions: string, user: string) => {
+      const span = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+      span.setCacheShape(body(tools, instructions, user));
+      return span.finish('ok', 200)!.cache;
+    };
+    const first = capture('stable tool', 'stable instructions', 'first user turn');
+    const second = capture('stable tool', 'stable instructions', 'different user turn');
+    const changedTools = capture('changed tool', 'stable instructions', 'first user turn');
+    const changedInstructions = capture('stable tool', 'changed instructions', 'first user turn');
+    expect(first.tools).toEqual(second.tools);
+    expect(first.instructions).toEqual(second.instructions);
+    expect(first.tools).not.toEqual(changedTools.tools);
+    expect(first.instructions).not.toEqual(changedInstructions.instructions);
+    expect(JSON.stringify(telemetry.snapshot())).not.toMatch(/stable instructions|first user turn|stable tool/);
+  });
+
+  it('includes both top-level and developer-prefix components when a request carries both', () => {
+    const telemetry = new GatewayRequestTelemetry();
+    const fingerprint = (prefixTool: string, prefixInstruction: string) => {
+      const span = telemetry.begin({ provider: 'codex', protocol: 'openai-responses' });
+      span.setCacheShape(Buffer.from(JSON.stringify({ tools: [], instructions: 'top-level instruction', input: [
+        { type: 'additional_tools', role: 'developer', tools: [{ name: prefixTool }] },
+        { type: 'message', role: 'developer', content: [{ type: 'input_text', text: prefixInstruction }] },
+        { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'dynamic user' }] },
+      ] })));
+      return span.finish('ok', 200)!.cache;
+    };
+    const first = fingerprint('first', 'same');
+    expect(first.tools).not.toEqual(fingerprint('second', 'same').tools);
+    expect(first.instructions).not.toEqual(fingerprint('first', 'different').instructions);
+  });
+
   it('compares complete representative large tool and instruction blocks', () => {
     const telemetry = new GatewayRequestTelemetry();
     const body = {

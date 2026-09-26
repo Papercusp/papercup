@@ -146,10 +146,10 @@ describe('createPotAppSeam', () => {
       dedupeKey: 'candidate:a',
     }, 'review-candidate');
     expect(request).toEqual({
-      harnessSlug: 'shop',
-      operationId: 'review-candidate',
-      requestKey: 'candidate:a',
-      input: { candidateId: 'a' },
+      harnessSlug: "shop",
+      operationId: "review-candidate",
+      requestKey: "candidate:a",
+      input: { candidateId: "a", provenance: { eventId: "evt-a" } },
     });
     expect(() => operationDraftFromPlanRun({
       templateSlug: 'candidate-review',
@@ -157,6 +157,18 @@ describe('createPotAppSeam', () => {
       provenance: { eventId: 'evt-a' },
       execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
     }, 'review-candidate')).toThrow(/requires dedupeKey/);
+    expect(() =>
+      operationDraftFromPlanRun(
+        {
+          templateSlug: "candidate-review",
+          input: { provenance: "caller-owned" },
+          provenance: { eventId: "evt-a" },
+          execution: { appHarnessSlug: "shop", agentName: "shop-reviewer" },
+          dedupeKey: "candidate:a",
+        },
+        "review-candidate",
+      ),
+    ).toThrow(/reserved provenance/);
   });
 
   it('submits one durable operation handle on replay and returns payload only when ready', async () => {

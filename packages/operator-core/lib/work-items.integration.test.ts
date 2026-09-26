@@ -2501,6 +2501,46 @@ describe('unified work_items surface (real PG)', () => {
     expect(rows).toEqual([{ workspace_id: 'papercusp-workspace' }]);
   });
 
+  it('routes a fresh BAR reviewer from a real scoped feature comment', async () => {
+    h.activeWorkspace = 'papercusp-workspace';
+    const feature = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'BAR review target',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const post = await wi.commentWorkItem(feature.id, 'approval preview', 'agA', { harness: 'papercup' });
+    expect(post).not.toBeNull();
+    const [thread] = await db.sql<{ parent_kind: string; parent_ref: string }[]>`
+      SELECT parent_kind, parent_ref
+        FROM harness_shared.coord_threads
+       WHERE workspace_id = 'papercusp-workspace'
+         AND thread_id = ${`work-item-thread-${feature.id}`}`;
+    expect(thread).toEqual({ parent_kind: 'feature', parent_ref: `papercup#${feature.id}` });
+
+    const { launchFreshAmendmentReviewer } = await import('./consult/acceptance-bar-amendment-review');
+    const launch = vi.fn().mockResolvedValue({ data: { launch: { tasks: [{ taskId: 'task-review' }] } } });
+    const result = await launchFreshAmendmentReviewer(
+      {
+        rubricRef: 'plan:review-test',
+        previewPostRef: `thread-post:${post!.id}`,
+        preview: { approval: { kind: 'acceptance-bar-approval', bars: [] }, changes: [] },
+        patch: {},
+        applierId: 'agA',
+        workspaceId: 'papercusp-workspace',
+      } as never,
+      {
+        resolveScreen: async () => ({ check: async () => ({ eligible: true, reason: 'eligible' }) }),
+        launch,
+      },
+    );
+    expect(result).toMatchObject({
+      state: 'launched',
+      answerOn: { workItemId: feature.id, harness: 'papercup' },
+    });
+    expect(launch).toHaveBeenCalledOnce();
+  });
+
   it('search (cross-kind FTS): matches title/body across both kind-tables', async () => {
     await wi.createWorkItem({
       kind: 'bug',

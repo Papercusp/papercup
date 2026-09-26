@@ -20,7 +20,7 @@
 import postgres from 'postgres';
 import { getHarnessAdminUrl } from '../packages/operator-core/lib/embedded-pg-discovery';
 import { setFrontmatterScalar } from '../packages/operator-core/lib/agent-tools/plans/transfer-owner';
-import { hashPlanContent } from '@papercusp/plan-parser';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 
 const EXECUTE = process.argv.includes('--execute');
 

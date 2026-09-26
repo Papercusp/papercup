@@ -238,6 +238,11 @@ export function collectHarnessSlugArgs(
   const out: Array<{ arg: string; slug: string }> = [];
   for (const [arg, value] of Object.entries(args as Record<string, unknown>)) {
     if (skip.has(arg)) continue;
+    // workspace:work_scope sets a workspace-wide POLICY. Its allow-list names
+    // destinations the policy governs; it does not route this call into them.
+    // A hive-bound operator must be able to preserve existing sibling entries
+    // while updating that policy. Other harness-naming args remain clamped.
+    if (options?.toolName === 'workspace:work_scope' && (args as Record<string, unknown>).op === 'set' && arg === 'allowHarnesses') continue;
     if (!designatesHarnessArg(arg, options?.toolName)) continue;
     // ORDER MATTERS. A name-level exemption must NOT beat tool-scoped
     // enforcement: `slug` is exempt as a bare name (it is a feature/doc/plan

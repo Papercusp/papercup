@@ -441,6 +441,29 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
     expect(execFileSyncM).not.toHaveBeenCalled();
   });
 
+  it('previews an implicit auto-managed root without allowing a confirmed write', async () => {
+    const priorRoot = process.env.PAPERCUSP_DESKTOP_ROOT;
+    process.env.PAPERCUSP_DESKTOP_ROOT = '/workspace/papercusp-release/papercusp-desktop';
+    try {
+      const preview = body(await tool.handler(args as never, { role: 'operator' } as never));
+      expect(preview).toMatchObject({
+        ok: true, op: 'prepare-tag', dry_run: true, ready: false,
+        tag: 'desktop-v0.0.18-alpha', remoteRefWrite: true,
+      });
+      expect(preview.blocker).toMatch(/root_not_isolated/);
+      expect(preview.wouldRun).toContain('<registered-isolated-worktree>/papercusp-desktop');
+      expect(preview.wouldRun).not.toContain('/workspace/papercusp-release/');
+      expect(execFileSyncM).not.toHaveBeenCalled();
+
+      const confirmed = body(await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never));
+      expect(confirmed).toMatchObject({ ok: false, refused: true });
+      expect(confirmed.reason).toMatch(/root_not_isolated/);
+      expect(execFileSyncM).not.toHaveBeenCalled();
+    } finally {
+      process.env.PAPERCUSP_DESKTOP_ROOT = priorRoot;
+    }
+  });
+
   it('rejects malformed source authority before resolving or writing a ref', async () => {
     const b = body(await tool.handler({ ...args, sourceSha: 'f9030aa' } as never, { role: 'operator' } as never));
 

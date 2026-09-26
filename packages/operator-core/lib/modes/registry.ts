@@ -102,99 +102,38 @@ export interface ModeDef {
   contract: string;
 }
 
-function builtinModeText(id: (typeof BUILTIN_MODE_COMPONENTS)[number]['id']): Pick<ModeDef, 'title' | 'oneLiner' | 'contract'> {
-  const component = BUILTIN_MODE_COMPONENTS.find((entry) => entry.id === id);
-  if (!component) throw new Error(`built-in mode ${id} has no generated identity component`);
-  return { title: component.title, oneLiner: component.oneLiner, contract: component.definitionText };
-}
-
-function coldAutoRider(): string {
-  const auto = BUILTIN_MODE_COMPONENTS.find((entry) => entry.id === 'auto');
-  const heading = '## COLD AUTO — the same autonomy component across fresh-context wakes';
-  const start = auto?.definitionText.indexOf(heading) ?? -1;
-  if (start < 0) throw new Error('AUTO identity has no canonical COLD AUTO carry rider');
-  return auto!.definitionText.slice(start).trimEnd();
-}
-
-const MODE_POLICY_DEFS: readonly ModeDef[] = [
-  {
-    id: 'auto',
-    axis: 'autonomy',
-    // psu `--auto` (a boolean flag, NOT `--mode=auto`).
-    launchable: true,
-    ...builtinModeText('auto'),
-  },
-  {
-    id: 'cold-auto',
-    axis: 'autonomy',
-    title: 'COLD AUTO — auto across fresh-context wakes',
-    oneLiner: 'AUTO carried across scheduled cold wakes: fresh context each fire, continuity via the carry-note',
-    contract: coldAutoRider(),
-  },
-  {
-    id: 'ideate',
-    axis: 'overlay',
-    ...builtinModeText('ideate'),
-  },
-  {
-    id: 'drain',
-    axis: 'overlay',
-    implies: ['auto'],
-    // psu `--mode=drain` (drain-mode-2026-07-03 P-003). DRAIN implies AUTO, and
-    // psu's effectiveAutoMode() already forces --auto on for it.
-    launchable: true,
-    ...builtinModeText('drain'),
-  },
-  {
-    id: 'grade',
-    axis: 'overlay',
-    implies: ['auto'],
-    launchable: true,
-    ...builtinModeText('grade'),
-  },
-  {
-    id: 'goal',
-    axis: 'overlay',
-    implies: ['auto', 'ideate'],
-    requiresSubject: true,
-    ...builtinModeText('goal'),
-  },
-  {
-    id: 'test',
-    axis: 'overlay',
-    launchable: true,
-    ...builtinModeText('test'),
-  },
-  {
-    id: 'audit',
-    axis: 'overlay',
-    /*
-     * NO `implies` and NO `requiresSubject`, both deliberate.
-     *
-     * implies: an audit is a READ posture, and it is routinely run with the owner
-     * watching — turning "come look at this program" into a standing act-don't-ask
-     * grant would hand out autonomy on the one mode whose entire discipline is to
-     * observe rather than act.
-     *
-     * requiresSubject: the scope rides in mode:set's own `instructions`, exactly as
-     * TEST's does and for the same measured reason — `requiresSubject` exists for
-     * modes something downstream JOINS on, and nothing joins on an audit's scope.
-     * Verified rather than assumed: goal provenance resolves through
-     * `agent_modes.subject WHERE mode = 'goal'` (work_items/_create-core.ts
-     * stampGoalProvenance) and the edit guard fires on `agent_modes.mode = 'goal'`
-     * (locks/goal-mode-edit-guard.ts), so both consumers are goal-scoped. Setting
-     * the flag here would also point audit users at a hardcoded goal-flavoured
-     * error ("use goals:start … subject:'<goals.id>'", set.ts ~L339) that has
-     * nothing to do with auditing.
-     */
-    ...builtinModeText('audit'),
-  },
-];
-
-/** Compatibility API over the host policy rows and generated identity content.
- * `cold-auto` is the one runtime carry rider sharing AUTO's identity document. */
-export const MODES: readonly ModeDef[] = MODE_POLICY_DEFS;
-
+/** Compatibility API over trusted declarations and existing enforcement.
+ * The allowlist names implemented host policies, never their activation data. */
+const SUPPORTED_MODE_POLICIES = new Set(['auto', 'ideate', 'drain', 'grade', 'goal', 'test', 'audit']);
+export const MODES: readonly ModeDef[] = BUILTIN_MODE_COMPONENTS.flatMap<ModeDef>((component) => {
+  if (!SUPPORTED_MODE_POLICIES.has(component.policyRef) || component.id !== component.policyRef) {
+    throw new Error(`built-in mode ${component.id} references unsupported host policy ${component.policyRef}`);
+  }
+  const declarations = [
+    { ...component, contract: component.definitionText },
+    ...component.aliases.map((alias) => {
+      // cold-auto is the existing AUTO carry mode, with its existing code-backed
+      // lifecycle. A new name needs runtime support before it may be advertised.
+      if (component.policyRef !== 'auto' || alias.id !== 'cold-auto') {
+        throw new Error(`mode alias ${alias.id} has no host carry policy`);
+      }
+      const start = component.definitionText.indexOf(alias.definitionHeading);
+      if (start < 0) throw new Error(`mode alias ${alias.id} has no declared definition heading`);
+      return { ...alias, contract: component.definitionText.slice(start).trimEnd() };
+    }),
+  ];
+  return declarations.map((declaration) => ({
+    id: declaration.id,
+    axis: component.slot === 'autonomy' ? 'autonomy' : 'overlay',
+    // Preserve the public optional-field shape for existing discovery clients.
+    ...(declaration.implies.length ? { implies: declaration.implies } : {}),
+    ...(declaration.requiresSubject ? { requiresSubject: true } : {}),
+    ...(declaration.launchable ? { launchable: true } : {}),
+    title: declaration.title,
+    oneLiner: declaration.oneLiner,
+    contract: declaration.contract,
+  }));
+});
 /** Look up a mode by id (case-insensitive). */
 export function modeById(id: string): ModeDef | null {
   const key = id.trim().toLowerCase();

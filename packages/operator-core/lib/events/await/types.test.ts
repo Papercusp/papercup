@@ -16,6 +16,7 @@ describe('WAKE_TURN_CHANNELS — turn-burning wake channels', () => {
       'psu-socket-inject',
       'resume',
       'resume-headless',
+      'cold-fresh-successor',
       'hive-fresh-wake',
       'fresh-context-warm-inject',
       'plan-run-resume',

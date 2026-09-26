@@ -93,7 +93,9 @@ therefore fails loudly and retryably while the promoted work remains visible.
    `launchPlanRuns` remains as a compatibility surface while an existing
    binding migrates. `operationDraftFromPlanRun` refuses a legacy draft without
    `dedupeKey`, because that key becomes the operation request key and losing it
-   would fork replay identity.
+   would fork replay identity. It also copies the immutable plan-run provenance
+   into the reserved operation input field `provenance`; declare that field in
+   the operation schema and do not reuse it for domain input.
 6. **Own one contracts package and one parse gate.** Specialize
    `contracts/candidate-set.ts` into e.g. `@yourapp/contracts`: `.strict()`
    zod schemas both directions; the join key round-trips unchanged; an empty

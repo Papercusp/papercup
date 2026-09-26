@@ -192,6 +192,8 @@ export type WakeChannel =
   | 'psu-socket-recycle-unconfirmed'
   | 'resume'
   | 'resume-headless'
+  // An exited cold-loop owner starts a fresh context under its existing coord id.
+  | 'cold-fresh-successor'
   // P-013 part A (review-system-rework-reduction-2026-09-23): every Claude account was
   // walled, so the dead session was continued on Codex via a session port instead of
   // resumed into the wall. Burns a turn like a resume.
@@ -230,6 +232,7 @@ export const WAKE_TURN_CHANNELS: readonly WakeChannel[] = [
   'psu-socket-recycle-unconfirmed',
   'resume',
   'resume-headless',
+  'cold-fresh-successor',
   'resume-rehome-backend',
   'hive-fresh-wake',
   'fresh-context-warm-inject',

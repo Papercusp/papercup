@@ -24,6 +24,16 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
+import ts from 'typescript';
+
+it('includes executable .mts scripts in the root scripts TypeScript project', () => {
+  const configPath = fileURLToPath(new URL('../../../scripts/tsconfig.json', import.meta.url));
+  const loaded = ts.readConfigFile(configPath, ts.sys.readFile);
+  expect(loaded.error).toBeUndefined();
+  const parsed = ts.parseJsonConfigFileContent(loaded.config, ts.sys, dirname(configPath), undefined, configPath);
+  expect(parsed.errors).toEqual([]);
+  expect(parsed.fileNames).toContain(fileURLToPath(new URL('../../../scripts/run-carry-cohort.mts', import.meta.url)));
+});
 // eslint-disable-next-line import/no-relative-packages
 import {
   parseTscErrors,

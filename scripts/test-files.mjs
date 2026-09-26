@@ -3192,7 +3192,11 @@ export async function main(
           'filters. That is the signature of a quoted pattern being eaten by the shell/npm arg chain: quote it ' +
           'for the inner command (npm eats one level) or use a space-free pattern.'
         : '';
-    if (summary.testsExecuted === 0 && summary.testsUnmeasuredGroups === 0) {
+    // A failed setup/collection or a watchdog can also leave every assertion
+    // skipped. Preserve those measured outcomes below; zero executed tests is
+    // evidence of an unmatched filter only when the runner otherwise succeeded.
+    if (summary.testsExecuted === 0 && summary.testsUnmeasuredGroups === 0 &&
+        !summary.anyFailed && !summary.anyTimedOut) {
       console.error(
         `TEST_FILE_NAME_FILTER_NO_MATCH requested=${summary.requested} matched=${summary.matched} ` +
           `executedFiles=${summary.executed} testsExecuted=0 status=failed reason=name-filter-matched-no-tests ` +

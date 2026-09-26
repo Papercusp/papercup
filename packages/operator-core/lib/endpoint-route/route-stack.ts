@@ -38,6 +38,19 @@ import {
 
 export type RouteStepName = 'auth' | 'input' | 'invoke';
 
+const committedResponses = new WeakSet<Response>();
+
+/**
+ * Preserve a receipt only AFTER its durable effect has committed. A deadline
+ * can request cancellation, but cannot turn a completed mutation into a
+ * refusal. The marker is server-local; request/response headers cannot set it.
+ * Unmarked responses and handlers that throw retain normal timeout behavior.
+ */
+export function committedRouteResponse(response: Response): Response {
+  committedResponses.add(response);
+  return response;
+}
+
 /* ─── Per-call mutable state ─────────────────────────────────────────── */
 
 export interface RouteExecution {
@@ -509,8 +522,10 @@ const invokeStep: RouteStep = {
         signal: exec.abort.signal,
       });
       const response = await Promise.resolve(result);
-      // ok-on-abort: the watchdog fired but the handler returned anyway.
-      if (exec.abort.signal.aborted) {
+      // A committed receipt is authoritative even if the watchdog fired while
+      // persistence was pending. Never replace it with a false refusal.
+      const committed = committedResponses.delete(response);
+      if (exec.abort.signal.aborted && !committed) {
         exec.status = 'timeout';
         return errorResponse(408, 'timeout', `route exceeded ${timeoutSec}s`);
       }

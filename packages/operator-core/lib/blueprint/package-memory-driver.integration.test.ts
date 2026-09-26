@@ -21,7 +21,11 @@ import { preparePackageResource, releasePackageResource, type PackageResourceAdd
 let db: OrgTestDb;
 let pool: Pool;
 let selectedBackend: Mem0Backend;
-vi.mock('../memory/backend', () => ({ getMemoryBackend: () => selectedBackend }));
+let backendSelectionError: Error | undefined;
+vi.mock('../memory/backend', () => ({ getMemoryBackend: () => {
+  if (backendSelectionError) throw backendSelectionError;
+  return selectedBackend;
+} }));
 const stores: CanonicalVectorStore[] = [];
 const scope = 'harness:managed-write-tests';
 const vector = Array(EMBEDDER_DIM_SPECS.local.targetDims).fill(0.1);
@@ -105,6 +109,15 @@ describe('real canonical backend package resources', () => {
     await expect(db.adminSql.begin((tx) => applySessionPackageResources(tx, {
       ownerId, workspaceId: 'compensated-test', revision, artifact, attemptId: randomUUID(),
     }))).rejects.toThrow(/has not been prepared/);
+    await expect(db.adminSql.begin((tx) => applySessionPackageResources(tx, {
+      ownerId, workspaceId: 'compensated-test', revision, artifact: null, attemptId,
+    }))).rejects.toThrow(/requires a verified artifact/);
+    expect(await readPackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
+      .toMatchObject({ phase: 'preparing' });
+    // The historical no-artifact path remains a no-op only without a new attempt.
+    await db.adminSql.begin((tx) => applySessionPackageResources(tx, {
+      ownerId, workspaceId: 'compensated-test', revision, artifact: null,
+    }));
     await db.adminSql.begin((tx) => applySessionPackageResources(tx, {
       ownerId, workspaceId: 'compensated-test', revision, artifact, attemptId,
     }));
@@ -122,6 +135,13 @@ describe('real canonical backend package resources', () => {
       .toMatchObject({ phase: 'cleanup_failed', error: expect.stringContaining('does not support fenced package resources') });
     expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
       WHERE payload->>'user_id' = 'harness:compensated-target' ORDER BY id`).toEqual(rows);
+    backendSelectionError = new Error('backend selector unavailable');
+    try {
+      await expect(releaseKnowledgePackageResources(db.adminSql, 'compensated-test', retriedDependent))
+        .rejects.toThrow('backend selector unavailable');
+      expect(await readPackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
+        .toMatchObject({ phase: 'cleanup_failed', error: 'backend selector unavailable' });
+    } finally { backendSelectionError = undefined; }
     await releaseKnowledgePackageResources(db.adminSql, 'compensated-test', retriedDependent);
     expect(await readPackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
       .toMatchObject({ phase: 'released', error: null });

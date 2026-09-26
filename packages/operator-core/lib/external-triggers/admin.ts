@@ -7,6 +7,7 @@
  * surface.
  */
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
 import {
   EMAIL_DRAFT_PROPOSAL_HARNESS,
@@ -56,7 +57,7 @@ export interface CreateExternalTriggerBindingInput {
    * Goal target (work-on-everything-goal-2026-08-23 P-020): the binding's
    * matches ACTIVATE this goal (action type `start-goal`, dispatched through
    * `startGoalById`) instead of launching a plan.
-  */
+   */
   goalId?: string | null;
   /** Direct bounded work-item target (P-018). Both fields are required together. */
   workItemHarnessSlug?: string | null;
@@ -66,6 +67,8 @@ export interface CreateExternalTriggerBindingInput {
   operationId?: string | null;
   /** Literal input merged over the redacted event routing envelope at dispatch. */
   operationInput?: Record<string, unknown>;
+  /** Internal compatibility marker: the legacy plan binding this replacement preserves. */
+  operationMigrationFromBindingId?: string | null;
   eventPattern: string;
   eventFilter?: Record<string, unknown>;
   stormPolicy?: Record<string, unknown>;
@@ -247,8 +250,8 @@ export interface ExternalTriggerRunVisibility {
     operationId: string;
     specificationRevision: string;
     target:
-      | { kind: 'work-item'; id: string }
-      | { kind: 'plan'; runId: number; instanceSlug: string };
+      | { kind: 'work-item'; id: string; status: string | null }
+      | { kind: 'plan'; runId: number; instanceSlug: string; status: string | null; outcome: string | null };
   } | null;
   outcomeLinks: ExternalTriggerOutcomeLink[];
   timeline: ExternalTriggerTimelineStep[];
@@ -428,6 +431,8 @@ interface RunVisibilityDbRow {
   workItemFailed: number | string;
   agents: unknown;
   costUsd: number | string;
+  operationTargetStatus: string | null;
+  operationTargetOutcome: string | null;
 }
 
 interface PlanTriggerDbRow {
@@ -556,7 +561,11 @@ function outcomeLinks(
   return result;
 }
 
-function blueprintOperationOutcome(outcome: Record<string, unknown>): ExternalTriggerRunVisibility['blueprintOperation'] {
+function blueprintOperationOutcome(
+  outcome: Record<string, unknown>,
+  targetStatus: string | null,
+  targetOutcome: string | null,
+): ExternalTriggerRunVisibility['blueprintOperation'] {
   const operation = object(outcome.blueprintOperation);
   const target = object(operation.target);
   const kind = text(target.kind);
@@ -568,18 +577,33 @@ function blueprintOperationOutcome(outcome: Record<string, unknown>): ExternalTr
     operationId: text(operation.operationId),
     specificationRevision: text(operation.specificationRevision),
   };
-  if (!common.workspaceId || !common.harnessSlug || common.receiptId <= 0 || !common.operationId || !common.specificationRevision) {
+  if (
+    !common.workspaceId ||
+    !common.harnessSlug ||
+    common.receiptId <= 0 ||
+    !common.operationId ||
+    !common.specificationRevision
+  ) {
     return null;
   }
   if (kind === 'work-item') {
     const id = text(target.id);
-    return id ? { ...common, target: { kind, id } } : null;
+    return id ? { ...common, target: { kind, id, status: targetStatus } } : null;
   }
   if (kind === 'plan') {
     const runId = finiteNumber(target.runId);
     const instanceSlug = text(target.instanceSlug);
     return runId !== null && runId > 0 && instanceSlug
-      ? { ...common, target: { kind, runId: Math.floor(runId), instanceSlug } }
+      ? {
+          ...common,
+          target: {
+            kind,
+            runId: Math.floor(runId),
+            instanceSlug,
+            status: targetStatus,
+            outcome: targetOutcome,
+          },
+        }
       : null;
   }
   return null;
@@ -591,7 +615,7 @@ function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility
   const rawPayload = row.deliveryPayload ?? object(trigger.payload);
   const redactedPayload = object(redactSensitiveValue(rawPayload));
   const outcome = object(row.outcome);
-  const blueprintOperation = blueprintOperationOutcome(outcome);
+  const blueprintOperation = blueprintOperationOutcome(outcome, row.operationTargetStatus, row.operationTargetOutcome);
   const policy = externalTriggerDisposition(row.status, outcome, row.error);
   const total = Number(row.workItemTotal ?? 0);
   const passed = Number(row.workItemPassed ?? 0);
@@ -622,6 +646,22 @@ function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility
   const startedAt = iso(row.startedAt);
   const completedAt = iso(row.completedAt);
   const planCompletedAt = planRunFinishedAt == null ? null : iso(planRunFinishedAt);
+  const operationTarget = blueprintOperation?.target ?? null;
+  const operationTerminal =
+    operationTarget?.kind === 'work-item'
+      ? ['done', 'passed', 'resolved', 'failed', 'dropped', 'deprecated', 'closed'].includes(
+          operationTarget.status ?? '',
+        )
+      : operationTarget?.kind === 'plan'
+        ? operationTarget.status === 'done' || operationTarget.status === 'failed'
+        : false;
+  const operationFailed =
+    operationTarget?.kind === 'work-item'
+      ? ['failed', 'dropped', 'deprecated', 'closed'].includes(operationTarget.status ?? '')
+      : operationTarget?.kind === 'plan'
+        ? operationTarget.status === 'failed' ||
+          (operationTarget.status === 'done' && operationTarget.outcome !== 'success')
+        : false;
   const timeline: ExternalTriggerTimelineStep[] = [
     {
       stage: 'received',
@@ -653,15 +693,32 @@ function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility
     },
     {
       stage: 'completed',
-      at: planCompletedAt,
-      status: planCompletedAt
-        ? planRun?.status === 'failed'
-          ? 'failed'
-          : 'done'
-        : planRun?.status === 'running'
-          ? 'active'
-          : 'pending',
-      detail: planCompletedAt ? `Plan run ${planRun?.status ?? 'completed'}` : 'Plan run has not completed',
+      at: blueprintOperation ? null : planCompletedAt,
+      status: blueprintOperation
+        ? operationTerminal
+          ? operationFailed
+            ? 'failed'
+            : 'done'
+          : operationTarget?.status
+            ? 'active'
+            : 'pending'
+        : planCompletedAt
+          ? planRun?.status === 'failed'
+            ? 'failed'
+            : 'done'
+          : planRun?.status === 'running'
+            ? 'active'
+            : 'pending',
+      detail: blueprintOperation
+        ? operationTarget?.kind === 'work-item'
+          ? `Work item ${operationTarget.id} · ${operationTarget.status ?? 'status unavailable'}`
+          : operationTarget?.kind === 'plan'
+            ? `Plan ${operationTarget.instanceSlug} · ${operationTarget.status ?? 'status unavailable'}` +
+              (operationTarget.outcome ? ` · ${operationTarget.outcome}` : '')
+            : 'Operation target unavailable'
+        : planCompletedAt
+          ? `Plan run ${planRun?.status ?? 'completed'}`
+          : 'Plan run has not completed',
     },
   ];
   return {
@@ -772,7 +829,9 @@ export async function loadExternalTriggerRunVisibilities(
            ), '[]'::jsonb) AS agents,
            (SELECT COALESCE(sum(t.cost_usd), 0)
               FROM harness_shared.plan_run_turns t
-             WHERE t.workspace_id = tr.workspace_id AND t.plan_run_id = pr.id) AS "costUsd"
+             WHERE t.workspace_id = tr.workspace_id AND t.plan_run_id = pr.id) AS "costUsd",
+           COALESCE(op_wi.status, op_pr.status) AS "operationTargetStatus",
+           op_pr.outcome AS "operationTargetOutcome"
       FROM harness_shared.trigger_runs tr
       JOIN harness_shared.trigger_bindings b
         ON b.workspace_id = tr.workspace_id AND b.id = tr.binding_id
@@ -782,6 +841,20 @@ export async function loadExternalTriggerRunVisibilities(
         ON d.workspace_id = tr.workspace_id AND d.id = tr.delivery_id
       LEFT JOIN harness_shared.plan_runs pr
         ON pr.workspace_id = tr.workspace_id AND pr.id::text = tr.plan_run_ref
+      LEFT JOIN harness_shared.work_items op_wi
+        ON tr.outcome #>> '{blueprintOperation,target,kind}' = 'work-item'
+       AND op_wi.workspace_id = tr.workspace_id
+       AND op_wi.harness_slug = tr.outcome #>> '{blueprintOperation,harnessSlug}'
+       AND op_wi.feature_id = tr.outcome #>> '{blueprintOperation,target,id}'
+      LEFT JOIN harness_shared.plan_runs op_pr
+        ON tr.outcome #>> '{blueprintOperation,target,kind}' = 'plan'
+       AND op_pr.workspace_id = tr.workspace_id
+       AND op_pr.harness_slug = tr.outcome #>> '{blueprintOperation,harnessSlug}'
+       AND op_pr.id = CASE
+         WHEN tr.outcome #>> '{blueprintOperation,target,runId}' ~ '^[1-9][0-9]*$'
+           THEN (tr.outcome #>> '{blueprintOperation,target,runId}')::bigint
+         ELSE NULL
+       END
      WHERE tr.workspace_id = ${workspaceId}
        ${harnessFilter}
        ${planFilter}
@@ -938,11 +1011,16 @@ export async function createExternalTriggerBinding(
         : goalId
           ? 'start-goal'
           : 'launch-plan',
-    ...(operationGiven ? {
-      operationHarnessSlug,
-      operationId,
-      ...(input.operationInput ? { input: input.operationInput } : {}),
-    } : {}),
+    ...(operationGiven
+      ? {
+          operationHarnessSlug,
+          operationId,
+          ...(input.operationInput ? { input: input.operationInput } : {}),
+          ...(input.operationMigrationFromBindingId?.trim()
+            ? { migrationFromBindingId: input.operationMigrationFromBindingId.trim() }
+            : {}),
+        }
+      : {}),
     ...(execution ? { execution } : {}),
   });
   // A binding with no explicit storm policy is UNBOUNDED under the landed
@@ -995,6 +1073,173 @@ export async function createExternalTriggerBinding(
     createdAt: iso(rows[0].createdAt) as string,
     updatedAt: iso(rows[0].updatedAt) as string,
   };
+}
+
+export interface ExternalTriggerOperationMigration {
+  legacyBindingId: string;
+  replacement: CreatedExternalTriggerBinding;
+  replayed: boolean;
+  parity: {
+    sourceId: string;
+    eventPattern: string;
+    eventFilter: Record<string, unknown>;
+    stormPolicy: Record<string, unknown>;
+    legacyArmed: boolean;
+    replacementArmed: false;
+    legacyTarget: { harnessSlug: string; planSlug: string };
+    operationTarget: { harnessSlug: string; operationId: string };
+    legacyExecution: AgenticPlanExecutionTarget | null;
+  };
+}
+
+interface MigrationBindingDbRow {
+  id: string;
+  sourceId: string;
+  sourceKind: string;
+  planHarnessSlug: string | null;
+  planSlug: string | null;
+  goalId: string | null;
+  workItemHarnessSlug: string | null;
+  workItemKind: string | null;
+  eventPattern: string;
+  eventFilter: Record<string, unknown>;
+  action: Record<string, unknown>;
+  armed: boolean;
+  stormPolicy: Record<string, unknown>;
+  createdBy: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+}
+
+async function migrationBindingRow(
+  sql: Db,
+  workspaceId: string,
+  where: { id?: string; migrationFromBindingId?: string },
+): Promise<MigrationBindingDbRow | null> {
+  const idFilter = where.id ? sql`AND b.id = ${where.id}::uuid` : sql``;
+  const migrationFilter = where.migrationFromBindingId
+    ? sql`AND b.action->>'migrationFromBindingId' = ${where.migrationFromBindingId}`
+    : sql``;
+  const rows = await sql<MigrationBindingDbRow[]>`
+    SELECT b.id::text,
+           b.source_id::text AS "sourceId",
+           s.kind AS "sourceKind",
+           b.plan_harness_slug AS "planHarnessSlug",
+           b.plan_slug AS "planSlug",
+           b.goal_id AS "goalId",
+           b.work_item_harness_slug AS "workItemHarnessSlug",
+           b.work_item_kind AS "workItemKind",
+           b.event_pattern AS "eventPattern",
+           b.event_filter AS "eventFilter",
+           b.action,
+           b.armed,
+           b.storm_policy AS "stormPolicy",
+           b.created_by AS "createdBy",
+           b.created_at AS "createdAt",
+           b.updated_at AS "updatedAt"
+      FROM harness_shared.trigger_bindings b
+      JOIN harness_shared.trigger_sources s
+        ON s.workspace_id = b.workspace_id AND s.id = b.source_id
+     WHERE b.workspace_id = ${workspaceId}
+       AND b.detached_at IS NULL
+       ${idFilter}
+       ${migrationFilter}
+     ORDER BY b.created_at, b.id
+     LIMIT 2`;
+  if (rows.length > 1) throw new Error('external_trigger_binding_migration_ambiguous');
+  return rows[0] ?? null;
+}
+
+function createdBindingFromMigrationRow(row: MigrationBindingDbRow): CreatedExternalTriggerBinding {
+  return {
+    ...row,
+    createdAt: iso(row.createdAt) as string,
+    updatedAt: iso(row.updatedAt) as string,
+  };
+}
+
+/**
+ * Install (or replay) a DISARMED blueprint-operation replacement for one
+ * legacy launch-plan binding. Source/filter/storm policy are copied under one
+ * advisory lock; the legacy row is unchanged. Prove the replacement with
+ * run-with-last-event, then switch arming through the existing explicit controls.
+ */
+export async function migrateExternalTriggerPlanBindingToOperation(
+  sql: postgres.Sql,
+  workspaceId: string,
+  input: {
+    bindingId: string;
+    operationHarnessSlug: string;
+    operationId: string;
+    operationInput?: Record<string, unknown>;
+    createdBy?: string | null;
+  },
+): Promise<ExternalTriggerOperationMigration> {
+  const ws = required(workspaceId, 'workspace_id');
+  const bindingId = required(input.bindingId, 'binding_id');
+  const operationHarnessSlug = required(input.operationHarnessSlug, 'operation_harness_slug');
+  const operationId = required(input.operationId, 'operation_id');
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`external-trigger-operation-migration:${ws}:${bindingId}`}, 0))`;
+    const legacy = await migrationBindingRow(tx, ws, { id: bindingId });
+    if (!legacy) throw new Error(`external_trigger_binding_not_found:${bindingId}`);
+    const legacyActionType = text(legacy.action.type) || 'launch-plan';
+    if (legacyActionType !== 'launch-plan' || !legacy.planHarnessSlug || !legacy.planSlug) {
+      throw new Error('external_trigger_binding_migration_requires_legacy_plan_target');
+    }
+    const existing = await migrationBindingRow(tx, ws, { migrationFromBindingId: bindingId });
+    let replacement: CreatedExternalTriggerBinding;
+    let replayed = false;
+    if (existing) {
+      if (
+        existing.action.type !== 'blueprint-operation' ||
+        existing.action.operationHarnessSlug !== operationHarnessSlug ||
+        existing.action.operationId !== operationId ||
+        !isDeepStrictEqual(object(existing.action.input), input.operationInput ?? {})
+      ) {
+        throw new Error('external_trigger_binding_migration_target_conflict');
+      }
+      replacement = createdBindingFromMigrationRow(existing);
+      replayed = true;
+    } else {
+      replacement = await createExternalTriggerBinding(tx, ws, {
+        sourceId: legacy.sourceId,
+        operationHarnessSlug,
+        operationId,
+        operationInput: input.operationInput,
+        operationMigrationFromBindingId: bindingId,
+        eventPattern: legacy.eventPattern,
+        eventFilter: legacy.eventFilter,
+        stormPolicy: legacy.stormPolicy,
+        createdBy: input.createdBy,
+      });
+    }
+    if (
+      replacement.armed ||
+      replacement.sourceId !== legacy.sourceId ||
+      replacement.eventPattern !== legacy.eventPattern ||
+      !isDeepStrictEqual(replacement.eventFilter, legacy.eventFilter) ||
+      !isDeepStrictEqual(replacement.stormPolicy, legacy.stormPolicy)
+    ) {
+      throw new Error('external_trigger_binding_migration_parity_failed');
+    }
+    return {
+      legacyBindingId: bindingId,
+      replacement,
+      replayed,
+      parity: {
+        sourceId: legacy.sourceId,
+        eventPattern: legacy.eventPattern,
+        eventFilter: legacy.eventFilter,
+        stormPolicy: legacy.stormPolicy,
+        legacyArmed: legacy.armed,
+        replacementArmed: false,
+        legacyTarget: { harnessSlug: legacy.planHarnessSlug, planSlug: legacy.planSlug },
+        operationTarget: { harnessSlug: operationHarnessSlug, operationId },
+        legacyExecution: parseAgenticPlanExecutionTarget(legacy.action.execution),
+      },
+    };
+  });
 }
 
 /**

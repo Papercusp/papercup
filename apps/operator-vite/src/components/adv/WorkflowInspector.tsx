@@ -145,6 +145,7 @@ export default function WorkflowInspector({
     binding,
     loaded: bindingLoaded,
     planChainable: null,
+    operationTarget: item.operation?.target ?? null,
   });
   const runRows = runs?.runs.slice(0, 5) ?? [];
   const lastRun = runs?.runs[0];

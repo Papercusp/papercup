@@ -132,6 +132,63 @@ describe('code:run static arg preflight (EI-19449316000499177)', () => {
     validateMock.mockResolvedValue({ ok: true, issues: [], staticToolNames: [] });
   });
 
+  it('shares the response deadline with preflight instead of giving a slow preflight a fresh worker budget', async () => {
+    const clock = vi.spyOn(Date, 'now');
+    let now = 1_000_000;
+    clock.mockImplementation(() => now);
+    validateMock.mockImplementationOnce(async () => {
+      now += 43_000;
+      return { ok: true, issues: [], staticToolNames: [] };
+    });
+    runToolOrchestrationMock.mockResolvedValueOnce(orchestration({
+      ok: false,
+      error: 'script_timeout after 1000ms',
+    }));
+    try {
+      const payload = payloadOf(await codeRun().fn({ script: 'return 1;', timeoutSec: 45 }, mkCtx()));
+      expect(runToolOrchestrationMock).toHaveBeenCalledTimes(1);
+      expect(runToolOrchestrationMock.mock.calls[0]?.[1]?.timeoutMs).toBeLessThanOrEqual(1_000);
+      expect(payload.error).toContain('argument preflight used part of this call');
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('returns a typed no-dispatch timeout when preflight never settles', async () => {
+    vi.useFakeTimers();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    validateMock.mockImplementationOnce(() => new Promise(() => {}));
+    try {
+      const pending = codeRun().fn({ script: 'return 1;', timeoutSec: 45 }, mkCtx());
+      await vi.advanceTimersByTimeAsync(44_000);
+      const payload = payloadOf(await pending);
+      expect(payload).toMatchObject({ ok: false, error: 'script_timeout during argument preflight', executed: false, dispatchCount: 0 });
+      expect(runToolOrchestrationMock).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('argument preflight'));
+    } finally {
+      warning.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a thrown preflight error without calling it a timeout or dispatching', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    validateMock.mockRejectedValueOnce(new Error('catalog unavailable'));
+    try {
+      const payload = payloadOf(await codeRun().fn({ script: 'return 1;' }, mkCtx()));
+      expect(payload).toMatchObject({
+        ok: false,
+        error: 'script_preflight_error: catalog unavailable',
+        executed: false,
+        dispatchCount: 0,
+      });
+      expect(runToolOrchestrationMock).not.toHaveBeenCalled();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('catalog unavailable'));
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('an undeclared arg refuses the script BEFORE the orchestrator is entered — nothing can strand', async () => {
     validateMock.mockResolvedValueOnce({
       ok: false,

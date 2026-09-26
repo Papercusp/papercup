@@ -209,6 +209,123 @@ async function completeExecutionWorkItem(id: string, actor: string): Promise<Rec
 }
 
 describe('runScheduledPlanFire (system:plan-run)', () => {
+  it('runs two isolated neutral plan operations with different schemas through the shared admission contract', async () => {
+    const secondTemplate = 'score-template';
+    const secondContent = '# Score Template\n\n## Now\n**State:** ready.\n**Next:** score.\n\n## Phase 1\n\n- **P-001** `todo` score the batch';
+    await materializePlanSchedule({
+      workspaceId: WS, harnessSlug: HARNESS, templateSlug: TEMPLATE,
+      schedule: { kind: 'rrule', rrule: 'FREQ=DAILY', dtstart: '2026-01-01T09:00:00.000Z' },
+      concurrency: 'queue', sql,
+    });
+    await sql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
+      VALUES (${WS}, ${APP_HARNESS}, ${secondTemplate}, 'Score Template', 'active',
+              ${secondContent}, ${hashPlanContent(secondContent)},
+              ${JSON.stringify([{ id: 'P-001', text: 'score the batch', status: 'todo' }])}::text::jsonb)`;
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET acceptance_bar_epoch = NULL, acceptance_bar_cohort = NULL
+       WHERE workspace_id = ${WS} AND harness_slug = ${APP_HARNESS} AND plan_slug = ${secondTemplate}`;
+    await materializePlanSchedule({
+      workspaceId: WS, harnessSlug: APP_HARNESS, templateSlug: secondTemplate,
+      schedule: { kind: 'rrule', rrule: 'FREQ=DAILY', dtstart: '2026-01-01T09:00:00.000Z' },
+      concurrency: 'queue', sql,
+    });
+    const consumers = [
+      { harness: HARNESS, template: TEMPLATE, content: TEMPLATE_CONTENT,
+        operationId: 'extract-plan', callerId: 'pi:extract-consumer', input: { segment: 'east' },
+        expectedPhase: 'waiting',
+        outputSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } } },
+      { harness: APP_HARNESS, template: secondTemplate, content: secondContent,
+        operationId: 'score-plan', callerId: 'pi:score-consumer', input: { count: 7 },
+        expectedPhase: 'accepted',
+        outputSchema: { type: 'object', required: ['score'], properties: { score: { type: 'integer' } } } },
+    ] as const;
+    const handles = [];
+    for (const consumer of consumers) {
+      const [key, value] = Object.entries(consumer.input)[0]!;
+      const source = {
+        id: `neutral-${consumer.operationId}`, workItem: { kind: 'feature' },
+        roles: [{ id: 'worker' }],
+        spine: { steps: [{ id: 'open', op: 'coord:thread-open', args: { title: consumer.operationId } }] },
+        operations: [{
+          id: 'root-program', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
+          execution: { kind: 'program' },
+          inputSchema: { type: 'object', required: [key], additionalProperties: false,
+            properties: { [key]: { type: typeof value === 'number' ? 'integer' : 'string' } } },
+          acceptance: { resultSchema: consumer.outputSchema },
+        }, {
+          id: consumer.operationId, version: '1',
+          target: { kind: 'plan', template: { kind: 'plan-template', ref: consumer.template,
+            revision: '0', contentHash: hashPlanContent(consumer.content) } },
+          inputSchema: { type: 'object', required: [key], additionalProperties: false,
+            properties: { [key]: { type: typeof value === 'number' ? 'integer' : 'string' } } },
+          acceptance: { resultSchema: consumer.outputSchema },
+        }, {
+          id: 'leaf', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
+          execution: { kind: 'agent', role: 'worker' },
+          inputSchema: { type: 'object', required: [key], additionalProperties: false,
+            properties: { [key]: { type: typeof value === 'number' ? 'integer' : 'string' } } },
+          acceptance: { resultSchema: consumer.outputSchema },
+        }],
+      };
+      await projectBlueprintToPg(sql, { workspaceId: WS, harnessSlug: consumer.harness,
+        blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }) });
+      const request = { workspaceId: WS, harnessSlug: consumer.harness, callerId: consumer.callerId,
+        operationId: consumer.operationId, requestKey: 'neutral-plan', input: consumer.input };
+      const handle = await submitBlueprintOperation(sql, request);
+      expect(handle.target.kind).toBe('plan');
+      expect(await submitBlueprintOperation(sql, request)).toEqual(handle);
+      await expect(submitBlueprintOperation(sql, { ...request, input: { [key]: typeof value === 'number' ? 8 : 'west' } }))
+        .rejects.toThrow('reused with different input');
+      expect(await getBlueprintOperationStatus(sql, handle, consumer.callerId))
+        .toMatchObject({ phase: consumer.expectedPhase, outcome: null });
+      handles.push(handle);
+      const root = await submitBlueprintOperation(sql, {
+        ...request, operationId: 'root-program', requestKey: 'neutral-program',
+      });
+      if (root.target.kind !== 'work-item') throw new Error('program root must be a work item');
+      const [rootRow] = await sql<Array<{ updated_ts: string | number }>>`
+        SELECT updated_ts FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND harness_slug = ${consumer.harness}
+           AND feature_id = ${root.target.id}`;
+      const parent = { blueprintId: source.id, payload: {}, callerId: consumer.callerId,
+        workspaceId: WS, harnessSlug: consumer.harness, workItemId: root.target.id,
+        runId: 'neutral-program', acceptedAttemptUpdatedTs: Number(rootRow.updated_ts),
+        acceptedOperation: root };
+      const planChildRequest = { stepId: 'op-plan', operationId: consumer.operationId,
+        input: consumer.input };
+      const planChild = await submitAcceptedCoordProgramChild(sql, parent, planChildRequest);
+      expect(planChild.target.kind).toBe('plan');
+      expect(planChild.specificationRevision).toBe(root.specificationRevision);
+      expect(await submitAcceptedCoordProgramChild(sql, parent, planChildRequest)).toEqual(planChild);
+      expect(await loadAcceptedCoordProgramChild(sql, parent, 'plan', consumer.operationId))
+        .toEqual(planChild);
+      const leafChildRequest = { stepId: 'op-leaf', operationId: 'leaf', input: consumer.input };
+      const leafChild = await submitAcceptedCoordProgramChild(sql, parent, leafChildRequest);
+      expect(leafChild.target.kind).toBe('work-item');
+      expect(leafChild.specificationRevision).toBe(root.specificationRevision);
+      expect(await loadAcceptedCoordProgramChild(sql, parent, 'leaf', 'leaf')).toEqual(leafChild);
+      await expect(getBlueprintOperationStatus(sql, planChild,
+        consumers.find((candidate) => candidate.callerId !== consumer.callerId)!.callerId))
+        .rejects.toThrow('does not match its durable receipt');
+    }
+    expect(handles[0]!.target).not.toEqual(handles[1]!.target);
+    await expect(getBlueprintOperationStatus(sql, handles[0]!, consumers[1]!.callerId))
+      .rejects.toThrow('does not match its durable receipt');
+    await expect(cancelBlueprintOperation(sql, handles[1]!, consumers[0]!.callerId,
+      { requestKey: 'foreign-cancel', reason: 'foreign' }))
+      .rejects.toThrow('does not match its durable receipt');
+    const [counts] = await sql<Array<{ runs: number; instances: number }>>`
+      SELECT (SELECT count(*)::int FROM harness_shared.plan_runs
+                WHERE workspace_id = ${WS} AND harness_slug IN (${HARNESS}, ${APP_HARNESS})) AS runs,
+             (SELECT count(*)::int FROM harness_shared.harness_plans
+                WHERE workspace_id = ${WS} AND harness_slug IN (${HARNESS}, ${APP_HARNESS})
+                  AND plan_slug LIKE '%@run-%') AS instances`;
+    expect(counts).toEqual({ runs: 4, instances: 4 });
+  }, 90_000);
+
   it('lets an accepted program invoke a pinned plan child and wait for the canonical plan outcome', async () => {
     const rubric = { rubricId: 'plan-child-result-quality', characteristic: 'quality',
       description: 'Final plan output quality', methodRef: null,

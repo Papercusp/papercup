@@ -42,6 +42,11 @@ const render = (over: Partial<WorkspaceHostDesktopPackInput> = {}): string =>
   buildWorkspaceHostDesktopPackScript(input(over)).script;
 
 describe('P-012 / D-018 — the pack is a layer, not a base image', () => {
+  it('rejects uninstall rather than rendering an install script that attests uninstall', () => {
+    expect(() => render({ action: 'uninstall' })).toThrow(/uninstall is not implemented; only install is supported/);
+    expect(render({ action: 'install' })).toContain('retry 5 apt_install');
+  });
+
   it('installs a fixed isolated runtime with a service-only socket and cgroup teardown', () => {
     const script = render();
     expect(script).toContain('bin/papercusp-desktop-session.cjs');

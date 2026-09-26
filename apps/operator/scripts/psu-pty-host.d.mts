@@ -1901,6 +1901,23 @@ export function mcpServerRowStatus(line: any, name: any): "unknown" | "connected
  *  only one server). Scans freshest-line-first; the first decisive row wins.
  *  Pure — exported for tests. */
 export function mcpConnectedVerdict(visible: any, name: any): boolean;
+/** A scripted, fresh headless role must have its signed MCP server before its
+ * first task turn. Claude does not reliably retry a failed startup catalog fetch. */
+export function headlessRoleKickoffRequiresMcp({ agent, role, headless, hasKickoff, isResume }: {
+    agent: any;
+    role: any;
+    headless: any;
+    hasKickoff: any;
+    isResume: any;
+}): boolean;
+/** Reuse the existing closed-loop /mcp walker, with one bounded second chance
+ * for a server that was still connecting when the first dialog opened. */
+export function verifyHeadlessRoleMcp(connect: any, attempts?: number): Promise<{
+    attempts: number;
+    ok: boolean;
+    step: string;
+    detail: string;
+}>;
 /** Is the ❯ selection cursor on the (freshest) dialog row matching `test`?
  *  Parses an ANSI-stripped visible chunk; the LAST matching line reflects the
  *  most recent repaint. Pure — exported for tests. */

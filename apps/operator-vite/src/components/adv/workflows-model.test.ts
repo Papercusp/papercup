@@ -201,4 +201,123 @@ describe('automations model', () => {
     expect(sources.map((source) => source.label)).toEqual(['Schedule', 'slack', 'gmail']);
     expect(sources.find((source) => source.label === 'slack')?.armedCount).toBe(1);
   });
+
+  it("groups operation bindings and joins their canonical work-item target outcome", () => {
+    const input = fixture();
+    const operationBinding = {
+      ...input.external!.bindings[0]!,
+      id: "33333333-3333-4333-8333-333333333333",
+      planHarnessSlug: null,
+      planSlug: null,
+      action: {
+        type: "blueprint-operation",
+        operationHarnessSlug: "papercusp",
+        operationId: "triage-message",
+      },
+      lastRun: {
+        id: "run-operation",
+        status: "succeeded",
+        triggeredAt: "2026-08-22T19:30:00.000Z",
+        completedAt: "2026-08-22T19:30:01.000Z",
+        error: null,
+      },
+    };
+    input.external!.bindings.push(operationBinding);
+    input.external!.recentRuns.push({
+      ...input.external!.recentRuns[0]!,
+      id: "run-operation",
+      bindingId: operationBinding.id,
+      planHarnessSlug: null,
+      planSlug: null,
+      triggeredAt: operationBinding.lastRun.triggeredAt,
+      blueprintOperation: {
+        workspaceId: "papercusp-workspace",
+        harnessSlug: "papercusp",
+        receiptId: 41,
+        operationId: "triage-message",
+        specificationRevision: "a".repeat(64),
+        target: { kind: "work-item", id: "WI-41", status: "done" },
+      },
+    });
+
+    const operation = buildAutomationItems(input).find(
+      (item) => item.kind === "triggered-operation",
+    );
+    expect(operation).toMatchObject({
+      id: "operation:papercusp:triage-message",
+      label: "triage-message",
+      planSlug: null,
+      operation: {
+        harnessSlug: "papercusp",
+        operationId: "triage-message",
+        specificationRevision: "a".repeat(64),
+        target: { kind: "work-item", id: "WI-41", status: "done" },
+      },
+      flow: {
+        sourceLabel: "Slack",
+        planDetail: "papercusp · blueprint operation",
+        outcomeLabel: "Work item WI-41",
+        outcomeDetail: "Done · spec aaaaaaaa",
+        outcomeState: "completed",
+      },
+    });
+    expect(
+      buildAutomationActivity(input).find(
+        (row) => row.id === "external-run:run-operation",
+      ),
+    ).toMatchObject({
+      automationId: "operation:papercusp:triage-message",
+      label: "papercusp#triage-message · slack",
+    });
+  });
+
+  it("renders an operation plan target from its actual run status and outcome", () => {
+    const input = fixture();
+    const binding = {
+      ...input.external!.bindings[0]!,
+      id: "44444444-4444-4444-8444-444444444444",
+      planHarnessSlug: null,
+      planSlug: null,
+      action: {
+        type: "blueprint-operation",
+        operationHarnessSlug: "papercusp",
+        operationId: "daily-triage",
+      },
+    };
+    input.external!.bindings = [binding];
+    input.external!.recentRuns = [
+      {
+        ...input.external!.recentRuns[0]!,
+        id: "run-plan-operation",
+        bindingId: binding.id,
+        planHarnessSlug: null,
+        planSlug: null,
+        blueprintOperation: {
+          workspaceId: "papercusp-workspace",
+          harnessSlug: "papercusp",
+          receiptId: 42,
+          operationId: "daily-triage",
+          specificationRevision: "b".repeat(64),
+          target: {
+            kind: "plan",
+            runId: 88,
+            instanceSlug: "daily-triage@run-88",
+            status: "failed",
+            outcome: "failed",
+          },
+        },
+      },
+    ];
+    const operation = buildAutomationItems(input).find(
+      (item) => item.kind === "triggered-operation",
+    );
+    expect(operation).toMatchObject({
+      needsAttention: true,
+      flow: {
+        outcomeLabel: "Plan daily-triage@run-88",
+        outcomeDetail: "Failed · Failed · spec bbbbbbbb",
+        outcomeState: "failed",
+      },
+    });
+  });
 });

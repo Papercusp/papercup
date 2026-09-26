@@ -159,6 +159,29 @@ beforeEach(() => {
 });
 
 describe('coord:declare-intent lane validation (EI-356)', () => {
+  it('resolves an omitted harness from the session context for a cross-harness plan lane', async () => {
+    getPlanRow.mockResolvedValue(rowWithItems(['P-004']));
+    const res = parse(await tool.handler(
+      { intent: 'portal plan', current_plan_slug: 'portal-session-search-parity', items: ['P-004'] },
+      { harnessSlug: 'portal' },
+    ));
+    expect(res.ok).toBe(true);
+    expect(resolvePlanScope).toHaveBeenCalledWith({ harnessSlug: 'portal' });
+    expect(getPlanRow).toHaveBeenCalledWith('portal-session-search-parity', { harnessSlug: 'portal' });
+    expect(reconcileDeclaredClaims).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an explicit harness authoritative over the session context', async () => {
+    getPlanRow.mockResolvedValue(rowWithItems(['P-004']));
+    const res = parse(await tool.handler(
+      { intent: 'portal plan', current_plan_slug: 'portal-session-search-parity', items: ['P-004'], harness: 'portal' },
+      { harnessSlug: 'papercusp' },
+    ));
+    expect(res.ok).toBe(true);
+    expect(resolvePlanScope).toHaveBeenCalledWith({ harnessSlug: 'portal' });
+    expect(getPlanRow).toHaveBeenCalledWith('portal-session-search-parity', { harnessSlug: 'portal' });
+  });
+
   it('items that parse as plan items are claimed (the happy path is unchanged)', async () => {
     getPlanRow.mockResolvedValue(rowWithItems(['P-001', 'P-002']));
     const res = parse(

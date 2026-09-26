@@ -1044,6 +1044,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         if (
           outcome.channel === 'resume' ||
           outcome.channel === 'resume-headless' ||
+          outcome.channel === 'cold-fresh-successor' ||
           outcome.channel === 'resume-rehome-backend' ||
           outcome.channel === 'plan-run-resume'
         ) {

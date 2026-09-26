@@ -132,12 +132,51 @@ describe('buildWorkflowGraph — nodes trace to real binding fields', () => {
     ]);
   });
 
-  it('never invents a recipe or outcome node — neither has a binding field today', () => {
+  it("renders the actual canonical target reached by an operation receipt", () => {
     const graph = buildWorkflowGraph({
-      binding: binding({ eventFilter: { 'attendees.0': { exists: true } }, action: { type: 'coord:send' } }),
+      binding: binding({
+        planHarnessSlug: null,
+        planSlug: null,
+        action: {
+          type: "blueprint-operation",
+          operationHarnessSlug: "papercusp",
+          operationId: "triage-message",
+        },
+      }),
+      operationTarget: {
+        kind: "plan",
+        runId: 88,
+        instanceSlug: "triage-message@run-88",
+        status: "done",
+        outcome: "success",
+      },
     });
-    expect(graph.nodes.some((n) => n.kind === 'recipe')).toBe(false);
-    expect(graph.nodes.some((n) => n.kind === 'outcome')).toBe(false);
+    expect(graph.nodes.map((node) => node.kind)).toEqual([
+      "trigger",
+      "tool",
+      "outcome",
+    ]);
+    expect(graph.nodes.at(-1)).toMatchObject({
+      label: "triage-message@run-88",
+      detail: "plan run #88 · done · success",
+      meta: "canonical operation target",
+      state: "ok",
+    });
+    expect(graph.edges.map((edge) => `${edge.from}->${edge.to}`)).toEqual([
+      "trigger->operation",
+      "operation->outcome",
+    ]);
+  });
+
+  it("never invents recipe or outcome nodes without a canonical operation target", () => {
+    const graph = buildWorkflowGraph({
+      binding: binding({
+        eventFilter: { "attendees.0": { exists: true } },
+        action: { type: "coord:send" },
+      }),
+    });
+    expect(graph.nodes.some((n) => n.kind === "recipe")).toBe(false);
+    expect(graph.nodes.some((n) => n.kind === "outcome")).toBe(false);
   });
 });
 

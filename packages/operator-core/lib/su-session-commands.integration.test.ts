@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { Hono } from 'hono';
 import { SU_SESSION_SCHEMA, type SuSessionDescriptor } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../test/_org-test-db';
 
@@ -12,6 +13,7 @@ const { createOrgTestDb } = await import('../test/_org-test-db');
 const { pgSuSessionCommandStore } = await import('./su-session-commands');
 const { SuSessionHost, _resetSuSessionHostsForTest, registerSuSessionHost } = await import('./su-session-host');
 const { suSessionRoutes } = await import('./endpoint-route/routes/agent-chats/su-session');
+const { registerRoute } = await import('./endpoint-route/define-route');
 const { runWithWorkspace } = await import('./workspace-als');
 
 const workspaceId = 'papercusp-workspace';
@@ -101,6 +103,72 @@ describe('SU command acceptance through real PostgreSQL', () => {
     expect((await replay.terminal).status).toBe('completed');
     expect(execute).toHaveBeenCalledTimes(1);
     expect(await storedTurns()).toHaveLength(1);
+  });
+
+  it('EI-24367810949873789: preserves a committed acceptance after the HTTP deadline without executing a retry twice', async () => {
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = new SuSessionHost({ descriptor: descriptor(), executeCommand: execute });
+    registerSuSessionHost(host);
+    const command = ownerTurn('delayed-reservation');
+    let releaseLock!: () => void;
+    let reportLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { reportLocked = resolve; });
+    const release = new Promise<void>((resolve) => { releaseLock = resolve; });
+    const blocker = sql.begin(async (tx) => {
+      await tx`SELECT id FROM harness_shared.agent_chats_consolidated
+        WHERE workspace_id = ${workspaceId} AND id = ${agentChatId} FOR UPDATE`;
+      reportLocked();
+      await release;
+      // Read through the lock-holding transaction: the fixture has two pool
+      // connections and the other is waiting to reserve the turn.
+      const [row] = await tx<{ transcript: unknown[] }[]>`
+        SELECT transcript FROM harness_shared.agent_chats_consolidated
+         WHERE workspace_id = ${workspaceId} AND id = ${agentChatId}`;
+      expect(row.transcript).toHaveLength(0);
+    });
+    await locked;
+
+    let reportDeadline!: () => void;
+    const deadline = new Promise<void>((resolve) => { reportDeadline = resolve; });
+    const route = suSessionRoutes.find((candidate) => candidate.method === 'POST')!;
+    const app = new Hono();
+    registerRoute(app, {
+      ...route,
+      auth: 'public', // Isolate dispatch/receipt behavior from the socket auth layer.
+      timeoutSec: 0.01,
+      handler: (request, context) => {
+        context.signal.addEventListener('abort', reportDeadline, { once: true });
+        return route.handler(request, context);
+      },
+    });
+    const send = () => runWithWorkspace(workspaceId, () => app.request(
+      '/harness/' + harnessSlug + '/agent-chats/' + agentChatId + '/su-session/commands',
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(command) },
+    ));
+    const pending = send();
+    try {
+      await deadline;
+      expect(execute).not.toHaveBeenCalled();
+      releaseLock();
+      await blocker;
+
+      const response = await pending;
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({ ok: true, accepted: { status: 'accepted' } });
+      const dispatch = await host.acceptCommand(command);
+      expect((await dispatch.terminal).status).toBe('completed');
+      const replay = await send();
+      expect(replay.status).toBe(202);
+      expect(await replay.json()).toMatchObject({ ok: true, replayed: true });
+      expect(execute).toHaveBeenCalledTimes(1);
+      const turns = await storedTurns();
+      expect(turns).toHaveLength(1);
+      expect(turns[0].content).toBe(command.content);
+    } finally {
+      releaseLock();
+      await blocker;
+      await pending;
+    }
   });
 
   it('reserves one turn under concurrent connections', async () => {

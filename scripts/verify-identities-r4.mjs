@@ -16,6 +16,7 @@ import postgres from "postgres";
 import { execFileSync } from "node:child_process";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { redactIdentityLeaks } from "./lib/identity-leak-patterns.mjs";
+import { openDeliveryLedger } from "../apps/operator/scripts/hooks/inject/delivery-ledger.mjs";
 
 /**
  * Serialize the evidence artifact with every identity-leak class scrubbed.
@@ -95,6 +96,24 @@ export function requireRollbackResponse({ poll, readResponse }) {
     throw new Error(`real rollback route refused the mutation: ${JSON.stringify(response)}`);
   }
   return response;
+}
+
+/** Exercise the real hook's ACK-on-emission protocol for the isolated fixture. */
+export async function confirmFixtureDelivery({ request, emit, ledger }) {
+  if (!ledger) throw new Error("fixture delivery ledger is unavailable");
+  const rendered = await request(ledger.confirmed());
+  if (rendered?.ok !== true || typeof rendered.text !== "string" || !rendered.text.trim()) {
+    throw new Error("fixture host received no rendered control context");
+  }
+  // A fresh-context transition may have no confirmable candidate yet. Preserve
+  // that pending state; the caller's activation assertions decide what it proves.
+  if (!rendered.deliveryToken) return rendered;
+  ledger.offer(rendered.deliveryToken);
+  await emit(rendered.text);
+  if (!ledger.commit()) throw new Error("fixture delivery emission was not recorded");
+  const acknowledged = await request(ledger.confirmed());
+  if (acknowledged?.ok !== true) throw new Error("fixture delivery confirmation failed");
+  return acknowledged;
 }
 
 const required = (name) => {
@@ -267,7 +286,20 @@ const observeActivation = async (label) => {
 };
 
 const acknowledgeRealHost = async (label) => {
-  const responseText = evalFile(`
+  const ledger = openDeliveryLedger(owner);
+  let attempt = 0;
+  return confirmFixtureDelivery({
+    ledger,
+    emit: (text) => {
+      // This is the disposable R-4 host fixture, never the real R-7 subject.
+      // Persist the emitted context before the canonical ledger can confirm it.
+      const path = resolve(outDir, `${label}-emitted.txt`);
+      writeFileSync(path, text);
+      evidence.steps.push({ label: `${label}-emitted`, path, host: "isolated fixture" });
+    },
+    request: async (confirmedDelivery) => {
+      const requestLabel = attempt++ === 0 ? label : `${label}-confirm-delivery`;
+      const responseText = evalFile(`
     fetch('/api/agent-mcp/turn-start-memory', {
       method: 'POST',
       headers: {'content-type': 'application/json'},
@@ -276,18 +308,21 @@ const acknowledgeRealHost = async (label) => {
         workspace: ${JSON.stringify(workspace)},
         prompt: 'identity activation acknowledgement',
         client: 'codex',
+        confirmedDelivery: ${JSON.stringify(confirmedDelivery)},
       }),
     }).then(async (response) => JSON.stringify({status: response.status, body: await response.text()}))
-  `, label);
-  let response;
-  try {
-    response = JSON.parse(responseText);
-  } catch {
-    throw new Error(`${label} returned non-JSON response: ${responseText}`);
-  }
-  evidence.steps.push({ label, response });
-  if (response.status !== 200) throw new Error(`${label} failed: ${responseText}`);
-  return response;
+      `, requestLabel);
+      let response;
+      try {
+        response = JSON.parse(responseText);
+      } catch {
+        throw new Error(`${label} returned non-JSON response: ${responseText}`);
+      }
+      evidence.steps.push({ label: requestLabel, response });
+      if (response.status !== 200) throw new Error(`${label} failed: ${responseText}`);
+      return JSON.parse(response.body);
+    },
+  });
 };
 
 const syncInvalidations = (label) => {

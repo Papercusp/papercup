@@ -734,12 +734,24 @@ describe('POST /workspace-hosts/action existing-host lifecycle', () => {
       workspaceId: 'host-1',
       snapshot,
       desired: restored,
+      canary,
     });
     expect(restore.status).toBe(200);
     await expect(restore.json()).resolves.toMatchObject({ hostId: 'host-restored-1' });
     expect(startLifecycle).toHaveBeenLastCalledWith(
-      expect.objectContaining({ action: 'restore', snapshot, desired: restored }),
+      expect.objectContaining({ action: 'restore', snapshot, desired: restored, canary }),
     );
+  });
+
+  it('refuses a canary restore without pre-run economics instead of accepting an unaccountable run', async () => {
+    const { dependencies, startLifecycle } = harness();
+    const response = await post(dependencies, {
+      action: 'restore', workspaceId: 'host-1',
+      snapshot: { target: 'gcp', providerId: 'snapshot-1', hostId: 'host-1' },
+      desired: { ...desired, hostId: 'host-restored-1' },
+    });
+    expect(response.status).toBe(422);
+    expect(startLifecycle).not.toHaveBeenCalled();
   });
 
   // EI-23712230399040759: a workflow still running after the admission window is ACCEPTED work.

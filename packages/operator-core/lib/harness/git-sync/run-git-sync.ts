@@ -1362,13 +1362,14 @@ export interface RunGitSyncOpts {
    * submodule paths are mapped to that repo's relative coordinate space below.
    */
   excludePaths?: string[];
-  /** Structured live lock holdings. `excludePaths` remains the staging filter for clean-held paths. */
+  /** Initial live lock holdings, including clean-held paths; replaced by a successful authoritative refresh. */
   liveLockHoldings?: GitSyncLockHolding[];
   /**
    * Re-read the live edit-lock plane immediately before staging each dirty repo.
    * The callback returns superproject-root-relative holdings; runGitSync maps
    * them into each repo's coordinate space before passing them to commitOneRepo.
-   * A rejected refresh fails closed and prevents that repo from staging.
+   * A successful refresh replaces the initial holdings; explicit excludePaths
+   * remain protected. A rejected refresh fails closed and prevents staging.
    */
   refreshLiveLockHoldings?: () => Promise<GitSyncLockHolding[]>;
   /** Override the content-guard detector registry (tests / future extension).
@@ -3700,7 +3701,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // attribution add or catch-all staging command, and fail closed if the
     // lock plane cannot be read.
     let protectedHoldings = o.protectedHoldings;
-    let effectiveExcludePaths = o.excludePaths;
+    let effectiveExcludePaths = [...o.excludePaths, ...protectedHoldings.map((holding) => holding.path)];
     if (o.refreshLiveLockHoldings) {
       let refreshedHoldings: GitSyncLockHolding[];
       try {
@@ -3718,11 +3719,10 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
           skippedPaths,
         };
       }
-      // Prefer the latest provenance for a path while retaining the original
-      // snapshot as a conservative fallback if a concurrent lock read is
-      // eventually consistent. New paths are always added to both projections.
+      // The strict lock-plane read is authoritative, including releases. A
+      // union with the setup snapshot would strand completed edits for the
+      // rest of a long tick. Keep explicit exclusions separate from holdings.
       const byPath = new Map<string, GitSyncLockHolding>();
-      for (const holding of o.protectedHoldings) byPath.set(holding.path, holding);
       for (const holding of refreshedHoldings) {
         const path = holding.path.trim();
         if (path.length > 0) byPath.set(path, { ...holding, path });

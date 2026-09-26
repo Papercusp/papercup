@@ -21,6 +21,7 @@ import { parseAsString, useQueryState } from 'nuqs';
 import WorkflowAgentPanel from './WorkflowAgentPanel';
 import WorkflowGraphPane from './WorkflowGraphPane';
 import { buildWorkflowGraph, type WorkflowBindingInput } from './workflow-graph-model';
+import type { AutomationOperationTarget } from "./workflows-model";
 import './adv-workflow-detail.css';
 
 export interface WorkflowDetailViewProps {
@@ -36,11 +37,13 @@ export interface WorkflowDetailViewProps {
   bindingLoaded: boolean;
   /** From plans:get-output-schema (P-026); null when not read. */
   planChainable?: boolean | null;
+  /** Latest canonical item/plan target reached by an operation binding. */
+  operationTarget?: AutomationOperationTarget | null;
   /** Human relative time of the last run, e.g. "last fired 09:30"; null when never fired. */
   lastFiredLabel?: string | null;
   /** The test execution just queued from this surface, before the refreshed activity feed catches up. */
   lastTestRunId?: string | null;
-  busy: 'arm' | 'test' | null;
+  busy: "arm" | "test" | null;
   onBack: () => void;
   onToggleArm: () => void;
   onTest: () => void;
@@ -53,6 +56,7 @@ export default function WorkflowDetailView({
   binding,
   bindingLoaded,
   planChainable = null,
+  operationTarget = null,
   lastFiredLabel = null,
   lastTestRunId = null,
   busy,
@@ -60,7 +64,10 @@ export default function WorkflowDetailView({
   onToggleArm,
   onTest,
 }: WorkflowDetailViewProps) {
-  const [selectedNodeId, setSelectedNodeId] = useQueryState('wfNode', parseAsString);
+  const [selectedNodeId, setSelectedNodeId] = useQueryState(
+    "wfNode",
+    parseAsString,
+  );
 
   const graph = useMemo(
     () =>
@@ -69,8 +76,9 @@ export default function WorkflowDetailView({
         binding,
         loaded: bindingLoaded,
         planChainable,
+        operationTarget,
       }),
-    [workflowLabel, binding, bindingLoaded, planChainable],
+    [workflowLabel, binding, bindingLoaded, operationTarget, planChainable],
   );
 
   const selectedNode = useMemo(
@@ -90,7 +98,11 @@ export default function WorkflowDetailView({
   return (
     <div className="pc-workflow-detail">
       <header className="pc-workflow-detail__head">
-        <button type="button" className="pc-workflow-detail__back" onClick={onBack}>
+        <button
+          type="button"
+          className="pc-workflow-detail__back"
+          onClick={onBack}
+        >
           ← Workflows
         </button>
         <div className="pc-workflow-detail__ident">
@@ -98,17 +110,25 @@ export default function WorkflowDetailView({
           <div className="pc-workflow-detail__meta">
             <span
               className="pc-workflow-detail__badge"
-              data-armed={armed === null ? 'unknown' : String(armed)}
+              data-armed={armed === null ? "unknown" : String(armed)}
             >
-              {armed === null ? 'Unwired' : armed ? 'Armed' : 'Disarmed'}
+              {armed === null ? "Unwired" : armed ? "Armed" : "Disarmed"}
             </span>
-            {lastFiredLabel ? <span className="pc-workflow-detail__lastfired">{lastFiredLabel}</span> : null}
+            {lastFiredLabel ? (
+              <span className="pc-workflow-detail__lastfired">
+                {lastFiredLabel}
+              </span>
+            ) : null}
           </div>
         </div>
       </header>
 
       <div className="pc-workflow-detail__body">
-        <WorkflowGraphPane graph={graph} selectedNodeId={selectedNodeId} onSelectNode={handleSelectNode} />
+        <WorkflowGraphPane
+          graph={graph}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={handleSelectNode}
+        />
         <WorkflowAgentPanel
           harnessSlug={harnessSlug}
           workflowLabel={workflowLabel}

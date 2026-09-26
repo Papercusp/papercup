@@ -131,10 +131,11 @@ export interface LedgerSourceInput {
   bindingCount: number;
 }
 
-const KIND_BY_AUTOMATION: Record<AutomationItem['kind'], LedgerKind> = {
-  'triggered-plan': 'triggered',
-  'ai-routine': 'routine',
-  'system-task': 'system',
+const KIND_BY_AUTOMATION: Record<AutomationItem["kind"], LedgerKind> = {
+  "triggered-plan": "triggered",
+  "triggered-operation": "triggered",
+  "ai-routine": "routine",
+  "system-task": "system",
 };
 
 function sentenceCase(value: string): string {
@@ -167,7 +168,8 @@ function armedSummary(triggers: readonly AutomationTrigger[]): {
  * rows of zeros.
  */
 export function spendToken(item: AutomationItem): string {
-  if (item.kind === 'triggered-plan') return 'per run';
+  if (item.kind === "triggered-plan" || item.kind === "triggered-operation")
+    return "per run";
   const spend = item.routine?.spend;
   if (spend === 'none') return '$0';
   if (spend === 'unknown') return 'unknown';
@@ -178,7 +180,10 @@ function chainFor(item: AutomationItem): LedgerChain {
   const providers = [...new Set(item.triggers.map((trigger) => sentenceCase(trigger.provider)))];
   const trigger = item.flow?.sourceLabel
     ?? (providers.length === 0 ? 'No trigger' : providers.length <= 2 ? providers.join(' + ') : `${providers[0]} + ${providers.length - 1} more`);
-  const plan = item.planSlug ?? (item.kind === 'ai-routine' ? 'routine' : 'system task');
+  const plan = item.operation
+    ? `${item.operation.harnessSlug}#${item.operation.operationId}`
+    : (item.planSlug ??
+      (item.kind === "ai-routine" ? "routine" : "system task"));
   const outcome = item.flow?.outcomeLabel?.trim() || null;
   return { trigger, plan, outcome };
 }

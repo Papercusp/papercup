@@ -242,6 +242,7 @@ export interface WorkspaceHostDesktopPackIsolation {
 
 export interface WorkspaceHostDesktopPackInput {
   contractVersion: typeof WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION;
+  /** Uninstall is reserved by the contract but not implemented; the builder rejects it. */
   action: 'install' | 'uninstall';
   hostId: string;
   artifact?: WorkspaceHostDesktopPackArtifact;
@@ -312,6 +313,12 @@ export function buildWorkspaceHostDesktopPackScript(
     throw new Error(
       `Desktop pack contract mismatch: expected ${WORKSPACE_HOST_DESKTOP_PACK_CONTRACT_VERSION}`,
     );
+  }
+  // The privileged script only installs. Never render an install script labelled
+  // "uninstall": that would make a destructive caller run apt installs and then
+  // falsely attest success. Reject before constructing any shell commands.
+  if (input.action !== 'install') {
+    throw new Error(`Desktop pack action ${String(input.action)} is not implemented; only install is supported`);
   }
   if (!input.hostId.trim()) throw new Error('Desktop pack requires a hostId');
   if (input.publicMetadata) {

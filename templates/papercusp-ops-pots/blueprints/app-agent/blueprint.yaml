@@ -77,6 +77,10 @@ operations:
       properties:
         "{{OPERATION_INPUT_FIELD}}":
           type: string
+        provenance:
+          type: object
+        trigger:
+          type: object
       required:
         - "{{OPERATION_INPUT_FIELD}}"
       additionalProperties: false

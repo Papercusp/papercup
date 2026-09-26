@@ -114,6 +114,38 @@ describe('WorkflowDetailView — read-only topology (D-016)', () => {
     expect(arg.edges[0]).toMatchObject({ sources: ['trigger'], targets: ['filter'] });
   });
 
+  it("draws source to operation to the actual canonical target", async () => {
+    renderView({
+      planSlug: null,
+      binding: binding({
+        planHarnessSlug: null,
+        planSlug: null,
+        action: {
+          type: "blueprint-operation",
+          operationHarnessSlug: "papercusp",
+          operationId: "triage-message",
+        },
+      }),
+      operationTarget: { kind: "work-item", id: "WI-41", status: "done" },
+    });
+    await waitFor(() => expect(H.layout).toHaveBeenCalled());
+    const arg = H.layout.mock.calls[0][0] as {
+      children: Array<{ id: string }>;
+      edges: Array<{ sources: string[]; targets: string[] }>;
+    };
+    expect(arg.children.map((child) => child.id)).toEqual([
+      "trigger",
+      "filter",
+      "operation",
+      "outcome",
+    ]);
+    expect(arg.edges.at(-1)).toMatchObject({
+      sources: ["operation"],
+      targets: ["outcome"],
+    });
+    expect(screen.getByRole("button", { name: /WI-41/ })).toBeTruthy();
+  });
+
   it('surfaces a layout failure instead of rendering a blank canvas', async () => {
     // A silently empty graph is indistinguishable from "this workflow does nothing".
     H.layout.mockRejectedValue(new Error('elk exploded'));

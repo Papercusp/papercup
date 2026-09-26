@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Hono } from 'hono';
 import {
   SU_SESSION_PROTOCOL_VERSION,
   SU_SESSION_SCHEMA,
@@ -16,6 +17,8 @@ import {
   type SuSessionCommandExecutor,
 } from './su-session-host';
 import type { SuSessionCommandStore } from './su-session-commands';
+
+vi.mock('./endpoint-route/telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
 const supported = { state: 'supported', implementation: 'native' } as const;
 const hostSupported = { state: 'supported', implementation: 'host' } as const;
@@ -595,6 +598,70 @@ describe('restart reconciliation on the host snapshot', () => {
 });
 
 describe('agent-chat SU-session route registration', () => {
+  it('EI-24367810949873789: returns the saved owner-turn receipt after the watchdog fires', async () => {
+    const { suSessionRoutes } = await import('./endpoint-route/routes/agent-chats/su-session');
+    const { registerRoute } = await import('./endpoint-route/define-route');
+    const { DEFAULT_ROUTE_STACK } = await import('./endpoint-route/route-stack');
+    const { runWithWorkspace } = await import('./workspace-als');
+    const execute = vi.fn(async () => ({ status: 'completed' as const }));
+    const host = new SuSessionHost({ descriptor: { ...descriptor(), lifecycle: 'ready' }, executeCommand: execute });
+    registerSuSessionHost(host);
+    let commit!: () => void;
+    const committed = new Promise<void>((resolve) => { commit = resolve; });
+    const saved: unknown[] = [];
+    const store: SuSessionCommandStore = {
+      reserve: vi.fn(async (input, fingerprint) => {
+        await committed;
+        saved.push(input);
+        return { created: true, receipt: { command: input, fingerprint, acceptedAt: input.issuedAt } };
+      }),
+      finish: vi.fn(async () => {}),
+    };
+    const accept = host.acceptCommand.bind(host);
+    const spy = vi.spyOn(host, 'acceptCommand').mockImplementation((input) => accept(input, store));
+    let reportDeadline!: () => void;
+    const deadline = new Promise<void>((resolve) => { reportDeadline = resolve; });
+    const route = suSessionRoutes.find((candidate) => candidate.method === 'POST')!;
+    const app = new Hono();
+    registerRoute(app, {
+      ...route, timeoutSec: 0.01,
+      handler: (request, context) => {
+        context.signal.addEventListener('abort', reportDeadline, { once: true });
+        return route.handler(request, context);
+      },
+    }, DEFAULT_ROUTE_STACK.filter((step) => step.name === 'invoke'));
+    const turn = command('owner_turn');
+    const send = () => runWithWorkspace('papercusp-workspace', () => app.request(
+      '/harness/papercusp/agent-chats/chat-1/su-session/commands',
+      { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(turn) },
+    ));
+    const pending = send();
+    try {
+      await Promise.race([deadline, pending.then((response) => {
+        throw new Error(`command settled before the held reservation: ${response.status}`);
+      })]);
+      expect(saved).toHaveLength(0);
+      expect(execute).not.toHaveBeenCalled();
+      commit();
+      const response = await pending;
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({ ok: true, accepted: { status: 'accepted' } });
+      await (await accept(turn, store)).terminal;
+      const replay = await send();
+      expect(replay.status).toBe(202);
+      expect(await replay.json()).toMatchObject({ ok: true, replayed: true });
+      expect(saved).toEqual([turn]);
+      expect(store.reserve).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenCalledTimes(1);
+    } finally {
+      commit();
+      await pending;
+      spy.mockRestore();
+      host.dispose();
+      _resetSuSessionHostsForTest();
+    }
+  });
+
   it('mounts snapshot, resumable event, and command endpoints on agent-chats', async () => {
     const routes = (await import('./endpoint-route/routes/agent-chats/su-session')).default;
     expect(routes.map((route) => [route.method, route.path])).toEqual([

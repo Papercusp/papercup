@@ -16,12 +16,11 @@
  *   plan     ← planSlug / planHarnessSlug
  *   tool     ← action.type        (when it is NOT the default 'launch-plan')
  *
- * `recipe` and a distinct post-plan `outcome` have NO binding field to read, so this module
- * does NOT emit them. That is deliberate: a node drawn from nothing is a claim the UI cannot
- * support, and this pane's whole job is to show the operator what is really wired. The kind
- * is kept in the union so the renderer and legend are ready when the data exists — see
- * WI-40891 (plan-completed event carriage), which is what would make a real downstream
- * chain node derivable.
+ * `recipe` still has NO binding field to read, so this module does not emit it. A distinct
+ * `outcome` is emitted only for a blueprint-operation row when the caller supplies the
+ * canonical item/plan target joined from `recentRuns[].blueprintOperation`; it is never
+ * inferred from action prose. A node drawn from nothing is a claim the UI cannot support,
+ * and this pane's whole job is to show the operator what is really wired.
  *
  * ── ABSENCE IS NEVER RENDERED AS ZERO ───────────────────────────────────────────────────
  * An empty graph carries `emptyReason` saying WHY it is empty. A reader must be able to tell
@@ -46,6 +45,16 @@ export interface WorkflowGraphNode {
   meta: string | null;
   state: WorkflowNodeState;
 }
+
+export type WorkflowOutcomeTarget =
+  | { kind: "work-item"; id: string; status: string | null }
+  | {
+      kind: "plan";
+      runId: number;
+      instanceSlug: string;
+      status: string | null;
+      outcome: string | null;
+    };
 
 export interface WorkflowGraphEdge {
   id: string;
@@ -104,6 +113,8 @@ export interface BuildWorkflowGraphInput {
    * node's meta line; null when not read.
    */
   planChainable?: boolean | null;
+  /** Canonical target joined from the latest blueprint-operation receipt. */
+  operationTarget?: WorkflowOutcomeTarget | null;
 }
 
 /** Friendly provider names for the source kinds we ship adapters for. */
@@ -258,6 +269,40 @@ export function buildWorkflowGraph(input: BuildWorkflowGraphInput): WorkflowGrap
       label: describeStormPolicy(binding.stormPolicy),
     });
     previousId = operationNodeId;
+    const target = input.operationTarget ?? null;
+    if (target) {
+      const outcomeId = "outcome";
+      const status = target.status ?? "status unavailable";
+      const failed =
+        target.kind === "work-item"
+          ? ["failed", "dropped", "deprecated", "closed"].includes(status)
+          : status === "failed" ||
+            (status === "done" &&
+              target.outcome != null &&
+              target.outcome !== "success");
+      nodes.push({
+        id: outcomeId,
+        kind: "outcome",
+        label: target.kind === "work-item" ? target.id : target.instanceSlug,
+        detail:
+          target.kind === "work-item"
+            ? `work item · ${status}`
+            : `plan run #${target.runId} · ${status}${target.outcome ? ` · ${target.outcome}` : ""}`,
+        meta: "canonical operation target",
+        state: failed
+          ? "attention"
+          : status === "status unavailable"
+            ? "idle"
+            : "ok",
+      });
+      edges.push({
+        id: `${previousId}->${outcomeId}`,
+        from: previousId,
+        to: outcomeId,
+        label: null,
+      });
+      previousId = outcomeId;
+    }
   } else if (binding.planHarnessSlug && binding.planSlug) {
     // ── plan ────────────────────────────────────────────────────────────────
     const planId = 'plan';

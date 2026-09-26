@@ -599,7 +599,7 @@ describe('adoptStartingTerminalLaunch is narrowly guarded (WI-37743)', () => {
   it('COALESCEs the optional columns so adopting cannot blank existing values', () => {
     // The launcher's row already carries plan_slug/label/cwd; a plain assignment
     // would null them out whenever bootstrap happens not to pass one.
-    for (const col of ['plan_slug', 'label', 'cwd', 'mode', 'launch_argv']) {
+    for (const col of ['role', 'feature', 'plan_slug', 'label', 'cwd', 'mode', 'launch_argv']) {
       expect(adopt).toMatch(new RegExp(`${col}\\s*=\\s*COALESCE\\(`));
     }
   });

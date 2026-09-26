@@ -29,6 +29,12 @@ for an intent when you don't already know its name, call
 `tools:find("<what you need>")` — a hybrid semantic+lexical search over
 the full catalog — then call the returned tool directly.
 
+Inside Codex `functions.exec`, server verb names are exposed as normalized
+JavaScript methods. Call `tools.mcp__papercusp_su__tools_find({ query: "<what you need>" })`
+and `tools.mcp__papercusp_su__tools_invoke({ name, args })`; `tools.find` and
+`tools.invoke` are not aliases. The `tools:find` spelling is for `ptool` and
+Papercusp's catalog, not a JavaScript method name.
+
 **Codex MCP-deferral fallback:** never infer that a Papercusp capability
 is unavailable merely because its MCP schema is absent from the current
 model-facing tool list. If the whole `papercusp-su` namespace is missing,

@@ -76,18 +76,18 @@ export default defineTool({
 
     // Never wake a wildcard/human/selector — coord:wake is single-target by contract.
     if (isSelectorOrWildcard(args.to)) {
+      const payload = {
+        ok: false,
+        to: args.to,
+        queued: 0,
+        woken: 0,
+        pickupConfirmed: false,
+        error: 'not_a_single_target',
+        message: 'coord:wake is single-target — it cannot wake "*"/"human"/an audience selector (that would thunder-herd the fleet). Name one agent.',
+      };
       return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              error: 'not_a_single_target',
-              message:
-                'coord:wake is single-target — it cannot wake "*"/"human"/an audience selector (that would thunder-herd the fleet). Name one agent.',
-            }),
-          },
-        ],
+        content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+        structuredContent: payload,
       };
     }
 
@@ -97,20 +97,20 @@ export default defineTool({
     try {
       const r = await resolveRecipients([args.to], workspaceId);
       if (r.unknown.length || r.ambiguous.length) {
+        const payload = {
+          ok: false,
+          to: args.to,
+          queued: 0,
+          woken: 0,
+          pickupConfirmed: false,
+          error: 'unknown_recipient',
+          message: 'coord:wake addressed an agent not in the roster — nothing was woken. Use the short handle from [coord+N]/coord:presence, the su- prefix, or the full ownerId.',
+          ...(r.unknown.length ? { unknown_recipients: r.unknown } : {}),
+          ...(r.ambiguous.length ? { ambiguous_recipients: r.ambiguous } : {}),
+        };
         return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: false,
-                error: 'unknown_recipient',
-                message:
-                  'coord:wake addressed an agent not in the roster — nothing was woken. Use the short handle from [coord+N]/coord:presence, the su- prefix, or the full ownerId.',
-                ...(r.unknown.length ? { unknown_recipients: r.unknown } : {}),
-                ...(r.ambiguous.length ? { ambiguous_recipients: r.ambiguous } : {}),
-              }),
-            },
-          ],
+          content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+          structuredContent: payload,
         };
       }
       to = r.resolved[0] ?? args.to;

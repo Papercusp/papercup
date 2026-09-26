@@ -2034,7 +2034,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
-  it('EI-20744916065879285: passes live file-lock paths to the pure pipeline as protected exclusions', async () => {
+  it('EI-24356165312897992: passes initial locks without making them permanent explicit exclusions', async () => {
     const protectedPaths = ['packages/operator-core/lib/harness/git-sync/run-git-sync.ts', 'libs/subA/subA.txt'];
     const protectedHoldings = protectedPaths.map((path, index) => ({
       path,
@@ -2048,9 +2048,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     expect(liveLockHoldingsStrictMock).toHaveBeenCalledOnce();
     expect(runGitSyncMock.mock.calls[0]?.[1]).toMatchObject({
-      excludePaths: protectedPaths,
       liveLockHoldings: protectedHoldings,
     });
+    expect(runGitSyncMock.mock.calls[0]?.[1].excludePaths).toBeUndefined();
   });
 
   it('EI-22435583452728403: wires a guarded commit-time live-lock refresh into the pure pipeline', async () => {
@@ -2106,7 +2106,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // Unmapped, 'libs/child/src/probe.ts' matches nothing inside the child repo and the locked
     // file is committed; mapped, it is excluded as 'src/probe.ts'.
     const mapped = [{ ...held, path: 'src/probe.ts' }];
-    expect(runGitSyncMock.mock.calls[0]?.[1]).toMatchObject({ excludePaths: ['src/probe.ts'], liveLockHoldings: mapped });
+    expect(runGitSyncMock.mock.calls[0]?.[1]).toMatchObject({ liveLockHoldings: mapped });
+    expect(runGitSyncMock.mock.calls[0]?.[1].excludePaths).toBeUndefined();
     expect(observedRefresh).toEqual(mapped);
   });
 

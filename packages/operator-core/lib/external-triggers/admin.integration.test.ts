@@ -11,6 +11,7 @@ import {
   ensureExternalTriggerBinding,
   loadExternalTriggerAdminSnapshot,
   loadExternalTriggerPlanAdminSnapshot,
+  migrateExternalTriggerPlanBindingToOperation,
   queueExternalTriggerLastEventTestRun,
   setExternalTriggerBindingArmed,
   updateExternalTriggerBindingStormPolicy,
@@ -40,6 +41,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
   await sql`DELETE FROM harness_shared.plan_run_turns WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.plan_runs WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}`;
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
@@ -213,6 +215,90 @@ describe('external-trigger admin shared seam', () => {
         href: 'https://mail.google.com/mail/u/0/#drafts/draft-1',
       },
     ]);
+  });
+
+  it('joins a blueprint-operation run to its actual direct-item or plan target outcome', async () => {
+    await sql`
+      UPDATE harness_shared.trigger_bindings
+         SET plan_harness_slug = NULL,
+             plan_slug = NULL,
+             action = ${JSON.stringify({
+               type: 'blueprint-operation',
+               operationHarnessSlug: HARNESS,
+               operationId: 'triage-message',
+             })}::text::jsonb
+       WHERE workspace_id = ${WS} AND id = ${bindingId}`;
+    const itemId = 'WI-operation-target-fixture';
+    const itemStatus = 'todo';
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status)
+      VALUES (${WS}, ${HARNESS}, ${itemId}, 'task', 'Operation target fixture', ${itemStatus})`;
+    const baseHandle = {
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      receiptId: 71,
+      operationId: 'triage-message',
+      specificationRevision: 'a'.repeat(64),
+    };
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET status = 'succeeded',
+             outcome = ${JSON.stringify({
+               blueprintOperation: { ...baseHandle, target: { kind: 'work-item', id: itemId } },
+             })}::text::jsonb,
+             error = NULL,
+             completed_at = now()
+       WHERE workspace_id = ${WS} AND binding_id = ${bindingId}`;
+
+    const direct = (await loadExternalTriggerAdminSnapshot(sql, WS)).recentRuns[0]!;
+    expect(direct.blueprintOperation).toMatchObject({
+      operationId: 'triage-message',
+      target: { kind: 'work-item', id: itemId, status: itemStatus },
+    });
+    expect(direct.timeline!.at(-1)).toMatchObject({
+      stage: 'completed',
+      status: 'active',
+      detail: `Work item ${itemId} · ${itemStatus}`,
+    });
+
+    const planRuns = await sql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.plan_runs
+        (workspace_id, harness_slug, plan_slug, plan_content_hash, session_id, note,
+         launched_by, launched_at, status, title, updated_at, run_type, trigger,
+         outcome, finished_at, instance_plan_slug, outputs)
+      VALUES (${WS}, ${HARNESS}, ${PLAN}, 'trigger-admin-v1', 'operation-visibility-session', NULL,
+              'system:blueprint-operation', 1000, 'done', 'Operation plan target', 5000,
+              'scheduled', 'event', 'success', 5000, 'trigger-admin-fixture@run-71',
+              '{"candidate":"accepted"}'::jsonb)
+      RETURNING id`;
+    const planRunId = Number(planRuns[0]!.id);
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET outcome = ${JSON.stringify({
+           blueprintOperation: {
+             ...baseHandle,
+             target: { kind: 'plan', runId: planRunId, instanceSlug: 'trigger-admin-fixture@run-71' },
+           },
+         })}::text::jsonb
+       WHERE workspace_id = ${WS} AND binding_id = ${bindingId}`;
+
+    const plan = (await loadExternalTriggerAdminSnapshot(sql, WS)).recentRuns[0]!;
+    expect(plan.blueprintOperation).toMatchObject({
+      operationId: 'triage-message',
+      target: {
+        kind: 'plan',
+        runId: planRunId,
+        instanceSlug: 'trigger-admin-fixture@run-71',
+        status: 'done',
+        outcome: 'success',
+      },
+    });
+    expect(plan.timeline!.at(-1)).toMatchObject({
+      stage: 'completed',
+      status: 'done',
+      detail: 'Plan trigger-admin-fixture@run-71 · done · success',
+    });
   });
 
   it('changes only the named workspace binding armed state', async () => {
@@ -535,6 +621,73 @@ describe('external-trigger admin shared seam', () => {
       operationHarnessSlug: HARNESS,
       eventPattern: 'ext:slack:mention',
     })).rejects.toThrow('external_trigger_blueprint_operation_target_incomplete');
+  });
+
+  it('migrates one legacy plan binding with exact source/filter/storm parity and replay identity', async () => {
+    const first = await migrateExternalTriggerPlanBindingToOperation(sql, WS, {
+      bindingId,
+      operationHarnessSlug: HARNESS,
+      operationId: 'triage-message',
+      operationInput: { priority: 'normal' },
+      createdBy: 'agent-fixture',
+    });
+    expect(first).toMatchObject({
+      legacyBindingId: bindingId,
+      replayed: false,
+      replacement: {
+        sourceId,
+        planHarnessSlug: null,
+        planSlug: null,
+        eventPattern: 'ext:gmail:message.*',
+        eventFilter: { label: 'support' },
+        stormPolicy: { maxRuns: 2, windowSeconds: 60 },
+        armed: false,
+        action: {
+          type: 'blueprint-operation',
+          operationHarnessSlug: HARNESS,
+          operationId: 'triage-message',
+          input: { priority: 'normal' },
+          migrationFromBindingId: bindingId,
+        },
+      },
+      parity: {
+        sourceId,
+        eventPattern: 'ext:gmail:message.*',
+        eventFilter: { label: 'support' },
+        stormPolicy: { maxRuns: 2, windowSeconds: 60 },
+        legacyArmed: true,
+        replacementArmed: false,
+        legacyTarget: { harnessSlug: HARNESS, planSlug: PLAN },
+        operationTarget: { harnessSlug: HARNESS, operationId: 'triage-message' },
+        legacyExecution: null,
+      },
+    });
+    const replay = await migrateExternalTriggerPlanBindingToOperation(sql, WS, {
+      bindingId,
+      operationHarnessSlug: HARNESS,
+      operationId: 'triage-message',
+      operationInput: { priority: 'normal' },
+      createdBy: 'agent-fixture',
+    });
+    expect(replay.replayed).toBe(true);
+    expect(replay.replacement.id).toBe(first.replacement.id);
+
+    const rows = await sql<Array<{ id: string; armed: boolean; action: Record<string, unknown> }>>`
+      SELECT id::text, armed, action
+        FROM harness_shared.trigger_bindings
+       WHERE workspace_id = ${WS}
+         AND (id = ${bindingId}::uuid OR action->>'migrationFromBindingId' = ${bindingId})
+       ORDER BY id`;
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.id === bindingId)?.armed).toBe(true);
+    expect(rows.find((row) => row.id === first.replacement.id)?.armed).toBe(false);
+    await expect(
+      migrateExternalTriggerPlanBindingToOperation(sql, WS, {
+        bindingId,
+        operationHarnessSlug: HARNESS,
+        operationId: 'different-operation',
+      }),
+    ).rejects.toThrow('external_trigger_binding_migration_target_conflict');
   });
 
   it('refuses a binding pattern for a different source kind', async () => {

@@ -134,6 +134,31 @@ function cacheFingerprint(value: unknown): GatewayCacheFingerprint | null {
   return { sha256: createHash('sha256').update(prefix).digest('hex'), bytes: bytes.length, hashedBytes: prefix.length };
 }
 
+/** Codex's native Responses body can put tool schemas and instructions in
+ * leading developer items instead of top-level tools/instructions. Only that
+ * prefix is a reusable component; later user/assistant/tool turns are dynamic
+ * conversation and must never enter either fingerprint. */
+function codexInputPrefix(value: unknown) {
+  const tools: unknown[] = [], instructions: unknown[] = [];
+  if (!Array.isArray(value)) return { tools, instructions };
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) break;
+    const entry = item as Record<string, unknown>;
+    if (entry.role !== 'developer' && entry.role !== 'system') break;
+    if (entry.type === 'additional_tools' && Array.isArray(entry.tools)) tools.push(entry);
+    else if (entry.type === 'message' && Array.isArray(entry.content) &&
+      entry.content.some(part => part && typeof part === 'object' &&
+        (part as Record<string, unknown>).type === 'input_text' &&
+        typeof (part as Record<string, unknown>).text === 'string')) instructions.push(entry);
+  }
+  return { tools, instructions };
+}
+
+const fingerprintParts = (parts: unknown[]) => {
+  const present = parts.filter(part => part !== null && part !== undefined);
+  return cacheFingerprint(present.length === 1 ? present[0] : present.length ? present : null);
+};
+
 export interface StartupCacheEvidence {
   /** Observed authorization/tenant cache scope, never an owner-id or requested account pin. */
   authorizationScope: string | null;
@@ -641,10 +666,12 @@ export class GatewayRequestSpan {
     const started = this.now();
     try {
       if (body.byteLength > 2_097_152) { this.cache.shape = 'oversized'; return; }
-      const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as { tools?: unknown; system?: unknown; instructions?: unknown };
+      const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as {
+        tools?: unknown; system?: unknown; instructions?: unknown; input?: unknown };
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { this.cache.shape = 'invalid'; return; }
-      this.cache.tools = cacheFingerprint(parsed.tools);
-      this.cache.instructions = cacheFingerprint(parsed.system ?? parsed.instructions);
+      const prefix = codexInputPrefix(parsed.input);
+      this.cache.tools = fingerprintParts([parsed.tools, ...prefix.tools]);
+      this.cache.instructions = fingerprintParts([parsed.system, parsed.instructions, ...prefix.instructions]);
       this.cache.shape = 'observed';
     } catch { this.cache.shape = 'invalid'; }
     finally { this.cacheObservationMs += Math.max(0, this.now() - started); }

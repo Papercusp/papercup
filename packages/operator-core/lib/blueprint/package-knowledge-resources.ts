@@ -9,6 +9,7 @@ import { packItemMemoryWrite, knowledgePackMemoryScope, type KnowledgePackMemory
 import { packageMemoryDriver } from './package-memory-driver';
 import { packageResourceKey, preparePackageResource, releasePackageResource,
   beginPackageInstallationRelease, finishPackageInstallationRelease,
+  recordPackageInstallationReleaseFailure,
   type PackageResourceAddress, type PackageResourceReceipt } from './package-resource-receipts';
 
 export interface KnowledgePackageResourceInput {
@@ -65,29 +66,40 @@ export async function prepareKnowledgePackageResources(sql: Sql, input: Knowledg
 /** Replays from durable addresses, not today's pack contents or the current
  * filesystem release. Cleanup can therefore resume after upgrade/restart. */
 export async function releaseKnowledgePackageResources(
-  sql: Sql, workspaceId: string, dependentId: string, backend: MemoryBackend = getMemoryBackend(),
+  sql: Sql, workspaceId: string, dependentId: string, backend?: MemoryBackend,
   options: { onlyUnapplied?: boolean } = {},
 ): Promise<PackageResourceReceipt[]> {
   if (!await beginPackageInstallationRelease(sql, workspaceId, dependentId, options)) return [];
-  const rows = await sql<Array<{
-    memory_scope: string; package_kind: string; package_ref: string; package_version: string;
-    package_hash: string; resource_kind: string; item_key: string; installed_hash: string;
-  }>>`SELECT r.memory_scope, r.package_kind, r.package_ref, r.package_version,
-      r.package_hash, r.resource_kind, r.item_key, r.installed_hash
-    FROM harness_shared.blueprint_package_resources r
-    JOIN harness_shared.blueprint_package_dependents d USING (workspace_id, resource_key)
-    WHERE d.workspace_id = ${workspaceId} AND d.dependent_id = ${dependentId}
-      AND r.resource_kind = 'memory' ORDER BY r.resource_key`;
-  const receipts: PackageResourceReceipt[] = [];
-  for (const row of rows) {
-    const address: PackageResourceAddress = { workspaceId, memoryScope: row.memory_scope,
-      packageKind: row.package_kind, packageRef: row.package_ref, packageVersion: row.package_version,
-      packageHash: row.package_hash, resourceKind: row.resource_kind, itemKey: row.item_key,
-      installedHash: row.installed_hash };
-    const receipt = await releasePackageResource(sql, address, dependentId,
-      packageMemoryDriver(backend, '', { scope: row.memory_scope }));
-    if (receipt) receipts.push(receipt);
+  try {
+    const rows = await sql<Array<{
+      memory_scope: string; package_kind: string; package_ref: string; package_version: string;
+      package_hash: string; resource_kind: string; item_key: string; installed_hash: string;
+    }>>`SELECT r.memory_scope, r.package_kind, r.package_ref, r.package_version,
+        r.package_hash, r.resource_kind, r.item_key, r.installed_hash
+      FROM harness_shared.blueprint_package_resources r
+      JOIN harness_shared.blueprint_package_dependents d USING (workspace_id, resource_key)
+      WHERE d.workspace_id = ${workspaceId} AND d.dependent_id = ${dependentId}
+        AND r.resource_kind = 'memory' ORDER BY r.resource_key`;
+    const receipts: PackageResourceReceipt[] = [];
+    for (const row of rows) {
+      // Backend initialization can throw too. Keep it after the release fence
+      // and inside the durable error boundary; empty installs need no backend.
+      backend ??= getMemoryBackend();
+      const address: PackageResourceAddress = { workspaceId, memoryScope: row.memory_scope,
+        packageKind: row.package_kind, packageRef: row.package_ref, packageVersion: row.package_version,
+        packageHash: row.package_hash, resourceKind: row.resource_kind, itemKey: row.item_key,
+        installedHash: row.installed_hash };
+      const receipt = await releasePackageResource(sql, address, dependentId,
+        packageMemoryDriver(backend, '', { scope: row.memory_scope }));
+      if (receipt) receipts.push(receipt);
+    }
+    await finishPackageInstallationRelease(sql, workspaceId, dependentId);
+    return receipts;
+  } catch (error) {
+    try { await recordPackageInstallationReleaseFailure(sql, workspaceId, dependentId, error); }
+    catch (recordError) {
+      throw new AggregateError([error, recordError], 'package cleanup failed and its diagnostic could not be persisted', { cause: error });
+    }
+    throw error;
   }
-  await finishPackageInstallationRelease(sql, workspaceId, dependentId);
-  return receipts;
 }

@@ -1,0 +1,434 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "name": "R-7 same-subject integrated identity journey, 2026-09-26b",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-10002713",
+  "observer": "su-d652716d-b3f5-44e8-ac34-044f1fbd12f2",
+  "command": [
+    "source <verifier-work>/env.sh; R7_OWNER=su-626b42aa-470d-44d6-9a78-423de618e2e2 R7_OUT=<run-directory> R7_UI_TIMEOUT_MS=180000 R7_APPLY_TIMEOUT_MS=600000 node scripts/verify-identities-r7.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-26T23:11:53.661Z",
+  "finishedAt": "2026-09-26T23:15:46.846Z",
+  "timeBasis": "Artifact mtimes bound UI L5/L6. L1/L2/L7 were observed21:15-21:17Z; launch22:36 and leadership22:37. These named observations form the continued journey.",
+  "summary": "The attested listing/update, real launch and leadership, actual two-way UI switch, applied spans/tool calls and prompt-only update diff are connected to one subject. dist-verify now resolves its own bundled source and the previously refused preview succeeds.",
+  "subject": {
+    "ownerId": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+    "advSessionId": "30989",
+    "treeHead": "1ae55c476b27d5e13108f6644ba761cb9670a6bc",
+    "realBackend": true,
+    "syntheticHostAcknowledgement": false,
+    "fleet": "r7-journey-0926-2116"
+  },
+  "links": [
+    {
+      "id": "L1-attested-listing",
+      "passed": true,
+      "evidence": "Clone-first source recomputation matches the attested listing hash.",
+      "observed": {
+        "listed": "sha256:6c6ae340a52e73c357ce10abff2f6a5b0cacb6acc3f67e8df2cb048ce43d5e32",
+        "publishStyle(cloneFirst)": {
+          "rootHash": "sha256:6c6ae340a52e73c357ce10abff2f6a5b0cacb6acc3f67e8df2cb048ce43d5e32",
+          "matchesListed": true,
+          "pins": [
+            "blueprint:base=0d1a4dabe848a16320f",
+            "blueprint:papercusp-engineer=492caab96ec34a4b62b"
+          ]
+        },
+        "installStyle(builtinTiers)": {
+          "rootHash": "sha256:53f0fb6fc436eec3862c16e0d2ad8d4544defd1a6abd183094f3a57cf55ddca2",
+          "matchesListed": false,
+          "pins": [
+            "blueprint:base=5293a36690a456a286a",
+            "blueprint:papercusp-engineer=e606e13376a2efd609a"
+          ]
+        }
+      }
+    },
+    {
+      "id": "L2-install-from-listing",
+      "passed": true,
+      "evidence": "Observed update installed version0.1.2 at the exact listed release hash.",
+      "observed": {
+        "version": "0.1.2",
+        "release": {
+          "version": "0.1.2",
+          "contentHash": "sha256:6c6ae340a52e73c357ce10abff2f6a5b0cacb6acc3f67e8df2cb048ce43d5e32",
+          "packageContentHash": "492caab96ec34a4b62bda838229c80359de756bab7daea82f7e06867d6f76f6e"
+        }
+      }
+    },
+    {
+      "id": "L3-launch-wearing-installed-identity",
+      "passed": true,
+      "evidence": "Actual capability launch registered this subject/adv30989. Before either UI switch, WI-10002713 checkpoint11f30955c92e recorded installed-tier identity input c19c053c and initial specification e144426b. Its inherited domain is in specificationArtifact.inputs, not the explicit stack. Current return-to-installed receipt independently has the same identity hash.",
+      "observed": {
+        "launchTask": "0muiyy8pv1raqo571va",
+        "initialPrepared": {
+          "id": "22459",
+          "phase": "prepared",
+          "control_generation": "2",
+          "specification_revision": "e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5",
+          "state_revision": "153ab949e0650481c6379e0e",
+          "stack_refs": [
+            "autonomy:su.mode-auto",
+            "fleet-posture:su.fleet-member"
+          ],
+          "adv_session_id": "30989",
+          "actor_id": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+          "principal_id": "system:superuser",
+          "recorded_at": "2026-09-26T22:36:21.733Z"
+        },
+        "currentInstalledReceipt": [
+          {
+            "id": "30989",
+            "session_id": "afe61e7d-cccc-46f0-9b42-408078a2b654",
+            "ref": "papercusp-engineer",
+            "source_kind": "identity",
+            "content_hash": "c19c053c9891cf49534f5458fcf9302adcb271ccc14a2836f89ccfa64220a334"
+          }
+        ],
+        "preSwitchCheckpoint": "WI-10002713#checkpoint:11f30955c92e"
+      }
+    },
+    {
+      "id": "L4-leadership-attach",
+      "passed": true,
+      "evidence": "Same subject and specification reached applied fleet leadership before the UI journey.",
+      "observed": [
+        {
+          "id": "22461",
+          "phase": "desired",
+          "control_generation": "3",
+          "specification_revision": "e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5",
+          "state_revision": "81ab329b30dce1c79f5e9c5fdc84bf000f980bb8af2fad54b2bc494baed26dc0",
+          "stack_refs": [
+            "autonomy:su.mode-auto",
+            "fleet-posture:su.fleet-leader"
+          ],
+          "adv_session_id": "30989",
+          "actor_id": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+          "principal_id": "system:superuser",
+          "recorded_at": "2026-09-26T22:36:36.082Z"
+        },
+        {
+          "id": "22464",
+          "phase": "prepared",
+          "control_generation": "3",
+          "specification_revision": "e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5",
+          "state_revision": "81ab329b30dce1c79f5e9c5fdc84bf000f980bb8af2fad54b2bc494baed26dc0",
+          "stack_refs": [
+            "autonomy:su.mode-auto",
+            "fleet-posture:su.fleet-leader"
+          ],
+          "adv_session_id": "30989",
+          "actor_id": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+          "principal_id": "system:superuser",
+          "recorded_at": "2026-09-26T22:37:06.722Z"
+        },
+        {
+          "id": "22467",
+          "phase": "applied",
+          "control_generation": "3",
+          "specification_revision": "e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5",
+          "state_revision": "81ab329b30dce1c79f5e9c5fdc84bf000f980bb8af2fad54b2bc494baed26dc0",
+          "stack_refs": [
+            "autonomy:su.mode-auto",
+            "fleet-posture:su.fleet-leader"
+          ],
+          "adv_session_id": "30989",
+          "actor_id": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+          "principal_id": "system:superuser",
+          "recorded_at": "2026-09-26T22:37:33.851Z"
+        }
+      ]
+    },
+    {
+      "id": "L5-real-ui-switches",
+      "passed": true,
+      "evidence": "Real pointer review/switch to research-steward and back to the installed identity; both applied by the real host.",
+      "observed": {
+        "responses": [
+          {
+            "label": "to-target-review-response",
+            "status": 200,
+            "action": "preview",
+            "ok": true,
+            "bodySha256": "bde0f3dbf4e144ddb84b0830bd85c935c6636c6be228fad3d26a4d8f02bb85b2"
+          },
+          {
+            "label": "to-target-switch-response",
+            "status": 200,
+            "action": "switch",
+            "ok": true,
+            "bodySha256": "ccce7cbe28ec77d2eb4926dbbdcbe2c01e169ce965a7237ec628d6b2bf4ee921"
+          },
+          {
+            "label": "to-installed-review-response",
+            "status": 200,
+            "action": "preview",
+            "ok": true,
+            "bodySha256": "d0e95f68d4d0aeae91d9bff2e4336cea64f3f9f0d05be68a52d059202f2ec5c3"
+          },
+          {
+            "label": "to-installed-switch-response",
+            "status": 200,
+            "action": "switch",
+            "ok": true,
+            "bodySha256": "8a2ff2be60f45f1ad904ec201b4242f5458ba26e3b1fb01c892be018dbb5aa77"
+          }
+        ],
+        "applied": {
+          "toTarget": {
+            "id": "22527",
+            "phase": "applied",
+            "control_generation": "4",
+            "specification_revision": "2963c7551d644e1cb6dca70cf577389b49f77c769feafc0d98e6240cbcdabf85",
+            "stack_refs": [
+              "autonomy:su.mode-auto",
+              "domain:research-steward",
+              "fleet-posture:su.fleet-leader"
+            ],
+            "session_id": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+            "adv_session_id": "30989",
+            "recorded_at": "2026-09-26T23:14:19.850Z"
+          },
+          "toInstalled": {
+            "id": "22536",
+            "phase": "applied",
+            "control_generation": "5",
+            "specification_revision": "e290ff71fd873486c9636f9b1048cf8b1d09e5d6f345c121a254d85cf435e685",
+            "stack_refs": [
+              "autonomy:su.mode-auto",
+              "domain:papercusp-engineer",
+              "fleet-posture:su.fleet-leader"
+            ],
+            "session_id": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+            "adv_session_id": "30989",
+            "recorded_at": "2026-09-26T23:15:43.273Z"
+          }
+        }
+      }
+    },
+    {
+      "id": "L6-layer-spans-with-calls",
+      "passed": true,
+      "evidence": "Final applied event opened domain/autonomy/leader spans; actual subject tool invocations join within those timestamps.",
+      "observed": {
+        "spans": [
+          {
+            "activation_event_id": "22536",
+            "session_id": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+            "adv_session_id": "30989",
+            "control_generation": "5",
+            "layer_ref": "autonomy:su.mode-auto",
+            "layer_slot": "autonomy",
+            "layer_id": "su.mode-auto",
+            "active_from": "2026-09-26T23:15:43.273Z",
+            "active_until": null
+          },
+          {
+            "activation_event_id": "22536",
+            "session_id": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+            "adv_session_id": "30989",
+            "control_generation": "5",
+            "layer_ref": "domain:papercusp-engineer",
+            "layer_slot": "domain",
+            "layer_id": "papercusp-engineer",
+            "active_from": "2026-09-26T23:15:43.273Z",
+            "active_until": null
+          },
+          {
+            "activation_event_id": "22536",
+            "session_id": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+            "adv_session_id": "30989",
+            "control_generation": "5",
+            "layer_ref": "fleet-posture:su.fleet-leader",
+            "layer_slot": "fleet-posture",
+            "layer_id": "su.fleet-leader",
+            "active_from": "2026-09-26T23:15:43.273Z",
+            "active_until": null
+          }
+        ],
+        "calls": [
+          {
+            "id": "29792892",
+            "tool_name": "sessions:record-prompt-origin",
+            "invoked_at": "2026-09-26T23:15:45.523Z",
+            "status": "ok",
+            "layer_ref": "fleet-posture:su.fleet-leader"
+          },
+          {
+            "id": "29792893",
+            "tool_name": "orders:capture",
+            "invoked_at": "2026-09-26T23:15:46.166Z",
+            "status": "ok",
+            "layer_ref": "fleet-posture:su.fleet-leader"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L7-prompt-only-update",
+      "passed": true,
+      "evidence": "Observed rollback0.1.1 and update0.1.2 change prompt files only, with no grants and only derived promptBytes burn difference.",
+      "observed": {
+        "fromVersion": "0.1.1",
+        "toVersion": "0.1.2",
+        "diff": {
+          "fromContentHash": "5ff00d6f678ea26cabdb7b3963e122cc5ab4116e60f5296b5c88f3eff2ddbb1d",
+          "toContentHash": "492caab96ec34a4b62bda838229c80359de756bab7daea82f7e06867d6f76f6e",
+          "promptText": [
+            {
+              "path": "base/prompts/agent-base-preamble.md",
+              "beforeHash": "8e20eea1f2345e5696fb6fedfdd753c4c33f8dbadd40471ddd81273ecdf16faa",
+              "afterHash": "49824cd9bc343ced4f65995827d8a77f20c9cc405df251103b8477d8f30aa655"
+            },
+            {
+              "path": "base/prompts/architect.tools.md",
+              "beforeHash": "afa0d99eba37f739e3be0d6261200f594327e5a20e435e40444edd312e4f371a",
+              "afterHash": "99d485d6cb53a98c6c0247918b3016d73dd1789631bec07da4d7d95f46faeee9"
+            },
+            {
+              "path": "base/prompts/debugger.tools.md",
+              "beforeHash": "1aa4c7ce4e9d83a506cbef75986376ac856750fa89a212f402688b0106207ee2",
+              "afterHash": "c59f4cf78e2896fd090d2a7435317ed14583543b9cea28070305aa4fa8ff2326"
+            },
+            {
+              "path": "base/prompts/operator.tools.md",
+              "beforeHash": "00c72577f1add9489936f8a61a75a97f92b11cb403b868405022bc32750b1660",
+              "afterHash": "b1e445d5bf2d19963d5006376ae6c9074c3194acccf2b92423a9562c30623039"
+            },
+            {
+              "path": "base/prompts/papercup-deep.tools.md",
+              "beforeHash": "05e8f8cced63907da68c3cd21a358fc9090475ee8cb8ff6417575a439aab3233",
+              "afterHash": "3bcdea52e530e55eb8c4a0b23d9c29bf2c73039ebb100efa9adb863f87cb3280"
+            },
+            {
+              "path": "base/prompts/papercup.tools.md",
+              "beforeHash": "69e5328aa4d45cda738bd19e775bfc27901e7defd2d7472222a8b3a4bc7d2f0c",
+              "afterHash": "b7553874e878fd2d252c6a0467c5f638c3d9b84c64e9152dbc7b1af9680d5652"
+            },
+            {
+              "path": "base/prompts/reviewer.tools.md",
+              "beforeHash": "7a74fc339ebcfbebe6a97887ea2595b02cd7e33ef10d70f0a4dc6a7d5bfdd74d",
+              "afterHash": "769460e320f1bf6a0f69fef4b730bf7d108f5be234751d8d01f9768e05264d6b"
+            },
+            {
+              "path": "base/prompts/scoper.tools.md",
+              "beforeHash": "6d531983074a110c4950efbc527c8fe2f4ebb1cc3a63bf7a86490aafd26a4596",
+              "afterHash": "096d75759deedf22eeab81b95838f9d68f487c9232e903affbcebb35e8c29938"
+            },
+            {
+              "path": "base/prompts/validator.tools.md",
+              "beforeHash": "4bb1ce3379f0b4567ac6710bfe04ca0198daaf8958fe9b2c1b2ad1de7bdbf824",
+              "afterHash": "24c44483ba6f12c72d9a3497f5c39dfbfc500604afad77ba50fe4e24940b26c5"
+            },
+            {
+              "path": "base/prompts/worker.tools.md",
+              "beforeHash": "9cb6c6eb9e657e6ec89222d4101f886023465a07abe7da57688f81950a942e65",
+              "afterHash": "77ff13dc6d1a99e150e9ab8bca3db52f2253b664c625f3029540ce89edd65c76"
+            }
+          ],
+          "grants": [],
+          "burnKnobs": [
+            {
+              "path": "promptBytes",
+              "before": 915315,
+              "after": 924266
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "assertions": [
+    {
+      "id": "L1-attested-listing",
+      "passed": true,
+      "evidence": "Clone-first source recomputation matches the attested listing hash."
+    },
+    {
+      "id": "L2-install-from-listing",
+      "passed": true,
+      "evidence": "Observed update installed version0.1.2 at the exact listed release hash."
+    },
+    {
+      "id": "L3-launch-wearing-installed-identity",
+      "passed": true,
+      "evidence": "Actual capability launch registered this subject/adv30989. Before either UI switch, WI-10002713 checkpoint11f30955c92e recorded installed-tier identity input c19c053c and initial specification e144426b. Its inherited domain is in specificationArtifact.inputs, not the explicit stack. Current return-to-installed receipt independently has the same identity hash."
+    },
+    {
+      "id": "L4-leadership-attach",
+      "passed": true,
+      "evidence": "Same subject and specification reached applied fleet leadership before the UI journey."
+    },
+    {
+      "id": "L5-real-ui-switches",
+      "passed": true,
+      "evidence": "Real pointer review/switch to research-steward and back to the installed identity; both applied by the real host."
+    },
+    {
+      "id": "L6-layer-spans-with-calls",
+      "passed": true,
+      "evidence": "Final applied event opened domain/autonomy/leader spans; actual subject tool invocations join within those timestamps."
+    },
+    {
+      "id": "L7-prompt-only-update",
+      "passed": true,
+      "evidence": "Observed rollback0.1.1 and update0.1.2 change prompt files only, with no grants and only derived promptBytes burn difference."
+    }
+  ],
+  "sourcePaths": [
+    "scripts/verify-identities-r7.mjs",
+    "apps/operator/lib/verify-identities-r7.test.ts",
+    "apps/operator/app/settings/identities/page.tsx",
+    "packages/operator-core/lib/agent-identities/source.ts",
+    "scripts/verify-tauri-headless.sh"
+  ],
+  "sourceBlobs": [
+    {
+      "path": "scripts/verify-identities-r7.mjs",
+      "blob": "e5d01ff58f5d232b6dc3da5fe764943efbe038c3",
+      "sha256": "1350d320e9a4cdc33d4d74e7a32cb6cb59b86c38d101ee16dfbc1ad843061272"
+    },
+    {
+      "path": "apps/operator/lib/verify-identities-r7.test.ts",
+      "blob": "ae335fee0aafae6c9138bebeed895b3a721810e8",
+      "sha256": "c3731a06cc7a8a2955faf628a5aa00ebed1587f287e93930294f54d60a64f9ff"
+    },
+    {
+      "path": "apps/operator/app/settings/identities/page.tsx",
+      "blob": "2a6200f770a658f7c415feb0a76c5a79b0f7499f",
+      "sha256": "af738360e9fa384f49d93af86cf27212eddc62b0774c4c2c85ac69d47dc52dfd"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-identities/source.ts",
+      "blob": "d9f8b87d8ffa6b8703d7237a818417916ceb1de2",
+      "sha256": "81af2b607cd916f8ed61095df7caca2efa0306ddf84fe84c5bc97c6a44f28d17"
+    },
+    {
+      "path": "scripts/verify-tauri-headless.sh",
+      "blob": "4da6b1a5781128d387b929e5ef8633976a4aeff8",
+      "sha256": "a3046189bf789a0975ce9a633c93433365b82e2b5f9c6bdb0af74515e091f7b8"
+    }
+  ],
+  "rawEvidence": {
+    "path": "/tmp/p015-r7-ui-20260926-2313/evidence.json",
+    "sha256": "792853d262d981333393011c7f1b3c0faab014ad664bdb774ef0e8bd2a9005c8",
+    "listing": "/tmp/p015-r7-listing-20260926-2115.json",
+    "update": "/tmp/p015-r7-update-20260926-2117-full.json",
+    "rollback": "/tmp/p015-r7-rollback-20260926-2116-full.json",
+    "launch": "/tmp/p015-r7-subject-launch-2236.json"
+  },
+  "notProven": [
+    "Final main/release deployment.",
+    "A separate applied event at launch generation2: leadership superseded that prepared generation and applied generation3.",
+    "A new adv_sessions row on each switch: same30989 is retained.",
+    "An archive lookup of initial specification e144426b: historical input receipt is from the pre-switch checkpoint, with current installed receipt cross-check."
+  ]
+}

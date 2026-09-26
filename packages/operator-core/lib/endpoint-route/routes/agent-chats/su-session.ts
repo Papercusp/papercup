@@ -1,6 +1,7 @@
 /** P-003: typed SU-session attachment on the existing agent-chats transport. */
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { committedRouteResponse } from '../../route-stack';
 import {
   SuSessionHostError,
   createSuSessionEventResponse,
@@ -88,7 +89,7 @@ const commandRoute = defineTool({
           { status: 409 },
         );
       }
-      return Response.json(
+      const response = Response.json(
         {
           ok: true,
           replayed: dispatch.replayed,
@@ -96,6 +97,11 @@ const commandRoute = defineTool({
         },
         { status: 202 },
       );
+      // acceptCommand reserves owner turns before returning an acceptance.
+      // A route watchdog cannot undo that committed turn or its receipt.
+      return dispatch.accepted.commandType === 'owner_turn'
+        ? committedRouteResponse(response)
+        : response;
     } catch (error) {
       if (error instanceof SuSessionHostError) {
         return Response.json({ error: error.message, code: error.code }, { status: error.status });

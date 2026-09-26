@@ -1252,7 +1252,9 @@ export default defineTool({
       // as shipped and is unreachable.
       unchanged: looseBoolean().describe(
         'single shorthand default for `unchanged`; also the items[] default. ATTEST that the stored checkpoint ' +
-          'is still current instead of rewriting it. Requires `contentHash`.',
+          'is still current instead of rewriting it. Requires `contentHash`. Do not send `checkpoint`, ' +
+          '`did`/`left`/`insight`/`next`, `clear`, `append`, `checks`, or `dependsOn` with `unchanged:true`; ' +
+          'omit `unchanged` when writing a new body. Conflicting fields return `attestation_conflicting_args`.',
       ),
       contentHash: contentHashSpec().describe(
         'single shorthand default for `contentHash`; also the items[] default. Required with `unchanged`.',

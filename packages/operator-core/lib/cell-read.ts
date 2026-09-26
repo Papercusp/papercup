@@ -74,6 +74,7 @@ import {
   dispatchReadOnlyTool,
   isAccessDenialCode,
   ReadOnlyDispatchError,
+  type ReadOnlyDispatchEnv,
   valueAtPath,
 } from './events/await/predicate-watch';
 
@@ -620,6 +621,9 @@ export interface CellReadEnv {
   harnessSlug: string | null;
   /** The role the resolver dispatch runs under — the SECOND gate. Never widened. */
   role: string;
+  /** Host-supplied wearer authority for identity templates; absent for legacy internal reads. */
+  callerContext?: ReadOnlyDispatchEnv['callerContext'];
+  signal?: AbortSignal;
 }
 
 /**
@@ -777,6 +781,8 @@ async function readCellValue(
       role: env.role,
       onBehalfOf: reader.ownerId,
       spawnId: CELL_READ_SPAWN_ID,
+      ...(env.callerContext ? { callerContext: env.callerContext } : {}),
+      ...(env.signal ? { signal: env.signal } : {}),
     });
     // A dispatch that loses the race can still reject LATER, after we've already
     // returned via the timeout branch below — and nothing else will be listening for

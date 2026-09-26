@@ -36,7 +36,8 @@ describe('GitNexus disposable graph-reader recovery', () => {
           statement: "MATCH (caller:Function)-[r:CodeRelation]->(callee:Function) WHERE caller.name = 'caller' AND callee.name = 'dependency' AND r.type = 'CALLS' RETURN count(r) AS n",
         },
       });
-      const body = result.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
+      const content = (result as { content: Array<{ type: string; text?: string }> }).content;
+      const body = content.filter((part) => part.type === 'text').map((part) => part.text ?? '').join('\n');
       if (result.isError) throw new Error(`GitNexus reader error: ${body}`);
       const cell = /\|\s*(\d+)\s*\|/.exec(body);
       if (!cell) throw new Error(`GitNexus returned no edge count: ${body.slice(-500)}`);

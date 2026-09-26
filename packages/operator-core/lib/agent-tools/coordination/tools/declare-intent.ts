@@ -47,6 +47,7 @@ import { writePresence, getPresence } from '../presence';
 import { fetchPresenceFleet, type FleetMembership } from '../presence-fleet';
 import { COORD_ROLES } from '../roles';
 import { resolvePlanScope, getPlanRow, planItemsForRow } from '../../plans/source';
+import { ctxToPlanSourceOpts } from '../../plans/_ctx-opts';
 import { reconcileDeclaredClaims } from '../../../plan-items/claim-discipline';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../../plan-items/agent-names';
 import { convertPlanItem } from '../../../plan-items/convert';
@@ -185,7 +186,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Harness the plan lives in, for the item claims (default: papercup / operator scope).'),
+      .describe('Harness the plan lives in, for the item claims (default: session harness, or operator home if unscoped).'),
     current_files: z
       .array(z.string())
       .optional()
@@ -211,11 +212,11 @@ export default defineTool({
     // caller can issue the documented self-clear declaration.
     if (declaredPlanSlug) {
       try {
-        declaredPlanScope = await resolvePlanScope(args.harness ? { harnessSlug: args.harness } : {});
-        declaredPlanRow = await getPlanRow(
-          declaredPlanSlug,
-          args.harness ? { harnessSlug: args.harness } : {},
-        );
+        const planOpts = args.harness
+          ? { harnessSlug: args.harness }
+          : await ctxToPlanSourceOpts(ctx);
+        declaredPlanScope = await resolvePlanScope(planOpts);
+        declaredPlanRow = await getPlanRow(declaredPlanSlug, planOpts);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         return {

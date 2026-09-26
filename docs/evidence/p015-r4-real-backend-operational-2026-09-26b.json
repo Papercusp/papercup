@@ -1,0 +1,284 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-10002713",
+  "observer": "su-d652716d-b3f5-44e8-ac34-044f1fbd12f2",
+  "exitCode": 0,
+  "name": "R-4 real UI recovery and confirmed fixture delivery, 2026-09-26",
+  "command": [
+    "PAPERCUSP_HOME=<operator-home> VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_DOM_TIMEOUT=120 scripts/verify-tauri-headless.sh -- env P015_R4_REAL_BACKEND=1 P015_R4_REAL_RECOVERY=1 TAURI_SURFACE_VERIFY_P015_R4_OUT=<run-directory> node scripts/verify-identities-r4.mjs"
+  ],
+  "startedAt": "2026-09-26T23:00:24.765Z",
+  "finishedAt": "2026-09-26T23:02:01.281Z",
+  "timeBasis": "Assertion artifact mtimes bound the UI run; boot preparation precedes this interval.",
+  "summary": "Real pointer selection/review/switch/rollback, URL recovery, provider boundary, forced CAS failure with retained state, retry and SSE invalidation passed in the isolated current-build database. Fixture context emission is confirmed through the production delivery ledger.",
+  "subject": {
+    "ownerId": "p015-r4-owned-962277-1790463619516",
+    "treeHead": "cda1e874920686cd480c227ee2d975a4180743e1",
+    "bridgePid": 885887,
+    "launchProvenance": "agent:su-d652716d-b3f5-44e8-ac34-044f1fbd12f2:run:1790463363405617909-560335-17027",
+    "isolatedDatabase": true,
+    "syntheticMutationResponses": false
+  },
+  "sourcePaths": [
+    "apps/operator/app/settings/identities/page.tsx",
+    "packages/operator-core/lib/identity-management.ts",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "packages/operator-core/lib/role-launch-spec.ts",
+    "scripts/verify-identities-r4.mjs"
+  ],
+  "sourceBlobs": [
+    {
+      "path": "apps/operator/app/settings/identities/page.tsx",
+      "blob": "2a6200f770a658f7c415feb0a76c5a79b0f7499f",
+      "sha256": "af738360e9fa384f49d93af86cf27212eddc62b0774c4c2c85ac69d47dc52dfd"
+    },
+    {
+      "path": "packages/operator-core/lib/identity-management.ts",
+      "blob": "2bbfe6564c3e8b7f878feb8386dcd25543e74402",
+      "sha256": "254d4304e4a191114f7f325ee533f20f9b0b53006a52315af03858ea0d674c08"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts",
+      "blob": "01c52268a165fe89cdd6604c2cccb45199e683d3",
+      "sha256": "de2f9cd51239e506fd4e3bce2c4f8c212f075eb4b8b321037f1b28e4745bcffb"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+      "blob": "afa7ff8103287ff21a89f7954d735b56e2b8ca36",
+      "sha256": "14ec68156dbfbdd58e552363a03be69bb9f8dce29e14074b9b80940302f67968"
+    },
+    {
+      "path": "packages/operator-core/lib/role-launch-spec.ts",
+      "blob": "aaaa62ea1fe3a00ac6fe7f65da11ccf464f0a7d4",
+      "sha256": "899ee8a58e145efa2317d96a9d9d7c234fdc0a940d7abe813cf305226c72bed5"
+    },
+    {
+      "path": "scripts/verify-identities-r4.mjs",
+      "blob": "2312c670e4157db8dca5ada2e3e72b19253cd592",
+      "sha256": "8204672b70e271f3e544d19e8c9d00417b9e9214428f1e86e932f35ae2e574b2"
+    }
+  ],
+  "bootDriverSha256": "8204672b70e271f3e544d19e8c9d00417b9e9214428f1e86e932f35ae2e574b2",
+  "rawEvidence": {
+    "path": "/tmp/p015-r4-20260926-2255/evidence.json",
+    "sha256": "a6523cd34c066612cb2cd820a4fcc500611ba452531a2f01cf5662a2e911ee0d",
+    "log": "/tmp/p015-r4-rig-20260926-2255.log"
+  },
+  "observed": [
+    "owned-roster-selection",
+    "real-backend-review",
+    "real-switch-change-requested",
+    "real-switch-applied",
+    "real-rollback-change-requested",
+    "real-rollback-applied"
+  ],
+  "recoveryObserved": [
+    "nuqs-selection-written",
+    "nuqs-tab-written",
+    "provider-bindings-boundary",
+    "nuqs-state-restored-from-url",
+    "forced-real-apply-failure",
+    "prior-state-retained",
+    "retry-reachable",
+    "retry-switch-change-requested",
+    "sse-sync-invalidation",
+    "rollback-applied"
+  ],
+  "activations": [
+    {
+      "label": "real-switch-applied",
+      "controlGeneration": 1,
+      "controlDeliveredGeneration": 1,
+      "activation": {
+        "status": "applied",
+        "applied": {
+          "stateRevision": "e7d18114d2957cdfbbb078e0",
+          "specificationRevision": "179f77582a4dca0fc08023cd582fb96e287b4c9c65eb772d0a6703128d2b97c3"
+        },
+        "desired": {
+          "stateRevision": "e7d18114d2957cdfbbb078e0",
+          "specificationRevision": "179f77582a4dca0fc08023cd582fb96e287b4c9c65eb772d0a6703128d2b97c3"
+        },
+        "failure": null,
+        "prepared": null,
+        "attribution": {
+          "actorId": "p015-r4-owned-962277-1790463619516",
+          "sessionId": "p015-r4-owned-962277-1790463619516",
+          "principalId": "p015-r4-owned-962277-1790463619516"
+        },
+        "schemaVersion": 1
+      }
+    },
+    {
+      "label": "real-rollback-applied",
+      "controlGeneration": 2,
+      "controlDeliveredGeneration": 2,
+      "activation": {
+        "status": "applied",
+        "applied": {
+          "stateRevision": "e7d18114d2957cdfbbb078e0",
+          "specificationRevision": "0e1479500fe5cc649dea1150d01b58bc584c4d85c6ff91d19e65c93ad7bd2ba7"
+        },
+        "desired": {
+          "stateRevision": "e7d18114d2957cdfbbb078e0",
+          "specificationRevision": "0e1479500fe5cc649dea1150d01b58bc584c4d85c6ff91d19e65c93ad7bd2ba7"
+        },
+        "failure": null,
+        "prepared": null,
+        "attribution": {
+          "actorId": "p015-r4-owned-962277-1790463619516",
+          "sessionId": "p015-r4-owned-962277-1790463619516",
+          "principalId": "p015-r4-owned-962277-1790463619516"
+        },
+        "schemaVersion": 1
+      }
+    }
+  ],
+  "responses": [
+    {
+      "label": "real-review-response",
+      "status": 200,
+      "action": "preview",
+      "ok": true,
+      "bodySha256": "8eef3dc1ae0c1e4543d4b3eeb8faf8accc6d9203b2342fc2c6d2ab7755d099b1"
+    },
+    {
+      "label": "forced-failure-response",
+      "status": 409,
+      "action": "switch",
+      "ok": false,
+      "error": "The session identity changed concurrently; reload and review the new diff.",
+      "bodySha256": "7fd59800af6f25c5e73f299f75c13317e22c982fe51df1b85f73c76480cb791d"
+    },
+    {
+      "label": "real-switch-response",
+      "status": 200,
+      "action": "switch",
+      "ok": true,
+      "bodySha256": "3d268cbdc6dcafa414b9758b270eb14292e2fc401ded136d6aa363389a84c262"
+    },
+    {
+      "label": "real-rollback-response",
+      "status": 200,
+      "action": "rollback",
+      "ok": true,
+      "bodySha256": "33411c069747f5a13a29c47d75ce1ca5239c9abd9bab2d7f6510fad7b4a7f846"
+    }
+  ],
+  "retainedState": {
+    "launchSpecUnchanged": true,
+    "stack": [
+      "domain:papercusp-engineer"
+    ],
+    "activationEventsBefore": 1,
+    "activationEventsAfter": 1,
+    "activationUnchanged": true
+  },
+  "assertions": [
+    {
+      "id": "owned-roster-selection",
+      "passed": true,
+      "evidence": "Driver passed owned-roster-selection using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-backend-review",
+      "passed": true,
+      "evidence": "Driver passed real-backend-review using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-switch-change-requested",
+      "passed": true,
+      "evidence": "Driver passed real-switch-change-requested using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-switch-applied",
+      "passed": true,
+      "evidence": "Driver passed real-switch-applied using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-rollback-change-requested",
+      "passed": true,
+      "evidence": "Driver passed real-rollback-change-requested using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-rollback-applied",
+      "passed": true,
+      "evidence": "Driver passed real-rollback-applied using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "nuqs-selection-written",
+      "passed": true,
+      "evidence": "Driver passed nuqs-selection-written using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "nuqs-tab-written",
+      "passed": true,
+      "evidence": "Driver passed nuqs-tab-written using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "provider-bindings-boundary",
+      "passed": true,
+      "evidence": "Driver passed provider-bindings-boundary using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "nuqs-state-restored-from-url",
+      "passed": true,
+      "evidence": "Driver passed nuqs-state-restored-from-url using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "forced-real-apply-failure",
+      "passed": true,
+      "evidence": "Driver passed forced-real-apply-failure using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "prior-state-retained",
+      "passed": true,
+      "evidence": "Driver passed prior-state-retained using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "retry-reachable",
+      "passed": true,
+      "evidence": "Driver passed retry-reachable using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "retry-switch-change-requested",
+      "passed": true,
+      "evidence": "Driver passed retry-switch-change-requested using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "sse-sync-invalidation",
+      "passed": true,
+      "evidence": "Driver passed sse-sync-invalidation using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "rollback-applied",
+      "passed": true,
+      "evidence": "Driver passed rollback-applied using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "confirmed-host-activation",
+      "passed": true,
+      "evidence": "Switch and rollback are applied at matching current/delivered generations."
+    },
+    {
+      "id": "forced-backend-refusal",
+      "passed": true,
+      "evidence": "Forced CAS race returned HTTP409 from the actual route."
+    },
+    {
+      "id": "driver-integrity",
+      "passed": true,
+      "evidence": "Current driver SHA256 matches pre-boot assertion manifest; wrapper integrity check passed before execution."
+    }
+  ],
+  "notProven": [
+    "A real launched R4 subject: this host is an isolated fixture; R7 covers the real subject.",
+    "Final release deployment."
+  ]
+}

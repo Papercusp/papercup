@@ -3,7 +3,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { projectBlueprintToPg } from '../blueprint/project-to-pg';
+import { submitBlueprintOperation } from '../blueprint/operation-service';
+import { runBlueprintOperationAction } from '../harness/routines/blueprint-operation-action';
 import type { StartGoalByIdResult } from '../goals/start-goal-by-id';
 import { upsertDatatype } from '../datatype-registry-store';
 import type { CreateWorkItemInput, WorkItem } from '../work-items';
@@ -14,8 +18,16 @@ import {
   EMAIL_DRAFT_PROPOSAL_KIND,
   EMAIL_DRAFT_PROPOSAL_SCHEMA_VERSION,
   triggerRunPlanToken,
+  type TriggerDispatchDeps,
 } from './binding-engine';
 import type { ScheduledPlanFireRefusal, ScheduledPlanFireStartedResult } from '../harness/routines/plan-run-action';
+
+const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual,
+    getOrgPg: () => ({ sql: h.sql }) };
+});
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../../../..');
@@ -53,6 +65,7 @@ let deliveryId: string;
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
+  h.sql = sql;
   const migration = readFileSync(
     path.join(REPO, 'libs/papercusp/libs/db/sql/878-external-trigger-dispatch-routine.sql'),
     'utf8',
@@ -165,6 +178,87 @@ function startedPlanRun(triggerRunId: string, runId: number): ScheduledPlanFireS
 }
 
 describe('external trigger durable dispatch', () => {
+  it('replays event and routine fires for two typed neutral consumers without plan runs', async () => {
+    const consumers = [
+      { harness: 'neutral-trigger-text', operationId: 'extract', field: 'value',
+        value: 'alpha' as string | number, resultField: 'answer', resultType: 'string' },
+      { harness: 'neutral-trigger-count', operationId: 'score', field: 'count',
+        value: 7 as string | number, resultField: 'score', resultType: 'integer' },
+    ];
+    await sql`
+      INSERT INTO harness_shared.pots
+        (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
+      VALUES (${WS}, ${consumers[0]!.harness}, ${Buffer.from([1])}, 'kc-neutral-trigger-text', 0),
+             (${WS}, ${consumers[1]!.harness}, ${Buffer.from([2])}, 'kc-neutral-trigger-count', 0)
+      ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING`;
+    const triggerRunIds: string[] = [];
+    for (const consumer of consumers) {
+      const source = {
+        id: consumer.harness, workItem: { kind: 'feature' },
+        roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+        operations: [{
+          id: consumer.operationId, version: '1', target: { kind: 'work-item', itemKind: 'feature' },
+          execution: { kind: 'agent', role: 'worker' },
+          inputSchema: { type: 'object', required: [consumer.field], additionalProperties: false,
+            properties: { [consumer.field]: { type: typeof consumer.value === 'number' ? 'integer' : 'string' },
+              trigger: { type: 'object' } } },
+          acceptance: { resultSchema: { type: 'object', required: [consumer.resultField],
+            properties: { [consumer.resultField]: { type: consumer.resultType } } } },
+        }],
+      };
+      await projectBlueprintToPg(sql, { workspaceId: WS, harnessSlug: consumer.harness,
+        blueprint: BlueprintSchema.parse(source), specification: compileAgentSpecification({ source }) });
+      const [binding] = await sql<Array<{ id: string }>>`
+        INSERT INTO harness_shared.trigger_bindings
+          (workspace_id, source_id, event_pattern, event_filter, action, armed, storm_policy)
+        VALUES (${WS}, ${sourceId}, 'ext:gmail:message.*', '{}'::jsonb,
+                ${JSON.stringify({ type: 'blueprint-operation', operationHarnessSlug: consumer.harness,
+                  operationId: consumer.operationId, input: { [consumer.field]: consumer.value } })}::text::jsonb,
+                TRUE, '{}'::jsonb)
+        RETURNING id`;
+      triggerRunIds.push(await seedTriggerRun({ bindingId: binding.id }));
+    }
+    const dispatch = await dispatchPendingTriggerRuns(sql);
+    const failures = await sql<Array<{ id: string; error: string | null }>>`
+      SELECT id, error FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id IN ${sql(triggerRunIds)} AND status = 'failed'`;
+    expect({ dispatch, failures }).toMatchObject({
+      dispatch: { claimed: 2, succeeded: 2, failed: 0 }, failures: [],
+    });
+    const triggerRows = await sql<Array<{ id: string; outcome: { blueprintOperation: {
+      harnessSlug: string; target: { kind: string; id: string } } } }>>`
+      SELECT id, outcome FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id IN ${sql(triggerRunIds)}`;
+    expect(triggerRows).toHaveLength(2);
+    const eventItemIds = triggerRows.map((row) => row.outcome.blueprintOperation.target.id);
+    expect(new Set(eventItemIds).size).toBe(2);
+    for (const consumer of consumers) {
+      const first = await runBlueprintOperationAction({
+        workspaceId: WS, installSlug: consumer.harness, routineId: `routine:${consumer.harness}`,
+        workflowId: `routine-fire:${consumer.harness}:first`, triggerConfig: {},
+        payloadTemplate: { operationHarnessSlug: consumer.harness,
+          operationId: consumer.operationId, input: { [consumer.field]: consumer.value } },
+      }, { sql });
+      const replay = await runBlueprintOperationAction({
+        workspaceId: WS, installSlug: consumer.harness, routineId: `routine:${consumer.harness}`,
+        workflowId: `routine-fire:${consumer.harness}:first`, triggerConfig: {},
+        payloadTemplate: { operationHarnessSlug: consumer.harness,
+          operationId: consumer.operationId, input: { [consumer.field]: consumer.value } },
+      }, { sql });
+      expect(replay).toEqual(first);
+      expect(first.diagnostics?.blueprintOperation).toMatchObject({ harnessSlug: consumer.harness,
+        operationId: consumer.operationId, target: { kind: 'work-item' } });
+    }
+    const [counts] = await sql<Array<{ items: number; runs: number; plans: number }>>`
+      SELECT (SELECT count(*)::int FROM harness_shared.work_items
+                WHERE workspace_id = ${WS} AND harness_slug IN ('neutral-trigger-text', 'neutral-trigger-count')) AS items,
+             (SELECT count(*)::int FROM harness_shared.plan_runs
+                WHERE workspace_id = ${WS} AND harness_slug IN ('neutral-trigger-text', 'neutral-trigger-count')) AS runs,
+             (SELECT count(*)::int FROM harness_shared.harness_plans
+                WHERE workspace_id = ${WS} AND harness_slug IN ('neutral-trigger-text', 'neutral-trigger-count')) AS plans`;
+    expect(counts).toEqual({ items: 4, runs: 0, plans: 0 });
+  }, 90_000);
+
   it('replays one blueprint operation from the trigger receipt and never forwards private payload', async () => {
     const operationAction = {
       type: 'blueprint-operation',
@@ -188,7 +282,7 @@ describe('external trigger durable dispatch', () => {
       specificationRevision: 'a'.repeat(64),
       target: { kind: 'work-item' as const, id: 'WI-operation-41' },
     };
-    const submitOperation = vi.fn(async () => handle);
+    const submitOperation = vi.fn<NonNullable<TriggerDispatchDeps['submitOperation']>>(async () => handle);
 
     await expect(dispatchPendingTriggerRuns(sql, { submitOperation })).resolves.toMatchObject({
       claimed: 1,
@@ -243,7 +337,8 @@ describe('external trigger durable dispatch', () => {
       },
     };
     const triggerRunId = await seedTriggerRun({ outcome: audit });
-    const runPlan = vi.fn(async (): Promise<ScheduledPlanFireStartedResult> => startedPlanRun(triggerRunId, 4241));
+    const runPlan = vi.fn<NonNullable<TriggerDispatchDeps['runPlan']>>(
+      async (): Promise<ScheduledPlanFireStartedResult> => startedPlanRun(triggerRunId, 4241));
     const announceRunWork = vi.fn(async () => undefined);
     const result = await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork });
 
@@ -427,7 +522,7 @@ describe('external trigger durable dispatch', () => {
          SET action = ${JSON.stringify({ type: 'launch-plan', execution })}::text::jsonb
        WHERE workspace_id = ${WS} AND id = ${bindingId}`;
     const triggerRunId = await seedTriggerRun();
-    const runPlan = vi.fn(async (): Promise<ScheduledPlanFireStartedResult> => ({
+    const runPlan = vi.fn<NonNullable<TriggerDispatchDeps['runPlan']>>(async (): Promise<ScheduledPlanFireStartedResult> => ({
       started: true,
       instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
       runId: 9004,
@@ -727,7 +822,7 @@ describe('external trigger durable dispatch', () => {
          SET error = 'external_trigger_agentic_dispatch_failed:target_absent',
              outcome = '{}'::jsonb, next_attempt_at = now() - interval '1 second'
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
-    const runPlan = vi.fn(async (): Promise<ScheduledPlanFireStartedResult> => ({
+    const runPlan = vi.fn<NonNullable<TriggerDispatchDeps['runPlan']>>(async (): Promise<ScheduledPlanFireStartedResult> => ({
       started: true,
       instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
       runId: 9003, runSeq: 0, minted: 0, workItemIds: [], actionableWorkItemIds: [], replayed: true,
@@ -808,7 +903,7 @@ describe('external trigger durable dispatch', () => {
       },
     };
     const triggerRunId = await seedTriggerRun({ args });
-    const runPlan = vi.fn(async (): Promise<ScheduledPlanFireStartedResult> => ({
+    const runPlan = vi.fn<NonNullable<TriggerDispatchDeps['runPlan']>>(async (): Promise<ScheduledPlanFireStartedResult> => ({
       started: true,
       instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
       runId: 4243,
@@ -1325,7 +1420,8 @@ describe('social platform dispatch (P-028 simulated acceptance)', () => {
 
   it('carries a social inbound event through binding -> plan run -> delivery ledger', async () => {
     const { triggerRunId } = await seedSocialChain();
-    const runPlan = vi.fn(async (): Promise<ScheduledPlanFireStartedResult> => startedPlanRun(triggerRunId, 5252));
+    const runPlan = vi.fn<NonNullable<TriggerDispatchDeps['runPlan']>>(
+      async (): Promise<ScheduledPlanFireStartedResult> => startedPlanRun(triggerRunId, 5252));
     const announceRunWork = vi.fn(async () => undefined);
 
     const result = await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork });

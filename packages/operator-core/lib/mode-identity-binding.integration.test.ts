@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { stringify } from 'yaml';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
 import { composeSuStackSource, layerContentHash, suSessionBinding } from '@papercusp/orchestrator/blueprint';
+import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
 import { bindSelectedIdentityOutputArtifact, bindSelectedIdentityOutputs, getIdentitySource, resolvePinnedIdentityLaunchSelection } from './agent-identities/source';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from './blueprint/installed-blueprints';
 import { commitBlueprintRelease, snapshotBlueprintReleaseSource } from './cupboard/blueprint-release';
@@ -41,6 +42,12 @@ describe('GOAL plus IDEATE selects authored components from persisted mode state
   });
 
   it('persists GOAL subject and AUTO+IDEATE implications, then renders all three mode packages', async () => {
+    const declared = BUILTIN_MODE_COMPONENTS.find((entry) => entry.id === 'goal')!;
+    expect(declared.implies).toEqual(['auto', 'ideate']);
+    expect(declared.requiresSubject).toBe(true);
+    expect(declared.launchable).toBe(false);
+    // The public mode:set subject guard is exercised by agent-tools/mode/set.test.ts.
+    // Here the internal store proves the declared cascade persists atomically.
     const transition = await setMode({
       workspaceId, ownerId, modeId: 'goal', subject: goalId, enabled: true,
       reason: 'P-003 identity composition proof', setBy: ownerId, sql: db.adminSql,
@@ -48,6 +55,7 @@ describe('GOAL plus IDEATE selects authored components from persisted mode state
     expect(transition.ok).toBe(true);
     const rows = await getModes(workspaceId, ownerId, db.adminSql);
     expect(rows.map((row) => row.mode).sort()).toEqual(['auto', 'goal', 'ideate']);
+    expect(rows.map((row) => row.mode).sort()).toEqual([declared.id, ...declared.implies].sort());
     expect(rows.find((row) => row.mode === 'goal')?.subject).toBe(goalId);
     expect(rows.find((row) => row.mode === 'auto')?.impliedBy).toMatchObject({ mode: 'goal', subject: goalId });
     expect(rows.find((row) => row.mode === 'ideate')?.impliedBy).toMatchObject({ mode: 'goal', subject: goalId });

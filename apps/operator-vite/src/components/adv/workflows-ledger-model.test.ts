@@ -33,12 +33,13 @@ function trigger(over: Partial<AutomationTrigger> = {}): AutomationTrigger {
 
 function item(over: Partial<AutomationItem> = {}): AutomationItem {
   return {
-    id: 'plan:papercusp:nightly-audit',
-    kind: 'triggered-plan',
-    label: 'Nightly release audit',
-    description: 'Audits yesterday’s releases',
-    harness: 'papercusp',
-    planSlug: 'nightly-audit',
+    id: "plan:papercusp:nightly-audit",
+    kind: "triggered-plan",
+    label: "Nightly release audit",
+    description: "Audits yesterday’s releases",
+    harness: "papercusp",
+    planSlug: "nightly-audit",
+    operation: null,
     routine: null,
     triggers: [trigger()],
     running: false,
@@ -46,16 +47,16 @@ function item(over: Partial<AutomationItem> = {}): AutomationItem {
     needsAttention: false,
     nextAt: NOW + 6 * HOUR,
     lastAt: NOW - 9 * HOUR,
-    timingLabel: 'Next in 6h',
-    spendLabel: 'Run-linked cost available in details',
+    timingLabel: "Next in 6h",
+    spendLabel: "Run-linked cost available in details",
     flow: {
-      sourceLabel: 'Schedule',
-      sourceDetail: '1/1 automatic armed',
-      sourceState: 'ready',
-      planDetail: 'papercusp · Ready',
-      outcomeLabel: 'Audit report',
-      outcomeDetail: 'Last observed outcome · Completed',
-      outcomeState: 'completed',
+      sourceLabel: "Schedule",
+      sourceDetail: "1/1 automatic armed",
+      sourceState: "ready",
+      planDetail: "papercusp · Ready",
+      outcomeLabel: "Audit report",
+      outcomeDetail: "Last observed outcome · Completed",
+      outcomeState: "completed",
     },
     ...over,
   };
@@ -90,16 +91,22 @@ function source(over: Partial<LedgerSourceInput> = {}): LedgerSourceInput {
 }
 
 describe('buildLedgerRows', () => {
-  it('maps the three automation kinds onto the three facet kinds', () => {
+  it("maps plan and operation workflows onto triggered, beside routine and system facets", () => {
     const rows = buildLedgerRows(
       [
         item(),
-        routineItem({ id: 'r1', kind: 'ai-routine' }),
-        routineItem({ id: 'r2', kind: 'system-task' }),
+        item({ id: "op", kind: "triggered-operation" }),
+        routineItem({ id: "r1", kind: "ai-routine" }),
+        routineItem({ id: "r2", kind: "system-task" }),
       ],
       { nowMs: NOW },
     );
-    expect(rows.map((row) => row.kind)).toEqual(['triggered', 'routine', 'system']);
+    expect(rows.map((row) => row.kind)).toEqual([
+      "triggered",
+      "triggered",
+      "routine",
+      "system",
+    ]);
   });
 
   it('reports one state word, attention outranking running and paused', () => {
@@ -162,6 +169,23 @@ describe('buildLedgerRows', () => {
 
     const [aiRow] = buildLedgerRows([routineItem({ kind: 'ai-routine' })], { nowMs: NOW });
     expect(aiRow.chain.plan).toBe('routine');
+
+    const [operationRow] = buildLedgerRows(
+      [
+        item({
+          kind: "triggered-operation",
+          planSlug: null,
+          operation: {
+            harnessSlug: "papercusp",
+            operationId: "triage-message",
+            specificationRevision: null,
+            target: null,
+          },
+        }),
+      ],
+      { nowMs: NOW },
+    );
+    expect(operationRow.chain.plan).toBe("papercusp#triage-message");
   });
 
   it('collects distinct trigger providers as the source facet tokens', () => {
@@ -179,6 +203,7 @@ describe('buildLedgerRows', () => {
 describe('spendToken (D-005)', () => {
   it('never invents dollars for a triggered plan', () => {
     expect(spendToken(item())).toBe('per run');
+    expect(spendToken(item({ kind: "triggered-operation" }))).toBe("per run");
   });
 
   it('renders the routine classification the producer actually asserts', () => {

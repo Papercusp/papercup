@@ -414,6 +414,18 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     }
   });
 
+  it('teaches the single-item attestation exclusion in the published schema', () => {
+    const json = z.toJSONSchema(checkpoint.args as never) as {
+      properties?: { unchanged?: { description?: string } };
+    };
+    const guidance = json.properties?.unchanged?.description ?? '';
+    for (const field of ['contentHash', 'checkpoint', 'did', 'left', 'insight', 'next', 'clear', 'append', 'checks', 'dependsOn']) {
+      expect(guidance).toContain(field);
+    }
+    expect(guidance).toContain('attestation_conflicting_args');
+    expect(guidance).toContain('omit `unchanged` when writing a new body');
+  });
+
   it('accepts a current read-only executable probe and refuses drift before persistence', () => {
     const probe = {
       kind: 'tool' as const,
@@ -601,7 +613,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(itemBodyRef).toBe(shorthandBodyRef);
     expect(shorthandChecksRef).toBe('#/$defs/work-items-checks-v1');
     expect(itemChecksRef).toBe(shorthandChecksRef);
-    expect(JSON.stringify(json)).toHaveLength(23932);
+    expect(JSON.stringify(json)).toHaveLength(24156);
   });
 
   it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {

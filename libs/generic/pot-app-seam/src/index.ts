@@ -224,16 +224,21 @@ function sameOperationHandle(left: BlueprintOperationHandle, right: BlueprintOpe
 export function operationDraftFromPlanRun<TInput extends JsonObject>(
   draft: PlanRunDraft<TInput>,
   operationId: string,
-): BlueprintOperationDraft<TInput> {
-  assertNonEmpty(operationId, 'operationId');
+): BlueprintOperationDraft<JsonObject> {
+  assertNonEmpty(operationId, "operationId");
   if (!draft.dedupeKey?.trim()) {
-    throw new Error('legacy plan run migration requires dedupeKey so replay identity is preserved');
+    throw new Error(
+      "legacy plan run migration requires dedupeKey so replay identity is preserved",
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(draft.input, "provenance")) {
+    throw new Error("legacy plan input uses reserved provenance field");
   }
   return {
     harnessSlug: draft.execution.appHarnessSlug,
     operationId,
     requestKey: draft.dedupeKey,
-    input: draft.input,
+    input: { ...draft.input, provenance: draft.provenance },
   };
 }
 

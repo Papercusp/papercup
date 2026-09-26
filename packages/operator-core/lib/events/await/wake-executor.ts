@@ -2473,18 +2473,14 @@ export interface ExecuteWakeDeps {
    *  defaults to the real recordColdNoHostParkAndMaybeEscalate (fail-soft: null ⇒
    *  the caller parks exactly as before). */
   recordColdNoHostPark?: typeof recordColdNoHostParkAndMaybeEscalate;
-  /** P-013 (review-system-rework-reduction-2026-09-23) / EI-24023838400909760: fire the
-   *  subscriber's own inbox-wake when a cold loop fire finds no injectable psu host.
-   *  Returns how many deliveries the fan queued (0 ⇒ nobody watches the key). Injected
-   *  for tests; the default lazily imports `wakeRecipients` (a static import would close
-   *  the wake-executor → inbox-wake → engine → wake-executor cycle). */
-  fireColdParkInboxWake?: (input: {
+  /** Start a new context under the exited owner's existing coord identity. */
+  launchColdFreshSuccessor?: (input: {
     subscriberId: string;
     workspaceId: string;
-    summary: string;
-    source: string;
-    payload: unknown;
-  }) => Promise<{ queued: number }>;
+    harness: string | null;
+    wakeText: string;
+    deliveryId: number;
+  }) => Promise<boolean>;
   /** P-013 part A (review-system-rework-reduction-2026-09-23, RSR-P-013-A): decide whether a
    *  dead Claude session's resume must be RE-HOMED because its account is walled. Injected
    *  for tests; defaults to the account-pool projection read in wake-rehome.ts (fail-soft:
@@ -3802,69 +3798,40 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // active for an eligible explicit-cold wake; warm/disabled/unanchored wakes
     // preserve the normal resume fallback below.
     if (await coldWakeRequiresPsuHost(sessionDelivery, deliveryDeps)) {
-      // P-013 (review-system-rework-reduction-2026-09-23) / EI-24023838400909760: a
-      // cold fire that finds no injectable host used to PARK and nothing else — the
-      // session went dark until a peer happened to coord:send it a wake. That peer
-      // wake is exactly what revived it: an inbox-wake carries no cold marker, so it
-      // takes the warm process-gone rung below (resume). Re-route THIS fire onto that
-      // same demonstrably-working path instead of waiting for a peer. The cost is the
-      // fresh-context boundary for this one wake (the resume keeps the transcript);
-      // going dark is strictly worse.
-      //
-      // Settled as `delivered`/`inbox` (a non-turn channel, like degradeToInboxOrDrop)
-      // rather than parked: a still-parked cold row would be re-claimed WITH the new
-      // inbox-wake delivery and coalesced into one group that carries the cold marker,
-      // parking the fallback too. The inbox-wake row is the turn-burning delivery.
-      const coldMarker = readLoopDeliveryMarker(d.payload);
-      const fallbackSource = `loop:${coldMarker?.routineId ?? 'cold-park-fallback'}`;
-      const fireFallback =
-        deps.fireColdParkInboxWake ??
-        (async (input: {
-          subscriberId: string;
-          workspaceId: string;
-          summary: string;
-          source: string;
-          payload: unknown;
-        }) => {
-          const { wakeRecipients } = await import('../../agent-tools/coordination/inbox-wake');
-          const fired = await wakeRecipients([input.subscriberId], {
-            summary: input.summary,
-            payload: input.payload,
-            // A `loop:` source bypasses the manual wake-mode gate, as the loop's own
-            // self-wake does: staging it would leave nobody to release it.
-            source: input.source,
-            workspaceId: input.workspaceId,
-          });
-          return { queued: fired.queued ?? fired.woken };
-        });
-      const fallback = await withWakeTimeout(
-        fireFallback({
-          subscriberId: d.subscriberId,
-          workspaceId: d.workspaceId,
-          summary:
-            'Loop fire re-routed via inbox-wake: its cold wake found no injectable psu host ' +
-            `(delivery #${d.id}). Resume your loop goal. ${text}`.slice(0, 1_800),
-          source: fallbackSource,
-          // Nested on purpose: top-level carry/wakeCount/routineId would make this a cold
-          // loop marker again (readColdLoopMarker) and park the fallback.
-          payload: {
-            coldParkFallback: {
-              fromDeliveryId: d.id,
-              routineId: coldMarker?.routineId ?? null,
-              wakeCount: coldMarker?.wakeCount ?? null,
-            },
-          },
-        }),
-        `cold-park inbox-wake fallback/${d.subscriberId}`,
-        2_000,
-      ).catch(() => null);
-      if (fallback && fallback.queued > 0) {
-        console.log(
-          `[wake-executor] wake #${d.id} cold fire had no injectable psu host → re-routed via inbox-wake ` +
-            `(${fallback.queued} queued) for ${d.subscriberId} (P-013)`,
-        );
-        return { kind: 'delivered', channel: 'inbox' };
-      }
+      // The former P-013 inbox fallback discarded the cold marker. Its second
+      // delivery therefore resumed the old Codex UUID and kept the critical
+      // context. Use the existing identity-preserving successor launch instead.
+      const launchSuccessor = deps.launchColdFreshSuccessor ?? (async (input: {
+        subscriberId: string; workspaceId: string; harness: string | null;
+        wakeText: string; deliveryId: number;
+      }) => {
+        const { default: launchTool } = await import('../../agent-tools/capability/launch-agent');
+        const result = await launchTool.handler({
+          successor: { agentId: input.subscriberId },
+          brief: input.wakeText,
+          harness: input.harness ?? undefined,
+          headless: true,
+          carry: 'cold',
+          idempotencyKey: `cold-wake:${input.deliveryId}`,
+        } as never, {
+          workspaceId: input.workspaceId,
+          harnessSlug: input.harness,
+          role: 'su',
+        } as never);
+        const launch = (result as { data?: { launch?: { tasks?: Array<{ ownerId?: string }> } }; isError?: boolean }).data?.launch;
+        return !('isError' in result && result.isError) && !!launch?.tasks?.some((task) => task.ownerId === input.subscriberId);
+      });
+      const successorStarted = await launchSuccessor({
+        subscriberId: d.subscriberId,
+        workspaceId: d.workspaceId,
+        harness: fresh?.harnessSlug ?? readLoopDeliveryMarker(d.payload)?.harness ?? null,
+        wakeText: text,
+        deliveryId: d.id,
+      }).catch((error) => {
+        console.warn(`[wake-executor] cold fresh successor failed for ${d.subscriberId}: ${String(error)}`);
+        return false;
+      });
+      if (successorStarted) return { kind: 'delivered', channel: 'cold-fresh-successor' };
       // No inbox-wake watcher (or the fan failed): nothing else can carry this fire,
       // so the limbo guard below still streaks it toward pause + escalation.
       // EI-21431587306904888: for an ENDED session no injectable host ever

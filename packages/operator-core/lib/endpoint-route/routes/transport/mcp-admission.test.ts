@@ -2112,11 +2112,22 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     expect(classifyMcpRequest(body)).toBe('diagnostic');
   });
 
+  it('admits the reported exact 50-row spec audit read under critical pressure', async () => {
+    const body = toolsCall(13, 'scorecards:list', {
+      rubricRef: 'spec-test-adequacy',
+      subjectRef: 'SPEC-P-025-LEADER-BRIEF-NEVER-DROP-FACTS@1',
+      limit: 50,
+      payloadTier: 'full',
+    });
+    expect(classifyMcpBody(body)).toEqual({ sheddable: false, id: null });
+    expect(await evaluateAdmission(post(body), 'critical', true)).toBeNull();
+  });
+
   it('keeps broad or oversized scorecards:list reads sheddable under critical pressure', () => {
     for (const args of [
       { rubricRef: 'grading-integrity' },
       { subjectRef: 'EI-22581128473264750' },
-      { rubricRef: 'grading-integrity', subjectRef: 'EI-22581128473264750', limit: 26 },
+      { rubricRef: 'grading-integrity', subjectRef: 'EI-22581128473264750', limit: 51 },
     ]) {
       expect(classifyMcpBody(toolsCall(14, 'scorecards:list', args))).toEqual({ sheddable: true, id: 14 });
     }

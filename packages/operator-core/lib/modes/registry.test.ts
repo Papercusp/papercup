@@ -31,6 +31,29 @@ import {
 } from './registry';
 
 describe('generated mode identity catalog view', () => {
+  it('derives activation metadata from the same trusted catalog as discovery text', () => {
+    for (const component of BUILTIN_MODE_COMPONENTS) {
+      const mode = modeById(component.id)!;
+      const metadata = component as unknown as {
+        implies: readonly string[]; requiresSubject: boolean; launchable: boolean;
+      };
+      expect(mode.implies ?? [], `${component.id} implications`).toEqual(metadata.implies);
+      expect(mode.requiresSubject ?? false, `${component.id} subject`).toBe(metadata.requiresSubject);
+      expect(mode.launchable ?? false, `${component.id} launch`).toBe(metadata.launchable);
+      expect(mode.axis).toBe(component.slot === 'autonomy' ? 'autonomy' : 'overlay');
+      for (const alias of component.aliases) {
+        const variant = modeById(alias.id)!;
+        expect(variant.title).toBe(alias.title);
+        expect(variant.oneLiner).toBe(alias.oneLiner);
+        expect(variant.implies ?? []).toEqual(alias.implies);
+        expect(variant.requiresSubject ?? false).toBe(alias.requiresSubject);
+        expect(variant.launchable ?? false).toBe(alias.launchable);
+        expect(variant.contract).toBe(component.definitionText.slice(
+          component.definitionText.indexOf(alias.definitionHeading)).trimEnd());
+      }
+    }
+  });
+
   it('serves titles and index text from authored manifests while retaining host policy fields', () => {
     for (const component of BUILTIN_MODE_COMPONENTS) {
       const mode = modeById(component.id)!;
