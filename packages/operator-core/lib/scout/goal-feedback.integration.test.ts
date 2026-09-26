@@ -8,6 +8,7 @@
  *    leaves the original attribution intact (no duplicate row per routed ref).
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { pathToFileURL } from 'node:url';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
@@ -18,7 +19,11 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
 const { recordRoutedIdea, refreshScoutOutcomes } = await import('./routed-ledger');
-const { recordGoalLocalPlanOrigin, recordGoalReviewFeedback, goalLocalPlanIdeaId } = await import('./goal-feedback');
+// The mutation runner substitutes a copy while the tracked source stays intact.
+const subject: typeof import('./goal-feedback') = process.env.PAPERCUSP_GOAL_FEEDBACK_PROBE
+  ? await import(/* @vite-ignore */ pathToFileURL(process.env.PAPERCUSP_GOAL_FEEDBACK_PROBE).href)
+  : await import('./goal-feedback');
+const { recordGoalLocalPlanOrigin, recordGoalReviewFeedback, goalLocalPlanIdeaId } = subject;
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 
 const WS = 'ws-goal-feedback-test';
@@ -146,6 +151,36 @@ describe('goal-local findings and outcomes reach the routed-idea ledger (real PG
     const [row] = await rowsFor('plan:local-plan');
     expect(row!.addresses_pattern_refs).toEqual(['wi:EI-100', 'rubric:acceptance-x#c1@papercup', 'wi:WI-200']);
     expect(row!.created_by).toBe(HOLDER_A);
+  });
+
+  it('preserves both planning origins and goal links when revised plans receive more feedback', async () => {
+    const beforeLocal = await rowsFor('plan:local-plan');
+    const beforeBlender = await rowsFor('plan:blender-plan');
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans
+         SET title = title || ' revised', content = 'Revised execution details', updated_at = ${new Date(T + 30_000)}
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+         AND plan_slug IN ('local-plan', 'blender-plan')`;
+
+    const feedback = await recordGoalReviewFeedback({
+      workspaceId: WS, ownerId: HOLDER_A,
+      review: { goalId: GOAL_A, planRefs: ['plan:local-plan', 'plan:blender-plan'], evidenceRefs: ['WI-201'] },
+    });
+    expect(feedback.map((result) => result.action)).toEqual(['evidence-linked', 'existing-attribution']);
+    const local = await rowsFor('plan:local-plan');
+    expect(local).toHaveLength(1);
+    expect(local[0]).toEqual({ ...beforeLocal[0],
+      addresses_pattern_refs: [...beforeLocal[0]!.addresses_pattern_refs!, 'wi:WI-201'],
+    });
+    expect(await rowsFor('plan:blender-plan')).toEqual(beforeBlender);
+    const plans = await db.adminSql`
+      SELECT plan_slug, goal_id FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+         AND plan_slug IN ('local-plan', 'blender-plan') ORDER BY plan_slug`;
+    expect([...plans]).toEqual([
+      { plan_slug: 'blender-plan', goal_id: GOAL_A },
+      { plan_slug: 'local-plan', goal_id: GOAL_A },
+    ]);
   });
 
   it("learns the goal-local plan's verified outcome from its terminal state, like a Blender plan's", async () => {

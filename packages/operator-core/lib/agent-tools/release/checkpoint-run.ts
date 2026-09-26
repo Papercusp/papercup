@@ -447,8 +447,11 @@ export default defineTool({
     const refusalProvenance = await readCheckpointRefusalProvenance(refusalProvenanceRoot);
     // The dispatch metadata seam is overwrite-not-merge. Centralize the additive
     // provenance field so every existing branch keeps its own decision fields.
-    const recordMetadata = (data: Record<string, unknown>) =>
-      ctx.metadata?.({ refusalProvenance, ...data });
+    const actionMetadata: Record<string, unknown> = { refusalProvenance };
+    const recordMetadata = (data: Record<string, unknown>) => {
+      Object.assign(actionMetadata, data);
+      ctx.metadata?.({ ...actionMetadata });
+    };
     const serializeResponse = (payload: Record<string, unknown>) =>
       serializeCheckpointRunResponse(payload, refusalProvenance);
     if (routing.skip) {
@@ -746,13 +749,16 @@ export default defineTool({
     // OVERWRITE-not-merge (see the EI-20031402866608444 note): a second ctx.metadata() call on a
     // path that continues would wipe every preLaunchExclusion key.
     let ownershipLivenessAmbiguous = false;
+    let gateOwnershipAtDispatch: Awaited<ReturnType<typeof readGateOwnership>> | null = null;
+    let gateCallerOwnerId: string | null = null;
     // A claim whose holder the oracle CONFIRMS dead (`ended`). The stand-down rail already
     // lets these through — `POSITIVELY_LIVE` maps `ended` to false — so this changes no
     // behaviour. It records WHY the launch was allowed past a still-`held` claim, which is
     // otherwise indistinguishable from "no claim at all" in the metadata.
     let ownershipAbandoned = false;
-    if (!args.force) {
+    {
       const ownership = await readGateOwnership({ harness: installSlug });
+      gateOwnershipAtDispatch = ownership;
       // Resolving the CALLER can throw (a power-user ctx missing its uiClientId). If we cannot
       // tell who we are, we cannot tell whether the claim is our OWN — and refusing then would
       // block an agent from re-firing its own gate. Unknown identity ⇒ fail open, like every
@@ -766,6 +772,27 @@ export default defineTool({
       } catch {
         callerOwnerId = null;
       }
+      gateCallerOwnerId = callerOwnerId;
+      if (args.force && shouldStandDownForLivePeer(ownership, callerOwnerId)) {
+        recordMetadata({
+          standDown: 'condition_claimed_even_with_force',
+          standDownWorkItem: ownership.workItem,
+          standDownTakenBy: ownership.takenBy,
+        });
+        return {
+          content: [{
+            type: 'text',
+            text: serializeResponse({
+              ok: false,
+              launched: false,
+              reason: 'condition_claimed_even_with_force',
+              work_item: ownership.workItem,
+              taken_by: ownership.takenBy,
+            }),
+          }],
+        };
+      }
+      if (!args.force) {
       const peerHeld =
         ownership.claimState === 'held' &&
         Boolean(ownership.workItem) &&
@@ -1055,6 +1082,7 @@ export default defineTool({
             },
           ],
         };
+      }
       }
     }
     // EI-20025784115349280: the containment verdict below (L~479) is assembled ENTIRELY from

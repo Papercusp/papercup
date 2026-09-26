@@ -195,6 +195,7 @@ describe.sequential('P-012 release stage over a real candidate (package → inst
       expect.objectContaining({ image: 'debian:stable-slim', status: 0 }),
     ]);
     expect(result.stockMachines.every(({ output }) => output.includes('PUI local install: OK'))).toBe(true);
+    expect(result.stockMachines.every(({ output }) => /psu \d+\.\d+\.\d+/.test(output))).toBe(true);
 
     // Independent oracles for "the installed binary": our own hash of the file
     // the launcher resolves to, and the archive's own digest list.

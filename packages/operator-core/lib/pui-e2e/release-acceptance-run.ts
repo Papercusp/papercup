@@ -32,6 +32,7 @@ const ACCEPTANCE_SOURCES = [
   ...RELEASE_SUITES,
   'packages/operator-core/lib/pui-e2e/release-acceptance.ts',
   'packages/operator-core/lib/pui-e2e/release-acceptance-reporter.ts',
+  'packages/operator-core/lib/pui-e2e/release-acceptance-run.ts',
 ];
 const REPORTER = path.join(REPO_ROOT, 'packages/operator-core/lib/pui-e2e/release-acceptance-reporter.ts');
 const VITEST = path.join(REPO_ROOT, 'node_modules/.bin/vitest');
@@ -77,14 +78,24 @@ const STOCK_MACHINE_SCRIPT = `set -eu
 mkdir -p "$HOME"
 cd /candidate
 ./install.sh --yes
-"$HOME/.local/bin/pui" --version
+pui_version=$("$HOME/.local/bin/pui" --version)
+printf '%s\\n' "$pui_version"
+case "$pui_version" in
+  *[0-9]*.[0-9]*.[0-9]*) ;;
+  *) echo 'pui --version did not print a version' >&2; exit 1 ;;
+esac
 doctor=$("$HOME/.local/bin/pui" doctor 2>&1) || :
 printf '%s\\n' "$doctor"
 case "$doctor" in
   *"PUI local install: OK"*) ;;
   *) echo 'pui doctor did not confirm the installed release' >&2; exit 1 ;;
 esac
-exec "$HOME/.local/bin/psu" --version`;
+psu_version=$("$HOME/.local/bin/psu" --version)
+printf '%s\\n' "$psu_version"
+case "$psu_version" in
+  "psu "[0-9]*.[0-9]*.[0-9]*) ;;
+  *) echo 'psu --version did not print a version' >&2; exit 1 ;;
+esac`;
 
 /** Exercise the shipped unit on stock Linux, without host libraries or network. */
 export function runStockMachineSmoke(unit: string, images = STOCK_LINUX_IMAGES): StockMachineResult[] {
@@ -219,7 +230,10 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   // When the stage itself runs under vitest (its R-12 test), the outer worker's
   // VITEST_* markers must not leak into the suites' own run.
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('VITEST')));
-  for (const leg of [null, ...(options.real ?? [])]) {
+  // A binary that cannot start on stock Linux cannot earn PTY evidence. Keep
+  // writing the acceptance verdict, but avoid launching expensive live legs.
+  const legsToRun = stockMachines.some((machine) => machine.status !== 0) ? [] : [null, ...(options.real ?? [])];
+  for (const leg of legsToRun) {
     const engine = leg ? leg.backend : 'scripted';
     const evidence = path.join(work, `evidence-${engine}.json`);
     const run = spawnSync(VITEST, [
