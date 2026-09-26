@@ -185,13 +185,23 @@ export interface JoinLinkInput {
   slug: string;
   link: HarnessLink;
   existingGistId?: string;
+  /** WI-10003237: the CALLER materializes the joined Pot's identity row itself,
+   *  under the Pot's own slug, so skip the WI-10003134 upsert below. join-hive
+   *  sets this: it calls handleJoinLink once per MEMBER harness, where `slug` is
+   *  the member's slug (`hello-world`), not the Pot's (`hello-world-pot`), yet a
+   *  member link still carries the POT's hivePubkey. Upserting it here claimed the
+   *  Pot pubkey (UNIQUE pots_public_key_key) under the member slug; join-hive's
+   *  step 2b then collided writing the correct row, no pots row existed at the Pot
+   *  slug, and every federated pot_members apply failed pot_members_pot_fkey
+   *  (live-fed cert 20260926-071526: the joiner never converged). */
+  callerOwnsPotIdentity?: boolean;
 }
 
 export async function handleJoinLink(
   input: JoinLinkInput,
   deps: JoinLinkDeps = realJoinLinkDeps,
 ): Promise<Response> {
-  const { slug, link, existingGistId } = input;
+  const { slug, link, existingGistId, callerOwnsPotIdentity } = input;
 
   // Resolve GitHub identity server-side.
   const id = await deps.resolveIdentity();
@@ -322,7 +332,11 @@ export async function handleJoinLink(
     // carries the Hive pubkey; a bare link cannot know it here. keychain_id is a
     // NON-SIGNING remote:* placeholder — a joiner never signs for a Pot it does
     // not own. Best-effort: a failure NEVER fails the join.
-    if (link.hivePubkey) {
+    // A DIRECT join-link call joins the Pot's own self-repo, so `slug` IS the
+    // Pot's slug. join-hive's per-member calls set callerOwnsPotIdentity instead:
+    // there `slug` is a MEMBER slug and join-hive writes the row under the Pot's
+    // slug itself (step 2b) — WI-10003237.
+    if (link.hivePubkey && !callerOwnsPotIdentity) {
       try {
         await deps.upsertHiveIdentity({
           workspaceId: deps.resolveWorkspaceId(),

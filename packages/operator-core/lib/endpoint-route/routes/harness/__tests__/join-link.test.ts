@@ -361,6 +361,18 @@ describe('handleJoinLink', () => {
     });
   });
 
+  it('WI-10003237: a join-hive per-member join (callerOwnsPotIdentity) writes NO identity row — the slug is a member slug, not the Pot', async () => {
+    const deps = makeDeps();
+    const res = await handleJoinLink(
+      { ...VALID_INPUT, link: VALID_LINK_WITH_OWNER_BINDING, callerOwnsPotIdentity: true },
+      deps,
+    );
+    expect(res.status).toBe(200);
+    expect(deps.upsertHiveIdentity).not.toHaveBeenCalled();
+    // the rest of the join is unchanged
+    expect(deps.seedOwnerBinding).toHaveBeenCalledTimes(1);
+  });
+
   it('WI-10003134: a bare link (no hive pubkey) writes no identity row', async () => {
     const deps = makeDeps();
     await handleJoinLink(VALID_INPUT, deps);
