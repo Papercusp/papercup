@@ -47,6 +47,8 @@ owner's release approval.
   same connections, picker and sign-in as `psu`.
 - The archive ships `psu` on its own private Node runtime, so none of this
   needs Node, npm or a separately installed `psu`.
+- For a local connection, install the separate Papercusp Server package.
+  The desktop GUI is optional; cloud and remote hosts need no local server.
 
 **Install and support**
 
@@ -60,6 +62,9 @@ owner's release approval.
   report that leaves out conversation content and credentials.
 - The workbench uses the zellij build shipped in the archive, so the companion
   plugin always matches the multiplexer it runs in.
+- Audio devices use the bundled `pui-audio` helper. On Linux, PUI's text
+  interface starts without ALSA; voice explains how to install the missing
+  system sound library when needed. See `COMPATIBILITY.md`.
 
 Known limits: see `COMPATIBILITY.md` for which platforms and agent engines this
 release has been verified with. macOS builds are produced but have not been
