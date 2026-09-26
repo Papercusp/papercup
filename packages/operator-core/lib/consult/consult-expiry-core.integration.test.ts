@@ -63,6 +63,10 @@ const MIGRATION_963_ARMED = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/963-backfill-blank-owner-answered-consult-outcomes.sql', import.meta.url),
 );
 const MIGRATION_963 = existsSync(MIGRATION_963_ARMED) ? MIGRATION_963_ARMED : `${MIGRATION_963_ARMED}.DRAFT`;
+// consult_state.dispatch_attempts — where P-003's answer-window failures are recorded.
+const MIGRATION_1225 = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/1225-consult-dispatch-attempts.sql', import.meta.url),
+);
 
 let rootSql: Sql;
 
@@ -93,6 +97,7 @@ beforeAll(async () => {
   // The REAL migrations — consult_state + consult_post_meta cannot drift.
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
   await rootSql.unsafe(readFileSync(MIGRATION_844, 'utf8'));
+  await rootSql.unsafe(readFileSync(MIGRATION_1225, 'utf8'));
   await ensureCoordEventLogTable(rootSql);
   coordFixture.log = new PgCoordLog({
     getSql: () => rootSql,
@@ -1194,5 +1199,92 @@ describe('review consult conversion at half TTL (review-system-rework-reduction-
     const { deps, reachCalls } = makeDeps({ withReach: true });
     await sweepExpiredConsults(deps);
     expect(reachCalls.filter((c) => c.conversationId === id).map((c) => c.responder)).toEqual(['resp-2']);
+  });
+});
+
+describe('P-003 idle answering sessions end at the consult window (WI-10003199)', () => {
+  async function attemptsOf(id: string): Promise<Array<Record<string, unknown>>> {
+    const rows = (await rootSql`
+      SELECT dispatch_attempts FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${id}
+    `) as unknown as Array<{ dispatch_attempts: unknown }>;
+    const v = rows[0]!.dispatch_attempts;
+    return (typeof v === 'string' ? JSON.parse(v) : v) as Array<Record<string, unknown>>;
+  }
+
+  /** A fake task ledger: the answering sessions still running, and every stop call. */
+  function withStopper(deps: ExpirySweepDeps, running: Set<string>, opts: { throws?: boolean } = {}) {
+    const stops: Array<Parameters<NonNullable<ExpirySweepDeps['stopAnsweringSession']>>[0]> = [];
+    deps.stopAnsweringSession = async (t) => {
+      stops.push(t);
+      if (opts.throws) throw new Error('ledger down');
+      const key = t.answeringOwnerId ?? t.sourceOwnerId;
+      return running.delete(key) ? `stopped task for ${key}` : 'no live answering session found';
+    };
+    return stops;
+  }
+
+  it('an expired silent slot is stopped and recorded as a failed attempt with the expiry reason (cascade advances)', async () => {
+    const id = await seedConsult({ routing: menuSnapshot(['resp-1', 'resp-2'], ['resp-1-fork']) });
+    const { deps } = makeDeps({ withReach: true });
+    const running = new Set(['resp-1-fork']);
+    const stops = withStopper(deps, running);
+
+    const r = await sweepExpiredConsults(deps);
+
+    expect(r.answerFailures.filter((f) => f.conversationId === id)).toEqual([
+      { conversationId: id, reason: 'answer-window-expired', stopOutcome: 'stopped task for resp-1-fork', recorded: true },
+    ]);
+    expect(stops.filter((s) => s.conversationId === id)).toEqual([
+      { workspaceId: WS, conversationId: id, answeringOwnerId: 'resp-1-fork', sourceOwnerId: 'resp-1' },
+    ]);
+    expect(running.has('resp-1-fork')).toBe(false);
+    const attempts = await attemptsOf(id);
+    expect(attempts.at(-1)).toMatchObject({
+      sourceOwnerId: 'resp-1',
+      dispatched: false,
+      answeringOwnerId: 'resp-1-fork',
+      answerFailure: { reason: 'answer-window-expired', cascadeCursor: 0 },
+      attempts: [{ outcome: 'failed', reason: 'answer-window-expired' }],
+    });
+  });
+
+  it('the terminal expiry of an exhausted menu stops and records the last silent slot', async () => {
+    const id = await seedConsult({ routing: menuSnapshot(['resp-1'], ['resp-1-fork']) });
+    const { deps } = makeDeps();
+    const running = new Set(['resp-1-fork']);
+    withStopper(deps, running);
+
+    const r = await sweepExpiredConsults(deps);
+
+    expect((await stateOf(id)).state).toBe('expired');
+    expect(r.answerFailures.filter((f) => f.conversationId === id).map((f) => f.reason)).toEqual(['answer-window-expired']);
+    expect(running.has('resp-1-fork')).toBe(false);
+    expect((await attemptsOf(id)).at(-1)).toMatchObject({ attempts: [{ outcome: 'failed', reason: 'answer-window-expired' }] });
+  });
+
+  it('a slot whose responder already engaged (state active) is neither stopped nor recorded', async () => {
+    const id = await seedConsult({ state: 'active', routing: menuSnapshot(['resp-1'], ['resp-1-fork']) });
+    const { deps } = makeDeps();
+    const running = new Set(['resp-1-fork']);
+    const stops = withStopper(deps, running);
+
+    const r = await sweepExpiredConsults(deps);
+
+    expect(stops.filter((s) => s.conversationId === id)).toEqual([]);
+    expect(r.answerFailures.filter((f) => f.conversationId === id)).toEqual([]);
+    expect(running.has('resp-1-fork')).toBe(true);
+    expect(await attemptsOf(id)).toEqual([]);
+  });
+
+  it('a stop that throws still records the failure, naming the stop error', async () => {
+    const id = await seedConsult({ routing: menuSnapshot(['resp-1'], ['resp-1-fork']) });
+    const { deps } = makeDeps();
+    withStopper(deps, new Set(['resp-1-fork']), { throws: true });
+
+    const r = await sweepExpiredConsults(deps);
+
+    expect(r.answerFailures.find((f) => f.conversationId === id)).toMatchObject({ recorded: true, stopOutcome: 'stop threw: ledger down' });
+    expect(String((await attemptsOf(id)).at(-1)?.detail)).toContain('stop threw: ledger down');
   });
 });

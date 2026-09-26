@@ -38,6 +38,7 @@
 import type { Sql } from 'postgres';
 import { consultParkKey, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
 import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting } from './cascade-core';
+import { appendAnswerFailureRecord, type AnswerFailureReason } from './consult-dispatch';
 import { GRADING_CASCADE_FLAVOR } from './grading-cascade';
 import { RUBRIC_VETTING_POLICY } from './selection-policies';
 
@@ -199,6 +200,19 @@ export interface ExpirySweepDeps {
    * a later tick when a subsequent step failed. Absent ⇒ no conversion leg (review
    * consults keep the cascade behaviour); prod binds it. */
   fileReviewWorkItem?: (req: ReviewWorkItemRequest) => Promise<{ id: string }>;
+  /**
+   * P-003 (WI-10003199): stop the answering session a slot launched, once the sweep
+   * has WON the transition that ends that slot's window without a post. Returns a
+   * short outcome for the failure record; a throw is caught and recorded. Absent ⇒
+   * nothing is stopped here (the task reaper's consult-settled class remains the
+   * backstop), but the failure is still recorded; prod binds it.
+   */
+  stopAnsweringSession?: (opts: {
+    workspaceId: string;
+    conversationId: string;
+    answeringOwnerId: string | null;
+    sourceOwnerId: string;
+  }) => Promise<string>;
   now?: () => Date;
   /** Override the per-tick bound (tests). */
   limit?: number;
@@ -223,6 +237,8 @@ export interface ExpirySweepResult {
   converted: Array<{ conversationId: string; workItemId: string; kind: ReviewConsultKind }>;
   /** Review consults whose conversion failed this tick; retried next tick. */
   conversionFailures: string[];
+  /** P-003: slots whose window ended without a post — session stopped, failure recorded. */
+  answerFailures: Array<{ conversationId: string; reason: AnswerFailureReason; stopOutcome: string; recorded: boolean }>;
   /** True when the tick hit the bound — more due rows likely remain. */
   saturated: boolean;
 }
@@ -293,6 +309,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   const requesterAlertFailures: string[] = [];
   const converted: ExpirySweepResult['converted'] = [];
   const conversionFailures: string[] = [];
+  const answerFailures: ExpirySweepResult['answerFailures'] = [];
   for (const row of due) {
     const isDue = row.is_due === true;
 
@@ -313,6 +330,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       if (outcome.status === 'converted') {
         converted.push({ conversationId: row.conversation_id, workItemId: outcome.workItemId, kind: reviewKind });
         requesterAlerts.push(row.conversation_id);
+        await endSilentAnsweringSession(deps, sql, row, 'answer-window-converted', nowIso, answerFailures);
         continue;
       }
       if (outcome.status === 'raced') continue;
@@ -378,6 +396,11 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       if (adv.raced) continue; // a verb / concurrent tick won — nothing to do
       if (adv.advanced) {
         advanced += 1;
+        // The CAS above proved this slot was still owed a post when its window
+        // ended, so its answering session is over (P-003).
+        await endSilentAnsweringSession(
+          deps, sql, row, isDue ? 'answer-window-expired' : 'answer-pickup-stalled', nowIso, answerFailures,
+        );
         continue;
       }
     } catch {
@@ -460,6 +483,7 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     }) as unknown as Array<{ conversation_id: string }>;
     if (flipped.length === 0) continue;
     expiredCount += 1;
+    await endSilentAnsweringSession(deps, sql, row, 'answer-window-expired', nowIso, answerFailures);
 
     // Wake the hard-blocked parked requester (the emit LATCHES, so a requester
     // who re-registers after the fire is told immediately). Best-effort: the
@@ -500,8 +524,80 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     requesterAlertFailures,
     converted,
     conversionFailures,
+    answerFailures,
     saturated: due.length >= limit && due[limit - 1]?.is_due === true,
   };
+}
+
+const ANSWER_FAILURE_DETAIL: Record<AnswerFailureReason, (row: DueConsultRow) => string> = {
+  'answer-window-expired': (row) =>
+    `answering session for ${row.responder_id} did not post before its ${row.latency_contract} consult window expired ` +
+    `(cascade position ${row.cascade_cursor + 1})`,
+  'answer-pickup-stalled': (row) =>
+    `answering session for ${row.responder_id} did not post before bounded pickup recovery ` +
+    `(cascade position ${row.cascade_cursor + 1})`,
+  'answer-window-converted': (row) =>
+    `answering session for ${row.responder_id} had not posted when the review was converted to a work item ` +
+    `at half its window (cascade position ${row.cascade_cursor + 1})`,
+};
+
+/**
+ * P-003 (WI-10003199): end the answering session of a slot whose window the sweep
+ * has just closed without a post, and record it on the consult as a failed attempt.
+ *
+ * Call ONLY after the sweep's own guarded write won (advance, terminal expire, or
+ * review conversion). That CAS is what proves the slot was still `awaiting_responder`
+ * on this cursor, i.e. the session had not posted; stopping any earlier could kill a
+ * session whose reply just landed. A row not awaiting its responder (the responder
+ * answered and the requester is the silent side) is not a failed attempt and is left
+ * to the task reaper. Never throws: the transition has already happened, so a failed
+ * stop or record must not strand the rest of the batch.
+ */
+async function endSilentAnsweringSession(
+  deps: ExpirySweepDeps,
+  sql: Sql,
+  row: DueConsultRow,
+  reason: AnswerFailureReason,
+  nowIso: string,
+  out: ExpirySweepResult['answerFailures'],
+): Promise<void> {
+  if (row.state !== 'awaiting_responder' || row.responder_id == null) return;
+  const selection = currentSelectionAnswerer(row.routing, row.cascade_cursor, row.responder_id);
+  if (!selection) return;
+  const target = {
+    workspaceId: row.workspace_id,
+    conversationId: row.conversation_id,
+    answeringOwnerId: selection.answeringOwnerId,
+    sourceOwnerId: row.responder_id,
+  };
+  let stopOutcome: string;
+  if (!deps.stopAnsweringSession) {
+    stopOutcome = 'no session stopper bound (task reaper is the backstop)';
+  } else {
+    try {
+      stopOutcome = await deps.stopAnsweringSession(target);
+    } catch (e) {
+      stopOutcome = `stop threw: ${(e as Error)?.message ?? String(e)}`;
+    }
+  }
+  let recorded = false;
+  try {
+    await appendAnswerFailureRecord(
+      sql,
+      {
+        ...target,
+        cascadeCursor: row.cascade_cursor,
+        reason,
+        detail: ANSWER_FAILURE_DETAIL[reason](row),
+        stopOutcome,
+      },
+      nowIso,
+    );
+    recorded = true;
+  } catch {
+    // Best-effort, like the dispatcher's own recorder: evidence must not cost the sweep.
+  }
+  out.push({ conversationId: row.conversation_id, reason, stopOutcome, recorded });
 }
 
 type ReviewConversionOutcome =

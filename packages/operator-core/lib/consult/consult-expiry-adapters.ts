@@ -42,6 +42,8 @@ import type { ExpirySweepDeps, SilentResponderCandidate } from './consult-expiry
 import { DEAD_RESPONDER_STATES, HARD_BLOCKED_EXPIRY_MS } from './get-feedback-core';
 import type { ThreadableStore } from '@papercusp/coordination/capabilities';
 import { runWithWorkspace } from '../workspace-als';
+import { consultAnswerFacts } from '../task-manager/reaper';
+import type { TaskRow } from '../task-manager/types';
 
 /** The ownerId this sweep acts under. Exported so a test asserts the real constant
  *  rather than re-typing the string it is checking against. */
@@ -426,4 +428,56 @@ function readCascadeBlock(routing: unknown): {
 function firstLine(text: string, cap: number): string {
   const line = text.split('\n').find((l) => l.trim().length > 0)?.trim() ?? '(no question text)';
   return line.length > cap ? `${line.slice(0, cap)}…` : line;
+}
+
+/** The task-manager seams {@link consultExpiryStopAnsweringSession} needs, declared structurally. */
+export interface AnsweringSessionTaskSeams {
+  listLiveTasks: (workspaceId: string) => Promise<readonly Pick<TaskRow, 'taskId' | 'class' | 'detail'>[]>;
+  killTask: (taskId: string) => Promise<{ ok: boolean; error?: string; detail?: string }>;
+}
+
+/**
+ * P-003 (WI-10003199): the production `stopAnsweringSession` — kill the ledger task
+ * of the answering session a consult slot launched.
+ *
+ * It matches ONLY rows consult-dispatch tagged `consultAnswer` for THIS conversation,
+ * then the slot: by the expert it answers for (`sourceOwnerId`), or by the
+ * `answeringOwnerId` stamp on a row tagged before `sourceOwnerId` was recorded. It
+ * never matches by owner id alone: a convert continues the expert's own identity,
+ * so an owner-keyed stop could hit the expert's live session. Legacy rows with no
+ * conversation id are left to the task reaper. Never throws.
+ */
+export function consultExpiryStopAnsweringSession(
+  seams: AnsweringSessionTaskSeams,
+): NonNullable<ExpirySweepDeps['stopAnsweringSession']> {
+  return async ({ workspaceId, conversationId, answeringOwnerId, sourceOwnerId }) => {
+    try {
+      const matches = (await seams.listLiveTasks(workspaceId)).filter((row) => {
+        if (row.class !== 'agent-session') return false;
+        const facts = consultAnswerFacts(row);
+        if (!facts || facts.conversationId !== conversationId) return false;
+        if (facts.sourceOwnerId) return facts.sourceOwnerId === sourceOwnerId;
+        return answeringOwnerId != null && facts.answeringOwnerId === answeringOwnerId;
+      });
+      if (matches.length === 0) return 'no live answering session found';
+      const outcomes: string[] = [];
+      for (const row of matches) {
+        try {
+          const o = await seams.killTask(row.taskId);
+          outcomes.push(
+            o.ok
+              ? `stopped task ${row.taskId}`
+              : o.error === 'already_gone'
+                ? `task ${row.taskId} already gone`
+                : `stop of task ${row.taskId} refused: ${o.error ?? 'unknown'}`,
+          );
+        } catch (e) {
+          outcomes.push(`stop of task ${row.taskId} threw: ${(e as Error)?.message ?? String(e)}`);
+        }
+      }
+      return outcomes.join('; ');
+    } catch (e) {
+      return `answering-session lookup failed: ${(e as Error)?.message ?? String(e)}`;
+    }
+  };
 }

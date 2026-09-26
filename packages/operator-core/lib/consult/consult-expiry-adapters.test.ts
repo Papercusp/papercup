@@ -26,7 +26,9 @@ import {
   consultExpiryFindSilentResponders,
   consultExpiryNotifyRequester,
   consultExpiryDispatch,
+  consultExpiryStopAnsweringSession,
   sweepIdentity,
+  type AnsweringSessionTaskSeams,
   type AwaitedEventEmitter,
   type ConsultDispatcherFactory,
 } from './consult-expiry-adapters';
@@ -505,5 +507,62 @@ describe('consultExpiryFileReviewWorkItem', () => {
       resolveHarness: async () => null,
     });
     await expect(file({ ...base, kind: 'grading-integrity', routing: {} })).rejects.toThrow(/no id/);
+  });
+});
+
+describe('consultExpiryStopAnsweringSession (WI-10003199, P-003)', () => {
+  type Row = Awaited<ReturnType<AnsweringSessionTaskSeams['listLiveTasks']>>[number];
+  const tagged = (taskId: string, consultAnswer: Record<string, unknown>, cls = 'agent-session'): Row =>
+    ({ taskId, class: cls, detail: { consultAnswer } }) as unknown as Row;
+  const target = { workspaceId: 'ws', conversationId: 'conv-1', answeringOwnerId: 'fork-1', sourceOwnerId: 'src-1' };
+
+  function seams(rows: Row[], kill: AnsweringSessionTaskSeams['killTask'] = async () => ({ ok: true })) {
+    const killed: string[] = [];
+    const listCalls: string[] = [];
+    return {
+      killed,
+      listCalls,
+      seams: {
+        listLiveTasks: async (ws: string) => { listCalls.push(ws); return rows; },
+        killTask: async (id: string) => { killed.push(id); return kill(id); },
+      } satisfies AnsweringSessionTaskSeams,
+    };
+  }
+
+  it("kills only this slot's tagged session — never another consult's, another slot's, or the expert's own session", async () => {
+    const s = seams([
+      tagged('t-slot', { conversationId: 'conv-1', operation: 'fork', answeringOwnerId: 'fork-1', sourceOwnerId: 'src-1' }),
+      tagged('t-next-slot', { conversationId: 'conv-1', operation: 'fork', answeringOwnerId: 'fork-2', sourceOwnerId: 'src-2' }),
+      tagged('t-other-consult', { conversationId: 'conv-2', operation: 'fork', answeringOwnerId: 'fork-1', sourceOwnerId: 'src-1' }),
+      tagged('t-not-agent', { conversationId: 'conv-1', sourceOwnerId: 'src-1' }, 'command'),
+      // The expert's own live session carries no consultAnswer tag at all.
+      { taskId: 't-expert', class: 'agent-session', detail: { label: 'su-src-1' } } as unknown as Row,
+    ]);
+    const out = await consultExpiryStopAnsweringSession(s.seams)(target);
+    expect(s.listCalls).toEqual(['ws']);
+    expect(s.killed).toEqual(['t-slot']);
+    expect(out).toBe('stopped task t-slot');
+  });
+
+  it('matches a row tagged before sourceOwnerId was recorded by its answeringOwnerId stamp', async () => {
+    const s = seams([tagged('t-old', { conversationId: 'conv-1', operation: 'fork', answeringOwnerId: 'fork-1' })]);
+    expect(await consultExpiryStopAnsweringSession(s.seams)(target)).toBe('stopped task t-old');
+    const unstamped = seams([tagged('t-old', { conversationId: 'conv-1', operation: 'fork', answeringOwnerId: 'fork-1' })]);
+    await consultExpiryStopAnsweringSession(unstamped.seams)({ ...target, answeringOwnerId: null });
+    expect(unstamped.killed).toEqual([]);
+  });
+
+  it('reports no session, an already-gone task, a refusal and a failed lookup without throwing', async () => {
+    expect(await consultExpiryStopAnsweringSession(seams([]).seams)(target)).toBe('no live answering session found');
+    const row = tagged('t-slot', { conversationId: 'conv-1', sourceOwnerId: 'src-1' });
+    const gone = seams([row], async () => ({ ok: false, error: 'already_gone' }));
+    expect(await consultExpiryStopAnsweringSession(gone.seams)(target)).toBe('task t-slot already gone');
+    const refused = seams([row], async () => ({ ok: false, error: 'identity_mismatch' }));
+    expect(await consultExpiryStopAnsweringSession(refused.seams)(target)).toBe('stop of task t-slot refused: identity_mismatch');
+    const broken = consultExpiryStopAnsweringSession({
+      listLiveTasks: async () => { throw new Error('ledger down'); },
+      killTask: async () => ({ ok: true }),
+    });
+    expect(await broken(target)).toBe('answering-session lookup failed: ledger down');
   });
 });

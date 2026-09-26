@@ -277,13 +277,26 @@ export async function appendDispatchRecord(
   input: ConsultDispatchRecordInput,
   nowIso: string,
 ): Promise<void> {
+  await appendDispatchRecordEntry(sql, input, dispatchRecordEntry(input, nowIso));
+}
+
+/**
+ * The one bounded append behind every `dispatch_attempts` writer — a launch walk
+ * ({@link appendDispatchRecord}) or an answer-window failure
+ * ({@link appendAnswerFailureRecord}).
+ */
+async function appendDispatchRecordEntry(
+  sql: Sql,
+  target: { workspaceId: string; conversationId: string },
+  record: Record<string, unknown>,
+): Promise<void> {
   // `::text` THEN `::jsonb`: typing the parameter as text makes postgres.js send
   // the string as-is on ANY client. A bare `${entry}::jsonb` infers a jsonb param,
   // and a client without the canonical hybrid serializer (restoreRawJsonbSerializer)
   // JSON-encodes it again — storing a jsonb STRING, not an object (caught by
   // consult-dispatch-record.integration.test.ts on a plain client). Not sql.json():
   // the org pool has mishandled that in templates (EI-10445).
-  const entry = JSON.stringify(dispatchRecordEntry(input, nowIso));
+  const entry = JSON.stringify(record);
   await sql`
     UPDATE harness_shared.consult_state
        SET dispatch_attempts = (
@@ -296,8 +309,82 @@ export async function appendDispatchRecord(
               LIMIT ${DISPATCH_RECORDS_MAX}
            ) kept
        )
-     WHERE workspace_id = ${input.workspaceId} AND conversation_id = ${input.conversationId}
+     WHERE workspace_id = ${target.workspaceId} AND conversation_id = ${target.conversationId}
   `;
+}
+
+// ── Answer-window failures (WI-10003199, plan review-routing-through-relevance-router P-003) ──
+//
+// A launch walk records whether a session STARTED. It says nothing about whether
+// that session then ANSWERED. Measured 2026-09-26 over 3 days of consult answering
+// sessions: 8 launched, never posted, and ran a median 58 min (max 190) before the
+// task reaper noticed — and none of them left any trace on their consult. The
+// consult expiry sweep, the one actor that decides a slot's window is over, now
+// stops that session and appends one of these records, so "launched but silent" is
+// a failed attempt with a reason instead of an absence.
+
+/** Why a launched answering session ended without posting. */
+export type AnswerFailureReason =
+  /** The slot's consult window elapsed (the cascade advanced, or the consult expired). */
+  | 'answer-window-expired'
+  /** Bounded pickup recovery found no consult post before the window (implicit decline). */
+  | 'answer-pickup-stalled'
+  /** A silent review consult was converted to pullable work at half its window. */
+  | 'answer-window-converted';
+
+export interface AnswerFailureRecordInput {
+  workspaceId: string;
+  conversationId: string;
+  /** The expert the slot was selected for (`selection.selected[cursor].ownerId`). */
+  sourceOwnerId: string;
+  /** The slot's `answeringOwnerId` stamp; null when dispatch never stamped one. */
+  answeringOwnerId: string | null;
+  cascadeCursor: number;
+  reason: AnswerFailureReason;
+  detail: string;
+  /** What stopping the session did, e.g. `stopped task …` or `no live answering session found`. */
+  stopOutcome: string;
+}
+
+/**
+ * The persisted shape of an answer-window failure. It deliberately mirrors a launch
+ * walk's top level, so `conversations:get` renders it with no special case, and its
+ * single attempt carries `outcome:'failed'` + the reason.
+ *
+ * `dispatched:false` with a reason outside the launch-failure set keeps it NEUTRAL to
+ * the source cool-down: it launched nothing, so it neither counts as a failed launch
+ * nor resets the count the way a successful dispatch does.
+ */
+export function answerFailureRecordEntry(input: AnswerFailureRecordInput, nowIso: string): Record<string, unknown> {
+  const detail = clip(`${input.detail}; ${input.stopOutcome}`);
+  return {
+    at: nowIso,
+    sourceOwnerId: input.sourceOwnerId,
+    dispatched: false,
+    answeringOwnerId: input.answeringOwnerId,
+    operation: null,
+    agent: null,
+    model: null,
+    verified: null,
+    detail,
+    answerFailure: {
+      reason: input.reason,
+      cascadeCursor: input.cascadeCursor,
+      stopOutcome: clip(input.stopOutcome, 300),
+    },
+    attempts: [
+      { rank: null, agent: null, model: null, operation: null, outcome: 'failed', reason: input.reason, detail },
+    ],
+  };
+}
+
+/** Append one {@link answerFailureRecordEntry} to its consult's `dispatch_attempts`. */
+export async function appendAnswerFailureRecord(
+  sql: Sql,
+  input: AnswerFailureRecordInput,
+  nowIso: string,
+): Promise<void> {
+  await appendDispatchRecordEntry(sql, input, answerFailureRecordEntry(input, nowIso));
 }
 
 /** Default recorder: {@link appendDispatchRecord} through the org pool. */

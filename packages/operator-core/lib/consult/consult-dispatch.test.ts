@@ -32,6 +32,7 @@ import {
   SOURCE_FAILURE_LOOKBACK_MS,
   SOURCE_LAUNCH_FAILURE_THRESHOLD,
   sourceCooldownFrom,
+  answerFailureRecordEntry,
   type ConsultDispatchContext,
   type ConsultDispatchDeps,
   type ConsultDispatchRecordInput,
@@ -1005,5 +1006,48 @@ describe('source cool-down (WI-10003198 — a source whose launches keep failing
     it('ignores records with no parseable time', () => {
       expect(sourceCooldownFrom([{ at: 'not-a-time' } as PersistedDispatchRecord, failedOnce(1)], NOW_MS)).toBeNull();
     });
+  });
+});
+
+describe('answer-window failure records (WI-10003199, P-003)', () => {
+  const T0 = Date.parse('2026-09-26T05:00:00Z');
+  const iso = (minAgo: number) => new Date(T0 - minAgo * 60_000).toISOString();
+  const input = {
+    workspaceId: 'ws',
+    conversationId: 'conv-1',
+    sourceOwnerId: 'src-1',
+    answeringOwnerId: 'fork-1',
+    cascadeCursor: 2,
+    reason: 'answer-window-expired' as const,
+    detail: 'answering session for src-1 did not post before its proceed consult window expired',
+    stopOutcome: 'stopped task t-1',
+  };
+
+  it('records a failed attempt carrying the expiry reason and the stop outcome', () => {
+    const entry = answerFailureRecordEntry(input, iso(0));
+    expect(entry).toMatchObject({
+      at: iso(0),
+      sourceOwnerId: 'src-1',
+      dispatched: false,
+      answeringOwnerId: 'fork-1',
+      answerFailure: { reason: 'answer-window-expired', cascadeCursor: 2, stopOutcome: 'stopped task t-1' },
+      attempts: [{ outcome: 'failed', reason: 'answer-window-expired' }],
+    });
+    expect(String(entry.detail)).toContain('stopped task t-1');
+  });
+
+  it('is neutral to the source cool-down: it neither counts as a launch failure nor resets the count', () => {
+    const launchFail = (minAgo: number): PersistedDispatchRecord => ({
+      at: iso(minAgo),
+      sourceOwnerId: 'src-1',
+      dispatched: false,
+      attempts: [{ outcome: 'failed', reason: 'launch-exited', agent: 'claude', model: 'm' }],
+    });
+    const expiry = (minAgo: number) => answerFailureRecordEntry(input, iso(minAgo)) as unknown as PersistedDispatchRecord;
+    // Not counted: three answer failures alone never start a cool-down.
+    expect(sourceCooldownFrom([expiry(1), expiry(2), expiry(3)], T0)).toBeNull();
+    // Not a reset: failed launches on either side of it still add up to the threshold.
+    const cd = sourceCooldownFrom([launchFail(1), expiry(2), launchFail(3), launchFail(4)], T0);
+    expect(cd?.failures).toBe(SOURCE_LAUNCH_FAILURE_THRESHOLD);
   });
 });

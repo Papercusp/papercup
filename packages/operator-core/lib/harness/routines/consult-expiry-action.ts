@@ -35,9 +35,12 @@ registerSystemAction('consult-expiry-sweep', async () => {
       consultExpiryNotifyRequester,
       consultExpiryDispatch,
       consultExpiryFileReviewWorkItem,
+      consultExpiryStopAnsweringSession,
     },
     { makeConsultReachDispatcher },
     { upsertConditionWorkItem },
+    { listLiveTasks },
+    { killTask },
   ] = await Promise.all([
     import('@papercusp/db-org'),
     import('../../consult/consult-expiry-core'),
@@ -45,10 +48,19 @@ registerSystemAction('consult-expiry-sweep', async () => {
     import('../../consult/consult-expiry-adapters'),
     import('../../consult/consult-dispatch'),
     import('../../coord/condition-upsert'),
+    import('../../task-manager/store'),
+    import('../../task-manager/control'),
   ]);
 
   await sweepExpiredConsults({
     getSql: () => getOrgPg().sql,
+    // P-003 (WI-10003199): a slot whose window closes without a post has its
+    // answering session stopped here, at the transition, instead of idling until
+    // the task reaper's next pass; the reaper remains the backstop.
+    stopAnsweringSession: consultExpiryStopAnsweringSession({
+      listLiveTasks: (workspaceId) => listLiveTasks(workspaceId),
+      killTask: (taskId) => killTask(taskId),
+    }),
     emitReplyEvent: consultExpiryEmitReplyEvent(emitAwaitedEvent),
     notifyRequester: consultExpiryNotifyRequester(async (identity, opts) => {
       const { sendMessage } = await import('../../agent-tools/coordination/messages');
