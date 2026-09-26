@@ -1,0 +1,199 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "PTY host error-to-corpus live acceptance on the psu-pty-host runtime (R-004)",
+  "plan": "pty-host-error-logging-and-blender-corpus-2026-09-25",
+  "bar": "R-004",
+  "evidencePlane": "live",
+  "evidenceRuntime": "psu-pty-host",
+  "framework": "node",
+  "command": [
+    "node_modules/.bin/tsx",
+    ".papercusp/scratch/pty-r004-live-capture.mts",
+    "su-1bac2809-9d15-4282-84a8-b27b7e8cf74d",
+    "docs/evidence/pty-host-error-corpus-live-2026-09-26.json"
+  ],
+  "scriptSha256": "ebfc9023869e71f549e8a6bc7b92bf596e35229559099dee25c5b3fb860fc693",
+  "exitCode": 0,
+  "startedAt": "2026-09-26T17:30:58.202Z",
+  "finishedAt": "2026-09-26T17:31:01.022Z",
+  "summary": "Live host su-1bac2809-9d15-4282-84a8-b27b7e8cf74d (~/.papercusp/psu-pty/su-1bac2809-9d15-4282-84a8-b27b7e8cf74d.events.jsonl): 4 failure kind(s) traced JSONL -> psu_pty_host_events -> Blender corpus pattern -> flattenDigest; loaded-vs-disk host code compared.",
+  "assertions": [
+    {
+      "id": "jsonl-to-store",
+      "passed": true,
+      "evidence": "11/11 failure-class JSONL rows from ~/.papercusp/psu-pty/su-1bac2809-9d15-4282-84a8-b27b7e8cf74d.events.jsonl are persisted in psu_pty_host_events"
+    },
+    {
+      "id": "store-to-corpus",
+      "passed": true,
+      "evidence": "busy-gate-expired: store id 7722565 cited by pty-host:kind:busy-gate-expired and present in flattenDigest=true; wake-rearm-unsupported: store id 7722566 cited by pty-host:kind:wake-rearm-unsupported and present in flattenDigest=true; mcp-reconnect-failed: store id 7722563 cited by pty-host:kind:mcp-reconnect-failed and present in flattenDigest=true; host-code-stale: store id 7722568 cited by pty-host:kind:host-code-stale and present in flattenDigest=true"
+    },
+    {
+      "id": "no-unaccounted-failure-class",
+      "passed": true,
+      "evidence": "recent failure kinds [\"busy-gate-expired\",\"wake-rearm-unsupported\",\"mcp-reconnect-failed\",\"host-code-stale\"]; unaccounted []"
+    },
+    {
+      "id": "loaded-code-disposition",
+      "passed": true,
+      "evidence": "host pid 2416210 started 2026-09-26T15:11:38.792Z loaded 003986d636ef (= apps/operator/scripts/psu-pty-host.mjs at 8d58bce7aa committed 2026-09-26T00:21:33-04:00); disk ca8d9f2b7196; host logged host-code-stale at 2026-09-26T17:19:09.255Z with willAdopt=false notAdoptingReason=interactive-tty: no forced restart of an interactive owner TTY; new code loads on the next host start"
+    }
+  ],
+  "observed": {
+    "host": {
+      "ownerId": "su-1bac2809-9d15-4282-84a8-b27b7e8cf74d",
+      "pid": 2416210,
+      "startedAt": "2026-09-26T15:11:38.792Z",
+      "ledger": "~/.papercusp/psu-pty/su-1bac2809-9d15-4282-84a8-b27b7e8cf74d.events.jsonl",
+      "loadedHostCode": "003986d636efcb087bb92c3c2b4d85817d9bca434e1b08a3e72d3d1f475e62d6",
+      "diskHostCode": "ca8d9f2b7196b9402e78093c7b1caf64dc825aeeb26da7ffcdcfe6490d73e84f",
+      "loadedCommit": {
+        "sha": "8d58bce7aad4ea4e64dc7fe50e52b0d2a8ab1c9a",
+        "committedAt": "2026-09-26T00:21:33-04:00"
+      },
+      "hostCodeStale": {
+        "ts": "2026-09-26T17:19:09.255Z",
+        "kind": "host-code-stale",
+        "mode": "carry-respawn",
+        "loaded": "003986d636efcb087bb92c3c2b4d85817d9bca434e1b08a3e72d3d1f475e62d6",
+        "onDisk": "ca8d9f2b7196b9402e78093c7b1caf64dc825aeeb26da7ffcdcfe6490d73e84f",
+        "adoptable": false,
+        "willAdopt": false,
+        "notAdoptingReason": "interactive-tty",
+        "bridgeTty": true,
+        "hasReexecCallback": true,
+        "reexecCode": 87
+      }
+    },
+    "ingested": [
+      {
+        "ts": "2026-09-26T16:33:34.278Z",
+        "kind": "busy-gate-expired",
+        "storeId": "7683001",
+        "ingestedAt": "2026-09-26 12:47:06.532-04"
+      },
+      {
+        "ts": "2026-09-26T16:42:34.286Z",
+        "kind": "busy-gate-expired",
+        "storeId": "7683007",
+        "ingestedAt": "2026-09-26 12:47:06.532-04"
+      },
+      {
+        "ts": "2026-09-26T16:42:34.440Z",
+        "kind": "wake-rearm-unsupported",
+        "storeId": "7683008",
+        "ingestedAt": "2026-09-26 12:47:06.532-04"
+      },
+      {
+        "ts": "2026-09-26T16:51:34.445Z",
+        "kind": "busy-gate-expired",
+        "storeId": "7722553",
+        "ingestedAt": "2026-09-26 13:23:03.511496-04"
+      },
+      {
+        "ts": "2026-09-26T16:51:34.446Z",
+        "kind": "wake-rearm-unsupported",
+        "storeId": "7722554",
+        "ingestedAt": "2026-09-26 13:23:03.511496-04"
+      },
+      {
+        "ts": "2026-09-26T16:54:34.449Z",
+        "kind": "busy-gate-expired",
+        "storeId": "7722558",
+        "ingestedAt": "2026-09-26 13:23:03.511496-04"
+      },
+      {
+        "ts": "2026-09-26T16:54:34.449Z",
+        "kind": "wake-rearm-unsupported",
+        "storeId": "7722559",
+        "ingestedAt": "2026-09-26 13:23:03.511496-04"
+      },
+      {
+        "ts": "2026-09-26T17:02:27.878Z",
+        "kind": "mcp-reconnect-failed",
+        "storeId": "7722563",
+        "ingestedAt": "2026-09-26 13:23:03.511496-04"
+      },
+      {
+        "ts": "2026-09-26T17:09:57.229Z",
+        "kind": "busy-gate-expired",
+        "storeId": "7722565",
+        "ingestedAt": "2026-09-26 13:23:03.511496-04"
+      },
+      {
+        "ts": "2026-09-26T17:09:57.229Z",
+        "kind": "wake-rearm-unsupported",
+        "storeId": "7722566",
+        "ingestedAt": "2026-09-26 13:23:03.511496-04"
+      },
+      {
+        "ts": "2026-09-26T17:19:09.255Z",
+        "kind": "host-code-stale",
+        "storeId": "7722568",
+        "ingestedAt": "2026-09-26 13:23:03.511496-04"
+      }
+    ],
+    "hops": [
+      {
+        "kind": "busy-gate-expired",
+        "jsonlTs": "2026-09-26T17:09:57.229Z",
+        "storeId": "7722565",
+        "corpusRef": "pty-host:kind:busy-gate-expired",
+        "cited": true,
+        "flattened": true,
+        "summary": "busy-gate-expired: 326 PTY-host event(s) across 43 session(s) in 24h"
+      },
+      {
+        "kind": "wake-rearm-unsupported",
+        "jsonlTs": "2026-09-26T17:09:57.229Z",
+        "storeId": "7722566",
+        "corpusRef": "pty-host:kind:wake-rearm-unsupported",
+        "cited": true,
+        "flattened": true,
+        "summary": "wake-rearm-unsupported: 10 PTY-host event(s) across 5 session(s) in 24h"
+      },
+      {
+        "kind": "mcp-reconnect-failed",
+        "jsonlTs": "2026-09-26T17:02:27.878Z",
+        "storeId": "7722563",
+        "corpusRef": "pty-host:kind:mcp-reconnect-failed",
+        "cited": true,
+        "flattened": true,
+        "summary": "mcp-reconnect-failed: 5 PTY-host event(s) across 4 session(s) in 24h"
+      },
+      {
+        "kind": "host-code-stale",
+        "jsonlTs": "2026-09-26T17:19:09.255Z",
+        "storeId": "7722568",
+        "corpusRef": "pty-host:kind:host-code-stale",
+        "cited": true,
+        "flattened": true,
+        "summary": "host-code-stale: 270 PTY-host event(s) across 36 session(s) in 24h"
+      }
+    ],
+    "corpusRefsAtCapture": [
+      "pty-host:kind:busy-gate-expired",
+      "pty-host:kind:host-code-stale",
+      "pty-host:kind:respawn-carry-dropped",
+      "pty-host:kind:turn-start-unverified",
+      "pty-host:kind:persona-refresh-skipped",
+      "pty-host:kind:launch-kickoff-model-turn-absent",
+      "pty-host:kind:wake-rearm-unsupported",
+      "pty-host:kind:mcp-reconnect-failed",
+      "pty-host:kind:model-capacity-detected",
+      "pty-host:kind:quota-block-detected",
+      "pty-host:kind:startup-turn-dropped",
+      "pty-host:kind:orphan-teardown",
+      "pty-host:kind:launch-kickoff-marker-echo-unconfirmed",
+      "pty-host:kind:submit-verify-unconfirmed",
+      "pty-host:kind:wake-rearm-dropped",
+      "pty-host:kind:respawn-report-timeout",
+      "pty-host:kind:turn-delivered-after-retry",
+      "pty-host:kind:respawn-carry-turn-start-retry",
+      "pty-host:kind:submit-verify-human-input-retry",
+      "pty-host:kind:respawn-carry-fresh-epoch-retry",
+      "pty-host:coverage-residue"
+    ]
+  }
+}
