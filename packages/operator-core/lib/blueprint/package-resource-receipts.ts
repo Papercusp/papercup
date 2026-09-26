@@ -53,6 +53,15 @@ export interface PackageResourceReceipt {
 
 type Db = Sql | TransactionSql;
 
+export interface PackageInstallationReceipt {
+  owner_id: string;
+  specification_revision: string;
+  state_revision: string;
+  expected_resources: Record<string, string>;
+  phase: 'preparing' | 'applied' | 'releasing' | 'released' | 'cleanup_failed';
+  error: string | null;
+}
+
 export function packageResourceKey(address: PackageResourceAddress): string {
   for (const [key, value] of Object.entries(address)) {
     if (typeof value !== 'string' || !value.trim()) throw new Error(`package resource requires ${key}`);
@@ -68,6 +77,128 @@ export function packageResourceKey(address: PackageResourceAddress): string {
 
 async function lock(sql: TransactionSql, workspaceId: string, key: string): Promise<void> {
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify(['blueprint-package-resource', workspaceId, key])}, 0))`;
+}
+
+export async function readPackageInstallation(sql: Db, workspaceId: string, dependentId: string): Promise<PackageInstallationReceipt | null> {
+  const [row] = await sql<PackageInstallationReceipt[]>`SELECT owner_id, specification_revision, state_revision,
+      expected_resources, phase, error FROM harness_shared.blueprint_package_installations
+    WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId}`;
+  return row ?? null;
+}
+
+/** Persist the full intended set before any external write, including zero writes.
+ * Existing per-resource receipts remain the authority for external IDs/ownership. */
+interface PackageInstallationInput {
+  workspaceId: string; dependentId: string; ownerId: string;
+  specificationRevision: string; stateRevision: string; expectedResources: ReadonlyMap<string, string>;
+}
+
+export async function beginPackageInstallation(sql: Sql, input: PackageInstallationInput): Promise<void> {
+  await sql.begin((tx) => beginPackageInstallationInTransaction(tx, input));
+}
+
+async function beginPackageInstallationInTransaction(tx: TransactionSql, input: PackageInstallationInput): Promise<void> {
+  for (const value of [input.workspaceId, input.dependentId, input.ownerId, input.specificationRevision, input.stateRevision]) {
+    if (!value?.trim()) throw new Error('package installation requires exact wearer and revision');
+  }
+  const expected = Object.fromEntries([...input.expectedResources].sort(([a], [b]) => a.localeCompare(b)));
+  if (Object.entries(expected).some(([key, hash]) => !/^[a-f0-9]{64}$/.test(key) || !/^[a-f0-9]{64}$/.test(hash))) {
+    throw new Error('package installation requires exact resource keys and hashes');
+  }
+  await lock(tx, input.workspaceId, 'dependent:' + input.dependentId);
+  await tx`INSERT INTO harness_shared.blueprint_package_installations
+    (workspace_id, dependent_id, owner_id, specification_revision, state_revision, expected_resources)
+    VALUES (${input.workspaceId}, ${input.dependentId}, ${input.ownerId}, ${input.specificationRevision},
+      ${input.stateRevision}, ${tx.json(expected)}) ON CONFLICT (workspace_id, dependent_id) DO NOTHING`;
+  const row = (await readPackageInstallation(tx, input.workspaceId, input.dependentId))!;
+  if (row.owner_id !== input.ownerId || row.specification_revision !== input.specificationRevision ||
+      row.state_revision !== input.stateRevision || Object.keys(row.expected_resources).length !== Object.keys(expected).length ||
+      Object.entries(expected).some(([key, hash]) => row.expected_resources[key] !== hash)) {
+    throw new Error('package installation manifest cannot change under an exact revision');
+  }
+  if (row.phase !== 'preparing' && row.phase !== 'applied') throw new Error('released installation cannot be replayed');
+}
+
+/** Mode/control changes can carry an unchanged specification without external
+ * writes. The host must select the source from its authoritative applied receipt
+ * and call this INSIDE the transaction that publishes the next desired revision.
+ * The new ref stays prepared until that revision is acknowledged. */
+export async function carryAppliedPackageInstallation(tx: TransactionSql, input: PackageInstallationInput & {
+  fromDependentId: string;
+}): Promise<void> {
+  if (!input.fromDependentId.trim()) throw new Error('package carry requires an applied source');
+  for (const id of [...new Set([input.fromDependentId, input.dependentId])].sort()) {
+    await lock(tx, input.workspaceId, 'dependent:' + id);
+  }
+  const source = await readPackageInstallation(tx, input.workspaceId, input.fromDependentId);
+  if (!source || source.phase !== 'applied' || source.owner_id !== input.ownerId ||
+      source.specification_revision !== input.specificationRevision) {
+    throw new Error('package carry requires the same wearer and applied specification');
+  }
+  // Reuses the locked exact-set validation, including current resource readiness.
+  // No target rows are written if the source is incomplete or the pins changed.
+  await applyPackageResourceDependent(tx, input.workspaceId, input.fromDependentId, input.expectedResources);
+  await beginPackageInstallationInTransaction(tx, input);
+  await tx`INSERT INTO harness_shared.blueprint_package_dependents
+    (workspace_id, dependent_id, resource_key)
+    SELECT workspace_id, ${input.dependentId}, resource_key
+    FROM harness_shared.blueprint_package_dependents
+    WHERE workspace_id = ${input.workspaceId} AND dependent_id = ${input.fromDependentId}
+    ON CONFLICT (workspace_id, dependent_id, resource_key) DO NOTHING`;
+}
+
+/** Commit the release fence BEFORE external cleanup. All members are ineligible
+ * immediately, and a crash can replay the durable dependent addresses. */
+export async function beginPackageInstallationRelease(sql: Sql, workspaceId: string, dependentId: string,
+  options: { onlyUnapplied?: boolean } = {}): Promise<boolean> {
+  return sql.begin(async (tx) => {
+    await lock(tx, workspaceId, 'dependent:' + dependentId);
+    const row = await readPackageInstallation(tx, workspaceId, dependentId);
+    const [applied] = await tx`SELECT 1 FROM harness_shared.blueprint_package_dependents
+      WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId} AND phase = 'applied' LIMIT 1`;
+    if (options.onlyUnapplied && (row?.phase === 'applied' || applied)) return false;
+    await tx`UPDATE harness_shared.blueprint_package_installations SET phase = 'releasing', error = NULL, updated_at = now()
+      WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId} AND phase <> 'released'`;
+    await tx`UPDATE harness_shared.blueprint_package_dependents SET phase = 'released', updated_at = now()
+      WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId}`;
+    return true;
+  });
+}
+
+export async function finishPackageInstallationRelease(sql: Sql, workspaceId: string, dependentId: string): Promise<void> {
+  await sql.begin(async (tx) => {
+    await lock(tx, workspaceId, 'dependent:' + dependentId);
+    const row = await readPackageInstallation(tx, workspaceId, dependentId);
+    if (!row || row.phase === 'released') return; // pre-manifest compatibility
+    if (row.phase !== 'releasing' && row.phase !== 'cleanup_failed') throw new Error('package installation release has not begun');
+    const residue = await tx<Array<{ resource_key: string; error: string | null }>>`
+      SELECT d.resource_key, r.error FROM harness_shared.blueprint_package_dependents d
+      JOIN harness_shared.blueprint_package_resources r USING (workspace_id, resource_key)
+      WHERE d.workspace_id = ${workspaceId} AND d.dependent_id = ${dependentId}
+        AND (d.phase <> 'released' OR (r.phase NOT IN ('deleted', 'detached') AND NOT EXISTS (
+          SELECT 1 FROM harness_shared.blueprint_package_dependents held
+          WHERE held.workspace_id = r.workspace_id AND held.resource_key = r.resource_key AND held.phase <> 'released')))`;
+    const error = residue.length ? residue.map((r) => r.resource_key + ': ' + (r.error ?? 'cleanup incomplete')).join('; ') : null;
+    await tx`UPDATE harness_shared.blueprint_package_installations
+      SET phase = ${error ? 'cleanup_failed' : 'released'}, error = ${error}, updated_at = now()
+      WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId}`;
+  });
+}
+
+/** Failures before a per-resource receipt (backend selection, enumeration or
+ * finalization) still belong to the durable installation. Never overwrite a
+ * concurrently completed release with a stale failure. */
+export async function recordPackageInstallationReleaseFailure(
+  sql: Sql, workspaceId: string, dependentId: string, error: unknown,
+): Promise<void> {
+  const message = (error instanceof Error ? error.message : String(error)).slice(0, 4000);
+  await sql.begin(async (tx) => {
+    await lock(tx, workspaceId, 'dependent:' + dependentId);
+    await tx`UPDATE harness_shared.blueprint_package_installations
+      SET phase = 'cleanup_failed', error = ${message}, updated_at = now()
+      WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId}
+        AND phase IN ('releasing', 'cleanup_failed')`;
+  });
 }
 
 export async function readPackageResourceReceipt(sql: Db, workspaceId: string, key: string): Promise<PackageResourceReceipt | null> {
@@ -97,6 +228,19 @@ export async function preparePackageResource(
   await sql.begin(async (tx) => {
     await lock(tx, address.workspaceId, 'dependent:' + dependentId);
     await lock(tx, address.workspaceId, key);
+    const installation = await readPackageInstallation(tx, address.workspaceId, dependentId);
+    if (installation) {
+      if (installation.phase !== 'preparing' && installation.phase !== 'applied') throw new Error('released installation cannot be replayed');
+      if (installation.expected_resources[key] !== address.installedHash) throw new Error('resource is outside the installation manifest');
+    }
+    // Once applied, this installation describes an immutable complete set.
+    // Replaying a member is safe; appending another one requires a new revision.
+    const [sealed] = await tx`SELECT 1 FROM harness_shared.blueprint_package_dependents
+      WHERE workspace_id = ${address.workspaceId} AND dependent_id = ${dependentId} AND phase = 'applied'
+        AND NOT EXISTS (SELECT 1 FROM harness_shared.blueprint_package_dependents
+          WHERE workspace_id = ${address.workspaceId} AND dependent_id = ${dependentId}
+            AND resource_key = ${key}) LIMIT 1`;
+    if (sealed) throw new Error('applied installation cannot prepare additional resources');
     const [conflictingPin] = await tx`SELECT 1 FROM harness_shared.blueprint_package_dependents d
       JOIN harness_shared.blueprint_package_resources r USING (workspace_id, resource_key)
       WHERE d.workspace_id = ${address.workspaceId} AND d.dependent_id = ${dependentId}
@@ -131,6 +275,7 @@ export async function preparePackageResource(
 
   try {
     return await sql.begin(async (tx) => {
+      await lock(tx, address.workspaceId, 'dependent:' + dependentId);
       await lock(tx, address.workspaceId, key);
       const [dependent] = await tx<{ phase: string }[]>`SELECT phase FROM harness_shared.blueprint_package_dependents
         WHERE workspace_id = ${address.workspaceId} AND dependent_id = ${dependentId} AND resource_key = ${key}`;
@@ -165,18 +310,48 @@ export async function preparePackageResource(
 }
 
 /** Invoke in the SAME transaction that promotes the existing applied activation. */
-export async function applyPackageResourceDependent(tx: TransactionSql, workspaceId: string, dependentId: string): Promise<void> {
+export async function applyPackageResourceDependent(
+  tx: TransactionSql, workspaceId: string, dependentId: string,
+  expectedResources?: ReadonlyMap<string, string>,
+  options: { allowLegacyUnprepared?: boolean } = {},
+): Promise<void> {
+  let expected = expectedResources ? new Map(expectedResources) : undefined;
   await lock(tx, workspaceId, 'dependent:' + dependentId);
+  const installation = await readPackageInstallation(tx, workspaceId, dependentId);
+  if (installation) {
+    if (installation.phase !== 'preparing' && installation.phase !== 'applied') throw new Error('package installation has been released');
+    const manifest = new Map(Object.entries(installation.expected_resources));
+    if (expected && (manifest.size !== expected.size || [...manifest].some(([key, hash]) => expected!.get(key) !== hash))) {
+      throw new Error('identity package preparation does not match the complete applied pin set');
+    }
+    expected = manifest;
+  }
   const resources = await tx<{ resource_key: string }[]>`SELECT resource_key FROM harness_shared.blueprint_package_dependents
     WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId} ORDER BY resource_key`;
-  if (!resources.length) throw new Error('package resource dependent has not been prepared');
+  if (!resources.length && !installation) {
+    if (options.allowLegacyUnprepared) return;
+    throw new Error('package resource dependent has not been prepared');
+  }
   for (const { resource_key: key } of resources) await lock(tx, workspaceId, key);
+  // Read the set and content hashes only after BOTH the dependent and resource
+  // locks. A host-side preflight is a stale snapshot once it waits for either.
+  if (expected) {
+    const prepared = await tx<Array<{ resource_key: string; installed_hash: string }>>`
+      SELECT d.resource_key, r.installed_hash FROM harness_shared.blueprint_package_dependents d
+      JOIN harness_shared.blueprint_package_resources r USING (workspace_id, resource_key)
+      WHERE d.workspace_id = ${workspaceId} AND d.dependent_id = ${dependentId}`;
+    if (prepared.length !== expected.size || prepared.some((row) => expected.get(row.resource_key) !== row.installed_hash)) {
+      throw new Error('identity package preparation does not match the complete applied pin set');
+    }
+  }
   const [invalid] = await tx`SELECT 1 FROM harness_shared.blueprint_package_dependents d
     JOIN harness_shared.blueprint_package_resources r USING (workspace_id, resource_key)
     WHERE d.workspace_id = ${workspaceId} AND d.dependent_id = ${dependentId}
       AND (d.phase = 'released' OR r.phase <> 'ready') LIMIT 1`;
   if (invalid) throw new Error('package resources are not prepared for activation');
   await tx`UPDATE harness_shared.blueprint_package_dependents SET phase = 'applied', updated_at = now()
+    WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId}`;
+  await tx`UPDATE harness_shared.blueprint_package_installations SET phase = 'applied', error = NULL, updated_at = now()
     WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId}`;
 }
 

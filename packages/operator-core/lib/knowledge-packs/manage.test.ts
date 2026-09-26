@@ -17,6 +17,8 @@ vi.mock('../hive-settings-store', () => ({
 }));
 
 import { getMemoryBackend } from '../memory/backend';
+import { drainDetached } from '../detached-imports';
+import { notifySyncInvalidate } from '../sync-sse';
 import {
   applyPackInstall,
   classifyPackInstall,
@@ -376,6 +378,7 @@ describe('uninstallPack', () => {
   });
 
   it('reports exact cleanup failures and retries only surviving rows without losing edits', async () => {
+    vi.mocked(notifySyncInvalidate).mockClear();
     const remaining = [...pool, {
       id: 'p3', text: 'C — always do c', scope: 'hive:h',
       metadata: { source: 'pack', pack_id: 'rails-pack', pack_item_id: 'c' },
@@ -391,7 +394,8 @@ describe('uninstallPack', () => {
       if (index >= 0) remaining.splice(index, 1);
     });
     const options = { potSlug: 'h', packId: 'rails-pack', pack };
-    const first = await uninstallPack(options, { backend: backend as never });
+    const deps = { backend: backend as never, notifyInvalidate: vi.mocked(notifySyncInvalidate) };
+    const first = await uninstallPack(options, deps);
     expect(first).toMatchObject({
       ok: false, removed: 1,
       failed: [{ id: 'p1', error: 'memory store unavailable' }],
@@ -400,12 +404,18 @@ describe('uninstallPack', () => {
     expect(remaining.map((row) => row.id)).toEqual(['p1', 'p2', 'o1', 'x1']);
 
     backend.forget.mockClear();
-    const retried = await uninstallPack(options, { backend: backend as never });
+    const retried = await uninstallPack(options, deps);
     expect(retried).toMatchObject({ ok: true, removed: 1, failed: [] });
     expect(backend.forget.mock.calls).toEqual([['p1']]);
     expect(remaining.map((row) => row.id)).toEqual(['p2', 'o1', 'x1']);
-    await expect(uninstallPack(options, { backend: backend as never }))
+    await expect(uninstallPack(options, deps))
       .resolves.toMatchObject({ ok: true, removed: 0, failed: [] });
+    await drainDetached();
+    expect(vi.mocked(notifySyncInvalidate).mock.calls.map(([name]) => name)).toEqual([
+      'learning.hive', 'knowledgePacks.list', 'knowledgePacks.candidates',
+      'learning.hive', 'knowledgePacks.list', 'knowledgePacks.candidates',
+      'learning.hive', 'knowledgePacks.list', 'knowledgePacks.candidates',
+    ]);
   });
 });
 

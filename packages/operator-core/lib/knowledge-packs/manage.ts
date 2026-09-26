@@ -88,6 +88,16 @@ export interface InstallReview {
 export interface ManageDeps {
   backend?: MemoryBackend;
   judge?: LlmJudge;
+  notifyInvalidate?: (name: string) => void | Promise<void>;
+}
+
+function notifyPackQueries(names: string[], deps: Pick<ManageDeps, 'notifyInvalidate'> = {}): void {
+  const dispatch = deps.notifyInvalidate
+    ? Promise.all(names.map((name) => Promise.resolve().then(() => deps.notifyInvalidate!(name))))
+    : import('../sync-sse').then((m) => Promise.all(names.map((name) => m.notifySyncInvalidate(name))));
+  // Track the whole notification chain: tracking the import alone lets its
+  // .then callback escape Vitest teardown and a unit fixture's mock realm.
+  void trackDetached(dispatch).catch(() => {});
 }
 
 function realJudge(): LlmJudge {
@@ -355,14 +365,8 @@ export async function applyPackInstall(
     }
   }
 
-  void trackDetached(import('../sync-sse'))
-    .then((m) => {
-      m.notifySyncInvalidate('learning.hive');
-      m.notifySyncInvalidate('knowledgePacks.list');
-      // The Candidates pane reads its own name (push-audit 2026-07-26).
-      m.notifySyncInvalidate('knowledgePacks.candidates');
-    })
-    .catch(() => {});
+  // The Candidates pane reads its own name (push-audit 2026-07-26).
+  notifyPackQueries(['learning.hive', 'knowledgePacks.list', 'knowledgePacks.candidates'], deps);
 
   return {
     ok: failed === 0,
@@ -428,14 +432,8 @@ export async function uninstallPack(
     }
   }
 
-  void trackDetached(import('../sync-sse'))
-    .then((m) => {
-      m.notifySyncInvalidate('learning.hive');
-      m.notifySyncInvalidate('knowledgePacks.list');
-      // The Candidates pane reads its own name (push-audit 2026-07-26).
-      m.notifySyncInvalidate('knowledgePacks.candidates');
-    })
-    .catch(() => {});
+  // The Candidates pane reads its own name (push-audit 2026-07-26).
+  notifyPackQueries(['learning.hive', 'knowledgePacks.list', 'knowledgePacks.candidates'], deps);
 
   return {
     ok: failed.length === 0, packId: opts.packId, removed, kept, failed,
@@ -487,7 +485,7 @@ export async function setPackEnabled(opts: {
   potSlug: string;
   packId: string;
   enabled: boolean;
-}): Promise<{ ok: true; disabled: string[] }> {
+}, deps: Pick<ManageDeps, 'notifyInvalidate'> = {}): Promise<{ ok: true; disabled: string[] }> {
   const cur = await disabledPacksFor(opts.workspaceId, opts.potSlug);
   const next = opts.enabled ? cur.filter((p) => p !== opts.packId) : [...new Set([...cur, opts.packId])];
   const { setHiveSetting } = await import('../hive-settings-store');
@@ -497,9 +495,7 @@ export async function setPackEnabled(opts: {
     settingKey: DISABLED_PACKS_SETTING,
     value: next, // store serializes JSON values
   });
-  void trackDetached(import('../sync-sse'))
-    .then((m) => m.notifySyncInvalidate('learning.hive'))
-    .catch(() => {});
+  notifyPackQueries(['learning.hive'], deps);
   return { ok: true, disabled: next };
 }
 
