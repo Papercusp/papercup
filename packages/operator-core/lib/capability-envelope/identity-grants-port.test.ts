@@ -735,6 +735,53 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       { ...f.record, ...applied, specificationArtifact: artifact }, read)).toBeNull();
     expect(read).not.toHaveBeenCalled();
   });
+
+  // D-007: no live session is governed, so the per-call row reference must also
+  // come from the ungoverned outcome — without changing that outcome.
+  it('names the evaluated launch row for a grantless artifact while keeping the null verdict', async () => {
+    const f = fixture();
+    const artifact = compileAgentSpecification({
+      source: { id: 'plain-audit', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } },
+      prompt: { role: 'worker', text: 'Plain.' },
+    });
+    const applied = { specificationRevision: artifact.specificationRevision, stateRevision: 'plain-audit' };
+    const record = { ...f.record, ...applied, specificationArtifact: artifact };
+    const state = {
+      appliedRevision: applied,
+      identityLaunchRecordVersion: { sessionId: 'ungoverned-audit-test', rowVersion: '71' },
+    };
+    const read = vi.fn(async () => f.policy);
+    const sink = vi.fn();
+
+    expect(await checkIdentityGrantKernel(f.request, state, record, read, undefined, sink)).toBeNull();
+    expect(sink).toHaveBeenCalledWith({ advSessionId: 'ungoverned-audit-test', xmin: '71' });
+    // The cached resolution is judged against the same row, so it names it too.
+    expect(await checkIdentityGrantKernel(f.request, state, record, read, undefined, sink)).toBeNull();
+    expect(sink).toHaveBeenCalledTimes(2);
+    expect(sink).toHaveBeenLastCalledWith({ advSessionId: 'ungoverned-audit-test', xmin: '71' });
+
+    // No database row version, no reference: nothing is invented.
+    sink.mockClear();
+    expect(await checkIdentityGrantKernel(f.request, { appliedRevision: applied }, record, read, undefined, sink))
+      .toBeNull();
+    expect(sink).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('keeps the governed stamp on the decision itself and never reports it as ungoverned', async () => {
+    const f = fixture();
+    const state = { ...f.state, identityLaunchRecordVersion: { sessionId: 'governed-audit-test', rowVersion: '72' } };
+    const read = vi.fn(async () => f.policy);
+    const sink = vi.fn();
+    expect(await checkIdentityGrantKernel(f.request, state, f.record, read, undefined, sink)).toMatchObject({
+      decision: 'allow',
+      serverAudit: { identityLaunchRecord: { advSessionId: 'governed-audit-test', xmin: '72' } },
+    });
+    expect(await checkIdentityGrantKernel(f.request, state,
+      { ...f.record, specificationArtifact: { tampered: true } }, read, undefined, sink))
+      .toMatchObject({ decision: 'deny' });
+    expect(sink).not.toHaveBeenCalled();
+  });
 });
 
 describe('P-005 production policy reader', () => {

@@ -257,14 +257,15 @@ fn pipe_argv(plugin_url: &str) -> Vec<String> {
 }
 
 /// Turn a [`PaneSpec`] into the open-command-pane command. `argv[0]` is the
-/// program; the rest are args. cwd is left to zellij's default (the workbench
-/// cwd); the title rides along for traceability. `stack` requests the dockview
-/// stack-on-open behavior (D-008).
+/// program (`psu` resolves beside the running pui first, D-031); the rest are
+/// args. cwd is left to zellij's default (the workbench cwd); the title rides
+/// along for traceability. `stack` requests the dockview stack-on-open
+/// behavior (D-008).
 fn spec_to_open_command(spec: &PaneSpec, stack: bool) -> Command {
     let (command, args) = spec
         .argv
         .split_first()
-        .map(|(c, rest)| (c.clone(), rest.to_vec()))
+        .map(|(c, rest)| (crate::remote_connect::pane_program(c), rest.to_vec()))
         .unwrap_or_else(|| (String::new(), Vec::new()));
     Command::OpenCommandPane {
         command,

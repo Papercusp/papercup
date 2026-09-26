@@ -63,12 +63,16 @@ vi.mock('./capability-envelope/identity-grants-port', async (importOriginal) => 
   const actual = await importOriginal<typeof import('./capability-envelope/identity-grants-port')>();
   return {
     ...actual,
-    checkIdentityGrantKernel: (request: KernelEnforcementRequest, state: never, record: unknown) => {
+    checkIdentityGrantKernel: (
+      request: KernelEnforcementRequest, state: never, record: unknown,
+      _readPolicy: unknown, _readClaim: unknown,
+      onUngovernedEvaluated?: Parameters<typeof actual.checkIdentityGrantKernel>[5],
+    ) => {
       // Stands in for the whole class the resolver's catch exists for: the gate
       // is reached by DYNAMIC import, so a module that fails to load and one
       // that throws are the same event from the caller's side. Defaults off.
       if (grants.kernelThrows) throw new Error('identity policy module unavailable');
-      return actual.checkIdentityGrantKernel(request, state, record, grants.read, grants.claim);
+      return actual.checkIdentityGrantKernel(request, state, record, grants.read, grants.claim, onUngovernedEvaluated);
     },
   };
 });
@@ -252,6 +256,26 @@ describe('control-anchor kernel resolver (D-030)', () => {
       await controlAnchorKernelResolver(request());
       await controlAnchorKernelResolver(request());
       expect(bodyReads()).toBe(2);
+    });
+
+    // D-007: PLAIN_ARTIFACT carries no configuration.grants — the shape of every
+    // live session — so the structural verdict stands and must name its row.
+    it('persists the evaluated launch row on an ungoverned allow, on the miss and on the cache hit', async () => {
+      db.rows.push([rowAt('700')], [rowAt('700')]);
+      const serverAudit = { identityLaunchRecord: { advSessionId: '31', xmin: '700' } };
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow', serverAudit });
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow', serverAudit });
+      expect(bodyReads()).toBe(1);
+    });
+
+    it('names the row version the body was actually read at on an ungoverned miss', async () => {
+      const spec = anchorRow({}).launch_spec;
+      db.rows.push([rowAt('820')]);
+      db.loadOverrides.push([{ launch_spec: spec, launch_spec_xmin: '821' }]);
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+        decision: 'allow',
+        serverAudit: { identityLaunchRecord: { advSessionId: '31', xmin: '821' } },
+      });
     });
 
     it('keys a miss on the row version the body was read at, not the header read', async () => {

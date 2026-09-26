@@ -18,10 +18,42 @@
 //! through psu, so no status value could signal one unambiguously).
 
 use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The launcher that owns saved connection profiles.
 pub const PSU_PROGRAM: &str = "psu";
+
+/// `<directory of exe>/psu` when it is an executable file: the psu a PUI
+/// release unit ships beside `bin/pui` (D-031).
+pub fn sibling_psu(exe: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let candidate = exe.parent()?.join(PSU_PROGRAM);
+    let meta = std::fs::metadata(&candidate).ok()?;
+    (meta.is_file() && meta.permissions().mode() & 0o111 != 0).then_some(candidate)
+}
+
+/// The psu every PUI spawn runs: the one shipped beside the running `pui`
+/// first, so an installed release uses its own bundled psu and private Node
+/// whatever else is on PATH; otherwise `psu` from PATH (a developer build, or
+/// the desktop app, which provides its own psu).
+pub fn psu_program() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| sibling_psu(&exe))
+        .and_then(|path| path.into_os_string().into_string().ok())
+        .unwrap_or_else(|| PSU_PROGRAM.to_string())
+}
+
+/// The program a pane actually runs for `argv[0]`: `psu` resolves through
+/// [`psu_program`]; every other program is left to PATH unchanged.
+pub fn pane_program(program: &str) -> String {
+    if program == PSU_PROGRAM {
+        psu_program()
+    } else {
+        program.to_string()
+    }
+}
 /// Tells psu's front controller to launch `pui` (not `psu`) on the chosen host.
 pub const CONNECT_PROGRAM_ARG: &str = "--connect-program=pui";
 /// Set by psu's front controller on the program it launches on the remote host.
@@ -60,7 +92,7 @@ pub fn refuse_when_forwarded(forwarded: Option<&str>) -> Result<()> {
 
 fn psu_missing() -> anyhow::Error {
     anyhow::anyhow!(
-        "`pui --connect` uses the remote hosts psu saves, but `{PSU_PROGRAM}` is not on PATH. Install psu, or open a terminal on the remote host and run `pui` there"
+        "`pui --connect` uses the remote hosts psu saves, but this PUI has no bundled psu beside it and `{PSU_PROGRAM}` is not on PATH. Reinstall PUI from a release archive (it includes psu), or open a terminal on the remote host and run `pui` there"
     )
 }
 
@@ -69,7 +101,7 @@ fn psu_missing() -> anyhow::Error {
 /// returns only when psu could not be started.
 pub fn hand_off(args: &[String]) -> Result<i32> {
     refuse_when_forwarded(std::env::var(FORWARDED_ENV).ok().as_deref())?;
-    let mut command = Command::new(PSU_PROGRAM);
+    let mut command = Command::new(psu_program());
     command.args(psu_args(args));
     #[cfg(unix)]
     {

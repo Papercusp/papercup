@@ -567,12 +567,39 @@ function denyUnlessRecoveryDoor(
   return denial(cause, classRef, toolName, policyRevision);
 }
 
+/**
+ * The exact adv_sessions row version whose immutable identity artifact a kernel
+ * decision evaluated: the database row id and the xmin actually read (the lazily
+ * loaded body's xmin on a cache miss, not the earlier header's).
+ */
+export interface IdentityLaunchAuditStamp {
+  advSessionId: string;
+  xmin: string;
+}
+
+/**
+ * Receives the audit stamp for an artifact this gate evaluated but does not
+ * govern. `checkIdentityGrantKernel` returns `null` for that outcome so the
+ * caller's structural verdict stands; this is how that verdict still names the
+ * row it was judged against (D-007).
+ */
+export type UngovernedIdentityAuditSink = (stamp: IdentityLaunchAuditStamp) => void;
+
+function identityLaunchAuditStamp(
+  version: IdentityGrantKernelState['identityLaunchRecordVersion'],
+): IdentityLaunchAuditStamp | null {
+  return version?.sessionId && version.rowVersion
+    ? { advSessionId: version.sessionId, xmin: version.rowVersion }
+    : null;
+}
+
 export async function checkIdentityGrantKernel(
   request: KernelEnforcementRequest,
   state: IdentityGrantKernelState,
   rawRecord: unknown,
   readPolicy: PolicyReader = readIdentityGrantPolicy,
   readOperationEffectClaim: OperationEffectClaimReader = readCurrentOperationEffectClaim,
+  onUngovernedEvaluated?: UngovernedIdentityAuditSink,
 ): Promise<KernelEnforcementResult | null> {
   // WI-10002721: the live resolver passes a header + loader instead of the
   // (hundreds-of-KB) record. The header carries exactly the fields this gate
@@ -643,7 +670,15 @@ export async function checkIdentityGrantKernel(
   }
   resolution ??= resolveIdentityArtifactForKernel(record, applied, version);
   if (resolution.kind === 'stale-artifact') return staleArtifact(request);
-  if (resolution.kind === 'ungoverned') return null;
+  if (resolution.kind === 'ungoverned') {
+    // D-007: no live session carries configuration.grants, so without this
+    // every identity-bearing invocation would persist with no row reference and
+    // the per-call receipt could never be produced. Audit only: the caller's
+    // structural verdict (and its decision) is unchanged.
+    const stamp = identityLaunchAuditStamp(version);
+    if (stamp) onUngovernedEvaluated?.(stamp);
+    return null;
+  }
   const { artifact, current } = resolution;
   const workspaceId = request.ctx.workspaceId ?? request.ctx.principal?.workspaceId;
   if (record.workspaceId !== workspaceId ||
