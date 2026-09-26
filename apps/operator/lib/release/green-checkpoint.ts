@@ -6386,16 +6386,23 @@ export async function measureTargetedGateRuns(
   for (const { script, workspace } of resolveGateRuns(gateIds)) {
     const label = workspace ? `${workspace} :: ${script}` : script;
     let status: TargetedGateOutcome["status"];
+    // WI-10003211: an ERRORED leg used to be summarized as a bare "ERRORED", discarding the
+    // runner's own reason (e.g. "timed out after 2700000ms"). That made a watchdog kill of a
+    // still-progressing lane indistinguishable from a spawn failure in the gate log. Keep the
+    // first line of the reason, bounded and stripped of the `;` that separates summary entries.
+    let erroredReason: string | null = null;
     try {
       const result = await run(script, workspace);
       status = result.code === 0 ? "pass"
         : result.code === EXIT_NOT_CHECKED && isNotCheckedNonGating(label) ? "not-checked"
         : Number.isInteger(result.code) ? "fail" : "errored";
-    } catch {
+    } catch (e) {
       status = "errored";
+      const firstLine = (e instanceof Error ? e.message : String(e)).split("\n", 1)[0] ?? "";
+      erroredReason = firstLine.replace(/;/g, ",").trim().slice(0, 200) || null;
     }
     measured.set(key(script, workspace), status);
-    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}`);
+    summaries.push(`${label}: ${status === "not-checked" ? "NOT CHECKED (examined nothing — not gating)" : status === "pass" ? "pass" : status.toUpperCase()}${erroredReason ? ` (${erroredReason})` : ""}`);
   }
   const perGate = [...new Set(gateIds)].map((id): TargetedGateOutcome => {
     const statuses = resolveGateRuns([id]).map(({ script, workspace }) => measured.get(key(script, workspace)));
@@ -15036,23 +15043,52 @@ export const ISOLATION_RUN_TIMEOUT_MS = 5 * 60_000;
  * sanitized child env, so a host-only override cannot silently change what the rescue claims
  * to have bounded.
  */
-const RESCUE_TASK_TIMEOUT_FLOOR_MS = 45 * 60_000;
-const RESCUE_TASK_TIMEOUT_MAX_MS = 90 * 60_000;
+export const RESCUE_TASK_TIMEOUT_FLOOR_MS = 45 * 60_000;
+export const RESCUE_TASK_TIMEOUT_MAX_MS = 90 * 60_000;
 
-function rescueTaskWatchdogOptions(
+/**
+ * WI-10003211: the floor is a CHECKPOINT, not a verdict — the same correction the batch runner
+ * got in EI-20803703725014949. A repair re-test whose radius widened to whole tasks runs the full
+ * `operator-core :: test:lane-stateful` (~2.5k files) at the gate's shared 2-fork cap, which
+ * needs more than 45 minutes. Under the old ABSOLUTE 45-min timeout it was SIGKILLed at exactly
+ * 2700000ms on every pass while still completing files, so the queue's only signature leg read
+ * ERRORED forever and the frozen candidate could never converge (repair head 1a044fb6, 2026-09-26).
+ *
+ * Default policy (no operator override): the floor becomes an IDLE budget — every stdout/stderr
+ * chunk re-arms it — capped by an absolute ceiling. Both properties the batch runner relies on hold:
+ *   1. MONOTONE — an idle window of at least the floor cannot expire before the floor has elapsed,
+ *      and the ceiling is at least the floor, so no input is killed EARLIER than before.
+ *   2. BOUNDED — a silent wedge dies at the floor exactly as before; a chattering wedge dies at
+ *      the ceiling, below the gate-wide backstop.
+ * An explicit AFFECTED_BATCH_TIMEOUT_MS stays an ABSOLUTE bound: an operator who pins a deadline
+ * gets that deadline, never a silently-extended one.
+ */
+export function rescueTaskWatchdogOptions(
   script: string,
   env: NodeJS.ProcessEnv,
-): { timeoutMs?: number; killProcessGroupOnTimeout?: boolean } {
+): {
+  timeoutMs?: number;
+  timeoutResetsOnProgress?: boolean;
+  hardTimeoutMs?: number;
+  killProcessGroupOnTimeout?: boolean;
+} {
   if (script !== "test" && !script.startsWith("test:")) return {};
+  // `0` is the "no valid override" sentinel: resolveBatchTimeoutMs only returns a positive
+  // number for a positive, finite env value.
+  const explicitMs = resolveBatchTimeoutMs(env.AFFECTED_BATCH_TIMEOUT_MS, 0);
+  const overrideMs = explicitMs > 0 ? explicitMs : null;
   const timeoutMs = resolveTaskTimeoutMs({
-    overrideMs: resolveBatchTimeoutMs(
-      env.AFFECTED_BATCH_TIMEOUT_MS,
-      RESCUE_TASK_TIMEOUT_FLOOR_MS,
-    ),
+    overrideMs,
     floorMs: RESCUE_TASK_TIMEOUT_FLOOR_MS,
     maxMs: RESCUE_TASK_TIMEOUT_MAX_MS,
   });
-  return { timeoutMs, killProcessGroupOnTimeout: true };
+  if (overrideMs != null) return { timeoutMs, killProcessGroupOnTimeout: true };
+  return {
+    timeoutMs,
+    timeoutResetsOnProgress: true,
+    hardTimeoutMs: Math.max(timeoutMs, RESCUE_TASK_TIMEOUT_MAX_MS),
+    killProcessGroupOnTimeout: true,
+  };
 }
 
 /**
