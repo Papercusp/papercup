@@ -11377,8 +11377,12 @@ async function runGreenCheckpointInner(
           );
         }
         if (heal.kind === "healed") {
-          const expectedUpdatedAtMs = repairQueue.updatedAtMs;
-          repairQueue = applyGenCheckHeal(repairQueue, heal);
+          // A concurrent fixer may have advanced the lineage while the selective
+          // suite ran. The healer re-runs the writer at that fresh head; apply its
+          // admission to the SAME fresh queue, never to this run's stale snapshot.
+          const admissionBase = heal.refreshedQueue ?? repairQueue;
+          const expectedUpdatedAtMs = admissionBase.updatedAtMs;
+          repairQueue = applyGenCheckHeal(admissionBase, heal);
           await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs });
           if (signatureWithoutHealed(verification.signature, heal).length === 0) {
             candidate = repairQueue.repairHead;
@@ -19740,6 +19744,17 @@ export function realCheckpointDeps(
           });
           // WI-10002075: see the repair-tick seam above — same digest-first capture.
           return { code: r.code, tail: summarizeLegOutput(r.stderr || r.stdout) };
+        },
+        refreshAfterRefMove: async (previous) => {
+          const fresh = await this.readFrozenRepairQueue?.();
+          if (!fresh || fresh.candidate !== previous.candidate ||
+              fresh.repairHead === previous.repairHead) return null;
+          await this.setupTree(fresh.repairHead);
+          const checkedOut = await revParse(cfg.checkpointRoot, "HEAD");
+          if (checkedOut !== fresh.repairHead) {
+            throw new Error(`checkpoint tree at ${checkedOut} instead of ${fresh.repairHead}`);
+          }
+          return fresh;
         },
         log: (line) => console.log(line),
       });
