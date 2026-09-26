@@ -1283,6 +1283,13 @@ export async function dispatchPendingGradingAudits(
             // dispatcher's caller fleet and exposes that fleet's unrelated
             // persisted headcount profile in the launch receipt.
             independent: true,
+            // EI-24339979200649356: the ancestry check above measured THIS
+            // dispatcher's build, so a generation-bound judge must run on it.
+            // Without spawn-host binding, launch-agent defaults the judge's
+            // MCP to the stable proxy (:9071 → green :3070) — a different,
+            // possibly older build — and its terminal emit is then refused
+            // grading_audit_generation_incompatible after the launch is paid.
+            ...(generationBound ? { mcpTarget: 'spawn-host' as const } : {}),
             account: useFallback ? GRADING_AUDIT_FALLBACK.account : GRADING_AUDIT_ACCOUNT,
             ...(useFallback ? { agent: GRADING_AUDIT_FALLBACK.agent } : {}),
             count: 1,

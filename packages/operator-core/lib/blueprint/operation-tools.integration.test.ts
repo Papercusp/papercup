@@ -327,6 +327,14 @@ describe('P-017 blueprint:* registration and contract projection', () => {
     for (const field of ['requestKey', 'operationId', 'channel', 'token', 'cursor']) {
       expect(JSON.stringify(doc), field).toContain(`"${field}"`);
     }
+    // The typed RESULT contract projects to MCP `outputSchema` (the OpenAPI assembler
+    // references a generic ToolResult for Event.done, so output fields never reach
+    // the document). The MCP listing advertises only an object-typed schema.
+    for (const name of names) {
+      const output = lookupByMcpName(name)?.outputJsonSchema;
+      expect(output?.type, `${name} output schema`).toBe('object');
+    }
+    expect(JSON.stringify(lookupByMcpName(T.status)?.outputJsonSchema)).toContain('"cancellationRequested"');
   });
 });
 

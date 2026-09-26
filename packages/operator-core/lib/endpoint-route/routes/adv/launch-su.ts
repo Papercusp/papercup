@@ -47,6 +47,7 @@ import { defaultLaunchAccount } from '../../../agent-launch-core';
 import { isLaunchableMode, LAUNCHABLE_MODE_IDS } from '../../../modes/registry';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { HARNESS_SLUG_RE } from '../../../harness-slug';
+import { hostedAgentIdentityPsuEnv } from '../../../workspace-host/hosted-agent-identity-psu-env';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
 // EI-21563406996333542: shared with the WRITE doors (goals:update) so a slug can
@@ -774,7 +775,12 @@ async function handleLaunchSu(req: Request): Promise<Response> {
           ...base,
           // Same delivery goal-auto-start / capability:launch-agent use: the
           // brief rides the spawn-safe env, read by psu's resolveKickoffText.
-          ...(kickoffPrompt ? { env: { ...base.env, PAPERCUSP_KICKOFF_PROMPT: kickoffPrompt } } : {}),
+          // D-424: on a hosted host the agent-identity spec rides the same env.
+          env: {
+            ...base.env,
+            ...(kickoffPrompt ? { PAPERCUSP_KICKOFF_PROMPT: kickoffPrompt } : {}),
+            ...hostedAgentIdentityPsuEnv(),
+          },
           greetingCmd: oneliner,
           cwd: base.cwd,
         },
@@ -849,6 +855,8 @@ async function handleLaunchSu(req: Request): Promise<Response> {
         // The bash -lc child inherits this env (the operator-URL var above
         // already rides the same seam) — spawn-safe, unlike a --kickoff argv.
         ...(kickoffPrompt ? { PAPERCUSP_KICKOFF_PROMPT: kickoffPrompt } : {}),
+        // D-424: a hosted host's psu runs its agent CLI as the customer account.
+        ...hostedAgentIdentityPsuEnv(),
       },
     });
     spawned = r.ok ? r : { ok: false, error: r.error };

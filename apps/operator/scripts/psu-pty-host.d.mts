@@ -2380,6 +2380,34 @@ export function healDeadOperatorPin(env: EnvironmentMap, { fetchImpl, timeoutMs 
     to: string;
 } | null>;
 /**
+ * D-424 (plan byoc-cloud-workspaces-gcp-aws-azure-2026-08-22, P-326): the process the pty
+ * actually runs for the agent child.
+ *
+ * With no {@link AGENT_IDENTITY_SPEC_ENV} in the child env (desktop, dev — every launch that is
+ * not a hosted workspace host) this is exactly `command args env`, unchanged. On a hosted host
+ * the operator sets that spec: psu stays the service-user supervisor and only the agent CLI
+ * crosses to the customer workspace account — staged over a non-TTY hop, then run under a
+ * remote TTY (`ssh -tt`) so the TUI, ^C and window resizes behave as they do locally. The spec
+ * env var itself never crosses (the stage's env allowlist excludes it). A staging failure throws
+ * a NAMED refusal; there is deliberately no fall back to running the agent as the service user.
+ *
+ * @param {{command: string, args: string[], env: Record<string,string|undefined>, cwd?: string}} target
+ * @param {{stage?: typeof stageAgentIdentityTty}} [deps]
+ * @returns {{command: string, args: string[], env: Record<string,string|undefined>}}
+ */
+export function resolveAgentPtyTarget({ command, args, env, cwd }: {
+    command: string;
+    args: string[];
+    env: Record<string, string | undefined>;
+    cwd?: string;
+}, deps?: {
+    stage?: typeof stageAgentIdentityTty;
+}): {
+    command: string;
+    args: string[];
+    env: Record<string, string | undefined>;
+};
+/**
  * Host `command args` through a managed pty, bridging the user's TTY and
  * exposing the control socket. Returns a Promise that resolves with the child's
  * exit code (the caller maps that to its own exit). The pty + socket live in
@@ -2686,3 +2714,4 @@ export type EnvironmentMap = Record<string, string | undefined>;
  * the file/IO/safety logic (which is exactly how this stayed codex-only).
  */
 export type TurnRowVerdict = "turn-completed" | "turn-started" | "ignore";
+import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';

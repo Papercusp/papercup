@@ -48,6 +48,10 @@ import { spawn } from 'node:child_process';
 // the same dependency-free signature as the governed turn taxonomy.
 import { makeModelCapacityDetector } from '../../../libs/papercusp-shared/src/agent/model-capacity.mjs';
 import {
+  AGENT_IDENTITY_SPEC_ENV,
+  stageAgentIdentityTty,
+} from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';
+import {
   mkdirSync,
   readdirSync,
   writeFileSync,
@@ -6154,6 +6158,30 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
 }
 
 /**
+ * D-424 (plan byoc-cloud-workspaces-gcp-aws-azure-2026-08-22, P-326): the process the pty
+ * actually runs for the agent child.
+ *
+ * With no {@link AGENT_IDENTITY_SPEC_ENV} in the child env (desktop, dev — every launch that is
+ * not a hosted workspace host) this is exactly `command args env`, unchanged. On a hosted host
+ * the operator sets that spec: psu stays the service-user supervisor and only the agent CLI
+ * crosses to the customer workspace account — staged over a non-TTY hop, then run under a
+ * remote TTY (`ssh -tt`) so the TUI, ^C and window resizes behave as they do locally. The spec
+ * env var itself never crosses (the stage's env allowlist excludes it). A staging failure throws
+ * a NAMED refusal; there is deliberately no fall back to running the agent as the service user.
+ *
+ * @param {{command: string, args: string[], env: Record<string,string|undefined>, cwd?: string}} target
+ * @param {{stage?: typeof stageAgentIdentityTty}} [deps]
+ * @returns {{command: string, args: string[], env: Record<string,string|undefined>}}
+ */
+export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
+  const rawSpec = env?.[AGENT_IDENTITY_SPEC_ENV];
+  if (!rawSpec) return { command, args, env };
+  const stage = deps.stage ?? stageAgentIdentityTty;
+  const exec = stage(rawSpec, { command, args, env, cwd });
+  return { command: exec.command, args: [...exec.args], env: exec.env };
+}
+
+/**
  * Host `command args` through a managed pty, bridging the user's TTY and
  * exposing the control socket. Returns a Promise that resolves with the child's
  * exit code (the caller maps that to its own exit). The pty + socket live in
@@ -6367,14 +6395,16 @@ export function hostThroughPty(o) {
    *  (su-cold-auto-mode P-004b): same command/args/cwd/env means PAPERCUSP_SID,
    *  locks, hooks, and the control socket all survive — only the process is new.
    *  Reads the CURRENT terminal size each spawn. */
-  const spawnChild = (spawnArgs = args) =>
-    pty.spawn(command, spawnArgs, {
+  const spawnChild = (spawnArgs = args) => {
+    const target = resolveAgentPtyTarget({ command, args: spawnArgs, env, cwd });
+    return pty.spawn(target.command, target.args, {
       name: ptyName,
       cols: sanePtyDim(stdout.columns, 80, 1000),
       rows: sanePtyDim(stdout.rows, 24, 500),
       cwd,
-      env,
+      env: target.env,
     });
+  };
   let child;
   try {
     child = spawnChild();
