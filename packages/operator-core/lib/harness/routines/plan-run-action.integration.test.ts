@@ -15,6 +15,9 @@ import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { projectBlueprintToPg } from '../../blueprint/project-to-pg';
 import { acceptBlueprintPlanRun } from '../../blueprint/operation-admission';
+import {
+  awaitAcceptedCoordProgramChild, loadAcceptedCoordProgramChild, submitAcceptedCoordProgramChild,
+} from '../../dbos/coord-program-workflow';
 import { cancelBlueprintOperation, getBlueprintOperationEvents, getBlueprintOperationResult, getBlueprintOperationStatus, openBlueprintOperationWait, resumeBlueprintOperation, signalBlueprintOperation, submitBlueprintOperation } from '../../blueprint/operation-service';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
@@ -205,6 +208,66 @@ async function completeExecutionWorkItem(id: string, actor: string): Promise<Rec
 }
 
 describe('runScheduledPlanFire (system:plan-run)', () => {
+  it('lets an accepted program invoke a pinned plan child and wait for the canonical plan outcome', async () => {
+    const source = {
+      id: 'program-plan-child', version: '1', workItem: { kind: 'feature' },
+      roles: [{ id: 'worker' }],
+      spine: { steps: [{ id: 'open', op: 'coord:thread-open', args: { title: 'Plan child' } }] },
+      operations: [{
+        id: 'root', version: '1', target: { kind: 'work-item', itemKind: 'feature' },
+        execution: { kind: 'program' }, inputSchema: { type: 'object' },
+        acceptance: { resultSchema: { type: 'object' } },
+      }, {
+        id: 'run-monitor', version: '1', target: { kind: 'plan', template: {
+          kind: 'plan-template', ref: TEMPLATE, revision: '0',
+          contentHash: hashPlanContent(TEMPLATE_CONTENT),
+        } },
+        inputSchema: { type: 'object', required: ['segment'],
+          properties: { segment: { type: 'string' } } },
+        acceptance: { resultSchema: { type: 'object' } },
+      }],
+    };
+    const blueprint = BlueprintSchema.parse(source);
+    await projectBlueprintToPg(sql, { workspaceId: WS, harnessSlug: HARNESS, blueprint,
+      specification: compileAgentSpecification({ source }) });
+    const root = await submitBlueprintOperation(sql, {
+      workspaceId: WS, harnessSlug: HARNESS, callerId: 'program-plan-caller',
+      operationId: 'root', requestKey: 'plan-child-root', input: {}, title: 'Program root',
+    });
+    if (root.target.kind !== 'work-item') throw new Error('program root must be a work item');
+    const [row] = await sql<Array<{ updated_ts: number | string }>>`
+      SELECT updated_ts FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${root.target.id}
+    `;
+    const parent = { blueprintId: blueprint.id, payload: {}, callerId: 'program-plan-caller',
+      workspaceId: WS, harnessSlug: HARNESS, workItemId: root.target.id, runId: 'plan-child-root',
+      acceptedAttemptUpdatedTs: Number(row.updated_ts), acceptedOperation: root };
+    const request = { stepId: 'op-plan', operationId: 'run-monitor', input: { segment: 'east' } };
+    const child = await submitAcceptedCoordProgramChild(sql, parent, request);
+    expect(child.target.kind).toBe('plan');
+    expect(await submitAcceptedCoordProgramChild(sql, parent, request)).toEqual(child);
+    expect(await loadAcceptedCoordProgramChild(sql, parent, 'plan', 'run-monitor')).toEqual(child);
+    await expect(awaitAcceptedCoordProgramChild(sql, parent, {
+      invokeStepId: 'plan', operationId: 'run-monitor', deadlineAt: new Date(0).toISOString(),
+    })).rejects.toThrow('did not settle before its deadline');
+    if (child.target.kind !== 'plan') throw new Error('plan child handle was lost');
+    await sql`
+      UPDATE harness_shared.work_items SET status = 'passed', authority = 'committed'
+       WHERE workspace_id = ${WS} AND payload->'plan_run'->>'runId' = ${String(child.target.runId)}
+         AND payload->'plan_run'->>'instancePlanSlug' = ${child.target.instanceSlug}
+    `;
+    await sql`
+      UPDATE harness_shared.plan_runs
+         SET status = 'done', outcome = 'success', outputs = ${JSON.stringify({ count: 2 })}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND id = ${child.target.runId}
+    `;
+    expect(await awaitAcceptedCoordProgramChild(sql, parent, {
+      invokeStepId: 'plan', operationId: 'run-monitor',
+      deadlineAt: new Date(Date.now() + 10_000).toISOString(),
+    }, async () => { throw new Error('settled child must not sleep'); }))
+      .toMatchObject({ state: 'ready', output: { count: 2 }, evidenceRef: `plan-run:${child.target.runId}` });
+  }, 90_000);
+
   it('admits one pinned blueprint plan run under concurrent replay and repairs an interrupted receipt update', async () => {
     const source = {
       id: 'plan-invocation-fixture', workItem: { kind: 'feature' },
