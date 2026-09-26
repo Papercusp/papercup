@@ -110,7 +110,11 @@ import {
 } from './agent-tools/plans/revisions-repair';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
-import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
+import {
+  acceptanceLineageClosure,
+  areAcceptanceLineageRelated,
+  resolvePlanImplementerIdentities,
+} from './acceptance-author-identity';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import {
   listLocalRubrics,
@@ -3576,12 +3580,17 @@ async function evaluateAcceptanceBarApproverEligibility(
   approvedBy: string,
   roles: ReadonlyMap<string, AcceptanceBarApproverRelationVia>,
   opts: NonNullable<Parameters<typeof areAcceptanceLineageRelated>[2]> = {},
+  /** The pairwise lineage relation. A menu screen passes a closure-backed
+   * equivalent (see resolveAcceptanceBarApproverScreen); the verdict logic below
+   * is shared so the two cannot disagree about ordering or attribution. */
+  related: (candidate: string, identity: string) => Promise<boolean> = (candidate, identity) =>
+    areAcceptanceLineageRelated(candidate, identity, opts),
 ): Promise<AcceptanceBarApproverEvaluation> {
   const durable = [...roles.entries()].filter(([, via]) => via !== 'caller').map(([identity]) => identity);
   const callerOnly = [...roles.entries()].filter(([, via]) => via === 'caller').map(([identity]) => identity);
   const relatedTo = async (population: string[]) => {
     for (const identity of population) {
-      if (await areAcceptanceLineageRelated(approvedBy, identity, opts)) return identity;
+      if (await related(approvedBy, identity)) return identity;
     }
     return null;
   };
@@ -4839,8 +4848,34 @@ export async function checkAcceptanceBarApproverEligibility(input: {
 }): Promise<AcceptanceBarApproverEligibilityCheck> {
   const rubricId = input.rubricId.trim();
   const ownerId = input.ownerId.trim();
-  const applierId = input.applierId?.trim();
   if (!rubricId || !ownerId) throw new Error('acceptance_bar_approver_check_invalid_identity');
+  const screen = await resolveAcceptanceBarApproverScreen({ rubricId, applierId: input.applierId });
+  return screen.check(ownerId);
+}
+
+/** One rubric's independence population, resolved once and applied per candidate. */
+export interface AcceptanceBarApproverScreen {
+  rubricId: string;
+  subjectPlan: string;
+  check(ownerId: string): Promise<AcceptanceBarApproverEligibilityCheck>;
+}
+
+/**
+ * The rubrics:check-approver screen, split so a router can apply it to a whole
+ * candidate menu (P-005, review-routing-through-relevance-router-2026-09-26)
+ * without re-reading the rubric, subject plan and implementer history per
+ * candidate. `checkAcceptanceBarApproverEligibility` is this screen applied to
+ * one owner, so the tool and the router cannot disagree about who is eligible.
+ * Reads throw rather than shrink the population: an unreadable independence set
+ * must fail closed.
+ */
+export async function resolveAcceptanceBarApproverScreen(input: {
+  rubricId: string;
+  applierId?: string;
+}): Promise<AcceptanceBarApproverScreen> {
+  const rubricId = input.rubricId.trim();
+  const applierId = input.applierId?.trim();
+  if (!rubricId) throw new Error('acceptance_bar_approver_check_invalid_identity');
   const rubric = await getRubric(rubricId);
   if (!rubric) throw new Error('acceptance_bar_approver_check_rubric_unreadable_or_missing');
   if (rubric.kind !== 'acceptance' || !rubric.barContract || !rubric.barSetHash || !rubric.subjectPlan) {
@@ -4877,25 +4912,50 @@ export async function checkAcceptanceBarApproverEligibility(input: {
   attribute(subjectRow.owner, 'subject-owner');
   if (applierId) attribute(applierId, 'caller');
 
-  const eligibility = await evaluateAcceptanceBarApproverEligibility(ownerId, roles, {
-    workspaceId: subjectScope.workspaceId,
-  });
-  const reason: AcceptanceBarApproverEligibilityReason = eligibility.eligible
-    ? 'eligible'
-    : eligibility.relatedVia === 'caller'
-      ? 'related_to_applier'
-      : eligibility.relatedVia === 'plan-implementer'
-        ? 'related_to_plan_implementer'
-        : eligibility.relatedVia === 'rubric-author'
-          ? 'related_to_rubric_author'
-          : 'related_to_subject_owner';
+  const subjectPlan = rubric.subjectPlan;
+  // One closure per population identity, computed on first use and shared by
+  // every candidate: `closure(identity).has(candidate)` is exactly
+  // areAcceptanceLineageRelated(candidate, identity) (pinned by the real-PG
+  // parity test in acceptance-author-identity.integration.test.ts).
+  const closures = new Map<string, Promise<Set<string>>>();
+  const closureOf = (identity: string) => {
+    let closure = closures.get(identity);
+    if (!closure) {
+      closure = acceptanceLineageClosure(identity, { workspaceId: subjectScope.workspaceId });
+      closures.set(identity, closure);
+    }
+    return closure;
+  };
   return {
     rubricId: rubric.rubricId,
-    subjectPlan: rubric.subjectPlan,
-    ownerId,
-    eligible: eligibility.eligible,
-    reason,
-    eligibleWithUnrelatedApplier: eligibility.eligibleWithUnrelatedApplier,
+    subjectPlan,
+    async check(rawOwnerId: string): Promise<AcceptanceBarApproverEligibilityCheck> {
+      const ownerId = rawOwnerId.trim();
+      if (!ownerId) throw new Error('acceptance_bar_approver_check_invalid_identity');
+      const eligibility = await evaluateAcceptanceBarApproverEligibility(
+        ownerId,
+        roles,
+        { workspaceId: subjectScope.workspaceId },
+        async (candidate, identity) => (await closureOf(identity)).has(candidate),
+      );
+      const reason: AcceptanceBarApproverEligibilityReason = eligibility.eligible
+        ? 'eligible'
+        : eligibility.relatedVia === 'caller'
+          ? 'related_to_applier'
+          : eligibility.relatedVia === 'plan-implementer'
+            ? 'related_to_plan_implementer'
+            : eligibility.relatedVia === 'rubric-author'
+              ? 'related_to_rubric_author'
+              : 'related_to_subject_owner';
+      return {
+        rubricId: rubric.rubricId,
+        subjectPlan,
+        ownerId,
+        eligible: eligibility.eligible,
+        reason,
+        eligibleWithUnrelatedApplier: eligibility.eligibleWithUnrelatedApplier,
+      };
+    },
   };
 }
 
