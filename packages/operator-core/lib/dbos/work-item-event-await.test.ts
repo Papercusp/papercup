@@ -7,7 +7,7 @@ import type { KeyFireRow } from '../events/await/types';
 // ordinary suite uses the tracked module and keeps the same assertions.
 const { awaitWorkItemCompletionEvent } = await import(
   /* @vite-ignore */ process.env.PAPERCUSP_WAIT_BRIDGE_PROBE_PATH ?? './work-item-event-await'
-);
+) as typeof import('./work-item-event-await');
 
 const input: WorkItemEventWaitInput = {
   itemId: 'WI-123', harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace',
