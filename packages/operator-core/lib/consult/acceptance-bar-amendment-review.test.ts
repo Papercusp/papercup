@@ -9,8 +9,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { selectionPolicy } from '@papercusp/ranked-selection';
 import type { RouteResult } from './relevance-router';
 import {
+  ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
   buildAmendmentReviewBrief,
   filterAmendmentReviewRoute,
+  launchFreshAmendmentReviewer,
   openAcceptanceBarAmendmentReview,
   routeAcceptanceBarAmendmentReview,
   type AmendmentReviewerScreen,
@@ -245,9 +247,74 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
 
   it('carries no routed reference when no eligible reviewer exists', async () => {
     const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: null, reason: 'no_qualified_responder', screenedOut: [] });
-    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route });
+    const launchFresh = vi.fn().mockResolvedValue({ state: 'not-launched', reason: 'launcher screened out' });
+    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh });
     expect(result).toMatchObject({ state: 'no-eligible-reviewer', previewPostRef: 'thread-post:42' });
     expect(result.next).not.toContain('consult:reply');
+    expect(result.next).toContain('launcher screened out');
+  });
+
+  // WI-10003299: an empty menu used to end the review ("re-request later"), so a
+  // plan whose whole live fleet built it could never get a BAR change approved.
+  it('launches a fresh reviewer when the router staffs nobody, and says where it will answer', async () => {
+    const route = vi.fn().mockResolvedValue({
+      state: 'no-eligible-reviewer',
+      conversationId: 'conv-9',
+      reason: 'no_available_responder',
+      screenedOut: [{ ownerId: 'su-peer', reason: 'related_to_plan_implementer' }],
+    });
+    const launchFresh = vi.fn().mockResolvedValue({
+      state: 'launched',
+      launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
+      taskId: 'task-1',
+      label: 'bar-amendment-review:abc',
+      idempotencyKey: 'acceptance-bar-amendment-review:abc',
+      deduped: false,
+      answerOn: { workItemId: 'WI-7', harness: 'papercusp' },
+    });
+    const launchCtx = { ownerId: 'su-implementer', workspaceId: 'ws' };
+    const result = await openAcceptanceBarAmendmentReview(
+      { ...baseInput, launchCtx },
+      { verifyPreviewPost: vi.fn(), route, launchFresh },
+    );
+    expect(launchFresh).toHaveBeenCalledTimes(1);
+    expect(launchFresh.mock.calls[0]![0]).toMatchObject({
+      rubricRef: 'acceptance-demo',
+      previewPostRef: 'thread-post:42',
+      applierId: 'su-implementer',
+      workspaceId: 'ws',
+      patch: baseInput.patch,
+      launchCtx,
+    });
+    expect(result).toMatchObject({
+      state: 'no-eligible-reviewer',
+      previewPostRef: 'thread-post:42',
+      freshReviewer: { state: 'launched', taskId: 'task-1' },
+      screenedOut: [{ ownerId: 'su-peer', reason: 'related_to_plan_implementer' }],
+    });
+    expect(result.next).toContain('work_items:comment on WI-7');
+    expect(result.next).toContain("approvalRef:'thread-post:<that post id>'");
+    expect(result.next).not.toMatch(/re-request later/i);
+  });
+
+  it('does not launch a fresh reviewer when the router staffed one', async () => {
+    const route = vi.fn().mockResolvedValue({ state: 'routed', conversationId: 'conv-1', responderId: 'su-outsider', screenedOut: [] });
+    const launchFresh = vi.fn();
+    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh });
+    expect(result.state).toBe('routed');
+    expect(launchFresh).not.toHaveBeenCalled();
+    expect('freshReviewer' in result).toBe(false);
+  });
+
+  it('reports a failed fresh launch instead of throwing away the routing result', async () => {
+    const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: 'conv-3', reason: 'x', screenedOut: [] });
+    const launchFresh = vi.fn().mockRejectedValue(new Error('rubric unreadable'));
+    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh });
+    expect(result).toMatchObject({
+      state: 'no-eligible-reviewer',
+      conversationId: 'conv-3',
+      freshReviewer: { state: 'not-launched', reason: 'fresh reviewer launch failed: rubric unreadable' },
+    });
   });
 
   it('the brief carries what the reviewer signs and the one line the apply guard accepts', () => {
@@ -266,5 +333,126 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     const brief = buildAmendmentReviewBrief({ ...baseInput, patch: { criteria: ['x'.repeat(10_000)] } });
     expect(brief.length).toBeLessThan(6_000);
     expect(brief).toMatch(/chars clipped\]/);
+  });
+});
+
+describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
+  const approval = { schemaVersion: 1, kind: 'acceptance-bar-approval', rubricRef: 'acceptance-demo', bars: [{ barKey: 'R-1' }] };
+  const input = {
+    rubricRef: 'plan:acceptance-demo',
+    previewPostRef: 'thread-post:42',
+    preview: { approval, changes: [{ barKey: 'R-1', kinds: ['bar-meaning'], fields: ['model'] }] },
+    patch: { criterion: { key: 'r-1', field: 'model', mode: 'replace', text: 'new model' } },
+    applierId: 'su-implementer',
+    workspaceId: 'ws',
+    // The requester's own tool context: the launch must NOT be attributed to it.
+    launchCtx: { ownerId: 'su-implementer', ownerLabel: 'su · impl', isSuperuser: true, workspaceId: 'ws', harnessSlug: '*' },
+  } as unknown as Parameters<typeof launchFreshAmendmentReviewer>[0];
+  const answerOn = { workItemId: 'WI-7', harness: 'papercusp' };
+  const launched = { data: { deduped: false, launch: { tasks: [{ taskId: 'task-1' }] } } };
+
+  function deps(overrides: Record<string, unknown> = {}) {
+    return {
+      resolveAnswerTarget: vi.fn().mockResolvedValue(answerOn),
+      // The implementer's lineage never includes the dedicated launcher.
+      resolveScreen: vi.fn(async () => ({ check: lineageScreen('su-implementer') })),
+      launch: vi.fn().mockResolvedValue(launched),
+      ...overrides,
+    };
+  }
+
+  it('launches ONE headless, independent judge under the system principal, never as the requester', async () => {
+    const d = deps();
+    const result = await launchFreshAmendmentReviewer(input, d as never);
+    expect(d.resolveScreen).toHaveBeenCalledWith({ rubricId: 'acceptance-demo', applierId: 'su-implementer' });
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    const [args, ctx] = d.launch.mock.calls[0]!;
+    expect(args).toMatchObject({
+      harness: 'papercusp',
+      headless: true,
+      independent: true,
+      account: 'auto',
+      count: 1,
+      members: [{ role: 'judge' }],
+    });
+    // The lineage fence: the launch edge must point at the dedicated principal.
+    expect(ctx).toMatchObject({
+      ownerId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
+      principal: { kind: 'system', slug: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR, workspaceId: 'ws' },
+      isSuperuser: false,
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+    });
+    expect(ctx.ownerId).not.toBe('su-implementer');
+    expect(args.brief).toBe(buildAmendmentReviewBrief(input, answerOn));
+    expect(result).toEqual({
+      state: 'launched',
+      launcherId: ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR,
+      taskId: 'task-1',
+      label: expect.stringMatching(/^bar-amendment-review:[0-9a-f]{12}$/),
+      idempotencyKey: expect.stringMatching(/^acceptance-bar-amendment-review:[0-9a-f]{32}$/),
+      deduped: false,
+      answerOn,
+    });
+  });
+
+  it('is idempotent per preview: the same preview reuses the key, a new preview post gets a new one', async () => {
+    const d = deps();
+    await launchFreshAmendmentReviewer(input, d as never);
+    await launchFreshAmendmentReviewer(input, d as never);
+    await launchFreshAmendmentReviewer({ ...input, previewPostRef: 'thread-post:43' }, d as never);
+    const keys = d.launch.mock.calls.map((call) => (call[0] as { idempotencyKey: string }).idempotencyKey);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it('refuses to launch when the launcher itself fails the check-approver screen', async () => {
+    const screen: AmendmentReviewerScreen = async (ownerId) =>
+      ownerId === ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR
+        ? { eligible: false, reason: 'related_to_plan_implementer' }
+        : { eligible: true, reason: 'eligible' };
+    const d = deps({ resolveScreen: vi.fn(async () => ({ check: screen })) });
+    const result = await launchFreshAmendmentReviewer(input, d as never);
+    expect(result).toEqual({
+      state: 'not-launched',
+      reason: expect.stringContaining('related_to_plan_implementer'),
+    });
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it('refuses to launch when the preview post is not on a work-item thread', async () => {
+    const d = deps({ resolveAnswerTarget: vi.fn().mockResolvedValue(null) });
+    const result = await launchFreshAmendmentReviewer(input, d as never);
+    expect(result).toMatchObject({ state: 'not-launched', reason: expect.stringContaining('work-item thread') });
+    expect(d.resolveScreen).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
+  it('omits the harness-scoped judge role when the work-item has no harness', async () => {
+    const d = deps({ resolveAnswerTarget: vi.fn().mockResolvedValue({ workItemId: 'WI-7', harness: null }) });
+    await launchFreshAmendmentReviewer(input, d as never);
+    const [args] = d.launch.mock.calls[0]!;
+    expect(args).not.toHaveProperty('members');
+    expect(args).not.toHaveProperty('harness');
+  });
+
+  it('reports a refused launch', async () => {
+    const d = deps({ launch: vi.fn().mockResolvedValue({ isError: true, content: [{ text: 'quota walled' }] }) });
+    await expect(launchFreshAmendmentReviewer(input, d as never)).resolves.toEqual({
+      state: 'not-launched',
+      reason: 'launch refused: quota walled',
+    });
+  });
+
+  it('the fresh brief asks for one work_items:comment on the preview work-item, not a consult answer', () => {
+    const brief = buildAmendmentReviewBrief(input, answerOn);
+    expect(brief.split('\n')).toContain(
+      "To approve, post exactly one line with work_items:comment { id:'WI-7', harness:'papercusp' }, body: approve thread-post:42",
+    );
+    expect(brief).not.toContain('answer this consult');
+    // A judge cannot call rubrics:amend, so the fresh brief must not require it.
+    expect(brief).not.toContain('rubrics:amend');
+    expect(brief).toContain(JSON.stringify(approval));
+    expect(brief).toContain(ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR);
   });
 });

@@ -342,6 +342,9 @@ export default defineTool({
           patch: amendmentPatch(args),
           identity,
           workspaceId: identity.workspaceId,
+          // WI-10003299: a fresh-reviewer launch reuses this call's context,
+          // re-attributed to the review's system principal.
+          launchCtx: ctx,
         });
         return { ok: true, dryRun: true, preview, review };
       })());
