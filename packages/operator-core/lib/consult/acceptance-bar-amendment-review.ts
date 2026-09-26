@@ -18,10 +18,13 @@
  *    every later cascade rank inherit the same fence, and a screen fault throws
  *    (fail closed) instead of letting an unscreened candidate through.
  *
- * P-006 connects rubrics:amend to `routeAcceptanceBarAmendmentReview`.
+ * P-006 connects rubrics:amend to it: `openAcceptanceBarAmendmentReview` checks
+ * the requester's preview post with the apply guard's own resolver, then routes
+ * a brief that carries everything the reviewer signs (no tool reads a thread
+ * post by id, so the brief cannot just point at it).
  */
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
-import type { AcceptanceBarApproverEligibilityCheck } from '../rubrics';
+import type { AcceptanceBarAmendmentPreview, AcceptanceBarApproverEligibilityCheck } from '../rubrics';
 import type { RouteResult } from './relevance-router';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 
@@ -124,4 +127,128 @@ export async function routeAcceptanceBarAmendmentReview(
     reason: `${result.verdict}${result.reason ? ` (${result.reason})` : ''}`,
     screenedOut,
   };
+}
+
+const PREVIEW_POST_REF = /^thread-post:[1-9][0-9]*$/;
+const BRIEF_REASON_MAX = 800;
+const BRIEF_PATCH_MAX = 2500;
+
+function clip(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}… [${text.length - max} chars clipped]`;
+}
+
+export interface AmendmentReviewBriefInput {
+  rubricRef: string;
+  /** `thread-post:<id>` — the requester's post carrying the exact preview approval JSON. */
+  previewPostRef: string;
+  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes'>;
+  reason?: string;
+  /** The amendment fields as requested, so the reviewer can reproduce the preview. */
+  patch: Record<string, unknown>;
+}
+
+/**
+ * What the routed reviewer reads. It carries the approval JSON and the patch
+ * itself because no tool reads a thread post by id, and it names the one-line
+ * answer the apply guard accepts (`approve thread-post:<id>`).
+ */
+export function buildAmendmentReviewBrief(input: AmendmentReviewBriefInput): string {
+  const bars = input.preview.changes
+    .map((change) => `${change.barKey} (${[...change.kinds].join('+')}${change.fields?.length ? `: ${change.fields.join(', ')}` : ''})`)
+    .join('; ');
+  return [
+    `Outside-lineage review of a started acceptance-BAR amendment to ${input.rubricRef}. The relevance router picked you and screened you with rubrics:check-approver: you are outside the implementer's lineage.`,
+    `Changed BARs: ${bars || '(none listed)'}.`,
+    input.reason?.trim() ? `Reason given: ${clip(input.reason.trim(), BRIEF_REASON_MAX)}` : 'No reason was given.',
+    'Requested patch. Reproduce the preview with rubrics:amend { rubricRef, dryRun:true, ...patch } and read the criteria with rubrics:get before judging:',
+    '```json',
+    clip(JSON.stringify(input.patch), BRIEF_PATCH_MAX),
+    '```',
+    `Approval JSON the requester posted as ${input.previewPostRef}:`,
+    '```json',
+    JSON.stringify(input.preview.approval),
+    '```',
+    `To approve, answer this consult with exactly one line: approve ${input.previewPostRef}`,
+    'That line is the signature: the apply guard takes its author and time from your post. If the change weakens a requirement or you cannot verify it, decline or answer with the objection; any other answer is not an approval.',
+  ].join('\n');
+}
+
+/**
+ * The preview post must carry the approval the CURRENT delta produces. This is
+ * the apply guard's own resolver, so a post it would later refuse (unparseable,
+ * other rubric, uncovered or stale BAR hashes) refuses the review up front
+ * instead of spending a routed reviewer on it.
+ */
+async function verifyPreviewPostWithApplyResolver(args: {
+  workspaceId: string;
+  previewPostRef: string;
+  approval: AcceptanceBarAmendmentPreview['approval'];
+}): Promise<void> {
+  const [{ getOrgPg }, { resolveAcceptanceBarApproval }] = await Promise.all([
+    import('@papercusp/db-org'),
+    import('../acceptance-bar-amendment'),
+  ]);
+  await resolveAcceptanceBarApproval(getOrgPg().sql as never, {
+    workspaceId: args.workspaceId,
+    approvalRef: args.previewPostRef,
+    expected: args.approval,
+  });
+}
+
+export interface OpenAmendmentReviewInput extends AmendmentReviewBriefInput {
+  preview: Pick<AcceptanceBarAmendmentPreview, 'approval' | 'changes' | 'approvalRequired'>;
+  identity: AgentIdentity;
+  workspaceId: string;
+  harness?: string;
+}
+
+export type AmendmentReviewRequestResult =
+  | { state: 'not-required'; next: string }
+  | (AmendmentReviewRouteResult & { previewPostRef: string; next: string });
+
+/**
+ * rubrics:amend's review opener (P-006). A preview that needs no approval
+ * routes nothing; otherwise the preview post is checked, then the routed,
+ * lineage-screened review is opened for it.
+ */
+export async function openAcceptanceBarAmendmentReview(
+  input: OpenAmendmentReviewInput,
+  deps: {
+    verifyPreviewPost?: typeof verifyPreviewPostWithApplyResolver;
+    route?: typeof routeAcceptanceBarAmendmentReview;
+  } = {},
+): Promise<AmendmentReviewRequestResult> {
+  if (!input.preview.approvalRequired) {
+    return { state: 'not-required', next: 'No BAR meaning changes: apply without approvalRef.' };
+  }
+  const previewPostRef = input.previewPostRef.trim();
+  if (!PREVIEW_POST_REF.test(previewPostRef)) {
+    throw new Error(`invalid_args: reviewPreviewPost must be thread-post:<id>, got '${input.previewPostRef}'`);
+  }
+  try {
+    await (deps.verifyPreviewPost ?? verifyPreviewPostWithApplyResolver)({
+      workspaceId: input.workspaceId,
+      previewPostRef,
+      approval: input.preview.approval,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `acceptance_bar_amendment_review_preview_invalid: ${previewPostRef} does not carry this preview's approval (${message}). ` +
+        'Post the current preview.approval JSON once with work_items:comment and pass that post.',
+    );
+  }
+  const routed = await (deps.route ?? routeAcceptanceBarAmendmentReview)({
+    rubricRef: input.rubricRef,
+    brief: buildAmendmentReviewBrief({ ...input, previewPostRef }),
+    identity: input.identity,
+    workspaceId: input.workspaceId,
+    ...(input.harness ? { harness: input.harness } : {}),
+  });
+  const next =
+    routed.state === 'routed'
+      ? `events:await { event:'consult:reply:${routed.conversationId}' }. When the routed reviewer answers \`approve ${previewPostRef}\`, ` +
+        `apply with the same patch plus approvalRef:'thread-post:<that answer post id>' (conversations:get { id:'${routed.conversationId}' } lists post ids).`
+      : 'No eligible outside-lineage reviewer could be routed; the reason and screenedOut say why. Re-request later, or change the amendment so it is additive-only.';
+  return { ...routed, previewPostRef, next };
 }
