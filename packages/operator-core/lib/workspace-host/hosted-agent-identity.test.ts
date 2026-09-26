@@ -92,6 +92,26 @@ describe('hosted customer agent identity (D-421)', () => {
     expect(h.env.PATH.split(':')).not.toContain(`${serviceHome}/.local/bin`);
   });
 
+  it('links the customer Claude credential into an isolated CLAUDE_CONFIG_DIR (P-325)', () => {
+    // runAgentChat symlinks the OPERATOR's ~/.claude/.credentials.json into its local config dir;
+    // symlinks are never shipped, so without this link a hosted claude spawn finds no credential.
+    const stagedClaudeDir = join(root, 'claude-chat-xyz789');
+    mkdirSync(stagedClaudeDir, { recursive: true });
+    const plan = hostedCustomerAgentSpawnTransform(withToolchain())({
+      backend: 'claude',
+      command: '/opt/papercusp/current/bin/claude',
+      args: ['-p'],
+      cwd: undefined,
+      env: { PATH: '/usr/bin:/bin', CLAUDE_CONFIG_DIR: stagedClaudeDir },
+      stagedDirs: [{ path: stagedClaudeDir, persistent: false }],
+    });
+    const h = header(plan.stdinPrelude);
+    expect(h.env.CLAUDE_CONFIG_DIR.startsWith(`${HOSTED_WORKSPACE_ACCOUNT_HOME}/.papercusp/agent-spawns/`)).toBe(true);
+    expect(h.links).toEqual([
+      { path: `${h.env.CLAUDE_CONFIG_DIR}/.credentials.json`, target: `${HOSTED_WORKSPACE_ACCOUNT_HOME}/.claude/.credentials.json` },
+    ]);
+  });
+
   // D-423: the customer account cannot read the Papercusp runtime (D-043), so neither the
   // release's Node nor its psu wrappers may appear anywhere in what crosses to that account.
   it('runs the wrapper Node and the agent CLI from the customer toolchain, never the release tree', () => {
