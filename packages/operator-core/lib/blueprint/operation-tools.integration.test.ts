@@ -32,7 +32,7 @@ import {
 import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { unwrapToolResult, type ToolResult } from '@papercusp/tooldef';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
-import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { BlueprintSchema, compileAgentSpecification, operationFromSpecification } from '@papercusp/orchestrator/blueprint';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -40,7 +40,7 @@ import {
   WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
-import { projectBlueprintToPg } from './project-to-pg';
+import { projectBlueprintToPg, readBlueprintSpecificationSnapshot } from './project-to-pg';
 import { openBlueprintOperationWait, type BlueprintOperationHandle } from './operation-service';
 import { BLUEPRINT_OPERATION_TOOLS, BlueprintOperationStatusSchema } from './operation-contract';
 import { BlueprintOperationClient, createProjectedBlueprintOperationPort } from './operation-client';
@@ -228,7 +228,7 @@ async function refused(p: Promise<Outcome>): Promise<{ code: string; message: st
 
 const OPERATION_SOURCE = {
   id: 'operation-tools-fixture', workItem: { kind: 'feature' },
-  roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+  roles: [{ id: 'worker' }], spine: { steps: [{ id: 'open', op: 'coord:thread-open', args: { title: 'Extract' } }] },
   operations: [{
     id: 'extract', version: 'A', target: { kind: 'work-item', itemKind: 'feature' },
     execution: { kind: 'agent', role: 'worker' },
@@ -530,7 +530,7 @@ describe.each<Transport>(['http', 'mcp'])('P-011 neutral consumers over %s', (tr
     const secondHarness = 'neutral-consumer-b';
     const secondSource = {
       id: 'neutral-consumer-b', workItem: { kind: 'feature' },
-      roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+      roles: [{ id: 'worker' }], spine: { steps: [{ id: 'open', op: 'coord:thread-open', args: { title: 'Score' } }] },
       operations: [{
         id: 'score', version: 'B', target: { kind: 'work-item', itemKind: 'feature' },
         execution: { kind: 'agent', role: 'worker' },
@@ -582,14 +582,14 @@ describe.each<Transport>(['http', 'mcp'])('P-011 neutral consumers over %s', (tr
         .toMatchObject({ phase: 'accepted' });
       for (const name of [T.status, T.result, T.events]) {
         expect((await refused(call(transport, caller, name, { handle: foreign }))).message)
-          .toMatch(/scope_mismatch|handle_mismatch/);
+          .toMatch(/^scope_mismatch:/);
       }
       expect((await refused(call(transport, caller, T.cancel,
         { handle: foreign, requestKey: 'foreign-cancel', reason: 'foreign' }))).message)
-        .toMatch(/scope_mismatch|handle_mismatch/);
+        .toMatch(/^scope_mismatch:/);
       expect((await refused(call(transport, caller, T.resume,
         { handle: foreign, token: 'foreign-wait', response: {}, requestKey: 'foreign-resume' }))).message)
-        .toMatch(/scope_mismatch|handle_mismatch/);
+        .toMatch(/^scope_mismatch:/);
     }
     const signal = await ok<{ accepted: boolean }>(call(transport, { principal: 'gamma' }, T.signal,
       { handle: second, channel: 'adjust', payload: { delta: 2 }, requestKey: 'adjust-1' }));
@@ -630,7 +630,7 @@ describe.each<Transport>(['http', 'mcp'])('P-011 neutral consumers over %s', (tr
     const secondHarness = 'neutral-consumer-b';
     const secondSource = {
       id: 'neutral-consumer-b', workItem: { kind: 'feature' },
-      roles: [{ id: 'worker' }], spine: { edges: { DONE: { to: 'done' } } },
+      roles: [{ id: 'worker' }], spine: { steps: [{ id: 'open', op: 'coord:thread-open', args: { title: 'Score' } }] },
       operations: [{
         id: 'score-program', version: 'B', target: { kind: 'work-item', itemKind: 'feature' },
         execution: { kind: 'program' },
@@ -661,14 +661,19 @@ describe.each<Transport>(['http', 'mcp'])('P-011 neutral consumers over %s', (tr
       expect((await refused(call(transport, fixture.caller, T.submit,
         { ...args, input: index === 0 ? { value: 'changed' } : { count: 8 } }))).message)
         .toContain('input_conflict');
-      const [stored] = await db.sql<Array<{ execution_kind: string; item_kind: string }>>`
-        SELECT payload->'blueprintOperation'->'execution'->>'kind' AS execution_kind,
-               kind AS item_kind
+      const [stored] = await db.sql<Array<{ pin: { operationId: string; specificationRevision: string; input: unknown } }>>`
+        SELECT payload->'blueprintOperation' AS pin
           FROM harness_shared.work_items
          WHERE workspace_id = ${first.workspaceId} AND harness_slug = ${first.harnessSlug}
            AND feature_id = ${(first.target as { id: string }).id}`;
-      expect(stored?.execution_kind).toBe('program');
-      expect(stored?.item_kind).toBe('feature');
+      expect(stored?.pin).toMatchObject({ operationId: fixture.operationId, input: fixture.input,
+        specificationRevision: first.specificationRevision });
+      const specification = await readBlueprintSpecificationSnapshot(
+        db.sql, first.workspaceId, first.harnessSlug, stored.pin.specificationRevision);
+      expect(specification).not.toBeNull();
+      const operation = operationFromSpecification(specification!, stored.pin.operationId).operation;
+      expect(operation.execution?.kind).toBe('program');
+      expect(operation.target).toMatchObject({ kind: 'work-item', itemKind: 'feature' });
     }
     const [counts] = await db.sql<Array<{ items: number; plans: number; runs: number }>>`
       SELECT (SELECT count(*)::int FROM harness_shared.work_items) AS items,
