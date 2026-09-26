@@ -2053,7 +2053,7 @@ HTTP200/19d7b93dda at23:30:24Z. These are staging observations, not shipment.
 
 ### P-007 resumed native runs and response attribution — 2026-09-26
 
-Avraham explicitly resumed this lane. The frozen packaged GUI still has shell
+The owner explicitly resumed this lane. The frozen packaged GUI still has shell
 SHA256 `e41628e003effa300146c646ad820b79fa0a0607d2412b2d460c0581cb50d5c0`
 and SPA index SHA256 `938a51916940a30806f1947fc96b4331bf005496d9d9099df67d77e28b6e8f9a`.
 The pinned scenario remains `goal-agent-behavior-feedback-2026-09-06` in
@@ -2102,3 +2102,223 @@ produced no popup timing and is excluded from the valid-run set.
 every popup at most1500ms. These results falsify acceptance on the measured
 builds. FCP/LCP, independent acceptance, D-003 semantic activation audit and
 final shipment remain open.
+
+### P-007 response-header run and acquisition split — 2026-09-26
+
+The live Git worktree registry places branch `staging` in the primary
+`papercusp` checkout; the similarly named
+`papercusp-staging` checkout is detached. The live staging systemd unit's
+`WorkingDirectory` is `apps/operator` in that primary checkout, so the
+detached checkout is not evidence of which source the running API loaded.
+The private packaged fixture was copied to
+`$HOME/.papercusp/perf/p007-native-current` so manual file locks
+could cover fixture edits. Its shell SHA256 remains `e41628e003effa300146c646ad820b79fa0a0607d2412b2d460c0581cb50d5c0`.
+The refreshed SPA index SHA256 is
+`e054e7cbac4e5eba6119adcc42d1f74ecbbeca00ca0c27519a61bce782327c41`;
+its assets contain the new `response-headers` mark. Both private IPC descriptors
+were copied from the PID/socket-verified live port3170 advertisement. The API
+health endpoint reported build `64c532cb38` before the run.
+
+The required-phase packaged WDIO run
+`p007-64c532-e054-20260926-r01` measured **4817ms**, failing the1500ms budget.
+Its click-to-phase readings were request-start336ms, response-headers4503ms,
+response-ready4516ms, and preview-rendered4809ms. The browser request to
+headers interval was4167ms; JSON parsing contributed13ms. The UI scheduler's
+foreground-read queue-wait total rose only1ms across the popup, so its own
+queue is not the observed multi-second interval. Log:
+`$HOME/.papercusp/perf/p007-native-current/run-001.log`.
+The publisher wrote16 measures as receipt `perfrun-1790383531556-u5sub5` with
+`workspace_id=papercusp-workspace`, confirming the workspace payload fix at
+runtime. Its `git_sha=5c56b715cb4ed6e0d5f0d702048d51267ae15f1d` identifies
+the WDIO checkout, not the shell, SPA or staging API.
+
+Matching `plans:get` invocation29625800 on API build64c532 took2801ms.
+The plan-source read took1964ms, including1913ms before the source query;
+the query itself took46ms. Rubric/audit took519ms and stale paths428ms,
+with those enrichment stages overlapping. `source.acquireAndSetup` currently
+combines pool wait, connection/BEGIN and transaction-local workspace setup;
+this run does not identify which subphase caused the1913ms. Earlier valid
+failures' matching invocations29618758 and29619811 spent9ms and7ms there,
+respectively, so the cost is variable. The browser-to-server residual is also
+unattributed; no database-only claim is supported by the4167ms interval.
+
+A same-build second attempt, `p007-64c532-e054-20260926-r02`, lost its
+WebDriver session while waiting for app mount. It produced no popup measure or
+receipt and is excluded from acceptance. Log:
+`$HOME/.papercusp/perf/p007-native-current/run-002.log`;
+the existing mount-termination issue is EI-24280898105217857.
+
+The existing `withWorkspace` options now offer a diagnostic `begin` / `ready`
+callback, and the plan-source timing adds `source.waitForBegin` (pool wait,
+connection and BEGIN combined) plus `source.workspaceSetup` while retaining
+`source.acquireAndSetup`. The real wrapper ordering test passed10/10; the
+plan-source attribution suite passed3/3. DB-org and operator-core package
+typechecks and `git diff --check` passed. This instrumentation is source proof
+only: it had not been committed, activated on :3170, or remeasured natively
+at this write. P-007 remains open.
+
+### P-007 packaged runner recovery and named receipt — 2026-09-26
+
+The repeated mount failure was a fixture navigation race. In invalid run
+`run-002.log`, WebDriver was still at `about:blank` when the popup spec read
+`location.href`; changing its pathname and query yielded
+`about:blank?ws=papercusp-workspace&opcv=plans`, which the spec navigated to.
+The earlier valid run had produced
+`papercusp://localhost/adv?ws=papercusp-workspace&opcv=plans` at the same site.
+The spec now waits for a host-bearing packaged document URL before applying
+the workspace query, and URL discovery plus app mount share the original mount
+timeout. The runner's real Node suite passed10/10, including an `about:blank`
+counterexample, and its typecheck passed. This fixes the test's invalid
+navigation path; the WebKit page-crash message itself remains a downstream
+symptom, not a proven WebKit defect.
+
+The same existing publisher payload builder now sets `gitSha:null` for a
+named `PAPERCUSP_PERF_RUN_ID`, because the checkout HEAD is not the frozen
+shell/SPA/live API build. Unnamed runs retain checkout correlation. The
+runner README describes the profile convention; its10-test suite and typecheck
+passed. No new ingest field or table was added.
+
+A new real packaged run used shell `e41628e0`, SPA index `e054e7cb`, and
+staging API `e97031f294`; the private IPC files were refreshed to live PID
+1570985. The log at
+`$HOME/.papercusp/perf/p007-native-current/run-003.log`
+shows navigation to `papercusp://localhost/adv?ws=papercusp-workspace&opcv=plans`
+and a rendered pinned plan. Its **1825ms** popup still exceeded1500ms.
+Request-start was329ms, response-headers1592ms, response-ready1604ms, and
+preview-rendered1818ms. Receipt `perfrun-1790384860776-t03lf7` persisted16
+real measures with `workspace_id=papercusp-workspace`, `git_sha=NULL`, and
+`run_id=p007-e41628-e054e7-e97031-20260926-r03`. Matching `plans:get`
+invocation29628521 took1218ms (source acquisition/setup273ms, query11ms,
+rubric/audit356ms) on API build e97031f294.
+
+This run verifies both harness fixes at runtime but falsifies P-007 latency
+acceptance on this profile. The new source acquisition split was still dirty
+and absent from the e97031f294 API at this write; the next valid run must
+verify its deployed stage fields before attributing the variable wait.
+
+### P-007 packaged Web Vitals smoke on the same frozen shell and SPA — 2026-09-26
+
+The packaged `smoke.spec.ts` instrument reported `ready` with **FCP 2972ms**
+and **LCP 4441ms** on shell SHA256 `e41628e0`, SPA index SHA256 `e054e7cb`,
+and staging API `e97031f294`. FCP met its 3000ms budget; LCP exceeded its
+4000ms budget. INP, CLS and TTFB retained their documented environmental
+classifications. The native smoke spec passed its instrument assertions, and
+publisher receipt `perfrun-1790385620425-7ttznj` stored ten measures under
+`papercusp-workspace` with one over budget and status `fail`. The raw log is
+`$HOME/.papercusp/perf/p007-native-current/run-004-smoke.log`.
+This is one cold packaged sample on that build profile, not a distributional
+latency or P-007 acceptance result. No cause is assigned to the LCP value.
+
+### P-007 activated timing split and variable native popup — 2026-09-26
+
+Git-sync commit `da16252fd3` contains the source acquisition split, the
+`libs/papercusp` DB wrapper pin, and the packaged runner mount guard. The
+isolated staging sync completed at 01:28:39Z; `/api/health` reported
+`da16252fd3`, and both private IPC descriptors were refreshed to the live
+PID 3923358 and its socket. Shell `e41628e0` and SPA index `e054e7cb`
+remained frozen.
+
+Named packaged run `p007-e41628-e054e7-da1625-20260926-r05` measured
+**2919ms**, failing the 1500ms popup budget. Request-started was 662ms,
+response-headers 2545ms, response-ready 2584ms, and preview-rendered
+2911ms. The publisher stored 17 measures as
+`perfrun-1790386201980-pii25e` with status `fail`. In the same short window,
+the single recorded full `plans:get` for the pinned slug was invocation
+29630889 on build `da16252fd3`; its 1316ms dispatch duration included a
+1199.6ms cold read with `source.waitForBegin` 39.8ms,
+`source.workspaceSetup` 571.5ms, `source.query` 66.1ms, and
+`stalePaths` 385.5ms. These are overlapping wall intervals, not DB CPU.
+The browser click's absolute timestamp was not logged, so temporal pairing
+is a scoped correlation, not proof that the full browser request interval
+equals this dispatch span.
+
+Named run `p007-e41628-e054e7-da1625-20260926-r06` measured **918ms**
+and published 17 passing measures as `perfrun-1790386294000-uc3l70`.
+Its recorded `plans:get` invocation29631091 took 22ms, while
+`plansGetRead.buildState=running` and `waitMs=0.216ms` show the cached read
+returned as a background refresh ran. This warm result does not clear the
+failed cold result. Raw logs are `run-005-popup.log` and `run-006-popup.log`
+under `$HOME/.papercusp/perf/p007-native-current/`.
+
+Correction to the initial analysis: `tool_invocations.invoked_at` is stamped
+at dispatch settlement in `projected-tool-deps.ts`, not request start. A
+browser-to-server residual derived by treating it as a start timestamp was
+wrong and is retracted; this evidence assigns no number to that residual.
+The server stage values and browser phase values above remain observed.
+
+The shared workspace transaction wrapper currently awaits separate
+transaction-local `search_path` and `app.workspace_id` setup statements on
+pooled app connections. The canonical source now combines those independent
+settings in one SQL round trip, with unit proof (11/11), real-Postgres
+integration proof (8/8), DB package typecheck, and diff check passing. This
+source change is still uncommitted/unactivated at this write. The measured
+571.5ms was the prior **combined setup interval**; no per-statement cost or
+native improvement is claimed yet.
+
+### P-007 same-build repeats and hot-path attribution — 2026-09-26
+
+Staging API build `bcf4dbf223` contains the combined transaction-local
+workspace setup and the `stalePaths.resolveRoot` / `stalePaths.scan`
+diagnostics. The frozen shell and SPA remain `e41628e0` / `e054e7cb`.
+Packaged popup run r14 measured **1405ms** (receipt
+`perfrun-1790388457077-4u4vzh`, pass). Its same-window full
+`plans:get` invocation29635511 took624ms: cold read600.9ms,
+`source.workspaceSetup`176.9ms, `stalePaths.resolveRoot`51.1ms and
+`stalePaths.scan`0.14ms. This one sample cannot isolate the saved time
+from the combined SQL statement because its predecessor ran under different
+conditions. The r14 start-wall log was missing: the test had read the
+`:start` mark AFTER `endInteraction` consumes that mark. The runner now
+derives absolute start from the completed measure's `startTime` and fails
+an unmeasurable sample if that value is absent.
+
+Run r17 verified the corrected timestamp path in the real packaged suite:
+absolute start `2026-09-26T02:13:15.028Z`, popup **1003ms**, receipt
+`perfrun-1790388799207-u3pyzp` pass. Its request-start phase was372ms,
+response headers715ms, preview997ms. Full `plans:get` invocation29636225
+settled at02:13:15.730Z after104ms; the unique pinned slug, build and
+timestamp establish this run's correlation. Its `buildState=running` and
+`waitMs=0.278ms` mean the cached response returned while refresh ran, so
+r17 is warm evidence.
+
+With the existing page event-loop probe enabled, r18 measured **1713ms**
+and failed the1500ms budget (receipt `perfrun-1790388911717-6qgo1i`).
+Absolute start was02:15:07.681Z; request-start615ms, headers1499ms,
+response-ready1510ms and preview1707ms. The matching
+`plans:get` invocation29636459 took746ms, with a cold read729.3ms:
+`source.workspaceSetup`40.4ms, `source.finishTransaction`354.5ms,
+`stalePaths.resolveRoot`255.7ms and `stalePaths.scan`0.10ms. The
+page probe observed event-loop gaps of255ms and370ms in this interval;
+its DOM layout hook reported no >=10ms layout operation. The root lookup
+was issuing `git rev-parse --show-toplevel` even when the caller supplied
+the known worktree root. Current source now checks that root's `.git`
+entry first and reserves Git for nested/unknown paths. A real throwaway
+repo test removes Git from PATH and still resolves cited paths at the
+explicit root; the focused suite passed30/30 and diff check passed.
+This new source fix is uncommitted/unactivated at this write; no native
+latency improvement is claimed.
+
+Web Vitals remain variable on the same frozen shell/SPA: smoke r08 recorded
+FCP10092/LCP11233 (fail), r09 2347/3428 (pass), r10 4291/5582 (fail),
+r11 2697/3722 (pass), r12 2213/3311 (pass), and r15 2392/3363
+(pass). All named receipts are in the corresponding `run-NNN-smoke.log`
+files under the private fixture directory. The r10/r11 page traces showed
+cumulative foreground scheduler wait of14855ms versus2323ms across69
+requests, but that SUM is not a first-paint critical path. CPU PSI was
+not higher in the slow sample (start 0.62% vs0.96%, end0% vs2.92%).
+A corrected bounded query-ring probe now separates requests completed
+before FCP from requests merely started before it. In r15, zero recorded
+queries completed before FCP and eight started before FCP but completed
+later; its FCP2392ms passed. An r12 snapshot showed 16 queued foreground
+requests and several later 20s queue timeouts despite FCP2213ms passing.
+This separate unconfirmed post-paint queue defect is tracked as
+WI-10003191. These observations do not establish a cause for the FCP/LCP
+variance or a ten-run P-007 acceptance result.
+
+Smoke r19 used the same frozen shell and SPA with API build `ac0cb93e81`.
+The packaged instrument reported FCP **2383ms** and LCP **3456ms**, both
+within budget, and published ten measures as
+`perfrun-1790390021053-v1gwnn` (pass). Its bounded query-ring probe found
+zero queries completed before FCP; eight started before FCP and completed
+later. This one passing sample does not identify the cause of the earlier
+slow paints. Raw log:
+`$HOME/.papercusp/perf/p007-native-current/run-019-smoke.log`.

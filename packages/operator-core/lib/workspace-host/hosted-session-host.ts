@@ -634,23 +634,38 @@ export class SafeRootFileService {
   }
 }
 
+/** Home directory of the customer workspace account the loopback SSH vector lands in. */
+export const HOSTED_WORKSPACE_ACCOUNT_HOME = `/home/${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}`;
+
+/**
+ * The pinned loopback SSH argv to the customer workspace account, up to and including the
+ * destination (the remote command is appended by the caller). `tty` selects a forced PTY
+ * (`-tt`, the customer terminal) or none (`-T`, a piped agent child — D-421). Both use the
+ * same service-owned key and host pin the bootstrap installs (`restrict,pty,from="127.0.0.1"`).
+ */
+export function hostedWorkspaceSshArgs(options: { tty: boolean }): string[] {
+  return [
+    '-F', '/dev/null', options.tty ? '-tt' : '-T', '-i', WORKSPACE_HOST_HOSTED_PTY_SSH_KEY,
+    '-o', `UserKnownHostsFile=${WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS}`,
+    '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'StrictHostKeyChecking=yes',
+    '-o', 'HostKeyAlgorithms=ssh-ed25519', '-o', 'IdentitiesOnly=yes',
+    '-o', 'BatchMode=yes', '-o', 'PasswordAuthentication=no',
+    '-o', 'KbdInteractiveAuthentication=no', '-o', 'ForwardAgent=no',
+    '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10',
+    '-l', DEFAULT_WORKSPACE_HOST_WORKSPACE_USER, '127.0.0.1',
+  ];
+}
+
 /** Exact loopback SSH vector: the remote shell belongs to the customer workspace account. */
 export function hostedWorkspacePtySpawnSpec(input: HostedHostPtyFactoryInput) {
   if (process.platform !== 'linux') throw new Error('hosted_workspace_pty_requires_linux');
   const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
-  const home = `/home/${DEFAULT_WORKSPACE_HOST_WORKSPACE_USER}`;
+  const home = HOSTED_WORKSPACE_ACCOUNT_HOME;
   return {
     accessScope: input.scope,
     command: '/usr/bin/ssh',
     args: [
-      '-F', '/dev/null', '-tt', '-i', WORKSPACE_HOST_HOSTED_PTY_SSH_KEY,
-      '-o', `UserKnownHostsFile=${WORKSPACE_HOST_HOSTED_PTY_KNOWN_HOSTS}`,
-      '-o', 'GlobalKnownHostsFile=/dev/null', '-o', 'StrictHostKeyChecking=yes',
-      '-o', 'HostKeyAlgorithms=ssh-ed25519', '-o', 'IdentitiesOnly=yes',
-      '-o', 'BatchMode=yes', '-o', 'PasswordAuthentication=no',
-      '-o', 'KbdInteractiveAuthentication=no', '-o', 'ForwardAgent=no',
-      '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10',
-      '-l', DEFAULT_WORKSPACE_HOST_WORKSPACE_USER, '127.0.0.1',
+      ...hostedWorkspaceSshArgs({ tty: true }),
       `cd -- ${quote(input.workspaceRoot)} && exec env -i HOME=${quote(home)} PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 TERM=xterm-256color /bin/bash --noprofile --norc`,
     ],
     cwd: input.workspaceRoot,

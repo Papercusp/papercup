@@ -44,6 +44,8 @@ import {
   type DesktopAuditPhase,
 } from '../desktop/desktop-audit';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
+import { configureAgentSpawnTransform } from '@papercusp/papercusp-shared/agent';
+import { installHostedCustomerAgentIdentity } from './hosted-agent-identity';
 import { createHostedDesktopBackend, type HostedDesktopBackendDeps } from './hosted-desktop-backend';
 import {
   HostedWorkspaceHostSessionAdapter,
@@ -59,6 +61,11 @@ import {
 } from './hosted-connector-client';
 
 export interface HostedWorkspaceHostRuntimeOptions {
+  /**
+   * D-421: install the customer-account agent spawn transform at start. Defaults on; only
+   * tests that construct a runtime without a customer account set it false.
+   */
+  installAgentIdentity?: boolean;
   /** Absolute control-plane socket URL. */
   url: string;
   /** The enrollment bearer this host registered with. */
@@ -314,6 +321,11 @@ export function ensureHostedWorkspaceHostRuntime(
   if (started.runtime) return started.runtime;
   const config = readHostedWorkspaceHostConfig(env);
   if (!config) return null;
+  // D-421: customer-driven agent CLIs (chat brain, New Session) run as the customer
+  // workspace account, never as this service account. Only a hosted host installs it.
+  if (overrides.installAgentIdentity !== false && process.platform === 'linux') {
+    installHostedCustomerAgentIdentity();
+  }
   const runtime = createHostedWorkspaceHostRuntime({
     ...config,
     onBinding: registerHostedCustomerWorkspace,
@@ -358,6 +370,7 @@ export function registerHostedCustomerWorkspace(binding: HostedConnectorBinding)
 export function __resetHostedWorkspaceHostRuntime(): void {
   started.runtime?.stop('test_reset');
   started.runtime = null;
+  configureAgentSpawnTransform(undefined);
 }
 
 export interface HostedWorkspaceHostEnvironmentConfig {

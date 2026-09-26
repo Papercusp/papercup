@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { awaitWorkItemCompletionEvent, type WorkItemEventWaitInput } from './work-item-event-await';
+import type { WorkItemEventWaitInput } from './work-item-event-await';
 import type { WorkItem } from '../work-items';
 import type { KeyFireRow } from '../events/await/types';
+
+// The copy-out mutation probe loads the subject from its mirrored path. The
+// ordinary suite uses the tracked module and keeps the same assertions.
+const { awaitWorkItemCompletionEvent } = await import(
+  /* @vite-ignore */ process.env.PAPERCUSP_WAIT_BRIDGE_PROBE_PATH ?? './work-item-event-await'
+);
 
 const input: WorkItemEventWaitInput = {
   itemId: 'WI-123', harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace',
