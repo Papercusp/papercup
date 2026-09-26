@@ -323,7 +323,25 @@ export default defineTool({
     //
     // Dynamic arguments are never inspected (the validator skips `dynamicArgs`), so a computed
     // argument object behaves exactly as it did before this check existed.
-    const argPreflight = await validateRecipeScriptAgainstCatalog(script, all, allowed);
+    // Preflight is part of the same foreground request. A slow catalog read must not
+    // spend the entire transport window before the worker's own clock even starts.
+    const preflight = await withCodeRunResponseBudget(
+      () => validateRecipeScriptAgainstCatalog(script, all, allowed),
+      { deadlineAtMs: responseDeadlineAtMs - 1_000, fallback: null, label: 'argument preflight' },
+    );
+    if (preflight.degraded || !preflight.value) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: false,
+          error: preflight.reason === 'error'
+            ? `script_preflight_error: ${preflight.errorMessage ?? 'unknown error'}`
+            : 'script_timeout during argument preflight',
+          executed: false,
+          dispatchCount: 0, partial: false,
+        }) }],
+      } as unknown as ToolResult;
+    }
+    const argPreflight = preflight.value;
     const blockingArgIssues = argPreflight.issues.filter((issue) => issue.kind === 'unknown-key');
     if (blockingArgIssues.length > 0) {
       const acceptedKeysFor = (toolName: string): string[] => {
@@ -378,6 +396,21 @@ export default defineTool({
       } as unknown as ToolResult;
     }
 
+    // The worker timeout starts when it is launched, after preflight. Bound it by
+    // the *remaining* absolute response window, leaving a second for shaping.
+    const remainingWorkerMs = responseDeadlineAtMs - Date.now() - 1_000;
+    if (remainingWorkerMs <= 0) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: false, error: 'script_timeout before execution', executed: false,
+          dispatchCount: 0, partial: false,
+        }) }],
+      } as unknown as ToolResult;
+    }
+    const workerTimeoutMs = Math.min(
+      effectiveTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS,
+      remainingWorkerMs,
+    );
     const result = await runToolOrchestration(script, {
       ctx,
       // Thread the host's REAL dispatch deps (B-CX-DEPS): inner tool calls route through
@@ -392,7 +425,7 @@ export default defineTool({
       // EI-9239: clamp below the ~55s MCP transport cap (mirrors capability:inspect's identical
       // EI-6073 fix) so a script_timeout fires cleanly here instead of the caller getting an
       // opaque transport-level request_timeout after the script's own budget was never reached.
-      timeoutMs: requestedTimeoutMs !== undefined ? effectiveTimeoutMs : undefined,
+      timeoutMs: workerTimeoutMs,
       wrapDispatch: bindCurrentCallerDispatch,
       requestHash,
       ...(contract ? { inputs: contract.inputs } : {}),
@@ -413,6 +446,14 @@ export default defineTool({
       if (clampDisclosure && typeof result.error === 'string' && result.error.startsWith('script_timeout')) {
         (result as { error?: string }).error = `${result.error}${clampDisclosure}`;
       }
+    }
+    if (
+      !result.ok && workerTimeoutMs < (effectiveTimeoutMs ?? DEFAULT_SCRIPT_TIMEOUT_MS) &&
+      typeof result.error === 'string' && result.error.startsWith('script_timeout')
+    ) {
+      (result as { error?: string }).error =
+        `${result.error} — worker budget was reduced to ${workerTimeoutMs}ms because argument preflight ` +
+        'used part of this call\'s shared foreground response deadline';
     }
 
     // P-013: capture the execution evidence BEFORE shaping the model-facing
