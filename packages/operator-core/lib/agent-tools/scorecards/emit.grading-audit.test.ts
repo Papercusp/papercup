@@ -485,7 +485,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
-  it('keeps the subject pending when unknown audit ratings cannot establish a verdict', async () => {
+  it('refuses unknown audit ratings before filing an orphan audit card', async () => {
     getRubric.mockResolvedValue(replayConsistencyAuditRubric());
     const res = await emitScorecard(
       {
@@ -498,11 +498,8 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
     );
 
-    expect(res).toMatchObject({
-      ok: true,
-      gradingAuditRecorded: false,
-      gradingAuditError: expect.stringContaining('remains pending'),
-    });
+    expect(res).toMatchObject({ ok: false, code: 'grading_audit_verdict_unknown' });
+    expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
     expect(closeSourceAuditConsults).not.toHaveBeenCalled();
   });
@@ -855,9 +852,15 @@ describe('scorecards:emit grading audit path (P-013)', () => {
         { generationAncestry },
       );
 
-      expect(res).toMatchObject({ ok: false, code: 'grading_audit_generation_incompatible' });
-      expect((res as { error?: string }).error).toContain('auditor-build-older-than-graded-build');
-      expect(generationAncestry).toHaveBeenCalledWith('/test/root', gradedSha, auditorSha);
+      if (_rating === 'unknown') {
+        expect(res).toMatchObject({ ok: false, code: 'grading_audit_verdict_unknown' });
+        expect(generationAncestry).not.toHaveBeenCalled();
+      } else {
+        expect(res).toMatchObject({ ok: false, code: 'grading_audit_generation_incompatible' });
+        expect((res as { error?: string }).error).toContain('auditor-build-older-than-graded-build');
+        expect(generationAncestry).toHaveBeenCalledWith('/test/root', gradedSha, auditorSha);
+      }
+      expect(captureImprovement).not.toHaveBeenCalled();
       expect(recordGradingAudit).not.toHaveBeenCalled();
     },
   );
