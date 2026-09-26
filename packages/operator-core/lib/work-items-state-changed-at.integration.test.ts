@@ -168,7 +168,8 @@ describe('migration 896 — work-item state age clock', () => {
           JOIN pg_namespace n ON n.oid = c.relnamespace
          WHERE n.nspname = 'harness_shared'
            AND c.relname = 'work_items'
-           AND t.tgname = 'stamp_work_item_state_changed_at_trg'
+           -- mig 1227 renamed it to fire before stamp_local_federated_write_trg (WI-10003230)
+           AND t.tgname = 'stamp_before_fed_work_item_state_changed_at_trg'
            AND NOT t.tgisinternal
       ) AS exists`;
     expect(column.exists).toBe(true);

@@ -162,7 +162,7 @@ async function pot(
  * wrong, so the fixture writes them in their real type.
  *
  * ⚠ CLOSING A ROW TAKES BOTH a terminal `status` AND an explicit `closedTs`.
- * `stamp_work_item_closed_ts_trg` (BEFORE INSERT OR UPDATE) NULLs `closed_ts`
+ * `stamp_before_fed_work_item_closed_ts_trg` (BEFORE INSERT OR UPDATE) NULLs `closed_ts`
  * whenever the status is non-terminal, and on INSERT it deliberately never
  * INVENTS one — an already-terminal row arriving is a federated replica or a
  * restore, where stamping now() would record its ARRIVAL as its close. So a
