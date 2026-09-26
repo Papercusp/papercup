@@ -103,6 +103,11 @@ describe('selected identity recipe reaches its existing consumer', () => {
         bindings: [], ceilings: [{ allowCapabilities: ['*'] }], tools: new Map(),
       })).toMatchObject({ applied: true, allowedTools: [], failures: [] });
       expect(launch.resourceArtifacts).toHaveLength(1);
+      // Prompt text and a compiled package pin do not make the recipe callable.
+      // The existing resolver must see it only after the host provisions it.
+      const beforeProvision = await recipeGetTool.handler({ id: recipeId }, {} as never);
+      expect((beforeProvision as { data: { results: Array<Record<string, unknown>> } }).data.results[0])
+        .toMatchObject({ ok: false, id: recipeId, error: 'not_found' });
       await provisionLaunchIdentityResources(launch, db.adminSql);
 
       const read = await recipeGetTool.handler({ id: recipeId }, {} as never);
