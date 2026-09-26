@@ -363,7 +363,9 @@ export type AcceptanceGraderTerminalFailureCode =
    */
   | 'launch_kickoff_dropped'
   /** A completed grading auditor turn explicitly says it could not reach platform tools. */
-  | 'tool_surface_unavailable';
+  | 'tool_surface_unavailable'
+  /** A completed grading auditor turn explicitly declined to emit its audit. */
+  | 'grading_audit_refused';
 
 export interface AcceptanceGraderTerminalFailure {
   code: AcceptanceGraderTerminalFailureCode;
@@ -397,6 +399,7 @@ export async function detectAcceptanceGraderTerminalFailure(
     allowLauncherWalledPoolRefusal = false,
     allowLauncherKickoffDrop = false,
     allowToolSurfaceRefusal = false,
+    allowGradingAuditRefusal = false,
     detectStartupStall = true,
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
@@ -446,6 +449,8 @@ export async function detectAcceptanceGraderTerminalFailure(
     allowLauncherKickoffDrop?: boolean;
     /** Controlled grading-audit briefs may classify an explicit completed-turn tool-surface refusal. */
     allowToolSurfaceRefusal?: boolean;
+    /** Controlled grading-audit briefs may retire an auditor that explicitly finished without emitting. */
+    allowGradingAuditRefusal?: boolean;
     /** Some consumers only need terminal quota detection and must not spend the
      * longer connection-stall window inside their synchronous dispatch path. */
     detectStartupStall?: boolean;
@@ -465,6 +470,7 @@ export async function detectAcceptanceGraderTerminalFailure(
       allowLauncherWalledPoolRefusal,
       allowLauncherKickoffDrop,
       allowToolSurfaceRefusal,
+      allowGradingAuditRefusal,
     });
     if (terminalFailure) return terminalFailure;
     if (recheck < boundedRechecks) await sleep(boundedDelay);
@@ -488,6 +494,7 @@ export async function detectAcceptanceGraderTerminalFailure(
       allowLauncherWalledPoolRefusal,
       allowLauncherKickoffDrop,
       allowToolSurfaceRefusal,
+      allowGradingAuditRefusal,
     });
     if (terminalFailure) return terminalFailure;
     startupStall = classifyAcceptanceGraderStartupStall(latestRawLog);
@@ -524,6 +531,7 @@ export function classifyAcceptanceGraderTerminalFailure(
     allowLauncherWalledPoolRefusal = false,
     allowLauncherKickoffDrop = false,
     allowToolSurfaceRefusal = false,
+    allowGradingAuditRefusal = false,
   }: {
     allowStandaloneWeeklyLimit?: boolean;
     allowInferenceGatewayError?: boolean;
@@ -548,6 +556,7 @@ export function classifyAcceptanceGraderTerminalFailure(
      */
     allowLauncherKickoffDrop?: boolean;
     allowToolSurfaceRefusal?: boolean;
+    allowGradingAuditRefusal?: boolean;
   } = {},
 ): AcceptanceGraderTerminalFailure | null {
   const normalized = normalizeAcceptanceGraderLog(rawLog);
@@ -671,6 +680,22 @@ export function classifyAcceptanceGraderTerminalFailure(
     return {
       code: 'tool_surface_unavailable',
       evidence: toolSurfaceRefusal[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+    };
+  }
+  // A one-shot auditor may explicitly finish without an emit while its PTY and
+  // task-ledger heartbeat stay live. The controlled audit brief cannot contain
+  // this final answer. Require the auditor's own answer marker and completed
+  // turn footer; a quoted error or a still-working turn is not terminal proof.
+  const lastAssistantAnswer = normalized.slice(normalized.lastIndexOf('●'));
+  const gradingAuditRefusal = allowGradingAuditRefusal
+    ? lastAssistantAnswer.match(
+        /●\s+I (?:didn't|did not) emit an audit\b(?:(?!●\s)[\s\S]){0,6000}?\b(?:server refused|audit would be refused|Why I stopped)\b(?:(?!●\s)[\s\S]){0,6000}?✻\s*\p{L}{3,24}\s+for [^\n]{1,120}?\s*·\s*done\b/iu,
+      )
+    : null;
+  if (gradingAuditRefusal) {
+    return {
+      code: 'grading_audit_refused',
+      evidence: gradingAuditRefusal[0].replace(/\s+/g, ' ').trim().slice(0, 400),
     };
   }
   return null;

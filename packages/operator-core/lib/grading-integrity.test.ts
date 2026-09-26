@@ -1824,6 +1824,48 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
   });
 
+  it('retires a heartbeat-fresh auditor that finished without emitting, then launches a replacement', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-finished-refusal')]);
+    d.listTasks.mockResolvedValue([
+      {
+        taskId: 'task-finished-refusal',
+        state: 'running',
+        detail: { label: 'grading-audit:EI-finished-refusal' },
+        logPath: '/tmp/finished-refusal.log',
+      } as unknown as TaskRow,
+    ]);
+    d.launch.mockResolvedValue(
+      launchResult({
+        deduped: false,
+        launch: {
+          agentStarted: true,
+          tasks: [{ taskId: 'task-replacement', logPath: '/tmp/replacement.log', kickoffProof: { persisted: true } }],
+        },
+      }),
+    );
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const result = await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp' },
+      {
+        ...d,
+        killTask,
+        readLogTail: (path: string) =>
+          path.includes('finished-refusal')
+            ? "● I didn't emit an audit, so the scorecard is still unsettled. The server refused my audit.\n✻ Worked for 4m 57s · done"
+            : 'healthy replacement',
+        sleep: async () => undefined,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+    expect(killTask).toHaveBeenCalledWith('task-finished-refusal', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(result.receipts[0]).toMatchObject({
+      state: 'launched',
+      terminalRecovery: { retiredTaskIds: ['task-finished-refusal'], codes: ['grading_audit_refused'] },
+    });
+  });
+
   it('keeps a judge whose native kickoff marker arrived late but whose turn was observed', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-late-marker')]);

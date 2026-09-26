@@ -1016,6 +1016,7 @@ export async function dispatchPendingGradingAudits(
         // fingerprint, so it cannot quote the host receipt.
         allowLauncherKickoffDrop: true,
         allowToolSurfaceRefusal: true,
+        allowGradingAuditRefusal: true,
         detectStartupStall: false,
       });
     /**

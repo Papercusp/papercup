@@ -1191,6 +1191,33 @@ describe('classifyAcceptanceGraderStartupStall', () => {
 });
 
 describe('detectAcceptanceGraderTerminalFailure', () => {
+  it('classifies a completed one-shot audit refusal only when explicitly enabled', async () => {
+    const finalAnswer =
+      "● I didn't emit an audit, so scorecard EI-24208147289140038 is still unsettled. " +
+      'The server refused my audit because this session runs on an older build.\n' +
+      '✻ Worked for 4m 57s · done';
+    const options = { readLogTail: () => finalAnswer, maxRechecks: 0, detectStartupStall: false };
+    await expect(detectAcceptanceGraderTerminalFailure('/tmp/judge.log', options)).resolves.toBeNull();
+    await expect(
+      detectAcceptanceGraderTerminalFailure('/tmp/judge.log', { ...options, allowGradingAuditRefusal: true }),
+    ).resolves.toMatchObject({ code: 'grading_audit_refused' });
+    await expect(
+      detectAcceptanceGraderTerminalFailure('/tmp/judge.log', {
+        ...options,
+        allowGradingAuditRefusal: true,
+        readLogTail: () => finalAnswer.replace(' · done', ' · retrying'),
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      detectAcceptanceGraderTerminalFailure('/tmp/judge.log', {
+        ...options,
+        allowGradingAuditRefusal: true,
+        readLogTail: () =>
+          finalAnswer + '\n● I retried on the correct build and emitted the audit.\n✻ Worked for 1m 2s · done',
+      }),
+    ).resolves.toBeNull();
+  });
+
   it('stops after the bounded recheck window when no terminal response arrives', async () => {
     const readLogTail = vi.fn(() => 'still booting');
     const sleep = vi.fn(async () => undefined);
