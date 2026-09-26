@@ -1,13 +1,62 @@
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { checkedCommand, requireRollbackResponse, selectIdentityInCatalog, serializeEvidence, toolArgs } from "../../../scripts/verify-identities-r4.mjs";
+import { checkedCommand, confirmFixtureDelivery, requireRollbackResponse, selectIdentityInCatalog, serializeEvidence, toolArgs } from "../../../scripts/verify-identities-r4.mjs";
+import { openDeliveryLedger } from "../scripts/hooks/inject/delivery-ledger.mjs";
 import { findBoxIdentityPaths } from "../../../scripts/lib/identity-leak-patterns.mjs";
 
 const script = readFileSync(resolve(__dirname, "../../../scripts/verify-identities-r4.mjs"), "utf8");
 
 describe("P-015 R-4 maintained identity UI verifier", () => {
+  it("confirms only emitted control context using the production delivery ledger", async () => {
+    const home = mkdtempSync(resolve(tmpdir(), "r4-delivery-"));
+    try {
+      const ledger = openDeliveryLedger("fixture", { PAPERCUSP_HOME: home });
+      const events: string[] = [];
+      await confirmFixtureDelivery({
+        ledger,
+        request: async (confirmed: string | null) => {
+          events.push(`request:${confirmed}`);
+          return confirmed ? { ok: true, text: "" } : { ok: true, text: "control context", deliveryToken: "candidate" };
+        },
+        emit: async (text: string) => {
+          expect(ledger?.confirmed()).toBeNull();
+          events.push(`emit:${text}`);
+        },
+      });
+      expect(events).toEqual(["request:null", "emit:control context", "request:candidate"]);
+      expect(openDeliveryLedger("fixture", { PAPERCUSP_HOME: home })?.confirmed()).toBe("candidate");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("never confirms a dropped emission or a transition without a delivery candidate", async () => {
+    const home = mkdtempSync(resolve(tmpdir(), "r4-delivery-"));
+    try {
+      const ledger = openDeliveryLedger("fixture", { PAPERCUSP_HOME: home });
+      let requests = 0;
+      await expect(confirmFixtureDelivery({
+        ledger,
+        request: async () => { requests++; return { ok: true, text: "context", deliveryToken: "lost" }; },
+        emit: async () => { throw new Error("emission failed"); },
+      })).rejects.toThrow("emission failed");
+      expect(requests).toBe(1);
+      expect(ledger?.confirmed()).toBeNull();
+      const pending = { ok: true, text: "await fresh context" };
+      expect(await confirmFixtureDelivery({
+        ledger,
+        request: async () => pending,
+        emit: async () => { throw new Error("must not emit a candidate"); },
+      })).toEqual(pending);
+      expect(ledger?.confirmed()).toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("requires the isolated verifier database and bridge provenance", () => {
     expect(script).toContain('required("HARNESS_ADMIN_DATABASE_URL")');
     expect(script).toContain('required("VERIFY_TAURI_PID")');
