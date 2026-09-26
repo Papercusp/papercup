@@ -26,13 +26,13 @@ export default defineTool({
   name: 'rubrics:check-approver',
   profile: 'engineer',
   description:
-    'Read-only pre-dispatch lineage screen for a prospective reviewer of a started acceptance BAR amendment. This reports eligibility only; it does not approve, authorize, or apply an amendment.',
+    'Read-only lineage screen for one identity as a reviewer of a started acceptance BAR amendment: the same screen the routed amendment review applies to every candidate. Reports eligibility only; it does not approve, authorize, or apply an amendment.',
   guidance: {
-    when: 'Before routing an outside-lineage reviewer for a started acceptance BAR amendment, when the candidate ownerId is known.',
+    when: 'Diagnose why a specific identity is or would be screened out as a reviewer of a started acceptance BAR amendment.',
     notWhen:
-      'Do not treat an eligible result as approval. The reviewer must still inspect the full candidate criteria and fresh dry-run diff on a durable thread; the apply guard remains authoritative.',
+      'Not a way to pick a reviewer: never message a candidate yourself; rubrics:amend { dryRun:true, reviewPreviewPost } routes the review. An eligible result is not approval; the apply guard remains authoritative.',
     chaining:
-      "rubrics:check-approver { rubricRef, ownerId } → route only eligible candidates → post the exact candidate criteria and fresh rubrics:amend dryRun diff for the reviewer to inspect → collect the approval receipt → apply with rubrics:amend.",
+      'rubrics:amend { dryRun:true, reviewPreviewPost } routes the review and runs this screen on every candidate → if review.state is no-eligible-reviewer, rubrics:check-approver { rubricRef, ownerId } explains one identity\'s verdict.',
     seeAlso: ['rubrics:amend (preview and apply the exact amendment)', 'rubrics:get (read the full rubric criteria)'],
   },
   capability: 'coord:read',

@@ -27998,7 +27998,7 @@
       "guidance": {
         "when": "A targeted acceptance-BAR change, evidence-plane binding, or rubric-ref update.",
         "notWhen": "For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.",
-        "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → requester posts preview.approval once as a work_items:comment and sends its post id to the outside-lineage reviewer → reviewer posts `approve thread-post:<preview-post-id>` on any existing writable thread, preferably an item they already hold → apply with amend { approvalRef:'thread-post:<reviewer post id>' }. Both posts are immutable and resolved by workspace/id; this avoids hash transcription. The server checks the referenced preview against the applied delta. A work-item payload needs payloadTier:'full', which some reviewer views cannot read; a thread post is visible on every surface. Do not create a counter-sign work-item for approval."
+        "chaining": "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → if approvalRequired, post preview.approval once as a work_items:comment → repeat the dry run with reviewPreviewPost:'thread-post:<that post id>'; the relevance router picks and screens an outside-lineage reviewer → follow review.next → the reviewer answers `approve thread-post:<preview-post-id>` → apply with amend { approvalRef:'thread-post:<answer post id>' }. Posts are immutable and resolved by workspace/id, which avoids hash transcription; the server checks the preview against the applied delta. Never pick or message a reviewer yourself. Do not create a counter-sign work-item for approval."
       }
     },
     {
