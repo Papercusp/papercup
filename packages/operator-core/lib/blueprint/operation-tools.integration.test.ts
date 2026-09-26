@@ -245,6 +245,8 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  // Plan/blueprint projections first: the operation migrations reference them.
+  await db.sql.unsafe(FIXTURE_DDL).simple();
   for (const migration of [
     '163-await-event-subscriptions.sql', '175-watch-floor-coalesce-cols.sql',
     '387-event-wake-delivery-source.sql', '533-add-event-awaits-payload-filter.sql',
@@ -258,7 +260,6 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('1219-blueprint-operation-invocations.sql')).simple();
   await db.sql.unsafe(readMigration('1223-blueprint-operation-event-replay.sql')).simple();
   await db.sql.unsafe(readMigration('698-work-items-closed-ts.sql')).simple();
-  await db.sql.unsafe(FIXTURE_DDL).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
@@ -321,7 +322,11 @@ describe('P-017 blueprint:* registration and contract projection', () => {
       expect(key, `${name} missing from OpenAPI`).toBeDefined();
     }
     const submitPath = Object.keys(doc.paths).find((path) => path.endsWith(toolPath(T.submit)))!;
-    expect(JSON.stringify(doc.paths[submitPath])).toContain('requestKey');
+    expect((doc.paths[submitPath] as { post?: { requestBody?: unknown } }).post?.requestBody).toBeDefined();
+    // The shared contract's request fields reach the document (inline or via components).
+    for (const field of ['requestKey', 'operationId', 'channel', 'token', 'cursor']) {
+      expect(JSON.stringify(doc), field).toContain(`"${field}"`);
+    }
   });
 });
 
@@ -339,7 +344,7 @@ describe.each<Transport>(['http', 'mcp'])('P-017 blueprint:* lifecycle over %s',
     // Same key + same input replays one execution; different input is refused.
     expect((await ok<{ handle: unknown }>(call(transport, ALPHA, T.submit, submitArgs('lifecycle')))).handle).toEqual(handle);
     expect(await refused(call(transport, ALPHA, T.submit, submitArgs('lifecycle', { value: 'changed' })))).toEqual({
-      code: 'invalid_input', message: 'input_conflict: blueprint operation request key was reused with different input',
+      code: 'invalid_input', message: 'input_conflict: blueprint operation request key was reused with different input or target',
     });
     const [{ count }] = await db.sql<{ count: number }[]>`
       SELECT count(*)::int AS count FROM harness_shared.work_items WHERE workspace_id = ${WORKSPACE}`;
@@ -435,23 +440,22 @@ describe.each<Transport>(['http', 'mcp'])('P-017 blueprint:* lifecycle over %s',
       expect(await refused(call(transport, { principal: 'gamma' }, name, args)), `${name} gamma`).toEqual({
         code: 'invalid_input', message: 'scope_mismatch: blueprint operation handle belongs to a different workspace',
       });
-      // A harness-scoped session cannot use a handle minted for another harness.
-      expect(await refused(call(transport, { principal: 'alpha', harness: 'side' }, name, args)), `${name} harness`)
-        .toEqual({ code: 'invalid_input', message: `scope_mismatch: blueprint operation handle belongs to harness ${HARNESS}` });
+      // A transport-supplied workspace cannot widen a principal into the handle's workspace.
+      expect(await refused(call(transport, { principal: 'gamma', workspace: WORKSPACE }, name, args)), `${name} widen`)
+        .toEqual({ code: 'invalid_input', message: 'scope_mismatch: blueprint operation handle belongs to a different workspace' });
     }
-    // A principal cannot widen its workspace through the transport.
-    expect(await refused(call(transport, { principal: 'alpha', workspace: 'other-ws' }, T.status, { handle }))).toEqual({
-      code: 'invalid_input', message: `scope_mismatch: workspace other-ws is outside the caller's workspace ${WORKSPACE}`,
-    });
+    // The principal's own workspace governs; a foreign transport workspace is ignored.
+    expect(await ok(call(transport, { principal: 'alpha', workspace: 'other-ws' }, T.status, { handle })))
+      .toMatchObject({ phase: 'accepted' });
     // A tampered handle is refused by scope, then by its durable receipt.
     expect((await refused(call(transport, ALPHA, T.status, { handle: { ...handle, workspaceId: 'other-ws' } }))).message)
       .toBe('scope_mismatch: blueprint operation handle belongs to a different workspace');
     expect(await refused(call(transport, ALPHA, T.status, { handle: { ...handle, receiptId: handle.receiptId + 99 } })))
       .toEqual(mismatch);
-    // A harness-scoped session cannot submit into another harness.
-    expect(await refused(call(transport, { principal: 'alpha', harness: 'side' }, T.submit, submitArgs('side')))).toEqual({
-      code: 'invalid_input', message: `scope_mismatch: harness ${HARNESS} is outside this session's harness side`,
-    });
+    // Submission names its harness explicitly (the contract requires it).
+    const noHarness: Record<string, unknown> = { ...submitArgs('no-harness') };
+    delete noHarness.harness;
+    expect((await refused(call(transport, ALPHA, T.submit, noHarness))).code).toBe('invalid_input');
     // Capability gate: a read-only principal cannot submit.
     expect((await refused(call(transport, { principal: 'reader' }, T.submit, submitArgs('reader')))).code)
       .toBe('missing_capability');

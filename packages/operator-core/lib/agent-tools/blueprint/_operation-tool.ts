@@ -1,56 +1,46 @@
 /** Shared scope, identity and error rail for the seven public blueprint
  * operation tools (P-017, plan blueprint-backed-work-item-execution-2026-09-23
  * D-009). Every transport (MCP, /api/agent-tools HTTP, OpenAPI clients)
- * reaches the same projected dispatcher and therefore this one rail:
+ * reaches the same projected dispatcher and therefore this one rail.
  *
- * - caller identity comes from the authenticated transport identity
- *   (`resolveAgentIdentity`, the same rail work_items:create attributes by),
- *   never from arguments, and a bearer principal's unverified client id is
- *   namespaced under the principal (`operationCallerId`), so a handle cannot
- *   be read or driven by another caller;
- * - the workspace comes from the session scope, and a handle minted in a
- *   different workspace or (for a harness-scoped session) harness is refused
- *   before the service is reached;
+ * These are principal-gated defineTools, so the handler receives the
+ * framework's field-by-field legacy ctx (define-tool.ts registerLegacyAsProjected):
+ * `principal` and `uiClientId` arrive; the transport's `workspaceId`,
+ * `harnessSlug` and `isSuperuser` do NOT. The rail therefore derives scope only
+ * from the authenticated principal — which is also the only sound source:
+ *
+ * - the workspace is the principal's. A transport-supplied workspace (a bare
+ *   `?workspace=` on the HTTP catch-all) never reaches the handler, so it
+ *   cannot widen the service's admin-handle queries into another workspace;
+ * - the caller is the principal slug, or `<slug>/<client>` when the transport
+ *   carries a client id. That client id (`?client=` / the MCP mount's client
+ *   param) is caller-chosen and unverified — the shared identity resolver
+ *   returns it verbatim for a principal — so it is only ever a sub-identity of
+ *   the authenticated principal, never another caller's id. Synthesized
+ *   principals (power-user, signed spawn) carry slug === client, unchanged;
+ * - a handle minted in another workspace is refused before the service runs;
+ *   its harness is bound by the durable receipt (harness is not an
+ *   authorization boundary for a workspace-scoped principal);
  * - caller-caused service refusals surface as `invalid_input`; any other
  *   error stays a `handler_error` because it is a defect, not a caller mistake. */
 import { getOrgPg } from '@papercusp/db-org';
-import { HarnessRequiredError, UnauthorizedToolError } from '@papercusp/agent-mcp';
+import { UnauthorizedToolError } from '@papercusp/agent-mcp';
 import { InvalidInputError } from '@papercusp/tooldef';
 import type { Sql } from 'postgres';
-import { resolveAgentIdentity } from '../coordination/identity';
 import { isAllHarnessSentinel } from '../_harness-scope';
 import { isBlueprintOperationRefusal } from '../../blueprint/operation-refusal';
 import type { BlueprintOperationHandle } from '../../blueprint/operation-service';
 
+/** The subset of the principal-gated handler ctx this rail may rely on. */
 export interface OperationToolContext {
-  workspaceId?: string | null;
-  harnessSlug?: string | null;
-  isSuperuser?: boolean;
-  isPowerUser?: boolean;
-  /** The MCP spawn URL's HMAC (which covers `client=`) was verified. */
-  sigVerifiedSpawn?: boolean;
   principal?: { slug?: string; workspaceId?: string | null } | null;
-}
-
-/** The operation caller id. A bearer principal's transport client id (a bare
- * `?client=` on the HTTP catch-all or the MCP PI mount) is caller-chosen and
- * unverified, and the shared identity resolver returns it verbatim — so a
- * principal could otherwise name another caller's id and drive that caller's
- * handle. Scope it under the authenticated principal slug: a principal can
- * only select sub-identities of itself. Superuser, power-user and verified
- * spawn identities are already authenticated by their transport. */
-export function operationCallerId(ctx: OperationToolContext, ownerId: string): string {
-  const slug = ctx.principal?.slug?.trim();
-  if (ctx.isSuperuser || ctx.isPowerUser || ctx.sigVerifiedSpawn === true || !slug) return ownerId;
-  return ownerId === slug ? slug : `${slug}/${ownerId}`;
+  uiClientId?: string | null;
 }
 
 export interface OperationScope {
   sql: Sql;
   workspaceId: string;
   callerId: string;
-  /** Concrete session harness, or null for a session not bound to one harness. */
-  sessionHarness: string | null;
 }
 
 function concrete(value: string | null | undefined): string | null {
@@ -58,56 +48,31 @@ function concrete(value: string | null | undefined): string | null {
   return trimmed && trimmed !== '*' && !isAllHarnessSentinel(trimmed) ? trimmed : null;
 }
 
-/** The operation workspace. The service runs on the admin handle, so the
- * workspace must be authenticated: a superuser's session workspace, else the
- * bearer principal's. A transport-supplied workspace (a bare `?workspace=` on
- * the HTTP catch-all) may only restate the principal's, never widen it. */
-function operationWorkspace(ctx: OperationToolContext): string | null {
-  const requested = concrete(ctx.workspaceId);
-  const principalWorkspace = concrete(ctx.principal?.workspaceId);
-  if (ctx.isSuperuser || !principalWorkspace) return requested ?? principalWorkspace;
-  if (requested && requested !== principalWorkspace) {
-    refuse('scope_mismatch', `workspace ${requested} is outside the caller's workspace ${principalWorkspace}`);
-  }
-  return principalWorkspace;
+/** The operation caller: the authenticated principal, optionally narrowed to
+ * one of its own sessions by the transport client id. */
+export function operationCallerId(principalSlug: string, uiClientId: string | null | undefined): string {
+  const client = uiClientId?.trim();
+  return client && client !== principalSlug ? `${principalSlug}/${client}` : principalSlug;
 }
 
 export function resolveOperationScope(ctx: OperationToolContext): OperationScope {
-  const workspaceId = operationWorkspace(ctx);
+  const slug = ctx.principal?.slug?.trim();
+  if (!slug) throw new UnauthorizedToolError('blueprint operations require an authenticated principal');
+  const workspaceId = concrete(ctx.principal?.workspaceId);
   if (!workspaceId) {
-    throw new UnauthorizedToolError('blueprint operations require a concrete workspace scope');
+    throw new UnauthorizedToolError('blueprint operations require a principal bound to a concrete workspace');
   }
-  let callerId: string;
-  try {
-    callerId = operationCallerId(ctx, resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId);
-  } catch {
-    throw new UnauthorizedToolError('blueprint operations require an attributable caller identity');
-  }
-  return { sql: getOrgPg().sql, workspaceId, callerId, sessionHarness: concrete(ctx.harnessSlug) };
+  return { sql: getOrgPg().sql, workspaceId, callerId: operationCallerId(slug, ctx.uiClientId) };
 }
 
 function refuse(code: string, message: string): never {
   throw new InvalidInputError(`${code}: ${message}`);
 }
 
-/** The harness a submission targets: explicit, else the session harness. A
- * harness-scoped session may not submit into a different harness. */
-export function submissionHarness(scope: OperationScope, requested: string | undefined): string {
-  const harness = concrete(requested) ?? scope.sessionHarness;
-  if (!harness) throw new HarnessRequiredError('blueprint:submit needs a harness: pass `harness` or scope the session');
-  if (scope.sessionHarness && harness !== scope.sessionHarness) {
-    refuse('scope_mismatch', `harness ${harness} is outside this session's harness ${scope.sessionHarness}`);
-  }
-  return harness;
-}
-
-/** A handle is usable only inside the scope it was minted for. */
+/** A handle is usable only inside the workspace it was minted for. */
 export function checkHandleScope(scope: OperationScope, handle: BlueprintOperationHandle): void {
   if (handle.workspaceId !== scope.workspaceId) {
     refuse('scope_mismatch', 'blueprint operation handle belongs to a different workspace');
-  }
-  if (scope.sessionHarness && handle.harnessSlug !== scope.sessionHarness) {
-    refuse('scope_mismatch', `blueprint operation handle belongs to harness ${handle.harnessSlug}`);
   }
 }
 
