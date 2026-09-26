@@ -240,9 +240,9 @@ export async function bindGoalLaunchIdentity(
         { contributionId: 'goal-kickoff', value: input.kickoff },
         input.portfolio
           ? { contributionId: 'goal-portfolio', value: input.portfolio }
-          : { contributionId: 'goal-portfolio', omission: { reason: 'not-requested' } },
+          : { contributionId: 'goal-portfolio', omission: { reason: 'ineligible' } },
       ],
-      scope: { workspace: input.workspaceId, goal: input.goalId, ownerId: input.ownerId },
+      scope: { workspace: input.workspaceId, goal: input.goalId, ownerId: input.ownerId, sink: 'launch' },
       observedAt: new Date().toISOString(),
     });
   } catch (error) {

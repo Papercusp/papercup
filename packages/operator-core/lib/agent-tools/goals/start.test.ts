@@ -362,8 +362,10 @@ describe('goals:start — the happy path', () => {
     }, bindIdentityMock as never);
     expect(receipt).toBe(identityReceipt);
     expect(bindIdentityMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      scope: expect.objectContaining({ sink: 'launch' }),
       outputs: expect.arrayContaining([
         { contributionId: 'current-mode-state', omission: { reason: 'not-requested' } },
+        { contributionId: 'goal-portfolio', omission: { reason: 'ineligible' } },
       ]),
     }));
   });
