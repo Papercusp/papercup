@@ -43,11 +43,38 @@ function identityEdges(sql: Sql, workspaceId: string) {
         UNION
         -- Migration 1217 maintains this scalar from launch_spec, including
         -- legacy writers. Avoid detoasting every prompt-bearing launch document.
+        --
+        -- P-005 (review-routing-through-relevance-router-2026-09-26): a session the
+        -- consult router dispatched to answer FROM an expert's transcript takes its
+        -- lineage from that SOURCE (the consult-dispatch edge below), never from
+        -- whoever is recorded as its launcher. The dispatcher records the consult
+        -- REQUESTER as launchedBy, so an implementer who routes a review of their
+        -- own work would otherwise be the ancestor of every reviewer the router
+        -- picks, and the acceptance-BAR amendment apply guard would refuse each
+        -- one as the implementer's own descendant. The launch edge is dropped only
+        -- where the dispatch edge exists to replace it, so a routed fork is never
+        -- left without a lineage; an ordinary launch keeps its launch edge.
+        -- (Unaliased on purpose: the performance test rewrites the bare column
+        -- name to replay this query against the pre-projection baseline.)
         SELECT launch_parent_owner, coord_owner_id
           FROM harness_shared.adv_sessions
          WHERE workspace_id = ${workspaceId}
            AND launch_parent_owner IS NOT NULL
            AND NULLIF(coord_owner_id, '') IS NOT NULL
+           AND NOT EXISTS (
+                 SELECT 1
+                   FROM harness_shared.consult_state routed
+                   CROSS JOIN LATERAL jsonb_array_elements(
+                          CASE jsonb_typeof(routed.routing -> 'selection' -> 'selected')
+                            WHEN 'array' THEN routed.routing -> 'selection' -> 'selected'
+                            ELSE '[]'::jsonb
+                          END
+                        ) AS routed_sel
+                  WHERE routed.workspace_id = ${workspaceId}
+                    AND routed_sel->>'answeringOwnerId' = adv_sessions.coord_owner_id
+                    AND NULLIF(routed_sel->>'ownerId', '') IS NOT NULL
+                    AND routed_sel->>'ownerId' IS DISTINCT FROM routed_sel->>'answeringOwnerId'
+               )
         UNION
         SELECT parent_spawn_id, spawn_id
           FROM harness_shared.spawned_agents
@@ -103,6 +130,8 @@ function identityEdges(sql: Sql, workspaceId: string) {
  *
  * Rebind edges, both agent-launch parent edges, and the consult-dispatch edge
  * (routed expert → the identity answering from their transcript) are directed.
+ * A routed answering session's lineage is its source expert, not the requester
+ * recorded as its launcher (P-005 — see the launch branch of `identityEdges`).
  * We walk from each candidate in turn, so an ancestor grader is excluded just
  * like a descendant grader, while siblings remain eligible (sharing a parent is
  * not lineage).
@@ -147,6 +176,52 @@ export async function areAcceptanceLineageRelated(
           OR EXISTS (SELECT 1 FROM reverse_walk WHERE node = ${first}) AS matches
   `;
   return rows[0]?.matches === true;
+}
+
+/**
+ * Every identity lineage-related to `id`: the set S with
+ * `areAcceptanceLineageRelated(x, id) === S.has(x)` for every x (id included).
+ * Same edge set and the same 64-hop bound, walked as descendants plus ancestors
+ * in ONE query, so a screen can apply one identity's population to a whole
+ * candidate menu instead of one recursive query per (candidate, identity) pair
+ * (P-005, review-routing-through-relevance-router-2026-09-26). Query failures
+ * propagate: an unreadable population must not read as an empty one.
+ */
+export async function acceptanceLineageClosure(
+  id: string | null | undefined,
+  opts: AcceptanceAuthorIdentityOpts = {},
+): Promise<Set<string>> {
+  const self = id?.trim() ?? '';
+  if (!self) return new Set();
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<Array<{ node: string }>>`
+      WITH RECURSIVE identity_edges(from_id, to_id) AS (
+        ${identityEdges(sql, workspaceId)}
+      ),
+      descendants(node, path, depth) AS (
+        SELECT ${self}::text, ARRAY[${self}::text], 0
+        UNION ALL
+        SELECT edge.to_id, descendants.path || edge.to_id, descendants.depth + 1
+          FROM descendants
+          JOIN identity_edges AS edge ON edge.from_id = descendants.node
+         WHERE descendants.depth < 64
+           AND NOT edge.to_id = ANY(descendants.path)
+      ),
+      ancestors(node, path, depth) AS (
+        SELECT ${self}::text, ARRAY[${self}::text], 0
+        UNION ALL
+        SELECT edge.from_id, ancestors.path || edge.from_id, ancestors.depth + 1
+          FROM ancestors
+          JOIN identity_edges AS edge ON edge.to_id = ancestors.node
+         WHERE ancestors.depth < 64
+           AND NOT edge.from_id = ANY(ancestors.path)
+      )
+      SELECT node FROM descendants
+      UNION
+      SELECT node FROM ancestors
+  `;
+  return new Set(rows.map((row) => row.node).filter((node): node is string => Boolean(node)));
 }
 
 /**

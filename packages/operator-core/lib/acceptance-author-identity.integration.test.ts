@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import {
+  acceptanceLineageClosure,
   areAcceptanceLineageRelated,
   isAcceptanceAuthorIdentity,
   lineagePartyKeys,
@@ -168,6 +169,29 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
         coord_owner_id: 'su-cross-tenant-psu-child',
         launch_spec: { launchedBy: 'su-author' },
       },
+      // P-005 (review-routing-through-relevance-router-2026-09-26): an implementer
+      // REQUESTS a routed review, so the consult dispatcher records the implementer
+      // as the launcher of the answering fork (get-feedback-prod passes the
+      // requester as launchedBy). Only the fork's SOURCE decides its lineage.
+      {
+        workspace_id: workspaceId,
+        mode: 'console',
+        coord_owner_id: 'su-amend-review-fork',
+        launch_spec: { launchedBy: 'su-amend-implementer' },
+      },
+      {
+        workspace_id: workspaceId,
+        mode: 'console',
+        coord_owner_id: 'su-amend-inlineage-fork',
+        launch_spec: { launchedBy: 'su-amend-implementer' },
+      },
+      // An ORDINARY launch by the implementer — not a routed answer — is lineage.
+      {
+        workspace_id: workspaceId,
+        mode: 'console',
+        coord_owner_id: 'su-amend-implementer-child',
+        launch_spec: { launchedBy: 'su-amend-implementer' },
+      },
     ];
     await db.adminSql`INSERT INTO harness_shared.adv_sessions ${db.adminSql(sessions)}`;
     // P-004 consult-dispatch edges. `su-consult-fork` is launched by the SYSTEM
@@ -206,6 +230,25 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
         latency_contract: 'proceed',
         routing: {
           selection: { selected: [{ ownerId: 'su-author', answeringOwnerId: 'su-cross-tenant-consult-fork' }] },
+        },
+      },
+      {
+        workspace_id: workspaceId,
+        conversation_id: 'conv-amend-review',
+        requester_id: 'su-amend-implementer',
+        responder_id: 'su-amend-expert',
+        state: 'awaiting_responder',
+        question: 'q',
+        latency_contract: 'hard-blocked',
+        routing: {
+          policy: 'acceptance-bar-amendment-review',
+          selection: {
+            selected: [
+              { ownerId: 'su-amend-expert', via: 'floor', answeringOwnerId: 'su-amend-review-fork' },
+              // A fork of the implementer's OWN child: related through its source.
+              { ownerId: 'su-amend-implementer-child', via: 'floor', answeringOwnerId: 'su-amend-inlineage-fork' },
+            ],
+          },
         },
       },
     ].map((row) => ({ ...row, routing: db.adminSql.json(row.routing as never) }));
@@ -370,6 +413,53 @@ describe('isAcceptanceAuthorIdentity (audited coord rebind lineage)', () => {
     await expect(
       areAcceptanceLineageRelated('su-author', 'su-cross-tenant-consult-fork', opts),
     ).resolves.toBe(false);
+  });
+
+  it('P-005: a routed fork is judged by its SOURCE lineage, not by the requester recorded as its launcher', async () => {
+    const opts = { sql: db.adminSql, workspaceId };
+    // The acceptance-BAR amendment apply guard refuses an approval whose author is
+    // related to any implementer. The implementer requested the review, so it is
+    // the fork's recorded launcher; if that launch edge counted, every routed
+    // reviewer would be refused as the implementer's own descendant.
+    await expect(areAcceptanceLineageRelated('su-amend-review-fork', 'su-amend-implementer', opts)).resolves.toBe(false);
+    await expect(areAcceptanceLineageRelated('su-amend-implementer', 'su-amend-review-fork', opts)).resolves.toBe(false);
+    // Exclusion still follows the knowledge: the fork is its source expert.
+    await expect(areAcceptanceLineageRelated('su-amend-review-fork', 'su-amend-expert', opts)).resolves.toBe(true);
+    // Not a blanket exemption: an ordinary launch by the implementer stays lineage,
+    await expect(areAcceptanceLineageRelated('su-amend-implementer-child', 'su-amend-implementer', opts)).resolves.toBe(
+      true,
+    );
+    // and a routed fork of an implementer-lineage source is still related, via that source.
+    await expect(areAcceptanceLineageRelated('su-amend-inlineage-fork', 'su-amend-implementer', opts)).resolves.toBe(
+      true,
+    );
+    const keys = await lineagePartyKeys(['su-amend-implementer', 'su-amend-review-fork', 'su-amend-expert'], opts);
+    expect(keys.get('su-amend-review-fork')).toBe(keys.get('su-amend-expert'));
+    expect(keys.get('su-amend-review-fork')).not.toBe(keys.get('su-amend-implementer'));
+  });
+
+  it('P-005: acceptanceLineageClosure(id).has(x) equals areAcceptanceLineageRelated(x, id) for every fixture pair', async () => {
+    const opts = { sql: db.adminSql, workspaceId };
+    // The amendment-review screen answers per candidate from this closure, while
+    // the apply guard asks pairwise. They must be the same relation.
+    const ids = [
+      'su-author', 'su-child-1', 'su-grandchild', 'su-successor-2', 'su-psu-grandchild',
+      'su-sibling-a', 'su-sibling-b', 'su-psu-sibling-a', 'su-consult-source', 'su-consult-fork',
+      'su-consult-converted', 'su-amend-implementer', 'su-amend-review-fork', 'su-amend-expert',
+      'su-amend-implementer-child', 'su-amend-inlineage-fork', 'su-unrelated',
+    ];
+    let relatedPairs = 0;
+    for (const target of ids) {
+      const closure = await acceptanceLineageClosure(target, opts);
+      for (const candidate of ids) {
+        const pairwise = await areAcceptanceLineageRelated(candidate, target, opts);
+        expect({ candidate, target, related: closure.has(candidate) }).toEqual({ candidate, target, related: pairwise });
+        if (pairwise) relatedPairs += 1;
+      }
+    }
+    // Positive control: related pairs beyond the diagonal exist, so parity is not vacuous.
+    expect(relatedPairs).toBeGreaterThan(ids.length);
+    await expect(acceptanceLineageClosure('  ', opts)).resolves.toEqual(new Set());
   });
 
   /**

@@ -39,6 +39,14 @@ export const ACCEPTANCE_GRADING_POLICY = 'acceptance-grading';
 export const GRADING_INTEGRITY_AUDIT_POLICY = 'grading-integrity-audit';
 
 /**
+ * Outside-lineage review of a started acceptance-BAR amendment
+ * (review-routing-through-relevance-router-2026-09-26 D-001/D-002 [owner]).
+ * One approval settles an amendment, so one reviewer per attempt; a decline or
+ * expiry moves to the next eligible candidate rather than seating two at once.
+ */
+export const ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY = 'acceptance-bar-amendment-review';
+
+/**
  * Every other get_feedback consult (plan-start, goal kickoff, ad-hoc peer
  * consults). D-004 [owner 2026-08-30] deliberately LEAVES this at max 3: the
  * owner's 3→2 change is scoped to vetting and grading, and this constant is
@@ -56,6 +64,7 @@ export const SELECTION_POLICIES: Readonly<Record<string, SelectionBounds>> = Obj
   [RUBRIC_VETTING_POLICY]: { min: 1, max: 2 },
   [ACCEPTANCE_GRADING_POLICY]: { min: 1, max: 2 },
   [GRADING_INTEGRITY_AUDIT_POLICY]: { min: 1, max: 1 },
+  [ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY]: { min: 1, max: 1 },
 });
 
 /**
