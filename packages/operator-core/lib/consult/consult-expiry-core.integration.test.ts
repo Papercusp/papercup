@@ -729,6 +729,19 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
     expect(reachCalls[0].body).toContain('- resp-1 (expired):');
   });
 
+  it('EI-24351703367365896: an expired slot followed only by refused launches expires in this sweep', async () => {
+    const id = await seedConsult({ latency: 'hard-blocked', routing: menuSnapshot(['resp-1', 'unlaunchable']) });
+    const { deps, emits, reachCalls } = makeDeps({ withReach: true });
+    deps.dispatch = async (o) => { reachCalls.push(o); return { woke: 0 }; };
+    await sweepExpiredConsults(deps);
+    expect(reachCalls.filter((o) => o.conversationId === id).map((o) => o.responder)).toEqual(['unlaunchable']);
+    expect(await cascadeRow(id)).toMatchObject({
+      state: 'expired',
+      cascade_digest: [{ ownerId: 'resp-1', kind: 'expired' }, { ownerId: 'unlaunchable', kind: 'dispatch_failed' }],
+    });
+    expect(emits.filter((e) => e.payload.conversation_id === id)).toHaveLength(1);
+  });
+
   it('menu exhausted → terminal expire with the hard-blocked park emit; the digest still records the final expiry', async () => {
     const id = await seedConsult({
       latency: 'hard-blocked',

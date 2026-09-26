@@ -360,6 +360,8 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
       continue;
     }
 
+    let terminalSlot = { state: row.state, cascadeCursor: row.cascade_cursor, expiresAt: row.expires_at };
+    let exhaustedAfterDispatch = false;
     // One malformed routing value or throwing wake must not strand the batch.
     try {
       const adv = await advanceCascade(
@@ -402,6 +404,10 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
           deps, sql, row, isDue ? 'answer-window-expired' : 'answer-pickup-stalled', nowIso, answerFailures,
         );
         continue;
+      }
+      if (adv.exhaustedAfterDispatch) {
+        terminalSlot = adv.exhaustedAfterDispatch;
+        exhaustedAfterDispatch = true;
       }
     } catch {
       continue;
@@ -455,10 +461,10 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
          WHERE workspace_id = ${row.workspace_id}
            AND conversation_id = ${row.conversation_id}
            AND closed_at IS NULL
-           AND state = ${row.state}
-           AND cascade_cursor = ${row.cascade_cursor}
-           AND expires_at IS NOT DISTINCT FROM ${row.expires_at}::timestamptz
-           AND expires_at < ${nowIso}::timestamptz
+           AND state = ${terminalSlot.state}
+           AND cascade_cursor = ${terminalSlot.cascadeCursor}
+           AND expires_at IS NOT DISTINCT FROM ${terminalSlot.expiresAt}::timestamptz
+           AND (${exhaustedAfterDispatch}::boolean OR expires_at < ${nowIso}::timestamptz)
         RETURNING conversation_id
       `) as unknown as Array<{ conversation_id: string }>;
       if (terminal.length === 0) return terminal;
