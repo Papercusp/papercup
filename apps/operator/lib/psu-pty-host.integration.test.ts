@@ -27,6 +27,7 @@ import {
   readManagedKickoffFile,
   ptyWriteChunks,
   findNativeTranscriptMarker,
+  firstKickoffTurnStartedBeforeRetry,
   waitForNativeTranscriptMarker,
   leadingTurnOriginMarker,
   composeCarryTurnText,
@@ -77,6 +78,10 @@ describe('plain launch kickoff turn-start proof', () => {
     const codexHome = join(root, 'codex-home');
     const nativeFile = join(codexHome, 'sessions', '2026', '09', '26', 'rollout.jsonl');
     const submitFile = join(root, 'submitted.txt');
+    const proofPath = join(root, 'kickoff-proof.json');
+    const proofToken = 'd'.repeat(48);
+    writeFileSync(proofPath, '', { mode: 0o600 });
+    chmodSync(proofPath, 0o600);
     const ownerId = 'su-codex-viewport-' + process.pid + '-' + Math.floor(performance.now());
     const sock = socketPathFor(ownerId);
     const marker = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧';
@@ -90,7 +95,7 @@ describe('plain launch kickoff turn-start proof', () => {
       "let wire='',composer='',submitted=false,paint;const start='\x1b[200~',end='\x1b[201~';",
       "process.stdout.write('\x1b[?2004hmodel: GPT-5.6-Sol high\\nReady · GPT-5.6-Sol high · Context 100% left\\n');",
       "function repaint(){clearTimeout(paint);paint=setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+composer.slice(-160)+'\\n'),30);}",
-      "function submit(){if(submitted)return;submitted=true;fs.writeFileSync(process.env.SUBMIT_FILE,composer);fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'viewport-1'}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id:'viewport-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));process.stdout.write('SUBMITTED\\n');}",
+      "function submit(){if(submitted){setTimeout(()=>process.stdout.write('RESUBMIT_ACK\\n'),75);return;}submitted=true;fs.writeFileSync(process.env.SUBMIT_FILE,composer);fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text:composer}]}},{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'viewport-1'}},{type:'event_msg',timestamp,payload:{type:'task_complete',turn_id:'viewport-1'}}];fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));setTimeout(()=>process.stdout.write('SUBMITTED\\n'),75);}",
       "process.stdin.on('data',d=>{if(d.includes('\x04'))process.exit(0);wire+=d;while(wire){if(wire.startsWith(start)){const at=wire.indexOf(end,start.length);if(at<0)break;composer+=wire.slice(start.length,at);wire=wire.slice(at+end.length);repaint();continue;}if(start.startsWith(wire))break;const next=wire.indexOf(start);const take=next<0?wire.length:next;const text=wire.slice(0,take);wire=wire.slice(take);for(const c of text){if(c==='\\r')submit();else composer+=c;}repaint();}});",
       'setTimeout(()=>process.exit(0),4000);',
     ].join('');
@@ -101,6 +106,7 @@ describe('plain launch kickoff turn-start proof', () => {
         env: {
           ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, SUBMIT_FILE: submitFile,
+          [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '2000',
           PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS: '1000',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
@@ -119,6 +125,13 @@ describe('plain launch kickoff turn-start proof', () => {
       expect(readFileSync(submitFile, 'utf8')).toBe(kickoff);
       expect(captured()).toContain('COMPOSER_ECHO:' + marker);
       expect(readFileSync(nativeFile, 'utf8')).toContain(marker);
+      await vi.waitFor(() => {
+        const proof = readFileSync(proofPath, 'utf8');
+        expect(proof.length).toBeGreaterThan(0);
+        expect(JSON.parse(proof)).toEqual({
+          token: proofToken, persisted: true, nativeRef: nativeFile, reason: null,
+        });
+      }, { timeout: 1500 });
     } finally {
       if (existsSync(sock)) await rawInject(sock, '\x04');
       await done?.catch(() => undefined);
@@ -259,6 +272,69 @@ describe('plain launch kickoff turn-start proof', () => {
     } finally {
       await done?.catch(() => undefined);
       if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+
+  it('suppresses a queued retry when native execution begins before the final write boundary', () => {
+    let started = false;
+    const nativeTurnActivity = () => ({ available: true, started });
+    expect(firstKickoffTurnStartedBeforeRetry(nativeTurnActivity)).toBe(false);
+    started = true; // the original turn starts while the retry waits for the prompt
+    expect(firstKickoffTurnStartedBeforeRetry(nativeTurnActivity)).toBe(true);
+    expect(firstKickoffTurnStartedBeforeRetry(() => { throw new Error('unreadable transcript'); })).toBe(false);
+    expect(firstKickoffTurnStartedBeforeRetry(null)).toBe(false);
+  });
+
+  it('does not rewrite a queued kickoff after its first native turn starts', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-delayed-kickoff-'));
+    const codexHome = join(root, 'codex-home');
+    const nativeFile = join(codexHome, 'sessions', '2026', '09', '26', 'rollout.jsonl');
+    const countFile = join(root, 'kickoff-count.txt');
+    const ownerId = `su-delayed-kickoff-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const marker = '⟦turn-origin:fleet-kickoff nonce:abcdef0123456789⟧';
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "const fs=require('fs'),path=require('path');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "let input='',pending='',submitted=0,echoed=false;process.stdout.write('62% context left\\n');",
+      "process.stdin.on('data',d=>{input+=d;pending+=d;if(!echoed&&input.includes('⟧')){echoed=true;process.stdout.write('COMPOSER_ECHO:'+input+'\\n');}",
+      "if(d.includes('\\r')){if(pending.includes('BEGIN_DELAYED_KICKOFF')){submitted++;fs.appendFileSync(process.env.COUNT_FILE,submitted+'\\n');if(submitted===1){fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const ts=new Date().toISOString();fs.writeFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'response_item',timestamp:ts,payload:{type:'message',role:'user',content:[{type:'input_text',text:input}]}})+'\\n');const tick=setInterval(()=>process.stdout.write('MODEL_BUSY\\n'),10);setTimeout(()=>{clearInterval(tick);fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'event_msg',timestamp:new Date().toISOString(),payload:{type:'task_started',turn_id:'delayed-1'}})+'\\n');process.stdout.write('MODEL_STARTED\\n');},1500);}else process.stdout.write('DUPLICATE_KICKOFF\\n');}else process.stdout.write('RESUBMIT_ACK\\n');pending='';}",
+      "if(input.includes('QUIT'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),8000);',
+    ].join('');
+    let done: Promise<number> | undefined;
+    try {
+      done = hostThroughPty({
+        command: execPath, args: ['-e', childCode], cwd: root,
+        env: {
+          ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, COUNT_FILE: countFile,
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '10',
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+          TERM: 'xterm-256color',
+        },
+        ownerId, io, bridgeTty: false,
+        kickoff: `${marker}\nBEGIN_DELAYED_KICKOFF`,
+        nativePersistenceTimeoutMs: 2_000,
+        signalSource: new EventEmitter(), onExit: () => undefined,
+      });
+      await vi.waitFor(() => {
+        expect(captured()).toContain('MODEL_STARTED');
+        expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8'))
+          .toContain('launch-kickoff-model-turn-retry-skipped');
+      }, { timeout: 5_000 });
+      expect(readFileSync(countFile, 'utf8').trim().split(/\r?\n/)).toEqual(['1']);
+      expect(captured()).not.toContain('DUPLICATE_KICKOFF');
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
     }
   }, 10_000);
@@ -2647,14 +2723,17 @@ describe('RECYCLE heals a DEAD operator pin before the successor starts (EI-2409
         onExit: () => {},
       });
       try {
-        await sleep(600);
         // CALIBRATION: the first child really did start on the dead pin, so the
         // assertion below observes a change made at the respawn, not at launch.
-        expect(captured()).toContain(`BOOT:http://localhost:${deadPort}`);
+        await vi.waitFor(() => {
+          expect(captured()).toContain(`BOOT:http://localhost:${deadPort}`);
+        }, { timeout: 5000 });
         expect(captured()).not.toContain(`BOOT:http://127.0.0.1:${proxyPort}`);
 
         await controlInject(sock, 'recycle', '');
-        await sleep(2500);
+        await vi.waitFor(() => {
+          expect(captured().split('BOOT:').length - 1).toBe(2);
+        }, { timeout: 5000 });
 
         const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
         if (managed) {
@@ -2723,9 +2802,19 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
   /** `refreshed` = what the operator's persona-refresh hands back: a path, or null
    *  when the refresh failed / was unavailable. `mint` defaults to the REAL one. */
   async function driveRespawn(refreshed: string | null, mint?: (a: string[]) => unknown) {
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-    // @ts-ignore — pure JS script, no .d.ts
-    const { mintRecycleArgs } = await import('../scripts/psu-launcher.mjs');
+    // Import the pure mint helper independently of the invoking operator's
+    // endpoint. Tool-driven test runs may inherit a full MCP URL; validating
+    // that unrelated live pin at module load is not this fixture's subject.
+    const { mintRecycleArgs } = await (async () => {
+      const priorOperatorUrl = process.env.PAPERCUSP_OPERATOR_URL;
+      process.env.PAPERCUSP_OPERATOR_URL = 'http://127.0.0.1:1';
+      try {
+        return await import('../scripts/psu-launcher.mjs');
+      } finally {
+        if (priorOperatorUrl === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
+        else process.env.PAPERCUSP_OPERATOR_URL = priorOperatorUrl;
+      }
+    })();
     const ownerId = `su-persona-refresh-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
     const stale = `/tmp/launch-context/session-STALE-${process.pid}.md`;
@@ -2748,12 +2837,15 @@ describe('RECYCLE re-renders the base persona instead of inheriting it (stale-pr
       onExit: (c: number) => { exitCode = c; },
     });
 
-    await sleep(600);
     // First boot always runs the launch argv verbatim — the inherited render.
-    expect(captured()).toContain(`SPF:${stale}`);
+    await vi.waitFor(() => {
+      expect(captured()).toContain(`SPF:${stale}`);
+    }, { timeout: 5000 });
 
     await controlInject(sock, 'recycle', '');
-    await sleep(2500); // kill + respawn + boot
+    await vi.waitFor(() => {
+      expect([...captured().matchAll(/SPF:(\S+)/g)]).toHaveLength(2);
+    }, { timeout: 5000 });
 
     const spfs = [...captured().matchAll(/SPF:(\S+)/g)].map((m) => m[1]);
     await rawInject(sock, 'QUIT\n');
