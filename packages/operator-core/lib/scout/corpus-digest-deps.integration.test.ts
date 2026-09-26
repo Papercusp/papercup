@@ -382,6 +382,26 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(flat.every((p) => p.category === 'pty-host-health')).toBe(true);
   });
 
+  it('excludes the carry-drills roll-up rather than double-counting it as a session', async () => {
+    const sql = db.adminSql;
+    const at = new Date(T + 3_000).toISOString();
+    await sql`
+      INSERT INTO harness_shared.psu_pty_host_events
+        (workspace_id, owner_id, ts, kind, payload, row_digest)
+      VALUES
+        (${WS}, 'su-pty-a', ${at}::timestamptz, 'respawn-carry-dropped',
+         '{}'::jsonb, 'pty-health-real-carry-drop'),
+        (${WS}, 'carry-drills', ${at}::timestamptz, 'respawn-carry-dropped',
+         '{}'::jsonb, 'pty-health-mirrored-carry-drop'),
+        (${WS}, 'carry-drills', ${at}::timestamptz, 'carry-drill-requested',
+         '{}'::jsonb, 'pty-health-operator-drill')`;
+
+    const lane = await buildPtyHostHealthLane({ workspaceId: WS, nowMs: T + 4_000 });
+    const drop = lane.find((pattern) => pattern.ref === 'pty-host:kind:respawn-carry-dropped');
+    expect(drop?.summary).toContain('1 PTY-host event(s) across 1 session(s)');
+    expect(lane.map((pattern) => pattern.ref)).not.toContain('pty-host:kind:carry-drill-requested');
+  });
+
   it('cites the newest event time when older files are ingested later', async () => {
     const sql = db.adminSql;
     const newerAt = new Date(T + 1_000).toISOString();
