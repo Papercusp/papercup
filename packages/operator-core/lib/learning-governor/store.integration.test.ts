@@ -9,6 +9,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import { getTestPg, teardownTestPg } from '@papercusp/test-config/pg';
 import { provisionGymDatabase } from '../gym/gym-db-init';
@@ -31,13 +32,21 @@ import { setPotLearningScope } from '../learning/pot-gate/store';
 
 let sql: postgres.Sql;
 let containerUri: string;
+let testDatabaseUri: string;
 const dbName = `lgov_${randomBytes(5).toString('hex')}`;
 const WS = 'ws-gov-test';
 
 beforeAll(async () => {
   containerUri = await getTestPg();
   const { databaseUri } = await provisionGymDatabase({ maintenanceUri: containerUri, dbName });
+  testDatabaseUri = databaseUri;
   sql = postgres(databaseUri, { max: 2, onnotice: () => {}, prepare: false });
+  // Exercise the real additive migration while it is unarmed, too. Reapplying
+  // after provision verifies idempotence once it ships with the full schema.
+  const resourcesMigration = new URL('../../../../libs/papercusp/libs/db/sql/1224-learning-reservation-resources.sql', import.meta.url);
+  const resourceSql = readFileSync(existsSync(resourcesMigration) ? resourcesMigration : new URL(`${resourcesMigration.href}.DRAFT`), 'utf8');
+  await sql.unsafe(resourceSql);
+  await sql.unsafe(resourceSql);
   // Budget is MEASURED, not guessed (2026-09-04): on this box getTestPg() returns
   // in ~1.2s and provisionGymDatabase() takes ~165s, because it re-applies all 934
   // migrations serially into a fresh database on EVERY run. Against the family's
@@ -144,6 +153,171 @@ describe('exact manifest-bound reservations', () => {
     const input = request('does-not-exist', 1);
     expect(await reserveLearningSpend({} as postgres.Sql, input))
       .toMatchObject({ ok: false, reason: 'transaction-required' });
+  });
+
+  it('exact settlement rejects mirror accounting instead of reopening charged dollar capacity', async () => {
+    const loopId = await register();
+    const input = request(loopId, 10);
+    expect((await reserveLearningSpend(sql, input)).ok).toBe(true);
+    const settled = await settleLearningSpend(sql, { workspaceId: WS, reservationId: input.exact.reservationId,
+      disposition: 'used', usedUsd: 10, accumulate: false });
+    const next = await reserveLearningSpend(sql, request(loopId, 10));
+    expect({ settled: settled.ok, secondGrant: next.ok }).toEqual({ settled: false, secondGrant: false });
+    expect(settled).toMatchObject({ reason: 'exact-settlement-required', reservation: { status: 'open' } });
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(10);
+    expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toHaveLength(0);
+  });
+
+  it.each([undefined, Number.NaN, Number.POSITIVE_INFINITY, -1, 0.0000001])(
+    'exact settlement retains reservations for an unknown or invalid charge (%s)', async usedUsd => {
+      const loopId = await register();
+      const input = request(loopId, 10);
+      expect((await reserveLearningSpend(sql, input)).ok).toBe(true);
+      expect(await settleLearningSpend(sql, { workspaceId: WS, reservationId: input.exact.reservationId,
+        disposition: 'failed', usedUsd })).toMatchObject({ ok: false, reason: 'exact-settlement-required' });
+      expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(10);
+      expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toHaveLength(0);
+    });
+
+  it('exact settlement records an explicit charge once, including an overrun', async () => {
+    const loopId = await register();
+    const input = request(loopId, 10);
+    expect((await reserveLearningSpend(sql, input)).ok).toBe(true);
+    const settle = { workspaceId: WS, reservationId: input.exact.reservationId,
+      disposition: 'failed' as const, usedUsd: 11 };
+    const results = await Promise.all([settleLearningSpend(sql, settle), settleLearningSpend(sql, settle)]);
+    expect(results.filter(r => r.ok)).toHaveLength(1);
+    expect(results.find(r => r.ok)).toMatchObject({ overrunUsd: 1, releasedUsd: 0 });
+    expect(results.find(r => !r.ok)).toMatchObject({ reason: 'already-settled' });
+    expect((await getLearningLoop(sql, { workspaceId: WS, loopId }))!.spentUsd).toBe(11);
+    expect(await listLearningSpendEvents(sql, { workspaceId: WS, loopId })).toHaveLength(1);
+    expect((await reserveLearningSpend(sql, request(loopId, 1))).ok).toBe(false);
+  });
+});
+
+describe('manifest-bound resource reservations', () => {
+  const binding = 'c'.repeat(64);
+  const budget = () => ({ inputTokens: 10, outputTokens: 10, requestsPerArm: 2, armIds: ['control', 'candidate'] });
+  const register = async (caps = budget()) => {
+    const loopId = `resources:${randomUUID()}`;
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, budgetUsd: 10,
+      meta: { reservationBinding: binding, reservationResourceBudget: caps } });
+    return loopId;
+  };
+  const request = (loopId: string, caps = budget(), armId = 'control', inputTokens = 1, outputTokens = 1) => ({
+    workspaceId: WS, loopId, requestedUsd: 1, floorUsd: 0,
+    exact: { reservationId: randomUUID(), binding, expectedBudgetUsd: 10,
+      resources: { armId, inputTokens, outputTokens }, expectedResourceBudget: caps },
+  });
+
+  it.each(['input', 'output', 'requests'] as const)('serializes competing %s grants independently of dollar headroom', async axis => {
+    const caps = budget();
+    if (axis === 'requests') caps.requestsPerArm = 1;
+    const loopId = await register(caps);
+    const first = request(loopId, caps, 'control', axis === 'input' ? 6 : 1, axis === 'output' ? 6 : 1);
+    const results = await Promise.all([reserveLearningSpend(sql, first),
+      reserveLearningSpend(sql, { ...first, exact: { ...first.exact, reservationId: randomUUID() } })]);
+    expect(results.filter(r => r.ok)).toHaveLength(1);
+    expect(results.find(r => !r.ok)).toMatchObject({ reason: 'resource-cap-exceeded' });
+    const rows = await listLearningSpendReservations(sql, { workspaceId: WS, loopId });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.resources).toEqual(first.exact.resources);
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(1);
+  });
+
+  it('accepts the exact global boundary across arms and rejects an invented arm', async () => {
+    const loopId = await register();
+    expect((await reserveLearningSpend(sql, request(loopId, budget(), 'control', 5, 5))).ok).toBe(true);
+    expect((await reserveLearningSpend(sql, request(loopId, budget(), 'candidate', 5, 5))).ok).toBe(true);
+    expect(await reserveLearningSpend(sql, request(loopId))).toMatchObject({ reason: 'resource-cap-exceeded' });
+    const anotherLoop = await register();
+    expect(await reserveLearningSpend(sql, request(anotherLoop, budget(), 'third')))
+      .toMatchObject({ reason: 'resource-cap-exceeded' });
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId: anotherLoop })).toEqual([]);
+  });
+
+  it.each(['cancelled', 'failed', 'used'] as const)('retains every resource after %s settlement, including a zero-dollar result', async disposition => {
+    const caps = { ...budget(), requestsPerArm: 1 };
+    const loopId = await register(caps);
+    const input = request(loopId, caps, 'control', 5, 5);
+    expect((await reserveLearningSpend(sql, input)).ok).toBe(true);
+    expect((await settleLearningSpend(sql, { workspaceId: WS, reservationId: input.exact.reservationId,
+      disposition, usedUsd: 0 })).ok).toBe(true);
+    expect(await sumOpenReservedUsd(sql, { workspaceId: WS, loopId })).toBe(0);
+    // No process-local counter can establish this: the next call opens a new connection.
+    const fresh = postgres(testDatabaseUri, { max: 1, onnotice: () => {}, prepare: false });
+    try {
+      expect(await reserveLearningSpend(fresh, request(loopId, caps))).toMatchObject({ reason: 'resource-cap-exceeded' });
+      expect((await reserveLearningSpend(fresh, request(loopId, caps, 'candidate', 5, 5))).ok).toBe(true);
+    } finally { await fresh.end({ timeout: 5 }); }
+  });
+
+  it('refuses omitted resources, USD-only bypass and changed expected caps', async () => {
+    const loopId = await register();
+    const input = request(loopId);
+    expect(await reserveLearningSpend(sql, { ...input, exact: undefined })).toMatchObject({ reason: 'binding-required' });
+    expect(await reserveLearningSpend(sql, { ...input, exact: { reservationId: randomUUID(), binding, expectedBudgetUsd: 10 } }))
+      .toMatchObject({ reason: 'resource-binding-required' });
+    for (const caps of [{ ...budget(), inputTokens: 11 }, { ...budget(), outputTokens: 11 },
+      { ...budget(), requestsPerArm: 3 }, { ...budget(), armIds: ['control', 'third'] }]) {
+      expect(await reserveLearningSpend(sql, request(loopId, caps))).toMatchObject({ reason: 'stale-binding' });
+    }
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toEqual([]);
+  });
+
+  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('refuses invalid resource bound %s before reserving', async bad => {
+    const loopId = await register();
+    expect(await reserveLearningSpend(sql, request(loopId, budget(), 'control', bad)))
+      .toMatchObject({ reason: 'invalid-exact-request' });
+    expect(await reserveLearningSpend(sql, request(loopId, budget(), 'control', 1, bad)))
+      .toMatchObject({ reason: 'invalid-exact-request' });
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toEqual([]);
+  });
+
+  it('rejects zero output, duplicated arm policy and resources without a registered resource policy', async () => {
+    const loopId = await register();
+    expect(await reserveLearningSpend(sql, request(loopId, budget(), 'control', 1, 0)))
+      .toMatchObject({ reason: 'invalid-exact-request' });
+    expect(await reserveLearningSpend(sql, request(loopId, { ...budget(), armIds: ['control', 'control'] })))
+      .toMatchObject({ reason: 'invalid-exact-request' });
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, meta: { reservationBinding: binding } });
+    expect(await reserveLearningSpend(sql, request(loopId))).toMatchObject({ reason: 'resource-binding-required' });
+  });
+
+  it('never interprets legacy history or another manifest as a complete resource census', async () => {
+    const loopId = await register();
+    await registerLearningLoop(sql, { workspaceId: WS, loopId, meta: { reservationBinding: binding } });
+    const legacy = request(loopId);
+    expect((await reserveLearningSpend(sql, { ...legacy, exact: { reservationId: randomUUID(), binding, expectedBudgetUsd: 10 } })).ok).toBe(true);
+    await registerLearningLoop(sql, { workspaceId: WS, loopId,
+      meta: { reservationBinding: binding, reservationResourceBudget: budget() } });
+    expect(await reserveLearningSpend(sql, request(loopId))).toMatchObject({ reason: 'resource-accounting-incomplete' });
+    const otherLoop = await register();
+    expect((await reserveLearningSpend(sql, request(otherLoop))).ok).toBe(true);
+    const changedBinding = 'd'.repeat(64);
+    await registerLearningLoop(sql, { workspaceId: WS, loopId: otherLoop,
+      meta: { reservationBinding: changedBinding, reservationResourceBudget: budget() } });
+    const next = request(otherLoop); next.exact.binding = changedBinding;
+    expect(await reserveLearningSpend(sql, next)).toMatchObject({ reason: 'resource-accounting-incomplete' });
+  });
+
+  it('prevents replay without consuming extra resource slots or dollar headroom', async () => {
+    const loopId = await register();
+    const input = request(loopId);
+    expect((await reserveLearningSpend(sql, input)).ok).toBe(true);
+    expect(await reserveLearningSpend(sql, input)).toMatchObject({ reason: 'already-reserved' });
+    expect((await reserveLearningSpend(sql, request(loopId))).ok).toBe(true);
+    expect(await listLearningSpendReservations(sql, { workspaceId: WS, loopId })).toHaveLength(2);
+  });
+
+  it('the additive migration rejects partial resource rows and preserves USD-only rows', async () => {
+    const loopId = await register();
+    await expect(sql`INSERT INTO harness_shared.learning_spend_reservations
+      (workspace_id, loop_id, requested_usd, reserved_usd, arm_id)
+      VALUES (${WS}, ${loopId}, 1, 1, 'control')`).rejects.toMatchObject({ code: '23514' });
+    await expect(sql`INSERT INTO harness_shared.learning_spend_reservations
+      (workspace_id, loop_id, requested_usd, reserved_usd)
+      VALUES (${WS}, ${loopId}, 1, 1)`).resolves.toBeDefined();
   });
 });
 

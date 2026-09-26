@@ -328,16 +328,21 @@ export function staleCheckpointPathsNote(split: StalePathRefsBySource | null): s
 export async function getStalePathRefsForSubjects(
   subjects: readonly StalePathRefSubject[],
   repoRoot?: string,
+  timings?: Record<string, number>,
 ): Promise<Record<string, ClaimTimeStalePathRef[]>> {
   if (subjects.length === 0) return {};
   try {
+    const rootStartedAt = timings ? performance.now() : 0;
     const topLevel = await resolveRepoRoot(repoRoot);
+    if (timings) timings['stalePaths.resolveRoot'] = Math.max(0, performance.now() - rootStartedAt);
     if (!topLevel) return {};
+    const scanStartedAt = timings ? performance.now() : 0;
     const byId: Record<string, ClaimTimeStalePathRef[]> = {};
     for (const [id, split] of Object.entries(splitForSubjects(subjects, topLevel))) {
       const unresolved = [...split.prose, ...split.checkpoint];
       if (unresolved.length > 0) byId[id] = unresolved;
     }
+    if (timings) timings['stalePaths.scan'] = Math.max(0, performance.now() - scanStartedAt);
     return byId;
   } catch {
     // Advisory-only. A filesystem/git failure is absence of evidence, not a clean bill

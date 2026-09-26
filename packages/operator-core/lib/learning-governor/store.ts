@@ -349,6 +349,39 @@ export interface LearningSpendReservation {
   note: string | null;
   createdAt: number;
   settledAt: number | null;
+  /** Conservative bounds, retained even after monetary settlement. Not usage. */
+  resources?: LearningReservationResources;
+}
+
+export interface LearningReservationResources {
+  armId: string;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Frozen by the controller in registration.meta.reservationResourceBudget.
+ * The allowlist bounds distinct arms as well as rejecting invented identities. */
+export interface LearningReservationResourceBudget {
+  inputTokens: number;
+  outputTokens: number;
+  requestsPerArm: number;
+  armIds: string[];
+}
+
+const resourceCount = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+/** Exact reservations and settlements must agree on currency precision. */
+function exactUsdMicros(value: unknown): number | null {
+  if (typeof value !== 'number') return null;
+  const n = Math.round(value * 1_000_000);
+  return value >= 0 && Number.isSafeInteger(n) && n / 1_000_000 === value ? n : null;
+}
+const resourceArm = (s: unknown): s is string => typeof s === 'string' && s.trim() === s && s.length > 0 && s.length <= 256;
+function resourceBudgetValid(value: unknown): value is LearningReservationResourceBudget {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as LearningReservationResourceBudget;
+  return resourceCount(v.inputTokens) && resourceCount(v.outputTokens) && resourceCount(v.requestsPerArm) &&
+    v.requestsPerArm > 0 && Array.isArray(v.armIds) && v.armIds.length > 0 && v.armIds.length <= 1000 &&
+    v.armIds.every(resourceArm) && new Set(v.armIds).size === v.armIds.length;
 }
 
 function mapReservation(r: Row): LearningSpendReservation {
@@ -367,6 +400,8 @@ function mapReservation(r: Row): LearningSpendReservation {
     note: strOrNull(r.note),
     createdAt: ts(r.created_at),
     settledAt: r.settled_at === null || r.settled_at === undefined ? null : ts(r.settled_at),
+    ...(r.arm_id == null ? {} : { resources: { armId: str(r.arm_id),
+      inputTokens: Number(r.reserved_input_tokens), outputTokens: Number(r.reserved_output_tokens) } }),
   };
 }
 
@@ -413,17 +448,21 @@ export interface ReserveLearningSpendInput {
   /** Exact, single-use reservation for a controller's frozen manifest. The
    * registration must carry meta.reservationBinding with this SHA256, be
    * enabled/lifetime, and still have the expected dollar cap. No partial grant
-   * or successful replay is possible. This is USD enforcement only: callers
-   * still own approval, source/auth/native bounds and non-dollar limits. */
+   * or successful replay is possible. Optional resource bounds require the
+   * matching registered budget. Callers still own approval, source/auth/native
+   * bounds, full remaining-arm projection and authenticated accounting. */
   exact?: {
     reservationId: string;
     binding: string;
     expectedBudgetUsd: number;
+    resources?: LearningReservationResources;
+    expectedResourceBudget?: LearningReservationResourceBudget;
   };
 }
 
 type ExactReservationRefusal = 'invalid-exact-request' | 'transaction-required' | 'binding-required' |
-  'stale-binding' | 'disabled' | 'unsupported-budget-kind' | 'insufficient-headroom' | 'already-reserved';
+  'stale-binding' | 'disabled' | 'unsupported-budget-kind' | 'insufficient-headroom' | 'already-reserved' |
+  'resource-binding-required' | 'resource-accounting-incomplete' | 'resource-cap-exceeded';
 
 export type ReserveLearningSpendResult =
   | { ok: true; reservation: LearningSpendReservation; clamped: boolean; headroomUsd: number | null }
@@ -446,16 +485,17 @@ export async function reserveLearningSpend(
   sql: Sql,
   q: ReserveLearningSpendInput,
 ): Promise<ReserveLearningSpendResult> {
-  q = { ...q, ...(q.exact ? { exact: { ...q.exact } } : {}) };
+  q = { ...q, ...(q.exact ? { exact: { ...q.exact,
+    ...(q.exact.resources ? { resources: { ...q.exact.resources } } : {}),
+    ...(q.exact.expectedResourceBudget ? { expectedResourceBudget: { ...q.exact.expectedResourceBudget,
+      armIds: Array.isArray(q.exact.expectedResourceBudget.armIds) ? [...q.exact.expectedResourceBudget.armIds] : [] } } : {}),
+  } } : {}) };
   const exact = q.exact;
   const refuse = (reason: ReservationRefusal | ExactReservationRefusal, headroomUsd: number | null = null): ReserveLearningSpendResult =>
     ({ ok: false, reason, requestedUsd: q.requestedUsd, headroomUsd });
   // Work in integer microdollars on the exact path, not floating subtraction
   // that can round remaining headroom UP. Reject non-microdollar input.
-  const micros = (value: number): number | null => {
-    const n = Math.round(value * 1_000_000);
-    return value >= 0 && Number.isSafeInteger(n) && n / 1_000_000 === value ? n : null;
-  };
+  const micros = exactUsdMicros;
   const begin = (sql as unknown as { begin?: unknown }).begin;
   if (exact && (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(exact.reservationId) ||
     !/^[a-f0-9]{64}$/.test(exact.binding) || micros(exact.expectedBudgetUsd) === null ||
@@ -464,13 +504,20 @@ export async function reserveLearningSpend(
   // The legacy test seam may run without begin; exact grants must NEVER take
   // a FOR UPDATE lock in autocommit and then insert outside its transaction.
   if (exact && typeof begin !== 'function') return refuse('transaction-required');
+  const resources = exact?.resources;
+  const expectedResources = exact?.expectedResourceBudget;
+  if ((resources || expectedResources) && (!resources || !resourceBudgetValid(expectedResources) ||
+    !resourceArm(resources.armId) || !resourceCount(resources.inputTokens) ||
+    !resourceCount(resources.outputTokens) || resources.outputTokens === 0)) return refuse('invalid-exact-request');
   const run = async (tx: Sql | TransactionSql): Promise<ReserveLearningSpendResult> => {
     const regRows = (await tx`
       SELECT * FROM harness_shared.learning_governor_loops
        WHERE workspace_id = ${q.workspaceId} AND loop_id = ${q.loopId}
        FOR UPDATE`) as Row[];
     const reg = regRows[0] ? mapLoop(regRows[0]) : null;
-    if (reg?.meta?.reservationBinding != null && !exact) return refuse('binding-required');
+    if ((reg?.meta?.reservationBinding != null || reg?.meta?.reservationResourceBudget != null) && !exact) {
+      return refuse('binding-required');
+    }
     if (exact) {
       if (!reg || reg.budgetUsd === null) return refuse('unbudgeted');
       if (!reg.enabled) return refuse('disabled');
@@ -478,6 +525,39 @@ export async function reserveLearningSpend(
       if (reg.meta?.reservationBinding !== exact.binding || reg.budgetUsd !== exact.expectedBudgetUsd) {
         return refuse('stale-binding');
       }
+    }
+    const resourceBudget = reg?.meta?.reservationResourceBudget;
+    if (resourceBudget != null || resources) {
+      if (!resources || !expectedResources || !resourceBudgetValid(resourceBudget)) return refuse('resource-binding-required');
+      if (resourceBudget.inputTokens !== expectedResources.inputTokens || resourceBudget.outputTokens !== expectedResources.outputTokens ||
+        resourceBudget.requestsPerArm !== expectedResources.requestsPerArm ||
+        resourceBudget.armIds.length !== expectedResources.armIds.length ||
+        resourceBudget.armIds.some(id => !expectedResources.armIds.includes(id))) return refuse('stale-binding');
+      if (!resourceBudget.armIds.includes(resources.armId)) return refuse('resource-cap-exceeded');
+      // No status filter: a failed/cancelled/settled request may have spent
+      // tokens. Releasing USD is not authority to refund any resource bound.
+      // GROUP BY keeps the result bounded by the frozen arm population, and
+      // rejects an incomplete legacy history instead of treating it as zero.
+      const history = (await tx`
+        SELECT arm_id, SUM(reserved_input_tokens) AS inputs, SUM(reserved_output_tokens) AS outputs,
+          COUNT(*) AS requests,
+          BOOL_AND(reserved_input_tokens IS NOT NULL AND reserved_output_tokens IS NOT NULL
+            AND run_ref IS NOT DISTINCT FROM ${`manifest:${exact!.binding}/attempt:`} || id::text) AS complete
+        FROM harness_shared.learning_spend_reservations
+        WHERE workspace_id = ${q.workspaceId} AND loop_id = ${q.loopId}
+        GROUP BY arm_id`) as Row[];
+      let inputs = resources.inputTokens, outputs = resources.outputTokens;
+      let armRequests = 1;
+      for (const row of history) {
+        const input = Number(row.inputs), output = Number(row.outputs), requests = Number(row.requests);
+        if (row.complete !== true || !resourceArm(row.arm_id) || !resourceBudget.armIds.includes(row.arm_id) ||
+          !resourceCount(input) || !resourceCount(output) || !resourceCount(requests)) return refuse('resource-accounting-incomplete');
+        inputs += input; outputs += output;
+        if (row.arm_id === resources.armId) armRequests += requests;
+        if (requests > resourceBudget.requestsPerArm) return refuse('resource-cap-exceeded');
+      }
+      if (![inputs, outputs, armRequests].every(resourceCount) || inputs > resourceBudget.inputTokens ||
+        outputs > resourceBudget.outputTokens || armRequests > resourceBudget.requestsPerArm) return refuse('resource-cap-exceeded');
     }
     const openReserved = await sumOpenReservedUsd(tx as Sql, {
       workspaceId: q.workspaceId,
@@ -504,11 +584,13 @@ export async function reserveLearningSpend(
     const rows = (await tx`
       INSERT INTO harness_shared.learning_spend_reservations
         (id, workspace_id, loop_id, pot_slug, attempt_kind, requested_usd, reserved_usd,
-         status, signal_origin, run_ref, note)
+         status, signal_origin, run_ref, note
+         ${resources ? tx`, arm_id, reserved_input_tokens, reserved_output_tokens` : tx``})
       VALUES (${exact?.reservationId ?? randomUUID()}, ${q.workspaceId}, ${q.loopId}, ${q.potSlug === undefined ? (reg?.potSlug ?? null) : q.potSlug},
         ${q.attemptKind ?? 'cycle'}, ${q.requestedUsd}, ${plan.reservedUsd},
         'open', ${q.signalOrigin ?? 'organic'},
-        ${exact ? `manifest:${exact.binding}/attempt:${exact.reservationId.toLowerCase()}` : q.runRef ?? null}, ${q.note ?? null})
+        ${exact ? `manifest:${exact.binding}/attempt:${exact.reservationId.toLowerCase()}` : q.runRef ?? null}, ${q.note ?? null}
+        ${resources ? tx`, ${resources.armId}, ${resources.inputTokens}, ${resources.outputTokens}` : tx``})
       ON CONFLICT (id) DO NOTHING
       RETURNING *`) as Row[];
     // A replay must not return an existing success: the caller could send a
@@ -531,13 +613,16 @@ export interface SettleLearningSpendInput {
   workspaceId: string;
   reservationId: string;
   disposition: SpendDisposition;
-  /** What was actually charged. Defaults to 0 — a cancelled/failed attempt that burned nothing. */
+  /** What was actually charged. Legacy rows default to 0. Exact rows require
+   * an explicit nonnegative microdollar value; unknown charges stay OPEN. */
   usedUsd?: number;
   note?: string | null;
   /**
    * true (default): the charge also bumps the registration's spent_usd — the
    * path for loops whose only spend store is the governor. false: ledger the
    * event only (mirror-mode loops whose row spent syncs from their own store).
+   * Exact lifetime reservations refuse false: releasing their reserved USD
+   * without accumulating the charge would reopen already-spent headroom.
    */
   accumulate?: boolean;
 }
@@ -551,7 +636,7 @@ export type SettleLearningSpendResult =
       releasedUsd: number;
       overrunUsd: number;
     }
-  | { ok: false; reason: 'not-found' | 'already-settled'; reservation: LearningSpendReservation | null };
+  | { ok: false; reason: 'not-found' | 'already-settled' | 'exact-settlement-required'; reservation: LearningSpendReservation | null };
 
 /**
  * Close one attempt — the ONLY way an attempt leaves 'open'. Idempotent by
@@ -569,6 +654,9 @@ export async function settleLearningSpend(
   sql: Sql,
   q: SettleLearningSpendInput,
 ): Promise<SettleLearningSpendResult> {
+  // Do not let a caller change the charge/workspace while the row lock awaits.
+  q = { ...q };
+  const begin = (sql as unknown as { begin?: unknown }).begin;
   const run = async (tx: Sql | TransactionSql): Promise<SettleLearningSpendResult> => {
     const rows = (await tx`
       SELECT * FROM harness_shared.learning_spend_reservations
@@ -578,6 +666,14 @@ export async function settleLearningSpend(
     const current = mapReservation(rows[0]);
     if (current.status !== 'open') {
       return { ok: false, reason: 'already-settled', reservation: current };
+    }
+    // Identify the original exact grant from durable provenance, not today's
+    // registration settings, which may have changed since it was reserved.
+    const exact = current.runRef !== null &&
+      /^manifest:[a-f0-9]{64}\/attempt:/.test(current.runRef) &&
+      current.runRef.slice(-current.id.length) === current.id;
+    if (exact && (typeof begin !== 'function' || q.accumulate === false || exactUsdMicros(q.usedUsd) === null)) {
+      return { ok: false, reason: 'exact-settlement-required', reservation: current };
     }
     const settlement = settleReservation({
       reservedUsd: current.reservedUsd,
@@ -616,7 +712,6 @@ export async function settleLearningSpend(
       overrunUsd: settlement.overrunUsd,
     };
   };
-  const begin = (sql as unknown as { begin?: unknown }).begin;
   return typeof begin === 'function'
     ? ((await sql.begin(run)) as SettleLearningSpendResult)
     : run(sql);

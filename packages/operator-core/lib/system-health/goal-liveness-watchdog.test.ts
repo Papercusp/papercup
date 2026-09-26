@@ -798,6 +798,22 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     reconcileStrandedLatch: async () => ({ kind: 'noop' }),
     pauseNeedsHuman: async () => {},
     escalateGiveUp: async () => {},
+    // Existing holder-recovery cases model a completed first turn. Without an
+    // explicit attestation, the production default reads the live ledger via
+    // the bare SQL stub and correctly returns unknown rather than clearing
+    // re-kick and capacity-deferral state.
+    attestHolder: async (g, elected) => ({
+      status: 'complete',
+      workspaceId: g.workspaceId,
+      goalId: g.goalId,
+      ownerId: elected.ownerId,
+      modeSetAt: new Date(elected.setAtMs).toISOString(),
+      loopActive: true,
+      checkpointAt: new Date(elected.setAtMs).toISOString(),
+      portfolioAct: { tool: 'goals:get', at: new Date(elected.setAtMs).toISOString() },
+      missing: [],
+      unavailable: [],
+    }),
     // WI-2140573 finding 5: the default assessor reads live accounts:status; a
     // unit fixture measures capacity as clear unless a test says otherwise.
     assessLaunchCapacity: async () => ({
@@ -890,6 +906,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       neutralizeFailed: 0,
       gaveUp: 0,
       rekicked: 0,
+      partialFirstTurn: 0,
       deferredCapacity: 0,
       skipped: false,
     });

@@ -3,7 +3,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { assertProjectHistoryDocument } from '@papercusp/plan-parser/project-history';
-import { buildReleaseHistoryAssets, normalizeReleaseHistoryAssets, releaseHistoryStem, releaseProjectHistory } from './release-project-history';
+import {
+  buildReleaseHistoryAssets,
+  normalizeReleaseHistoryAssets,
+  releaseHistoryStem,
+  releaseProjectHistory,
+  type ReleaseHistoryAssetTimings,
+} from './release-project-history';
 import { gateSite } from './gate-release-site';
 import { renderIndexHtml, renderProjectHistoryPage, type HydratedRelease } from './release-history-page';
 
@@ -66,12 +72,16 @@ describe('release Project History adapter', () => {
     expect(history.plans.find((plan) => plan.slug === 'other')?.completedItems).toEqual([]);
   });
 
-  it('packages executable assets without development comments and preserves JSON dictionaries', () => {
+  it('packages executable assets without development comments and preserves JSON dictionaries', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'release-assets-'));
     try {
       fs.writeFileSync(path.join(directory, 'runtime.js'), '// developer@example.invalid\nglobalThis.result = 1 + 2;');
       fs.writeFileSync(path.join(directory, 'dictionary.js'), '{"locale":"en"}');
-      normalizeReleaseHistoryAssets(directory);
+      fs.mkdirSync(path.join(directory, 'nested'));
+      fs.writeFileSync(path.join(directory, 'nested', 'deep.js'), '/* author@example.invalid */\nexport const v = 40 + 2;');
+      // Only runtime.js and nested/deep.js are rewritten; the JSON dictionary is data.
+      await expect(normalizeReleaseHistoryAssets(directory)).resolves.toBe(2);
+      expect(fs.readFileSync(path.join(directory, 'nested', 'deep.js'), 'utf8')).not.toContain('author@example.invalid');
       const code = fs.readFileSync(path.join(directory, 'runtime.js'), 'utf8');
       expect(code).not.toContain('developer@example.invalid');
       expect(code).toContain('globalThis.result=3');
@@ -79,25 +89,33 @@ describe('release Project History adapter', () => {
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
-  it('normalizes read-only files copied from an immutable dependency generation', () => {
+  it('normalizes read-only files copied from an immutable dependency generation', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'release-assets-readonly-'));
     const file = path.join(directory, 'theme.css');
     try {
       fs.writeFileSync(file, '/* development comment */\n.demo { color: red; }');
       fs.chmodSync(file, 0o444);
 
-      expect(() => normalizeReleaseHistoryAssets(directory)).not.toThrow();
+      await expect(normalizeReleaseHistoryAssets(directory)).resolves.toBe(1);
       expect(fs.readFileSync(file, 'utf8').trim()).toBe('.demo{color:red}');
       expect(fs.statSync(file).mode & 0o200).toBe(0o200);
     } finally { fs.rmSync(directory, { recursive: true, force: true }); }
   });
 
-  it('replaces old asset output and builds a self-hosted, privacy-clean renderer', async () => {
+  it('replaces old asset output and builds a self-hosted, privacy-clean renderer', async ({ onTestFailed }) => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'release-assets-build-'));
+    // Filled in as each phase finishes; on a failure (including a timeout) the
+    // report names the phases that completed and how long each took, so a slow
+    // run carries its own evidence instead of a bare "timed out" (EI-24286419344594844).
+    const timings: ReleaseHistoryAssetTimings = {};
+    onTestFailed(() => {
+      console.error(`[release-project-history] asset build phase timings: ${JSON.stringify(timings)}`);
+    });
     try {
       fs.mkdirSync(path.join(directory, 'assets'));
       fs.writeFileSync(path.join(directory, 'assets', 'stale.js.map'), 'old development source');
-      await buildReleaseHistoryAssets(directory);
+      await buildReleaseHistoryAssets(directory, timings);
+      expect(timings.normalizedFiles).toBeGreaterThan(0);
       expect(fs.existsSync(path.join(directory, 'assets', 'stale.js.map'))).toBe(false);
       expect(fs.existsSync(path.join(directory, 'assets', 'project-history.js'))).toBe(true);
       expect(fs.existsSync(path.join(directory, 'assets', 'vditor/dist/js/lute/lute.min.js'))).toBe(true);

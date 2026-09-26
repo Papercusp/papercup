@@ -636,6 +636,14 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
         .map((entry) => ({ key: entry.name, value: Math.round(entry.duration) })),
       INTERACTION_NAME,
     );
+    // The ledger stamps invocation time at dispatch settlement. The page's
+    // absolute start mark lets a native run correlate those records without
+    // treating a settlement timestamp as the beginning of the request.
+    const startWallMs = await browser.execute((name) => {
+      const start = performance.getEntriesByName(`${name}:start`, 'mark').at(-1);
+      return start ? Math.round(performance.timeOrigin + start.startTime) : null;
+    }, INTERACTION_NAME);
+    console.log('[perf] plan-popup start wall time', startWallMs === null ? 'missing' : new Date(startWallMs).toISOString());
     console.log('[perf] plan-popup phases (cumulative click-to-phase ms)', JSON.stringify(phases));
     if (process.env.PAPERCUSP_PERF_REACT_MODULE) {
       const effects = await browser.execute(() => {

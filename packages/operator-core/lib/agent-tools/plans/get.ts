@@ -1215,6 +1215,8 @@ export default defineTool({
                 id: item.id,
                 summary: typeof item.text === 'string' ? item.text : null,
               })),
+              undefined,
+              detailMs,
             ).catch(() => ({})));
             const stalePathRefsByItem = await stalePathsRead;
             stageStarted = performance.now();

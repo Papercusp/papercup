@@ -228,6 +228,7 @@ describe.runIf(gitAvailable)('title/summary stalePathRefs (EI-20049758099997696)
   });
 
   it('batches plan items against one advisory shape and stays silent for resolvable text', async () => {
+    const timings: Record<string, number> = {};
     await expect(
       getStalePathRefsForSubjects(
         [
@@ -235,8 +236,11 @@ describe.runIf(gitAvailable)('title/summary stalePathRefs (EI-20049758099997696)
           { id: 'P-002', summary: 'Delete packages/retired/no-longer-here.ts' },
         ],
         repo,
+        timings,
       ),
     ).resolves.toEqual({ 'P-002': ['packages/retired/no-longer-here.ts'] });
+    expect(timings['stalePaths.resolveRoot']).toBeGreaterThanOrEqual(0);
+    expect(timings['stalePaths.scan']).toBeGreaterThanOrEqual(0);
   });
 
   it('shares one claim-time advisory with payload pathHints without conflating the fields', async () => {

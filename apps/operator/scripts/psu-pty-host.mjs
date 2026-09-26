@@ -628,9 +628,13 @@ function nativeTranscriptRoot(agent, env, home) {
 
 /** The carry prompt's unique first line is the strongest cross-backend proof
  * that the fresh native transcript accepted THIS successor turn. */
+// Match the canonical turn-provenance envelope grammar's origin and nonce
+// alphabet. `coord-inject:owner` is valid; a narrower host-only parser falsely
+// reports its native carry as missing provenance.
+const LEADING_TURN_ORIGIN_RE = /^⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧$/i;
 export function leadingTurnOriginMarker(text) {
   const firstLine = String(text ?? '').replace(/\r\n?/g, '\n').split('\n', 1)[0].trim();
-  return /^⟦turn-origin:[a-z0-9][a-z0-9-]* nonce:[a-f0-9]{16,64}⟧$/i.test(firstLine)
+  return LEADING_TURN_ORIGIN_RE.test(firstLine)
     ? firstLine
     : null;
 }
@@ -705,7 +709,7 @@ export function truncatedTurnOriginMarkerLoss(
   { minNonceChars = TRUNCATED_MARKER_MIN_NONCE_CHARS } = {},
 ) {
   const exact = String(marker ?? '');
-  if (!/^⟦turn-origin:[a-z0-9][a-z0-9-]* nonce:[a-f0-9]{16,64}⟧$/i.test(exact)) return null;
+  if (!LEADING_TURN_ORIGIN_RE.test(exact)) return null;
   const text = String(value ?? '');
   const minSuffixLength = minNonceChars + 1; // nonce tail + closing bracket
   for (let lost = 1; lost <= exact.length - minSuffixLength; lost++) {
@@ -727,28 +731,37 @@ function truncatedMarkerLossInRow(marker, row, depth = 0) {
   return best;
 }
 
-/** The ONE native-transcript marker scan behind the exact and truncated proofs.
- * With `allowTruncated`, a row qualifies when one of its strings begins with a
- * truncated suffix of the marker (see truncatedTurnOriginMarkerLoss); the same
- * recency fence and native-id restriction apply either way.
+/** The ONE native-transcript scan behind marker and exact-prompt proofs.
+ * An untagged Claude owner-request prompt qualifies only as an exact user row
+ * in the newly minted native session. It does not gain a machine-origin tag.
+ * With `allowTruncated`, a marker row may begin with a truncated suffix (see
+ * truncatedTurnOriginMarkerLoss). All paths share the recency and native-id gates.
  * @returns {{nativeRef: string, lostChars: number} | null} */
 function scanNativeTranscriptMarker({
   agent,
   env = process.env,
   marker,
+  exactPrompt = null,
   sinceMs,
   home = homedir(),
   nativeId = null,
   allowTruncated = false,
 }) {
   const root = nativeTranscriptRoot(agent, env, home);
-  if (!root || !existsSync(root) || !marker) return null;
+  const expectedPrompt = typeof exactPrompt === 'string'
+    ? exactPrompt.replace(/\r\n?/g, '\n').trimEnd()
+    : '';
+  if (!root || !existsSync(root) || (!marker && !expectedPrompt)) return null;
+  // Generic text is not a unique marker. Require Claude's fresh native id and
+  // match the entire user row; never certify an assistant echo or another file.
+  if (expectedPrompt && (agent !== 'claude' || !nativeId ||
+      !String(env?.CLAUDE_CONFIG_DIR ?? '').trim())) return null;
   const nonceTail = allowTruncated
     ? /nonce:([a-f0-9]{16,64})⟧$/i.exec(marker)?.[1]?.slice(-TRUNCATED_MARKER_MIN_NONCE_CHARS) ?? null
     : null;
   if (allowTruncated && !nonceTail) return null;
-  const needle = allowTruncated ? nonceTail : marker;
-  const markerBytes = Buffer.from(needle, 'utf8');
+  const needle = expectedPrompt ? null : (allowTruncated ? nonceTail : marker);
+  const markerBytes = needle ? Buffer.from(needle, 'utf8') : null;
   const stack = [{ path: root, depth: 0 }];
   let visited = 0;
   while (stack.length && visited < 4096) {
@@ -771,14 +784,19 @@ function scanNativeTranscriptMarker({
       if (nativeId && !entry.name.includes(String(nativeId))) continue;
       try {
         const st = statSync(path);
-        if (st.size < markerBytes.length || st.size > 64 * 1024 * 1024) continue;
+        if (st.size < (markerBytes?.length ?? 1) || st.size > 64 * 1024 * 1024) continue;
         const body = readFileSync(path, 'utf8');
         for (const line of body.split(/\r?\n/)) {
-          if (!line.includes(needle)) continue;
+          if (needle && !line.includes(needle)) continue;
           let row;
           try { row = JSON.parse(line); }
           catch { continue; }
-          const lostChars = allowTruncated ? truncatedMarkerLossInRow(marker, row) : 0;
+          if (expectedPrompt) {
+            if (row?.type !== 'user' || row?.message?.role !== 'user' ||
+                typeof row?.message?.content !== 'string' ||
+                row.message.content.replace(/\r\n?/g, '\n').trimEnd() !== expectedPrompt) continue;
+          }
+          const lostChars = expectedPrompt ? 0 : (allowTruncated ? truncatedMarkerLossInRow(marker, row) : 0);
           if (lostChars == null) continue;
           const rawTimestamp = row?.timestamp ?? row?.time ?? row?.createdAt ?? row?.created_at;
           if (rawTimestamp != null) {
@@ -1218,6 +1236,20 @@ export async function waitForNativeTranscriptMarker({
   return { persisted: false, nativeRef: null };
 }
 
+/** Prove an untagged owner-request carry without changing its owner authorship.
+ * The exact user text must appear after the respawn in Claude's fresh native id.
+ * This deliberately shares the bounded scanner and timestamp fence above. */
+async function waitForNativeTranscriptPrompt({ agent, env, text, sinceMs, home, timeoutMs, nativeId }) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const proof = scanNativeTranscriptMarker({ agent, env, exactPrompt: text, sinceMs, home, nativeId });
+    if (proof) return { persisted: true, nativeRef: proof.nativeRef };
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  } while (true);
+  return { persisted: false, nativeRef: null };
+}
+
 /**
  * Prove that a provenance-tagged turn actually entered the backend's native
  * transcript. PTY output is not authority: pressing Enter can repaint the TUI
@@ -1243,7 +1275,11 @@ export async function verifyNativeTurnStartWithRetry({
 }) {
   const marker = leadingTurnOriginMarker(text);
   const proofSupported = ['claude', 'codex', 'omp'].includes(String(agent || ''));
-  if (!marker) {
+  // P-010 replays an unresolved owner's words as the first Claude prompt,
+  // intentionally without a machine-origin envelope. The native session id,
+  // exact user-row content and timestamp together prove that turn's submission.
+  const exactOwnerPrompt = !marker && agent === 'claude' && Boolean(nativeId);
+  if (!marker && !exactOwnerPrompt) {
     return {
       persisted: false,
       nativeRef: null,
@@ -1268,7 +1304,9 @@ export async function verifyNativeTurnStartWithRetry({
     };
   }
   const readProof = () =>
-    waitForMarker({
+    exactOwnerPrompt
+      ? waitForNativeTranscriptPrompt({ agent, env, text, sinceMs, home, timeoutMs, nativeId })
+      : waitForMarker({
       agent,
       env,
       marker,
@@ -1291,7 +1329,7 @@ export async function verifyNativeTurnStartWithRetry({
     };
   }
   try {
-    onRetry({ marker, nativeId });
+    onRetry({ marker, nativeId, proofKind: exactOwnerPrompt ? 'exact-prompt' : 'marker' });
   } catch {
     /* retry observability must never block the recovery keystroke */
   }
@@ -1305,7 +1343,7 @@ export async function verifyNativeTurnStartWithRetry({
     persisted: Boolean(proof?.persisted),
     nativeRef: proof?.nativeRef ?? null,
     retried: true,
-    reason: proof?.persisted ? null : 'native-turn-marker-timeout',
+    reason: proof?.persisted ? null : (exactOwnerPrompt ? 'native-turn-prompt-timeout' : 'native-turn-marker-timeout'),
     ...truncation(proof),
   };
 }
@@ -1430,7 +1468,8 @@ export function shouldRetryCarryOnFreshEpoch({
   if (reason === 'never-settled' ||
       reason === 'no-startup-ready-marker' ||
       reason === 'no-startup-ready-marker-last-resort-failed') return true;
-  return reason === 'turn-start-unverified' && proofReason === 'native-turn-marker-timeout';
+  return reason === 'turn-start-unverified' &&
+    (proofReason === 'native-turn-marker-timeout' || proofReason === 'native-turn-prompt-timeout');
 }
 
 /** After writing an injected TURN's text, the host sends the submit Enter (CR)
@@ -10111,11 +10150,11 @@ export function hostThroughPty(o) {
           sinceMs: lastRespawnAtMs,
           timeoutMs: proofWindowMs,
           writeCr: () => child.write('\r'),
-          onRetry: () => {
+          onRetry: ({ proofKind }) => {
             appendHostEvent(ownerId, 'respawn-carry-turn-start-retry', {
               mode: respawnMode,
               nativeId,
-              reason: 'native-turn-marker-timeout',
+              reason: proofKind === 'exact-prompt' ? 'native-turn-prompt-timeout' : 'native-turn-marker-timeout',
             });
           },
         });

@@ -869,6 +869,12 @@ describe('session-port managed seed + native persistence helpers', () => {
       const claudeSinceMs = Date.now();
       writeFileSync(claudeFile, `${JSON.stringify({ type: 'user', timestamp: new Date(claudeSinceMs).toISOString(), message: { content: carryMarker } })}\n`);
       expect(leadingTurnOriginMarker(`${carryMarker}\nContinue where you left off`)).toBe(carryMarker);
+      const ownerMarker = '⟦turn-origin:coord-inject:owner nonce:0123456789abcdef⟧';
+      expect(leadingTurnOriginMarker(`${ownerMarker}\nThe owner replied`)).toBe(ownerMarker);
+      expect(truncatedTurnOriginMarkerLoss(ownerMarker, `${ownerMarker.slice(1)}\nThe owner replied`)).toBe(1);
+      const shortNonceMarker = '⟦turn-origin:coord-inject:owner nonce:abcdef12⟧';
+      expect(leadingTurnOriginMarker(`${shortNonceMarker}\nThe owner replied`)).toBe(shortNonceMarker);
+      expect(leadingTurnOriginMarker('⟦turn-origin:coord-inject:owner nonce:xyz⟧\ninvalid')).toBeNull();
       expect(leadingTurnOriginMarker(`history before ${carryMarker}`)).toBeNull();
       expect(findNativeTranscriptMarker({
         agent: 'claude',
