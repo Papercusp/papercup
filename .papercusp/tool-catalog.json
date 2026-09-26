@@ -21543,7 +21543,7 @@
       "guidance": {
         "when": "Before plans:start or direct item promotion for a plan that has adopted first-class spec clauses. The terminal standard-rubric card emitted from this result remains audit-pending until a NON-AUTHOR reviewer emits its grading-integrity audit.",
         "notWhen": "Authoring clauses — use plans:set-specs. Grading implementation proof — use plans:evaluate-spec-test-adequacy.",
-        "chaining": "plans:evaluate-spec-quality { slug } → repair all prerequisite blockers → scorecards:emit the returned draft with terminal:true → dispatch or await the NON-AUTHOR grading-integrity reviewer → scorecards:list { rubricRef:'spec-quality', subjectRef:'<scorecardId>' } and confirm gradingAudit is settled → plans:start { slug }. References derive from exact clause semantics and persisted policy; substantive changes require fresh evidence."
+        "chaining": "plans:evaluate-spec-quality { slug } → repair all prerequisite blockers → scorecards:emit the returned draft with terminal:true → await the automatically routed NON-AUTHOR grading-integrity audit (scorecards:repair re-dispatches a stalled one; never pick the auditor yourself) →scorecards:list { rubricRef:'spec-quality', subjectRef:'<scorecardId>' } and confirm gradingAudit is settled → plans:start { slug }. References derive from exact clause semantics and persisted policy; substantive changes require fresh evidence."
       }
     },
     {

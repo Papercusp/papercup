@@ -82,7 +82,13 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
   it('independent review request is not acceptance, and self-grade is refused', async () => {
     const world = makeS33World('verify');
     expect((await call(world, 'plans:grade-acceptance')).ok).toBe(false);
-    expect((await call(world, 'coord:send', { to: ['su-independent'], expects: 'action', summary: 'Review agenda-fixture-plan', body: [{ text: 'Independent acceptance please.', forYouBecause: { relation: 'owns', ref: 'independent-review' } }] })).s33.effect).toBe('independent-review-requested');
+    // review-routing-through-relevance-router-2026-09-26 D-001: messaging a
+    // hand-picked live reviewer is NOT a review request; only the routed ship
+    // call is. It must refuse (acceptance_ungraded) — routing is not acceptance.
+    expect((await call(world, 'coord:send', { to: ['su-independent'], expects: 'action', summary: 'Review agenda-fixture-plan', body: [{ text: 'Independent acceptance please.', forYouBecause: { relation: 'owns', ref: 'independent-review' } }] })).ok).toBe(false);
+    expect((await call(world, 'plans:set-plan-status', { slug: 'other-plan', status: 'shipped' })).ok).toBe(false);
+    const routed = await call(world, 'plans:set-plan-status', { slug: 'agenda-fixture-plan', status: 'shipped' });
+    expect(routed).toMatchObject({ ok: false, error: 'acceptance_ungraded', effectReceipt: { effect: 'independent-review-requested' } });
     expect((await call(world, 'coord:orient')).s33.status).toBe('due');
   });
 
@@ -94,6 +100,7 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     const discovery = await call(makeS33World('verify'), 'tools:find', { query: 'independent acceptance review' });
     const names = discovery.hits.map((entry: { tool: string }) => entry.tool);
     expect(names).toContain('coord:send');
+    expect(names).toContain('plans:set-plan-status');
     expect(names).toContain('scorecards:emit');
     expect(names).not.toContain('plans:grade-acceptance');
     for (const name of names) expect(canonicalNames.has(name), `${name} is absent from the canonical tool catalog`).toBe(true);
@@ -169,7 +176,8 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     const world = makeS33World('verify');
     const plan = await call(world, 'plans:get');
     expect(plan.results[0].slug).toBe('agenda-fixture-plan');
-    expect(plan.results[0].acceptance.independentReviewer).toBe('su-independent');
+    expect(plan.results[0].acceptance.graderRecruitment).toContain('plans:set-plan-status');
+    expect(plan.results[0].acceptance.independentReviewer).toBeUndefined();
     expect(plan.obligationObservation).toBeUndefined();
     expect((await call(world, 'coord:whoami')).ownerId).toBe('su-agenda-fixture');
     expect((await call(world, 'goals:get')).goal.status).toBe('active');

@@ -788,6 +788,21 @@ describe('frozen provider matrix: independent verification (6 opportunities)', (
     expect(result.action?.kind).toBe(action);
   });
 
+  it('delegates grading by naming the routed recruiter, never a hand-picked grader', () => {
+    // review-routing-through-relevance-router-2026-09-26 D-001: plans:set-plan-status
+    // → shipped IS the recruiter. The action must name that call so a reader does
+    // not pick a grader off coord:presence and message it directly.
+    for (const code of ['acceptance_ungraded', 'self_graded_only'] as const) {
+      const action = independentVerificationObligation(verifyInput(known(gate(false, code)))).action;
+      expect(action).toMatchObject({
+        kind: 'delegate',
+        tool: 'plans:set-plan-status',
+        args: { slug: verifyInput(known(gate(false, code))).planSlug, status: 'shipped' },
+      });
+      expect(action?.summary).not.toMatch(/coord:send|coord:dispatch|assign_to/);
+    }
+  });
+
   it('mints a fresh episode when the same gate code recurs on a new source generation', () => {
     const read = known(gate(false, 'acceptance_ungraded'));
     const first = independentVerificationObligation(verifyInput(read));

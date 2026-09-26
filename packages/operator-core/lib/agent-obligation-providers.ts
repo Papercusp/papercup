@@ -1085,7 +1085,13 @@ export function independentVerificationObligation(input: IndependentVerification
     action: isDelegable
       ? {
           kind: 'delegate',
-          summary: `route ${input.planSlug} to a lineage-independent acceptance grader`,
+          // review-routing-through-relevance-router-2026-09-26 D-001: the ship
+          // verb IS the recruiter (it routes through the relevance router and
+          // excludes implementers/author/shipper), so the action names that call
+          // rather than leaving the reader to hand-pick and message a grader.
+          summary: `call plans:set-plan-status → shipped for ${input.planSlug}: it routes the plan to a lineage-independent acceptance grader; never pick or message a grader yourself`,
+          tool: 'plans:set-plan-status',
+          args: { slug: input.planSlug, status: 'shipped' },
           targetRef: input.planSlug,
         }
       : ownership === 'author' || ownership === 'not-here'
