@@ -565,6 +565,17 @@ export interface FrozenCandidateRepairQueue {
    */
   retestRequested?: FrozenRepairRetestRequest;
   /**
+   * WI-10003213: the repairHead at which the gate already spent its ONE free re-verification
+   * for an UNMEASURED red — a red whose legs were killed/timed out/errored without any test
+   * reporting a failure (`gate_health.failingTestsMeasured:false`). Such a red leaves the queue
+   * in awaiting-fixer, where the fixer dispatcher correctly refuses ("nothing to reproduce")
+   * and no other path runs a suite — so without this re-verification the queue deadlocks until
+   * someone admits an unrelated change. Equal to `repairHead` ⇒ the retest is spent at this
+   * head; a second unmeasured red there stays on the ordinary (dispatch-refused) path rather
+   * than burning a full suite every tick. Optional and additive: a legacy row parses without it.
+   */
+  unmeasuredRetestHead?: string;
+  /**
    * P-021 (D-007 #1): the per-leg REPAIR MANIFEST derived from this row — subject paths, red /
    * admitted / green status, the exact admit command, leg claims. Rebuilt by
    * `withRepairManifest` inside the ONE production write path (`writeFrozenCandidateRepairQueue`),
@@ -1654,9 +1665,15 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     row.candidate,
     row.updatedAtMs as number,
   );
+  // WI-10003213: the once-per-head unmeasured-red retest is the third legitimate route into a
+  // verification phase (no fixer, no admission — the gate itself re-verifies a head whose red
+  // measured no failing test). Only a marker naming the CURRENT head vouches for that.
+  const unmeasuredRetestHead =
+    nonBlank(row.unmeasuredRetestHead) ? (row.unmeasuredRetestHead as string) : undefined;
   if (row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') {
     const viaFixer = (row.attempts as number) >= 1 && nonBlank(row.fixerSpawnId);
-    if (!viaFixer && admissions.length === 0) return null;
+    const viaUnmeasuredRetest = unmeasuredRetestHead !== undefined && unmeasuredRetestHead === row.repairHead;
+    if (!viaFixer && admissions.length === 0 && !viaUnmeasuredRetest) return null;
   }
   /**
    * Rounds are OBSERVABILITY, not safety, so a malformed value is dropped rather than
@@ -1740,6 +1757,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     ...(legs.length > 0 ? { legs } : {}),
     ...(admissions.length > 0 ? { admissions } : {}),
     ...(retestRequested ? { retestRequested } : {}),
+    ...(unmeasuredRetestHead !== undefined ? { unmeasuredRetestHead } : {}),
     ...(manifest ? { manifest } : {}),
     failingTests: boundedFailures(typed.failingTests),
     signature: typed.signature,
@@ -2449,6 +2467,61 @@ export function markFrozenRepairAdmitted(
     },
     updatedAtMs: Math.max(queue.updatedAtMs, entry.atMs),
     lastAdmittedAtMs: entry.atMs,
+  };
+}
+
+/**
+ * WI-10003213 — may the gate spend its once-per-head re-verification on this queue?
+ *
+ * An UNMEASURED red (every red leg was killed, timed out or errored without a single test
+ * reporting a failure — `gate_health.failingTestsMeasured:false`) parks the queue in
+ * `awaiting-fixer`. The fixer dispatcher then refuses by design (`frozenRepairHasNoMeasuredFailures`:
+ * a reproduce-style fixer has no target), and `decideFrozenCandidateRepairQueue` offers nothing
+ * else in that phase — so every tick decided `dispatch-fixer`, got no spawn, and ran no suite,
+ * forever (measured 2026-09-26 on candidate 55b22f4e / head 1a044fb6: ~2h of `repair-in-progress`
+ * inconclusives while the red it waited on was a watchdog SIGKILL already fixed in gate code).
+ *
+ * Pure. The caller supplies the measured-failures verdict; this only answers the queue-shape
+ * half: an unassigned awaiting-fixer queue (no live fixer, no dispatch lease) whose current head
+ * has not already had its unmeasured retest. Bounded to ONE per head so a persistently
+ * unmeasured red cannot burn a full suite every tick.
+ */
+export function frozenRepairUnmeasuredRetestEligible(queue: FrozenCandidateRepairQueue | null | undefined): boolean {
+  if (!queue) return false;
+  return (
+    queue.phase === 'awaiting-fixer' &&
+    queue.fixerSpawnId === null &&
+    !queue.dispatchReservation &&
+    queue.unmeasuredRetestHead !== queue.repairHead
+  );
+}
+
+/**
+ * WI-10003213 — move an unassigned awaiting-fixer queue whose red measured no failing test back
+ * to verification of the SAME head, spending that head's one unmeasured retest.
+ *
+ * Idempotent and race-tolerant for the CAS seam: a row that is no longer eligible (a fixer was
+ * dispatched, a lease appeared, an admission moved the head/phase, or the retest is already
+ * spent at this head) is returned unchanged. `retestRequested` is stamped exactly as an
+ * admission stamps it, so the existing P-001 settle/refire machinery treats the verification
+ * like any other requested retest; `attempts` is untouched (no fixer was spent).
+ */
+export function markFrozenRepairUnmeasuredRetest(
+  queue: FrozenCandidateRepairQueue,
+  input: { nowMs: number },
+): FrozenCandidateRepairQueue {
+  assertTimestamp(input.nowMs, 'nowMs');
+  if (!frozenRepairUnmeasuredRetestEligible(queue)) return queue;
+  return {
+    ...queue,
+    phase: 'ready-to-verify',
+    unmeasuredRetestHead: queue.repairHead,
+    retestRequested: {
+      candidate: queue.candidate,
+      repairHead: queue.repairHead,
+      requestedAtMs: input.nowMs,
+    },
+    updatedAtMs: Math.max(queue.updatedAtMs, input.nowMs),
   };
 }
 

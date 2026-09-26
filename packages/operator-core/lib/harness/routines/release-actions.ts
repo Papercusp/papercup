@@ -5386,6 +5386,33 @@ export function frozenRepairHasNoMeasuredFailures(
 }
 
 /**
+ * WI-10003213: the live-row form of the dispatcher's no-measured-failures refusal — reads
+ * `gate_health.failingTestsMeasured` exactly as `dispatchReleaseFixer` does and applies the
+ * same predicate to the queue's own failing set, so green-checkpoint's once-per-head
+ * unmeasured-red retest fires precisely when the dispatcher would refuse. Any read failure
+ * answers false (keep the old dispatch-only behaviour).
+ */
+export async function frozenRepairRedIsUnmeasured(
+  ctx: GateVerdictTarget,
+  repairQueue: FrozenCandidateRepairQueue,
+): Promise<boolean> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = (await sql.unsafe(
+      `SELECT metadata->'gate_health'->>'failingTestsMeasured' AS ftm
+         FROM harness_shared.routines
+        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+      [ctx.installSlug],
+    )) as Array<{ ftm: string | null }>;
+    const ftm = rows[0]?.ftm === 'true' ? true : rows[0]?.ftm === 'false' ? false : null;
+    return frozenRepairHasNoMeasuredFailures(repairQueue, repairQueue.failingTests, ftm);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Build the release-fixer's task brief at the single dispatch seam.
  *
  * Frozen repairs are delegated children of the gate owner. The parent keeps the

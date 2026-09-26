@@ -145,6 +145,8 @@ import {
   markFrozenRepairAgeEscalated,
   markFrozenRepairExhausted,
   markFrozenRepairFixerDead,
+  markFrozenRepairUnmeasuredRetest,
+  frozenRepairUnmeasuredRetestEligible,
   frozenRepairAgeEscalationRung,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
@@ -1312,6 +1314,13 @@ export interface CheckpointDeps {
   dispatchFrozenRepairFixer?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<{ spawnId: string | null; runId: string | null } | null>;
+  /**
+   * WI-10003213: TRUE when the queue's current red measured no failing test — the exact
+   * question `dispatchFrozenRepairFixer`'s no-measured-failures guard answers before refusing
+   * to spawn. Absent (tests, legacy wiring) or throwing = false, which preserves the old
+   * dispatch-only behaviour.
+   */
+  frozenRepairRedUnmeasured?(queue: FrozenCandidateRepairQueue): Promise<boolean>;
   /**
    * Atomically reserve a frozen-repair queue before preparing its worktree or launching the
    * external fixer. A null result means another checkpoint owns the dispatch window.
@@ -10836,6 +10845,38 @@ async function runGreenCheckpointInner(
       });
     }
 
+    // WI-10003213: an UNMEASURED red (legs killed/timed out, no test reported a failure) parks
+    // the queue in awaiting-fixer, where the dispatcher refuses ("nothing to reproduce; a fresh
+    // verdict is the unblock") and nothing else runs a suite — a permanent deadlock until an
+    // unrelated admission. Spend the head's ONE free re-verification instead of dispatching.
+    // Bounded per head (`unmeasuredRetestHead`), so a persistently unmeasured red falls back to
+    // the refused dispatch below rather than burning a suite every tick.
+    if (
+      repairQueue &&
+      decision.kind === "dispatch-fixer" &&
+      frozenRepairUnmeasuredRetestEligible(repairQueue) &&
+      (await deps
+        .frozenRepairRedUnmeasured?.(repairQueue)
+        .catch(() => false)) === true
+    ) {
+      deps.log(
+        `FROZEN_REPAIR_UNMEASURED_RED_RETEST: repairHead ${repairQueue.repairHead.slice(0, 8)} ` +
+          `of frozen candidate ${repairQueue.candidate.slice(0, 8)} is red with no measured ` +
+          `failing test (killed/timed-out legs) and no fixer can be dispatched for it — ` +
+          `re-verifying the same head once instead of holding for a fixer that will never spawn.`,
+      );
+      repairQueue = await commitFrozenRepairQueueTransition(
+        deps,
+        repairQueue,
+        (fresh) =>
+          markFrozenRepairUnmeasuredRetest(fresh, { nowMs: Date.now() }),
+        "unmeasured-red-retest",
+      );
+      decision = decideFrozenCandidateRepairQueue(repairQueue, {
+        nowMs: Date.now(),
+      });
+    }
+
     // P-010 / D-011 (frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the queue's
     // AGE never clears, blocks or retires it — it is made LOUD instead. Escalate once per 8h
     // rung the open queue has crossed (a monotone high-water mark persisted on the row), so a
@@ -18139,6 +18180,13 @@ export function realCheckpointDeps(
               queue.failingTests,
               queue,
             );
+          },
+          // WI-10003213: the same no-measured-failures verdict the dispatcher refuses on,
+          // read from the same live row, so the retest and the refusal cannot disagree.
+          async frozenRepairRedUnmeasured(queue: FrozenCandidateRepairQueue) {
+            const { frozenRepairRedIsUnmeasured } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            return frozenRepairRedIsUnmeasured(repairTarget, queue);
           },
           async reserveFrozenRepairFixer(
             queue: FrozenCandidateRepairQueue,
