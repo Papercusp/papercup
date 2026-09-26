@@ -9,14 +9,14 @@
     "const b=\"./packages/operator-core/lib/scout/\";const l=[[\"pty-host-health-lane\",\"buildPtyHostHealthLane\"],[\"ci-test-health-lane\",\"buildCiTestHealthLane\"],[\"workspace-host-health-lane\",\"buildWorkspaceHostHealthLane\"],[\"system-health-flap-lane\",\"buildSystemHealthFlapLane\"],[\"browser-crash-health-lane\",\"buildBrowserCrashHealthLane\"]];Promise.all(l.map(async([f,n])=>{const p=await import(b+f+\".ts\");const v=await p[n]({workspaceId:\"papercusp-workspace\"});return{lane:f,count:v.length,refs:v.slice(0,3).map(x=>x.ref)}})).then(async x=>{const d=await import(b+\"corpus-digest-deps.ts\");const c=await import(b+\"corpus-digest.ts\");const v=c.buildReworkLessons(await d.buildStateOfHiveReaders({workspaceId:\"papercusp-workspace\"}).reverts(),20);console.log(JSON.stringify([...x,{lane:\"rework\",count:v.length,refs:v.slice(0,3).map(x=>x.ref)}]));process.exit(0)},e=>{console.error(e);process.exit(1)})"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-25T22:09:58Z",
-  "finishedAt": "2026-09-25T22:10:07Z",
-  "summary": "Read-only current-tree reader invocation against papercusp-workspace PostgreSQL completed for PTY, CI, managed workspace-host, health flap, browser crash, and rework lanes. Four lanes yielded source-cited organic patterns; browser crash and rework yielded zero organic patterns in this window. Seeded real-PG integration tests separately exercise those empty lanes.",
+  "startedAt": "2026-09-26T00:07:11.474Z",
+  "finishedAt": "2026-09-26T00:07:21.821Z",
+  "summary": "Read-only current-tree reader invocation after the carry-drills pseudo-owner scope fix completed against papercusp-workspace PostgreSQL for PTY, CI, managed workspace-host, health flap, browser crash, and rework lanes. Four lanes yielded source-cited organic patterns; browser crash and rework yielded zero organic patterns in this window. Seeded real-PG integration tests separately exercise those empty lanes and the carry-drills exclusion.",
   "assertions": [
     {
       "id": "pty-host-reader",
       "passed": true,
-      "evidence": "Returned 21 bounded entries; first refs pty-host:kind:busy-gate-expired, pty-host:kind:respawn-carry-dropped, pty-host:kind:host-code-stale."
+      "evidence": "Returned 21 bounded entries after excluding the carry-drills roll-up; first refs pty-host:kind:busy-gate-expired, pty-host:kind:host-code-stale, pty-host:kind:turn-start-unverified."
     },
     {
       "id": "ci-reader",
@@ -50,8 +50,8 @@
       "count": 21,
       "refs": [
         "pty-host:kind:busy-gate-expired",
-        "pty-host:kind:respawn-carry-dropped",
-        "pty-host:kind:host-code-stale"
+        "pty-host:kind:host-code-stale",
+        "pty-host:kind:turn-start-unverified"
       ]
     },
     {
