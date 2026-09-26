@@ -24,8 +24,10 @@ import {
 } from './operation-admission';
 import { readBlueprintHashFromPg, readBlueprintSpecificationSnapshot } from './project-to-pg';
 import { seedContentHash, type RubricSeedSource } from '../cupboard/rubric-store';
+import { BlueprintOperationRefusal } from './operation-refusal';
 
-const OperationHandleSchema = z.object({
+/** Exported for the shared public contract (operation-contract.ts). */
+export const OperationHandleSchema = z.object({
   workspaceId: z.string().min(1),
   harnessSlug: z.string().min(1),
   receiptId: z.number().int().positive(),
@@ -89,7 +91,8 @@ export function submitBlueprintOperation(
     const requestKey = input.requestKey?.trim();
     if (!input.workspaceId?.trim() || !input.harnessSlug?.trim() || !input.operationId?.trim() ||
         !callerId || callerId.length > 200 || !requestKey || requestKey.length > 200) {
-      throw new Error('blueprint submission requires workspace, harness, operation, authenticated caller and request key');
+      throw new BlueprintOperationRefusal('invalid_request',
+        'blueprint submission requires workspace, harness, operation, authenticated caller and request key');
     }
     const previous = await sql<InvocationRow[]>`
       SELECT id, caller_id, operation_id, specification_revision, target_kind, target_ref
@@ -287,7 +290,7 @@ async function readCanonicalOperation(sql: Sql, handle: BlueprintOperationHandle
       receipt.specification_revision !== ref.specificationRevision ||
       receipt.target_kind !== ref.target.kind ||
       receipt.target_ref !== (ref.target.kind === 'plan' ? ref.target.instanceSlug : ref.target.id)) {
-    throw new Error('blueprint operation handle does not match its durable receipt');
+    throw new BlueprintOperationRefusal('handle_mismatch', 'blueprint operation handle does not match its durable receipt');
   }
   const controls = await readOperationControls(sql, ref);
   if (ref.target.kind === 'work-item') {
@@ -330,7 +333,8 @@ export function getBlueprintOperationStatus(sql: Sql, handle: BlueprintOperation
   return runWithWorkspace(handle.workspaceId, async () => (await readValidatedCanonicalOperation(sql, handle, callerId)).status);
 }
 
-const OperationEventBodySchema = z.discriminatedUnion('kind', [
+/** Exported for the shared public contract (operation-contract.ts). */
+export const OperationEventBodySchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('work-item'), workItemId: z.string().min(1),
     runId: z.string().nullable(), harnessSlug: z.string().min(1),
@@ -398,7 +402,9 @@ export function getBlueprintOperationEvents(
 ): Promise<{ status: BlueprintOperationStatus; events: BlueprintOperationEvent[]; cursor: string; hasMore: boolean }> {
   return runWithWorkspace(handle.workspaceId, async () => {
     const cursor = options.cursor ?? '0';
-    if (!/^(0|[1-9][0-9]*)$/.test(cursor)) throw new Error('blueprint operation cursor must be a decimal event id');
+    if (!/^(0|[1-9][0-9]*)$/.test(cursor)) {
+      throw new BlueprintOperationRefusal('invalid_request', 'blueprint operation cursor must be a decimal event id');
+    }
     const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
     const { status } = await readValidatedCanonicalOperation(sql, handle, callerId);
     const rows = handle.target.kind === 'work-item'
@@ -433,6 +439,12 @@ function eventIdentity(kind: string, handle: BlueprintOperationHandle, key: stri
   return kind + ':' + createHash('sha256').update(canonicalJson({ receiptId: handle.receiptId, key })).digest('hex');
 }
 
+/** Caller input is a refusal; a non-lossless stored OUTPUT is an internal defect. */
+function losslessJsonFailure(kind: 'input' | 'output'): Error {
+  const message = `blueprint operation ${kind} must be lossless JSON`;
+  return kind === 'input' ? new BlueprintOperationRefusal('invalid_payload', message) : new Error(message);
+}
+
 function exactJsonValue(value: unknown, kind: 'input' | 'output' = 'input'): unknown {
   let saved: unknown;
   try {
@@ -440,9 +452,9 @@ function exactJsonValue(value: unknown, kind: 'input' | 'output' = 'input'): unk
     if (encoded === undefined) throw new Error('not JSON');
     saved = JSON.parse(encoded);
   } catch {
-    throw new Error(`blueprint operation ${kind} must be lossless JSON`);
+    throw losslessJsonFailure(kind);
   }
-  if (!isDeepStrictEqual(saved, value)) throw new Error(`blueprint operation ${kind} must be lossless JSON`);
+  if (!isDeepStrictEqual(saved, value)) throw losslessJsonFailure(kind);
   return saved;
 }
 
@@ -468,7 +480,7 @@ async function appendControlEvent(
        AND msg_id = ${msgId}
   `;
   if (!prior[0] || prior[0].body.fingerprint !== fingerprint) {
-    throw new Error('blueprint operation control key was reused with different input');
+    throw new BlueprintOperationRefusal('input_conflict', 'blueprint operation control key was reused with different input');
   }
   return { id: String(prior[0].id), replayed: true };
 }
@@ -562,9 +574,11 @@ export function cancelBlueprintOperation(
 ): Promise<BlueprintOperationInputReceipt & { effected: boolean }> {
   return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationInputReceipt & { effected: boolean }> => {
     const { status, items } = await readCanonicalOperation(sql, handle, callerId);
-    if (!input.requestKey?.trim() || !input.reason?.trim()) throw new Error('blueprint cancellation requires a key and reason');
+    if (!input.requestKey?.trim() || !input.reason?.trim()) {
+      throw new BlueprintOperationRefusal('invalid_request', 'blueprint cancellation requires a key and reason');
+    }
     if (status.phase === 'terminal' && !status.cancellationRequested) {
-      throw new Error('cannot cancel a terminal blueprint operation');
+      throw new BlueprintOperationRefusal('terminal', 'cannot cancel a terminal blueprint operation');
     }
     const body = { kind: 'cancel', receiptId: handle.receiptId, ...targetEventFields(handle),
       requestedBy: callerId, requestKey: input.requestKey, reason: input.reason.trim() };
@@ -601,13 +615,15 @@ export function signalBlueprintOperation(
 ): Promise<BlueprintOperationInputReceipt> {
   return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationInputReceipt> => {
     const { status } = await readCanonicalOperation(sql, handle, callerId);
-    if (!input.requestKey?.trim()) throw new Error('blueprint signal requires a request key');
+    if (!input.requestKey?.trim()) throw new BlueprintOperationRefusal('invalid_request', 'blueprint signal requires a request key');
     const operation = await declaredOperation(sql, handle);
     const schema = operation.signals[input.channel]?.payloadSchema;
-    if (!schema) throw new Error('blueprint operation signal channel is not declared');
+    if (!schema) throw new BlueprintOperationRefusal('undeclared', 'blueprint operation signal channel is not declared');
     const payload = exactJsonValue(input.payload);
     const valid = checkAgainstJsonSchema(schema, payload);
-    if (!valid.ok) throw new Error(`blueprint signal payload is invalid: ${valid.errors.join('; ')}`);
+    if (!valid.ok) {
+      throw new BlueprintOperationRefusal('invalid_payload', `blueprint signal payload is invalid: ${valid.errors.join('; ')}`);
+    }
     const body = { kind: 'signal', receiptId: handle.receiptId, ...targetEventFields(handle),
       channel: input.channel, payload, requestKey: input.requestKey };
     const msgId = eventIdentity('signal', handle, `${input.channel}:${input.requestKey}`);
@@ -616,7 +632,7 @@ export function signalBlueprintOperation(
         SELECT id FROM harness_shared.coord_event_log
          WHERE workspace_id = ${handle.workspaceId} AND surface = 'blueprint-operation' AND msg_id = ${msgId}
       `;
-      if (!prior[0]) throw new Error('cannot signal a terminal blueprint operation');
+      if (!prior[0]) throw new BlueprintOperationRefusal('terminal', 'cannot signal a terminal blueprint operation');
     }
     const receipt = await appendControlEvent(sql, handle, msgId, body);
     const wakeQueued = status.phase === 'terminal' ? false : await notifyControl(
@@ -664,7 +680,9 @@ export function resumeBlueprintOperation(
 ): Promise<BlueprintOperationInputReceipt> {
   return runWithWorkspace(handle.workspaceId, async (): Promise<BlueprintOperationInputReceipt> => {
     const { status } = await readCanonicalOperation(sql, handle, callerId);
-    if (!input.token?.trim() || !input.requestKey?.trim()) throw new Error('blueprint resume requires a wait token and request key');
+    if (!input.token?.trim() || !input.requestKey?.trim()) {
+      throw new BlueprintOperationRefusal('invalid_request', 'blueprint resume requires a wait token and request key');
+    }
     const waits = await sql<Array<{ body: Record<string, unknown> }>>`
       SELECT body FROM harness_shared.coord_event_log
        WHERE workspace_id = ${handle.workspaceId} AND surface = 'blueprint-operation'
@@ -672,7 +690,7 @@ export function resumeBlueprintOperation(
     `;
     const waitName = waits[0]?.body.waitName;
     if (waits[0]?.body.receiptId !== handle.receiptId || typeof waitName !== 'string') {
-      throw new Error('blueprint operation wait token is stale or outside this operation');
+      throw new BlueprintOperationRefusal('stale_wait', 'blueprint operation wait token is stale or outside this operation');
     }
     const prior = await sql<Array<{ id: string | number }>>`
       SELECT id FROM harness_shared.coord_event_log
@@ -680,14 +698,16 @@ export function resumeBlueprintOperation(
          AND msg_id = ${eventIdentity('resume', handle, input.token)}
     `;
     if ((!status.wait || status.wait.token !== input.token || status.phase === 'terminal') && !prior[0]) {
-      throw new Error('blueprint operation wait token is no longer outstanding');
+      throw new BlueprintOperationRefusal('stale_wait', 'blueprint operation wait token is no longer outstanding');
     }
     const operation = await declaredOperation(sql, handle);
     const schema = operation.waits[waitName]?.responseSchema;
-    if (!schema) throw new Error('blueprint operation wait is no longer declared');
+    if (!schema) throw new BlueprintOperationRefusal('undeclared', 'blueprint operation wait is no longer declared');
     const response = exactJsonValue(input.response);
     const valid = checkAgainstJsonSchema(schema, response);
-    if (!valid.ok) throw new Error(`blueprint resume response is invalid: ${valid.errors.join('; ')}`);
+    if (!valid.ok) {
+      throw new BlueprintOperationRefusal('invalid_payload', `blueprint resume response is invalid: ${valid.errors.join('; ')}`);
+    }
     const body = { kind: 'resume', receiptId: handle.receiptId, ...targetEventFields(handle),
       waitName, token: input.token, response, requestKey: input.requestKey };
     const receipt = await appendControlEvent(sql, handle, eventIdentity('resume', handle, input.token), body);
