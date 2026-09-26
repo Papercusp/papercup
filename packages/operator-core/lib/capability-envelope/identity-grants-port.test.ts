@@ -777,7 +777,9 @@ describe('P-005 current identity grants at the common kernel seat', () => {
       decision: 'allow',
       serverAudit: { identityLaunchRecord: { advSessionId: 'governed-audit-test', xmin: '72' } },
     });
-    expect(await checkIdentityGrantKernel(f.request, state,
+    // A changed row (new xmin) is re-evaluated; a tampered artifact is denied, not reported.
+    const changed = { ...state, identityLaunchRecordVersion: { sessionId: 'governed-audit-test', rowVersion: '73' } };
+    expect(await checkIdentityGrantKernel(f.request, changed,
       { ...f.record, specificationArtifact: { tampered: true } }, read, undefined, sink))
       .toMatchObject({ decision: 'deny' });
     expect(sink).not.toHaveBeenCalled();

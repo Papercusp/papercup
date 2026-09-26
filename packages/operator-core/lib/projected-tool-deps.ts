@@ -55,6 +55,8 @@ import { isRecoveryDoorCall } from './capability-envelope/recovery-door';
 // Dependency-free leaf, like recovery-door: building the lazy launch-record
 // handle must not statically import the identity port it is handed to.
 import { lazyIdentityLaunchRecord, type LoadedIdentityLaunchRecord } from './capability-envelope/lazy-launch-record';
+// Type-only: the identity gate itself is reached by DYNAMIC import (see the resolver).
+import type { IdentityLaunchAuditStamp } from './capability-envelope/identity-grants-port';
 import { checkAuditModeMutationGuard } from './capability-envelope/audit-mode-guard';
 // Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
 // confinement resolver. This gate fails SILENTLY when unresolved — no resolver means every
@@ -586,10 +588,17 @@ export const controlAnchorKernelResolver: KernelEnforcementPort = async (request
   if (verdict.decision === 'deny') return verdict;
   // Applied-state receipts and current policy are host-resolved. This common
   // seat runs for indirect/rule dispatch and native adapters, before exemptions.
+  // An artifact the identity gate evaluated but does not govern leaves the
+  // structural verdict in force; it still names the launch row it was judged
+  // against, so every identity-bearing invocation persists a row reference (D-007).
+  const ungoverned: { stamp?: IdentityLaunchAuditStamp } = {};
   if (state && Object.prototype.hasOwnProperty.call(state, 'identityLaunchRecord')) {
     try {
       const { checkIdentityGrantKernel } = await import('./capability-envelope/identity-grants-port');
-      const grants = await checkIdentityGrantKernel(request, state, state.identityLaunchRecord);
+      const grants = await checkIdentityGrantKernel(
+        request, state, state.identityLaunchRecord, undefined, undefined,
+        (stamp) => { ungoverned.stamp = stamp; },
+      );
       if (grants) return grants;
     } catch {
       // The generic optional port catches throws as unavailable/allow. This
@@ -626,7 +635,9 @@ export const controlAnchorKernelResolver: KernelEnforcementPort = async (request
       return operatorKernelDenial('policy-unavailable', 'identity policy evaluation unavailable; no effect authorized');
     }
   }
-  return verdict;
+  return ungoverned.stamp
+    ? { ...verdict, serverAudit: { ...verdict.serverAudit, identityLaunchRecord: ungoverned.stamp } }
+    : verdict;
 };
 
 /** Install the DB-backed resolver exactly once at the host's bootstrap seam. */
