@@ -27,9 +27,11 @@ async function legacyWait(check: () => boolean, timeoutMs: number): Promise<bool
 const opened: Array<Server | Socket> = [];
 
 afterEach(async () => {
-  for (const handle of opened.splice(0)) {
-    if ('destroy' in handle) handle.destroy();
-    else await new Promise((resolve) => handle.close(resolve));
+  const handles = opened.splice(0);
+  // Sockets first: `server.close()` waits for every accepted connection to end.
+  for (const handle of handles) if ('destroy' in handle) handle.destroy();
+  for (const handle of handles) {
+    if (!('destroy' in handle)) await new Promise((resolve) => handle.close(resolve));
   }
 });
 
@@ -84,10 +86,16 @@ describe('pollUntil when the observing event loop is blocked', () => {
   });
 
   test('reads output that arrived during the block and reports how long it was', async () => {
-    const outcome = await stallScenario((check) => pollUntil(check, { timeoutMs: 150 }));
-    expect(outcome.ok).toBe(true);
-    // The sleep was due 60ms in and could not run until the 400ms block ended.
-    expect(outcome.maxLateMs).toBeGreaterThanOrEqual(250);
+    // Repeated: without the I/O turn after each sleep the final check usually
+    // runs before the socket is read, but in about one run in five Node
+    // defers the sleep's timer past the poll phase and the check sees the
+    // bytes anyway. Three runs make that regression visible about 99% of the time.
+    for (let run = 0; run < 3; run++) {
+      const outcome = await stallScenario((check) => pollUntil(check, { timeoutMs: 150 }));
+      expect(outcome.ok).toBe(true);
+      // The sleep was due 60ms in and could not run until the 400ms block ended.
+      expect(outcome.maxLateMs).toBeGreaterThanOrEqual(250);
+    }
   });
 
   test('a check that itself outlasts the deadline gets one more look', async () => {

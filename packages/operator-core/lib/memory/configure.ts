@@ -21,8 +21,7 @@
  * Part of papercusp-systems-abstraction-2026-05-29 (P-021).
  */
 
-import os from 'node:os';
-import path from 'node:path';
+import { operatorMemoryStoreDir } from './memory-store-dir';
 import {
   configureMemory,
   registerMemoryBackend,
@@ -698,10 +697,10 @@ configureMemory({
   getAdminUrl: getHarnessAdminUrl,
   // The operator's memory tables live in the harness_shared schema
   // (migration 081); the embedded-pg database is `papercusp`; the SQLite
-  // event-history log persists under ~/.papercusp.
+  // event-history log persists in the operator's state directory.
   schema: 'harness_shared',
   defaultDbName: 'papercusp',
-  localStoreDir: path.join(os.homedir(), '.papercusp'),
+  localStoreDir: operatorMemoryStoreDir,
   // The swappable-store selector (generalize-memory-backend-swappable
   // D-004): which MemoryBackend getMemoryBackend() serves. A LIVE thunk
   // (mem0-revive-or-retire / Brief 30) reading the persisted operator
