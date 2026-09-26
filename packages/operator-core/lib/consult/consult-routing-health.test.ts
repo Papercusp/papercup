@@ -1,0 +1,244 @@
+/**
+ * consult-routing-health — unit tests for the P-004 routing-health read
+ * (plan review-routing-through-relevance-router-2026-09-26, clause
+ * RR-P-004-routing-health-counts): seeded consult attempts with known outcomes
+ * and timestamps, in and out of the window, must land in exactly their policy's
+ * counts.
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  consultPolicyKey,
+  resolveRoutingHealthWindow,
+  routingHealthFromRows,
+  type RoutingHealthConsultRow,
+} from './consult-routing-health';
+import { DISPATCH_RECORDS_MAX } from './consult-dispatch';
+import { GRADING_CASCADE_FLAVOR } from './grading-cascade';
+import { SELECTION_POLICIES } from './selection-policies';
+
+const T0 = Date.parse('2026-09-26T00:00:00.000Z');
+const H = 3_600_000;
+const iso = (ms: number) => new Date(ms).toISOString();
+const SINCE = T0;
+const UNTIL = T0 + 6 * H;
+const NOW = T0 + 8 * H;
+
+const launch = (atMs: number, answeringOwnerId: string, extraAttempts: object[] = []) => ({
+  at: iso(atMs),
+  sourceOwnerId: 'src',
+  dispatched: true,
+  answeringOwnerId,
+  operation: 'fork',
+  agent: 'claude',
+  model: 'm',
+  verified: true,
+  detail: 'ok',
+  attempts: [
+    ...extraAttempts,
+    { rank: extraAttempts.length, agent: 'claude', model: 'm', operation: 'fork', outcome: 'dispatched', detail: 'ok' },
+  ],
+});
+
+const answerFailure = (atMs: number, answeringOwnerId: string | null, reason: string) => ({
+  at: iso(atMs),
+  sourceOwnerId: 'src',
+  dispatched: false,
+  answeringOwnerId,
+  operation: null,
+  agent: null,
+  model: null,
+  verified: null,
+  detail: 'silent',
+  answerFailure: { reason, cascadeCursor: 0, stopOutcome: 'stopped task t1' },
+  attempts: [{ rank: null, agent: null, model: null, operation: null, outcome: 'failed', reason, detail: 'silent' }],
+});
+
+const digest = (ownerId: string, kind: string, atMs: number) => ({ ownerId, kind, at: iso(atMs), excerpt: 'x' });
+
+function row(partial: Partial<RoutingHealthConsultRow> & { conversation_id: string }): RoutingHealthConsultRow {
+  return {
+    routing: { query: 'q' },
+    state: 'active',
+    latency_contract: 'proceed',
+    closed_at: null,
+    cascade_digest: [],
+    dispatch_attempts: [],
+    ...partial,
+  };
+}
+
+/** The seeded population: one consult per outcome, spread across policies. */
+const SEEDED: RoutingHealthConsultRow[] = [
+  // consult-default: answered in window; an answered launch BEFORE the window must not count.
+  row({
+    conversation_id: 'A',
+    dispatch_attempts: [launch(T0 - 1 * H, 'fork-a0'), launch(T0 + 1 * H, 'fork-a1')],
+    cascade_digest: [digest('fork-a0', 'answer', T0 - 0.5 * H), digest('fork-a1', 'answer', T0 + 1.5 * H)],
+  }),
+  // rubric-vetting (hard-blocked): a failed launch rank, then a launched session the sweep
+  // stopped for not posting (P-003 answer-window failure).
+  row({
+    conversation_id: 'B',
+    routing: { policy: 'rubric-vetting' },
+    latency_contract: 'hard-blocked',
+    dispatch_attempts: [
+      launch(T0 + 2 * H, 'fork-b1', [
+        { rank: 0, agent: 'codex', model: 'm', operation: 'fork', outcome: 'failed', reason: 'launch-failed', detail: 'x' },
+      ]),
+      answerFailure(T0 + 2.5 * H, 'fork-b1', 'answer-window-expired'),
+    ],
+  }),
+  // acceptance-grading: one launch silent past its 4 h window (hung), one still inside it
+  // (pending), and one launched AFTER the window ends (must not count).
+  row({
+    conversation_id: 'C',
+    routing: { cascade: { flavor: GRADING_CASCADE_FLAVOR } },
+    dispatch_attempts: [launch(T0 + 3 * H, 'fork-c1'), launch(T0 + 5 * H, 'fork-c2'), launch(T0 + 7 * H, 'fork-c3')],
+  }),
+  // grading-integrity-audit: a skipped rank, then a convert that closed the consult answered.
+  row({
+    conversation_id: 'D',
+    routing: { cascade: { flavor: 'grading-integrity' } },
+    state: 'closed_answered',
+    closed_at: new Date(T0 + 4.2 * H),
+    dispatch_attempts: [
+      launch(T0 + 4 * H, 'src-d', [
+        { rank: 0, agent: 'codex', model: 'm', operation: null, outcome: 'skipped', reason: 'account-walled', detail: 'x' },
+      ]),
+    ],
+  }),
+  // consult-default: routed before the recorder shipped — no dispatch record at all.
+  row({ conversation_id: 'E', cascade_digest: [digest('someone', 'dispatch_failed', T0 + 1 * H)] }),
+  // consult-default: the launched session declined.
+  row({
+    conversation_id: 'F',
+    dispatch_attempts: [launch(T0 + 1 * H, 'fork-f1')],
+    cascade_digest: [digest('fork-f1', 'decline', T0 + 1.2 * H)],
+  }),
+];
+
+const byPolicy = (result: ReturnType<typeof routingHealthFromRows>) =>
+  Object.fromEntries(result.policies.map((p) => [p.policy, p]));
+
+describe('routingHealthFromRows — seeded attempts in and out of the window', () => {
+  const result = routingHealthFromRows(SEEDED, { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
+  const p = byPolicy(result);
+
+  it('counts the default policy: one answered and one declined launch; the pre-window answer is excluded', () => {
+    expect(p['consult-default']).toMatchObject({
+      consults: 3,
+      consultsWithoutDispatchRecords: 1,
+      launched: 2,
+      answered: 1,
+      declined: 1,
+      failed: 0,
+      hung: 0,
+      pending: 0,
+    });
+  });
+
+  it('counts rubric vetting: a failed launch rank and a launched session stopped for silence, by reason', () => {
+    expect(p['rubric-vetting']).toMatchObject({ consults: 1, launched: 1, answered: 0, failed: 2, hung: 0, pending: 0 });
+    expect(p['rubric-vetting']!.failedReasons).toEqual({ 'launch-failed': 1, 'answer-window-expired': 1 });
+  });
+
+  it('counts acceptance grading: hung past its window, pending inside it, the post-window launch excluded', () => {
+    expect(p['acceptance-grading']).toMatchObject({ consults: 1, launched: 2, hung: 1, pending: 1, answered: 0, failed: 0 });
+  });
+
+  it('counts grading-integrity audits: a close on the current launch is an answer; skips are reported by reason', () => {
+    expect(p['grading-integrity-audit']).toMatchObject({ launched: 1, answered: 1, skipped: 1 });
+    expect(p['grading-integrity-audit']!.skippedReasons).toEqual({ 'account-walled': 1 });
+  });
+
+  it('totals are the sum over policies and the window is labelled a launch cohort', () => {
+    expect(result.totals).toMatchObject({ launched: 6, answered: 2, declined: 1, failed: 2, hung: 1, pending: 1, skipped: 1 });
+    expect(result.window).toEqual({ since: iso(SINCE), until: iso(UNTIL), cohort: 'launch-time' });
+    expect(result.bounded).toMatchObject({ truncatedByLimit: false, consultsScanned: SEEDED.length, dispatchLogCapped: 0 });
+  });
+
+  it('moving the window moves the counts: only the pre-window launch is counted when the window covers it', () => {
+    const early = byPolicy(routingHealthFromRows(SEEDED, { sinceMs: T0 - 2 * H, untilMs: T0, nowMs: NOW }));
+    expect(early['consult-default']).toMatchObject({ launched: 1, answered: 1, declined: 0 });
+    expect(early['acceptance-grading']).toMatchObject({ launched: 0, hung: 0, pending: 0 });
+  });
+
+  it('judges hung against now: the same launch is pending before its window elapses', () => {
+    const before = byPolicy(routingHealthFromRows(SEEDED, { sinceMs: SINCE, untilMs: UNTIL, nowMs: T0 + 6.5 * H }));
+    expect(before['acceptance-grading']).toMatchObject({ hung: 0, pending: 2 });
+  });
+});
+
+describe('routingHealthFromRows — honesty markers', () => {
+  it('reports every known policy even with no consults, so a zero is measured, not omitted', () => {
+    const result = routingHealthFromRows([], { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
+    expect(result.policies.map((p) => p.policy).sort()).toEqual(Object.keys(SELECTION_POLICIES).sort());
+    expect(result.policies.every((p) => p.launched === 0 && p.consults === 0)).toBe(true);
+  });
+
+  it('carries truncation and a capped dispatch log on the result', () => {
+    const capped = row({
+      conversation_id: 'G',
+      dispatch_attempts: Array.from({ length: DISPATCH_RECORDS_MAX }, (_, i) => launch(T0 + i * 60_000, `f${i}`)),
+    });
+    const result = routingHealthFromRows([capped], {
+      sinceMs: SINCE,
+      untilMs: UNTIL,
+      nowMs: NOW,
+      truncatedByLimit: true,
+      consultLimit: 1,
+    });
+    expect(result.bounded).toEqual({ truncatedByLimit: true, consultsScanned: 1, consultLimit: 1, dispatchLogCapped: 1 });
+  });
+
+  it('counts a failure record with no launch to resolve by its own time', () => {
+    const orphan = row({
+      conversation_id: 'H',
+      routing: { policy: 'rubric-vetting' },
+      dispatch_attempts: [
+        answerFailure(T0 + 1 * H, null, 'answer-pickup-stalled'),
+        answerFailure(T0 - 1 * H, null, 'answer-pickup-stalled'),
+      ],
+    });
+    const p = byPolicy(routingHealthFromRows([orphan], { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW }));
+    expect(p['rubric-vetting']).toMatchObject({ launched: 0, failed: 1, failedReasons: { 'answer-pickup-stalled': 1 } });
+  });
+
+  it('reads JSON-string columns the same as parsed ones', () => {
+    const asStrings = SEEDED.map((r) => ({
+      ...r,
+      routing: JSON.stringify(r.routing),
+      dispatch_attempts: JSON.stringify(r.dispatch_attempts),
+      cascade_digest: JSON.stringify(r.cascade_digest),
+    }));
+    const a = routingHealthFromRows(SEEDED, { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
+    const b = routingHealthFromRows(asStrings, { sinceMs: SINCE, untilMs: UNTIL, nowMs: NOW });
+    expect(b.policies).toEqual(a.policies);
+  });
+});
+
+describe('consultPolicyKey', () => {
+  it('maps a routing snapshot to its selection policy', () => {
+    expect(consultPolicyKey({ policy: 'rubric-vetting' })).toBe('rubric-vetting');
+    expect(consultPolicyKey({ cascade: { flavor: GRADING_CASCADE_FLAVOR } })).toBe('acceptance-grading');
+    expect(consultPolicyKey({ cascade: { flavor: 'grading-integrity' } })).toBe('grading-integrity-audit');
+    expect(consultPolicyKey({ query: 'q' })).toBe('consult-default');
+    expect(consultPolicyKey(null)).toBe('consult-default');
+    expect(consultPolicyKey('not json')).toBe('consult-default');
+  });
+});
+
+describe('resolveRoutingHealthWindow', () => {
+  it('defaults to the last 24 h ending now', () => {
+    expect(resolveRoutingHealthWindow({}, NOW)).toEqual({ sinceMs: NOW - 24 * H, untilMs: NOW });
+  });
+  it('honours since/until and hours', () => {
+    expect(resolveRoutingHealthWindow({ since: iso(SINCE), until: iso(UNTIL) }, NOW)).toEqual({ sinceMs: SINCE, untilMs: UNTIL });
+    expect(resolveRoutingHealthWindow({ hours: 2, until: iso(UNTIL) }, NOW)).toEqual({ sinceMs: UNTIL - 2 * H, untilMs: UNTIL });
+  });
+  it('refuses an empty, unparseable, or over-long window', () => {
+    expect(resolveRoutingHealthWindow({ since: iso(UNTIL), until: iso(SINCE) }, NOW)).toHaveProperty('error');
+    expect(resolveRoutingHealthWindow({ since: 'yesterday' }, NOW)).toHaveProperty('error');
+    expect(resolveRoutingHealthWindow({ since: iso(NOW - 15 * 24 * H) }, NOW)).toHaveProperty('error');
+  });
+});
