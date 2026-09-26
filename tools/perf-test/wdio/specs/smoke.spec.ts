@@ -117,18 +117,33 @@ describe("Packaged Papercusp desktop binary", () => {
         readyState: document.readyState,
         resources,
         scheduler,
+        lcp:
+          (window as unknown as { __wv_lcp?: unknown; __wv_lcp_error?: string })
+            .__wv_lcp ?? null,
+        lcpAttributionError:
+          (window as unknown as { __wv_lcp_error?: string }).__wv_lcp_error ??
+          null,
         ipc: {
           client: ipcClient,
           assertionTimedOut: snapshot?.ipcAssertTimedOut ?? null,
           assertionLastClient: snapshot?.ipcAssertLastClient ?? null,
         },
         queryCountCompletedBeforeFcp: completedBeforeFcp.length,
-        startedBeforeFcpCompletedLater: startedBeforeFcp.length - completedBeforeFcp.length,
-        longestWaitsCompletedBeforeFcp: completedBeforeFcp.slice().sort((a, b) => b.waitMs - a.waitMs)
-          .slice(0, 10).map(compactQuery),
-        longestRequestsCompletedBeforeFcp: completedBeforeFcp.slice().sort((a, b) => b.requestMs - a.requestMs)
-          .slice(0, 10).map(compactQuery),
-        longTasksSupported: PerformanceObserver.supportedEntryTypes?.includes('longtask') ?? false,
+        startedBeforeFcpCompletedLater:
+          startedBeforeFcp.length - completedBeforeFcp.length,
+        longestWaitsCompletedBeforeFcp: completedBeforeFcp
+          .slice()
+          .sort((a, b) => b.waitMs - a.waitMs)
+          .slice(0, 10)
+          .map(compactQuery),
+        longestRequestsCompletedBeforeFcp: completedBeforeFcp
+          .slice()
+          .sort((a, b) => b.requestMs - a.requestMs)
+          .slice(0, 10)
+          .map(compactQuery),
+        longTasksSupported:
+          PerformanceObserver.supportedEntryTypes?.includes("longtask") ??
+          false,
       };
     }, reading.metrics.FCP ?? null);
     console.log('[web-vitals] page trace:', JSON.stringify(startup));
