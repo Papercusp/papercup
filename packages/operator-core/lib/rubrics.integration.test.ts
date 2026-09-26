@@ -3077,6 +3077,121 @@ describe('template_data persistence boundary — the set-template-data door', ()
     expect(revisions.filter((row) => row.source_bar_key === 'R-2').at(-1)!.required_test_layers).toEqual(['unit']);
   });
 
+  // D-002 (review-routing-through-relevance-router-2026-09-26, P-009): an amendment whose every
+  // change is mechanically additive skips the outside-lineage approval; a removal or a rewording
+  // keeps it, and so does a mixed amendment. The replacement case above (['unit'] → ['integration'])
+  // drops a layer, so it still requires approval.
+  async function subjectContent(subject: string) {
+    const [row] = await db.adminSql`SELECT content FROM harness_shared.harness_plans
+      WHERE workspace_id=${activeWorkspaceId()} AND harness_slug='papercusp' AND plan_slug=${subject}`;
+    return String(row!.content);
+  }
+  // `model` is canonical and `bar` is its alias; a reword must drop the alias or match it.
+  function reword<T extends { bar?: unknown }>({ bar: _bar, ...criterion }: T, model: string) {
+    return { ...criterion, model };
+  }
+
+  it('applies a started-BAR amendment that only grows required test layers without approval', async () => {
+    const seeded = await seedBarContract('additive-layer-amendment-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const key = before.criteria[0]!.key;
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Also require integration proof of the outcome.',
+      requirement: { key, acceptance: { requiredTestLayers: ['unit', 'integration'] } },
+    };
+    const preview = (await rubrics.previewAcceptanceBarAmendment(amendment))!;
+    expect(preview).toMatchObject({
+      changedBars: ['R-1'],
+      approvalRequired: false,
+      approvalClassification: { additiveBars: ['R-1'], reviewedBars: [] },
+    });
+    const changed = (await rubrics.amendRubric(amendment))!;
+    expect(changed.revision).toBe(before.revision! + 1);
+    // The canonical writer stores required layers sorted.
+    expect(changed.criteria[0]!.requiredTestLayers).toEqual(['integration', 'unit']);
+    expect(changed.criteria[0]!.barHash).not.toBe(before.criteria[0]!.barHash);
+    expect(changed.criteria[1]).toEqual(before.criteria[1]);
+    expect(await subjectContent(seeded.subject)).toContain(
+      'Approval: not required — every change is additive (R-1)',
+    );
+  });
+
+  it('applies a first check and proof layer to seeded BARs without approval', async () => {
+    const seeded = await seedBarContract('additive-check-amendment-subject');
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    expect(before.criteria.every((criterion) => !criterion.check)).toBe(true);
+    const amendment: Parameters<typeof rubrics.amendRubric>[0] = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'method-author',
+      reason: 'Author METHOD and deterministic checks for the seeded acceptance contract.',
+      criteria: before.criteria.map((criterion) => ({
+        ...criterion,
+        method: 'Execute the seeded acceptance fixture.',
+        check: { kind: 'tests' as const, files: ['packages/operator-core/lib/acceptance-bar-seed.test.ts'] },
+        requiredTestLayers: ['unit'],
+      })),
+    };
+    const preview = (await rubrics.previewAcceptanceBarAmendment(amendment))!;
+    expect(preview.changedBars).toEqual(['R-1', 'R-2']);
+    expect(preview.approvalRequired).toBe(false);
+    expect(preview.approvalClassification).toEqual({ additiveBars: ['R-1', 'R-2'], reviewedBars: [] });
+    const applied = (await rubrics.amendRubric(amendment))!;
+    expect(applied.revision).toBe(before.revision! + 1);
+    expect(applied.criteria.map((criterion) => criterion.check?.kind)).toEqual(['tests', 'tests']);
+    expect(await subjectContent(seeded.subject)).toContain(
+      'Approval: not required — every change is additive (R-1, R-2)',
+    );
+  });
+
+  it('still requires approval for a started-BAR prose rewording', async () => {
+    const seeded = await seedBarContract('reworded-bar-amendment-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const amendment: Parameters<typeof rubrics.amendRubric>[0] = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Loosen the first outcome.',
+      criteria: before.criteria.map((criterion) =>
+        criterion.barKey === 'R-1' ? reword(criterion, 'The first outcome usually holds.') : criterion,
+      ),
+    };
+    const preview = (await rubrics.previewAcceptanceBarAmendment(amendment))!;
+    expect(preview.changedBars).toEqual(['R-1']);
+    expect(preview.approvalRequired).toBe(true);
+    expect(preview.approvalClassification).toEqual({
+      additiveBars: [],
+      reviewedBars: [{ barKey: 'R-1', reason: expect.stringMatching(/changed$/) }],
+    });
+    await expect(rubrics.amendRubric(amendment)).rejects.toThrow('acceptance_bar_approval_required');
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+    const approved = (await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) }))!;
+    expect(approved.revision).toBe(before.revision! + 1);
+    expect(await subjectContent(seeded.subject)).not.toContain('Approval: not required');
+  });
+
+  it('still requires approval when an additive change is mixed with a rewording', async () => {
+    const seeded = await seedBarContract('mixed-bar-amendment-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const amendment: Parameters<typeof rubrics.amendRubric>[0] = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Add integration proof to R-1 and reword R-2.',
+      criteria: before.criteria.map((criterion) =>
+        criterion.barKey === 'R-1'
+          ? { ...criterion, requiredTestLayers: ['unit', 'integration'] }
+          : reword(criterion, 'The second outcome usually holds.'),
+      ),
+    };
+    const preview = (await rubrics.previewAcceptanceBarAmendment(amendment))!;
+    expect(preview.changedBars).toEqual(['R-1', 'R-2']);
+    expect(preview.approvalRequired).toBe(true);
+    expect(preview.approvalClassification.additiveBars).toEqual(['R-1']);
+    expect(preview.approvalClassification.reviewedBars.map((bar) => bar.barKey)).toEqual(['R-2']);
+    await expect(rubrics.amendRubric(amendment)).rejects.toThrow('acceptance_bar_approval_required');
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+  });
+
   it('previews structural plane amendments without writes and requires an actual outside-lineage approval', async () => {
     const seeded = await seedBarContract('plane-approval-subject', { authorMethods: true });
     const before = await rubrics.getRubric(seeded.rubricSlug);
