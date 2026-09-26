@@ -2002,6 +2002,7 @@ function runTestProcess(
   commandArgs: string[],
   args: string[],
   cwd: string,
+  checkoutRoot: string,
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
   signal?: AbortSignal,
@@ -2153,8 +2154,12 @@ function runTestProcess(
               else settleBeforeLaunchHandoff();
             }, launchTimeoutMs);
             void launchManagedTestProcess({
-              command,
-              args: [...commandArgs, ...args],
+              // The wrapper serializes admission with in-tree probe publication
+              // and keeps the original-byte bind over the entire child tree.
+              // It runs even when no probe was visible at preflight: a probe
+              // can start between that read and managedSpawn's handoff.
+              command: join(REPO_ROOT, 'scripts', 'testing-run-probe-overlay.sh'),
+              args: [checkoutRoot, '--', command, ...commandArgs, ...args],
               cwd,
               env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
               timeoutMs: launchTimeoutMs,
@@ -2246,6 +2251,7 @@ function runRouter(
     [join(cwd, 'scripts', 'test-files.mjs')],
     args,
     cwd,
+    cwd,
     env,
     timeoutMs,
     signal,
@@ -2257,6 +2263,7 @@ function runRouter(
 function runDirectVitest(
   args: string[],
   cwd: string,
+  checkoutRoot: string,
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
   signal?: AbortSignal,
@@ -2267,6 +2274,7 @@ function runDirectVitest(
     ['--no-install', 'vitest'],
     args,
     cwd,
+    checkoutRoot,
     env,
     timeoutMs,
     signal,
@@ -2791,6 +2799,7 @@ export async function runTestFilesCore(opts: {
         const groupOutcome = await runDirectVitest(
           groupArgs,
           group.cwd,
+          root,
           childEnv,
           remaining,
           opts.signal,
