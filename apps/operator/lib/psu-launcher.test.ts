@@ -134,6 +134,9 @@ import {
   recoverResumeSessionOwner,
   exactTrackedResumePath,
   rehydrateOutOfWindowTrackedSession,
+  exactTrackedResumeBySessionPath,
+  transcriptOwnerFromConfigDir,
+  recoverOutOfWindowTrackedSession,
   nativeSessionIdFromLaunchArgs,
   mintRecycleArgs,
   mintCarryRespawnArgs,
@@ -8612,6 +8615,124 @@ describe("out-of-window tracked-session recovery (WI-10002877)", () => {
         sessions: [{ ...durableRow, id: 99 }],
       }),
     ).toBeNull();
+  });
+});
+
+describe("carry-respawn incarnation recovery (WI-10003198)", () => {
+  // Measured shape (2026-09-26): transcript fa2b9674 is an EARLIER incarnation of
+  // su-5078d176. Its owner's only row (#29793) carries the LATER native id, the
+  // local owner index holds no row id for it, and the transcript sits in the
+  // owner's isolated config dir. psu refused every consult fork/convert of it.
+  const home = "/home/u";
+  const ownerDir = "/home/u/.papercusp/session-claude/su-5078d176";
+  const earlier = "fa2b9674-2646-42fa-9135-3909f93fcd9a";
+  const diskHit = {
+    agent: "claude",
+    sessionId: earlier,
+    cwd: "/repo",
+    untracked: true,
+    psuTracked: true,
+    id: null,
+    configDir: ownerDir,
+  };
+  const ownersRow = {
+    id: 29793,
+    agent: "claude",
+    sessionId: "f56ecb13-112b-4e1b-931b-34af1c6f274b",
+    cwd: "/repo",
+    workspaceId: "papercusp-workspace",
+    planSlug: null,
+    coordOwnerId: "su-5078d176",
+  };
+  beforeEach(() => {
+    // sessionClaudeRoot honours this override; a psu-launched test runner can carry it.
+    vi.stubEnv("PAPERCUSP_SESSION_CLAUDE_DIR", "");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("asks the server to bridge a native uuid only for a psu-tracked hit", () => {
+    expect(exactTrackedResumeBySessionPath(diskHit)).toBe(
+      `/api/adv/sessions/resumable?sessionId=${earlier}`,
+    );
+    expect(exactTrackedResumeBySessionPath({ ...diskHit, psuTracked: false })).toBeNull();
+    expect(exactTrackedResumeBySessionPath({ ...diskHit, sessionId: "omp-thread" })).toBeNull();
+  });
+
+  it("reads the transcript's owner from its isolated config dir, and nothing else", () => {
+    expect(transcriptOwnerFromConfigDir(diskHit, home)).toBe("su-5078d176");
+    expect(transcriptOwnerFromConfigDir({ configDir: "/elsewhere/su-x" }, home)).toBeNull();
+    expect(transcriptOwnerFromConfigDir({}, home)).toBeNull();
+  });
+
+  it("recovers the owner's row through the session bridge and keeps the earlier transcript", async () => {
+    const calls: string[] = [];
+    const apiImpl = async (path: string) => {
+      calls.push(path);
+      return { sessions: [ownersRow], exact: { id: 29793, ownerId: "su-5078d176", requestedSessionId: earlier } };
+    };
+    const { tracked, reasons } = await recoverOutOfWindowTrackedSession(diskHit, { apiImpl, home });
+    expect(calls).toEqual([`/api/adv/sessions/resumable?sessionId=${earlier}`]);
+    expect(reasons).toEqual([]);
+    // The row supplies identity/scope (id, owner, workspace); the disk hit
+    // supplies the transcript actually requested — never the row's later one.
+    expect(tracked).toMatchObject({
+      id: 29793,
+      coordOwnerId: "su-5078d176",
+      workspaceId: "papercusp-workspace",
+      sessionId: earlier,
+      configDir: ownerDir,
+    });
+  });
+
+  it("never trusts an owner-index row that belongs to a different owner than the transcript dir", async () => {
+    const foreign = { ...ownersRow, id: 31000, coordOwnerId: "su-consult-revival" };
+    const apiImpl = async (path: string) =>
+      path.includes("?id=31000")
+        ? { sessions: [foreign] }
+        : { sessions: [ownersRow], exact: { id: 29793, ownerId: "su-5078d176", requestedSessionId: earlier } };
+    const { tracked, reasons } = await recoverOutOfWindowTrackedSession(
+      { ...diskHit, id: 31000 },
+      { apiImpl, home },
+    );
+    expect(tracked).toMatchObject({ id: 29793, coordOwnerId: "su-5078d176", sessionId: earlier });
+    expect(reasons.join(" ")).toMatch(/owner-index row #31000 belongs to su-consult-revival/);
+  });
+
+  it("refuses a session-bridge row whose owner disagrees with the transcript dir", async () => {
+    const apiImpl = async () => ({
+      sessions: [{ ...ownersRow, coordOwnerId: "su-someone-else" }],
+      exact: { id: 29793, ownerId: "su-someone-else", requestedSessionId: earlier },
+    });
+    const { tracked, reasons } = await recoverOutOfWindowTrackedSession(diskHit, { apiImpl, home });
+    expect(tracked).toBeNull();
+    expect(reasons.join(" ")).toMatch(/session-bridge row #29793 belongs to su-someone-else/);
+  });
+
+  it("returns concrete reasons, never a throw, when nothing can be recovered", async () => {
+    // An operator that predates the sessionId lookup answers with the plain window.
+    const older = await recoverOutOfWindowTrackedSession(diskHit, {
+      apiImpl: async () => ({ sessions: [] }),
+      home,
+    });
+    expect(older.tracked).toBeNull();
+    expect(older.reasons.join(" ")).toMatch(/resolved no tracked row .* predate the sessionId lookup/);
+
+    const broken = await recoverOutOfWindowTrackedSession(diskHit, {
+      apiImpl: async () => {
+        throw new Error("ECONNREFUSED");
+      },
+      home,
+    });
+    expect(broken.tracked).toBeNull();
+    expect(broken.reasons.join(" ")).toMatch(/session-bridge read failed \(ECONNREFUSED\)/);
+
+    const nothing = await recoverOutOfWindowTrackedSession(
+      { ...diskHit, psuTracked: false },
+      { apiImpl: async () => ({ sessions: [] }), home },
+    );
+    expect(nothing).toEqual({ tracked: null, reasons: ["no row id and no native session uuid to look up"] });
   });
 });
 
