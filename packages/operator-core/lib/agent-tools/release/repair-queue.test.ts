@@ -709,6 +709,56 @@ describe('release:repair-queue', () => {
       return (await transitionResult).queue;
     };
 
+    it('settles a dead host-generation runner as failed on get instead of advertising a live pre-check', async () => {
+      const pending = {
+        ...queueWithoutPrecheck(),
+        admissionPrecheck: {
+          ...queue.admissionPrecheck,
+          status: 'running' as const,
+          verdict: undefined,
+          runnerPid: 999_999_999,
+          runnerPidIdentity: 'old-boot:123',
+          startedAtMs: Date.now() - 1000,
+          expiresAtMs: Date.now() + 60_000,
+        },
+      };
+      let persisted = pending as typeof queue;
+      mocks.readState.mockImplementation(async () => ({ status: 'value', queue: persisted }));
+      mocks.transition.mockImplementation(async (_target, transition) => {
+        persisted = transition(persisted);
+        return { status: 'written', queue: persisted, fresh: persisted, retries: 0 };
+      });
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never)) as {
+        repairQueue: { admissionPrecheck: { status: string; verdict: { ok: boolean; detail: string } } };
+      };
+      expect(result.repairQueue.admissionPrecheck).toMatchObject({
+        status: 'failed',
+        verdict: { ok: false, detail: expect.stringContaining('host process 999999999 ended or was replaced') },
+      });
+      expect(persisted.dispatchReservation).toBeUndefined();
+      expect(mocks.transition).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not falsely fail a legacy running marker without a process identity', async () => {
+      mocks.readState.mockResolvedValue({
+        status: 'value',
+        queue: {
+          ...queueWithoutPrecheck(),
+          admissionPrecheck: {
+            ...queue.admissionPrecheck,
+            status: 'running',
+            verdict: undefined,
+            expiresAtMs: Date.now() + 60_000,
+          },
+        },
+      });
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never)) as {
+        repairQueue: { admissionPrecheck: { status: string } };
+      };
+      expect(result.repairQueue.admissionPrecheck.status).toBe('running');
+      expect(mocks.transition).not.toHaveBeenCalled();
+    });
+
     it('a live pre-check serializes the queue: another confirmed admission returns the same handle without building or launching', async () => {
       const pending = {
         ...queueWithoutPrecheck(),

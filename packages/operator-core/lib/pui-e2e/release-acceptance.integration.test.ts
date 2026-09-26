@@ -190,6 +190,11 @@ describe.sequential('P-012 release stage over a real candidate (package → inst
     expect(result.out).toBe(`${pkg.archive}.acceptance.json`);
     expect(verdict.runner.platform).toBe(PLATFORM);
     expect(result.legs).toEqual([expect.objectContaining({ engine: 'scripted', status: 0 })]);
+    expect(result.stockMachines).toEqual([
+      expect.objectContaining({ image: 'ubuntu:24.04', status: 0 }),
+      expect.objectContaining({ image: 'debian:stable-slim', status: 0 }),
+    ]);
+    expect(result.stockMachines.every(({ output }) => output.includes('PUI local install: OK'))).toBe(true);
 
     // Independent oracles for "the installed binary": our own hash of the file
     // the launcher resolves to, and the archive's own digest list.

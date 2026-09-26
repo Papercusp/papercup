@@ -62,7 +62,46 @@ export interface RunResult {
   verdict: Verdict;
   out: string;
   legs: Array<{ engine: string; status: number | null; evidence: string; rows: number }>;
+  stockMachines: StockMachineResult[];
   suiteProvenance: Array<{ file: string; candidateBlob: string | null; runBlob: string | null }>;
+}
+
+export interface StockMachineResult {
+  image: string;
+  status: number | null;
+  output: string;
+}
+
+const STOCK_LINUX_IMAGES = ['ubuntu:24.04', 'debian:stable-slim'];
+const STOCK_MACHINE_SCRIPT = `set -eu
+mkdir -p "$HOME"
+cd /candidate
+./install.sh --yes
+"$HOME/.local/bin/pui" --version
+doctor=$("$HOME/.local/bin/pui" doctor 2>&1) || :
+printf '%s\\n' "$doctor"
+case "$doctor" in
+  *"PUI local install: OK"*) ;;
+  *) echo 'pui doctor did not confirm the installed release' >&2; exit 1 ;;
+esac
+exec "$HOME/.local/bin/psu" --version`;
+
+/** Exercise the shipped unit on stock Linux, without host libraries or network. */
+export function runStockMachineSmoke(unit: string, images = STOCK_LINUX_IMAGES): StockMachineResult[] {
+  return images.map((image) => {
+    const run = spawnSync('docker', [
+      'run', '--rm', '--pull=missing', '--network=none', '--read-only',
+      '--tmpfs', '/tmp:rw,exec,mode=1777',
+      '--mount', `type=bind,source=${realpathSync(unit)},target=/candidate,readonly`,
+      '--env', 'HOME=/tmp/pui-home', '--env', 'TERM=dumb', '--env', 'PAPERCUSP_HONO_PORT=1',
+      '--entrypoint', '/bin/sh', image, '-ec', STOCK_MACHINE_SCRIPT,
+    ], { encoding: 'utf8', timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024 });
+    return {
+      image,
+      status: run.status,
+      output: `${run.stdout ?? ''}\n${run.stderr ?? ''}${run.error ? `\n${run.error.message}` : ''}`.slice(-8_000),
+    };
+  });
 }
 
 const sha256 = (file: string) => createHash('sha256').update(readFileSync(file)).digest('hex');
@@ -151,6 +190,7 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
     target: string; source: { commit: string };
   };
   const sourceSha = provenance.source.commit;
+  const stockMachines = provenance.target.startsWith('linux-') ? runStockMachineSmoke(unit) : [];
 
   const home = path.join(work, 'home');
   mkdirSync(path.join(home, 'tmp'), { recursive: true });
@@ -217,6 +257,11 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   if (!contract) extra.push(`candidate ${sourceSha} carries no apps/tui/PUBLIC_RELEASE_UX.md`);
   if (!matrixText) extra.push(`candidate ${sourceSha} carries no apps/tui/release/acceptance-matrix.json`);
   if (!platform) extra.push(`this host (${process.platform}/${process.arch}) is not a platform in the release matrix`);
+  for (const machine of stockMachines) {
+    if (machine.status !== 0) {
+      extra.push(`stock-machine smoke on ${machine.image} failed (status ${machine.status}): ${machine.output.slice(-1_000)}`);
+    }
+  }
   const suiteProvenance = ACCEPTANCE_SOURCES.map((file) => ({ file, candidateBlob: blob(sourceSha, file), runBlob: blob(null, file) }));
   for (const entry of suiteProvenance) {
     if (!entry.candidateBlob || entry.candidateBlob !== entry.runBlob) {
@@ -234,8 +279,8 @@ export async function runReleaseAcceptance(options: RunOptions): Promise<RunResu
   writeFileSync(out, `${JSON.stringify({
     schemaVersion: 1,
     checkedAt: new Date().toISOString(),
-    runner: { head: git('rev-parse', 'HEAD'), platform, legs, suiteProvenance, work },
+    runner: { head: git('rev-parse', 'HEAD'), platform, legs, stockMachines, suiteProvenance, work },
     ...verdict,
   }, null, 2)}\n`);
-  return { verdict, out, legs, suiteProvenance };
+  return { verdict, out, legs, stockMachines, suiteProvenance };
 }

@@ -22,6 +22,8 @@ import {
 } from '../../harness/routines/release-actions';
 import { integrationRoot } from '../../release-deploy-launch';
 import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
+import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
+import { isPidAlive } from '../../release/in-flight-candidate';
 import {
   describeUnreadableFrozenCandidateRepairQueue,
   diagnoseFrozenCandidateRepairQueue,
@@ -416,6 +418,35 @@ async function inspectQueue() {
   let queue = read.status === 'value' ? read.queue : null;
   let ledger: { status: string; reconciled: number; detail: string } | null = null;
   if (queue) ({ queue, ledger } = await reconcileQueueRowWithLineage(queueTarget, queue));
+  // R6 runs in this host's process, not a persistent worker. A normal service restart
+  // kills its setup/test child and its in-memory finalizer. The marker must not keep
+  // advertising "running" until the entire per-file timeout budget expires.
+  const pending = queue?.admissionPrecheck;
+  if (queue && pending?.status === 'running' && pending.runnerPidIdentity && pending.runnerPid) {
+    const alive = isPidAlive(pending.runnerPid);
+    const observedIdentity = alive === true ? checkpointPidIdentity(pending.runnerPid) : null;
+    if (alive === false || (observedIdentity !== null && observedIdentity !== pending.runnerPidIdentity)) {
+      const detail =
+        `R6 pre-check host process ${pending.runnerPid} ended or was replaced before settling ` +
+        `${pending.operationId}; no test verdict exists for ${pending.builtCommit.slice(0, 12)}. ` +
+        'The admission remains fail-closed; retryPrecheck:true starts a fresh measurement.';
+      const verdict = evaluateFixPrecheck(
+        precheckPopulation({ signature: queue.signature, admittedPaths: pending.files }),
+        { ran: false, reason: 'runner-failed', detail },
+      );
+      try {
+        await settleAdmissionPrecheck(queueTarget, pending.operationId, verdict);
+        const refreshed = await readFrozenCandidateRepairQueueState(queueTarget);
+        if (refreshed.status === 'value') queue = refreshed.queue;
+      } catch (err) {
+        ledger = {
+          status: 'precheck-reconcile-failed',
+          reconciled: 0,
+          detail: `Could not persist host-restart failure for ${pending.operationId}: ${String(err)}`,
+        };
+      }
+    }
+  }
   let fixerAlive: boolean | null | undefined;
   if (queue?.fixerSpawnId) {
     fixerAlive = await releaseFixerSpawnAlive(getOrgPg().sql, queue.fixerSpawnId).catch(() => null);
@@ -1171,6 +1202,7 @@ export default defineTool({
           precheck = matchingPrecheck.verdict;
         } else {
           const startedAtMs = Date.now();
+          const runnerPidIdentity = checkpointPidIdentity(process.pid);
           const operationId =
             `repair-precheck-${queue.candidate.slice(0, 12)}-${builtCommit.slice(0, 12)}-` +
             `${startedAtMs.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1185,6 +1217,8 @@ export default defineTool({
             builtTree: outcome.tree,
             files: [...population.files],
             actor: identity.ownerId,
+            runnerPid: process.pid,
+            ...(runnerPidIdentity ? { runnerPidIdentity } : {}),
             startedAtMs,
             updatedAtMs: startedAtMs,
             expiresAtMs: admissionPrecheckDeadline(startedAtMs, population.files),

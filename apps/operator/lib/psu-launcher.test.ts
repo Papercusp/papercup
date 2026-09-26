@@ -3177,6 +3177,19 @@ describe("psu-launcher arg parsing", () => {
     }
   });
 
+  it("recognizes --version and -V as terminal parser results without warning", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(parseArgs(["--version", "--model=not-a-real-model"])).toMatchObject({
+        version: true,
+      });
+      expect(parseArgs(["-V"])).toMatchObject({ version: true });
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("runs --help without entering the picker or launch flow", () => {
     const launcher = join(__dirname, "..", "scripts", "psu-launcher.mjs");
     const result = spawnSync(
@@ -3192,6 +3205,25 @@ describe("psu-launcher arg parsing", () => {
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(PSU_HELP_TEXT);
     expect(result.stderr).not.toContain("unrecognized flag");
+  });
+
+  it("runs --version without entering the connection controller or picker", () => {
+    const launcher = join(__dirname, "..", "scripts", "psu-launcher.mjs");
+    const result = spawnSync(process.execPath, [launcher, "--version"], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        PAPERCUSP_BUILD_ID: "fixture-build",
+        PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1",
+      },
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("psu fixture-build\n");
+    expect(result.stderr).not.toMatch(/ECONNREFUSED|connection profile|picker/i);
+    expect(PSU_HELP_TEXT).toContain("--version");
   });
 
   it("reaches recovery redemption without contacting the operator or connection controller", () => {

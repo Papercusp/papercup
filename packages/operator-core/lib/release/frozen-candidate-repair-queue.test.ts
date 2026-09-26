@@ -66,6 +66,8 @@ describe('frozen-candidate repair queue', () => {
         builtTree: C2,
         files: ['lib/a.test.ts'],
         actor: 'su-test',
+        runnerPid: 123,
+        runnerPidIdentity: 'boot-id:456',
         startedAtMs: T0 + 1,
         updatedAtMs: T0 + 1,
         expiresAtMs: T0 + 60_000,
@@ -77,6 +79,14 @@ describe('frozen-candidate repair queue', () => {
     };
     const parsed = parseFrozenCandidateRepairQueue(JSON.parse(JSON.stringify(pending)));
     expect(parsed?.admissionPrecheck).toEqual(pending.admissionPrecheck);
+    expect(parseFrozenCandidateRepairQueue({
+      ...pending,
+      admissionPrecheck: { ...pending.admissionPrecheck, runnerPid: -1 },
+    })?.admissionPrecheck).toBeUndefined();
+    expect(parseFrozenCandidateRepairQueue({
+      ...pending,
+      admissionPrecheck: { ...pending.admissionPrecheck, runnerPid: undefined, runnerPidIdentity: 'boot-id:456' },
+    })?.admissionPrecheck).toBeUndefined();
     expect(diagnoseFrozenCandidateRepairQueue(parsed!, { nowMs: T0 + 2 })?.admissionPrecheck).toEqual(
       pending.admissionPrecheck,
     );

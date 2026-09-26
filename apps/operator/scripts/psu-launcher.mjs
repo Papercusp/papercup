@@ -244,6 +244,7 @@ scripted launch.
 
 Session selection:
   -h, --help                         Show this help and exit
+  -V, --version                      Show the psu build version and exit
   --resume[=<id>] [id]               Resume a tracked or native session
   --fork, --fork-session             Fork the selected session (with --resume)
   --brain                            Show the retired brain-session message
@@ -957,6 +958,12 @@ export function parseArgs(argv) {
       // Help is a terminal parser result: ignore any following launch flags so
       // `psu --help` cannot validate, prompt, contact the operator, or spawn.
       out.help = true;
+      break;
+    }
+    if (a === "--version" || a === "-V") {
+      // Version is also terminal: no picker, profile lookup, credential read,
+      // operator request or connection-controller prompt may precede it.
+      out.version = true;
       break;
     }
     if (a === "--set-claude-token") {
@@ -15338,6 +15345,13 @@ async function main() {
   // even the connection front controller: a remote-profile lookup or transport
   // bootstrap must not become an accidental prerequisite during an outage.
   const rawArgv = process.argv.slice(2);
+  if (rawArgv.includes("--version") || rawArgv.includes("-V")) {
+    const versionArgs = parseArgs(rawArgv);
+    if (versionArgs.version) {
+      process.stdout.write(`psu ${psuClientVersion()}\n`);
+      return;
+    }
+  }
   if (hasRecoveryCliFlag(rawArgv)) {
     const recoveryArgs = parseArgs(rawArgv);
     if (await recoveryFlow(recoveryArgs, { rawArgv })) return;
@@ -15354,6 +15368,10 @@ async function main() {
   // prompt, read credentials, contact the operator, or create a session.
   if (args.help) {
     process.stdout.write(`${PSU_HELP_TEXT}\n`);
+    return;
+  }
+  if (args.version) {
+    process.stdout.write(`psu ${psuClientVersion()}\n`);
     return;
   }
   if (await recoveryFlow(args, { rawArgv: connection.argv })) return;

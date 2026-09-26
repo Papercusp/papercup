@@ -424,6 +424,10 @@ export interface FrozenRepairAdmissionPrecheck {
   builtTree?: string;
   files: string[];
   actor: string;
+  /** Process that owns the in-memory runner; absent on legacy R6 markers. */
+  runnerPid?: number;
+  /** Boot id + /proc start ticks, so a recycled PID cannot masquerade as the runner. */
+  runnerPidIdentity?: string;
   startedAtMs: number;
   updatedAtMs: number;
   expiresAtMs: number;
@@ -1425,6 +1429,8 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
       (typeof row.sourceCommit !== 'string' || !/^[0-9a-f]{40,64}$/.test(row.sourceCommit))) ||
     (row.builtTree !== undefined && !nonBlank(row.builtTree)) ||
     !nonBlank(row.actor) ||
+    (row.runnerPid !== undefined && (!Number.isInteger(row.runnerPid) || (row.runnerPid as number) <= 0)) ||
+    (row.runnerPidIdentity !== undefined && (!nonBlank(row.runnerPidIdentity) || row.runnerPid === undefined)) ||
     !files ||
     !files.every(nonBlank) ||
     !validTimestamp(row.startedAtMs) ||
@@ -1473,6 +1479,8 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
     ...(nonBlank(row.builtTree) ? { builtTree: row.builtTree } : {}),
     files: [...(row.files as string[])],
     actor: row.actor as string,
+    ...(typeof row.runnerPid === 'number' ? { runnerPid: row.runnerPid } : {}),
+    ...(typeof row.runnerPidIdentity === 'string' ? { runnerPidIdentity: row.runnerPidIdentity } : {}),
     startedAtMs: row.startedAtMs as number,
     updatedAtMs: row.updatedAtMs as number,
     expiresAtMs: row.expiresAtMs as number,
