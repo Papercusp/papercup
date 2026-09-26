@@ -260,6 +260,84 @@ export async function isRegisteredHive(workspaceId: string, slug: string): Promi
   return registry.projects.some((project) => project.slug === slug && project.harness_kind === 'hive');
 }
 
+/** Upstream coordinates an invite link carries for the repo it clones. */
+export interface LinkJoinedUpstream {
+  /** `owner/repo` from the link. */
+  github?: string;
+  repoId?: number;
+}
+
+/**
+ * The fields a link-joined entry is missing, relative to the ONE registry shape
+ * for it (WI-10003277). Empty when the entry is complete. Existing values are
+ * never overwritten, even divergent ones.
+ */
+function linkJoinedPatch(p: ProjectEntry, upstream: LinkJoinedUpstream): Partial<ProjectEntry> {
+  return {
+    ...(p.github_remote || !upstream.github ? {} : { github_remote: `https://github.com/${upstream.github}` }),
+    ...(typeof p.github_repository_id === 'number' || typeof upstream.repoId !== 'number'
+      ? {}
+      : { github_repository_id: upstream.repoId }),
+    ...(p.joined_via_link === undefined ? { joined_via_link: true } : {}),
+    // WI-3891: without these three, isRegisteredHive()/isHiveProject() never
+    // recognize the entry (probe:emit refuses harness_not_federated, pot:get and
+    // pot:list report hive_not_found) and federation-scope does not count the
+    // hive as shared. Mirrors bootstrap-papercusp-hive.ts's self-admit shape: a
+    // real repo checkout that is a joiner-side hive member, never its own home.
+    ...(p.harness_kind === 'hive' ? {} : { harness_kind: 'hive' }),
+    ...(p.remote_hive === true ? {} : { remote_hive: true }),
+    ...(p.self_repo === true ? {} : { self_repo: true }),
+  };
+}
+
+/**
+ * Insert-or-enrich the entry for a checkout joined through an invite LINK. This
+ * is the one writer of that shape (WI-10003277). Three paths used to write it
+ * three ways: the join-link route stamped the WI-3891 shape, the join
+ * orchestrator's pre-boot registration wrote only `joined_via_link` + upstream
+ * coords, and the boot-time join-state heal wrote a bare `{ slug, path }`. A
+ * join that died after the pre-boot write (the route answers 502, and every
+ * retry then stops at 409 slug_conflict) kept the short row for good, so the
+ * member never counted its own hive as shared: seat offers were skipped
+ * `hive_not_shared` on the P-202 rig, 2026-09-26.
+ *
+ * An existing same-slug entry is enriched only when it is this clone (same
+ * path) or is already marked link-joined; anything else is a different
+ * checkout and is left alone. Returns `reg` itself when nothing changes.
+ */
+export function upsertLinkJoinedEntry(
+  reg: HarnessRegistry,
+  entry: { slug: string; path: string } & LinkJoinedUpstream,
+): HarnessRegistry {
+  const { slug, path, ...upstream } = entry;
+  const existing = reg.projects.find((p) => p.slug === slug);
+  if (!existing) {
+    const fresh: ProjectEntry = { slug, path };
+    return { ...reg, projects: [...reg.projects, { ...fresh, ...linkJoinedPatch(fresh, upstream) }] };
+  }
+  if (existing.joined_via_link !== true && existing.path !== path) return reg;
+  const patch = linkJoinedPatch(existing, upstream);
+  if (Object.keys(patch).length === 0) return reg;
+  return { ...reg, projects: reg.projects.map((p) => (p.slug === slug ? { ...p, ...patch } : p)) };
+}
+
+/**
+ * Complete every `joined_via_link` entry that is missing part of the
+ * link-joined shape: the boot-time heal for rows an older build left short.
+ * Returns `reg` itself and no slugs when nothing changes.
+ */
+export function healLinkJoinedEntries(reg: HarnessRegistry): { registry: HarnessRegistry; healed: string[] } {
+  const healed: string[] = [];
+  const projects = reg.projects.map((p) => {
+    if (p.joined_via_link !== true) return p;
+    const patch = linkJoinedPatch(p, {});
+    if (Object.keys(patch).length === 0) return p;
+    healed.push(p.slug);
+    return { ...p, ...patch };
+  });
+  return healed.length === 0 ? { registry: reg, healed } : { registry: { ...reg, projects }, healed };
+}
+
 /**
  * The registry's uniqueness invariant: `slug` is the primary key. Every
  * insert path guards with `projects.some(p => p.slug === …)` and every update

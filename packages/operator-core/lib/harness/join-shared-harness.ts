@@ -697,24 +697,18 @@ export async function joinSharedHarness(opts: JoinOptions): Promise<JoinState> {
             // slug-present check skipped an existing row) and left the clone
             // invisible to the hive_slug/joined_via_link-keyed git-sync
             // reconcile, and easy to mistake for registry debris.
-            const { mutateHarnessRegistry } = await import('../harness-registry');
+            // The full link-joined shape, not a subset: a join that dies after
+            // this write never reaches the route's enrichment, and a short row
+            // was never counted as a shared hive (WI-10003277).
+            const { mutateHarnessRegistry, upsertLinkJoinedEntry } = await import('../harness-registry');
             const cloneDir = state.cloneDir;
             await mutateHarnessRegistry((reg) =>
-              reg.projects.some((p) => p.slug === opts.slug)
-                ? reg
-                : {
-                    ...reg,
-                    projects: [
-                      ...reg.projects,
-                      {
-                        slug: opts.slug,
-                        path: cloneDir,
-                        github_remote: `https://github.com/${opts.link.github}`,
-                        github_repository_id: opts.link.repoId,
-                        joined_via_link: true,
-                      },
-                    ],
-                  },
+              upsertLinkJoinedEntry(reg, {
+                slug: opts.slug,
+                path: cloneDir,
+                github: opts.link.github,
+                repoId: opts.link.repoId,
+              }),
             );
           }
         } catch {

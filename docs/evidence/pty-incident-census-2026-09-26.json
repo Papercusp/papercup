@@ -1,0 +1,227 @@
+{
+  "schema": "pty-incident-census/v1",
+  "clause": "psu-pty-host-recent-errors-2026-09-24#PTY-INCIDENT-CENSUS@1",
+  "planItem": "P-001",
+  "generatedAt": "2026-09-26T16:19:02.959Z",
+  "population": {
+    "source": "~/.papercusp/psu-pty/*.events.jsonl",
+    "window": {
+      "from": "2026-09-25T16:00:00.000Z",
+      "toExclusive": "2026-09-26T16:00:00.000Z"
+    },
+    "filesScanned": 3659,
+    "filesWithInWindowRows": 196,
+    "rowsScanned": 148332,
+    "rowsInWindow": 6623,
+    "malformedRows": 0
+  },
+  "failureCodeRule": "code = kind when kind matches /fail|error|timeout|timed-out|stuck|exhaust|refus|never-settled|not-confirmed|unconfirmed|unverified|drop|lost|abort|crash|mismatch|expired|absent|give-?up/i; else kind:reason when reason matches; otherwise not a failure. Session = ownerId (fallback: ledger file stem).",
+  "census": [
+    {
+      "code": "respawn-carry-dropped",
+      "events": 328,
+      "affectedSessions": 29,
+      "lastObservedAt": "2026-09-26T15:58:45.993Z"
+    },
+    {
+      "code": "wake-rearm-queued:busy-gate-expired",
+      "events": 328,
+      "affectedSessions": 35,
+      "lastObservedAt": "2026-09-26T15:58:52.844Z"
+    },
+    {
+      "code": "busy-gate-expired",
+      "events": 280,
+      "affectedSessions": 38,
+      "lastObservedAt": "2026-09-26T15:58:52.844Z"
+    },
+    {
+      "code": "respawn-carry-turn-start-retry:native-turn-marker-timeout",
+      "events": 190,
+      "affectedSessions": 16,
+      "lastObservedAt": "2026-09-26T05:10:51.917Z"
+    },
+    {
+      "code": "turn-start-unverified",
+      "events": 177,
+      "affectedSessions": 16,
+      "lastObservedAt": "2026-09-26T05:11:07.683Z"
+    },
+    {
+      "code": "respawn-rearm-queued:busy-gate-expired",
+      "events": 150,
+      "affectedSessions": 27,
+      "lastObservedAt": "2026-09-26T15:58:39.474Z"
+    },
+    {
+      "code": "stale-fire-dropped",
+      "events": 98,
+      "affectedSessions": 8,
+      "lastObservedAt": "2026-09-26T05:14:41.452Z"
+    },
+    {
+      "code": "respawn-carry-fresh-epoch-retry:turn-start-unverified",
+      "events": 90,
+      "affectedSessions": 15,
+      "lastObservedAt": "2026-09-26T05:10:05.456Z"
+    },
+    {
+      "code": "launch-kickoff-model-turn-absent",
+      "events": 11,
+      "affectedSessions": 11,
+      "lastObservedAt": "2026-09-26T15:41:57.187Z"
+    },
+    {
+      "code": "startup-turn-dropped",
+      "events": 8,
+      "affectedSessions": 8,
+      "lastObservedAt": "2026-09-26T15:38:27.075Z"
+    },
+    {
+      "code": "launch-kickoff-marker-echo-unconfirmed",
+      "events": 6,
+      "affectedSessions": 6,
+      "lastObservedAt": "2026-09-26T03:39:22.280Z"
+    },
+    {
+      "code": "persona-refresh-skipped:error: The operation was aborted due to timeout",
+      "events": 5,
+      "affectedSessions": 4,
+      "lastObservedAt": "2026-09-26T15:42:33.958Z"
+    },
+    {
+      "code": "wake-rearm-dropped",
+      "events": 4,
+      "affectedSessions": 2,
+      "lastObservedAt": "2026-09-26T15:38:27.076Z"
+    },
+    {
+      "code": "mcp-reconnect-failed",
+      "events": 3,
+      "affectedSessions": 3,
+      "lastObservedAt": "2026-09-26T15:42:30.389Z"
+    },
+    {
+      "code": "persona-refresh-skipped:error: fetch failed",
+      "events": 3,
+      "affectedSessions": 3,
+      "lastObservedAt": "2026-09-26T15:34:11.102Z"
+    },
+    {
+      "code": "submit-verify-unconfirmed",
+      "events": 2,
+      "affectedSessions": 2,
+      "lastObservedAt": "2026-09-26T15:38:27.075Z"
+    }
+  ],
+  "independentReaggregation": {
+    "method": "jq per-file re-parse with the same rule (independent parser and grouping)",
+    "table": [
+      {
+        "code": "respawn-carry-dropped",
+        "events": 328,
+        "affectedSessions": 29,
+        "lastObservedAt": "2026-09-26T15:58:45.993Z"
+      },
+      {
+        "code": "wake-rearm-queued:busy-gate-expired",
+        "events": 328,
+        "affectedSessions": 35,
+        "lastObservedAt": "2026-09-26T15:58:52.844Z"
+      },
+      {
+        "code": "busy-gate-expired",
+        "events": 280,
+        "affectedSessions": 38,
+        "lastObservedAt": "2026-09-26T15:58:52.844Z"
+      },
+      {
+        "code": "respawn-carry-turn-start-retry:native-turn-marker-timeout",
+        "events": 190,
+        "affectedSessions": 16,
+        "lastObservedAt": "2026-09-26T05:10:51.917Z"
+      },
+      {
+        "code": "turn-start-unverified",
+        "events": 177,
+        "affectedSessions": 16,
+        "lastObservedAt": "2026-09-26T05:11:07.683Z"
+      },
+      {
+        "code": "respawn-rearm-queued:busy-gate-expired",
+        "events": 150,
+        "affectedSessions": 27,
+        "lastObservedAt": "2026-09-26T15:58:39.474Z"
+      },
+      {
+        "code": "stale-fire-dropped",
+        "events": 98,
+        "affectedSessions": 8,
+        "lastObservedAt": "2026-09-26T05:14:41.452Z"
+      },
+      {
+        "code": "respawn-carry-fresh-epoch-retry:turn-start-unverified",
+        "events": 90,
+        "affectedSessions": 15,
+        "lastObservedAt": "2026-09-26T05:10:05.456Z"
+      },
+      {
+        "code": "launch-kickoff-model-turn-absent",
+        "events": 11,
+        "affectedSessions": 11,
+        "lastObservedAt": "2026-09-26T15:41:57.187Z"
+      },
+      {
+        "code": "startup-turn-dropped",
+        "events": 8,
+        "affectedSessions": 8,
+        "lastObservedAt": "2026-09-26T15:38:27.075Z"
+      },
+      {
+        "code": "launch-kickoff-marker-echo-unconfirmed",
+        "events": 6,
+        "affectedSessions": 6,
+        "lastObservedAt": "2026-09-26T03:39:22.280Z"
+      },
+      {
+        "code": "persona-refresh-skipped:error: The operation was aborted due to timeout",
+        "events": 5,
+        "affectedSessions": 4,
+        "lastObservedAt": "2026-09-26T15:42:33.958Z"
+      },
+      {
+        "code": "wake-rearm-dropped",
+        "events": 4,
+        "affectedSessions": 2,
+        "lastObservedAt": "2026-09-26T15:38:27.076Z"
+      },
+      {
+        "code": "mcp-reconnect-failed",
+        "events": 3,
+        "affectedSessions": 3,
+        "lastObservedAt": "2026-09-26T15:42:30.389Z"
+      },
+      {
+        "code": "persona-refresh-skipped:error: fetch failed",
+        "events": 3,
+        "affectedSessions": 3,
+        "lastObservedAt": "2026-09-26T15:34:11.102Z"
+      },
+      {
+        "code": "submit-verify-unconfirmed",
+        "events": 2,
+        "affectedSessions": 2,
+        "lastObservedAt": "2026-09-26T15:38:27.075Z"
+      }
+    ]
+  },
+  "comparison": {
+    "codesCompared": 16,
+    "mismatches": [],
+    "verdict": "agree"
+  },
+  "producer": {
+    "script": ".papercusp/scratch/pty-census.mts (scratch, not committed)",
+    "sha256": "8de5c7d2a29d56238ed3b215f6a6e9b28a5bae96a2aeeb32d5c6700d244c98b7"
+  }
+}

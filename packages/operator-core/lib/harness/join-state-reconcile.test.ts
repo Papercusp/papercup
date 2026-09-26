@@ -52,7 +52,57 @@ describe('reconcileJoinStates (P-013)', () => {
     const { opts, calls } = fakes([js('ghost', '/clones/ghost')], [], ['/clones/ghost']);
     const r = await reconcileJoinStates(opts);
     expect(r.reregistered).toEqual(['ghost']);
-    expect(calls.registry).toContainEqual({ slug: 'ghost', path: '/clones/ghost' });
+    // Re-registered in the full link-joined shape (WI-10003277), not a bare row.
+    expect(calls.registry).toContainEqual({
+      slug: 'ghost',
+      path: '/clones/ghost',
+      joined_via_link: true,
+      harness_kind: 'hive',
+      remote_hive: true,
+      self_repo: true,
+    });
+  });
+
+  it('WI-10003277: completes a registered link-joined row an older build left short', async () => {
+    const { opts, calls } = fakes([], [], []);
+    const shortRow = {
+      slug: 'papercusp',
+      path: '/clones/papercup',
+      github_remote: 'https://github.com/Papercusp/papercup',
+      github_repository_id: 12345,
+      joined_via_link: true,
+    };
+    const owned = { slug: 'mine', path: '/r/mine' };
+    calls.registry = [shortRow, owned];
+    const r = await reconcileJoinStates(opts);
+    expect(r.enriched).toEqual(['papercusp']);
+    expect(calls.registry).toEqual([
+      { ...shortRow, harness_kind: 'hive', remote_hive: true, self_repo: true },
+      owned, // not link-joined: never stamped
+    ]);
+  });
+
+  it('WI-10003277: no registry write when every link-joined row is already complete', async () => {
+    const full = {
+      slug: 'papercusp',
+      path: '/clones/papercup',
+      joined_via_link: true,
+      harness_kind: 'hive',
+      remote_hive: true,
+      self_repo: true,
+    };
+    let writes = 0;
+    const r = await reconcileJoinStates({
+      workspaceId: 'ws',
+      listJoinStates: async () => [],
+      loadRegistry: async () => ({ projects: [full] }),
+      mutateRegistry: (async () => {
+        writes += 1;
+        return undefined as never;
+      }) as never,
+    });
+    expect(r.enriched).toEqual([]);
+    expect(writes).toBe(0);
   });
 
   it('unregistered + no clone dir on disk → abandoned, reported (nothing to re-drive)', async () => {

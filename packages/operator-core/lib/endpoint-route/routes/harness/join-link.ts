@@ -27,7 +27,7 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { loadHarnessRegistry, mutateHarnessRegistry } from '../../../harness-registry';
+import { loadHarnessRegistry, mutateHarnessRegistry, upsertLinkJoinedEntry } from '../../../harness-registry';
 import type { ProjectEntry } from '../../../harness-registry';
 import { scaffoldHarnessSchema } from '../../../scaffold-harness-schema';
 import { parseHarnessLink } from '../../../harness/url-scheme';
@@ -259,69 +259,14 @@ export async function handleJoinLink(
   // — the suspected mechanism behind a joined-hive row that federated for hours
   // then vanished at restart (mac-VM P-003 repro, 2026-07-03). Now: absent →
   // insert the full self-describing row; present-but-minimal → fill ONLY the
-  // missing coord fields in place; already-enriched → no-op.
+  // missing coord fields in place; already-enriched → no-op. The shape itself
+  // (incl. the WI-3891 hive stamp) lives in upsertLinkJoinedEntry, shared with
+  // the orchestrator's pre-boot write and the boot heal (WI-10003277).
   if (state.cloneDir) {
     const cloneDir = state.cloneDir;
-    await deps.mutateRegistry((reg) => {
-      const existing = reg.projects.find((p) => p.slug === slug);
-      if (!existing) {
-        return {
-          ...reg,
-          projects: [
-            ...reg.projects,
-            {
-              slug,
-              path: cloneDir,
-              github_remote: `https://github.com/${link.github}`,
-              github_repository_id: link.repoId,
-              joined_via_link: true,
-              // WI-3891: without these three, isRegisteredHive()/isHiveProject()
-              // (harness-registry.ts / hive/_resolve.ts) never recognize this
-              // entry — so probe:emit refuses harness_not_federated and
-              // pot:get/pot:list report hive_not_found, even though
-              // git-sync-reconcile.ts's isGitSyncMember already treats a
-              // joined_via_link entry as a real federating member. Mirrors the
-              // established self-admit pattern (bootstrap-papercusp-hive.ts's
-              // defaultSelfAdmitCanonical): a real repo checkout that is a
-              // joiner-side hive member, never its own home.
-              harness_kind: 'hive',
-              remote_hive: true,
-              self_repo: true,
-            },
-          ],
-        };
-      }
-      if (
-        existing.github_remote &&
-        typeof existing.github_repository_id === 'number' &&
-        existing.joined_via_link !== undefined &&
-        existing.harness_kind === 'hive' &&
-        existing.remote_hive === true &&
-        existing.self_repo === true
-      ) {
-        return reg; // already self-describing — nothing to do
-      }
-      return {
-        ...reg,
-        projects: reg.projects.map((p) =>
-          p.slug !== slug
-            ? p
-            : {
-                ...p,
-                ...(p.github_remote ? {} : { github_remote: `https://github.com/${link.github}` }),
-                ...(typeof p.github_repository_id === 'number'
-                  ? {}
-                  : { github_repository_id: link.repoId }),
-                ...(p.joined_via_link === undefined ? { joined_via_link: true } : {}),
-                // WI-3891 backfill: heal a pre-fix row (registered before this
-                // change shipped) the same way a fresh join stamps it now.
-                ...(p.harness_kind === 'hive' ? {} : { harness_kind: 'hive' as const }),
-                ...(p.remote_hive === true ? {} : { remote_hive: true as const }),
-                ...(p.self_repo === true ? {} : { self_repo: true as const }),
-              },
-        ),
-      };
-    });
+    await deps.mutateRegistry((reg) =>
+      upsertLinkJoinedEntry(reg, { slug, path: cloneDir, github: link.github, repoId: link.repoId }),
+    );
 
     // WI-10003134: materialize the joined Pot's identity row, exactly as
     // join-hive's step 2b does. `pot_members_pot_fkey` needs it as the FK parent

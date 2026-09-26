@@ -36,8 +36,10 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import {
+  healLinkJoinedEntries,
   loadHarnessRegistry,
   mutateHarnessRegistry,
+  upsertLinkJoinedEntry,
   type HarnessRegistry,
 } from '../harness-registry';
 import type { JoinState } from './join-shared-harness';
@@ -91,6 +93,9 @@ export interface ReconcileJoinStatesResult {
   /** Slugs with a pending join-state, no registry entry, AND no clone dir on
    *  disk — truly abandoned; reported (logged), nothing to re-drive. */
   abandoned: string[];
+  /** Link-joined entries an older build left short, completed to the full
+   *  link-joined shape this sweep (WI-10003277). */
+  enriched: string[];
   /** Set when the sweep itself failed before walking (reported, never thrown). */
   error?: string;
 }
@@ -107,6 +112,7 @@ export async function reconcileJoinStates(
     reregistered: [],
     healedByBoot: [],
     abandoned: [],
+    enriched: [],
   };
   const listJoinStates = opts.listJoinStates ?? defaultListJoinStates;
   const loadRegistry = opts.loadRegistry ?? loadHarnessRegistry;
@@ -115,13 +121,30 @@ export async function reconcileJoinStates(
 
   let states: JoinState[];
   let registered: Set<string>;
+  let needsHeal: boolean;
   try {
     states = await listJoinStates();
     const reg = await loadRegistry(opts.workspaceId);
     registered = new Set((reg.projects ?? []).map((p) => p.slug));
+    needsHeal = healLinkJoinedEntries({ ...reg, projects: reg.projects ?? [] }).healed.length > 0;
   } catch (e) {
     result.error = e instanceof Error ? e.message : String(e);
     return result;
+  }
+
+  // A registered link-joined clone that an older build left short never counted
+  // its hive as shared. Complete it here; boot-all cannot, it only federates.
+  if (needsHeal) {
+    try {
+      await mutate((cur: HarnessRegistry) => {
+        const { registry, healed } = healLinkJoinedEntries(cur);
+        result.enriched = healed;
+        return registry;
+      }, opts.workspaceId);
+    } catch {
+      // best-effort — a registry write blip; next boot retries.
+      result.enriched = [];
+    }
   }
 
   for (const js of states) {
@@ -136,10 +159,12 @@ export async function reconcileJoinStates(
     if (cloneDir && pathExists(cloneDir)) {
       try {
         await mutate(
+          // Every join-state is a link join (join-shared-harness writes them),
+          // so it re-registers in the full link-joined shape.
           (cur: HarnessRegistry) =>
             cur.projects.some((p) => p.slug === js.slug)
               ? cur
-              : { ...cur, projects: [...cur.projects, { slug: js.slug, path: cloneDir }] },
+              : upsertLinkJoinedEntry(cur, { slug: js.slug, path: cloneDir }),
           opts.workspaceId,
         );
         registered.add(js.slug);
@@ -183,11 +208,12 @@ export function ensureJoinStatesReconciledOnce(
     if (r.error) {
        
       console.warn(`[join-state-reconcile] sweep failed for workspace '${workspaceId}': ${r.error}`);
-    } else if (r.reregistered.length || r.abandoned.length) {
+    } else if (r.reregistered.length || r.abandoned.length || r.enriched.length) {
        
       console.log(
         `[join-state-reconcile] boot sweep (${workspaceId}): reregistered=[${r.reregistered.join(', ')}]` +
-          (r.abandoned.length ? ` abandoned=[${r.abandoned.join(', ')}]` : ''),
+          (r.abandoned.length ? ` abandoned=[${r.abandoned.join(', ')}]` : '') +
+          (r.enriched.length ? ` enriched=[${r.enriched.join(', ')}]` : ''),
       );
     }
   })().catch((e) => {

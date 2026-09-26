@@ -6,6 +6,8 @@ import {
   isEphemeralForeignProject,
   ephemeralForeignHarnessSlug,
   sweepOrphanedEphemeralForeignHarnesses,
+  upsertLinkJoinedEntry,
+  healLinkJoinedEntries,
   type ProjectEntry,
 } from './harness-registry';
 
@@ -228,5 +230,77 @@ describe('sweepOrphanedEphemeralForeignHarnesses (WI-1937 leader-required test (
     const res = await sweepOrphanedEphemeralForeignHarnesses(undefined, checkLive, { loadRegistry, deregister });
     expect(res).toEqual({ swept: 0, removed: [] });
     expect(checkLive).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * upsertLinkJoinedEntry / healLinkJoinedEntries (WI-10003277) — the one shape for
+ * an invite-link-joined checkout. The P-202 rig carried the short pre-boot row
+ * (joined_via_link + github coords, no hive stamp) and never counted its hive as
+ * shared, so its seat offers were skipped hive_not_shared.
+ */
+describe('upsertLinkJoinedEntry / healLinkJoinedEntries', () => {
+  const FULL = {
+    slug: 'papercusp',
+    path: '/clones/papercup',
+    github_remote: 'https://github.com/Papercusp/papercup',
+    github_repository_id: 12345,
+    joined_via_link: true,
+    harness_kind: 'hive',
+    remote_hive: true,
+    self_repo: true,
+  };
+  const UPSTREAM = { github: 'Papercusp/papercup', repoId: 12345 };
+
+  it('inserts the full link-joined shape', () => {
+    const next = upsertLinkJoinedEntry({ projects: [] }, { slug: 'papercusp', path: '/clones/papercup', ...UPSTREAM });
+    expect(next.projects).toEqual([FULL]);
+  });
+
+  it('completes the short pre-boot row in place (the rig shape) — no duplicate', () => {
+    const short = {
+      slug: 'papercusp',
+      path: '/clones/papercup',
+      github_remote: 'https://github.com/Papercusp/papercup',
+      github_repository_id: 12345,
+      joined_via_link: true,
+    };
+    const next = upsertLinkJoinedEntry({ projects: [short] }, { slug: 'papercusp', path: '/clones/papercup', ...UPSTREAM });
+    expect(next.projects).toEqual([FULL]);
+  });
+
+  it('returns the same registry when the entry is already complete', () => {
+    const reg = { projects: [FULL] };
+    expect(upsertLinkJoinedEntry(reg, { slug: 'papercusp', path: '/clones/papercup', ...UPSTREAM })).toBe(reg);
+  });
+
+  it('control: leaves a same-slug entry for a DIFFERENT, non-link checkout alone', () => {
+    const owned: ProjectEntry = { slug: 'papercusp', path: '/home/me/papercusp' };
+    const reg = { projects: [owned] };
+    expect(upsertLinkJoinedEntry(reg, { slug: 'papercusp', path: '/clones/papercup', ...UPSTREAM })).toBe(reg);
+  });
+
+  it('never overwrites divergent existing coords', () => {
+    const divergent = { ...FULL, github_remote: 'https://github.com/someone/else', github_repository_id: 777, harness_kind: undefined };
+    const next = upsertLinkJoinedEntry({ projects: [divergent] }, { slug: 'papercusp', path: '/clones/papercup', ...UPSTREAM });
+    expect(next.projects[0]).toEqual({ ...divergent, harness_kind: 'hive' });
+  });
+
+  it('heal completes only joined_via_link rows and names them', () => {
+    const short = { slug: 'papercusp', path: '/clones/papercup', joined_via_link: true };
+    const owned: ProjectEntry = { slug: 'mine', path: '/r/mine' };
+    const { registry, healed } = healLinkJoinedEntries({ projects: [short, owned] });
+    expect(healed).toEqual(['papercusp']);
+    expect(registry.projects).toEqual([
+      { ...short, harness_kind: 'hive', remote_hive: true, self_repo: true },
+      owned,
+    ]);
+  });
+
+  it('heal returns the same registry when nothing is short', () => {
+    const reg = { projects: [FULL, { slug: 'mine', path: '/r/mine' }] };
+    const { registry, healed } = healLinkJoinedEntries(reg);
+    expect(healed).toEqual([]);
+    expect(registry).toBe(reg);
   });
 });
