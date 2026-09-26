@@ -35,7 +35,10 @@ import { DEFAULT_MODEL_TIERS, MODEL_EFFORT_LEVELS } from '../../../agent-config-
 import { classifyLoopModelSpec } from '../../../agent-loop/model-selection';
 import { resolveRoleLaunch } from '../../../fleet/role-launch';
 import { launchableModes } from '../../../modes/registry';
-import { detectBinaries } from '../../../agent-bin-detect';
+// Never the sync `detectBinaries()` here: it runs four blocking
+// spawnSync('which') calls on the operator main thread per request
+// (WI-10003266, measured in :3170 loop-saturation profiles).
+import { detectBinariesAsync, detectBinariesCached } from '../../../agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
 import { notifySyncInvalidate } from '../../../sync-sse';
 
@@ -84,7 +87,7 @@ export default [
           title,
           oneLiner,
         })),
-        binaries: detectBinaries(),
+        binaries: await detectBinariesCached(),
         codexDiagnostics: latestCodexSession
           ? {
               sessionId: latestCodexSession.id,
@@ -223,7 +226,7 @@ export default [
       void notifySyncInvalidate('agentConfig.modelTiersBaseline', {}).catch(() => {});
       return Response.json({
         config: next,
-        binaries: detectBinaries(),
+        binaries: await detectBinariesAsync(),
         effectiveBackend: effectiveBackend(next),
       });
     },

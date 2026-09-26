@@ -59,9 +59,18 @@ vi.mock('../../agent-config', async () => {
   const actual = await vi.importActual<typeof import('../../agent-config')>('../../agent-config');
   return { ...actual, readAgentConfig: readMock, writeAgentConfig: writeMock };
 });
-vi.mock('../../agent-bin-detect', () => ({
-  detectBinaries: () => ({ claude: '/usr/bin/claude', codex: '/usr/bin/codex', omp: null, pi: null }),
-}));
+// The sync detector THROWS here: the route must never run blocking
+// spawnSync('which') on the operator main thread (WI-10003266).
+vi.mock('../../agent-bin-detect', () => {
+  const bins = { claude: '/usr/bin/claude', codex: '/usr/bin/codex', omp: null, pi: null };
+  return {
+    detectBinaries: () => {
+      throw new Error('agent-config route must not call the synchronous detectBinaries()');
+    },
+    detectBinariesAsync: async () => bins,
+    detectBinariesCached: async () => bins,
+  };
+});
 vi.mock('../../adv-sessions', async (orig) => ({
   ...(await orig<typeof import('../../adv-sessions')>()),
   endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
