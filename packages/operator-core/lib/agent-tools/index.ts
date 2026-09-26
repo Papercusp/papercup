@@ -1470,6 +1470,15 @@ import './identities/validate';
 // publish entry point (mirror of knowledge_packs:publish): promote a local/private
 // blueprint to the published/installed tier via the shared Cupboard core.
 import './blueprint/publish';
+// Public blueprint operation lifecycle (blueprint-backed-work-item-execution P-017, D-009):
+// one typed defineTool per verb over the shared operation service.
+import './blueprint/submit-operation';
+import './blueprint/status-operation';
+import './blueprint/result-operation';
+import './blueprint/events-operation';
+import './blueprint/cancel-operation';
+import './blueprint/signal-operation';
+import './blueprint/resume-operation';
 // cupboard-app-distribution-2026-07-14 P-003 — cupboard:publish-app, the publish
 // entry point for a whole standalone application (Oddsmith-style): validate its
 // latest.json resolves, then list a kind='app' listing on the Cupboard Apps tab.
