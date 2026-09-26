@@ -65,14 +65,33 @@ describe("Packaged Papercusp desktop binary", () => {
     }
     // Compare passing and failing paint samples through the same bounded
     // page-local probe. Host load average alone cannot explain either result.
-    const startup = await browser.execute((fcpMs: number | null) => {
+    const startup = await browser.execute(async (fcpMs: number | null) => {
       const metrics = (window as unknown as {
         __sync_metrics__?: {
-          snapshot(): { scheduler?: unknown };
+          snapshot(): { scheduler?: unknown; ipcAssertTimedOut?: boolean; ipcAssertLastClient?: string | null };
           queries(): Array<{ name: string; startedAtMs: number; waitMs: number; requestMs: number; outcome: string }>;
         };
       }).__sync_metrics__;
-      const scheduler = metrics?.snapshot().scheduler ?? null;
+      const snapshot = metrics?.snapshot();
+      const scheduler = snapshot?.scheduler ?? null;
+      const runtime = (window as unknown as {
+        __TAURI_INTERNALS__?: {
+          invoke?: (command: string) => Promise<{ client?: string; ownerIsContentOrigin?: boolean }>;
+        };
+      }).__TAURI_INTERNALS__;
+      const ipcClient = await (async () => {
+        if (!runtime?.invoke) return { kind: 'unavailable' as const };
+        try {
+          const status = await runtime.invoke('endpoint_ipc_status');
+          return {
+            kind: 'ok' as const,
+            client: status?.client ?? null,
+            ownerIsContentOrigin: status?.ownerIsContentOrigin ?? null,
+          };
+        } catch (error) {
+          return { kind: 'error' as const, error: String(error).slice(0, 160) };
+        }
+      })();
       const startedBeforeFcp = (metrics?.queries() ?? [])
         .filter((query) => fcpMs === null || query.startedAtMs <= fcpMs);
       // The ring contains COMPLETED events. A request can start before paint
@@ -98,6 +117,11 @@ describe("Packaged Papercusp desktop binary", () => {
         readyState: document.readyState,
         resources,
         scheduler,
+        ipc: {
+          client: ipcClient,
+          assertionTimedOut: snapshot?.ipcAssertTimedOut ?? null,
+          assertionLastClient: snapshot?.ipcAssertLastClient ?? null,
+        },
         queryCountCompletedBeforeFcp: completedBeforeFcp.length,
         startedBeforeFcpCompletedLater: startedBeforeFcp.length - completedBeforeFcp.length,
         longestWaitsCompletedBeforeFcp: completedBeforeFcp.slice().sort((a, b) => b.waitMs - a.waitMs)
