@@ -2366,3 +2366,50 @@ acceptance and shipment remain open. The separate restart-overlap/fixture
 issue `WI-10003191` was completed with stable native runs and a changing
 live-socket counterexample; no steady-state scheduler queue defect was
 reproduced.
+
+### P-007 body-first activated; host main-thread saturation — 2026-09-26 15:25Z
+
+The body-first source (`get.ts` 450e7f2165, `plans-api.ts` /
+`_plans-args.ts` 8d58bce7aa) is in staging API `65060e4abc`: blobs for all
+three paths equal `staging`. The frozen fixture SPA `e054e7cb` did **not**
+contain the client half (0 asset files match `includeEnrichments`, positive
+control `response-headers` 1), so a run on it could never exercise the fix.
+The fixture SPA was replaced by the canonical `apps/operator-vite/dist` built
+15:18:54Z (index SHA256 `61b3e23247c8…`, 1 asset file with the new call);
+the previous SPA is kept beside it as `sidecar/spa.e054e7cb`. Both private
+IPC descriptors were refreshed to live PID 2214020 (started 15:08:48Z).
+
+Named run `p007-e41628-61b3e2-65060e-20260926-r28` measured **2296ms**
+(FAIL, receipt `perfrun-1790436350495-en13hp`, log
+`$HOME/.papercusp/perf/p007-native-current/run-028-popup-bodyfirst.log`):
+request-started 305, response-headers 2048, preview-rendered 2289. Its first
+`plans:get` (invocation 29694809) carried `includeEnrichments:false` and
+recorded **no** enrichment stages; dispatch took 544ms (`waitMs` 360,
+`source.waitForBegin` 281). The later hydration read (29694820, 687ms)
+carried the enrichments. So the fix works as designed, and the remaining
+wait is outside the handler: dispatch began ≈1445ms after the click
+(settle time minus duration; `invoked_at` is stamped at settlement), about
+1140ms after the browser's request-started mark.
+
+The staging host was CPU-bound on its main thread in that window: its lag
+monitor logged p95 297ms / p99 518ms / max 944ms for the 10s ending
+15:25:44.885Z, beside `plans.attentionCounts` 4222ms and `plans.list`
+3519ms sync reads. Between 15:10 and 15:27Z the single :3170 process served
+1,524 MCP-transport tool calls from ~18 agent sessions, versus ~800 across
+:3070's six cluster workers. psu sessions launched from the staging desktop
+inherit `PAPERCUSP_OPERATOR_URL`/`PAPERCUSP_API_BASE` = `:3170`
+(`console-launcher.ts` / `spawn-config.ts` derive it from the launching
+request), so their hook traffic lands on the process serving the UI;
+`:3170` runs without `PAPERCUSP_CLUSTER_WORKERS`. The popup budget is
+therefore currently measured against fleet load, not only plan-read code.
+
+Loop-saturation profiles of that process
+(`~/.papercusp/loop-profiles/loop-saturation-1790435495838-pid2214020-p95_160ms.cpuprofile`
+and `…1790436378631-…p95_42ms`) attribute self time to `spawn` (14.2% /
+11.9%), `fnv1a64` (10.1% / 6.1%) plus its registry/delta callers, and plan
+parsing (`maskFences`, `parseItemLine`, `splitSections`, a `[a-z]\n[a-z]`
+regex). `fnv1a64` did a BigInt XOR and multiply per code unit; WI-10003260
+replaces both tooldef FNV loops with a bit-exact 16-bit-limb version
+(102 tests pass, including a BigInt reference kept as control; same output,
+11.5× faster on a 224,671-char body). Its effect on the staging main thread is
+not yet measured. P-007 acceptance remains open.
