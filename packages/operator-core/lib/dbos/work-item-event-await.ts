@@ -2,12 +2,15 @@
  * Replay-safe DBOS consumer bridge for the canonical work-item completion event.
  *
  * This is called INSIDE a DBOS workflow. It reads the existing work-item row and
- * event_key_fires latch; DBOS.sleep is the durable wait between observations.
+ * event_key_fires latch; the DBOS workflow recovers and rechecks after a crash.
  * Reads are deliberately not checkpointed as DBOS steps: after a workflow
  * replay, the current business state (including reopen) must be re-read.
  * The event is an executor signal; the work item remains the outcome authority.
+ * The conditional delay is not recorded as a DBOS operation, because replay
+ * may see a different current state and must not skip a recorded sleep.
  */
 import { runWithWorkspace } from '../workspace-als';
+import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import { getWorkItem, isSettledWorkItemState, type WorkItem } from '../work-items';
@@ -97,8 +100,7 @@ async function defaultReadItem(input: WorkItemEventWaitInput): Promise<WorkItem 
 }
 
 async function defaultSleep(ms: number): Promise<void> {
-  const { DBOS } = await import('@dbos-inc/dbos-sdk');
-  await DBOS.sleep(ms);
+  await delay(ms);
 }
 
 /** Await a published completion or an already-settled current item.
