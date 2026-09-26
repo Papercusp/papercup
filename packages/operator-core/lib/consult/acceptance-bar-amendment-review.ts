@@ -148,6 +148,36 @@ function clip(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max)}… [${text.length - max} chars clipped]`;
 }
 
+function reviewPatch(input: AmendmentReviewBriefInput): { patch: string; omittedCriteria: number } {
+  const full = JSON.stringify(input.patch);
+  if (full.length <= BRIEF_PATCH_MAX || !Array.isArray(input.patch.criteria)) {
+    return { patch: full, omittedCriteria: 0 };
+  }
+
+  const changedKeys = new Set(input.preview.changes.map((change) => change.barKey));
+  const criteria = input.patch.criteria;
+  const changedCriteria = criteria.filter((criterion) => {
+    if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return false;
+    const candidate = criterion as Record<string, unknown>;
+    const barKey = candidate.barKey ?? candidate.key;
+    return typeof barKey === 'string' && changedKeys.has(barKey.trim());
+  });
+  // A malformed or unmappable replacement must stay complete: omitting entries
+  // would make a change invisible to the reviewer.
+  if (criteria.some((criterion) => !criterion || typeof criterion !== 'object' || Array.isArray(criterion)
+    || typeof ((criterion as Record<string, unknown>).barKey ?? (criterion as Record<string, unknown>).key) !== 'string')
+    || input.preview.changes.some((change) => !changedCriteria.some((criterion) => {
+      const candidate = criterion as Record<string, unknown>;
+      return ((candidate.barKey ?? candidate.key) as string).trim() === change.barKey;
+    }))) {
+    return { patch: full, omittedCriteria: 0 };
+  }
+  return {
+    patch: JSON.stringify({ ...input.patch, criteria: changedCriteria }),
+    omittedCriteria: criteria.length - changedCriteria.length,
+  };
+}
+
 export interface AmendmentReviewBriefInput {
   rubricRef: string;
   /** `thread-post:<id>` — the requester's post carrying the exact preview approval JSON. */
@@ -178,6 +208,7 @@ export function buildAmendmentReviewBrief(
   input: AmendmentReviewBriefInput,
   answerOn?: FreshReviewerAnswerTarget,
 ): string {
+  const shownPatch = reviewPatch(input);
   const bars = input.preview.changes
     .map((change) => `${change.barKey} (${[...change.kinds].join('+')}${change.fields?.length ? `: ${change.fields.join(', ')}` : ''})`)
     .join('; ');
@@ -190,11 +221,13 @@ export function buildAmendmentReviewBrief(
       : `Outside-lineage review of a started acceptance-BAR amendment to ${input.rubricRef}. The relevance router picked you and screened you with rubrics:check-approver: you are outside the implementer's lineage.`,
     `Changed BARs: ${bars || '(none listed)'}.`,
     input.reason?.trim() ? `Reason given: ${clip(input.reason.trim(), BRIEF_REASON_MAX)}` : 'No reason was given.',
-    answerOn
-      ? 'Requested patch. Read the current criteria with rubrics:get and judge what the patch changes; the apply guard itself checks the approval JSON below against the live delta:'
-      : 'Requested patch. Reproduce the preview with rubrics:amend { rubricRef, dryRun:true, ...patch } and read the criteria with rubrics:get before judging:',
+    shownPatch.omittedCriteria > 0
+      ? `Requested patch excerpt: all changed criteria and other patch fields are complete; ${shownPatch.omittedCriteria} unchanged criteria omitted. Read the full current criteria with rubrics:get and compare the changed BARs before judging. This excerpt is not a complete replacement patch and must not be submitted to rubrics:amend.`
+      : answerOn
+        ? 'Requested patch. Read the current criteria with rubrics:get and judge what the patch changes; the apply guard itself checks the approval JSON below against the live delta:'
+        : 'Requested patch. Reproduce the preview with rubrics:amend { rubricRef, dryRun:true, ...patch } and read the criteria with rubrics:get before judging:',
     '```json',
-    clip(JSON.stringify(input.patch), BRIEF_PATCH_MAX),
+    shownPatch.patch,
     '```',
     `Approval JSON the requester posted as ${input.previewPostRef}:`,
     '```json',
@@ -254,7 +287,13 @@ async function resolvePreviewPostWorkItem(args: {
       JOIN harness_shared.coord_threads t
         ON t.workspace_id = p.workspace_id AND t.thread_id = p.thread_id
       JOIN harness_shared.work_items w
-        ON w.workspace_id = p.workspace_id AND w.feature_id = t.parent_ref
+        ON w.workspace_id = p.workspace_id
+       AND (
+         (t.parent_kind = 'feature' AND w.item_kind IN ('feature', 'chunk')
+           AND t.parent_ref = w.harness_slug || '#' || w.feature_id)
+         OR (t.parent_kind = 'issue' AND w.item_kind IN ('bug', 'change', 'task')
+           AND t.parent_ref = w.feature_id)
+       )
      WHERE p.workspace_id = ${args.workspaceId}
        AND p.id = ${postId}::bigint
        AND p.origin = 'local'

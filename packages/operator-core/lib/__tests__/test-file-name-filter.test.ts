@@ -310,6 +310,8 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errSpy: ReturnType<typeof vi.spyOn>;
   let warnSpy: ReturnType<typeof vi.spyOn>;
+  let stdoutSpy: ReturnType<typeof vi.spyOn>;
+  let stderrSpy: ReturnType<typeof vi.spyOn>;
   const runCapturedTestProcessMock = vi.fn();
   const runVitestListMock = vi.fn();
 
@@ -388,6 +390,10 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     // when PAPERCUSP_TEST_RUN_HARNESS is unset). Swallow them like log/error, or
     // vitest-fail-on-console reds every case here whenever the router gains one.
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // main forwards child output directly. Synthetic failed/skip summaries
+    // belong to this fixture, never to the outer runner's verdict parser.
+    stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     // These tests drive main() as a UNIT, but this suite is itself normally run
     // BY `npm run test:file`, i.e. under pc-heavy — which exports
     // PC_HEAVY_PREEMPT_READY_FILE and has ALREADY published that marker for the
@@ -404,6 +410,8 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     logSpy.mockRestore();
     errSpy.mockRestore();
     warnSpy.mockRestore();
+    stdoutSpy.mockRestore();
+    stderrSpy.mockRestore();
     spawnSyncMock.mockReset();
     runCapturedTestProcessMock.mockReset();
     runVitestListMock.mockReset();
@@ -430,6 +438,31 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     expect(err).toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
     expect(err).toContain('pattern="cd"');
     expect(err).toContain('EXIT-trap');
+  });
+
+  it('preserves a failing beforeAll instead of blaming the name filter for skipped assertions', async () => {
+    // Shape observed in mode-identity-binding.integration.test.ts: the selected
+    // test exists, but database setup fails before any assertion can execute.
+    stubVitest(
+      ' Test Files  1 failed (1)\n      Tests  3 skipped (3)\n' +
+      ' FAIL  selected identity > beforeAll\nError: Hook timed out in 120000ms.\n',
+      1,
+    );
+    expect(await runMain([FILE, '--', '-t', 'rejects'])).toBe(1);
+    expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
+    expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=failed/);
+  });
+
+  it('preserves a watchdog refusal instead of diagnosing an unmatched name filter', async () => {
+    stubVitest(REAL_ROWS.allSkipped);
+    runCapturedTestProcessMock.mockResolvedValue({
+      status: null, signal: 'SIGTERM', stdout: REAL_ROWS.allSkipped,
+      stderr: '', error: null, timedOut: true,
+    });
+    expect(await runMain([FILE, '--', '-t', 'rejects'])).toBe(2);
+    expect(linesFrom(errSpy)).toContain('TEST_FILE_NOT_MEASURED');
+    expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
+    expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
   });
 
   it('stays green when the filter DID match tests (guards against a blanket refusal)', async () => {
