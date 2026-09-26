@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { checkedCommand, confirmFixtureDelivery, requireRollbackResponse, selectIdentityInCatalog, serializeEvidence, toolArgs } from "../../../scripts/verify-identities-r4.mjs";
+// @ts-ignore — production hook JS module; delivery behavior is exercised below.
 import { openDeliveryLedger } from "../scripts/hooks/inject/delivery-ledger.mjs";
 import { findBoxIdentityPaths } from "../../../scripts/lib/identity-leak-patterns.mjs";
 
