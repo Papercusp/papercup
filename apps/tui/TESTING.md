@@ -3,6 +3,10 @@
 Rust crate (`apps/tui`, binary `pui`). Tests are Cargo `#[cfg(test)]` modules —
 the canonical home for Rust per the repo's four-framework convention.
 
+Audio hardware is isolated in the sibling `pui-audio` binary. `pui` must not
+link `libasound.so.2`; `package-release.sh` enforces that with `readelf`, while
+the helper/proxy protocol and the exit-127 ALSA remedy are covered by Cargo tests.
+
 ## Run
 
 ```bash

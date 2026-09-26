@@ -17,7 +17,8 @@
  *
  * This endpoint previously had NO test file at all.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../../../agent-tools/coordination/read-cursors';
 
 const {
   buildMemoryContextBlockMock,
@@ -112,6 +113,7 @@ const post = async (body: unknown): Promise<{ ok: boolean; text: string; deliver
 };
 
 beforeEach(() => {
+  configureReadCursorStore(new InMemoryReadCursorStore());
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM-BLOCK');
   preparePendingControlTransitionMock.mockReset().mockResolvedValue(null);
   markControlTransitionPreparedMock.mockReset().mockResolvedValue(true);
@@ -132,6 +134,7 @@ beforeEach(() => {
   buildTurnStartOrientationBlockMock.mockReset().mockResolvedValue({ block: '', deliveryToken: null });
   readSuLaunchSpecByOwnerMock.mockReset().mockResolvedValue(null);
 });
+afterEach(() => resetReadCursorStore());
 
 /**
  * The coverage write is fire-and-forget (`void`, never awaited) and reaches its
@@ -238,10 +241,11 @@ describe('turn-start-memory admission (F-E: no length floor)', () => {
 
     const recovered = await post({ owner: 'sess-1', prompt: 'retry' });
     expect(recovered.text).toBe('CTRL:mode\n\nSTACK-RECOVERED');
-    expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
-    expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith('sess-1', 'ws-test', 7);
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
 
-    const settled = await post({ owner: 'sess-1', prompt: 'after recovery' });
+    const settled = await post({ owner: 'sess-1', prompt: 'after recovery', confirmedDelivery: recovered.deliveryToken });
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith('sess-1', 'ws-test', 7, undefined, undefined);
     expect(settled.text).toBe('');
     expect(preparePendingControlTransitionMock).toHaveBeenCalledTimes(3);
     expect(renderStackTransitionContextResultMock).toHaveBeenCalledTimes(2);
@@ -565,6 +569,7 @@ describe('relaunch-with-carry convergence (WI-10002021)', () => {
     expect(out.text).toBe('CTRL:stack\n\nSTACK-LAYER');
     expect(markControlTransitionPreparedMock).not.toHaveBeenCalled();
     expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    expect(convergeActivationToLaunchRecordMock).not.toHaveBeenCalled();
   });
 
   it('converges once the launch record carries the desired spec — the successor IS the fresh context', async () => {
@@ -575,6 +580,12 @@ describe('relaunch-with-carry convergence (WI-10002021)', () => {
 
     expect(out.text).toBe('CTRL:stack\n\nSTACK-LAYER');
     expect(markControlTransitionPreparedMock).toHaveBeenCalledWith('sess-1', 'ws-test', 11, desired);
+    expect(convergeActivationToLaunchRecordMock).toHaveBeenCalledWith('sess-1', 'ws-test', 11, desired);
+    expect(convergeActivationToLaunchRecordMock.mock.invocationCallOrder[0]).toBeLessThan(
+      markControlTransitionPreparedMock.mock.invocationCallOrder[0]!,
+    );
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    await post({ owner: 'sess-1', prompt: 'host emitted the successor layer', confirmedDelivery: out.deliveryToken });
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith('sess-1', 'ws-test', 11, undefined, desired);
   });
@@ -621,9 +632,104 @@ describe('relaunch-with-carry convergence (WI-10002021)', () => {
       requiresFreshContext: false,
     });
 
-    await post({ owner: 'sess-1', prompt: 'in-place mode flip' });
+    const out = await post({ owner: 'sess-1', prompt: 'in-place mode flip' });
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    await post({ owner: 'sess-1', prompt: 'host emitted the layer', confirmedDelivery: out.deliveryToken });
 
     expect(readSuLaunchSpecByOwnerMock).not.toHaveBeenCalled();
+    expect(convergeActivationToLaunchRecordMock).not.toHaveBeenCalled();
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('control activation waits for host emission (WI-10003297)', () => {
+  const desired = { specificationRevision: 'spec-new', stateRevision: 'state-new' };
+  beforeEach(() => {
+    let pending = true;
+    preparePendingControlTransitionMock.mockImplementation(async () => pending
+      ? { kind: 'stack', generation: 12, state: { activation: { desired } } }
+      : null);
+    acknowledgeControlTransitionMock.mockImplementation(async () => { pending = false; return true; });
+    renderStackTransitionContextResultMock.mockResolvedValue({ text: 'IDENTITY-LAYER', rendered: true });
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+  });
+
+  const assertNoAcknowledgmentBeforeResponse = async () => {
+    let release!: () => void;
+    const delayed = new Promise<null>((resolve) => { release = () => resolve(null); });
+    buildPersonalAmbientContextBlockMock.mockReturnValueOnce(delayed);
+    const request = post({ owner: 'sess-1', prompt: 'slow response', confirmedDelivery: null });
+    try {
+      await vi.waitFor(() => expect(markControlTransitionPreparedMock).toHaveBeenCalled());
+      // The hook can time out now. Nothing has reached the host yet.
+      expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await request;
+    }
+    return await request;
+  };
+
+  it('does not mark Applied while another response leg is pending or after an unconfirmed response', async () => {
+    const dropped = await assertNoAcknowledgmentBeforeResponse();
+    expect(dropped.deliveryToken).toBeTruthy();
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    const retry = await post({ owner: 'sess-1', prompt: 'next turn after timeout', confirmedDelivery: null });
+    expect(retry.text).toContain('IDENTITY-LAYER');
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    const confirmed = await post({ owner: 'sess-1', prompt: 'emitted retry', confirmedDelivery: retry.deliveryToken });
+    expect(confirmed.text).not.toContain('IDENTITY-LAYER');
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith('sess-1', 'ws-test', 12, undefined, desired);
+    await post({ owner: 'sess-1', prompt: 'later turn', confirmedDelivery: retry.deliveryToken });
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('negative control: the same oracle catches an acknowledgment during preparation', async () => {
+    // Permanent fault injection at the existing dependency seam reproduces the
+    // pre-fix ordering without ever mutating shared production source.
+    markControlTransitionPreparedMock.mockImplementation(async () => {
+      await acknowledgeControlTransitionMock('sess-1', 'ws-test', 12, undefined, desired);
+      return true;
+    });
+    await expect(assertNoAcknowledgmentBeforeResponse()).rejects.toThrow('not be called');
+  });
+
+  it('preserves delivery when staging fails and never treats orientation proof as control proof', async () => {
+    class UnavailableStore extends InMemoryReadCursorStore {
+      override async stage(): Promise<void> { throw new Error('store unavailable'); }
+    }
+    configureReadCursorStore(new UnavailableStore());
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: 'ORIENTATION', deliveryToken: 'orientation-only' });
+    const offered = await post({ owner: 'sess-1', prompt: 'offer' });
+    expect(offered.text).toContain('IDENTITY-LAYER');
+    expect(offered.deliveryToken).toBe('orientation-only');
+    await post({ owner: 'sess-1', prompt: 'confirmed orientation only', confirmedDelivery: offered.deliveryToken });
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+  });
+
+  it.each([null, 'wrong-token', undefined])('redelivers when the host confirms %s instead of the offered token', async (token) => {
+    await post({ owner: 'sess-1', prompt: 'offer' });
+    const retry = await post({ owner: 'sess-1', prompt: 'unproved', confirmedDelivery: token });
+    expect(retry.text).toContain('IDENTITY-LAYER');
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+  });
+
+  it('shares orientation proof, but never applies another session from its token', async () => {
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: 'ORIENTATION', deliveryToken: 'shared-token' });
+    const offered = await post({ owner: 'sess-1', prompt: 'offer' });
+    expect(offered.deliveryToken).toBe('shared-token');
+    await post({ owner: 'sess-other', prompt: 'wrong session', confirmedDelivery: offered.deliveryToken });
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    await post({ owner: 'sess-1', prompt: 'right session', confirmedDelivery: offered.deliveryToken });
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a failed acknowledgment from the committed delivery proof', async () => {
+    const offered = await post({ owner: 'sess-1', prompt: 'offer' });
+    acknowledgeControlTransitionMock.mockRejectedValueOnce(new Error('write unavailable'));
+    await post({ owner: 'sess-1', prompt: 'confirm', confirmedDelivery: offered.deliveryToken });
+    const recovered = await post({ owner: 'sess-1', prompt: 'retry committed proof', confirmedDelivery: null });
+    expect(recovered.text).not.toContain('IDENTITY-LAYER');
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(2);
   });
 });

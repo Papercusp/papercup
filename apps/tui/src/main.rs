@@ -12,6 +12,7 @@ mod agent_chats;
 mod agent_ctx;
 mod agent_pane_kind;
 mod app;
+mod audio_proto;
 mod bee;
 mod brain_view;
 mod card_view;
@@ -57,6 +58,7 @@ mod theme;
 mod transcript;
 mod tutorial;
 mod ui;
+#[path = "voice_proxy.rs"]
 mod voice;
 mod voice_convai;
 mod voice_stream;

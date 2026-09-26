@@ -1,14 +1,16 @@
 /** P002 demand/priority proof using the real portfolio and scoped-review read path. */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { insertGoalRow } from '@papercusp/agent-mcp/goals';
+import { parsePlan } from '@papercusp/plan-parser';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
 import { setMode } from './modes/store';
-import { readAgentObligationAgenda } from './agent-obligation-reader';
+import { defaultAgentObligationReaderDeps, readAgentObligationAgenda } from './agent-obligation-reader';
 import { readGoalPortfolioBrief } from './goal-launch-settings';
 import { applyGoalPropertyWrite } from './typed-properties-db';
 import { seedPlan, cleanupPlans } from './agent-tools/plans/__tests__/_pg-tool-fixture';
 import { deriveIndexFromContent } from './agent-tools/plans/derive-index';
 import { writePlanIndexRows } from './agent-tools/plans/plan-index-rows';
+import { evaluateExactPlanAdmission } from './agent-tools/plans/plan-admission-preflight';
 import recordTool, { ideatePassRecordArgs } from './agent-tools/scout/ideate-pass-record';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -84,7 +86,7 @@ async function record(disposition: 'plan-needed' | 'existing-plans-sufficient') 
   expect('isError' in result && result.isError === true).toBe(false);
 }
 
-async function agenda() {
+async function agenda(realAdmission = false) {
   return (await readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER,
     // Scope, portfolio, review, ownership, index and ordering are real. Launch admissibility
     // and unrelated final acceptance are controlled inputs: this proves priority,
@@ -92,6 +94,24 @@ async function agenda() {
     deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [],
       ownerReport: async () => null,
       planAcceptance: async () => ({ satisfied: true, buildProvenance: { sha: null, version: 'fixture' } }),
+      // Priority cases control admission as well as launch feasibility. The
+      // separate negative control below uses the real PostgreSQL preflight.
+      planAdmission: realAdmission ? defaultAgentObligationReaderDeps().planAdmission
+        : async ({ planSlug, requestedSeats }) => evaluateExactPlanAdmission({
+          planSlug, requestedSeats,
+          planItems: parsePlan('## Build\n\n- **P-001** `todo` Implement recovery\n').items,
+          workItems: [{ id: `WI-${RUN}`, family: 'issue', state: 'open',
+            sourcePlanItemIds: ['P-001'], payload: null }],
+          laneHealth: {
+            claimable: 1, matchedByFilter: 1, excluded: {},
+            issueFamily: { claimable: 1, matchedByFilter: 1, excluded: {} },
+            featureFamily: null,
+            effective: { claimable: 1, matchedByFilter: 1, excluded: {}, basis: 'issue-family' },
+            familyReachability: { issue: true, feature: false },
+            spec: { ref: `${PLAN}@1`, specId: PLAN, revision: 1,
+              matchedBy: 'fixture', harness: HARNESS, assigneeScoped: null },
+          },
+        }),
       goalLaunch: async () => ({ goalId: GOAL, settings: null, goalBrief: null, effective: {},
         ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null },
         budget: null, refusal: null, degraded: false, degradedReasons: [] }),
@@ -116,18 +136,32 @@ describe('goal planning demand and execution priority from PostgreSQL', () => {
     await record('existing-plans-sufficient');
     const read = await agenda();
     expect(read.evaluations.find((entry) => entry.family === 'planning-needed')?.status).toBe('satisfied');
-    expect(read.primary[0]).toMatchObject({ family: 'plan-placement', status: 'due', action: { kind: 'delegate', tool: 'fleet:launch-on-plan' } });
+    expect(read.primary[0], read.primary[0]?.reason).toMatchObject({ family: 'plan-placement', status: 'due', action: { kind: 'delegate', tool: 'fleet:launch-on-plan' } });
   }, 90_000);
 
   it('prioritizes staffing the eligible unstaffed plan over further planning', async () => {
     await existingPlan('ready');
     await record('plan-needed');
     const read = await agenda();
-    expect(read.primary[0]).toMatchObject({ family: 'plan-placement', status: 'due', action: {
+    expect(read.primary[0], read.primary[0]?.reason).toMatchObject({ family: 'plan-placement', status: 'due', action: {
       kind: 'delegate', tool: 'fleet:launch-on-plan', args: { plan: SLUG, harness: HARNESS, leader: 'spawn' },
     } });
     const planningIndex = read.primary.findIndex((entry) => entry.family === 'planning-needed');
     expect(planningIndex).toBeGreaterThan(0);
+  }, 90_000);
+
+  it('requires actual promotion before real admission permits staffing a ready plan', async () => {
+    await existingPlan('ready');
+    await record('plan-needed');
+    const read = await agenda(true);
+    expect(read.primary[0], read.primary[0]?.reason).toMatchObject({
+      family: 'plan-placement', status: 'blocked',
+      reason: 'Actionable plan items lack a promoted row: P-001.',
+      action: { kind: 'repair', targetRef: PLAN },
+    });
+    expect(read.primary[0]?.episode).toContain(':promotion-lag:');
+    expect(read.primary[0]?.action?.tool).toBeUndefined();
+    expect(read.evaluations.find((entry) => entry.family === 'planning-needed')?.status).toBe('due');
   }, 90_000);
 
   it('reports a blocked draft without instructing an inadmissible launch or losing the planning need', async () => {

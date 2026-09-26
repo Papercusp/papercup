@@ -6,6 +6,14 @@ description = "Papercusp terminal workbench (TUI) — SP-TUI tui-workbench-ratat
 license = "Apache-2.0"
 publish = false
 
+[[bin]]
+name = "pui"
+path = "src/main.rs"
+
+[[bin]]
+name = "pui-audio"
+path = "src/bin/pui_audio.rs"
+
 # Standalone crate: there is no Cargo workspace under papercup/, so this never
 # participates in (or breaks) a peer's workspace build. Run from apps/tui/.
 

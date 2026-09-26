@@ -18,6 +18,7 @@ import { drainDetached } from './detached-imports';
 import { recordScoutTick } from './scout/tick-ledger';
 import recordTool, { ideatePassRecordArgs } from './agent-tools/scout/ideate-pass-record';
 import modeGetTool from './agent-tools/mode/get';
+import { clearPresence, writePresence } from './agent-tools/coordination/presence';
 
 const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const OWNER = `su-planning-${RUN}`;
@@ -34,6 +35,8 @@ beforeAll(async () => {
     enabled: true, reason: 'Isolated planning reader integration', setBy: OWNER, sql: fx.admin })).ok).toBe(true);
 }, 150_000);
 afterEach(async () => {
+  await drainDetached();
+  await clearPresence(OWNER);
   await fx.admin`DELETE FROM harness_shared.scout_ticks WHERE workspace_id = ${WS} AND detail->>'owner' IN (${OWNER}, ${`${OWNER}-noise`})`;
   await fx.admin`DELETE FROM harness_shared.coord_read_cursors WHERE owner_id = ${OWNER}`;
 });
@@ -100,6 +103,10 @@ describe('production planning-needed consumer', () => {
   }, 90_000);
 
   it.each(['codex', 'claude'])('delivers exact goal revisions through the real %s hook across warm/cold/compaction and omission', async (client) => {
+    await writePresence({ ownerId: OWNER, ownerLabel: 'Planning hook fixture',
+      source: 'omp-hook-session', workspaceId: WS, userId: null }, {
+      intent: 'Verify planning obligation delivery', currentPlanSlug: null, capabilityTags: [],
+    });
     await record('plan-needed');
     let read = await readAgenda();
     let brief = projectAgentTurnStartObligationBrief(read.agenda);
@@ -205,8 +212,13 @@ describe('production planning-needed consumer', () => {
       await drainDetached();
       const identityRows = await fx.admin`SELECT pending FROM harness_shared.coord_read_cursors
         WHERE owner_id = ${OWNER} AND surface = ${ORIENTATION_CURSOR_SURFACE}`;
-      expect(identityRows[0]?.pending?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
+      const identityReceipt = identityRows[0]?.pending?.[TURN_START_IDENTITY_DELIVERY_KEY];
+      expect(identityReceipt, JSON.stringify(identityReceipt?.root)).toMatchObject({
         status: 'bound', deliveryToken: receipts.at(-1)?.offered,
+        root: { identityId: 'su', contributions: expect.arrayContaining([
+          expect.objectContaining({ contributionId: 'current-mode-state', status: 'bound' }),
+          expect.objectContaining({ contributionId: 'current-assignment', status: 'bound' }),
+        ]) },
         practice: { identityId: 'su.practice', contributions: expect.arrayContaining([
           expect.objectContaining({ contributionId: 'turn-start-orientation', status: 'bound' }),
         ]) },
@@ -227,6 +239,20 @@ describe('production planning-needed consumer', () => {
           expect.objectContaining({ contributionId: 'current-mode-state', status: 'bound' }),
           expect.objectContaining({ contributionId: 'goal-obligations', status: 'bound' }),
         ]),
+      });
+      // Losing authoritative presence must remain an explicit partial receipt,
+      // even while the native hook still delivers the goal obligation exactly.
+      await clearPresence(OWNER);
+      expectExact(await nativeTurn(), current);
+      await drainDetached();
+      const missingPresenceRows = await fx.admin`SELECT pending FROM harness_shared.coord_read_cursors
+        WHERE owner_id = ${OWNER} AND surface = ${ORIENTATION_CURSOR_SURFACE}`;
+      expect(missingPresenceRows[0]?.pending?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
+        status: 'partial',
+        root: { identityId: 'su', status: 'unavailable', errorRef: 'turn-start:root-binding-failed' },
+        goal: { contributions: expect.arrayContaining([
+          expect.objectContaining({ contributionId: 'goal-obligations', status: 'bound' }),
+        ]) },
       });
       expect(serverErrors).toEqual([]);
     } finally {

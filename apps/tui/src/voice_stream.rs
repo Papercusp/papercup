@@ -14,7 +14,7 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -347,114 +347,49 @@ fn read_loop(mut sock: UnixStream, ev_tx: Sender<VoiceEvent>, mix_tx: Sender<Vec
 }
 
 // ---------------------------------------------------------------- audio I/O
-// cpal capture + rodio playback wrappers — same dedicated-OS-thread model as
-// voice.rs. Hardware-dependent; exercised by #[ignore] smokes, not unit tests.
+// Hardware lives in the sibling pui-audio process. These adapters preserve the
+// voice-stream API while keeping cpal/rodio (and ALSA) out of the pui binary.
 
 /// Drop to stop the continuous mic capture.
 pub struct MicHandle {
-    stop: Arc<AtomicBool>,
-}
-
-impl Drop for MicHandle {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-    }
+    _capture: crate::voice::StreamCapture,
 }
 
 pub fn start_mic(vs: Arc<VoiceStream>) -> Result<MicHandle> {
-    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_t = stop.clone();
-    let (ready_tx, ready_rx) = channel::<Result<()>>();
+    let mut capture = crate::voice::start_stream_capture(20)?;
+    let chunks = capture
+        .take_chunks()
+        .context("pui-audio capture did not expose its stream")?;
     std::thread::Builder::new()
         .name("pui-voice-stream-capture".into())
         .spawn(move || {
-            let host = cpal::default_host();
-            let device = match host.default_input_device() {
-                Some(d) => d,
-                None => {
-                    let _ = ready_tx.send(Err(anyhow!("no input device")));
+            while let Ok(bytes) = chunks.recv() {
+                let samples: Vec<f32> = bytes
+                    .chunks_exact(2)
+                    .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 32768.0)
+                    .collect();
+                if vs.push_pcm(&samples, 1, crate::voice::WHISPER_RATE).is_err() {
                     return;
-                }
-            };
-            let config = match device.default_input_config() {
-                Ok(c) => c,
-                Err(e) => {
-                    let _ = ready_tx.send(Err(anyhow!("input config: {e}")));
-                    return;
-                }
-            };
-            let rate = config.sample_rate().0;
-            let channels = config.channels();
-            let vs_cb = vs.clone();
-            let stream = device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _| {
-                    let _ = vs_cb.push_pcm(data, channels, rate);
-                },
-                |e| eprintln!("voice mic stream error: {e}"),
-                None,
-            );
-            match stream {
-                Ok(s) => {
-                    if s.play().is_err() {
-                        let _ = ready_tx.send(Err(anyhow!("mic play failed")));
-                        return;
-                    }
-                    let _ = ready_tx.send(Ok(()));
-                    while !stop_t.load(Ordering::Relaxed) {
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                    drop(s);
-                }
-                Err(e) => {
-                    let _ = ready_tx.send(Err(anyhow!("mic stream: {e}")));
                 }
             }
         })
         .context("spawn voice capture")?;
-    ready_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .context("mic thread no answer")??;
-    Ok(MicHandle { stop })
+    Ok(MicHandle { _capture: capture })
 }
 
 /// Spawn the playback thread: mixed frames → rodio sink. Returns when the
 /// output device is open. The thread ends when the mix channel closes.
 pub fn start_playback(mix_rx: Receiver<Vec<i16>>) -> Result<()> {
-    let (ready_tx, ready_rx) = channel::<Result<()>>();
+    let player = crate::voice::Player::spawn();
     std::thread::Builder::new()
         .name("pui-voice-stream-playback".into())
         .spawn(move || {
-            let (stream, handle) = match rodio::OutputStream::try_default() {
-                Ok(x) => x,
-                Err(e) => {
-                    let _ = ready_tx.send(Err(anyhow!("output device: {e}")));
-                    return;
-                }
-            };
-            let sink = match rodio::Sink::try_new(&handle) {
-                Ok(s) => s,
-                Err(e) => {
-                    let _ = ready_tx.send(Err(anyhow!("sink: {e}")));
-                    return;
-                }
-            };
-            let _ = ready_tx.send(Ok(()));
             while let Ok(frame) = mix_rx.recv() {
-                // Jitter guard: if playback falls behind (queue growing), drop
-                // the oldest queued audio by skipping — keep latency bounded.
-                if sink.len() > 6 {
-                    continue;
-                }
-                sink.append(rodio::buffer::SamplesBuffer::new(1, VOICE_RATE, frame));
+                player.append_pcm(frame, VOICE_RATE);
             }
-            drop(stream);
         })
         .context("spawn voice playback")?;
-    ready_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .context("playback thread no answer")?
+    Ok(())
 }
 
 // ---------------------------------------------------------------- tests

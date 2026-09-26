@@ -32,6 +32,16 @@
  * `auth: 'loopback'` — the hook runs on this box.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { randomUUID } from 'node:crypto';
+import type { ActivationRevision } from '../../../session-activation';
+
+// Reuse the hook's emission ledger and the existing two-phase cursor store.
+// This surface is separate from orientation: CTRL may be the only emitted block.
+const CONTROL_DELIVERY_SURFACE = 'turn-start-control';
+type ControlDelivery = {
+  text: string;
+  candidate?: { generation: number; activationRevision?: ActivationRevision };
+};
 
 /*
  * NO LENGTH FLOOR HERE — deliberately (context-injection-audit-2026-07-28 P-035
@@ -170,7 +180,7 @@ const turnStartMemory = defineTool({
         })();
       };
 
-      const controlPromise = (async (): Promise<string> => {
+      const controlPromise = (async (): Promise<ControlDelivery> => {
         try {
           const {
             preparePendingControlTransition,
@@ -182,16 +192,35 @@ const turnStartMemory = defineTool({
           } = await import(
             '../../../agent-tools/coordination/control-anchor'
           );
+          const { ackAndRead, clearReadCursor } = await import('../../../agent-tools/coordination/read-cursors');
+          // WI-10003297: rendering is not delivery. Even a legacy hook without
+          // a ledger must not acknowledge on arrival: it proves no emission.
+          // A committed candidate survives an ACK write failure for next-turn retry.
+          const proof = await ackAndRead(owner, CONTROL_DELIVERY_SURFACE, {
+            confirmedToken: typeof body.confirmedDelivery === 'string' ? body.confirmedDelivery : null,
+          }).catch(() => null);
+          const confirmed = proof?.committed;
+          if (confirmed && typeof confirmed.generation === 'number' && Number.isSafeInteger(confirmed.generation)) {
+            const revision = confirmed.activationRevision as ActivationRevision | undefined;
+            if (revision === undefined || (typeof revision?.specificationRevision === 'string' && typeof revision.stateRevision === 'string')) {
+              const acknowledged = await acknowledgeControlTransition(owner, workspaceId, confirmed.generation, undefined, revision)
+                .catch(() => false);
+              // Once the authoritative write succeeded there is nothing to retry.
+              // Retain committed proof on failures, but avoid another write on every
+              // later turn after success. Cleanup failure merely permits a retry.
+              if (acknowledged) await clearReadCursor(owner, CONTROL_DELIVERY_SURFACE).catch(() => {});
+            }
+          }
           const transition = await preparePendingControlTransition(owner, workspaceId);
-          if (!transition) return '';
+          if (!transition) return { text: '' };
           const ctrl = renderControlTransitionContext(transition);
           const activationRevision = transition.state?.activation?.desired;
           // identities-v1 P-012: a stack mutation (a fleet posture attached / swapped /
           // detached; mode-axis layers once P-021 lands) rides THIS transition. The
           // layer text is a SEPARATE block after the `⟦CTRL⟧` line — outside the
           // anchor's 384-token budget — and degrades to nothing on any failure.
-          // The CTRL generation is acknowledged only after this block has rendered;
-          // a failed layer render therefore remains pending for the next turn.
+          // Rendering prepares a delivery candidate. Only the hook's later proof
+          // of emission acknowledges it; failed rendering or delivery stays pending.
           let stack = '';
           let stackRendered = true;
           let stackRequiresFreshContext = false;
@@ -273,6 +302,15 @@ const turnStartMemory = defineTool({
           }
           let activationPrepared = true;
           if (stackRendered && !awaitingRelaunch && activationRevision) {
+            // A verified successor already runs this launch artifact. Preserve
+            // that independently-proven authority while the hook receipt is
+            // pending, or the successor's first turn can lose every tool to
+            // stale-artifact. This never advances the delivery watermark, and
+            // the prepare below keeps delivery status at Prepared until proof.
+            if (stackRequiresFreshContext) {
+              await convergeActivationToLaunchRecord(owner, workspaceId, transition.generation, activationRevision)
+                .catch(() => false);
+            }
             activationPrepared = await markControlTransitionPrepared(
               owner,
               workspaceId,
@@ -286,20 +324,11 @@ const turnStartMemory = defineTool({
             activationPrepared &&
             Number.isSafeInteger(transition.generation)
           ) {
-            try {
-              if (activationRevision) {
-                await acknowledgeControlTransition(owner, workspaceId, transition.generation, undefined, activationRevision);
-              } else {
-                await acknowledgeControlTransition(owner, workspaceId, transition.generation);
-              }
-            } catch {
-              // Preserve the assembled prompt even if the watermark write fails.
-              // The pending generation will be retried on the next turn.
-            }
+            return { text, candidate: { generation: transition.generation, ...(activationRevision ? { activationRevision } : {}) } };
           }
-          return text;
+          return { text };
         } catch {
-          return ''; // migration/operator skew must never block the prompt
+          return { text: '' }; // migration/operator skew must never block the prompt
         }
       })();
 
@@ -496,14 +525,26 @@ const turnStartMemory = defineTool({
         memoryPromise,
         personalPromise,
       ]);
+      let deliveryToken = orientation.deliveryToken;
+      if (control.candidate) {
+        const token = deliveryToken ?? randomUUID();
+        try {
+          const { stage } = await import('../../../agent-tools/coordination/read-cursors');
+          await stage(owner, CONTROL_DELIVERY_SURFACE, control.candidate, { deliveryToken: token });
+          deliveryToken = token;
+        } catch {
+          // No durable candidate means no control ACK, even if orientation has
+          // its own valid token. Keep delivering CTRL until staging succeeds.
+        }
+      }
       // ORDER IS DELIBERATE: control (a mode/route transition governs everything
       // after it) → orientation (what you hold and who is waiting on you) →
       // memory (background recall) -> explicitly granted private context.
       // Most-binding first; the private block is visibly separate and last.
       return Response.json({
         ok: true,
-        text: [control, orientation.block, memory, personal].filter(Boolean).join('\n\n'),
-        ...(orientation.deliveryToken ? { deliveryToken: orientation.deliveryToken } : {}),
+        text: [control.text, orientation.block, memory, personal].filter(Boolean).join('\n\n'),
+        ...(deliveryToken ? { deliveryToken } : {}),
       });
     } catch {
       return Response.json({ ok: true, text: '' });

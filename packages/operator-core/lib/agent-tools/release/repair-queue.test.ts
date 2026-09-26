@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { drainDetached } from '../../detached-imports';
 import { checkpointRootMirror } from '../../release-checkpoint-launch';
+import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
+import { checkpointPidIdentity } from '../../release/checkpoint-qualification-transaction';
 
 const queue = {
   schemaVersion: 3 as const,
@@ -722,7 +724,7 @@ describe('release:repair-queue', () => {
           expiresAtMs: Date.now() + 60_000,
         },
       };
-      let persisted = pending as typeof queue;
+      let persisted: FrozenCandidateRepairQueue = pending;
       mocks.readState.mockImplementation(async () => ({ status: 'value', queue: persisted }));
       mocks.transition.mockImplementation(async (_target, transition) => {
         persisted = transition(persisted);
@@ -757,6 +759,32 @@ describe('release:repair-queue', () => {
       };
       expect(result.repairQueue.admissionPrecheck.status).toBe('running');
       expect(mocks.transition).not.toHaveBeenCalled();
+    });
+
+    it('distinguishes a recycled live PID from its recorded process start', async () => {
+      const liveIdentity = checkpointPidIdentity(process.pid);
+      expect(liveIdentity).not.toBeNull();
+      let persisted: FrozenCandidateRepairQueue = {
+        ...queueWithoutPrecheck(),
+        admissionPrecheck: {
+          ...queue.admissionPrecheck,
+          status: 'running',
+          verdict: undefined,
+          runnerPid: process.pid,
+          runnerPidIdentity: `${liveIdentity}-recycled`,
+          expiresAtMs: Date.now() + 60_000,
+        },
+      };
+      mocks.readState.mockImplementation(async () => ({ status: 'value', queue: persisted }));
+      mocks.transition.mockImplementation(async (_target, transition) => {
+        persisted = transition(persisted);
+        return { status: 'written', queue: persisted, fresh: persisted, retries: 0 };
+      });
+      const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never)) as {
+        repairQueue: { admissionPrecheck: { status: string } };
+      };
+      expect(result.repairQueue.admissionPrecheck.status).toBe('failed');
+      expect(mocks.transition).toHaveBeenCalledTimes(1);
     });
 
     it('a live pre-check serializes the queue: another confirmed admission returns the same handle without building or launching', async () => {

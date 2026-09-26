@@ -19497,7 +19497,7 @@
           "POST"
         ]
       },
-      "description": "Side-effect-free normalization and current-caller preflight for one fresh script or saved recipe. Revalidates bindings, recipe revision/authority, tools, capabilities, topology, lifecycle and timeout without dispatching nested tools.",
+      "description": "Side-effect-free normalization and current-caller preflight for one fresh script or saved recipe, or status inspection for one durable run. Revalidates bindings, recipe revision/authority, tools, capabilities, topology, lifecycle and timeout without dispatching nested tools.",
       "capabilities": [
         "recipes:read"
       ],
@@ -19560,7 +19560,7 @@
       "guidance": {
         "when": "Before running an unfamiliar saved recipe or a capability-declaring/bound script.",
         "notWhen": "You only need recipe discovery; use orchestrate:search.",
-        "chaining": "orchestrate:inspect { script|recipe } → orchestrate:run with the same exact source and bindings"
+        "chaining": "orchestrate:inspect { script|recipe } → orchestrate:run with the same exact source and bindings; inspect durableRun.workflowId for status/result"
       }
     },
     {
@@ -19571,7 +19571,7 @@
           "POST"
         ]
       },
-      "description": "Preferred execution door for exactly one fresh script or saved recipe. Runs on the server under the current caller and returns one bounded authored-summary envelope.",
+      "description": "Preferred execution door for exactly one fresh script or saved recipe, plus explicit durable-run cancel/signal control. Foreground runs execute on the server; pinned durable scripts run as background DBOS workflows under the current caller.",
       "capabilities": [
         "agent_tools:read"
       ],
@@ -19634,7 +19634,7 @@
       "guidance": {
         "when": "After orchestrate:search/inspect, run one fresh script or exact saved-recipe continuation.",
         "notWhen": "You need a single direct tool call or must use a native compatibility door explicitly.",
-        "chaining": "orchestrate:search { query } → orchestrate:inspect { recipe|script } → orchestrate:run { recipe|script }"
+        "chaining": "orchestrate:search { query } → orchestrate:inspect { recipe|script } → orchestrate:run { recipe|script }; use durableControl for cancel/signal"
       }
     },
     {

@@ -227,7 +227,9 @@ case "$TARGET" in
     ;;
 esac
 PUI_BIN="$CARGO_TARGET_DIR/$RUST_TRIPLE/release/pui"
+PUI_AUDIO_BIN="$CARGO_TARGET_DIR/$RUST_TRIPLE/release/pui-audio"
 [[ -f "$PUI_BIN" ]] || die "pui build did not produce $PUI_BIN"
+[[ -f "$PUI_AUDIO_BIN" ]] || die "pui build did not produce $PUI_AUDIO_BIN"
 
 # ── zellij, pinned ──────────────────────────────────────────────────────────
 ZJ_CACHE="$CARGO_TARGET_DIR/zellij-$ZJ_VER-$ZJ_TRIPLE"
@@ -263,6 +265,7 @@ STAGE="$WORK/stage"
 UNIT="$STAGE/$NAME"
 mkdir -p "$UNIT/bin"
 install -m 0755 "$PUI_BIN" "$UNIT/bin/pui"
+install -m 0755 "$PUI_AUDIO_BIN" "$UNIT/bin/pui-audio"
 install -m 0755 "$ZJ_CACHE/zellij" "$UNIT/bin/zellij"
 install -m 0644 "$WASM" "$UNIT/pui-companion.wasm"
 install -m 0755 "$SRC/apps/tui/release/install.sh" "$UNIT/install.sh"
@@ -305,6 +308,7 @@ NEEDED=""
 if [[ "$TARGET" == linux-* ]] && command -v readelf >/dev/null && command -v objdump >/dev/null; then
   GLIBC_FLOOR="$(objdump -T "$UNIT/bin/pui" | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)"
   NEEDED="$(readelf -d "$UNIT/bin/pui" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' | LC_ALL=C sort | paste -sd, -)"
+  [[ ",$NEEDED," != *,libasound.so.2,* ]] || die "bin/pui still links libasound.so.2; audio must stay isolated in bin/pui-audio"
 fi
 
 # Quoted heredoc: every input arrives through the environment, so nothing in the
