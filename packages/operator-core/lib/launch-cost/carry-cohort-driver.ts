@@ -149,6 +149,21 @@ export interface CohortSourceInput {
   modelContextWindow: number; autoCompactTokenLimit: number;
 }
 
+export interface CohortSourceRunResult {
+  source: CohortSourceRecord;
+  arms: CohortArmRecord[];
+  stop: string | null;
+}
+
+/** A persisted source is resumable only when the whole registered source
+ * population completed cleanly. A preparation-only or partially dispatched
+ * failure must never masquerade as an already-finished source on restart. */
+export function isCompletedCohortSourceRun(recipe: Recipe, result: CohortSourceRunResult) {
+  const expectedArms = recipe.pairs.filter(pair => pair.sourceId === result.source.sourceId).length * 2;
+  return result.stop === null && result.source.errors.length === 0 && result.arms.length === expectedArms &&
+    result.arms.every(arm => arm.completed && arm.quality === 'pass' && arm.errors.length === 0);
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
