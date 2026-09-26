@@ -417,8 +417,8 @@ if glibc:
     lines.append(f"- Requires glibc {glibc} or newer (measured from the binary).")
 if needed:
     lines.append(f"- Loads these system libraries (measured): {', '.join(needed)}.")
-    if any(lib.startswith("libasound") for lib in needed):
-        lines.append("  `libasound.so.2` is ALSA (voice); a minimal system may need `libasound2t64` (Debian/Ubuntu/WSL2) or `alsa-lib` (Fedora).")
+if target.startswith("linux-"):
+    lines.append("- Voice uses the bundled `bin/pui-audio` helper and the system ALSA library (`libasound.so.2`). For voice on a minimal system, install `libasound2t64` (current Debian/Ubuntu), `libasound2` (older Debian/Ubuntu), or `alsa-lib` (Fedora). PUI's text interface starts without it.")
 lines += ["", "## All targets at build time", "", "| Target | Platforms | Build-time status |", "| --- | --- | --- |"]
 for name, t in compat["targets"].items():
     lines.append(f"| {name} | {', '.join(t['platforms'])} | {t['status']} |")
