@@ -191,6 +191,40 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
 }
 
+/** A claude/codex native session uuid — the only shape `/adv/sessions/resumable?sessionId=` resolves. */
+const RESUMABLE_NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * WI-10003198: the transcript a session port reads, when the consult's evidence
+ * names an EARLIER incarnation of the tracked source rather than its row's
+ * current native session.
+ *
+ * A carry-respawn rewrites its owner's adv_sessions row in place (same row id,
+ * new session_id), so every earlier incarnation has no row of its own — and the
+ * router routinely picks exactly those, because they hold the matched turns.
+ * The port used to refuse them outright ("must name this exact source
+ * session"). An earlier incarnation belongs to the row when session_turns
+ * records the row's coord owner as that session's latest owner — the same
+ * bridge resolveResumeTarget uses — and then the port reads THAT transcript.
+ * Anything else is still refused.
+ */
+export async function evidenceIncarnationOwnedBy(
+  sql: import('postgres').Sql,
+  sourceRow: { coordOwnerId: string | null },
+  sessionId: string,
+): Promise<boolean> {
+  if (!sourceRow.coordOwnerId) return false;
+  const [latest] = await sql<Array<{ owner: string }>>`
+    SELECT t.owner
+      FROM harness_shared.session_turns t
+     WHERE t.session_id = ${sessionId}
+       AND t.owner IS NOT NULL
+     ORDER BY t.ingested_at DESC
+     LIMIT 1
+  `;
+  return latest?.owner === sourceRow.coordOwnerId;
+}
+
 function sessionPortProtocolError(version: unknown, transformVersion: unknown): Response | null {
   if (version === SESSION_PORT_PROTOCOL_VERSION && transformVersion === SESSION_PORT_TRANSFORM_VERSION) return null;
   return json({
@@ -238,8 +272,13 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     ? body.workspace.trim()
     : activeWorkspaceId();
   await store.assertSessionPortStorageReady();
-  const sourceRow = await getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId);
-  if (!sourceRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
+  const trackedRow = await getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId);
+  if (!trackedRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
+  // The row whose transcript this port reads. Normally the tracked row itself;
+  // for an evidence span in an earlier carry-respawn incarnation, the same row
+  // re-pointed at that incarnation's native session (see
+  // evidenceIncarnationOwnedBy). Identity, workspace and plan stay the row's.
+  let sourceRow = trackedRow;
   let evidenceSpan: import('../../../session-port/service').SessionPortEvidenceSpan | undefined;
   if (body.consultEvidenceSpan != null) {
     const raw = body.consultEvidenceSpan;
@@ -250,12 +289,26 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
     const sessionId = typeof value.sessionId === 'string' ? value.sessionId.trim() : '';
     const turnIndices = Array.isArray(value.turnIndices) ? [...new Set(value.turnIndices)] : [];
     const contextTurns = value.contextTurns;
-    if (!sessionId || sessionId !== sourceRow.sessionId || turnIndices.length < 1 || turnIndices.length > 12 ||
+    if (!sessionId || turnIndices.length < 1 || turnIndices.length > 12 ||
         !turnIndices.every((index) => Number.isSafeInteger(index) && Number(index) >= 0) ||
         !Number.isSafeInteger(contextTurns) || Number(contextTurns) < 0 || Number(contextTurns) > 8) {
       return { response: json({ ok: false, error: 'consultEvidenceSpan must name this exact source session, 1–12 valid turn indices, and a context window from 0–8' }, 400) } as const;
     }
     const { sql } = getOrgPg();
+    if (sessionId !== trackedRow.sessionId) {
+      if (!RESUMABLE_NATIVE_SESSION_ID_RE.test(sessionId) ||
+          !(await evidenceIncarnationOwnedBy(sql as unknown as import('postgres').Sql, trackedRow, sessionId))) {
+        return {
+          response: json({
+            ok: false,
+            error: `consultEvidenceSpan must name this exact source session or an earlier incarnation of its owner: ` +
+              `session ${sessionId} is neither tracked source #${trackedRow.id}'s current session nor latest-owned by ` +
+              `${trackedRow.coordOwnerId ?? '(no owner)'}`,
+          }, 400),
+        } as const;
+      }
+      sourceRow = { ...trackedRow, sessionId };
+    }
     const indexed = await sql<Array<{ turn_idx: number; timestamp: string | Date | null; speaker: string; text: string }>>`
       SELECT t.turn_idx, t.ts AS timestamp, t.speaker, t.text
         FROM harness_shared.session_turns t
@@ -1246,7 +1299,25 @@ const resumable = defineTool({
     const searchParams = new URL(req.url).searchParams;
     const limit = Number(searchParams.get('limit') ?? 30);
     const requestedId = Number(searchParams.get('id') ?? NaN);
-    const exactId = Number.isSafeInteger(requestedId) && requestedId > 0 ? requestedId : null;
+    const exactRowId = Number.isSafeInteger(requestedId) && requestedId > 0 ? requestedId : null;
+    // WI-10003198: an exact read by NATIVE session id. psu finds a transcript on
+    // disk, but the row that owns it can be invisible to it: older than the
+    // bounded window below, or — for every earlier incarnation of a
+    // carry-respawn chain — carrying a DIFFERENT native id, because a respawn
+    // rewrites its owner's row in place. resolveResumeTarget bridges that uuid
+    // through session_turns.owner to the owner's current row, the same
+    // authority the consult dispatcher already resolved its source with, so psu
+    // and the dispatcher cannot disagree about which row a transcript belongs to.
+    const requestedSessionId = (searchParams.get('sessionId') ?? '').trim();
+    let exactBySession: { id: number; ownerId: string | null; requestedSessionId: string } | null = null;
+    if (exactRowId == null && RESUMABLE_NATIVE_SESSION_ID_RE.test(requestedSessionId)) {
+      const { resolveResumeTarget } = await import('../../../agent-launch-core');
+      const target = await resolveResumeTarget({ sessionId: requestedSessionId });
+      if (target.ok) {
+        exactBySession = { id: target.advSessionId, ownerId: target.ownerId, requestedSessionId };
+      }
+    }
+    const exactId = exactRowId ?? exactBySession?.id ?? null;
     const sessions = await listResumableSessions(Number.isFinite(limit) && limit > 0 ? limit : 30, { exactId });
     // Enrich each session with `hasArchive` — whether its transcript exists in the
     // DB session-archive. The archive-at-death lifecycle deletes an ended session's
@@ -1296,7 +1367,15 @@ const resumable = defineTool({
       ...s,
       hasArchive: s.sessionId ? archivedIds.has(s.sessionId) : false,
     }));
-    return new Response(JSON.stringify({ sessions: enriched }), { status: 200, headers: JSON_HEADERS });
+    return new Response(
+      JSON.stringify({
+        sessions: enriched,
+        // Present only when a `sessionId` lookup resolved a row, so an older
+        // psu (or a miss) reads exactly the response it always did.
+        ...(exactBySession ? { exact: exactBySession } : {}),
+      }),
+      { status: 200, headers: JSON_HEADERS },
+    );
   },
 });
 
