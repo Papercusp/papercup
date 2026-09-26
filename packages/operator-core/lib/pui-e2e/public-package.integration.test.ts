@@ -21,9 +21,13 @@ import {
   cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync,
   rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
-import { createServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { spawn as ptySpawn } from '@lydell/node-pty';
+import { WebSocketServer } from 'ws';
+import { VtScreen } from './vt-screen';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const PACKAGER = path.join(REPO_ROOT, 'apps/tui/scripts/package-release.sh');
@@ -156,6 +160,125 @@ function statusJson(launcher: string, env: NodeJS.ProcessEnv, cwd: string) {
 }
 
 const releaseId = (pkg: PackageResult) => `${pkg.version}-${pkg.sourceSha.slice(0, 12)}`;
+
+const CLOUD_USER_CODE = 'BCDF-GHJK';
+const CLOUD_TOKEN = `pct_${'c'.repeat(43)}`;
+const CLOUD_TICKET = `ht_${'f'.repeat(43)}`;
+const CLOUD_WORKSPACE = 'ws-first-run';
+const REMOTE_MARKER = 'FIRST-RUN REMOTE PUI';
+
+/**
+ * A stand-in for the Papercusp cloud portal and its connector relay (D-031):
+ * RFC 8628 device sign-in, the CLI workspace API, and one workspace terminal
+ * that answers the program psu starts there with a marker and exit 0. It
+ * records what it was asked so the test can prove the sign-in and hand-off.
+ */
+async function startCloudStub() {
+  const calls: Array<{ method: string; path: string; authorization?: string }> = [];
+  const remoteInput: string[] = [];
+  const server = createHttpServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://cloud.test');
+    calls.push({ method: req.method ?? 'GET', path: url.pathname, authorization: req.headers.authorization });
+    const json = (status: number, body: object) => {
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+    req.resume();
+    if (url.pathname === '/api/hosted/cli/device/code' && req.method === 'POST') {
+      return json(200, {
+        ok: true, deviceCode: `pdc_${'d'.repeat(43)}`, userCode: CLOUD_USER_CODE,
+        verificationUri: `${origin}/api/hosted/cli/device`,
+        verificationUriComplete: `${origin}/api/hosted/cli/device?user_code=${CLOUD_USER_CODE}`,
+        expiresIn: 600, interval: 1,
+      });
+    }
+    if (url.pathname === '/api/hosted/cli/device/token' && req.method === 'POST') {
+      return json(200, {
+        ok: true, accessToken: CLOUD_TOKEN, tokenId: 'hct_first-run', organizationId: 'org-first-run',
+        userId: 'user_first_run', expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+    }
+    if (req.headers.authorization !== `Bearer ${CLOUD_TOKEN}`) return json(401, { ok: false, error: { code: 'cli_token_invalid' } });
+    if (url.pathname === '/api/hosted/cli/workspaces') {
+      return json(200, { ok: true, workspaces: [{ id: CLOUD_WORKSPACE, displayName: 'first-run', state: 'active', reachable: true }] });
+    }
+    if (url.pathname === `/api/hosted/cli/workspaces/${CLOUD_WORKSPACE}/terminal` && req.method === 'POST') {
+      return json(200, { ok: true, session: 'first-run-session', socketUrl: `wss://portal.invalid/api/hosted/connectors/socket?ticket=${CLOUD_TICKET}` });
+    }
+    return json(404, { ok: false, error: { code: 'not_found' } });
+  });
+  const relay = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url ?? '/', 'http://cloud.test');
+    if (url.pathname !== '/api/hosted/connectors/socket' || url.searchParams.get('ticket') !== CLOUD_TICKET) {
+      socket.destroy();
+      return;
+    }
+    relay.handleUpgrade(req, socket, head, (ws) => {
+      const send = (message: object) => ws.send(JSON.stringify(message));
+      ws.on('message', (raw) => {
+        const message = JSON.parse(String(raw)) as { type: string; data?: string };
+        if (message.type !== 'pty.input' || !message.data) return;
+        remoteInput.push(Buffer.from(message.data, 'base64').toString('utf8'));
+        if (!remoteInput.join('').includes('\r')) return;
+        send({ type: 'pty.output', data: Buffer.from(`${REMOTE_MARKER}\r\n`).toString('base64') });
+        send({ type: 'pty.exit', code: 0, signal: 0 });
+        setTimeout(() => ws.close(), 200);
+      });
+      send({ type: 'session.bound', role: 'controller' });
+      send({ type: 'pty.ready', role: 'controller', resumed: false });
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  return {
+    origin,
+    calls,
+    remoteInput,
+    close: () => new Promise<void>((resolve) => {
+      relay.close();
+      server.closeAllConnections();
+      server.close(() => resolve());
+    }),
+  };
+}
+
+/** An installed PUI under a real PTY: the screen as a user sees it, and its exit. */
+function ptyRun(file: string, args: string[], env: NodeJS.ProcessEnv, cwd: string) {
+  const cols = 100;
+  const rows = 30;
+  let raw = '';
+  const term = ptySpawn(file, args, { name: 'xterm-256color', cols, rows, cwd, env: env as Record<string, string> });
+  const exited = new Promise<{ exitCode: number }>((resolve) => term.onExit(resolve));
+  term.onData((chunk) => {
+    raw += chunk;
+    // Answer PUI's device-attributes probe as a real terminal would.
+    if (/\u001b\[0?c/.test(chunk)) term.write('\u001b[?62;22c');
+  });
+  const screen = () => {
+    const vt = new VtScreen(rows, cols);
+    vt.feed(raw);
+    return vt.text();
+  };
+  return {
+    write: (data: string) => term.write(data),
+    screen,
+    raw: () => raw,
+    exited,
+    kill: () => {
+      try { term.kill(); } catch { /* already exited */ }
+    },
+    /** Wait until the screen shows `needle` — or, with `sinceRaw`, until the
+     * output after that offset carried it (text a later screen may scroll away). */
+    async waitFor(needle: string, { sinceRaw, timeoutMs = 60_000 }: { sinceRaw?: number; timeoutMs?: number } = {}) {
+      const deadline = Date.now() + timeoutMs;
+      while (!screen().includes(needle) && !(sinceRaw !== undefined && raw.slice(sinceRaw).includes(needle))) {
+        if (Date.now() > deadline) throw new Error(`waited ${timeoutMs} ms for ${JSON.stringify(needle)}; screen:\n${screen()}`);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    },
+  };
+}
 
 beforeAll(async () => {
   WORK = mkdtempSync(path.join(tmpdir(), 'pui-public-package-'));
@@ -307,6 +430,66 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     expect(removed.stdout).not.toContain('remove psu link');
     expect(readdirSync(shimBin)).toEqual(['psu']);
     expect(readFileSync(path.join(shimBin, 'psu'), 'utf8')).toBe(shim);
+  });
+
+  test('AUTO-BAR-R-08-P-020: with no operator, installed PUI setup signs in to Papercusp cloud through its bundled psu and runs PUI on the cloud workspace', { timeout: 300_000 }, async () => {
+    const unit = unpack(B.archive, 'cloud-first-run');
+    const home = freshHome('cloud-first-run');
+    const env = sandboxEnv(home);
+    const installed = run(path.join(unit, 'install.sh'), ['--yes'], env, home);
+    expect(installed.status, output(installed)).toBe(0);
+    // Positive control: nothing but the installed product can sign in here.
+    for (const absent of ['node', 'zellij', 'xdg-open']) {
+      expect(run('sh', ['-c', `command -v ${absent}`], env, home).status, absent).not.toBe(0);
+    }
+
+    const cloud = await startCloudStub();
+    const pane = ptyRun(path.join(home, '.local', 'bin', 'pui'), ['workbench'],
+      { ...env, TERM: 'xterm-256color', PAPERCUSP_CLOUD_ORIGIN: cloud.origin }, home);
+    try {
+      await pane.waitFor('Connection: Unavailable');
+      const setup = pane.screen();
+      expect(setup).toContain('No operator here? Run PUI on a remote host instead:');
+      expect(setup).toContain('l Sign in to Papercusp cloud · h Connect to a remote host');
+      // The address form names no internal deployment ports.
+      pane.write('e');
+      await pane.waitFor('Operator connection');
+      expect(pane.screen()).toContain('A full http(s) URL, such as https://host:9443');
+      expect(pane.screen()).not.toMatch(/staging|release/);
+      pane.write('\u001b');
+      await pane.waitFor('l Sign in to Papercusp cloud');
+      expect(pane.screen()).not.toContain('Operator connection');
+
+      const handOff = pane.raw().length;
+      pane.write('l');
+      // psu's device sign-in prints the code to check in the browser...
+      await pane.waitFor(CLOUD_USER_CODE, { sinceRaw: handOff });
+      // ...then opens PUI on the one connected workspace and returns its status.
+      await pane.waitFor(REMOTE_MARKER, { sinceRaw: handOff });
+      const { exitCode } = await Promise.race([
+        pane.exited,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`pui did not exit:\n${pane.screen()}`)), 60_000)),
+      ]);
+      expect(exitCode, pane.screen()).toBe(0);
+    } finally {
+      pane.kill();
+      await cloud.close();
+    }
+
+    expect(cloud.calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      'POST /api/hosted/cli/device/code',
+      'POST /api/hosted/cli/device/token',
+      'GET /api/hosted/cli/workspaces',
+      `POST /api/hosted/cli/workspaces/${CLOUD_WORKSPACE}/terminal`,
+    ]);
+    // The token the sign-in just issued, and nothing else, opened the workspace.
+    for (const call of cloud.calls.slice(2)) expect(call.authorization).toBe(`Bearer ${CLOUD_TOKEN}`);
+    expect(cloud.remoteInput.join('')).toBe('exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 pui\r');
+    // The sign-in is kept, privately, for the next `pui --connect`.
+    const storePath = path.join(home, '.papercusp', 'psu-connections.json');
+    expect(lstatSync(storePath).mode & 0o077).toBe(0);
+    const store = JSON.parse(readFileSync(storePath, 'utf8')) as { profiles: Array<{ kind: string; origin: string }> };
+    expect(store.profiles).toMatchObject([{ kind: 'papercusp-hosted', origin: cloud.origin }]);
   });
 
   test('AUTO-BAR-R-11-P-011: archives are reproducible, name their committed generation, and refuse tampering', { timeout: 2 * BUILD_TIMEOUT_MS }, () => {
