@@ -364,7 +364,9 @@ export async function provisionBlueprintPackages(
 }
 
 /** Existing stores, with no-clobber registration and the existing reviewed memory install. */
-export function blueprintPackageProvisioners(sql: Sql): BlueprintPackageProvisioners {
+export function blueprintPackageProvisioners(sql: Sql, resourceInstall?: {
+  dependentId: string;
+}): BlueprintPackageProvisioners {
   return {
     async recipe(pin, scope) {
       const { getRecipe, upsertRecipe } = await import('../code-recipes-store');
@@ -388,6 +390,14 @@ export function blueprintPackageProvisioners(sql: Sql): BlueprintPackageProvisio
       await provisionPinnedRubric(pin.value as import('../cupboard/rubric-store').RubricSeedSource, scope.workspaceId);
     },
     async knowledge(pin, scope) {
+      if (resourceInstall) {
+        const { prepareKnowledgePackageResources } = await import('./package-knowledge-resources');
+        await prepareKnowledgePackageResources(sql, { pin, workspaceId: scope.workspaceId,
+          harnessSlug: scope.harnessSlug, memoryTarget: scope.memoryTarget!,
+          shapes: scope.knowledgeSelection!.shapes, domains: scope.knowledgeSelection!.domains,
+          dependentId: resourceInstall.dependentId });
+        return;
+      }
       const { classifyPackInstall, applyPackInstall } = await import('../knowledge-packs/manage');
       const pack = pin.value as import('../knowledge-packs/pack-format').KnowledgePack;
       const review = await classifyPackInstall({ potSlug: scope.harnessSlug, pack,
