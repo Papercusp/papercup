@@ -2411,12 +2411,34 @@ export function buildWorkspaceHostBootstrap(
           `retry 5 apt_install -y --no-install-recommends ${WORKSPACE_HOST_BOOTSTRAP_APT_PACKAGES.join(" ")} || die "runtime package install failed after 5 attempts"`,
         ]
       : []),
+    // A recreated image may allocate different numeric IDs to the same named accounts. `/home`
+    // is deliberately durable (WI-10003296), so reconcile only entries carrying the historical
+    // home owner/group IDs. Root-owned files stay root-owned, and a root-owned HOME with a
+    // mismatched account fails closed instead of recursively handing privileged files to a user.
+    'repair_persisted_home_ownership() {',
+    '  local user="$1" group="$2" home="$3" expected_uid expected_gid current_uid current_gid',
+    '  [[ -e "$home" || -L "$home" ]] || return 0',
+    '  [[ -d "$home" && ! -L "$home" ]] || die "persisted home is not a real directory: $home"',
+    '  expected_uid="$(id -u "$user")"',
+    '  expected_gid="$(getent group "$group" | cut -d: -f3)"',
+    '  current_uid="$(stat -c %u "$home")"',
+    '  current_gid="$(stat -c %g "$home")"',
+    '  if [[ "$current_uid" != "$expected_uid" ]]; then',
+    '    [[ "$current_uid" != "0" ]] || die "persisted home has unexpected root owner: $home"',
+    '    chown -R -h --from="$current_uid" "$expected_uid" -- "$home"',
+    '  fi',
+    '  if [[ "$current_gid" != "$expected_gid" ]]; then',
+    '    [[ "$current_gid" != "0" ]] || die "persisted home has unexpected root group: $home"',
+    '    chown -R -h --from=":$current_gid" ":$expected_gid" -- "$home"',
+    '  fi',
+    '}',
     'getent group "$SERVICE_GROUP" >/dev/null || groupadd --system "$SERVICE_GROUP"',
     'id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --gid "$SERVICE_GROUP" --home-dir "$STATE_ROOT" --create-home --shell /usr/sbin/nologin "$SERVICE_USER"',
     'usermod --lock --shell /usr/sbin/nologin "$SERVICE_USER"',
     'getent group "$WORKSPACE_GROUP" >/dev/null || groupadd "$WORKSPACE_GROUP"',
     'id -u "$WORKSPACE_USER" >/dev/null 2>&1 || useradd --gid "$WORKSPACE_GROUP" --home-dir "/home/$WORKSPACE_USER" --create-home --shell /bin/bash "$WORKSPACE_USER"',
     'usermod --lock --gid "$WORKSPACE_GROUP" --groups "" --home "/home/$WORKSPACE_USER" --shell /bin/bash "$WORKSPACE_USER"',
+    'repair_persisted_home_ownership "$WORKSPACE_USER" "$WORKSPACE_GROUP" "/home/$WORKSPACE_USER"',
     'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx "$SERVICE_GROUP" >/dev/null; then die "workspace SSH user must not belong to the runtime service group"; fi',
     // The THIRD identity (D-248). It exists so that exactly one account both reads the signed
     // runtime and holds the agent credentials, and that account is NOT the customer's SSH login.
@@ -2425,6 +2447,7 @@ export function buildWorkspaceHostBootstrap(
     'getent group "$AGENT_GROUP" >/dev/null || groupadd --system "$AGENT_GROUP"',
     'id -u "$AGENT_USER" >/dev/null 2>&1 || useradd --system --gid "$AGENT_GROUP" --home-dir "$AGENT_HOME" --create-home --shell /usr/sbin/nologin "$AGENT_USER"',
     'usermod --lock --gid "$AGENT_GROUP" --groups "" --home "$AGENT_HOME" --shell /usr/sbin/nologin "$AGENT_USER"',
+    'repair_persisted_home_ownership "$AGENT_USER" "$AGENT_GROUP" "$AGENT_HOME"',
     // Two memberships, refused for two different reasons. $SERVICE_GROUP would hand the agent
     // runtime $STATE_ROOT — embedded PG and every delivered credential. $WORKSPACE_GROUP would
     // let the SSH account reach the agent's 0700 credential home through the group bits, which

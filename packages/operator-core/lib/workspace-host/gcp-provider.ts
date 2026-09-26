@@ -1375,6 +1375,23 @@ function durableFilesystemStartupScript(dataDeviceName: string, hostBootstrapScr
     'mountpoint -q "$data_mount" || mount "$data_mount"',
     'resize2fs "$data_device"',
     'install -d -m 0750 "$data_mount"/{postgres,repositories,transcripts,workspaces}',
+    // ⛔ WORKSPACE + AGENT HOMES MUST LAND ON THE DURABLE DISK (WI-10003296).
+    //
+    // GCP upgrades delete and recreate the boot disk while retaining only `data_device`.
+    // Both identities whose state must survive that operation live below /home: the customer's
+    // SSH identity owns its dotfiles and option-A agent credentials, and the isolated agent
+    // identity owns its native agent homes. Keeping either on the image loses authentication on
+    // every routine upgrade even though the workspace data itself survives.
+    //
+    // Seed only an empty durable home so introducing this bind on an existing machine preserves
+    // any homes already on its boot disk. Once the durable copy has content it is authoritative;
+    // a later image must never merge its own /home population into customer state.
+    'install -d -m 0755 "$data_mount/home"',
+    'home_seed="$(find "$data_mount/home" -mindepth 1 -maxdepth 1 -print -quit)"',
+    'if [[ -z "$home_seed" ]]; then cp -a /home/. "$data_mount/home"/; fi',
+    "install -d -m 0755 '/home'",
+    'grep -q " /home none bind" /etc/fstab || printf "%s /home none bind 0 0\\n" "$data_mount/home" >> /etc/fstab',
+    "mountpoint -q '/home' || mount --bind \"$data_mount/home\" '/home'",
     // ⛔ CUSTOMER WORKSPACES MUST LAND ON THE DURABLE DISK (WI-2143796, proven on canary-14).
     //
     // WORKSPACE_HOST_DATA_ROOT is `/srv/papercusp/workspaces` — a path on the BOOT disk, which

@@ -983,6 +983,35 @@ describe('buildWorkspaceHostBootstrap', () => {
     expect(first).not.toMatch(/usermod .*sudo/);
   });
 
+  it('repairs only historical non-root ownership when persisted homes cross an image UID/GID boundary', () => {
+    const script = buildWorkspaceHostBootstrap(input());
+
+    expect(script).toContain('repair_persisted_home_ownership() {');
+    expect(script).toContain('chown -R -h --from="$current_uid" "$expected_uid" -- "$home"');
+    expect(script).toContain('chown -R -h --from=":$current_gid" ":$expected_gid" -- "$home"');
+    expect(script).toContain('die "persisted home has unexpected root owner: $home"');
+    expect(script).toContain('die "persisted home has unexpected root group: $home"');
+    expect(script).toContain(
+      'repair_persisted_home_ownership "$WORKSPACE_USER" "$WORKSPACE_GROUP" "/home/$WORKSPACE_USER"',
+    );
+    expect(script).toContain(
+      'repair_persisted_home_ownership "$AGENT_USER" "$AGENT_GROUP" "$AGENT_HOME"',
+    );
+
+    expect(script.indexOf('useradd --gid "$WORKSPACE_GROUP"')).toBeLessThan(
+      script.indexOf('repair_persisted_home_ownership "$WORKSPACE_USER"'),
+    );
+    expect(script.indexOf('repair_persisted_home_ownership "$WORKSPACE_USER"')).toBeLessThan(
+      script.indexOf('install -d -o "$WORKSPACE_USER" -g "$WORKSPACE_GROUP" -m 0700'),
+    );
+    expect(script.indexOf('useradd --system --gid "$AGENT_GROUP"')).toBeLessThan(
+      script.indexOf('repair_persisted_home_ownership "$AGENT_USER"'),
+    );
+    expect(script.indexOf('repair_persisted_home_ownership "$AGENT_USER"')).toBeLessThan(
+      script.indexOf('install -d -o "$AGENT_USER" -g "$AGENT_GROUP" -m 0700'),
+    );
+  });
+
   /**
    * The unit's WorkingDirectory is the STATE root, because that is the only writable place the
    * service owns. Every content resolver in the server falls back to probing relative to cwd,

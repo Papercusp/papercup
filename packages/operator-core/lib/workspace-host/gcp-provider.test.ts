@@ -781,6 +781,30 @@ describe('GCP workspace-host provider planning', () => {
     expect(script).not.toContain('# User-supplied bootstrap follows the durable mount.');
   });
 
+  it('binds workspace and agent homes onto the DURABLE disk before the bootstrap runs', async () => {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'home-bind', idempotencyKey: 'home-bind', desired: desired() },
+      context({}, '#!/usr/bin/env bash\necho papercusp-bootstrap\n'),
+    );
+    const instance = (
+      plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as { request: GcpInstanceInsertInput }
+    ).request;
+    const script = instance.metadata.items.find(({ key }) => key === 'startup-script')?.value ?? '';
+
+    expect(script).toContain('install -d -m 0755 "$data_mount/home"');
+    expect(script).toContain('home_seed="$(find "$data_mount/home" -mindepth 1 -maxdepth 1 -print -quit)"');
+    expect(script).toContain('if [[ -z "$home_seed" ]]; then cp -a /home/. "$data_mount/home"/; fi');
+    expect(script).toContain('grep -q " /home none bind" /etc/fstab');
+    expect(script).toContain(`mountpoint -q '/home' || mount --bind "$data_mount/home" '/home'`);
+
+    const homeBindAt = script.indexOf('mount --bind "$data_mount/home"');
+    const bootstrapAt = script.indexOf('# User-supplied bootstrap follows the durable mount.');
+    expect(homeBindAt).toBeGreaterThan(-1);
+    expect(bootstrapAt).toBeGreaterThan(-1);
+    expect(homeBindAt).toBeLessThan(bootstrapAt);
+  });
+
   it('binds the customer workspace root onto the DURABLE disk, before the bootstrap runs', async () => {
     // WI-2143796, proven on canary-14: WORKSPACE_HOST_DATA_ROOT is a path on the BOOT disk, and
     // `upgrade` deletes and recreates that disk while retaining only the data disk — so a routine
