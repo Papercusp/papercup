@@ -453,7 +453,7 @@ export default defineTool({
         .enum(['stable', 'spawn-host'])
         .optional()
         .describe(
-          "OPTIONAL, default stable — 'spawn-host' binds this agent's bootstrap and MCP to the operator handling this launch (for a bounded current-build A/B check). The staging host may restart; ordinary long-lived sessions use the stable proxy.",
+          "'spawn-host' binds bootstrap and MCP to this operator for a bounded current-build check; default 'stable' uses the proxy.",
         ),
       workItem: z
         .string()
