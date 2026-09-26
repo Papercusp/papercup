@@ -1,7 +1,8 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(join(__dirname, '..', '..', '..', '..'));
 
@@ -17,7 +18,9 @@ const REPO_ROOT = resolve(join(__dirname, '..', '..', '..', '..'));
  * a round trip here before the cause was found.
  */
 const GUARD_REL = 'scripts/check-systemd-dropins-installed.mjs';
-const GUARD = join(REPO_ROOT, GUARD_REL);
+// Overridable only so a falsifiability probe can point these cases at a COPY of an older
+// guard (outside the swept tree) instead of mutating the real file.
+const GUARD = process.env.SYSTEMD_DROPIN_GUARD_UNDER_TEST ?? join(REPO_ROOT, GUARD_REL);
 const AMBIENT_CURSOR_DROP_IN = join(
   REPO_ROOT,
   'apps/operator/scripts/systemd/papercup-dev-api.service.d/60-ambient-semantic-push.conf',
@@ -43,13 +46,17 @@ const AMBIENT_CURSOR_DROP_IN = join(
  *     repo's declared unit configuration, everything built on that assumption is already
  *     wrong, and three components were silently written against exactly that drift.
  */
-function runGuard(args: string[]): { status: number; stdout: string; stderr: string } {
+function runGuard(
+  args: string[],
+  env?: Record<string, string>,
+): { status: number; stdout: string; stderr: string } {
   try {
     const stdout = execFileSync('node', [GUARD, ...args], {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       stdio: 'pipe',
       timeout: 60_000,
+      env: env ? { ...process.env, ...env } : undefined,
     });
     return { status: 0, stdout, stderr: '' };
   } catch (err: any) {
@@ -100,6 +107,12 @@ describe('systemd drop-in install guard (scripts/check-systemd-dropins-installed
     }
 
     const { status, stdout, stderr } = runGuard([]);
+    if (status === 2) {
+      // Exit 2 = systemctl reads kept failing after retries: nothing was concluded, so this is
+      // an unverified host fact (like the no-manager skip above), not drift. Drift is exit 1.
+      console.log(`systemd drop-in host assertion NOT VERIFIED (exit 2):\n${stdout}${stderr}`);
+      return;
+    }
     expect(
       status,
       `A tracked systemd drop-in is not loaded by its unit on this host. The unit is ` +
@@ -108,5 +121,140 @@ describe('systemd drop-in install guard (scripts/check-systemd-dropins-installed
 
     const list = runGuard(['--list']);
     expect(list.stdout).toMatch(/missing=0/);
+  });
+});
+
+/**
+ * EI-24161579159727790: a failed or anomalous `systemctl show` read must never be reported
+ * as a MISSING drop-in. Measured 2026-09-24 12:35 EDT: the guard reported
+ * at-spi-dbus-bus.service/10-survive-bus-drop.conf MISSING while a concurrent run of the same
+ * guard (no daemon-reload in the window) read it as loaded, because a failed read was mapped
+ * to an empty DropInPaths. The supervision reconciler parses --list and files a work-item on
+ * MISSING, so the false verdict also minted false work.
+ *
+ * These cases put a FAKE `systemctl` first on PATH, so each failure mode is deterministic and
+ * the cases run in CI too (no real user manager needed). The fake answers every tracked unit
+ * with all of its repo drop-ins loaded, then injects exactly one fault per mode.
+ */
+const FAKE_SYSTEMCTL = `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2).filter((a) => a !== '--user');
+if (args[0] === 'is-system-running') { process.stdout.write('running\\n'); process.exit(0); }
+if (args[0] !== 'show') { process.stderr.write('fake systemctl: unsupported ' + args.join(' ') + '\\n'); process.exit(64); }
+const counter = path.join(process.env.FAKE_SYSTEMCTL_STATE, 'show-calls');
+const n = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) : 0) + 1;
+fs.writeFileSync(counter, String(n));
+const mode = process.env.FAKE_SYSTEMCTL_MODE;
+if (mode === 'always-fail' || (mode === 'fail-first' && n === 1)) {
+  process.stderr.write('Failed to get properties: Connection reset by peer\\n');
+  process.exit(1);
+}
+if (mode === 'empty-first' && n === 1) process.exit(0);
+const drop = mode === 'drop-always' || (mode === 'drop-first' && n === 1);
+const props = args.filter((a) => a.startsWith('--property=')).map((a) => a.slice('--property='.length));
+const units = args.slice(1).filter((a) => !a.startsWith('-'));
+// The 2026-09-24 incident, independent of how the guard batches its calls: the FIRST read of
+// DropInPaths that covers the at-spi unit fails, while every other read succeeds.
+const fired = path.join(process.env.FAKE_SYSTEMCTL_STATE, 'dropin-fault-fired');
+if (mode === 'fail-dropin-read-once' && props.includes('DropInPaths') && units.includes(process.env.FAKE_DROP_UNIT) && !fs.existsSync(fired)) {
+  fs.writeFileSync(fired, '1');
+  process.stderr.write('Failed to get properties: Connection reset by peer\\n');
+  process.exit(1);
+}
+const blocks = units.map((u) => {
+  const dir = path.join(process.env.FAKE_SYSTEMD_DIR, u + '.d');
+  let confs = fs.existsSync(dir) ? fs.readdirSync(dir).filter((c) => c.endsWith('.conf')) : [];
+  if (drop && u === process.env.FAKE_DROP_UNIT) confs = confs.filter((c) => c !== process.env.FAKE_DROP_CONF);
+  const values = { Id: u, LoadState: 'loaded', ActiveState: 'inactive', DropInPaths: confs.map((c) => '/fake/' + u + '.d/' + c).join(' ') };
+  return props.map((p) => p + '=' + (values[p] ?? '')).join('\\n');
+});
+process.stdout.write(blocks.join('\\n\\n') + '\\n');
+`;
+
+const DROP_UNIT = 'at-spi-dbus-bus.service';
+const DROP_CONF = '10-survive-bus-drop.conf';
+
+describe('systemd drop-in guard: a failed read is never a verdict (EI-24161579159727790)', () => {
+  const binDir = mkdtempSync(join(tmpdir(), 'fake-systemctl-'));
+  writeFileSync(join(binDir, 'systemctl'), FAKE_SYSTEMCTL);
+  chmodSync(join(binDir, 'systemctl'), 0o755);
+  afterAll(() => rmSync(binDir, { recursive: true, force: true }));
+
+  function runWithFake(mode: string, args: string[] = []) {
+    const stateDir = mkdtempSync(join(binDir, 'state-'));
+    const result = runGuard(args, {
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      FAKE_SYSTEMCTL_MODE: mode,
+      FAKE_SYSTEMCTL_STATE: stateDir,
+      FAKE_SYSTEMD_DIR: join(REPO_ROOT, 'apps/operator/scripts/systemd'),
+      FAKE_DROP_UNIT: DROP_UNIT,
+      FAKE_DROP_CONF: DROP_CONF,
+      CHECK_SYSTEMD_DROPINS_RETRY_DELAY_MS: '0',
+    });
+    const showCalls = Number(readFileSync(join(stateDir, 'show-calls'), 'utf8'));
+    return { ...result, showCalls, output: `${result.stdout}${result.stderr}` };
+  }
+
+  it('the fixture tracks the drop-in the fault cases remove (guards against a vacuous pass)', () => {
+    expect(
+      existsSync(join(REPO_ROOT, 'apps/operator/scripts/systemd', `${DROP_UNIT}.d`, DROP_CONF)),
+    ).toBe(true);
+  });
+
+  it('replays the 2026-09-24 incident: a failed DropInPaths read is retried, not reported MISSING', () => {
+    const r = runWithFake('fail-dropin-read-once');
+    expect(r.showCalls).toBeGreaterThanOrEqual(2); // the fault actually fired, then was retried
+    expect(r.output).not.toMatch(/NOT loaded|MISSING|UNREADABLE/);
+    expect(r.status).toBe(0);
+  });
+
+  it('retries a failed read instead of reporting every drop-in MISSING', () => {
+    const r = runWithFake('fail-first');
+    expect(r.showCalls).toBeGreaterThanOrEqual(2); // the fault actually fired, then was retried
+    expect(r.output).not.toMatch(/NOT loaded|MISSING|UNREADABLE/);
+    expect(r.status).toBe(0);
+  });
+
+  it('retries an empty answer from a successful call instead of reading it as no drop-ins', () => {
+    const r = runWithFake('empty-first');
+    expect(r.showCalls).toBeGreaterThanOrEqual(2);
+    expect(r.output).not.toMatch(/NOT loaded|MISSING/);
+    expect(r.status).toBe(0);
+  });
+
+  it('reports a persistently failing read as NOT VERIFIED (exit 2) with systemctl’s error, never as drift', () => {
+    const r = runWithFake('always-fail');
+    expect(r.status).toBe(2);
+    expect(r.output).toContain('Connection reset by peer');
+    expect(r.output).toMatch(/UNREADABLE\s+at-spi-dbus-bus\.service\s+10-survive-bus-drop\.conf/);
+    expect(r.output).not.toMatch(/NOT loaded by the unit/);
+  });
+
+  it('--list keeps the reconciler contract: an unreadable unit is UNIT-ABSENT (systemctl show failed), not MISSING', () => {
+    const r = runWithFake('always-fail', ['--list']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toMatch(/^\s*MISSING\s/m);
+    expect(r.stdout).toMatch(
+      /^\s*UNIT-ABSENT\s+at-spi-dbus-bus\.service\s+10-survive-bus-drop\.conf\s+\(systemctl show failed\)\s*$/m,
+    );
+    expect(r.stdout).toMatch(/^installed=0 missing=0 unit-absent=\d+$/m);
+  });
+
+  it('does not report a drop-in MISSING when a confirmation read shows it loaded', () => {
+    const r = runWithFake('drop-first');
+    expect(r.showCalls).toBeGreaterThanOrEqual(2);
+    expect(r.output).not.toMatch(/NOT loaded|MISSING/);
+    expect(r.status).toBe(0);
+  });
+
+  it('still catches a genuinely missing drop-in (calibration: the fix did not blind the guard)', () => {
+    const gate = runWithFake('drop-always');
+    expect(gate.status).toBe(1);
+    expect(gate.stderr).toContain(`${DROP_UNIT}  <-  ${DROP_CONF}`);
+
+    const list = runWithFake('drop-always', ['--list']);
+    expect(list.stdout).toMatch(/^\s*MISSING\s+at-spi-dbus-bus\.service\s+10-survive-bus-drop\.conf\s*$/m);
+    expect(list.stdout).toMatch(/^installed=\d+ missing=1 unit-absent=0$/m);
   });
 });
