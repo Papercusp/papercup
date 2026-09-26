@@ -326,11 +326,32 @@ export async function resolveAcceptanceGraderEligibility(params: {
         code: 'grader_in_implementer_lineage',
         error:
           `grader '${callerId}' is in ${sourceLabel}'s spawn/rebind lineage — ` +
-          'a related session cannot supply the independent grading; recruit an existing unrelated live session via ' +
-          "coord:presence/coord:dispatch, then work_items:create the grading request WITH assign_to naming that peer " +
-          '(bypass:explicit-assignment makes it born-admitted and claimable in the same write). Do NOT file it ' +
-          'unassigned for scheduler pull — admission screening refuses every claimant, the named grader included, ' +
-          'for a promoter-tick window. Never launch a grader from this lineage',
+          'a related session cannot supply the independent grading. Do not recruit a grader yourself: ' +
+          "plans:set-plan-status { slug:<the rubric's subject plan>, status:'shipped' } routes the grading " +
+          "request through the relevance router, which excludes the implementer's lineage and mints a " +
+          'lineage-safe judge when no eligible peer answers. Never launch a grader from this lineage',
+        remedy: {
+          summary:
+            "Let the plan ship recruiter route the grading: plans:set-plan-status → 'shipped' on the " +
+            "rubric's subject plan picks an independent grader for you.",
+          steps: [
+            "Call plans:set-plan-status { slug:<the rubric's subject plan>, status:'shipped' }. Its " +
+              'acceptance_ungraded / self_graded_only refusal IS the recruiter: it routes the grading request ' +
+              "through the relevance router, excludes the implementer's spawn/rebind lineage, cascades past a " +
+              'decline and mints a lineage-safe judge when no eligible peer answers.',
+            'If that call refuses with any other code (for example acceptance_bar_contract_not_ready), repair ' +
+              'that first — recruitment fires only once grading is reachable — then call it again.',
+            "Wait for the routed grader's scorecard; grade nothing from this lineage.",
+          ],
+          doesNotWork: [
+            'Picking a peer yourself and messaging or assigning them the grading: it skips the router’s ' +
+              'lineage screen, decline cascade and fresh-judge fallback, and a peer inside the lineage is ' +
+              'refused only after a full boot.',
+            'Launching a fresh grader session yourself: a session you spawn is in your lineage and is ' +
+              'refused with this same code.',
+          ],
+          docRef: 'agent-insights/acceptance-rubrics-on-every-plan-runbook',
+        },
       },
     };
   }
@@ -396,25 +417,26 @@ export async function resolveAcceptanceGraderEligibility(params: {
           error:
             `grader '${callerId}' ${standing} for acceptance rubric ` +
             `'${rubric.rubricId}' — no recorded critic is independent of the grader, so rubric ` +
-            `fitness and work compliance would be attested by the same party; use a different ` +
-            `independent grader, or obtain a second genuinely independent critic through the ` +
-            `other supported vetting channel (consult or work-item) at the current rubric ` +
+            `fitness and work compliance would be attested by the same party; request a second ` +
+            `genuinely independent critic through the router — consult:get_feedback ` +
+            `{ policy:'rubric-vetting' } — and record its attestation at the current rubric ` +
             `revision before grading`,
           remedy: {
             summary:
               'Record a SECOND vetting critic who is genuinely independent of this grader, at ' +
               'the current rubric revision — then this same grader becomes eligible.',
             steps: [
-              `Recruit a critic unrelated to '${callerId}' by spawn/rebind lineage (coord:presence ` +
-                'for a live session outside your lineage, then coord:dispatch or work_items:create ' +
-                'with assign_to naming them).',
-              `Have that critic vet rubric '${rubric.rubricId}' at its CURRENT revision and record ` +
-                'the attestation with scorecards:emit against meta-acceptance-rubric.',
-              'Use the OTHER vetting channel from the one already recorded: scorecards:emit accepts ' +
-                'exactly one of vettingConsult / vettingWorkItem per attestation, so a second critic ' +
-                'on the same channel cannot be recorded alongside the first.',
-              'Re-attempt the grading emit — the guard unions critics across BOTH channels at the ' +
-                'current revision, so it now sees a critic who is not you.',
+              `Request the second critic through the router: consult:get_feedback { policy:'rubric-vetting', ` +
+                `question:<ask for a critique of rubric '${rubric.rubricId}' at its CURRENT revision> }. ` +
+                'The router picks and screens the critic; its answering session is outside your ' +
+                'spawn/rebind lineage, so do not pick or message one yourself.',
+              `Record that critique as a vetting attestation for rubric '${rubric.rubricId}' at its ` +
+                'CURRENT revision with scorecards:emit against meta-acceptance-rubric, citing the consult ' +
+                'as vettingConsult.',
+              'Each attestation cites exactly one of vettingConsult / vettingWorkItem, but the guard ' +
+                'unions critics across EVERY current-revision attestation on either channel, so a second ' +
+                'consult-backed attestation counts alongside the first.',
+              'Re-attempt the grading emit — the guard now sees a critic who is not you.',
             ],
             doesNotWork: [
               'A second critic in your OWN spawn/rebind lineage: critics are collapsed to the ' +

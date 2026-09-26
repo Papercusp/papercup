@@ -210,7 +210,7 @@ describe('resolveAcceptanceGraderEligibility sole-vetting-critic rail (EI-221823
     });
     expect(result.refusal?.code).toBe('grader_is_sole_vetting_critic');
     expect(result.refusal?.error).toContain('second genuinely independent critic');
-    expect(result.refusal?.error).toContain('other supported vetting channel (consult or work-item)');
+    expect(result.refusal?.error).toContain("consult:get_feedback { policy:'rubric-vetting' }");
     expect(result.refusal?.error).toContain('current rubric revision');
   });
 
@@ -285,17 +285,18 @@ describe('principal plan implementers are independent-grader exclusions', () => 
   });
 });
 
-describe('grader_in_implementer_lineage remedy text (EI-22268985547402093)', () => {
+describe('grader_in_implementer_lineage remedy text (EI-22268985547402093, review-routing P-007)', () => {
   /**
    * The refusal message is the ONE surface where a blocked author learns how to
    * route the grading, so a wrong remedy there is not cosmetic — it is executed.
-   * It used to advise "use an unassigned grading work-item for scheduler pull",
-   * which admission screening refuses for a promoter-tick window; WI-2142286 and
-   * WI-2140951 both followed that advice into open-for-40h+ strands. The working
-   * route is `assign_to` + `bypass:explicit-assignment` (live since 2026-08-31),
-   * which is born-admitted and claimable by the named grader in the same write.
+   * It first advised an unassigned grading work-item for scheduler pull (WI-2142286,
+   * WI-2140951: open-for-40h+ strands), then a hand-picked peer via coord:presence /
+   * coord:dispatch plus an assign_to work-item. Plan
+   * review-routing-through-relevance-router-2026-09-26 D-001 routes all review
+   * recruitment through the relevance router: plans:set-plan-status → 'shipped' IS
+   * the grading recruiter, and it screens the implementer's lineage itself.
    */
-  const remedy = async () => {
+  const refusal = async () => {
     lineageRelated.mockResolvedValue(true);
     const result = await resolveAcceptanceGraderEligibility({
       rubric: RUBRIC,
@@ -303,19 +304,22 @@ describe('grader_in_implementer_lineage remedy text (EI-22268985547402093)', () 
       workspaceId: 'ws-test',
     });
     expect(result.refusal?.code).toBe('grader_in_implementer_lineage');
-    return result.refusal?.error ?? '';
+    return result.refusal!;
   };
 
-  it('names the assign_to / explicit-assignment route that actually admits the item', async () => {
-    const error = await remedy();
-    expect(error).toContain('assign_to');
-    expect(error).toContain('bypass:explicit-assignment');
+  it('names the plan ship recruiter as the route to an independent grader', async () => {
+    const { error, remedy } = await refusal();
+    expect(error).toContain("plans:set-plan-status { slug:<the rubric's subject plan>, status:'shipped' }");
+    expect(error).toMatch(/relevance router/);
+    expect(remedy?.steps.join('\n')).toMatch(/acceptance_ungraded \/ self_graded_only refusal IS the recruiter/);
+    expect(remedy?.steps.join('\n')).toMatch(/acceptance_bar_contract_not_ready/);
+    expect(remedy?.docRef).toBe('agent-insights/acceptance-rubrics-on-every-plan-runbook');
   });
 
-  it('CONTROL: does NOT recommend filing the grading request unassigned for scheduler pull', async () => {
-    const error = await remedy();
-    expect(error).not.toMatch(/unassigned grading work-item for scheduler pull/);
-    expect(error).toMatch(/Do NOT file it unassigned/);
+  it('CONTROL: does NOT recommend hand-picked recruitment or scheduler pull', async () => {
+    const payload = JSON.stringify(await refusal());
+    expect(payload).not.toMatch(/coord:(presence|dispatch|send)|assign_to|explicit-assignment/);
+    expect(payload).not.toMatch(/unassigned grading work-item for scheduler pull/);
   });
 });
 
@@ -364,8 +368,10 @@ describe('grader_is_sole_vetting_critic carries the escape route (R-5 / P-005)',
 
     expect(steps.length).toBeGreaterThan(0);
     const joined = steps.join('\n');
-    expect(joined).toContain('coord:presence');
+    expect(joined).toContain("consult:get_feedback { policy:'rubric-vetting'");
+    expect(joined).not.toMatch(/coord:(presence|dispatch|send)|assign_to/);
     expect(joined).toMatch(/vettingConsult \/ vettingWorkItem/);
+    expect(joined).toMatch(/EVERY current-revision attestation on either channel/);
     expect(joined).toMatch(/CURRENT revision/i);
     expect(joined).toContain('meta-acceptance-rubric');
   });
@@ -387,10 +393,10 @@ describe('grader_is_sole_vetting_critic carries the escape route (R-5 / P-005)',
   });
 
   it('CONTROL: the sibling implementer-lineage refusal does NOT carry this remedy', async () => {
-    // Falsifiability. If a remedy were attached to every refusal, or defaulted onto
+    // Falsifiability. If one remedy were attached to every refusal, or defaulted onto
     // the type, every assertion above would pass while proving nothing about THIS
-    // code path. `grader_in_implementer_lineage` carries its route in `error` prose
-    // (asserted in the block above) and no structured `remedy`.
+    // code path. `grader_in_implementer_lineage` carries its OWN remedy (the plan ship
+    // recruiter, asserted in the block above), never the second-critic route.
     lineageRelated.mockResolvedValue(true);
     const result = await resolveAcceptanceGraderEligibility({
       rubric: RUBRIC,
@@ -399,6 +405,7 @@ describe('grader_is_sole_vetting_critic carries the escape route (R-5 / P-005)',
     });
 
     expect(result.refusal?.code).toBe('grader_in_implementer_lineage');
-    expect(result.refusal?.remedy).toBeUndefined();
+    expect(result.refusal?.remedy?.summary).not.toMatch(/SECOND vetting critic/i);
+    expect(result.refusal?.remedy?.docRef).not.toBe('agent-insights/acceptance-rubric-vetting');
   });
 });
