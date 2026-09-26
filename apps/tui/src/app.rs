@@ -69,7 +69,7 @@ pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
 /// answers (P-021): sending a message opens setup, which offers the cloud path.
 pub const SETUP_DISCONNECTED_LABEL: &str = "not connected to an operator · send a message to open setup";
 pub const CHAT_DISCONNECTED_HINT: &str = "Not connected — press i and send a message to open setup, where l signs in to Papercusp cloud.";
-pub const SETUP_UNREACHABLE_NOTE: &str = "Nothing answered at that address. Start the Papercusp desktop app on this computer, then press r to retry — or use l or h above to run PUI on a remote host.";
+pub const SETUP_UNREACHABLE_NOTE: &str = "Nothing answered at that address. For a local setup, install and start the separate Papercusp Server package from your Papercusp release download page, then press r. The desktop app is optional; l signs in to cloud and h uses a remote host.";
 
 /// What the run-loop should do after handling one event.
 /// (No `Eq`: `VoiceChan(VoiceCmd)` carries a `serde_json::Value` for prefs
@@ -25198,6 +25198,8 @@ mod first_run_copy_tests {
         app.backend_identity_error = Some(unreachable_line());
         let note = app.setup_blocker().unwrap();
         assert_eq!(note, SETUP_UNREACHABLE_NOTE);
+        assert!(note.contains("Papercusp Server"));
+        assert!(note.contains("release download page"));
         for internal in ["curl", "PUI_OPERATOR", "silently fall back", "--connect-login"] {
             assert!(!note.contains(internal), "{internal} in {note}");
         }
