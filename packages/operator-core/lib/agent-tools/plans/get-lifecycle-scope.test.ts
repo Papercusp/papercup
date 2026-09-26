@@ -140,6 +140,8 @@ beforeEach(async () => {
   __setCachedReadEnabledForTests(true);
   M.readPlanBySlug.mockClear();
   M.derivePlanLifecycleForRead.mockClear();
+  M.getAcceptanceRubricForPlan.mockClear();
+  M.getLatestPlanAudit.mockClear();
   M.planHarnessesForSlugs.mockReset();
   M.planHarnessesForSlugs.mockResolvedValue(new Map());
   M.overlayIssueBlocksForPlan.mockReset();
@@ -159,6 +161,16 @@ afterEach(async () => {
 });
 
 describe("plans:get — lifecycle signals are scoped to the plan row's workspace", () => {
+  it.each([
+    { mode: "meta" },
+    { heading: "Now" },
+    { decisions: ["D-001"] },
+  ])("skips unused rubric and audit reads for narrow request %j", async (request) => {
+    await run({ slug: "narrow", includeHistory: false, ...request });
+    expect(M.getAcceptanceRubricForPlan).not.toHaveBeenCalled();
+    expect(M.getLatestPlanAudit).not.toHaveBeenCalled();
+  });
+
   it("starts independent reads while issue blocks are pending and joins their results before lifecycle", async () => {
     const started: string[] = [];
     let release!: () => void;
@@ -167,6 +179,16 @@ describe("plans:get — lifecycle signals are scoped to the plan row's workspace
       started.push("issues");
       await gate;
       return { items, blockingIssues: { "P-001": ["EI-1"] } };
+    });
+    M.getAcceptanceRubricForPlan.mockImplementationOnce(async () => {
+      started.push("rubric");
+      await gate;
+      return null;
+    });
+    M.getLatestPlanAudit.mockImplementationOnce(async () => {
+      started.push("audit");
+      await gate;
+      return null;
     });
     M.withWorkspace.mockImplementation(async (_workspace, read) => read(async (strings: TemplateStringsArray) => {
       const sql = strings.join("?");
@@ -185,9 +207,10 @@ describe("plans:get — lifecycle signals are scoped to the plan row's workspace
     }));
     const pending = run({ slug: "overlap", includeHistory: false });
     try {
-      // A serialized implementation cannot start features/coverage until this
-      // test releases issue blocks, so this rendezvous detects the regression.
-      await vi.waitFor(() => expect(started).toEqual(expect.arrayContaining(["issues", "features", "coverage"])));
+      // Every independent read must start before issue blocks are released.
+      await vi.waitFor(() => expect(started).toEqual(expect.arrayContaining([
+        "issues", "features", "coverage", "rubric", "audit",
+      ])));
       expect(M.derivePlanLifecycleForRead).not.toHaveBeenCalled();
     } finally {
       release();

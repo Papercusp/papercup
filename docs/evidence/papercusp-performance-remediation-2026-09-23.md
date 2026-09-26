@@ -2050,3 +2050,55 @@ existing snapshot launcher now copies adjacent shell helpers too. Final suite
 19358689 passed10/0skipped, including mutation of that helper while paused.
 Configured staging sync completed0 at23:28:11Z and `/api/health` returned
 HTTP200/19d7b93dda at23:30:24Z. These are staging observations, not shipment.
+
+### P-007 resumed native runs and response attribution — 2026-09-26
+
+Avraham explicitly resumed this lane. The frozen packaged GUI still has shell
+SHA256 `e41628e003effa300146c646ad820b79fa0a0607d2412b2d460c0581cb50d5c0`
+and SPA index SHA256 `938a51916940a30806f1947fc96b4331bf005496d9d9099df67d77e28b6e8f9a`.
+The pinned scenario remains `goal-agent-behavior-feedback-2026-09-06` in
+`papercusp-workspace`, with both private IPC descriptors refreshed from the
+live staging process before valid attempts.
+
+| Staging API | Native log | Popup | Receipt | Verdict |
+| --- | --- | ---: | --- | --- |
+| `e44f174741` | `/tmp/p007-native-parallel-20260925.log` | 1010ms | `perfrun-1790380359573-8qzzkp` | pass |
+| `e44f174741` | `/tmp/p007-native-parallel-20260925-run2.log` | 3591ms | `perfrun-1790380454630-bikpyk` | fail |
+| `4c847070f7` | `/tmp/p007-native-parallel-20260925-newapi.log` | 3068ms | `perfrun-1790380776510-7bygjw` | fail |
+
+Each valid receipt contains 16 persisted measures. The 3591ms run's request
+interval was 317–3404ms; matching `plans:get` invocation29618758 spent
+1010ms in the server, including a 761ms plan read. The 3068ms run's request
+interval was 823–2783ms; invocation29619811 spent1441ms, including a
+1391ms plan read and an 833ms rubric/audit stage. The unmeasured difference
+between browser request interval and handler duration must not be called
+database time. The current UI code now marks response headers separately from
+parsed body so the next activated SPA can distinguish transport from JSON
+processing. Its result test passed17 cases and scoped typecheck was clean.
+
+In the existing server getter, rubric/audit depended only on the plan row but
+started after issue, feature and coverage enrichment. It now starts with those
+reads on full/sections requests; meta, heading and decision-narrow requests
+still skip it. The new rendezvous guard requires rubric and audit to begin
+before held issue-block work can finish, and narrow-request cases assert the
+reads are skipped. Project run `03ee341e-2833-47ff-9627-f2eba1b43fd9` passed
+39 tests with zero skips across four getter suites; scoped two-file typecheck
+and diff check passed. This is source proof only: the overlap edit was still
+uncommitted and had no native result at this write.
+
+The WDIO publisher used the UI scenario workspace for selection but omitted
+it from the ingest payload. A same-instrument positive-control database read
+found the three receipts under `workspace_id=default`, not
+`papercusp-workspace`; the publisher also stamped checkout HEAD as `git_sha`,
+which does not identify this frozen GUI or its staging API. The publisher now
+passes the selected workspace through the ingest route's existing
+`workspaceId` field. Its Node suite passed9 tests and typecheck passed; a
+new published receipt must verify the fix after activation. The checkout SHA
+remains only a checkout correlation; the shell, SPA and API identities above
+are the measured build profile. A separate native WebDriver mount termination
+produced no popup timing and is excluded from the valid-run set.
+
+`PERF-P-007@1` still requires ten valid native runs on one accepted build,
+every popup at most1500ms. These results falsify acceptance on the measured
+builds. FCP/LCP, independent acceptance, D-003 semantic activation audit and
+final shipment remain open.

@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import type { Browser } from "webdriverio";
 
-import { assertPrivateIpcFixture, hasRunOutcomeMeasure, type PerfMeasure } from "./perf-report";
+import { assertPrivateIpcFixture, desktopPerfRunPayload, hasRunOutcomeMeasure, type PerfMeasure } from "./perf-report";
 import {
   isTerminalWebDriverSessionError,
   waitUntilOrFailOnTerminalSession,
@@ -107,6 +107,19 @@ test("a timing or invariant makes the surrounding host context publishable", () 
     host("host:psi-cpu-some-avg10-pct:start"),
     { key: "invariant:webview-http-egress", value: 0, unit: "count", budget: 0, ok: true, invariant: true },
   ]), true);
+});
+
+test("desktop perf receipts retain the measured workspace across the WDIO publisher boundary", () => {
+  const measures = [{ key: "interaction:plan-popup-open", value: 1010, unit: "ms", budget: 1500, ok: true }] as const;
+  assert.deepEqual(desktopPerfRunPayload(measures, "checkout-sha", "named-profile", {
+    PAPERCUSP_PERF_WORKSPACE_ID: " papercusp-workspace ",
+  }), {
+    measures,
+    gitSha: "checkout-sha",
+    runId: "named-profile",
+    workspaceId: "papercusp-workspace",
+  });
+  assert.equal("workspaceId" in desktopPerfRunPayload(measures, null, null, {}), false);
 });
 
 test("the runner resets stale measures before any preflight can throw", () => {

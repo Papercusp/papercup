@@ -845,6 +845,30 @@ export default defineTool({
 
             const resolved = resolveEffectiveStatus(parsed);
 
+            // These reads depend only on the plan row. Start them alongside the
+            // item enrichments so a slow rubric or audit lookup does not add a
+            // second wait to a full plan read.
+            const rubricAndAuditRead = requestedDecisionIds || args.heading || mode === 'meta'
+              ? Promise.resolve([null, null] as const)
+              : timeStage('rubricAndAudit', () => Promise.all([
+              getAcceptanceRubricForPlan(row.planSlug, { harnessSlug: row.harnessSlug })
+                .then((r) =>
+                  r
+                    ? {
+                        rubricId: r.rubricId,
+                        status: r.status,
+                        criteriaCount: r.criteria.length,
+                        ...(r.classRef ? { classRef: r.classRef } : {}),
+                      }
+                    : null,
+                )
+                .catch(() => null),
+              // An audit's citation harness may differ from the plan's home.
+              getLatestPlanAudit(row.planSlug, {
+                workspaceId: row.workspaceId,
+              }),
+              ]));
+
             // engineer-issues D-005: overlay OPEN issue blocks (coord_links rel='blocks',
             // dst=plan_item) onto effectiveStatus AFTER the pure resolver — an item blocked
             // by an open engineer-issue resolves to `blocked` + carries which EI(s) block it
@@ -965,7 +989,8 @@ export default defineTool({
               { linkedFeatures, linkedWorkItemUpdatedAt },
               planItemTests,
               decoratedNow,
-            ] = await Promise.all([issueBlocksRead, linkedFeaturesRead, testCoverageRead, nowRead]);
+              [acceptanceRubric, latestAudit],
+            ] = await Promise.all([issueBlocksRead, linkedFeaturesRead, testCoverageRead, nowRead, rubricAndAuditRead]);
             stageStarted = performance.now();
             const responseItems = requestedItemIdSet
               ? resolvedItems.filter((item) => requestedItemIdSet.has(item.id))
@@ -1178,44 +1203,6 @@ export default defineTool({
             // complete bodies (alongside the prose blob).
             const boundedDecisions = mode === 'full' ? parsed.decisions : boundDecisionBodies(parsed.decisions);
             const decisionBodiesTruncated = mode !== 'full' && boundedDecisions.some((d) => 'body_truncated' in d);
-            // acceptance-rubrics-on-every-plan-2026-08-11 P-003: surface the plan's
-            // acceptance rubric (its definition-of-done) so completion state is
-            // discoverable from the plan itself. Absent = not yet authored (it is
-            // authored POST-implementation, D-007; the ship gate names the recipe).
-            const rubricAndAuditRead = timeStage('rubricAndAudit', () => Promise.all([
-              getAcceptanceRubricForPlan(row.planSlug, { harnessSlug: row.harnessSlug })
-                .then((r) =>
-                  r
-                    ? {
-                        rubricId: r.rubricId,
-                        status: r.status,
-                        criteriaCount: r.criteria.length,
-                        ...(r.classRef ? { classRef: r.classRef } : {}),
-                      }
-                    : null,
-                )
-                .catch(() => null),
-              // plan-completion-audit-and-acceptance-verdict-2026-08-13 P-003:
-              // make the recorded code-truth audit discoverable from the same plan
-              // read as its definition-of-done rubric. The stored item entries carry
-              // their own auditedSha/auditedAt/blobSha provenance (D-006/D-007).
-              //
-              // EI-21124863090048444: pass ONLY workspaceId here, never row.harnessSlug.
-              // `row.harnessSlug` is the plan's Hive-HOME slug (resolvePlanScope collapses
-              // a member/sub-harness caller to it — see plan-writers-must-not-re-derive-
-              // the-tenant.md). `plan_audits.harness_slug` records something different: the
-              // CITATION-CONTEXT harness `plans:audit` was run from (needed later to
-              // re-resolve citations against the right repo root at ship time), which for a
-              // Hive with member/sub-harnesses (a "SideStage"-shaped pot) is routinely a
-              // DIFFERENT slug than the plan's own Hive home. Filtering strictly on
-              // row.harnessSlug therefore misses a real, canonical plan_audits row whenever
-              // the audit was recorded from anything but the Hive home itself — recordPlanAudit's
-              // own audit_seq computation and getEffectiveItemAudits both already treat
-              // (workspaceId, planSlug) alone as the audit ledger's scope; match that here too.
-              getLatestPlanAudit(row.planSlug, {
-                workspaceId: row.workspaceId,
-              }),
-            ]));
             // EI-20049758099997696: plan-item prose is the source of truth for many
             // promoted work-items, but promotion intentionally keeps those citations in
             // `summary` rather than `payload.paths`. Decorate the structured read with
@@ -1229,9 +1216,7 @@ export default defineTool({
                 summary: typeof item.text === 'string' ? item.text : null,
               })),
             ).catch(() => ({})));
-            const [[acceptanceRubric, latestAudit], stalePathRefsByItem] = await Promise.all([
-              rubricAndAuditRead, stalePathsRead,
-            ]);
+            const stalePathRefsByItem = await stalePathsRead;
             stageStarted = performance.now();
             const decorateStalePathRefs = <T extends { id: string }>(item: T) =>
               decoratePlanItemStalePathRefs(item, stalePathRefsByItem);

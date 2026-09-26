@@ -20,6 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   assertPrivateIpcFixture,
+  desktopPerfRunPayload,
   hasRunOutcomeMeasure,
   operatorBaseUrl,
   readMeasures,
@@ -484,7 +485,9 @@ async function publishMeasures(): Promise<void> {
     const res = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ measures, gitSha, runId: process.env.PAPERCUSP_PERF_RUN_ID ?? null }),
+      body: JSON.stringify(desktopPerfRunPayload(
+        measures, gitSha, process.env.PAPERCUSP_PERF_RUN_ID ?? null,
+      )),
     });
     if (!res.ok) {
       // eslint-disable-next-line no-console

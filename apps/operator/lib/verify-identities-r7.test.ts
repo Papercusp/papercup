@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { appliesLayer, identitiesUrl, settleOutcome } from "../../../scripts/verify-identities-r7.mjs";
+import { appliesLayer, catalogProbeExpression, identitiesUrl, settleOutcome } from "../../../scripts/verify-identities-r7.mjs";
 
 const scriptPath = resolve(__dirname, "../../../scripts/verify-identities-r7.mjs");
 const script = readFileSync(scriptPath, "utf8");
@@ -67,6 +68,21 @@ describe("P-015 R-7 live identity-switch verifier", () => {
     expect(library).toBeGreaterThan(-1);
     expect(row).toBeGreaterThan(library);
     expect(row).toBeLessThan(agent);
+  });
+
+  it("follows catalog pages until the requested identity is available", () => {
+    const target = '[aria-label="Inspect identity research-steward"]';
+    const next = ".pc-identities__catalog-pages button:last-of-type";
+    const probe = (matches: Record<string, { disabled?: boolean } | null>) =>
+      runInNewContext(catalogProbeExpression("research-steward"), {
+        document: { querySelector: (selector: string) => matches[selector] ?? null },
+      });
+    expect(probe({ [next]: { disabled: false } })).toBe("next");
+    expect(probe({ [target]: {}, [next]: { disabled: true } })).toBe("found");
+    expect(probe({ [next]: { disabled: true } })).toBe("missing");
+    const page = readFileSync(pagePath, "utf8");
+    expect(page).toContain('className="pc-identities__catalog-pages"');
+    expect(page).toContain('aria-label={`Inspect identity ${identity.id}`}');
   });
 
   it("treats a busy/unknown settle as recorded evidence, never as a pass or a silent swallow", () => {

@@ -28,6 +28,8 @@ export function appliesLayer(row: {
  * @returns {string}
  */
 export function identitiesUrl(owner: string, identityId: string, nonce: number): string;
+/** Return the action available on the currently loaded identity catalog page. */
+export function catalogProbeExpression(identityId: any): string;
 /**
  * Classify a failed VERIFY_TAURI_SETTLE run. The settle contract exits 1 when the page is still
  * busy at its timeout and 3 when readiness is unknown; both are recorded, not fatal. Anything else

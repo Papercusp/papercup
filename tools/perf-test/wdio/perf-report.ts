@@ -99,6 +99,24 @@ export function hasRunOutcomeMeasure(measures: readonly PerfMeasure[]): boolean 
   return measures.some((measure) => !measure.key.startsWith("host:"));
 }
 
+/** Keep the published workspace aligned with the workspace exercised by WDIO.
+ * The ingest route already accepts workspaceId; omitting it stores a private
+ * staging scenario under the operator host's unrelated default workspace. */
+export function desktopPerfRunPayload(
+  measures: readonly PerfMeasure[],
+  gitSha: string | null,
+  runId: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  const workspaceId = env.PAPERCUSP_PERF_WORKSPACE_ID?.trim();
+  return {
+    measures,
+    gitSha,
+    runId,
+    ...(workspaceId ? { workspaceId } : {}),
+  };
+}
+
 /**
  * The operator this run talks to over plain HTTP — for publishing measures, and
  * for anything else that needs an origin the RUNNER can reach.

@@ -69,6 +69,15 @@ export function identitiesUrl(owner, identityId, nonce) {
   return `/settings/identities?identityAgent=${encodeURIComponent(owner)}&identityId=${encodeURIComponent(identityId)}&identitySlot=domain&refresh=${nonce}`;
 }
 
+/** Return the action available on the currently loaded identity catalog page. */
+export function catalogProbeExpression(identityId) {
+  return `(() => {
+    if (document.querySelector(${JSON.stringify(`[aria-label="Inspect identity ${identityId}"]`)})) return "found";
+    const next = document.querySelector('.pc-identities__catalog-pages button:last-of-type');
+    return next && !next.disabled ? "next" : "missing";
+  })()`;
+}
+
 /**
  * Classify a failed VERIFY_TAURI_SETTLE run. The settle contract exits 1 when the page is still
  * busy at its timeout and 3 when readiness is unknown; both are recorded, not fatal. Anything else
@@ -263,7 +272,24 @@ export async function main() {
     check(["--selector", ".pc-identities__identity"], `${label}-library-visible`);
     evalFile(captureFetch, `${label}-observe-fetch`);
     check(["--eval", `document.querySelector('[aria-label="Agent to manage"]')?.disabled === false && new URLSearchParams(location.search).get('identityAgent') === ${JSON.stringify(owner)}`], `${label}-owner-selected`);
-    check(["--eval", `!!document.querySelector('[aria-label="Inspect identity ${identityId}"]')`], `${label}-identity-inspectable`);
+    // identities:list scans a bounded page of source documents. The requested
+    // identity can be on a later page even when the library already has rows.
+    const nextSelector = ".pc-identities__catalog-pages button:last-of-type";
+    let found = false;
+    for (let page = 1; page <= 20; page += 1) {
+      const action = evalFile(catalogProbeExpression(identityId), `${label}-catalog-probe-${page}`).trim();
+      if (action === "found") {
+        evidence.steps.push({ label: `${label}-identity-inspectable`, page });
+        found = true;
+        break;
+      }
+      if (action !== "next" || page === 20) throw new Error(`${label}: identity ${identityId} absent from catalog at page ${page} (${action})`);
+      const nextPage = `Page ${page + 1}`;
+      clickUntil(nextSelector, `${label}-catalog-next-${page}`, `document.querySelector('.pc-identities__catalog-pages span')?.textContent?.trim() === ${JSON.stringify(nextPage)}`);
+      settle(`${label}-catalog-next-${page}`);
+      check(["--eval", `document.querySelector('.pc-identities__catalog-pages span')?.textContent?.trim() === ${JSON.stringify(nextPage)} && !!document.querySelector('.pc-identities__library')`], `${label}-catalog-page-${page + 1}-loaded`);
+    }
+    if (!found) throw new Error(`${label}: identity ${identityId} not found in catalog`);
     click(`[aria-label="Inspect identity ${identityId}"]`, `${label}-select-identity`);
     settle(`${label}-select-identity`);
     check(["--eval", "!!document.querySelector('.pc-identities__actions button') && !document.querySelector('.pc-identities__actions button').disabled"], `${label}-review-ready`);
