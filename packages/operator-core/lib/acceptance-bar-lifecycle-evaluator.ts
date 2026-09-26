@@ -254,6 +254,9 @@ function phaseSnapshotCodes(
 ): AcceptanceBarSnapshotCode[] {
   const deferred = new Set<AcceptanceBarSnapshotCode>([
     'bar_snapshot_method_missing',
+    // Ship-only: AUTO-BAR clauses are SEEDED draft, so gating any earlier door on it would
+    // block every freshly seeded plan before its author could reasonably accept anything.
+    'bar_snapshot_clause_not_accepted',
     'bar_snapshot_work_contract_missing',
     'bar_snapshot_work_contract_stale',
     'bar_snapshot_proof_missing',
@@ -289,6 +292,7 @@ function baseBarCodes(snapshot: AcceptanceBarContractSnapshot, bar: AcceptanceBa
     if (
       ![
         'bar_snapshot_method_missing',
+        'bar_snapshot_clause_not_accepted',
         'bar_snapshot_work_contract_missing',
         'bar_snapshot_work_contract_stale',
         'bar_snapshot_proof_missing',
@@ -347,12 +351,18 @@ function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecycl
   // a non-empty METHOD (checked above), while runnable checks carry their own
   // file/instrument/probe/cargo binding in the structured check.
   if (phase === 'ship') {
-    if (bar.role === 'outcome' && automatedProofRequired(bar)) {
+    // WI-10003187: with no enforceable clause, proof is counted against nothing, so the
+    // stale/depth/adequacy verdicts describe the lifecycle gap, not the proof. Mirror the
+    // snapshot: name the gap instead. A pre-field snapshot (undefined) keeps the old codes.
+    const clausesNotAccepted = bar.readiness.clauseAcceptance === 'not-accepted';
+    if (clausesNotAccepted) addCode(codes, 'bar_snapshot_clause_not_accepted');
+    if (!clausesNotAccepted && bar.role === 'outcome' && automatedProofRequired(bar)) {
       if (!bar.requiredTestLayers?.length) addCode(codes, 'bar_snapshot_proof_depth_missing');
       else if (bar.proof.adequacy?.state !== 'pass') addCode(codes, 'bar_snapshot_proof_inadequate');
     }
     if (bar.proof.state === 'missing') addCode(codes, 'bar_snapshot_proof_missing');
-    if (bar.proof.state === 'stale' || bar.proof.state === 'truncated') addCode(codes, 'bar_snapshot_proof_stale');
+    if (bar.proof.state === 'truncated' || (bar.proof.state === 'stale' && !clausesNotAccepted))
+      addCode(codes, 'bar_snapshot_proof_stale');
     if (bar.proof.uncertainEvidence > 0) addCode(codes, 'bar_snapshot_proof_uncertain');
     if (bar.evidencePlane !== 'tree' && !bar.proof.evidencePlanes.some((plane) => token(plane) === bar.evidencePlane)) {
       addCode(codes, 'bar_snapshot_evidence_plane_unmet');

@@ -685,6 +685,100 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     },
   );
 
+  // WI-10003187 (measured on p2p-join-catchup-speed-2026-09-23): every revision of an
+  // AUTO-BAR clause was `draft` while its bound proof matched the current revision and
+  // fingerprint exactly. The gate said proof_stale + proof_inadequate and told the author to
+  // re-prove, which can never clear it; one lifecycle-only promotion shipped the plan.
+  function neverAcceptedFixture(): AcceptanceBarContractSnapshotInput {
+    const input = provedFixture(1);
+    for (const clause of input.clauses.rows) {
+      clause.lifecycleStatus = 'draft';
+      clause.acceptedBy = null;
+      clause.acceptedAt = null;
+    }
+    return input;
+  }
+
+  it('names a never-accepted clause instead of calling its current proof stale and inadequate', () => {
+    const snapshot = projectAcceptanceBarContractSnapshot(neverAcceptedFixture());
+    const bar = snapshot.bars[0]!;
+
+    expect(bar.readiness.clauseAcceptance).toBe('not-accepted');
+    expect(bar.readiness.codes).toContain('bar_snapshot_clause_not_accepted');
+    expect(bar.readiness.codes).not.toContain('bar_snapshot_proof_stale');
+    expect(bar.readiness.codes).not.toContain('bar_snapshot_proof_inadequate');
+    expect(bar.readiness.codes).not.toContain('bar_snapshot_proof_depth_missing');
+
+    const ship = evaluateAcceptanceBarLifecycle(snapshot, 'ship');
+    expect(ship.satisfied).toBe(false);
+    expect(ship.codes).toContain('bar_snapshot_clause_not_accepted');
+    expect(ship.codes).not.toContain('bar_snapshot_proof_stale');
+    expect(ship.codes).not.toContain('bar_snapshot_proof_inadequate');
+    expect(ship.nextRepair).toMatchObject({ code: 'bar_snapshot_clause_not_accepted', barKey: 'R-1' });
+    expect(ship.nextRepair?.action).toMatch(/lifecycleStatus:"active"/);
+    expect(ship.nextRepair?.action).toMatch(/sourceBar/);
+    expect(ship.nextRepair?.action).toMatch(/Do NOT re-prove/);
+  });
+
+  it('CONTROL: the same proof on an accepted clause ships — the lifecycle, not the proof, was the gap', () => {
+    const input = neverAcceptedFixture();
+    input.clauses.rows[0]!.lifecycleStatus = 'active';
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.readiness.clauseAcceptance).toBe('accepted');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').satisfied).toBe(true);
+  });
+
+  it('does not block any door before ship on a seeded draft clause', () => {
+    const snapshot = projectAcceptanceBarContractSnapshot(neverAcceptedFixture());
+
+    for (const phase of ['pre-start', 'pre-vetting', 'pre-grading'] as const) {
+      expect(evaluateAcceptanceBarLifecycle(snapshot, phase).codes).not.toContain('bar_snapshot_clause_not_accepted');
+    }
+  });
+
+  it('keeps proof_missing for a never-accepted clause with no evidence at all', () => {
+    const input = neverAcceptedFixture();
+    input.evidence.rows.length = 0;
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.readiness.codes).toEqual(
+      expect.arrayContaining(['bar_snapshot_clause_not_accepted', 'bar_snapshot_proof_missing']),
+    );
+    // Accept first: the promotion carries whatever is bound, so binding before it is not wasted,
+    // but the ranked repair should still lead with the one-call lifecycle gap.
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').nextRepair?.code).toBe('bar_snapshot_clause_not_accepted');
+  });
+
+  it('does not report a never-accepted clause when one sibling clause is enforceable', () => {
+    const input = provedFixture(1);
+    const accepted = input.clauses.rows[0]!;
+    input.clauses.rows.push({
+      ...accepted,
+      specId: `${accepted.specId}-draft`,
+      contentHash: `${accepted.contentHash}-draft`,
+      lifecycleStatus: 'draft',
+      acceptedBy: null,
+      acceptedAt: null,
+    });
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+
+    expect(snapshot.bars[0]!.readiness.clauseAcceptance).toBe('accepted');
+    expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_clause_not_accepted');
+  });
+
+  it('keeps the old proof codes for a pre-field snapshot that carries no clauseAcceptance', () => {
+    const snapshot = projectAcceptanceBarContractSnapshot(neverAcceptedFixture());
+    // Model a snapshot written before WI-10003187: no field, and the code was never emitted.
+    const readiness = snapshot.bars[0]!.readiness;
+    delete readiness.clauseAcceptance;
+    readiness.codes = readiness.codes.filter((code) => code !== 'bar_snapshot_clause_not_accepted');
+
+    const codes = evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes;
+    expect(codes).not.toContain('bar_snapshot_clause_not_accepted');
+    expect(codes).toContain('bar_snapshot_proof_stale');
+  });
+
   it('does not invent an automated proof floor for a non-automated delivery-plane clause', () => {
     const input = fixture(1);
     input.clauses.rows[0]!.behaviorClass = 'non-automated';

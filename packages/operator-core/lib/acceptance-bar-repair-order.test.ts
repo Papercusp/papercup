@@ -127,6 +127,14 @@ describe('acceptance BAR repair order: vet before proof (P-004)', () => {
     }
   });
 
+  it('ranks accepting a draft clause after vetting and before every proof/card/grading repair (WI-10003187)', () => {
+    const accept = rank(ACCEPTANCE_BAR_REPAIR_ORDER, 'bar_snapshot_clause_not_accepted');
+    expect(accept).toBeGreaterThan(Math.max(...VETTING.map((code) => rank(ACCEPTANCE_BAR_REPAIR_ORDER, code))));
+    expect(accept).toBeLessThan(Math.min(...BIND_CARDS_GRADE.map((code) => rank(ACCEPTANCE_BAR_REPAIR_ORDER, code))));
+    expect(nextRepair(['bar_snapshot_proof_missing', 'bar_snapshot_clause_not_accepted'], [])?.code)
+      .toBe('bar_snapshot_clause_not_accepted');
+  });
+
   it('attributes the repair to the BAR whose readiness carries it', () => {
     const repair = nextRepair(
       ['bar_snapshot_proof_missing'],
