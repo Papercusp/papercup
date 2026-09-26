@@ -1,5 +1,11 @@
+/** Independent P-005 progress oracles; optional subject is a copy-out mutant, never an in-tree edit. */
 import { describe, expect, it } from 'vitest';
-import { advanceGoalPlacementProgress, type GoalPlacementEffect, type GoalPlacementOpportunity } from './goal-placement-progress';
+import { pathToFileURL } from 'node:url';
+import type { GoalPlacementEffect, GoalPlacementOpportunity } from './goal-placement-progress';
+
+const { advanceGoalPlacementProgress }: typeof import('./goal-placement-progress') = process.env.PAPERCUSP_GOAL_PROGRESS_PROBE
+  ? await import(/* @vite-ignore */ pathToFileURL(process.env.PAPERCUSP_GOAL_PROGRESS_PROBE).href)
+  : await import('./goal-placement-progress');
 
 const scopeKey = 'workspace/goal/plan/holder';
 const at = (minute: number) => new Date(Date.UTC(2026, 8, 23, 0, minute)).toISOString();
