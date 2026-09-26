@@ -298,6 +298,10 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
       patch: { criterion: patchArgs.criterion },
       preview: approvalRequired,
     });
+    // WI-10003299: the tool context reaches the opener so a fresh-reviewer
+    // launch can run (re-attributed to the review's system principal).
+    expect(call).toHaveProperty('launchCtx');
+    expect(call.launchCtx).toEqual({});
     expect(Object.keys(call.patch)).toEqual(['criterion']);
   });
 
