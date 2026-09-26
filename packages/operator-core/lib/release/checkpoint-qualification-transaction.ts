@@ -427,12 +427,50 @@ function consumedRunner(
   current: CheckpointQualificationTransaction,
   outcome: QualificationOutcome,
   nowMs: number,
+  settledRunId: string | null = null,
 ): QualificationPhysicalRun[] {
-  if (!current.currentPhysicalRunner) return current.consumedPhysicalRuns ?? [];
+  const runner = current.currentPhysicalRunner;
+  if (!runner) return current.consumedPhysicalRuns ?? [];
+  const evidenceRefs = settledRunId && canBindRunIdToRunner(runner, settledRunId)
+    ? uniqueStrings([...runner.evidenceRefs, `checkpoint-run:${settledRunId}`])
+    : runner.evidenceRefs;
   return [
     ...(current.consumedPhysicalRuns ?? []),
-    { ...current.currentPhysicalRunner, endedAtMs: nowMs, outcome },
+    { ...runner, evidenceRefs, endedAtMs: nowMs, outcome },
   ].slice(-32);
+}
+
+/** A runner may carry at most one run id: bind only when it has none yet, or already has this one. */
+function canBindRunIdToRunner(runner: { evidenceRefs?: readonly string[] }, runId: string): boolean {
+  const bound = (runner.evidenceRefs ?? []).filter((ref) => ref.startsWith('checkpoint-run:'));
+  return bound.length === 0 || bound.includes(`checkpoint-run:${runId}`);
+}
+
+/**
+ * WI-10003212 — the run id a transition that RELEASES the current runner (wait / terminal settle)
+ * may store on the attempt, plus the id to bind into the released runner's history.
+ *
+ * A runner binds its run id at activation (`checkpoint-run:<runId>`). A run that settles BEFORE
+ * activating — `skipped-locked`, which emits its verdict before it ever attaches to its
+ * reservation — used to store its run id on the attempt while the released runner carried no
+ * binding. `storedRunIdIsFromEndedRunner` therefore could not recognise the id as history, every
+ * fresh reservation inherited it (`runIdForFreshRunner`), and each later scheduled CLI was refused
+ * at activation (`run stored=<skipped run> produced=<own run>`): attempt 075de039 wedged every fire
+ * from 04:23Z on 2026-09-26 on run 1977bd22, the 02:23Z fire that lock-skipped behind a manual run.
+ * The released runner now takes the binding, and an id no runner can carry is never stored.
+ */
+function runIdOnRelease(
+  current: CheckpointQualificationTransaction,
+  inputRunId: string | null | undefined,
+): { runId: string | null; bind: string | null } {
+  const own = inputRunId?.trim() || null;
+  if (!own) return { runId: current.runId, bind: null };
+  const runner = current.currentPhysicalRunner;
+  if (runner && canBindRunIdToRunner(runner, own)) return { runId: own, bind: own };
+  if ((current.consumedPhysicalRuns ?? []).some((run) => runIdBoundToRunner(run, own))) {
+    return { runId: own, bind: null };
+  }
+  return { runId: current.runId, bind: null };
 }
 
 /**
@@ -458,6 +496,22 @@ function storedRunIdIsFromEndedRunner(current: CheckpointQualificationTransactio
   if (!runId) return false;
   if (runIdBoundToRunner(current.currentPhysicalRunner, runId)) return false;
   return (current.consumedPhysicalRuns ?? []).some((run) => runIdBoundToRunner(run, runId));
+}
+
+/**
+ * WI-10003212 recovery — the stored run id cannot belong to the incumbent's CLI: the incumbent is a
+ * placeholder no CLI ever attached to (no pid, still `launching`, no `checkpoint-run:` binding),
+ * so the id was inherited, not assigned. The scheduled pre-spawn reservation never carries a run
+ * id, so its first attach is the only claimant. Needed for rows wedged BEFORE `runIdOnRelease`
+ * existed, whose orphaned id has aged out of the 32-run history (oddsmith attempt de070acc: run
+ * 8e9dbf64 lock-skipped at 2026-09-25T16:01Z and wedged every later fire). An attached runner keeps
+ * single flight: a second, different run id against it still conflicts.
+ */
+function storedRunIdOrphanedAtUnattachedRunner(current: CheckpointQualificationTransaction): boolean {
+  const runner = current.currentPhysicalRunner;
+  if (!runner || !current.runId) return false;
+  if (runner.pid != null || runner.pidIdentity || runner.phase !== 'launching') return false;
+  return !(runner.evidenceRefs ?? []).some((ref) => ref.startsWith('checkpoint-run:'));
 }
 
 /** The run id a FRESH runner reservation carries: its own, never one bound to another runner. */
@@ -964,6 +1018,7 @@ export function waitQualificationTransaction(
   }
   const nowMs = input.nowMs ?? Date.now();
   const outcome = { kind: 'pre-suite-no-verdict' as const, reason: input.reason };
+  const released = runIdOnRelease(current, input.runId);
   return {
     status: 'updated',
     transaction: {
@@ -975,11 +1030,11 @@ export function waitQualificationTransaction(
       outcome,
       candidate: input.candidate?.trim() || current.candidate,
       repairHead: input.repairHead?.trim() || current.repairHead,
-      runId: input.runId?.trim() || current.runId,
+      runId: released.runId,
       blockers: (input.blockers ?? []).slice(0, 24).map((blocker) => ({ ...blocker, observedAtMs: nowMs })),
       waitGeneration: current.waitGeneration + 1,
       currentPhysicalRunner: null,
-      consumedPhysicalRuns: consumedRunner(current, outcome, nowMs),
+      consumedPhysicalRuns: consumedRunner(current, outcome, nowMs, released.bind),
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
     },
   };
@@ -1017,7 +1072,7 @@ export function reserveQualificationRunner(
       (current.candidate && input.candidate && current.candidate !== input.candidate.trim()) ||
       (current.repairHead && input.repairHead && current.repairHead !== input.repairHead.trim()) ||
       (current.runId && input.runId && current.runId !== input.runId.trim() &&
-        !storedRunIdIsFromEndedRunner(current)) ||
+        !storedRunIdIsFromEndedRunner(current) && !storedRunIdOrphanedAtUnattachedRunner(current)) ||
       (incumbent.pidIdentity && input.pidIdentity && incumbent.pidIdentity !== input.pidIdentity)
     ) return { status: 'conflict', transaction: current };
     if (input.started !== true && input.pid == null && !input.unit) {
@@ -1203,6 +1258,7 @@ export function settleQualificationTransaction(
     });
   }
   const nowMs = input.nowMs ?? Date.now();
+  const released = runIdOnRelease(current, runId);
   return {
     status: 'updated',
     transaction: {
@@ -1215,10 +1271,10 @@ export function settleQualificationTransaction(
       outcome,
       candidate: candidate ?? current.candidate,
       repairHead: input.repairHead?.trim() || current.repairHead,
-      runId: runId ?? current.runId,
+      runId: released.runId,
       blockers: [],
       currentPhysicalRunner: null,
-      consumedPhysicalRuns: consumedRunner(current, outcome, nowMs),
+      consumedPhysicalRuns: consumedRunner(current, outcome, nowMs, released.bind),
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
     },
   };

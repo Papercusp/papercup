@@ -567,6 +567,79 @@ describe('logical checkpoint qualification transaction', () => {
     }).status).toBe('conflict');
   });
 
+  it('binds a run that settles BEFORE activating to its released runner, so no fresh runner inherits it (WI-10003212)', () => {
+    // A scheduled reservation whose CLI lock-skips: it settles `skipped-locked` without ever
+    // attaching, so the runner never recorded `checkpoint-run:skipped-run`.
+    const reserved1 = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-1', leaseDurationMs: 1_000, started: false, nowMs: 200,
+    }).transaction;
+    const skipped = settleQualificationTransaction(reserved1, {
+      attemptId: 'attempt-1', reason: 'skipped-locked', candidate: 'candidate-1', runId: 'skipped-run', nowMs: 300,
+    });
+    expect(skipped).toMatchObject({ status: 'updated', transaction: { phase: 'waiting', runId: 'skipped-run' } });
+    expect(skipped.transaction.consumedPhysicalRuns?.at(-1)).toMatchObject({
+      id: 'gate-fire-1', evidenceRefs: expect.arrayContaining(['checkpoint-run:skipped-run']),
+    });
+
+    // The next fire's fresh reservation does not inherit the skipped run's id ...
+    const reserved2 = reserveQualificationRunner(skipped.transaction, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-2', leaseDurationMs: 1_000, started: false, nowMs: 400,
+    });
+    expect(reserved2).toMatchObject({ status: 'updated', transaction: { runId: null } });
+    // ... so its own CLI activates instead of being refused `run stored=skipped-run produced=run-2`.
+    expect(reserveQualificationRunner(reserved2.transaction, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-2', runId: 'run-2', candidate: 'candidate-1',
+      pid: 22, pidIdentity: 'boot-a:22', leaseDurationMs: 2_000, started: true, nowMs: 500,
+      evidenceRefs: ['checkpoint-run:run-2'],
+    })).toMatchObject({ status: 'updated', transaction: { runId: 'run-2' } });
+  });
+
+  it('recovers a row already wedged on an orphaned run id that aged out of history (WI-10003212)', () => {
+    // Pre-fix shape: the attempt holds `orphan-run`, bound to no runner (the lock-skipped runner
+    // aged out of the 32-run window), and a fresh scheduled placeholder inherited it.
+    const placeholder = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-9', leaseDurationMs: 1_000, started: false, nowMs: 200,
+    }).transaction;
+    const wedged = { ...placeholder, runId: 'orphan-run' };
+    const attach = (from: Parameters<typeof reserveQualificationRunner>[0], runId: string, pid: number) => reserveQualificationRunner(from, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-9', runId, candidate: 'candidate-1',
+      pid, pidIdentity: `boot-a:${pid}`, leaseDurationMs: 2_000, started: true, nowMs: 300,
+      evidenceRefs: [`checkpoint-run:${runId}`],
+    });
+    const recovered = attach(wedged, 'run-9', 99);
+    expect(recovered).toMatchObject({
+      status: 'updated',
+      transaction: { runId: 'run-9', currentPhysicalRunner: { id: 'gate-fire-9', phase: 'materializing', pid: 99 } },
+    });
+    // Once a CLI has attached, single flight holds: a different run id against it conflicts.
+    expect(attach(recovered.transaction, 'run-10', 100).status).toBe('conflict');
+  });
+
+  it('never stores a released run id that no runner can carry (WI-10003212)', () => {
+    // run-1 activated and is bound to gate-fire-1; a late wait from an unrelated run must not
+    // overwrite the attempt's run id with an unattributable one, nor re-bind gate-fire-1.
+    const reserved = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-1', leaseDurationMs: 1_000, started: false, nowMs: 200,
+    }).transaction;
+    const started = reserveQualificationRunner(reserved, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-1', runId: 'run-1', candidate: 'candidate-1',
+      pid: 11, pidIdentity: 'boot-a:11', leaseDurationMs: 2_000, started: true, nowMs: 300,
+      evidenceRefs: ['checkpoint-run:run-1'],
+    }).transaction;
+    const waited = waitQualificationTransaction(started, {
+      attemptId: 'attempt-1', reason: 'repair-in-progress', runId: 'stray-run', nowMs: 400,
+    });
+    expect(waited).toMatchObject({ status: 'updated', transaction: { runId: 'run-1' } });
+    const released = waited.transaction.consumedPhysicalRuns?.at(-1);
+    expect(released?.evidenceRefs).toContain('checkpoint-run:run-1');
+    expect(released?.evidenceRefs).not.toContain('checkpoint-run:stray-run');
+    // With no runner at all, an unbound id is likewise not stored.
+    const again = waitQualificationTransaction(waited.transaction, {
+      attemptId: 'attempt-1', reason: 'wait-for-eligibility-unavailable', runId: 'stray-run', nowMs: 500,
+    });
+    expect(again.transaction.runId).toBe('run-1');
+  });
+
   it('lets a live physical-run lease outrank a stale eligibility action', () => {
     const running = reserveQualificationRunner(begin(), {
       attemptId: 'attempt-1',
