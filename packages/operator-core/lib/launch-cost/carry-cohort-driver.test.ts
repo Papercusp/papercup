@@ -1,6 +1,6 @@
 import { parse as parseToml } from '@iarna/toml';
 import { describe, expect, it } from 'vitest';
-import { buildCarryTaskEvaluations, buildCohortConfigToml, buildHistoryFiller, cohortArmPlan, reserveCohortBudget,
+import { buildCarryTaskEvaluations, buildCohortConfigToml, buildHistoryFiller, cohortArmPlan, isCompletedCohortSourceRun, reserveCohortBudget,
   priceUsageRow, type CohortArmRecord, type CohortSourceRecord, type CohortUsageRow } from './carry-cohort-driver';
 import { createCarryTrialRecipe, evaluateCarryTaskPairs } from './launch-cost-metrics';
 
@@ -66,6 +66,18 @@ describe('P-005 carry cohort driver (pure parts)', () => {
     expect(buildCarryTaskEvaluations(recipe, [arm('S-I0-T2:control', null)], [source], rows)[0].accountingComplete).toBe(false);
     expect(buildCarryTaskEvaluations(recipe, [arm('S-I0-T1:candidate', 'cand')], [source], rows.filter(r => r.session_id !== 'src'))[0]
       .accountingComplete).toBe(false);
+  });
+
+  it('never resumes a preparation-only or partial failure as a completed source', () => {
+    const completeArms = recipe.pairs.filter(pair => pair.sourceId === 'S-I0')
+      .flatMap(pair => pair.arms.map(item => arm(item.id, `${item.id}-thread`)));
+    expect(isCompletedCohortSourceRun(recipe, { source, arms: completeArms, stop: null })).toBe(true);
+    expect(isCompletedCohortSourceRun(recipe, { source, arms: [], stop: 'source-failed:S-I0' })).toBe(false);
+    expect(isCompletedCohortSourceRun(recipe, { source, arms: completeArms.slice(0, -1), stop: null })).toBe(false);
+    expect(isCompletedCohortSourceRun(recipe, { source: { ...source, errors: ['ledger-query-failed'] },
+      arms: completeArms, stop: null })).toBe(false);
+    expect(isCompletedCohortSourceRun(recipe, { source, arms: completeArms.map((item, index) => index === 0
+      ? { ...item, completed: false } : item), stop: null })).toBe(false);
   });
 
   it('admits the registered full cohort from zero spend and refuses once the charges reach the cap', () => {
