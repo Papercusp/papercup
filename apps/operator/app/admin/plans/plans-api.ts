@@ -646,6 +646,10 @@ export interface PlanGetResult {
       valsPassing: number;
     }
   >;
+  /** The first document response deferred live status/test decorations. */
+  enrichmentsDeferred?: boolean;
+  /** The document is readable, but its later decoration request failed. */
+  enrichmentsUnavailable?: boolean;
 }
 
 export type SearchScope = "title" | "now" | "items" | "decisions" | "prose";
@@ -741,6 +745,7 @@ export function fetchPlan(
   slug: string,
   harnessSlugOrSignal?: string | null | AbortSignal,
   signal?: AbortSignal,
+  options: { includeEnrichments?: boolean; trackInteraction?: boolean } = {},
 ) {
   const harnessSlug =
     typeof harnessSlugOrSignal === "string" ? harnessSlugOrSignal : null;
@@ -755,20 +760,32 @@ export function fetchPlan(
   // `data.raw`/`data.prose` to render/round-trip the whole plan, so without
   // mode:'full' the editor renders BLANK. These are user-driven, one-plan-at-
   // a-time fetches, so the full body is the right payload.
-  markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, "request-started");
+  const trackInteraction = options.trackInteraction !== false;
+  if (trackInteraction)
+    markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, "request-started");
   return getJson<PlanGetResult>(
     "get",
-    { slug, mode: "full", ...(harnessSlug ? { harness: harnessSlug } : {}) },
+    {
+      slug,
+      mode: "full",
+      ...(harnessSlug ? { harness: harnessSlug } : {}),
+      ...(options.includeEnrichments === false
+        ? { includeEnrichments: false }
+        : {}),
+    },
     actualSignal,
     () => {
-      if (!actualSignal?.aborted) {
-        markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, "response-headers");
+      if (trackInteraction && !actualSignal?.aborted) {
+        markInteractionPhase(
+          PERF_INTERACTIONS.planPopupOpen,
+          "response-headers",
+        );
       }
     },
   ).then((result) => {
     // A superseded/closed popup must not credit its old response to a new
     // interaction. getJson resolves only after the response body is parsed.
-    if (!actualSignal?.aborted) {
+    if (trackInteraction && !actualSignal?.aborted) {
       markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, "response-ready");
     }
     return result;
@@ -1553,10 +1570,81 @@ export function usePlan(
   const oneShot = useAsyncJson<PlanGetResult | null>(
     (signal) =>
       !live && slug
-        ? fetchPlan(slug, harnessSlug, signal)
+        ? fetchPlan(slug, harnessSlug, signal, { includeEnrichments: false })
         : Promise.resolve(null),
     [slug, live, harnessSlug],
   );
+
+  // Let the document paint before loading live badges and issue overlays. Keep
+  // the second request one-shot: a live subscription could overwrite an editor
+  // draft after it has begun. Preserve the first response's CAS baseline and
+  // any local item changes when the decoration response arrives.
+  const initial = oneShot.data;
+  useEffect(() => {
+    if (
+      live ||
+      !slug ||
+      !initial?.enrichmentsDeferred ||
+      oneShot.loading ||
+      oneShot.error
+    )
+      return;
+    const controller = new AbortController();
+    fetchPlan(slug, harnessSlug, controller.signal, { trackInteraction: false })
+      .then((decorated) => {
+        if (controller.signal.aborted) return;
+        oneShot.setData?.((current) => {
+          if (
+            !current ||
+            current.slug !== decorated.slug ||
+            current.version !== decorated.version ||
+            current.raw !== decorated.raw
+          ) {
+            return current
+              ? {
+                  ...current,
+                  enrichmentsDeferred: false,
+                  enrichmentsUnavailable: true,
+                }
+              : current;
+          }
+          return {
+            ...current,
+            items:
+              current.items === initial.items ? decorated.items : current.items,
+            linkedFeatures: decorated.linkedFeatures,
+            planItemTests: decorated.planItemTests,
+            enrichmentsDeferred: false,
+          };
+        });
+      })
+      .catch((error: unknown) => {
+        if (
+          controller.signal.aborted ||
+          (error as { name?: string })?.name === "AbortError"
+        )
+          return;
+        oneShot.setData?.((current) =>
+          current
+            ? {
+                ...current,
+                enrichmentsDeferred: false,
+                enrichmentsUnavailable: true,
+              }
+            : current,
+        );
+      });
+    return () => controller.abort();
+  }, [
+    live,
+    slug,
+    harnessSlug,
+    initial?.enrichmentsDeferred,
+    initial?.version,
+    initial?.raw,
+    oneShot.loading,
+    oneShot.error,
+  ]);
 
   if (live) {
     return {

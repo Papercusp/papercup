@@ -74,6 +74,25 @@ describe('popup plan read phases', () => {
     expect(await pending).toEqual({ slug: 'p' });
     expect(phaseSpy.mock.calls).toEqual([['plan-popup-open', 'request-started']]);
   });
+
+  it("requests body-first data without crediting a later decoration fetch to the popup", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://localhost:3170" } });
+    const fetchSpy = vi.fn(
+      async (_input: RequestInfo | URL) =>
+        new Response(JSON.stringify({ slug: "p", raw: "# Body" })),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await fetchPlan("p", "papercusp", undefined, {
+      includeEnrichments: false,
+      trackInteraction: false,
+    });
+
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain(
+      "includeEnrichments=false",
+    );
+    expect(phaseSpy).not.toHaveBeenCalled();
+  });
 });
 
 describe('normalizeAttentionGroups', () => {

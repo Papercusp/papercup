@@ -22,6 +22,7 @@ export const PLANS_BOOLEAN_KEYS: ReadonlySet<string> = new Set([
   'includeArchived',
   'includeLegacy',
   'includeHistory',
+  'includeEnrichments',
   'actionable',
   'needsHuman',
 ]);

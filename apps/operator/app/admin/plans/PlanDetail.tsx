@@ -195,6 +195,7 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
   const editing = pane === 'edit';
   const dirty = editing && draft !== null && draft !== raw;
   const locked = !!lock;
+  const enrichmentsPending = data?.enrichmentsDeferred === true;
 
   // A plan freshly (re)loaded while not editing: clear any stale draft.
   useEffect(() => {
@@ -275,6 +276,7 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
     planStatus === 'draft' ? (data.slug.startsWith('scoper-proposal-') ? 'scoper' : 'user') : null;
 
   const enterEdit = () => {
+    if (enrichmentsPending) return;
     setDraft(raw);
     setRationale('');
     setSaveError(null);
@@ -297,7 +299,7 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
     setPane('read');
   };
   const save = async () => {
-    if (draft === null) return;
+    if (draft === null || enrichmentsPending) return;
     setSaving(true);
     setSaveError(null);
     try {
@@ -343,10 +345,14 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
         draftSource ? (
           <span
             className={`pc-pill pc-pill--source-${draftSource}`}
-            title={draftSource === 'scoper' ? 'Authored by the scoper' : 'Authored by you'}
+            title={
+              draftSource === "scoper"
+                ? "Authored by the scoper"
+                : "Authored by you"
+            }
             style={{ marginLeft: 8 }}
           >
-            {draftSource === 'scoper' ? 'scoper' : 'you'}
+            {draftSource === "scoper" ? "scoper" : "you"}
           </span>
         ) : null
       }
@@ -359,6 +365,7 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
               editing={editing}
               dirty={dirty}
               locked={locked}
+              pending={enrichmentsPending}
               onEnter={enterEdit}
               onExit={() => void exitEdit()}
             />
@@ -387,13 +394,15 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
           onOptimisticStatus={onOptimisticStatus}
           onChanged={onChanged}
           onRejected={onClose}
-          disabled={editing || locked}
+          disabled={editing || locked || enrichmentsPending}
           disabledReason={
             editing
-              ? 'Finish or discard your edits first'
+              ? "Finish or discard your edits first"
               : locked
                 ? `Locked by ${lock?.owner_label ?? lock?.owner}`
-                : undefined
+                : enrichmentsPending
+                  ? "Finishing plan status data"
+                  : undefined
           }
         />
       ) : null}
@@ -413,6 +422,7 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
           dirty={dirty}
           saving={saving}
           locked={locked}
+          pending={enrichmentsPending}
           error={saveError}
           rationale={rationale}
           onRationaleChange={setRationale}
@@ -424,156 +434,196 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
       <PlanTabStrip
         tab={tab}
         editing={editing}
-          onTab={(next) => {
-            if (editing && next !== 'editor') {
-              // Going away from the editor mid-edit would visually
-              // discard the draft. Confirm — same gate as exitEdit's
-              // "discard unsaved edits".
-              if (dirty) {
-                void askConfirm({
-                  title: 'Leave editor?',
-                  body: 'Your current plan edits will be discarded when you leave the editor.',
-                  confirmLabel: 'Leave',
-                  destructive: true,
-                }).then((ok) => {
-                  if (ok) setTab(next);
-                });
-                return;
-              }
+        onTab={(next) => {
+          if (editing && next !== "editor") {
+            // Going away from the editor mid-edit would visually
+            // discard the draft. Confirm — same gate as exitEdit's
+            // "discard unsaved edits".
+            if (dirty) {
+              void askConfirm({
+                title: "Leave editor?",
+                body: "Your current plan edits will be discarded when you leave the editor.",
+                confirmLabel: "Leave",
+                destructive: true,
+              }).then((ok) => {
+                if (ok) setTab(next);
+              });
+              return;
             }
+          }
           setTab(next);
         }}
       />
-      {tab === 'editor' ? (
+      {tab === "editor" ? (
         <>
-      {!editing ? (
-        <div className="pc-plan-editor-tools">
-          <button
-            type="button"
-            className="pc-plan-editor-tools__btn"
-            onClick={() => setItemView(itemView === 'kanban' ? 'list' : 'kanban')}
-            aria-pressed={itemView === 'kanban'}
-          >
-            {itemView === 'kanban' ? '☰ List' : '⊞ Kanban'}
-          </button>
-          <Tooltip label="Show the plan's revision activity feed"><button
-            type="button"
-            className="pc-plan-editor-tools__btn"
-            onClick={() => setActivityOpen(activityOpen === 'open' ? 'closed' : 'open')}
-            aria-pressed={activityOpen === 'open'}
-
-          >
-            ⟲ Activity
-          </button></Tooltip>
-        </div>
-      ) : null}
-      {!editing && itemView === 'kanban' ? (
-        <PlanKanbanView
-          items={data.items ?? []}
-          slug={slug}
-          onChanged={onChanged}
-        />
-      ) : null}
-      {(editing || itemView === 'list') ? (
-        <>
-      {!editing ? (
-        <PlanJumpToItem
-          items={data.items}
-          decisions={data.decisions}
-          scopeRef={editorScopeRef}
-        />
-      ) : null}
-      {/* Frontmatter + Now/Next sit directly under the in-plan jump/search
+          {!editing ? (
+            <div className="pc-plan-editor-tools">
+              <button
+                type="button"
+                className="pc-plan-editor-tools__btn"
+                onClick={() =>
+                  setItemView(itemView === "kanban" ? "list" : "kanban")
+                }
+                aria-pressed={itemView === "kanban"}
+              >
+                {itemView === "kanban" ? "☰ List" : "⊞ Kanban"}
+              </button>
+              <Tooltip label="Show the plan's revision activity feed">
+                <button
+                  type="button"
+                  className="pc-plan-editor-tools__btn"
+                  onClick={() =>
+                    setActivityOpen(activityOpen === "open" ? "closed" : "open")
+                  }
+                  aria-pressed={activityOpen === "open"}
+                >
+                  ⟲ Activity
+                </button>
+              </Tooltip>
+            </div>
+          ) : null}
+          {!editing && itemView === "kanban" ? (
+            <PlanKanbanView
+              items={data.items ?? []}
+              slug={slug}
+              onChanged={onChanged}
+            />
+          ) : null}
+          {editing || itemView === "list" ? (
+            <>
+              {!editing ? (
+                <PlanJumpToItem
+                  items={data.items}
+                  decisions={data.decisions}
+                  scopeRef={editorScopeRef}
+                />
+              ) : null}
+              {/* Frontmatter + Now/Next sit directly under the in-plan jump/search
           (relocated from the top of the detail pane). */}
-      {/* B1 (shared-hive-collaboration P-001): owner + last-editor badges. */}
-      {data.ownerIdentity || data.lastEditor ? (
-        <div
-          className="pc-plan-detail__authors"
-          style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', margin: '2px 0 6px' }}
-          data-testid="plan-detail-authors"
-        >
-          {data.ownerIdentity ? <AuthorBadge identity={data.ownerIdentity} prefix="owner" /> : null}
-          {data.lastEditor ? <AuthorBadge identity={data.lastEditor} prefix="edited by" /> : null}
-        </div>
-      ) : null}
-      {!data.legacy && data.frontmatter ? (
-        <PlanDocumentFrontmatter slug={data.slug} frontmatter={data.frontmatter} />
-      ) : null}
-      {data.now ? (
-        <NowHero
-          state={data.now.state}
-          next={data.now.next}
-          featureSummary={featureSummary}
-        />
-      ) : null}
-      {/* P-011: ship-readiness belongs beside `## Now`, not buried in a tab — these are
+              {/* B1 (shared-hive-collaboration P-001): owner + last-editor badges. */}
+              {data.ownerIdentity || data.lastEditor ? (
+                <div
+                  className="pc-plan-detail__authors"
+                  style={{
+                    display: "flex",
+                    gap: 12,
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    margin: "2px 0 6px",
+                  }}
+                  data-testid="plan-detail-authors"
+                >
+                  {data.ownerIdentity ? (
+                    <AuthorBadge identity={data.ownerIdentity} prefix="owner" />
+                  ) : null}
+                  {data.lastEditor ? (
+                    <AuthorBadge
+                      identity={data.lastEditor}
+                      prefix="edited by"
+                    />
+                  ) : null}
+                </div>
+              ) : null}
+              {!data.legacy && data.frontmatter ? (
+                <PlanDocumentFrontmatter
+                  slug={data.slug}
+                  frontmatter={data.frontmatter}
+                />
+              ) : null}
+              {data.now ? (
+                <NowHero
+                  state={data.now.state}
+                  next={data.now.next}
+                  featureSummary={featureSummary}
+                />
+              ) : null}
+              {/* P-011: ship-readiness belongs beside `## Now`, not buried in a tab — these are
           the first surfaces on which the acceptance gate and the spec-coverage census are
           visible WITHOUT attempting a ship. Both collapsed by default and `enabled`-gated.
           Gate first (what blocks the ship NOW), census second (the full coverage picture,
           which the gate's own short-circuit can hide). */}
-      <PlanAcceptanceGateSection slug={data.slug} />
-      <PlanSpecCoverageSection
-        slug={data.slug}
-        harnessSlug={harnessSlug ?? data.harness ?? null}
-      />
-      <div ref={editorScopeRef} className="pc-plan-editor-scope">
-        <PlanEditor
-          value={editing ? (draft ?? raw) : strippedRaw}
-          slug={slug}
-          items={data.items}
-          promotedFeatures={promotedFeatures.length > 0 ? promotedFeatures : undefined}
-          linkedFeatures={data.linkedFeatures}
-          planItemTests={data.planItemTests}
-          // P-205: while another shell holds the lock, the editor is
-          // forced read-only even in edit mode — the draft is preserved
-          // (value still resolves to `draft ?? raw`), so editing resumes
-          // intact once the lock releases. The EditBar shows the lock
-          // state and Save stays disabled.
-          readOnly={!editing || locked}
-          onChange={editing && !locked ? setDraft : undefined}
-          onFeatureClick={(featureId) => setSelectedFeatureId(featureId)}
-          onStatusClick={(target, status) => {
-            // While editing, a setValue round-trip from set-status would
-            // clobber the draft — D-007 disables structured writes in that
-            // mode. The popover is read-mode-only.
-            if (editing || locked) return;
-            const itemId = resolveItemId(target);
-            if (!itemId) return;
-            setPendingStatus({ target, status: status as PlanItemStatus, itemId });
-          }}
+              <PlanAcceptanceGateSection slug={data.slug} />
+              <PlanSpecCoverageSection
+                slug={data.slug}
+                harnessSlug={harnessSlug ?? data.harness ?? null}
+              />
+              <div ref={editorScopeRef} className="pc-plan-editor-scope">
+                <PlanEditor
+                  value={editing ? (draft ?? raw) : strippedRaw}
+                  slug={slug}
+                  items={data.items}
+                  promotedFeatures={
+                    promotedFeatures.length > 0 ? promotedFeatures : undefined
+                  }
+                  linkedFeatures={data.linkedFeatures}
+                  planItemTests={data.planItemTests}
+                  // P-205: while another shell holds the lock, the editor is
+                  // forced read-only even in edit mode — the draft is preserved
+                  // (value still resolves to `draft ?? raw`), so editing resumes
+                  // intact once the lock releases. The EditBar shows the lock
+                  // state and Save stays disabled.
+                  readOnly={!editing || locked || enrichmentsPending}
+                  onChange={
+                    editing && !locked && !enrichmentsPending
+                      ? setDraft
+                      : undefined
+                  }
+                  onFeatureClick={(featureId) =>
+                    setSelectedFeatureId(featureId)
+                  }
+                  onStatusClick={(target, status) => {
+                    // While editing, a setValue round-trip from set-status would
+                    // clobber the draft — D-007 disables structured writes in that
+                    // mode. The popover is read-mode-only.
+                    if (editing || locked || enrichmentsPending) return;
+                    const itemId = resolveItemId(target);
+                    if (!itemId) return;
+                    setPendingStatus({
+                      target,
+                      status: status as PlanItemStatus,
+                      itemId,
+                    });
+                  }}
+                />
+              </div>
+              <PlanStatusPopover
+                pending={pendingStatus}
+                slug={data.slug}
+                onSuccess={onChanged}
+                onClose={() => setPendingStatus(null)}
+              />
+            </>
+          ) : null}
+        </>
+      ) : null}
+      {tab === "revisions" ? <RevisionsPanel slug={data.slug} /> : null}
+      {tab === "triggers" ? (
+        <PlanTriggersPanel
+          slug={data.slug}
+          harnessSlug={harnessSlug ?? data.harness ?? null}
         />
-      </div>
-      <PlanStatusPopover
-        pending={pendingStatus}
-        slug={data.slug}
-        onSuccess={onChanged}
-        onClose={() => setPendingStatus(null)}
-      />
-        </>
       ) : null}
-        </>
-      ) : null}
-      {tab === 'revisions' ? <RevisionsPanel slug={data.slug} /> : null}
-      {tab === 'triggers' ? (
-        <PlanTriggersPanel slug={data.slug} harnessSlug={harnessSlug ?? data.harness ?? null} />
-      ) : null}
-      {tab === 'agents' ? (
+      {tab === "agents" ? (
         <AgentsPanel
           slug={data.slug}
           planTitle={title}
           currentContentHash={data.contentHash}
         />
       ) : null}
-      {tab === 'runs' ? (
-        <RunsPanel slug={data.slug} planTitle={title} currentContentHash={data.contentHash} />
+      {tab === "runs" ? (
+        <RunsPanel
+          slug={data.slug}
+          planTitle={title}
+          currentContentHash={data.contentHash}
+        />
       ) : null}
       <PlanConflictModal
         open={conflict !== null}
-        currentContent={conflict ?? ''}
+        currentContent={conflict ?? ""}
         onReload={() => {
           setConflict(null);
           setDraft(null);
-          setPane('read');
+          setPane("read");
           onChanged();
         }}
         onKeepEditing={() => setConflict(null)}
@@ -590,22 +640,26 @@ export default function PlanDetail({ slug, harnessSlug, onClose, showBack = true
         revisionId={openConvo}
         onClose={() => setOpenConvo(null)}
       />
-      {selectedFeatureId ? (() => {
-        const pf = promotedFeatures.find((f) => f.featureId === selectedFeatureId);
-        return (
-          <FeatureSlideOver
-            featureId={selectedFeatureId}
-            harnessSlug={pf?.harnessSlug ?? data.slug}
-            featureTitle={pf?.title ?? null}
-            featureStatus={pf?.status ?? null}
-            onClose={() => setSelectedFeatureId(null)}
-          />
-        );
-      })() : null}
+      {selectedFeatureId
+        ? (() => {
+            const pf = promotedFeatures.find(
+              (f) => f.featureId === selectedFeatureId,
+            );
+            return (
+              <FeatureSlideOver
+                featureId={selectedFeatureId}
+                harnessSlug={pf?.harnessSlug ?? data.slug}
+                featureTitle={pf?.title ?? null}
+                featureStatus={pf?.status ?? null}
+                onClose={() => setSelectedFeatureId(null)}
+              />
+            );
+          })()
+        : null}
       <PlanActivityFeed
         slug={slug}
-        open={activityOpen === 'open'}
-        onClose={() => setActivityOpen('closed')}
+        open={activityOpen === "open"}
+        onClose={() => setActivityOpen("closed")}
       />
     </DetailShell>
   );
@@ -615,19 +669,25 @@ function EditToggle({
   editing,
   dirty,
   locked,
+  pending,
   onEnter,
   onExit,
 }: {
   editing: boolean;
   dirty: boolean;
   locked: boolean;
+  pending: boolean;
   onEnter: () => void;
   onExit: () => void;
 }) {
   if (editing) {
     return (
-      <button type="button" className="pc-plans__editbtn is-on" onClick={onExit}>
-        {dirty ? 'Exit edit (unsaved)' : 'Exit edit'}
+      <button
+        type="button"
+        className="pc-plans__editbtn is-on"
+        onClick={onExit}
+      >
+        {dirty ? "Exit edit (unsaved)" : "Exit edit"}
       </button>
     );
   }
@@ -636,8 +696,14 @@ function EditToggle({
       type="button"
       className="pc-plans__editbtn"
       onClick={onEnter}
-      disabled={locked}
-      aria-label={locked ? 'Plan is locked by another shell' : 'Edit the raw markdown'}
+      disabled={locked || pending}
+      aria-label={
+        locked
+          ? "Plan is locked by another shell"
+          : pending
+            ? "Finishing plan status data"
+            : "Edit the raw markdown"
+      }
     >
       Edit
     </button>
@@ -648,6 +714,7 @@ function EditBar({
   dirty,
   saving,
   locked,
+  pending,
   error,
   rationale,
   onRationaleChange,
@@ -657,6 +724,7 @@ function EditBar({
   dirty: boolean;
   saving: boolean;
   locked: boolean;
+  pending: boolean;
   error: string | null;
   rationale: string;
   onRationaleChange: (v: string) => void;
@@ -668,10 +736,12 @@ function EditBar({
       <div className="pc-editbar__row">
         <span className="pc-editbar__hint">
           {locked
-            ? 'Locked by another shell — saving is disabled until it releases.'
-            : dirty
-              ? 'Unsaved changes.'
-              : 'No changes yet.'}
+            ? "Locked by another shell — saving is disabled until it releases."
+            : pending
+              ? "Finishing plan status data before editing."
+              : dirty
+                ? "Unsaved changes."
+                : "No changes yet."}
         </span>
         <span className="pc-editbar__spacer" />
         <button
@@ -686,9 +756,9 @@ function EditBar({
           type="button"
           className="pc-editbar__btn pc-editbar__btn--primary"
           onClick={onSave}
-          disabled={saving || locked || !dirty}
+          disabled={saving || locked || pending || !dirty}
         >
-          {saving ? 'Saving…' : 'Save'}
+          {saving ? "Saving…" : "Save"}
         </button>
       </div>
       {/* P-025 (D-009): the rationale input. Optional — D-009's

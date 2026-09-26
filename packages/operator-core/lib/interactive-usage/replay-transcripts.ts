@@ -1,6 +1,7 @@
 /** Read-only, bounded replay for historical reconciliation. No ledger writes or watermarks. */
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { costFromTokens } from '@papercusp/model-pricing';
 import type { TranscriptAdapter } from './ingest-adapters';
 import {
@@ -42,6 +43,7 @@ export interface ReplayInventory {
 
 export type TranscriptReplay = {
   status: 'available';
+  sourceLocation: 'filesystem' | 'archive';
   filePath: string;
   byteOffset: number;
   sourceSha256: string;
@@ -77,6 +79,40 @@ function mergeEvent(previous: ReplayRequest, event: ReplayRequest): ReplayReques
     inputTotalTokens: event.inputTotalTokens ?? previous.inputTotalTokens };
 }
 
+/** Read the existing archive without restoring files into a native client's home.
+ * An archive that exists but cannot be verified is an error, never proof of absence. */
+export async function readArchivedTranscriptSource(filePath: string, sourceKind?: string): Promise<Buffer | null> {
+  if (!filePath.endsWith('.jsonl')) return null;
+  const { codexSessionIdForFile } = await import('./ingest-adapters');
+  const { pgSessionArchiveStore, decompressArchiveBlobBounded, isUnsafeArchiveRelpath, sha256Hex } =
+    await import('../session-archive');
+  const sessionId = codexSessionIdForFile(filePath);
+  const store = pgSessionArchiveStore();
+  const kinds = sourceKind ? [sourceKind] : ['codex', 'claude', 'omp'];
+  const maxBytes = 64 * 1024 * 1024;
+  for (const kind of kinds) {
+    const stamp = await store.readStamp(kind, sessionId);
+    if (!stamp) continue;
+    if (![stamp.bytes_raw, stamp.bytes_stored].every(n => Number.isSafeInteger(n) && n >= 0 && n <= maxBytes)) {
+      throw new Error('Archive exceeds the bounded historical replay limit');
+    }
+    const entries = stamp.manifest.filter(entry => !isUnsafeArchiveRelpath(entry.relpath) &&
+      path.resolve(stamp.session_root, entry.relpath) === path.resolve(filePath));
+    if (entries.length !== 1) throw new Error('Archive does not identify one exact historical source path');
+    const entry = entries[0];
+    const rows = (await store.readFiles(kind, sessionId)).filter(row => row.relpath === entry.relpath);
+    if (rows.length !== 1 || rows[0].sha256 !== entry.sha256 || rows[0].bytes_raw !== entry.bytes_raw) {
+      throw new Error('Archive file and manifest disagree for historical source');
+    }
+    const raw = await decompressArchiveBlobBounded(rows[0], maxBytes);
+    if (raw.length !== entry.bytes_raw || sha256Hex(raw) !== entry.sha256) {
+      throw new Error('Archive historical source length or digest verification failed');
+    }
+    return raw;
+  }
+  return null;
+}
+
 /**
  * Reuse the production parsers from byte zero, preserving their state between chunks.
  * A missing/unreplayable source produces no invented observations. The digest covers
@@ -94,13 +130,15 @@ export async function replayTranscriptPrefix(options: ReplayOptions): Promise<Tr
   const unavailable = (reason: Extract<TranscriptReplay, { status: 'unavailable' }>['reason']): TranscriptReplay =>
     ({ status: 'unavailable', filePath, byteOffset, reason });
   let handle;
+  let archived: Buffer | null = null;
   try { handle = await fs.open(filePath, 'r'); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return unavailable('missing');
-    throw error;
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    archived = await readArchivedTranscriptSource(filePath, adapter.name);
+    if (!archived) return unavailable('missing');
   }
   try {
-    const initial = await handle.stat();
-    if (initial.size < byteOffset) return unavailable('truncated');
+    const initial = handle ? await handle.stat() : null;
+    if ((initial?.size ?? archived!.length) < byteOffset) return unavailable('truncated');
     const digest = createHash('sha256');
     const requests = new Map<string, ReplayRequest>();
     let parserState: TranscriptParserState = {};
@@ -108,7 +146,8 @@ export async function replayTranscriptPrefix(options: ReplayOptions): Promise<Tr
     let repeatedObservations = 0;
     while (offset < byteOffset) {
       const buffer = Buffer.alloc(Math.min(chunkBytes, byteOffset - offset));
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
+      const bytesRead = handle ? (await handle.read(buffer, 0, buffer.length, offset)).bytesRead
+        : archived!.copy(buffer, 0, offset, offset + buffer.length);
       if (!bytesRead) return unavailable('truncated');
       // Cut on a byte-level newline BEFORE decoding; never split a UTF-8 code point.
       const end = buffer.subarray(0, bytesRead).lastIndexOf(10) + 1;
@@ -129,12 +168,14 @@ export async function replayTranscriptPrefix(options: ReplayOptions): Promise<Tr
       parserState = parsed.parserState ?? parserState;
       offset += end;
     }
-    const final = await fs.stat(filePath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    });
-    if (!final || initial.ino !== final.ino || initial.dev !== final.dev || final.size < byteOffset ||
-      (initial.size === final.size && initial.mtimeMs !== final.mtimeMs)) return unavailable('changed');
+    if (initial) {
+      const final = await fs.stat(filePath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+      if (!final || initial.ino !== final.ino || initial.dev !== final.dev || final.size < byteOffset ||
+        (initial.size === final.size && initial.mtimeMs !== final.mtimeMs)) return unavailable('changed');
+    }
     // Model ids are source data, not object properties (e.g. "constructor").
     const models: Record<string, ReplayInventory> = Object.create(null);
     for (const event of requests.values()) {
@@ -159,7 +200,7 @@ export async function replayTranscriptPrefix(options: ReplayOptions): Promise<Tr
       row.cacheWrite5mTokensLowerBound += usage.cacheCreation5mTokens ?? 0;
       row.estimatedUsd = row.estimatedUsd !== null && cost.priced ? row.estimatedUsd + cost.usd : null;
     }
-    return { status: 'available', filePath, byteOffset, sourceSha256: digest.digest('hex'),
+    return { status: 'available', sourceLocation: archived ? 'archive' : 'filesystem', filePath, byteOffset, sourceSha256: digest.digest('hex'),
       parserState, repeatedObservations, events: [...requests.values()], models };
-  } finally { await handle.close(); }
+  } finally { await handle?.close(); }
 }

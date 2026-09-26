@@ -3,7 +3,13 @@ import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TOKEN_ESTIMATOR, SESSION_PORT_TRANSFORM_VERSION } from '../../session-port/types';
 
-const state = vi.hoisted(() => ({ sql: null as unknown, sourceRow: null as unknown, inspectArgs: null as unknown }));
+const state = vi.hoisted(() => ({
+  sql: null as unknown,
+  sourceRow: null as unknown,
+  inspectArgs: null as unknown,
+  /** The row the port acquired its transcript for (WI-10003198). */
+  acquiredRow: null as unknown,
+}));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: state.sql }) as never,
@@ -24,10 +30,13 @@ vi.mock('../../model-context-budget.mjs', () => ({
 }));
 vi.mock('../../session-port/store', () => ({ assertSessionPortStorageReady: async () => {} }));
 vi.mock('../../session-port/service', () => ({
-  acquireTrackedClaudeSource: async () => ({
-    bytes: Buffer.from('fixture'), sha256: 'a'.repeat(64), highWaterBytes: 7,
-    completeBytes: 7, source: 'archive-manifest', relpath: 'projects/source.jsonl',
-  }),
+  acquireTrackedClaudeSource: async (row: unknown) => {
+    state.acquiredRow = row;
+    return {
+      bytes: Buffer.from('fixture'), sha256: 'a'.repeat(64), highWaterBytes: 7,
+      completeBytes: 7, source: 'archive-manifest', relpath: 'projects/source.jsonl',
+    };
+  },
   // This is synchronous in production. Keeping the fake synchronous is load-bearing:
   // the inspect route immediately reads the returned inspection's source identity.
   inspectAcquiredSessionPort: (args: unknown) => {
@@ -78,6 +87,8 @@ beforeAll(async () => {
     turn_idx integer NOT NULL, ts timestamptz, speaker text NOT NULL, text text NOT NULL,
     ingested_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
   )`);
+  // The owner bridge an earlier carry-respawn incarnation is resolved through (WI-10003198).
+  await sql.unsafe(`ALTER TABLE harness_shared.session_turns ADD COLUMN IF NOT EXISTS owner text`);
 }, 120_000);
 
 afterAll(async () => { await db?.cleanup(); });
@@ -88,6 +99,7 @@ beforeEach(async () => {
     coordOwnerId: 'su-source', cwd: '/repo', startedAt: '2026-09-23T08:00:00.000Z', endedAt: '2026-09-23T08:30:00.000Z',
   };
   state.inspectArgs = null;
+  state.acquiredRow = null;
   await sql`TRUNCATE harness_shared.session_turns CASCADE`;
   await sql`
     INSERT INTO harness_shared.session_turns (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text)
@@ -130,6 +142,43 @@ describe('session-port evidence-span route (P-007)', () => {
     const response = await inspect({ consultEvidenceSpan: { sessionId: 'wrong-session', turnIndices: [2], contextTurns: 2 } });
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: expect.stringContaining('exact source session') });
+    expect(state.inspectArgs).toBeNull();
+  });
+});
+
+describe('session-port evidence in an earlier carry-respawn incarnation (WI-10003198)', () => {
+  // A carry-respawn rewrites its owner's row in place, so the router's matched
+  // turns routinely live in a session the row no longer names. Measured shape:
+  // fa2b9674 is an earlier incarnation of su-5078d176, whose row carries f56ecb13.
+  const EARLIER = 'fa2b9674-2646-42fa-9135-3909f93fcd9a';
+  const seedEarlier = async (owner: string) => {
+    await sql`
+      INSERT INTO harness_shared.session_turns (workspace_id, source_kind, session_id, turn_idx, ts, speaker, text, owner)
+      VALUES
+        (${WS}, 'claude', ${EARLIER}, 2, '2026-09-23T07:01:00.000Z'::timestamptz, 'user', 'earlier evidence', ${owner}),
+        (${WS}, 'claude', ${EARLIER}, 4, '2026-09-23T07:02:00.000Z'::timestamptz, 'assistant', 'earlier answer', ${owner})
+    `;
+  };
+
+  it('ports the earlier incarnation when session_turns names the row owner as its latest owner', async () => {
+    await seedEarlier('su-source');
+    const response = await inspect({ consultEvidenceSpan: { sessionId: EARLIER, turnIndices: [2, 4], contextTurns: 2 } });
+    expect(response.status).toBe(200);
+    // The transcript acquired and inspected is the earlier incarnation's, under
+    // the row's own identity — never the row's current session.
+    expect(state.acquiredRow).toMatchObject({ id: 41, coordOwnerId: 'su-source', sessionId: EARLIER });
+    const args = state.inspectArgs as { sourceRow: { sessionId: string }; evidenceSpan: { sessionId: string; evidenceTurns: unknown[] } };
+    expect(args.sourceRow.sessionId).toBe(EARLIER);
+    expect(args.evidenceSpan.sessionId).toBe(EARLIER);
+    expect(args.evidenceSpan.evidenceTurns).toHaveLength(2);
+  });
+
+  it('refuses a session latest-owned by a different owner, before acquiring anything', async () => {
+    await seedEarlier('su-someone-else');
+    const response = await inspect({ consultEvidenceSpan: { sessionId: EARLIER, turnIndices: [2, 4], contextTurns: 2 } });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: expect.stringContaining('earlier incarnation of its owner') });
+    expect(state.acquiredRow).toBeNull();
     expect(state.inspectArgs).toBeNull();
   });
 });

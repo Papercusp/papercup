@@ -62,7 +62,7 @@ async function requireHistoricalBackup(sql: Sql, workspaceId: string, snapshotId
  * A missing source is NOT evidence for a replacement model or count. Preserve
  * each original row verbatim in provenance, then make the unrecoverable fields
  * NULL so every ledger consumer sees unknown rather than a plausible old guess.
- * Only a positively missing (ENOENT) single-source mapping may take this path.
+ * Only a positively missing (ENOENT), unarchived single-source mapping may take this path.
  */
 export async function markUnavailableTranscriptUsage(
   approval: Omit<HistoricalUsageApproval, 'sourceSha256'>,
@@ -93,6 +93,10 @@ export async function markUnavailableTranscriptUsage(
       throw new Error('Source exists; replay it instead of declaring its usage unknown');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    const { readArchivedTranscriptSource } = await import('./replay-transcripts');
+    if (await readArchivedTranscriptSource(approval.filePath)) {
+      throw new Error('Source exists in the archive; replay it instead of declaring its usage unknown');
     }
     const [head] = await tx<Array<{ fingerprint: string; count: number; marked: number }>>`
       SELECT md5(COALESCE(jsonb_agg(to_jsonb(s) ORDER BY id)::text, '[]')) AS fingerprint,
@@ -567,7 +571,13 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
     for (const file of files) {
       result.scannedFiles += 1;
       try {
-        const { size } = await fs.stat(file);
+        const { size } = await fs.stat(file).catch(async (error: NodeJS.ErrnoException) => {
+          if (error.code !== 'ENOENT' || !opts.historical) throw error;
+          const { readArchivedTranscriptSource } = await import('./replay-transcripts');
+          const archived = await readArchivedTranscriptSource(file, adapter.name);
+          if (!archived) throw error;
+          return { size: archived.length };
+        });
         const stored = watermarks.get(file) ?? { offset: 0, parserState: {} };
         let offset = stored.offset;
         if (size < offset) offset = 0; // recreated transcript — re-ingest from the top
@@ -604,6 +614,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
         }
         fileState = { ...fileState, initialized: true };
         let parsed: ParsedChunk;
+        let historicalSourceLocation: 'filesystem' | 'archive' | undefined;
         if (opts.historical) {
           const approval = opts.historical;
           if (stored.offset !== approval.byteOffset || size !== stored.offset || (fileState.fileGeneration ?? 0) !== 0) {
@@ -614,6 +625,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
           if (replay.status !== 'available' || replay.sourceSha256 !== approval.sourceSha256 || replay.events.length === 0) {
             throw new Error('Historical source unavailable, empty or changed since dry run');
           }
+          historicalSourceLocation = replay.sourceLocation;
           offset = 0;
           fileState = { initialized: true };
           parsed = { perModel: new Map(), events: replay.events.map(event => ({ ...event, relativeOffset: event.byteOffset })),
@@ -735,6 +747,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
               requestOrdinal: event.requestOrdinal ?? null,
               cacheReadSource: event.cacheReadKnown === true ? 'reported' : event.cacheReadKnown === false ? 'unreported' : 'unavailable',
               ...(opts.historical ? { reconciliation: { sourceSha256: opts.historical.sourceSha256,
+                sourceLocation: historicalSourceLocation,
                 byteOffset: opts.historical.byteOffset, backupSnapshotId: opts.historical.backupSnapshotId,
                 legacyFingerprint: opts.historical.legacyFingerprint,
                 ...(eventIndex === 0 ? { originalRows: legacyRows } : {}) } } : {}) };

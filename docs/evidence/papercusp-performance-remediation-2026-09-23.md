@@ -2322,3 +2322,47 @@ zero queries completed before FCP; eight started before FCP and completed
 later. This one passing sample does not identify the cause of the earlier
 slow paints. Raw log:
 `$HOME/.papercusp/perf/p007-native-current/run-019-smoke.log`.
+
+### P-007 active enrichment timing and body-first follow-up — 2026-09-26
+
+The known-root stale-path fix reached staging API `aa7c7a1e93`: native r21
+still failed at **1870ms**, while its matching cold `plans:get` took697ms.
+`stalePaths.resolveRoot` had fallen to0.03ms; the remaining long stages were
+overlapping enrichment reads. On API `835b4d17a8`, smoke r24 measured
+FCP2945/LCP4325 (LCP fail), while r25 measured FCP2406/LCP3502 (pass).
+The r25 LCP entry was a text `DIV` with `loadMs=0`; no image-load cause is
+inferred. Both profiles used the same frozen shell and SPA described above.
+
+After the per-enrichment timing split committed, staging API `104948524e`
+served two guarded native cold popups. r26 measured **2225ms** (receipt
+`perfrun-1790394892683-vp338e`); r27 measured **1502ms** (receipt
+`perfrun-1790395123191-yo6d58`). Both exceed the1500ms budget. Their
+private IPC descriptors matched live PID3974231 at start and end, and their
+foreground/interactive scheduler snapshots had queue0 and timeout0. Logs:
+`$HOME/.papercusp/perf/p007-native-current/run-026-popup-enrichments.log`
+and `run-027-popup-warm.log` beside it.
+
+The matching `plans:get` invocations `29648251` and `29648585` measured
+wait872ms and474ms. Source read was76ms and74ms. The first invocation's
+overlapping optional reads included test coverage794ms, linked features794ms,
+rubric/audit642ms and issue blocks354ms; the second's longest optional reads
+were about399ms. Transaction-local workspace setup accounted for561ms and
+376ms within the feature/test reads. The server also logged event-loop lag
+in each native interval, so these measurements identify the **body's wait on
+optional enrichments**, not the underlying cause of each stall.
+
+Current source therefore returns the full plan body with
+`includeEnrichments:false` on the popup's first REST read. A separate one-shot
+read hydrates live badges, test coverage and issue status after the document
+paints; edit/status actions stay disabled until it finishes. The lightweight
+and full cache keys are separate. Five focused project test files passed
+**75/75**, scoped formatting and diff checks passed, and operator-core
+typecheck was baseline-clean. Operator UI typecheck reports no new error in
+these paths; it remains red on three TS7006 diagnostics in the unrelated
+`verify-identities-r4.test.ts`. This body-first change is **source-verified
+only** at this write: its nine paths await git-sync and active staging native
+remeasurement. Ten valid same-build popup runs, paint variance, independent
+acceptance and shipment remain open. The separate restart-overlap/fixture
+issue `WI-10003191` was completed with stable native runs and a changing
+live-socket counterexample; no steady-state scheduler queue defect was
+reproduced.

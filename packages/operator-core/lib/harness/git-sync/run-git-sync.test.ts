@@ -3023,6 +3023,67 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       return { code: r.code, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
 
+  it('WI-10003100: overlaps sibling submodules but finishes children before parents', async () => {
+    let releaseNested!: () => void;
+    let releaseSibling!: () => void;
+    let nestedEntered!: () => void;
+    const nestedGate = new Promise<void>((resolve) => {
+      releaseNested = resolve;
+    });
+    const siblingGate = new Promise<void>((resolve) => {
+      releaseSibling = resolve;
+    });
+    const enteredNested = new Promise<void>((resolve) => {
+      nestedEntered = resolve;
+    });
+    const seen = new Set<string>();
+    let siblingAWaiting = false;
+    let siblingBEnteredWhileAWaiting = false;
+    const run: RunGit = async (args, cwd) => {
+      if (cwd !== '/fake' && !seen.has(cwd)) {
+        seen.add(cwd);
+        if (cwd === '/fake/libs/a/nested') {
+          nestedEntered();
+          await nestedGate;
+        } else if (cwd === '/fake/libs/a') {
+          siblingAWaiting = true;
+          await siblingGate;
+          siblingAWaiting = false;
+        } else if (cwd === '/fake/libs/b') {
+          siblingBEnteredWhileAWaiting = siblingAWaiting;
+          releaseSibling();
+        }
+      }
+      const command = stripGitCFlags(args).join(' ');
+      if (command.startsWith('symbolic-ref')) return { code: 0, stdout: 'main', stderr: '' };
+      if (command.startsWith('rev-parse HEAD')) return { code: 0, stdout: 'abc123', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const timeout = setTimeout(() => {
+      releaseNested();
+      releaseSibling();
+    }, 2_000);
+    try {
+      const syncing = runGitSync('test', {
+        repoPath: '/fake',
+        runGit: run,
+        submodulePaths: ['libs/a', 'libs/a/nested', 'libs/b'],
+        config: { push: false, pushSubmoduleOrigins: false },
+      });
+      await enteredNested;
+      expect(seen.has('/fake/libs/a')).toBe(false);
+      expect(seen.has('/fake/libs/b')).toBe(false);
+      releaseNested();
+      await syncing;
+      expect(siblingBEnteredWhileAWaiting).toBe(true);
+      expect(seen).toEqual(new Set(['/fake/libs/a/nested', '/fake/libs/a', '/fake/libs/b']));
+    } finally {
+      clearTimeout(timeout);
+      releaseNested();
+      releaseSibling();
+    }
+  });
+
   it('P-002a: a commit failure is reported as error, NOT a phantom conflict', async () => {
     let commitAttempts = 0;
     const run = fakeGit((args) => {

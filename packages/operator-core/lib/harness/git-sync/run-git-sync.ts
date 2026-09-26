@@ -67,6 +67,9 @@ const envMs = (name: string, dflt: number): number => {
 /** Subcommands that touch the network (a hung remote must fail fast, not stall the fire). */
 const GIT_NETWORK_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'ls-remote', 'clone']);
 
+/** Repos at the same depth have separate git dirs; parents still wait for children. */
+const SUBMODULE_SYNC_CONCURRENCY = 4;
+
 /**
  * WI-5111: git-sync commits under the box's GLOBAL git identity, which on every
  * shared dev box is the OWNER's own `user.name`/`user.email` (agents never commit
@@ -4728,35 +4731,51 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
           });
       out.submodulePaths = [...subPaths];
     }
-    for (const s of subPaths) {
+    const syncSubmodule = (s: string): Promise<RepoSyncResult> =>
       // P-004: a submodule's last-resort default is its own 'main' (resolved via
       // origin/HEAD first), never the superproject's branch (cfg.branch = 'staging').
       // EI-18689553108460319: submodules push under `doSubPush`, NOT the superproject's
       // `doPush` — a bridged/p2p-only hive's push:false must not silently strand every
       // submodule's commits too (see GitSyncConfig.pushSubmoduleOrigins).
-      absorb(
-        out,
-        s,
-        await syncOneRepo(runGit, join(repo, s), {
-          ...repoO,
-          scope: s,
-          doPush: doSubPush,
-          defaultBranch: 'main',
-          // The caller supplies workspace/superproject-root-relative paths, while
-          // git commands inside a submodule use that submodule's own root. This is
-          // the same coordinate mapping used by git-sync attribution.
-          excludePaths: protectedPaths
-            .filter((path) => path.startsWith(`${s}/`))
-            .map((path) => path.slice(s.length + 1))
-            .filter(Boolean),
-          protectedHoldings: protectedHoldings
-            .filter((holding) => holding.path.startsWith(`${s}/`))
-            .map((holding) => ({ ...holding, path: holding.path.slice(s.length + 1) }))
-            .filter((holding) => holding.path.length > 0),
-          refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.(s, subPaths),
-          attribution: attributionMapForRepo(roster, s, repo),
-        }),
-      );
+      syncOneRepo(runGit, join(repo, s), {
+        ...repoO,
+        scope: s,
+        doPush: doSubPush,
+        defaultBranch: 'main',
+        // The caller supplies workspace/superproject-root-relative paths, while
+        // git commands inside a submodule use that submodule's own root. This is
+        // the same coordinate mapping used by git-sync attribution.
+        excludePaths: protectedPaths
+          .filter((path) => path.startsWith(`${s}/`))
+          .map((path) => path.slice(s.length + 1))
+          .filter(Boolean),
+        protectedHoldings: protectedHoldings
+          .filter((holding) => holding.path.startsWith(`${s}/`))
+          .map((holding) => ({ ...holding, path: holding.path.slice(s.length + 1) }))
+          .filter((holding) => holding.path.length > 0),
+        refreshLiveLockHoldings: refreshLiveLockHoldingsForRepo?.(s, subPaths),
+        attribution: attributionMapForRepo(roster, s, repo),
+      });
+    // WI-10003100: syncing every repo serially delayed the superproject commit
+    // behind a 338s submodule phase on a 38-submodule checkout. Sync only
+    // independent repos together; finish every child depth before starting a
+    // parent so a parent's pushed gitlink always resolves on the child origin.
+    for (let depthStart = 0; depthStart < subPaths.length; ) {
+      const depth = subPaths[depthStart]!.split('/').length;
+      let depthEnd = depthStart + 1;
+      while (depthEnd < subPaths.length && subPaths[depthEnd]!.split('/').length === depth) depthEnd++;
+      for (let batchStart = depthStart; batchStart < depthEnd; batchStart += SUBMODULE_SYNC_CONCURRENCY) {
+        const batch = subPaths.slice(batchStart, Math.min(batchStart + SUBMODULE_SYNC_CONCURRENCY, depthEnd));
+        // allSettled is a safety barrier: an unexpected rejection must not let a
+        // sibling start more Git commands after the action releases its locks.
+        const results = await Promise.allSettled(batch.map(syncSubmodule));
+        for (let i = 0; i < results.length; i++) {
+          const result = results[i]!;
+          if (result.status === 'rejected') throw result.reason;
+          absorb(out, batch[i]!, result.value);
+        }
+      }
+      depthStart = depthEnd;
     }
     return out;
   });

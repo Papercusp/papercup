@@ -853,6 +853,39 @@ export function exactTrackedResumePath(session: any): string | null;
  * wins for native id/config dir/cwd because those identify the transcript that
  * was actually requested; the durable row restores coordination scope. */
 export function rehydrateOutOfWindowTrackedSession(session: any, exactRead: any): any;
+/** WI-10003198: exact server read by NATIVE session id, for a psu-tracked
+ * transcript whose row id the local index cannot supply. The server bridges the
+ * uuid through session_turns.owner to the owner's current row — which is the
+ * only row an earlier carry-respawn incarnation has, since a respawn rewrites
+ * its owner's row in place. Raw/foreign sessions get no such read. */
+export function exactTrackedResumeBySessionPath(session: any): string | null;
+/** The coord owner whose isolated CLAUDE_CONFIG_DIR holds this transcript, or
+ * null when the hit is not under `session-claude/<owner>/`. That directory is
+ * keyed by the owner the transcript was written under, so it is ground truth a
+ * recovered row must agree with. Pure — exported for tests. */
+export function transcriptOwnerFromConfigDir(session: any, home?: string): string | null;
+/**
+ * Recover the durable adv row for a psu-tracked transcript found on disk after
+ * the bounded `/adv/sessions/resumable` window missed it (WI-10002877,
+ * WI-10003198). Two exact reads, in order:
+ *   1. the row id the local first-write-wins owner index recorded at launch;
+ *   2. the server's session_turns owner bridge, by native session id — the only
+ *      way to reach an earlier carry-respawn incarnation, whose own launch never
+ *      wrote an index entry with a row id (measured 2026-09-26: 41 of 52 refused
+ *      consult sources).
+ * A recovered row is accepted only when its coord owner matches the owner whose
+ * isolated config dir holds the transcript: the index is first-write-wins and has
+ * been seen naming a foreign owner, so it is never trusted over that directory.
+ * Returns `{ tracked, reasons }`; `tracked` is null when nothing was recovered and
+ * `reasons` says why, for the caller's refusal message. Never throws.
+ */
+export function recoverOutOfWindowTrackedSession(untracked: any, { apiImpl, home }?: {
+    apiImpl?: typeof api | undefined;
+    home?: string | undefined;
+}): Promise<{
+    tracked: any;
+    reasons: any[];
+}>;
 /**
  * The native session id a launch argv identifies AS THIS SESSION, or null.
  * Precedence matters because a fork's argv names TWO sessions:
@@ -4471,6 +4504,7 @@ export type RunWrapperOptions = {
 };
 import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+declare function api(path: any, opts?: {}): Promise<any>;
 import { fireSessionCompactedEvent } from "./psu-pty-host.mjs";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 /** Numeric pid entries under `/proc`. Exported for tests via the injectable. */

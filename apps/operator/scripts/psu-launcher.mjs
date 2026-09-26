@@ -3155,6 +3155,101 @@ export function rehydrateOutOfWindowTrackedSession(session, exactRead) {
   };
 }
 
+/** WI-10003198: exact server read by NATIVE session id, for a psu-tracked
+ * transcript whose row id the local index cannot supply. The server bridges the
+ * uuid through session_turns.owner to the owner's current row — which is the
+ * only row an earlier carry-respawn incarnation has, since a respawn rewrites
+ * its owner's row in place. Raw/foreign sessions get no such read. */
+export function exactTrackedResumeBySessionPath(session) {
+  if (session?.psuTracked !== true) return null;
+  const sid = session?.sessionId;
+  if (!sid || !UUID_RE.test(String(sid))) return null;
+  return `/api/adv/sessions/resumable?sessionId=${encodeURIComponent(String(sid))}`;
+}
+
+/** The coord owner whose isolated CLAUDE_CONFIG_DIR holds this transcript, or
+ * null when the hit is not under `session-claude/<owner>/`. That directory is
+ * keyed by the owner the transcript was written under, so it is ground truth a
+ * recovered row must agree with. Pure — exported for tests. */
+export function transcriptOwnerFromConfigDir(session, home = homedir()) {
+  const dir = session?.configDir;
+  if (!dir) return null;
+  const root = sessionClaudeRoot(home);
+  if (dirname(dir) !== root) return null;
+  return basename(dir) || null;
+}
+
+/**
+ * Recover the durable adv row for a psu-tracked transcript found on disk after
+ * the bounded `/adv/sessions/resumable` window missed it (WI-10002877,
+ * WI-10003198). Two exact reads, in order:
+ *   1. the row id the local first-write-wins owner index recorded at launch;
+ *   2. the server's session_turns owner bridge, by native session id — the only
+ *      way to reach an earlier carry-respawn incarnation, whose own launch never
+ *      wrote an index entry with a row id (measured 2026-09-26: 41 of 52 refused
+ *      consult sources).
+ * A recovered row is accepted only when its coord owner matches the owner whose
+ * isolated config dir holds the transcript: the index is first-write-wins and has
+ * been seen naming a foreign owner, so it is never trusted over that directory.
+ * Returns `{ tracked, reasons }`; `tracked` is null when nothing was recovered and
+ * `reasons` says why, for the caller's refusal message. Never throws.
+ */
+export async function recoverOutOfWindowTrackedSession(
+  untracked,
+  { apiImpl = api, home = homedir() } = {},
+) {
+  const reasons = [];
+  const dirOwner = transcriptOwnerFromConfigDir(untracked, home);
+  const accept = (tracked, via) => {
+    if (dirOwner && tracked.coordOwnerId && tracked.coordOwnerId !== dirOwner) {
+      reasons.push(
+        `${via} row #${tracked.id} belongs to ${tracked.coordOwnerId}, but the transcript is under ${dirOwner}`,
+      );
+      return null;
+    }
+    return tracked;
+  };
+  const byId = exactTrackedResumePath(untracked);
+  if (byId) {
+    try {
+      const recovered = rehydrateOutOfWindowTrackedSession(untracked, await apiImpl(byId));
+      if (recovered) {
+        const ok = accept(recovered, "owner-index");
+        if (ok) return { tracked: ok, reasons };
+      } else {
+        reasons.push(`owner-index row #${untracked.id} is not a resumable tracked row`);
+      }
+    } catch (error) {
+      reasons.push(`owner-index row #${untracked.id} read failed (${error?.message ?? error})`);
+    }
+  }
+  const bySession = exactTrackedResumeBySessionPath(untracked);
+  if (bySession) {
+    try {
+      const read = await apiImpl(bySession);
+      const id = Number(read?.exact?.id);
+      if (Number.isSafeInteger(id) && id > 0) {
+        const recovered = rehydrateOutOfWindowTrackedSession({ ...untracked, id }, read);
+        if (recovered) {
+          const ok = accept(recovered, "session-bridge");
+          if (ok) return { tracked: ok, reasons };
+        } else {
+          reasons.push(`session-bridge row #${id} is not a resumable tracked row`);
+        }
+      } else {
+        reasons.push(
+          `the operator resolved no tracked row for native session ${untracked.sessionId}` +
+            (read && !("exact" in read) ? " (it may predate the sessionId lookup)" : ""),
+        );
+      }
+    } catch (error) {
+      reasons.push(`session-bridge read failed (${error?.message ?? error})`);
+    }
+  }
+  if (!byId && !bySession) reasons.push("no row id and no native session uuid to look up");
+  return { tracked: null, reasons };
+}
+
 /**
  * The native session id a launch argv identifies AS THIS SESSION, or null.
  * Precedence matters because a fork's argv names TWO sessions:
@@ -14407,23 +14502,24 @@ async function resumeFlow(args = {}) {
     // dialogs. Measured 2026-09-24: two ranks from source 9aed… failed this way;
     // a different source succeeded. The managed path below mints a fresh config
     // dir + forced native id and keeps the fork durable/resumable.
-    const exactPath = exactTrackedResumePath(untracked);
-    if (exactPath) {
-      try {
-        const exactRead = await api(exactPath);
-        const recoveredTracked = rehydrateOutOfWindowTrackedSession(
-          untracked,
-          exactRead,
-        );
-        if (recoveredTracked) {
-          await launchResolvedResume(recoveredTracked, args, { tracked: true });
-          return;
-        }
-      } catch (error) {
-        console.error(
-          `psu: exact tracked-session recovery for #${untracked.id} failed (${error?.message ?? error}).`,
-        );
+    //
+    // WI-10003198: the index alone was not enough. Every earlier incarnation of
+    // a carry-respawn chain has no index entry with a row id (and no row of its
+    // own), so the same call also asks the server to bridge the native id to its
+    // owner's row — the lookup the consult dispatcher already made.
+    let recoveryReasons = [];
+    if (untracked.psuTracked) {
+      const recovery = await recoverOutOfWindowTrackedSession(untracked);
+      if (recovery.tracked) {
+        await launchResolvedResume(recovery.tracked, args, { tracked: true });
+        return;
       }
+      recoveryReasons = recovery.reasons;
+      if (recoveryReasons.length)
+        console.error(
+          `psu: exact tracked-session recovery for ${untracked.sessionId ?? untracked.ompThreadId ?? "?"} failed: ` +
+            `${recoveryReasons.join("; ")}.`,
+        );
     }
 
     // A pre-pinned identity is a managed launch contract. Never silently turn
@@ -14434,7 +14530,9 @@ async function resumeFlow(args = {}) {
     if (args.fork && args.ownerId && untracked.psuTracked) {
       console.error(
         `psu: refusing unmanaged fork ${args.ownerId}: tracked source session ${untracked.sessionId ?? untracked.ompThreadId ?? "?"} ` +
-          `could not recover adv row #${untracked.id ?? "?"}.`,
+          `could not recover adv row #${untracked.id ?? "?"}` +
+          (recoveryReasons.length ? ` (${recoveryReasons.join("; ")})` : "") +
+          ".",
       );
       process.exit(2);
     }

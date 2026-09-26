@@ -134,6 +134,10 @@ const M = vi.hoisted(() => {
       findings: [],
       summary: 'code truth verified',
     })),
+    overlayIssueBlocksForPlan: vi.fn(async (_slug: string, items: unknown[]) => ({
+      items,
+      blockingIssues: {},
+    })),
   };
 });
 
@@ -160,10 +164,7 @@ vi.mock('../../issue-blocks-merge', async (orig) => {
   const actual = await orig<typeof import('../../issue-blocks-merge')>();
   return {
     ...actual,
-    overlayIssueBlocksForPlan: vi.fn(async (_slug: string, items: unknown[]) => ({
-      items,
-      blockingIssues: {},
-    })),
+    overlayIssueBlocksForPlan: M.overlayIssueBlocksForPlan,
   };
 });
 // The linkedFeatures / planItemTests decorations query PG via withWorkspace; in the
@@ -192,6 +193,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 
 import tool from './get';
+import { withWorkspace } from '@papercusp/db-org';
 import {
   getOperatorCache,
   resetOperatorCacheForTests,
@@ -232,6 +234,8 @@ beforeEach(async () => {
   M.ctxToPlanSourceOpts.mockClear();
   M.getAcceptanceRubricForPlan.mockClear();
   M.getLatestPlanAudit.mockClear();
+  M.overlayIssueBlocksForPlan.mockClear();
+  vi.mocked(withWorkspace).mockClear();
   M.previewPlanStartConsult.mockClear();
   M.previewPlanStartConsult.mockResolvedValue({
     outcome: 'proceed',
@@ -290,6 +294,32 @@ describe('plans:get — cache wiring', () => {
     expect(again.results[0].history).toEqual(_history);
     expect(M.history).toHaveBeenCalledOnce();
     expect(M.readPlanBySlug).toHaveBeenCalledOnce();
+  });
+
+  it('returns the full body before optional decorations and keeps the full cache key separate', async () => {
+    const first = await run({
+      slug: 'alpha',
+      mode: 'full',
+      includeRaw: true,
+      includeHistory: false,
+      includeEnrichments: false,
+    });
+    expect(first.results[0]).toMatchObject({ ok: true, raw: 'slug: alpha\n', enrichmentsDeferred: true });
+    expect(first.results[0].items).toBeTruthy();
+    expect(M.overlayIssueBlocksForPlan).not.toHaveBeenCalled();
+    expect(M.getAcceptanceRubricForPlan).not.toHaveBeenCalled();
+    expect(M.getLatestPlanAudit).not.toHaveBeenCalled();
+    // The lifecycle derivation retains its own scoped read; the two optional
+    // feature/test transactions are the ones excluded from the body path.
+    expect(withWorkspace).toHaveBeenCalledTimes(1);
+
+    const decorated = await run({ slug: 'alpha', mode: 'full', includeRaw: true, includeHistory: false });
+    expect(decorated.results[0].enrichmentsDeferred).toBeUndefined();
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
+    expect(M.overlayIssueBlocksForPlan).toHaveBeenCalledOnce();
+    expect(M.getAcceptanceRubricForPlan).toHaveBeenCalledOnce();
+    expect(M.getLatestPlanAudit).toHaveBeenCalledOnce();
+    expect(withWorkspace).toHaveBeenCalledTimes(4);
   });
 
   it('still honors explicit history requests when the UI default omits incidental history', async () => {

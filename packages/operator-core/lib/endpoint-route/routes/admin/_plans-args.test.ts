@@ -23,6 +23,7 @@ describe('bodyFromSearchParams', () => {
   it('coerces an allowlisted boolean key from true/false; drops garbage', () => {
     expect(body('includeArchived=true')).toEqual({ includeArchived: true });
     expect(body('actionable=false')).toEqual({ actionable: false });
+    expect(body('includeEnrichments=false')).toEqual({ includeEnrichments: false });
     expect(body('needsHuman=yes')).toEqual({}); // garbage for a boolean key → dropped
   });
 
@@ -59,6 +60,7 @@ describe('the coercion allowlists', () => {
     expect([...PLANS_BOOLEAN_KEYS].sort()).toEqual([
       'actionable',
       'includeArchived',
+      'includeEnrichments',
       'includeHistory',
       'includeLegacy',
       'needsHuman',

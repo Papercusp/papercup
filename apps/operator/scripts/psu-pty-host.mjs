@@ -552,6 +552,7 @@ async function waitForPtyTextEcho({
   timeoutMs = KICKOFF_MARKER_ECHO_TIMEOUT_MS,
   pollMs = KICKOFF_MARKER_ECHO_POLL_MS,
   shouldCancel = () => false,
+  onPending = () => {},
 } = {}) {
   const expected = String(text ?? '');
   if (!expected || typeof read !== 'function') {
@@ -559,15 +560,27 @@ async function waitForPtyTextEcho({
   }
   const startedAt = Date.now();
   const deadline = startedAt + Math.max(1, Number(timeoutMs) || KICKOFF_MARKER_ECHO_TIMEOUT_MS);
+  let observedChars = 0;
+  let markerTailSeen = false;
+  let pendingReported = false;
   while (true) {
     if (shouldCancel()) return { echoed: false, cancelled: true, elapsedMs: Date.now() - startedAt };
     const visible = stripAnsi(String(read() ?? '')).replace(/[\r\n]/g, '');
-    if (visible.includes(expected)) return { echoed: true, elapsedMs: Date.now() - startedAt };
+    observedChars = Math.max(observedChars, visible.length);
+    markerTailSeen ||= visible.includes(expected.slice(-12));
+    if (visible.includes(expected)) {
+      return { echoed: true, elapsedMs: Date.now() - startedAt, observedChars, markerTailSeen };
+    }
+    const elapsedMs = Date.now() - startedAt;
+    if (!pendingReported && elapsedMs >= KICKOFF_MARKER_ECHO_TIMEOUT_MS) {
+      pendingReported = true;
+      onPending({ elapsedMs, observedChars, markerTailSeen });
+    }
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
     await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(1, Number(pollMs) || 1), remainingMs)));
   }
-  return { echoed: false, reason: 'timeout', elapsedMs: Date.now() - startedAt };
+  return { echoed: false, reason: 'timeout', elapsedMs: Date.now() - startedAt, observedChars, markerTailSeen };
 }
 
 /**
@@ -7229,18 +7242,29 @@ export function hostThroughPty(o) {
                 if (i + 1 < chunks.length) await new Promise((r) => setTimeout(r, 0));
               }
               if (marker && echoTap) {
+                // A real Codex composer can take longer than two seconds to
+                // render a complete paste. Keep the exact-marker safety check
+                // until this kickoff's existing delivery deadline, and record
+                // the two-second state without treating it as a failed turn.
+                const echoBudgetMs = Math.max(1, deadline - Date.now());
+                const echoTimeoutMs = Math.min(
+                  echoBudgetMs,
+                  positiveNumber(env.PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS, echoBudgetMs),
+                );
                 echoProof = await waitForPtyTextEcho({
                   read: echoTap.read,
                   text: marker,
-                  timeoutMs: positiveNumber(
-                    env.PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_TIMEOUT_MS,
-                    KICKOFF_MARKER_ECHO_TIMEOUT_MS,
-                  ),
+                  timeoutMs: echoTimeoutMs,
                   pollMs: positiveNumber(
                     env.PAPERCUSP_PSU_PTY_KICKOFF_MARKER_ECHO_POLL_MS,
                     KICKOFF_MARKER_ECHO_POLL_MS,
                   ),
                   shouldCancel: () => child !== injectChild || freshChildWasInterrupted(),
+                  onPending: (state) => appendHostEvent(ownerId, 'launch-kickoff-marker-echo-pending', {
+                    ...state,
+                    markerChars: marker.length,
+                    budgetMs: echoTimeoutMs,
+                  }),
                 });
               }
             } finally {
@@ -7255,6 +7279,9 @@ export function hostThroughPty(o) {
                 elapsedMs: echoProof.elapsedMs,
                 markerChars: marker.length,
                 reason: echoProof.reason,
+                observedChars: echoProof.observedChars,
+                markerTailSeen: echoProof.markerTailSeen,
+                budgetMs: Math.max(0, deadline - turnWriteStartedAt),
               });
               markerEchoFailureReason = 'kickoff-marker-echo-unconfirmed';
               break;

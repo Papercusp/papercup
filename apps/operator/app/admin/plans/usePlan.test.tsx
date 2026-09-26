@@ -111,7 +111,87 @@ describe('usePlan — read-only (live) vs editor (one-shot) split', () => {
     const url = String((fetchSpy.mock.calls[0]?.[0] as URL | string) ?? '');
     expect(url).toContain('/api/admin/plans/get');
     expect(url).toContain('mode=full');
+    expect(url).toContain("includeEnrichments=false");
     expect(typeof (result as unknown as AsyncResult<PlanGetResult | null>)!.setData).toBe('function');
+  });
+
+  it("renders the first body before a one-shot decoration read, then merges badges without a live subscription", async () => {
+    let finishDecorations!: (response: Response) => void;
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            slug: "p1",
+            version: 3,
+            raw: "# Body",
+            items: [{ id: "P-001", effectiveStatus: "todo" }],
+            enrichmentsDeferred: true,
+          }),
+        ),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            finishDecorations = resolve;
+          }),
+      );
+    let result: AsyncResult<PlanGetResult | null> | null = null;
+    render(<HookProbe slug="p1" sink={(r) => (result = r)} />);
+
+    await waitFor(() =>
+      expect(
+        (result as unknown as AsyncResult<PlanGetResult | null>)!.data?.raw,
+      ).toBe("# Body"),
+    );
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    expect(
+      (result as unknown as AsyncResult<PlanGetResult | null>)!.data
+        ?.enrichmentsDeferred,
+    ).toBe(true);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain(
+      "includeEnrichments=false",
+    );
+    expect(String(fetchSpy.mock.calls[1]?.[0])).not.toContain(
+      "includeEnrichments=false",
+    );
+    expect(syncCalls.every((call) => call.enabled === false)).toBe(true);
+
+    finishDecorations(
+      new Response(
+        JSON.stringify({
+          slug: "p1",
+          version: 3,
+          raw: "# Body",
+          items: [{ id: "P-001", effectiveStatus: "blocked" }],
+          linkedFeatures: { "P-001": { featureId: "WI-1", status: "open" } },
+          planItemTests: {
+            "P-001": {
+              valsTotal: 1,
+              valsRequiringTest: 1,
+              valsCovered: 1,
+              valsPassing: 1,
+            },
+          },
+        }),
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        (result as unknown as AsyncResult<PlanGetResult | null>)!.data
+          ?.enrichmentsDeferred,
+      ).toBe(false),
+    );
+    expect(
+      (result as unknown as AsyncResult<PlanGetResult | null>)!.data?.items?.[0]
+        ?.effectiveStatus,
+    ).toBe("blocked");
+    expect(
+      (result as unknown as AsyncResult<PlanGetResult | null>)!.data
+        ?.linkedFeatures?.["P-001"]?.featureId,
+    ).toBe("WI-1");
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(syncCalls.every((call) => call.enabled === false)).toBe(true);
   });
 
   it('null slug: live path stays quiet (disabled) and returns null data', () => {

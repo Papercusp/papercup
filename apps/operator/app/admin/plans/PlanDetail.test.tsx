@@ -52,11 +52,17 @@ vi.mock('@papercusp/sync', () => ({
 // Heavy / Vditor / IPC children — stub to inert nodes (their own tests cover them).
 // The feature-badge click is exposed as a button so a test can drive
 // selectedFeatureId (and thus mount FeatureSlideOver) without a real Vditor render.
-vi.mock('./PlanEditor', () => ({
-  default: ({ onFeatureClick }: { onFeatureClick?: (id: string) => void }) => (
-    <div data-testid="plan-editor">
+vi.mock("./PlanEditor", () => ({
+  default: ({
+    onFeatureClick,
+    readOnly,
+  }: {
+    onFeatureClick?: (id: string) => void;
+    readOnly?: boolean;
+  }) => (
+    <div data-testid="plan-editor" data-read-only={String(readOnly)}>
       {onFeatureClick ? (
-        <button type="button" onClick={() => onFeatureClick('F-1')}>
+        <button type="button" onClick={() => onFeatureClick("F-1")}>
           open feature
         </button>
       ) : null}
@@ -66,7 +72,21 @@ vi.mock('./PlanEditor', () => ({
 vi.mock('./PlanJumpToItem', () => ({ default: () => null }));
 vi.mock('./LockBanner', () => ({ default: () => null }));
 vi.mock('./LintBanner', () => ({ default: () => null }));
-vi.mock('./PlanActions', () => ({ default: () => <div data-testid="plan-actions" /> }));
+vi.mock("./PlanActions", () => ({
+  default: ({
+    disabled,
+    disabledReason,
+  }: {
+    disabled?: boolean;
+    disabledReason?: string;
+  }) => (
+    <div
+      data-testid="plan-actions"
+      data-disabled={String(disabled)}
+      data-reason={disabledReason}
+    />
+  ),
+}));
 vi.mock('./AssignDialog', () => ({ default: () => null }));
 vi.mock('./RevisionsPanel', () => ({ default: () => null }));
 vi.mock('./RevisionDiffModal', () => ({ default: () => null }));
@@ -153,6 +173,32 @@ describe('PlanDetail (plan-detail main pane)', () => {
     // Non-legacy plans get the PlanActions strip + an Edit toggle.
     expect(screen.getByTestId('plan-actions')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Edit/ })).toBeTruthy();
+  });
+
+  it("shows the document while status actions wait for the later decoration read", () => {
+    planResult = {
+      data: mkPlan({ enrichmentsDeferred: true }),
+      loading: false,
+      error: null,
+    };
+    renderDetail(<PlanDetail slug="my-plan" onClose={() => {}} />);
+
+    expect(
+      screen.getByTestId("plan-editor").getAttribute("data-read-only"),
+    ).toBe("true");
+    expect(
+      screen.getByTestId("plan-actions").getAttribute("data-disabled"),
+    ).toBe("true");
+    expect(screen.getByTestId("plan-actions").getAttribute("data-reason")).toBe(
+      "Finishing plan status data",
+    );
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Finishing plan status data",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
   });
 
   it('renders the Now hero when the plan has a ## Now block', () => {

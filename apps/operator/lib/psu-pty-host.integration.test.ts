@@ -269,6 +269,68 @@ describe('plain launch kickoff turn-start proof', () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 10_000);
+
+  it('waits beyond two seconds for a complete Codex composer echo before submitting', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-delayed-marker-'));
+    const codexHome = join(root, 'codex-home');
+    const submitFile = join(root, 'submitted.txt');
+    const ownerId = `su-delayed-marker-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const marker = '⟦turn-origin:fleet-kickoff nonce:1234567890abcdef⟧';
+    const kickoff = `${marker}\nBEGIN_DELAYED_ECHO`;
+    const { captured, io } = fakeIo();
+    const childCode = [
+      "const fs=require('fs');process.stdin.setEncoding('utf8');process.stdin.setRawMode?.(true);",
+      "let input='',echoScheduled=false;process.stdout.write('62% context left\\n');",
+      "process.stdin.on('data',d=>{input+=d;if(!echoScheduled&&input.includes('BEGIN_DELAYED_ECHO')){echoScheduled=true;setTimeout(()=>process.stdout.write('COMPOSER_ECHO:'+input+'\\n'),2500);}if(d.includes('\\r')){fs.appendFileSync(process.env.SUBMIT_FILE,'submitted\\n');process.stdout.write('SUBMITTED\\n');}if(input.includes('QUIT'))process.exit(0);});",
+      'setTimeout(()=>process.exit(0),7000);',
+    ].join('');
+    let done;
+    try {
+      done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: root,
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          CODEX_HOME: codexHome,
+          SUBMIT_FILE: submitFile,
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '5000',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '100',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff,
+        signalSource: new EventEmitter(),
+        onExit: () => undefined,
+      });
+      await sleep(2_100);
+      expect(existsSync(submitFile)).toBe(false);
+      await vi.waitFor(() => expect(existsSync(submitFile)).toBe(true), { timeout: 4_000 });
+      const output = captured();
+      expect(output.indexOf(`COMPOSER_ECHO:${marker}`)).toBeGreaterThanOrEqual(0);
+      expect(output.indexOf(`COMPOSER_ECHO:${marker}`)).toBeLessThan(output.indexOf('SUBMITTED'));
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
+      expect(events).toContain('launch-kickoff-marker-echo-pending');
+      expect(events).toContain('launch-kickoff-marker-echo-confirmed');
+      await rawInject(sock, 'QUIT\\n');
+      expect(await done).toBe(0);
+    } finally {
+      await done?.catch(() => undefined);
+      if (existsSync(sock)) await rawInject(sock, 'QUIT\\n');
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 12_000);
 });
 
 describe('Claude launch kickoff bracketed-paste regression (EI-24141825238362808)', () => {

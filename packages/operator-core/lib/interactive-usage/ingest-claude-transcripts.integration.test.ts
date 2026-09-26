@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 
@@ -16,6 +17,7 @@ vi.mock('../workspace-registry', async (original) => ({
 
 const { ingestInteractiveUsage, parseTranscriptChunk, legacyUsageFingerprint, markUnavailableTranscriptUsage } = await import('./ingest-claude-transcripts');
 const { replayTranscriptPrefix } = await import('./replay-transcripts');
+const { archiveSession, pgSessionArchiveStore } = await import('../session-archive');
 const { parseCodexChunk, parseOmpChunk, codexSessionIdForFile } = await import('./ingest-adapters');
 let org: OrgTestDb;
 let sql: Sql;
@@ -100,6 +102,107 @@ describe('persistent transcript accounting', () => {
     expect(await markUnavailableTranscriptUsage(approval)).toEqual({ markedRows: 0, alreadyMarked: true });
     expect(await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`).toEqual([row]);
   });
+
+  it('replays a missing live transcript from its verified archive and refuses to mark it unavailable', async () => {
+    const sessionId = randomUUID();
+    const dir = path.join(root, 'sessions', '2026', '09', '23');
+    const file = path.join(dir, `rollout-2026-09-23T00-00-00-${sessionId}.jsonl`);
+    const source = context('gpt-6-luna') + usage(1000);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(file, source);
+    await sql`INSERT INTO harness_shared.interactive_usage_files (workspace_id,file_path,byte_offset)
+      VALUES (${WS},${file},${Buffer.byteLength(source)})`;
+    await sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id,ts,source,provider,bucket_key,model_class,session_id,model,input_tokens,cost_usd)
+      VALUES (${WS},123,'interactive','openai','legacy','default',${sessionId},'gpt-5.5',800,123)`;
+    const approval = { filePath: file, byteOffset: Buffer.byteLength(source), backupSnapshotId: backupId,
+      legacyFingerprint: await legacyUsageFingerprint(sql, WS, sessionId) };
+    const [original] = await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    const live = await replayTranscriptPrefix({ ...approval, adapter: adapter()[0] });
+    expect((await archiveSession({ sourceKind: 'codex', sessionId, sessionRoot: root }, pgSessionArchiveStore())).ok).toBe(true);
+    await fs.unlink(file);
+    const archived = await replayTranscriptPrefix({ ...approval, adapter: adapter()[0] });
+    expect(archived).toMatchObject({ ...live, sourceLocation: 'archive' });
+    await expect(fs.stat(file)).rejects.toMatchObject({ code: 'ENOENT' }); // no rematerialization into a live home
+    await expect(markUnavailableTranscriptUsage(approval)).rejects.toThrow('archive');
+    expect(await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`).toEqual([original]);
+    if (archived.status !== 'available') throw new Error(archived.reason);
+    const historical = { ...approval, sourceSha256: archived.sourceSha256 };
+    expect((await ingestInteractiveUsage({ adapters: adapter(), historical })).errors).toEqual([]);
+    const corrected = await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(corrected).toHaveLength(1);
+    expect(corrected[0].model).toBe('gpt-6-luna');
+    expect(corrected[0].usage_provenance.reconciliation.sourceLocation).toBe('archive');
+    expect(corrected[0].usage_provenance.reconciliation.originalRows[0]).toMatchObject({ model: 'gpt-5.5', cost_usd: 123 });
+    expect((await ingestInteractiveUsage({ adapters: adapter(), historical })).samples).toBe(0);
+    expect(await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`).toEqual(corrected);
+    await expect(fs.stat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('repairs previously unavailable history from an archive while retaining the nested original evidence', async () => {
+    const sessionId = randomUUID();
+    const dir = path.join(root, 'sessions', '2026', '09', '23');
+    const file = path.join(dir, `rollout-2026-09-23T00-00-00-${sessionId}.jsonl`);
+    const source = context('gpt-6-astra') + usage(1000);
+    await fs.mkdir(dir, { recursive: true });
+    await sql`INSERT INTO harness_shared.interactive_usage_files (workspace_id,file_path,byte_offset)
+      VALUES (${WS},${file},${Buffer.byteLength(source)})`;
+    await sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id,ts,source,provider,bucket_key,model_class,session_id,model,cost_usd)
+      VALUES (${WS},123,'interactive','openai','legacy','default',${sessionId},'gpt-5.5',123)`;
+    const approval = { filePath: file, byteOffset: Buffer.byteLength(source), backupSnapshotId: backupId,
+      legacyFingerprint: await legacyUsageFingerprint(sql, WS, sessionId) };
+    expect((await markUnavailableTranscriptUsage(approval)).markedRows).toBe(1);
+    const [unknown] = await sql`SELECT to_jsonb(s) AS row FROM harness_shared.agent_usage_samples s WHERE workspace_id=${WS}`;
+    expect(unknown.row.model).toBeNull();
+    await fs.writeFile(file, source);
+    expect((await archiveSession({ sourceKind: 'codex', sessionId, sessionRoot: root }, pgSessionArchiveStore())).ok).toBe(true);
+    await fs.unlink(file);
+    const replay = await replayTranscriptPrefix({ ...approval, adapter: adapter()[0] });
+    if (replay.status !== 'available') throw new Error(replay.reason);
+    const historical = { ...approval, sourceSha256: replay.sourceSha256,
+      legacyFingerprint: await legacyUsageFingerprint(sql, WS, sessionId) };
+    expect((await ingestInteractiveUsage({ adapters: adapter(), historical })).errors).toEqual([]);
+    const corrected = await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+    expect(corrected[0].model).toBe('gpt-6-astra');
+    expect(corrected[0].cost_usd).toBeCloseTo(0.007225, 10);
+    expect(corrected[0].usage_provenance.reconciliation.originalRows).toEqual([unknown.row]);
+    expect(corrected[0].usage_provenance.reconciliation.originalRows[0].usage_provenance.historicalAvailability.originalRow)
+      .toMatchObject({ model: 'gpt-5.5', cost_usd: 123 });
+    expect((await ingestInteractiveUsage({ adapters: adapter(), historical })).samples).toBe(0);
+    expect(await sql`SELECT * FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`).toEqual(corrected);
+    await expect(fs.stat(file)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each(['wrong-path', 'bad-digest', 'oversized'] as const)(
+    'refuses unavailable marking when an archive is %s instead of silently treating it as absent', async (fault) => {
+      const sessionId = randomUUID();
+      const dir = path.join(root, 'sessions', '2026', '09', '23');
+      const file = path.join(dir, `rollout-2026-09-23T00-00-00-${sessionId}.jsonl`);
+      const source = context('gpt-6-luna') + usage(1000);
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile(file, source);
+      await sql`INSERT INTO harness_shared.interactive_usage_files (workspace_id,file_path,byte_offset)
+        VALUES (${WS},${file},${Buffer.byteLength(source)})`;
+      await sql`INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id,ts,source,provider,bucket_key,model_class,session_id,model,cost_usd)
+        VALUES (${WS},123,'interactive','openai','legacy','default',${sessionId},'gpt-5.5',123)`;
+      const approval = { filePath: file, byteOffset: Buffer.byteLength(source), backupSnapshotId: backupId,
+        legacyFingerprint: await legacyUsageFingerprint(sql, WS, sessionId) };
+      expect((await archiveSession({ sourceKind: 'codex', sessionId, sessionRoot: root }, pgSessionArchiveStore())).ok).toBe(true);
+      await fs.unlink(file);
+      if (fault === 'wrong-path') await sql`UPDATE harness_shared.session_archives SET session_root=${path.join(root, 'different')}
+        WHERE workspace_id='default' AND source_kind='codex' AND session_id=${sessionId}`;
+      if (fault === 'bad-digest') await sql`UPDATE harness_shared.session_archive_files SET sha256=${'0'.repeat(64)}
+        WHERE workspace_id='default' AND source_kind='codex' AND session_id=${sessionId}`;
+      if (fault === 'oversized') await sql`UPDATE harness_shared.session_archives SET bytes_raw=1073741824
+        WHERE workspace_id='default' AND source_kind='codex' AND session_id=${sessionId}`;
+      await expect(replayTranscriptPrefix({ ...approval, adapter: adapter()[0] })).rejects.toThrow(/[Aa]rchive/);
+      await expect(markUnavailableTranscriptUsage(approval)).rejects.toThrow(/[Aa]rchive/);
+      const [row] = await sql`SELECT model,cost_usd,usage_provenance FROM harness_shared.agent_usage_samples WHERE workspace_id=${WS}`;
+      expect(row).toEqual({ model: 'gpt-5.5', cost_usd: 123, usage_provenance: null });
+    },
+  );
 
   it('reconciles an approved legacy prefix atomically, retaining originals and replay idempotency', async () => {
     const file = path.join(root, 'legacy-reconcile.jsonl');
