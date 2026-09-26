@@ -1,0 +1,59 @@
+{
+  "version": "0.0.22",
+  "channel": "alpha",
+  "sourceSha": "7708e704d9b0dbe0b570e8cd914bd7036079abd0",
+  "artifacts": [
+    {
+      "name": "Papercusp GUI.app.tar.gz",
+      "sha256": "66b88adef5ea61e18a25354f83cc9ccd6fb43cc6001a680d12efe90021108aa0"
+    },
+    {
+      "name": "Papercusp GUI_0.0.22_amd64.deb",
+      "sha256": "fe067ef97b6f3b3818b6af47e437634da393c0eb5ca228289219eae323447813"
+    },
+    {
+      "name": "Papercusp GUI_0.0.22_universal-apple-darwin.dmg",
+      "sha256": "679c80c437c0d90ee30575c2caddc6204340da82f0e8186407b233d126f768c4"
+    },
+    {
+      "name": "Papercusp GUI_0.0.22_x64-setup.exe",
+      "sha256": "d649cab150c799ad8e15b75bd4febd1577568a10917a7510bff01f052c637e9d"
+    },
+    {
+      "name": "Papercusp Server.app.tar.gz",
+      "sha256": "d9b654e634ab341aac28853863b8db019b205a29ccec488824c5eac1deef2ddf"
+    },
+    {
+      "name": "Papercusp Server_0.0.22_amd64.deb",
+      "sha256": "328b24b692955c79fa1401bdd66ef1da7787d59c0f1c9a9d2db9ca655590c1a9"
+    },
+    {
+      "name": "Papercusp Server_0.0.22_universal-apple-darwin.dmg",
+      "sha256": "9d38754691f08b79aa8b67f9dfc49c5e17ad84ab58fd76353f783dc8d2082e97"
+    },
+    {
+      "name": "Papercusp Server_0.0.22_x64-setup-1.bin",
+      "sha256": "9660a281187810ab522e2c6d48ce806c2a6969e739621ded6444bb1b13144416"
+    },
+    {
+      "name": "Papercusp Server_0.0.22_x64-setup-2.bin",
+      "sha256": "49822bb363091a41707310b359e47a2b99601d8e3e0a84c1476634017f725637"
+    },
+    {
+      "name": "Papercusp Server_0.0.22_x64-setup-3.bin",
+      "sha256": "d885042f7fac27e79296b7fc38f3267f38a91a4324ebd463e55918f4317ddf79"
+    },
+    {
+      "name": "Papercusp Server_0.0.22_x64-setup-4.bin",
+      "sha256": "56ce33b0dddda69bd8899c1efe6caf880b3bb331ef44d61c4a77d80c1171c019"
+    },
+    {
+      "name": "Papercusp Server_0.0.22_x64-setup.exe",
+      "sha256": "1d6d15a0ac8834bd6c8d06cda052c05446a092fca5d201271f3b13dc5985e5de"
+    },
+    {
+      "name": "Papercusp_GUI_0.0.22_amd64.AppImage",
+      "sha256": "f2d9b49efad66eea18d7b8f325589011abb284e4fd7db9b0bee02bfaa4f2205a"
+    }
+  ]
+}

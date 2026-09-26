@@ -36,6 +36,7 @@ describe('cloud portal source reconciliation', () => {
     const { config, release } = fixture();
     const run = vi.fn().mockResolvedValue(undefined);
     const writeReceipt = vi.fn().mockResolvedValue(undefined);
+    const withHandoffLock = vi.fn(async (handoff: () => Promise<unknown>) => handoff());
     const result = await reconcilePortal(config, {
       fingerprint: vi.fn().mockResolvedValue({ digest: 'linked-new', rootDigest: 'root-1' }),
       releaseAt: vi.fn().mockResolvedValue(release),
@@ -47,6 +48,7 @@ describe('cloud portal source reconciliation', () => {
       healthy: vi.fn().mockResolvedValue(true),
       run,
       writeReceipt,
+      withHandoffLock,
     });
     expect(result.status).toBe('deployed');
     expect(run.mock.calls.map(([command, args]) => [command, args])).toEqual([
@@ -57,6 +59,7 @@ describe('cloud portal source reconciliation', () => {
       join(config.runtimeRoot, '.papercusp-reconcile.json'),
       expect.objectContaining({ releasePath: release.path, sourceDigest: 'linked-new' }),
     );
+    expect(withHandoffLock).toHaveBeenCalledTimes(1);
   });
 
   it('skips a healthy release with an exact full-source receipt', async () => {
@@ -72,6 +75,7 @@ describe('cloud portal source reconciliation', () => {
       }),
       healthy: vi.fn().mockResolvedValue(true),
       run,
+      withHandoffLock: vi.fn(async (handoff: () => Promise<unknown>) => handoff()),
     });
     expect(result.status).toBe('fresh');
     expect(run).not.toHaveBeenCalled();
@@ -89,6 +93,7 @@ describe('cloud portal source reconciliation', () => {
       receiptAt: vi.fn().mockResolvedValue(null),
       run,
       writeReceipt,
+      withHandoffLock: vi.fn(async (handoff: () => Promise<unknown>) => handoff()),
     })).rejects.toThrow('portal_linked_source_changed_during_build');
     expect(run).toHaveBeenCalledTimes(1);
     expect(writeReceipt).not.toHaveBeenCalled();

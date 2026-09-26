@@ -659,7 +659,7 @@ describe('release:deploy — trigger', () => {
 });
 
 describe('release:deploy — force (owner-gated)', () => {
-  const forceArgs = { op: 'force', reason: 'no-users window: ship the ledger fix', acknowledgeRedTests: ['orchestrator/invoke.test'], confirm: true };
+  const forceArgs = { op: 'force', reason: 'no-users window: ship the ledger fix', ownerSignoffRef: 'owner-directive:123', acknowledgeRedTests: ['orchestrator/invoke.test'], confirm: true };
 
   it('is role-gated: a bee cannot force, and no deploy fires', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red' }));
@@ -677,6 +677,14 @@ describe('release:deploy — force (owner-gated)', () => {
     expect(launchM).not.toHaveBeenCalled();
   });
 
+  it('refuses a confirmed force without a durable owner signoff reference', async () => {
+    statusM.mockResolvedValue(mkStatus({ state: 'gate-red', deploy: { ...mkStatus().deploy, stagingHeadSha: 'feedface' } }));
+    const { ownerSignoffRef: _omitted, ...missingSignoff } = forceArgs;
+    const b = body(await tool.handler(missingSignoff as never, { role: 'operator' } as never));
+    expect(b).toMatchObject({ ok: false, refused: true, reason: 'owner_signoff_reference_required' });
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
   it('confirm:true fires force (un-green commit) AND notifies the owner', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red', deploy: { ...mkStatus().deploy, stagingHeadSha: 'feedface' } }));
     launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'force', commit: 'feedface', argv: [], logPath: '/tmp/x.log' });
@@ -687,7 +695,7 @@ describe('release:deploy — force (owner-gated)', () => {
     expect(notifyM).toHaveBeenCalledTimes(1); // loud owner notification
     expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
       gateActionReceipt: expect.objectContaining({
-        action: 'deploy-force', target: { commit: 'feedface', ownerSignoffRef: 'unknown' },
+        action: 'deploy-force', target: { commit: 'feedface', ownerSignoffRef: 'owner-directive:123' },
         effect: expect.objectContaining({ status: 'detached-launch-accepted', deployedSha: 'unknown' }),
       }),
     }));

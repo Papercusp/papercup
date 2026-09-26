@@ -749,6 +749,12 @@ export default defineTool({
         action: `repair-queue:${args.op}`,
         callerOwnerId,
         ownership: gateOwnershipReceipt,
+        delegate: {
+          status: callerAuthorization.status,
+          authorized: callerAuthorization.authorized,
+          callerSpawnId: callerAuthorization.callerSpawnId,
+          queueFixerSpawnId: callerAuthorization.queueFixerSpawnId,
+        },
         target: { candidate: inspected.queue?.candidate ?? null, repairHead: inspected.queue?.repairHead ?? null },
         effect,
       },

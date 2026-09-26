@@ -432,6 +432,9 @@ export default defineTool({
       op: z.literal('force'),
       harness: harnessAssertion,
       reason: hardText(LIMITS.SHORT_TITLE, { min: 8 }).describe('Why a force (un-green) deploy is justified — loudly audited.'),
+      ownerSignoffRef: z.string().min(8).max(200).optional().describe(
+        'For confirm:true, a durable owner authorization reference (for example an owner directive or approved decision). Required before a force deploy can launch; omitted for dry-run preview.',
+      ),
       acknowledgeRedTests: z
         .array(z.string().min(1))
         .min(1)
@@ -646,6 +649,14 @@ export default defineTool({
           'FORCE ships an UN-GREEN commit past the gate (KNOWN-BROKEN code). This is the rare no-users-window escape — prefer fixing the reds. Pass confirm:true to fire; the action is loudly audited + notifies the owner.',
       });
     }
+    if (!args.ownerSignoffRef) {
+      ctx.metadata?.({ gateActionReceipt: {
+        schemaVersion: 1, action: 'deploy-force', callerOwnerId: identity.ownerId,
+        target: { commit, ownerSignoffRef: null }, effect: { status: 'refused-missing-owner-signoff' },
+      } });
+      return json({ ok: false, op: 'force', refused: true, ...stamp,
+        reason: 'owner_signoff_reference_required', commit });
+    }
     const gateOwnership = await deployGateOwnershipReceipt(identity.ownerId);
     if (gateOwnership.standDown) {
       ctx.metadata?.({ gateActionReceipt: {
@@ -661,6 +672,7 @@ export default defineTool({
       commit,
       acknowledgeRedTests: args.acknowledgeRedTests,
       reason: args.reason,
+      ownerSignoffRef: args.ownerSignoffRef,
       gateAtForce: statusBrief(status),
       gateOwnership: gateOwnership.receipt,
     });
@@ -679,7 +691,7 @@ export default defineTool({
     const launch = await launchDetachedDeploy({ force: true, commit });
     ctx.metadata?.({ gateActionReceipt: {
       schemaVersion: 1, action: 'deploy-force', callerOwnerId: identity.ownerId,
-      ownership: gateOwnership.receipt, target: { commit, ownerSignoffRef: 'unknown' },
+      ownership: gateOwnership.receipt, target: { commit, ownerSignoffRef: args.ownerSignoffRef },
       effect: { status: launch.launched ? 'detached-launch-accepted' : 'not-launched', unit: launch.unit ?? null,
         reason: launch.reason ?? null, deployedSha: 'unknown' },
     } });

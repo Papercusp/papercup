@@ -756,43 +756,42 @@ export default defineTool({
     // behaviour. It records WHY the launch was allowed past a still-`held` claim, which is
     // otherwise indistinguishable from "no claim at all" in the metadata.
     let ownershipAbandoned = false;
-    {
-      const ownership = await readGateOwnership({ harness: installSlug });
-      gateOwnershipAtDispatch = ownership;
-      // Resolving the CALLER can throw (a power-user ctx missing its uiClientId). If we cannot
-      // tell who we are, we cannot tell whether the claim is our OWN — and refusing then would
-      // block an agent from re-firing its own gate. Unknown identity ⇒ fail open, like every
-      // other unknown on this rail.
-      let callerOwnerId: string | null = null;
-      let callerWorkspaceId: string | undefined;
-      try {
-        const caller = resolveAgentIdentity(ctx);
-        callerOwnerId = caller.ownerId;
-        callerWorkspaceId = caller.workspaceId ?? undefined;
-      } catch {
-        callerOwnerId = null;
-      }
-      gateCallerOwnerId = callerOwnerId;
-      if (args.force && shouldStandDownForLivePeer(ownership, callerOwnerId)) {
-        recordMetadata({
-          standDown: 'condition_claimed_even_with_force',
-          standDownWorkItem: ownership.workItem,
-          standDownTakenBy: ownership.takenBy,
-        });
-        return {
-          content: [{
-            type: 'text',
-            text: serializeResponse({
-              ok: false,
-              launched: false,
-              reason: 'condition_claimed_even_with_force',
-              work_item: ownership.workItem,
-              taken_by: ownership.takenBy,
-            }),
-          }],
-        };
-      }
-      if (!args.force) {
+    const ownership = await readGateOwnership({ harness: installSlug });
+    gateOwnershipAtDispatch = ownership;
+    // Resolving the CALLER can throw (a power-user ctx missing its uiClientId). If we cannot
+    // tell who we are, we cannot tell whether the claim is our OWN — and refusing then would
+    // block an agent from re-firing its own gate. Unknown identity ⇒ fail open, like every
+    // other unknown on this rail.
+    let callerOwnerId: string | null = null;
+    let callerWorkspaceId: string | undefined;
+    try {
+      const caller = resolveAgentIdentity(ctx);
+      callerOwnerId = caller.ownerId;
+      callerWorkspaceId = caller.workspaceId ?? undefined;
+    } catch {
+      callerOwnerId = null;
+    }
+    gateCallerOwnerId = callerOwnerId;
+    if (args.force && shouldStandDownForLivePeer(ownership, callerOwnerId)) {
+      recordMetadata({
+        standDown: 'condition_claimed_even_with_force',
+        standDownWorkItem: ownership.workItem,
+        standDownTakenBy: ownership.takenBy,
+      });
+      return {
+        content: [{
+          type: 'text',
+          text: serializeResponse({
+            ok: false,
+            launched: false,
+            reason: 'condition_claimed_even_with_force',
+            work_item: ownership.workItem,
+            taken_by: ownership.takenBy,
+          }),
+        }],
+      };
+    }
+    if (!args.force) {
       const peerHeld =
         ownership.claimState === 'held' &&
         Boolean(ownership.workItem) &&
@@ -1082,7 +1081,6 @@ export default defineTool({
             },
           ],
         };
-      }
       }
     }
     // EI-20025784115349280: the containment verdict below (L~479) is assembled ENTIRELY from
@@ -2162,6 +2160,31 @@ export default defineTool({
           queueCas: frozenLineageCas.reason,
         }
       : null;
+    // The detached unit accepting a launch is an effect, not a published verdict.
+    // Keep that distinction and the non-atomic ownership observation in the
+    // invocation row; a later audit must never infer either from status='ok'.
+    recordMetadata({
+      gateActionReceipt: {
+        schemaVersion: 1,
+        action: 'checkpoint-run',
+        callerOwnerId: gateCallerOwnerId,
+        ownership: gateOwnershipAtDispatch?.claimState === 'held' && gateOwnershipAtDispatch.workItem
+          ? {
+              certainty: 'prelaunch-observation',
+              workItem: gateOwnershipAtDispatch.workItem,
+              holder: gateOwnershipAtDispatch.takenBy,
+              assessment: gateOwnershipAtDispatch.assessment,
+            }
+          : { certainty: 'unknown', reason: gateOwnershipAtDispatch?.unknown?.code ?? 'no-held-condition' },
+        target: { candidate: transportedCandidateSha, repairHead: frozenLineageCas.liveIdentity?.repairHead ?? null },
+        effect: {
+          status: result.launched ? 'detached-launch-accepted' : 'not-launched',
+          unit: result.unit ?? null,
+          reason: result.reason ?? null,
+          publishedVerdict: 'unknown',
+        },
+      },
+    });
     const reportedContainment = containment
       ? {
           ...containment,

@@ -11,7 +11,7 @@ Environment=PAPERCUSP_CLOUD_PORTAL_RUNTIME_ROOT=@RUNTIME_ROOT@
 Environment=PAPERCUSP_CLOUD_PORTAL_INTEGRATION_ROOT=@INTEGRATION_ROOT@
 Environment=PAPERCUSP_CLOUD_PORTAL_PORT=@PORT@
 Environment=PATH=@NODE_DIR@:%h/.local/bin:%h/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=@NODE@ @INTEGRATION_ROOT@/apps/operator/scripts/systemd/reconcile-cloud-portal.mjs
+ExecStart=@TSX@ @INTEGRATION_ROOT@/apps/operator/scripts/systemd/reconcile-cloud-portal.mjs
 TimeoutStartSec=3600
 
 [Install]

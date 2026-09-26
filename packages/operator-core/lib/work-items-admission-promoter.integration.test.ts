@@ -276,6 +276,12 @@ describe('work-item admission promoter (real Postgres)', () => {
       embeddingProfile: 'openai-text-embedding-3-small-768@v1',
     });
     const llmCall = vi.fn();
+    const onNewlyAdmitted = vi.fn(async (rows: readonly { id: string; harness: string }[]) => {
+      const stored = await db.sql<Array<{ admission: string }>>`
+        SELECT admission FROM harness_shared.work_items WHERE feature_id = 'WI-gemma'`;
+      expect(stored[0]?.admission).toBe('admitted');
+      expect(rows).toEqual([{ id: 'WI-gemma', harness: HARNESS }]);
+    });
     const result = await runWorkItemAdmissionPromoter({
       workspaceId: WS,
       harnessSlug: HARNESS,
@@ -283,10 +289,12 @@ describe('work-item admission promoter (real Postgres)', () => {
       sql: db.sql,
       llmCall,
       now: () => NOW,
+      onNewlyAdmitted,
     });
 
     expect(result).toMatchObject({ promoted: 1, merged: 0, modelCalled: false });
     expect(llmCall).not.toHaveBeenCalled();
+    expect(onNewlyAdmitted).toHaveBeenCalledOnce();
   });
 
   describe('dependency-reference rewrite transaction boundary', () => {
@@ -1765,14 +1773,22 @@ describe('work-item admission promoter (real Postgres)', () => {
       VALUES ('rt-promoter', ${HARNESS}, ${WS}, ${WORK_ITEM_ADMISSION_PROMOTER}, false,
               to_timestamp(${NOW - 4 * 60 * 60_000} / 1000.0))`;
 
+    const onNewlyAdmitted = vi.fn(async (rows: readonly { id: string; harness: string }[]) => {
+      const stored = await db.sql<Array<{ admission: string }>>`
+        SELECT admission FROM harness_shared.work_items WHERE feature_id = 'WI-old'`;
+      expect(stored[0]?.admission).toBe('unreviewed');
+      expect(rows).toEqual([{ id: 'WI-old', harness: HARNESS }]);
+    });
     const result = await runWorkItemAdmissionFailOpen({
       workspaceId: WS,
       harnessSlug: HARNESS,
       runId: 'fail-open-killed',
       sql: db.sql,
       now: () => NOW,
+      onNewlyAdmitted,
     });
     expect(result.autoPromoted).toEqual(['WI-old']);
+    expect(onNewlyAdmitted).toHaveBeenCalledOnce();
     expect(result.liveness).toMatchObject({ stale: true, reason: 'promoter routine is inactive' });
     expect(result.reviewDebt).toMatchObject({ pending: 1, overdue: 1, reReviewed: 0, stillOpen: 0, terminal: 0 });
     const rows = await db.sql<Array<{ feature_id: string; admission: string; payload: Record<string, unknown> }>>`

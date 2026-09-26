@@ -692,6 +692,26 @@ describe('emitWorkItemCreatedEvent (EI-8296)', () => {
 });
 
 describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
+  it('announces a newly admitted row with the canonical claimability guard', async () => {
+    const emit = typedEmit();
+    emitWorkItemClaimableEvent(
+      wi({ id: 'WI-admitted', state: 'open', assignee: null }),
+      'admitted',
+      { emit, duplicateAdmissionCheck: async () => true },
+    );
+    emitWorkItemClaimableEvent(
+      wi({ id: 'WI-assigned', state: 'open', assignee: 'su-holder' }),
+      'admitted',
+      { emit, duplicateAdmissionCheck: async () => true },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'work-item:claimable',
+      payload: expect.objectContaining({ id: 'WI-admitted', reason: 'admitted' }),
+    });
+  });
+
   it('fires the GLOBAL work-item:claimable key with id/kind/severity/harness/title/state/reason/assignee', async () => {
     const emit = typedEmit();
     const { emitWorkItemClaimableEvent } = await import('./work-items-events');

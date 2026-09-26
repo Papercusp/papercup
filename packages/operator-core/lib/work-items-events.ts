@@ -231,7 +231,7 @@ const CLAIMABLE_STATES: ReadonlySet<string> = new Set(CLAIM_STATES_ALLOWLIST);
  */
 export function emitWorkItemClaimableEvent(
   wi: WorkItem,
-  reason: 'created' | 'released' | 'unblocked' | 'requeued',
+  reason: 'created' | 'admitted' | 'released' | 'unblocked' | 'requeued',
   deps: Pick<SettledEventsDeps, 'emit' | 'planItemLaneBlockReason' | 'duplicateAdmissionCheck'> = {},
 ): void {
   // D-005: observation-lane rows are captured reflections, not work-queue material. Keep
@@ -292,7 +292,7 @@ export function emitWorkItemClaimableEvent(
  */
 export function workItemClaimableEventPayload(
   wi: WorkItem,
-  reason?: 'created' | 'released' | 'unblocked' | 'requeued',
+  reason?: 'created' | 'admitted' | 'released' | 'unblocked' | 'requeued',
 ): Record<string, unknown> {
   return workItemEventPayload({
     id: wi.id,

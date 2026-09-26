@@ -27,6 +27,13 @@ export function resolvePtoolOperatorBase(env?: NodeJS.ProcessEnv): string;
  */
 export function resolvePtoolOperatorCandidates(env?: EnvironmentMap, explicitUrl?: string | null): string[];
 /**
+ * A named call must use the operator selected at invocation start. Otherwise a
+ * dead staging listener can silently move a schema-dependent write or replay to
+ * an older live operator. Catalog browsing may still recover to another host;
+ * callers can then explicitly pin that host with --url for a subsequent call.
+ */
+export function resolvePtoolInvocationCandidates(args?: {}, env?: NodeJS.ProcessEnv): string[];
+/**
  * Whether the operator URL came from implicit local discovery and may follow a
  * packaged operator that restarts onto a different port. Explicit CLI/env
  * URLs are pins: changing them behind the caller's back would violate the

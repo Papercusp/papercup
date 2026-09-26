@@ -42,6 +42,33 @@ import { isHarnessInScope, primeWorkScopePolicy, recordWorkScopeDecision, workSc
 import type { OrgSql } from './work-items';
 import { effectiveStoredProseProfileIdSql } from './search/prose-vector-dims';
 
+/** Announce the pending→admitted edge only after its write commits. The lifecycle
+ * emitter applies the same state, claim-hold, observation and plan-lane floors as
+ * every other return to the claimable pool. A reviewed unreviewed→admitted row was
+ * already claimable, so callers must not pass that edge here. */
+async function announceNewlyAdmittedWorkItems(rows: readonly { id: string; harness: string }[]): Promise<void> {
+  if (rows.length === 0) return;
+  try {
+    const [{ getWorkItemsByIds }, { emitWorkItemClaimableEvent }] = await Promise.all([
+      import('./work-items'),
+      import('./work-items-events'),
+    ]);
+    for (const harness of new Set(rows.map((row) => row.harness))) {
+      const ids = rows.filter((row) => row.harness === harness).map((row) => row.id);
+      const items = await getWorkItemsByIds(ids, harness);
+      for (const item of items) {
+        if (item.harness === harness) emitWorkItemClaimableEvent(item, 'admitted');
+      }
+    }
+  } catch (error) {
+    // Admission has committed; a notification failure cannot roll it back.
+    // Minimal admission integration fixtures do not project the issue/feature
+    // views used by getWorkItemsByIds, matching work-items-events' fail-soft rule.
+    if ((error as { code?: unknown } | null)?.code === '42P01') return;
+    console.warn('[work-item-admission] claimable notification failed:', error);
+  }
+}
+
 export const WORK_ITEM_ADMISSION_PROMOTER = 'work-item-admission-promoter';
 export const WORK_ITEM_ADMISSION_FAIL_OPEN = 'work-item-admission-fail-open';
 export const PROMOTER_ACTOR = `system:${WORK_ITEM_ADMISSION_PROMOTER}`;
@@ -4566,6 +4593,8 @@ export async function runWorkItemAdmissionPromoter(opts: {
   now?: () => number;
   /** A request-driven recovery must renew authority after model latency, before any persistence. */
   beforePersist?: () => Promise<void>;
+  /** Test seam; production emits the canonical claimable event after commit. */
+  onNewlyAdmitted?: (rows: readonly { id: string; harness: string }[]) => Promise<void>;
 }): Promise<PromoterRunResult> {
   // Validate before opening a ledger run or touching policy/DB state.
   const targetItemIds = normalizeAdmissionTargetIds(opts.targetItemIds);
@@ -4700,6 +4729,10 @@ export async function runWorkItemAdmissionPromoter(opts: {
       snapshots: [...snapshotsById.values()],
       mutationItemIds: targetItemIds,
     });
+    const pendingIds = new Set(pending.filter((item) => item.admission === 'pending').map((item) => item.id));
+    await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(
+      persisted.promotedIds.filter((id) => pendingIds.has(id)).map((id) => ({ id, harness: opts.harnessSlug })),
+    );
     const promoted = persisted.promotedIds.length;
     const merged = persisted.mergedIds.length;
     const held = persisted.held.length;
@@ -4886,6 +4919,8 @@ export async function runWorkItemAdmissionFailOpen(opts: {
   staleMinutes?: number;
   /** Defaults to `'harness'`; the production routine passes `'workspace'`. See AdmissionFailOpenScope. */
   scope?: AdmissionFailOpenScope;
+  /** Test seam; production emits the canonical claimable event after the admission update. */
+  onNewlyAdmitted?: (rows: readonly { id: string; harness: string }[]) => Promise<void>;
 }): Promise<FailOpenRunResult> {
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
@@ -4950,6 +4985,9 @@ export async function runWorkItemAdmissionFailOpen(opts: {
          AND admission = 'pending'
          AND created_ts < ${cutoffMs}
        RETURNING feature_id, harness_slug`;
+    await (opts.onNewlyAdmitted ?? announceNewlyAdmittedWorkItems)(
+      rows.map((row) => ({ id: row.feature_id, harness: row.harness_slug })),
+    );
     const autoPromoted = rows.map((row) => row.feature_id).sort();
     const autoPromotedByHarness: Record<string, string[]> = {};
     for (const row of rows) (autoPromotedByHarness[row.harness_slug] ??= []).push(row.feature_id);

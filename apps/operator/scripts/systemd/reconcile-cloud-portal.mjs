@@ -6,6 +6,7 @@ import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { withPortalHandoffLock } from './portal-reconcile-lock.mts';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -68,6 +69,7 @@ export async function reconcilePortal(config, deps = {}) {
   const saveReceipt = deps.writeReceipt ?? writeReceipt;
   const checkHealth = deps.healthy ?? healthy;
   const runCommand = deps.run ?? run;
+  const withHandoffLock = deps.withHandoffLock ?? withPortalHandoffLock;
   await mkdir(runtimeRoot, { recursive: true });
 
   const before = await getFingerprint(portalRoot);
@@ -78,8 +80,10 @@ export async function reconcilePortal(config, deps = {}) {
     && receipt?.sourceRootDigest === before.rootDigest;
   if (sameRelease && sameSource) {
     if (await checkHealth(config.port)) return { status: 'fresh', releasePath: current.path };
-    await runCommand('bash', [config.deployScript, '--handoff'], config.integrationRoot, config.env);
-    if (!(await checkHealth(config.port))) throw new Error('portal_handoff_health_failed');
+    await withHandoffLock(async () => {
+      await runCommand('bash', [config.deployScript, '--handoff'], config.integrationRoot, config.env);
+      if (!(await checkHealth(config.port))) throw new Error('portal_handoff_health_failed');
+    });
     return { status: 'recovered', releasePath: current.path };
   }
 
@@ -88,24 +92,26 @@ export async function reconcilePortal(config, deps = {}) {
   if (before.digest !== afterBuild.digest) {
     throw new Error('portal_linked_source_changed_during_build');
   }
-  await runCommand('bash', [config.deployScript, '--handoff'], config.integrationRoot, config.env);
-  if (!(await checkHealth(config.port))) throw new Error('portal_handoff_health_failed');
-  const deployed = await getRelease(runtimeRoot);
-  const afterHandoff = await getFingerprint(portalRoot);
-  if (afterHandoff.digest !== before.digest) {
-    throw new Error('portal_linked_source_changed_during_handoff');
-  }
-  if (resolve(deployed.manifest.sourceRoot ?? '') !== portalRoot
-    || deployed.manifest.sourceRootDigest !== before.rootDigest) {
-    throw new Error('portal_release_source_mismatch');
-  }
-  await saveReceipt(receiptPath, {
-    schemaVersion: 1,
-    releasePath: deployed.path,
-    sourceDigest: before.digest,
-    sourceRootDigest: before.rootDigest,
+  return withHandoffLock(async () => {
+    await runCommand('bash', [config.deployScript, '--handoff'], config.integrationRoot, config.env);
+    if (!(await checkHealth(config.port))) throw new Error('portal_handoff_health_failed');
+    const deployed = await getRelease(runtimeRoot);
+    const afterHandoff = await getFingerprint(portalRoot);
+    if (afterHandoff.digest !== before.digest) {
+      throw new Error('portal_linked_source_changed_during_handoff');
+    }
+    if (resolve(deployed.manifest.sourceRoot ?? '') !== portalRoot
+      || deployed.manifest.sourceRootDigest !== before.rootDigest) {
+      throw new Error('portal_release_source_mismatch');
+    }
+    await saveReceipt(receiptPath, {
+      schemaVersion: 1,
+      releasePath: deployed.path,
+      sourceDigest: before.digest,
+      sourceRootDigest: before.rootDigest,
+    });
+    return { status: 'deployed', releasePath: deployed.path };
   });
-  return { status: 'deployed', releasePath: deployed.path };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
