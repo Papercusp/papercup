@@ -143,6 +143,9 @@ export async function buildPtyHostHealthLane(
                     ELSE kind END AS kind
           FROM harness_shared.psu_pty_host_events
          WHERE workspace_id = ${ws}
+           -- ownerFromFilename ingests carry-drills.events.jsonl as a pseudo-owner.
+           -- It mirrors per-session host events and also contains operator-side drills.
+           AND owner_id <> 'carry-drills'
            AND ts >= ${since}::timestamptz
            AND ts <= ${until}::timestamptz
       )
