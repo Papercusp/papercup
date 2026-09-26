@@ -163,7 +163,12 @@ export function parsePsuConnectionArgs(argv) {
     throw new Error(
       "Choose only one of --connect-list, --connect-add-gcp-iap, --connect-remove, --connect-login, or --connect-logout",
     );
-  if (actions && (transport.explicitConnect || transport.sessionKey))
+  // `--connect-login --connect` (bare) is the one maintenance+connect pairing:
+  // sign in, then open the program on the new sign-in's workspace. PUI's
+  // first-run "Sign in to Papercusp cloud" is exactly this command line.
+  const signInThenConnect =
+    transport.login && transport.explicitConnect && transport.selection == null;
+  if (actions && (transport.explicitConnect || transport.sessionKey) && !signInThenConnect)
     throw new Error("Profile maintenance commands cannot also use --connect");
   if (
     transport.sessionKey != null &&
@@ -839,7 +844,7 @@ async function listHostedWorkspaces(profile, deps, timeoutMs) {
 
 /** RFC 8628 device sign-in: print a code, let the person approve it in a browser, poll once per interval. */
 async function hostedLogin(originInput, store, deps) {
-  const origin = normalizeHostedPortalOrigin(originInput);
+  const origin = normalizeHostedPortalOrigin(originInput ?? deps.cloudOrigin);
   const started = await hostedRequest(deps, origin, "/hosted/cli/device/code", {
     method: "POST",
     body: { clientLabel: deps.hostname },
@@ -1063,6 +1068,10 @@ function connectionDeps(overrides) {
       ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     now: overrides.now ?? (() => Date.now()),
     hostname: overrides.hostname ?? osHostname(),
+    // The portal a sign-in without an explicit origin uses: a self-hosted
+    // Papercusp portal (or a test server) sets PAPERCUSP_CLOUD_ORIGIN.
+    cloudOrigin:
+      overrides.cloudOrigin ?? (process.env.PAPERCUSP_CLOUD_ORIGIN || undefined),
     openBrowser: overrides.openBrowser ?? defaultOpenBrowser,
     openHostedTerminal: overrides.openHostedTerminal ?? defaultOpenHostedTerminal,
     output: overrides.output ?? ((line) => console.log(line)),
@@ -1112,12 +1121,16 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
     }
     return { handled: true, argv: forwardedArgv, exitCode: 0 };
   }
+  let signedIn = null;
   if (transport.login) {
-    const profile = await hostedLogin(transport.loginOrigin, store, deps);
-    deps.output(
-      `Signed in to ${profile.origin}. Run ${transport.program} --connect=${profile.name} to open ${transport.program} on one of your workspaces.`,
-    );
-    return { handled: true, argv: forwardedArgv, exitCode: 0 };
+    signedIn = await hostedLogin(transport.loginOrigin, store, deps);
+    if (!transport.explicitConnect) {
+      deps.output(
+        `Signed in to ${signedIn.origin}. Run ${transport.program} --connect=${signedIn.name} to open ${transport.program} on one of your workspaces.`,
+      );
+      return { handled: true, argv: forwardedArgv, exitCode: 0 };
+    }
+    deps.notice(`psu: signed in to ${signedIn.origin}`);
   }
   if (transport.logout) {
     const hosted = store.profiles.filter(
@@ -1196,7 +1209,7 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
     !requestsLocalHelp &&
     !forwardedArgv.includes("--no-picker") &&
     !forwardedArgv.includes("--headless");
-  let selection = transport.selection;
+  let selection = signedIn?.name ?? transport.selection;
   if (
     (transport.explicitConnect || transport.sessionKey) &&
     selection == null &&

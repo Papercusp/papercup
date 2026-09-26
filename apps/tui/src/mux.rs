@@ -139,7 +139,11 @@ impl Multiplexer for Zellij {
             v.push("--close-on-exit".to_string());
         }
         v.push("--".to_string());
-        v.extend(spec.argv.iter().cloned());
+        if let Some((program, args)) = spec.argv.split_first() {
+            // `psu` resolves beside the running pui first (D-031).
+            v.push(crate::remote_connect::pane_program(program));
+            v.extend(args.iter().cloned());
+        }
         v
     }
 

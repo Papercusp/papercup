@@ -34,7 +34,16 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
+import * as realLauncher from './psu-launcher.mjs';
+
+// PSU_LAUNCHER_MODULE_PATH lets scripts/mutation-probe.sh (copy-out mode) point this
+// suite at a MUTATED copy of the launcher without dirtying the tracked file. It
+// defaults to the real module; an unset variable changes nothing.
+const launcherOverride = process.env.PSU_LAUNCHER_MODULE_PATH;
+const launcher: typeof realLauncher = launcherOverride
+  ? await import(launcherOverride)
+  : realLauncher;
+const {
   codexGatewayConfigPatch,
   codexRolloutModelProvider,
   codexResumeRouteNotice,
@@ -43,7 +52,7 @@ import {
   codexFreshDefaultAuthPreflight,
   reconcileCodexSystemAuth,
   isCodexHomeLaunchReady,
-} from './psu-launcher.mjs';
+} = launcher;
 
 let dir: string;
 beforeEach(() => {

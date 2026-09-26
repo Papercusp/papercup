@@ -13,6 +13,7 @@ import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { runWithWorkspace } from '../workspace-als';
 import { readBlueprintHashFromPg, readBlueprintSpecificationSnapshot, retainBlueprintSpecificationSnapshot } from './project-to-pg';
 import { runScheduledPlanFire } from '../harness/routines/plan-run-action';
+import { BlueprintOperationRefusal } from './operation-refusal';
 
 const AcceptedOperationPinSchema = z
   .object({
@@ -88,7 +89,7 @@ function withInvocationSingleflight<T>(
   const prior = invocationFlights.get(flightKey);
   if (prior) {
     if (prior.fingerprint !== fingerprint) {
-      throw new Error('blueprint operation request key was reused with different input or target');
+      throw new BlueprintOperationRefusal('input_conflict', 'blueprint operation request key was reused with different input or target');
     }
     return prior.promise as Promise<T>;
   }
@@ -147,7 +148,7 @@ async function findDirectItemByRequest(
     throw new Error('recovered blueprint operation differs from the expected specification revision');
   }
   if (pin.requestFingerprint !== fingerprint || pin.requestKey !== key) {
-    throw new Error('blueprint operation request key was reused with different input');
+    throw new BlueprintOperationRefusal('input_conflict', 'blueprint operation request key was reused with different input');
   }
   return item;
 }
@@ -168,7 +169,7 @@ function exactJsonInput(input: Record<string, unknown>): Record<string, unknown>
 function validateOperationInput(schema: Record<string, unknown>, input: Record<string, unknown>): void {
   const verdict = checkAgainstJsonSchema(schema, input);
   if (!verdict.ok) {
-    throw new Error(`blueprint operation ${verdict.code}: ${verdict.errors.join('; ')}`);
+    throw new BlueprintOperationRefusal('invalid_payload', `blueprint operation ${verdict.code}: ${verdict.errors.join('; ')}`);
   }
 }
 
@@ -230,7 +231,7 @@ async function acceptBlueprintDirectWorkItemScoped(
       `;
           const receipt = receipts[0];
           if (receipt && (receipt.request_fingerprint !== fingerprint || receipt.target_kind !== 'work-item')) {
-            throw new Error('blueprint operation request key was reused with different input or target');
+            throw new BlueprintOperationRefusal('input_conflict', 'blueprint operation request key was reused with different input or target');
           }
           if (request.expectedSpecificationRevision && receipt?.specification_revision &&
               receipt.specification_revision !== request.expectedSpecificationRevision) {
@@ -466,7 +467,7 @@ async function acceptBlueprintPlanRunScoped(
     `;
         const receipt = prior[0];
         if (receipt && (receipt.request_fingerprint !== fingerprint || receipt.target_kind !== 'plan')) {
-          throw new Error('blueprint operation request key was reused with different input or target');
+          throw new BlueprintOperationRefusal('input_conflict', 'blueprint operation request key was reused with different input or target');
         }
         const revision = selectOperationSpecificationRevision(
           request.expectedSpecificationRevision,

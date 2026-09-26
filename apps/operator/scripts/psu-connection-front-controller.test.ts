@@ -352,6 +352,16 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
     expect(() => parsePsuConnectionArgs(["--connect-login", "--connect=x"])).toThrow(
       "cannot also use --connect",
     );
+    expect(() =>
+      parsePsuConnectionArgs(["--connect-login", "--connect-session=abc"]),
+    ).toThrow("cannot also use --connect");
+    // Bare --connect beside --connect-login = sign in, then connect there.
+    expect(
+      parsePsuConnectionArgs(["--connect-program=pui", "--connect-login", "--connect"]),
+    ).toMatchObject({
+      transport: { login: true, explicitConnect: true, selection: null, program: "pui" },
+      forwardedArgv: [],
+    });
     expect(() => parsePsuConnectionArgs(["--connect-session=bad key"])).toThrow(
       "--connect-session",
     );
@@ -748,6 +758,89 @@ describe("pui through psu's saved connections (P-017)", () => {
     expect(remote).toContain(
       `'env' 'PAPERCUSP_PSU_CONNECTION_FORWARDED=1' 'pui' 'workbench'`,
     );
+  });
+
+  it("signs in and then opens pui on the new sign-in's workspace (PUI first-run, D-031)", async () => {
+    const home = tempHome();
+    const storePath = defaultPsuConnectionStorePath(home);
+    const portal = fakePortal({
+      "/api/hosted/cli/device/code": () => ({
+        status: 200,
+        body: {
+          ok: true,
+          deviceCode: `pdc_${"d".repeat(43)}`,
+          userCode: "BCDF-GHJK",
+          verificationUriComplete: `${PORTAL}/api/hosted/cli/device?user_code=BCDF-GHJK`,
+          expiresIn: 600,
+          interval: 1,
+        },
+      }),
+      "/api/hosted/cli/device/token": () => ({
+        status: 200,
+        body: {
+          ok: true,
+          accessToken: NEW_TOKEN,
+          tokenId: "hct_new",
+          organizationId: "org-1",
+          userId: "user_01",
+          expiresAt: "2026-10-24T00:00:00.000Z",
+        },
+      }),
+      ...WORKSPACES,
+      "/api/hosted/cli/workspaces/ws-live/terminal": ({ body }) => ({
+        status: 200,
+        body: {
+          ok: true,
+          socketUrl: `wss://portal.example.test/api/hosted/connectors/socket?ticket=${TICKET}`,
+          session: (body as { session: string }).session,
+        },
+      }),
+    });
+    const terminals: Array<{ socketUrl: string; initialInput: string }> = [];
+    const output = vi.fn();
+    // No origin on the command line: the portal comes from PAPERCUSP_CLOUD_ORIGIN.
+    vi.stubEnv("PAPERCUSP_CLOUD_ORIGIN", PORTAL);
+    try {
+      await expect(
+        runPsuConnectionFrontController(
+          ["--connect-program=pui", "--connect-login", "--connect"],
+          {
+            home,
+            storePath,
+            interactive: true,
+            hostname: "laptop",
+            fetch: portal.fetch,
+            sleep: async () => {},
+            openBrowser: vi.fn(),
+            pickConnection: async () => {
+              throw new Error("one connected workspace needs no picker");
+            },
+            output,
+            notice: vi.fn(),
+            async openHostedTerminal(input: { socketUrl: string; initialInput: string }) {
+              terminals.push(input);
+              return { exit: { code: 0, signal: 0 }, resumed: false };
+            },
+          },
+        ),
+      ).resolves.toEqual({ handled: true, argv: [], exitCode: 0 });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(portal.calls[0]?.url).toBe(`${PORTAL}/api/hosted/cli/device/code`);
+    // The freshly issued token, not a stale one, authorizes the workspace calls.
+    const listed = portal.calls.find((call) => call.url.endsWith("/cli/workspaces"));
+    expect(listed?.headers.authorization).toBe(`Bearer ${NEW_TOKEN}`);
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]?.initialInput).toBe(
+      `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 pui\r`,
+    );
+    // Sign-in-then-connect does not print the "now run --connect" hint.
+    expect(output).not.toHaveBeenCalled();
+    expect(loadPsuConnectionStore(storePath).profiles.map((profile) => profile.name)).toEqual([
+      "portal.example.test",
+    ]);
   });
 
   it("offers pui no 'this computer' entry and refuses to fall back to a local launch", async () => {
