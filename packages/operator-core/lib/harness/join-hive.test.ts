@@ -391,12 +391,67 @@ describe('joiner-side git-sync seeding (git-sync-any-hive P-003 / B-03)', () => 
     deps.upsertHiveIdentity = async () => {
       throw new Error('pg down');
     };
-    const res = await joinHiveAsView(
-      { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
-      deps,
-    );
-    expect(res.ok).toBe(true);
-    expect(res.potSlug).toBe('shop-hive');
+    deps.findHiveByPubkey = async () => null;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await joinHiveAsView(
+        { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+        deps,
+      );
+      expect(res.ok).toBe(true);
+      expect(res.potSlug).toBe('shop-hive');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  // WI-10003237: a swallowed step-2b failure left NO pots row at (workspace, potSlug),
+  // so every federated pot_members apply failed pot_members_pot_fkey and the only
+  // trace was that FK storm downstream. The failure must be LOGGED, naming the row
+  // that already holds the pubkey (a same-workspace slug race) or its absence (the
+  // pubkey lives in another workspace).
+  it('a pubkey-collision identity failure is logged with the row already holding the pubkey', async () => {
+    const { deps } = fakes();
+    deps.upsertHiveIdentity = async () => {
+      throw new Error('duplicate key value violates unique constraint "pots_public_key_key"');
+    };
+    const lookups: [string, string][] = [];
+    deps.findHiveByPubkey = async (ws, pk) => {
+      lookups.push([ws, pk]);
+      return { homeSlug: 'shop', canonicalHomeSlug: 'shop', keychainId: `remote:${pk}` };
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const res = await joinHiveAsView(
+        { potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' },
+        deps,
+      );
+      expect(res.ok).toBe(true);
+      expect(lookups).toEqual([['ws', HIVE_PUBKEY]]);
+      const line = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes('[join-hive] step 2b'));
+      expect(line).toBeDefined();
+      expect(line).toContain('ws/shop-hive');
+      expect(line).toContain('pots_public_key_key');
+      expect(line).toContain('same-workspace slug=shop canonical=shop');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('an identity failure with no same-workspace pubkey holder says so', async () => {
+    const { deps } = fakes();
+    deps.upsertHiveIdentity = async () => {
+      throw new Error('pots_public_key_key');
+    };
+    deps.findHiveByPubkey = async () => null;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await joinHiveAsView({ potId: 'shop-hive', memberLinks: [link('shop', 100)], workspaceId: 'ws' }, deps);
+      const line = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes('[join-hive] step 2b'));
+      expect(line).toContain('pubkey holder: none-in-this-workspace');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

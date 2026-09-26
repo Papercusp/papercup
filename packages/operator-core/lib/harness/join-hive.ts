@@ -46,7 +46,7 @@ import {
   type SeedGitSyncRoutineOpts,
   type SeedGitSyncRoutineOutcome,
 } from './git-sync/git-sync-routine';
-import { upsertRemoteHiveIdentity } from '../hive-store';
+import { getHiveByPubkey, upsertRemoteHiveIdentity } from '../hive-store';
 import { adoptRepoKey } from '../sync/pot-git/repo-identity';
 import { hiveKeychainId } from '../identity/hive-keypair';
 
@@ -115,6 +115,13 @@ export interface JoinHiveDeps {
     pubkeyBase64: string;
     keychainId: string;
   }) => Promise<unknown>;
+  /** Find the Pot identity row already holding `pubkeyBase64` in this workspace
+   *  (default: hive-store getHiveByPubkey). Diagnostic only — read when
+   *  upsertHiveIdentity FAILS, to name the row that won the pubkey (WI-10003237). */
+  findHiveByPubkey?: (
+    workspaceId: string,
+    pubkeyBase64: string,
+  ) => Promise<{ homeSlug: string; canonicalHomeSlug: string; keychainId: string } | null>;
   /** Re-key a joined member's substrate IN PLACE so it re-resolves its swarm
    *  binding (default: boot-all's rekeyHarness, lazily imported). EI-681 step 2c
    *  — the per-member joins booted each substrate on the gh:<repo_id> topic
@@ -424,10 +431,12 @@ export async function joinHiveAsView(
         title: opts.title ?? opts.potId,
         repairKeychainIds: [hiveKeychainId(opts.workspaceId, potSlug)],
       }));
+  let identityPubkey: string | null = null;
   try {
     const pubkeyBase64 =
       (typeof opts.hivePubkey === 'string' && opts.hivePubkey.trim() ? opts.hivePubkey.trim() : null) ??
       (await resolveHivePubkey(opts.workspaceId, opts.potId).catch(() => null));
+    identityPubkey = pubkeyBase64;
     if (pubkeyBase64) {
       await upsertHiveIdentity({
         workspaceId: opts.workspaceId,
@@ -436,8 +445,30 @@ export async function joinHiveAsView(
         keychainId: `remote:${opts.potId}`,
       });
     }
-  } catch {
-    /* identity-view write is best-effort; never fail the join over it */
+  } catch (e) {
+    // Identity-view write is best-effort: never fail the join over it. But NEVER
+    // silently — WI-10003237: when this upsert lost a `pots_public_key_key` race,
+    // no pots row existed at (workspace, potSlug), so EVERY federated pot_members
+    // apply then failed `pot_members_pot_fkey` (1280x in 9 min on the cert rig) and
+    // the only trace was that FK storm, three hops downstream. Name the failure and
+    // the row already holding this pubkey here, so the next occurrence is
+    // self-diagnosing: a same-workspace holder under another slug is a slug race;
+    // none means the pubkey lives in ANOTHER workspace.
+    let holder = 'unknown';
+    if (identityPubkey) {
+      holder = await (deps.findHiveByPubkey ?? getHiveByPubkey)(opts.workspaceId, identityPubkey)
+        .then((h) =>
+          h
+            ? `same-workspace slug=${h.homeSlug} canonical=${h.canonicalHomeSlug} keychain=${h.keychainId}`
+            : 'none-in-this-workspace',
+        )
+        .catch((le) => `lookup-failed: ${le instanceof Error ? le.message : String(le)}`);
+    }
+    console.warn(
+      `[join-hive] step 2b remote Pot identity upsert FAILED for ${opts.workspaceId}/${potSlug} ` +
+        `(potId=${opts.potId}): ${e instanceof Error ? e.message : String(e)} — pubkey holder: ${holder}. ` +
+        `Without a pots row at this (workspace, slug) every federated pot_members apply fails pot_members_pot_fkey.`,
+    );
   }
 
   // 2c — EI-681: re-key the joined members onto the Hive-pubkey topic. The
