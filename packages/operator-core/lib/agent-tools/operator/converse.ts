@@ -40,6 +40,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool, lookupByMcpName, resolveBearer } from '@papercusp/agent-mcp';
+import { agentSpawnTransformConfigured } from '@papercusp/papercusp-shared/agent';
 import { runAgentChat, resolveBackend } from '../../agent-chat-stream';
 import { readAgentConfig, surfaceBackend, surfaceModel } from '../../agent-config';
 import { FLAGS } from '@papercusp/flags';
@@ -321,6 +322,13 @@ export default defineTool({
     const principalOk = hostTrust === 'owner'
       ? ownerPrincipal !== null && ownerPrincipal.workspaceId === workspaceId
       : publicPrincipal?.kind === 'pi' && publicPrincipal.workspaceId === workspaceId;
+    // D-421 (WI-10003195): with the hosted customer-identity spawn transform installed, the
+    // brain's agent CLI runs as the customer workspace account. The owner mount's bearer is the
+    // operator superuser token — a credential that account must never hold (it reaches tools
+    // that execute as the service identity, undoing D-417), and the transform refuses any spawn
+    // carrying it. So the owner brain runs tool-less there rather than failing every turn, until
+    // a customer-scoped bearer exists.
+    const hostedCustomerIdentity = hostTrust === 'owner' && agentSpawnTransformConfigured();
     // The brain's tool surface for this turn — host-TRUST-keyed (D-007 §2), and
     // resolved BEFORE the prompt build so the catalog advertises exactly the set
     // the mount serves (listed == callable on both trusts).
@@ -329,7 +337,7 @@ export default defineTool({
       hostTrust,
       publicDoorNames: () => capabilityToolNames(OWNED_LOOP_TOOL_SELECTION),
     });
-    const operatorTools: readonly string[] = !principalOk
+    const operatorTools: readonly string[] = !principalOk || hostedCustomerIdentity
       ? []
       : hostTrust === 'public' && publicPrincipal
         ? selectedOperatorTools.filter((fullName) => {
@@ -478,7 +486,8 @@ export default defineTool({
       workspaceId,
       tools: operatorTools,
       uiClientId,
-      superuserToken: hostTrust === 'owner' ? readSuperuserToken() : '',
+      superuserToken: hostTrust === 'owner' && !hostedCustomerIdentity ? readSuperuserToken() : '',
+      agentRunsAsCustomer: hostedCustomerIdentity,
       principalToken: hostTrust === 'public' ? (input.principalToken ?? null) : null,
     });
     const mcpConfig =
