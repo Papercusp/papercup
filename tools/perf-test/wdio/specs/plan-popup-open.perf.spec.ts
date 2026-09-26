@@ -637,11 +637,11 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
       INTERACTION_NAME,
     );
     // The ledger stamps invocation time at dispatch settlement. The page's
-    // absolute start mark lets a native run correlate those records without
-    // treating a settlement timestamp as the beginning of the request.
+    // completed interaction measure retains its startTime after endInteraction
+    // consumes the :start mark, so use the measure to correlate those records.
     const startWallMs = await browser.execute((name) => {
-      const start = performance.getEntriesByName(`${name}:start`, 'mark').at(-1);
-      return start ? Math.round(performance.timeOrigin + start.startTime) : null;
+      const measure = performance.getEntriesByName(name, 'measure').at(-1);
+      return measure ? Math.round(performance.timeOrigin + measure.startTime) : null;
     }, INTERACTION_NAME);
     console.log('[perf] plan-popup start wall time', startWallMs === null ? 'missing' : new Date(startWallMs).toISOString());
     console.log('[perf] plan-popup phases (cumulative click-to-phase ms)', JSON.stringify(phases));
@@ -733,6 +733,9 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     console.log('[perf] plan-popup scheduler after render', JSON.stringify(schedulerAfter));
     for (const phase of phases) {
       recordMeasure({ ...phase, unit: 'ms', budget: null, ok: true });
+    }
+    if (startWallMs === null) {
+      throw new Error('UNMEASURABLE: completed plan-popup measure lost its absolute start time');
     }
     expect(measuredMs).not.toBeNull();
     expect(measuredMs as number).toBeLessThanOrEqual(PLAN_POPUP_OPEN_BUDGET_MS);

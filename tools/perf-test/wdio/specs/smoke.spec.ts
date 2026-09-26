@@ -63,6 +63,51 @@ describe("Packaged Papercusp desktop binary", () => {
       // eslint-disable-next-line no-console
       console.warn("[web-vitals] registration errors:", reading.errors);
     }
+    // Compare passing and failing paint samples through the same bounded
+    // page-local probe. Host load average alone cannot explain either result.
+    const startup = await browser.execute((fcpMs: number | null) => {
+      const metrics = (window as unknown as {
+        __sync_metrics__?: {
+          snapshot(): { scheduler?: unknown };
+          queries(): Array<{ name: string; startedAtMs: number; waitMs: number; requestMs: number; outcome: string }>;
+        };
+      }).__sync_metrics__;
+      const scheduler = metrics?.snapshot().scheduler ?? null;
+      const startedBeforeFcp = (metrics?.queries() ?? [])
+        .filter((query) => fcpMs === null || query.startedAtMs <= fcpMs);
+      // The ring contains COMPLETED events. A request can start before paint
+      // but time out afterward; counting its full wait as a pre-paint cost
+      // would manufacture a critical path that never existed.
+      const completedBeforeFcp = startedBeforeFcp.filter((query) => fcpMs === null ||
+        query.startedAtMs + query.waitMs + query.requestMs <= fcpMs);
+      const compactQuery = (query: typeof startedBeforeFcp[number]) => ({
+        name: query.name,
+        startMs: Math.round(query.startedAtMs),
+        waitMs: Math.round(query.waitMs),
+        requestMs: Math.round(query.requestMs),
+        outcome: query.outcome,
+      });
+      const resources = (performance.getEntriesByType('resource') as PerformanceResourceTiming[])
+        .sort((a, b) => b.duration - a.duration).slice(0, 12)
+        .map((entry) => ({
+          path: new URL(entry.name, location.href).pathname,
+          startMs: Math.round(entry.startTime),
+          durationMs: Math.round(entry.duration),
+        }));
+      return {
+        readyState: document.readyState,
+        resources,
+        scheduler,
+        queryCountCompletedBeforeFcp: completedBeforeFcp.length,
+        startedBeforeFcpCompletedLater: startedBeforeFcp.length - completedBeforeFcp.length,
+        longestWaitsCompletedBeforeFcp: completedBeforeFcp.slice().sort((a, b) => b.waitMs - a.waitMs)
+          .slice(0, 10).map(compactQuery),
+        longestRequestsCompletedBeforeFcp: completedBeforeFcp.slice().sort((a, b) => b.requestMs - a.requestMs)
+          .slice(0, 10).map(compactQuery),
+        longTasksSupported: PerformanceObserver.supportedEntryTypes?.includes('longtask') ?? false,
+      };
+    }, reading.metrics.FCP ?? null);
+    console.log('[web-vitals] page trace:', JSON.stringify(startup));
 
     // Record BEFORE asserting: an assert throws, and instrument health is
     // precisely the observation worth keeping from a failing run (same rule as
