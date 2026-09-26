@@ -212,7 +212,16 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     // Both carry the launch/run facts under the same names.
     expect(bgSeen.ok).toBe(true);
     expect(typeof bgSeen.task_id).toBe('string');
-    expect(fgSeen.ok).toBe(true);
+    // EI-23534775644576082 recurred in a full lane run after a focused pass.
+    // Keep the job outcome visible when the real shell fails intermittently;
+    // a bare `false` hid whether it failed, timed out, or lost its task scope.
+    expect(fgSeen.ok, JSON.stringify({
+      status: fgSeen.status,
+      exit_code: fgSeen.exit_code,
+      output: fgSeen.output,
+      log_path: fgSeen.log_path,
+      task_id: fgSeen.task_id,
+    })).toBe(true);
     expect(bgSeen.cwd).toBe(STATE);
     expect(fgSeen.cwd).toBe(STATE);
   });
