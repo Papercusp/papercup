@@ -184,7 +184,15 @@ const argsSchema = z
     includeHistory: z
       .boolean()
       .optional()
-      .describe('Include descendant work history on a full plan read (default true). Body-only UI readers may set false. An explicit History heading or priorAttemptRefs still retrieves the requested history.'),
+      .describe(
+        'Include descendant work history on a full plan read (default true). Body-only UI readers may set false. An explicit History heading or priorAttemptRefs still retrieves the requested history.',
+      ),
+    includeEnrichments: z
+      .boolean()
+      .optional()
+      .describe(
+        'Include live issue, feature, test, rubric and audit decorations (default true). A body-first UI read may set false, then request the full snapshot after the document paints.',
+      ),
     includeRaw: z
       .boolean()
       .optional()
@@ -219,7 +227,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        "Add `operationalBrief`: current phase, next executable item, blockers, authority, acceptance state and last verified evidence, projected from this same read. Fields not measured here are explicit `unknown` with a reason, never zero. Combine with shipReadiness:true for a measured ship verdict.",
+        'Add `operationalBrief`: current phase, next executable item, blockers, authority, acceptance state and last verified evidence, projected from this same read. Fields not measured here are explicit `unknown` with a reason, never zero. Combine with shipReadiness:true for a measured ship verdict.',
       ),
     shipReadiness: z
       .boolean()
@@ -668,6 +676,7 @@ export default defineTool({
     // EI-21913230259449717: resolve the `include` compatibility alias into the
     // canonical `includeRaw`; an explicit `includeRaw` always wins.
     const includeRaw = args.includeRaw ?? args.include ?? false;
+    const includeEnrichments = args.includeEnrichments !== false;
     // EI-21905561475819210: normalize the generic `detail` compatibility
     // alias before cache-key construction and every output branch. Keeping one
     // canonical mode prevents alias/mode reads from diverging in cache.
@@ -779,6 +788,7 @@ export default defineTool({
               mode,
               heading: args.heading ?? null,
               includeRaw,
+              includeEnrichments,
               items: requestedItemIds,
               decisions: requestedDecisionIds,
             },
@@ -857,7 +867,7 @@ export default defineTool({
             // item enrichments so a slow rubric or audit lookup does not add a
             // second wait to a full plan read.
             const rubricAndAuditRead =
-              requestedDecisionIds || args.heading || mode === 'meta'
+              !includeEnrichments || requestedDecisionIds || args.heading || mode === 'meta'
                 ? Promise.resolve([null, null] as const)
                 : timeStage('rubricAndAudit', () =>
                     Promise.all([
@@ -889,41 +899,44 @@ export default defineTool({
             // by an open engineer-issue resolves to `blocked` + carries which EI(s) block it
             // (the closing of the issue unblocks every target atomically). The pure
             // @papercusp/plan-parser resolver is unchanged; the merge lives only here.
-            const issueBlocksRead = timeStage('issueBlocks', () => overlayIssueBlocksForPlan(slug, resolved.items));
+            const issueBlocksRead = includeEnrichments
+              ? timeStage('issueBlocks', () => overlayIssueBlocksForPlan(slug, resolved.items))
+              : Promise.resolve({ items: resolved.items, blockingIssues: {} });
 
             // P-006: Build a map of plan-item-id → { featureId, status } so the UI
             // can show live feature status badges next to each P-NNN item.
             const harnessSlug = resolveEffectiveHarnessSlug(sctx);
-            const linkedFeaturesRead = timeStage('linkedFeatures', async () => {
-            let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
-              // P-003: the newest transition across work-items linked to this
-              // plan — one of the two measurable freshness sources. Taken from
-              // the query below rather than a second one: it already selects
-              // exactly this plan's linked rows, so the signal costs one more
-              // column instead of a round-trip.
-              let linkedWorkItemUpdatedAt: string | null = null;
-              try {
-                const acquisitionStarted = performance.now();
-                let beganAt: number | null = null;
-                let callbackEndedAt: number | null = null;
-                const rows = await withWorkspace(
-                  DEFAULT_WORKSPACE_ID,
-                  async (tx) => {
-                    try {
-                      return await timeDetail(
-                        'linkedFeatures.query',
-                        () => tx<
-                          {
-                            feature_id: string;
-                            status: string;
-                            source_plan_slug: string | null;
-                            source_plan_item_ids: string[] | null;
-                            stamped_plan_slug: string | null;
-                            stamped_item_id: string | null;
-                            harness_slug: string;
-                            updated_ts: string | number | null;
-                          }[]
-                        >`
+            const linkedFeaturesRead = includeEnrichments
+              ? timeStage('linkedFeatures', async () => {
+                  let linkedFeatures: Record<string, { featureId: string; status: string; harnessSlug: string }> = {};
+                  // P-003: the newest transition across work-items linked to this
+                  // plan — one of the two measurable freshness sources. Taken from
+                  // the query below rather than a second one: it already selects
+                  // exactly this plan's linked rows, so the signal costs one more
+                  // column instead of a round-trip.
+                  let linkedWorkItemUpdatedAt: string | null = null;
+                  try {
+                    const acquisitionStarted = performance.now();
+                    let beganAt: number | null = null;
+                    let callbackEndedAt: number | null = null;
+                    const rows = await withWorkspace(
+                      DEFAULT_WORKSPACE_ID,
+                      async (tx) => {
+                        try {
+                          return await timeDetail(
+                            'linkedFeatures.query',
+                            () => tx<
+                              {
+                                feature_id: string;
+                                status: string;
+                                source_plan_slug: string | null;
+                                source_plan_item_ids: string[] | null;
+                                stamped_plan_slug: string | null;
+                                stamped_item_id: string | null;
+                                harness_slug: string;
+                                updated_ts: string | number | null;
+                              }[]
+                            >`
                 SELECT feature_id, status, source_plan_slug, source_plan_item_ids,
                        payload -> 'plan_item' ->> 'plan_slug' AS stamped_plan_slug,
                        payload -> 'plan_item' ->> 'item_id'   AS stamped_item_id,
@@ -933,122 +946,131 @@ export default defineTool({
                    AND (source_plan_slug = ${slug}
                         OR payload -> 'plan_item' ->> 'plan_slug' = ${slug})
               `,
-                      );
-                    } finally {
-                      callbackEndedAt = performance.now();
+                          );
+                        } finally {
+                          callbackEndedAt = performance.now();
+                        }
+                      },
+                      {
+                        onAcquisitionPhase: (phase) => {
+                          const at = performance.now();
+                          if (phase === 'begin') {
+                            beganAt = at;
+                            detailMs['linkedFeatures.waitForBegin'] = Math.max(0, at - acquisitionStarted);
+                          } else {
+                            detailMs['linkedFeatures.workspaceSetup'] = Math.max(
+                              0,
+                              at - (beganAt ?? acquisitionStarted),
+                            );
+                          }
+                        },
+                      },
+                    );
+                    if (callbackEndedAt !== null) {
+                      detailMs['linkedFeatures.finishTransaction'] = Math.max(0, performance.now() - callbackEndedAt);
                     }
-                  },
-                  {
-                    onAcquisitionPhase: (phase) => {
-                      const at = performance.now();
-                      if (phase === 'begin') {
-                        beganAt = at;
-                        detailMs['linkedFeatures.waitForBegin'] = Math.max(0, at - acquisitionStarted);
-                      } else {
-                        detailMs['linkedFeatures.workspaceSetup'] = Math.max(0, at - (beganAt ?? acquisitionStarted));
+                    for (const row of rows) {
+                      // P-003 freshness: newest linked work-item write. Taken over
+                      // ALL linked rows, including ones whose plan-item provenance
+                      // does not resolve to a P-NNN below — a linked work-item that
+                      // moved is evidence of activity on this plan whether or not it
+                      // can be attributed to a specific item.
+                      const at = normalizeActivityTimestamp(row.updated_ts);
+                      if (
+                        at &&
+                        (linkedWorkItemUpdatedAt === null || Date.parse(at) > Date.parse(linkedWorkItemUpdatedAt))
+                      ) {
+                        linkedWorkItemUpdatedAt = at;
                       }
-                    },
-                  },
-                );
-                if (callbackEndedAt !== null) {
-                  detailMs['linkedFeatures.finishTransaction'] = Math.max(0, performance.now() - callbackEndedAt);
-                }
-                for (const row of rows) {
-                  // P-003 freshness: newest linked work-item write. Taken over
-                  // ALL linked rows, including ones whose plan-item provenance
-                  // does not resolve to a P-NNN below — a linked work-item that
-                  // moved is evidence of activity on this plan whether or not it
-                  // can be attributed to a specific item.
-                  const at = normalizeActivityTimestamp(row.updated_ts);
-                  if (at && (linkedWorkItemUpdatedAt === null || Date.parse(at) > Date.parse(linkedWorkItemUpdatedAt))) {
-                    linkedWorkItemUpdatedAt = at;
+                      // EI-19435123521651527: `source_plan_item_ids` is effectively unwritten
+                      // (1 row workspace-wide vs 1,239 carrying the `payload.plan_item` stamp),
+                      // so the old `WHERE source_plan_item_ids IS NOT NULL` predicate matched
+                      // nothing and this badge map was always empty. Resolve via the shared
+                      // precedence rule instead.
+                      for (const itemId of planItemProvenanceFromRow(row).itemIds) {
+                        linkedFeatures[itemId] = {
+                          featureId: row.feature_id,
+                          status: row.status,
+                          harnessSlug: row.harness_slug,
+                        };
+                      }
+                    }
+                  } catch {
+                    // Non-fatal — UI degrades to no badges.
                   }
-                  // EI-19435123521651527: `source_plan_item_ids` is effectively unwritten
-                  // (1 row workspace-wide vs 1,239 carrying the `payload.plan_item` stamp),
-                  // so the old `WHERE source_plan_item_ids IS NOT NULL` predicate matched
-                  // nothing and this badge map was always empty. Resolve via the shared
-                  // precedence rule instead.
-                  for (const itemId of planItemProvenanceFromRow(row).itemIds) {
-                    linkedFeatures[itemId] = {
-                      featureId: row.feature_id,
-                      status: row.status,
-                      harnessSlug: row.harness_slug,
-                    };
-                  }
-                }
-              } catch {
-                // Non-fatal — UI degrades to no badges.
-              }
-              return { linkedFeatures, linkedWorkItemUpdatedAt };
-            });
+                  return { linkedFeatures, linkedWorkItemUpdatedAt };
+                })
+              : Promise.resolve({ linkedFeatures: {}, linkedWorkItemUpdatedAt: null });
             // P-083: per-plan-item test coverage (the plan↔test rollup, through the
             // VAL). Mirrors linkedFeatures — computed server-side, decorated client-
             // side by decoratePlanItemTestBadges. Skips the tests query when the plan
             // has no inline-VAL assertions. Non-fatal.
-            const testCoverageRead = timeStage('testCoverage', async () => {
-              let planItemTests: Record<string, PlanItemTestStatus> = {};
-              try {
-                const acquisitionStarted = performance.now();
-                let beganAt: number | null = null;
-                let callbackEndedAt: number | null = null;
-                planItemTests = await withWorkspace(
-                  DEFAULT_WORKSPACE_ID,
-                  async (tx) => {
-                    try {
-                      const assertions = await timeDetail(
-                        'testCoverage.assertionsQuery',
-                        () => tx<
-                          {
-                            val_id: string;
-                            item_id: string;
-                            requires_test: boolean;
-                          }[]
-                        >`
+            const testCoverageRead = includeEnrichments
+              ? timeStage('testCoverage', async () => {
+                  let planItemTests: Record<string, PlanItemTestStatus> = {};
+                  try {
+                    const acquisitionStarted = performance.now();
+                    let beganAt: number | null = null;
+                    let callbackEndedAt: number | null = null;
+                    planItemTests = await withWorkspace(
+                      DEFAULT_WORKSPACE_ID,
+                      async (tx) => {
+                        try {
+                          const assertions = await timeDetail(
+                            'testCoverage.assertionsQuery',
+                            () => tx<
+                              {
+                                val_id: string;
+                                item_id: string;
+                                requires_test: boolean;
+                              }[]
+                            >`
                 SELECT val_id, item_id, requires_test FROM harness_shared.harness_plan_assertions
                  WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
               `,
-                      );
-                      if (assertions.length === 0) return {};
-                      const testRows = await timeDetail(
-                        'testCoverage.testsQuery',
-                        () => tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
+                          );
+                          if (assertions.length === 0) return {};
+                          const testRows = await timeDetail(
+                            'testCoverage.testsQuery',
+                            () => tx<{ status: string; payload: { coversVALs?: unknown } }[]>`
                 SELECT status, payload FROM harness_shared.harness_tests
                  WHERE workspace_id = ${DEFAULT_WORKSPACE_ID} AND harness_slug = ${harnessSlug}
               `,
-                      );
-                      return computePlanItemTestStatus(
-                        assertions,
-                        testRows.map((r) => ({
-                          status: r.status,
-                          coversVALs: Array.isArray(r.payload?.coversVALs)
-                            ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
-                            : [],
-                        })),
-                      );
-                    } finally {
-                      callbackEndedAt = performance.now();
+                          );
+                          return computePlanItemTestStatus(
+                            assertions,
+                            testRows.map((r) => ({
+                              status: r.status,
+                              coversVALs: Array.isArray(r.payload?.coversVALs)
+                                ? (r.payload.coversVALs as unknown[]).filter((v): v is string => typeof v === 'string')
+                                : [],
+                            })),
+                          );
+                        } finally {
+                          callbackEndedAt = performance.now();
+                        }
+                      },
+                      {
+                        onAcquisitionPhase: (phase) => {
+                          const at = performance.now();
+                          if (phase === 'begin') {
+                            beganAt = at;
+                            detailMs['testCoverage.waitForBegin'] = Math.max(0, at - acquisitionStarted);
+                          } else {
+                            detailMs['testCoverage.workspaceSetup'] = Math.max(0, at - (beganAt ?? acquisitionStarted));
+                          }
+                        },
+                      },
+                    );
+                    if (callbackEndedAt !== null) {
+                      detailMs['testCoverage.finishTransaction'] = Math.max(0, performance.now() - callbackEndedAt);
                     }
-                  },
-                  {
-                    onAcquisitionPhase: (phase) => {
-                      const at = performance.now();
-                      if (phase === 'begin') {
-                        beganAt = at;
-                        detailMs['testCoverage.waitForBegin'] = Math.max(0, at - acquisitionStarted);
-                      } else {
-                        detailMs['testCoverage.workspaceSetup'] = Math.max(0, at - (beganAt ?? acquisitionStarted));
-                      }
-                    },
-                  },
-                );
-                if (callbackEndedAt !== null) {
-                  detailMs['testCoverage.finishTransaction'] = Math.max(0, performance.now() - callbackEndedAt);
-                }
-              } catch {
-                // Non-fatal — UI degrades to no coverage badges.
-              }
-              return planItemTests;
-            });
+                  } catch {
+                    // Non-fatal — UI degrades to no coverage badges.
+                  }
+                  return planItemTests;
+                })
+              : Promise.resolve({});
             const sections = splitSections(parsed.prose);
             // WI-1442 fix (a): read-time liveness decoration — annotate any
             // su-* agent-id mention in the ## Now prose with its CURRENT
@@ -1240,9 +1262,7 @@ export default defineTool({
                   requestedItemIds && itemSelection
                     ? {
                         items:
-                          mode === 'full'
-                            ? responseItems
-                            : responseItems.map(({ rawLine: _rawLine, ...rest }) => rest),
+                          mode === 'full' ? responseItems : responseItems.map(({ rawLine: _rawLine, ...rest }) => rest),
                         itemSelection,
                         linkedFeatures: selectItemMap(linkedFeatures),
                         planItemTests: selectItemMap(planItemTests),
@@ -1282,20 +1302,23 @@ export default defineTool({
             // repo-relative citation before it starts work. This is report-only: a plan
             // item may quite legitimately describe a file it intends to create, and a
             // resolvable path says nothing about semantic freshness.
-            const stalePathsRead = timeStage('stalePaths', () => getStalePathRefsForSubjects(
-              responseItems.map((item) => ({
-                id: item.id,
-                summary: typeof item.text === 'string' ? item.text : null,
-              })),
-              undefined,
-              detailMs,
-            ).catch(() => ({})));
+            const stalePathsRead = timeStage('stalePaths', () =>
+              getStalePathRefsForSubjects(
+                responseItems.map((item) => ({
+                  id: item.id,
+                  summary: typeof item.text === 'string' ? item.text : null,
+                })),
+                undefined,
+                detailMs,
+              ).catch(() => ({})),
+            );
             const stalePathRefsByItem = await stalePathsRead;
             stageStarted = performance.now();
             const decorateStalePathRefs = <T extends { id: string }>(item: T) =>
               decoratePlanItemStalePathRefs(item, stalePathRefsByItem);
             const structured = {
               ...base,
+              ...(!includeEnrichments ? { enrichmentsDeferred: true as const } : {}),
               ...(acceptanceRubric ? { acceptanceRubric } : {}),
               ...(latestAudit ? { latestAudit } : {}),
               items:
