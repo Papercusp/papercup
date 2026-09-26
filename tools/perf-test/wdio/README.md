@@ -65,6 +65,10 @@ publisher stores these as `run_id` and `workspace_id`. A named profile leaves
 `git_sha` empty because the WDIO checkout HEAD may differ from every component
 under test; unnamed runs retain that checkout correlation. Record the shell,
 SPA and API hashes alongside the run log for exact reproduction.
+On Linux, a named run using a private `PAPERCUSP_HOME` must also set
+`PAPERCUSP_DEV_API_TARGET` to the target port (for example, `3170`). The runner
+checks the private IPC PID and socket before measuring and again before
+publishing; an API restart makes that sample invalid and prevents a receipt.
 
 ## Architecture vs the in-process `/tests` page
 

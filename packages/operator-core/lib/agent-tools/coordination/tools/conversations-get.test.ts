@@ -15,9 +15,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConversationDetail } from '../conversations-core';
 import type { ConversationRow } from '../conversations-store';
 
-vi.mock('../conversations', () => ({ getConversation: vi.fn(), getConsultStates: vi.fn() }));
+vi.mock('../conversations', async (importActual) => ({
+  getConversation: vi.fn(),
+  getConsultStates: vi.fn(),
+  // The REAL pure summarizer: its output is what the tool is asked to surface.
+  summarizeConsultDispatch: (await importActual<typeof import('../conversations')>()).summarizeConsultDispatch,
+}));
 
-import { getConversation, getConsultStates } from '../conversations';
+import {
+  getConversation,
+  getConsultStates,
+  summarizeConsultDispatch,
+  type ConsultDispatchSummary,
+} from '../conversations';
 const getM = vi.mocked(getConversation);
 const consultM = vi.mocked(getConsultStates);
 const tool = (await import('./conversations-get')).default;
@@ -181,6 +191,42 @@ describe('conversations:get handler (bulk keyed-array)', () => {
         estimated_sample_count: 1,
         unpriced_sample_count: 0,
       },
+      dispatch: null as ConsultDispatchSummary | null,
+    });
+
+    it('surfaces WHY each answering-session launch failed once a dispatch walk is recorded (WI-10003197)', async () => {
+      const dispatch = summarizeConsultDispatch([
+        {
+          at: '2026-09-26T03:33:07.713Z',
+          dispatched: false,
+          answeringOwnerId: null,
+          detail: 'every allowed expert model was exhausted …',
+          attempts: [
+            {
+              rank: 1,
+              agent: 'claude',
+              model: 'opus',
+              operation: 'fork',
+              outcome: 'failed',
+              reason: 'launch-exited',
+              detail: 'long detail',
+              launchError: 'psu: refusing unmanaged fork su-x: could not recover adv row #29351.',
+            },
+          ],
+        },
+      ]);
+      getM.mockResolvedValue(detail('c-consult', { kind: 'consult', state: 'open' }));
+      consultM.mockResolvedValue(new Map([['c-consult', { ...consultRow('c-consult'), dispatch }]]));
+      const r = (await body({ id: 'c-consult' })).results[0];
+      expect(r.consult.dispatch.recent[0].attempts[0]).toEqual({
+        rank: 1,
+        agent: 'claude',
+        model: 'opus',
+        operation: 'fork',
+        outcome: 'failed',
+        reason: 'launch-exited',
+        launch_error: 'psu: refusing unmanaged fork su-x: could not recover adv row #29351.',
+      });
     });
 
     it('surfaces `consult` for a consult conversation whose CONVERSATION row still reads open', async () => {
@@ -215,6 +261,35 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       getM.mockResolvedValue(detail('c1'));
       const r = (await body({ id: 'c1' })).results[0];
       expect(r).not.toHaveProperty('consult');
+    });
+
+    it('summarizeConsultDispatch keeps the newest walks only, drops long detail, and is null when empty', () => {
+      const walk = (i: number) => ({
+        at: `t${i}`,
+        dispatched: i === 5,
+        answeringOwnerId: i === 5 ? 'su-a' : null,
+        detail: 'x'.repeat(500),
+        attempts: [{ rank: 1, agent: 'claude', model: 'opus', operation: 'fork', outcome: 'skipped', detail: 'y' }],
+      });
+      const s = summarizeConsultDispatch([1, 2, 3, 4, 5].map(walk))!;
+      expect(s.total_walks).toBe(5);
+      expect(s.recent.map((w) => w.at)).toEqual(['t3', 't4', 't5']);
+      expect(s.recent[2]).toMatchObject({ dispatched: true, answering_owner_id: 'su-a' });
+      // no reason / launch_error key when the rank had none; no `detail` at all
+      expect(s.recent[0]!.attempts[0]).toEqual({
+        rank: 1, agent: 'claude', model: 'opus', operation: 'fork', outcome: 'skipped',
+      });
+      expect(JSON.stringify(s)).not.toContain('xxxxx');
+      expect(summarizeConsultDispatch([])).toBeNull();
+      expect(summarizeConsultDispatch(null)).toBeNull();
+      expect(summarizeConsultDispatch('[]')).toBeNull();
+    });
+
+    it('omits consult.dispatch when no walk is recorded (CONTROL — no shape change for old consults)', async () => {
+      getM.mockResolvedValue(detail('c-consult', { kind: 'consult', state: 'open' }));
+      consultM.mockResolvedValue(new Map([['c-consult', consultRow('c-consult')]]));
+      const r = (await body({ id: 'c-consult' })).results[0];
+      expect(r.consult).not.toHaveProperty('dispatch');
     });
 
     it('batches the lifecycle read ONCE for the whole ids:[…] set, not per id', async () => {

@@ -1951,6 +1951,18 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // The packaged WDIO runner lives outside npm workspaces. Its Node unit
+    // suite is part of the package's `test` script, but the affected-workspace
+    // router cannot select that package from a runner-only source edit. Run the
+    // existing unit suite as a narrow guard so IPC receipt safety remains gated.
+    workspace: "@papercusp/operator-core",
+    script: "test:packaged-runner-unit",
+    appliesTo: (f) =>
+      f === "packages/operator-core/package.json" ||
+      f === "scripts/affected-tests.mjs" ||
+      (f.startsWith("tools/perf-test/wdio/") && /\.(?:[cm]?[jt]sx?|json)$/.test(f)),
+  },
+  {
     // deterministic-tool-definition-delivery-2026-09-21 P-005 — the tool-delivery
     // drift gate. `apps/operator/scripts/tool-delivery.generated.mjs` holds the
     // RESOLVED per-agent delivery map (which tools are advertised, at FULL or

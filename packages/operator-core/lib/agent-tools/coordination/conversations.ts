@@ -530,9 +530,74 @@ export interface ConsultLifecycleState {
     estimated_sample_count: number;
     unpriced_sample_count: number;
   } | null;
+  /**
+   * The answering-session dispatch walks this consult made (WI-10003197), so a
+   * fork/convert that never posted is visible here instead of only in
+   * fleet-logs. null = no walk recorded (never dispatched, or a DB before
+   * migration 1225). Bounded: the newest {@link CONSULT_DISPATCH_RECENT} walks.
+   */
+  dispatch: ConsultDispatchSummary | null;
 }
 
-type ConsultLifecycleBaseRow = Omit<ConsultLifecycleState, 'session_cost'>;
+/** Walks shown per consult in a conversation read (the column itself keeps 24). */
+export const CONSULT_DISPATCH_RECENT = 3;
+
+export interface ConsultDispatchSummary {
+  /** Walks recorded on the consult (at most the column's bound of 24). */
+  total_walks: number;
+  /** The newest walks, oldest first; each rank carries why it failed. */
+  recent: Array<{
+    at: string | null;
+    dispatched: boolean;
+    answering_owner_id: string | null;
+    attempts: Array<{
+      rank: number | null;
+      agent: string | null;
+      model: string | null;
+      operation: string | null;
+      outcome: string | null;
+      reason?: string;
+      /** The launcher's own words (e.g. psu's refusal), when its log had one. */
+      launch_error?: string;
+    }>;
+  }>;
+}
+
+const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+
+/**
+ * Compact a raw `consult_state.dispatch_attempts` array for a conversation read:
+ * the newest {@link CONSULT_DISPATCH_RECENT} walks, dropping the long `detail`
+ * strings (reason + launch_error carry the failure). Pure; null when empty or
+ * not an array.
+ */
+export function summarizeConsultDispatch(raw: unknown): ConsultDispatchSummary | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const recent = raw.slice(-CONSULT_DISPATCH_RECENT).map((w) => {
+    const walk = (w && typeof w === 'object' ? w : {}) as Record<string, unknown>;
+    const attempts = Array.isArray(walk.attempts) ? walk.attempts : [];
+    return {
+      at: str(walk.at),
+      dispatched: walk.dispatched === true,
+      answering_owner_id: str(walk.answeringOwnerId),
+      attempts: attempts.map((a) => {
+        const at = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
+        return {
+          rank: typeof at.rank === 'number' ? at.rank : null,
+          agent: str(at.agent),
+          model: str(at.model),
+          operation: str(at.operation),
+          outcome: str(at.outcome),
+          ...(str(at.reason) ? { reason: str(at.reason)! } : {}),
+          ...(str(at.launchError) ? { launch_error: str(at.launchError)! } : {}),
+        };
+      }),
+    };
+  });
+  return { total_walks: raw.length, recent };
+}
+
+type ConsultLifecycleBaseRow = Omit<ConsultLifecycleState, 'session_cost' | 'dispatch'>;
 
 interface ConsultLifecycleUsageRow {
   conversation_id: string;
@@ -604,6 +669,24 @@ export function getConsultStates(
         // Spend is supplemental. A usage-ledger read failure must not hide the
         // consult lifecycle the caller asked for.
       }
+      // A SEPARATE query, like spend: on a DB without migration 1225 the column
+      // is absent, and folding it into the base SELECT would fail that query and
+      // drop the whole `consult` block (WI-10003197).
+      const dispatchByConversation = new Map<string, ConsultDispatchSummary | null>();
+      try {
+        const dispatchRows = await sql<Array<{ conversation_id: string; dispatch_attempts: unknown }>>`
+          SELECT conversation_id, dispatch_attempts
+            FROM harness_shared.consult_state
+           WHERE workspace_id = ${conversationsScopeWorkspace()}
+             AND conversation_id = ANY(${conversationIds as string[]}::text[])
+             AND jsonb_array_length(dispatch_attempts) > 0
+        `;
+        for (const d of dispatchRows) {
+          dispatchByConversation.set(d.conversation_id, summarizeConsultDispatch(d.dispatch_attempts));
+        }
+      } catch {
+        // Dispatch history is supplemental too.
+      }
       for (const r of rows) {
         const usage = usageByConversation.get(r.conversation_id);
         const sampleCount = Number(usage?.session_cost_sample_count ?? 0);
@@ -628,6 +711,7 @@ export function getConsultStates(
           closed_at: r.closed_at ?? null,
           wakes_used: r.wakes_used ?? null,
           session_cost: sessionCost,
+          dispatch: dispatchByConversation.get(r.conversation_id) ?? null,
         });
       }
     } catch (err) {

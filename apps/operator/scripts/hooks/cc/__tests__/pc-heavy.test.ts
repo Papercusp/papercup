@@ -752,8 +752,12 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
       PC_HEAVY_HEARTBEAT_SEC: '1',
     };
-    const writerBlocker = spawn('flock', [writerPath, 'sleep', '30'], {
+    // Keep the external writer until this test releases it. A timed sleeper can
+    // expire while the full suite is scheduling other tests, before the retry's
+    // holder diagnostic runs.
+    const writerBlocker = spawn('flock', [writerPath, 'cat'], {
       env: baseEnv(env), cwd: dir, detached: true,
+      stdio: ['pipe', 'ignore', 'ignore'],
     });
     const retryWorkload = [
       `attempt=$(cat ${JSON.stringify(attemptsFile)} 2>/dev/null || printf '0')`,
@@ -810,6 +814,8 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       // heartbeat proves that a minutes-long production wait remains visibly
       // alive without weakening that ordering barrier.
       expect(readFileSync(attemptsFile, 'utf8').trim()).toBe('1');
+      expect(writerBlocker.exitCode).toBeNull();
+      expect(spawnSync('flock', ['-n', writerPath, 'true'], { stdio: 'ignore' }).status).not.toBe(0);
       expect(retryingErr.text()).toContain('retry materializer progress: elapsed=');
       expect(retryingErr.text()).toContain('retry materializer intent owner:');
       expect(retryingErr.text()).toContain('retry materializer writer lock holder:');

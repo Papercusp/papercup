@@ -111,6 +111,9 @@ export default defineTool({
                   closed_at: consult.closed_at,
                   wakes_used: consult.wakes_used,
                   session_cost: consult.session_cost,
+                  // Why each answering-session launch failed (WI-10003197);
+                  // present only once a dispatch walk has been recorded.
+                  ...(consult.dispatch ? { dispatch: consult.dispatch } : {}),
                 },
               }
             : {}),
