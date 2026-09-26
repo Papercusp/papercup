@@ -36,7 +36,7 @@ import { hardText, LIMITS } from '../limits';
 import { readIdentity } from '../locks/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { getOwnerDirective } from '../../owner-directives';
-import { readDeployStatus, launchDetachedDeploy, integrationRoot, type DeployStatus } from '../../release-deploy-launch';
+import { readDeployStatus, launchDetachedDeploy, integrationRoot, type DeployStatus, type DeployStatusReadStage } from '../../release-deploy-launch';
 import { currentDiagnosticVintage } from '../../diagnostic-vintage';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
 import { operatorHomeHarnessSlug, canonicalHarnessSlug } from '../../harness/operator-home-harness';
@@ -292,17 +292,26 @@ export async function gateWaitBriefFor(
   return { ...brief, text: [renderOperationalBrief(brief), ...renderGateWaitFactLines(brief)].join('\n') };
 }
 
-async function readStatusBounded(readerOwnerId: string | null): Promise<BoundedTimeoutResult<DeployStatus | null>> {
-  return withBoundedTimeout(() => readDeployStatus({ readerOwnerId }), {
+type StatusReadResult = BoundedTimeoutResult<DeployStatus | null> & { pendingReads: DeployStatusReadStage[] };
+
+async function readStatusBounded(readerOwnerId: string | null): Promise<StatusReadResult> {
+  let pendingReads: DeployStatusReadStage[] = [];
+  const result = await withBoundedTimeout(() => readDeployStatus({
+    readerOwnerId,
+    onReadProgress: (pending) => {
+      pendingReads = pending;
+    },
+  }), {
     fallback: null,
     timeoutMs: RELEASE_STATUS_READ_TIMEOUT_MS,
     label: 'release:deploy:status',
   });
+  return { ...result, pendingReads };
 }
 
 function statusUnavailable(
   op: 'status' | 'trigger' | 'force',
-  read: BoundedTimeoutResult<DeployStatus | null>,
+  read: StatusReadResult,
   stamp: ReleaseSubjectStamp,
 ) {
   const timedOut = read.reason === 'timeout';
@@ -318,6 +327,7 @@ function statusUnavailable(
       retryable: true,
       elapsedMs: read.elapsedMs,
       ...(timedOut ? { timeoutMs: RELEASE_STATUS_READ_TIMEOUT_MS } : {}),
+      ...(timedOut ? { pendingReads: read.pendingReads } : {}),
     },
     status: null,
   });
