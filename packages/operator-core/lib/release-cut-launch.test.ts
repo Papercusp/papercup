@@ -878,7 +878,7 @@ describe('release-tooling staleness', () => {
       expect(drift({}).detail).toContain(SUBJECT);
       const noBranch = drift({ [`${SUBJECT}::rev-parse HEAD`]: okv(`${SUBJECT_PIN}\n`) });
       expect(noBranch.state).toBe('unknown');
-      expect(noBranch.detail).toMatch(/staging branch's pin of papercusp-desktop/);
+      expect(noBranch.detail).toMatch(/main branch's pin of papercusp-desktop/);
     });
   });
 
