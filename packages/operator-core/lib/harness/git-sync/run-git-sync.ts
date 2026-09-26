@@ -2426,8 +2426,42 @@ async function lsofSeesOpenFile(path: string): Promise<boolean | null> {
   });
 }
 
+/** A targeted native Linux descriptor check. A serial JS walk over every
+ * /proc/<pid>/fd took 34s for the two index proofs on this host, and turned
+ * the real-git repair guard into a 60s test timeout. fuser checks the same
+ * target in one process; errors and timeouts remain unknown (fail closed).
+ * A host without fuser retains the existing /proc fallback. */
+async function fuserSeesOpenFile(path: string): Promise<boolean | null | 'unavailable'> {
+  return await new Promise<boolean | null | 'unavailable'>((resolve) => {
+    let settled = false;
+    let sawStderr = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (value: boolean | null | 'unavailable'): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const child = spawn('fuser', ['-s', path], { stdio: ['ignore', 'ignore', 'pipe'] });
+    child.stderr?.on('data', (chunk) => {
+      if (String(chunk).trim()) sawStderr = true;
+    });
+    child.once('error', (error: NodeJS.ErrnoException) =>
+      finish(error.code === 'ENOENT' ? 'unavailable' : null));
+    child.once('close', (code) => finish(code === 0 ? true : code === 1 && !sawStderr ? false : null));
+    timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish(null);
+    }, 12_000);
+    timer.unref?.();
+  });
+}
+
 async function defaultOpenFileCheck(path: string): Promise<boolean | null> {
-  if (process.platform === 'linux') return procSeesOpenFile(path);
+  if (process.platform === 'linux') {
+    const targeted = await fuserSeesOpenFile(path);
+    return targeted === 'unavailable' ? await procSeesOpenFile(path) : targeted;
+  }
   if (process.platform === 'darwin') return lsofSeesOpenFile(path);
   return null;
 }

@@ -23,6 +23,8 @@ import {
   symlinkSync,
   utimesSync,
   existsSync,
+  openSync,
+  closeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -1519,6 +1521,20 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(readFileSync(indexPath).length).toBeGreaterThanOrEqual(MIN_VALID_GIT_INDEX_BYTES);
     expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('real-work.txt');
     expect(logs.join('\n')).toMatch(/repaired invalid Git index.*read-tree HEAD/i);
+  });
+
+  it('refuses invalid-index repair while a real process holds its descriptor open', async () => {
+    const indexPath = join(repo, '.git', 'index');
+    writeFileSync(indexPath, Buffer.alloc(0));
+    const fd = openSync(indexPath, 'r');
+    try {
+      const result = await preflightInvalidIndex(directRunGit, repo, () => {});
+      expect(result).toMatchObject({ status: 'refused', indexPath });
+      if (result.status === 'refused') expect(result.reason).toContain('open by a live writer');
+      expect(readFileSync(indexPath).length).toBe(0);
+    } finally {
+      closeSync(fd);
+    }
   });
 
   it.each([

@@ -713,5 +713,5 @@ export async function readAcceptedBlueprintDirectWorkItem(sql: Sql, workspaceId:
     throw new Error('accepted blueprint operation pin does not match the work item');
   }
   validateOperationInput(operation.inputSchema, pin.input);
-  return { pin, operation };
+  return { pin, operation, specification };
 }

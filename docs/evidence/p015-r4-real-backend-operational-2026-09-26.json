@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-4 real-backend identity UI journey on current source, 2026-09-26",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-10002713",
+  "observer": "su-0bee59ae-2be5-416f-ad19-ed758492e106",
+  "recordedBy": "su-0bee59ae-2be5-416f-ad19-ed758492e106",
+  "capturedAt": "2026-09-26T02:13:14.221Z",
+  "command": [
+    "scripts/verify-tauri-headless.sh",
+    "VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- bash -c 'P015_R4_REAL_BACKEND=1 P015_R4_REAL_RECOVERY=1 TAURI_SURFACE_VERIFY_P015_R4_OUT=/tmp/p015-r4-identities-20260926-0208 node scripts/verify-identities-r4.mjs'"
+  ],
+  "commandBasis": "The exact exec_command invocation ran in the canonical staging tree. Its PTY session 62865 reported the isolated sidecar database on port 36643, the real driver result with status pass, and process exit 0 after teardown. The driver wrote the raw artifact before teardown.",
+  "exitCode": 0,
+  "startedAt": "2026-09-26T02:11:54.115Z",
+  "finishedAt": "2026-09-26T02:13:14.221Z",
+  "timeBasis": "startedAt is the millisecond timestamp embedded in the raw driver's owned subject id; finishedAt is the raw evidence.json file mtime. These bound the driver portion, while the shell's exit 0 also includes teardown.",
+  "summary": "The maintained R-4 driver passed 79 recorded steps in an isolated Tauri WebView and freshly migrated Postgres. It used the real identity-management backend and observed an authoritative review, a forced compare-and-swap conflict with prior state retained, pointer retry with same-document SSE invalidation, host-applied switch, and host-applied rollback. realBackend=true, syntheticMutationResponses=false, forcedRealFailureProven=true, hostActivationProven=true, syncInvalidationProven=true.",
+  "subject": {
+    "workspaceId": "verify-tauri-isolated-90",
+    "ownerId": "p015-r4-owned-3234781-1790388714115",
+    "bridgePid": 3195373,
+    "treeHead": "ac0cb93e81104a68d103277cef3b41185228ed55",
+    "stepCount": 79,
+    "isolatedDatabasePort": 36643,
+    "isolationEvidence": "The verifier reported EI-10387 sidecar HARNESS_ADMIN_DATABASE_URL resolution to its own isolated Postgres on port 36643 before running the assertion command."
+  },
+  "rawArtifact": {
+    "path": "docs/evidence/p015-r4-real-backend-2026-09-26.json",
+    "sha256": "a15440cbe140501788e52b473a9021510c4ebecb1664ff139d11f1992d87f86f",
+    "redaction": "The maintained driver's serializeEvidence removed local identity paths before writing. findBoxIdentityPaths found zero matches in the exact 1241811-byte artifact copied here."
+  },
+  "assertions": [
+    {
+      "id": "isolated-real-backend",
+      "passed": true,
+      "evidence": "Verifier output confirmed an isolated WebView and sidecar Postgres; raw artifact status=pass, realBackend=true, syntheticMutationResponses=false, with 79 recorded steps."
+    },
+    {
+      "id": "url-and-provider-boundary",
+      "passed": true,
+      "evidence": "Raw recoveryObserved includes nuqs-selection-written, nuqs-tab-written, provider-bindings-boundary and nuqs-state-restored-from-url."
+    },
+    {
+      "id": "forced-cas-failure-keeps-prior-state",
+      "passed": true,
+      "evidence": "Raw forcedRealFailureProven=true; recoveryObserved includes forced-real-apply-failure, prior-state-retained and retry-reachable."
+    },
+    {
+      "id": "same-document-sse-and-host-switch",
+      "passed": true,
+      "evidence": "Raw syncInvalidationProven=true and hostActivationProven=true; recoveryObserved includes retry-switch-change-requested and sse-sync-invalidation; observed includes real-switch-applied."
+    },
+    {
+      "id": "host-rollback-applied",
+      "passed": true,
+      "evidence": "Raw observed includes real-rollback-change-requested and real-rollback-applied; recoveryObserved ends with rollback-applied."
+    }
+  ],
+  "notProven": [
+    "Generic transport loss and HTTP 5xx failure classes were not exercised by this forced compare-and-swap run.",
+    "Provider binding selection is outside the current read-only boundary.",
+    "This is scoped R-4 evidence, not complete P-015 or plan acceptance."
+  ],
+  "supersedes": "docs/evidence/p015-r4-real-backend-operational-2026-09-25.json",
+  "sourcePaths": [
+    "apps/operator/app/settings/identities/page.tsx",
+    "packages/operator-core/lib/identity-management.ts",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "packages/operator-core/lib/role-launch-spec.ts",
+    "scripts/verify-identities-r4.mjs"
+  ]
+}
