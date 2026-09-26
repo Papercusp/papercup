@@ -3245,6 +3245,73 @@ describe('template_data persistence boundary — the set-template-data door', ()
     });
   });
 
+  it('P-005: the apply accepts an approval from a routed fork the applier requested, and still refuses an ordinary child', async () => {
+    // review-routing-through-relevance-router-2026-09-26 P-005. The applier REQUESTS a routed
+    // amendment review, and the consult dispatcher records the requester as the answering
+    // fork's launcher (get-feedback-prod passes launchedBy = requester). The fork answers from
+    // an OUTSIDE expert's transcript, so its lineage is that source's, not the requester's.
+    // The ordinary child is the control: the same launch edge without a consult-dispatch edge
+    // IS lineage, so the apply must still refuse it. Without it, a guard that ignored launch
+    // edges entirely would pass this test.
+    const seeded = await seedBarContract('routed-fork-approval-subject', { authorMethods: true });
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'amendment-actor',
+      reason: 'Move the BAR to live evidence.',
+      criterionEvidencePlane: { key: before.criteria[0]!.key, evidencePlane: 'live' as const },
+    };
+    await db.adminSql`INSERT INTO harness_shared.adv_sessions ${db.adminSql([
+      {
+        workspace_id: seeded.workspaceId,
+        mode: 'console',
+        coord_owner_id: 'su-routed-review-fork',
+        launch_spec: { launchedBy: 'amendment-actor' },
+      },
+      {
+        workspace_id: seeded.workspaceId,
+        mode: 'console',
+        coord_owner_id: 'su-applier-ordinary-child',
+        launch_spec: { launchedBy: 'amendment-actor' },
+      },
+    ] as never)}`;
+    await db.adminSql`INSERT INTO harness_shared.consult_state ${db.adminSql([
+      {
+        workspace_id: seeded.workspaceId,
+        conversation_id: 'conv-routed-fork-approval',
+        requester_id: 'amendment-actor',
+        responder_id: 'su-routed-review-expert',
+        state: 'awaiting_responder',
+        question: 'q',
+        latency_contract: 'hard-blocked',
+        routing: db.adminSql.json({
+          policy: 'acceptance-bar-amendment-review',
+          selection: {
+            selected: [
+              { ownerId: 'su-routed-review-expert', via: 'floor', answeringOwnerId: 'su-routed-review-fork' },
+            ],
+          },
+        } as never),
+      },
+    ] as never)}`;
+
+    await expect(
+      rubrics.checkAcceptanceBarApproverEligibility({
+        rubricId: seeded.rubricSlug,
+        ownerId: 'su-routed-review-fork',
+        applierId: 'amendment-actor',
+      }),
+    ).resolves.toMatchObject({ eligible: true, reason: 'eligible' });
+    await expect(
+      rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment, 'su-applier-ordinary-child') }),
+    ).rejects.toThrow("acceptance_bar_approval_in_implementer_lineage: 'su-applier-ordinary-child' is related to 'amendment-actor'");
+    const after = await rubrics.amendRubric({
+      ...amendment,
+      approvalRef: await postApproval(amendment, 'su-routed-review-fork'),
+    });
+    expect(after!.criteria[0]!.evidencePlane).toBe('live');
+  });
+
   it('validates a supplied approval receipt during dry-run preview', async () => {
     const seeded = await seedBarContract('dry-run-approval-receipt-subject', { authorMethods: true });
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
