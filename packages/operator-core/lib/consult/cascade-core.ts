@@ -220,8 +220,8 @@ export function cascadeWakeCopyForRouting(routing: unknown): CascadeWakeCopyWrit
  * The consult DELIVERY seam (D-002/D-010/D-011). Prod binds the fork/convert
  * dispatcher (`makeConsultReachDispatcher`), NEVER a wake: `responder` names the
  * expert whose TRANSCRIPT answers, and a non-zero `woke` means an answering
- * session was launched from it. Zero means the whole allowlist was exhausted for
- * that expert, which every caller already treats as "advance to the next".
+ * session was launched from it. Zero WITHOUT an answering identity means no
+ * session was launched; zero WITH an identity means the session is still booting.
  *
  * `answeringOwnerId` is who will actually post — it differs from `responder` on a
  * fork, and `stampAnsweringOwner` persists it so the launched session's reply is
@@ -279,6 +279,13 @@ export interface AdvanceCascadeResult {
   raced: boolean;
   next: { ownerId: string; via: 'floor' | 'minimum' } | null;
   woke: number;
+  /** A failed-dispatch walk exhausted at a later slot than the caller read.
+   * Terminal writers must guard this snapshot, not the original slot's TTL. */
+  exhaustedAfterDispatch?: {
+    cascadeCursor: number;
+    state: 'awaiting_responder' | 'active';
+    expiresAt: string;
+  };
   /** WI-39861: this advance was the ONE bounded min-ANSWERS refill round — the
    * menu exhausted with fewer substantive answers than selection.min, so the
    * menu was extended from the untried route-time-live remainder of the
@@ -379,6 +386,26 @@ export async function advanceCascade(
   const digest = [...digestFromRow(params.digest), params.event].slice(-CASCADE_DIGEST_MAX_ENTRIES);
   const nextIdx = params.cascadeCursor + 1;
   const next = nextIdx < selected.length ? selected[nextIdx] : null;
+  // EI-24351703367365896: a refused dispatch cannot leave an unstaffed slot
+  // awaiting a fresh TTL. Reuse this same finite menu/refill walk, guarded by
+  // the slot we just wrote. A concurrent reply/expiry refresh wins the CAS.
+  const skipUndispatched = async (
+    ownerId: string, cursor: number, routing: unknown, expiresAt: string,
+  ): Promise<AdvanceCascadeResult> => {
+    const result = await advanceCascade({
+      ...params,
+      routing,
+      cascadeCursor: cursor,
+      digest,
+      expectedState: params.stateOnAdvance,
+      expectedExpiresAt: expiresAt,
+      event: makeDigestEntry(ownerId, 'dispatch_failed', params.nowIso,
+        'Dispatch returned without launching an answering session; advancing to the next selected expert.'),
+    }, sql, dispatch);
+    return result.exhausted && !result.exhaustedAfterDispatch
+      ? { ...result, exhaustedAfterDispatch: { cascadeCursor: cursor, state: params.stateOnAdvance, expiresAt } }
+      : result;
+  };
   if (!next) {
     // WI-39861 min-ANSWERS refill: the menu is exhausted. If fewer substantive
     // ANSWERS than selection.min were collected (counting the just-appended
@@ -518,13 +545,17 @@ export async function advanceCascade(
             digest,
             extension: 'min-answers refill',
           });
+          let announcedOwner: string | undefined;
           const r = await dispatch({
             responder: first.ownerId,
             conversationId: params.conversationId,
             summary: copy.summary,
             body: copy.body,
             ...(first.evidence ? { evidence: first.evidence } : {}),
-            onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params, cursorIdx, owner),
+            onAnsweringOwner: async (owner) => {
+              await stampAnsweringOwner(sql, params, cursorIdx, owner);
+              announcedOwner = owner;
+            },
           });
           woke = r.woke;
           // Backstop for a dispatcher that does not call the hook. Stamped on
@@ -533,6 +564,10 @@ export async function advanceCascade(
           // keyboard, and without the stamp its first reply is refused
           // not_a_participant. stampAnsweringOwner no-ops on absent.
           await stampAnsweringOwner(sql, params, cursorIdx, r.answeringOwnerId);
+          if (woke === 0 && !r.answeringOwnerId && !announcedOwner) {
+            const result = await skipUndispatched(first.ownerId, cursorIdx, updatedSnap, expiresAt);
+            return { ...result, ...(sel.refill ? {} : { refilled: true }) };
+          }
         }
         return {
           advanced: true,
@@ -629,17 +664,24 @@ export async function advanceCascade(
       next,
       digest,
     });
+    let announcedOwner: string | undefined;
     const r = await dispatch({
       responder: next.ownerId,
       conversationId: params.conversationId,
       summary: copy.summary,
       body: copy.body,
       ...(next.evidence ? { evidence: next.evidence } : {}),
-      onAnsweringOwner: (owner) => stampAnsweringOwner(sql, params, nextIdx, owner),
+      onAnsweringOwner: async (owner) => {
+        await stampAnsweringOwner(sql, params, nextIdx, owner);
+        announcedOwner = owner;
+      },
     });
     woke = r.woke;
     // Backstop, on the answering identity and never on `woke` — as above.
     await stampAnsweringOwner(sql, params, nextIdx, r.answeringOwnerId);
+    if (woke === 0 && !r.answeringOwnerId && !announcedOwner) {
+      return skipUndispatched(next.ownerId, nextIdx, params.routing, expiresAt);
+    }
   }
   return { advanced: true, exhausted: false, raced: false, next: { ownerId: next.ownerId, via: next.via }, woke };
 }

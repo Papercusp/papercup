@@ -62,17 +62,19 @@
  * variable actually bound to a wall-clock delta is treated as elapsed.
  *
  * The second class is a synchronous child-process budget that is not smaller than its
- * enclosing Vitest test budget. `runGuardScript(..., { timeoutMs: 180_000 })` inside a
+ * enclosing Vitest test budget. `runGuardScript(..., { timeoutMs: 180_000 })` or
+ * `spawnSync(..., { timeout: 180_000 })` inside a
  * test with the shared 60-second default can never exercise its promised timeout: Vitest
  * kills the parent first. The whole-tree undrained-stdout ratchet measured 57.3s current-
  * byte / 69.5s under the affected retry, so this exact inversion produced a false red.
- * Direct literal `runGuardScript` sites are parsed with TypeScript so comments, fixtures,
+ * Direct literal synchronous-child sites are parsed with TypeScript so comments, fixtures,
  * and nested calls cannot masquerade as live invocations. Give the enclosing `it`/`test`
  * an explicit larger timeout; the parent remains the final bound.
  *
  * KNOWN BOUND, stated rather than implied: an elapsed budget reached through a helper, a struct
  * field (`expect(res.latencyMs).toBeLessThan(400)`), or a cross-file constant is NOT
- * detected. For child-process inversions, calls routed through a helper or budgets held in
+ * detected. For child-process inversions, calls routed through a helper, aliased direct-call
+ * names, or budgets held in
  * identifiers are also not resolved. This guard reports what it can see and its --list
  * output is the honest population — it is not a proof that no other tight budget exists.
  * Overstating a guard's reach is how the next reader mistakes silence for safety.
@@ -118,6 +120,27 @@ export const BASELINE = new Set([
   'packages/operator-core/lib/agent-tools/fleet/leader-brief.test.ts', //          250ms ×2
   'packages/operator-core/lib/code-intelligence/lsp-adapter.test.ts', //           250ms
   'packages/operator-core/lib/memory/corpus-recall-io.test.ts', //            200/400ms ×3
+]);
+
+/**
+ * Pre-existing explicit `spawnSync` child/parent inversions. SHRINK-ONLY and keyed by
+ * file + stable test title + budgets so unrelated line movement does not manufacture a
+ * finding. Re-seed only from this guard's measured output.
+ */
+export const SPAWN_SYNC_EXPLICIT_BASELINE = new Set([
+  // Seeded 2026-09-26 from the guard's measured output after direct spawnSync
+  // coverage landed. Keyed more narrowly than BASELINE so a new test in any of
+  // these files is still rejected.
+  'packages/operator-core/lib/__tests__/check-explicit-presence.test.ts::spawnSync::runs an end-to-end positive control that forces the real ratchet red even when the corpus has zero candidates::60000::60000',
+  'packages/operator-core/lib/__tests__/check-explicit-presence.test.ts::spawnSync::refuses to combine the synthetic positive control with --update::60000::60000',
+  'packages/operator-core/lib/__tests__/check-shell-syntax-entrypoint.test.ts::spawnSync::resolves its TypeScript detector import under the pinned Node runtime::30000::30000',
+  'packages/operator-core/lib/harness/git-sync/run-git-sync.test.ts::spawnSync::EI-20345390379109755: an orphaned config.lock is cleared before canonical submodule URL sync retries::30000::30000',
+  'packages/operator-core/lib/lint-as-committed.test.ts::spawnSync::extracts REAL, committed content for a git-submodule path, not an empty gitlink dir::60000::60000',
+  'packages/operator-core/lib/live-federation-gate-certified-source-window.test.ts::spawnSync::banks parseable JSON when GATE_POSTLEGS_* is unset (the set -u / unbound-variable trap)::60000::60000',
+  'packages/operator-core/lib/live-federation-gate-singleton-lock-fd-inheritance.test.ts::spawnSync::THE GUARD: a child that outlives the driver does NOT hold the gate lock::60000::60000',
+  'packages/operator-core/lib/live-federation-gate-verdict-bank.test.ts::spawnSync::stays valid JSON under hostile leg text, and stays bounded::60000::60000',
+  'packages/operator-core/lib/release/identity-gate-archive-expansion.test.ts::spawnSync::FAILS on an identity literal hidden inside a compressed .deb payload::120000::120000',
+  'packages/operator-core/lib/release/identity-gate-symlink-targets.test.ts::spawnSync::FAILS CLOSED on a .tar.zst whose zstd stream cannot be read::60000::60000',
 ]);
 
 const DIRECT_RE =
@@ -227,7 +250,7 @@ function isTestCallExpression(expression) {
 }
 
 /**
- * Direct `runGuardScript` child budgets that can outlive their enclosing Vitest parent.
+ * Direct synchronous child-process budgets that can outlive their enclosing Vitest parent.
  * Literal-only by design: a symbolic budget is not guessed, and a helper invocation has
  * no enclosing test ancestor at the call site. Both bounds are documented above.
  */
@@ -240,39 +263,56 @@ export function findNestedChildBudgetInversions(
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind);
   const inversions = [];
 
-  const visit = (node) => {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === 'runGuardScript' &&
-      node.arguments.length >= 3 &&
-      ts.isObjectLiteralExpression(node.arguments[2])
-    ) {
-      const timeoutProperty = node.arguments[2].properties.find(
-        (property) => ts.isPropertyAssignment(property) && propertyNameText(property.name) === 'timeoutMs',
-      );
-      const childTimeoutMs = timeoutProperty && ts.isPropertyAssignment(timeoutProperty)
-        ? numericLiteralMs(timeoutProperty.initializer)
+  const directChildBudget = (node) => {
+    if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression)) return null;
+    const call = node.expression.text;
+    const shape = call === 'runGuardScript'
+      ? { optionsIndex: 2, timeoutKey: 'timeoutMs' }
+      : call === 'spawnSync'
+        ? { optionsIndex: 2, timeoutKey: 'timeout' }
         : null;
+    if (!shape || node.arguments.length <= shape.optionsIndex) return null;
+    const options = node.arguments[shape.optionsIndex];
+    if (!ts.isObjectLiteralExpression(options)) return null;
+    const timeoutProperty = options.properties.find(
+      (property) => ts.isPropertyAssignment(property) && propertyNameText(property.name) === shape.timeoutKey,
+    );
+    const timeoutMs = timeoutProperty && ts.isPropertyAssignment(timeoutProperty)
+      ? numericLiteralMs(timeoutProperty.initializer)
+      : null;
+    return timeoutMs === null ? null : { call, timeoutMs };
+  };
 
-      if (childTimeoutMs !== null) {
-        let ancestor = node.parent;
-        while (ancestor) {
-          if (ts.isCallExpression(ancestor) && isTestCallExpression(ancestor.expression)) {
-            const explicitParentMs = numericLiteralMs(ancestor.arguments[2]);
-            const parentTimeoutMs = explicitParentMs ?? defaultParentMs;
-            if (childTimeoutMs >= parentTimeoutMs) {
-              inversions.push({
-                line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
-                childTimeoutMs,
-                parentTimeoutMs,
-                parentSource: explicitParentMs === null ? 'implicit-default' : 'explicit',
-              });
-            }
-            break;
+  const visit = (node) => {
+    const childBudget = directChildBudget(node);
+    if (childBudget) {
+      const childTimeoutMs = childBudget.timeoutMs;
+      let ancestor = node.parent;
+      while (ancestor) {
+        if (ts.isCallExpression(ancestor) && isTestCallExpression(ancestor.expression)) {
+          const explicitParentMs = numericLiteralMs(ancestor.arguments[2]);
+          const parentTimeoutMs = explicitParentMs ?? defaultParentMs;
+          const titleNode = ancestor.arguments[0];
+          const testName = titleNode && ts.isStringLiteralLike(titleNode) ? titleNode.text : '<dynamic-test-title>';
+          // There are dozens of legacy direct spawnSync calls relying on the shared
+          // default. Gate the explicit contradiction class that produced WI-10003256;
+          // implicit direct-spawn coverage is a documented detector bound.
+          if (
+            childTimeoutMs >= parentTimeoutMs &&
+            !(childBudget.call === 'spawnSync' && explicitParentMs === null)
+          ) {
+            inversions.push({
+              line: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
+              childCall: childBudget.call,
+              testName,
+              childTimeoutMs,
+              parentTimeoutMs,
+              parentSource: explicitParentMs === null ? 'implicit-default' : 'explicit',
+            });
           }
-          ancestor = ancestor.parent;
+          break;
         }
+        ancestor = ancestor.parent;
       }
     }
     ts.forEachChild(node, visit);
@@ -296,6 +336,16 @@ function walkTestFiles(dir, out) {
     else if (e.isFile() && p.endsWith('.test.ts')) out.push(p);
   }
   return out;
+}
+
+function nestedInversionKey(rel, inversion) {
+  return [
+    rel,
+    inversion.childCall,
+    inversion.testName,
+    inversion.childTimeoutMs,
+    inversion.parentTimeoutMs,
+  ].join('::');
 }
 
 function main() {
@@ -325,9 +375,11 @@ function main() {
       continue;
     }
     const rel = relative(REPO_ROOT, abs);
-    if (rawText.includes('runGuardScript')) {
+    if (rawText.includes('runGuardScript') || rawText.includes('spawnSync')) {
       for (const inversion of findNestedChildBudgetInversions(rawText, abs)) {
-        nestedInversions.push({ rel, ...inversion });
+        const baselineKey = nestedInversionKey(rel, inversion);
+        if (inversion.childCall === 'spawnSync' && SPAWN_SYNC_EXPLICIT_BASELINE.has(baselineKey)) continue;
+        nestedInversions.push({ rel, baselineKey, ...inversion });
       }
     }
     if (text.includes('.now()')) {
@@ -350,18 +402,19 @@ function main() {
       `\n${measured.length} literal wall-clock budget(s) in ${new Set(measured.map((m) => m.rel)).size} file(s); ` +
         `${tight.length} below the ${TIGHT_BUDGET_FLOOR_MS}ms floor, in ${new Set(tight.map((m) => m.rel)).size} file(s).`,
     );
-    console.log(`${nestedInversions.length} direct runGuardScript child/parent timeout inversion(s).`);
+    console.log(`${nestedInversions.length} direct synchronous child/parent timeout inversion(s).`);
     console.log('Re-seed BASELINE from the TIGHT/BASELINE paths above — never from a hand-run grep.');
     return;
   }
 
   if (offenders.length > 0 || nestedInversions.length > 0) {
     if (nestedInversions.length > 0) {
-      console.error(`\n✖ ${nestedInversions.length} runGuardScript child/parent timeout inversion(s):\n`);
+      console.error(`\n✖ ${nestedInversions.length} synchronous child/parent timeout inversion(s):\n`);
       for (const o of nestedInversions) {
         console.error(
-          `   ${o.rel}:${o.line}  child ${o.childTimeoutMs}ms >= ` +
-            `${o.parentSource} parent ${o.parentTimeoutMs}ms`,
+          `   ${o.rel}:${o.line}  ${o.childCall} child ${o.childTimeoutMs}ms >= ` +
+            `${o.parentSource} parent ${o.parentTimeoutMs}ms\n` +
+            `      baseline key: ${o.baselineKey}`,
         );
       }
       console.error(
@@ -394,7 +447,7 @@ function main() {
 
   console.log(
     `✓ no NEW tight wall-clock timing budgets (floor ${TIGHT_BUDGET_FLOOR_MS}ms, ` +
-      `${BASELINE.size} file(s) baselined) or direct runGuardScript timeout inversions. ` +
+      `${BASELINE.size} file(s) baselined) or direct synchronous child/parent timeout inversions. ` +
       '--list to measure the population.',
   );
 }

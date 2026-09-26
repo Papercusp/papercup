@@ -123,6 +123,28 @@ describe('startCluster (P3-2)', () => {
     expect(cl.forks).toBe(5);
   });
 
+  it('refills after the budget window even when every worker has exited', () => {
+    vi.useFakeTimers();
+    try {
+      const cl = new MockCluster(true);
+      vi.setSystemTime(0);
+      const h = startCluster({ workers: 2, onWorker: () => {}, cluster: cl, maxRespawns: 2, respawnWindowMs: 1000, log: () => {} });
+      cl.emitExit(cl.workers[0]);
+      cl.emitExit(cl.workers[1]);
+      cl.emitExit(cl.workers[2]);
+      cl.emitExit(cl.workers[3]);
+      expect(h.liveWorkerCount?.()).toBe(0);
+      vi.advanceTimersByTime(1000);
+      expect(cl.forks).toBe(4);
+      vi.advanceTimersByTime(1);
+      expect(h.liveWorkerCount?.()).toBe(2);
+      expect(cl.forks).toBe(6);
+      h.drain?.();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('liveWorkerCount reflects forks minus not-yet-respawned exits', () => {
     const cl = new MockCluster(true);
     let t = 0;

@@ -251,7 +251,7 @@ describe('release:deploy — status', () => {
       greenPinSha: 'greenpin0',
     });
     expect(b.diagnosticVintage.warning).toContain('Verify any nextVerb');
-    expect(statusM).toHaveBeenCalledWith({ readerOwnerId: 'o' });
+    expect(statusM).toHaveBeenCalledWith({ readerOwnerId: 'o', onReadProgress: expect.any(Function) });
     expect(launchM).not.toHaveBeenCalled();
   });
 
@@ -305,7 +305,10 @@ describe('release:deploy — status', () => {
   it('returns a bounded structured error when the status read hangs', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
-    statusM.mockImplementation(() => new Promise<DeployStatus>(() => {}));
+    statusM.mockImplementation((deps) => {
+      deps.onReadProgress?.(['snapshot']);
+      return new Promise<DeployStatus>(() => {});
+    });
     const pending = tool.handler({ op: 'status' } as never, { role: 'cup' } as never);
     await vi.advanceTimersByTimeAsync(RELEASE_STATUS_READ_TIMEOUT_MS);
     const b = body(await pending);
@@ -316,6 +319,7 @@ describe('release:deploy — status', () => {
         code: 'status_timeout',
         retryable: true,
         timeoutMs: RELEASE_STATUS_READ_TIMEOUT_MS,
+        pendingReads: ['snapshot'],
       },
       status: null,
     });

@@ -13,7 +13,8 @@ import { packageMemoryDriver } from './package-memory-driver';
 import { prepareKnowledgePackageResources, releaseKnowledgePackageResources } from './package-knowledge-resources';
 import { pinPackageInput, resolveBlueprint } from '@papercusp/orchestrator/blueprint';
 import { compileBlueprintWithPackages } from './compile-packages';
-import { applySessionPackageResources, sessionPackageDependentId } from './session-package-resources';
+import { applySessionPackageResources, provisionSessionPackageResources, sessionPackageDependentId } from './session-package-resources';
+import { readPackageInstallation } from './package-resource-receipts';
 import { provisionLaunchIdentityResources } from '../role-launch-spec';
 import { preparePackageResource, releasePackageResource, type PackageResourceAddress } from './package-resource-receipts';
 
@@ -32,6 +33,8 @@ beforeAll(async () => {
   const draft = new URL('../../../../libs/papercusp/libs/db/sql/1231-memory-managed-write-fences.sql.DRAFT', import.meta.url);
   // Draft verification before arming; afterwards the migrated fixture owns it.
   if (existsSync(draft)) await db.adminSql.unsafe(readFileSync(draft, 'utf8'));
+  const installations = new URL('../../../../libs/papercusp/libs/db/sql/1232-blueprint-package-installations.sql.DRAFT', import.meta.url);
+  if (existsSync(installations)) await db.adminSql.unsafe(readFileSync(installations, 'utf8'));
   pool = new Pool({ connectionString: db.adminDsn });
 }, 180_000);
 afterAll(async () => {
@@ -63,6 +66,76 @@ function address(name: string): PackageResourceAddress {
 }
 
 describe('real canonical backend package resources', () => {
+  it('compensates a partial artifact preparation and explicitly applies an empty selected pack', async () => {
+    const pin = pinPackageInput({ packageKind: 'knowledge-pack', ref: 'compensated-pack', revision: '1.0.0', files: [],
+      value: { manifest: { id: 'compensated-pack', version: '1.0.0', title: 'Compensated', description: 'Test' }, items: [
+        { id: 'one', title: 'First', text: 'first', kind: 'reference', appliesTo: ['ui'] },
+        { id: 'two', title: 'Second', text: 'second', kind: 'reference', appliesTo: ['ui'] },
+      ] } });
+    const source = resolveBlueprint({ id: 'compensated-host', bundles: [{ kind: 'knowledge-pack', ref: pin.ref }],
+      workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } });
+    const compile = (shapes: Array<'ui'>) => compileBlueprintWithPackages(source, { workspaceId: 'compensated-test',
+      harnessSlug: 'compensated-target', memoryTarget: { kind: 'harness', slug: 'compensated-target' },
+      knowledgeSelection: { shapes, domains: [] }, resolvePackage: async () => pin });
+    const artifact = await compile(['ui']);
+    const ownerId = 'compensated-wearer';
+    const revision = { specificationRevision: artifact.specificationRevision, stateRevision: hash('compensated-state') };
+    let embeds = 0;
+    selectedBackend = backend(writes(async () => { if (++embeds === 2) throw new Error('second embedding failed'); return vector; }));
+    await expect(provisionSessionPackageResources(db.adminSql, { ownerId, revision, artifacts: [artifact] }))
+      .rejects.toThrow('second embedding failed');
+    const dependentId = sessionPackageDependentId(ownerId, revision);
+    expect(await readPackageInstallation(db.adminSql, 'compensated-test', dependentId)).toMatchObject({ phase: 'released' });
+    expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
+      WHERE payload->>'user_id' = 'harness:compensated-target'`).toHaveLength(0);
+    selectedBackend = backend();
+    // Retry the SAME source/state with a fresh, caller-persisted attempt. The
+    // failed attempt stays terminal; replay cannot silently open its fence.
+    await expect(provisionSessionPackageResources(db.adminSql, { ownerId, revision, artifacts: [artifact] }))
+      .rejects.toThrow(/released installation/);
+    const attemptId = randomUUID();
+    const retry = { ownerId, revision, artifacts: [artifact], attemptId };
+    await provisionSessionPackageResources(db.adminSql, retry);
+    await provisionSessionPackageResources(db.adminSql, retry); // restart replay
+    const retriedDependent = sessionPackageDependentId(ownerId, revision, attemptId);
+    expect(retriedDependent).not.toBe(dependentId);
+    const rows = await db.adminSql`SELECT id FROM harness_shared.memory_canonical
+      WHERE payload->>'user_id' = 'harness:compensated-target' ORDER BY id`;
+    expect(rows).toHaveLength(2);
+    await expect(db.adminSql.begin((tx) => applySessionPackageResources(tx, {
+      ownerId, workspaceId: 'compensated-test', revision, artifact, attemptId: randomUUID(),
+    }))).rejects.toThrow(/has not been prepared/);
+    await db.adminSql.begin((tx) => applySessionPackageResources(tx, {
+      ownerId, workspaceId: 'compensated-test', revision, artifact, attemptId,
+    }));
+    // Delayed compensation of the failed attempt cannot delete its successor.
+    await releaseKnowledgePackageResources(db.adminSql, 'compensated-test', dependentId);
+    expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
+      WHERE payload->>'user_id' = 'harness:compensated-target' ORDER BY id`).toEqual(rows);
+    expect(await readPackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
+      .toMatchObject({ phase: 'applied' });
+    await expect(provisionSessionPackageResources(db.adminSql, { ...retry, attemptId: ' ' }))
+      .rejects.toThrow(/attempt/);
+    await expect(releaseKnowledgePackageResources(db.adminSql, 'compensated-test', retriedDependent, new NoopBackend()))
+      .rejects.toThrow(/does not support fenced package resources/);
+    expect(await readPackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
+      .toMatchObject({ phase: 'cleanup_failed', error: expect.stringContaining('does not support fenced package resources') });
+    expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
+      WHERE payload->>'user_id' = 'harness:compensated-target' ORDER BY id`).toEqual(rows);
+    await releaseKnowledgePackageResources(db.adminSql, 'compensated-test', retriedDependent);
+    expect(await readPackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
+      .toMatchObject({ phase: 'released', error: null });
+    expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
+      WHERE payload->>'user_id' = 'harness:compensated-target'`).toHaveLength(0);
+    const empty = await compile([]);
+    const emptyRevision = { specificationRevision: empty.specificationRevision, stateRevision: hash('empty-state') };
+    selectedBackend = backend();
+    await provisionSessionPackageResources(db.adminSql, { ownerId, revision: emptyRevision, artifacts: [empty] });
+    await db.adminSql.begin((tx) => applySessionPackageResources(tx, { ownerId, workspaceId: 'compensated-test', revision: emptyRevision, artifact: empty }));
+    expect(await readPackageInstallation(db.adminSql, 'compensated-test', sessionPackageDependentId(ownerId, emptyRevision)))
+      .toMatchObject({ phase: 'applied', expected_resources: {} });
+  });
+
   it('atomically applies the complete exact wearer pin set and rolls back a partial preparation', async () => {
     const pin = pinPackageInput({ packageKind: 'knowledge-pack', ref: 'atomic-pack', revision: '1.0.0', files: [],
       value: { manifest: { id: 'atomic-pack', version: '1.0.0', title: 'Atomic', description: 'Test' }, items: [

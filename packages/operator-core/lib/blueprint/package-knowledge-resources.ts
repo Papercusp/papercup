@@ -8,6 +8,7 @@ import { filterByDomains, filterByShapes, type AppliesTo, type KnowledgePack } f
 import { packItemMemoryWrite, knowledgePackMemoryScope, type KnowledgePackMemoryTarget } from '../knowledge-packs/seed';
 import { packageMemoryDriver } from './package-memory-driver';
 import { packageResourceKey, preparePackageResource, releasePackageResource,
+  beginPackageInstallationRelease, finishPackageInstallationRelease,
   type PackageResourceAddress, type PackageResourceReceipt } from './package-resource-receipts';
 
 export interface KnowledgePackageResourceInput {
@@ -65,7 +66,9 @@ export async function prepareKnowledgePackageResources(sql: Sql, input: Knowledg
  * filesystem release. Cleanup can therefore resume after upgrade/restart. */
 export async function releaseKnowledgePackageResources(
   sql: Sql, workspaceId: string, dependentId: string, backend: MemoryBackend = getMemoryBackend(),
+  options: { onlyUnapplied?: boolean } = {},
 ): Promise<PackageResourceReceipt[]> {
+  if (!await beginPackageInstallationRelease(sql, workspaceId, dependentId, options)) return [];
   const rows = await sql<Array<{
     memory_scope: string; package_kind: string; package_ref: string; package_version: string;
     package_hash: string; resource_kind: string; item_key: string; installed_hash: string;
@@ -85,5 +88,6 @@ export async function releaseKnowledgePackageResources(
       packageMemoryDriver(backend, '', { scope: row.memory_scope }));
     if (receipt) receipts.push(receipt);
   }
+  await finishPackageInstallationRelease(sql, workspaceId, dependentId);
   return receipts;
 }

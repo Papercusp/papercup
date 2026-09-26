@@ -243,6 +243,26 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
   const respawnWindowMs = opts.respawnWindowMs ?? 600_000;
   const respawnTimes: number[] = [];
   let draining = false;
+  let refillTimer: ReturnType<typeof setTimeout> | undefined;
+  const pruneRespawnWindow = (): void => {
+    while (respawnTimes.length && now() - respawnTimes[0] > respawnWindowMs) respawnTimes.shift();
+  };
+  const scheduleRefill = (): void => {
+    if (refillTimer || draining || unbootable || maxRespawns <= 0 || byId.size >= workers) return;
+    const oldest = respawnTimes[0];
+    const delay = oldest == null ? 1 : Math.max(1, oldest + respawnWindowMs + 1 - now());
+    refillTimer = setTimeout(() => {
+      refillTimer = undefined;
+      if (draining || unbootable) return;
+      pruneRespawnWindow();
+      while (byId.size < workers && respawnTimes.length < maxRespawns) {
+        respawnTimes.push(now());
+        track(cluster.fork(opts.workerEnv));
+      }
+      if (byId.size < workers) scheduleRefill();
+    }, delay);
+    refillTimer.unref?.();
+  };
   // Boot-failure backstop state (armed only when opts.onUnbootable is set).
   let sawHealthy = false; // any worker has surpassed bootGraceMs (the build CAN boot)
   let consecutiveBootFailures = 0; // workers that exited inside the grace window, no healthy yet
@@ -282,13 +302,14 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
     // P-003: prune the rolling window, then decide. A deny is NOT permanent —
     // once the window drains, the next exit respawns again (the cluster can
     // RECOVER its full size instead of shrinking until the next deploy).
-    while (respawnTimes.length && now() - respawnTimes[0] > respawnWindowMs) respawnTimes.shift();
+    pruneRespawnWindow();
     if (respawnTimes.length >= maxRespawns) {
       log(
         `[cluster] ALARM worker ${worker.id} exited (code=${code} signal=${signal}); respawn budget exhausted ` +
           `(${respawnTimes.length}/${maxRespawns} respawns in the last ${Math.round(respawnWindowMs / 1000)}s) — NOT respawning now; ` +
           `serving ${byId.size}/${workers} workers (resumes when the window drains)`,
       );
+      scheduleRefill();
       return;
     }
     respawnTimes.push(now());
@@ -301,6 +322,8 @@ export function startCluster(opts: StartClusterOpts): ClusterHandle {
     workerCount: workers,
     drain(signal = 'SIGTERM') {
       draining = true;
+      if (refillTimer) clearTimeout(refillTimer);
+      refillTimer = undefined;
       for (const w of forked) {
         try {
           w.kill(signal);

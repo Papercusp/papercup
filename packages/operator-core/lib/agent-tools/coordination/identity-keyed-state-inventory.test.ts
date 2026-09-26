@@ -208,6 +208,11 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: "the session's OWN record, created under its own id at boot — never read/reaped keyed on a DIFFERENT session's liveness.",
   },
+  'blueprint_package_installations.owner_id': {
+    status: 'exempt',
+    reason:
+      'immutable wearer of an exact owner/specification/state installation (migration 1232), not a presence lease or current-holder claim. sessionPackageDependentId hashes the original owner into dependent_id; rebinding only owner_id would corrupt that identity and transfer applicability. A replacement logical wearer must prepare its own dependent; the old installation is retired through its persisted resource journal, never adopted by rebindIdentity.',
+  },
   'tool_invocations.coord_owner_id': {
     status: 'exempt',
     reason: 'immutable per-call audit log row — attribution, not a claim any reaper acts on.',

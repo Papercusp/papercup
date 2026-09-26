@@ -349,6 +349,10 @@ export function nativeTurnVerifierSupport(agent: string | undefined, env?: Envir
     supported: boolean;
     reason: "no-classifier" | "no-isolated-root" | null;
 };
+/** A queued kickoff retry may wait behind the original turn. At the final
+ * write boundary only positive native execution proof cancels the retry;
+ * missing or unreadable evidence preserves the existing bounded recovery. */
+export function firstKickoffTurnStartedBeforeRetry(nativeTurnActivity: any): boolean;
 /**
  * Did the agent's native turn genuinely complete, per THIS transcript?
  *

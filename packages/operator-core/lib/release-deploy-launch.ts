@@ -849,7 +849,11 @@ export interface ReadDeployStatusDeps {
   /** Injectable live manual-run authority reader. Omitted without readerOwnerId preserves
    * legacy/pure callers and avoids an ambient database read in watchdogs/tests. */
   loadManualRunAuthority?: () => Promise<ReleaseTraceManualRunAuthority | null>;
+  /** Diagnostic only: identify which dependency is still pending if the outer status read times out. */
+  onReadProgress?: (pending: DeployStatusReadStage[]) => void;
 }
+
+export type DeployStatusReadStage = 'snapshot' | 'inFlight' | 'manualRunAuthority' | 'liveCertification';
 
 /** Read the current deploy status (the snapshot + the in-flight probe + the pure computation).
  *  READ-ONLY. The in-flight probe is best-effort: if it throws, the status still returns (with
@@ -872,15 +876,31 @@ export async function readDeployStatus(deps: ReadDeployStatusDeps = {}): Promise
     (deps.readerOwnerId !== undefined
       ? () => resolveManualRunAuthority({ readerOwnerId: deps.readerOwnerId })
       : async () => null);
+  const pending = new Set<DeployStatusReadStage>();
+  const reportPending = () => {
+    try {
+      deps.onReadProgress?.([...pending]);
+    } catch {
+      // An observer cannot break the status read.
+    }
+  };
+  const track = <T>(stage: DeployStatusReadStage, read: () => Promise<T>): Promise<T> => {
+    pending.add(stage);
+    reportPending();
+    return Promise.resolve().then(read).finally(() => {
+      pending.delete(stage);
+      reportPending();
+    });
+  };
   const [snap, inFlight, manualRunAuthority] = await Promise.all([
-    load(),
-    loadInFlight().catch(() => null),
-    loadManualRunAuthority().catch(() => null),
+    track('snapshot', load),
+    track('inFlight', () => loadInFlight().catch(() => null)),
+    track('manualRunAuthority', () => loadManualRunAuthority().catch(() => null)),
   ]);
   const targetSha = snap.deploy.greenPin?.sha ?? null;
   const loadCertification = deps.loadLiveCertification ?? ((sha: string) => readLiveReleaseCertification(sha));
   const certification = targetSha
-    ? await loadCertification(targetSha).catch((error): LiveReleaseCertification => ({
+    ? await track('liveCertification', () => loadCertification(targetSha).catch((error): LiveReleaseCertification => ({
         status: 'unreadable',
         targetSha,
         certified: false,
@@ -888,7 +908,7 @@ export async function readDeployStatus(deps: ReadDeployStatusDeps = {}): Promise
         bankPath: null,
         evidence: null,
         invalidLines: 0,
-      }))
+      })))
     : undefined;
   return computeDeployStatus(snap, inFlight, certification, manualRunAuthority);
 }

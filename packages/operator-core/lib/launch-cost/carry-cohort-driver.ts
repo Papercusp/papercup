@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { stringify as stringifyToml } from '@iarna/toml';
 import { getEncoding } from 'js-tiktoken';
 import { costFromTokens } from '@papercusp/model-pricing';
+import type { Sql } from 'postgres';
 import type { RpcFrame, SuStdioPeer, SuStdioReceipt } from '../su-session-stdio-peer';
 import { createCarryTrialRecipe, evaluateCarryBudgetReservation, inspectCarryNativeTurn, inspectCarryPreparationResponse,
   inspectCarrySourceRead, inspectCarryTaskResponse, type CarryBudgetCharge, type CarryBudgetRequest,
@@ -162,6 +163,17 @@ export function isCompletedCohortSourceRun(recipe: Recipe, result: CohortSourceR
   const expectedArms = recipe.pairs.filter(pair => pair.sourceId === result.source.sourceId).length * 2;
   return result.stop === null && result.source.errors.length === 0 && result.arms.length === expectedArms &&
     result.arms.every(arm => arm.completed && arm.quality === 'pass' && arm.errors.length === 0);
+}
+
+/** Every new immutable retry root must chain all earlier attempts, including
+ * preparation-only failures. An explicit ordinal prevents a runner from
+ * accidentally omitting retry-1 when it starts retry-2. */
+export function cohortPriorAttemptIds(attemptId: string) {
+  if (attemptId === 'initial') return [];
+  const match = /^retry-([1-9][0-9]*)$/.exec(attemptId);
+  const ordinal = match ? Number(match[1]) : NaN;
+  if (!Number.isSafeInteger(ordinal) || ordinal > 100) throw new Error(`invalid cohort attempt ${attemptId}`);
+  return ['initial', ...Array.from({ length: ordinal - 1 }, (_, index) => `retry-${index + 1}`)];
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -356,20 +368,19 @@ async function runArm(deps: CohortDeps, live: Live, ctx: {
     const threadId = String(record(opened.thread).id);
     row.threadId = threadId;
     const turnOptions = { threadId, model, timeoutMs: ctx.input.turnTimeoutMs };
-    if (arm === 'candidate') {
-      const carried = await runTurn(deps, live, { ...turnOptions, text: ctx.carry.carryText, bindInput: false });
-      row.turnIds.push(carried.turnId);
-      row.firstDispatchAtMs = carried.dispatchAtMs;
-      if (carried.status !== 'completed') throw new Error(`carry turn ${carried.status}`);
-      if (carried.trace.violations.length) row.errors.push(...carried.trace.violations.map(v => `violation:carry:${v}`));
-    }
     const recover = task.id === 'T2' && ctx.window && ctx.readArgs;
     const prompt = recover ? `${task.prompt}\nRecovery reference: ${ctx.window!.sourceRef}\nByte window: ${JSON.stringify(ctx.readArgs)}`
       : task.prompt;
     const allowed = recover ? [{ server: COHORT_MCP_SERVER, tool: COHORT_READ_TOOL, arguments: ctx.readArgs }] : [];
-    const result = await runTurn(deps, live, { ...turnOptions, text: prompt, allowedMcpCalls: allowed, bindInput: true });
+    // A real fresh Codex successor receives its carry as the first actionable
+    // turn. Give the candidate the objective task in that same turn: a separate
+    // carry-only turn would execute nextAction before the matched task arrives.
+    // The frozen carry bytes and hash remain unchanged, and any premature or
+    // unapproved action in this turn still fails the native trace checker.
+    const turnText = arm === 'candidate' ? `${ctx.carry.carryText}\n\n${prompt}` : prompt;
+    const result = await runTurn(deps, live, { ...turnOptions, text: turnText, allowedMcpCalls: allowed, bindInput: true });
     row.turnIds.push(result.turnId);
-    row.firstDispatchAtMs ??= result.dispatchAtMs;
+    row.firstDispatchAtMs = result.dispatchAtMs;
     row.firstUsefulAtMs = result.completedAtMs;
     row.completed = result.status === 'completed';
     row.response = result.trace.finalResponse;
@@ -397,6 +408,49 @@ export interface CohortUsageRow {
   id: string; session_id: string; usage_event_key: string | null; model: string | null; ts: string;
   input_tokens: number; cache_read_tokens: number; cache_creation_tokens: number; output_tokens: number;
   usage_provenance: Record<string, unknown> | null;
+}
+
+/** Read every canonical request for the selected native sessions. Both
+ * event_ts and ts are bigint Unix milliseconds; keep the same statement for
+ * the empty-session pre-charge preflight so a SQL/type drift fails before any
+ * preparation request can be sent. Unknown token categories fail closed. */
+export async function readCarryCohortUsage(sql: Sql, input: { workspaceId: string; sessionIds: readonly string[] }):
+  Promise<CohortUsageRow[]> {
+  if (!input.workspaceId.trim() || input.sessionIds.some(id => !id.trim())) {
+    throw new Error('cohort usage query requires a workspace and nonblank native session ids');
+  }
+  const sessions = [...new Set(input.sessionIds)];
+  const result = await sql<Array<Record<string, unknown>>>`
+    SELECT id::text, session_id, usage_event_key, model,
+           COALESCE(event_ts, ts)::text AS event_time,
+           input_tokens, cache_read_tokens, cache_creation_tokens, output_tokens, usage_provenance
+      FROM harness_shared.agent_usage_samples
+     WHERE workspace_id = ${input.workspaceId}
+       AND session_id = ANY(${sql.array(sessions)}::text[])
+     ORDER BY COALESCE(event_ts, ts), id`;
+  return result.map(row => {
+    for (const key of ['input_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'output_tokens']) {
+      if (row[key] === null || row[key] === undefined || !Number.isSafeInteger(Number(row[key])) || Number(row[key]) < 0) {
+        throw new Error(`canonical usage row ${row.id} has unavailable ${key}`);
+      }
+    }
+    const eventTime = Number(row.event_time);
+    if (!Number.isSafeInteger(eventTime) || eventTime < 0) {
+      throw new Error(`canonical usage row ${row.id} has unavailable bigint epoch-ms event time`);
+    }
+    return {
+      id: String(row.id), session_id: String(row.session_id),
+      usage_event_key: row.usage_event_key === null ? null : String(row.usage_event_key),
+      model: row.model === null ? null : String(row.model), ts: String(row.event_time),
+      input_tokens: Number(row.input_tokens), cache_read_tokens: Number(row.cache_read_tokens),
+      cache_creation_tokens: Number(row.cache_creation_tokens), output_tokens: Number(row.output_tokens),
+      usage_provenance: row.usage_provenance as Record<string, unknown> | null,
+    };
+  });
+}
+
+export async function preflightCarryCohortUsageQuery(sql: Sql, workspaceId: string) {
+  await readCarryCohortUsage(sql, { workspaceId, sessionIds: [] });
 }
 
 function requestOrder(row: CohortUsageRow) {

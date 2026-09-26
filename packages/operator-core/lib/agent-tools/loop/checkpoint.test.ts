@@ -265,7 +265,20 @@ beforeEach(() => {
   getModes.mockResolvedValue([]);
   selfCompactionAvailability.mockReturnValue({ available: false });
   readFleetWindDownLoopEndAuthorization.mockResolvedValue(null);
-  withBoundedTimeout.mockResolvedValue({ value: undefined, degraded: false, elapsedMs: 0 });
+  withBoundedTimeout.mockImplementation(async (work: unknown, options: unknown) => {
+    if ((options as { label?: string }).label === 'loop:checkpoint decision-ref advisory') {
+      try {
+        return {
+          value: await (work as () => Promise<unknown>)(),
+          degraded: false,
+          elapsedMs: 0,
+        };
+      } catch {
+        return { value: undefined, degraded: true, elapsedMs: 0 };
+      }
+    }
+    return { value: undefined, degraded: false, elapsedMs: 0 };
+  });
   listVerifiedWaitTakeoversForSubscribers.mockResolvedValue([]);
   unresolvedPlanDecisionRefs.mockResolvedValue(undefined);
   readFrozenRepairMarker.mockReset();
@@ -734,6 +747,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     } as const;
     listVerifiedWaitTakeoversForSubscribers.mockResolvedValueOnce([alert]);
     withBoundedTimeout
+      .mockResolvedValueOnce({ value: undefined, degraded: false, elapsedMs: 0 })
       .mockResolvedValueOnce({ value: undefined, degraded: false, elapsedMs: 0 })
       .mockResolvedValueOnce({ value: [alert], degraded: false, elapsedMs: 1 });
 
@@ -1663,6 +1677,25 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
         fallback: undefined,
         timeoutMs: CONTINUATION_READ_BUDGET_MS,
         label: 'loop:checkpoint continuation reads',
+      }),
+    );
+  });
+
+  it('bounds a stalled decision-ref advisory after the carry note is stored', async () => {
+    const { CONTINUATION_READ_BUDGET_MS } = await import('./checkpoint');
+    unresolvedPlanDecisionRefs.mockImplementation(() => new Promise(() => {}));
+    withBoundedTimeout.mockResolvedValueOnce({ value: undefined, degraded: true, elapsedMs: 5_000 });
+
+    const out = await call({ next: 'continue after checkpoint' });
+
+    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledOnce();
+    expect(body(out).ok).toBe(true);
+    expect(withBoundedTimeout).toHaveBeenCalledWith(
+      expect.any(Function),
+      expect.objectContaining({
+        fallback: undefined,
+        timeoutMs: CONTINUATION_READ_BUDGET_MS,
+        label: 'loop:checkpoint decision-ref advisory',
       }),
     );
   });

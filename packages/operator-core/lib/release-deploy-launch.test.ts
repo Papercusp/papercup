@@ -1335,6 +1335,18 @@ describe('EI-18724155280048738: an in-flight deploy must be distinguishable from
 });
 
 describe('readDeployStatus wiring', () => {
+  it('identifies a hanging authority read without mistaking completed status reads for pending', async () => {
+    const progress: string[][] = [];
+    const inFlight = computeDeployInFlight({ props: null, logPath: '/l', logMtimeMs: null });
+    void readDeployStatus({
+      loadSnapshot: async () => mkSnap({}, {}),
+      loadInFlight: async () => inFlight,
+      loadManualRunAuthority: () => new Promise<null>(() => {}),
+      onReadProgress: (pending) => progress.push(pending),
+    });
+    await vi.waitFor(() => expect(progress.at(-1)).toEqual(['manualRunAuthority']));
+  });
+
   it('reads P-010 certification for the exact green pin and threads it into status', async () => {
     const greenPin = {
       sha: '0123456789abcdef0123456789abcdef01234567',

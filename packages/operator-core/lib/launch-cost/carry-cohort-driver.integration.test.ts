@@ -35,7 +35,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('P-005 carry cohort dri
     const home = mkdtempSync(join(tmpdir(), 'p005-cohort-driver-')); homes.push(home);
     const { mintCarryRespawnArgs } = await vi.importActual<{ mintCarryRespawnArgs: (args: string[], o: Record<string, unknown>) =>
       { carryText: string; launchContextPath: string } }>('../../../../apps/operator/scripts/psu-launcher.mjs');
-    const requests: Array<{ kind: string; model: string; input: string }> = [];
+    const requests: Array<{ kind: string; model: string; input: string; text: string }> = [];
     const textOf = (item: Record<string, unknown> | undefined) =>
       ((item?.content as Array<{ text?: string }> | undefined) ?? []).map(part => part.text ?? '').join('');
     const provider = createServer(async (req, res) => {
@@ -43,9 +43,9 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('P-005 carry cohort dri
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { model: string; input: Array<Record<string, unknown>> };
       const lastUser = [...body.input].reverse().find(item => item.type === 'message' && item.role === 'user');
       const text = textOf(lastUser), toolResult = body.input.at(-1)?.type === 'function_call_output';
-      const task = recipe.tasks.find(t => text.startsWith(t.prompt.split('\n')[0]));
+      const task = recipe.tasks.find(t => text.includes(t.prompt.split('\n')[0]));
       const kind = text.includes('Acknowledgement JSON') ? 'preparation' : task ? `${task.id}${toolResult ? ':after-read' : ''}` : 'carry';
-      requests.push({ kind, model: body.model, input: JSON.stringify(body.input) });
+      requests.push({ kind, model: body.model, input: JSON.stringify(body.input), text });
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       if (task?.id === 'T2' && !toolResult) {
         const readArgs = text.slice(text.indexOf('Byte window: ') + 'Byte window: '.length).trim();
@@ -122,7 +122,7 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('P-005 carry cohort dri
         expect(arm.observedIdleMs).toBeGreaterThanOrEqual(0);
         expect(arm.observedIdleMs).toBeLessThan(60_000);
         expect(arm.firstUsefulResponseMs).toBeGreaterThan(0);
-        expect(arm.turnIds).toHaveLength(arm.arm === 'candidate' ? 2 : 1);
+        expect(arm.turnIds).toHaveLength(1);
       }
       // Control inherits the predecessor's full history; the candidate starts
       // fresh and receives the seed only through the managed carry turn.
@@ -132,8 +132,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('P-005 carry cohort dri
       expect(controlT1).toBeDefined();
       expect(candidateT1).toHaveLength(1);
       expect(candidateT1[0].input).toContain(JSON.stringify(recipe.seedText).slice(1, 40));
-      expect(requests.filter(r => r.kind === 'carry')).toHaveLength(2);
-      expect(requests.filter(r => r.kind === 'carry').every(r => !r.input.includes(filler))).toBe(true);
+      // The first candidate request must carry the task itself. A standalone
+      // carry request would let the agent act on nextAction before T1 arrives.
+      expect(candidateT1[0].text.endsWith(recipe.tasks[0].prompt)).toBe(true);
+      expect(requests.filter(r => r.kind === 'carry')).toHaveLength(0);
       expect(requests.every(r => r.model === 'gpt-6-sol')).toBe(true);
 
       const requestsBeforeRefusal = requests.length;

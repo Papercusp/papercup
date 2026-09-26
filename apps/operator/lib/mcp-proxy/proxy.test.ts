@@ -1650,6 +1650,8 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     const r = await request(port(proxy));
     expect(r.status).toBe(503);
     expect(r.body).toContain("mcp_proxy_upstream_unavailable");
+    expect(JSON.parse(r.body).note).toContain("upstream target refused connections");
+    expect(JSON.parse(r.body).note).not.toContain(":3070");
   });
 
   it("does NOT reuse upstream sockets — a FRESH connection per forward (W1.3 stale-socket-400 guard)", async () => {

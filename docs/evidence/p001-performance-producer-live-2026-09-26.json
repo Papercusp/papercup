@@ -1,0 +1,160 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-001 backend performance producer live-series verification on 2026-09-26",
+  "framework": "operational",
+  "testLayer": "integration",
+  "evidencePlane": "live",
+  "plan": "papercusp-log-performance-remediation-2026-09-23",
+  "workItem": "WI-10002823",
+  "specs": [
+    "PERF-P-001@1",
+    "AUTO-BAR-R-1-P-001@1"
+  ],
+  "observer": "su-8716da52-ff87-4348-a7da-b413d3ecef4b",
+  "command": [
+    "ptool dev:pg_query: read the current shared system.health performanceHistory projection for papercusp-workspace",
+    "ptool dev:pg_query: read the four newest harness_shared.perf_regression_snapshots rows for papercusp-workspace with a same-scope positive control",
+    "systemctl --user show papercusp-bg-host.service --property=ActiveState --property=MainPID --property=ExecMainStartTimestamp",
+    "ptool dev:pg_query: join the active bg-host MainPID to harness_shared.runtime_vintage with a same-scope positive control",
+    "git rev-parse: compare the three P-001 producer/reader/integration source blobs at the loaded bg-host commit and current HEAD",
+    "curl -fsS http://127.0.0.1:3170/api/desktop/version"
+  ],
+  "startedAt": "2026-09-26T22:47:24.466Z",
+  "finishedAt": "2026-09-26T22:49:13.797Z",
+  "exitCode": 0,
+  "summary": "The active background-worker host is persisting the backend performance series on its 15-minute cadence. Four consecutive rows span 21:55:51Z through 22:41:59Z, the current Health projection reports status ok with lastCapturedAt 22:41:59Z, and the producer's exact source blobs match current HEAD. The live read is named and bounded; nullable metrics remain null rather than being fabricated.",
+  "subject": {
+    "workspaceId": "papercusp-workspace",
+    "host": "main-server-Precision-7865-Tower",
+    "bgHostUnit": "papercusp-bg-host.service",
+    "bgHostRuntimeUnit": "hono-host:3271",
+    "bgHostPid": 1357826,
+    "bgHostActive": true,
+    "bgHostStartedAt": "2026-09-26T14:50:13-04:00",
+    "bgHostLoadedCommit": "e45de4f8f8e0a0bc49dfec4360645755e7ac92b6",
+    "stagingApiUrl": "http://127.0.0.1:3170",
+    "stagingApiBuild": "cda1e87492",
+    "observedHead": "cda1e874920686cd480c227ee2d975a4180743e1"
+  },
+  "measurementProfile": {
+    "cadenceMs": 900000,
+    "staleAfterMs": 1800000,
+    "window": {
+      "firstCapturedAt": "2026-09-26T21:55:51.869237Z",
+      "lastCapturedAt": "2026-09-26T22:41:59.784010Z",
+      "sampleCount": 4,
+      "orderedGapSeconds": [918.316615, 917.451346, 931.928812]
+    },
+    "metricDefinitions": {
+      "loopLagP95Ms": "event-loop-lag p95 in milliseconds; null when no monitor is running",
+      "connSaturationPct": "Postgres server-wide connection saturation percent; null when pgHealth is unreadable",
+      "dispatchOrphanRate": "dispatch-orphan fraction in [0,1]; null below the minimum sample or when its table is absent",
+      "dispatchSample": "dispatch rows behind dispatchOrphanRate",
+      "coordOpenEscalations": "open coordination escalation count; null when its table is absent"
+    },
+    "budgets": {
+      "loopLagP95WarnMs": 600,
+      "loopLagP95CritMs": 1000,
+      "connSaturationWarnPct": 85,
+      "connSaturationCritPct": 92,
+      "dispatchOrphanRateWarnPct": 0.3,
+      "dispatchOrphanRateCritPct": 0.6,
+      "dispatchOrphanMinSample": 20,
+      "dispatchOrphanWindowHours": 24,
+      "coordOpenEscalationsWarn": 2000,
+      "coordOpenEscalationsCrit": 8000
+    }
+  },
+  "observations": {
+    "healthSnapshot": {
+      "computedAtMs": 1790462829926,
+      "evaluatedAtMs": 1790462815560,
+      "status": "ok",
+      "lastCapturedAt": "2026-09-26T22:41:59.784Z",
+      "ageMs": 302436,
+      "note": "lastCapturedAt=2026-09-26T22:41:59.784Z"
+    },
+    "seriesNewestFirst": [
+      {
+        "capturedAt": "2026-09-26T22:41:59.784010Z",
+        "loopLagP95Ms": 51.5,
+        "connSaturationPct": 43.8,
+        "dispatchOrphanRate": null,
+        "dispatchSample": 0,
+        "coordOpenEscalations": 330,
+        "breached": []
+      },
+      {
+        "capturedAt": "2026-09-26T22:26:27.637198Z",
+        "loopLagP95Ms": 298.8,
+        "connSaturationPct": 36.3,
+        "dispatchOrphanRate": null,
+        "dispatchSample": 0,
+        "coordOpenEscalations": 335,
+        "breached": []
+      },
+      {
+        "capturedAt": "2026-09-26T22:11:10.185852Z",
+        "loopLagP95Ms": 175.4,
+        "connSaturationPct": 40.2,
+        "dispatchOrphanRate": null,
+        "dispatchSample": 0,
+        "coordOpenEscalations": 337,
+        "breached": []
+      },
+      {
+        "capturedAt": "2026-09-26T21:55:51.869237Z",
+        "loopLagP95Ms": 146.1,
+        "connSaturationPct": 46.7,
+        "dispatchOrphanRate": null,
+        "dispatchSample": 0,
+        "coordOpenEscalations": 331,
+        "breached": []
+      }
+    ],
+    "sourceBlobParity": {
+      "packages/operator-core/lib/system-health/perf-regression-rig.ts": "0fa7a1aee1f52b768097028874adc2b2da16a3d9",
+      "packages/operator-core/lib/system-health/perf-regression-producer.integration.test.ts": "f0179975fd0e0c92dacf5d577a54e6b05d2726a0",
+      "packages/operator-core/lib/dbos/in-process-periodic.ts": "920c3b6ebf7e624eb50678abce55b097237b86aa"
+    }
+  },
+  "assertions": [
+    {
+      "id": "fresh-timestamped-series",
+      "passed": true,
+      "evidence": "Four newest persisted samples are timestamped at 21:55:51.869237Z, 22:11:10.185852Z, 22:26:27.637198Z and 22:41:59.784010Z. All three gaps are about 15-16 minutes and below the explicit two-missed-sample 30-minute alarm threshold."
+    },
+    {
+      "id": "independent-health-readback",
+      "passed": true,
+      "evidence": "The independently persisted system.health snapshot computedAt=1790462829926 reports performanceHistory.status=ok, lastCapturedAt=2026-09-26T22:41:59.784Z and ageMs=302436; it did not invoke or manually insert a producer sample."
+    },
+    {
+      "id": "named-host-and-build",
+      "passed": true,
+      "evidence": "papercusp-bg-host.service was active with MainPID 1357826. The runtime-vintage row joins that PID to main-server-Precision-7865-Tower and loaded commit e45de4f8f8e0a0bc49dfec4360645755e7ac92b6; the staging API read plane reports cda1e87492."
+    },
+    {
+      "id": "producer-code-present-in-loaded-build",
+      "passed": true,
+      "evidence": "The loaded bg-host commit and current HEAD have identical Git blobs for perf-regression-rig.ts, perf-regression-producer.integration.test.ts and dbos/in-process-periodic.ts. Whole-tree build equality is not claimed."
+    },
+    {
+      "id": "metric-bounds-and-missing-data-semantics",
+      "passed": true,
+      "evidence": "The inspected producer source defines a 15-minute cadence, stale after two missed intervals, the exact four metric budgets recorded above, and nullable unavailable metrics. The live series kept dispatchOrphanRate null at sample size 0 instead of fabricating a value."
+    }
+  ],
+  "supportingTestRunIds": [19210434],
+  "sourcePaths": [
+    "packages/operator-core/lib/system-health/perf-regression-rig.ts",
+    "packages/operator-core/lib/system-health/perf-regression-producer.integration.test.ts",
+    "packages/operator-core/lib/dbos/in-process-periodic.ts"
+  ],
+  "notProven": [
+    "Whole-tree equality between the loaded bg-host commit and current HEAD; only the three P-001 source/test blobs were compared and matched.",
+    "A deliberate outage on the shared live producer; stopped-producer and failed-insert behavior is covered by canonical integration test_run 19210434 instead of disrupting the live service.",
+    "Final green-main or :3070 shipment; this is current-build/live-service evidence for P-001, while plan-wide shipment remains P-009."
+  ]
+}

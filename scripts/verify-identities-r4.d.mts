@@ -46,4 +46,10 @@ export function requireRollbackResponse({ poll, readResponse }: {
     poll: any;
     readResponse: any;
 }): any;
+/** Exercise the real hook's ACK-on-emission protocol for the isolated fixture. */
+export function confirmFixtureDelivery({ request, emit, ledger }: {
+    request: any;
+    emit: any;
+    ledger: any;
+}): Promise<any>;
 export function main(): Promise<void>;

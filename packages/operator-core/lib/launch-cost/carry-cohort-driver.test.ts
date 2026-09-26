@@ -1,12 +1,22 @@
 import { parse as parseToml } from '@iarna/toml';
 import { describe, expect, it } from 'vitest';
 import { buildCarryTaskEvaluations, buildCohortConfigToml, buildHistoryFiller, cohortArmPlan, isCompletedCohortSourceRun, reserveCohortBudget,
-  priceUsageRow, type CohortArmRecord, type CohortSourceRecord, type CohortUsageRow } from './carry-cohort-driver';
+  cohortPriorAttemptIds, priceUsageRow, type CohortArmRecord, type CohortSourceRecord, type CohortUsageRow } from './carry-cohort-driver';
 import { createCarryTrialRecipe, evaluateCarryTaskPairs } from './launch-cost-metrics';
 
 const recipe = createCarryTrialRecipe();
 
 describe('P-005 carry cohort driver (pure parts)', () => {
+  it('chains every immutable paid attempt before a new retry root', () => {
+    expect(cohortPriorAttemptIds('initial')).toEqual([]);
+    expect(cohortPriorAttemptIds('retry-1')).toEqual(['initial']);
+    expect(cohortPriorAttemptIds('retry-2')).toEqual(['initial', 'retry-1']);
+    expect(cohortPriorAttemptIds('retry-3')).toEqual(['initial', 'retry-1', 'retry-2']);
+    for (const attempt of ['retry-0', 'retry-two', 'other', 'retry-101']) {
+      expect(() => cohortPriorAttemptIds(attempt)).toThrow('invalid cohort attempt');
+    }
+  });
+
   it('builds deterministic inert filler at the requested o200k size', () => {
     const a = buildHistoryFiller(5_000, 'S-I0'), b = buildHistoryFiller(5_000, 'S-I0'), c = buildHistoryFiller(5_000, 'L-I0');
     expect(a.sha256).toBe(b.sha256);

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const loadSnapshot = vi.fn();
 const createSource = vi.fn();
 const createBinding = vi.fn();
+const migrateBinding = vi.fn();
 const setArmed = vi.fn();
 const queueLastEvent = vi.fn();
 const invalidate = vi.fn();
@@ -11,6 +12,7 @@ vi.mock('../../external-triggers/admin', () => ({
   loadExternalTriggerAdminSnapshot: (...args: unknown[]) => loadSnapshot(...args),
   createExternalTriggerSource: (...args: unknown[]) => createSource(...args),
   createExternalTriggerBinding: (...args: unknown[]) => createBinding(...args),
+  migrateExternalTriggerPlanBindingToOperation: (...args: unknown[]) => migrateBinding(...args),
   setExternalTriggerBindingArmed: (...args: unknown[]) => setArmed(...args),
   queueExternalTriggerLastEventTestRun: (...args: unknown[]) => queueLastEvent(...args),
 }));
@@ -63,6 +65,12 @@ beforeEach(() => {
   loadSnapshot.mockResolvedValue(snapshot);
   createSource.mockResolvedValue({ id: '00000000-0000-4000-8000-000000000003', kind: 'slack' });
   createBinding.mockResolvedValue({ id: '10000000-0000-4000-8000-000000000003', armed: false });
+  migrateBinding.mockResolvedValue({
+    legacyBindingId: '10000000-0000-4000-8000-000000000001',
+    replacement: { id: '10000000-0000-4000-8000-000000000004', armed: false },
+    replayed: false,
+    parity: { sourceId: '00000000-0000-4000-8000-000000000001' },
+  });
   setArmed.mockImplementation(async (_sql, _ws, id, armed) => ({ id, armed }));
   queueLastEvent.mockResolvedValue({
     ok: true,
@@ -156,6 +164,37 @@ describe('triggers:* tool surface', () => {
       planHarnessSlug: null,
       planSlug: null,
     }));
+  });
+
+  it('copies a legacy plan binding into one disarmed operation replacement', async () => {
+    const out = body(
+      await bindTool.handler(
+        {
+          migrateFromBindingId: '10000000-0000-4000-8000-000000000001',
+          operationHarnessSlug: 'papercusp',
+          operationId: 'triage-message',
+          input: { priority: 'normal' },
+        } as never,
+        ctx,
+      ),
+    );
+    expect(out).toMatchObject({
+      ok: true,
+      migration: {
+        legacyBindingId: '10000000-0000-4000-8000-000000000001',
+        replacement: { id: '10000000-0000-4000-8000-000000000004', armed: false },
+        replayed: false,
+      },
+    });
+    expect(migrateBinding).toHaveBeenCalledWith(expect.anything(), 'ws-1', {
+      bindingId: '10000000-0000-4000-8000-000000000001',
+      operationHarnessSlug: 'papercusp',
+      operationId: 'triage-message',
+      operationInput: { priority: 'normal' },
+      createdBy: 'su-test',
+    });
+    expect(createBinding).not.toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-1' });
   });
 
   it('arms and disarms only the named binding', async () => {

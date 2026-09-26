@@ -429,7 +429,7 @@ describe('hono-host rejects persistent main-port conflicts before bootstrap', ()
     expect(bootstrapCall).toBeGreaterThan(preflightImport);
     expect(honoHostPortPreflightSrc).toContain('portAvailableSync(port, hostname)');
     expect(honoHostPortPreflightSrc).toContain('fatal EADDRINUSE during pre-bootstrap port check');
-    expect(honoHostPortPreflightSrc).toContain('if (!sidecarMode');
+    expect(honoHostPortPreflightSrc).toContain('cluster.isPrimary && !sidecarMode');
   });
 });
 

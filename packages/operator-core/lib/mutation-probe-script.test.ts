@@ -24,7 +24,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -37,6 +37,7 @@ import { join, resolve } from 'node:path';
  * exact hazard EI-19450431506682666 was filed for.
  */
 const SCRIPT = process.env.MUTATION_PROBE_SCRIPT ?? resolve(__dirname, '../../../scripts/mutation-probe.sh');
+const OVERLAY = resolve(__dirname, '../../../scripts/testing-run-probe-overlay.sh');
 const ORIGINAL = 'alpha\nbeta\ngamma\n';
 
 let dir: string;
@@ -921,6 +922,33 @@ describe('mutation-probe.sh — historical source mode', () => {
 const ACCEPT_SWEEP = '--accept-sweep-race';
 
 describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
+  beforeEach(() => { git(dir, ['init', '-q']); });
+
+  it('admits a concurrent test against original bytes while the tracked subject is mutated', async () => {
+    const mutantStarted = join(dir, 'mutant-started');
+    const child = spawn('bash', [SCRIPT, '--in-tree', ACCEPT_SWEEP, '--file', subject,
+      '--mutate', 's/beta/BETA/', '--test',
+      `if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then : > "${mutantStarted}"; sleep 4; fi; grep -q "^beta$" {}`],
+    { stdio: ['ignore', 'pipe', 'pipe'] });
+    const exited = new Promise<number | null>((resolveExit, rejectExit) => {
+      child.once('error', rejectExit);
+      child.once('exit', (code) => resolveExit(code));
+    });
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(mutantStarted) && Date.now() < deadline) await sleep(50);
+      expect(existsSync(mutantStarted)).toBe(true);
+      expect(read()).toContain('BETA');
+      const admitted = spawnSync('bash', [OVERLAY, dir, '--', 'cat', subject],
+        { encoding: 'utf8', timeout: 10_000 });
+      expect(admitted.status, admitted.stderr).toBe(0);
+      expect(admitted.stdout).toBe(ORIGINAL);
+      expect(await exited).toBe(0);
+      expect(read()).toBe(ORIGINAL);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    }
+  }, 20_000);
   it('restores after a normal exit', () => {
     // Assert the exit code, not just the restore: without this the probe REFUSING outright
     // (exit 2, tracked file never touched) also leaves the file byte-identical, so the restore

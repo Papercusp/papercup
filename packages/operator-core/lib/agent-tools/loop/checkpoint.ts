@@ -1662,10 +1662,20 @@ export default defineTool({
     // fail-open even if the advisory's resolver itself regresses.
     const decisionRefAdvisory =
       stored !== null
-        ? await unresolvedPlanDecisionRefs(stored, {
-            workspaceId,
-            harnessSlug: harness,
-          }).catch(() => undefined)
+        ? (
+            await withBoundedTimeout(
+              () =>
+                unresolvedPlanDecisionRefs(stored, {
+                  workspaceId,
+                  harnessSlug: harness,
+                }),
+              {
+                fallback: undefined,
+                timeoutMs: CONTINUATION_READ_BUDGET_MS,
+                label: 'loop:checkpoint decision-ref advisory',
+              },
+            )
+          ).value
         : undefined;
 
     // Unreachable today (this tool passes no `guard`, and only a blocked guard skips

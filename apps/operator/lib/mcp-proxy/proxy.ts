@@ -4398,7 +4398,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               ures.pipe(res);
               if (attempts > 1) {
                 log(
-                  `recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`,
+                  `recovered after ${attempts} attempts (${Date.now() - started}ms) — upstream target came back`,
                 );
                 record({
                   kind: "recovered",
@@ -4545,7 +4545,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               attempts,
               windowMs: retryWindowMs,
               note: refused
-                ? ":3070 refused connections for the whole retry window (restart took too long or is down)"
+                ? "upstream target refused connections for the whole retry window (restart took too long or is down)"
                 : fwd.klass === "opaque"
                   ? "upstream errored AFTER connecting — not retried (avoids double-applying a non-idempotent tools/call)"
                   : fwd.klass === "keyed"
