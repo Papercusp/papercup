@@ -33,6 +33,7 @@ import type { SuRpcEngine } from '../su-session-rpc-engine';
 import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import { paneContains, screenContains, screenHasAssistantReply, VtScreen } from './vt-screen';
+import { describeObserverBlock, pollUntil } from './poll-until';
 import { redactSensitiveText } from '../sensitive-text';
 import { nativeProviderRequestSignal, nativeProviderTraceOrigin } from './native-provider-trace';
 import { HARNESS_TAG } from './release-acceptance';
@@ -572,6 +573,12 @@ class PuiPane {
   // only a card naming a path a journey registered is approved, and only once.
   private readonly nativeReadPaths = new Set<string>();
   private readonly nativeReadApprovals: string[] = [];
+  // `stop()` quits pui, which clears the screen, and failure evidence is
+  // usually gathered after a `finally` has stopped the pane: keep what was on
+  // screen before the quit key so the evidence shows the failing frame.
+  private stoppedScreen: string | undefined;
+  // Longest the observing event loop was blocked during any wait (WI-10003175).
+  private observerMaxLateMs = 0;
 
   /** SU tool approvals this pane answered, in order. */
   get answeredSuToolApprovals(): readonly string[] { return this.suToolApprovals ?? []; }
@@ -708,7 +715,9 @@ class PuiPane {
 
   failureEvidence(): Record<string, unknown> {
     return {
-      screen: this.screen(),
+      screen: this.stoppedScreen ?? this.screen(),
+      screenFrozenAtStop: this.stoppedScreen !== undefined,
+      observerMaxLateMs: this.observerMaxLateMs,
       traffic: sessionTraffic,
       commands: commandPosts.map(({ type, commandId }) => ({ type, commandId })),
       commandReplies,
@@ -744,14 +753,15 @@ class PuiPane {
 
   async waitFor(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (screenContains(this.screen(), needle)) return;
-      this.settleSuToolApproval();
-      await new Promise((resolve) => setTimeout(resolve, 60));
-    }
+    const { ok, maxLateMs } = await pollUntil(() => screenContains(this.screen(), needle), {
+      timeoutMs,
+      onMiss: () => { this.settleSuToolApproval(); },
+    });
+    this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
+    if (ok) return;
     throw new Error(
-      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} on the rendered screen:\n` + this.screen(),
+      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} on the rendered screen`
+        + `${describeObserverBlock(maxLateMs)}:\n` + this.screen(),
       { cause: new Error(`Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`) },
     );
   }
@@ -769,13 +779,12 @@ class PuiPane {
    */
   async waitForGone(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (!screenContains(this.screen(), needle)) return;
-      await new Promise((resolve) => setTimeout(resolve, 60));
-    }
+    const { ok, maxLateMs } = await pollUntil(() => !screenContains(this.screen(), needle), { timeoutMs });
+    this.observerMaxLateMs = Math.max(this.observerMaxLateMs, maxLateMs);
+    if (ok) return;
     throw new Error(
-      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} to LEAVE the rendered screen:\n` + this.screen(),
+      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} to LEAVE the rendered screen`
+        + `${describeObserverBlock(maxLateMs)}:\n` + this.screen(),
       { cause: new Error(`Production session evidence: ${JSON.stringify({ binary: bin, binarySha256, traffic: sessionTraffic })}`) },
     );
   }
@@ -801,6 +810,11 @@ class PuiPane {
   }
 
   async stop(): Promise<void> {
+    try {
+      this.stoppedScreen ??= this.screen();
+    } catch {
+      /* no screen to keep */
+    }
     try {
       this.pty.write('q');
     } catch {
@@ -949,15 +963,17 @@ async function waitForPersistedChat(
   predicate: (chat: PersistedChat) => boolean,
   timeoutMs = 15_000,
 ): Promise<PersistedChat> {
-  const deadline = Date.now() + timeoutMs;
-  let last: PersistedChat[] = [];
-  while (Date.now() < deadline) {
-    last = await persistedChats(db);
-    const chat = last.find(predicate);
-    if (chat) return chat;
-    await new Promise((resolve) => setTimeout(resolve, 60));
-  }
-  throw new Error(`timed out waiting for persisted Agent Chat state; last rows: ${JSON.stringify(last)}`);
+  const seen: { rows: PersistedChat[]; match?: PersistedChat } = { rows: [] };
+  const { maxLateMs } = await pollUntil(async () => {
+    seen.rows = await persistedChats(db);
+    seen.match = seen.rows.find(predicate);
+    return seen.match !== undefined;
+  }, { timeoutMs });
+  if (seen.match) return seen.match;
+  throw new Error(
+    `timed out waiting for persisted Agent Chat state${describeObserverBlock(maxLateMs)}; `
+      + `last rows: ${JSON.stringify(seen.rows)}`,
+  );
 }
 
 let db: OrgTestDb;

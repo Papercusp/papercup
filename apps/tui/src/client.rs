@@ -1178,7 +1178,7 @@ impl OperatorClient {
             .context("verify selected operator supports attached SU sessions")?;
         if !identity.capabilities.attached_su_session {
             anyhow::bail!(
-                "selected operator {} does not advertise attached, windowless SU sessions; PUI refused before launch so it cannot open a native agent terminal. Select a current operator with PUI_OPERATOR=staging or update the selected operator",
+                "selected operator {} does not advertise attached, windowless SU sessions; PUI refused before launch so it cannot open a native agent terminal. Update the selected operator, or select a current one with PUI_OPERATOR=<url>",
                 identity.endpoint
             );
         }

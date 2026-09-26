@@ -1233,6 +1233,14 @@ describe('buildWorkspaceHostBootstrap', () => {
     const unit = buildWorkspaceHostBootstrap(input());
 
     expect(unit).toContain('Environment=PAPERCUSP_HOME=$STATE_ROOT/.papercusp');
+    // WI-10003189: blueprint prompt resolution (su persona for New Session) must read the
+    // installed content home, never the release — the release carries no blueprints.
+    expect(unit).toContain('Environment=PAPERCUSP_PROMPT_ROOT=$STATE_ROOT/.papercusp\n');
+    expect(unit).not.toContain('Environment=PAPERCUSP_PROMPT_ROOT=$RUNTIME_ROOT');
+    // WI-10003189: long-lived sessions target the host's own operator, never the dev
+    // box's :9071 MCP proxy (a host runs none).
+    expect(unit).toContain('Environment=PAPERCUSP_MCP_PROXY_BASE=http://127.0.0.1:$SERVICE_PORT\n');
+    expect(unit).not.toContain('9071');
     for (const [envVar, dir] of [
       ['PAPERCUSP_PROMPTS_DIR', 'blueprints/base/prompts'],
       ['PAPERCUSP_TEMPLATES_DIR', 'templates'],

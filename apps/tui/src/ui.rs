@@ -4781,7 +4781,7 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
         return;
     }
     if setup.show_help {
-        let text = "Setup and recovery\n\nContext: e edits the operator address; Tab enters its token (masked). Enter reconnects this PUI; Esc cancels. A different address never receives the old operator token.\n\nRuntime: b engine, a account, m model, e effort, u mode. Default uses the operator host's credential; auto routes its configured account pool. No account? Configure one on that operator, then r refresh.\n\nAuthentication failure: enter a token issued by the selected operator. Provider login belongs on the operator host: use your engine's login or its existing account setup. PUI does not store provider keys.\n\nUnreachable: check the address and start the operator. TLS: check scheme and certificate. Missing engine: install it on the operator host. Missing capability: update that operator.\n\nManual mode is the initial setting. Review is required before any session starts.\n\nAny key returns to setup (draft retained).";
+        let text = "Setup and recovery\n\nNo operator on this computer? l signs in to Papercusp cloud in your browser, then opens PUI on one of your cloud workspaces. h connects to a remote host you saved with psu (a cloud sign-in or an SSH host). Both hand this terminal to the psu bundled with PUI; when the remote PUI exits, this one has exited too.\n\nContext: e edits the operator address; Tab enters its token (masked). Enter reconnects this PUI; Esc cancels. A different address never receives the old operator token.\n\nRuntime: b engine, a account, m model, e effort, u mode. Default uses the operator host's credential; auto routes its configured account pool. No account? Configure one on that operator, then r refresh.\n\nAuthentication failure: enter a token issued by the selected operator. Provider login belongs on the operator host: use your engine's login or its existing account setup. PUI does not store provider keys.\n\nUnreachable: check the address and start the operator. TLS: check scheme and certificate. Missing engine: install it on the operator host. Missing capability: update that operator.\n\nManual mode is the initial setting. Review is required before any session starts.\n\nAny key returns to setup (draft retained).";
         let text = format!("{text}\n\nAccount setup: {}/settings/deploy-accounts\nOperator tokens entered here last for this PUI process only.", setup.endpoint);
         f.render_widget(Clear, area);
         f.render_widget(Paragraph::new(text).style(Theme::popup())
@@ -4795,7 +4795,7 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
             Line::from("Reconnect this PUI"),
             Line::from(format!("Operator: {endpoint}{}", if setup.editing_token { "" } else { "▏" })),
             Line::from(format!("Operator token: {}{}", if setup.token.0.is_empty() { "(not entered)" } else { "••••••••" }, if setup.editing_token { "▏" } else { "" })),
-            Line::from("staging, release, or a full http(s) URL"),
+            Line::from("A full http(s) URL, such as https://host:9443"),
             Line::from("Tab switches address/token · Ctrl-U clears the field"),
             Line::from("Enter reconnects · Esc cancels · first message retained"),
             Line::from("A changed address clears the previous operator token."),
@@ -4813,11 +4813,16 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
             else if app.backend_identity.is_some() { "Connection: Connected" } else { "Connection: Checking" }),
     ];
     if setup.step == 0 {
+        if app.backend_identity_error.is_some() {
+            lines.push(Line::from("No operator here? Run PUI on a remote host instead:"));
+        }
+        lines.push(Line::from("l Sign in to Papercusp cloud · h Connect to a remote host"));
         lines.push(Line::from("e endpoint / token · c register project · r retry · ? help"));
         lines.push(Line::from(format!("Project search: {}{}", setup.project_query, if setup.project_searching { "▏" } else { "" })));
         let projects = app.setup_projects();
         if projects.is_empty() { lines.push(Line::from("No matching projects. Wait for connection or change the search.")); }
-        let available = area.height.saturating_sub(10).max(1) as usize;
+        // Two more fixed rows than before: the remote-choice line(s) above.
+        let available = area.height.saturating_sub(12).max(1) as usize;
         let start = setup.project_cursor.saturating_sub(available.saturating_sub(1));
         for (index, project) in projects.iter().enumerate().skip(start).take(available) {
             lines.push(Line::from(format!("{} {project}", if index == setup.project_cursor { ">" } else { " " })));

@@ -38,6 +38,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { screenContains, VtScreen } from './vt-screen';
+import { describeObserverBlock, pollUntil } from './poll-until';
 import { HARNESS_TAG } from './release-acceptance';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
@@ -330,23 +331,19 @@ class FakeOperator {
   }
 
   async waitForTool(name: string, timeoutMs = 15_000): Promise<RecordedRequest> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const request = this.requests.find((candidate) => candidate.body?.name === name);
-      if (request) return request;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    throw new Error(`timed out waiting for run-tool request ${name}`);
+    const find = () => this.requests.find((candidate) => candidate.body?.name === name);
+    const { maxLateMs } = await pollUntil(() => find() !== undefined, { timeoutMs, intervalMs: 50 });
+    const request = find();
+    if (request) return request;
+    throw new Error(`timed out waiting for run-tool request ${name}${describeObserverBlock(maxLateMs)}`);
   }
 
   async waitForTaskAction(action: string, after = 0, timeoutMs = 15_000): Promise<RecordedTaskOp> {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const request = this.taskOps.slice(after).find((candidate) => candidate.body.action === action);
-      if (request) return request;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    throw new Error(`timed out waiting for task action ${action}`);
+    const find = () => this.taskOps.slice(after).find((candidate) => candidate.body.action === action);
+    const { maxLateMs } = await pollUntil(() => find() !== undefined, { timeoutMs, intervalMs: 50 });
+    const request = find();
+    if (request) return request;
+    throw new Error(`timed out waiting for task action ${action}${describeObserverBlock(maxLateMs)}`);
   }
 }
 
@@ -387,25 +384,21 @@ class PuiPane {
 
   async waitFor(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 20_000;
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (this.contains(needle)) return;
-      await new Promise((r) => setTimeout(r, 60));
-    }
+    const { ok, maxLateMs } = await pollUntil(() => this.contains(needle), { timeoutMs });
+    if (ok) return;
     throw new Error(
-      `timed out (${timeoutMs}ms) waiting for ${JSON.stringify(needle)} on the rendered screen:\n${this.screen()}`,
+      `timed out (${timeoutMs}ms) waiting for ${JSON.stringify(needle)} on the rendered screen`
+        + `${describeObserverBlock(maxLateMs)}:\n${this.screen()}`,
     );
   }
 
   async waitForAbsent(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 20_000;
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      if (!this.contains(needle)) return;
-      await new Promise((r) => setTimeout(r, 60));
-    }
+    const { ok, maxLateMs } = await pollUntil(() => !this.contains(needle), { timeoutMs });
+    if (ok) return;
     throw new Error(
-      `timed out (${timeoutMs}ms) waiting for ${JSON.stringify(needle)} to leave the rendered screen:\n${this.screen()}`,
+      `timed out (${timeoutMs}ms) waiting for ${JSON.stringify(needle)} to leave the rendered screen`
+        + `${describeObserverBlock(maxLateMs)}:\n${this.screen()}`,
     );
   }
 

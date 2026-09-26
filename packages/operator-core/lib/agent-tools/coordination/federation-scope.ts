@@ -38,7 +38,9 @@ export interface FederationScopeDeps {
   listHives: (workspaceId: string) => Promise<Array<{ homeSlug: string }>>;
   loadHarnessRegistry: (
     workspaceId: string,
-  ) => Promise<{ projects: Array<{ slug: string; remote_hive?: boolean }> }>;
+  ) => Promise<{
+    projects: Array<{ slug: string; remote_hive?: boolean; joined_via_link?: boolean }>;
+  }>;
   getOwnedHiveMeta: (
     potHomeSlug: string,
     workspaceId: string,
@@ -94,7 +96,10 @@ async function resolveUncached(
   const shared: string[] = [];
   for (const h of hives) {
     const entry = reg.projects.find((p) => p.slug === h.homeSlug);
-    if (entry?.remote_hive === true) {
+    // A pot join writes a `remote_hive` view; the canonical invite-LINK join writes
+    // the cloned harness with `joined_via_link` and no view. Both are joiner-side
+    // (git-sync-reconcile treats them the same), so both federate by definition.
+    if (entry?.remote_hive === true || entry?.joined_via_link === true) {
       shared.push(h.homeSlug); // joined view — federates by definition
       continue;
     }

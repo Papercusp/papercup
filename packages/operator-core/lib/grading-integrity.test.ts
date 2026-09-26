@@ -203,10 +203,25 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.generationAncestry).toHaveBeenCalledWith(expect.any(String), '1111111', '2222222');
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).toHaveBeenCalledTimes(1);
+    // EI-24339979200649356: the ancestry check measured THIS dispatcher's build, so the
+    // judge must be bound to it. The default ('stable') rides the :9071 proxy to green
+    // :3070 — a different build — and the judge's emit is then refused as incompatible.
+    expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({ mcpTarget: 'spawn-host' }), expect.anything());
     expect(result.receipts[0]).toMatchObject({
       state: 'launched',
       routingFallback: 'generation-bound card requires a fresh judge launched from this compatible dispatcher build',
     });
+  });
+
+  it('keeps a judge for a card with no graded generation on the stable MCP proxy', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-unbound-generation')]);
+
+    await dispatchPendingGradingAudits({ targetIds: ['EI-unbound-generation'], ctx }, d);
+
+    expect(d.generationAncestry).not.toHaveBeenCalled();
+    expect(d.launch).toHaveBeenCalledTimes(1);
+    expect(d.launch.mock.calls[0]?.[0]).not.toHaveProperty('mcpTarget');
   });
 
   it.each([

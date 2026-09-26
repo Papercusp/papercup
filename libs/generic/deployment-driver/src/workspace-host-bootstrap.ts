@@ -2794,6 +2794,11 @@ export function buildWorkspaceHostBootstrap(
     "WorkingDirectory=$STATE_ROOT",
     "Environment=PAPERCUSP_BIND_HOST=127.0.0.1",
     "Environment=PAPERCUSP_PORT=$SERVICE_PORT",
+    // A host runs no resilient MCP proxy, so the operator's own loopback port IS the
+    // stable endpoint for long-lived sessions. Unset, resolveLongLivedSessionMcpBaseUrl
+    // falls back to the dev box's :9071 proxy and every hosted New Session boots
+    // against a dead address before discovery rescues it (WI-10003189, r51).
+    "Environment=PAPERCUSP_MCP_PROXY_BASE=http://127.0.0.1:$SERVICE_PORT",
     "Environment=PAPERCUSP_EMBEDDED_PG_ROOT=$STATE_ROOT/embedded-pg",
     "Environment=PAPERCUSP_WORKSPACE_ROOT=$WORKSPACE_ROOT",
     "Environment=PUI_COMPANION_WASM=$RUNTIME_ROOT/current/$PUI_COMPANION_PATH",
@@ -2808,7 +2813,14 @@ export function buildWorkspaceHostBootstrap(
     // no cwd probe and no immutable-release fallback can silently reintroduce
     // bundled content after the vm-release directories are removed.
     //
+    // PAPERCUSP_PROMPT_ROOT is the HARNESS-shaped prompt root (`<root>/blueprints/<id>/
+    // prompts/<role>.md`) that resolvePromptFiles reads through promptHarnessRoot().
+    // Without it the su persona lookup falls to harnessRoot() — the immutable release,
+    // which no longer carries blueprints — finds no su.md, falls back to the legacy
+    // apps/operator/prompts playbook no host ships, and every New Session dies at
+    // boot with `renderSuPlaybook: base playbook ... not found` (WI-10003189, r51).
     "Environment=PAPERCUSP_HOME=$STATE_ROOT/.papercusp",
+    "Environment=PAPERCUSP_PROMPT_ROOT=$STATE_ROOT/.papercusp",
     "Environment=PAPERCUSP_PROMPTS_DIR=$STATE_ROOT/.papercusp/blueprints/base/prompts",
     "Environment=PAPERCUSP_SPA_DIST=$RUNTIME_ROOT/current/spa",
     "Environment=PAPERCUSP_DOCS_ROOT=$RUNTIME_ROOT/current/internal-docs",

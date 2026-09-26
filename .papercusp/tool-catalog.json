@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 908,
+  "count": 915,
   "tools": [
     {
       "name": "ablation:report",
@@ -2122,6 +2122,23 @@
       }
     },
     {
+      "name": "blueprint:cancel",
+      "http": {
+        "path": "/api/agent-tools/blueprint/cancel",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Request cancellation of an operation you submitted. Returns a durable receipt; effected is true only once canonical state reads cancelled. A terminal operation is refused.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "guidance": {
+        "when": "Stopping a non-terminal blueprint operation you own.",
+        "notWhen": "Dropping ordinary work (work_items:set_state)."
+      }
+    },
+    {
       "name": "blueprint:catalog",
       "http": {
         "path": "/api/agent-tools/blueprint/catalog",
@@ -2196,6 +2213,24 @@
       }
     },
     {
+      "name": "blueprint:events",
+      "http": {
+        "path": "/api/agent-tools/blueprint/events",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Page an operation's durable events (work-item, plan-run, cancel, signal, wait, resume, model-attestation) after a cursor, with the current status. Reconnect by passing the last cursor.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "guidance": {
+        "when": "Following an operation you submitted, or catching up after a disconnect.",
+        "notWhen": "You only need the current state (blueprint:status).",
+        "chaining": "Pass the returned cursor back while hasMore is true; the status snapshot is always current."
+      }
+    },
+    {
       "name": "blueprint:extend",
       "http": {
         "path": "/api/agent-tools/blueprint/extend",
@@ -2248,6 +2283,92 @@
         "when": "From an unscoped (--all-workspaces) superuser session, sharing a blueprint you authored or customized — a local/private blueprint living at <repo>/.papercusp/blueprints/<id>/ — so others can install it from the Comb.",
         "notWhen": "Browsing/installing blueprints (blueprint:catalog lists what's installable); authoring one (blueprint:create / blueprint:extend); calling from a workspace-scoped session (the transport and handler refuse this global publication; the workspace argument cannot make it safe); or when the blueprint files are not on GitHub yet — publish points at the repo, so commit + push first.",
         "chaining": "Run from an unscoped (--all-workspaces) superuser session after the blueprint files are committed + pushed via the project's normal flow. The response carries review_status=pending — operators approve at /admin/cupboard-moderation; once approved it installs via the Cupboard like any blueprint listing."
+      }
+    },
+    {
+      "name": "blueprint:result",
+      "http": {
+        "path": "/api/agent-tools/blueprint/result",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read an operation result: pending, failed/cancelled/dropped/unavailable with a reason, or ready with validated output and evidence. Only ready carries output.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "guidance": {
+        "when": "After blueprint:status reports terminal, or to wait-check a handle you submitted.",
+        "notWhen": "Treating a settled work item as success — failed/dropped settlements never carry output."
+      }
+    },
+    {
+      "name": "blueprint:resume",
+      "http": {
+        "path": "/api/agent-tools/blueprint/resume",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Answer the outstanding declared wait of an operation you submitted, by its wait token. Stale, foreign or already-answered tokens are refused; the response is schema-validated.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "guidance": {
+        "when": "blueprint:status shows phase waiting with a wait token you can answer.",
+        "notWhen": "No outstanding wait, or sending an unsolicited input (blueprint:signal)."
+      }
+    },
+    {
+      "name": "blueprint:signal",
+      "http": {
+        "path": "/api/agent-tools/blueprint/signal",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Send a payload on a channel the operation declares; validated against its schema and durably accepted. handled:false — acceptance is not handling.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "guidance": {
+        "when": "Feeding a running operation you submitted an input it declares.",
+        "notWhen": "Answering a declared wait (blueprint:resume) or an undeclared channel (refused)."
+      }
+    },
+    {
+      "name": "blueprint:status",
+      "http": {
+        "path": "/api/agent-tools/blueprint/status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the phase (accepted/dispatched/waiting/terminal), outcome, items, plan run, cancellation and outstanding wait of an operation you submitted.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "guidance": {
+        "when": "Checking progress of a blueprint operation handle you hold.",
+        "notWhen": "Reading the output — terminal is not success; use blueprint:result."
+      }
+    },
+    {
+      "name": "blueprint:submit",
+      "http": {
+        "path": "/api/agent-tools/blueprint/submit",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Submit a declared blueprint operation under a request key; returns its durable handle. Same key + same input replays one execution; different input is refused. Accepted is not completed.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "guidance": {
+        "when": "Starting a task that the harness blueprint declares as an operation.",
+        "notWhen": "Plain ad-hoc work (work_items:create) or running a plan by hand (plans:*).",
+        "chaining": "Keep the handle; poll blueprint:status or page blueprint:events, then read blueprint:result."
       }
     },
     {

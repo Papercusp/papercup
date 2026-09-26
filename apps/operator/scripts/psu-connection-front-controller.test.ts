@@ -838,7 +838,7 @@ describe("pui through psu's saved connections (P-017)", () => {
     );
     // Sign-in-then-connect does not print the "now run --connect" hint.
     expect(output).not.toHaveBeenCalled();
-    expect(loadPsuConnectionStore(storePath).profiles.map((profile) => profile.name)).toEqual([
+    expect(loadPsuConnectionStore(storePath).profiles.map((profile: { name: string }) => profile.name)).toEqual([
       "portal.example.test",
     ]);
   });

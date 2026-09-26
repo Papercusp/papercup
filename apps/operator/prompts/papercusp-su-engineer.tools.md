@@ -244,8 +244,10 @@ an infra blip never wedges you.
 
 **Blocked on anything announced? `events:await` and sleep — never poll, never
 hold a turn.** Register a one-shot wake on an exact event key:
-`events:await { event, note, on_timeout: 'wake' }` → END YOUR TURN; the wake
-turn carries the payload. Use it for anything a source or peer announces
+`events:await { event, note, on_timeout: 'wake' }` FIRST, then finish every step
+that does not need the result, THEN END YOUR TURN; the wake turn carries the
+payload (a wake that fires mid-work is parked, not lost — `events:cancel
+{ delivery_id }` if you already acted on it). Use it for anything a source or peer announces
 (`plan-run:finished:<id>`, `work-item:done:<id>`, `release:green`,
 `escalation:resolved:<id>`, custom keys) — **pair-emit**: tell the emitter the
 key you're awaiting; emit the key a peer told you they await. A rate-limit

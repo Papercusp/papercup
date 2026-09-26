@@ -250,6 +250,10 @@ pub enum Action {
     /// Read-only connection recheck for the new-session form.
     CheckSessionSetup,
     ReconnectSessionSetup(crate::session_config::SetupReconnect),
+    /// Setup's remote choices (D-031): hand the terminal to the bundled psu,
+    /// which runs PUI on a remote host. `sign_in` = sign in to Papercusp
+    /// cloud first (`l`); otherwise pick a saved host or sign-in (`h`).
+    ConnectSessionSetup { sign_in: bool },
     RegisterSetupProject { slug: String, path: String },
     /// Open the fresh agent-chat identity already created by the Sessions
     /// Continue/Fork route. Unlike `OpenSuSession`, this must never create a
@@ -7086,6 +7090,8 @@ impl App {
             KeyCode::Char('c') if setup.step == 0 => {
                 setup.project_entry = Some(0); setup.note = None; Action::Render
             }
+            KeyCode::Char('l') if setup.step == 0 => Action::ConnectSessionSetup { sign_in: true },
+            KeyCode::Char('h') if setup.step == 0 => Action::ConnectSessionSetup { sign_in: false },
             KeyCode::Char('?') => { setup.show_help = true; Action::Render }
             KeyCode::Down | KeyCode::Char('j') if setup.step == 0 => {
                 setup.project_cursor = (setup.project_cursor + 1).min(projects.len().saturating_sub(1));
@@ -15497,6 +15503,25 @@ mod tests {
         a.backend_identity_error = Some("connection refused".into());
         assert!(a.setup_blocker().unwrap().contains("unavailable"));
         assert!(a.su_pending_turn.is_none());
+        assert!(a.launched.is_empty());
+    }
+
+    #[test]
+    fn session_setup_offers_the_cloud_and_remote_host_hand_off_on_context() {
+        let mut a = setup_app();
+        a.backend_identity = None;
+        a.backend_identity_error = Some("connection refused".into());
+        a.open_session_setup();
+        assert_eq!(a.on_key(KeyCode::Char('l'), KeyModifiers::NONE),
+            Action::ConnectSessionSetup { sign_in: true });
+        assert_eq!(a.on_key(KeyCode::Char('h'), KeyModifiers::NONE),
+            Action::ConnectSessionSetup { sign_in: false });
+        // Choosing leaves the form (and its draft) intact for a failed hand-off.
+        assert!(a.session_setup.is_some());
+        // While searching projects, the letters are search text, not choices.
+        a.on_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert_eq!(a.on_key(KeyCode::Char('l'), KeyModifiers::NONE), Action::Render);
+        assert_eq!(a.session_setup.as_ref().unwrap().project_query, "l");
         assert!(a.launched.is_empty());
     }
 

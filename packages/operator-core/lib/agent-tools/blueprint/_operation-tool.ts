@@ -5,8 +5,9 @@
  *
  * - caller identity comes from the authenticated transport identity
  *   (`resolveAgentIdentity`, the same rail work_items:create attributes by),
- *   never from arguments, so a handle cannot be read or driven by another
- *   caller;
+ *   never from arguments, and a bearer principal's unverified client id is
+ *   namespaced under the principal (`operationCallerId`), so a handle cannot
+ *   be read or driven by another caller;
  * - the workspace comes from the session scope, and a handle minted in a
  *   different workspace or (for a harness-scoped session) harness is refused
  *   before the service is reached;
@@ -24,7 +25,24 @@ import type { BlueprintOperationHandle } from '../../blueprint/operation-service
 export interface OperationToolContext {
   workspaceId?: string | null;
   harnessSlug?: string | null;
-  principal?: { workspaceId?: string | null } | null;
+  isSuperuser?: boolean;
+  isPowerUser?: boolean;
+  /** The MCP spawn URL's HMAC (which covers `client=`) was verified. */
+  sigVerifiedSpawn?: boolean;
+  principal?: { slug?: string; workspaceId?: string | null } | null;
+}
+
+/** The operation caller id. A bearer principal's transport client id (a bare
+ * `?client=` on the HTTP catch-all or the MCP PI mount) is caller-chosen and
+ * unverified, and the shared identity resolver returns it verbatim — so a
+ * principal could otherwise name another caller's id and drive that caller's
+ * handle. Scope it under the authenticated principal slug: a principal can
+ * only select sub-identities of itself. Superuser, power-user and verified
+ * spawn identities are already authenticated by their transport. */
+export function operationCallerId(ctx: OperationToolContext, ownerId: string): string {
+  const slug = ctx.principal?.slug?.trim();
+  if (ctx.isSuperuser || ctx.isPowerUser || ctx.sigVerifiedSpawn === true || !slug) return ownerId;
+  return ownerId === slug ? slug : `${slug}/${ownerId}`;
 }
 
 export interface OperationScope {
@@ -40,14 +58,28 @@ function concrete(value: string | null | undefined): string | null {
   return trimmed && trimmed !== '*' && !isAllHarnessSentinel(trimmed) ? trimmed : null;
 }
 
+/** The operation workspace. The service runs on the admin handle, so the
+ * workspace must be authenticated: a superuser's session workspace, else the
+ * bearer principal's. A transport-supplied workspace (a bare `?workspace=` on
+ * the HTTP catch-all) may only restate the principal's, never widen it. */
+function operationWorkspace(ctx: OperationToolContext): string | null {
+  const requested = concrete(ctx.workspaceId);
+  const principalWorkspace = concrete(ctx.principal?.workspaceId);
+  if (ctx.isSuperuser || !principalWorkspace) return requested ?? principalWorkspace;
+  if (requested && requested !== principalWorkspace) {
+    refuse('scope_mismatch', `workspace ${requested} is outside the caller's workspace ${principalWorkspace}`);
+  }
+  return principalWorkspace;
+}
+
 export function resolveOperationScope(ctx: OperationToolContext): OperationScope {
-  const workspaceId = concrete(ctx.workspaceId) ?? concrete(ctx.principal?.workspaceId);
+  const workspaceId = operationWorkspace(ctx);
   if (!workspaceId) {
     throw new UnauthorizedToolError('blueprint operations require a concrete workspace scope');
   }
   let callerId: string;
   try {
-    callerId = resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId;
+    callerId = operationCallerId(ctx, resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId);
   } catch {
     throw new UnauthorizedToolError('blueprint operations require an attributable caller identity');
   }

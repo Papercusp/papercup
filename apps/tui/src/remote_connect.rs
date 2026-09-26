@@ -79,6 +79,18 @@ pub fn psu_args(args: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// PUI's command line for setup's remote choices (D-031): `--connect-login
+/// --connect` signs in to Papercusp cloud, then opens PUI on one of that
+/// sign-in's workspaces; a bare `--connect` offers psu's saved hosts (and a
+/// cloud sign-in when there is none). Pass the result to [`hand_off`].
+pub fn setup_connect_args(sign_in: bool) -> Vec<String> {
+    if sign_in {
+        vec!["--connect-login".into(), "--connect".into()]
+    } else {
+        vec!["--connect".into()]
+    }
+}
+
 /// Refuse a nested hand-off: a `pui` that psu already launched on a remote host
 /// connecting onward would stack one remote terminal inside another.
 pub fn refuse_when_forwarded(forwarded: Option<&str>) -> Result<()> {
@@ -187,6 +199,19 @@ mod tests {
                 "--seat=s",
             ])
         );
+    }
+
+    #[test]
+    fn setup_remote_choices_are_connection_command_lines() {
+        let sign_in = setup_connect_args(true);
+        let host = setup_connect_args(false);
+        assert_eq!(sign_in, args(&["--connect-login", "--connect"]));
+        assert_eq!(host, args(&["--connect"]));
+        // Both must take the hand-off route and reach psu as a pui connection.
+        for line in [&sign_in, &host] {
+            assert!(requests_connection(line), "{line:?}");
+            assert_eq!(psu_args(line)[0], CONNECT_PROGRAM_ARG);
+        }
     }
 
     #[test]

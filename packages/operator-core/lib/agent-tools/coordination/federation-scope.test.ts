@@ -51,6 +51,30 @@ describe('resolveWorkspaceHiveScope', () => {
     expect(deps.getOwnedHiveMeta).not.toHaveBeenCalled(); // joined ⇒ meta not consulted
   });
 
+  it('an invite-LINK join (joined_via_link, no remote_hive view) counts as shared', async () => {
+    // The canonical link join writes the cloned harness with joined_via_link and no
+    // remote_hive view; before this, a link-joined member never saw its own hive as
+    // shared, so seat offers were skipped `hive_not_shared` (measured on the P-202 rig).
+    const deps = makeDeps({
+      loadHarnessRegistry: vi.fn(async () => ({
+        projects: [{ slug: 'hive-a', joined_via_link: true }],
+      })),
+      getOwnedHiveMeta: vi.fn(async () => null),
+    });
+    const r = await resolveWorkspaceHiveScope('ws1', { deps });
+    expect(r).toEqual({ kind: 'one', homeSlug: 'hive-a' });
+    expect(deps.getOwnedHiveMeta).not.toHaveBeenCalled();
+  });
+
+  it('a plain local entry with no join marker and no published meta is not shared', async () => {
+    const deps = makeDeps({
+      loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'hive-a' }] })),
+      getOwnedHiveMeta: vi.fn(async () => null),
+    });
+    const r = await resolveWorkspaceHiveScope('ws1', { deps });
+    expect(r).toEqual({ kind: 'none' });
+  });
+
   it('a PRIVATE owned hive is never a scope (no DHT leak)', async () => {
     const deps = makeDeps({ getOwnedHiveMeta: vi.fn(async () => ({ visibility: 'private' })) });
     expect(await resolveWorkspaceHiveScope('ws1', { deps })).toEqual({ kind: 'none' });

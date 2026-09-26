@@ -1,0 +1,73 @@
+{
+  "schema": "papercusp-operational-evidence-v1",
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-001",
+  "spec": {
+    "specId": "identity-activation-audit-source-coverage",
+    "revision": 1,
+    "contentHash": "d594363f3e373fd88c6ef68f2855763e71a8a98cd92cf118c43624a49d264879",
+    "behavior": "When the activation audit runs on the approved plan revision, every cited owner turn resolves and the ten acceptance BARs are seeded against that exact revision.",
+    "falsifier": "An owner-turn reference is unresolved, a cited correction lacks a plan target, or the BAR seed revision differs from the audited revision."
+  },
+  "recordedAt": "2026-09-26T16:12:00Z",
+  "recordedBy": "su-0301e142-a512-411d-b8a6-c2d933c5ace9",
+  "operatorBuild": "7708e704d9 (:3070)",
+  "procedure": [
+    "Diffed plan_revisions seq 43 (hash ce5bee7e, the D-015 approved BAR-amendment revision, audited by auditSeq 9) against seq 44 (hash e79bcd40, current). The only differences are P-004 wip->done and the frontmatter updated date.",
+    "Ran plans:audit { phase:'activation', classRef:'plan-class-feature-ship', dryRun:true }, then dryRun:false with prior mappings carried forward.",
+    "Independently resolved every sourceRef cited by the carried mappings against harness_shared.session_turns (source_kind, session_id, turn_idx).",
+    "Independently checked every mapping planTarget against the current plan snapshot (P-NNN items, ### D-NNN decisions, section headings) and the acceptance rubric criteria keys (R-N).",
+    "Read rubrics:get for acceptance-su-mode-contract-identity-unification-2026-09-24 after the audit and compared barContract.subjectPlanRevision with the audited plan revision."
+  ],
+  "observations": {
+    "audit": {
+      "auditSeq": 10,
+      "coverageBaseAuditSeq": 9,
+      "auditedPlanRevision": { "id": 65355, "seq": 44, "planVersion": 45, "contentHash": "e79bcd406563139c63717b7e99b60e5682d74fa5f630ba3aeb240ec6be36dcca" },
+      "sourceRanges": 4,
+      "mappings": 13,
+      "carriedMappings": 13,
+      "sourceRefsResolved": 32,
+      "sourceRefsFromArchive": 0,
+      "sourceSpan": { "transcriptTurns": 182, "declaredTurns": 182, "gapTurns": 0 },
+      "barSeed": { "ok": true, "rubricRevision": 3, "barSetHash": "8bcc33ca314fc22394987e08b747de8f35adb900a0c674f1d3bdb57cf3b3d04e", "bars": 10, "projectionEdges": 41, "rubricChanged": false }
+    },
+    "independentRefResolution": {
+      "citedRefs": 32,
+      "distinctRefs": 32,
+      "resolvedInSessionTurns": 32,
+      "unresolved": [],
+      "userSpeaker": 31,
+      "userSpeakerWithMachineOriginMarker": 0,
+      "assistantSpeaker": 1,
+      "assistantRefs": [
+        { "ref": "session_turn:codex:01a0cf39-3205-7b90-aa8d-fda78428aced:23", "mapping": "M-013", "note": "M-013 cites this turn as an earlier agent evaluation, not as owner speech." }
+      ],
+      "turnOriginVerdicts": "turn_origin is null on every cited turn. turn_origin_verdict is 'unenrolled-origin' on the user turns (these are Codex transcripts without enrolled origin stamps). Owner authorship therefore rests on speaker=user with no machine-origin marker, not on a verified OWNER stamp."
+    },
+    "independentTargetResolution": {
+      "mappingsWithoutTargets": 0,
+      "distinctTargets": 33,
+      "unresolvedTargets": [],
+      "dispositions": ["covered"]
+    },
+    "barContract": {
+      "rubricRevision": 3,
+      "criteria": 10,
+      "criteriaKeys": ["R-1", "R-2", "R-3", "R-4", "R-5", "R-6", "R-7", "R-8", "R-9", "R-10"],
+      "subjectPlanRevision": 45,
+      "equalsAuditedPlanVersion": true
+    }
+  },
+  "falsifierChecks": {
+    "ownerTurnReferenceUnresolved": false,
+    "citedCorrectionLacksPlanTarget": false,
+    "barSeedRevisionDiffersFromAuditedRevision": false
+  },
+  "verdict": "pass",
+  "scopeLimits": [
+    "Plan 'revision' numbers in rubric barContract and plan version are plan_revisions.seq + 1. Audited seq 44 is plan version 45.",
+    "The BAR contract subject revision follows later plan edits, so any later status flip moves it past auditSeq 10. This artifact proves equality at the time of the audit run, which is the behavior the clause names.",
+    "Owner provenance of the 31 user turns is by transcript speaker and absence of machine-origin markers. The Codex sessions carry no enrolled turn-origin stamp."
+  ]
+}

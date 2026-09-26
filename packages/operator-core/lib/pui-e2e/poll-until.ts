@@ -51,10 +51,14 @@ export async function pollUntil(
   const deadline = Date.now() + opts.timeoutMs;
   let maxLateMs = 0;
   for (;;) {
-    // Check BEFORE testing the deadline: the final check always follows the
-    // final I/O turn, so bytes that arrived during a block are read first.
+    // Read the clock BEFORE the check, and give up only on a check that began
+    // after the deadline had already passed. A check that itself outlasts the
+    // deadline (a block inside it, a slow query) therefore gets one more look,
+    // and the final check always follows the final I/O turn, so bytes that
+    // arrived during a block are read before the verdict.
+    const expired = Date.now() >= deadline;
     if (await check()) return { ok: true, maxLateMs };
-    if (Date.now() >= deadline) return { ok: false, maxLateMs };
+    if (expired) return { ok: false, maxLateMs };
     opts.onMiss?.();
     const due = Date.now() + intervalMs;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));

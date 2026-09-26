@@ -228,7 +228,8 @@ for the same thing.
    signs, sends store-and-forward (durable: a queued send survives the peer being
    offline), and records the ask in your ledger. It returns a `correlationId` and
    an `answeredEvent` key (`cross-pot:answered:<correlationId>`).
-3. `events:await { event: <answeredEvent> }` then **END YOUR TURN**. The peer's
+3. `events:await { event: <answeredEvent> }`, finish any work that does not need
+   the reply, then **END YOUR TURN**. The peer's
    answer/decline arrives through the boundary, transitions the ledger row, and
    fires that event — re-invoking a sleeping agent with the reply. (`pot:asks`
    is the read-back if you need to review state; the wake is the no-poll path.)

@@ -1,5 +1,6 @@
 /** Scoped typed client for the shared operation contract. The PostgreSQL port
- * is used internally; P-017 can provide the same port through defineTool. */
+ * is used internally; the projected port reaches the same service through the
+ * public `blueprint:*` defineTool surface (P-017). */
 import type { Sql } from 'postgres';
 import {
   cancelBlueprintOperation,
@@ -15,6 +16,15 @@ import {
   type BlueprintOperationStatus,
   type SubmitBlueprintOperationInput,
 } from './operation-service';
+import {
+  BLUEPRINT_OPERATION_TOOLS,
+  BlueprintOperationCancelReceiptSchema,
+  BlueprintOperationEventsPageSchema,
+  BlueprintOperationInputReceiptSchema,
+  BlueprintOperationResultSchema,
+  BlueprintOperationStatusSchema,
+  SubmitResultSchema,
+} from './operation-contract';
 
 export interface BlueprintOperationPort {
   submit(input: SubmitBlueprintOperationInput): Promise<BlueprintOperationHandle>;
@@ -39,6 +49,39 @@ export function createPgBlueprintOperationPort(sql: Sql): BlueprintOperationPort
     cancel: (handle, callerId, input) => cancelBlueprintOperation(sql, handle, callerId, input),
     signal: (handle, callerId, input) => signalBlueprintOperation(sql, handle, callerId, input),
     resume: (handle, callerId, input) => resumeBlueprintOperation(sql, handle, callerId, input),
+  };
+}
+
+/** Invoke one projected tool and return its decoded structured result; a
+ * refused call must throw. MCP and /api/agent-tools adapters both satisfy it. */
+export type ProjectedToolInvoke = (toolName: string, args: Record<string, unknown>) => Promise<unknown>;
+
+/** The same port over the public `blueprint:*` tools (P-017). Caller identity
+ * and workspace come from the transport's authenticated scope, so the port's
+ * `callerId` / submission `workspaceId` / `callerId` arguments are not sent:
+ * the client's scope check on the returned handle detects a mismatch. Every
+ * result is parsed by the shared contract, so transport drift fails loudly. */
+export function createProjectedBlueprintOperationPort(invoke: ProjectedToolInvoke): BlueprintOperationPort {
+  const call = async <T>(verb: keyof typeof BLUEPRINT_OPERATION_TOOLS, args: Record<string, unknown>,
+    schema: { parse(value: unknown): unknown }): Promise<T> =>
+    schema.parse(await invoke(BLUEPRINT_OPERATION_TOOLS[verb], args)) as T;
+  return {
+    submit: async (input) => (await call<{ handle: BlueprintOperationHandle }>('submit', {
+      harness: input.harnessSlug, operationId: input.operationId, requestKey: input.requestKey,
+      input: input.input,
+      ...(input.title === undefined ? {} : { title: input.title }),
+      ...(input.summary === undefined ? {} : { summary: input.summary }),
+    }, SubmitResultSchema)).handle,
+    status: (handle) => call('status', { handle }, BlueprintOperationStatusSchema),
+    result: (handle) => call('result', { handle }, BlueprintOperationResultSchema),
+    events: (handle, _callerId, options) => call('events', {
+      handle,
+      ...(options?.cursor === undefined ? {} : { cursor: options.cursor }),
+      ...(options?.limit === undefined ? {} : { limit: options.limit }),
+    }, BlueprintOperationEventsPageSchema),
+    cancel: (handle, _callerId, input) => call('cancel', { handle, ...input }, BlueprintOperationCancelReceiptSchema),
+    signal: (handle, _callerId, input) => call('signal', { handle, ...input }, BlueprintOperationInputReceiptSchema),
+    resume: (handle, _callerId, input) => call('resume', { handle, ...input }, BlueprintOperationInputReceiptSchema),
   };
 }
 

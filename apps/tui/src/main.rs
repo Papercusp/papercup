@@ -2061,6 +2061,17 @@ async fn run<B: Backend>(
                         terminal.draw(|f| ui::draw(f, &app))?;
                     }
                 }
+                Action::ConnectSessionSetup { sign_in } => {
+                    // Like reconnect: psu replaces this process, so nothing of
+                    // this PUI keeps running beside the remote one.
+                    if let Err(error) = connect_setup_process(sign_in, kbd_enhanced) {
+                        if let Some(setup) = app.session_setup.as_mut() {
+                            setup.note = Some(format!("Could not start psu: {error:#}. Your draft is retained."));
+                        }
+                        terminal.clear()?;
+                        terminal.draw(|f| ui::draw(f, &app))?;
+                    }
+                }
                 Action::RegisterSetupProject { slug, path } => {
                     tokio::spawn(register_setup_project(slug, path, tx.clone()));
                     terminal.draw(|f| ui::draw(f, &app))?;
@@ -2687,6 +2698,25 @@ fn reconnect_setup_process(reconnect: &session_config::SetupReconnect, enhanced:
     use std::os::unix::process::CommandExt;
     let executable = std::env::current_exe()?;
     let mut command = setup_reconnect_command(&executable, reconnect);
+    exec_restoring_terminal(enhanced, || command.exec().into())
+}
+
+/// Setup's `l` / `h`: hand the terminal to the bundled psu (D-031), which signs
+/// in when asked and runs PUI on the chosen remote host.
+fn connect_setup_process(sign_in: bool, enhanced: bool) -> Result<()> {
+    exec_restoring_terminal(enhanced, || {
+        match remote_connect::hand_off(&remote_connect::setup_connect_args(sign_in)) {
+            // Only a non-Unix hand-off returns after psu ran; its status is ours.
+            Ok(code) => std::process::exit(code),
+            Err(error) => error,
+        }
+    })
+}
+
+/// Leave the TUI's terminal modes, run `exec` (which only returns on failure),
+/// then restore this same UI so the caller can show the error beside the
+/// retained draft.
+fn exec_restoring_terminal(enhanced: bool, exec: impl FnOnce() -> anyhow::Error) -> Result<()> {
     // Restore termios before exec: crossterm's saved original state is in
     // process memory, and would otherwise be lost across replacement.
     let mut out = stdout();
@@ -2694,7 +2724,7 @@ fn reconnect_setup_process(reconnect: &session_config::SetupReconnect, enhanced:
     disable_raw_mode()?;
     let _ = execute!(out, crossterm::event::DisableFocusChange,
         crossterm::event::DisableBracketedPaste, LeaveAlternateScreen);
-    let error = command.exec();
+    let error = exec();
     // exec only returns on failure. Restore this same UI and retained draft.
     enable_raw_mode()?;
     execute!(out, EnterAlternateScreen, crossterm::event::EnableBracketedPaste,
@@ -2703,7 +2733,7 @@ fn reconnect_setup_process(reconnect: &session_config::SetupReconnect, enhanced:
         let _ = execute!(out, crossterm::event::PushKeyboardEnhancementFlags(
             crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES));
     }
-    Err(error.into())
+    Err(error)
 }
 
 #[cfg(test)]

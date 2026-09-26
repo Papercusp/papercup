@@ -201,14 +201,16 @@ impl RendezvousError {
         match self.kind {
             RendezvousFailure::Selection => format!(
                 "{e} is not a valid operator selection, so nothing was contacted. \
-                 PUI_OPERATOR must be `staging` (:3170), `release` (:3070), or a full http(s) \
-                 URL such as https://host:9443 — and it must not embed credentials."
+                 PUI_OPERATOR must be a full http(s) URL such as https://host:9443 — and it \
+                 must not embed credentials."
             ),
             RendezvousFailure::Unreachable => format!(
                 "nothing answered at {e}. Confirm an operator is running and reachable there \
                  (`curl {e}/api/health`), or select a different one with \
-                 PUI_OPERATOR=staging|release|<url>. pui will NOT silently fall back to a local \
-                 operator — an explicit selection is honoured or it fails."
+                 PUI_OPERATOR=<url>. No operator on this computer? `pui --connect-login \
+                 --connect` signs in to Papercusp cloud and runs PUI there. pui will NOT \
+                 silently fall back to a local operator — an explicit selection is honoured \
+                 or it fails."
             ),
             RendezvousFailure::Tls => format!(
                 "reached {e} but the TLS handshake failed. Check the scheme first — an \
