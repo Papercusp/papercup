@@ -1167,6 +1167,34 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
     expect(classifyAcceptanceGraderTerminalFailure(observedRefusal, { allowToolSurfaceRefusal: true }))
       .toMatchObject({ code: 'tool_surface_unavailable' });
   });
+
+  it('recognizes the observed compacted auditor refusal without relying on an intact duration footer', () => {
+    // WI-10003331: PTY redraws dropped spaces and the "r" in "for" while the
+    // auditor explicitly declined its checks; its process remained alive.
+    const refusal =
+      "● I haven't audited scorecard EI-24349788243040613 and emitted no scorecard. My\n" +
+      "sessiondoesn'thavethetoolstoreadthescorecardortoemitone.\n" +
+      '- Tool search found nothing.\n' +
+      '✻Crunched fo 12s ·done2:29 PM\n❯';
+    expect(classifyAcceptanceGraderTerminalFailure(refusal)).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(refusal, { allowToolSurfaceRefusal: true }))
+      .toMatchObject({ code: 'tool_surface_unavailable' });
+    expect(classifyAcceptanceGraderTerminalFailure(refusal.replace('·done2:29 PM', '·thinking'), {
+      allowToolSurfaceRefusal: true,
+    })).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure(refusal.replace(
+      "sessiondoesn'thavethetoolstoreadthescorecardortoemitone.\n- Tool search found nothing.",
+      'The tools are available; I am still examining the evidence.',
+    ), { allowToolSurfaceRefusal: true })).toBeNull();
+  });
+
+  it('does not retire an auditor for a historical refusal followed by a new assistant answer', () => {
+    const recovered =
+      "● I haven't graded or emitted anything for scorecard EI-24234352612789401.\n" +
+      'No platform tools loaded.\n✻ Cooked for 24s · done\n❯\n' +
+      '● The tools are now available; I am reading the evidence for the audit.';
+    expect(classifyAcceptanceGraderTerminalFailure(recovered, { allowToolSurfaceRefusal: true })).toBeNull();
+  });
 });
 
 describe('classifyAcceptanceGraderStartupStall', () => {
