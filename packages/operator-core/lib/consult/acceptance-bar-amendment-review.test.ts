@@ -329,10 +329,24 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(brief).not.toContain('coord:send');
   });
 
-  it('clips an oversized patch instead of routing an unbounded brief', () => {
-    const brief = buildAmendmentReviewBrief({ ...baseInput, patch: { criteria: ['x'.repeat(10_000)] } });
-    expect(brief.length).toBeLessThan(6_000);
-    expect(brief).toMatch(/chars clipped\]/);
+  it('preserves changed criteria after a large unchanged prefix', () => {
+    const unchanged = Array.from({ length: 12 }, (_, index) => ({ key: `R-${index + 2}`, model: 'unchanged '.repeat(35) }));
+    const changed = { key: 'R-1', model: 'complete changed falsifier after the prefix' };
+    const patch = { criteria: [...unchanged, changed], reason: 'keep this field' };
+    expect(JSON.stringify(patch).length).toBeGreaterThan(2500);
+    const brief = buildAmendmentReviewBrief({ ...baseInput, patch });
+    expect(brief).toContain(JSON.stringify({ criteria: [changed], reason: 'keep this field' }));
+    expect(brief).toContain('12 unchanged criteria omitted');
+    expect(brief).not.toContain(unchanged[0].model);
+    expect(brief).not.toContain('chars clipped');
+    expect(brief).toContain('must not be submitted to rubrics:amend');
+  });
+
+  it('keeps an unmappable replacement complete rather than hiding a changed criterion', () => {
+    const patch = { criteria: ['x'.repeat(10_000)] };
+    const brief = buildAmendmentReviewBrief({ ...baseInput, patch });
+    expect(brief).toContain(JSON.stringify(patch));
+    expect(brief).not.toContain('chars clipped');
   });
 });
 
