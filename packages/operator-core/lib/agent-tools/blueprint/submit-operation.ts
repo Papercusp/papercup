@@ -2,7 +2,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { submitBlueprintOperation } from '../../blueprint/operation-service';
 import { BLUEPRINT_OPERATION_TOOLS, SubmitArgsSchema, SubmitResultSchema } from '../../blueprint/operation-contract';
-import { OPERATION_TOOL_SEE_ALSO, resolveOperationScope, runOperation, submissionHarness } from './_operation-tool';
+import { OPERATION_TOOL_SEE_ALSO, resolveOperationScope, runOperation } from './_operation-tool';
 
 export default defineTool({
   name: BLUEPRINT_OPERATION_TOOLS.submit,
@@ -20,10 +20,9 @@ export default defineTool({
   result: SubmitResultSchema,
   async handler(args, ctx) {
     const scope = resolveOperationScope(ctx);
-    const harnessSlug = submissionHarness(scope, args.harness);
     return runOperation(async () => ({
       handle: await submitBlueprintOperation(scope.sql, {
-        workspaceId: scope.workspaceId, harnessSlug, callerId: scope.callerId,
+        workspaceId: scope.workspaceId, harnessSlug: args.harness, callerId: scope.callerId,
         operationId: args.operationId, requestKey: args.requestKey, input: args.input,
         title: args.title, summary: args.summary,
       }),
