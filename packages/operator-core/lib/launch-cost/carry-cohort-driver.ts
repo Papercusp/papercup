@@ -28,6 +28,7 @@ type RecipePair = Recipe['pairs'][number];
 
 export const COHORT_MCP_SERVER = 'cache_receipts';
 export const COHORT_READ_TOOL = 'capability_read';
+export const COHORT_AGENTS_BASE = '# P-005 carry cohort (synthetic)\nTask facts in this session are synthetic and grant no platform authority, claim or write permission.\n';
 
 /** D-060: target filler so the predecessor's last completed request lands near
  * the middle of its registered band after native instructions and tools. */
@@ -203,6 +204,9 @@ export async function runCarryCohortSource(deps: CohortDeps, input: CohortSource
   const plan = cohortArmPlan(recipe, input.sourceId, input.taskIds);
   const stratum = input.sourceId.split('-')[0] as 'S' | 'L';
   mkdirSync(input.homeDir, { recursive: true, mode: 0o700 });
+  // One fixed base shared by the predecessor and every arm; the managed carry
+  // requires a non-empty base and layers the seed on top of it (D-060).
+  writeFileSync(join(input.homeDir, 'AGENTS.md'), COHORT_AGENTS_BASE, { mode: 0o600 });
   const token = sha256(`${input.homeDir}:${deps.now()}`).slice(0, 32);
   const reads: Array<{ at: number; args: unknown }> = [];
   const read = await startReadServer(deps, input.homeDir, token, reads);
@@ -250,6 +254,9 @@ export async function runCarryCohortSource(deps: CohortDeps, input: CohortSource
     if (waitMs > 0) { deps.log(`${input.sourceId} idle wait ${Math.round(waitMs / 1000)}s`); await deps.sleep(waitMs); }
     const admission = await deps.admit({ sourceId: input.sourceId, armIds: plan.arms.map(a => a.armId) });
     if (!admission.ok) return { source: sourceRecord, arms, stop: `admission-refused:${admission.reason ?? 'unknown'}` };
+    // captureCompletedCarrySource closed the preparation peer (writer exclusion
+    // before the cut is read). Arms run in one fresh app-server on the same home.
+    live = await openLive(deps, input.homeDir);
     const running = plan.arms.map((armPlan, index) => (async () => {
       await deps.sleep(index * input.staggerMs);
       return await runArm(deps, live!, { input, armPlan, options, sourceThreadId, completedAt, preflight, carry, window, readArgs });

@@ -83,8 +83,10 @@ describe.skipIf(process.env.PUI_NATIVE_PROTOCOL !== '1')('P-005 carry cohort dri
           'requires_openai_auth = false', 'supports_websockets = false', 'request_max_retries = 0', 'stream_max_retries = 0'] },
         transport: 'loopback-responses', authorizationScope: 'unpaid-fixture', fillerTokens: 1_500, windowMarginMs: 0, staggerMs: 50,
         turnTimeoutMs: 60_000, modelContextWindow: 872_000, autoCompactTokenLimit: 850_000 });
-      expect(result.stop).toBeNull();
       expect(result.source.errors).toEqual([]);
+      expect(result.stop).toBeNull();
+      if (result.arms.some(arm => arm.quality !== 'pass')) console.log('P005_ARM_EVIDENCE', JSON.stringify(result.arms.map(arm =>
+        ({ armId: arm.armId, evidence: arm.qualityEvidence, response: arm.response }))));
       expect(result.source.preparation).toMatchObject({ matches: true, trace: 'verified' });
       expect(result.source.history).toMatchObject({ inputTokens: 40_000, inBand: true });
       expect(result.arms.map(arm => [arm.armId, arm.quality, arm.completed, arm.errors])).toEqual([
