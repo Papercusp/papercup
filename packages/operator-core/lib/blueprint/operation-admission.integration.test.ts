@@ -12,11 +12,15 @@ import { seedContentHash } from '../cupboard/rubric-store';
 import { getRubric, provisionPinnedRubric } from '../rubrics';
 import { getWorkItem, setWorkItemState } from '../work-items';
 import { runWithWorkspace } from '../workspace-als';
-import {
+// Copy-out mutation probes load the program executor from its mirrored path.
+// The normal integration suite uses the tracked module.
+const {
   coordProgramWorkflowId, findUnstartedAcceptedCoordPrograms, loadAcceptedCoordProgramBlueprint,
   loadAcceptedCoordProgramChild, settleAcceptedCoordProgram, submitAcceptedCoordProgramChild,
   awaitAcceptedCoordProgramChild,
-} from '../dbos/coord-program-workflow';
+} = await import(
+  /* @vite-ignore */ process.env.PAPERCUSP_PROGRAM_WORKFLOW_PROBE_PATH ?? '../dbos/coord-program-workflow'
+) as typeof import('../dbos/coord-program-workflow');
 
 const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async (original) => ({
