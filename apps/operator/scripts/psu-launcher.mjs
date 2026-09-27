@@ -574,6 +574,12 @@ let OPERATOR_URL = OPERATOR_TARGET.url;
  * Exported for the environment-boundary regression tests.
  */
 export function applyLauncherOperatorUrlEnv(env, target = OPERATOR_TARGET) {
+  // These describe the spawning operator host, not the agent session. ptool
+  // prefers either hint over PAPERCUSP_OPERATOR_URL, so carrying a stale host
+  // port through a loop respawn can route every named tool call to the wrong
+  // control plane even after the launcher selected a live operator URL.
+  delete env.PAPERCUSP_OPERATOR_BASE;
+  delete env.PAPERCUSP_HONO_PORT;
   env.PAPERCUSP_OPERATOR_URL = target.url;
   if (target.source === "env")
     delete env[OPERATOR_URL_PROVENANCE_ENV];
@@ -3958,9 +3964,10 @@ const LAST_MODEL_TAIL_BYTES = 256 * 1024;
  * final ~256KB and scans lines newest-first:
  *   - claude: `{"type":"assistant","message":{"model":"…"}}` — the model that
  *     actually answered; `<synthetic>` (error/system events) is skipped.
- *   - codex: `{"type":"turn_context","payload":{"model":"…"}}` — stamped every
- *     turn (verified codex CLI 0.144.0; session_meta carries only
- *     model_provider).
+ *   - codex: `{"type":"turn_context","payload":{"model":"…","effort":"…"}}`
+ *     — stamped every turn (verified codex CLI 0.144.0; session_meta carries
+ *     only model_provider). Return the complete model:effort selection so a
+ *     carry or exact resume cannot silently reset the owner's reasoning level.
  *   - omp / no transcript / unreadable → null (callers degrade to "unknown").
  * Pure-ish (reads FS); `home` injectable for tests; exported for tests.
  */
@@ -4015,7 +4022,14 @@ export function lastActiveModelFor(session, { home = homedir() } = {}) {
             : o?.type === "assistant"
               ? o?.message?.model
               : null;
-      if (typeof m === "string" && m && m !== "<synthetic>") return m;
+      if (typeof m === "string" && m && m !== "<synthetic>") {
+        if (session.agent === "codex") {
+          const effort = o?.payload?.effort;
+          if (typeof effort === "string" && RESPAWN_MODEL_EFFORT_RE.test(effort))
+            return `${m}:${effort.toLowerCase()}`;
+        }
+        return m;
+      }
     } catch {
       /* malformed / partial line — keep scanning */
     }
@@ -4069,10 +4083,9 @@ export function respawnModelFamily(id) {
  *
  * Null on every uncertain input — no inherited flag (we never ADD one; see
  * mintRecycleArgs), nothing detected, an unrecognizable detected id, or an
- * unchanged model. A change is composed as detected-identity + the INHERITED
- * effort: `/model` in the chat changes the model, it does not restate the
- * effort the session was launched at, so effort rides across rather than being
- * silently dropped to the model default. normalizeModelSpec then re-adds the
+ * unchanged model and effort. A change is composed with the transcript's
+ * effort when present (Codex stamps it on every turn); older transcripts and
+ * Claude retain the inherited effort. normalizeModelSpec then re-adds the
  * `[1m]` window marker exactly as the resume path does, so an opus/fable/
  * sonnet-5 successor keeps its 1M window. Pure; exported for tests.
  *
@@ -4103,7 +4116,9 @@ export function reconcileRespawnModelSpec(inheritedSpec, detectedModel) {
     inheritedFamily && detectedFamily
       ? inheritedFamily === detectedFamily
       : detected.id === inherited.id;
-  if (unchanged) return null;
+  const effortChanged =
+    detected.effort && detected.effort.toLowerCase() !== inherited.effort.toLowerCase();
+  if (unchanged && !effortChanged) return null;
   return composeResumeModelSpec(
     detected.id,
     detected.effort || inherited.effort,
@@ -8431,16 +8446,25 @@ export function accountPickerChoices(accounts) {
         ]
       : []),
     ...pool.map((id) => {
-      const blocked = exclude.has(id) || (forced.size > 0 && !forced.has(id));
+      const state = accounts?.accountStates?.[id];
+      const blocked = exclude.has(id) || (forced.size > 0 && !forced.has(id)) || state === "unavailable";
       const tag = exclude.has(id)
         ? "  (excluded)"
         : forced.size > 0 && !forced.has(id)
           ? "  (not in allow-list)"
-          : "";
+          : state === "unavailable"
+            ? "  (used up — usage limit reached)"
+            : state === "unknown"
+              ? "  (usage unverified)"
+              : "";
       return {
         name: `${id}${tag}  (pin via the gateway)`,
         value: id,
-        disabled: blocked ? "(blocked by session-override)" : false,
+        disabled: blocked
+          ? state === "unavailable" && !exclude.has(id) && !(forced.size > 0 && !forced.has(id))
+            ? "(usage limit reached)"
+            : "(blocked by session-override)"
+          : false,
       };
     }),
   ];

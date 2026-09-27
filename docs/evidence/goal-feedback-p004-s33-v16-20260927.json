@@ -1,0 +1,393 @@
+{
+  "schemaVersion": 1,
+  "kind": "isolated-behavior-cohort",
+  "plan": "goal-agent-behavior-feedback-2026-09-06",
+  "workItem": "WI-10003407",
+  "disposition": "failed-not-acceptance",
+  "cohort": {
+    "version": 16,
+    "models": [
+      "claude-sonnet-4-6/gpt-5.6-terra"
+    ],
+    "runColumns": [
+      "id",
+      "status",
+      "judgeErrors",
+      "judgeWarnings",
+      "recordedCostUsd"
+    ],
+    "cases": {
+      "achieved": {
+        "matrix": "ec10a94d-a150-47ac-b17b-43c39044ee1a",
+        "runs": [
+          [
+            "d4a7fdc0-8ddb-4141-be45-5e13c36601a5",
+            "passed",
+            0,
+            1,
+            0.041821
+          ],
+          [
+            "95192ab2-0a8f-4d68-9f8a-aff791927f0d",
+            "passed",
+            0,
+            2,
+            0.050764
+          ],
+          [
+            "5da72bcc-f479-4d11-b266-5eadff80167b",
+            "passed",
+            0,
+            0,
+            0.022708
+          ]
+        ],
+        "hashes": {
+          "identity": [
+            "7a7a1922e810cc2ad2d880794d821feef519ea15321281a145b1f7d95b69d233"
+          ],
+          "scenario": [
+            "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36"
+          ]
+        }
+      },
+      "continue": {
+        "matrix": "358a0048-4cae-4401-b165-a0506e437f9b",
+        "runs": [
+          [
+            "6c7208cd-de12-4f21-88cd-072efc7bbd75",
+            "passed",
+            0,
+            2,
+            0.066347
+          ],
+          [
+            "13e4faf4-7fc9-42fb-99ef-6c130714ea64",
+            "passed",
+            0,
+            2,
+            0.104283
+          ],
+          [
+            "431d3700-b985-42d3-be06-2a84490ed665",
+            "passed",
+            0,
+            1,
+            0.0645
+          ]
+        ],
+        "hashes": {
+          "identity": [
+            "8b9fad4564304bc0a7e2c3cfcc7113eae033b5af0d4c9a011a24b9a9f9552eba"
+          ],
+          "scenario": [
+            "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36"
+          ]
+        }
+      },
+      "delegate": {
+        "matrix": "e2ff0279-d6b6-45be-b981-9e17e469ef33",
+        "runs": [
+          [
+            "e39318ba-79e5-4ca4-9365-df57ba345d15",
+            "passed",
+            2,
+            1,
+            0.063018
+          ],
+          [
+            "bec5d3ab-9f60-48e5-b55d-67ea8f4b6644",
+            "passed",
+            0,
+            0,
+            0.041041
+          ],
+          [
+            "2d5b6c2e-73b4-43bf-84fc-64670028fc3e",
+            "passed",
+            0,
+            1,
+            0.043791
+          ]
+        ],
+        "hashes": {
+          "identity": [
+            "6f7a58917a88015471ee6e5180c81e8f24600396a3b460b65c7e394f5846ff15"
+          ],
+          "scenario": [
+            "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36"
+          ]
+        }
+      },
+      "killed": {
+        "matrix": "81255399-5275-4795-b4be-3c17646c7015",
+        "runs": [
+          [
+            "d0cb4215-1cf8-4e37-b694-108dbb9ea53f",
+            "passed",
+            0,
+            1,
+            0.022563
+          ],
+          [
+            "18776fdb-183f-40fc-a37b-d769775b38c6",
+            "passed",
+            0,
+            1,
+            0.018919
+          ],
+          [
+            "8dad8679-aa28-4d0a-a9f5-ec55bf77172d",
+            "passed",
+            0,
+            0,
+            0.015415
+          ]
+        ],
+        "hashes": {
+          "identity": [
+            "388051093202c6eb476d82314fe265ceaa340af5c75c134b857cb43083279e3d"
+          ],
+          "scenario": [
+            "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36"
+          ]
+        }
+      },
+      "no-demand": {
+        "matrix": "0ec98151-5e0e-4b0c-85c4-e755e0d46dc2",
+        "runs": [
+          [
+            "ca57fbb4-f882-4d4d-928e-6e57bbb4ab6e",
+            "failed",
+            1,
+            4,
+            0.057171
+          ],
+          [
+            "559d6c7b-93dc-45c3-9750-700d8550e68b",
+            "failed",
+            1,
+            4,
+            0.101152
+          ],
+          [
+            "8ca3376a-1658-4cf0-95ba-2b33b4e48548",
+            "failed",
+            1,
+            3,
+            0.076303
+          ]
+        ],
+        "hashes": {
+          "identity": [
+            "1d98cd917d7fa255f0f0d0e82d98e337fd216985191d5db2f2c812d86f441ae6"
+          ],
+          "scenario": [
+            "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36"
+          ]
+        }
+      },
+      "paused": {
+        "matrix": "af87e08f-61ef-4858-a62f-b895da491b3d",
+        "runs": [
+          [
+            "4d42fdfb-0520-4fc4-8450-637e0c84520d",
+            "passed",
+            0,
+            2,
+            0.034019
+          ],
+          [
+            "bfe6259b-a291-4257-ad6a-9c057a217704",
+            "failed",
+            1,
+            0,
+            0.032383
+          ],
+          [
+            "cd75eaef-e11b-4434-a742-063ab2f51378",
+            "passed",
+            0,
+            2,
+            0.036259
+          ]
+        ],
+        "hashes": {
+          "identity": [
+            "5f3473c3c0a1af7ab46ae3a1f57b1788e486bafb6a72759e89b91c497039eaed"
+          ],
+          "scenario": [
+            "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36"
+          ]
+        }
+      },
+      "report": {
+        "matrix": "d8436255-5a6d-480f-b200-0b3cd3cc4def",
+        "runs": [
+          [
+            "f055fb70-fc75-438c-989f-b9e249faa406",
+            "passed",
+            0,
+            3,
+            0.076536
+          ],
+          [
+            "bc307580-dd1c-47b4-9cb4-09174516bd4f",
+            "passed",
+            0,
+            2,
+            0.073461
+          ],
+          [
+            "55d4ec5e-25df-41f9-bcf2-9a957d987305",
+            "passed",
+            0,
+            4,
+            0.077501
+          ]
+        ],
+        "hashes": {
+          "identity": [
+            "1f46fe16b8aead4855d4e52f42f5023bef5d76ef038bb09f0d4ec80cf9fc38e2"
+          ],
+          "scenario": [
+            "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36"
+          ]
+        }
+      },
+      "unknown": {
+        "matrix": "3a521bf7-8ec1-4968-b2a8-f9f21f321d4d",
+        "runs": [
+          [
+            "f30c4625-5923-404c-89c0-3a8d72ac18e4",
+            "failed",
+            1,
+            6,
+            0.145544
+          ],
+          [
+            "1a83edd7-4869-4496-8dc3-67aab70fd39f",
+            "failed",
+            1,
+            3,
+            0.133953
+          ],
+          [
+            "479b0ad4-c7fa-4b23-9826-523f9bb1c6d6",
+            "failed",
+            1,
+            5,
+            0.167279
+          ]
+        ],
+        "hashes": {
+          "identity": [
+            "5988623cfde36ca32fb1d5c9f18a8ec7a6acded8bb342a155e0ce6e005a07487"
+          ],
+          "scenario": [
+            "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36"
+          ]
+        }
+      },
+      "verify": {
+        "matrix": "92e021ad-58bf-45c0-982e-8dbc5a73d027",
+        "runs": [
+          [
+            "ffdf996c-ab56-437b-972d-e8973d355f17",
+            "passed",
+            0,
+            0,
+            0.040479
+          ],
+          [
+            "ecb80d52-c7c6-494a-b2b7-ac9c0f3c724f",
+            "passed",
+            0,
+            0,
+            0.029369
+          ],
+          [
+            "174b154d-a2b9-45e9-840f-cb065c1c96e4",
+            "passed",
+            0,
+            0,
+            0.03693
+          ]
+        ],
+        "hashes": {
+          "identity": [
+            "a958d5442c7fba8201dad6b92b73ab1c81b2f4f42b5b2f37488f3dbc477f7803"
+          ],
+          "scenario": [
+            "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36"
+          ]
+        }
+      },
+      "wait": {
+        "matrix": "a8c75cc8-4f2a-49d5-879c-6b39debedb36",
+        "runs": [
+          [
+            "7a7c4afb-22de-411f-996a-98bff54b6253",
+            "passed",
+            0,
+            1,
+            0.068176
+          ],
+          [
+            "64d7099c-d455-4f1d-8afb-3061137d5a1f",
+            "passed",
+            0,
+            0,
+            0.056701
+          ],
+          [
+            "4944494c-cd62-4c4e-96a6-387d7cbb973b",
+            "passed",
+            0,
+            1,
+            0.049834
+          ]
+        ],
+        "hashes": {
+          "identity": [
+            "89a8d43bfc7d2484b33c1828b1933bc91b521892f4edb597b6b1c33ae501d39a"
+          ],
+          "scenario": [
+            "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36"
+          ]
+        }
+      }
+    }
+  },
+  "counts": {
+    "runs": 30,
+    "passed": 23,
+    "failed": 7,
+    "storedJudgeErrors": 9,
+    "storedJudgeWarnings": 52
+  },
+  "verification": {
+    "unitTestRunIds": [
+      19700983,
+      19700985
+    ],
+    "suiteResult": "Red: 62 passed, 6 failed. Green focused S33 + canonical mode-render suites: 71 passed, 0 failed.",
+    "modelCommand": "env LLM_TEST_SUT_MODEL=claude-sonnet-4-6 LLM_TEST_JUDGE_MODEL=gpt-5.6-terra npm --prefix apps/operator run llm-test -- --scenario su-S33-agenda-<case>",
+    "processExitCode": 1
+  },
+  "findings": [
+    "No-demand and unknown each failed all three repeats for unsupported post-disposition probes; paused failed one repeat. A majority-pass CLI aggregate is not all-run acceptance.",
+    "The new GOAL continuation rule reached the subject: no-demand run 8ca3376a-1658-4cf0-95ba-2b33b4e48548 quotes it and still probes beyond it. Wording alone is not a demonstrated behavior fix.",
+    "Delegate judge errors are attribution-confounded: plans:get says the independently led plan is working after effect while the launch receipt says pickup/progress unmeasured; s33PlacementInput also turns effect into live claims. Repair fixture consistency before attributing this to model behavior.",
+    "Possible kernel-blocker instruction conflict and omitted planning/reporting state in no-demand remain unproven causal hypotheses. Required effects and stopped-goal assertions were not weakened."
+  ],
+  "sourceSnapshotAfterRun": {
+    "head": "8f8a61972cc657977e5d7534b040b06274a2f7f2",
+    "blobs": {
+      "packages/operator-core/lib/llm-testing/scenarios/su/S33-goal-agenda.ts": "b54beb67ba498a15e4f7d1bb80d64f67903b1927",
+      "packages/operator-core/lib/llm-testing/scenarios/su/S33-goal-agenda.test.ts": "a25ff5c1c4afd3f482b023da0bbd014674b58a30",
+      "libs/papercusp/packages/harness/blueprints/su.mode-goal/prompts/goal.md": "1500d803386ddd3c66e6a56541a14053fb9166f1"
+    },
+    "note": "Post-run source snapshot, not a claim that every dependency stayed unchanged throughout the suite. Per-run identity/scenario hashes are from the canonical LLM ledger."
+  }
+}

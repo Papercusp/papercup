@@ -537,6 +537,17 @@ export async function resolveAccountPin(
     const provider = accountProvider(acct as never);
     if (provider !== expected)
       return fail(`'${id}' is a ${provider} account, but ${agent} sessions require ${expected} accounts`);
+    if (acct.rate) {
+      const { accountFull, accountReadingStatus } = await import('../../../deployment/account-pool');
+      const now = Date.now();
+      if (
+        accountReadingStatus(acct, now).readingStatus === 'fresh' &&
+        !acct.rate.lastProbeFailedAt &&
+        accountFull(acct, now)
+      ) {
+        return fail(`'${id}' is measured used up or rate-paused; choose auto or a fresh account`);
+      }
+    }
     const { getAccountOverride } = await import('../../../deployment/account-session-override');
     const ov = await getAccountOverride(workspaceId);
     if (ov.excludeAccounts.includes(id)) return fail('it is in the session-override exclude list');
@@ -614,6 +625,7 @@ export async function resolveAccountChoices(
   pool: string[];
   forcedAccounts: string[];
   excludeAccounts: string[];
+  accountStates?: Record<string, 'available' | 'unavailable' | 'unknown'>;
   provider: BackendAccountProvider | null;
   unsupportedReason?: string;
 }> {
@@ -637,11 +649,27 @@ export async function resolveAccountChoices(
     const { FLAGS } = await import('@papercusp/flags');
     if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) return empty;
     const { loadAccountPool } = await import('../../../deployment/account-pool-store');
-    const { accountsForProvider } = await import('../../../deployment/account-pool');
-    const pool = accountsForProvider(await loadAccountPool(workspaceId), provider).map((a: { id: string }) => a.id);
+    const { accountsForProvider, accountFull, accountReadingStatus } = await import('../../../deployment/account-pool');
+    const accounts = accountsForProvider(await loadAccountPool(workspaceId), provider);
+    const pool = accounts.map((a: { id: string }) => a.id);
+    const now = Date.now();
+    const accountStates = Object.fromEntries(accounts.flatMap((account) => {
+      // A legacy/incomplete row has no measured usage state. Never call it
+      // available from a missing or stale reading; keep the pin visible with
+      // an explicit unknown label so the owner can probe it.
+      if (!account.rate) return [];
+      const { readingStatus } = accountReadingStatus(account, now);
+      const state = readingStatus !== 'fresh' || account.rate.lastProbeFailedAt
+        ? 'unknown'
+        : accountFull(account, now) ? 'unavailable' : 'available';
+      return [[account.id, state]];
+    })) as Record<string, 'available' | 'unavailable' | 'unknown'>;
     const { getAccountOverride } = await import('../../../deployment/account-session-override');
     const ov = await getAccountOverride(workspaceId);
-    return { gatewayOn: true, pool, forcedAccounts: ov.forcedAccounts, excludeAccounts: ov.excludeAccounts, provider };
+    return {
+      gatewayOn: true, pool, forcedAccounts: ov.forcedAccounts, excludeAccounts: ov.excludeAccounts,
+      ...(Object.keys(accountStates).length ? { accountStates } : {}), provider,
+    };
   } catch {
     return empty;
   }

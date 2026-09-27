@@ -47,6 +47,17 @@ describe('normalizeAccountChoices (WI-6321)', () => {
     expect(normalizeAccountChoices({ pool: [{ id: 'a2' }] }).map((a) => a.id)).toEqual(['a2']);
   });
 
+  it('preserves measured and unknown pool states from the shared psu options response', () => {
+    expect(normalizeAccountChoices({
+      pool: ['used', 'stale', 'fresh'],
+      accountStates: { used: 'unavailable', stale: 'unknown', fresh: 'available' },
+    })).toEqual([
+      { id: 'used', availability: 'unavailable' },
+      { id: 'stale', availability: 'unknown' },
+      { id: 'fresh', availability: 'available' },
+    ]);
+  });
+
   it('accepts plain string ids', () => {
     expect(normalizeAccountChoices(['a3']).map((a) => a.id)).toEqual(['a3']);
   });

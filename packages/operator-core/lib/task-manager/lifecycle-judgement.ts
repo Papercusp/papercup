@@ -127,6 +127,8 @@ export interface OpenLifecycleCandidateItem {
   id: string;
   taskId: string;
   harnessSlug: string | null;
+  /** A claim is dispatch ownership, even when the item still has open status. */
+  takenBy?: string | null;
 }
 
 export interface LifecycleJudgementDeps {
@@ -589,7 +591,9 @@ export async function runLifecycleJudgementSweep(
   // launch even if their task stopped matching the detector in the meantime.
   const open = (await deps.listOpenCandidateItems(input.workspaceId)).filter(
     (item) =>
-      !settledVerdictTaskIds.has(item.taskId) && latestVerdicts.get(item.taskId)?.decision !== 'gone',
+      !item.takenBy &&
+      !settledVerdictTaskIds.has(item.taskId) &&
+      latestVerdicts.get(item.taskId)?.decision !== 'gone',
   );
   if (open.length === 0) {
     return {
@@ -718,17 +722,26 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
 
   async listOpenCandidateItems(workspaceId) {
     const { sql } = getOrgPg();
-    const rows = await sql<Array<{ id: string; task_id: string; harness_slug: string | null }>>`
+    const rows = await sql<Array<{ id: string; task_id: string; harness_slug: string | null; taken_by: string | null }>>`
       SELECT feature_id AS id,
              payload #>> '{processLifecycleCandidate,taskId}' AS task_id,
-             harness_slug
+             harness_slug, taken_by
         FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId}
          AND NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+         -- Open is not unclaimed: the judge leaves status open while working.
+         -- A dead holder is released by the existing stale-claim reaper;
+         -- do not launch another judge against a still-owned candidate.
+         AND (taken_by IS NULL OR taken_by = '')
          AND COALESCE(payload #>> '{processLifecycleCandidate,taskId}', '') <> ''
        ORDER BY updated_ts ASC, feature_id ASC
     `;
-    return rows.map((row) => ({ id: row.id, taskId: row.task_id, harnessSlug: row.harness_slug ?? null }));
+    return rows.map((row) => ({
+      id: row.id,
+      taskId: row.task_id,
+      harnessSlug: row.harness_slug ?? null,
+      takenBy: row.taken_by,
+    }));
   },
 
   spawnJudge: ({ workspaceId, harnessSlug, idempotencyKey, brief }) =>

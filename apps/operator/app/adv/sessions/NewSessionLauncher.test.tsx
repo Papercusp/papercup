@@ -742,6 +742,18 @@ describe('NewSessionLauncher', () => {
       expect(opts.map((o) => o.value)).toEqual(['default', 'auto', 'pool-1']);
     });
 
+    it('disables measured used-up accounts while keeping unknown usage visibly uncertain', () => {
+      const opts = buildAccountOptions([
+        { id: 'used', availability: 'unavailable' },
+        { id: 'stale', availability: 'unknown' },
+        { id: 'fresh', availability: 'available' },
+      ]);
+      expect(opts.find((o) => o.value === 'used')).toMatchObject({ disabled: true });
+      expect(opts.find((o) => o.value === 'stale')).toMatchObject({ disabled: false });
+      expect(opts.find((o) => o.value === 'stale')?.detail).toContain('unverified');
+      expect(opts.find((o) => o.value === 'fresh')).toMatchObject({ disabled: false });
+    });
+
     it('offers Native plus exactly psu\'s context-size variants', () => {
       expect(buildContextSizeOptions().map((o) => o.value)).toEqual([
         CONTEXT_SELECT_NATIVE,

@@ -53,6 +53,7 @@ export interface AccountChoice {
   id: string;
   label?: string | null;
   detail?: string | null;
+  availability?: 'available' | 'unavailable' | 'unknown';
 }
 
 export interface OmpLaunchModelCost {
@@ -195,6 +196,11 @@ const EMPTY: Omit<SuLaunchOptions, 'loading' | 'error' | 'refresh'> = {
  * crash that takes the whole launcher down.
  */
 export function normalizeAccountChoices(raw: unknown): AccountChoice[] {
+  const states = raw && typeof raw === 'object' && !Array.isArray(raw) &&
+    (raw as { accountStates?: unknown }).accountStates &&
+    typeof (raw as { accountStates?: unknown }).accountStates === 'object'
+    ? (raw as { accountStates: Record<string, unknown> }).accountStates
+    : {};
   const list = Array.isArray(raw)
     ? raw
     : Array.isArray((raw as { pool?: unknown })?.pool)
@@ -202,7 +208,14 @@ export function normalizeAccountChoices(raw: unknown): AccountChoice[] {
       : [];
   return list
     .map((a): AccountChoice | null => {
-      if (typeof a === 'string') return { id: a };
+      if (typeof a === 'string') {
+        const state = states[a];
+        return {
+          id: a,
+          ...(state === 'available' || state === 'unavailable' || state === 'unknown'
+            ? { availability: state } : {}),
+        };
+      }
       if (a && typeof a === 'object') {
         const o = a as Record<string, unknown>;
         const id = typeof o.id === 'string' ? o.id : typeof o.value === 'string' ? o.value : null;
@@ -211,6 +224,8 @@ export function normalizeAccountChoices(raw: unknown): AccountChoice[] {
           id,
           label: typeof o.label === 'string' ? o.label : typeof o.name === 'string' ? o.name : null,
           detail: typeof o.detail === 'string' ? o.detail : null,
+          ...(states[id] === 'available' || states[id] === 'unavailable' || states[id] === 'unknown'
+            ? { availability: states[id] as AccountChoice['availability'] } : {}),
         };
       }
       return null;

@@ -135,8 +135,13 @@ export function buildAccountOptions(
     ...accounts.map((account) => ({
       value: account.id,
       label: account.label?.trim() || account.id,
-      detail: account.detail?.trim() || "Pinned pool account",
+      detail: account.availability === 'unavailable'
+        ? 'Used up — usage limit reached'
+        : account.availability === 'unknown'
+          ? 'Usage unverified — check capacity before pinning'
+          : account.detail?.trim() || "Pinned pool account",
       keywords: [account.id],
+      disabled: account.availability === 'unavailable',
     })),
   ];
 }

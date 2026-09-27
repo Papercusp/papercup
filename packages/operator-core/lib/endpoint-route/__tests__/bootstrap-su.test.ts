@@ -377,7 +377,18 @@ vi.mock('../../agent-tools/plans/source', () => ({
 // psu-account-chooser P-002: resolveAccountPin reads the pool + the session-override,
 // but ONLY when the gateway flag is on. Mock both so the gateway-ON branches are
 // DB-free + deterministic (the gateway-OFF + no-account branches return before them).
-type MockPoolAccount = { id: string; provider?: 'claude' | 'codex' };
+type MockPoolAccount = {
+  id: string;
+  provider?: 'claude' | 'codex';
+  rate?: {
+    utilization?: number;
+    utilization7d?: number;
+    utilizationAt?: number;
+    windowResetAt7d?: number;
+    pausedUntil?: number;
+    lastProbeFailedAt?: number;
+  };
+};
 const loadAccountPoolMock = vi.fn(
   async (_ws?: string): Promise<{ accounts: MockPoolAccount[] }> => ({
     accounts: [{ id: 'aviynw6' }, { id: 'aviynw2' }],
@@ -1880,6 +1891,21 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.error).toMatch(/codex account.*claude sessions require claude/i);
   });
 
+  it('refuses a freshly measured used-up pinned account but does not infer a wall from stale usage', async () => {
+    getFlagMock.mockResolvedValue(true);
+    const now = Date.now();
+    loadAccountPoolMock.mockResolvedValue({ accounts: [
+      { id: 'used', provider: 'codex', rate: { utilization: 0, utilization7d: 1, utilizationAt: now, windowResetAt7d: now + 3600_000, pausedUntil: 0 } },
+      { id: 'stale', provider: 'codex', rate: { utilization: 0, utilization7d: 1, utilizationAt: now - 24 * 3600_000, windowResetAt7d: now + 3600_000, pausedUntil: 0 } },
+    ] });
+    const used = await pin('used', 'codex');
+    expect(used.error).toMatch(/measured used up/i);
+    expect(used.env).toEqual({});
+    const stale = await pin('stale', 'codex');
+    expect(stale.error).toBeUndefined();
+    expect(stale.accountId).toBe('stale');
+  });
+
   // P-006 (end-to-end through the POST handler): the launcher's `account` body field
   // flows → resolveAccountPin → the response's envelopeEnv + accountNotice.
   it('POST { account } → 409 before session bookkeeping when the explicit route is unavailable', async () => {
@@ -1973,6 +1999,22 @@ describe('resolveAccountChoices (psu-account-chooser P-005)', () => {
     const r = await choices('codex');
     expect(r.provider).toBe('codex');
     expect(r.pool).toEqual(['codex-main']);
+  });
+
+  it('marks freshly usage-walled accounts unavailable, while stale and failed probes stay unknown', async () => {
+    getFlagMock.mockResolvedValue(true);
+    const now = Date.now();
+    loadAccountPoolMock.mockResolvedValue({ accounts: [
+      { id: 'used', provider: 'codex', rate: { utilization: 0, utilization7d: 1, utilizationAt: now, windowResetAt7d: now + 3600_000, pausedUntil: 0 } },
+      { id: 'fresh', provider: 'codex', rate: { utilization: 0, utilization7d: 0.2, utilizationAt: now, windowResetAt7d: now + 3600_000, pausedUntil: 0 } },
+      { id: 'stale', provider: 'codex', rate: { utilization: 0, utilization7d: 1, utilizationAt: now - 24 * 3600_000, windowResetAt7d: now + 3600_000, pausedUntil: 0 } },
+      { id: 'probe-failed', provider: 'codex', rate: { utilization: 0, utilization7d: 1, utilizationAt: now, windowResetAt7d: now + 3600_000, pausedUntil: 0, lastProbeFailedAt: now } },
+    ] });
+    const r = await choices('codex');
+    expect(r.pool).toEqual(['used', 'fresh', 'stale', 'probe-failed']);
+    expect(r.accountStates).toEqual({
+      used: 'unavailable', fresh: 'available', stale: 'unknown', 'probe-failed': 'unknown',
+    });
   });
 
   it('OMP choices resolve to the claude account pool (omp pins claude accounts, D-006)', async () => {

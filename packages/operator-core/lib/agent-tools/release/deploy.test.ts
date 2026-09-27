@@ -306,6 +306,7 @@ describe('release:deploy — status', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
     statusM.mockImplementation((deps) => {
+      if (!deps) throw new Error('status read dependencies are required for this test');
       deps.onReadProgress?.(['snapshot']);
       return new Promise<DeployStatus>(() => {});
     });

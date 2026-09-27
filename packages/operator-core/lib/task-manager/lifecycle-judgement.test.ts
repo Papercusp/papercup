@@ -423,6 +423,44 @@ describe('runLifecycleJudgementSweep', () => {
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS)).not.toBe(current);
   });
 
+  it('does not launch a second judge across an interval boundary for candidates claimed by the first', async () => {
+    const spawn = vi.fn(async (_input: Parameters<LifecycleJudgementDeps['spawnJudge']>[0]) =>
+      ({ ok: true, spawnId: 'spawn-free' }));
+    const result = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW + LIFECYCLE_JUDGE_INTERVAL_MS },
+      depsForRunner({
+        listOpenCandidateItems: async () => [
+          { id: 'WI-held-a', taskId: 'task-a', harnessSlug: 'papercusp', takenBy: 'queen-a' },
+          { id: 'WI-held-b', taskId: 'task-b', harnessSlug: 'papercusp', takenBy: 'queen-a' },
+          { id: 'WI-free', taskId: 'task-c', harnessSlug: 'papercusp', takenBy: null },
+        ],
+        spawnJudge: spawn,
+      }),
+    );
+    expect(result.openItems).toEqual(['WI-free']);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0][0].brief).toContain('WI-free | taskId=task-c');
+    expect(spawn.mock.calls[0][0].brief).not.toContain('WI-held');
+  });
+
+  it('skips dispatch entirely while all open candidates are claimed, retaining reaper recovery', async () => {
+    const spawn = vi.fn(async () => ({ ok: true, spawnId: 'unwanted' }));
+    const result = await runLifecycleJudgementSweep(
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW + LIFECYCLE_JUDGE_INTERVAL_MS },
+      depsForRunner({
+        listOpenCandidateItems: async () => [
+          { id: 'WI-held', taskId: 'task-a', harnessSlug: 'papercusp', takenBy: 'queen-a' },
+        ],
+        spawnJudge: spawn,
+      }),
+    );
+    expect(result.openItems).toEqual([]);
+    expect(result.judge.attempted).toBe(false);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(readFileSync(new URL('./lifecycle-judgement.ts', import.meta.url), 'utf8'))
+      .toContain("AND (taken_by IS NULL OR taken_by = '')");
+  });
+
   it('launches for an earlier open candidate even when this sweep finds no current candidate', async () => {
     const spawn = vi.fn(async () => ({ ok: true, spawnId: 'spawn-existing' }));
     const result = await runLifecycleJudgementSweep(

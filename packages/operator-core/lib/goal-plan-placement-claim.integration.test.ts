@@ -139,6 +139,41 @@ describe('canonical delegated-member claim receipt', () => {
     expect(await placement()).toMatchObject({ state: 'working', activeLane: { ownerId: MEMBER, workItemId: work.id },
       fleet: { leaderOwnerId: LEADER, planScoped: true }, reconciliation: { consistent: true, action: 'none' } });
   });
+  it('does not substitute a claimed self-contained bare item for the required organizing plan', async () => {
+    await lease();
+    const bare = await runWithWorkspaceIfConcrete(WS, () => createWorkItem({
+      workspaceId: WS, harness: HARNESS, kind: 'task',
+      title: `Self-contained spelling correction ${RUN}`,
+      summary: 'An unrelated one-file correction; it does not implement the planned outcome.',
+      createdBy: LEADER, assignee: MEMBER,
+    }));
+    const bareRows = await fx.admin`SELECT taken_by, source_plan_slug, source_plan_item_ids
+      FROM harness_shared.work_items WHERE harness_slug = ${HARNESS} AND feature_id = ${bare.id}`;
+    expect(bareRows).toMatchObject([{ taken_by: MEMBER, source_plan_slug: null }]);
+    expect(bareRows[0]!.source_plan_item_ids ?? []).toEqual([]);
+    // A real, permitted bare item and a plan lease still cannot stand in for
+    // organizing and claiming this necessary plan's work.
+    expect(await placement()).toMatchObject({ state: 'admitting', activeLane: { ownerId: MEMBER, workItemId: null },
+      reconciliation: { consistent: false, toolCall: null } });
+    const organized = await claimedWork();
+    expect(await placement()).toMatchObject({ state: 'working',
+      activeLane: { ownerId: MEMBER, workItemId: organized.id } });
+    expect((await placement()).activeLane?.workItemId).not.toBe(bare.id);
+  });
+  it('retains one accountable execution owner when another worker competes for the same plan lane', async () => {
+    await lease();
+    const work = await claimedWork();
+    const competing = await acquireClaim({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN,
+      itemId: 'P-001', owner: OUTSIDER, intent: 'Competing ownership attempt', ttlSec: 1200 });
+    expect(competing).toMatchObject({ ok: false, conflict: { owner: MEMBER } });
+    const owners = await fx.admin`SELECT owner FROM harness_shared.plan_item_claims
+      WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${PLAN}
+        AND item_id = 'P-001'`;
+    expect(owners).toEqual([{ owner: MEMBER }]);
+    expect(await placement()).toMatchObject({ state: 'working',
+      activeLane: { ownerId: MEMBER, workItemId: work.id },
+      fleet: { leaderOwnerId: LEADER }, reconciliation: { consistent: true, action: 'none' } });
+  });
   it('does not count the leader claimed work item and lease as independent member pickup', async () => {
     await lease(LEADER); await claimedWork(LEADER);
     expect(await placement()).toMatchObject({ state: 'admitting', reconciliation: { consistent: false, toolCall: null } });
