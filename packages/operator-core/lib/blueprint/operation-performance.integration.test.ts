@@ -155,7 +155,9 @@ describe('P-013 workload A fixture', () => {
       // Each cold sample owns a fresh Node process, module graph and PG client.
       // The parent retains the migrated database and checks all terminal rows.
       let coldStarts = 0;
-      const counterRows: Array<{ arm: Arm; sequence: number; embedderCalls: number | null } & PgCounters> = [];
+      const counterRows: Array<{
+        arm: Arm; sequence: number; embedderCalls: number | null; eventRecovery: P013Sample['eventRecovery'];
+      } & PgCounters> = [];
       const benchmarkArm = (arm: Arm): BenchmarkArm => ({
         warmup: async () => { await runArm(arm, sequence++); },
         run: async () => (await runArm(arm, sequence++)).marks,
@@ -243,7 +245,9 @@ describe('P-013 workload A fixture', () => {
               // Exclude this fixture's own read-only commits: the BEFORE snapshot
               // and every pg_stat_activity sampler poll.
               delta.xactCommit -= 1 + pgSamples.length;
-              counterRows.push({ arm, sequence: childSequence, embedderCalls, ...delta });
+              counterRows.push({
+                arm, sequence: childSequence, embedderCalls, eventRecovery: sample!.eventRecovery, ...delta,
+              });
               return sample!.marks;
             },
             close: async () => { if (!child.killed && child.exitCode === null) child.kill(); await exit; },
@@ -262,6 +266,15 @@ describe('P-013 workload A fixture', () => {
       expect(coldStarts).toBe(2 * repetitions * coldSamples);
       expect(trials).toHaveLength(2 * repetitions);
       expect(counterRows).toHaveLength(coldStarts);
+      // A sample whose normal done-fire missed P013_NORMAL_FIRE_BUDGET_MS was
+      // completed by production's reconciler; its business-event mark is the
+      // repair, not the normal emit. Count them per arm so the report carries them.
+      console.info('P-013 workload A business-event recovery', JSON.stringify(
+        (['control', 'candidate'] as const).map((arm) => ({
+          arm,
+          normal: counterRows.filter((row) => row.arm === arm && row.eventRecovery === 'normal').length,
+          reconciler: counterRows.filter((row) => row.arm === arm && row.eventRecovery === 'reconciler').length,
+        }))));
       console.info('P-013 workload A per-sample persistence counters', JSON.stringify({
         cluster: dedicatedPg ? 'dedicated' : 'shared', fixtureEmbedder: Boolean(fixtureEmbedder),
         rows: counterRows }));
