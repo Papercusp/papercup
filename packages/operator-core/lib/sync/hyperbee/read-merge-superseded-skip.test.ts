@@ -30,6 +30,7 @@ import type { PeerLogOp } from './peer-log';
 import {
   createMergeCursor,
   mergeAdmittedLogsIncremental,
+  MERGE_DEPENDENCY_RETRY_MAX_MS,
   MERGE_PERSIST_EVERY_OPS,
   type AdmittedLog,
   type IncrementalMergeOpts,
@@ -131,7 +132,12 @@ async function pass(
   apply: IncrementalMergeOpts['applyImpl'],
   opts: PassOpts = {},
 ) {
-  return mergeAdmittedLogsIncremental(logs, cursor, { applyImpl: apply, getTimeoutMs: 0, batchApply: false, ...opts });
+  const res = await mergeAdmittedLogsIncremental(logs, cursor, { applyImpl: apply, getTimeoutMs: 0, batchApply: false, ...opts });
+  // WI-10003506: a held structural deferral backs off in wall-clock time. These tests model
+  // fold ORDER, not timing, so each pass lands after any backoff window, as a real pass
+  // separated by the merge cadence would.
+  now += MERGE_DEPENDENCY_RETRY_MAX_MS;
+  return res;
 }
 
 async function drain(
@@ -151,13 +157,19 @@ async function drain(
 
 let warn: ReturnType<typeof vi.spyOn>;
 let error: ReturnType<typeof vi.spyOn>;
+/** Simulated wall clock; `pass` advances it past any dependency backoff window. */
+let now = 0;
+let clock: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  now = 1_000_000;
+  clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
 });
 afterEach(() => {
   warn.mockRestore();
   error.mockRestore();
+  clock.mockRestore();
 });
 
 describe('P-528: skip superseded puts in the tail fold', () => {

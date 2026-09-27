@@ -12,7 +12,13 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type postgres from 'postgres';
-import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog, type MergeCursor } from './read-merge';
+import {
+  createMergeCursor,
+  mergeAdmittedLogsIncremental,
+  MERGE_DEPENDENCY_RETRY_MAX_MS,
+  type AdmittedLog,
+  type MergeCursor,
+} from './read-merge';
 import { projectionAfterCommit, projectionSql } from './projection';
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
@@ -285,11 +291,19 @@ describe('P-002 step 2: batched fold commits', () => {
     expect(cursor.winners.has('features-by-id::k4')).toBe(true);
 
     db.failWrites.delete('k3');
-    await mergeAdmittedLogsIncremental([memLog('A', ops)], cursor, {
-      applyImpl: sink(db),
-      getTimeoutMs: 0,
-      batchApply: { maxOps: 50, ...NO_AGE_BOUND },
-    });
+    // WI-10003506: the deferred op backs off in wall-clock time; the retry pass runs once
+    // its window has passed, as a real pass separated by the merge cadence would.
+    const later = Date.now() + MERGE_DEPENDENCY_RETRY_MAX_MS;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => later);
+    try {
+      await mergeAdmittedLogsIncremental([memLog('A', ops)], cursor, {
+        applyImpl: sink(db),
+        getTimeoutMs: 0,
+        batchApply: { maxOps: 50, ...NO_AGE_BOUND },
+      });
+    } finally {
+      clock.mockRestore();
+    }
     expect([...db.committed.keys()].sort()).toEqual(['k0', 'k1', 'k2', 'k3', 'k4', 'k5']);
     expect(cursor.positions.get('A')).toBe(6);
   });

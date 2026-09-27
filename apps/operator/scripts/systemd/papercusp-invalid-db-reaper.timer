@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Papercusp INVALID test-database reaper hourly at :40, clear of the :00 papercusp-db-backup run (WI-10003478)
+
+[Timer]
+OnCalendar=*:40
+AccuracySec=1min
+Persistent=true
+Unit=papercusp-invalid-db-reaper.service
+
+[Install]
+WantedBy=timers.target

@@ -356,11 +356,37 @@ export async function closeCloudResourceObligation(
     resourceKind: string;
     resourceId: string;
     incarnationId?: string;
+    /**
+     * When the destroy was confirmed by a NOT-FOUND provider read rather than by the delete's own
+     * response, the provider cannot name the incarnation it proved gone — there is nothing left to
+     * read one from. An absence read at T still proves every incarnation that existed at or before
+     * T is gone, so with no `incarnationId` this closes the open row iff it was (re)recorded at or
+     * before T. A same-name replacement is recorded after T (reopen resets `created_at`), so its
+     * obligation stays open. Without this, an incarnation-stamped VM row whose delete timed out and
+     * was confirmed on the reconciling read stayed owed forever and escalated a phantom
+     * (WI-10003510: r55 canary VM, 2026-09-27).
+     */
+    confirmedAbsentAt?: string;
     reason: string;
   },
 ): Promise<{ closed: boolean; staleIncarnation?: boolean }> {
   requireNonEmpty(input.reason, 'reason');
   const incarnationId = input.incarnationId?.trim() ?? '';
+  const confirmedAbsentAt = input.confirmedAbsentAt?.trim() ?? '';
+  if (!incarnationId && confirmedAbsentAt && Number.isFinite(Date.parse(confirmedAbsentAt))) {
+    const absentRows = await sql<{ id: number }[]>`
+      UPDATE harness_shared.cloud_resource_obligations
+         SET closed_at = now(), closed_reason = ${input.reason}, teardown_owed = false, updated_at = now()
+       WHERE workspace_id = ${input.workspaceId}
+         AND provider = ${input.provider}
+         AND resource_kind = ${input.resourceKind}
+         AND resource_id = ${input.resourceId}
+         AND created_at <= ${confirmedAbsentAt}::timestamptz
+         AND closed_at IS NULL
+       RETURNING id
+    `;
+    if (absentRows.length > 0) return { closed: true };
+  }
   const rows = await sql<{ id: number }[]>`
     UPDATE harness_shared.cloud_resource_obligations
        SET closed_at = now(), closed_reason = ${input.reason}, teardown_owed = false, updated_at = now()
@@ -407,6 +433,8 @@ export interface CloudResourceDestroyedEventLike {
     readonly deleteOp: string;
     readonly providerId: string;
     readonly incarnationId?: string;
+    /** When the provider proved the resource absent (see `closeCloudResourceObligation`). */
+    readonly confirmedAbsentAt?: string;
   };
   /** From the live apply context — one provider serves many workspaces. */
   readonly workspaceId: string;
@@ -458,6 +486,7 @@ export function createCloudResourceObligationCloseObserver(
       resourceKind,
       resourceId: event.resource.providerId,
       ...(event.resource.incarnationId ? { incarnationId: event.resource.incarnationId } : {}),
+      ...(event.resource.confirmedAbsentAt ? { confirmedAbsentAt: event.resource.confirmedAbsentAt } : {}),
       reason: event.reason ?? 'provider confirmed destroy',
     });
     if (!result.closed && !result.staleIncarnation) binding.onUnmatched?.(event);

@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-3 live-plane observation (2026-09-27c): a session whose applied activation revision is no longer admitted by its launch record is converged BY THE IDENTITY GATE on its next ordinary tool call (EI-23703586803892464 fix, build 3c1404e37c); the same staged state on the unfixed build 7708e704d9 is denied stale-artifact and stays stuck until hand-written SQL",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "EI-23703586803892464",
+  "rubricCriterion": "launch-activation-attribution-hold (R-3)",
+  "observer": "su-fcbb3fed-83b5-4c34-9dab-72e191d76491",
+  "startedAt": "2026-09-27T16:39:52Z",
+  "finishedAt": "2026-09-27T16:42:15Z",
+  "capturedAt": "2026-09-27T16:45:00Z",
+  "command": [
+    "sudo -n -u postgres psql -d papercusp  # stage: UPDATE harness_shared.session_briefs SET control_state.activation.applied.specificationRevision := <unadmitted>, status := 'desired', prepared := null WHERE owner_id=<observer> AND status='applied' AND applied=desired=launch record revision",
+    "node scripts/mcp-call.mjs coord:glance --json-file .papercusp/scratch/ei2370-live-0927/glance-args.json --client <observer> --port 3170   # run 3 (fixed build)",
+    "node scripts/mcp-call.mjs coord:glance --json-file .papercusp/scratch/ei2370-live-0927/glance-args.json --client <observer> --port 3070   # run 4 (control, unfixed build)"
+  ],
+  "exitCode": 0,
+  "timeBasis": "State readings come from harness_shared.session_briefs now() in -04:00 local and are restated here in UTC. Tool rows come from harness_shared.tool_invocations.invoked_at for coord_owner_id=<observer> from each run's T0 minus 1 s.",
+  "summary": "Run 3 (fixed :3170, build 3c1404e37c): staged applied=aeb05fa8e4 (sha256 of a probe label; absent from adv_sessions 31144 launch_spec and all 12 identityHistory receipts), desired=4a51d5cfe1 (= launch record revision). One coord:glance call returned ok; the activation was status=applied, applied=desired=4a51d5cfe1 immediately after, and no SQL fallback ran. Run 4 (control, :3070, build 7708e704d9, which lacks healStaleArtifactFromLaunchRecord): the identical staged state was denied 'Kernel preflight denied tool \"coord:glance\": Identity capability (unresolved): stale-artifact' and the activation stayed desired/aeb05fa8e4 until the documented SQL converge. The only variable between the two runs is the serving build.",
+  "subject": {
+    "ownerIds": ["su-fcbb3fed-83b5-4c34-9dab-72e191d76491"],
+    "advSessionId": 31144,
+    "launchRecordRevision": "4a51d5cfe121f7967269082aae5d707c71b01fb3e4b7bcafd8ac14103c13a549",
+    "stagedUnadmittedApplied": "aeb05fa8e49a3648237098bdf6fc06d4cd7f161393f3025486b2eb2483e4add6",
+    "stateRevision": "18cf633bd75920daa1cf3bc7",
+    "controlGeneration": 77,
+    "fixedServingBuild": "3c1404e37c",
+    "controlServingBuild": "7708e704d9",
+    "fixCommit": "bca0f34bb9593ae98bcf062eeca51b9e1040ab64"
+  },
+  "sourcePaths": ["packages/operator-core/lib/projected-tool-deps.ts"],
+  "testPaths": ["packages/operator-core/lib/projected-tool-deps.kernel-resolver.test.ts"],
+  "sourceBlobs": [
+    {
+      "path": "packages/operator-core/lib/projected-tool-deps.ts",
+      "blobAtServingBuild": "3cb3df2ad37c2272b398edbd88a437a85f5d2e7b",
+      "blobAtControlBuild": "5469a46c899fd649135ca9b67dfba43dddf8efe9",
+      "blobAtHead": "3cb3df2ad37c2272b398edbd88a437a85f5d2e7b",
+      "sameAsHead": true,
+      "healSymbolCount": { "3c1404e37c": 2, "7708e704d9": 0 }
+    },
+    {
+      "path": "packages/operator-core/lib/projected-tool-deps.kernel-resolver.test.ts",
+      "blobAtServingBuild": "38eebe65a55e22a31b3192cef4d7f6d97021ea24",
+      "blobAtControlBuild": "41be4e7739abef9dcbdc342ebdcdfbe680a23154",
+      "blobAtHead": "38eebe65a55e22a31b3192cef4d7f6d97021ea24",
+      "sameAsHead": true
+    }
+  ],
+  "assertions": [
+    {
+      "id": "staged-state-is-a-true-stale-artifact",
+      "passed": true,
+      "evidence": "H2/K2: status=desired, applied=aeb05fa8e4, desired=4a51d5cfe1. The unadmitted revision matches 0 of the record's 13 receipts (record + identityHistory), so resolveIdentityArtifact returns stale-artifact/receipt-missing; run 4 shows the unfixed gate deny exactly that."
+    },
+    {
+      "id": "fixed-gate-converges-on-ordinary-call",
+      "passed": true,
+      "evidence": "H3: coord:glance via :3170 exit 0, tool_invocations 16:41:57.073Z coord:glance ok serving_build_sha=3c1404e37c. H4 (16:41:57.162Z): status=applied, applied=desired=4a51d5cfe1. No H5 fallback line: the convergence was written by the gate."
+    },
+    {
+      "id": "unfixed-gate-denies-and-stays-stuck",
+      "passed": true,
+      "evidence": "K3: coord:glance via :3070 exit 1, 'authorization_denied: Kernel preflight denied tool \"coord:glance\": Identity capability (unresolved): stale-artifact'; tool_invocations 16:42:14.358Z coord:glance error serving_build_sha=7708e704d9. K4: still desired/aeb05fa8e4; K5 SQL converge required."
+    },
+    {
+      "id": "session-restored",
+      "passed": true,
+      "evidence": "K6 (16:42:14.708Z): status=applied, applied=desired=4a51d5cfe1, control_generation 77 unchanged across all runs."
+    }
+  ],
+  "notProven": [
+    "Runs 1 and 2 in the scratch log staged applied=76ad97bab2, which IS admitted by identityHistory, so the gate correctly resolved 'governed' and allowed without healing; they are NOT evidence either way and are retained only as the record of a mis-staged probe.",
+    "A natural carry-respawn reaching this state on its own: this is a staged reproduction of the not-admitted-applied condition the heal targets. Natural fleet-wide absence of startup stale-artifact denials after the fix deploys to :3070 is a separate post-deploy reading.",
+    "The :3070 release operator: it does not yet carry the fix (main is held by the frozen repair queue); this observation is on the staging operator."
+  ],
+  "complements": [
+    "docs/evidence/p015-r3-live-observation-2026-09-27b.json",
+    "docs/evidence/p015-r3-live-observation-2026-09-27.json"
+  ],
+  "replication": [
+    {
+      "tool": "bash + psql + scripts/mcp-call.mjs",
+      "role": "staged A/B (fixed :3170 vs unfixed :3070)",
+      "file": ".papercusp/scratch/ei2370-live-0927/log.txt",
+      "steps": [
+        "Read: control_state.activation must be status=applied with applied=desired=launch_spec.specificationRevision.",
+        "Stage (guarded on that exact state): applied.specificationRevision := a revision absent from launch_spec and launch_spec.identityHistory; status := 'desired'; prepared := null.",
+        "Call coord:glance through the target port with --client <owner>.",
+        "Read control_state.activation and tool_invocations since T0.",
+        "If status != applied, converge: applied := desired, prepared := desired, status := 'applied' WHERE desired = launch record revision."
+      ]
+    }
+  ]
+}

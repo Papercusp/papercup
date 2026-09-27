@@ -1,0 +1,16 @@
+[Unit]
+Description=Papercusp INVALID test-database reaper — drops interrupted-DROP leftovers (datconnlimit=-2, fixture name, harness marker only) (WI-10003478)
+# A systemd timer, not a DBOS workflow or operator tick: this is host-level
+# Postgres hygiene for the dev box's test fixtures, the same reasoning as
+# papercup-vitest-orphan-reaper.service. The safety contract lives in the script.
+
+[Service]
+Type=oneshot
+Nice=10
+CPUWeight=10
+IOSchedulingClass=idle
+# DROP DATABASE under IO contention has been measured at 125s for ONE database;
+# a full sweep of a backlog can take many minutes. No statement_timeout is used
+# on purpose (a cancelled DROP is what creates these rows).
+TimeoutStartSec=45min
+ExecStart=%h/papercupai-workspace/papercusp/bin/reap-invalid-test-databases.sh
