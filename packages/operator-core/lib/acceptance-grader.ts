@@ -6,7 +6,7 @@ import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 import { ACCEPTANCE_DRAIN_ACTOR } from './agent-tools/plans/acceptance-drain-filing';
 import { readPlanBySlug } from './agent-tools/plans/source';
 import { resolveAggregatedVettingCritics } from './agent-tools/scorecards/grader-eligibility';
-import { areAcceptanceLineageRelated } from './acceptance-author-identity';
+import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from './acceptance-author-identity';
 import { readAcceptanceGradingSettlement, type AcceptanceGradingSettlement } from './acceptance-grading-authority';
 import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
@@ -1114,10 +1114,23 @@ export async function resolvePriorGradingDecliners(
   return rows.map((row) => row.owner_id);
 }
 
+/**
+ * EI-24402913315950329 — the discovery exclusion set must be a SUPERSET of every
+ * identity `scorecards:emit` would refuse as a grader, or the router recruits a
+ * grader who boots, reads the plan and is then refused (or, correctly, declines).
+ * Measured on declared-gate-recovery-contract-2026-09-21: the recruiter read
+ * vetting critics with (rubricId, revision) only, so the rev-15 vetting card whose
+ * currentness depends on criteriaHash/meaningRevision classified as not-current and
+ * the sole critic was routed; and it omitted the principal-implementer population
+ * the emit guard reads (plan audits, claimant history), so the implementer was
+ * routed and forked. Both reads now use the emit guard's OWN functions and inputs.
+ */
 export async function resolveAcceptanceGraderDiscoveryExtraExclusions(
   rubric: {
     rubricId: string;
     revision?: number | null;
+    criteriaHash?: string | null;
+    barContract?: { meaningRevision?: number | null } | null;
     proposedBy?: string | null;
     createdBy?: string | null;
   },
@@ -1127,18 +1140,28 @@ export async function resolveAcceptanceGraderDiscoveryExtraExclusions(
   scope: GradingDeclineScope,
   readVettingCritics: typeof resolveAggregatedVettingCritics = resolveAggregatedVettingCritics,
   readPriorDecliners: typeof resolvePriorGradingDecliners = resolvePriorGradingDecliners,
+  readPlanImplementers: (
+    planSlug: string,
+    opts: { workspaceId: string },
+  ) => Promise<string[]> = resolvePlanImplementerIdentities,
 ): Promise<string[]> {
   // Infrastructure faults PROPAGATE here rather than degrading to "no
   // exclusions" — a swallowed read would re-offer to a decliner, and the
   // caller's own degrade path (`freshReason: 'degraded'`) is a fresh mint,
   // which is the safe outcome.
-  const [{ critics }, decliners] = await Promise.all([
-    readVettingCritics(rubric.rubricId, rubric.revision ?? null),
+  const [{ critics }, decliners, implementers] = await Promise.all([
+    readVettingCritics(
+      rubric.rubricId,
+      rubric.revision ?? null,
+      rubric.criteriaHash ?? null,
+      rubric.barContract?.meaningRevision ?? null,
+    ),
     readPriorDecliners(scope, rubric.rubricId),
+    readPlanImplementers(scope.planSlug, { workspaceId: scope.workspaceId }),
   ]);
   return [
     ...new Set(
-      [rubric.proposedBy, rubric.createdBy, shipperId, ...critics, ...decliners]
+      [rubric.proposedBy, rubric.createdBy, shipperId, ...implementers, ...critics, ...decliners]
         .filter((identity): identity is string => typeof identity === 'string')
         .map((identity) => identity.trim())
         .filter(Boolean),
@@ -1146,9 +1169,24 @@ export async function resolveAcceptanceGraderDiscoveryExtraExclusions(
   ];
 }
 
+/**
+ * EI-24402913315950329 — the REAL ship-gate caller, carried through the
+ * system-actor ctx rewrite in `launchAcceptanceGraderForGate`. That rewrite is
+ * correct for launch LINEAGE (a fresh judge must descend from the system actor,
+ * not the author), but it also replaced the identity `resolveShipperId` reads, so
+ * the shipper D-009 excludes became `system:acceptance-grading-sweep` and the
+ * actual shipper — routinely the implementer — stayed routable. This field is an
+ * exclusion INPUT only; nothing grants authority from it.
+ */
+export interface AcceptanceShipperCarrier {
+  acceptanceShipperOwnerId?: string | null;
+}
+
 /** The caller of the ship gate — the shipper D-009 excludes. Null when unattributable;
  * the computed set still excludes implementers. */
-async function resolveShipperId(ctx: LaunchCtx): Promise<string | null> {
+export async function resolveShipperId(ctx: LaunchCtx): Promise<string | null> {
+  const carried = (ctx as AcceptanceShipperCarrier).acceptanceShipperOwnerId;
+  if (typeof carried === 'string' && carried.trim()) return carried.trim();
   try {
     const { resolveAgentIdentity } = await import('./agent-tools/coordination/identity');
     return resolveAgentIdentity(ctx as never).ownerId;
