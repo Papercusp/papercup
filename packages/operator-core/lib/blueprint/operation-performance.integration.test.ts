@@ -99,7 +99,12 @@ describe('P-013 workload A fixture', () => {
             while (sampling) {
               const rows = await db.adminSql`
                 SELECT pid, state, wait_event_type, wait_event, application_name,
-                       left(query, 200) AS query
+                       left(query, 200) AS query,
+                       -- Epoch-ms stamps split a run of 'active' samples into ONE long
+                       -- statement (same query_start) vs many short ones (it moves).
+                       (extract(epoch FROM query_start) * 1000)::bigint AS query_start_ms,
+                       (extract(epoch FROM state_change) * 1000)::bigint AS state_change_ms,
+                       (extract(epoch FROM xact_start) * 1000)::bigint AS xact_start_ms
                   FROM pg_stat_activity
                  WHERE datname = current_database() AND pid <> pg_backend_pid()`;
               pgSamples.push({ at: Date.now(), rows });
