@@ -108,7 +108,10 @@ describe('P-013 workload A fixture', () => {
           const exit = new Promise<void>((resolve, reject) => {
             child.once('error', (error) => reject(new Error(
               `P-013 cold child ${stage}: ${error.message}; stderr: ${stderr}`)));
-            child.once('exit', (code, signal) => code === 0 ? resolve()
+            // The child SIGKILLs itself after flushing to skip native env
+            // teardown (EI-10702); that exit is clean only once a sample arrived.
+            child.once('exit', (code, signal) => code === 0 || (signal === 'SIGKILL' && sample)
+              ? resolve()
               : reject(new Error(`P-013 cold child ${stage} exited ${code}/${signal} ` +
                 `(${sample ? 'sample received' : 'no sample'}): ${stderr}`)));
           });
