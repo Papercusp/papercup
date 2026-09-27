@@ -417,6 +417,7 @@ describe('spawnConsole terminal PID receipt (EI-21653040525457620)', () => {
     );
     const script = interactiveRcScript(out);
     expect(script).toContain(`printf '%s\\n' "$$" > '/tmp/terminal-pid.receipt'`);
+    expect(script).toContain('export PAPERCUSP_TERMINAL_PID="$$"');
   });
 
   it('returns the receipt PID separately while preserving the emulator PID', async () => {

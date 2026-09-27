@@ -646,7 +646,7 @@ export function keepWindowOpenOnFailure(
   // the latter from inside the interactive bash itself so fleet:kill can use
   // the same marker + birth identity it authenticates for terminal_pids.
   const terminalPidReceipt = opts?.terminalPidReceiptPath
-    ? `printf '%s\\n' "$$" > ${shellEscape(opts.terminalPidReceiptPath)}`
+    ? `printf '%s\\n' "$$" > ${shellEscape(opts.terminalPidReceiptPath)}; export PAPERCUSP_TERMINAL_PID="$$"`
     : null;
   const interactiveScript = [
     terminalPidReceipt,
