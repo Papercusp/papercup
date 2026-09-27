@@ -39,6 +39,13 @@ export interface FireReactionResult {
   error?: string;
   /** The reaction's runId (for audit / dedup correlation). */
   runId?: string;
+  /**
+   * The dispatched tool's own result payload (WI-10003498). `ok` only says the
+   * DISPATCH succeeded — a guarded tool (e.g. `plans:set-status` skipping on a
+   * coverage guard, or returning `{ ok:false, code:'busy' }` in its body) still
+   * dispatches ok. Callers that must know what the tool actually DID read this.
+   */
+  result?: unknown;
 }
 
 /**
@@ -192,7 +199,7 @@ export async function fireReactionInProcess(opts: {
     if (!result.ok) {
       return { ok: false, error: result.error ? `${result.error.code}: ${result.error.message}` : 'reaction failed' };
     }
-    return { ok: true };
+    return { ok: true, ...(result.result !== undefined ? { result: result.result } : {}) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

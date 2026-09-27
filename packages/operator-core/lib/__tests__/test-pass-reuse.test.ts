@@ -360,6 +360,50 @@ describe('reuseCandidates', () => {
   });
 });
 
+// P-011: within one gate run, the selective phase (narrowed to the repair radius) and the full
+// phase judge the SAME sha. A pass the selective phase recorded is therefore a zero-drift proof
+// for the un-narrowed full task, so the full phase skips it instead of re-running it. This pins
+// the composition: un-narrowed candidates come from the recorded proofs, and a same-sha proof is
+// reused without diffing.
+describe('P-011: the full phase reuses passes the selective phase recorded at the same sha', () => {
+  it('skips a file the narrowed selective run passed, when the un-narrowed full task judges that sha', () => {
+    const passed = 'packages/x/lib/a.test.ts';
+    const proofs = new Map([[passed, proof(passed, { recordedSha: 'repair-head' })]]);
+    const candidates = reuseCandidates({ wsRel: 'packages/x', relatedFiles: undefined, proofFiles: [...proofs.keys()] });
+    const r = selectReusablePasses({
+      candidates,
+      proofs,
+      judgedSha: 'repair-head',
+      changedBetween: () => {
+        throw new Error('a same-sha proof must not be diffed');
+      },
+      runContext: CTX,
+      runnerIdentity: RUNNER,
+      nowMs: NOW,
+      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
+    });
+    expect(r.skip).toEqual([passed]);
+    expect(r.summary.reused).toBe(1);
+  });
+
+  it('still runs a file whose selective-phase pass was recorded in a different run context', () => {
+    const passed = 'packages/x/lib/a.test.ts';
+    const proofs = new Map([[passed, proof(passed, { recordedSha: 'repair-head', runContext: 'clean-local' })]]);
+    const r = selectReusablePasses({
+      candidates: [passed],
+      proofs,
+      judgedSha: 'repair-head',
+      changedBetween: () => null,
+      runContext: CTX,
+      runnerIdentity: RUNNER,
+      nowMs: NOW,
+      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
+    });
+    expect(r.skip).toEqual([]);
+    expect(r.summary.otherContext).toBe(1);
+  });
+});
+
 describe('skip-list channel: affected-tests writer -> vitest-config reader', () => {
   const dirs: string[] = [];
   afterEach(() => {

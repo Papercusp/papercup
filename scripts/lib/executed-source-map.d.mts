@@ -101,6 +101,26 @@ export function loadReuseProofs({ client, workspaceName, runContext }: {
     rows: number;
 }>;
 /**
+ * P-013 (gate-file-level-test-reuse-2026-09-27): the newest CI pass duration per test file over
+ * the last 7 days, for the reuse "time saved" estimate. `duration_ms` is the reporter's per-file
+ * test time, so a sum over it is a LOWER bound (collection, transform and worker start-up are not
+ * in it). A file with no CI pass in the window is absent from the map. Measured 2026-09-27: 314ms
+ * for operator-core's 867 proof files (test_runs_file_path_idx).
+ *
+ * @param {object} o
+ * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
+ * @param {string[]} o.files repo-relative test files
+ * @returns {Promise<Map<string, number>>}
+ */
+export function loadPassDurations({ client, files }: {
+    client: {
+        query: (text: string, values?: unknown[]) => Promise<{
+            rows: any[];
+        }>;
+    };
+    files: string[];
+}): Promise<Map<string, number>>;
+/**
  * Build the `changedBetween` seam over a real git checkout. `git diff --name-only A B` names
  * every path that differs between the two commits (a rename appears as both names); an
  * unknown sha — one gc'd away, or from a lineage this checkout never had — makes the diff

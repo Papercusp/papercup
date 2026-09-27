@@ -28,6 +28,13 @@ export const TEST_REUSE_SKIP_LIST_ENV = "PC_TEST_REUSE_SKIP_LIST";
 export const TEST_REUSE_MAX_AGE_ENV = "AFFECTED_TEST_REUSE_MAX_AGE_HOURS";
 export const TEST_REUSE_MAX_AGE_MS_DEFAULT = 24 * 3600 * 1000;
 
+/**
+ * P-012 soundness audit: the fraction (0..1) of REUSABLE files that run anyway, so a proof the
+ * rule trusted is re-tested against reality every run. Default 5%; `0` disables the audit only.
+ */
+export const TEST_REUSE_AUDIT_RATE_ENV = "AFFECTED_TEST_REUSE_AUDIT_RATE";
+export const TEST_REUSE_AUDIT_RATE_DEFAULT = 0.05;
+
 const OFF = new Set(["0", "false", "off", "no"]);
 
 /** @param {Record<string, string | undefined>} [env] */
@@ -40,6 +47,26 @@ export function testReuseEnabled(env = process.env) {
 export function testReuseMaxAgeMs(env = process.env) {
   const h = Number(env[TEST_REUSE_MAX_AGE_ENV]);
   return Number.isFinite(h) && h > 0 ? h * 3600 * 1000 : TEST_REUSE_MAX_AGE_MS_DEFAULT;
+}
+
+/** @param {Record<string, string | undefined>} [env] */
+export function testReuseAuditRate(env = process.env) {
+  const raw = env[TEST_REUSE_AUDIT_RATE_ENV];
+  if (raw == null || String(raw).trim() === "") return TEST_REUSE_AUDIT_RATE_DEFAULT;
+  const r = Number(raw);
+  return Number.isFinite(r) ? Math.min(1, Math.max(0, r)) : TEST_REUSE_AUDIT_RATE_DEFAULT;
+}
+
+/**
+ * Deterministic draw in [0, 1) for one (file, judgedSha): a re-run of the same sha re-derives the
+ * same audit sample (so the task-verdict cache identity stays stable), and the sample rotates with
+ * every new sha, so over successive runs every reusable file is audited.
+ *
+ * @param {string} file
+ * @param {string} judgedSha
+ */
+export function auditDraw(file, judgedSha) {
+  return createHash("sha256").update(`${judgedSha}\0${file}`).digest().readUInt32BE(0) / 0x1_0000_0000;
 }
 
 /**
@@ -97,7 +124,12 @@ function invalidates(rel, o) {
  * @param {string}                        o.runnerIdentity
  * @param {number}                        o.nowMs
  * @param {number}                        o.maxAgeMs
- * @returns {{ skip: string[], summary: Record<string, number> }}
+ * @param {number}                        [o.auditRate] P-012: fraction of reusable files that
+ *        run anyway (deterministic per file+sha, see auditDraw). Default 0 (pure rule).
+ * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
+ *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
+ *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
+ *        fails, reuse could have hidden that red: reuseSoundnessAlarms turns it into an alarm.
  */
 export function selectReusablePasses({
   candidates,
@@ -108,6 +140,7 @@ export function selectReusablePasses({
   runnerIdentity,
   nowMs,
   maxAgeMs,
+  auditRate = 0,
 }) {
   const summary = {
     candidates: 0,
@@ -121,8 +154,12 @@ export function selectReusablePasses({
     unknownDrift: 0,
     globalInput: 0,
     inputChanged: 0,
+    audited: 0,
+    expiredClean: 0,
   };
   const skip = [];
+  /** @type {Map<string, "audit" | "expired-clean">} */
+  const watch = new Map();
   /** @type {Map<string, { drift: Set<string> | null, global: boolean }>} */
   const driftCache = new Map();
   const driftFor = (sha) => {
@@ -161,25 +198,35 @@ export function selectReusablePasses({
       summary.otherRunner += 1;
       continue;
     }
-    if (!Number.isFinite(p.recordedAtMs) || nowMs - p.recordedAtMs > maxAgeMs || p.recordedAtMs > nowMs + 60_000) {
+    // An expired proof is never reused, and it is counted ONLY as expired. A recently-expired one
+    // (within one more maxAgeMs) is still evaluated against the rest of the rule, so a file that
+    // would otherwise have been reused is watched (P-012); older ones stop here, which bounds the
+    // number of distinct recorded shas the drift computation has to diff.
+    const finiteAge = Number.isFinite(p.recordedAtMs) && p.recordedAtMs <= nowMs + 60_000;
+    const expired = !finiteAge || nowMs - p.recordedAtMs > maxAgeMs;
+    if (expired) {
       summary.expired += 1;
-      continue;
+      if (!finiteAge || nowMs - p.recordedAtMs > 2 * maxAgeMs) continue;
     }
+    /** @param {keyof typeof summary} bucket */
+    const reject = (bucket) => {
+      if (!expired) summary[bucket] += 1;
+    };
     if (p.inputsCaptured !== true) {
-      summary.notCaptured += 1;
+      reject("notCaptured");
       continue;
     }
     if (Array.isArray(p.opaqueReasons) && p.opaqueReasons.length > 0) {
-      summary.opaque += 1;
+      reject("opaque");
       continue;
     }
     const { drift, global } = driftFor(p.recordedSha);
     if (drift === null) {
-      summary.unknownDrift += 1;
+      reject("unknownDrift");
       continue;
     }
     if (global) {
-      summary.globalInput += 1;
+      reject("globalInput");
       continue;
     }
     const inputs = new Set([file, ...p.executedModules]);
@@ -205,14 +252,89 @@ export function selectReusablePasses({
       }
     }
     if (changed) {
-      summary.inputChanged += 1;
+      reject("inputChanged");
+      continue;
+    }
+    if (expired) {
+      summary.expiredClean += 1;
+      watch.set(file, "expired-clean");
+      continue;
+    }
+    if (auditRate > 0 && auditDraw(file, judgedSha) < auditRate) {
+      summary.audited += 1;
+      watch.set(file, "audit");
       continue;
     }
     summary.reused += 1;
     skip.push(file);
   }
   skip.sort();
-  return { skip, summary };
+  return { skip, summary, watch };
+}
+
+/**
+ * P-012 alarm: the watched files (would-have-been-reused, see selectReusablePasses) that FAILED on
+ * this fresh run. Each one is evidence that reuse can hide a red — a flake the proof happened to
+ * pass through, or a runtime input the proof did not capture. `failedFiles` are as the runner
+ * prints them (workspace-relative); `prefix` ("<wsRel>/" or "") maps them to the repo-relative
+ * keys of `watch`.
+ *
+ * @param {{ failedFiles: Iterable<string> | null | undefined, watch: Map<string, string> | null | undefined, prefix: string }} o
+ * @returns {{ file: string, reason: string }[]}
+ */
+export function reuseSoundnessAlarms({ failedFiles, watch, prefix }) {
+  if (!watch || watch.size === 0 || !failedFiles) return [];
+  const hits = new Map();
+  for (const raw of failedFiles) {
+    const f = String(raw).replaceAll("\\", "/").replace(/^\.\//, "");
+    const key = watch.has(prefix + f) ? prefix + f : watch.has(f) ? f : null;
+    if (key !== null) hits.set(key, watch.get(key));
+  }
+  return [...hits.keys()].sort().map((file) => ({ file, reason: String(hits.get(file)) }));
+}
+
+/**
+ * P-013: the test time the skipped files would have cost, from their last CI pass durations. A
+ * LOWER bound (per-file test time only); `unmeasured` files had no duration and add nothing.
+ *
+ * @param {string[]} skip repo-relative
+ * @param {Map<string, number>} durations
+ * @returns {{ savedMs: number, measured: number, unmeasured: number }}
+ */
+export function estimateReuseSavings(skip, durations) {
+  let savedMs = 0;
+  let unmeasured = 0;
+  for (const f of skip) {
+    const ms = durations.get(f);
+    if (ms === undefined) unmeasured += 1;
+    else savedMs += ms;
+  }
+  return { savedMs: Math.round(savedMs), measured: skip.length - unmeasured, unmeasured };
+}
+
+/**
+ * P-013: one run-level roll-up line over every armed task (sum of the per-task summaries and
+ * savings), so the gate log answers "what did reuse do this run" with a single grep.
+ *
+ * @param {{ tasks: number, summaries: Record<string, number>[], savedMs: number | null, unmeasured: number }} o
+ *        `savedMs: null` = the durations could not be read for at least one task
+ */
+export function formatTestReuseTotalLine({ tasks, summaries, savedMs, unmeasured }) {
+  const sum = (k) => summaries.reduce((acc, s) => acc + (Number(s[k]) || 0), 0);
+  return (
+    `TEST_PASS_REUSE_TOTAL tasks=${tasks} candidates=${sum("candidates")} reused=${sum("reused")} ` +
+    `audited=${sum("audited")} expiredClean=${sum("expiredClean")} ` +
+    `minSavedTestMs=${savedMs === null ? "unknown" : savedMs} unmeasured=${unmeasured}`
+  );
+}
+
+/** One greppable line per alarm; `proof=` names why the file ran instead of being reused. */
+export function formatReuseAlarmLine(wsName, alarm) {
+  return (
+    `TEST_PASS_REUSE_ALARM ws=${wsName} file=${alarm.file} proof=${alarm.reason} — reuse would have ` +
+    `SKIPPED this file and it failed on a fresh run: a flake, or a runtime input its pass proof did ` +
+    `not capture. The workspace's retry verdict below says which; a reproduced red is a capture gap.`
+  );
 }
 
 /** Schema of the skip-list file; libs/test-config/src/test-pass-reuse-skip.ts refuses any other. */
@@ -267,6 +389,7 @@ export function formatTestReuseLine(wsName, summary, extra = "") {
     `TEST_PASS_REUSE ws=${wsName} candidates=${s.candidates} reused=${s.reused} noProof=${s.noProof} ` +
     `otherContext=${s.otherContext} otherRunner=${s.otherRunner} expired=${s.expired} ` +
     `notCaptured=${s.notCaptured} opaque=${s.opaque} unknownDrift=${s.unknownDrift} ` +
-    `globalInput=${s.globalInput} inputChanged=${s.inputChanged}${extra}`
+    `globalInput=${s.globalInput} inputChanged=${s.inputChanged} audited=${s.audited ?? 0} ` +
+    `expiredClean=${s.expiredClean ?? 0}${extra}`
   );
 }

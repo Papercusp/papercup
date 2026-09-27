@@ -1062,8 +1062,8 @@ function readDependencyGeneration(workspace: string, identityScript: string): st
  * the signing key, the runtime dependency used by release-local.sh's pre-build
  * migration lint, release-local.sh + the three verify scripts (RELEASE-RUNBOOK §2–4)
  * that compose under this cut, and that no cut is already in flight. Requested optional
- * legs (mac/windows) add an informational reminder that their build VM must be up. No
- * heavy work, no GitHub, no mutation.
+ * legs (mac/windows) add an informational line naming their native Linux cross-build
+ * producer (no VM). No heavy work, no GitHub, no mutation.
  */
 export function preflightCut(
   legs: CutLegs = {},
@@ -1245,7 +1245,7 @@ export function preflightCut(
     checks.push({
       name: 'leg:mac',
       ok: true,
-      detail: 'WITH_MAC requested — the mac build VM must be up (SSH :2222) or this leg fails ~35 min in',
+      detail: 'WITH_MAC requested — built by bin/build-mac-cross.sh, cross-compiled on Linux on this host (no VM or SSH)',
       warnOnly: true,
     });
   }
@@ -1253,7 +1253,7 @@ export function preflightCut(
     checks.push({
       name: 'leg:windows',
       ok: true,
-      detail: 'WITH_WINDOWS requested — the Windows build VM must be up (SSH :2223) or this leg fails',
+      detail: 'WITH_WINDOWS requested — built by bin/build-windows-cross.sh, cross-compiled on Linux on this host (no VM or SSH)',
       warnOnly: true,
     });
   }

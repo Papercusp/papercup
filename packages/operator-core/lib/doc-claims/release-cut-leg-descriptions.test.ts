@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import releaseCutTool from '../agent-tools/release/cut';
+import { preflightCut } from '../release-cut-launch';
 import { ROOT } from './corpus-subject';
 
 type DescribedField = { description?: string } | undefined;
@@ -57,8 +58,21 @@ describe('release:cut leg descriptions track their actual producers', () => {
     expect(RELEASE_LOCAL).toContain('"$WIN_TARGET_ENTRYPOINT" "$WIN_PRODUCER"');
   });
 
+  // The preflight's per-leg checks are a SECOND copy of the same claim; the schema
+  // descriptions above were corrected while these kept telling operators a build VM
+  // on SSH :2222/:2223 had to be up (WI-10003501).
+  it('preflight leg checks name the same native producers', () => {
+    const { checks } = preflightCut({ mac: true, windows: true }, { root: join(ROOT, 'papercusp-desktop') });
+    const detail = (name: string) => checks.find((check) => check.name === name)?.detail ?? '';
+    expect(describesProducer(detail('leg:mac'), 'bin/build-mac-cross.sh')).toBe(true);
+    expect(describesProducer(detail('leg:windows'), 'bin/build-windows-cross.sh')).toBe(true);
+  });
+
   it('CONTROL: rejects the retired VM-and-SSH descriptions', () => {
     expect(describesProducer('Include the macOS leg (build VM on SSH :2222).', 'bin/build-mac-cross.sh')).toBe(false);
     expect(describesProducer('Include the Windows leg (build VM on SSH :2223).', 'bin/build-windows-cross.sh')).toBe(false);
+    expect(
+      describesProducer('WITH_MAC requested — the mac build VM must be up (SSH :2222) or this leg fails', 'bin/build-mac-cross.sh'),
+    ).toBe(false);
   });
 });

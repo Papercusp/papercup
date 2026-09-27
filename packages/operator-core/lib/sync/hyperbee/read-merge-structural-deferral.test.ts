@@ -21,7 +21,15 @@
  * never re-applied.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createMergeCursor, mergeAdmittedLogsIncremental, type AdmittedLog } from './read-merge';
+import {
+  createMergeCursor,
+  dependencyRetryDelayMs,
+  mergeAdmittedLogsIncremental,
+  MERGE_DEPENDENCY_RETRY_BASE_MS,
+  MERGE_DEPENDENCY_RETRY_MAX_MS,
+  rewindMergeCursor,
+  type AdmittedLog,
+} from './read-merge';
 import type { OpEnvelope } from './op-envelope-types';
 import type { PeerLogOp } from './peer-log';
 
@@ -92,29 +100,40 @@ describe('WI-559 — a STRUCTURAL apply failure defers, it does not abort or dro
   });
 
   it('SELF-HEALS: the same op applies once the missing referent lands — no re-fold, no operator action', async () => {
-    const cursor = createMergeCursor();
-    const log = memLog('A', [put('k1', 1000, { id: 'k1' })]);
-    const applied: string[] = [];
-    let parentExists = false;
-    const apply = async (op: OpEnvelope): Promise<boolean> => {
-      if (!parentExists) throw fkViolation();
-      applied.push(op.hbKey ?? '');
-      return true;
-    };
+    let now = 1_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    try {
+      const cursor = createMergeCursor();
+      const log = memLog('A', [put('k1', 1000, { id: 'k1' })]);
+      const applied: string[] = [];
+      let parentExists = false;
+      const apply = async (op: OpEnvelope): Promise<boolean> => {
+        if (!parentExists) throw fkViolation();
+        applied.push(op.hbKey ?? '');
+        return true;
+      };
 
-    // Passes while the FK parent is missing: deferred every time, never dropped.
-    for (let i = 0; i < 5; i++) {
+      // Passes while the FK parent is missing: deferred every time, never dropped.
+      for (let i = 0; i < 5; i++) {
+        await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: apply, getTimeoutMs: 0 });
+        now += MERGE_DEPENDENCY_RETRY_MAX_MS;
+      }
+      expect(applied).toEqual([]);
+      expect(cursor.winners.has(KEY('k1'))).toBe(false);
+
+      // The repair lands (migration 686 + the canonical-slug reconcile). WI-10003506: the
+      // re-attempt happens once the op's backoff window has passed, at most
+      // MERGE_DEPENDENCY_RETRY_MAX_MS after the parent arrives.
+      parentExists = true;
+      now += MERGE_DEPENDENCY_RETRY_MAX_MS;
       await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: apply, getTimeoutMs: 0 });
+
+      expect(applied).toEqual(['k1']);
+      expect(cursor.winners.has(KEY('k1'))).toBe(true);
+      expect(cursor.applyDeferrals?.size ?? 0).toBe(0);
+    } finally {
+      clock.mockRestore();
     }
-    expect(applied).toEqual([]);
-    expect(cursor.winners.has(KEY('k1'))).toBe(false);
-
-    // The repair lands (migration 686 + the canonical-slug reconcile).
-    parentExists = true;
-    await mergeAdmittedLogsIncremental([log], cursor, { applyImpl: apply, getTimeoutMs: 0 });
-
-    expect(applied).toEqual(['k1']);
-    expect(cursor.winners.has(KEY('k1'))).toBe(true);
   });
 
   it('rate-limits the deferral log so a whole-Pot mismatch cannot flood the journal', async () => {

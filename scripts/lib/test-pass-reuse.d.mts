@@ -5,6 +5,17 @@
 export function testReuseEnabled(env?: Record<string, string | undefined>): boolean;
 /** @param {Record<string, string | undefined>} [env] */
 export function testReuseMaxAgeMs(env?: Record<string, string | undefined>): number;
+/** @param {Record<string, string | undefined>} [env] */
+export function testReuseAuditRate(env?: Record<string, string | undefined>): number;
+/**
+ * Deterministic draw in [0, 1) for one (file, judgedSha): a re-run of the same sha re-derives the
+ * same audit sample (so the task-verdict cache identity stays stable), and the sample rotates with
+ * every new sha, so over successive runs every reusable file is audited.
+ *
+ * @param {string} file
+ * @param {string} judgedSha
+ */
+export function auditDraw(file: string, judgedSha: string): number;
 /**
  * Global runner inputs: a drift path matching this invalidates EVERY proof. Kept narrow on
  * purpose (P-007 measured that "any package.json or libs/test-config file" discards 12 of 38
@@ -33,9 +44,14 @@ export function isGlobalRunnerInput(rel: any): boolean;
  * @param {string}                        o.runnerIdentity
  * @param {number}                        o.nowMs
  * @param {number}                        o.maxAgeMs
- * @returns {{ skip: string[], summary: Record<string, number> }}
+ * @param {number}                        [o.auditRate] P-012: fraction of reusable files that
+ *        run anyway (deterministic per file+sha, see auditDraw). Default 0 (pure rule).
+ * @returns {{ skip: string[], summary: Record<string, number>, watch: Map<string, "audit" | "expired-clean"> }}
+ *        `watch` = files the rule would have skipped but that RUN this time (an audit sample, or
+ *        a proof that expired within the last maxAgeMs and is otherwise clean). If one of them
+ *        fails, reuse could have hidden that red: reuseSoundnessAlarms turns it into an alarm.
  */
-export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, }: {
+export function selectReusablePasses({ candidates, proofs, judgedSha, changedBetween, runContext, runnerIdentity, nowMs, maxAgeMs, auditRate, }: {
     candidates: string[];
     proofs: Map<string, ReuseProof>;
     judgedSha: string;
@@ -44,10 +60,58 @@ export function selectReusablePasses({ candidates, proofs, judgedSha, changedBet
     runnerIdentity: string;
     nowMs: number;
     maxAgeMs: number;
+    auditRate?: number | undefined;
 }): {
     skip: string[];
     summary: Record<string, number>;
+    watch: Map<string, "audit" | "expired-clean">;
 };
+/**
+ * P-012 alarm: the watched files (would-have-been-reused, see selectReusablePasses) that FAILED on
+ * this fresh run. Each one is evidence that reuse can hide a red — a flake the proof happened to
+ * pass through, or a runtime input the proof did not capture. `failedFiles` are as the runner
+ * prints them (workspace-relative); `prefix` ("<wsRel>/" or "") maps them to the repo-relative
+ * keys of `watch`.
+ *
+ * @param {{ failedFiles: Iterable<string> | null | undefined, watch: Map<string, string> | null | undefined, prefix: string }} o
+ * @returns {{ file: string, reason: string }[]}
+ */
+export function reuseSoundnessAlarms({ failedFiles, watch, prefix }: {
+    failedFiles: Iterable<string> | null | undefined;
+    watch: Map<string, string> | null | undefined;
+    prefix: string;
+}): {
+    file: string;
+    reason: string;
+}[];
+/**
+ * P-013: the test time the skipped files would have cost, from their last CI pass durations. A
+ * LOWER bound (per-file test time only); `unmeasured` files had no duration and add nothing.
+ *
+ * @param {string[]} skip repo-relative
+ * @param {Map<string, number>} durations
+ * @returns {{ savedMs: number, measured: number, unmeasured: number }}
+ */
+export function estimateReuseSavings(skip: string[], durations: Map<string, number>): {
+    savedMs: number;
+    measured: number;
+    unmeasured: number;
+};
+/**
+ * P-013: one run-level roll-up line over every armed task (sum of the per-task summaries and
+ * savings), so the gate log answers "what did reuse do this run" with a single grep.
+ *
+ * @param {{ tasks: number, summaries: Record<string, number>[], savedMs: number | null, unmeasured: number }} o
+ *        `savedMs: null` = the durations could not be read for at least one task
+ */
+export function formatTestReuseTotalLine({ tasks, summaries, savedMs, unmeasured }: {
+    tasks: number;
+    summaries: Record<string, number>[];
+    savedMs: number | null;
+    unmeasured: number;
+}): string;
+/** One greppable line per alarm; `proof=` names why the file ran instead of being reused. */
+export function formatReuseAlarmLine(wsName: any, alarm: any): string;
 /**
  * Persist a skip list for one task as a content-addressed JSON file (same shape of channel as
  * related-tests.mjs `writeRelatedFilterList`). Content-addressing keeps the passing-task-verdict
@@ -91,6 +155,12 @@ export const TEST_REUSE_SKIP_LIST_ENV: "PC_TEST_REUSE_SKIP_LIST";
 /** Maximum proof age; default 24h. */
 export const TEST_REUSE_MAX_AGE_ENV: "AFFECTED_TEST_REUSE_MAX_AGE_HOURS";
 export const TEST_REUSE_MAX_AGE_MS_DEFAULT: number;
+/**
+ * P-012 soundness audit: the fraction (0..1) of REUSABLE files that run anyway, so a proof the
+ * rule trusted is re-tested against reality every run. Default 5%; `0` disables the audit only.
+ */
+export const TEST_REUSE_AUDIT_RATE_ENV: "AFFECTED_TEST_REUSE_AUDIT_RATE";
+export const TEST_REUSE_AUDIT_RATE_DEFAULT: 0.05;
 /** Schema of the skip-list file; libs/test-config/src/test-pass-reuse-skip.ts refuses any other. */
 export const REUSE_SKIP_LIST_SCHEMA: 1;
 export type ReuseProof = {

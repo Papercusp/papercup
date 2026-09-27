@@ -2852,6 +2852,8 @@ export async function synchronizeFinishWork(
           // silent; a body-level refusal (`ok:false`, e.g. busy after every retry) is not.
           const body = reactionBody((statusResult as { result?: unknown }).result);
           if (committedStatus !== reflected && body && body.ok === false) {
+            // `complete:false` tells the caller the saga did not converge (retry-safe).
+            planItem = 'failed';
             errors.push(
               `plan-item reflection did not commit: ${stamp.plan_slug}#${stamp.item_id} is ` +
                 `'${committedStatus}', not '${reflected}'; plans:set-status returned ` +

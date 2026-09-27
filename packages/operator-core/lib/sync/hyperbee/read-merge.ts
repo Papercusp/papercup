@@ -508,6 +508,17 @@ export interface MergeCursor {
    * built as a bare `{ positions, winners }` (lazily initialized at the apply site).
    */
   applyThrows?: Map<string, number>;
+  /**
+   * WI-10003506: per-op backoff for a STRUCTURAL deferral (op-identity → the last real
+   * outcome and when to re-attempt it). A held `dependency-waiting` op is re-read on every
+   * merge pass; without this, each pass re-ran its write against PG. Measured on the P-203
+   * VM: 36 held ops about 0.7 passes/s = 26 FK failures/s, each logged by PG with the full
+   * statement (about 4.4 MB/min of log, disk 98% full). While the window is open the apply
+   * site returns the stored outcome without touching PG, so the cursor hold, the
+   * applyFailures record and the self-heal all behave exactly as for a real failure.
+   * Dropped on apply and on rewind. In memory only.
+   */
+  applyDeferrals?: Map<string, { retryAt: number; outcome: MergeApplyOutcome }>;
   /** First unresolved materialization per log, persisted beside its position. */
   applyFailures?: Map<string, MergeApplyFailure>;
   /** Reuse a timed-out write while it is still in flight, rather than starting
@@ -1500,6 +1511,7 @@ export function rewindMergeCursor(cursor: MergeCursor, floors: ReadonlyMap<strin
   if (moved.length > 0) {
     cursor.winners.clear();
     cursor.applyThrows?.clear();
+    cursor.applyDeferrals?.clear();
   }
   return moved;
 }
@@ -2265,6 +2277,20 @@ function isStructuralApplyFailure(err: unknown): boolean {
   return code === '23503';
 }
 
+/** WI-10003506: first re-attempt delay for a held structural deferral. */
+export const MERGE_DEPENDENCY_RETRY_BASE_MS = 1_000;
+/**
+ * WI-10003506: cap on that delay. It is also the worst-case self-heal latency once the
+ * missing parent row lands, so keep it well under the git-sync / reconcile cadence.
+ */
+export const MERGE_DEPENDENCY_RETRY_MAX_MS = 30_000;
+
+/** Delay before re-attempting an op after its `failures`-th consecutive structural deferral. */
+export function dependencyRetryDelayMs(failures: number): number {
+  const exp = Math.min(Math.max(0, failures - 1), 30);
+  return Math.min(MERGE_DEPENDENCY_RETRY_BASE_MS * 2 ** exp, MERGE_DEPENDENCY_RETRY_MAX_MS);
+}
+
 async function applyRecordingWinner(
   cursor: MergeCursor,
   groupKey: string,
@@ -2279,6 +2305,14 @@ async function applyRecordingWinner(
   source?: DeferralSource,
 ): Promise<MergeApplyOutcome> {
   const ident = opIdent(groupKey, env);
+  // WI-10003506: a held structural deferral inside its backoff window is not re-run against
+  // PG. The stored outcome is returned as-is, so the caller holds the cursor and records the
+  // failure exactly as a real attempt would; applyThrows counts real attempts only. An apply
+  // still in flight for this op is always awaited instead (its outcome is newer).
+  const deferral = cursor.applyDeferrals?.get(ident);
+  if (deferral && !cursor.pendingApplies?.has(ident) && Date.now() < deferral.retryAt) {
+    return deferral.outcome;
+  }
   let outcome: MergeApplyOutcome;
   let batchOpId = 0;
   let timedOut = false;
@@ -2360,6 +2394,7 @@ async function applyRecordingWinner(
       ? await batch.fold.endOp(batchOpId, outcome.kind === 'applied', timedOut, groupKey, env, ident)
       : false;
   if (outcome.kind === 'applied') {
+    cursor.applyDeferrals?.delete(ident);
     if (!provisional) {
       cursor.applyThrows?.delete(ident);
       recordWinner(cursor, groupKey, toMeta(env), maxWinnersEntries, onWinnersEvicted);
@@ -2368,6 +2403,17 @@ async function applyRecordingWinner(
     const counts = (cursor.applyThrows ??= new Map());
     const n = (counts.get(ident) ?? 0) + 1;
     counts.set(ident, n);
+    // WI-10003506: only a STRUCTURAL deferral backs off. It resolves when a missing row
+    // arrives, which no immediate retry can hasten. A retryable failure keeps its own
+    // bounded handling, and a rejection is a dead letter that never touches PG again.
+    if (outcome.kind === 'dependency-waiting') {
+      (cursor.applyDeferrals ??= new Map()).set(ident, {
+        retryAt: Date.now() + dependencyRetryDelayMs(n),
+        outcome,
+      });
+    } else {
+      cursor.applyDeferrals?.delete(ident);
+    }
     if (n === 1 || n % 100 === 0) {
       console.warn(`[read-merge] ${outcome.kind === 'dependency-waiting' ? 'structural apply deferral' : 'unapplied entry'} (${n}×): ${scope} ${groupKey}; cursor HELD for replay`, outcome.reason);
     }
@@ -2755,6 +2801,7 @@ class FoldBatch {
     reserved.release();
     for (const [groupKey, { meta, ident }] of this.overlay) {
       this.cursor.applyThrows?.delete(ident);
+      this.cursor.applyDeferrals?.delete(ident);
       recordWinner(this.cursor, groupKey, meta, this.maxWinnersEntries, this.onWinnersEvicted);
     }
     this.overlay.clear();

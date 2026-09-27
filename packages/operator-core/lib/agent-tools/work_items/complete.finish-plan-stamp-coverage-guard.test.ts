@@ -203,3 +203,64 @@ describe('synchronizeFinishWork plan-item reflection carries the coverage guard'
     expect(contentionMocks.acquireWithContentionRetry).toHaveBeenCalledOnce();
   });
 });
+
+// WI-10003498 — measured in the P-013 workload-B rig: two concurrent completes on one
+// plan left only ONE plan_revisions row, and the losing complete still returned ok with
+// planItem:'todo'. `fire` reports dispatch success only, so plans:set-status's BODY-level
+// `{ ok:false, error:'busy' }` (plan-lock budget exhausted) read as a successful reflection.
+describe('synchronizeFinishWork retries a body-level busy plan-lock refusal', () => {
+  const busyBody = { ok: false, slug: STAMP.plan_slug, itemId: STAMP.item_id, error: 'busy', busy: [] };
+
+  async function runWithFireResults(results: unknown[], committed: string[]) {
+    let call = 0;
+    const fire = vi.fn(async (_opts: FiredReaction) => ({ ok: true as const, result: results[Math.min(call++, results.length - 1)] }));
+    let read = 0;
+    const readPlanItemStatus = vi.fn(async () => committed[Math.min(read++, committed.length - 1)]);
+    const receipt = await synchronizeFinishWork(
+      {
+        id: 'WI-2',
+        workItem: { state: 'done', harness: 'papercusp', payload: { plan_item: STAMP } },
+        completionEvidenceStored: true,
+        ctx,
+      },
+      { fire: fire as never, clearCheckpoint: vi.fn(async () => undefined) as never, readPlanItemStatus },
+    );
+    const setStatusCalls = fire.mock.calls.filter((c) => c[0].fire === 'plans:set-status').length;
+    return { receipt, setStatusCalls };
+  }
+
+  it('re-fires set-status after a busy body and reports the committed flip', async () => {
+    const { receipt, setStatusCalls } = await runWithFireResults(
+      [busyBody, { ok: true, slug: STAMP.plan_slug, itemId: STAMP.item_id, status: 'done' }],
+      ['done'],
+    );
+    expect(setStatusCalls).toBe(2);
+    expect(receipt).toMatchObject({ complete: true, planItem: 'done' });
+  });
+
+  it('also recognises busy in the MCP content-text shape', async () => {
+    const { setStatusCalls, receipt } = await runWithFireResults(
+      [{ content: [{ type: 'text', text: JSON.stringify(busyBody) }] }, { ok: true }],
+      ['done'],
+    );
+    expect(setStatusCalls).toBe(2);
+    expect(receipt).toMatchObject({ complete: true, planItem: 'done' });
+  });
+
+  it('fails the finish leg loudly when busy persists past the retry budget', async () => {
+    const { receipt, setStatusCalls } = await runWithFireResults([busyBody], ['todo']);
+    expect(setStatusCalls).toBe(4);
+    expect(receipt).toMatchObject({ complete: false, planItem: 'failed' });
+    expect(receipt.errors?.join(' ')).toMatch(/is 'todo', not 'done'/);
+    expect(receipt.errors?.join(' ')).toMatch(/reflection did not commit.*busy/);
+  }, 10_000);
+
+  it('keeps a legitimate coverage-guard skip silent and does not retry it', async () => {
+    const { receipt, setStatusCalls } = await runWithFireResults(
+      [{ ok: true, skipped: 'coverage_guard', coveredBy: ['WI-9'] }],
+      ['wip'],
+    );
+    expect(setStatusCalls).toBe(1);
+    expect(receipt).toMatchObject({ complete: true, planItem: 'wip' });
+  });
+});
