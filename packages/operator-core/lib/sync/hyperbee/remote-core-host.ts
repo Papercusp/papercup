@@ -102,6 +102,95 @@ function isUnusable(store: Corestore): boolean {
  */
 export function registerStoreMachine(store: Corestore, machineId: string): void {
   machineOfStore.set(store as unknown as object, machineId);
+  wrapReplicateForBorrowedCores(store);
+}
+
+// ── WI-10003481: a BORROWED core must replicate over the CALLER's connections ──
+//
+// corestore 7.9.2 attaches a core only to streams its OWN root store replicated:
+// `streamTracker.attachAll(core)` on the downloading transition, and `replicate()`
+// iterating `this.cores`. A harness that got a SESSION on a sibling-hosted core
+// (resolveRemoteCoreHost above) therefore never carried it over its own sockets.
+// When the host store had not replicated the socket a peer arrived on, the log
+// sat at peersCount 0 on a live connection (tower 2026-09-27: 38 siblings hosted
+// the VM log; the root harness admitted it 3h later and stayed no_replicator).
+// So the caller attaches the borrowed core to every muxer it has replicated, now
+// and on each later replicate().
+
+/** Minimal structural view of the hypercore surface this attach needs. */
+interface AttachableCore {
+  closed?: boolean;
+  core?: { replicator?: { attached(muxer: unknown): boolean; attachTo(muxer: unknown): void } } | null;
+}
+
+/** Caller store → borrowed sessions (cores it opened on a sibling host). */
+const borrowedByStore = new WeakMap<object, Set<AttachableCore>>();
+const replicateWrapped = new WeakSet<object>();
+
+function muxerOfStream(stream: unknown): unknown {
+  const noise = (stream as { noiseStream?: { userData?: unknown } } | null)?.noiseStream;
+  return noise?.userData ?? null;
+}
+
+function attachCoreToMuxer(session: AttachableCore, muxer: unknown): void {
+  if (!muxer || session.closed) return;
+  const replicator = session.core?.replicator;
+  if (!replicator || replicator.attached(muxer)) return;
+  replicator.attachTo(muxer);
+}
+
+/** The muxers of every live stream this store (its root) has replicated. */
+function liveMuxersOf(store: Corestore): unknown[] {
+  const tracker = (store as unknown as { streamTracker?: { records?: Array<{ stream?: unknown }> } }).streamTracker;
+  const records = tracker?.records ?? [];
+  const out: unknown[] = [];
+  for (const record of records) {
+    const muxer = muxerOfStream(record.stream);
+    if (muxer) out.push(muxer);
+  }
+  return out;
+}
+
+function wrapReplicateForBorrowedCores(store: Corestore): void {
+  const target = store as unknown as { replicate: (...args: unknown[]) => unknown };
+  if (replicateWrapped.has(target) || typeof target.replicate !== 'function') return;
+  replicateWrapped.add(target);
+  const original = target.replicate.bind(store);
+  target.replicate = (...args: unknown[]) => {
+    const stream = original(...args);
+    const borrowed = borrowedByStore.get(target);
+    if (borrowed && borrowed.size > 0) {
+      const muxer = muxerOfStream(stream);
+      for (const session of [...borrowed]) {
+        if (session.closed) {
+          borrowed.delete(session);
+          continue;
+        }
+        attachCoreToMuxer(session, muxer);
+      }
+    }
+    return stream;
+  };
+}
+
+/**
+ * Record that `caller` holds a session on a core HOSTED by another store, and
+ * attach it to every connection `caller` has already replicated. Later
+ * `caller.replicate()` calls attach it too (see {@link registerStoreMachine}).
+ * A no-op for a caller that hosts the core itself.
+ */
+export function attachBorrowedCore(caller: Corestore, host: Corestore, session: unknown): void {
+  if (caller === host) return;
+  const key = caller as unknown as object;
+  const s = session as AttachableCore;
+  let borrowed = borrowedByStore.get(key);
+  if (borrowed === undefined) {
+    borrowed = new Set();
+    borrowedByStore.set(key, borrowed);
+  }
+  borrowed.add(s);
+  wrapReplicateForBorrowedCores(caller);
+  for (const muxer of liveMuxersOf(caller)) attachCoreToMuxer(s, muxer);
 }
 
 /**

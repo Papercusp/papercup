@@ -36,7 +36,7 @@ import type Corestore from 'corestore';
 // `OpEnvelope` now lives in its own types module (Stage 4d).
 import type { OpEnvelope } from './op-envelope-types';
 import type { CancellableRead, PrefetchRange } from './read-merge';
-import { resolveRemoteCoreHost } from './remote-core-host';
+import { attachBorrowedCore, resolveRemoteCoreHost } from './remote-core-host';
 import { trackDetached } from '../../detached-imports';
 
 /**
@@ -431,6 +431,9 @@ export async function openRemoteLog(store: Corestore, keyHex: string): Promise<R
   const host = resolveRemoteCoreHost(store, keyHex);
   const core = getCore(host, { key: Buffer.from(keyHex, 'hex') });
   await core.ready();
+  // WI-10003481: a session on a sibling-hosted core must still replicate over
+  // THIS store's connections — corestore attaches a core only to its host's streams.
+  attachBorrowedCore(store, host, core);
 
   return {
     async get(i: number): Promise<PeerLogOp | null> {
