@@ -943,35 +943,119 @@ export async function convergeActivationToLaunchRecord(
     if (typeof applied?.specificationRevision !== 'string' || typeof applied.stateRevision !== 'string') return false;
     const appliedRevision = { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision };
     if (launchRecordAdmitsApplied(launchSpec, appliedRevision)) return false;
-    const rows = await tx<Array<{ control_generation: number | string }>>`
-      UPDATE harness_shared.session_briefs
-         SET control_state = jsonb_set(
-           jsonb_set(
-             jsonb_set(control_state, '{activation,applied}', ${rev}::text::jsonb, true),
-             '{activation,prepared}', 'null'::jsonb, true
-           ),
-           '{activation,status}', '"applied"'::jsonb, true
-         )
-       WHERE owner_id = ${ownerId}
-         AND workspace_id = ${workspaceId}
-         AND control_generation >= ${generation}
-         AND control_state->'activation'->'desired' = ${rev}::text::jsonb
-      RETURNING control_generation
-    `;
-    if (rows.length === 0) return false;
-    const recorded = await recordCurrentSessionIdentityActivation({
-      ownerId, workspaceId, generation, phase: 'applied', source: 'control', revision,
-      sql: tx as unknown as Sql,
-    });
-    if (recorded === 'missing') {
-      throw new Error('session_identity_activation_applied_not_recorded');
-    }
-    const { applySessionPackageResources } = await import('../../blueprint/session-package-resources');
-    const { appliedIdentityArtifact } = await import('../../capability-envelope/identity-grants-port');
-    await applySessionPackageResources(tx, { ownerId, workspaceId, revision,
-      artifact: appliedIdentityArtifact(launchSpec, revision) });
-    return true;
+    return await writeLaunchProvenApplied(tx as unknown as Sql, ownerId, workspaceId, generation, revision, launchSpec);
   });
+}
+
+/**
+ * WI-10003459 (residual): make `applied` follow a carry-respawn at the relaunch,
+ * not one turn later.
+ *
+ * A carry-respawn relaunches the CLI on `desired`, so the new process consumes
+ * that revision from its first token. `applied` nevertheless moved only when the
+ * NEXT turn's hook proved the CTRL emission (WI-10003297), so the whole first
+ * turn after every respawn joined its tool and inference usage to the PREVIOUS
+ * applied revision. Measured 2026-09-27 on su-fcbb3fed: 95 tool rows under
+ * b4a393278a74 while adv_sessions.launch_spec already carried e5995edd00f9 — the
+ * R-3 falsifier "usage joined to a revision the process is not running".
+ *
+ * Delivery proof is the right gate for an IN-PLACE change: a mode flip is
+ * consumed only once its text reaches the context. A restart is different: the
+ * launch artifact IS the consumption. So this converges `applied` (authority and
+ * attribution) when, and only when:
+ *   1. the latest `desired` event for this owner was written by a RESTART onto
+ *      exactly this revision — an in-place flip, even one back to the launched
+ *      specification, is `control`-sourced and keeps waiting for delivery proof;
+ *   2. the gate-selected launch record carries exactly this specification and
+ *      state revision — a relaunch that never landed keeps the old record; and
+ *   3. that record admits the revision (the same gate the kernel preflight uses).
+ * Provenance is read first, so an in-place transition never consults the launch
+ * record. The delivery watermark is untouched: the CTRL text still awaits the
+ * hook's proof, and that acknowledgement replays this transition id idempotently.
+ */
+export async function applyRelaunchedActivation(
+  ownerId: string,
+  workspaceId: string,
+  generation: number,
+  revision: SessionActivation['desired'],
+  sql: Sql = getOrgPg().sql,
+): Promise<boolean> {
+  if (!Number.isSafeInteger(generation) || generation < 0) return false;
+  return await sql.begin(async (tx) => {
+    const [latest] = await tx<Array<{ source: string; specification_revision: string; state_revision: string }>>`
+      SELECT source, specification_revision, state_revision
+        FROM harness_shared.session_identity_activation_events
+       WHERE workspace_id = ${workspaceId}
+         AND owner_id = ${ownerId}
+         AND phase = 'desired'
+       ORDER BY id DESC
+       LIMIT 1
+    `;
+    if (
+      latest?.source !== 'restart' ||
+      latest.specification_revision !== revision.specificationRevision ||
+      latest.state_revision !== revision.stateRevision
+    ) return false;
+    const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId);
+    const launched = launchSpec && typeof launchSpec === 'object'
+      ? launchSpec as { specificationRevision?: unknown; stateRevision?: unknown }
+      : null;
+    if (
+      launched?.specificationRevision !== revision.specificationRevision ||
+      launched.stateRevision !== revision.stateRevision
+    ) return false;
+    const { launchRecordAdmitsApplied } = await import('../../capability-envelope/identity-grants-port');
+    if (!launchRecordAdmitsApplied(launchSpec, revision)) return false;
+    return await writeLaunchProvenApplied(tx as unknown as Sql, ownerId, workspaceId, generation, revision, launchSpec);
+  });
+}
+
+/**
+ * The shared write for a launch-proven `applied`: authority + attribution move to
+ * `revision`; `control_delivered_generation` does NOT (the prompt text still awaits
+ * the hook's delivery proof). A no-op when `revision` is already applied, so a
+ * retry never appends a second receipt.
+ */
+async function writeLaunchProvenApplied(
+  tx: Sql,
+  ownerId: string,
+  workspaceId: string,
+  generation: number,
+  revision: SessionActivation['desired'],
+  launchSpec: unknown,
+): Promise<boolean> {
+  const rev = JSON.stringify({ specificationRevision: revision.specificationRevision, stateRevision: revision.stateRevision });
+  const rows = await tx<Array<{ control_generation: number | string }>>`
+    UPDATE harness_shared.session_briefs
+       SET control_state = jsonb_set(
+         jsonb_set(
+           jsonb_set(control_state, '{activation,applied}', ${rev}::text::jsonb, true),
+           '{activation,prepared}', 'null'::jsonb, true
+         ),
+         '{activation,status}', '"applied"'::jsonb, true
+       )
+     WHERE owner_id = ${ownerId}
+       AND workspace_id = ${workspaceId}
+       AND control_generation >= ${generation}
+       AND control_state->'activation'->'desired' = ${rev}::text::jsonb
+       AND NOT (
+         control_state->'activation'->>'status' IS NOT DISTINCT FROM 'applied'
+         AND control_state->'activation'->'applied' = ${rev}::text::jsonb
+       )
+    RETURNING control_generation
+  `;
+  if (rows.length === 0) return false;
+  const recorded = await recordCurrentSessionIdentityActivation({
+    ownerId, workspaceId, generation, phase: 'applied', source: 'control', revision, sql: tx,
+  });
+  if (recorded === 'missing') {
+    throw new Error('session_identity_activation_applied_not_recorded');
+  }
+  const { applySessionPackageResources } = await import('../../blueprint/session-package-resources');
+  const { appliedIdentityArtifact } = await import('../../capability-envelope/identity-grants-port');
+  await applySessionPackageResources(tx, { ownerId, workspaceId, revision,
+    artifact: appliedIdentityArtifact(launchSpec, revision) });
+  return true;
 }
 
 /**

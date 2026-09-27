@@ -5,6 +5,7 @@ import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   acknowledgeControlTransition,
+  applyRelaunchedActivation,
   convergeActivationToLaunchRecord,
   failControlTransitionActivation,
   markControlTransitionPrepared,
@@ -290,6 +291,81 @@ describe('P-009 activation span views', () => {
         FROM harness_shared.session_briefs
        WHERE owner_id = ${owner}`;
     expect(row).toEqual({ delivered: '59', applied: relaunched.revision, status: 'applied' });
+  });
+
+  // WI-10003459 (residual) on real PG: a carry-respawn's launch artifact IS the
+  // consumption, so `applied` must follow it on the relaunch's FIRST turn — while an
+  // in-place flip (control-sourced desired) keeps waiting for delivery proof.
+  describe('applies a restart onto the launched revision at the relaunch (WI-10003459)', () => {
+    const seed = async (owner: string, advId: number, launch: ReturnType<typeof compiledLaunch>,
+      desired: { specificationRevision: string; stateRevision: string },
+      applied: { specificationRevision: string; stateRevision: string }, source: string) => {
+      await db.sql`INSERT INTO harness_shared.adv_sessions (id,workspace_id,coord_owner_id,session_id,started_at,launch_spec)
+        VALUES (${advId},${WS},${owner},'native-successor','2026-09-27T14:19:37Z',${JSON.stringify(launch.launchSpec)}::text::jsonb)`;
+      const activation = {
+        schemaVersion: 1,
+        attribution: { actorId: 'actor-stable', principalId: 'principal-stable', sessionId: 'session-stable' },
+        desired, prepared: null, applied, status: 'desired',
+      };
+      await db.sql`
+        INSERT INTO harness_shared.session_briefs
+          (owner_id,workspace_id,native_session_id,control_generation,control_delivered_generation,control_state)
+        VALUES (${owner},${WS},'native-successor',69,67,${JSON.stringify({ activation })}::text::jsonb)`;
+      await db.sql`
+        INSERT INTO harness_shared.session_identity_activation_events
+          (workspace_id,owner_id,actor_id,principal_id,session_id,adv_session_id,native_session_id,
+           transition_id,control_generation,phase,source,specification_revision,state_revision,stack_refs,recorded_at)
+        VALUES (${WS},${owner},'actor-stable','principal-stable','session-stable',${advId},'native-previous',
+          ${`t-${owner}`},69,'desired',${source},${desired.specificationRevision},${desired.stateRevision},
+          '[]'::jsonb,'2026-09-27T14:19:37Z')`;
+    };
+    const state = async (owner: string) => {
+      const [row] = await db.sql<Array<{ delivered: string; applied: unknown; status: string; receipts: string }>>`
+        SELECT b.control_delivered_generation::text AS delivered,
+               b.control_state->'activation'->'applied' AS applied,
+               b.control_state #>> '{activation,status}' AS status,
+               (SELECT count(*)::text FROM harness_shared.session_identity_activation_events e
+                 WHERE e.owner_id = b.owner_id AND e.phase = 'applied') AS receipts
+          FROM harness_shared.session_briefs b WHERE b.owner_id = ${owner}`;
+      return row;
+    };
+
+    it('restart + launch record carrying desired: applied at the first turn, watermark untouched, ack replays idempotently', async () => {
+      const owner = `${OWNER}-relaunch`;
+      const next = compiledLaunch('relaunch-next');
+      const previous = compiledLaunch('relaunch-prev').revision;
+      await seed(owner, 9301, next, next.revision, previous, 'restart');
+
+      await expect(applyRelaunchedActivation(owner, WS, 69, next.revision, db.sql)).resolves.toBe(true);
+      expect(await state(owner)).toEqual({ delivered: '67', applied: next.revision, status: 'applied', receipts: '1' });
+      // A retry (e.g. a non-identity bump before the ack) appends no second receipt.
+      await expect(applyRelaunchedActivation(owner, WS, 69, next.revision, db.sql)).resolves.toBe(false);
+      // Prepare leaves an already-applied revision alone; the later delivery proof
+      // advances the watermark and replays the SAME transition id, not a new span.
+      await expect(markControlTransitionPrepared(owner, WS, 69, next.revision, db.sql)).resolves.toBe(true);
+      await expect(acknowledgeControlTransition(owner, WS, 69, db.sql, next.revision)).resolves.toBe(true);
+      expect(await state(owner)).toEqual({ delivered: '69', applied: next.revision, status: 'applied', receipts: '1' });
+    });
+
+    it('an in-place (control-sourced) flip back to the launched revision still waits for delivery proof', async () => {
+      const owner = `${OWNER}-inplace`;
+      const launched = compiledLaunch('inplace-launched');
+      const flipped = compiledLaunch('inplace-flipped').revision;
+      await seed(owner, 9302, launched, launched.revision, flipped, 'control');
+
+      await expect(applyRelaunchedActivation(owner, WS, 69, launched.revision, db.sql)).resolves.toBe(false);
+      expect(await state(owner)).toEqual({ delivered: '67', applied: flipped, status: 'desired', receipts: '0' });
+    });
+
+    it('a restart whose relaunch never landed (launch record still the predecessor) is refused', async () => {
+      const owner = `${OWNER}-unlanded`;
+      const predecessor = compiledLaunch('unlanded-prev');
+      const wanted = compiledLaunch('unlanded-next').revision;
+      await seed(owner, 9303, predecessor, wanted, predecessor.revision, 'restart');
+
+      await expect(applyRelaunchedActivation(owner, WS, 69, wanted, db.sql)).resolves.toBe(false);
+      expect(await state(owner)).toEqual({ delivered: '67', applied: predecessor.revision, status: 'desired', receipts: '0' });
+    });
   });
 
   // P-008 (identity-native-applied-revision-proof) failed-injection negative control
