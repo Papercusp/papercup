@@ -48,6 +48,40 @@ export function selectReusablePasses({ candidates, proofs, judgedSha, changedBet
     skip: string[];
     summary: Record<string, number>;
 };
+/**
+ * Persist a skip list for one task as a content-addressed JSON file (same shape of channel as
+ * related-tests.mjs `writeRelatedFilterList`). Content-addressing keeps the passing-task-verdict
+ * identity stable for an identical list, while a different list can never alias another run.
+ *
+ * @param {string} dir
+ * @param {{ files: string[], runContext: string, runnerIdentity: string, judgedSha: string }} o
+ *        `files` are WORKSPACE-relative (vitest resolves `exclude` against the workspace root)
+ * @returns {{ path: string, digest: string, count: number }}
+ */
+export function writeReuseSkipList(dir: string, { files, runContext, runnerIdentity, judgedSha }: {
+    files: string[];
+    runContext: string;
+    runnerIdentity: string;
+    judgedSha: string;
+}): {
+    path: string;
+    digest: string;
+    count: number;
+};
+/**
+ * The candidate test files (repo-relative) a task would execute, for the reuse rule. A narrowed
+ * task's selection is authoritative; an un-narrowed one could run any file the workspace holds,
+ * so every proof under the workspace directory is a candidate (an exclude entry for a file the
+ * task's include never matches is inert).
+ *
+ * @param {{ wsRel: string, relatedFiles?: string[] | null, proofFiles: Iterable<string> }} o
+ * @returns {string[]}
+ */
+export function reuseCandidates({ wsRel, relatedFiles, proofFiles }: {
+    wsRel: string;
+    relatedFiles?: string[] | null;
+    proofFiles: Iterable<string>;
+}): string[];
 /** One greppable line per workspace: how many selected files were reused, and why others ran. */
 export function formatTestReuseLine(wsName: any, summary: any, extra?: string): string;
 /** Env kill switch: `0`/`false`/`off`/`no` disables reuse entirely (default: ON). */
@@ -57,6 +91,8 @@ export const TEST_REUSE_SKIP_LIST_ENV: "PC_TEST_REUSE_SKIP_LIST";
 /** Maximum proof age; default 24h. */
 export const TEST_REUSE_MAX_AGE_ENV: "AFFECTED_TEST_REUSE_MAX_AGE_HOURS";
 export const TEST_REUSE_MAX_AGE_MS_DEFAULT: number;
+/** Schema of the skip-list file; libs/test-config/src/test-pass-reuse-skip.ts refuses any other. */
+export const REUSE_SKIP_LIST_SCHEMA: 1;
 export type ReuseProof = {
     recordedSha: string;
     recordedAtMs: number;

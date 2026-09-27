@@ -16,6 +16,8 @@
 //
 // Everything else runs. PURE: every input is a value or a seam, so the unit tests pin the rule.
 
+import { createHash } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 /** Env kill switch: `0`/`false`/`off`/`no` disables reuse entirely (default: ON). */
@@ -211,6 +213,51 @@ export function selectReusablePasses({
   }
   skip.sort();
   return { skip, summary };
+}
+
+/** Schema of the skip-list file; libs/test-config/src/test-pass-reuse-skip.ts refuses any other. */
+export const REUSE_SKIP_LIST_SCHEMA = 1;
+
+/**
+ * Persist a skip list for one task as a content-addressed JSON file (same shape of channel as
+ * related-tests.mjs `writeRelatedFilterList`). Content-addressing keeps the passing-task-verdict
+ * identity stable for an identical list, while a different list can never alias another run.
+ *
+ * @param {string} dir
+ * @param {{ files: string[], runContext: string, runnerIdentity: string, judgedSha: string }} o
+ *        `files` are WORKSPACE-relative (vitest resolves `exclude` against the workspace root)
+ * @returns {{ path: string, digest: string, count: number }}
+ */
+export function writeReuseSkipList(dir, { files, runContext, runnerIdentity, judgedSha }) {
+  const normalized = [...new Set(files.map((f) => f.replaceAll("\\", "/")))].sort();
+  const body = JSON.stringify({ schema: REUSE_SKIP_LIST_SCHEMA, files: normalized, runContext, runnerIdentity, judgedSha });
+  const digest = createHash("sha256").update(body).digest("hex").slice(0, 16);
+  mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `reuse-skip-${digest}.json`);
+  try {
+    writeFileSync(filePath, body, { flag: "wx", mode: 0o600 });
+  } catch (err) {
+    // Same content => same name: a concurrent writer already landed it.
+    if (/** @type {NodeJS.ErrnoException} */ (err)?.code !== "EEXIST") throw err;
+  }
+  return { path: filePath, digest, count: normalized.length };
+}
+
+/**
+ * The candidate test files (repo-relative) a task would execute, for the reuse rule. A narrowed
+ * task's selection is authoritative; an un-narrowed one could run any file the workspace holds,
+ * so every proof under the workspace directory is a candidate (an exclude entry for a file the
+ * task's include never matches is inert).
+ *
+ * @param {{ wsRel: string, relatedFiles?: string[] | null, proofFiles: Iterable<string> }} o
+ * @returns {string[]}
+ */
+export function reuseCandidates({ wsRel, relatedFiles, proofFiles }) {
+  const prefix = wsRel === "" || wsRel === "." ? "" : `${wsRel.replace(/\/+$/, "")}/`;
+  if (Array.isArray(relatedFiles) && relatedFiles.length > 0) {
+    return relatedFiles.map((f) => prefix + f.replaceAll("\\", "/").replace(/^\.\//, ""));
+  }
+  return [...proofFiles].filter((f) => f.startsWith(prefix));
 }
 
 /** One greppable line per workspace: how many selected files were reused, and why others ran. */
