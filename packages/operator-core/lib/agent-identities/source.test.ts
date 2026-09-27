@@ -176,6 +176,39 @@ describe('selected identity producer output binding', () => {
     }
   });
 
+  it('WI-10003468: a stale mode-less built-in copy falls back to the compiled entry instead of stranding its implications', async () => {
+    // Measured on the Mac rig (P-202 WD-5, 2026-09-27): the current sidecar had no
+    // blueprints/ of its own, so builtinBlueprintPath resolved an OLDER installed
+    // bundle's su.mode-auto — a pre-P-021 file with no `mode:` block — while
+    // su.mode-goal was absent. The catalog then refused 'mode "goal" implies unknown
+    // mode "auto"' and every psu launch on that host died at boot.
+    const current = parseYaml(readFileSync(builtinBlueprintPath('su.mode-auto'), 'utf8'));
+    // Calibration: the real file DOES carry a mode block, so stripping it below is
+    // what makes the fixture stale (not an already-mode-less source).
+    expect(current.mode?.id).toBe('auto');
+    const { mode: _mode, ...stale } = current;
+    const root = mkdtempSync(join(tmpdir(), 'stale-mode-catalog-'));
+    const staleFile = join(root, 'stale', 'su.mode-auto', 'blueprint.yaml');
+    mkdirSync(dirname(staleFile), { recursive: true });
+    writeFileSync(staleFile, stringifyYaml(stale));
+    vi.stubEnv('PAPERCUSP_HOME', join(root, 'home'));
+    vi.spyOn(blueprint, 'builtinBlueprintPath').mockImplementation((id) =>
+      id === 'su.mode-auto' ? staleFile : join(root, 'missing', id, 'blueprint.yaml'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const catalog = await getSelectedModeCatalog();
+      const ids = catalog.entries.map((entry) => entry.id);
+      expect(ids).toContain('auto');
+      expect(ids).toContain('goal');
+      expect(catalog.entries).toEqual(BUILTIN_MODE_COMPONENTS.map(({ definitionText: _text, ...entry }) => entry));
+      expect(warn.mock.calls.some(([line]) => String(line).includes(staleFile))).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('accepts only exact installed mirrors of a packaged baseline and refuses unmoderated variants', async () => {
     const raw = parseYaml(readFileSync(builtinBlueprintPath('su.mode-auto'), 'utf8'));
     const compiled = BUILTIN_MODE_COMPONENTS.find((entry) => entry.id === 'auto')!;

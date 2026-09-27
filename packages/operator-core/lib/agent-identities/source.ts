@@ -320,7 +320,25 @@ export async function getSelectedModeCatalog() {
       missingBuiltins.add(id);
       return null;
     }
-    return resolveBlueprintSource(parseBlueprintSource(text), {
+    const raw = parseBlueprintSource(text);
+    // WI-10003468 (P-202 WD-5): a su.mode-* blueprint with NO `mode:` block is not a
+    // live mode source — it is a pre-P-021 copy from an OLDER bundle, reached through
+    // builtinBlueprintPath's harness-root fallback (measured on the Mac rig: the current
+    // sidecar has no blueprints/ of its own and resolved the Sep-7 installed app's
+    // su.mode-auto, 36 lines, no mode block). Using it contributed NO `auto` entry while
+    // the absent su.mode-goal fell back to its compiled entry (implies auto), so the whole
+    // catalog refused "mode goal implies unknown mode auto" and EVERY psu launch on that
+    // host died at boot. The compiled catalog is pinned to THIS build, so it wins over a
+    // mode-less stale file; the stale path is named so the packaging fault stays visible.
+    if (!raw.mode) {
+      console.warn(
+        `[mode-catalog] ignoring stale built-in blueprint ${file}: it declares no mode block ` +
+          `(pre-P-021 copy from another bundle) — using this build's compiled "${id}" entry instead`,
+      );
+      missingBuiltins.add(id);
+      return null;
+    }
+    return resolveBlueprintSource(raw, {
       sourcePath: file, resolve: resolveBuiltinExtends,
     });
   }));
