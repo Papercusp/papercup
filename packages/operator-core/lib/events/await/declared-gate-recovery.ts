@@ -512,6 +512,10 @@ export function evaluateDeclaredGateGeneration(input: DeclaredGateEvidenceInput)
   }
   reasons.push('no catalog family, no exact or sibling fire history, and no live emitter duty — nothing is heading toward this key');
   const corrected = catalog.nearMiss[0] ?? null;
+  // R-005: with no live owner, the escalation target is the durable condition
+  // item the bridge records for this generation (keyed by `conditionKey`) —
+  // explicit, never null, exactly like the no-owner missed-emitter path.
+  const advisory: RecoveryTarget = { kind: 'steward-work-item', ref: conditionKey };
   return classified(
     'never-fireable',
     {
@@ -524,7 +528,7 @@ export function evaluateDeclaredGateGeneration(input: DeclaredGateEvidenceInput)
           : { verb: 'events:emit', args: { event: a.eventKey, announce: true }, target: { kind: 'declarer', ref: a.declaredBy } },
       ],
     },
-    null,
+    advisory,
   );
 }
 

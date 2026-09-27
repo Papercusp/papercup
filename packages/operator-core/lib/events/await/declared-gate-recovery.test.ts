@@ -95,7 +95,10 @@ describe('evaluateDeclaredGateGeneration — taxonomy (R-001) and exact next ver
   it('never-fireable: no catalog family, no exact/sibling fire, no live emitter duty → cancel this generation, then emit', () => {
     const r = classified(evaluateDeclaredGateGeneration(input()));
     expect(r.classification).toBe('never-fireable');
-    expect(r.escalationTarget).toBeNull();
+    // R-005: no live owner → the durable advisory condition item is the explicit
+    // escalation target (never null for an acting class).
+    expect(r.escalationTarget).toEqual({ kind: 'steward-work-item', ref: 'declared-gate-recovery:42:3:never-fireable' });
+    expect(r.escalationTarget?.ref).toBe(r.idempotenceKey);
     expect(r.nextVerb).toEqual({
       verb: 'events:cancel',
       args: { announcement_id: 42, expected_generation: 3 },
