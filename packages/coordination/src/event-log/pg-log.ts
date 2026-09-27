@@ -283,7 +283,7 @@ async function columnExists(sql: Sql, table: string, column: string): Promise<bo
  * `id`, so after ONE full read the cache only ever needs the `id > watermark`
  * delta — see the readLines doc comment for the full rationale + safety rails.
  */
-interface ReadLinesCacheEntry {
+interface ReadLinesCacheEntry extends IdleEvictable {
   /** Highest `id` folded into `rows` (the delta watermark). */
   maxId: number;
   /** The surface's envelopes in `id ASC` order (append order). Treated as
@@ -336,7 +336,7 @@ function readLinesCacheEnabled(): boolean {
  * fresh `ts = now()` stamp). GC deletions (escalation-log-gc) fold out on the
  * TTL'd full refresh, exactly like readLines.
  */
-interface ReadEventsCacheEntry {
+interface ReadEventsCacheEntry extends IdleEvictable {
   /** Highest `id` folded (the NEW-row delta watermark). */
   maxId: number;
   /** One entry per msg_id (the event-surface key); REPLACED on upsert re-read. */
@@ -364,6 +364,33 @@ function readEventsCacheRefreshMs(): number {
 /** Kill switch: PAPERCUSP_COORD_READEVENTS_CACHE=0 restores the always-full read. */
 function readEventsCacheEnabled(): boolean {
   return process.env.PAPERCUSP_COORD_READEVENTS_CACHE !== '0';
+}
+
+/**
+ * A readLines/readEvents cache entry that goes unread this long is dropped.
+ * Without it, ONE full read of a large surface stays resident for the whole
+ * process lifetime: a single fallback read of `messages` pinned ~2 GB in
+ * papercusp-bg-host (host-memory-reduction-2026-09-27 D-010/D-011). A caller
+ * that keeps reading keeps its entry warm, so the WI-3937 furnace protection
+ * is unchanged for real hot readers. Env override for tests.
+ */
+const COORD_LOG_CACHE_IDLE_EVICT_MS = 10 * 60_000;
+function coordLogCacheIdleMs(): number {
+  const env = Number(process.env.PAPERCUSP_COORD_LOG_CACHE_IDLE_MS);
+  return Number.isFinite(env) && env > 0 ? env : COORD_LOG_CACHE_IDLE_EVICT_MS;
+}
+
+interface IdleEvictable {
+  idleTimer?: ReturnType<typeof setTimeout>;
+}
+
+/** (Re)arm `entry`'s idle eviction. Called on every read that serves from the cache. */
+function armIdleEviction<E extends IdleEvictable>(cache: Map<string, E>, key: string, entry: E): void {
+  if (entry.idleTimer) clearTimeout(entry.idleTimer);
+  entry.idleTimer = setTimeout(() => {
+    if (cache.get(key) === entry) cache.delete(key);
+  }, coordLogCacheIdleMs());
+  entry.idleTimer.unref?.();
 }
 
 /**
@@ -488,9 +515,14 @@ export class PgCoordLog implements CoordEventLog {
 
   /** WI-3937 readLines incremental cache, keyed `${workspace}::${surface}`. */
   private readonly readLinesCache = new Map<string, ReadLinesCacheEntry>();
+  /** The in-flight full (re)read per key: concurrent cold callers share ONE read
+   *  instead of each materialising the whole surface (D-011). */
+  private readonly readLinesPriming = new Map<string, Promise<ReadLinesCacheEntry>>();
 
   /** WI-3993 readEvents incremental cache, keyed `${workspace}::${surface}`. */
   private readonly readEventsCache = new Map<string, ReadEventsCacheEntry>();
+  /** readEvents twin of {@link readLinesPriming}. */
+  private readonly readEventsPriming = new Map<string, Promise<ReadEventsCacheEntry>>();
 
   constructor(private readonly opts: PgCoordLogOptions) {
     this.fallbackWs = opts.workspaceId ?? DEFAULT_COORD_WORKSPACE;
@@ -704,20 +736,30 @@ export class PgCoordLog implements CoordEventLog {
 
     if (!entry) {
       // Full (re)read — first call for this key, or a deletion was detected above.
-      // The full rebuild itself is keyset-paged; int8 `id` arrives as a STRING
-      // from postgres-js — Number() everywhere.
-      const rows = await readCoordLogRows(sql, ws, surface);
-      const recentIds = new Set<number>();
-      for (let i = Math.max(0, rows.length - READLINES_CACHE_RECENT_IDS); i < rows.length; i++) {
-        recentIds.add(Number(rows[i].id));
+      // Single-flight: a caller arriving while it runs awaits the same read.
+      let priming = this.readLinesPriming.get(key);
+      if (!priming) {
+        priming = (async () => {
+          // The full rebuild itself is keyset-paged; int8 `id` arrives as a STRING
+          // from postgres-js — Number() everywhere.
+          const rows = await readCoordLogRows(sql, ws, surface);
+          const recentIds = new Set<number>();
+          for (let i = Math.max(0, rows.length - READLINES_CACHE_RECENT_IDS); i < rows.length; i++) {
+            recentIds.add(Number(rows[i].id));
+          }
+          const fresh: ReadLinesCacheEntry = {
+            maxId: rows.length > 0 ? Number(rows[rows.length - 1].id) : 0,
+            rows: rows.map((r) => parseBody(r.body, r)),
+            recentIds,
+            fullReadAtMs: now,
+          };
+          this.readLinesCache.set(key, fresh);
+          return fresh;
+        })().finally(() => this.readLinesPriming.delete(key));
+        this.readLinesPriming.set(key, priming);
       }
-      const fresh: ReadLinesCacheEntry = {
-        maxId: rows.length > 0 ? Number(rows[rows.length - 1].id) : 0,
-        rows: rows.map((r) => parseBody(r.body, r)),
-        recentIds,
-        fullReadAtMs: now,
-      };
-      this.readLinesCache.set(key, fresh);
+      const fresh = await priming;
+      armIdleEviction(this.readLinesCache, key, fresh);
       return fresh.rows.slice();
     }
 
@@ -737,6 +779,7 @@ export class PgCoordLog implements CoordEventLog {
       const keep = [...entry.recentIds].sort((a, b) => a - b).slice(-READLINES_CACHE_RECENT_IDS);
       entry.recentIds = new Set(keep);
     }
+    armIdleEviction(this.readLinesCache, key, entry);
     return entry.rows.slice();
   }
 
@@ -891,18 +934,28 @@ export class PgCoordLog implements CoordEventLog {
 
     if (!entry) {
       // Full (re)read — first call for this key, or a deletion was detected above.
-      // The full rebuild itself is keyset-paged; int8 `id` arrives as a STRING
-      // from postgres-js — Number().
-      const rows = await readCoordLogRows(sql, ws, surface);
-      const byMsgId = new Map<string, { id: number; envelope: CoordEnvelope }>();
-      let maxId = 0;
-      for (const r of rows) {
-        const idNum = Number(r.id);
-        byMsgId.set(r.msg_id, { id: idNum, envelope: parseBody(r.body, r) });
-        if (idNum > maxId) maxId = idNum;
+      // Single-flight, exactly like readLines.
+      let priming = this.readEventsPriming.get(key);
+      if (!priming) {
+        priming = (async () => {
+          // The full rebuild itself is keyset-paged; int8 `id` arrives as a STRING
+          // from postgres-js — Number().
+          const rows = await readCoordLogRows(sql, ws, surface);
+          const byMsgId = new Map<string, { id: number; envelope: CoordEnvelope }>();
+          let maxId = 0;
+          for (const r of rows) {
+            const idNum = Number(r.id);
+            byMsgId.set(r.msg_id, { id: idNum, envelope: parseBody(r.body, r) });
+            if (idNum > maxId) maxId = idNum;
+          }
+          const fresh: ReadEventsCacheEntry = { maxId, byMsgId, lastReadStartMs: now, fullReadAtMs: now };
+          this.readEventsCache.set(key, fresh);
+          return fresh;
+        })().finally(() => this.readEventsPriming.delete(key));
+        this.readEventsPriming.set(key, priming);
       }
-      const fresh: ReadEventsCacheEntry = { maxId, byMsgId, lastReadStartMs: now, fullReadAtMs: now };
-      this.readEventsCache.set(key, fresh);
+      const fresh = await priming;
+      armIdleEviction(this.readEventsCache, key, fresh);
       return sortedEventEnvelopes(fresh);
     }
 
@@ -926,6 +979,7 @@ export class PgCoordLog implements CoordEventLog {
       if (idNum > entry.maxId) entry.maxId = idNum;
     }
     entry.lastReadStartMs = now;
+    armIdleEviction(this.readEventsCache, key, entry);
     return sortedEventEnvelopes(entry);
   }
 
