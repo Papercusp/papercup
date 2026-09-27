@@ -99,9 +99,12 @@ import {
   SnapshotAbortedError,
   throttleSnapshotFoldProgress,
   type ProduceSnapshotResult,
+  type SnapshotFoldCheckpointStore,
   type SnapshotFoldWorkerFactory,
 } from './log-snapshot';
-import { SnapshotFoldWorker } from './snapshot-fold-offload';
+import { fileSnapshotFoldCheckpointStore, SnapshotFoldWorker } from './snapshot-fold-offload';
+import { join as joinPath } from 'node:path';
+import { papercuspRoot } from '../../papercusp-root';
 import {
   loadLiveGovernorReceiptSnapshotKeys,
   loadOwnCompactionEnvelopeKeys,
@@ -440,6 +443,12 @@ export interface BootHarnessOpts {
    */
   ownCompactionFoldWorker?: SnapshotFoldWorkerFactory;
   ownCompactionFailureBackoffBaseMs?: number;
+  /**
+   * P-006 test seam: where the own compaction persists its resume checkpoint. Default: a
+   * file under `<papercuspRoot>/snapshot-fold-checkpoints/`, keyed by workspace, harness and
+   * own-log key. `null` disables resume.
+   */
+  ownCompactionCheckpointStore?: SnapshotFoldCheckpointStore | null;
   /**
    * P-530 test seam. Production reads the current work_items-backed legacy receipt
    * keys immediately after capturing the own-log boundary, for the own compaction and
@@ -3604,6 +3613,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     return { maxSourceIndexExclusive, liveQualifiedKeys, ...(envelopeKeys ? { envelopeKeys } : {}) };
   }
 
+  let checkpointStoreMemo: SnapshotFoldCheckpointStore | null | undefined;
+  /** P-006 — the own compaction's resume checkpoint (see `ownCompactionCheckpointStore` in the opts). */
+  function ownCompactionCheckpointStore(): SnapshotFoldCheckpointStore | null {
+    if (checkpointStoreMemo !== undefined) return checkpointStoreMemo;
+    if (opts.ownCompactionCheckpointStore !== undefined) {
+      checkpointStoreMemo = opts.ownCompactionCheckpointStore;
+    } else {
+      const safe = (s: string) => s.replace(/[^a-zA-Z0-9_.-]/g, '_');
+      checkpointStoreMemo = fileSnapshotFoldCheckpointStore(
+        joinPath(
+          papercuspRoot(),
+          'snapshot-fold-checkpoints',
+          `${safe(opts.workspaceId)}__${safe(opts.harnessSlug)}__${ownLog.keyHex}.json`,
+        ),
+      );
+    }
+    return checkpointStoreMemo;
+  }
+
   async function runOwnCompaction(trigger: 'cadence' | 'requested' = 'cadence'): Promise<OwnCompactionOutcome> {
     const startedAt = Date.now();
     const previousCoversUpTo = lastSnapshotCoversUpTo;
@@ -3636,6 +3664,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         foldWorker:
           opts.ownCompactionFoldWorker ??
           ((init) => SnapshotFoldWorker.open(init, { signal: ownCompactionAbort.signal })),
+        // P-006: a fold interrupted by a bg-host restart resumes from its cursor, not index 0.
+        ...(ownCompactionCheckpointStore() ? { foldCheckpoint: ownCompactionCheckpointStore()! } : {}),
         // WI-10002836: without a position the first full-history fold (7.76M ops on the
         // tower) was indistinguishable from a hang for its whole 30-minute run.
         onProgress: throttleSnapshotFoldProgress(
