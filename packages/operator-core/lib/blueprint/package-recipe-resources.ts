@@ -112,6 +112,9 @@ export function packageRecipeDriver(
           FROM harness_shared.blueprint_package_resources
           WHERE workspace_id = ${address.workspaceId} AND resource_key = ${packageResourceKey(address)}`;
         if (!receipt) throw new Error('recipe package ownership receipt is missing');
+        // Recheck the committed row after any in-flight editor finishes, and
+        // keep it locked through deletion so a later edit cannot be erased.
+        await tx`SELECT id FROM harness_shared.code_recipes WHERE id = ${resource.id} FOR UPDATE`;
         const row = await getRecipe(tx as unknown as postgres.Sql, resource.id);
         if (!row) return 'absent';
         if (recipePackageInstalledHash(row) !== resource.fingerprint ||
@@ -129,6 +132,17 @@ export async function prepareRecipePackageResource(
   input: { pin: ResolvedPackageInput; workspaceId: string; dependentId: string },
 ): Promise<PackageResourceReceipt> {
   const planned = planRecipePackageResource(input.pin, input.workspaceId);
-  return preparePackageResource(sql, planned.address, input.dependentId,
-    packageRecipeDriver(sql, planned.address, planned.value));
+  const driver = packageRecipeDriver(sql, planned.address, planned.value);
+  return preparePackageResource(sql, planned.address, input.dependentId, {
+    ...driver,
+    async recover(writeKey) {
+      const refs = await driver.recover(writeKey);
+      // Admission and cleanup share recovery, but only admission refuses an
+      // edited row. Cleanup still needs its changed disposition to preserve it.
+      if (refs.some((ref) => ref.disposition === 'changed')) {
+        throw new Error('package-pin-conflict: registered recipe differs; explicit migration is required');
+      }
+      return refs;
+    },
+  });
 }
