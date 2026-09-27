@@ -1577,8 +1577,11 @@ export interface CheckpointResult {
   cleanGreen?: boolean;
   /** P-013 (gate-file-level-test-reuse-2026-09-27): the candidate suite round's per-file reuse
    *  record, carried from `runGreen` unchanged; the recorder persists it as
-   *  `gate_health.testPassReuse`. It rides every result that carries `postSuiteLegs`, because both
-   *  describe the suite that formed this verdict. ABSENT ⇒ not reported this round. */
+   *  `gate_health.testPassReuse`. It rides EVERY result formed after the candidate suite ran —
+   *  advance, red (terminal and frozen-repair), and held-green (perf / desktop-perf / delta /
+   *  cupboard-hygiene) — because the recorder RETAINS the previous record when a round reports
+   *  none, so a missing site shows the prior round's numbers as this one's. ABSENT ⇒ the suite
+   *  did not run this round (or the runner reported nothing). */
   testPassReuse?: TestPassReuseHealth;
   /** P-013: where this round's wall-clock time went — the stamped setup phases, the candidate
    *  suite, and `other` for everything unstamped, against the whole pass's measured time. Built
@@ -13882,6 +13885,9 @@ async function runGreenCheckpointInner(
       failingTestNames: extractFailingTestNames(summary),
       ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
       ...(repairQueue ? { repairQueue } : {}),
+      // P-013: the suite RAN on this red, so its per-file reuse record and phase stamps are
+      // this round's own. Leaving them off made gate_health keep the PREVIOUS round's record.
+      ...roundObservations,
       ...(retriage ? { retriage } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
@@ -13985,6 +13991,8 @@ async function runGreenCheckpointInner(
         reason: "perf-held",
         summary: perf.summary,
         ...(logPath ? { logPath } : {}),
+        // P-013: a held green still ran the suite — report this round's reuse + phase stamps.
+        ...roundObservations,
       };
     }
   }
@@ -14065,6 +14073,8 @@ async function runGreenCheckpointInner(
         reason: "desktop-perf-held",
         summary: desktopPerf.summary,
         ...(logPath ? { logPath } : {}),
+        // P-013: a held green still ran the suite — report this round's reuse + phase stamps.
+        ...roundObservations,
       };
     }
   }
@@ -14097,6 +14107,8 @@ async function runGreenCheckpointInner(
         reason: "delta-held",
         summary: delta.summary,
         ...(logPath ? { logPath } : {}),
+        // P-013: a held green still ran the suite — report this round's reuse + phase stamps.
+        ...roundObservations,
       };
     }
   }
@@ -14129,6 +14141,8 @@ async function runGreenCheckpointInner(
         reason: "cupboard-hygiene-held",
         summary: cupboardHygiene.summary,
         ...(logPath ? { logPath } : {}),
+        // P-013: a held green still ran the suite — report this round's reuse + phase stamps.
+        ...roundObservations,
       };
     }
   }

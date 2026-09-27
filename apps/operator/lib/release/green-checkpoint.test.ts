@@ -8092,6 +8092,25 @@ describe("runGreenCheckpoint", () => {
       expect("roundPhaseStamps" in r).toBe(false);
     });
 
+    // A held green ran the suite too. Without the record here gate_health would keep the
+    // PREVIOUS round's numbers and present them as this round's.
+    it("carries it onto a HELD green verdict", async () => {
+      const c1 = await commit("a", "1", "c1");
+      await git(repo, ["branch", "ready", c1]);
+      await commit("a", "2", "c2");
+      const { deps, calls } = stubDeps(true);
+      deps.runGreen = async () => {
+        calls.push("runGreen");
+        return { green: true, summary: "all pass", testPassReuse: reuse };
+      };
+      deps.perfGate = async () => ({ action: "block", summary: "perf BLOCK" });
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      expect(r).toMatchObject({ green: true, advanced: false, reason: "perf-held" });
+      expect(r.testPassReuse).toEqual(reuse);
+      expect(r.roundPhases?.phases.map((p) => p.phase)).toContain("candidate-suite");
+      expect("roundPhaseStamps" in r).toBe(false);
+    });
+
     it("leaves it ABSENT when the round reported nothing — never a zero", async () => {
       const c1 = await commit("a", "1", "c1");
       await git(repo, ["branch", "ready", c1]);
