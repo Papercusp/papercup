@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { RunSummary } from '@papercusp/testing-shell/llm';
 
-import {
+import type { S34Case } from './S34-behavior-grader-discipline';
+
+/**
+ * S34_SUBJECT points this suite at a mutated COPY of the scenario module, so
+ * scripts/mutation-probe.sh can prove falsifiability in copy-out mode without
+ * mutating the shared tree. Unset, the suite imports the real module.
+ */
+const subject = (process.env.S34_SUBJECT
+  ? await import(process.env.S34_SUBJECT)
+  : await import('./S34-behavior-grader-discipline')) as typeof import('./S34-behavior-grader-discipline');
+const {
   makeS34World, S34_CASES, S34_CURRENT_KEYS, S34_GOAL, S34_RETIRED_KEY, S34_RUBRIC_REF, S34_RUBRIC_REVISION, S34_RUNS,
-  s34BehaviorAssert, s34Evidence, SU_S34_BEHAVIOR_GRADER, type S34Case,
-} from './S34-behavior-grader-discipline';
+  s34BehaviorAssert, s34Evidence, SU_S34_BEHAVIOR_GRADER,
+} = subject;
 
 type Call = [tool: string, args: Record<string, unknown>];
 
