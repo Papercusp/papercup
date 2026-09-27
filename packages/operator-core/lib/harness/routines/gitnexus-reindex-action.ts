@@ -385,6 +385,18 @@ export const GITNEXUS_EMBEDDING_DEVICE = 'cuda';
  *  future upstream default change cannot silently move the CPU envelope of the hourly tick. */
 export const GITNEXUS_EMBEDDING_THREADS = 4;
 
+/** P-012 (D-016) — glibc malloc arena cap for the analyze child. Uncapped, glibc grows up to
+ *  8×cores arenas; measured 2026-09-27 the analyze's native heap reached ~7.9 GB of arenas
+ *  against a 1.1 GB V8 heap, filled its own 24 GiB cgroup and was pushed 11 GB into swap. */
+export const GITNEXUS_ANALYZE_MALLOC_ARENA_MAX = 2;
+
+/** P-012 (D-017) — gitnexus's manual WAL checkpoint driver. It forces a CHECKPOINT every 5 s
+ *  during analyze to dodge a Windows rename race (AV / Defender file locks) that Linux does
+ *  not have; here it paced the whole LBUG phase — ~6 s cycles of ~10 MB rewrite + 9 fdatasync,
+ *  25.5 GB written for a 5.4 GB db at ~2% CPU. '0' is gitnexus's documented opt-out; the
+ *  engine's own auto-checkpoint (64 MiB WAL threshold) stays on, so durability is unchanged. */
+export const GITNEXUS_WAL_MANUAL_CHECKPOINT_LINUX = '0';
+
 /** Skip when the box is genuinely oversubscribed — load ABOVE 1.5x cores means real run-queue
  *  queueing, and a 4-minute CPU-heavy index is exactly the wrong thing to pile on. (This box
  *  is 128 cores and idles around 0.5/core, so this defers only during a real storm.) */
@@ -695,6 +707,7 @@ export function analyzeEnv(
   heapMb: number = GITNEXUS_ANALYZE_HEAP_MB,
   semiSpaceMb: number = GITNEXUS_ANALYZE_SEMI_SPACE_MB,
   sourceLimitKb?: number,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   if (sourceLimitKb != null && base.GITNEXUS_MAX_FILE_SIZE != null) {
     const configured = Number(base.GITNEXUS_MAX_FILE_SIZE);
@@ -715,6 +728,9 @@ export function analyzeEnv(
   // The embedding device/threads ride here too (D-002): gitnexus reads them from env in
   // resolveEmbeddingConfig, an explicit caller value still wins, and — like the pool — no
   // node flag can influence them, so they must not depend on the heap branch either.
+  //
+  // The malloc arena cap and the WAL-checkpoint opt-out (P-012) are native-side for the same
+  // reason. The opt-out is Linux-only: the driver it disables exists for a Windows rename race.
   const withDbCap: NodeJS.ProcessEnv = {
     ...base,
     ...(sourceLimitKb == null ? {} : { GITNEXUS_MAX_FILE_SIZE: base.GITNEXUS_MAX_FILE_SIZE ?? String(sourceLimitKb) }),
@@ -723,6 +739,10 @@ export function analyzeEnv(
       base.GITNEXUS_LBUG_BUFFER_POOL_SIZE ?? String(GITNEXUS_LBUG_BUFFER_POOL_BYTES),
     GITNEXUS_EMBEDDING_DEVICE: base.GITNEXUS_EMBEDDING_DEVICE ?? GITNEXUS_EMBEDDING_DEVICE,
     GITNEXUS_EMBEDDING_THREADS: base.GITNEXUS_EMBEDDING_THREADS ?? String(GITNEXUS_EMBEDDING_THREADS),
+    MALLOC_ARENA_MAX: base.MALLOC_ARENA_MAX ?? String(GITNEXUS_ANALYZE_MALLOC_ARENA_MAX),
+    ...(platform === 'linux'
+      ? { GITNEXUS_WAL_MANUAL_CHECKPOINT: base.GITNEXUS_WAL_MANUAL_CHECKPOINT ?? GITNEXUS_WAL_MANUAL_CHECKPOINT_LINUX }
+      : {}),
   };
   const existing = (withDbCap.NODE_OPTIONS ?? '').trim();
   if (/--max-old-space-size/.test(existing)) return withDbCap;
