@@ -3336,6 +3336,8 @@ export async function setIssueState(
      * callers omit this and continue through this module's own guard.
      */
     secondTerminalCloseHandledByUnified?: boolean;
+    /** Legacy terminal spelling supplied by the unified writer; commit with status. */
+    terminalReason?: string | null;
   } = {},
 ): Promise<EngineerIssue | null> {
   const isTerminal = ISSUE_TERMINAL_STATUSES.has(state);
@@ -3563,7 +3565,9 @@ export async function setIssueState(
       }
       const updated = await tx<{ feature_id: string }[]>`
         UPDATE harness_shared.work_items
-         SET status = ${state}, origin = 'local', updated_ts = (extract(epoch FROM now()) * 1000)::bigint,
+         SET status = ${state},
+               terminal_reason = COALESCE(${opts.terminalReason ?? null}, terminal_reason),
+               origin = 'local', updated_ts = (extract(epoch FROM now()) * 1000)::bigint,
                taken_by = NULL, taken_at = NULL,
                -- Keep the item-scoped progress signal tied to its claim. A terminal
                -- transition releases the holder, so retaining the old timestamp makes

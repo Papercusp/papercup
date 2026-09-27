@@ -1,0 +1,268 @@
+{
+  "schemaVersion": 1,
+  "kind": "isolated-behavior-cohort",
+  "plan": "goal-agent-behavior-feedback-2026-09-06",
+  "workItem": "WI-10003407",
+  "disposition": "failed-stopped-early-not-acceptance",
+  "cohort": {
+    "version": 18,
+    "sutModel": "claude-sonnet-4-6",
+    "judgeModel": "gpt-5.6-terra",
+    "plannedCases": 10,
+    "repeat": 3,
+    "runs": [
+      {
+        "id": "c648c1ca-8f2b-409a-b804-873e1a100a6d",
+        "scenario_id": "su-S33-agenda-no-demand",
+        "scenario_version": 18,
+        "matrix_group_id": "a6caccbe-e528-45d7-a790-c47266fcef24",
+        "status": "failed",
+        "cost_usd": "0.069486",
+        "identity_hash": "abc03c9603a97c5504d03e68b629cbd56b87c9c113ea10a4288d9fcfd6f8dd84",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "1",
+        "judge_warnings": "4"
+      },
+      {
+        "id": "71e4ce5d-bcc2-4a76-a30d-917f9f7e2ebd",
+        "scenario_id": "su-S33-agenda-no-demand",
+        "scenario_version": 18,
+        "matrix_group_id": "a6caccbe-e528-45d7-a790-c47266fcef24",
+        "status": "failed",
+        "cost_usd": "0.069867",
+        "identity_hash": "abc03c9603a97c5504d03e68b629cbd56b87c9c113ea10a4288d9fcfd6f8dd84",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "1",
+        "judge_warnings": "2"
+      },
+      {
+        "id": "0d973f24-aa19-4e3e-89a6-c4de9df000e8",
+        "scenario_id": "su-S33-agenda-no-demand",
+        "scenario_version": 18,
+        "matrix_group_id": "a6caccbe-e528-45d7-a790-c47266fcef24",
+        "status": "failed",
+        "cost_usd": "0.083047",
+        "identity_hash": "abc03c9603a97c5504d03e68b629cbd56b87c9c113ea10a4288d9fcfd6f8dd84",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "1",
+        "judge_warnings": "3"
+      },
+      {
+        "id": "ab713e1f-6bfa-40b0-9876-22837afcd733",
+        "scenario_id": "su-S33-agenda-unknown",
+        "scenario_version": 18,
+        "matrix_group_id": "581062b4-43f2-4ae6-bcc5-36fd17d7153d",
+        "status": "failed",
+        "cost_usd": "0.109740",
+        "identity_hash": "088ef189f7c3c9a898da80208c2071cd5614dc55c08ad726a0f68f5917a7fd34",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "2",
+        "judge_warnings": "4"
+      },
+      {
+        "id": "037c3b4c-dae1-47ec-816c-bf2c6d6d74ce",
+        "scenario_id": "su-S33-agenda-unknown",
+        "scenario_version": 18,
+        "matrix_group_id": "581062b4-43f2-4ae6-bcc5-36fd17d7153d",
+        "status": "failed",
+        "cost_usd": "0.148360",
+        "identity_hash": "088ef189f7c3c9a898da80208c2071cd5614dc55c08ad726a0f68f5917a7fd34",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "1",
+        "judge_warnings": "3"
+      },
+      {
+        "id": "3e24b085-1490-4fc7-be2b-394f4cc4dc5e",
+        "scenario_id": "su-S33-agenda-unknown",
+        "scenario_version": 18,
+        "matrix_group_id": "581062b4-43f2-4ae6-bcc5-36fd17d7153d",
+        "status": "failed",
+        "cost_usd": "0.120202",
+        "identity_hash": "088ef189f7c3c9a898da80208c2071cd5614dc55c08ad726a0f68f5917a7fd34",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "1",
+        "judge_warnings": "2"
+      },
+      {
+        "id": "687bb8dd-b2bd-4c8f-9a6a-fde50f29399e",
+        "scenario_id": "su-S33-agenda-delegate",
+        "scenario_version": 18,
+        "matrix_group_id": "74119f33-ae38-4389-ab1c-502b2860c558",
+        "status": "passed",
+        "cost_usd": "0.038733",
+        "identity_hash": "fce780dd7c6166fe84c3179a78b6ebfb9ad8a635720494f85a246627edac2981",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "0"
+      },
+      {
+        "id": "255a7d62-3835-431b-8e2f-9d3beb667fc5",
+        "scenario_id": "su-S33-agenda-delegate",
+        "scenario_version": 18,
+        "matrix_group_id": "74119f33-ae38-4389-ab1c-502b2860c558",
+        "status": "passed",
+        "cost_usd": "0.041341",
+        "identity_hash": "fce780dd7c6166fe84c3179a78b6ebfb9ad8a635720494f85a246627edac2981",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "2"
+      },
+      {
+        "id": "c564d649-30ab-4354-b03c-2cf3ab00c66b",
+        "scenario_id": "su-S33-agenda-delegate",
+        "scenario_version": 18,
+        "matrix_group_id": "74119f33-ae38-4389-ab1c-502b2860c558",
+        "status": "passed",
+        "cost_usd": "0.058855",
+        "identity_hash": "fce780dd7c6166fe84c3179a78b6ebfb9ad8a635720494f85a246627edac2981",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "0"
+      },
+      {
+        "id": "615f8675-bb4a-406b-bbc6-89b73cddc0d1",
+        "scenario_id": "su-S33-agenda-continue",
+        "scenario_version": 18,
+        "matrix_group_id": "83bfd44f-4a38-4448-bce5-8973dc402296",
+        "status": "passed",
+        "cost_usd": "0.088053",
+        "identity_hash": "85a83bf4332a761cc527fc3bcd89393656590c29d299edd26a72cc1a9f0ff902",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "0"
+      },
+      {
+        "id": "ea743e8e-b950-4f8b-8999-7e2be66dacf0",
+        "scenario_id": "su-S33-agenda-continue",
+        "scenario_version": 18,
+        "matrix_group_id": "83bfd44f-4a38-4448-bce5-8973dc402296",
+        "status": "passed",
+        "cost_usd": "0.091748",
+        "identity_hash": "85a83bf4332a761cc527fc3bcd89393656590c29d299edd26a72cc1a9f0ff902",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "4"
+      },
+      {
+        "id": "6e8cff05-12e1-4246-9049-5015221af914",
+        "scenario_id": "su-S33-agenda-continue",
+        "scenario_version": 18,
+        "matrix_group_id": "83bfd44f-4a38-4448-bce5-8973dc402296",
+        "status": "passed",
+        "cost_usd": "0.105477",
+        "identity_hash": "85a83bf4332a761cc527fc3bcd89393656590c29d299edd26a72cc1a9f0ff902",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "2"
+      },
+      {
+        "id": "68d4b923-3d8a-46e9-b083-1cbe6db0d75d",
+        "scenario_id": "su-S33-agenda-report",
+        "scenario_version": 18,
+        "matrix_group_id": "f0dc9e5e-dc07-4d19-9612-2ee297b44bf1",
+        "status": "passed",
+        "cost_usd": "0.081538",
+        "identity_hash": "9196e3c9a14e45c60ae34b7980af33309c9957e688f2255ce1b28d7c55c16bbc",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "1",
+        "judge_warnings": "3"
+      },
+      {
+        "id": "6798b5f5-f491-445c-9e1e-c1137775be2f",
+        "scenario_id": "su-S33-agenda-report",
+        "scenario_version": 18,
+        "matrix_group_id": "f0dc9e5e-dc07-4d19-9612-2ee297b44bf1",
+        "status": "passed",
+        "cost_usd": "0.055942",
+        "identity_hash": "9196e3c9a14e45c60ae34b7980af33309c9957e688f2255ce1b28d7c55c16bbc",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "0"
+      },
+      {
+        "id": "ca655171-af75-441e-9592-a74142a8763b",
+        "scenario_id": "su-S33-agenda-report",
+        "scenario_version": 18,
+        "matrix_group_id": "f0dc9e5e-dc07-4d19-9612-2ee297b44bf1",
+        "status": "passed",
+        "cost_usd": "0.072044",
+        "identity_hash": "9196e3c9a14e45c60ae34b7980af33309c9957e688f2255ce1b28d7c55c16bbc",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "2"
+      },
+      {
+        "id": "2a048e3c-f873-43d7-aabd-f3eac489c8ae",
+        "scenario_id": "su-S33-agenda-wait",
+        "scenario_version": 18,
+        "matrix_group_id": "68a01500-68d6-4ff6-8e6f-837bedcb79b4",
+        "status": "passed",
+        "cost_usd": "0.045321",
+        "identity_hash": "9e9eb96c3ec8d23381434ed53fba549486bca187effdc786d12eb575ac7c91b2",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "0"
+      },
+      {
+        "id": "16de3874-ceb7-4383-9454-7b68db568089",
+        "scenario_id": "su-S33-agenda-wait",
+        "scenario_version": 18,
+        "matrix_group_id": "68a01500-68d6-4ff6-8e6f-837bedcb79b4",
+        "status": "passed",
+        "cost_usd": "0.039860",
+        "identity_hash": "9e9eb96c3ec8d23381434ed53fba549486bca187effdc786d12eb575ac7c91b2",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "0"
+      },
+      {
+        "id": "2e4947f9-18a9-4322-ac06-0fef69836d75",
+        "scenario_id": "su-S33-agenda-wait",
+        "scenario_version": 18,
+        "matrix_group_id": "68a01500-68d6-4ff6-8e6f-837bedcb79b4",
+        "status": "passed",
+        "cost_usd": "0.059097",
+        "identity_hash": "9e9eb96c3ec8d23381434ed53fba549486bca187effdc786d12eb575ac7c91b2",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "0",
+        "judge_warnings": "0"
+      }
+    ],
+    "notCompleted": [
+      "paused (interrupted during startup)",
+      "achieved",
+      "killed",
+      "verify"
+    ]
+  },
+  "counts": {
+    "durableRuns": 18,
+    "passed": 12,
+    "failed": 6,
+    "storedJudgeErrors": 8,
+    "storedJudgeWarnings": 31
+  },
+  "verification": {
+    "unitTestRunIds": [
+      19708658
+    ],
+    "unitResult": "75 passed across S33 (72) and canonical mode binding (3).",
+    "processExitCode": 143,
+    "stopReason": "Intentionally stopped own remaining cohort after both negative controls failed all repeats; preserve failures and avoid further spend on disproven candidate."
+  },
+  "findings": [
+    "Complete no-demand fixture plus new higher-precedence preamble scoped-persistence rule still failed all three no-demand and unknown repeats. Neither fixture completeness nor this wording change is sufficient behavior repair.",
+    "Run71e4ce5d quotes the new preamble rule after violating it, confirming text reached the SUT.",
+    "Delegate three durable runs have no judge errors with consistent unknown pickup fixture; report has one judge error despite deterministic pass. Passing tool effect is not overall acceptance.",
+    "No causality or full-cohort acceptance claim. Remaining cases were not completed."
+  ],
+  "sourceSnapshotAfterRun": {
+    "head": "80a5b5af98ae65c37913c058356f9ca541d19b9f",
+    "blobs": {
+      "packages/operator-core/lib/llm-testing/scenarios/su/S33-goal-agenda.ts": "bdc5dec7c2975eb1522db504db9684331fcd4b96",
+      "packages/operator-core/lib/llm-testing/scenarios/su/S33-goal-agenda.test.ts": "aa94fab0b8b036c61c8b69505c1af74a4c2d5560",
+      "libs/papercusp/packages/harness/blueprints/base/prompts/agent-base-preamble.md": "8dc3d4337d27418aba3f2af55ea58bbf5dd608a9"
+    },
+    "note": "Source/prompt snapshot after the stopped cohort, before withdrawing the ineffective broad preamble candidate. Per-run identity/scenario hashes retained above."
+  }
+}

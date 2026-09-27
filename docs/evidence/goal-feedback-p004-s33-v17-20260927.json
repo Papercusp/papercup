@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "kind": "isolated-behavior-cohort",
+  "plan": "goal-agent-behavior-feedback-2026-09-06",
+  "workItem": "WI-10003407",
+  "disposition": "failed-incomplete-cohort-not-acceptance",
+  "cohort": {
+    "version": 17,
+    "sutModel": "claude-sonnet-4-6",
+    "judgeModel": "gpt-5.6-terra",
+    "runs": [
+      {
+        "id": "3a236fc3-292e-43cc-98c0-4e875be4e703",
+        "scenario_id": "su-S33-agenda-no-demand",
+        "scenario_version": 17,
+        "matrix_group_id": "74bbe3ff-2926-42ca-8fdb-a2ba013cb821",
+        "status": "failed",
+        "cost_usd": "0.036292",
+        "identity_hash": "ca7aea95b081c22bde8f8e25c1ac09331bf24878eb84ec8b1b2bb1e916a79dae",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "1",
+        "judge_warnings": "0"
+      },
+      {
+        "id": "cce51142-e81f-40fd-90b0-b2934063b5c2",
+        "scenario_id": "su-S33-agenda-no-demand",
+        "scenario_version": 17,
+        "matrix_group_id": "74bbe3ff-2926-42ca-8fdb-a2ba013cb821",
+        "status": "failed",
+        "cost_usd": "0.072515",
+        "identity_hash": "ca7aea95b081c22bde8f8e25c1ac09331bf24878eb84ec8b1b2bb1e916a79dae",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "1",
+        "judge_warnings": "2"
+      },
+      {
+        "id": "01afc1bd-8481-4326-8b2d-126714d159ac",
+        "scenario_id": "su-S33-agenda-no-demand",
+        "scenario_version": 17,
+        "matrix_group_id": "74bbe3ff-2926-42ca-8fdb-a2ba013cb821",
+        "status": "failed",
+        "cost_usd": "0.081023",
+        "identity_hash": "ca7aea95b081c22bde8f8e25c1ac09331bf24878eb84ec8b1b2bb1e916a79dae",
+        "scenario_hash": "31948cd78c6d1273fc8e7ecbb4e3bc945a53cc51d579c2e617a68c8a249c0d36",
+        "judge_errors": "1",
+        "judge_warnings": "4"
+      }
+    ]
+  },
+  "verification": {
+    "unitTestRunIds": [
+      19708632,
+      19708635,
+      19708645
+    ],
+    "unitResult": "Delegate contradiction red: 67 pass/1 fail. No-demand coverage red: 68 pass/1 fail. Final fixture suite: 70 pass.",
+    "processExitCode": 1
+  },
+  "findings": [
+    "No-demand failed all three persisted repeats even with current production planning review and not-due owner report; omission of those inputs was not sufficient to explain the over-probing.",
+    "Delegate completed three model runs with CLI pass, but persistRunReport failed during an announced PostgreSQL restart. No delegate acceptance evidence is claimed without the durable transcripts.",
+    "Unknown startup then failed with PostgreSQL 08P01 server_login_retry. It did not establish a model behavior result.",
+    "Fixture correction preserves unknown member pickup after a recorded placement; it no longer synthesizes live member claims or working-plan text."
+  ],
+  "scope": "Fixture consistency test only. Prompt unchanged from v16. Canonical runtime behavior repair remains open."
+}

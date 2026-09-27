@@ -3563,6 +3563,9 @@ export async function setWorkItemState(
       `work_item '${id}' (kind=${wi.kind}) cannot take state '${state}' — valid: ${norm.valid.join(', ')}`,
     );
   }
+  const requestedTerminalReason = /^(passed|resolved|deprecated|closed)$/i.test(requestedState.trim())
+    ? requestedState.trim().toLowerCase()
+    : null;
   const blueprintPin = wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
     ? (wi.payload as Record<string, unknown>).blueprintOperation : null;
   let blueprintResult: Awaited<ReturnType<typeof import('./blueprint/operation-service').prepareDirectOperationCompletion>> | undefined;
@@ -3965,6 +3968,7 @@ export async function setWorkItemState(
       // the direct-writer guard not to archive that same displaced record a
       // second time; direct setIssueState callers omit the bit and stay guarded.
       secondTerminalCloseHandledByUnified: isSecondTerminalClose,
+      terminalReason: requestedTerminalReason,
     });
     result = updated ? issueToWorkItem(updated) : null;
   } else {
@@ -4035,6 +4039,7 @@ export async function setWorkItemState(
         ? await tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET status = ${state},
+             terminal_reason = COALESCE(${requestedTerminalReason}, terminal_reason),
              requeue_count = 0,
              taken_by = NULL,
              taken_at = NULL,
@@ -4154,36 +4159,6 @@ export async function setWorkItemState(
       // before completion returns or the item remains lease-poisoned until TTL.
       if (wi.harness) {
         await releaseWorkItemLease({ harness: wi.harness, workItemId: id, owner: priorAssignee });
-      }
-    }
-  }
-  // work-item-status-full-unify (P-003 writer-flip): preserve the collapsed
-  // passed/resolved (→done) vs deprecated/closed (→dropped) nuance in terminal_reason.
-  // When the caller's INPUT was a legacy terminal spelling that folded to a unified
-  // terminal, stamp the reason; a plain unified `done`/`dropped` carries no legacy nuance
-  // (→ NULL, left untouched — the reopen-clear below nulls it on reopen so a later plain
-  // terminal starts clean). Direct base-table UPDATE — mirrors the reopen-clear stamp —
-  // so it covers BOTH the feature (auto-updatable view) and issue (INSTEAD OF trigger)
-  // write paths without threading a new column through either. Best-effort: the lifecycle
-  // write already committed.
-  if (result && isSettledWorkItemState(result.state)) {
-    const reqLower = requestedState.trim().toLowerCase();
-    const terminalReason =
-      reqLower === 'passed' || reqLower === 'resolved' || reqLower === 'deprecated' || reqLower === 'closed'
-        ? reqLower
-        : null;
-    if (terminalReason) {
-      try {
-        const { sql } = getOrgPg();
-        await sql`
-          UPDATE harness_shared.work_items
-             SET terminal_reason = ${terminalReason}
-           WHERE feature_id = ${id}
-             AND workspace_id IN (${issuesScopeWorkspace()}, ${activeWorkspaceId()})
-             AND terminal_reason IS DISTINCT FROM ${terminalReason}`;
-        (result as { terminalReason?: string | null }).terminalReason = terminalReason;
-      } catch {
-        /* best-effort — the nuance is a preservation nicety, never fail the write over it */
       }
     }
   }
