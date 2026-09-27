@@ -255,6 +255,7 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
         }],
         alive: () => true,
         quarantineToolReferenceSession: quarantine as never,
+        recoverToolReferenceDeath: recover,
         sendCoordMessage: vi.fn(async () => ({} as never)),
         spawnDetached: () => { throw new Error('poisoned live session must not spawn'); },
       });
@@ -273,7 +274,112 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
       const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 7777 }) });
 
       await expect(executeWake(d, deps)).resolves.toMatchObject({ kind: 'drop', reason: expect.stringContaining('quarantined') });
+      expect(recover).toHaveBeenCalledWith(s.ownerId, expect.objectContaining({ workspaceId: 'row-ws' }));
       expect(quarantine).toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // WI-10003466 (su-7dc2cf9d, 2026-09-27): a transient MCP disconnect left a LIVE
+  // interactive session replaying `Tool reference 'mcp__papercusp-su__capability_bash'
+  // not found` on every turn; this branch ENDED the session instead of recovering it.
+  // A live carry-respawn-capable host must get a fresh successor and the wake must park
+  // for it — never a quarantine, never an injection into the poisoned transcript.
+  it.each([
+    ['queued', 2],
+    ['in-grace', 3],
+  ] as const)('parks the wake instead of quarantining when recovery is %s (streak %i)', async (verdict, turns) => {
+    const root = mkdtempSync(join(tmpdir(), 'wake-resume-tool-reference-'));
+    try {
+      const transcriptPath = join(root, 'native-A.jsonl');
+      const error = "API Error: 400 Tool reference 'mcp__papercusp-su__capability_bash' not found in available tools";
+      const turn = () => JSON.stringify({
+        type: 'assistant',
+        isApiErrorMessage: true,
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: error }] },
+      });
+      writeFileSync(transcriptPath, Array.from({ length: turns }, turn).join('\n'));
+      const quarantine = vi.fn(async () => ({ poisoned: true, turns }));
+      const recover = vi.fn(async () => verdict);
+      const injected: unknown[] = [];
+      const { deps, s } = await exitedClaudeResumeDeps({
+        getSessionLifecycle: async () => null,
+        collectSessionFiles: async () => [{ rel: 'projects/-repo/native-A.jsonl', abs: transcriptPath, bytes: 1, mtimeMs: 1 }],
+        alive: () => true,
+        quarantineToolReferenceSession: quarantine as never,
+        recoverToolReferenceDeath: recover,
+        sendCoordMessage: vi.fn(async () => ({} as never)),
+        findPty: ((...args: unknown[]) => { injected.push(args); return null; }) as never,
+        spawnDetached: () => { throw new Error('poisoned live session must not spawn'); },
+      });
+      deps.getSession = async () => ({
+        id: s.advSessionId,
+        workspaceId: 'row-ws',
+        harnessSlug: 'papercusp',
+        agent: 'claude',
+        coordOwnerId: s.ownerId,
+        sessionId: 'native-A',
+        startedAt: '2026-09-24T10:00:00.123Z',
+        endedAt: null,
+        pid: 7777,
+        cwd: s.cwd,
+      }) as never;
+      const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 7777 }) });
+
+      const out = await executeWake(d, deps);
+      expect(out).toMatchObject({ kind: 'park', reason: expect.stringContaining('fresh context') });
+      expect(recover).toHaveBeenCalledWith(s.ownerId, expect.objectContaining({ workspaceId: 'row-ws' }));
+      expect(quarantine).not.toHaveBeenCalled();
+      expect(injected).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not quarantine when the LIVE transcript is healthy though the recorded one is poisoned', async () => {
+    // After a carry-respawn the adv-session row can still name the dead predecessor's
+    // transcript; the reconciled live transcript is the truth. 'not-dead' must neither
+    // quarantine nor queue another respawn (that would be a respawn loop).
+    const root = mkdtempSync(join(tmpdir(), 'wake-resume-tool-reference-'));
+    try {
+      const transcriptPath = join(root, 'native-A.jsonl');
+      const error = "API Error: 400 Tool reference 'mcp__papercusp-su__capability_bash' not found in available tools";
+      const turn = () => JSON.stringify({
+        type: 'assistant',
+        isApiErrorMessage: true,
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: error }] },
+      });
+      writeFileSync(transcriptPath, [turn(), turn(), turn()].join('\n'));
+      const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
+      const recover = vi.fn(async () => 'not-dead' as const);
+      const { deps, s } = await exitedClaudeResumeDeps({
+        getSessionLifecycle: async () => null,
+        collectSessionFiles: async () => [{ rel: 'projects/-repo/native-A.jsonl', abs: transcriptPath, bytes: 1, mtimeMs: 1 }],
+        alive: () => true,
+        quarantineToolReferenceSession: quarantine as never,
+        recoverToolReferenceDeath: recover,
+        sendCoordMessage: vi.fn(async () => ({} as never)),
+        spawnDetached: () => { throw new Error('live session must not spawn'); },
+      });
+      deps.getSession = async () => ({
+        id: s.advSessionId,
+        workspaceId: 'row-ws',
+        harnessSlug: 'papercusp',
+        agent: 'claude',
+        coordOwnerId: s.ownerId,
+        sessionId: 'native-A',
+        startedAt: '2026-09-24T10:00:00.123Z',
+        endedAt: null,
+        pid: 7777,
+        cwd: s.cwd,
+      }) as never;
+      const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 7777 }) });
+
+      const out = await executeWake(d, deps);
+      expect(out.kind).not.toBe('drop');
+      expect(recover).toHaveBeenCalledTimes(1);
+      expect(quarantine).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

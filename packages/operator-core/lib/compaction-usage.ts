@@ -18,6 +18,10 @@ import { findSessionTranscript, papercuspSessionClaudeBase, newestTranscriptUnde
 import { findCodexRolloutPath, findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import { MODEL_WINDOW_1M, MODEL_WINDOW_DEFAULT } from './agent-config-constants';
+import {
+  analyzeClaudeResumeTranscript,
+  CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
+} from './claude-resume-tool-references.mjs';
 
 // P-016 fallback resolver — RELOCATED to claude-sessions.ts (2026-07-04, WI-2680) so
 // the agents-roster live-thinking pane + stream share the SAME resume-rotation
@@ -1517,30 +1521,94 @@ const DEATH_TAIL_BYTES = 8_192;
  * error → false). fs reads only the tail, never the whole file.
  */
 export async function detectContextDeathForOwner(ownerId: string): Promise<boolean> {
+  const tail = await readLiveClaudeTranscriptTail(ownerId, DEATH_TAIL_BYTES);
+  return tail != null && tailCarriesContextDeath(tail);
+}
+
+/**
+ * The TAIL of an owner's LIVE claude transcript, or null (omp/codex, no transcript,
+ * read error). EI-13477: reconciled, same reasoning as resolveLiveTranscriptPath —
+ * a raw ref keeps reading a dead pre-relaunch transcript's tail, which can never
+ * show a death record the LIVE successor might actually have written (and, for the
+ * tool-reference detector, would keep "seeing" a death the successor already cured).
+ * The first line of a tail may be a partial record; both detectors parse whole JSONL
+ * lines and skip it.
+ */
+async function readLiveClaudeTranscriptTail(ownerId: string, bytes: number): Promise<string | null> {
   try {
-    // EI-13477: reconciled, same reasoning as resolveLiveTranscriptPath — a raw
-    // ref keeps reading a dead pre-relaunch transcript's tail, which can never
-    // show a death record the LIVE successor might actually have written.
     const ref = await resolveSessionRefReconciled(ownerId);
-    if (!ref?.sessionId || ref.agent === 'omp' || ref.agent === 'codex') return false;
+    if (!ref?.sessionId || ref.agent === 'omp' || ref.agent === 'codex') return null;
     const { findSessionTranscript } = await import('./claude-sessions');
     const p = await findSessionTranscript(ref.sessionId, {
       owner: ref.transcriptOwner === undefined ? ownerId : ref.transcriptOwner,
     });
-    if (!p) return false;
+    if (!p) return null;
     const size = fs.statSync(p).size;
-    const start = Math.max(0, size - DEATH_TAIL_BYTES);
+    const start = Math.max(0, size - bytes);
     const fd = fs.openSync(p, 'r');
     try {
       const buf = Buffer.alloc(size - start);
       fs.readSync(fd, buf, 0, buf.length, start);
-      return tailCarriesContextDeath(buf.toString('utf8'));
+      return buf.toString('utf8');
     } finally {
       fs.closeSync(fd);
     }
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** A live session stranded by the provider's unavailable-tool-reference rejection. */
+export interface ToolReferenceDeath {
+  /** Consecutive trailing assistant turns that were the synthetic rejection. */
+  turns: number;
+  /** The tool the latest rejection named (e.g. `mcp__papercusp-su__capability_bash`). */
+  toolName: string | null;
+  /** Bounded verbatim rejection text. */
+  evidence: string | null;
+}
+
+/** Tail window for the tool-reference death detector. Unlike the context-death
+ *  marker (always the final record), this death is a STREAK spanning several turns,
+ *  and each turn's user record can be a multi-KB wake or paste between the short
+ *  synthetic rejections. A streak that does not fit is simply not seen this pass —
+ *  fail-safe: it can under-detect, never invent a death. */
+const TOOL_REFERENCE_DEATH_TAIL_BYTES = 256 * 1024;
+
+/**
+ * Pure (WI-10003466): does this transcript TAIL end in a streak of the provider's
+ * `Tool reference '<x>' not found in available tools` rejection long enough that
+ * the session cannot recover on its own? Only claude's SYNTHETIC rejection records
+ * count (analyzeClaudeResumeTranscript keys on `isApiErrorMessage`/`<synthetic>`),
+ * so prose that quotes the error — including an agent diagnosing this very bug —
+ * never reads as a death. Exported for a direct unit test.
+ */
+export function tailCarriesToolReferenceDeath(
+  tail: string,
+  minTurns: number = CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
+): ToolReferenceDeath | null {
+  const analysis = analyzeClaudeResumeTranscript(tail, { maxReferences: 0 });
+  if (analysis.trailingMissingToolReferenceTurns < minTurns) return null;
+  return {
+    turns: analysis.trailingMissingToolReferenceTurns,
+    toolName: analysis.lastMissingToolReferenceName,
+    evidence: analysis.lastMissingToolReferenceEvidence,
+  };
+}
+
+/**
+ * WI-10003466 death detector, sibling of detectContextDeathForOwner: a LIVE claude
+ * session whose transcript ends in consecutive unavailable-tool-reference rejections
+ * is dead-but-still-beating exactly like a "Prompt is too long" death. The trigger
+ * that killed su-7dc2cf9d (2026-09-27): a ~20s MCP transport refusal made the client
+ * mark papercusp-su disconnected and drop its tools; the transcript held a saved
+ * `tool_reference` to one of them, so every later request was rejected before the
+ * agent could act — while hook-origin calls kept its presence beat fresh. A fresh
+ * successor (new transcript, new MCP connection) cures it. Best-effort → null.
+ */
+export async function detectToolReferenceDeathForOwner(ownerId: string): Promise<ToolReferenceDeath | null> {
+  const tail = await readLiveClaudeTranscriptTail(ownerId, TOOL_REFERENCE_DEATH_TAIL_BYTES);
+  return tail == null ? null : tailCarriesToolReferenceDeath(tail);
 }
 
 /**

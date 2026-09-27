@@ -20,6 +20,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import {
   codexReadingProvenanceForOwner,
   detectContextDeathForOwner,
+  detectToolReferenceDeathForOwner,
   estimateContextTokensForOwner,
   estimateContextWindowForOwner,
   observedPromptFloorForOwner,
@@ -497,11 +498,28 @@ export function resetBootConfigAssertForTests(): void {
  * accept it, raise ONE coord escalation per dead owner so the leader/owner can
  * relaunch it (fleet persona tier / trimmed context / a wider-window model).
  */
-async function escalateContextDeath(ownerId: string, ownerLabel: string): Promise<void> {
-  if (contextDeathEscalated.has(ownerId)) return;
-  contextDeathEscalated.add(ownerId);
+/** The transcript deaths the watchdog recovers with a forced carry-respawn. */
+type TranscriptDeathKind = 'context-death' | 'tool-reference-death';
+type CarryRespawnReason = 'soft-threshold' | TranscriptDeathKind;
+
+/** Per-kind dedup key; context-death keeps the bare owner id it always used. */
+function transcriptDeathKey(ownerId: string, kind: TranscriptDeathKind): string {
+  return kind === 'context-death' ? ownerId : `${kind}:${ownerId}`;
+}
+
+async function escalateContextDeath(
+  ownerId: string,
+  ownerLabel: string,
+  kind: TranscriptDeathKind = 'context-death',
+): Promise<void> {
+  const key = transcriptDeathKey(ownerId, kind);
+  if (contextDeathEscalated.has(key)) return;
+  contextDeathEscalated.add(key);
+  const toolRef = kind === 'tool-reference-death';
   console.warn(
-    `[compaction-watchdog] ${ownerLabel} (${ownerId}) DIED on "Prompt is too long" — escalating for relaunch (P-019).`,
+    toolRef
+      ? `[compaction-watchdog] ${ownerLabel} (${ownerId}) is STRANDED on repeated unavailable-tool-reference rejections and could not be carry-respawned — escalating for relaunch (WI-10003466).`
+      : `[compaction-watchdog] ${ownerLabel} (${ownerId}) DIED on "Prompt is too long" — escalating for relaunch (P-019).`,
   );
   try {
     const { openEscalation } = await import('../agent-tools/coordination/escalations');
@@ -514,27 +532,37 @@ async function escalateContextDeath(ownerId: string, ownerLabel: string): Promis
         workspaceId: null,
         userId: null,
       },
-      {
-        severity: 'blocker',
-        summary: `fleet member ${ownerLabel} (${ownerId}) died on "Prompt is too long" — context overflowed its model window; it cannot take another turn`,
-        body:
-          `The session's transcript ends in the window-overflow API error, so every subsequent wake fails silently while presence keeps beating. ` +
-          `Relaunch it (fleet:launch-on-plan / psu) with less baseline context: --persona-tier=fleet, --context-size=trimmed, or a wider-window ([1m]) model. ` +
-          `Its claims are reclaimable via the stale-claim lane. (context-trimming-tiers-2026-07-01 P-019)`,
-        // WI-5848 (sweep of EI-18668025239634541's class): the in-memory
-        // contextDeathEscalated Set is the only guard here, and it resets on a
-        // process restart — a stable conditionKey is durable defense-in-depth
-        // across restarts (this summary happens to already be restart-stable
-        // since it embeds no varying count, but the conditionKey removes any
-        // future risk if the summary is ever edited to add one).
-        meta: { subjectSignature: `compaction-watchdog:context-death:${ownerId}` },
-      },
+      toolRef
+        ? {
+            severity: 'blocker',
+            summary: `session ${ownerLabel} (${ownerId}) is stranded: every turn is rejected because its transcript references a tool that is no longer available — it cannot take another turn`,
+            body:
+              `The transcript ends in consecutive provider rejections of a saved tool reference (typically its MCP connection dropped and the client removed that server's tools), ` +
+              `so every wake fails while presence keeps beating. No live carry-respawn-capable psu host accepted a fresh-context successor. ` +
+              `Relaunch it (psu --resume re-seeds the referenced tools, or a fresh session) — its claims are reclaimable via the stale-claim lane. (WI-10003466)`,
+            meta: { subjectSignature: `compaction-watchdog:tool-reference-death:${ownerId}` },
+          }
+        : {
+            severity: 'blocker',
+            summary: `fleet member ${ownerLabel} (${ownerId}) died on "Prompt is too long" — context overflowed its model window; it cannot take another turn`,
+            body:
+              `The session's transcript ends in the window-overflow API error, so every subsequent wake fails silently while presence keeps beating. ` +
+              `Relaunch it (fleet:launch-on-plan / psu) with less baseline context: --persona-tier=fleet, --context-size=trimmed, or a wider-window ([1m]) model. ` +
+              `Its claims are reclaimable via the stale-claim lane. (context-trimming-tiers-2026-07-01 P-019)`,
+            // WI-5848 (sweep of EI-18668025239634541's class): the in-memory
+            // contextDeathEscalated Set is the only guard here, and it resets on a
+            // process restart — a stable conditionKey is durable defense-in-depth
+            // across restarts (this summary happens to already be restart-stable
+            // since it embeds no varying count, but the conditionKey removes any
+            // future risk if the summary is ever edited to add one).
+            meta: { subjectSignature: `compaction-watchdog:context-death:${ownerId}` },
+          },
     );
   } catch (e) {
     // Best-effort — never fail the sweep; un-dedup so the next pass retries.
-    contextDeathEscalated.delete(ownerId);
+    contextDeathEscalated.delete(key);
     console.warn(
-      `[compaction-watchdog] context-death escalation failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
+      `[compaction-watchdog] ${kind} escalation failed (will retry): ${e instanceof Error ? e.message : String(e)}`,
     );
   }
 }
@@ -779,11 +807,16 @@ async function healPresenceGap(sql: Sql, gap: PresencelessLoopOwner): Promise<bo
  * through as an empty string boots the fresh CLI and then parks it forever unless
  * a loop/event/human happens to wake it (WI-39942).
  */
-function watchdogCarryContinueNote(reason: 'soft-threshold' | 'context-death'): string {
+function watchdogCarryContinueNote(reason: CarryRespawnReason): string {
   const opening =
     reason === 'context-death'
       ? 'The compaction watchdog detected that the previous session hit a model-window "Prompt is too long" error and moved you onto fresh context. '
-      : 'The compaction watchdog moved this session onto fresh context at its configured soft threshold. ';
+      : reason === 'tool-reference-death'
+        ? 'The compaction watchdog detected that the previous session was stranded — the provider rejected every turn because its ' +
+          'transcript referenced a tool that was no longer available (usually its MCP connection dropped) — and moved you onto ' +
+          'fresh context with a fresh MCP connection. Any in-flight command you started may still have completed: re-check its ' +
+          'output/log before re-running it. '
+        : 'The compaction watchdog moved this session onto fresh context at its configured soft threshold. ';
   return (
     opening +
     MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION +
@@ -1051,7 +1084,7 @@ async function maybeCarryRespawn(
   ownerLabel: string,
   workspaceId: string,
   effectiveWindowTokens: number,
-  reason: 'soft-threshold' | 'context-death' = 'soft-threshold',
+  reason: CarryRespawnReason = 'soft-threshold',
 ): Promise<boolean> {
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([
@@ -1106,13 +1139,14 @@ async function maybeCarryRespawn(
         // carries any open owner message rather than refusing the only recovery
         // path. Neither path is self-requested: the session never ran its flush
         // discipline, and the rendered continuation must not claim "state was
-        // flushed" (the 2026-07-18 provenance mislabel).
-        boundaryDeliberate: reason !== 'context-death',
+        // flushed" (the 2026-07-18 provenance mislabel). A tool-reference death
+        // (WI-10003466) is terminal the same way: every turn is already rejected.
+        boundaryDeliberate: reason === 'soft-threshold',
         boundarySelfRequested: false,
       },
     });
     if (!spec) return false;
-    if (spec.openOwnerQuestion.crossesOpenOwnerMessage && reason !== 'context-death') {
+    if (spec.openOwnerQuestion.crossesOpenOwnerMessage && reason === 'soft-threshold') {
       console.warn(
         `[compaction-watchdog] ${ownerLabel} (${ownerId}) ${
           'reached the deterministic carry threshold and'
@@ -1136,7 +1170,11 @@ async function maybeCarryRespawn(
     if (ok) {
       console.warn(
         `[compaction-watchdog] CARRY-RESPAWN queued for ${ownerLabel} (${ownerId}) ${
-          reason === 'context-death' ? 'after detecting a Prompt-is-too-long death' : 'at the soft threshold'
+          reason === 'context-death'
+            ? 'after detecting a Prompt-is-too-long death'
+            : reason === 'tool-reference-death'
+              ? 'after detecting a stranding unavailable-tool-reference streak (WI-10003466)'
+              : 'at the soft threshold'
         } — fresh ${transcriptSourceKind} successor will inherit the deterministic carry (P-018/D-011).`,
       );
     }
@@ -1163,24 +1201,67 @@ async function recoverContextDeath(
   ownerLabel: string,
   workspaceId: string,
   effectiveWindowTokens: number,
-): Promise<boolean> {
-  if (contextDeathEscalated.has(ownerId)) return false;
+  kind: TranscriptDeathKind = 'context-death',
+): Promise<TranscriptDeathRecovery> {
+  if (contextDeathEscalated.has(transcriptDeathKey(ownerId, kind))) return 'unrecoverable';
   const lastCarryAt = carryRespawnRequestedAt.get(ownerId);
-  if (lastCarryAt != null && Date.now() - lastCarryAt < FORCE_RETRY_GRACE_MS) return false;
-  const recovered = await maybeCarryRespawn(
-    ownerId,
-    ownerLabel,
-    workspaceId,
-    effectiveWindowTokens,
-    'context-death',
-  );
+  if (lastCarryAt != null && Date.now() - lastCarryAt < FORCE_RETRY_GRACE_MS) return 'in-grace';
+  const recovered = await maybeCarryRespawn(ownerId, ownerLabel, workspaceId, effectiveWindowTokens, kind);
   if (!recovered) {
-    await escalateContextDeath(ownerId, ownerLabel);
-    return false;
+    await escalateContextDeath(ownerId, ownerLabel, kind);
+    return 'unrecoverable';
   }
   carryRespawnRequestedAt.set(ownerId, Date.now());
-  return true;
+  return 'queued';
 }
+
+/** A forced transcript-death recovery attempt: queued now, already queued inside the
+ *  socket-ACK grace (the host is replacing the child), or impossible (escalated). */
+type TranscriptDeathRecovery = 'queued' | 'in-grace' | 'unrecoverable';
+
+/** The wake-executor's view: `not-dead` = the RECONCILED live transcript shows no
+ *  stranding streak (e.g. the recorded row names a dead predecessor's transcript). */
+export type ToolReferenceDeathRecovery = TranscriptDeathRecovery | 'not-dead';
+
+/**
+ * WI-10003466: recover a LIVE claude session stranded by the provider's
+ * unavailable-tool-reference rejection by moving it onto fresh context — the same
+ * forced carry-respawn the sweep gives a "Prompt is too long" death, reachable
+ * on demand so the wake executor can RECOVER a session at wake time instead of
+ * quarantining it (the path that ended su-7dc2cf9d, 2026-09-27). Re-detects on the
+ * reconciled live transcript first so a stale session row can never trigger a
+ * respawn loop; shares the sweep's per-owner grace and escalation dedup, so the
+ * two callers cannot queue duplicate successors. Never throws.
+ */
+export async function recoverToolReferenceDeathForOwner(
+  ownerId: string,
+  opts: { workspaceId: string; ownerLabel?: string },
+): Promise<ToolReferenceDeathRecovery> {
+  try {
+    const death = await detectToolReferenceDeathForOwner(ownerId);
+    if (!death) return 'not-dead';
+    let window: number | null = null;
+    try {
+      window = await estimateContextWindowForOwner(ownerId);
+    } catch {
+      /* conservative fallback below */
+    }
+    const carryWindow = Math.min(MODEL_WINDOW_1M, Math.max(1, window ?? TOOL_REFERENCE_DEATH_FALLBACK_WINDOW));
+    return await recoverContextDeath(
+      ownerId,
+      opts.ownerLabel ?? ownerId,
+      opts.workspaceId,
+      carryWindow,
+      'tool-reference-death',
+    );
+  } catch {
+    return 'unrecoverable';
+  }
+}
+
+/** Same conservative carry budget session:request-compaction and loop-turn-outcome use
+ *  when the live window cannot be resolved: smaller is safe, a guessed larger one is not. */
+const TOOL_REFERENCE_DEATH_FALLBACK_WINDOW = 200_000;
 
 /**
  * P-012 (agent-managed-compaction-2026-07-01) — the L2 mechanical FORCE rung,
@@ -2012,6 +2093,9 @@ export interface CompactionComplianceResult {
   seeded: string[];
   /** P-019: owners whose transcript tail carries "Prompt is too long" (dead). */
   contextDeaths: string[];
+  /** WI-10003466: owners whose live claude transcript ends in a streak of the provider's
+   *  unavailable-tool-reference rejection (dead-but-still-beating after an MCP flap). */
+  toolReferenceDeaths: string[];
   /** flush-to-proceed P-003: over-limit sessions holding a work-item claim whose checkpoint is
    *  stale (unflushed work about to be lost to a compaction/reclaim). SURFACED, never seized
    *  (D-008). One entry per (owner, stale claim). */
@@ -2071,6 +2155,7 @@ export async function checkCompactionCompliance(
     unsatisfiableLimits: [],
     seeded: [],
     contextDeaths: [],
+    toolReferenceDeaths: [],
     unflushedClaims: [],
     bootConfigAlerts: [],
     bootConfigRecovered: [],
@@ -2211,8 +2296,16 @@ export async function checkCompactionCompliance(
       // before the estimate gate (a dead session's estimate is exactly the kind
       // that looks "over limit" or fails to resolve).
       try {
-        if (await detectContextDeathForOwner(r.owner_id)) {
-          out.contextDeaths.push(r.owner_id);
+        const contextDead = await detectContextDeathForOwner(r.owner_id);
+        // WI-10003466: a streak of the provider's unavailable-tool-reference rejection is
+        // the same dead-but-still-beating shape (hook-origin calls keep the presence beat
+        // fresh), cured the same way — a fresh successor transcript + MCP connection.
+        // Only checked when not already context-dead, so one owner gets one recovery.
+        const toolReferenceDeath = contextDead ? null : await detectToolReferenceDeathForOwner(r.owner_id);
+        if (contextDead || toolReferenceDeath) {
+          const deathKind: TranscriptDeathKind = contextDead ? 'context-death' : 'tool-reference-death';
+          if (contextDead) out.contextDeaths.push(r.owner_id);
+          else out.toolReferenceDeaths.push(r.owner_id);
           // P-019 recovery-first: use the effective model window for the carry
           // budget, preferring the measured backend value and then the spec
           // resolver. A configured limit is the safe bounded fallback when
@@ -2230,12 +2323,13 @@ export async function checkCompactionCompliance(
             Math.max(1, deathWindow ?? r.compaction_limit),
           );
           if (
-            await recoverContextDeath(
+            (await recoverContextDeath(
               r.owner_id,
               r.owner_label,
               r.workspace_id,
               carryWindow,
-            )
+              deathKind,
+            )) === 'queued'
           ) {
             out.carryRespawned.push(r.owner_id);
           }

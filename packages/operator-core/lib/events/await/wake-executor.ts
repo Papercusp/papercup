@@ -165,6 +165,7 @@ import {
   isMissingClaudeToolReferenceError,
 } from '../../claude-resume-tool-references.mjs';
 import { quarantineRepeatedClaudeToolReferenceFailures } from './poisoned-resume-session';
+import type { ToolReferenceDeathRecovery } from '../../system-health/compaction-compliance-watchdog';
 import type { ResumeTurnContext, ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeChannel, WakeOutcome } from './types';
 
@@ -2363,6 +2364,10 @@ export interface ExecuteWakeDeps {
   onResumeTurnExit?: (d: DeliveryWork, exit: ResumeTurnExitRaw, context?: ResumeTurnContext) => void;
   /** Injected detector/quarantine seam for repeated unavailable Claude tool references. */
   quarantineToolReferenceSession?: typeof quarantineRepeatedClaudeToolReferenceFailures;
+  /** WI-10003466: move a LIVE Claude session whose transcript replays an unavailable
+   *  tool reference onto fresh context (the compaction watchdog's forced carry-respawn)
+   *  BEFORE any quarantine. Injected for tests; defaults to the watchdog's recovery. */
+  recoverToolReferenceDeath?: (ownerId: string, opts: { workspaceId: string }) => Promise<ToolReferenceDeathRecovery>;
   /** WI-10002854: the task-ledger row and adv-session pid for a spawned
    *  `resume-headless` turn. Injected for tests; the default writes PG. */
   accountHeadlessResumeTurn?: (input: HeadlessResumeTurnInput) => HeadlessResumeTurnAccounting;
@@ -3308,6 +3313,13 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const ensureCodexHomeForWake = deps.ensureCodexHomeForWake ?? defaultEnsureCodexHomeForWake;
   const quarantineToolReferenceSession =
     deps.quarantineToolReferenceSession ?? quarantineRepeatedClaudeToolReferenceFailures;
+  const recoverToolReferenceDeath =
+    deps.recoverToolReferenceDeath ??
+    (async (ownerId: string, opts: { workspaceId: string }): Promise<ToolReferenceDeathRecovery> => {
+      // Dynamic: the watchdog module is heavy and imports this subsystem back.
+      const { recoverToolReferenceDeathForOwner } = await import('../../system-health/compaction-compliance-watchdog');
+      return recoverToolReferenceDeathForOwner(ownerId, opts);
+    });
   const rematerializeTimeoutMs = deps.rematerializeTimeoutMs ?? REMATERIALIZE_TIMEOUT_MS;
   let claudeResumeTranscriptPath: string | null = null;
   const refreshClaudeResumeTranscript = async (
@@ -3649,9 +3661,43 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     }
 
     // A live interactive transcript has no detached-child exit callback. Check
-    // the saved assistant-turn streak before injecting another wake; if the
-    // threshold is reached, quarantine this exact incarnation instead.
-    if (isAlive && sessionAgent === 'claude' && claudeTranscriptAnalysis?.poisoned && claudeResumeTranscriptPath) {
+    // the saved assistant-turn streak before injecting another wake.
+    //
+    // WI-10003466 (su-7dc2cf9d, 2026-09-27): RECOVER FIRST. A transient MCP
+    // disconnect makes the client drop its papercusp-su tools, and every later
+    // request replays a saved `tool_reference` the provider now rejects — the
+    // session cannot take a turn on its own, but it is NOT unrecoverable: a fresh
+    // successor (new transcript + new MCP connection) under the same coord id is
+    // exactly what the compaction watchdog's forced carry-respawn produces for the
+    // sibling "Prompt is too long" death. Quarantining here ENDED a healthy
+    // release-drive session 15 minutes after a 20-second transport blip, pre-empting
+    // every heal path. So: a queued (or already-pending) recovery parks this wake
+    // for the successor; `not-dead` means the RECONCILED live transcript is healthy
+    // (this row names a dead predecessor's) and the wake proceeds; only
+    // `unrecoverable` (no live carry-respawn-capable host) falls through to the
+    // quarantine below.
+    let liveTranscriptHealthy = false;
+    if (isAlive && sessionAgent === 'claude' && claudeTranscriptAnalysis?.needsFreshContext && claudeResumeTranscriptPath) {
+      const recovery = await recoverToolReferenceDeath(sessionOwner, {
+        workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
+      }).catch((): ToolReferenceDeathRecovery => 'unrecoverable');
+      if (recovery === 'queued' || recovery === 'in-grace') {
+        return {
+          kind: 'park',
+          reason:
+            `live Claude session replays an unavailable tool reference ` +
+            `(${claudeTranscriptAnalysis.trailingMissingToolReferenceTurns} consecutive rejected turns: ` +
+            `${claudeTranscriptAnalysis.lastMissingToolReferenceName ?? 'unknown tool'}); ` +
+            `carry-respawn onto fresh context ${recovery === 'queued' ? 'queued' : 'already pending'} — ` +
+            `this wake re-delivers to the successor`,
+        };
+      }
+      liveTranscriptHealthy = recovery === 'not-dead';
+    }
+    if (
+      !liveTranscriptHealthy &&
+      isAlive && sessionAgent === 'claude' && claudeTranscriptAnalysis?.poisoned && claudeResumeTranscriptPath
+    ) {
       const poisonContext: ResumeTurnContext = {
         advSessionId: handle.advSessionId,
         ownerId: sessionOwner,
