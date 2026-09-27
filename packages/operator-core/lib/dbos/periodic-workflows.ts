@@ -2077,9 +2077,17 @@ async function governorReceiptGcTick(): Promise<void> {
         );
       }
       if (!deleteTerminalReceipts) return;
-      const deleted = await gcGovernorReceipts();
-      if (deleted > 0) {
-        console.log(`[governor-receipt-gc] deleted ${deleted} terminal admission receipt(s)`);
+      const gc = await gcGovernorReceipts();
+      if (gc.deleted > 0) {
+        console.log(
+          `[governor-receipt-gc] deleted ${gc.deleted} terminal admission receipt(s) in ${gc.batches} batch(es)`,
+        );
+      }
+      if (gc.exhausted) {
+        console.warn(
+          `[governor-receipt-gc] BUDGET EXHAUSTED after ${gc.batches} full batch(es): terminal receipts past ` +
+            'retention remain, so the ledger is outgrowing its hourly sweep',
+        );
       }
     },
     { name: 'governor-receipt-gc' },

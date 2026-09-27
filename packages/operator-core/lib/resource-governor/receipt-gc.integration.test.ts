@@ -151,7 +151,7 @@ describe('gcGovernorReceipts', () => {
     await receipt('OLD-ELIGIBLE', 'eligible', 10);
     await receipt('NEW-COMPLETED', 'completed', 0);
 
-    const deleted = await gcGovernorReceipts({ nowMs: NOW });
+    const { deleted } = await gcGovernorReceipts({ nowMs: NOW });
 
     expect(deleted).toBe(4);
     expect(await surviving()).toEqual(['NEW-COMPLETED', 'OLD-ELIGIBLE', 'OLD-LEASED', 'OLD-QUEUED', 'OLD-RUNNING']);
@@ -164,7 +164,7 @@ describe('gcGovernorReceipts', () => {
     await realWorkItem('WI-REAL-OLD');
     await receipt('RECEIPT-OLD', 'completed', 10_000);
 
-    expect(await gcGovernorReceipts({ nowMs: NOW })).toBe(1);
+    expect((await gcGovernorReceipts({ nowMs: NOW })).deleted).toBe(1);
     expect(await surviving()).toEqual([]);
     await expect(rootSql`SELECT feature_id FROM harness_shared.work_items`).resolves.toEqual([
       { feature_id: 'WI-REAL-OLD' },
@@ -175,7 +175,7 @@ describe('gcGovernorReceipts', () => {
     // Deleting a leased/running receipt destroys LIVE admission state, not history.
     await receipt('RUNNING-ANCIENT', 'running', 10_000);
 
-    expect(await gcGovernorReceipts({ nowMs: NOW })).toBe(0);
+    expect((await gcGovernorReceipts({ nowMs: NOW })).deleted).toBe(0);
     expect(await surviving()).toEqual(['RUNNING-ANCIENT']);
   });
 
@@ -184,7 +184,7 @@ describe('gcGovernorReceipts', () => {
     await receipt('COLLIDING-KEY', 'completed', 10, 'workspace-a', { receiptId: sharedReceiptId });
     await receipt('COLLIDING-KEY', 'running', 10, 'workspace-b', { receiptId: sharedReceiptId });
 
-    expect(await gcGovernorReceipts({ nowMs: NOW })).toBe(1);
+    expect((await gcGovernorReceipts({ nowMs: NOW })).deleted).toBe(1);
     const rows = await rootSql<Array<{ workspace_id: string; receipt_id: string; state: string }>>`
       SELECT workspace_id, receipt_id, state
         FROM harness_shared.resource_governor_admissions
@@ -196,7 +196,7 @@ describe('gcGovernorReceipts', () => {
     await receipt('JUST-INSIDE', 'completed', GOVERNOR_RECEIPT_RETENTION_HOURS - 0.5);
     await receipt('JUST-OUTSIDE', 'completed', GOVERNOR_RECEIPT_RETENTION_HOURS + 0.5);
 
-    expect(await gcGovernorReceipts({ nowMs: NOW })).toBe(1);
+    expect((await gcGovernorReceipts({ nowMs: NOW })).deleted).toBe(1);
     expect(await surviving()).toEqual(['JUST-INSIDE']);
   });
 
@@ -205,32 +205,58 @@ describe('gcGovernorReceipts', () => {
       enqueuedAgeHours: 100,
     });
 
-    expect(await gcGovernorReceipts({ nowMs: NOW })).toBe(0);
+    expect((await gcGovernorReceipts({ nowMs: NOW })).deleted).toBe(0);
     expect(await surviving()).toEqual(['LONG-RUN-RECENTLY-COMPLETED']);
   });
 
   it('retentionHours widens or narrows what is due', async () => {
     await receipt('FIVE-HOURS', 'completed', 5);
-    expect(await gcGovernorReceipts({ nowMs: NOW, retentionHours: 24 })).toBe(0);
-    expect(await gcGovernorReceipts({ nowMs: NOW, retentionHours: 1 })).toBe(1);
+    expect((await gcGovernorReceipts({ nowMs: NOW, retentionHours: 24 })).deleted).toBe(0);
+    expect((await gcGovernorReceipts({ nowMs: NOW, retentionHours: 1 })).deleted).toBe(1);
   });
 
-  it('batchLimit bounds one run, oldest first, and successive runs converge', async () => {
+  it('batchLimit bounds one STATEMENT, not one run: a run drains every due batch', async () => {
+    // The regression: inflow (52k/h) outgrew a per-RUN cap (50k/tick), so each
+    // hourly run deleted exactly one batch and the backlog grew without bound.
+    await receipt('AGE-9', 'completed', 9);
+    await receipt('AGE-8', 'completed', 8);
+    await receipt('AGE-7', 'completed', 7);
+    await receipt('AGE-6', 'completed', 6);
+    await receipt('AGE-5', 'completed', 5);
+    await receipt('FRESH', 'completed', 0);
+
+    expect(await gcGovernorReceipts({ nowMs: NOW, batchLimit: 2 })).toEqual({
+      deleted: 5,
+      batches: 3,
+      exhausted: false,
+    });
+    expect(await surviving()).toEqual(['FRESH']);
+  });
+
+  it('a spent budget stops after a full batch, oldest first, and reports exhausted', async () => {
     await receipt('AGE-9', 'completed', 9);
     await receipt('AGE-8', 'completed', 8);
     await receipt('AGE-7', 'completed', 7);
 
-    // Bounded: one run takes only the two OLDEST.
-    expect(await gcGovernorReceipts({ nowMs: NOW, batchLimit: 2 })).toBe(2);
+    let t = 0;
+    const elapsedClock = () => (t += 1_000);
+    expect(await gcGovernorReceipts({ nowMs: NOW, batchLimit: 2, budgetMs: 1_000, elapsedClock })).toEqual({
+      deleted: 2,
+      batches: 1,
+      exhausted: true,
+    });
     expect(await surviving()).toEqual(['AGE-7']);
 
-    // Converging: the next run finishes the job rather than stalling.
-    expect(await gcGovernorReceipts({ nowMs: NOW, batchLimit: 2 })).toBe(1);
-    expect(await surviving()).toEqual([]);
+    // A later run picks up the remainder; a short batch is never "exhausted".
+    expect(await gcGovernorReceipts({ nowMs: NOW, batchLimit: 2 })).toEqual({
+      deleted: 1,
+      batches: 1,
+      exhausted: false,
+    });
   });
 
   it('is a no-op when nothing is due', async () => {
     await receipt('FRESH', 'completed', 0);
-    expect(await gcGovernorReceipts({ nowMs: NOW })).toBe(0);
+    expect((await gcGovernorReceipts({ nowMs: NOW })).deleted).toBe(0);
   });
 });
