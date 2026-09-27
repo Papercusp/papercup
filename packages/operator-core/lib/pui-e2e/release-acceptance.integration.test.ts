@@ -18,11 +18,17 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
-import {
-  checkReleaseAcceptance, loadAcceptanceMatrix, loadRequiredMatrix, REPO_ROOT,
-  type AcceptanceMatrixFile, type Candidate, type EvidenceRow, type Exclusion, type Verdict,
+import type {
+  AcceptanceMatrixFile, Candidate, EvidenceRow, Exclusion, Verdict,
 } from './release-acceptance';
 import { runReleaseAcceptance } from './release-acceptance-run';
+
+// Mutation-probe seam (copy-out tier): PUI_RELEASE_ACCEPTANCE_SUBJECT points this suite at a
+// mutated copy of release-acceptance.ts so a caught mutant proves the R-10/R-14 checks are
+// falsifiable without touching the shared tree. Unset, the suite loads the real module.
+const subject: typeof import('./release-acceptance') =
+  await import(process.env.PUI_RELEASE_ACCEPTANCE_SUBJECT || './release-acceptance');
+const { checkReleaseAcceptance, loadAcceptanceMatrix, loadRequiredMatrix, REPO_ROOT } = subject;
 
 const required = loadRequiredMatrix();
 const matrix = loadAcceptanceMatrix();

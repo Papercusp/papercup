@@ -8,6 +8,12 @@ const fixture = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...(await original<object>()), getOrgPg: () => ({ sql: fixture.sql }),
 }));
+// Mutation-probe seam (copy-out tier): SU_SESSION_HOST_SUBJECT substitutes a mutated copy of
+// su-session-host.ts for EVERY importer (this suite and the su-session route), so a caught
+// mutant proves the dedupe/replay assertions are falsifiable without touching the shared tree.
+vi.mock('./su-session-host', async (original) => (process.env.SU_SESSION_HOST_SUBJECT
+  ? import(process.env.SU_SESSION_HOST_SUBJECT)
+  : original<object>()));
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 const { pgSuSessionCommandStore } = await import('./su-session-commands');
