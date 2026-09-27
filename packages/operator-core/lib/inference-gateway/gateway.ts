@@ -3295,6 +3295,37 @@ export function createInferenceGateway(deps: GatewayDeps) {
     consider(egressPauseUntil.get(accountId));
     return recoverAt > 0 ? recoverAt : undefined;
   };
+  /** Count Codex accounts that automatic routing can actually select right now. The pool's
+   *  `healthyCount()` only knows its in-memory park map; `accountHealthKey()` also knows the
+   *  durable 5h/7d usage walls, burn SHED state, and egress circuit that the automatic picker
+   *  rejects. Keeping the count on the same key prevents `/stats`, launch preflight, and the
+   *  recovery horizon from advertising capacity the selector will never use. Pools without an
+   *  entry snapshot retain their legacy count because there is no account object to evaluate. */
+  const codexServiceableCount = (
+    source: AccountPool | null | undefined,
+    at: number,
+    fallbackEntries: readonly ActiveAccount[] = [],
+  ): number => {
+    const entries = source?.entries?.() ?? fallbackEntries;
+    if (entries.length === 0) return source?.healthyCount?.() ?? 0;
+    const byId = new Map(entries.map((account) => [account.accountId, account]));
+    const serviceable = (accountId: string): boolean => {
+      const account = byId.get(accountId);
+      return !!account && accountHealthKey(account, at) < Infinity;
+    };
+    return source?.healthyCount
+      ? source.healthyCount(serviceable)
+      : entries.reduce((count, account) => count + (serviceable(account.accountId) ? 1 : 0), 0);
+  };
+  /** Legacy CLI-only configurations may expose accounts without the routing twin pool. Adapt
+   *  their non-secret routing fields into the shared health contract for truthful diagnostics. */
+  const codexCliHealthEntries = (): ActiveAccount[] =>
+    codexCliAccounts().map(({ accountId, egress, egressPool }) => ({
+      accountId,
+      egress,
+      egressPool,
+      token: async () => '',
+    }));
   /** The codex POOL's recovery horizon for ONE 429 decision (0 = a sibling can serve now; epoch ms = the
    *  earliest known return; Infinity = every account is out with no known reset) — the pool's
    *  `earliestAvailableAt` under the shared health key + the store's hint horizon, with the account that
@@ -4047,8 +4078,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // so it is present even when a test injects governors via deps.governorFor (registry bypassed).
     const now = Date.now();
     const codexHealthyAccounts =
-      (deps.codexPool?.healthyCount ? deps.codexPool.healthyCount() : 0) +
-      (codexCliPool?.healthyCount ? codexCliPool.healthyCount() : codexCliAccounts().length);
+      codexServiceableCount(deps.codexPool, now) +
+      codexServiceableCount(codexCliPool, now, codexCliPool ? [] : codexCliHealthEntries());
     const codexRecoveryHorizons = [deps.codexPool, codexCliPool]
       .filter((candidate): candidate is AccountPool => !!candidate?.earliestAvailableAt)
       .map((candidate) =>
@@ -9843,9 +9874,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       for (const targetPool of targetPools) {
         for (const id of ids) targetPool.readmit?.(id, { reason: 'admin' });
       }
+      const at = Date.now();
       const healthyAccounts =
         provider === 'codex'
-          ? (deps.codexPool?.healthyCount?.() ?? 0) + (codexCliPool?.healthyCount?.() ?? 0)
+          ? codexServiceableCount(deps.codexPool, at) +
+            codexServiceableCount(codexCliPool, at, codexCliPool ? [] : codexCliHealthEntries())
           : (pool.healthyCount?.() ?? 1);
       sendJson(res, 200, { ok: true, provider, readmitted: ids, healthyAccounts });
       return;
