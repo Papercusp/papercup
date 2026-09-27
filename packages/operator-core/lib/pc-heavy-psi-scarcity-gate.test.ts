@@ -215,6 +215,33 @@ describe('pc-heavy PSI freeze requires real memory scarcity (EI-2192487023327105
     expect(readRecordField('state')).toBe('frozen');
   }, 30_000);
 
+  // host-memory-reduction-2026-09-27 P-009: the floor scales with RAM. On the 251 GiB tower the
+  // worst thrash (memory PSI full avg10 50%) still showed 13 GiB MemAvailable — above a fixed
+  // 8 GiB floor, so no freeze was ever elected. The pair below models that host; 13 vs 65 GiB is
+  // the only difference, so a floor that ignores MemTotal fails exactly one of them.
+  it('freezes a 251 GiB host thrashing at 13 GiB MemAvailable — above the absolute 8 GiB floor', async () => {
+    writeFileSync(psiFile, '10\n');
+    writeFileSync(memAvailFile, '13\n');
+
+    startAdmission({ PC_HEAVY_MEMTOTAL_GIB_OVERRIDE: '251' });
+    await waitFor('freeze engaged (state=frozen persisted)', () => readRecordField('state') === 'frozen');
+    expect(readRecordField('state')).toBe('frozen');
+  }, 30_000);
+
+  it('still declines the same host at 65 GiB MemAvailable — the EI-21924870233271057 churn case', async () => {
+    writeFileSync(psiFile, '10\n');
+    writeFileSync(memAvailFile, '65\n');
+
+    startAdmission({ PC_HEAVY_MEMTOTAL_GIB_OVERRIDE: '251' });
+    await waitFor('admission recorded', () => readRecordField('state') !== null);
+    await stayFalse(
+      'froze a 251 GiB host with 65 GiB available',
+      () => readRecordField('state') === 'frozen',
+      5_000,
+    );
+    expect(Number(readRecordField('frozen_episodes') ?? '0')).toBe(0);
+  }, 30_000);
+
   it('thaws an already-frozen root once memory becomes ample, WITHOUT waiting for PSI to recover', async () => {
     // Start scarce so the freeze is elected...
     writeFileSync(psiFile, '10\n');

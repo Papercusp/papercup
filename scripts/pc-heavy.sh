@@ -110,6 +110,12 @@
 #   PC_HEAVY_MEM_PSI_MIN_AVAIL_GIB  scarcity floor for the post-admission PSI
 #                         freeze (default 8 GiB; 0 disables the gate and
 #                         restores the pre-fix freeze-on-PSI-alone behaviour).
+#                         The effective floor is the larger of this and
+#                         PC_HEAVY_MEM_PSI_MIN_AVAIL_PCT (default 10) percent of
+#                         MemTotal: a thrashing 251 GiB host still reports
+#                         13-18 GiB MemAvailable, so a fixed 8 GiB never elects
+#                         a freeze there. PC_HEAVY_MEMTOTAL_GIB_OVERRIDE injects
+#                         MemTotal for tests.
 #                         Memory PSI measures reclaim/refault stall, which on a
 #                         host with a large page cache and ample swap tracks IO
 #                         pressure rather than shortage — so PSI alone elected
@@ -585,6 +591,19 @@ _pc_heavy_mem_avail_gib() {
   printf '%s\n' "$_raw"
 }
 
+# Read MemTotal as whole GiB — the base of the RAM-relative scarcity floor.
+# PC_HEAVY_MEMTOTAL_GIB_OVERRIDE lets a test model a host of any size.
+_pc_heavy_mem_total_gib() {
+  local _raw=''
+  if [ -n "${PC_HEAVY_MEMTOTAL_GIB_OVERRIDE:-}" ]; then
+    _raw="${PC_HEAVY_MEMTOTAL_GIB_OVERRIDE%%.*}"
+  else
+    _raw="$(awk '/^MemTotal:/ { print int($2 / 1048576); exit }' /proc/meminfo 2>/dev/null)"
+  fi
+  case "$_raw" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$_raw"
+}
+
 # Is memory ACTUALLY scarce, or is PSI just reporting churn?
 #
 # Memory PSI measures time stalled on reclaim/refault. On a host with a large
@@ -609,8 +628,20 @@ _pc_heavy_mem_avail_gib() {
 # the scarcity gate entirely and freeze on PSI alone, as before.
 _pc_heavy_mem_is_scarce() {
   local _floor="${PC_HEAVY_MEM_PSI_MIN_AVAIL_GIB:-8}" _avail=''
+  local _pct="${PC_HEAVY_MEM_PSI_MIN_AVAIL_PCT:-10}" _total='' _rel=0
   case "$_floor" in ''|*[!0-9]*) _floor=8 ;; esac
   [ "$_floor" -eq 0 ] && return 0
+  # The floor scales with RAM (host-memory-reduction-2026-09-27 P-009). A fixed
+  # 8 GiB never fired on the 251 GiB tower: its worst thrash (2026-09-27 01:00Z,
+  # memory PSI full avg10 50%) still showed 13 GiB MemAvailable, because the
+  # estimate counts hot page cache that is being refaulted as fast as it is
+  # reclaimed. 10% of RAM (25 GiB there) elects that episode and still declines
+  # the 65 GiB churn case above. An unreadable MemTotal keeps the absolute floor.
+  case "$_pct" in ''|*[!0-9]*) _pct=10 ;; esac
+  if _total="$(_pc_heavy_mem_total_gib)"; then
+    _rel=$(( _total * _pct / 100 ))
+    [ "$_rel" -gt "$_floor" ] && _floor="$_rel"
+  fi
   # INJECTED PSI IMPLIES INJECTED SCARCITY. A caller that simulates pressure via
   # PC_HEAVY_MEM_PSI_OVERRIDE(_FILE) is modelling a constrained host, so the
   # REAL MemAvailable of whatever box the simulation happens to run on is not
