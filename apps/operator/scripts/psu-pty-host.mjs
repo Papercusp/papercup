@@ -5409,12 +5409,19 @@ export async function runMcpReconnectMacro({
     }
     return null;
   };
-  // Claude 2.1.280 handles `/mcp` as a direct reconnect command and prints
-  // `Reconnected to <server>.` instead of opening the older selection dialog.
-  // Accept only the exact success line for this server: a partial reconnect
-  // message (for example, "but fetching tools failed") is not readiness.
+  // Claude prints `Reconnected to <server>.` both for a direct `/mcp` reconnect
+  // (2.1.280) and when the dialog's Reconnect action succeeds and the dialog
+  // closes. The live TUI renders it as a local-command result behind a `⎿`
+  // gutter, and Ink's diff renderer can emit inter-word gaps as cursor moves
+  // that stripAnsi drops — measured 2026-09-27 as `⎿  Reconnectedtopapercusp.`
+  // (WI-10003453). So compare with whitespace and the leading gutter removed,
+  // but still require the WHOLE line: a partial reconnect message (for example,
+  // ", but fetching tools failed") is not readiness.
+  const expectedReconnectLine = `Reconnectedto${String(serverName).replace(/\s+/gu, '')}.`;
   const directReconnectSucceeded = (v) =>
-    v.split('\n').some((line) => line.trim() === `Reconnected to ${serverName}.`);
+    v.split('\n').some(
+      (line) => line.replace(/\s+/gu, '').replace(/^[⎿│└├─]+/u, '') === expectedReconnectLine,
+    );
 
   // (1) open the dialog
   resetTap();
@@ -5474,8 +5481,19 @@ export async function runMcpReconnectMacro({
     // not found selected ⇒ fall through — the connected-wait below still judges it
   }
 
-  // (5) did it connect? (list-row OR detail-status shape — mcpConnectedVerdict)
-  const done = await waitFor((v) => mcpConnectedVerdict(v, serverName), reconnectBudgetMs);
+  // (5) did it connect? (list-row OR detail-status shape — mcpConnectedVerdict —
+  // OR the dialog closed itself and printed the success line.) mcpConnectedVerdict
+  // alone can never accept that line: `\bconnected\b` has no word boundary inside
+  // "Reconnected", so a real success used to time out here (WI-10003453).
+  const done = await waitFor(
+    (v) => directReconnectSucceeded(v) || mcpConnectedVerdict(v, serverName),
+    reconnectBudgetMs,
+  );
+  if (done && directReconnectSucceeded(done)) {
+    // The dialog is already closed; Esc Esc at the bare prompt would open the
+    // message selector underneath the kickoff that is about to be typed.
+    return { ok: true, step: 'done', detail: 'dialog reconnect printed the success line' };
+  }
   await closeOut();
   return done
     ? { ok: true, step: 'done', detail: 'connected verdict observed' }

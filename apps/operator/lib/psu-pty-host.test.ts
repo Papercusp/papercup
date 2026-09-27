@@ -4258,6 +4258,74 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       expect(result.step).toBe('open-dialog');
     });
 
+    // WI-10003453 — measured 2026-09-27 on a real headless judge: the dialog's
+    // Reconnect action succeeded, the dialog CLOSED itself and printed the result
+    // behind a `⎿` gutter with Ink-elided inter-word gaps. Step 5 used to consult
+    // only mcpConnectedVerdict, which reads that line as 'unknown' (no word
+    // boundary inside "Reconnected"), so a real success timed out as await-connected.
+    for (const successLine of ['  ⎿  Reconnected to papercusp.', '⎿  Reconnectedtopapercusp.']) {
+      it(`accepts the dialog closing with ${JSON.stringify(successLine)} and does not Esc the bare prompt`, async () => {
+        let output = '';
+        let view: 'idle' | 'list' | 'detail' | 'closed' = 'idle';
+        let detailCursor = 0;
+        const writes: string[] = [];
+        const result = await runMcpReconnectMacro({
+          serverName: 'papercusp',
+          write: (bytes: string) => {
+            writes.push(bytes);
+            if (bytes === '\r' && view === 'idle') {
+              view = 'list';
+              output = '\nManage MCP servers\n❯ papercusp · ◯ connecting…\n';
+            } else if (bytes === '\r' && view === 'list') {
+              view = 'detail';
+              detailCursor = 0;
+              output = '\npapercusp\nStatus: connecting\n❯ 1. View tools\n  2. Reconnect\n';
+            } else if (bytes === '\x1b[B' && view === 'detail') {
+              detailCursor = 1;
+              output = '\n  1. View tools\n❯ 2. Reconnect\n';
+            } else if (bytes === '\r' && view === 'detail' && detailCursor === 1) {
+              view = 'closed';
+              output = ` Connecting to papercusp…\n /mcp\n${successLine}\n`;
+            }
+          },
+          readTap: () => output,
+          resetTap: () => { output = ''; },
+          sleep: fastSleep,
+          crDelayMs: 1,
+          settleMs: 1,
+          paintBudgetMs: 200,
+          reconnectBudgetMs: 200,
+        });
+        expect(result).toEqual({
+          ok: true, step: 'done', detail: 'dialog reconnect printed the success line',
+        });
+        expect(writes).not.toContain('\x1b');
+      });
+    }
+
+    it('still refuses a gutter-rendered partial reconnect in the post-dialog wait', async () => {
+      let output = '';
+      let submitted = 0;
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp',
+        write: (bytes: string) => {
+          if (bytes !== '\r') return;
+          submitted += 1;
+          if (submitted === 1) output = '\n❯ papercusp · ✘ failed\n';
+          else output = '⎿  Reconnectedtopapercusp,butfetchingtoolsfailed: MCP error\n';
+        },
+        readTap: () => output,
+        resetTap: () => { output = ''; },
+        sleep: fastSleep,
+        crDelayMs: 1,
+        settleMs: 1,
+        paintBudgetMs: 60,
+        reconnectBudgetMs: 60,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.step).toBe('await-connected');
+    });
+
     it('fail-soft: reconnect action does not heal → await-connected failure', async () => {
       const tui = makeFakeTui(
         [{ name: 'papercusp-su', status: '✘ failed' }],
