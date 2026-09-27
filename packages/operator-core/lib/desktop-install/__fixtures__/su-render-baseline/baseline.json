@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-09-24T10:26:29.112Z",
+  "generatedAt": "2026-09-27T08:01:07.548Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
@@ -37,8 +37,8 @@
   },
   "tiers": {
     "full": {
-      "totalBytes": 116948,
-      "sha256": "740bc8fa5dbfe967805a5da17d58f39c88330ac1b5c01664f337a58e703af8db",
+      "totalBytes": 118192,
+      "sha256": "75c2a876e6e4320a42a2ce15b14e900e8c7a30bc88e8b6c9b7d982ce88c00192",
       "sections": [
         {
           "heading": "(preamble)",
@@ -98,7 +98,7 @@
           "heading": "## Operating modes — state in the registry, definitions as identity layers",
           "origin": "generated",
           "bytes": 4120,
-          "sha256": "5ef79adefb198abcaebf3d38734c80e7adef78e41f81036ecf97f7bf0f86041e"
+          "sha256": "85ceb477bbda468ac862096ba2406697ab2f3a94c0bf01fac0c42912e92fc3ac"
         },
         {
           "heading": "## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register",
@@ -145,14 +145,14 @@
         {
           "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
           "origin": "generated",
-          "bytes": 8226,
-          "sha256": "a68e80d51dbe5f920d9c6a3f925821a751fda93ca2537fc005a5d54e72923a94"
+          "bytes": 8900,
+          "sha256": "52dfed6bb8487b2760181db7518c28d7e4b4f8d43dd604d5e5964d8cddf89d05"
         },
         {
           "heading": "## Waiting on something? Arm a self-wake LOOP — never sleep on an event that may never fire; if the blocker isn't progressing, OWN getting it unblocked",
           "origin": "generated",
-          "bytes": 3669,
-          "sha256": "a8716cf704e3e4fde16ff16ae1eba9d03a96c71a305814ab68c765028cee158f"
+          "bytes": 4239,
+          "sha256": "609e0133274a9aa7d48db078bfeabfe29aadb0f3fafcc94126ce0ceb9fea582d"
         },
         {
           "heading": "## You can WAKE a peer — a parked agent sleeps until something re-invokes it; handing work off is not enough",
@@ -181,8 +181,8 @@
       ]
     },
     "fleet": {
-      "totalBytes": 116948,
-      "sha256": "740bc8fa5dbfe967805a5da17d58f39c88330ac1b5c01664f337a58e703af8db",
+      "totalBytes": 118192,
+      "sha256": "75c2a876e6e4320a42a2ce15b14e900e8c7a30bc88e8b6c9b7d982ce88c00192",
       "sections": [
         {
           "heading": "(preamble)",
@@ -242,7 +242,7 @@
           "heading": "## Operating modes — state in the registry, definitions as identity layers",
           "origin": "generated",
           "bytes": 4120,
-          "sha256": "5ef79adefb198abcaebf3d38734c80e7adef78e41f81036ecf97f7bf0f86041e"
+          "sha256": "85ceb477bbda468ac862096ba2406697ab2f3a94c0bf01fac0c42912e92fc3ac"
         },
         {
           "heading": "## Registering work is a SEPARATE discipline from asking approval — AUTO waives the ask, NOT the register",
@@ -289,14 +289,14 @@
         {
           "heading": "## The deploy pipeline is ASYNC — don't babysit your OWN change, but a RED gate is EVERYONE's job to FIX (no owner-ask)",
           "origin": "generated",
-          "bytes": 8226,
-          "sha256": "a68e80d51dbe5f920d9c6a3f925821a751fda93ca2537fc005a5d54e72923a94"
+          "bytes": 8900,
+          "sha256": "52dfed6bb8487b2760181db7518c28d7e4b4f8d43dd604d5e5964d8cddf89d05"
         },
         {
           "heading": "## Waiting on something? Arm a self-wake LOOP — never sleep on an event that may never fire; if the blocker isn't progressing, OWN getting it unblocked",
           "origin": "generated",
-          "bytes": 3669,
-          "sha256": "a8716cf704e3e4fde16ff16ae1eba9d03a96c71a305814ab68c765028cee158f"
+          "bytes": 4239,
+          "sha256": "609e0133274a9aa7d48db078bfeabfe29aadb0f3fafcc94126ce0ceb9fea582d"
         },
         {
           "heading": "## You can WAKE a peer — a parked agent sleeps until something re-invokes it; handing work off is not enough",

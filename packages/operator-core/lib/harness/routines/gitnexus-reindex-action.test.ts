@@ -42,6 +42,8 @@ import {
   GITNEXUS_EMBEDDINGS_NODE_CAP,
   GITNEXUS_EMBEDDING_DEVICE,
   GITNEXUS_EMBEDDING_THREADS,
+  GITNEXUS_ANALYZE_MALLOC_ARENA_MAX,
+  GITNEXUS_WAL_MANUAL_CHECKPOINT_LINUX,
   analyzeEmbeddingsExpected,
   vectorSearchProbe,
   readIncompleteIndexMarker,
@@ -566,6 +568,44 @@ describe('analyzeEnv — the embedding device/threads pins (D-002)', () => {
     const env = analyzeEnv({ GITNEXUS_EMBEDDING_DEVICE: 'cpu', GITNEXUS_EMBEDDING_THREADS: '8' });
     expect(env.GITNEXUS_EMBEDDING_DEVICE).toBe('cpu');
     expect(env.GITNEXUS_EMBEDDING_THREADS).toBe('8');
+  });
+});
+
+describe('analyzeEnv — the native-memory and WAL-checkpoint pins (P-012)', () => {
+  it('caps glibc malloc arenas (uncapped, the analyze grew ~7.9 GB of arenas — D-016)', () => {
+    expect(analyzeEnv({}).MALLOC_ARENA_MAX).toBe(String(GITNEXUS_ANALYZE_MALLOC_ARENA_MAX));
+    expect(Number.isInteger(GITNEXUS_ANALYZE_MALLOC_ARENA_MAX) && GITNEXUS_ANALYZE_MALLOC_ARENA_MAX > 0).toBe(true);
+  });
+
+  it('turns the manual WAL checkpoint driver off on linux, with a value gitnexus accepts as an opt-out', () => {
+    const env = analyzeEnv({}, undefined, undefined, undefined, 'linux');
+    expect(env.GITNEXUS_WAL_MANUAL_CHECKPOINT).toBe(GITNEXUS_WAL_MANUAL_CHECKPOINT_LINUX);
+    // gitnexus 1.6.9 isManualCheckpointEnabled(): anything outside this set leaves the driver ON.
+    expect(['0', 'false', 'off', 'no']).toContain(GITNEXUS_WAL_MANUAL_CHECKPOINT_LINUX.trim().toLowerCase());
+  });
+
+  it('leaves the driver on elsewhere (it exists for the Windows rename race)', () => {
+    expect(analyzeEnv({}, undefined, undefined, undefined, 'win32')).not.toHaveProperty('GITNEXUS_WAL_MANUAL_CHECKPOINT');
+    expect(analyzeEnv({}, undefined, undefined, undefined, 'darwin')).not.toHaveProperty('GITNEXUS_WAL_MANUAL_CHECKPOINT');
+  });
+
+  it('STILL pins both when an operator overrides the heap (the early-return branch)', () => {
+    const env = analyzeEnv({ NODE_OPTIONS: '--max-old-space-size=4096' }, undefined, undefined, undefined, 'linux');
+    expect(env.NODE_OPTIONS).toBe('--max-old-space-size=4096');
+    expect(env.MALLOC_ARENA_MAX).toBe(String(GITNEXUS_ANALYZE_MALLOC_ARENA_MAX));
+    expect(env.GITNEXUS_WAL_MANUAL_CHECKPOINT).toBe(GITNEXUS_WAL_MANUAL_CHECKPOINT_LINUX);
+  });
+
+  it('honours explicit caller-supplied values (an A/B run must be able to re-enable either)', () => {
+    const env = analyzeEnv(
+      { MALLOC_ARENA_MAX: '8', GITNEXUS_WAL_MANUAL_CHECKPOINT: '1' },
+      undefined,
+      undefined,
+      undefined,
+      'linux',
+    );
+    expect(env.MALLOC_ARENA_MAX).toBe('8');
+    expect(env.GITNEXUS_WAL_MANUAL_CHECKPOINT).toBe('1');
   });
 });
 
