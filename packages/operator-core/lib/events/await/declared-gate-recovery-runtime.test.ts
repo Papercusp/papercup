@@ -11,9 +11,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const store = vi.hoisted(() => ({
   findAnnouncementsForKey: vi.fn(),
   probeKeyFireEvidence: vi.fn(),
+  // D-001: the bridge performs NO re-arm. Spied so a regression that registers
+  // a wait from the recovery path is caught, not silently tolerated.
+  registerAwait: vi.fn(),
 }));
 vi.mock('./store', () => store);
 vi.mock('./installed-events', () => ({ readInstalledUnitEvents: vi.fn(async () => []) }));
+const compose = vi.hoisted(() => ({ registerComposedAwait: vi.fn() }));
+vi.mock('./compose', () => compose);
+// The production bridge's two lazily-imported leaves. Everything between the
+// sweeper and these calls — defaultDeclaredGateRecoveryDeps, the generation
+// CAS read, the condition-key derivation — runs for real (R-004 seam).
+const conditionUpsert = vi.hoisted(() => ({ upsertConditionWorkItem: vi.fn() }));
+vi.mock('../../coord/condition-upsert', () => conditionUpsert);
+const inboxWake = vi.hoisted(() => ({ wakeRecipients: vi.fn() }));
+vi.mock('../../agent-tools/coordination/inbox-wake', () => inboxWake);
 
 import {
   annotateTimedOutAnnouncedAwaits,
@@ -199,6 +211,84 @@ describe('annotateTimedOutAnnouncedAwaits — the sweeper hook', () => {
       next_verb: { verb: 'events:cancel' },
       action: { action: 'none', detail: expect.stringMatching(/bridge failed/) },
     });
+  });
+
+  it('R-004 real seam: the PRODUCTION bridge routes the exact condition key to upsertConditionWorkItem, wakes once, dedups the repeat, never re-arms', async () => {
+    const NOW = 1_800_000_000_000;
+    const declaration = row({ scopeKind: 'harness', scopeRef: 'papercusp' });
+    const stalledProducer = (d: AwaitRow): DeclaredGateEvidenceInput => ({
+      announcement: toDeclaredGateAnnouncement(d),
+      currentGeneration: d.causalGeneration ?? null,
+      catalog: { status: 'measured', value: { member: false, nearMiss: [] } },
+      fireHistory: { status: 'measured', value: { exactFired: false, familyFires: 0, priorGenerationFired: false, lastFiredAt: null } },
+      ownership: { status: 'measured', value: { declaredByLiveness: 'live', liveSuccessorIds: [] } },
+      producer: {
+        status: 'measured',
+        value: {
+          certificate: {
+            version: 1,
+            producer: { kind: 'green-checkpoint', id: 'run-7' },
+            owner: { ownerId: 'su-declarer', workItemId: 'WI-900' },
+            issuedAtMs: NOW - 60 * 60_000,
+            lastProgressAtMs: NOW - 60 * 60_000,
+            lastFireAtMs: null,
+            expectedCadenceMs: 10 * 60_000,
+            verificationDeadlineMs: NOW - 60_000,
+          },
+          observation: { checkedAtMs: NOW, producerPresent: true, lastProgressAtMs: NOW - 60 * 60_000, lastFireAtMs: null, completedAtMs: null },
+        },
+      },
+      checkedAtMs: NOW,
+    });
+    // The CAS read goes through the real deps → the (mocked) store.
+    store.findAnnouncementsForKey.mockResolvedValue([declaration]);
+    conditionUpsert.upsertConditionWorkItem
+      .mockResolvedValueOnce({ id: 'WI-77', created: true })
+      .mockResolvedValueOnce({ id: 'WI-77', created: false });
+    inboxWake.wakeRecipients.mockResolvedValue({ queued: 1 });
+    const sweep = () =>
+      annotateTimedOutAnnouncedAwaits([waiter(301)], {
+        findCurrentDeclaration: async () => declaration,
+        gather: async (d) => stalledProducer(d),
+        // bridgeDeps deliberately NOT injected: defaultDeclaredGateRecoveryDeps runs.
+      });
+
+    const first = await sweep();
+    const conditionKey = 'declared-gate-recovery:7:2:stalled-producer';
+    expect(first.get(301)).toMatchObject({
+      classification: 'stalled-producer',
+      idempotence_key: conditionKey,
+      action: { action: 'owner-woken', conditionKey, workItemId: 'WI-77' },
+    });
+    expect(conditionUpsert.upsertConditionWorkItem).toHaveBeenCalledTimes(1);
+    expect(conditionUpsert.upsertConditionWorkItem).toHaveBeenCalledWith(
+      conditionKey,
+      expect.objectContaining({
+        kind: 'bug',
+        harness: 'papercusp',
+        workspaceId: 'ws-test',
+        createdBy: 'system:declared-gate-recovery',
+        payload: { declaredGateRecovery: expect.objectContaining({ idempotenceKey: conditionKey, classification: 'stalled-producer' }) },
+      }),
+    );
+    expect(inboxWake.wakeRecipients).toHaveBeenCalledTimes(1);
+    expect(inboxWake.wakeRecipients).toHaveBeenCalledWith(
+      ['su-declarer'],
+      expect.objectContaining({ requiredWake: true, workspaceId: 'ws-test', source: 'system:declared-gate-recovery' }),
+    );
+
+    // Duplicate timeout wake / repeat sweep on the same identity: the real
+    // condition upsert adopts (created:false) → no second wake.
+    const second = await sweep();
+    expect(second.get(301)).toMatchObject({ action: { action: 'deduplicated', conditionKey, workItemId: 'WI-77' } });
+    expect(conditionUpsert.upsertConditionWorkItem).toHaveBeenCalledTimes(2);
+    expect(conditionUpsert.upsertConditionWorkItem.mock.calls[1]?.[0]).toBe(conditionKey);
+    expect(inboxWake.wakeRecipients).toHaveBeenCalledTimes(1);
+
+    // D-001: re-arm is the WAITER's returned next verb — the recovery path
+    // registers no wait of its own, on either sweep.
+    expect(store.registerAwait).not.toHaveBeenCalled();
+    expect(compose.registerComposedAwait).not.toHaveBeenCalled();
   });
 
   it('the production CAS read reports the key’s current declaration state', async () => {
