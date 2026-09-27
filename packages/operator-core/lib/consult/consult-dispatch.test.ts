@@ -169,6 +169,7 @@ function makeFakes(
     },
     // Same for the cool-down reader (WI-10003198): no history ⇒ no cool-down.
     readSourceDispatchRecords: async () => opts.sourceRecords ?? [],
+    readReviewerModel: async () => null,
     nowMs: () => NOW_MS,
     loadRanks: async () => RANKS,
     ...over,
@@ -720,6 +721,32 @@ describe('dispatchRecordEntry (the persisted shape is bounded)', () => {
 });
 
 describe('makeConsultReachDispatcher (D-010: the seam shape survives, its meaning changes)', () => {
+  it('keeps a saved reviewer model and effort on a later cascade leg', async () => {
+    const { deps, calls } = makeFakes({
+      readReviewerModel: async () => ({ agent: 'codex', model: 'sol', effort: 'xhigh' }),
+    });
+    const reach = makeConsultReachDispatcher(CTX, deps);
+    const result = await reach({
+      responder: 'su-expert', conversationId: 'conv-review', summary: 'review', body: 'next reviewer',
+      evidence: OPTS.evidence,
+    });
+    expect(result.dispatch).toMatchObject({ agent: 'codex', model: 'sol:xhigh' });
+    expect(calls.spawn).toHaveLength(1);
+    expect(calls.spawn[0]!.envelope.greetingCmd).toContain('sol');
+  });
+
+  it('refuses a reviewer model removed from the allowlist without launching a substitute', async () => {
+    const { deps, calls } = makeFakes({
+      readReviewerModel: async () => ({ agent: 'codex', model: 'unlisted' }),
+    });
+    const result = await makeConsultReachDispatcher(CTX, deps)({
+      responder: 'su-expert', conversationId: 'conv-review', summary: 'review', body: 'next reviewer',
+    });
+    expect(result).toMatchObject({ queued: 0, woke: 0, dispatch: { dispatched: false } });
+    expect(result.dispatch.detail).toContain('absent from the current expert allowlist');
+    expect(calls.spawn).toHaveLength(0);
+  });
+
   it('reports a dispatched launch in the delivery-count shape every consult call site already reads', async () => {
     const { deps, calls } = makeFakes();
     const reach = makeConsultReachDispatcher(CTX, deps);
