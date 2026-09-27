@@ -53,7 +53,7 @@ describe('merge progress probe (WI-10003427)', () => {
     const applied: string[] = [];
     const applyImpl = async (env: OpEnvelope) => {
       if (env.hbKey === 'B') await gate; // park the pass on the op at position 1
-      applied.push(env.hbKey);
+      applied.push(String(env.hbKey));
       return true;
     };
     const probe = createMergeProgressProbe();
@@ -88,7 +88,7 @@ describe('merge progress probe (WI-10003427)', () => {
     const applied: string[] = [];
     const result = await mergeAdmittedLogsIncremental([log], createMergeCursor(), {
       applyImpl: async (env: OpEnvelope) => {
-        applied.push(env.hbKey);
+        applied.push(String(env.hbKey));
         return true;
       },
       getTimeoutMs: 0,
