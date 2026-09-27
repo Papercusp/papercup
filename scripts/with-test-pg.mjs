@@ -114,6 +114,8 @@ if (runtimeRoot && runtimeId) {
   await Promise.all([
     mkdir(papercuspHome, { recursive: true }),
     mkdir(join(workspacesRoot, runtimeId), { recursive: true }),
+    mkdir(join(runtimeRoot, 'xdg-runtime'), { recursive: true, mode: 0o700 }),
+    mkdir(join(runtimeRoot, 'tmp'), { recursive: true }),
   ]);
   await writeFile(join(workspacesRoot, 'registry.json'), JSON.stringify({
     current: runtimeId,
@@ -132,6 +134,8 @@ if (runtimeRoot && runtimeId) {
     PAPERCUSP_WORKSPACES_ROOT: workspacesRoot,
     PAPERCUSP_WORKSPACE: runtimeId,
     PAPERCUSP_WORKSPACE_ID: runtimeId,
+    PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${httpPort}`,
+    PAPERCUSP_API_BASE: `http://127.0.0.1:${httpPort}`,
     HARNESS_ADMIN_DATABASE_URL: pg.urls.admin,
     HARNESS_DATABASE_URL: pg.urls.app,
     PAPERCUSP_HONO_PORT: String(httpPort),
@@ -141,8 +145,10 @@ if (runtimeRoot && runtimeId) {
     PAPERCUSP_BACKGROUND_WORKERS: '1',
     PAPERCUSP_DBOS_ENABLE: '1',
     PAPERCUSP_DBOS_ORCHESTRATOR: '1',
-    PAPERCUSP_DBOS_ROUTINES: '1',
-    PAPERCUSP_DBOS_TIMERS: '1',
+    // The test starts explicit background work; global scheduled routines may
+    // otherwise act on the shared checkout or external services during boot.
+    PAPERCUSP_DBOS_ROUTINES: '0',
+    PAPERCUSP_DBOS_TIMERS: '0',
     PAPERCUSP_DBOS_AUTOLOOP: '0',
     DBOS__VMID: runtimeId,
     DBOS__APPVERSION: runtimeId,
@@ -157,19 +163,21 @@ if (runtimeRoot && runtimeId) {
     XDG_DATA_HOME: join(runtimeRoot, 'xdg-data'),
     XDG_CACHE_HOME: join(runtimeRoot, 'xdg-cache'),
     XDG_CONFIG_HOME: join(runtimeRoot, 'xdg-config'),
+    XDG_RUNTIME_DIR: join(runtimeRoot, 'xdg-runtime'),
+    TMPDIR: join(runtimeRoot, 'tmp'),
   };
 }
 
 const childEnv = { ...process.env };
 if (isolatedRuntime) {
-  // An isolated DB is not enough: inherited keychain/agent/cloud credentials
-  // would still let a background worker act as the live device or owner.
+  // Start from no ambient operator identity, endpoints, IPC or credentials.
+  // HOME alone is insufficient: an inherited PAPERCUSP_SUBSTRATE_IPC_SOCKET,
+  // API base or DHT bootstrap can still join the running operator.
   for (const key of Object.keys(childEnv)) {
-    if (/^(AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GH_|DATABASE_URL$|PGHOST$|PGPORT$|PGUSER$|PGPASSWORD$|PGDATABASE$|PAPERCUSP_SID$|PAPERCUSP_.*(?:TOKEN|SECRET|CREDENTIAL))/i.test(key)) {
+    if (/^(PAPERCUSP_|HARNESS_|DBOS__|PG[A-Z]|DATABASE_URL$|AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GH_|CLOUDSDK_|DOCKER_|GIT_ASKPASS$|GIT_CONFIG_|SSH_AUTH_SOCK$|CODEX_HOME$)/i.test(key)) {
       delete childEnv[key];
     }
   }
-  delete childEnv.PAPERCUSP_SPAWNER_IPC_SOCKET;
 }
 const child = spawn(cmd[0], cmd.slice(1), {
   cwd: ROOT,

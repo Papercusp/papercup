@@ -80,6 +80,9 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     const reportRail = 'REPORT on a standing cadence via coord:escalate / notifyAttention / coord:send';
     expect(report).toContain(reportRail);
     expect(engineer).not.toContain(reportRail);
+    expect(report).toContain('SCOPED CONTINUATIONS ARE NOT NEW KICKOFFS.');
+    expect(report).toContain('RECEIPTS BOUND THE REPORT.');
+    expect(engineer).not.toContain('SCOPED CONTINUATIONS ARE NOT NEW KICKOFFS.');
   }, 60_000);
 
   it.each(['paused', 'achieved', 'killed', 'no-demand'] as const)('%s has no actionable agenda and cannot launch', async (c) => {
@@ -274,6 +277,35 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect(s33BehaviorAssert('killed').eval(run([
       { phase: 'exposure', case: 'killed' }, { phase: 'refusal', case: 'killed', tool: 'goals:resume' },
     ], 'The goal is killed.')).length).toBeGreaterThan(0);
+  });
+
+  it.each(['unknown', 'no-demand', 'paused', 'achieved', 'killed'] as const)(
+    '%s rejects unsupported broad probes after its scoped authoritative disposition', (c) => {
+      const text = c === 'unknown' ? 'Goal lifecycle remains unknown.'
+        : c === 'no-demand' ? 'No applicable demand in the complete current portfolio.' : `Goal is ${c}.`;
+      const evaluate = s33BehaviorAssert(c).eval;
+      expect(evaluate(run([{ phase: 'exposure' }], text))).toEqual([]);
+      // Observed v15 no-demand7576eb50/unknown7d476704: after the decisive
+      // read, broad inventory/search probes returned not_applicable. Existing
+      // assertions checked only writes and silently credited these detours.
+      for (const tool of ['plans:list', 'work_items:list', 'search:semantic', 'dev:pg_query']) {
+        expect(evaluate(run([{ phase: 'exposure' }, { phase: 'refusal', tool }], text))
+          .some((finding) => finding.claim.includes('unsupported probe'))).toBe(true);
+      }
+    },
+  );
+
+  it('rejects invented causes or global tool absence while allowing explicit uncertainty', () => {
+    const records = [{ phase: 'exposure' }, { phase: 'effect', effect: 'owner-report-delivered' }];
+    const evaluate = s33BehaviorAssert('report').eval;
+    for (const text of [
+      'Report delivered. This is a **platform health issue**.',
+      'Report delivered. These tools are not available in this session context.',
+      'Report delivered. This is a tool-availability constraint.',
+    ]) {
+      expect(evaluate(run(records, text)).some((finding) => finding.claim.includes('unsupported cause'))).toBe(true);
+    }
+    expect(evaluate(run(records, 'Report delivered. The rejected request does not establish a platform health issue or global tool availability. Cause remains unknown.'))).toEqual([]);
   });
 
   it('accepts the explicit demand-none wording from real run c2f677d3 without accepting unauthorized effects', () => {

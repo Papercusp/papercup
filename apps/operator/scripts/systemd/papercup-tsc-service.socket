@@ -1,0 +1,21 @@
+# WI-10003404 / plan host-memory-reduction-2026-09-27 P-004 — the shared typecheck service's socket.
+#
+# systemd holds this socket permanently and starts papercup-tsc-service.service on the first
+# connection; the service exits after 20 idle minutes and the next `lint:tsc --files` starts it
+# again (~2.5 s project load). The path must match tscServiceSocketPath() in
+# scripts/lib/tsc-service.mjs.
+#
+# Install (user units here are symlinks into the repo):
+#   ln -sf %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercup-tsc-service.socket ~/.config/systemd/user/
+#   ln -sf %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercup-tsc-service.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now papercup-tsc-service.socket
+
+[Unit]
+Description=Papercusp shared typecheck service socket (scoped lint:tsc --files)
+
+[Socket]
+ListenStream=%t/papercusp-tsc-service.sock
+SocketMode=0600
+
+[Install]
+WantedBy=sockets.target

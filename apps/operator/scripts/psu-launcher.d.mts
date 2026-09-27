@@ -1063,9 +1063,10 @@ export function addClaudeResumeToolReferencesToEnv(session: any, env: any, { hom
  * final ~256KB and scans lines newest-first:
  *   - claude: `{"type":"assistant","message":{"model":"…"}}` — the model that
  *     actually answered; `<synthetic>` (error/system events) is skipped.
- *   - codex: `{"type":"turn_context","payload":{"model":"…"}}` — stamped every
- *     turn (verified codex CLI 0.144.0; session_meta carries only
- *     model_provider).
+ *   - codex: `{"type":"turn_context","payload":{"model":"…","effort":"…"}}`
+ *     — stamped every turn (verified codex CLI 0.144.0; session_meta carries
+ *     only model_provider). Return the complete model:effort selection so a
+ *     carry or exact resume cannot silently reset the owner's reasoning level.
  *   - omp / no transcript / unreadable → null (callers degrade to "unknown").
  * Pure-ish (reads FS); `home` injectable for tests; exported for tests.
  */
@@ -1096,10 +1097,9 @@ export function respawnModelFamily(id: any): string | null;
  *
  * Null on every uncertain input — no inherited flag (we never ADD one; see
  * mintRecycleArgs), nothing detected, an unrecognizable detected id, or an
- * unchanged model. A change is composed as detected-identity + the INHERITED
- * effort: `/model` in the chat changes the model, it does not restate the
- * effort the session was launched at, so effort rides across rather than being
- * silently dropped to the model default. normalizeModelSpec then re-adds the
+ * unchanged model and effort. A change is composed with the transcript's
+ * effort when present (Codex stamps it on every turn); older transcripts and
+ * Claude retain the inherited effort. normalizeModelSpec then re-adds the
  * `[1m]` window marker exactly as the resume path does, so an opus/fable/
  * sonnet-5 successor keeps its 1M window. Pure; exported for tests.
  *

@@ -957,6 +957,7 @@ describe('probeFreshLaunchSessions', () => {
       .map((call) => String(call[0]?.join(' ')))
       .find((candidate) => candidate.includes('s.session_id'));
     expect(query).toContain('s.session_id');
+    expect(query).toMatch(/t\.status = 'ok'\s+AND t\.call_origin = 'agent'\s+--[\s\S]*?AND t\.invoked_at >= GREATEST\(s\.first_seen_at, to_timestamp\(/);
   });
 
   it('uses the authoritative self-wake oracle when session_briefs has stale `none`', async () => {

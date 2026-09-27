@@ -2052,24 +2052,28 @@ export async function probeFreshLaunchSessions({
                           AND t.coord_owner_id = s.coord_owner_id
                           AND t.status = 'ok'
                           AND t.call_origin = 'agent'
+                          -- Owner IDs survive a same-owner successor launch. Never
+                          -- credit the predecessor's calls to this new session.
+                          AND t.invoked_at >= GREATEST(s.first_seen_at, to_timestamp(${since / 1000}))
                           AND NOT (t.tool_name = ANY (${LAUNCH_STATUSLINE_TOOLS as string[]}))), 0) AS successful_calls,
              COALESCE((SELECT count(*) FROM harness_shared.tool_invocations t
                         WHERE t.workspace_id = ${workspaceId}
                           AND t.coord_owner_id = s.coord_owner_id
                           AND t.tool_name = 'scheduler:get_next'
                           AND t.call_origin = 'agent'
-                          AND t.invoked_at >= to_timestamp(${Math.floor(since / 1000)})), 0) AS scheduler_calls,
+                          AND t.invoked_at >= GREATEST(s.first_seen_at, to_timestamp(${since / 1000}))), 0) AS scheduler_calls,
              COALESCE((SELECT count(*) FROM harness_shared.tool_invocations t
                         WHERE t.workspace_id = ${workspaceId}
                           AND t.coord_owner_id = s.coord_owner_id
                           AND t.tool_name = 'scheduler:get_next'
                           AND t.call_origin = 'agent'
                           AND t.status = 'ok'
-                          AND t.invoked_at >= to_timestamp(${Math.floor(since / 1000)})), 0) AS successful_scheduler_calls,
+                          AND t.invoked_at >= GREATEST(s.first_seen_at, to_timestamp(${since / 1000}))), 0) AS successful_scheduler_calls,
              (SELECT EXTRACT(EPOCH FROM (now() - max(t.invoked_at))) * 1000
                 FROM harness_shared.tool_invocations t
                WHERE t.workspace_id = ${workspaceId}
-                 AND t.coord_owner_id = s.coord_owner_id) AS ms_since_last_signal,
+                 AND t.coord_owner_id = s.coord_owner_id
+                 AND t.invoked_at >= GREATEST(s.first_seen_at, to_timestamp(${since / 1000}))) AS ms_since_last_signal,
              EXISTS (SELECT 1 FROM harness_shared.coord_presence p
                       WHERE p.workspace_id = ${workspaceId}
                         AND p.owner_id = s.coord_owner_id) AS has_presence,
@@ -2079,7 +2083,7 @@ export async function probeFreshLaunchSessions({
                  AND t.coord_owner_id = s.coord_owner_id
                  AND t.tool_name = 'scheduler:get_next'
                  AND t.call_origin = 'agent'
-                 AND t.invoked_at >= to_timestamp(${Math.floor(since / 1000)})
+                 AND t.invoked_at >= GREATEST(s.first_seen_at, to_timestamp(${since / 1000}))
                ORDER BY t.invoked_at DESC
                LIMIT 1) AS scheduler_disposition,
              (SELECT wi.feature_id
@@ -2097,7 +2101,7 @@ export async function probeFreshLaunchSessions({
              s.launch_argv
         FROM harness_shared.adv_sessions s
        WHERE s.workspace_id = ${workspaceId}
-         AND s.first_seen_at >= to_timestamp(${Math.floor(since / 1000)})
+         AND s.first_seen_at >= to_timestamp(${since / 1000})
          AND s.launch_argv::text LIKE ${`%--launched-by=${launcherOwnerId}%`}
        ORDER BY s.first_seen_at ASC
        LIMIT 50`;

@@ -1,0 +1,31 @@
+# WI-10003404 / plan host-memory-reduction-2026-09-27 P-004 — the shared typecheck service.
+#
+# One tsgo API server answers every agent's scoped `lint:tsc --files` (scripts/tsc-service/server.mjs)
+# instead of each caller paying a 13 GB whole-project compile. Socket-activated by
+# papercup-tsc-service.socket; exits by itself after PAPERCUSP_TSC_SERVICE_IDLE_SEC idle.
+#
+# Memory: one operator-core program is ~4-5 GB loaded and checked; two open projects fit well under
+# MemoryMax, and the server restarts its tsgo child past PAPERCUSP_TSC_SERVICE_RSS_RESET_GIB. If the
+# unit is killed anyway, every caller falls back to the full CLI compile, so the ceiling costs
+# speed, never a verdict. No swap: a swapped-out checker is slower than a fresh load.
+
+[Unit]
+Description=Papercusp shared typecheck service (tsgo API for scoped lint:tsc --files)
+Requires=papercup-tsc-service.socket
+After=papercup-tsc-service.socket
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/node25/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PAPERCUSP_TSC_SERVICE_ROOT=%h/papercupai-workspace/papercusp
+Environment=PAPERCUSP_TSC_SERVICE_IDLE_SEC=1200
+Environment=PAPERCUSP_TSC_SERVICE_RSS_RESET_GIB=12
+WorkingDirectory=%h/papercupai-workspace/papercusp
+ExecStart=/usr/bin/env node scripts/tsc-service/server.mjs
+Restart=on-failure
+RestartSec=2
+Nice=10
+MemoryAccounting=yes
+MemoryHigh=14G
+MemoryMax=16G
+MemorySwapMax=0

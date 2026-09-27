@@ -19,6 +19,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
+import type { DeferralRecord, RevertRecord, SpendRecord, StructuredObservationRecord } from './corpus-digest';
+import type { MetaPattern } from './types';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 
@@ -109,25 +111,25 @@ describe('state-of-Hive production readers (real PG)', () => {
   it('reverts reader keeps only regressions, unquotes statuses, drops recoveries + non-status fields', async () => {
     const readers = buildStateOfHiveReaders();
     const reverts = await readers.reverts();
-    const ids = reverts.map((r) => r.workItemId);
+    const ids = reverts.map((r: RevertRecord) => r.workItemId);
 
     expect(ids).toContain('F-REVERT'); // passed→failing (+ validating→todo)
     expect(ids).toContain('F-KILLED'); // passed→deprecated
     expect(ids).not.toContain('F-RECOVER'); // failing→todo is a recovery
     expect(ids).not.toContain('F-NOISE'); // field='notes', not a status change
 
-    const sample = reverts.find((r) => r.workItemId === 'F-KILLED')!;
+    const sample = reverts.find((r: RevertRecord) => r.workItemId === 'F-KILLED')!;
     expect(sample.from).toBe('passed'); // unquoted (not '"passed"')
     expect(sample.to).toBe('deprecated');
     expect(sample.harness).toBe('papercup');
     expect(sample.reason).toContain('stale provider assumption');
     const digest = await synthesizeStateOfHive(readers, { nowMs: T });
-    const lessons = flattenDigest(digest).filter((pattern) => pattern.category === 'rework-lesson');
+    const lessons = flattenDigest(digest).filter((pattern: MetaPattern) => pattern.category === 'rework-lesson');
     expect(lessons).toContainEqual(expect.objectContaining({
       ref: 'wi:F-KILLED',
       summary: expect.stringContaining('stale provider assumption'),
     }));
-    expect(lessons.some((pattern) => pattern.ref === 'wi:F-REVERT')).toBe(false);
+    expect(lessons.some((pattern: MetaPattern) => pattern.ref === 'wi:F-REVERT')).toBe(false);
   });
 
   it('CI corpus reader separates repeated gate failures from clean same-commit local divergence', async () => {
@@ -155,7 +157,7 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(flattenDigest({
       recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
       ciTestHealth: lane,
-    }).map((pattern) => pattern.ref)).toEqual([lane[0]!.ref]);
+    }).map((pattern: MetaPattern) => pattern.ref)).toEqual([lane[0]!.ref]);
   });
 
   it('workspace-host corpus reader groups failed event rows and cites later host success separately', async () => {
@@ -200,7 +202,7 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(flattenDigest({
       recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
       workspaceHostHealth: lane,
-    }).map((pattern) => pattern.ref)).toEqual(['workspace-host:event:corpus-failure-2']);
+    }).map((pattern: MetaPattern) => pattern.ref)).toEqual(['workspace-host:event:corpus-failure-2']);
   });
 
   it('health-flap corpus reader measures time to OK and leaves an open critical entry incomplete', async () => {
@@ -224,7 +226,7 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(flattenDigest({
       recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
       systemHealthFlaps: lane,
-    }).map((pattern) => pattern.ref)).toEqual([lane[0]!.ref]);
+    }).map((pattern: MetaPattern) => pattern.ref)).toEqual([lane[0]!.ref]);
   });
 
   it('browser crash corpus reader folds only redacted render-boundary reports from the local archive', async () => {
@@ -252,33 +254,33 @@ describe('state-of-Hive production readers (real PG)', () => {
     expect(flattenDigest({
       recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
       browserCrashHealth: lane,
-    }).map((pattern) => pattern.ref)).toEqual([lane[0]!.ref]);
+    }).map((pattern: MetaPattern) => pattern.ref)).toEqual([lane[0]!.ref]);
   });
 
   it('spend reader scopes to the workspace and trailing 7d window', async () => {
     const readers = buildStateOfHiveReaders({ workspaceId: WS, nowMs: T });
     const spend = await readers.spend();
-    expect(spend.map((s) => `${s.harness}:${s.role}`).sort()).toEqual(['papercup:validator', 'papercup:worker']);
-    const worker = spend.find((s) => s.role === 'worker' && s.harness === 'papercup')!;
+    expect(spend.map((s: SpendRecord) => `${s.harness}:${s.role}`).sort()).toEqual(['papercup:validator', 'papercup:worker']);
+    const worker = spend.find((s: SpendRecord) => s.role === 'worker' && s.harness === 'papercup')!;
     expect(worker).toBeDefined();
     expect(worker.costUsd).toBeCloseTo(12.0, 5); // 8 + 4
     expect(worker.inputTokens).toBe(1_200_000);
     expect(worker.runs).toBe(2);
-    const validator = spend.find((s) => s.role === 'validator')!;
+    const validator = spend.find((s: SpendRecord) => s.role === 'validator')!;
     expect(validator.costUsd).toBeCloseTo(2.5, 5);
   });
 
   it('deferrals reader returns blocked/needs-human items + deferred decisions, excludes done', async () => {
     const readers = buildStateOfHiveReaders();
     const deferrals = await readers.deferrals();
-    const itemTexts = deferrals.filter((d) => d.source === 'item').map((d) => d.text);
+    const itemTexts = deferrals.filter((d: DeferralRecord) => d.source === 'item').map((d: DeferralRecord) => d.text);
     expect(itemTexts).toContain('wire the cadence trigger primitive'); // blocked
     expect(itemTexts).toContain('cross-machine paid E2E'); // needs-human
     expect(itemTexts).not.toContain('a normal done item'); // done is excluded
 
-    const decisions = deferrals.filter((d) => d.source === 'decision');
-    expect(decisions.map((d) => d.refId)).toContain('D-004'); // body marks a deferral
-    expect(decisions.map((d) => d.refId)).not.toContain('D-005'); // no deferral marker
+    const decisions = deferrals.filter((d: DeferralRecord) => d.source === 'decision');
+    expect(decisions.map((d: DeferralRecord) => d.refId)).toContain('D-004'); // body marks a deferral
+    expect(decisions.map((d: DeferralRecord) => d.refId)).not.toContain('D-005'); // no deferral marker
   });
 
   it('end-to-end: synthesize produces a populated digest from the real corpus', async () => {
@@ -335,7 +337,7 @@ describe('state-of-Hive production readers (real PG)', () => {
 
     // The reader maps the surfaced candidate.observation onto a clean record.
     const records = await buildStateOfHiveReaders().observations();
-    const rec = records.find((r) => r.rubricRef === 'pot-coordination-health');
+    const rec = records.find((r: StructuredObservationRecord) => r.rubricRef === 'pot-coordination-health');
     expect(rec).toBeDefined();
     expect(rec!.sourceHive).toBe('papercusp');
     expect(rec!.ratings?.['end-to-end-flow']).toEqual({ rating: 'broken', evidence: '88 items unplaced despite idle capacity' });
@@ -344,7 +346,7 @@ describe('state-of-Hive production readers (real PG)', () => {
     const digest = await synthesizeStateOfHive(buildStateOfHiveReaders(), { nowMs: T });
     expect(digest.corpus.observations).toBeGreaterThanOrEqual(1);
     const e2e = digest.rubricRatings.find(
-      (p) => p.ref === 'rubric:pot-coordination-health#end-to-end-flow@papercusp',
+      (p: MetaPattern) => p.ref === 'rubric:pot-coordination-health#end-to-end-flow@papercusp',
     );
     expect(e2e).toBeDefined();
     expect(e2e!.summary).toContain('broken');
@@ -380,8 +382,8 @@ describe('state-of-Hive production readers (real PG)', () => {
       recurringFriction: [], timeTokenSinks: [], chronicDeferrals: [], capabilityGaps: [],
       ptyHostHealth: lane,
     });
-    expect(flat.map((p) => p.ref)).toEqual(refs);
-    expect(flat.every((p) => p.category === 'pty-host-health')).toBe(true);
+    expect(flat.map((p: MetaPattern) => p.ref)).toEqual(refs);
+    expect(flat.every((p: MetaPattern) => p.category === 'pty-host-health')).toBe(true);
   });
 
   it('excludes the carry-drills roll-up rather than double-counting it as a session', async () => {

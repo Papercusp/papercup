@@ -1752,8 +1752,7 @@ export function appendHostEvent(ownerId, kind, extra = {}, dir = PSU_PTY_DIR) {
 
 /** EI-24353430528930250: process-scoped startup evidence for Codex's isolated
  * SQLite homes. Host-wide paging samples could not distinguish the failed
- * launch wave from a later successful one. These Linux counters belong to the
- * actual PTY child and retain their sampling time in the existing host log. */
+ * launch wave from a later successful one. */
 export function readLinuxStartupCounters(pid, readFile = readFileSync) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   let stat;
@@ -1796,6 +1795,45 @@ export function readLinuxStartupCounters(pid, readFile = readFileSync) {
   };
 }
 
+/** Resolve the Rust Codex runtime behind the npm/node launcher that owns the
+ * PTY. The launcher stays alive for the whole session, so sampling its PID
+ * produces a confident but irrelevant zero-IO trace. Linux exposes a cheap,
+ * race-tolerant descendant index at /proc/PID/task/PID/children; walk only a
+ * few generations and accept a process whose kernel comm identifies Codex. */
+export function resolveLinuxCodexStartupPid(rootPid, {
+  readFile = readFileSync,
+  readCounters = readLinuxStartupCounters,
+  maxDepth = 4,
+} = {}) {
+  if (!Number.isInteger(rootPid) || rootPid <= 0) return null;
+  const queue = [{ pid: rootPid, depth: 0 }];
+  const seen = new Set();
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || seen.has(current.pid)) continue;
+    seen.add(current.pid);
+    const counters = readCounters(current.pid, readFile);
+    if (counters && (counters.comm === 'codex' || counters.comm?.startsWith('codex-'))) {
+      return current.pid;
+    }
+    if (current.depth >= maxDepth) continue;
+    let children = '';
+    try {
+      children = readFile(`/proc/${current.pid}/task/${current.pid}/children`, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const token of String(children).trim().split(/\s+/)) {
+      if (!token) continue;
+      const childPid = Number(token);
+      if (Number.isInteger(childPid) && childPid > 0 && !seen.has(childPid)) {
+        queue.push({ pid: childPid, depth: current.depth + 1 });
+      }
+    }
+  }
+  return null;
+}
+
 /** Bound the trace to startup, stop it on child replacement, and never let a
  * diagnostic timer keep a finished agent alive. One row every 500 ms for at
  * most 30 s is small enough for the existing capped per-owner event log. */
@@ -1804,6 +1842,7 @@ export function startCodexStartupProcessTrace({
   ownerId,
   pid,
   readCounters = readLinuxStartupCounters,
+  resolveTargetPid = resolveLinuxCodexStartupPid,
   emit = appendHostEvent,
   now = Date.now,
   interval = setInterval,
@@ -1815,24 +1854,33 @@ export function startCodexStartupProcessTrace({
   }
   const startedAt = now();
   let samples = 0;
+  let targetPid = null;
   let stopped = false;
   let timer;
   const sample = () => {
     if (stopped) return;
     const elapsedMs = now() - startedAt;
-    const counters = readCounters(pid);
+    let counters = targetPid === null ? null : readCounters(targetPid);
+    if (targetPid === null || counters === null) {
+      const resolved = resolveTargetPid(pid, { readCounters });
+      if (Number.isInteger(resolved) && resolved > 0 && resolved !== targetPid) {
+        targetPid = resolved;
+        emit(ownerId, 'codex-startup-process-target-selected', { rootPid: pid, pid: targetPid, elapsedMs });
+      }
+      counters = targetPid === null ? null : readCounters(targetPid);
+    }
     if (counters) {
       samples++;
-      emit(ownerId, 'codex-startup-process-sample', { elapsedMs, ...counters });
+      emit(ownerId, 'codex-startup-process-sample', { elapsedMs, rootPid: pid, ...counters });
     }
-    if (elapsedMs >= 30_000) stop('window-ended');
+    if (elapsedMs >= 30_000) stop(samples > 0 ? 'window-ended' : 'target-not-found');
   };
   const stop = (reason = 'child-exit') => {
     if (stopped) return;
     stopped = true;
     if (timer) clear(timer);
     emit(ownerId, 'codex-startup-process-trace-ended', {
-      pid, elapsedMs: now() - startedAt, samples, reason,
+      rootPid: pid, pid: targetPid, elapsedMs: now() - startedAt, samples, reason,
     });
   };
   sample();

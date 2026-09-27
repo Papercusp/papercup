@@ -14,10 +14,13 @@ import {
   HOSTED_PRINCIPAL_SESSION_HEADER,
   HOSTED_PRINCIPAL_USER_HEADER,
   localOperatorOrigin,
+  OPERATOR_HTTP_ROUTE_ALLOWLIST,
+  OperatorHttpChannel,
   operatorHttpRequestHeaders,
 } from './hosted-operator-http';
 import { HostedWorkspaceHostSessionAdapter, type HostedHostOutboundEnvelope } from './hosted-session-host';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
+import { ALL_ROUTES } from '../endpoint-route/routes';
 
 describe('decideOperatorHttpRoute', () => {
   it.each([
@@ -32,8 +35,28 @@ describe('decideOperatorHttpRoute', () => {
     ['POST', '/api/adv/sessions/launch-su'],
     ['GET', '/api/agent-mcp/console/bootstrap-su/options?x=1'],
     ['post', '/api/admin/coord/send'],
+    // The Add-a-pot popup, as its forms call it (WI-10003268).
+    ['POST', '/api/harness/projects'],
+    ['POST', '/api/harness/pots'],
+    ['POST', '/api/harness/pots/from-repo'],
+    ['POST', '/api/harness/join-link'],
+    ['POST', '/api/discovery/join-pot'],
+    ['POST', '/api/discovery/join-invite'],
+    ['GET', '/api/github/search-repos?q=papercusp'],
+    ['GET', '/api/cupboard/listings?kind=blueprint&q=work'],
+    ['GET', '/api/cupboard/bindings?repo_ids=1,2'],
+    ['POST', '/api/cupboard/install-blueprint'],
+    ['GET', '/api/discovery/pot-meta?slug=alpha'],
+    ['POST', '/api/discovery/set-pot'],
+    ['GET', '/api/flags/bootstrap'],
   ])('relays the portal surface %s %s', (method, path) => {
     expect(decideOperatorHttpRoute(method, path)).toMatchObject({ ok: true });
+  });
+
+  it('marks slow writes as bounded by the route budget and leaves reads on the header budget', () => {
+    expect(decideOperatorHttpRoute('POST', '/api/harness/pots')).toMatchObject({ ok: true, awaitsRouteBudget: true });
+    expect(decideOperatorHttpRoute('GET', '/api/cupboard/listings?q=x')).toMatchObject({ ok: true, awaitsRouteBudget: false });
+    expect(decideOperatorHttpRoute('POST', '/api/harness/portal/agent-chats')).toMatchObject({ ok: true, awaitsRouteBudget: false });
   });
 
   it.each([
@@ -45,6 +68,10 @@ describe('decideOperatorHttpRoute', () => {
     // Right path, wrong method.
     ['DELETE', '/api/harness/portal/agent-chats/chat-1'],
     ['GET', '/api/adv/sessions/launch-su'],
+    // Pot surfaces the popup does not use stay closed.
+    ['DELETE', '/api/harness/projects'],
+    ['POST', '/api/harness/pots/from-repo/extra'],
+    ['POST', '/api/flags/bootstrap'],
   ])('refuses %s %s as route_not_relayed', (method, path) => {
     expect(decideOperatorHttpRoute(method, path)).toEqual({ ok: false, code: 'route_not_relayed' });
   });
@@ -60,6 +87,28 @@ describe('decideOperatorHttpRoute', () => {
   ])('refuses a path that could change the resolved route: %s', (path) => {
     expect(decideOperatorHttpRoute('GET', path)).toEqual({ ok: false, code: 'invalid_path' });
   });
+});
+
+describe('OPERATOR_HTTP_ROUTE_ALLOWLIST — awaitsRouteBudget', () => {
+  // A route relayed with no header budget is bounded ONLY by the operator route's own
+  // watchdog, so each one must resolve to a real route whose timeoutSec is finite
+  // (null means "no watchdog" in route-stack.ts).
+  const budgeted = OPERATOR_HTTP_ROUTE_ALLOWLIST.filter((entry) => entry.awaitsRouteBudget);
+
+  it('covers the Add-a-pot writes', () => {
+    expect(budgeted.map((entry) => entry.surface)).toEqual(expect.arrayContaining(['pot create', 'Cupboard install']));
+  });
+
+  it.each(budgeted.map((entry) => [entry.method, entry.surface, entry] as const))(
+    '%s %s resolves to an operator route with a finite timeoutSec',
+    (_method, _surface, entry) => {
+      const matches = ALL_ROUTES.filter(
+        (route) => route.method === entry.method && entry.pattern.test(`/api${route.path.replace(/:[^/]+/g, 'x')}`),
+      );
+      expect(matches.length).toBeGreaterThan(0);
+      for (const route of matches) expect(route.timeoutSec).not.toBeNull();
+    },
+  );
 });
 
 describe('operatorHttpRequestHeaders', () => {
@@ -251,6 +300,31 @@ describe('HostedWorkspaceHostSessionAdapter — operator-http channels (D-418)',
     await pending;
     await closed;
     expect(h.audit).toContainEqual(expect.objectContaining({ action: 'operator_http_detached' }));
+  });
+
+  it('lets a slow create answer past the header budget but still cuts a slow read (WI-10003268)', async () => {
+    const { origin } = await operator((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+      }, 150);
+    });
+    const sent: Array<Record<string, unknown>> = [];
+    const channel = new OperatorHttpChannel({
+      principal: { userId: 'user-1', hostedSessionId: 'session-1' },
+      send: (payload) => sent.push(payload),
+      audit: () => {},
+      origin,
+      headerTimeoutMs: 50,
+    });
+    await channel.accept('http.request', {
+      requestId: 'create', method: 'POST', path: '/api/harness/pots', body: Buffer.from('{}').toString('base64'),
+    });
+    await channel.accept('http.request', { requestId: 'read', method: 'GET', path: '/api/cupboard/listings?q=work' });
+
+    expect(sent).toContainEqual({ type: 'http.response', requestId: 'create', status: 200, headers: { 'content-type': 'application/json' } });
+    expect(sent).toContainEqual({ type: 'http.end', requestId: 'create' });
+    expect(sent).toContainEqual({ type: 'http.error', requestId: 'read', code: 'operator_timeout', status: 504 });
   });
 
   it('answers 502 when the loopback operator is down', async () => {

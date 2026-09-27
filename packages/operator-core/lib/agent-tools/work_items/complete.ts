@@ -11,9 +11,9 @@
  * `coord:emit` — the agent spends zero tokens narrating, and NOTHING is lost
  * (the deferred-set especially is carried structurally, D-006).
  *
- * State transition is OPTIONAL + explicit (`state`) so this never silently
- * steps on the validator/reviewer pipeline's own status semantics — pass it to
- * also move the item to a terminal state, omit it to record+emit only.
+ * State transition is explicit (`state`) so this never silently steps on the
+ * validator/reviewer pipeline's own status semantics. A record-only completion
+ * must explicitly opt in with `recordOnly:true` when it omits `state`.
  *
  * The `emits` rule is registered separately (../../coord-lifecycle/lifecycle-rules)
  * so the render-layer import stays out of the hot tool dispatch path; it fires
@@ -768,8 +768,9 @@ const itemSpec = z.object({
     .max(40)
     .optional()
     .describe(
-      "Terminal lifecycle intent. Feature/chunk success: 'passed'; issue success: 'resolved'. Unified 'done'/'dropped' aliases are accepted and preserve success vs discard semantics. Legacy 'deprecated'/'closed' are discard/wontfix. Never use 'closed' as a generic synonym for successful work. Omit to record + emit without changing lifecycle state.",
+      "Terminal lifecycle intent. Feature/chunk success: 'passed'; issue success: 'resolved'. Unified 'done'/'dropped' aliases are accepted and preserve success vs discard semantics. Legacy 'deprecated'/'closed' are discard/wontfix. Never use 'closed' as a generic synonym for successful work. To omit state deliberately, pass recordOnly:true.",
     ),
+  recordOnly: z.boolean().optional().describe('Explicitly record and emit a completion without changing lifecycle state.'),
   /** The structured completion record (D-004). `workItem` defaults to this item's `id`. */
   completion: completionSpec,
   /**
@@ -3123,6 +3124,7 @@ async function completeOne(
     // (`statusWasDefaulted`), so the two cases are separable and only the DEFAULT is
     // ignored. D-004's landmine is untouched: a bare completion still never auto-closes.
     !it.state &&
+    !it.recordOnly &&
     existing.family === 'issue' &&
     // EI-19362441037986499: an ALREADY-TERMINAL item has nothing to close, and a
     // record-only completion against one must ATTACH its evidence rather than write
@@ -4928,19 +4930,26 @@ async function completeOne(
   //       This is the reported bug (a peer's HOLD-OPEN refusal came back ok:true, item still open).
   //   (2) the caller used a CLOSE-INTENT state but the item did not land terminal — the
   //       issue-family alias trap (`state:'done'` silently lands as 'open').
-  // A bare completion with NO `state`, or a deliberate non-terminal park (`needs_human`,
-  // `blocked`), is a legitimate record-only call and stays ok:true with the existing loud
-  // `stateWarning` / `aliasNote`. Those callers did not ask to close, so we must not fail them.
+  // A deliberate `recordOnly:true` call or non-terminal park (`needs_human`,
+  // `blocked`) stays ok:true. An omitted state without that explicit intent is
+  // ambiguous and must not report success while leaving the item open.
   const landedState = workItem?.state ?? existing.state;
   const closeLanded = TERMINAL_WORK_ITEM_STATES.has(finalState);
   const closeIntended = Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
   const stateWriteFailed = Boolean(effectiveState) && Boolean(stateError);
   const closeFailed = closeIntended && !closeLanded && !stateError;
-  const stateNotApplied = stateWriteFailed || closeFailed;
+  // EI-24375004625460447: `assumptions` is required only for a terminal close.
+  // When a caller supplies it but omits `state`, the completion record may land
+  // while the item remains open. That is a failed close intent, not a successful
+  // record-only call. Preserve the record and make the missing transition loud.
+  const ambiguousOmittedState = !effectiveState && !it.recordOnly && !closeLanded;
+  const stateNotApplied = stateWriteFailed || closeFailed || ambiguousOmittedState;
   const stateFailure = !stateNotApplied
     ? undefined
     : stateError
       ? `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — it is still '${landedState}' and ${claimabilityHint}. The state write failed: ${stateError}`
+      : ambiguousOmittedState
+        ? `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — no top-level state was passed and recordOnly:true was not requested; the item is still '${landedState}'. Re-call the SAME completion with a terminal state (issue: 'resolved'|'closed'; feature: 'passed'|'deprecated'), or pass recordOnly:true for a deliberate progress record.`
       : `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — you requested state '${requestedState ?? effectiveState}' and it applied as '${appliedState ?? landedState}'${aliasNote ? ` (${aliasNote})` : ''}, which is NOT terminal, so the item stays claimable and the auto-loop may re-place work on it. Pass a TERMINAL state (issue: 'resolved'|'closed'; feature: 'passed'|'deprecated').`;
 
   const finish = closeLanded
@@ -5135,7 +5144,7 @@ const workItemsCompleteTool = defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    'Complete work-items with evidence; broadcast the result. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`"none"` or fact keys); omitting `state` records only. Check `finish.complete`/`stateWarning`.',
+    'Complete work-items with evidence. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`"none"` or fact keys); deliberate record-only calls pass `recordOnly:true`. Check `finish.complete`/`stateWarning`.',
   guidance: {
     when: 'After verification, pass `completion`, terminal `state` (`passed`/`deprecated` for feature/chunk; `resolved`/`closed` for issue; `done`/`dropped` aliases), and required `assumptions` (`\"none\"` or fact keys). Use discard states only for discard/wontfix. `specAdequacy`/`outputPayload` are top-level siblings of `completion` (nested placement is auto-hoisted); read `outputPayload` back at `work_items:get` → `results[].workItem.payload.out` with `payloadTier:"full"`, not inside `completion`. Universal claims require `completion.verification.coverage` to partition each entry exactly once across checked/notChecked/notApplicable; residue is separate (`[]` or `["none"]` means zero). Keep `deferred`/`coordNotes` outside verification; put test/typecheck/diff details in top-level aliases; use `filesDeleted` for removals, not `filesChanged`; use `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
@@ -5332,6 +5341,7 @@ const workItemsCompleteTool = defineTool({
             .describe(
                 "Terminal intent: feature/chunk uses 'passed'|'deprecated' and issue uses 'resolved'|'closed'; unified 'done'|'dropped' aliases are also accepted. 'dropped'/'closed'/'deprecated' mean discard or wontfix; never use them for successful work.",
               ),
+            recordOnly: z.boolean().optional().describe('Explicitly record and emit without changing lifecycle state.'),
             /** Optional successor/boundary note for a successful terminal finish. */
             boundaryNote: z
               .string()
@@ -5381,6 +5391,7 @@ const workItemsCompleteTool = defineTool({
             .describe(
                 "Default terminal intent for items that omit one. Feature/chunk success: 'passed'; issue success: 'resolved'. Legacy discard/wontfix: 'deprecated' or 'closed'; unified aliases 'done'|'dropped' are also accepted.",
               ),
+            recordOnly: z.boolean().optional().describe('Default record-only intent for items that omit their own state.'),
             /** Optional default successor/boundary note for items that omit their own. */
             boundaryNote: z
               .string()
@@ -5451,6 +5462,7 @@ const workItemsCompleteTool = defineTool({
           ...it,
           harness: it.harness ?? args.harness,
           state: it.state ?? args.state,
+          recordOnly: it.recordOnly ?? args.recordOnly,
           boundaryNote: it.boundaryNote ?? args.boundaryNote,
           validateOnly: it.validateOnly ?? args.validateOnly,
         }))
@@ -5459,6 +5471,7 @@ const workItemsCompleteTool = defineTool({
             id: args.id as string,
             harness: args.harness,
             state: args.state,
+            recordOnly: args.recordOnly,
             completion: args.completion!,
             outputPayload: args.outputPayload,
             specAdequacy: 'specAdequacy' in args ? args.specAdequacy : undefined,

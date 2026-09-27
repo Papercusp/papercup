@@ -291,6 +291,8 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
         scope,
         verbatim: true,
         concurrency: 8,
+        maxAttempts: 3,
+        retryDelayMs: 1_000,
         onProgress: (done, total) => {
           if (done === total || done % 10 === 0)
             console.log(

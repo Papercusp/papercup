@@ -241,7 +241,6 @@ const withAssumptions = (x: unknown): unknown => {
   const withCompletionContract = (value: unknown, fallbackState?: unknown): unknown => {
     if (typeof value !== 'object' || value === null) return value;
     const item = { ...(value as Record<string, unknown>) };
-    if (item.assumptions === undefined) item.assumptions = 'none';
     const completion = item.completion;
     const state = String(
       item.state ??
@@ -253,6 +252,10 @@ const withAssumptions = (x: unknown): unknown => {
     )
       .trim()
       .toLowerCase();
+    // A record-only fixture must stay record-only. Automatically adding the
+    // terminal-close declaration to every test input masked omitted-state bugs.
+    if (item.assumptions === undefined && state) item.assumptions = 'none';
+    if (!state && item.recordOnly === undefined) item.recordOnly = true;
     if (completion === undefined && ['done', 'resolved', 'passed'].includes(state)) {
       item.rootCauseVerification = ROOT_CAUSE_VERIFICATION_FIXTURE;
       return item;
@@ -1299,6 +1302,37 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({ id: 'WI-1', completion: { summary: 'progress note', tests: 'n/a' } });
       expect(r.ok).toBe(true);
       expect(r.error).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('does not report success when terminal-close assumptions are supplied without state', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const r = await oneRaw({
+        id: 'WI-1',
+        assumptions: 'none',
+        completion: { summary: 'fixed and verified', tests: '5 green' },
+      });
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('no top-level state was passed');
+      expect(r.error).toContain('Re-call the SAME completion');
+      expect(r.completion.summary).toBe('fixed and verified');
+      expect(r.workItem.state).toBe('open');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('does not report success for an ambiguous bare completion without state', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const r = await oneRaw({ id: 'WI-1', completion: { summary: 'fixed and verified', tests: '5 green' } });
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('recordOnly:true was not requested');
+      expect(r.workItem.state).toBe('open');
+    });
+
+    it('keeps an explicitly requested record-only completion successful', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      const r = await oneRaw({ id: 'WI-1', recordOnly: true, completion: { summary: 'progress', tests: 'n/a' } });
+      expect(r.ok).toBe(true);
+      expect(r.workItem.state).toBe('open');
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
@@ -5713,7 +5747,7 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     it('accepts a direct record-only completion without assumptions', async () => {
       getWorkItem.mockResolvedValue(openIssue);
 
-      const r = await oneRaw({ id: 'WI-1', completion: { summary: 'progress note' } });
+      const r = await oneRaw({ id: 'WI-1', recordOnly: true, completion: { summary: 'progress note' } });
 
       expect(r.ok).toBe(true);
       expect(r.error).toBeUndefined();

@@ -24,6 +24,12 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { findUnextractedDeps } from '../check-declared-deps-extracted.mjs';
 import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observations.mjs';
+import {
+  baselineWithinScope,
+  formatTscServiceBanner,
+  tscServiceEligibility,
+  typecheckViaService,
+} from './tsc-service.mjs';
 
 /**
  * One diagnostic parsed out of tsc's output.
@@ -3118,30 +3124,46 @@ export async function runTscBaselineGate({
   // pc-heavy's token now uses `--untracked-files=all` and its suite carries the two
   // creation-busts-the-cache cases (proven by differential: both fail under `=no`, and the
   // untracked-directory one still fails under `=normal`). Nothing here needs to compensate.
-  const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
-  const freshAfter = coalesceWatermarkFor({ root, files: explicitFiles, updateFlag });
-  const executableTscCommand = resolvePinnedTscCommand(root, tscCommand);
-  try {
-    tscOutput = existsSync(pcHeavyPath)
-      ? execFileSync('bash', [pcHeavyPath, ...pcHeavyCompileArgv(executableTscCommand, explicitFiles !== null)], {
-          cwd: root,
-          encoding: 'utf-8',
-          maxBuffer: 64 * 1024 * 1024,
-          stdio: ['ignore', 'pipe', 'inherit'],
-          env: tscChildEnv({
-            PC_HEAVY_COALESCE_SEC: process.env.PC_HEAVY_COALESCE_SEC ?? '420',
-            ...(freshAfter === null ? {} : { PC_HEAVY_FRESH_AFTER: String(freshAfter) }),
-          }),
-        })
-      : execSync(`${executableTscCommand} 2>&1`, {
-          cwd: root,
-          encoding: 'utf-8',
-          maxBuffer: 64 * 1024 * 1024,
-          env: tscChildEnv(),
-        });
-  } catch (e) {
-    tscThrew = true;
-    tscOutput = e.stdout || '';
+  //
+  // WI-10003404 / P-004 — before any of that, an explicit `--files` run asks the shared typecheck
+  // service (scripts/lib/tsc-service.mjs), which checks only the files this verdict can depend on
+  // inside one already-loaded program: ~2 s and no 13 GB compile per caller. It returns the CLI's
+  // own text format, so everything below parses it unchanged. Any refusal or failure falls back to
+  // the compile below with one printed line.
+  const serviceRoute = tscServiceEligibility({ tscCommand, explicitFiles, argv, root });
+  const served = serviceRoute.eligible
+    ? await typecheckViaService({ root, project: serviceRoute.project, files: [...explicitFiles], label })
+    : null;
+  if (served !== null) {
+    tscOutput = served.output;
+    tscThrew = served.errorCount > 0;
+    for (const line of formatTscServiceBanner(served)) console.log(line);
+  } else {
+    const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
+    const freshAfter = coalesceWatermarkFor({ root, files: explicitFiles, updateFlag });
+    const executableTscCommand = resolvePinnedTscCommand(root, tscCommand);
+    try {
+      tscOutput = existsSync(pcHeavyPath)
+        ? execFileSync('bash', [pcHeavyPath, ...pcHeavyCompileArgv(executableTscCommand, explicitFiles !== null)], {
+            cwd: root,
+            encoding: 'utf-8',
+            maxBuffer: 64 * 1024 * 1024,
+            stdio: ['ignore', 'pipe', 'inherit'],
+            env: tscChildEnv({
+              PC_HEAVY_COALESCE_SEC: process.env.PC_HEAVY_COALESCE_SEC ?? '420',
+              ...(freshAfter === null ? {} : { PC_HEAVY_FRESH_AFTER: String(freshAfter) }),
+            }),
+          })
+        : execSync(`${executableTscCommand} 2>&1`, {
+            cwd: root,
+            encoding: 'utf-8',
+            maxBuffer: 64 * 1024 * 1024,
+            env: tscChildEnv(),
+          });
+    } catch (e) {
+      tscThrew = true;
+      tscOutput = e.stdout || '';
+    }
   }
   if (tscThrew && !tscOutput) {
     // tsc itself failed to run (no diagnostics at all) — never treat that as zero errors, it would
@@ -3327,11 +3349,17 @@ export async function runTscBaselineGate({
     return;
   }
 
-  const { effective: baselineByFile, inherited } = effectiveBaselineByFile({
+  const { effective: effectiveBaseline, inherited } = effectiveBaselineByFile({
     baselineByFile: ownBaselineByFile,
     currentByFile,
     foreignBaselines: loadedForeign,
   });
+  // A service run judged only `served.checked`; every other baselined file would otherwise read as
+  // "improved to 0" (WI-10003404).
+  const baselineByFile =
+    served === null
+      ? effectiveBaseline
+      : baselineWithinScope(effectiveBaseline, new Set([...served.checked, ...Object.keys(currentByFile)]));
   // EI-18731016038876755: an explicit --files= list is authoritative — the caller SAID which
   // files are theirs, so never fall back to the git-status guess for the same run.
   const changedFiles = explicitFiles ?? (mineFlag ? gitChangedFiles(root) : null);
@@ -3474,7 +3502,10 @@ export async function runTscBaselineGate({
   // which drops any verdict that did not observe the complete standing set — so the `fail-*`
   // exits below record nothing, and a future verdict nobody classified is ignored rather than
   // trusted. Fail-soft like its sibling: TSC_EXIT can never depend on it.
-  if (!concurrentEditInconclusive) {
+  //
+  // A service-served run (WI-10003404) never records one: it checked a scoped subset, so its
+  // silence about a standing red is NOT evidence the red is gone.
+  if (!concurrentEditInconclusive && served === null) {
     recordGateRun({
       verdict: result.verdict,
       project: label ?? '',

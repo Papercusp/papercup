@@ -69,12 +69,17 @@ describe('dev:pipeline_position current-build test route selection', () => {
     expect(out.data.currentBuildTestRoute?.isolation).toMatch(/database and workspace are not isolated/i);
   });
 
-  it('does not pretend an unprepared background child is runnable', async () => {
+  it('requires private background runtime prerequisites before claiming a runnable route', async () => {
     vi.mocked(gitPipelinePosition).mockResolvedValue(running);
     const out = await tool.handler({ path: PATH, testClass: 'background-federation' } as never, {} as never) as {
-      data: { currentBuildTestRoute?: { readiness: string; runtime: string } };
+      data: { currentBuildTestRoute?: { readiness: string; runtime: string; route: string; prerequisites: string[] } };
     };
-    expect(out.data.currentBuildTestRoute).toMatchObject({ readiness: 'gap', runtime: 'bg-host' });
+    expect(out.data.currentBuildTestRoute).toMatchObject({
+      readiness: 'requires-prerequisites',
+      runtime: 'bg-host',
+      route: expect.stringContaining('--isolated-runtime'),
+      prerequisites: expect.arrayContaining(['explicit teardown assertion']),
+    });
   });
 
   it('rejects unknown classes rather than defaulting them to the release route', async () => {

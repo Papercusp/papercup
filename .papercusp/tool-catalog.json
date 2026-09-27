@@ -33067,7 +33067,7 @@
           "POST"
         ]
       },
-      "description": "Complete work-items with evidence; broadcast the result. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`\"none\"` or fact keys); omitting `state` records only. Check `finish.complete`/`stateWarning`.",
+      "description": "Complete work-items with evidence. For terminal closes use `passed`/`deprecated` (feature/chunk) or `resolved`/`closed` (issue); `done`/`dropped` aliases are accepted. `closed`/`deprecated` discard work. Pass terminal `state` plus `assumptions` (`\"none\"` or fact keys); deliberate record-only calls pass `recordOnly:true`. Check `finish.complete`/`stateWarning`.",
       "capabilities": [
         "work_items:write"
       ],
