@@ -414,6 +414,13 @@ export function databaseTuningToSettings(t: DatabaseTuning): Record<string, stri
     // Crash recovery stays bounded by max_wal_size. Both are SIGHUP-reloadable.
     max_wal_size: `${t.maxWalSizeMb}MB`,
     checkpoint_timeout: '15min',
+    // wal_compression — full-page images were 77% of WAL bytes on the dev box, and
+    // WAL writes dominate the root disk. A live A/B on that cluster (2026-09-27,
+    // WI-10003444; exact per-image ratio from pg_waldump -b) stored images at
+    // 0.431 of raw with pglz, 0.449 with zstd and 0.512 with lz4. pglz is also the
+    // ONLY method every build accepts: embedded PG 18.3 is built without lz4/zstd
+    // and refuses them with a FATAL at startup. Fixed, not host-scaled; reloadable.
+    wal_compression: 'pglz',
     // max_slot_wal_keep_size — disk-fill-SPOF defense (WI-347; complements the
     // WARN-only detector in operator-core storage/replication-slot-alarm.ts).
     // With PG's default -1 (UNLIMITED), a stuck/abandoned replication slot pins

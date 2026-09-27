@@ -643,6 +643,16 @@ describe('databaseTuningToSettings — renders GUC strings with units', () => {
     expect(pgSettingRequiresRestart('checkpoint_timeout')).toBe(false);
   });
 
+  it('wal_compression is pglz on every host, the one method embedded builds accept, and reloads', () => {
+    for (const embeddedPg of [false, true]) {
+      const s = databaseTuningToSettings(
+        deriveDatabaseTuning(signals({ cores: 128, embeddedPg, totalMemBytes: 256 * GIB })),
+      );
+      expect(s.wal_compression).toBe('pglz');
+    }
+    expect(pgSettingRequiresRestart('wal_compression')).toBe(false);
+  });
+
   // WI-6859 — the JIT-compilation defense. PG gates its LLVM passes on the
   // PLANNER'S COST ESTIMATE, which this workload's jsonb/LATERAL shapes cannot
   // produce reliably: measured 2,101,755 estimated for a plan touching 97
