@@ -2379,6 +2379,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             deleteOp,
             providerId: result.confirmation.providerResourceId,
             ...(result.confirmation.incarnationId ? { incarnationId: result.confirmation.incarnationId } : {}),
+            ...(result.confirmation.confirmedAbsentAt
+              ? { confirmedAbsentAt: result.confirmation.confirmedAbsentAt }
+              : {}),
           },
           workspaceId: ctx.workspaceId,
         });
