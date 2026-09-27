@@ -65,6 +65,7 @@ vi.mock('../recall-stats', async (original) => {
   return {
     ...actual,
     recordRecallStats: (...args: Parameters<typeof actual.recordRecallStats>) => {
+      if (process.env.PAPERCUSP_P006_RECALL_STATS === 'off') return Promise.resolve();
       const p = actual.recordRecallStats(...args);
       writes.add(p);
       void p.finally(() => writes.delete(p));
@@ -272,9 +273,24 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
       });
       const corpus = loadCorpusFixture();
       console.log('[P-006 setup] seeding frozen corpus');
-      manifest = await seedCorpus(backend, corpus, { scope, verbatim: true, concurrency: 8 });
+      const seedStarted = performance.now();
+      manifest = await seedCorpus(backend, corpus, {
+        scope,
+        verbatim: true,
+        concurrency: 8,
+        onProgress: (done, total) => {
+          if (done === total || done % 10 === 0)
+            console.log(
+              '[P-006 seed-progress]',
+              JSON.stringify({ done, total, elapsedMs: Math.round(performance.now() - seedStarted) }),
+            );
+        },
+      });
       assertCorpusSeeded(manifest, corpus.length);
-      console.log('[P-006 setup] frozen corpus seeded');
+      console.log(
+        '[P-006 setup] frozen corpus seeded',
+        JSON.stringify({ elapsedMs: Math.round(performance.now() - seedStarted) }),
+      );
       const queries = loadGoldSetFixture().queries;
       const sourcePaths = [
         'packages/operator-core/lib/memory/injection.ts',
@@ -299,6 +315,7 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
           embedder: getResolvedProfile(),
           floors: pushSearchFloors(),
           deadlineMs: MEMORY_BLOCK_COLD_DEADLINE_MS,
+          recallStats: process.env.PAPERCUSP_P006_RECALL_STATS === 'off' ? 'off' : 'on',
           isolation: 'throwaway org DB including hygiene; prose disabled; advisory flags false',
           cache: 'cold rendered-block cache per turn; cold client before each profile; warm query immediately primed',
         }),
