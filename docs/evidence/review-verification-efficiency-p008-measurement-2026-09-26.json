@@ -10,12 +10,16 @@
     "npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-coverage-accounting.test.ts",
     "testing:runs exact P-008 matrix receipts and rerun-group rollup",
     "work_items:get detail for seven frozen P-008 defect IDs",
-    "work_items:get P-003 through P-007 plan-item creation, closure and completion authority"
+    "work_items:get P-003 through P-007 plan-item creation, closure and completion authority",
+    "plans:evaluate-spec-test-adequacy for the three P-008 clauses at current revision",
+    "plans:get and work_items:get for the bounded P-001 historical-source audit and P-008 open-item age",
+    "sessions:search and sessions:read for bounded pre-September-12 P-001 archive traces",
+    "npm run test:file -- <the twelve P-008 matrix paths> at staging HEAD c809329d3f"
   ],
   "startedAt": "2026-09-26T20:40:00.000Z",
-  "finishedAt": "2026-09-27T00:47:01.000Z",
+  "finishedAt": "2026-09-27T01:39:06.257Z",
   "exitCode": 0,
-  "summary": "Two current-build validateOnly inputs and one focused coverage-accounting suite behaved as expected. A predeclared seven-day dispatch slice, a bounded P-008 test-rerun slice, a seven-defect sample, and five plan-item promotion-to-completion intervals were measured. Their populations are not comparable to the frozen P-001 baseline, so no causal efficiency improvement or no-sprawl verdict is asserted. Deployed-only certification remains unmeasured by this artifact.",
+  "summary": "Two current-build validateOnly inputs and one focused coverage-accounting suite behaved as expected. A predeclared seven-day dispatch slice, a bounded P-008 test-rerun slice, a seven-defect sample, and five plan-item promotion-to-completion intervals were measured. The twelve-file P-008 matrix passed on the current local candidate, with one named test path uncommitted; this is not a reproducible committed-candidate verdict. Current rev4 adequacy still fails R-10 and separate-delivery certification. The populations are not comparable to the frozen P-001 baseline, so no causal efficiency improvement or no-sprawl verdict is asserted. Deployed-only certification remains unmeasured by this artifact.",
   "population": {
     "checked": [
       "WI-10000985 complete-shaped feature evidence under work_items:complete validateOnly on :3170",
@@ -24,8 +28,12 @@
       "2026-09-19T21:07:00Z through 2026-09-26T21:07:00Z agent-origin Papercusp tool_invocations for five declared workflow verbs",
       "affected-tests-coverage-accounting.test.ts at clean named test-path HEAD 411d591c47",
       "P-008 twelve-file matrix at HEAD 411d591c47 and its post-revision rerun group f83a7cc9-4d8f-4032-ab95-6fd376ae3d43",
-      "Current state and recorded reopen history of the seven named defects in the frozen September 13 P-008 artifact",
-      "Creation, terminal closure and committed completion authority of P-003 through P-007 plan work-items"
+      "P-008 twelve-file local matrix at HEAD c809329d3f, with one of twelve named paths uncommitted",
+    "Current state and recorded reopen history of the seven named defects in the frozen September 13 P-008 artifact",
+    "Creation, terminal closure and committed completion authority of P-003 through P-007 plan work-items",
+    "Current pinned P-008 rev4 diagnostic adequacy verdict for R-10, R-6 and separate-delivery certification",
+    "Bounded historical-source audit of the P-001 work item, plan, frozen P-008 artifact and source-audit report",
+    "Open P-008 work-item age at the plan lifecycle read timestamp"
     ],
     "notChecked": [
       "Historical P-001 completion cohort with the same live query and population (outside the 14-day tool-invocation retention window)",
@@ -44,6 +52,57 @@
     ]
   },
   "measurements": {
+    "historicalSourceAudit": {
+      "readAt": "2026-09-27T01:08:00Z",
+      "scope": "Search for an independently preserved P-001 baseline matching the rev4 R-10 representative workflow set; this is a bounded source audit, not a claim that no other archive exists",
+      "sourcesChecked": [
+        "WI-10000978 P-001 completion: aggregate work_items:complete refusal and shared-path latency counts, with no consult, scorecard, acceptance-wait or standing-monitor cohort",
+        "review-verification-efficiency-2026-09-09 P-001 and measurement sections: requires representative before-workflow counts and outcome measures but does not preserve a matched workflow/inventory baseline",
+        "docs/evidence/review-verification-efficiency-p008-measurement-2026-09-13.json: aggregate completion/test measures and a P-003 through P-007 completion-call slice, without the same P-001 consult/scorecard/acceptance workflow or standing-monitor inventory",
+        "scratchpad/plan-throughput-verification-audit-2026-09-09.md: completed-plan week medians and aggregate agent tool dispatch/test results, without the matched P-001 workflow or monitor inventory",
+        "WI-10000964 current checkpoint: later driver state and flight record; its referenced P-001 baseline section is no longer in the replace-on-write checkpoint",
+        "sessions:search before September 12 found P-001 scorecard trace session_turn:codex:01a08564-ccaa-7a40-a960-27683fd0c43a:15; sessions:read confirms two revision-2 cards at 10/10 with rerun recipes pinned to test run 17742966 and pending grading audits, but no same-workflow call totals, acceptance wait or monitor inventory",
+        "sessions:search before September 12 for standing schedule/routine/watch/ledger inventory and P-001 completion/acceptance-wait yielded unrelated or injected-turn excerpts; this bounded search found no independently preserved matching inventory or workflow ledger"
+      ],
+      "ledgerLimit": "The September 2-9 tool_invocations rows were outside the configured 14-day retention window at read time; the September 26 positive control confirms the same scoped query can return recent rows.",
+      "result": "No checked source preserves the same-workflow P-001 calls, acceptance wait, false refusals, justified reruns, escaped/reopened defects, unfinished-plan age and schedule/routine/watch/ledger inventory needed for a like-for-like rev4 R-10 comparison.",
+      "disposition": "Keep the historical comparison and no-sprawl verdict unknown; do not substitute aggregate dispatch rates or P-003 through P-007 promotion-to-closure intervals. A current prospective cohort can document present behavior but cannot reconstruct the missing P-001 baseline."
+    },
+    "currentUnfinishedItemAge": {
+      "writer": "work_items:get projects WI-10000985 createdAt and open state; plans:get lifecycle.freshness.now supplies the read timestamp",
+      "item": "WI-10000985",
+      "planItem": "P-008",
+      "createdAt": "2026-09-09T17:28:41.802Z",
+      "snapshotAt": "2026-09-27T01:08:07.731Z",
+      "stateAtSnapshot": "open",
+      "elapsedHours": 415.657,
+      "calculation": "(snapshotAt - createdAt) / 3600000, rounded to three decimals",
+      "scopeLimit": "This measures the unfinished promoted work item, including queue, dependency, idle and active time. It is not an acceptance-wait-only measure, a P-001 matched plan cohort or a productivity verdict."
+    },
+    "currentAdequacyDiagnostic": {
+      "readAt": "2026-09-27T00:52:59Z",
+      "writer": "plans:evaluate-spec-test-adequacy grades exact current clause revisions and bound work-item evidence; this workItemIds-pinned read is diagnostic, not the unscoped plan ship verdict",
+      "workItemId": "WI-10000985",
+      "classRef": "plan-class-feature-ship",
+      "includeDraft": true,
+      "verdicts": {
+        "AUTO-BAR-R-10-P-008@4": {
+          "verdict": "fail",
+          "wouldBlock": ["falsifiability", "oracle-independence", "execution-integrity", "freshness", "plan-class-risk-floor", "disclosed-gap"],
+          "draggingBindingId": 13841
+        },
+        "AUTO-BAR-R-6-P-008@4": {
+          "verdict": "pass",
+          "wouldBlock": []
+        },
+        "SPEC-P008-SEPARATE-DELIVERY-CERTIFICATION@1": {
+          "verdict": "fail",
+          "wouldBlock": ["falsifiability", "freshness", "disclosed-gap"],
+          "draggingBindingIds": [4436, 4440, 13412, 13596]
+        }
+      },
+      "scopeLimit": "A successful tool read is not acceptance: the operational proof discloses incomplete cohorts and is source-stale; final delivery identity is still absent. The governing ship gate evaluates all bindings without this work-item filter."
+    },
     "predeclaredCohort": {
       "declarationPost": "thread-post:1147621",
       "workflowSet": [
@@ -120,6 +179,20 @@
       "totalFileExecutionsInSlice": 24,
       "rerunReason": "The acceptance rubric changed to revision 4 and prior matrix proof became stale; the later run tested the new candidate rather than repeating an unchanged verdict. The three failures are recorded by rows 19682919-19682921 and cannot be counted as passing acceptance.",
       "scopeLimit": "This is one observed matrix rerun, not a census of all P-008 or P-001 reruns. Both sets of rows have worktreeDirty=true, and the two candidate SHAs differ; no elapsed acceptance wait or saved cost follows from file execution counts."
+    },
+    "p008CurrentLocalMatrix": {
+      "startedAt": "2026-09-27T01:37:03.711Z",
+      "finishedAt": "2026-09-27T01:39:06.257Z",
+      "testedHead": "c809329d3f0050f8d97d8bcf1d619a23d15849ec",
+      "requestedFiles": 12,
+      "executedFiles": 12,
+      "matchedFiles": 12,
+      "passedFiles": 12,
+      "failedFiles": 0,
+      "skippedTests": 0,
+      "testRunIds": "19694812-19694821, 19694832-19694833",
+      "provenance": "npm run test:file stamped the twelve named paths before and after the run at the same HEAD; spec-test-adequacy.test.ts had uncommitted +22/-0 and eleven named paths were clean. All twelve durable testing:runs rows passed, but worktreeDirty=true on the rows reflects the shared tree. Imports outside the named paths were not fingerprinted.",
+      "scopeLimit": "This proves the current local candidate passed the matrix. It does not prove the committed HEAD alone passes, resolve the rev4 R-10 or separate-delivery adequacy gaps, or certify a deployed release."
     },
     "knownDefectSample": {
       "writer": "work_items:get detail projects each work item's current state and lifecycle.reopenHistory; lifecycle.coverage states that non-terminal transitions are not recorded",
