@@ -207,15 +207,25 @@ export async function deriveAgentRunEvidenceRecord(
   };
 }
 
+export type DeriveAgentRunEvidenceRecordSafeInput = Omit<DeriveAgentRunEvidenceRecordInput, 'sql'> & {
+  /**
+   * Resolved INSIDE the guard, so failing to obtain the pool is contained too. A thunk,
+   * not a handle: a postgres.js `Sql` is itself callable, so the two cannot be told apart.
+   */
+  getSql: () => EvidenceRecordSql;
+};
+
 /**
- * Emit-path wrapper: never throws. A DB failure yields an explicit
- * `derivation-failed` record so the card still lands and the gap stays visible.
+ * Emit-path wrapper: never throws. A DB failure — including failing to obtain the
+ * pool at all — yields an explicit `derivation-failed` record so the card still
+ * lands and the gap stays visible.
  */
 export async function deriveAgentRunEvidenceRecordSafe(
-  input: DeriveAgentRunEvidenceRecordInput,
+  input: DeriveAgentRunEvidenceRecordSafeInput,
 ): Promise<AgentRunEvidenceRecord> {
   try {
-    return await deriveAgentRunEvidenceRecord(input);
+    const { getSql, ...rest } = input;
+    return await deriveAgentRunEvidenceRecord({ ...rest, sql: getSql() });
   } catch (err) {
     const reason = `evidence-record derivation failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 400);
     return {

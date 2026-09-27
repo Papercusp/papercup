@@ -177,6 +177,7 @@ import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
   FROZEN_REPAIR_CONVERGENCE_HOLD_MS,
   frozenRepairHeadAwaitsVerification,
+  selectFrozenRepairAdmissionPaths,
   settleFrozenRepairRetestRequest,
   type FrozenCandidateRepairQueue,
 } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
@@ -1179,6 +1180,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(superseded).toBeDefined();
     expect(superseded).toContain(`recorded as round 1`);
     expect(superseded).not.toContain("not recorded");
+    // P-010: the superseded arm measured a head the row no longer carries — no receipt.
+    expect(cell.queue?.selectiveCoverage).toBeUndefined();
   });
 
   it("P-027 CONTROL: with no mid-run admission the same run records its red at exactly the head it judged", async () => {
@@ -1205,6 +1208,99 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(
       logs.some((l) => l.startsWith("FROZEN_REPAIR_VERDICT_SUPERSEDED")),
     ).toBe(false);
+  });
+
+  describe("P-010: a full-gate red at the repair head leaves a coverage receipt", () => {
+    async function admittedRepairFixture() {
+      const ready = await commit("a", "1", "ready");
+      await git(repo, ["branch", "ready", ready]);
+      const frozen = await commit("b", "broken", "frozen candidate");
+      const repaired = await commit("b", "still broken", "first admitted repair");
+      const atMs = Date.now();
+      const queue: FrozenCandidateRepairQueue = {
+        ...p027Queue(frozen, ready),
+        repairHead: repaired,
+        admissions: [
+          {
+            atMs,
+            actor: "su-fixer",
+            source: { ref: "staging", sha: repaired },
+            fromRepairHead: frozen,
+            toRepairHead: repaired,
+            paths: ["b"],
+            unchanged: [],
+            blobs: { b: await git(repo, ["rev-parse", `${repaired}:b`]) },
+          },
+        ],
+      };
+      const cell = { queue: queue as FrozenCandidateRepairQueue | null };
+      const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+      wireP027Transition(deps, cell);
+      return { frozen, repaired, cell, deps, calls, atMs };
+    }
+
+    it("records the receipt at the judged head, so the next admission verifies only its own paths", async () => {
+      const { frozen, repaired, cell, deps, calls, atMs } = await admittedRepairFixture();
+
+      await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+      expect(cell.queue?.phase).toBe("awaiting-fixer");
+      expect(cell.queue?.convergenceRounds?.map((r) => r.head)).toEqual([repaired]);
+      expect(cell.queue?.selectiveCoverage).toEqual({
+        schemaVersion: 1,
+        candidate: frozen,
+        head: repaired,
+      });
+
+      // Round N+1: one more admission lands on top. The receipt joins the admission
+      // suffix, so REPAIR_RADIUS is the delta, not every path since the candidate.
+      const next = await commit("c", "fix", "second admitted repair");
+      const judged = cell.queue!;
+      const advanced: FrozenCandidateRepairQueue = {
+        ...judged,
+        phase: "ready-to-verify",
+        repairHead: next,
+        admissions: [
+          ...(judged.admissions ?? []),
+          {
+            atMs: atMs + 1,
+            actor: "su-fixer",
+            source: { ref: "staging", sha: next },
+            fromRepairHead: repaired,
+            toRepairHead: next,
+            paths: ["c"],
+            unchanged: [],
+            blobs: { c: await git(repo, ["rev-parse", `${next}:c`]) },
+          },
+        ],
+      };
+      expect(selectFrozenRepairAdmissionPaths(advanced)).toMatchObject({
+        mode: "delta",
+        paths: ["c"],
+        coverageComplete: true,
+      });
+      // CONTROL: the same lineage without the receipt is the cumulative fallback this fixes.
+      expect(
+        selectFrozenRepairAdmissionPaths({ ...advanced, selectiveCoverage: undefined }),
+      ).toMatchObject({ mode: "cumulative", reason: "no-complete-coverage", paths: ["b", "c"] });
+    });
+
+    it("records NO receipt when an early typecheck preflight failed, because no suite ran", async () => {
+      const { repaired, cell, deps, calls } = await admittedRepairFixture();
+      deps.changedFilesForRange = async () => ["packages/operator-core/lib/thing.ts"];
+      deps.runChangedFileTypecheckPreflight = async () => ({
+        status: "failed" as const,
+        summary: "thing.ts(1,1): error TS2322: Type 'string' is not assignable.",
+        failingSignatures: ["lint:tsc"],
+      });
+
+      await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(calls.filter((call) => call === "runGreen")).toHaveLength(0);
+      expect(cell.queue?.convergenceRounds?.map((r) => r.head)).toEqual([repaired]);
+      expect(cell.queue?.selectiveCoverage).toBeUndefined();
+    });
   });
 
   it("P-001 self-refires in-process when an admission supersedes the running pass, then consumes the marker only after judging the new head", async () => {

@@ -153,6 +153,7 @@ import {
   markFrozenRepairVerificationStarted,
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
+  parseFrozenRepairSelectiveCoverage,
   recordFrozenRepairSupersededRed,
   selectFrozenRepairAdmissionPaths,
   settleFrozenRepairRetestRequest,
@@ -12680,17 +12681,38 @@ async function runGreenCheckpointInner(
         // discarded — the measurement is recorded at `candidate` (round + signature) with the
         // admission's head and phase left exactly as the admission set them.
         let supersededBy = null as FrozenCandidateRepairQueue | null;
+        // P-010 (gate-file-level-test-reuse-2026-09-27): a full-gate red at the repair head
+        // measured the WHOLE affected radius at that head, so it is complete coverage there,
+        // exactly like a selective red that measured every group. Without this receipt the
+        // next round had nothing to join the admission suffix to and fell back to
+        // REPAIR_RADIUS `no-complete-coverage` (every admission since the candidate), so each
+        // repair round re-verified the whole lineage instead of only the newly admitted paths.
+        // An early typecheck-preflight failure never ran the suite, so it proves nothing.
+        // The superseded arm below records no receipt: the head it measured is no longer the
+        // row's head. The queue reducer still refuses the receipt unless the admission chain
+        // and the failure frontier are lossless, and the full gate stays the promotion proof.
+        const fullGateSuiteRan = !earlyPreflightFailure;
         repairQueue = await commitFrozenRepairQueueTransition(
           deps,
           repairQueue,
           verdictTransitionAtHead(
             candidate,
-            (fresh) =>
-              markFrozenRepairVerificationRed(fresh, {
+            (fresh) => {
+              // Parse, never pass raw: the reducer THROWS on a malformed receipt, and a
+              // throw here would lose the red verdict itself.
+              const receipt = fullGateSuiteRan
+                ? parseFrozenRepairSelectiveCoverage(
+                    { schemaVersion: 1, candidate: fresh.candidate, head: candidate },
+                    fresh.candidate,
+                  )
+                : undefined;
+              return markFrozenRepairVerificationRed(fresh, {
                 repairHead: candidate,
                 ...measuredSignature,
                 nowMs: Date.now(),
-              }),
+                ...(receipt ? { selectiveCoverage: receipt } : {}),
+              });
+            },
             (fresh) => {
               supersededBy = fresh;
             },

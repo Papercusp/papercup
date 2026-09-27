@@ -133,12 +133,28 @@ describe('deriveAgentRunEvidenceRecord', () => {
 
 describe('deriveAgentRunEvidenceRecordSafe', () => {
   it('turns a DB failure into an explicit derivation-failed record instead of throwing', async () => {
-    const rec = await deriveAgentRunEvidenceRecordSafe({ sql: fakeSql({ throwOn: 'adv_sessions' }), ...base });
+    const rec = await deriveAgentRunEvidenceRecordSafe({ getSql: () => fakeSql({ throwOn: 'adv_sessions' }), ...base });
 
     expect(rec.goalSource).toBe('derivation-failed');
     expect(rec.goalId).toBeNull();
     expect(rec.instructionExposure).toMatchObject({ status: 'derivation-failed' });
     expect((rec.instructionExposure as { reason: string }).reason).toContain('adv_sessions');
+  });
+
+  it('contains a failure to obtain the pool itself (the getSql thunk throws)', async () => {
+    const rec = await deriveAgentRunEvidenceRecordSafe({
+      getSql: () => {
+        throw new Error('A UNIT test tried to open a REAL Postgres connection');
+      },
+      ...base,
+    });
+    expect(rec).toMatchObject({ goalSource: 'derivation-failed', instructionExposure: { status: 'derivation-failed' } });
+    expect(rec.window).toEqual({ start: '2026-09-26T10:00:00.000Z', end: '2026-09-26T12:00:00.000Z' });
+  });
+
+  it('passes a healthy handle through to the same derivation', async () => {
+    const rec = await deriveAgentRunEvidenceRecordSafe({ getSql: () => fakeSql({ goals: [{ id: 'goal-abc' }] }), ...base });
+    expect(rec).toMatchObject({ goalId: 'goal-abc', goalSource: 'goals.agentOwnerId' });
   });
 
   it('control: the unsafe variant propagates the same failure', async () => {
