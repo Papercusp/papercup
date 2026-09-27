@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { ProjectedTool } from '@papercusp/tooldef';
-import { inspectIdentityRecipeProvider } from './recipe-provider-conformance';
+import { assertIdentityRecipeClassConformance, inspectIdentityRecipeClassProvider, inspectIdentityRecipeProvider } from './recipe-provider-conformance';
 import type { SavedRecipeAdapter } from '../agent-tools/orchestration/saved-recipe-adapter';
 
 const revision = 'a'.repeat(64);
@@ -48,6 +48,77 @@ function fixture(source: string) {
 }
 
 describe('identity recipe conformance through the canonical orchestration inspector', () => {
+  it('builds immutable per-verb recipe evidence for the existing conformance report', async () => {
+    const f = fixture('return tools.status.read({});');
+    const capabilityClass = { ref: 'context.status@1.0.0',
+      interfaceVerbs: { read: f.input.contract, summary: f.input.contract },
+      behavioralSuiteRef: 'suite:context-status' };
+    const binding = { recipe: f.input.recipe, outputSchema };
+    const input = { capabilityClass, providerPackage: 'context-provider', providerVersion: '1.0.0',
+      registryRevision: 'registry-1', recipes: { read: binding, summary: binding },
+      context: f.input.context, declaredNeeds: f.input.declaredNeeds, capabilityCeiling: f.input.capabilityCeiling };
+    const report = await inspectIdentityRecipeClassProvider(input, f.deps);
+    expect(report).toMatchObject({ schemaVersion: 'capability-class-recipe-v1', ok: true,
+      providerKind: 'recipe', latencyClass: 'sync', classRef: capabilityClass.ref,
+      behavioral: { status: 'not-run', suiteRef: 'suite:context-status' } });
+    expect(Object.keys(report.recipes)).toEqual(['read', 'summary']);
+    expect(report.recipes.read).toMatchObject({ recipe: f.input.recipe,
+      inspectionPin: { recipeRevision: revision }, requiredCapabilities: ['status:read'], outputSchema });
+    expect(JSON.parse(JSON.stringify(report))).toEqual(report);
+    expect(f.recipes.run).not.toHaveBeenCalled();
+    const verbBindings = { read: binding.recipe.id, summary: binding.recipe.id };
+    const assert = (value = report) => assertIdentityRecipeClassConformance({ report: value, capabilityClass, verbBindings });
+    expect(() => assert()).not.toThrow();
+    for (const corrupt of [
+      (r: typeof report) => { delete r.recipes.read; },
+      (r: typeof report) => { r.recipes.read!.recipe.id = 'wrong-recipe'; },
+      (r: typeof report) => { r.recipes.read!.inspectionPin.recipeRevision = 'b'.repeat(64); },
+      (r: typeof report) => { r.recipes.read!.inspectionPin.sourceSha256 = 'invalid'; },
+      (r: typeof report) => { r.recipes.read!.outputSchema = { type: 'string' }; },
+      (r: typeof report) => { r.checks.push(r.checks[0]!); },
+      (r: typeof report) => { r.checks[0]!.problems.push('denied'); },
+      (r: typeof report) => { r.behavioral.suiteRef = null; },
+    ]) {
+      const altered = structuredClone(report);
+      corrupt(altered);
+      expect(() => assert(altered)).toThrow(/recipe conformance/);
+    }
+    const missing = await inspectIdentityRecipeClassProvider({ ...input, recipes: { read: binding } }, f.deps);
+    expect(missing.ok).toBe(false);
+    expect(() => assertIdentityRecipeClassConformance({ report: missing, capabilityClass,
+      verbBindings: { read: binding.recipe.id } })).not.toThrow();
+    expect(missing.checks).toContainEqual({ verb: 'summary', tool: null, ok: false, problems: ['missing provider recipe binding'] });
+    const extra = await inspectIdentityRecipeClassProvider({ ...input, recipes: { ...input.recipes, undeclared: binding } }, f.deps);
+    expect(extra.ok).toBe(false);
+    expect(() => assertIdentityRecipeClassConformance({ report: extra, capabilityClass,
+      verbBindings: { ...verbBindings, undeclared: binding.recipe.id } })).not.toThrow();
+    expect(extra.recipes).not.toHaveProperty('undeclared');
+    expect(extra.checks).toContainEqual({ verb: 'undeclared', tool: null, ok: false,
+      problems: ['binding names a verb the class does not declare'] });
+    const denied = await inspectIdentityRecipeClassProvider({ ...input, declaredNeeds: [] }, f.deps);
+    expect(denied.ok).toBe(false);
+    expect(denied.recipes).toEqual({});
+    expect(denied.checks.every((check) => check.problems.includes('capability-denied'))).toBe(true);
+  });
+
+  it('invalidates earlier verb inspection when class inspection is cancelled', async () => {
+    const f = fixture('return tools.status.read({});');
+    const controller = new AbortController();
+    f.input.context.signal = controller.signal;
+    const inspect = f.inspect.getMockImplementation()!;
+    let calls = 0;
+    f.inspect.mockImplementation(async () => { if (++calls === 2) controller.abort(); return inspect(); });
+    const report = await inspectIdentityRecipeClassProvider({
+      capabilityClass: { ref: 'context.status@1.0.0', interfaceVerbs: { first: f.input.contract, second: f.input.contract },
+        behavioralSuiteRef: null },
+      providerPackage: 'context-provider', providerVersion: '1.0.0', registryRevision: 'registry-1',
+      recipes: Object.fromEntries(['first', 'second'].map((verb) => [verb, { recipe: f.input.recipe, outputSchema }])),
+      context: f.input.context, declaredNeeds: f.input.declaredNeeds, capabilityCeiling: f.input.capabilityCeiling,
+    }, f.deps);
+    expect(report.ok).toBe(false);
+    expect(report.checks.every((check) => !check.ok && check.problems.includes('authority-unavailable'))).toBe(true);
+  });
+
   it('pins source, binding values and exact revision without executing any tool or recipe', async () => {
     const f = fixture('return await tools.status.read({});');
     const result = await inspectIdentityRecipeProvider(f.input, f.deps);

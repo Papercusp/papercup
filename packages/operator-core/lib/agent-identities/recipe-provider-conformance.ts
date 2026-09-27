@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { listAllProjectedTools, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { classifyDurableCall, roleScopedToolNames, type ProjectedTool } from '@papercusp/tooldef';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
-import type { CapabilityClassVerb } from '../capability-class-registry-store';
+import type { CapabilityClassRow, CapabilityClassVerb, ProviderConformanceReport } from '../capability-class-registry-store';
 import { isCompilableSchema } from '../json-schema-validation';
 import { inspectOrchestration } from '../agent-tools/orchestration/inspect';
 import { currentCallerRecipeCatalog, inspectScriptContract,
@@ -44,6 +44,104 @@ export type IdentityRecipeConformance = {
     'inspection-pin-stale' | 'dynamic-tool-target' | 'tool-unavailable' |
     'effect-not-read' | 'egress-capability' | 'capability-denied';
 };
+
+/** Stored in the existing conformance run's report JSON. Per-verb evidence is
+ * immutable with that run; it does not grant authority to execute a recipe. */
+export interface IdentityRecipeClassConformanceReport extends Omit<ProviderConformanceReport, 'schemaVersion'> {
+  schemaVersion: 'capability-class-recipe-v1';
+  providerKind: 'recipe';
+  latencyClass: 'sync';
+  recipes: Record<string, Extract<IdentityRecipeConformance, { ok: true }>>;
+}
+
+/** Storage-boundary consistency check, using the registry's current immutable
+ * class contract. Only the host inspector can supply evidence; this rejects
+ * accidentally mixed report/binding tuples without executing the provider.
+ */
+export function assertIdentityRecipeClassConformance(input: {
+  report: IdentityRecipeClassConformanceReport;
+  capabilityClass: Pick<CapabilityClassRow, 'ref' | 'interfaceVerbs' | 'behavioralSuiteRef'>;
+  verbBindings: Record<string, string>;
+}): void {
+  const { report, capabilityClass, verbBindings } = input;
+  const verbs = Object.keys(capabilityClass.interfaceVerbs).sort();
+  const checked = report.checks.map((check) => check.verb).sort();
+  const expectedChecks = [...new Set([...verbs, ...Object.keys(verbBindings)])].sort();
+  if (report.schemaVersion !== 'capability-class-recipe-v1' || report.providerKind !== 'recipe' ||
+      report.latencyClass !== 'sync' || report.classRef !== capabilityClass.ref ||
+      canonicalJson(checked) !== canonicalJson(expectedChecks) || !checked.length ||
+      report.ok !== report.checks.every((check) => check.ok) ||
+      report.checks.some((check) => check.tool !== null || check.ok !== (check.problems.length === 0)) ||
+      report.behavioral.suiteRef !== capabilityClass.behavioralSuiteRef ||
+      report.behavioral.status !== (capabilityClass.behavioralSuiteRef ? 'not-run' : 'not-required')) {
+    throw new Error('recipe conformance report does not match the class contract and bindings');
+  }
+  for (const [verb, evidence] of Object.entries(report.recipes)) {
+    const check = report.checks.find((entry) => entry.verb === verb);
+    const contract = Object.hasOwn(capabilityClass.interfaceVerbs, verb) ? capabilityClass.interfaceVerbs[verb] : undefined;
+    const pin = pinSchema.safeParse(evidence.inspectionPin);
+    if (!contract || !check || evidence.ok !== true ||
+        !Object.hasOwn(verbBindings, verb) || evidence.recipe.id !== verbBindings[verb] ||
+        !pin.success || pin.data.recipeRevision !== evidence.recipe.revision ||
+        !contract.outputSchema || !isCompilableSchema(contract.outputSchema) ||
+        canonicalJson(evidence.outputSchema) !== canonicalJson(contract.outputSchema)) {
+      throw new Error('recipe conformance inspection evidence does not match its verb binding');
+    }
+  }
+  for (const check of report.checks) {
+    if (check.ok && (!Object.hasOwn(report.recipes, check.verb) || !verbs.includes(check.verb))) {
+      throw new Error('passing recipe conformance requires inspected evidence for every declared verb');
+    }
+  }
+  if (report.ok && canonicalJson(Object.keys(report.recipes).sort()) !== canonicalJson(verbs)) {
+    throw new Error('passing recipe conformance requires the exact declared verb set');
+  }
+}
+
+/** Inspect every declared verb, preserving failed/missing/extra bindings in the
+ * same report shape used by tool providers. The host supplies class/registry
+ * metadata; packages cannot author their own passing inspection evidence. */
+export async function inspectIdentityRecipeClassProvider(input: {
+  capabilityClass: Pick<CapabilityClassRow, 'ref' | 'interfaceVerbs' | 'behavioralSuiteRef'>;
+  providerPackage: string;
+  providerVersion: string;
+  registryRevision: string;
+  recipes: Record<string, { recipe: SavedRecipeSelector & { revision: string };
+    bindings?: { values: Record<string, unknown> }; outputSchema: Record<string, unknown> }>;
+  declaredNeeds: readonly string[];
+  capabilityCeiling: ReadonlySet<string>;
+  context: UnifiedToolContext;
+}, deps: { tools?: readonly ProjectedTool[]; recipes?: SavedRecipeAdapter } = {}): Promise<IdentityRecipeClassConformanceReport> {
+  const checks: ProviderConformanceReport['checks'] = [];
+  const recipes: IdentityRecipeClassConformanceReport['recipes'] = {};
+  for (const verb of [...new Set([...Object.keys(input.capabilityClass.interfaceVerbs), ...Object.keys(input.recipes)])].sort()) {
+    const contract = Object.hasOwn(input.capabilityClass.interfaceVerbs, verb) ? input.capabilityClass.interfaceVerbs[verb] : undefined;
+    const binding = Object.hasOwn(input.recipes, verb) ? input.recipes[verb] : undefined;
+    const problems: string[] = [];
+    if (!contract) problems.push('binding names a verb the class does not declare');
+    if (!binding) problems.push('missing provider recipe binding');
+    if (contract && binding) {
+      const result = await inspectIdentityRecipeProvider({ ...binding, contract,
+        declaredNeeds: input.declaredNeeds, capabilityCeiling: input.capabilityCeiling, context: input.context }, deps);
+      if (!result.ok) problems.push(result.code);
+      else Object.defineProperty(recipes, verb, { value: result, enumerable: true });
+    }
+    checks.push({ verb, tool: null, ok: problems.length === 0, problems });
+  }
+  // Cancellation invalidates the whole inspection, including earlier verbs.
+  if (input.context.signal.aborted) {
+    for (const check of checks) {
+      check.ok = false;
+      if (!check.problems.includes('authority-unavailable')) check.problems.push('authority-unavailable');
+    }
+  }
+  return { schemaVersion: 'capability-class-recipe-v1', providerKind: 'recipe', latencyClass: 'sync',
+    ok: checks.length > 0 && checks.every((check) => check.ok),
+    classRef: input.capabilityClass.ref, providerPackage: input.providerPackage,
+    providerVersion: input.providerVersion, registryRevision: input.registryRevision, checks, recipes,
+    behavioral: { status: input.capabilityClass.behavioralSuiteRef ? 'not-run' : 'not-required',
+      suiteRef: input.capabilityClass.behavioralSuiteRef } };
+}
 
 /** External network rights have two existing spellings: capability:net for
  * host fetch and net:* for plugin confinement. Wildcard tool requirements

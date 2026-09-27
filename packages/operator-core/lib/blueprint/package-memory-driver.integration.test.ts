@@ -13,7 +13,7 @@ import { packageMemoryDriver } from './package-memory-driver';
 import { prepareKnowledgePackageResources, releaseKnowledgePackageResources } from './package-knowledge-resources';
 import { pinPackageInput, resolveBlueprint } from '@papercusp/orchestrator/blueprint';
 import { compileBlueprintWithPackages } from './compile-packages';
-import { applySessionPackageResources, provisionSessionPackageResources, sessionPackageDependentId } from './session-package-resources';
+import { applySessionPackageResources, carrySessionPackageResources, provisionSessionPackageResources, sessionPackageDependentId } from './session-package-resources';
 import { readPackageInstallation } from './package-resource-receipts';
 import { provisionLaunchIdentityResources } from '../role-launch-spec';
 import { preparePackageResource, releasePackageResource, type PackageResourceAddress } from './package-resource-receipts';
@@ -70,6 +70,62 @@ function address(name: string): PackageResourceAddress {
 }
 
 describe('real canonical backend package resources', () => {
+  it.each([false, true])('carries a verified session installation without reseeding (empty=%s)', async (empty) => {
+    const workspaceId = 'session-carry-' + empty;
+    const target = workspaceId + '-target';
+    const pin = pinPackageInput({ packageKind: 'knowledge-pack', ref: workspaceId, revision: '1.0.0', files: [],
+      value: { manifest: { id: workspaceId, version: '1.0.0', title: 'Carry', description: 'Test' },
+        items: empty ? [] : [{ id: 'one', title: 'One', text: 'carry me', kind: 'reference', appliesTo: ['any'] }] } });
+    const source = resolveBlueprint({ id: workspaceId, bundles: [{ kind: 'knowledge-pack', ref: pin.ref }],
+      workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } } });
+    const artifact = await compileBlueprintWithPackages(source, { workspaceId, harnessSlug: target,
+      memoryTarget: { kind: 'harness', slug: target }, knowledgeSelection: { shapes: [], domains: [] },
+      resolvePackage: async () => pin });
+    const ownerId = workspaceId + '-wearer';
+    const revision = { specificationRevision: artifact.specificationRevision, stateRevision: hash('before') };
+    const attemptId = randomUUID();
+    const embed = vi.fn(async () => vector);
+    selectedBackend = backend(writes(embed));
+    await provisionSessionPackageResources(db.adminSql, { ownerId, revision, artifacts: [artifact], attemptId });
+    const priorId = sessionPackageDependentId(ownerId, revision, attemptId);
+    const next = { ownerId, workspaceId, from: { revision, attemptId }, artifact,
+      revision: { ...revision, stateRevision: hash('after') }, attemptId: randomUUID() };
+    const nextId = sessionPackageDependentId(ownerId, next.revision, next.attemptId);
+    const carry = () => db.adminSql.begin((tx) => carrySessionPackageResources(tx, next));
+    await expect(carry()).rejects.toThrow(/applied specification/);
+    await db.adminSql.begin((tx) => applySessionPackageResources(tx, { ownerId, workspaceId, revision, artifact, attemptId }));
+    const rows = await db.adminSql`SELECT id FROM harness_shared.memory_canonical
+      WHERE payload->>'user_id' = ${'harness:' + target} ORDER BY id`;
+    expect(rows).toHaveLength(empty ? 0 : 1);
+    await expect(db.adminSql.begin(async (tx) => {
+      await carrySessionPackageResources(tx, next);
+      throw new Error('desired state write rolled back');
+    })).rejects.toThrow('desired state write rolled back');
+    expect(await readPackageInstallation(db.adminSql, workspaceId, nextId)).toBeNull();
+    await expect(db.adminSql.begin((tx) => carrySessionPackageResources(tx, { ...next, ownerId: 'other-wearer' })))
+      .rejects.toThrow(/applied specification/);
+    await expect(db.adminSql.begin((tx) => carrySessionPackageResources(tx, { ...next, workspaceId: 'other-workspace' })))
+      .rejects.toThrow(/workspace mismatch/);
+    await expect(db.adminSql.begin((tx) => carrySessionPackageResources(tx, { ...next,
+      revision: { ...next.revision, specificationRevision: hash('changed') } })))
+      .rejects.toThrow(/unchanged verified specification/);
+    await expect(db.adminSql.begin((tx) => carrySessionPackageResources(tx, { ...next,
+      from: { revision, attemptId: randomUUID() } }))).rejects.toThrow(/applied specification/);
+    await carry();
+    await carry(); // recovery reuses the persisted source and target attempts
+    expect(await readPackageInstallation(db.adminSql, workspaceId, nextId)).toMatchObject({ phase: 'preparing' });
+    await releaseKnowledgePackageResources(db.adminSql, workspaceId, priorId);
+    expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
+      WHERE payload->>'user_id' = ${'harness:' + target} ORDER BY id`).toEqual(rows);
+    await db.adminSql.begin((tx) => applySessionPackageResources(tx, next));
+    expect(await readPackageInstallation(db.adminSql, workspaceId, nextId)).toMatchObject({ phase: 'applied' });
+    expect(embed).toHaveBeenCalledTimes(empty ? 0 : 1);
+    await releaseKnowledgePackageResources(db.adminSql, workspaceId, nextId);
+    expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
+      WHERE payload->>'user_id' = ${'harness:' + target}`).toHaveLength(0);
+    await expect(carry()).rejects.toThrow(/applied specification/);
+  });
+
   it('compensates a partial artifact preparation and explicitly applies an empty selected pack', async () => {
     const pin = pinPackageInput({ packageKind: 'knowledge-pack', ref: 'compensated-pack', revision: '1.0.0', files: [],
       value: { manifest: { id: 'compensated-pack', version: '1.0.0', title: 'Compensated', description: 'Test' }, items: [

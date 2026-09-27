@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Sql, TransactionSql } from 'postgres';
 import { replayAgentSpecification, type SessionActivation, type CompiledAgentSpecification } from '@papercusp/orchestrator/blueprint';
-import { applyPackageResourceDependent, beginPackageInstallation } from './package-resource-receipts';
+import { applyPackageResourceDependent, beginPackageInstallation, carryAppliedPackageInstallation } from './package-resource-receipts';
 import { blueprintPackageProvisioners, provisionBlueprintPackages } from './compile-packages';
 import { planKnowledgePackageResources, releaseKnowledgePackageResources } from './package-knowledge-resources';
 
@@ -84,6 +84,33 @@ export async function provisionSessionPackageResources(sql: Sql, input: {
       'package preparation failed; compensation remains retryable in the resource journal', { cause: error });
     throw error;
   }
+}
+
+/** Reuse the applied installation when only the host state changes. The host
+ * supplies its authoritative applied receipt, persists the target attempt with
+ * the desired revision, and runs this in that SAME transaction. Recovery reuses
+ * those tokens; a failed target never reopens a released installation.
+ */
+export async function carrySessionPackageResources(tx: TransactionSql, input: {
+  ownerId: string;
+  workspaceId: string;
+  from: { revision: SessionActivation['desired']; attemptId?: string };
+  revision: SessionActivation['desired'];
+  artifact: CompiledAgentSpecification;
+  attemptId: string;
+}): Promise<void> {
+  const artifact = replayAgentSpecification(input.artifact);
+  if (artifact.specificationRevision !== input.revision.specificationRevision ||
+      input.from.revision.specificationRevision !== input.revision.specificationRevision) {
+    throw new Error('package carry requires an unchanged verified specification');
+  }
+  const fromDependentId = sessionPackageDependentId(input.ownerId, input.from.revision, input.from.attemptId);
+  const dependentId = sessionPackageDependentId(input.ownerId, input.revision, input.attemptId);
+  const expected = await expectedKnowledgeResources(artifact, input.workspaceId);
+  const expectedResources = expected.get(input.workspaceId);
+  if (!expectedResources) return; // no selected knowledge pack; an empty pack still has a manifest
+  await carryAppliedPackageInstallation(tx, { workspaceId: input.workspaceId, ownerId: input.ownerId,
+    fromDependentId, dependentId, ...input.revision, expectedResources });
 }
 
 /** Run inside the existing activation transaction. Never opens visibility by
