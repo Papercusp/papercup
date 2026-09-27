@@ -12,8 +12,10 @@ import {
   formatExecutedMapLine,
   gitChangedBetween,
   loadExecutedSourceMap,
+  loadReuseProofs,
   resolveExecutedMapPgUrl,
   rowsToExecutedMap,
+  rowsToReuseProofs,
 } from '../../../../scripts/lib/executed-source-map.mjs';
 
 /**
@@ -230,5 +232,73 @@ describe('scripts/affected-tests.mjs wiring (source pins)', () => {
     expect(source).toMatch(/inert\("no-judged-sha"\)/);
     expect(source).toMatch(/executed-map read timed out/);
     expect(source).toMatch(/executedMapContext\.client\.end\(\)/);
+  });
+});
+
+// gate-file-level-test-reuse-2026-09-27 P-008: the pass-proof loader feeding selectReusablePasses.
+describe('reuse proofs loader', () => {
+  const row = (over: Record<string, unknown> = {}) => ({
+    test_file: 'pkg/a.test.ts',
+    recorded_sha: 'sha1',
+    recorded_at: new Date('2026-09-27T10:00:00Z'),
+    executed_modules: ['pkg/a.test.ts', 'pkg/a.ts'],
+    read_paths: ['pkg/fixtures/'],
+    inputs_captured: true,
+    opaque_reasons: [],
+    run_context: 'green-checkpoint',
+    runner_identity: 'v25.9.0 linux x64',
+    ...over,
+  });
+
+  it('keys proofs repo-relative, newest-first wins, and maps every column', () => {
+    const proofs = rowsToReuseProofs([row(), row({ recorded_sha: 'older' }), row({ test_file: 'pkg/b.test.ts', recorded_at: '2026-09-27T09:00:00Z' })]);
+    expect([...proofs.keys()]).toEqual(['pkg/a.test.ts', 'pkg/b.test.ts']);
+    expect(proofs.get('pkg/a.test.ts')).toEqual({
+      recordedSha: 'sha1',
+      recordedAtMs: Date.parse('2026-09-27T10:00:00Z'),
+      executedModules: ['pkg/a.test.ts', 'pkg/a.ts'],
+      readPaths: ['pkg/fixtures/'],
+      inputsCaptured: true,
+      opaqueReasons: [],
+      runContext: 'green-checkpoint',
+      runnerIdentity: 'v25.9.0 linux x64',
+    });
+    expect(proofs.get('pkg/b.test.ts')?.recordedAtMs).toBe(Date.parse('2026-09-27T09:00:00Z'));
+  });
+
+  it('degrades unreadable columns toward "not reusable", never toward a valid proof', () => {
+    const p = rowsToReuseProofs([
+      row({ inputs_captured: null, read_paths: null, opaque_reasons: 'x', run_context: null, recorded_at: 'garbage' }),
+      { test_file: 7, recorded_sha: 'x' },
+    ]).get('pkg/a.test.ts');
+    expect(p?.inputsCaptured).toBe(false);
+    expect(p?.readPaths).toEqual([]);
+    expect(p?.runContext).toBeNull();
+    expect(Number.isNaN(p?.recordedAtMs)).toBe(true);
+  });
+
+  it('queries ONE workspace and ONE run context, newest row per file', async () => {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const client = {
+      query: async (text: string, values?: unknown[]) => {
+        calls.push({ text, values });
+        return { rows: [row()] };
+      },
+    };
+    const out = await loadReuseProofs({ client, workspaceName: '@papercusp/x', runContext: 'green-checkpoint' });
+    expect(out.rows).toBe(1);
+    expect(out.proofs.has('pkg/a.test.ts')).toBe(true);
+    expect(calls[0]?.values).toEqual(['@papercusp/x', 'green-checkpoint']);
+    expect(calls[0]?.text).toMatch(/DISTINCT ON \(test_file\)/);
+    expect(calls[0]?.text).toMatch(/run_context = \$2/);
+    expect(calls[0]?.text).toMatch(/ORDER BY test_file, recorded_at DESC/);
+  });
+
+  it('gitChangedBetween({ relative: true }) returns repo-relative drift', () => {
+    const exec = () => ':100644 100644 aaaa bbbb M\0pkg/a.ts\0:100644 100644 cccc dddd M\0lib/b.ts\0';
+    const rel = gitChangedBetween({ repoRoot: '/repo', exec, relative: true })('x', 'y');
+    expect(rel ? [...rel].sort() : rel).toEqual(['lib/b.ts', 'pkg/a.ts']);
+    const abs = gitChangedBetween({ repoRoot: '/repo', exec })('x', 'y');
+    expect(abs ? [...abs].sort() : abs).toEqual(['/repo/lib/b.ts', '/repo/pkg/a.ts']);
   });
 });
