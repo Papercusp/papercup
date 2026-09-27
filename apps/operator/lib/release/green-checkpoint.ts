@@ -60,6 +60,10 @@ import {
 } from "./selection-base";
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
+import {
+  buildTestPassReuseHealth,
+  type TestPassReuseHealth,
+} from "@papercusp/operator-core/lib/release/test-pass-reuse-report";
 import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
 import { parseTscDiagnostics } from "@papercusp/operator-core/lib/tsc-diagnostics";
 import type { TscDiagnostic } from "@papercusp/operator-core/lib/tsc-diagnostics";
@@ -700,6 +704,11 @@ export interface CheckpointDeps {
      *  those acts on failing files this run cannot vouch for. ABSENT ⇒ an ordinary red, or a
      *  stub/older dep that does not classify — never read as "the run was clean". */
     infraFault?: InfraFaultClassification;
+    /** P-013 (gate-file-level-test-reuse-2026-09-27): what per-file pass reuse did in THIS
+     *  suite round — built from the suite's own TEST_PASS_REUSE lines, stamped with the sha the
+     *  suite ran at. ABSENT ⇒ the round reported nothing (a candidate predating the emitter, an
+     *  early abort, a stub dep) — never read as "nothing was reused". */
+    testPassReuse?: TestPassReuseHealth;
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
@@ -1561,6 +1570,11 @@ export interface CheckpointResult {
    *  the gate, so `cleanGreen: true` means "the gate absorbed nothing", NOT "no test was
    *  ever retried anywhere". */
   cleanGreen?: boolean;
+  /** P-013 (gate-file-level-test-reuse-2026-09-27): the candidate suite round's per-file reuse
+   *  record, carried from `runGreen` unchanged; the recorder persists it as
+   *  `gate_health.testPassReuse`. It rides every result that carries `postSuiteLegs`, because both
+   *  describe the suite that formed this verdict. ABSENT ⇒ not reported this round. */
+  testPassReuse?: TestPassReuseHealth;
   /** P-005 / D-008: present ⇒ this candidate advanced with HYGIENE failures outstanding. The
    *  gate promoted because no product-correctness test failed, not because nothing failed —
    *  these are the drafts the caller owes the ledger. Same reasoning as `cleanGreen` directly
@@ -12272,6 +12286,7 @@ async function runGreenCheckpointInner(
     postSuiteMeasured,
     postSuiteLegs,
     infraFault,
+    testPassReuse,
   } = candidateSuiteResult;
   const splitPairNote =
     !green && splitSourceTestPairs.length > 0
@@ -12439,6 +12454,7 @@ async function runGreenCheckpointInner(
         ...(isolationNote ? { isolationNote } : {}),
         ...(failureShape ? { failureShape } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+        ...(testPassReuse ? { testPassReuse } : {}),
       };
     }
   }
@@ -12480,6 +12496,7 @@ async function runGreenCheckpointInner(
       ...(isolationNote ? { isolationNote } : {}),
       ...(failureShape ? { failureShape } : {}),
       ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+      ...(testPassReuse ? { testPassReuse } : {}),
     };
   }
   // WI-39450 / WI-39671: publish the verdict NOW, before any optional post-verdict leg can kill
@@ -12627,6 +12644,7 @@ async function runGreenCheckpointInner(
         ...(isolationNote ? { isolationNote } : {}),
         ...(failureShape ? { failureShape } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+        ...(testPassReuse ? { testPassReuse } : {}),
       };
     }
     // WI-479091: carries the repair-queue narration to the ORDINARY terminal exit below.
@@ -12906,6 +12924,7 @@ async function runGreenCheckpointInner(
               ...(checkpointEvidence ? { checkpointEvidence } : {}),
               ...(typecheckPreflight ? { typecheckPreflight } : {}),
               ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+              ...(testPassReuse ? { testPassReuse } : {}),
             };
             await emitTerminalRed(terminalResult);
             return terminalResult;
@@ -13048,6 +13067,7 @@ async function runGreenCheckpointInner(
         ...(failureShape ? { failureShape } : {}),
         ...(lineage ? { lineage } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+        ...(testPassReuse ? { testPassReuse } : {}),
       });
     // WI-2997 (EI-7443 follow-up): best-effort 7d historical flake annotation for
     // the failing file(s) — purely informational, same fail-soft shape as the
@@ -14175,6 +14195,7 @@ async function runGreenCheckpointInner(
         ...(deps.runId ? { runId: deps.runId } : {}),
         ...(logPath ? { logPath } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+        ...(testPassReuse ? { testPassReuse } : {}),
       };
     }
     deps.log(
@@ -14223,6 +14244,7 @@ async function runGreenCheckpointInner(
         ...(deps.runId ? { runId: deps.runId } : {}),
         ...(logPath ? { logPath } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+        ...(testPassReuse ? { testPassReuse } : {}),
       });
     }
 
@@ -14397,6 +14419,7 @@ async function runGreenCheckpointInner(
     ...(repairQueue ? { repairQueue } : {}),
     ...(logPath ? { logPath } : {}),
     ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+    ...(testPassReuse ? { testPassReuse } : {}),
   };
 }
 
@@ -19436,6 +19459,16 @@ export function realCheckpointDeps(
           legs.ran,
           failureShape,
         );
+      // P-013: one structured record of what per-file pass reuse did this round. Parsed from
+      // `suiteOutput` — the affected suite alone — so the post-suite legs and any isolation
+      // re-run cannot double-count a task. The sha is the tree's own HEAD: that is the commit
+      // affected-tests measured drift against when it decided what to skip.
+      const testPassReuse = buildTestPassReuseHealth(
+        suiteOutput,
+        resolvedHeadAtStart ?? execution?.candidate,
+        Date.now(),
+      );
+      if (testPassReuse) log(`TEST_PASS_REUSE_ROUND ${testPassReuse.headline}`);
       return {
         green,
         summary,
@@ -19462,6 +19495,7 @@ export function realCheckpointDeps(
         // yields a non-empty list, which correctly makes this false.
         ...(green ? { cleanGreen: !retriedTests?.length } : {}),
         ...(infraFault ? { infraFault } : {}),
+        ...(testPassReuse ? { testPassReuse } : {}),
       };
     },
     advance: (candidate) =>

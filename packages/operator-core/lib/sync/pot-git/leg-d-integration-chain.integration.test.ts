@@ -32,8 +32,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
-import { defaultRunGit, ensurePotGitRepo, writeNamespaceRef } from './storage';
+import { defaultRunGit, ensurePotGitRepo, readNamespaceRef, writeNamespaceRef } from './storage';
 import { WORK_REF, readStaging } from './integrator';
+import { buildSigrefs, SIGREFS_REF } from './sigrefs';
+import type { SignedSnapshotFloor } from './signed-context';
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
 import { runIntegratorTick } from './integrator-tick';
 import { runWorktreeBridgeTick } from './worktree-bridge-tick';
 import { listIntegrationRequests } from './integration-requests';
@@ -95,6 +98,23 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
   const integrator = keypair();
   const memberSteer = keypair();
   const memberBelowSteer = keypair();
+  // The integrator tick is an owner-key-gated hive effect (hive-effect-authority.ts):
+  // without an `authority` whose hive_id matches `context`, it skips as
+  // 'not-integrator' and never announces — which stranded this chain (WI-10003543).
+  const owner = hiveEffectFixture(REPO_KEY);
+  /** Signed-snapshot floors for the members' CURRENT heads — what the
+   *  ref-announcement receiver would have accepted. Rebuilt per tick because a
+   *  new work head changes the signed sigrefs the tick re-verifies. */
+  async function acceptedFloors(): Promise<Record<string, SignedSnapshotFloor>> {
+    const floors: Record<string, SignedSnapshotFloor> = {};
+    for (const member of [memberSteer, memberBelowSteer]) {
+      const signed = await buildSigrefs(repo, member.pubkeyBase64, member.sign, { nowMs: Date.now(), context: owner.context });
+      const oid = await readNamespaceRef(repo, member.pubkeyBase64, SIGREFS_REF);
+      if (!oid) throw new Error(`sigrefs ref missing for ${member.pubkeyBase64.slice(0, 12)}`);
+      floors[member.pubkeyBase64] = { ...owner.context, version: signed.version, sigrefs_oid: oid };
+    }
+    return floors;
+  }
 
   beforeAll(async () => {
     db = await createFreshPgDb('legd');
@@ -164,6 +184,9 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
       integratorDevicePubkeyBase64: integrator.pubkeyBase64,
       epoch: 1,
       priorSeq: 0,
+      context: owner.context,
+      acceptedSnapshots: await acceptedFloors(),
+      authority: owner.authority,
       sign: integrator.sign,
       resolveTier: (dev) => (dev === memberSteer.pubkeyBase64 ? 'steer' : 'message'),
       deps: { isIntegrator: async () => true, sql: db.sql },
@@ -206,7 +229,7 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
       worktreePath: otherMachineWt,
       pending: [announcement],
       prior: { epochSeq: null, stagingSha: null },
-      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
+      accept: { expectedContext: owner.context, expectedDevice: integrator.pubkeyBase64 },
     });
 
     expect(tickOut.ran).toBe(true);
@@ -240,6 +263,9 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
       integratorDevicePubkeyBase64: integrator.pubkeyBase64,
       epoch: 1,
       priorSeq: 1,
+      context: owner.context,
+      acceptedSnapshots: await acceptedFloors(),
+      authority: owner.authority,
       sign: integrator.sign,
       resolveTier: (dev) => (dev === memberSteer.pubkeyBase64 ? 'steer' : 'message'),
       deps: { isIntegrator: async () => true, sql: db.sql },
@@ -259,7 +285,7 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
       worktreePath: lockedWt,
       pending: [(globalThis as unknown as { __legd: { announcement: import('./staging-advance').SignedStagingAdvance } }).__legd.announcement],
       prior: { epochSeq: null, stagingSha: null },
-      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
+      accept: { expectedContext: owner.context, expectedDevice: integrator.pubkeyBase64 },
     });
     expect(seed.ran).toBe(true);
     expect(seed.results[0]?.bridge.outcome).toBe('accepted');
@@ -273,7 +299,7 @@ describe('Leg D chain (P-305): integrator-tick → real PG queue receipt → wor
       worktreePath: lockedWt,
       pending: [out2.announcement!],
       prior: seed.watermark,
-      accept: { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 },
+      accept: { expectedContext: owner.context, expectedDevice: integrator.pubkeyBase64 },
     });
 
     expect(advanceOut.ran).toBe(true);
