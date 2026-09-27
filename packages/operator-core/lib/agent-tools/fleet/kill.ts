@@ -416,6 +416,10 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   // dies with the host). A headless member must never inherit desktop residue
   // semantics merely because it uses the same managed psu-pty host substrate.
   const tabShellPid = !headless && input.closeTerminal ? findTabShellPid(host.pid, readProc) : null;
+  const discoveryTerminalPid =
+    !headless && input.closeTerminal && Number.isSafeInteger(host.terminalPid) && (host.terminalPid ?? 0) > 1
+      ? host.terminalPid!
+      : null;
 
   const signal = (await stopPid(host.pid, prims)) ?? 'SIGTERM';
   if (host.ptyPid && host.ptyPid !== host.pid && prims.alive(host.ptyPid)) {
@@ -435,6 +439,8 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   const cleanupError = await reapDeadOwner(input, deps);
 
   let terminal: KillOneResult['terminal'] = headless ? 'none' : 'left-open';
+  let terminalPidSource: 'ancestry' | 'discovery' | null = null;
+  let terminalCloseError: string | null = null;
   if (!headless && input.closeTerminal) {
     if (tabShellPid) {
       // SIGHUP first (the "window closed" signal a shell expects), then TERM.
@@ -442,6 +448,17 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
       await prims.sleep(KILL_WAIT_MS);
       if (prims.alive(tabShellPid)) prims.kill(tabShellPid, 'SIGTERM');
       terminal = 'closed';
+      terminalPidSource = 'ancestry';
+    } else if (discoveryTerminalPid) {
+      const closed = await closeTerminalPid(discoveryTerminalPid, {
+        readProc,
+        kill: prims.kill,
+        alive: prims.alive,
+        sleep: prims.sleep,
+      });
+      terminal = closed.ok ? 'closed' : 'not-found';
+      terminalPidSource = 'discovery';
+      terminalCloseError = closed.error ?? null;
     } else {
       terminal = 'not-found';
     }
@@ -453,7 +470,9 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
     signal,
     session_class: sessionClass,
     terminal,
-    tab_shell_pid: tabShellPid ?? undefined,
+    tab_shell_pid: tabShellPid ?? discoveryTerminalPid ?? undefined,
+    terminal_pid_source: terminalPidSource ?? undefined,
+    terminal_close_error: terminalCloseError ?? undefined,
     cleanup_error: cleanupError ?? undefined,
   });
   if (cleanupError) {

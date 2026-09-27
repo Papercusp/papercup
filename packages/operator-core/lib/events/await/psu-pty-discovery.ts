@@ -49,6 +49,10 @@ export interface PsuPtyHost {
   advSessionId: string | null;
   pid: number;
   ptyPid: number;
+  /** Authenticated interactive tab-shell pid captured inside the visible console.
+   *  Additive and absent/null for headless or pre-EI-24399199756155153 hosts.
+   *  Consumers must revalidate its console birth identity immediately before use. */
+  terminalPid?: number | null;
   sock: string;
   command: string;
   /** Exact argv of the hosted backend process. The writer has always persisted

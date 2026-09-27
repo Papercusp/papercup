@@ -531,6 +531,10 @@ export function shouldRetryCarryOnFreshEpoch({ drillId, reason, proofReason, ret
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId: any): string;
+/** Parse the visible console shell pid inherited from console-spawn. This is a
+ *  discovery candidate only; fleet:kill revalidates its boot/process-start
+ *  identity and harness marker immediately before sending any signal. */
+export function terminalPidFromEnv(value: any): number | null;
 /** EI-10412: per-owner durable host-event log. The host's stderr is the owner's
  *  terminal (/dev/pts/N) — every lifecycle diagnostic written there is LOST the
  *  moment the screen repaints, which is why the 2026-07-12 carry-note-drop

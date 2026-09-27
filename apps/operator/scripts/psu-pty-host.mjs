@@ -1713,6 +1713,14 @@ export function sanitizeKey(ownerId) {
   return String(ownerId || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 200);
 }
 
+/** Parse the visible console shell pid inherited from console-spawn. This is a
+ *  discovery candidate only; fleet:kill revalidates its boot/process-start
+ *  identity and harness marker immediately before sending any signal. */
+export function terminalPidFromEnv(value) {
+  const pid = Number(value);
+  return Number.isSafeInteger(pid) && pid > 1 ? pid : null;
+}
+
 /** EI-10412: per-owner durable host-event log. The host's stderr is the owner's
  *  terminal (/dev/pts/N) — every lifecycle diagnostic written there is LOST the
  *  moment the screen repaints, which is why the 2026-07-12 carry-note-drop
@@ -6794,6 +6802,7 @@ export function hostThroughPty(o) {
     advSessionId: advSessionId != null ? String(advSessionId) : null,
     pid: process.pid,
     ptyPid: child.pid,
+    terminalPid: terminalPidFromEnv(env.PAPERCUSP_TERMINAL_PID),
     sock,
     command,
     args,

@@ -315,6 +315,31 @@ describe('killOne', () => {
     );
   });
 
+  it('closes an authenticated discovery terminal when host ancestry is detached', async () => {
+    const t = makeProcTree({
+      300: { ppid: 1, cmdline: 'node psu-launcher.mjs' },
+      500: { ppid: 1, cmdline: 'bash -l', env: true },
+    });
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => ({ ...host(300), terminalPid: 500 }),
+      readProc: t.readProc,
+      kill: t.kill,
+      alive: t.alive,
+      sleep: noSleep,
+    };
+
+    const r = await killOne({ actor: 'su-me', target: 'su-target', closeTerminal: true, reason: 'x' }, deps);
+
+    expect(r).toMatchObject({ ok: true, signal: 'SIGTERM', terminal: 'closed' });
+    expect(t.kills).toEqual(
+      expect.arrayContaining([
+        { pid: 300, signal: 'SIGTERM' },
+        { pid: 500, signal: 'SIGHUP' },
+      ]),
+    );
+  });
+
   it('reports not_found for a target with no nursery row and no live host', async () => {
     let cleared: string | null = null;
     let released: string[] = [];
