@@ -2885,12 +2885,22 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       scheduleCheckpointEligibilityWait: scheduleSpy,
     });
     const { default: tool } = await import('./checkpoint-run');
+    // The property is "never sleeps in the request". A request-side sleep would last the
+    // refusal's wait_sec (120s here — the scheduleSpy assertion below pins waitSec: 120),
+    // so the budget only has to separate "returned immediately" from "slept across
+    // wait_sec". The old 1000ms literal separated it from gate-load scheduling noise
+    // instead: it measured 1392ms on repairHead 128acc8c under the loaded stateful lane
+    // (test_runs 19720275) after passing on the same commit an hour earlier.
+    // Named + ordered per scripts/check-test-timing-budgets.mjs (WI-10003256).
+    const REQUEST_SIDE_SLEEP_MS = 120_000;
+    const NO_SLEEP_BUDGET_MS = 15_000;
+    expect(NO_SLEEP_BUDGET_MS).toBeLessThan(REQUEST_SIDE_SLEEP_MS);
     const started = Date.now();
     const b = parse(
       (await tool.handler({ paths: [MINE], waitForEligibility: true, requiredAncestorSha }, MAKE_CTX())) as never,
     );
 
-    expect(Date.now() - started).toBeLessThan(1000);
+    expect(Date.now() - started).toBeLessThan(NO_SLEEP_BUDGET_MS);
     expect(scheduleSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         paths: [MINE],
