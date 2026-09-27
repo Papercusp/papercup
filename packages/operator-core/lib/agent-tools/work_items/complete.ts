@@ -2675,6 +2675,54 @@ async function readCommittedPlanItemStatus(stamp: FinishPlanStamp, ctx: UnifiedT
   return status || null;
 }
 
+/** Compact, bounded rendering of a reaction's tool result for a finish-leg error. */
+/** Bounded retry for a plans:set-status reflection refused `busy` by the plan lock (WI-10003498). */
+export const FINISH_SET_STATUS_BUSY_ATTEMPTS = 4;
+export const FINISH_SET_STATUS_BUSY_BACKOFF_MS = 250;
+
+/**
+ * The dispatched tool's own result body as an object: either the handler's plain
+ * return value, or an MCP-shaped `{ content:[{ text }] }` whose text is JSON.
+ * Returns null when there is no parseable object body.
+ */
+export function reactionBody(result: unknown): Record<string, unknown> | null {
+  if (!result || typeof result !== 'object') return null;
+  const content = (result as { content?: Array<{ text?: unknown }> }).content;
+  if (Array.isArray(content)) {
+    const text = content.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('');
+    try {
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  }
+  return result as Record<string, unknown>;
+}
+
+function isBusyReactionBody(statusResult: { result?: unknown }): boolean {
+  const body = reactionBody(statusResult.result);
+  if (!body) return false;
+  if (body.error === 'busy') return true;
+  const results = body.results;
+  return Array.isArray(results) && results.some((r) => (r as { error?: unknown } | null)?.error === 'busy');
+}
+
+function describeReactionResult(result: unknown): string {
+  if (result === undefined || result === null) return '(no result payload)';
+  const content = (result as { content?: Array<{ type?: string; text?: string }> }).content;
+  const text = Array.isArray(content)
+    ? content.map((part) => (typeof part?.text === 'string' ? part.text : '')).join(' ')
+    : (() => {
+        try {
+          return JSON.stringify(result);
+        } catch {
+          return String(result);
+        }
+      })();
+  return text.length > 400 ? `${text.slice(0, 400)}…` : text;
+}
+
 /**
  * Synchronously converge every mechanical finish leg before reporting success.
  * The operation is retry-safe: terminal state writes, plan status flips, claim
@@ -2742,7 +2790,7 @@ export async function synchronizeFinishWork(
   let planItem: FinishWorkReceipt['planItem'] = 'not-linked';
   let claimRelease: FinishWorkReceipt['claimRelease'] = 'not-linked';
   if (stamp && reflected) {
-    const statusResult = await fire({
+    const fireSetStatus = () => fire({
       fire: 'plans:set-status',
       args: {
         harness: stamp.harness_slug,
@@ -2782,11 +2830,35 @@ export async function synchronizeFinishWork(
         rootRunId: typeof opts.ctx.runId === 'string' ? opts.ctx.runId : null,
       },
     }).catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : String(error) }));
+    // WI-10003498: `fire` reports DISPATCH success only. plans:set-status answers a
+    // contended plan lock with `{ ok:false, error:'busy' }` in its BODY, which used to
+    // read as a successful reflection and strand the plan item at its old status.
+    // Retry that transient refusal a bounded number of times before giving up.
+    let statusResult = await fireSetStatus();
+    for (
+      let attempt = 1;
+      attempt < FINISH_SET_STATUS_BUSY_ATTEMPTS && statusResult.ok && isBusyReactionBody(statusResult);
+      attempt++
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, FINISH_SET_STATUS_BUSY_BACKOFF_MS * attempt));
+      statusResult = await fireSetStatus();
+    }
     if (statusResult.ok) {
       try {
         const committedStatus = await readPlanItemStatus(stamp, opts.ctx);
-        if (committedStatus) planItem = committedStatus;
-        else {
+        if (committedStatus) {
+          planItem = committedStatus;
+          // A guard skip (`skipped:'coverage_guard'` etc.) is a legitimate no-op and stays
+          // silent; a body-level refusal (`ok:false`, e.g. busy after every retry) is not.
+          const body = reactionBody((statusResult as { result?: unknown }).result);
+          if (committedStatus !== reflected && body && body.ok === false) {
+            errors.push(
+              `plan-item reflection did not commit: ${stamp.plan_slug}#${stamp.item_id} is ` +
+                `'${committedStatus}', not '${reflected}'; plans:set-status returned ` +
+                describeReactionResult((statusResult as { result?: unknown }).result),
+            );
+          }
+        } else {
           planItem = 'failed';
           errors.push(
             `plan-item status readback failed: ${stamp.plan_slug}#${stamp.item_id} was not found after reflection`,
