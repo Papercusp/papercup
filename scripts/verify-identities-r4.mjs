@@ -268,6 +268,34 @@ const evalFile = (source, name) => {
   return run(["eval", "--file", file], `eval:${name}`);
 };
 
+// R-4: an installed identity may wear the Applied badge only when one of its
+// refs is in the APPLIED stack. The reviewed/requested alternative
+// (research-steward) must never borrow it before the host applies it.
+const assertAlternativesNotApplied = (label) => {
+  const state = JSON.parse(evalFile(`JSON.stringify({
+    stack: document.querySelector('.pc-identities__stack-card')?.textContent ?? '',
+    rows: [...document.querySelectorAll('.pc-identities__identity')].map((row) => ({
+      id: row.querySelector('strong')?.textContent?.trim() ?? '',
+      applied: !!row.querySelector('.pc-identities__pill--applied'),
+    })),
+  })`, label));
+  evidence.appliedBadges = { ...(evidence.appliedBadges ?? {}), [label]: state };
+  const alternative = state.rows.find((row) => row.id === "research-steward");
+  const current = state.rows.find((row) => row.id === "papercusp-engineer");
+  if (!alternative || !current) {
+    throw new Error(`${label}: library does not list both research-steward and papercusp-engineer: ${JSON.stringify(state.rows)}`);
+  }
+  if (alternative.applied || state.stack.includes("domain:research-steward")) {
+    throw new Error(`${label}: installed alternative research-steward renders Applied before the host applied it: ${JSON.stringify(state)}`);
+  }
+  if (!current.applied) throw new Error(`${label}: applied identity papercusp-engineer lost its Applied badge: ${JSON.stringify(state)}`);
+  const borrowed = state.rows.filter((row) => row.applied && !state.stack.includes(`:${row.id}`));
+  if (borrowed.length > 0) {
+    throw new Error(`${label}: identities outside the applied stack render Applied: ${JSON.stringify(borrowed)}`);
+  }
+  evidence.observedChecks = [...(evidence.observedChecks ?? []), label];
+};
+
 const observeActivation = async (label) => {
   const [row] = await sql`
     SELECT control_generation, control_delivered_generation,
@@ -643,6 +671,22 @@ try {
     evidence.steps.push({ label: "real-review-response", response: reviewCall });
     if (reviewCall?.status !== 200) throw new Error(`real preview route refused the mutation: ${reviewCall?.body ?? JSON.stringify(reviewCall)}`);
     check(["--eval", "document.querySelector('.pc-identities__diff')?.textContent.includes('Revision diff') && !document.querySelector('[aria-label=\"Apply identity\"]')?.disabled"], "real-review-diff-visible");
+    // The "Revision diff" heading renders even over an empty grid, so the check
+    // above cannot prove a diff was rendered (R-4 judge gap, 2026-09-27). Read
+    // the grid rows the real review produced.
+    const reviewDiff = JSON.parse(evalFile(`JSON.stringify((() => {
+      const card = document.querySelector('.pc-identities__diff');
+      const rows = [...(card?.querySelectorAll('[role="row"]') ?? [])]
+        .map((row) => row.innerText.replace(/\\s+/g, ' ').trim()).filter(Boolean);
+      return { rowCount: rows.length, rows: rows.slice(0, 12),
+        emptyNotice: /produces no configuration difference|Review an identity to compare/.test(card?.innerText ?? '') };
+    })())`, "real-review-diff-rows"));
+    evidence.reviewDiff = reviewDiff;
+    // One header row plus at least one field row.
+    if (reviewDiff.emptyNotice || reviewDiff.rowCount < 2) {
+      throw new Error(`real review rendered no revision diff rows: ${JSON.stringify(reviewDiff)}`);
+    }
+    assertAlternativesNotApplied("real-review-alternatives-not-applied");
 
     let syncBeforeSwitch = null;
     if (realRecovery) {
@@ -657,6 +701,8 @@ try {
       throw new Error(`real switch route did not return a successful switch response: ${JSON.stringify(switchResponse)}`);
     }
     check(["--eval", "document.body.innerText.includes('Change requested') && document.querySelector('.pc-identities__stack-card')?.textContent.includes('domain:papercusp-engineer')"], "real-switch-change-requested");
+    // Desired, not applied: the requested alternative must still not borrow the badge.
+    assertAlternativesNotApplied("real-switch-requested-alternatives-not-applied");
     if (realRecovery) {
       // The retried switch must reach the page through @papercusp/sync: the route's
       // notifySyncInvalidate('identities.surface') arrives over SSE and refetches
@@ -731,7 +777,7 @@ try {
         rollbackApplied?.status === "applied" ? "rollback-applied" : "rollback-requested",
       ];
     }
-    evidence.observed = ["owned-roster-selection", "real-backend-review", "real-switch-change-requested", switchApplied?.status === "applied" ? "real-switch-applied" : "real-switch-pending-after-fresh-context-boundary", "real-rollback-change-requested", rollbackApplied?.status === "applied" ? "real-rollback-applied" : "real-rollback-pending-after-fresh-context-boundary"];
+    evidence.observed = ["owned-roster-selection", "real-backend-review", "real-review-diff-rows-rendered", ...(evidence.observedChecks ?? []), "real-switch-change-requested", switchApplied?.status === "applied" ? "real-switch-applied" : "real-switch-pending-after-fresh-context-boundary", "real-rollback-change-requested", rollbackApplied?.status === "applied" ? "real-rollback-applied" : "real-rollback-pending-after-fresh-context-boundary"];
   } else {
     selectIdentity("research-steward", "select-identity");
     settle();

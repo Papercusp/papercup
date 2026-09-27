@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-036 R-7 supplement (2026-09-27): identity path attested ON by default on every live process, the launch specification of the 2026-09-26b subject observed APPLIED, and the P-015 tracking item terminal",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-10003422",
+  "rubricCriterion": "plan-governed-and-evidenced-end-to-end (R-7)",
+  "observer": "su-fcbb3fed-83b5-4c34-9dab-72e191d76491",
+  "startedAt": "2026-09-27T11:04:34.233Z",
+  "finishedAt": "2026-09-27T11:21:33.982Z",
+  "command": [
+    "flags:attest { key: \"papercusp-su-blueprint-persona\" } via scripts/mcp-call.mjs --port 3170   # condensed reading in flagReading",
+    "sudo -n -u postgres psql -d papercusp -X -v ON_ERROR_STOP=1 -F' | ' -A < .papercusp/scratch/r7-0927/q1.sql   # read-only; SQL + output in replication[]",
+    "sudo -n -u postgres psql -d papercusp -X -v ON_ERROR_STOP=1 -F' | ' -A < .papercusp/scratch/r7-0927/q2.sql",
+    "sudo -n -u postgres psql -d papercusp -X -v ON_ERROR_STOP=1 -F' | ' -A < .papercusp/scratch/r7-0927/q3.sql"
+  ],
+  "exitCode": 0,
+  "timeBasis": "All timestamps in replication[] were rendered AT TIME ZONE UTC.",
+  "summary": "Supplements the 2026-09-26b end-to-end chain (binding 13743) on the three gaps the 2026-09-27 independent card named. (1) Identity path enabled: per D-119 the only gate on the M1 slot-assembly path is SU_BLUEPRINT_PERSONA (key papercusp-su-blueprint-persona, role-launch-spec.ts); M2 span recording (D-060) and M3 grant enforcement (checkIdentityGrantKernel from projected-tool-deps.ts) are ungated. flags:attest reads that key true, compiledDefault true, source compiled-default (no override row) and consistent on every discovered process. (2) The launch was applied: the 2026-09-26b subject (adv_sessions 30989) launched with specification e144426b46dc (desired 22458 / prepared 22459, generation 2). Leadership attach wrote generation 3 at 22:36:36Z with the SAME specification e144426b46dc and a new state revision (fleet-posture member -> leader); it was applied as event 22467 at 22:37:33.85Z. So the launch specification was applied, not only prepared: generation 2 was superseded before its turn-start boundary by design, and the applied event carries the identical specification. The persisted span for 22467 runs 22:37:33.85Z-23:14:19.85Z, and 33 tool rows on it are attributed to 22467 with specification e144426b46dc. 12 earlier rows (22:36:21Z-22:37:13Z, before any applied event) carry no identity attribution: prepared state is never billed. (3) WI-2143764 (P-015) is terminal (done).",
+  "subject": {
+    "ownerId": "su-626b42aa-470d-44d6-9a78-423de618e2e2",
+    "advSessionId": 30989,
+    "treeHead": "794d7567c699c5488e37946390c3c080b9999cd4"
+  },
+  "sourcePaths": [
+    "libs/flags/src/types.ts",
+    "packages/operator-core/lib/role-launch-spec.ts",
+    "packages/operator-core/lib/projected-tool-deps.ts",
+    "packages/operator-core/lib/session-identity-attribution.ts"
+  ],
+  "sourceBlobs": [
+    {
+      "path": "libs/flags/src/types.ts",
+      "blob": "12ce164c6c61ecc7bef2db0d07ced5b529beb0d8",
+      "sha256": "d8666bc18cade14d16067d27de16e51c9e7dbb5605202b0a8c8500560333c2c1"
+    },
+    {
+      "path": "packages/operator-core/lib/role-launch-spec.ts",
+      "blob": "87e03e2bfee7409c7e917b6e95cb0e995e95d62a",
+      "sha256": "5b47e1afd0a2c4f4ea474504e50aae62ef4b482289cc8924507c3950ec33cecb"
+    },
+    {
+      "path": "packages/operator-core/lib/projected-tool-deps.ts",
+      "blob": "644a29590a4e059d87fe16a100765f0f5c6675d7",
+      "sha256": "c7c187d81d187944f7724f80d281ddbc6c40fcc72521b75f1feed3b27b8d1b12"
+    },
+    {
+      "path": "packages/operator-core/lib/session-identity-attribution.ts",
+      "blob": "cb25149512b7bbb177572734189fc93e3032dd9e",
+      "sha256": "8f6600ddbadf766003a50537f1632327859c2a07e470cd7042777e409de3d904"
+    }
+  ],
+  "flagReading": {
+    "tool": "flags:attest { key: \"papercusp-su-blueprint-persona\" } (read-only, via :3170)",
+    "rawSha256": "d6bf22e746b0a4e819b6bfdeeb0ba1751d1a1d504f596aa9336a39a19ce0ed87",
+    "capturedAt": "2026-09-27T11:04:34.233Z",
+    "key": "papercusp-su-blueprint-persona",
+    "status": "partial",
+    "consistent": true,
+    "completeCoverage": false,
+    "reference": {
+      "resolvedValue": true,
+      "compiledDefault": true,
+      "source": "compiled-default",
+      "process": "operator:3170",
+      "buildSha": "29b2524406"
+    },
+    "processes": [
+      {
+        "label": "operator:3170",
+        "port": 3170,
+        "buildSha": "29b2524406",
+        "resolvedValue": true,
+        "compiledDefault": true,
+        "source": "compiled-default",
+        "ok": true
+      },
+      {
+        "label": "operator:3270",
+        "port": 3270,
+        "buildSha": "8e14b49f81",
+        "resolvedValue": true,
+        "compiledDefault": true,
+        "source": "compiled-default",
+        "ok": true
+      },
+      {
+        "label": "bg-host:3271",
+        "port": 3271,
+        "buildSha": "341a75c102",
+        "resolvedValue": true,
+        "compiledDefault": true,
+        "source": "compiled-default",
+        "ok": true
+      },
+      {
+        "label": "inference-gateway:8788",
+        "port": 8788,
+        "buildSha": "c809329d3f",
+        "resolvedValue": true,
+        "compiledDefault": true,
+        "source": "compiled-default",
+        "ok": true
+      }
+    ],
+    "mismatches": [],
+    "defaultMismatches": [],
+    "unknownProcesses": [
+      {
+        "target": "operator:3070",
+        "error": "discovery pid 225393 disagrees with responder pid 226826"
+      }
+    ]
+  },
+  "assertions": [
+    {
+      "id": "identity-path-flag-on-by-default",
+      "passed": true,
+      "evidence": "flags:attest papercusp-su-blueprint-persona: operator:3170=true (default true, compiled-default); operator:3270=true (default true, compiled-default); bg-host:3271=true (default true, compiled-default); inference-gateway:8788=true (default true, compiled-default). consistent=true. D-119: this flag is the sole gate on the M1 path; M2 (D-060) and M3 are ungated."
+    },
+    {
+      "id": "launch-specification-applied",
+      "passed": true,
+      "evidence": "q1 A2: launch desired 22458 and prepared 22459 (generation 2, specification e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5); generation 3 desired 22461, prepared 22464, APPLIED 22467 at 2026-09-26 22:37:33.851701Z with the same specification and principal system:superuser. Only state_revision changed (153ab949e065 -> 81ab329b30dc: fleet-member -> fleet-leader posture)."
+    },
+    {
+      "id": "applied-span-bills-launch-spec",
+      "passed": true,
+      "evidence": "q1 A3: span of 22467 active 22:37:33.851701Z-23:14:19.850778Z, specification e144426b46dc. q2 B1: 33 tool rows 22:37:41.382Z-23:12:30.134Z attributed to 22467, one distinct specification (e144426b46dc), stack [autonomy:su.mode-auto, fleet-posture:su.fleet-leader]."
+    },
+    {
+      "id": "prepared-generation-not-billed",
+      "passed": true,
+      "evidence": "q2 B1: the 12 tool rows between the launch (22:36:21.747Z) and the applied event (last 22:37:13.413Z) carry no identity_activation_event_id; no row is attributed to prepared 22459. q1 A3: no span exists for generation 2."
+    },
+    {
+      "id": "p015-tracking-item-terminal",
+      "passed": true,
+      "evidence": "q3 C1: C1 | WI-2143764 | feature | done | 2026-09-27 11:05:14.058 | papercusp"
+    }
+  ],
+  "notProven": [
+    "A separate applied event carrying generation number 2: generation 2 was superseded by generation 3 before its turn-start boundary, so its applied event is generation 3 with the identical specification (q1 A2). This is the designed supersede-before-apply path.",
+    "Identity attribution for the 12 pre-apply tool rows: they ran before any applied activation and are unattributed by design (q2 B1).",
+    "flags:attest could not read :3070 (pid discovery mismatch); every discovered process is covered.",
+    "Final release deployment."
+  ],
+  "complements": [
+    "docs/evidence/p015-r7-live-e2e-2026-09-26b.json",
+    "docs/evidence/p015-r3-live-observation-2026-09-27.json"
+  ],
+  "crossReferences": {
+    "r3InferenceJoinRun": 19748735,
+    "r7ChainBinding": 13743
+  },
+  "replication": [
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r7-0927/q1.sql",
+      "sha256": "14776cb31b2f128fa48ad0844f9c43aeb2c52b593ab2d01aca17c24a5330daab",
+      "sql": "-- R-7 supplement q1: the launch specification of the 2026-09-26b subject was APPLIED.\n-- A1: the adv_sessions launch receipt for the subject (specificationRevision).\nSELECT 'A1' AS block, id, coord_owner_id, launch_spec->>'specificationRevision' AS launch_spec_revision\n  FROM harness_shared.adv_sessions\n WHERE id = 30989 AND coord_owner_id = 'su-626b42aa-470d-44d6-9a78-423de618e2e2';\n-- A2: every activation event for generations 2-3 on that session (launch -> leadership attach).\nSELECT 'A2' AS block, id, phase, source, control_generation, specification_revision, state_revision,\n       stack_refs::text, actor_id, principal_id, failure, recorded_at AT TIME ZONE 'UTC' AS recorded_at_utc\n  FROM harness_shared.session_identity_activation_events\n WHERE workspace_id = 'papercusp-workspace'\n   AND owner_id = 'su-626b42aa-470d-44d6-9a78-423de618e2e2'\n   AND adv_session_id = 30989\n   AND control_generation IN (2, 3)\n ORDER BY id;\n-- A3: the persisted span of the applied activation (22467) and of any generation-2 activation.\nSELECT 'A3' AS block, activation_event_id, control_generation, specification_revision, stack_refs::text,\n       active_from AT TIME ZONE 'UTC' AS active_from_utc, active_until AT TIME ZONE 'UTC' AS active_until_utc\n  FROM harness_shared.session_identity_activation_spans\n WHERE workspace_id = 'papercusp-workspace'\n   AND owner_id = 'su-626b42aa-470d-44d6-9a78-423de618e2e2'\n   AND adv_session_id = 30989\n   AND control_generation IN (2, 3)\n ORDER BY activation_event_id;\n",
+      "output": [
+        "block | id | coord_owner_id | launch_spec_revision",
+        "A1 | 30989 | su-626b42aa-470d-44d6-9a78-423de618e2e2 | e290ff71fd873486c9636f9b1048cf8b1d09e5d6f345c121a254d85cf435e685",
+        "(1 row)",
+        "block | id | phase | source | control_generation | specification_revision | state_revision | stack_refs | actor_id | principal_id | failure | recorded_at_utc",
+        "A2 | 22458 | desired | launch | 2 | e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5 | 153ab949e0650481c6379e0e | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | su-626b42aa-470d-44d6-9a78-423de618e2e2 | system:superuser |  | 2026-09-26 22:36:18.567114",
+        "A2 | 22459 | prepared | control | 2 | e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5 | 153ab949e0650481c6379e0e | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | su-626b42aa-470d-44d6-9a78-423de618e2e2 | system:superuser |  | 2026-09-26 22:36:21.733943",
+        "A2 | 22461 | desired | control | 3 | e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5 | 81ab329b30dce1c79f5e9c5fdc84bf000f980bb8af2fad54b2bc494baed26dc0 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-leader\"] | su-626b42aa-470d-44d6-9a78-423de618e2e2 | system:superuser |  | 2026-09-26 22:36:36.082796",
+        "A2 | 22464 | prepared | control | 3 | e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5 | 81ab329b30dce1c79f5e9c5fdc84bf000f980bb8af2fad54b2bc494baed26dc0 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-leader\"] | su-626b42aa-470d-44d6-9a78-423de618e2e2 | system:superuser |  | 2026-09-26 22:37:06.722482",
+        "A2 | 22467 | applied | control | 3 | e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5 | 81ab329b30dce1c79f5e9c5fdc84bf000f980bb8af2fad54b2bc494baed26dc0 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-leader\"] | su-626b42aa-470d-44d6-9a78-423de618e2e2 | system:superuser |  | 2026-09-26 22:37:33.851701",
+        "(5 rows)",
+        "block | activation_event_id | control_generation | specification_revision | stack_refs | active_from_utc | active_until_utc",
+        "A3 | 22467 | 3 | e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-leader\"] | 2026-09-26 22:37:33.851701 | 2026-09-26 23:14:19.850778",
+        "(1 row)"
+      ]
+    },
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r7-0927/q2.sql",
+      "sha256": "ccc47e362118e519468a72ed47b0fa8b80b9f2002fdbba0955c1fcbf1a247955",
+      "sql": "-- R-7 supplement q2: tool calls billed to the applied launch-specification span (activation 22467).\n-- Bounded to the subject and to the window from the gen-2 desired event (22:36:18Z) to the\n-- gen-4 applied event (23:14:19.85Z) that closes the gen-3 span.\nSELECT 'B1' AS block, identity_activation_event_id, count(*) AS tool_rows,\n       min(invoked_at) AT TIME ZONE 'UTC' AS first_utc, max(invoked_at) AT TIME ZONE 'UTC' AS last_utc,\n       count(DISTINCT identity_specification_revision) AS distinct_specs,\n       min(identity_specification_revision) AS spec,\n       min(identity_stack_refs::text) AS stack_refs\n  FROM harness_shared.tool_invocations_identity_attribution\n WHERE workspace_id = 'papercusp-workspace'\n   AND coord_owner_id = 'su-626b42aa-470d-44d6-9a78-423de618e2e2'\n   AND invoked_at >= '2026-09-26 22:36:18Z' AND invoked_at < '2026-09-26 23:14:19.851Z'\n GROUP BY identity_activation_event_id\n ORDER BY identity_activation_event_id NULLS FIRST;\n",
+      "output": [
+        "block | identity_activation_event_id | tool_rows | first_utc | last_utc | distinct_specs | spec | stack_refs",
+        "B1 |  | 12 | 2026-09-26 22:36:21.747 | 2026-09-26 22:37:13.413 | 0 |  | ",
+        "B1 | 22467 | 33 | 2026-09-26 22:37:41.382 | 2026-09-26 23:12:30.134 | 1 | e144426b46dc78123d4627a6876ad1b02ada9e7185e395fc20cd44bd447f88c5 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-leader\"]",
+        "(2 rows)"
+      ]
+    },
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r7-0927/q3.sql",
+      "sha256": "5da8ddd4b210f094a5bef2ef1a07c116ed3c541568a35f1a6d6d8bfb90ad33b3",
+      "sql": "-- R-7 supplement q3: the P-015 tracking item WI-2143764 is terminal.\nSELECT 'C1' AS block, feature_id, item_kind, status, to_timestamp(updated_ts / 1000.0) AT TIME ZONE 'UTC' AS updated_utc, harness_slug\n  FROM harness_shared.work_items\n WHERE workspace_id = 'papercusp-workspace'\n   AND feature_id = 'WI-2143764';\n",
+      "output": [
+        "block | feature_id | item_kind | status | updated_utc | harness_slug",
+        "C1 | WI-2143764 | feature | done | 2026-09-27 11:05:14.058 | papercusp",
+        "(1 row)"
+      ]
+    }
+  ]
+}
