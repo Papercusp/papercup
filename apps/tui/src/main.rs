@@ -970,13 +970,23 @@ async fn run_doctor() -> Result<()> {
             // worktree `installed_sha` was built from, ask git whether the
             // operator's differing sha is already covered by it — distinguishes
             // "operator is pinned behind by design" (nothing to rebuild) from a
-            // genuinely stale local install (rebuild is the real fix). `None`
-            // (no recorded root, or ancestry can't be determined) preserves the
-            // original STALE+repair verdict unchanged.
+            // genuinely stale local install (rebuild is the real fix). A release
+            // install has no checkout, so it answers the same question from the
+            // source-ancestry listing its unit ships (WI-10003535). `None`
+            // (neither source available, or ancestry can't be determined)
+            // preserves the original STALE+repair verdict unchanged.
             let operator_generation_caught_up = local.as_ref().ok().and_then(|check| {
-                let root = check.manifest.source_root.as_deref()?;
                 let operator_sha = identity.build.sha.as_deref()?;
-                install::operator_generation_contained(root, operator_sha, installed_sha)
+                check
+                    .manifest
+                    .source_root
+                    .as_deref()
+                    .and_then(|root| {
+                        install::operator_generation_contained(root, operator_sha, installed_sha)
+                    })
+                    .or_else(|| {
+                        install::release_generation_contained(&check.binary_path, operator_sha)
+                    })
             });
             let freshness = install::operator_install_freshness(
                 installed_sha,

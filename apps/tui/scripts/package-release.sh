@@ -293,6 +293,15 @@ python3 "$SRC/apps/tui/scripts/write-install-manifest.py" write \
   --binary "$UNIT/bin/pui" --companion "$UNIT/pui-companion.wasm" \
   --relative-paths --version "$VERSION" --target "$TARGET"
 
+# Source ancestry (WI-10003535): every commit reachable from $SHA as a byte-sorted
+# 12-hex prefix. `pui doctor` on an installed release has no checkout to run
+# `git merge-base --is-ancestor`, so this listing is how it tells "the operator is
+# an older generation this pui already covers" from "this pui is behind the
+# operator". Written before CONTENTS.sha256, so the listing is hash-verified too.
+git -C "$ROOT" rev-list "$SHA" | cut -c1-12 | LC_ALL=C sort -u > "$UNIT/pui-source-ancestry.txt"
+grep -q "^${SHA:0:12}\$" "$UNIT/pui-source-ancestry.txt" \
+  || die "source ancestry listing does not contain the release source ${SHA:0:12}"
+
 echo "→ license inventory…"
 python3 "$SRC/apps/tui/scripts/license-inventory.py" \
   --out "$UNIT/THIRD_PARTY_LICENSES.md" \

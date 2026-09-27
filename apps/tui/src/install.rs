@@ -494,11 +494,14 @@ pub fn update_command(origin: InstallOrigin) -> &'static str {
 
 impl OperatorInstallFreshness {
     /// A release install cannot rebuild from a local tip, so its STALE repair is
-    /// to install the PUI release cut from the operator's own source generation.
+    /// to install a PUI release whose source history includes the operator's
+    /// generation. (Not "the release built from the operator's source": a release
+    /// that is already newer than the operator never needs that, and the ancestry
+    /// listing now reports it as covered, WI-10003535.)
     pub fn for_origin(mut self, origin: InstallOrigin, operator_sha: Option<&str>) -> Self {
         if origin == InstallOrigin::Release && self.status == InstallFreshnessStatus::Stale {
             self.repair = Some(format!(
-                "install the PUI release built from the operator's source {}: {}",
+                "install a PUI release whose source includes the operator's generation {}: {}",
                 operator_sha.unwrap_or("(unreported)"),
                 update_command(origin)
             ));
@@ -546,6 +549,55 @@ pub fn operator_generation_contained(
         Some(1) => Some(false),
         _ => None,
     }
+}
+
+/// Filename of the source-ancestry listing a release unit carries beside its
+/// manifest (written by `scripts/package-release.sh`): every commit reachable from
+/// the release's `sourceSha`, one lowercase 12-hex prefix per line, byte-sorted.
+/// It lets a release install answer "is the operator's generation already covered
+/// by this pui?" WITHOUT a git checkout (WI-10003535). Without it, a public install
+/// could only report a differing operator sha as STALE and prescribe a repair that
+/// cannot converge when the operator is older.
+pub const ANCESTRY_NAME: &str = "pui-source-ancestry.txt";
+
+/// Prefix length stored per commit in [`ANCESTRY_NAME`]. At 48 bits there is no
+/// realistic collision across the repository's history, and a short operator sha
+/// (`git rev-parse --short`, 7+ chars) is matched as a prefix of these entries.
+pub const ANCESTRY_PREFIX_LEN: usize = 12;
+
+/// Is `operator_sha` in the release's source ancestry `listing` (the contents of
+/// [`ANCESTRY_NAME`])? `Some(true)` means the operator's generation is the release's
+/// own source or an ancestor of it, so a differing sha is expected skew. `Some(false)`
+/// means it is not in the release's history: the operator is newer or diverged, and
+/// a newer PUI release is the real repair. `None` means the question cannot be
+/// answered (empty listing, or an operator sha that is not a 7+ char hex string), so
+/// the caller keeps the pre-existing STALE verdict.
+pub fn operator_generation_in_ancestry(listing: &str, operator_sha: &str) -> Option<bool> {
+    let operator_sha = operator_sha.trim().to_ascii_lowercase();
+    if operator_sha.len() < 7 || !operator_sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let prefix = &operator_sha[..operator_sha.len().min(ANCESTRY_PREFIX_LEN)];
+    let entries: Vec<&str> = listing
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if entries.is_empty() {
+        return None;
+    }
+    // The packager byte-sorts the listing, so the first entry >= `prefix` is the
+    // only candidate that can start with it.
+    let index = entries.partition_point(|entry| *entry < prefix);
+    Some(entries.get(index).is_some_and(|entry| entry.starts_with(prefix)))
+}
+
+/// Git-free ancestry for a binary running from an installed release unit: reads
+/// [`ANCESTRY_NAME`] beside the unit's manifest. `None` when `exe` is not in a
+/// release unit, or the unit predates the listing, or it cannot be read.
+pub fn release_generation_contained(exe: &Path, operator_sha: &str) -> Option<bool> {
+    let listing = fs::read_to_string(release_root_of(exe)?.join(ANCESTRY_NAME)).ok()?;
+    operator_generation_in_ancestry(&listing, operator_sha)
 }
 
 fn sha_identity_matches(installed_sha: &str, operator_sha: &str) -> bool {
@@ -1031,5 +1083,74 @@ mod tests {
             operator_generation_contained(no_repo.path().to_str().unwrap(), &older, &newer),
             None
         );
+    }
+
+    /// WI-10003535: a public release install has no checkout, so the ancestry
+    /// question is answered from the listing the unit ships. Pins prefix
+    /// matching for short and full shas, the definite "not in history" answer,
+    /// and the "unknown" answers that must keep the safe STALE fallback.
+    #[test]
+    fn operator_generation_in_ancestry_answers_without_git() {
+        let listing = "0123456789ab\n5f720ea918f6\n8e14b49f0c1d\nb5e2b1fbccf0\n";
+        // Full 40-char operator sha: compared on its 12-char prefix.
+        assert_eq!(
+            operator_generation_in_ancestry(listing, "b5e2b1fbccf0aaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            Some(true)
+        );
+        // `git rev-parse --short` form, and case-insensitive.
+        assert_eq!(operator_generation_in_ancestry(listing, "B5E2B1F"), Some(true));
+        assert_eq!(operator_generation_in_ancestry(listing, " 8e14b49f0c \n"), Some(true));
+        // Not in the release's history: the operator is newer or diverged.
+        assert_eq!(operator_generation_in_ancestry(listing, "ffffffffffff"), Some(false));
+        assert_eq!(operator_generation_in_ancestry(listing, "5f720eb"), Some(false));
+        // Unanswerable, never read as "no".
+        assert_eq!(operator_generation_in_ancestry(listing, "b5e2b1"), None, "too short");
+        assert_eq!(operator_generation_in_ancestry(listing, "build-b"), None, "not hex");
+        assert_eq!(operator_generation_in_ancestry("\n \n", "b5e2b1fbccf0"), None, "empty listing");
+    }
+
+    /// The case the independent acceptance card rated degraded: an installed
+    /// release unit, an operator that is an ANCESTOR of the release source, no
+    /// source_root and no git. Doctor must report OK, not STALE.
+    #[test]
+    fn release_install_with_ancestor_operator_and_no_git_is_not_stale() {
+        let unit = tempdir().unwrap();
+        fs::create_dir_all(unit.path().join("bin")).unwrap();
+        fs::write(unit.path().join("bin/pui"), b"binary").unwrap();
+        fs::write(unit.path().join(MANIFEST_NAME), b"{}").unwrap();
+        fs::write(
+            unit.path().join(ANCESTRY_NAME),
+            "8e14b49f0c1d\nb5e2b1fbccf0\n",
+        )
+        .unwrap();
+        let exe = unit.path().join("bin/pui");
+
+        let installed = "8e14b49f0c1d2e3f40516273849506a7b8c9d0e1";
+        let ancestor_operator = "b5e2b1fbccf0";
+        let caught_up = release_generation_contained(&exe, ancestor_operator);
+        assert_eq!(caught_up, Some(true));
+        let verdict = operator_install_freshness(installed, Some(ancestor_operator), "http://op", caught_up)
+            .for_origin(InstallOrigin::Release, Some(ancestor_operator));
+        assert_eq!(verdict.status.label(), "OK", "{}", verdict.detail);
+        assert!(verdict.repair.is_none());
+
+        // An operator the release does not contain is still STALE, and the
+        // repair names a release that includes the operator's generation.
+        let newer_operator = "c0ffee000000";
+        let behind = release_generation_contained(&exe, newer_operator);
+        assert_eq!(behind, Some(false));
+        let stale = operator_install_freshness(installed, Some(newer_operator), "http://op", behind)
+            .for_origin(InstallOrigin::Release, Some(newer_operator));
+        assert_eq!(stale.status.label(), "STALE");
+        let repair = stale.repair.expect("a stale release install has a repair");
+        assert!(repair.contains("includes the operator's generation c0ffee000000"), "{repair}");
+        assert!(repair.contains("pui self update"), "{repair}");
+
+        // A unit that predates the listing cannot answer: None keeps STALE.
+        fs::remove_file(unit.path().join(ANCESTRY_NAME)).unwrap();
+        assert_eq!(release_generation_contained(&exe, ancestor_operator), None);
+        // A binary outside any release unit cannot answer either.
+        let loose = tempdir().unwrap();
+        assert_eq!(release_generation_contained(&loose.path().join("bin/pui"), ancestor_operator), None);
     }
 }
