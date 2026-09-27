@@ -111,30 +111,39 @@ function isOnPath(bin: string): boolean {
 }
 
 /**
- * Pure terminal selection given a PATH-membership probe. Preference: an explicit
- * `$TERMINAL` (the user's own choice, honored as-is); then, driven by
+ * Pure terminal selection given a PATH-membership probe. Normally, preference is
+ * an explicit `$TERMINAL` (the user's own choice, honored as-is); then, driven by
  * `preferClientServer`, either the standard desktop terminals first
  * (gnome-terminal/konsole/xfce4 — chosen when a real desktop session was detected
  * and its D-Bus bus resolved, so they reliably open the owner's standard window)
  * or the process-per-window emulators first (chosen when NO desktop session is
  * reachable — a bare Xvfb/sandbox — where a client-server terminal would ghost).
- * The other group is always appended as a fallback. Exported (with an injectable
- * `onPath`) so the ordering is unit-testable without depending on whatever the
- * host happens to have installed. (WI-4718)
+ * The other group is appended as a fallback. `requireProcessPerWindow` is a hard
+ * constraint for agent launches that must not share a client-server terminal:
+ * it limits both `$TERMINAL` and fallback selection to that group. Exported (with
+ * an injectable `onPath`) so the ordering is unit-testable without depending on
+ * whatever the host happens to have installed. (WI-4718, EI-24381225643823469)
  */
 export function pickLinuxTerminal(
   onPath: (bin: string) => boolean,
   preferClientServer = false,
+  requireProcessPerWindow = false,
 ): { bin: string; args: string[] } | null {
   const fromEnv = process.env.TERMINAL;
-  if (fromEnv && onPath(fromEnv)) {
+  const processPerWindowEnv = PROCESS_PER_WINDOW_TERMINALS.find(([bin]) => bin === fromEnv);
+  if (fromEnv && onPath(fromEnv) && (!requireProcessPerWindow || processPerWindowEnv)) {
+    if (requireProcessPerWindow && processPerWindowEnv) {
+      return { bin: fromEnv, args: [...processPerWindowEnv[1]] };
+    }
     return fromEnv === 'gnome-terminal'
       ? { bin: fromEnv, args: ['--wait', '--'] }
       : { bin: fromEnv, args: ['-e'] };
   }
-  const order = preferClientServer
-    ? [...CLIENT_SERVER_TERMINALS, ...PROCESS_PER_WINDOW_TERMINALS]
-    : [...PROCESS_PER_WINDOW_TERMINALS, ...CLIENT_SERVER_TERMINALS];
+  const order = requireProcessPerWindow
+    ? [...PROCESS_PER_WINDOW_TERMINALS]
+    : preferClientServer
+      ? [...CLIENT_SERVER_TERMINALS, ...PROCESS_PER_WINDOW_TERMINALS]
+      : [...PROCESS_PER_WINDOW_TERMINALS, ...CLIENT_SERVER_TERMINALS];
   for (const [bin, args] of order) {
     if (onPath(bin)) return { bin, args: [...args] };
   }
@@ -143,17 +152,19 @@ export function pickLinuxTerminal(
 
 // Cache the terminal selection — the underlying set doesn't change at runtime
 // (terminal binaries don't appear/disappear), and the existsSync sweep was adding
-// noticeable latency to every console launch. Keyed by preferClientServer because
-// the two preferences can resolve to different terminals on a box that has both a
-// standard and a process-per-window emulator installed.
-const cachedTerminal: Map<boolean, { bin: string; args: string[] } | null> = new Map();
+// noticeable latency to every console launch. Keyed by both selection flags
+// because a strict process-per-window request must never reuse an ordinary
+// launch's cached client-server result.
+const cachedTerminal: Map<string, { bin: string; args: string[] } | null> = new Map();
 export function findLinuxTerminal(
   preferClientServer = false,
+  requireProcessPerWindow = false,
 ): { bin: string; args: string[] } | null {
-  const cached = cachedTerminal.get(preferClientServer);
+  const cacheKey = `${preferClientServer}:${requireProcessPerWindow}`;
+  const cached = cachedTerminal.get(cacheKey);
   if (cached !== undefined) return cached;
-  const picked = pickLinuxTerminal(isOnPath, preferClientServer);
-  cachedTerminal.set(preferClientServer, picked);
+  const picked = pickLinuxTerminal(isOnPath, preferClientServer, requireProcessPerWindow);
+  cachedTerminal.set(cacheKey, picked);
   return picked;
 }
 
@@ -1731,14 +1742,17 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
     // EI-11578: a RESUME/FORK launch forces the process-per-window ordering even
     // on a detected desktop session — gnome-terminal's VTE pty drops the resumed
     // session's reattached psu managed-pty host, while xterm/alacritty hold it.
+    const requireProcessPerWindow = opts.preferProcessPerWindow ?? false;
     term = findLinuxTerminal(
-      resolveTerminalPreference(desktop.desktopSessionDetected, opts.preferProcessPerWindow ?? false),
+      resolveTerminalPreference(desktop.desktopSessionDetected, requireProcessPerWindow),
+      requireProcessPerWindow,
     );
     if (!term) {
       return {
         status: 'error',
-        error:
-          'no terminal emulator found. Set $TERMINAL or install gnome-terminal / konsole / alacritty / kitty / wezterm / xterm',
+        error: requireProcessPerWindow
+          ? 'no process-per-window terminal emulator found. Install alacritty / kitty / wezterm / xterm; a client-server $TERMINAL cannot satisfy this launch requirement'
+          : 'no terminal emulator found. Set $TERMINAL or install gnome-terminal / konsole / alacritty / kitty / wezterm / xterm',
         code: 500,
       };
     }

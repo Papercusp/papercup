@@ -1611,6 +1611,17 @@ describe('pickLinuxTerminal — preference is conditional on a detected desktop 
     expect(pickLinuxTerminal(onlyOnPath('gnome-terminal', 'xterm'), true)?.bin).toBe('gnome-terminal');
   });
 
+  it('a strict process-per-window launch ignores $TERMINAL=gnome-terminal and chooses xterm', () => {
+    vi.stubEnv('TERMINAL', 'gnome-terminal');
+    const t = pickLinuxTerminal(onlyOnPath('gnome-terminal', 'xterm'), false, true);
+    expect(t).toEqual({ bin: 'xterm', args: ['-e'] });
+  });
+
+  it('a strict process-per-window launch fails when only a client-server terminal is installed', () => {
+    vi.stubEnv('TERMINAL', 'gnome-terminal');
+    expect(pickLinuxTerminal(onlyOnPath('gnome-terminal'), false, true)).toBeNull();
+  });
+
   it('returns null when no known emulator is installed', () => {
     vi.stubEnv('TERMINAL', '');
     expect(pickLinuxTerminal(() => false, true)).toBeNull();
