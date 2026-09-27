@@ -42,7 +42,7 @@ export interface DedupEdgeCandidate {
   id: string;
   harness: string | null;
   similarity: number;
-  source?: 'lexical-recent' | 'lexical-fulltext';
+  source?: 'lexical-recent' | 'lexical-fulltext' | 'measurement-overlap';
   titleSimilarity?: number;
 }
 

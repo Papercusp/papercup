@@ -720,6 +720,9 @@ export async function createOneWorkItem(
     if (shouldScreen) {
       const recentDupes = await findRecentLexicalDupes({
         title: args.title,
+        // Summary feeds the measurement-overlap signal (plan
+        // duplicate-screening-keys-on-authored-prose…-2026-09-05, P-002).
+        summary: args.summary,
         harness: args.harness ?? ctx.harnessSlug ?? undefined,
       });
       if (recentDupes && recentDupes.length > 0) {
@@ -985,7 +988,9 @@ export async function createOneWorkItem(
                   ? 'lexical-recent'
                   : c.source === 'lexical-fulltext'
                     ? 'lexical-fulltext'
-                    : 'semantic-soft',
+                    : c.source === 'measurement-overlap'
+                      ? 'measurement-overlap'
+                      : 'semantic-soft',
             }),
           )
         : undefined;

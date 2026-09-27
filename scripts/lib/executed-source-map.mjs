@@ -129,16 +129,76 @@ export async function loadExecutedSourceMap({ client, workspaceName, repoRoot })
   return { map: rowsToExecutedMap(rows, { repoRoot }), rows: rows.length };
 }
 
+/** @param {unknown} v @returns {string[]} */
+function stringArray(v) {
+  return Array.isArray(v) ? v.filter((s) => typeof s === "string" && s.length > 0) : [];
+}
+
+/**
+ * Newest pass proof per test file, keyed REPO-RELATIVE (gate-file-level-test-reuse-2026-09-27
+ * P-008): the input `selectReusablePasses` (scripts/lib/test-pass-reuse.mjs) judges. Rows
+ * arrive newest-first per test file; the first wins. A row that cannot be read is dropped,
+ * which the rule reads as "no proof" (the file runs).
+ *
+ * @param {Array<Record<string, unknown>>} rows
+ * @returns {Map<string, import('./test-pass-reuse.mjs').ReuseProof>}
+ */
+export function rowsToReuseProofs(rows) {
+  /** @type {Map<string, import('./test-pass-reuse.mjs').ReuseProof>} */
+  const proofs = new Map();
+  for (const row of rows ?? []) {
+    if (!row || typeof row.test_file !== "string" || typeof row.recorded_sha !== "string") continue;
+    if (proofs.has(row.test_file)) continue;
+    const at = row.recorded_at instanceof Date ? row.recorded_at.getTime() : Date.parse(String(row.recorded_at));
+    proofs.set(row.test_file, {
+      recordedSha: row.recorded_sha,
+      recordedAtMs: Number.isFinite(at) ? at : Number.NaN,
+      executedModules: stringArray(row.executed_modules),
+      readPaths: stringArray(row.read_paths),
+      inputsCaptured: row.inputs_captured === true,
+      opaqueReasons: stringArray(row.opaque_reasons),
+      runContext: typeof row.run_context === "string" ? row.run_context : null,
+      runnerIdentity: typeof row.runner_identity === "string" ? row.runner_identity : null,
+    });
+  }
+  return proofs;
+}
+
+/**
+ * Load the newest pass proof per test file for one workspace and ONE run context (D-004 rule 1:
+ * reuse only consumes proofs its own runner class recorded).
+ *
+ * @param {object} o
+ * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
+ * @param {string} o.workspaceName
+ * @param {string} o.runContext
+ * @returns {Promise<{ proofs: Map<string, import('./test-pass-reuse.mjs').ReuseProof>, rows: number }>}
+ */
+export async function loadReuseProofs({ client, workspaceName, runContext }) {
+  const { rows } = await client.query(
+    `SELECT DISTINCT ON (test_file) test_file, recorded_sha, recorded_at, executed_modules,
+            read_paths, inputs_captured, opaque_reasons, run_context, runner_identity
+       FROM harness_shared.test_executed_sources
+      WHERE workspace_name = $1 AND run_context = $2
+      ORDER BY test_file, recorded_at DESC`,
+    [workspaceName, runContext],
+  );
+  return { proofs: rowsToReuseProofs(rows), rows: rows.length };
+}
+
 /**
  * Build the `changedBetween` seam over a real git checkout. `git diff --name-only A B` names
  * every path that differs between the two commits (a rename appears as both names); an
  * unknown sha — one gc'd away, or from a lineage this checkout never had — makes the diff
  * fail, and that reads as `null` ("cannot tell"), which the pruning rule treats as stale.
  *
- * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string }} o
+ * `relative: true` returns repo-root-relative POSIX paths (the per-file pass-reuse rule's
+ * input) instead of absolute ones (the pruning selector's input).
+ *
+ * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string, relative?: boolean }} o
  * @returns {import('./related-tests.mjs').ChangedBetween}
  */
-export function gitChangedBetween({ repoRoot, exec = defaultExec }) {
+export function gitChangedBetween({ repoRoot, exec = defaultExec, relative = false }) {
   /** @type {Map<string, Set<string> | null>} */
   const cache = new Map();
   return (recordedSha, judgedSha) => {
@@ -146,25 +206,60 @@ export function gitChangedBetween({ repoRoot, exec = defaultExec }) {
     if (cache.has(key)) return cache.get(key);
     let result = null;
     try {
-      const out = exec("git", ["diff", "--name-only", recordedSha, judgedSha], {
-        cwd: repoRoot,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        maxBuffer: 64 * 1024 * 1024,
-      });
-      result = new Set(
-        String(out)
-          .split("\n")
-          .map((l) => l.trim())
-          .filter(Boolean)
-          .map((rel) => path.resolve(repoRoot, rel)),
-      );
+      const out = new Set();
+      result = collectRecursiveDiff({ exec, repoDir: repoRoot, prefix: "", a: recordedSha, b: judgedSha, out })
+        ? relative
+          ? out
+          : new Set([...out].map((rel) => path.resolve(repoRoot, rel)))
+        : null;
     } catch {
       result = null;
     }
     cache.set(key, result);
     return result;
   };
+}
+
+/** Every-zero object id: git's marker for "absent on this side" in `--raw` output. */
+const ZERO_OID_RE = /^0+$/;
+
+/**
+ * Collect repo-root-relative paths changed between `a` and `b`, RECURSING into submodules
+ * (gate-file-level-test-reuse-2026-09-27 D-003). A superproject `git diff --name-only` names a
+ * submodule change as the bare gitlink path, which no executed module ever equals, so a change
+ * inside any of the ~38 submodules used to read as "no drift". A moved gitlink is diffed INSIDE
+ * the submodule between the two pinned commits. Anything that cannot be diffed (a submodule
+ * added, removed or type-changed; a pinned commit missing from the local clone) returns false,
+ * and the caller reads that as "cannot tell" (stale), never as "nothing changed".
+ *
+ * @returns {boolean} true when the full recursive diff was computed
+ */
+export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }) {
+  const opts = {
+    cwd: repoDir,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    maxBuffer: 256 * 1024 * 1024,
+  };
+  const raw = String(exec("git", ["diff", "--raw", "--no-renames", "--abbrev=40", "-z", a, b], opts));
+  // -z --raw: ":<m1> <m2> <o1> <o2> <status>\0<path>\0" repeated.
+  const parts = raw.split("\0");
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const meta = parts[i].replace(/^\n/, "");
+    const rel = parts[i + 1];
+    if (!meta || !rel) continue;
+    const m = /^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) /.exec(meta);
+    if (!m) return false;
+    const [, modeA, modeB, oidA, oidB] = m;
+    out.add(prefix + rel);
+    if (modeA !== "160000" && modeB !== "160000") continue;
+    if (modeA !== modeB || ZERO_OID_RE.test(oidA) || ZERO_OID_RE.test(oidB)) return false;
+    const subDir = path.join(repoDir, rel);
+    if (!collectRecursiveDiff({ exec, repoDir: subDir, prefix: `${prefix}${rel}/`, a: oidA, b: oidB, out })) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function defaultExec(file, args, opts) {

@@ -69,18 +69,73 @@ export function loadExecutedSourceMap({ client, workspaceName, repoRoot }: {
     rows: number;
 }>;
 /**
+ * Newest pass proof per test file, keyed REPO-RELATIVE (gate-file-level-test-reuse-2026-09-27
+ * P-008): the input `selectReusablePasses` (scripts/lib/test-pass-reuse.mjs) judges. Rows
+ * arrive newest-first per test file; the first wins. A row that cannot be read is dropped,
+ * which the rule reads as "no proof" (the file runs).
+ *
+ * @param {Array<Record<string, unknown>>} rows
+ * @returns {Map<string, import('./test-pass-reuse.mjs').ReuseProof>}
+ */
+export function rowsToReuseProofs(rows: Array<Record<string, unknown>>): Map<string, import("./test-pass-reuse.mjs").ReuseProof>;
+/**
+ * Load the newest pass proof per test file for one workspace and ONE run context (D-004 rule 1:
+ * reuse only consumes proofs its own runner class recorded).
+ *
+ * @param {object} o
+ * @param {{ query: (text: string, values?: unknown[]) => Promise<{ rows: any[] }> }} o.client
+ * @param {string} o.workspaceName
+ * @param {string} o.runContext
+ * @returns {Promise<{ proofs: Map<string, import('./test-pass-reuse.mjs').ReuseProof>, rows: number }>}
+ */
+export function loadReuseProofs({ client, workspaceName, runContext }: {
+    client: {
+        query: (text: string, values?: unknown[]) => Promise<{
+            rows: any[];
+        }>;
+    };
+    workspaceName: string;
+    runContext: string;
+}): Promise<{
+    proofs: Map<string, import("./test-pass-reuse.mjs").ReuseProof>;
+    rows: number;
+}>;
+/**
  * Build the `changedBetween` seam over a real git checkout. `git diff --name-only A B` names
  * every path that differs between the two commits (a rename appears as both names); an
  * unknown sha — one gc'd away, or from a lineage this checkout never had — makes the diff
  * fail, and that reads as `null` ("cannot tell"), which the pruning rule treats as stale.
  *
- * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string }} o
+ * `relative: true` returns repo-root-relative POSIX paths (the per-file pass-reuse rule's
+ * input) instead of absolute ones (the pruning selector's input).
+ *
+ * @param {{ repoRoot: string, exec?: (file: string, args: string[], opts: object) => string, relative?: boolean }} o
  * @returns {import('./related-tests.mjs').ChangedBetween}
  */
-export function gitChangedBetween({ repoRoot, exec }: {
+export function gitChangedBetween({ repoRoot, exec, relative }: {
     repoRoot: string;
     exec?: (file: string, args: string[], opts: object) => string;
+    relative?: boolean;
 }): import("./related-tests.mjs").ChangedBetween;
+/**
+ * Collect repo-root-relative paths changed between `a` and `b`, RECURSING into submodules
+ * (gate-file-level-test-reuse-2026-09-27 D-003). A superproject `git diff --name-only` names a
+ * submodule change as the bare gitlink path, which no executed module ever equals, so a change
+ * inside any of the ~38 submodules used to read as "no drift". A moved gitlink is diffed INSIDE
+ * the submodule between the two pinned commits. Anything that cannot be diffed (a submodule
+ * added, removed or type-changed; a pinned commit missing from the local clone) returns false,
+ * and the caller reads that as "cannot tell" (stale), never as "nothing changed".
+ *
+ * @returns {boolean} true when the full recursive diff was computed
+ */
+export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }: {
+    exec: any;
+    repoDir: any;
+    prefix: any;
+    a: any;
+    b: any;
+    out: any;
+}): boolean;
 /**
  * One greppable line per workspace selection, so a run that did not narrow is never silent
  * about why.

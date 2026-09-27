@@ -39,7 +39,9 @@ export type DedupCandidateMethod =
   /** create path: recent-lexical prescreen (EI-9940 pre-embed-backfill window) */
   | 'lexical-recent'
   /** create path: unified full-text search-first prescreen (EI-19298062354262754) */
-  | 'lexical-fulltext';
+  | 'lexical-fulltext'
+  /** create path: recent-lexical leg, identifier-anchored measurements agree (measurement-tuples.ts) */
+  | 'measurement-overlap';
 
 /** One persisted candidate twin. */
 export interface DedupCandidateStamp {

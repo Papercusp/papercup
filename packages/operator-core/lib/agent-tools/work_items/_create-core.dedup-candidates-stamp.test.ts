@@ -86,7 +86,7 @@ const lastCreatePayload = (): Record<string, unknown> | undefined =>
 const cand = (
   id: string,
   similarity: number,
-  source?: 'lexical-recent' | 'lexical-fulltext',
+  source?: 'lexical-recent' | 'lexical-fulltext' | 'measurement-overlap',
 ): SemanticDupeCandidate => ({
   id,
   title: `candidate ${id}`,
@@ -134,6 +134,25 @@ describe('createOneWorkItem × P-001 dedupCandidates payload stamp', () => {
     expect(lastCreatePayload()?.dedupCandidates).toEqual([
       { id: 'EI-9', similarity: 0.8, method: 'lexical-recent' },
     ]);
+  });
+
+  it('R-4: measurement-overlap candidates are stamped under their own method, the create still succeeds, and the summary reaches the guard', async () => {
+    recentM.mockResolvedValue([cand('EI-22393887492211068', 0.89, 'measurement-overlap')]);
+    const r = await createOneWorkItem(
+      { kind: 'bug', title: 'retention scope is stale', summary: 'session_archive_files 22 GB\ntool_invocations 15 GB' },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    expect(recentM).toHaveBeenCalledWith(
+      expect.objectContaining({ summary: 'session_archive_files 22 GB\ntool_invocations 15 GB' }),
+    );
+    expect(lastCreatePayload()?.dedupCandidates).toEqual([
+      { id: 'EI-22393887492211068', similarity: 0.89, method: 'measurement-overlap' },
+    ]);
+    // Advisory lexical-family evidence, never a cosine edge: the edge writer receives it
+    // with its source intact, and dedup-edges skips every sourced candidate.
+    const edgeCandidates = dedupEdgeMocks.persist.mock.calls.at(-1)?.[0].candidates as SemanticDupeCandidate[];
+    expect(edgeCandidates.map((c) => [c.id, c.source])).toEqual([['EI-22393887492211068', 'measurement-overlap']]);
   });
 
   it('force past a hard semantic refusal persists the twins as semantic-hard (was: dropped entirely)', async () => {

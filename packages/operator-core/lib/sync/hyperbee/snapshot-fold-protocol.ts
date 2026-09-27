@@ -20,14 +20,13 @@
  * file adds nothing but that.
  */
 import {
-  buildSnapshotOpsFromRows,
   governorReceiptSnapshotValueTransform,
   isSnapshotBlock,
   isSnapshotOp,
-  SnapshotRowFolder,
   type GovernorReceiptSnapshotFilterStats,
   type SnapshotPayload,
 } from './log-snapshot';
+import { SnapshotIndexFolder } from './snapshot-index-fold';
 import type { GovernorReceiptSnapshotFilter } from './governor-receipt-snapshot-filter';
 import type { OpAAD } from './hive-epoch-crypto';
 import type { PeerLogOp } from './peer-log';
@@ -43,6 +42,14 @@ export type SnapshotFoldRequest =
       sourceStart?: number;
     }
   | { kind: 'inspect'; id: number; buf: ArrayBuffer; lengths: number[] }
+  /** P-006: the log indexes whose blocks still hold an unmaterialized winner. */
+  | { kind: 'pending'; id: number }
+  /** P-006: the raw blocks at `indexes` (from `pending`), turned into row JSON. */
+  | { kind: 'materialize'; id: number; buf: ArrayBuffer; lengths: number[]; indexes: number[]; now: number }
+  /** P-006: serialize the scan state covering every op below `cursor`. */
+  | { kind: 'checkpoint'; id: number; logKey: string; cursor: number }
+  /** P-006: load a checkpoint into the (fresh) fold, if it fits `[minCursor, maxCursor]`. */
+  | { kind: 'restore'; id: number; buf: ArrayBuffer; logKey: string; minCursor?: number; maxCursor: number }
   | {
       kind: 'finish';
       id: number;
@@ -69,6 +76,10 @@ export type SnapshotFoldResponse =
       heapUsedBytes?: number;
     }
   | { kind: 'inspected'; id: number; ops: Array<PeerLogOp | null> }
+  | { kind: 'pending'; id: number; indexes: number[] }
+  | { kind: 'materialized'; id: number; remaining: number; heapUsedBytes?: number }
+  | { kind: 'checkpointed'; id: number; buf: ArrayBuffer }
+  | { kind: 'restored'; id: number; cursor: number | null; reason?: string }
   | {
       kind: 'finished';
       id: number;
@@ -175,10 +186,12 @@ export function createSnapshotFoldHandler(
     openEnvelope?: (ciphertext: Uint8Array, key: Uint8Array, ad: OpAAD) => Uint8Array;
   } = {},
 ): (req: SnapshotFoldRequest) => SnapshotFoldReply {
-  let folder: SnapshotRowFolder | null = null;
+  // P-006: the index-only fold — winners are positions during the scan, row JSON after
+  // `materialize`; no decoded value is retained between requests (snapshot-index-fold.ts).
+  let folder: SnapshotIndexFolder | null = null;
   let governorStats: GovernorReceiptSnapshotFilterStats | null = null;
 
-  const requireFolder = (): SnapshotRowFolder => {
+  const requireFolder = (): SnapshotIndexFolder => {
     if (!folder) throw new Error('snapshot fold worker: fold/finish before init (or after finish)');
     return folder;
   };
@@ -194,7 +207,7 @@ export function createSnapshotFoldHandler(
               )
             : null;
           governorStats = projection?.stats ?? null;
-          folder = new SnapshotRowFolder({
+          folder = new SnapshotIndexFolder({
             excludeTables: req.excludeTables,
             ...(projection ? { transformValue: projection.transform } : {}),
           });
@@ -226,7 +239,8 @@ export function createSnapshotFoldHandler(
             // The stored block IS the op's UTF-8 JSON, so its length is the measure the
             // inline fold used to get by re-stringifying every op (a second full pass).
             decodedBytes += block.byteLength;
-            f.add(op, op.value, req.sourceStart === undefined ? undefined : req.sourceStart + offset);
+            // The index IS the retained state now, so an absent sourceStart means "from 0".
+            f.add(op, (req.sourceStart ?? 0) + offset);
           }
           const heapUsedBytes = opts.heapUsedBytes?.();
           return {
@@ -251,10 +265,44 @@ export function createSnapshotFoldHandler(
             },
             transfer: [],
           };
+        case 'pending':
+          return { res: { kind: 'pending', id: req.id, indexes: requireFolder().pendingBlockIndexes() }, transfer: [] };
+        case 'materialize': {
+          const f = requireFolder();
+          const ops = unpackBlocks(req.buf, req.lengths).map((b) => (b ? decodeStoredBlock(b) : null));
+          f.materialize(ops, req.indexes, { now: req.now });
+          const heapUsedBytes = opts.heapUsedBytes?.();
+          return {
+            res: {
+              kind: 'materialized',
+              id: req.id,
+              remaining: f.pendingCount,
+              ...(heapUsedBytes !== undefined ? { heapUsedBytes } : {}),
+            },
+            transfer: [],
+          };
+        }
+        case 'checkpoint': {
+          const bytes = requireFolder().exportCheckpoint({ logKey: req.logKey, cursor: req.cursor });
+          // A fresh copy owns its whole buffer, so transferring it detaches nothing else.
+          const buf = bytes.slice().buffer;
+          return { res: { kind: 'checkpointed', id: req.id, buf }, transfer: [buf] };
+        }
+        case 'restore': {
+          const r = requireFolder().restoreCheckpoint(new Uint8Array(req.buf), {
+            logKey: req.logKey,
+            maxCursor: req.maxCursor,
+            ...(req.minCursor !== undefined ? { minCursor: req.minCursor } : {}),
+          });
+          return {
+            res: r.ok
+              ? { kind: 'restored', id: req.id, cursor: r.cursor }
+              : { kind: 'restored', id: req.id, cursor: null, reason: r.reason },
+            transfer: [],
+          };
+        }
         case 'finish': {
-          const rows = requireFolder().finish({ now: req.now });
-          const ops = buildSnapshotOpsFromRows({
-            rows,
+          const { blocks, rowCount } = requireFolder().finishBlocks({
             coversUpTo: req.coversUpTo,
             author_pubkey: req.author_pubkey,
             ts: req.ts,
@@ -262,8 +310,7 @@ export function createSnapshotFoldHandler(
             maxChunkBytes: req.maxChunkBytes,
             excludeTables: req.excludeTables,
           });
-          const rowCount = ops.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
-          const packed = packBlocks(ops.map(encodeStoredBlock));
+          const packed = packBlocks(blocks);
           folder = null; // release the live-key Map before the reply crosses back
           const stats = governorStats;
           governorStats = null;

@@ -29,6 +29,7 @@ import { issuesScopeWorkspace } from '../../issues-engineer';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 import type { SemanticDupeCandidate } from './semantic-dupe-guard';
+import { extractMeasurements, measurementOverlap } from '../../harness/improvements/measurement-tuples';
 
 const DEFAULT_WINDOW_MIN = 10;
 const DEFAULT_THRESHOLD = 0.5;
@@ -50,6 +51,8 @@ const STOPWORDS = new Set([
 export interface RecentDupeCandidateRow {
   id: string;
   title: string;
+  /** Body text; feeds the measurement-overlap signal alongside the title. */
+  summary?: string;
   state: string;
   harness: string | null;
 }
@@ -109,8 +112,9 @@ async function queryRecentOpenItemsReal(windowMin: number, harness?: string): Pr
   const { sql } = getOrgPg();
   const terminal = [...ALL_TERMINAL_STATUSES];
   const workspaces = [...new Set([issuesScopeWorkspace(), activeWorkspaceId()])];
-  const rows = await sql<Array<{ id: string; title: string; state: string; harness_slug: string }>>`
-    SELECT feature_id AS id, COALESCE(title, '') AS title, COALESCE(status, 'todo') AS state, harness_slug
+  const rows = await sql<Array<{ id: string; title: string; summary: string; state: string; harness_slug: string }>>`
+    SELECT feature_id AS id, COALESCE(title, '') AS title, COALESCE(summary, '') AS summary,
+           COALESCE(status, 'todo') AS state, harness_slug
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND created_ts >= now() - (${windowMin} || ' minutes')::interval
@@ -118,33 +122,81 @@ async function queryRecentOpenItemsReal(windowMin: number, harness?: string): Pr
        AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
      ORDER BY created_ts DESC
      LIMIT ${CANDIDATE_LIMIT}`;
-  return rows.map((r) => ({ id: r.id, title: r.title, state: r.state, harness: r.harness_slug || null }));
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    summary: r.summary,
+    state: r.state,
+    harness: r.harness_slug || null,
+  }));
 }
 
 const realDeps: RecentLexicalDupeDeps = { queryRecentOpenItems: queryRecentOpenItemsReal };
 
+/**
+ * Measurement-overlap score: shared DISTINCT anchors n -> n/(n+1), so 2 anchors
+ * score 0.67 and the measured 8-anchor pair 0.89. Monotone, bounded below 1, and
+ * never read as a cosine (dedup-edges skips every row that carries a `source`).
+ */
+function measurementScore(sharedAnchors: number): number {
+  return Math.round((sharedAnchors / (sharedAnchors + 1)) * 100) / 100;
+}
+
+type ScoredRow = RecentDupeCandidateRow & {
+  similarity: number;
+  source: 'lexical-recent' | 'measurement-overlap';
+};
+
 async function classify(
   d: RecentLexicalDupeDeps,
-  input: { title: string; harness?: string; excludeId?: string },
+  input: { title: string; summary?: string; harness?: string; excludeId?: string },
+  overlap: typeof measurementOverlap = measurementOverlap,
 ): Promise<SemanticDupeCandidate[]> {
   const cfg = recentDupeConfig();
-  const rows = await d.queryRecentOpenItems(cfg.windowMin, input.harness);
+  const rows = (await d.queryRecentOpenItems(cfg.windowMin, input.harness)).filter(
+    (r) => r.id !== input.excludeId,
+  );
   const newTokens = titleTokens(input.title);
-  const scored = rows
-    .filter((r) => r.id !== input.excludeId)
-    .map((r) => ({ ...r, similarity: jaccardSimilarity(newTokens, titleTokens(r.title)) }))
-    .filter((r) => r.similarity >= cfg.threshold)
+  const hits: ScoredRow[] = [];
+  const misses: RecentDupeCandidateRow[] = [];
+  for (const r of rows) {
+    const similarity = jaccardSimilarity(newTokens, titleTokens(r.title));
+    if (similarity >= cfg.threshold) hits.push({ ...r, similarity, source: 'lexical-recent' });
+    else misses.push(r);
+  }
+  // Observed-measurement signal (plan duplicate-screening-keys-on-authored-prose…,
+  // P-002 / D-002): two filings of the same measurement agree on identifier-anchored
+  // numbers while their prose differs (title Jaccard ~0.25 for the measured pair).
+  // Fail-open (R-5): any extractor fault drops ONLY this signal, never the Jaccard hits.
+  if (misses.length > 0) {
+    try {
+      const newText = `${input.title}\n${input.summary ?? ''}`;
+      const newMeasurements = extractMeasurements(newText);
+      if (newMeasurements.length > 0) {
+        for (const r of misses) {
+          const o = overlap(newMeasurements, `${r.title}\n${r.summary ?? ''}`);
+          if (o.match) hits.push({ ...r, similarity: measurementScore(o.anchors.length), source: 'measurement-overlap' });
+        }
+      }
+    } catch {
+      // swallow: advisory signal only
+    }
+  }
+  return hits
     .sort((a, b) => b.similarity - a.similarity)
-    .slice(0, TOP_K);
-  return scored.map((r) => ({
-    id: r.id,
-    title: r.title,
-    state: r.state,
-    harness: r.harness,
-    similarity: r.similarity,
-    source: 'lexical-recent' as const,
-  }));
+    .slice(0, TOP_K)
+    .map((r) => ({
+      id: r.id,
+      title: r.title,
+      state: r.state,
+      harness: r.harness,
+      similarity: r.similarity,
+      source: r.source,
+    }));
 }
+
+/** Test seam: classify with an injectable overlap function (R-5 thrown-extractor case). */
+export const __classifyRecentForTest = classify;
 
 /**
  * Prescreen a new work-item's title against OPEN items created within the last
@@ -154,7 +206,7 @@ async function classify(
  * is advisory-only and NEVER blocks a create).
  */
 export async function findRecentLexicalDupes(
-  input: { title: string; harness?: string; excludeId?: string },
+  input: { title: string; summary?: string; harness?: string; excludeId?: string },
   deps?: RecentLexicalDupeDeps,
 ): Promise<SemanticDupeCandidate[] | null> {
   if (process.env.PAPERCUSP_WI_RECENT_DUPE === 'off') return null;

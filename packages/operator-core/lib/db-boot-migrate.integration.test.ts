@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
 import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
+import { readBackupLockedRelationNames } from './backup-lock-migration-proof';
 
 // ── shared test-DB + mock holders ────────────────────────────────────────────
 const h = vi.hoisted(() => ({
@@ -523,10 +524,15 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
     expect(lockReleased).toBe(true);
   });
 
-  it('waits behind a held backup advisory lock before applying an armed migration', async () => {
+  // WI-10003357: the wait is relation-scoped. Boot waits while the backup
+  // holds a relation the pending migration names, and resumes as soon as the
+  // dump stops holding it — even though the rendezvous itself is still held
+  // (the 99 GiB transcript tier keeps it for ~20 min after the state tier).
+  it('waits while the backup locks a relation the migration names, then resumes with the rendezvous still held', async () => {
     const filename = '955-native-boot-backup-lock.sql';
+    await rootSql.unsafe('CREATE TABLE IF NOT EXISTS harness_shared.boot_native_backup_target (id int)');
     const dir = makeSqlDir({
-      [filename]: 'CREATE TABLE harness_shared.boot_native_backup_lock (id int);',
+      [filename]: 'ALTER TABLE harness_shared.boot_native_backup_target ADD COLUMN note text;',
     });
     await seedMigrationReservations([filename]);
     await rootSql.unsafe(`
@@ -542,68 +548,110 @@ describe('native boot migration/backup rendezvous (EI-21443484375613585)', () =>
       onnotice: () => {},
       connection: { application_name: 'pcbackup-workspace' },
     });
+    const dump = await holder.reserve();
     let boot: Promise<Awaited<ReturnType<typeof applyPendingMigrationsNow>>> | undefined;
     let lockReleased = false;
     const bootLog = vi.spyOn(console, 'log');
     try {
-      await holder`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      await dump`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      await dump`BEGIN`;
+      await dump`LOCK TABLE harness_shared.boot_native_backup_target IN ACCESS SHARE MODE`;
       h.bootSqlDir = dir;
       boot = applyPendingMigrationsNow();
 
-      // Do not use a timing-only assertion: observe the native boot session
-      // itself waiting on the advisory lock. This proves the rendezvous is
-      // acquired before the migration runner can reach the DDL.
+      const waitingLine = `waiting for backup migration rendezvous; pending migrations: ${filename}`;
       const deadline = Date.now() + 10_000;
-      let waiting = false;
-      while (Date.now() < deadline) {
-        const activity = await rootSql<
-          {
-            wait_event_type: string | null;
-            wait_event: string | null;
-            query: string;
-          }[]
-        >`
-          SELECT wait_event_type, wait_event, query
-            FROM pg_stat_activity
-           WHERE datname = current_database()
-             AND application_name = 'papercusp-boot-migrate'
-             AND state = 'active'
-             AND query ILIKE '%pg_advisory_lock%'
-           ORDER BY query_start DESC`;
-        waiting = activity.some((row) => row.wait_event_type === 'Lock' && row.wait_event === 'advisory');
-        if (waiting) break;
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      expect(waiting).toBe(true);
+      const logged = () => bootLog.mock.calls.some((call) => String(call[0]).includes(waitingLine));
+      while (!logged() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
       // The HTTP listener cannot start until this wait settles. Its boot log
-      // must identify the safety barrier and pending file while still blocked.
-      expect(bootLog).toHaveBeenCalledWith(expect.stringContaining(
-        `waiting for backup migration rendezvous; pending migrations: ${filename}`,
-      ));
-
+      // must identify the barrier, the pending file and the locked relation.
+      expect(bootLog).toHaveBeenCalledWith(expect.stringContaining(waitingLine));
+      expect(bootLog).toHaveBeenCalledWith(
+        expect.stringContaining(`${filename} names backup-locked relation boot_native_backup_target`),
+      );
       const beforeRelease = await rootSql<{ filename: string }[]>`
         SELECT filename FROM harness_shared.schema_migrations WHERE filename = ${filename}`;
       expect(beforeRelease).toEqual([]);
 
-      await holder`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
-      lockReleased = true;
+      // The dump moves on (state tier done): the relation lock goes, the
+      // rendezvous stays held for the rest of the backup.
+      await dump`COMMIT`;
       const result = await boot;
       expect(result).not.toBeNull();
       expect(result!.applied).toBe(1);
       expect(result!.failed).toEqual([]);
+      expect(bootLog).toHaveBeenCalledWith(expect.stringContaining('name no relation the backup holds'));
+      const stillHeld = await rootSql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid
+         WHERE l.locktype = 'advisory' AND l.granted AND a.application_name = 'pcbackup-workspace'`;
+      expect(stillHeld[0].n).toBe(1);
 
       const afterRelease = await rootSql<{ filename: string }[]>`
         SELECT filename FROM harness_shared.schema_migrations WHERE filename = ${filename}`;
       expect(afterRelease).toEqual([{ filename }]);
+      await dump`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      lockReleased = true;
     } finally {
       if (!lockReleased) {
-        await holder`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch(() => {});
+        await dump`ROLLBACK`.catch(() => {});
+        await dump`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch(() => {});
       }
       // If an assertion fails while boot is blocked, release the holder and
       // settle the boot promise before closing the test connection.
       await boot?.catch(() => {});
+      dump.release();
       await holder.end({ timeout: 5 });
       bootLog.mockRestore();
+    }
+  });
+
+  it('applies immediately when the backup locks only relations the migration does not name', async () => {
+    const filename = '958-native-boot-backup-unrelated.sql';
+    await rootSql.unsafe('CREATE TABLE IF NOT EXISTS harness_shared.boot_native_backup_transcript (id int)');
+    const dir = makeSqlDir({ [filename]: 'CREATE TABLE harness_shared.boot_native_backup_fresh (id int);' });
+    await seedMigrationReservations([filename]);
+    const holder = postgres(dbUrl, {
+      max: 1,
+      prepare: false,
+      onnotice: () => {},
+      connection: { application_name: 'pcbackup' },
+    });
+    const dump = await holder.reserve();
+    const bootLog = vi.spyOn(console, 'log');
+    try {
+      await dump`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      await dump`BEGIN`;
+      await dump`LOCK TABLE harness_shared.boot_native_backup_transcript IN ACCESS SHARE MODE`;
+      h.bootSqlDir = dir;
+      const result = await applyPendingMigrationsNow();
+      expect(result!.applied).toBe(1);
+      expect(result!.failed).toEqual([]);
+      expect(bootLog.mock.calls.some((call) => String(call[0]).includes('waiting for backup migration rendezvous'))).toBe(false);
+    } finally {
+      await dump`ROLLBACK`.catch(() => {});
+      await dump`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch(() => {});
+      dump.release();
+      await holder.end({ timeout: 5 });
+      bootLog.mockRestore();
+    }
+  });
+
+  it('expands backup-locked relations with partition ancestors and index names', async () => {
+    await rootSql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.boot_backup_parent (id int, k int) PARTITION BY LIST (k);
+      CREATE TABLE IF NOT EXISTS harness_shared.boot_backup_child PARTITION OF harness_shared.boot_backup_parent FOR VALUES IN (1);
+      CREATE INDEX IF NOT EXISTS boot_backup_child_id_idx ON harness_shared.boot_backup_child (id);`);
+    const holder = postgres(dbUrl, { max: 1, prepare: false, onnotice: () => {}, connection: { application_name: 'pcbackup' } });
+    const dump = await holder.reserve();
+    try {
+      await dump`BEGIN`;
+      await dump`LOCK TABLE ONLY harness_shared.boot_backup_child IN ACCESS SHARE MODE`;
+      const names = await readBackupLockedRelationNames(rootSql);
+      expect(names).toEqual(expect.arrayContaining(['boot_backup_child', 'boot_backup_parent', 'boot_backup_child_id_idx']));
+    } finally {
+      await dump`ROLLBACK`.catch(() => {});
+      dump.release();
+      await holder.end({ timeout: 5 });
     }
   });
 });

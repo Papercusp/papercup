@@ -68,7 +68,27 @@ async function publicLinksSnapshot(path, inherited) {
     try { url = new URL(value); } catch { throw new Error('portal_public_links_invalid_url'); }
     if (url.protocol !== 'https:' || url.username || url.password) throw new Error('portal_public_links_invalid_url');
   }
-  return { env, digest: createHash('sha256').update(JSON.stringify(links)).digest('hex') };
+  return { env, links, digest: createHash('sha256').update(JSON.stringify(links)).digest('hex') };
+}
+
+/**
+ * A download link is only certified into a Portal build if it answers 2xx right now.
+ * WI-10003250: both Portal download buttons shipped pointing at a page that did not exist,
+ * and nothing between the links file and the rendered href ever asked whether it resolved.
+ */
+async function linkLive(url) {
+  try {
+    const response = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(10000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function assertPublicLinksLive(links, check) {
+  for (const [key, value] of Object.entries(links)) {
+    if (value && !(await check(value))) throw new Error(`portal_public_links_dead_link:${key}`);
+  }
 }
 
 async function healthy(port) {
@@ -115,6 +135,7 @@ export async function reconcilePortal(config, deps = {}) {
     return { status: 'recovered', releasePath: current.path };
   }
 
+  await assertPublicLinksLive(publicLinks.links, deps.linkLive ?? linkLive);
   await runCommand(config.npm, ['run', 'build'], portalRoot, publicLinks.env);
   const afterBuild = await getFingerprint(portalRoot);
   const afterBuildPublicLinksDigest = await getPublicLinksDigest(publicLinksEnv);

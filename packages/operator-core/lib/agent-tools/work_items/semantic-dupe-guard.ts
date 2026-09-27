@@ -133,7 +133,7 @@ export interface SemanticDupeCandidate {
    *  P-008 guard (kept optional so no existing caller/test needs to change).
    *  'lexical-fulltext' = EI-19298062354262754's reuse of improvements:capture's
    *  own full-text search-first dedup (fulltext-lexical-dupe-guard.ts). */
-  source?: 'lexical-recent' | 'lexical-fulltext';
+  source?: 'lexical-recent' | 'lexical-fulltext' | 'measurement-overlap';
   /** pg_trgm `similarity()` between the new title and this candidate's, 0..1.
    *  Undefined when the caller's `queryCandidates` seam does not supply it —
    *  the co-signal promotion then simply does not apply (fail-open). */

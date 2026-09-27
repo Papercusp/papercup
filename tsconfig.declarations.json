@@ -98,6 +98,10 @@
     // executed-source map (loader + git drift seam). Registered for the same reason as
     // related-tests.mjs above: imported directly by executed-source-map.test.ts.
     "scripts/lib/executed-source-map.mjs",
+    // gate-file-level-test-reuse-2026-09-27 P-009 — the pure per-file pass-reuse rule
+    // (D-004). Registered for the same reason as executed-source-map.mjs above: imported
+    // directly by test-pass-reuse.test.ts.
+    "scripts/lib/test-pass-reuse.mjs",
     // EI-20812741760514969 — the "where did this run's blast radius come from" reporter.
     // Registered for the FIRST reason this list exists: it is imported directly by
     // affected-tests-changed-path-provenance.test.ts, which is what makes the disclosure

@@ -12,11 +12,17 @@
  * retries — which costs one snapshot, not the host.
  */
 import { existsSync } from 'node:fs';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { SnapshotAbortedError, type SnapshotFoldWindowResult, type SnapshotFoldWorkerLike } from './log-snapshot';
+import {
+  SnapshotAbortedError,
+  type SnapshotFoldCheckpointStore,
+  type SnapshotFoldWindowResult,
+  type SnapshotFoldWorkerLike,
+} from './log-snapshot';
 import { resolveMemoryWatchdogLimitMb } from '../../memory-watchdog';
 import type { PeerLogOp } from './peer-log';
 import type { GovernorReceiptSnapshotFilter } from './governor-receipt-snapshot-filter';
@@ -28,6 +34,38 @@ import {
 } from './snapshot-fold-protocol';
 
 type RequestBody = SnapshotFoldRequest extends infer R ? (R extends { id: number } ? Omit<R, 'id'> : never) : never;
+
+/**
+ * P-006 — the resume checkpoint of an own-log fold, as a FILE.
+ *
+ * Why a file and not Postgres (the storage-policy default): it is a disposable, derived cache
+ * of the own log, which is itself files (the corestore); it can be ~100+ MB on a large pot and
+ * is rewritten every few minutes during a fold; and losing it only costs a longer fold, never
+ * correctness (`restoreCheckpoint` validates the log key, exclusions and cursor, and anything
+ * that does not fit falls back to the seed or a fold from 0). Writes are atomic (tmp + rename)
+ * so a crash mid-save leaves the previous checkpoint, never a torn one.
+ */
+export function fileSnapshotFoldCheckpointStore(path: string): SnapshotFoldCheckpointStore {
+  return {
+    async load() {
+      try {
+        return new Uint8Array(await readFile(path));
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw e;
+      }
+    },
+    async save(bytes) {
+      await mkdir(dirname(path), { recursive: true });
+      const tmp = `${path}.${process.pid}.tmp`;
+      await writeFile(tmp, bytes);
+      await rename(tmp, path);
+    },
+    async clear() {
+      await rm(path, { force: true });
+    },
+  };
+}
 
 /**
  * The bundled `.mjs` beside the executing module (dist-host / the desktop sidecar),
@@ -274,6 +312,40 @@ export class SnapshotFoldWorker implements SnapshotFoldWorkerLike {
     const res = await this.request({ kind: 'inspect', buf, lengths }, [buf]);
     if (res.kind !== 'inspected') throw new Error(`snapshot fold worker: unexpected reply ${res.kind} to inspect`);
     return res.ops;
+  }
+
+  async pendingIndexes(): Promise<number[]> {
+    const res = await this.request({ kind: 'pending' });
+    if (res.kind !== 'pending') throw new Error(`snapshot fold worker: unexpected reply ${res.kind} to pending`);
+    return res.indexes;
+  }
+
+  async materialize(blocks: ReadonlyArray<Uint8Array | null>, indexes: readonly number[], now: number): Promise<void> {
+    const { buf, lengths } = packBlocks(blocks);
+    const res = await this.request({ kind: 'materialize', buf, lengths, indexes: [...indexes], now }, [buf]);
+    if (res.kind !== 'materialized') throw new Error(`snapshot fold worker: unexpected reply ${res.kind} to materialize`);
+    // The materialized rows are the set's own bytes, so the soft cap guards this phase too.
+    if (res.heapUsedBytes !== undefined && res.heapUsedBytes > this.heapCapBytes) {
+      const e = new SnapshotFoldHeapCapError(res.heapUsedBytes, this.heapCapBytes);
+      this.failAll(e);
+      throw e;
+    }
+  }
+
+  async checkpoint(args: { logKey: string; cursor: number }): Promise<Uint8Array> {
+    const res = await this.request({ kind: 'checkpoint', ...args });
+    if (res.kind !== 'checkpointed') throw new Error(`snapshot fold worker: unexpected reply ${res.kind} to checkpoint`);
+    return new Uint8Array(res.buf);
+  }
+
+  async restore(
+    bytes: Uint8Array,
+    args: { logKey: string; minCursor?: number; maxCursor: number },
+  ): Promise<{ cursor: number | null; reason?: string }> {
+    const buf = bytes.slice().buffer;
+    const res = await this.request({ kind: 'restore', buf, ...args }, [buf]);
+    if (res.kind !== 'restored') throw new Error(`snapshot fold worker: unexpected reply ${res.kind} to restore`);
+    return { cursor: res.cursor, ...(res.reason ? { reason: res.reason } : {}) };
   }
 
   async finish(args: {

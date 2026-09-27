@@ -336,9 +336,9 @@ describe('(d) the fold worker is capped below the host and reports its own heap'
     const worker = await SnapshotFoldWorker.open({ excludeTables: [] }, { maxOldGenerationSizeMb: 96 });
     cleanups.push(() => worker.close());
     const big = 'x'.repeat(16 * 1024);
-    let failure: unknown = null;
-    for (let w = 0; w < 200 && failure === null; w++) {
-      const window = Array.from({ length: 256 }, (_, k) =>
+    const WINDOWS = 200;
+    const windowAt = (w: number) =>
+      Array.from({ length: 256 }, (_, k) =>
         encodeStoredBlock({
           type: 'put',
           table: 'oom_t',
@@ -349,7 +349,16 @@ describe('(d) the fold worker is capped below the host and reports its own heap'
           author_pubkey: '',
         }),
       );
-      await worker.fold(window).catch((e: unknown) => {
+    // P-006 (memory-reduction R-1): the SCAN retains winning positions, never values, so
+    // ~800 MB of values folds entirely under a 96 MB cap. The old value-holding fold failed
+    // here, a few windows in.
+    for (let w = 0; w < WINDOWS; w++) await worker.fold(windowAt(w), { sourceStart: w * 256 });
+    // The live set is the MATERIALIZED rows (the set's own bytes); that is where the cap trips.
+    const indexes = await worker.pendingIndexes();
+    expect(indexes).toHaveLength(WINDOWS * 256);
+    let failure: unknown = null;
+    for (let w = 0; w < WINDOWS && failure === null; w++) {
+      await worker.materialize(windowAt(w), indexes.slice(w * 256, (w + 1) * 256), 0).catch((e: unknown) => {
         failure = e;
       });
     }

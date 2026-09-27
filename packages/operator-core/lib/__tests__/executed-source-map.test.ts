@@ -81,18 +81,63 @@ describe('loadExecutedSourceMap', () => {
 });
 
 describe('gitChangedBetween', () => {
-  it('runs `git diff --name-only <from> <to>` in the repo root and re-anchors the names', () => {
-    const argv: string[][] = [];
+  const O1 = '1'.repeat(40);
+  const O2 = '2'.repeat(40);
+  const Z = '0'.repeat(40);
+  const rawEntry = (m1: string, m2: string, o1: string, o2: string, st: string, p: string) =>
+    `:${m1} ${m2} ${o1} ${o2} ${st}\0${p}\0`;
+
+  it('runs a raw -z diff in the repo root and re-anchors the names', () => {
+    const argv: Array<{ cwd: string; args: string[] }> = [];
     const seam = gitChangedBetween({
       repoRoot: ROOT,
-      exec: (file, args) => {
-        argv.push([file, ...args]);
-        return 'pkg/a.ts\n\npkg/b.ts \n';
+      exec: (_file, args, opts) => {
+        argv.push({ cwd: (opts as { cwd: string }).cwd, args });
+        return (
+          rawEntry('100644', '100644', O1, O2, 'M', 'pkg/a.ts') +
+          rawEntry('000000', '100644', Z, O2, 'A', 'pkg/b.ts')
+        );
       },
     });
-    const drift = seam('aaa', 'bbb');
-    expect(drift).toEqual(new Set(['/repo/pkg/a.ts', '/repo/pkg/b.ts']));
-    expect(argv).toEqual([['git', 'diff', '--name-only', 'aaa', 'bbb']]);
+    expect(seam('aaa', 'bbb')).toEqual(new Set(['/repo/pkg/a.ts', '/repo/pkg/b.ts']));
+    expect(argv).toEqual([
+      { cwd: ROOT, args: ['diff', '--raw', '--no-renames', '--abbrev=40', '-z', 'aaa', 'bbb'] },
+    ]);
+  });
+
+  // gate-file-level-test-reuse-2026-09-27 D-003: a plain superproject diff names a submodule
+  // change only as the gitlink path, which no executed module ever equals, so the stale check
+  // was blind to every change inside the ~38 submodules.
+  it('recurses into a moved gitlink and names the files changed INSIDE the submodule', () => {
+    const calls: string[] = [];
+    const seam = gitChangedBetween({
+      repoRoot: ROOT,
+      exec: (_file, args, opts) => {
+        const cwd = (opts as { cwd: string }).cwd;
+        calls.push(`${cwd} ${args.slice(-2).join('..')}`);
+        if (cwd === ROOT) return rawEntry('160000', '160000', O1, O2, 'M', 'libs/sub');
+        if (cwd === '/repo/libs/sub') return rawEntry('100644', '100644', O1, O2, 'M', 'src/x.ts');
+        throw new Error(`unexpected cwd ${cwd}`);
+      },
+    });
+    expect(seam('aaa', 'bbb')).toEqual(new Set(['/repo/libs/sub', '/repo/libs/sub/src/x.ts']));
+    expect(calls).toEqual([`${ROOT} aaa..bbb`, `/repo/libs/sub ${O1}..${O2}`]);
+  });
+
+  it('answers null (cannot tell) for an added submodule or an undiffable pinned commit', () => {
+    const added = gitChangedBetween({
+      repoRoot: ROOT,
+      exec: () => rawEntry('000000', '160000', Z, O2, 'A', 'libs/new-sub'),
+    });
+    expect(added('aaa', 'bbb')).toBeNull();
+    const missingPin = gitChangedBetween({
+      repoRoot: ROOT,
+      exec: (_file, _args, opts) => {
+        if ((opts as { cwd: string }).cwd === ROOT) return rawEntry('160000', '160000', O1, O2, 'M', 'libs/sub');
+        throw new Error('fatal: bad object');
+      },
+    });
+    expect(missingPin('aaa', 'bbb')).toBeNull();
   });
 
   it('answers null (cannot tell) when git refuses the pair, and caches per pair', () => {

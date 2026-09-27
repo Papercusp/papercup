@@ -16,8 +16,12 @@ import { judgeRendezvousTimeouts, stripCommentsForClaim } from './rendezvous-unb
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
+// WI-10003357: db-boot-migrate no longer BLOCKS on the rendezvous — it polls
+// pg_try_advisory_lock and re-proves relation safety each iteration, so it has
+// zero blocking acquisitions and is pinned by its own assertion below.
+const BOOT_MIGRATE_SITE = 'packages/operator-core/lib/db-boot-migrate.ts';
+
 const RENDEZVOUS_SITES = [
-  'packages/operator-core/lib/db-boot-migrate.ts',
   'packages/operator-core/lib/backup/configure.ts',
   'packages/operator-core/lib/agent-tools/db/migrate.ts',
 ] as const;
@@ -105,6 +109,18 @@ describe('WI-1194246 rendezvous-unbounded-timeouts claim', () => {
   });
 
   describe('live sources', () => {
+    it(`${BOOT_MIGRATE_SITE} polls the rendezvous instead of blocking on it`, () => {
+      const source = readFileSync(join(ROOT, BOOT_MIGRATE_SITE), 'utf8');
+      const verdict = judgeRendezvousTimeouts(source);
+      // A blocking acquisition re-added here must reset both timeouts; the
+      // poll itself needs no opt-out because pg_try_advisory_lock never waits.
+      expect(verdict.violations).toEqual([]);
+      expect(verdict.acquisitions).toBe(0);
+      expect(stripCommentsForClaim(source)).toMatch(
+        /pg_try_advisory_lock\(hashtext\(\$\{BACKUP_MIGRATION_ADVISORY_LOCK_KEY\}\)\)/,
+      );
+    });
+
     it.each(RENDEZVOUS_SITES)('%s resets BOTH timeouts before acquiring', (rel) => {
       const verdict = judgeRendezvousTimeouts(readFileSync(join(ROOT, rel), 'utf8'));
       expect(verdict.acquisitions).toBeGreaterThan(0);

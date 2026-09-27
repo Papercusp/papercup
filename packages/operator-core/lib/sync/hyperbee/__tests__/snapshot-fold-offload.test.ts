@@ -387,8 +387,16 @@ describe('the worker state machine (createSnapshotFoldHandler)', () => {
     expect(before.kind).toBe('error');
 
     expect(handle({ kind: 'init', id: 2, excludeTables: [] }).res.kind).toBe('ok');
-    const folded = handle({ kind: 'fold', id: 3, ...block(op!) }).res;
+    const folded = handle({ kind: 'fold', id: 3, ...block(op!), sourceStart: 0 }).res;
     expect(folded).toMatchObject({ kind: 'folded', decodedOps: 1, keyCount: 1 });
+    // P-006: the fold is index-only, so finish refuses until the winner's block is read back.
+    const early = { kind: 'finish' as const, now: NOW, coversUpTo: 1, author_pubkey: 'k', ts: NOW, schema_version: CURRENT_SCHEMA_VERSION, excludeTables: [] };
+    expect(handle({ ...early, id: 30 }).res).toMatchObject({ kind: 'error', message: expect.stringMatching(/not materialized/) });
+    expect(handle({ kind: 'pending', id: 31 }).res).toEqual({ kind: 'pending', id: 31, indexes: [0] });
+    expect(handle({ kind: 'materialize', id: 32, ...block(op!), indexes: [0], now: NOW }).res).toMatchObject({
+      kind: 'materialized',
+      remaining: 0,
+    });
     const finished = handle({
       kind: 'finish',
       id: 4,

@@ -58,6 +58,11 @@ import {
 } from './migration-reservation';
 import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
 import {
+  describeConflicts,
+  findBackupLockConflicts,
+  readBackupLockedRelationNames,
+} from './backup-lock-migration-proof';
+import {
   preDestructiveSnapshotAdmissionGuardSql,
   requiresPreDestructiveSnapshotAdmission,
 } from '@papercusp/backup/snapshot-admission';
@@ -234,6 +239,62 @@ export async function reconcileMigrationReservations(
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** How often a boot blocked on a busy backup rendezvous re-tries it and re-runs the proof. */
+export const BACKUP_RENDEZVOUS_POLL_MS = 5_000;
+
+type BusyRendezvousProof =
+  | { safe: true; migrationFiles: string[]; pendingFiles: string[]; message: string }
+  | { safe: false; message: string };
+
+/**
+ * WI-10003357 — may boot apply its pending migrations while a backup holds
+ * the rendezvous? Yes when nothing is pending, or when no pending file names a
+ * relation the backup currently holds (see backup-lock-migration-proof.ts).
+ * Any failure to prove it is a "no", so the caller keeps waiting safely.
+ */
+async function proveBusyRendezvousSafe(client: postgres.Sql, sqlDir: string): Promise<BusyRendezvousProof> {
+  try {
+    const migrationFiles = (await readdir(sqlDir))
+      .filter((file) => file.endsWith('.sql'))
+      .filter((file) => !defaultSkipFile(file));
+    const appliedRows = await client<{ filename: string }[]>`
+      SELECT filename FROM harness_shared.schema_migrations`;
+    const applied = new Set(appliedRows.map((row) => row.filename));
+    const pendingFiles = migrationFiles.filter((file) => !applied.has(file));
+    if (pendingFiles.length === 0) {
+      return {
+        safe: true,
+        migrationFiles,
+        pendingFiles,
+        message: `backup rendezvous busy, but all ${migrationFiles.length} migration(s) in this tree are already applied`,
+      };
+    }
+    const pending = await Promise.all(
+      pendingFiles.map(async (file) => ({ file, sqlText: await readFile(join(sqlDir, file), 'utf8') })),
+    );
+    const conflicts = findBackupLockConflicts(pending, await readBackupLockedRelationNames(client));
+    if (conflicts.length > 0) {
+      return {
+        safe: false,
+        message: `pending migrations: ${pendingFiles.join(', ')}; ${describeConflicts(conflicts)}`,
+      };
+    }
+    return {
+      safe: true,
+      migrationFiles,
+      pendingFiles,
+      message: `backup rendezvous busy, but pending migration(s) ${pendingFiles.join(', ')} name no relation the backup holds`,
+    };
+  } catch (error) {
+    return {
+      safe: false,
+      message: `pending migration set could not be proven safe (${
+        error instanceof Error ? error.message : String(error)
+      })`,
+    };
+  }
+}
+
 // EI-19403856469813053: a CROSS-BOOT cooldown for a migration file that keeps
 // failing. The original symptom this closes: migration 727 (an ALTER on
 // harness_shared.work_items — a table with dependent VIEWS, per the
@@ -386,7 +447,26 @@ export async function applyPendingMigrationsNow(
     if (requiresPreDestructiveSnapshotAdmission(file)) {
       await client.unsafe(preDestructiveSnapshotAdmissionGuardSql(activeWorkspaceId()));
     }
+    // WI-10003357: when boot proved the pending set safe WITHOUT the backup
+    // rendezvous, a backup can still start a new pg_dump between that proof and
+    // this file. Re-prove this one file against the live lock set right before
+    // it runs; a late conflict surfaces as lock contention so the bounded
+    // contention retry below waits it out instead of queueing DDL behind the dump.
+    if (unlockedWithPending) {
+      const conflicts = findBackupLockConflicts(
+        [{ file, sqlText }],
+        await readBackupLockedRelationNames(client),
+      );
+      if (conflicts.length > 0) {
+        throw new Error(
+          `canceling statement due to lock timeout (backup pg_dump now holds a lock this migration needs: ${describeConflicts(conflicts)})`,
+        );
+      }
+    }
   };
+  // Set once boot proceeds past a busy backup rendezvous with migrations still
+  // pending (see the rendezvous poll below); read by guardPendingMigration.
+  let unlockedWithPending = false;
 
   // A DEDICATED max:1 client — the runner applies each file as a raw
   // `BEGIN; <ddl>; COMMIT;` via .unsafe(), which postgres-js rejects with
@@ -485,53 +565,42 @@ export async function applyPendingMigrationsNow(
     // for that whole window when every migration in THEIR pinned tree is
     // already applied. Try the rendezvous first (the ordinary path remains one
     // query); only when it is busy do the cheap applied-set preflight.
-    const tryLock = await client<{ acquired: boolean }[]>`
-      SELECT pg_try_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})) AS acquired`;
-    if (tryLock[0]?.acquired === true) {
-      backupMigrationLockHeld = true;
-    } else {
-      let migrationFiles: string[] | null = null;
-      let pendingMigrationFiles: string[] | null = null;
-      try {
-        migrationFiles = (await readdir(sqlDir))
-          .filter((file) => file.endsWith('.sql'))
-          .filter((file) => !defaultSkipFile(file));
-        const appliedRows = await client<{ filename: string }[]>`
-          SELECT filename FROM harness_shared.schema_migrations`;
-        const applied = new Set(appliedRows.map((row) => row.filename));
-        pendingMigrationFiles = migrationFiles.filter((file) => !applied.has(file));
-        if (pendingMigrationFiles.length > 0) migrationFiles = null;
-      } catch (error) {
-        console.warn(
-          `[boot-migrate] could not prove the busy backup rendezvous is a no-op; waiting safely: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-        migrationFiles = null;
+    //
+    // WI-10003357: the wait is a POLL, not one blocking pg_advisory_lock. A
+    // backup holds the rendezvous through its whole run, including a ~99 GiB
+    // transcript tier that locks only the session-archive tables, so a blocking
+    // wait kept request-only hosts dark for the entire backup even when the
+    // pending migrations touched nothing the dump still held. Each iteration
+    // re-tries the lock and re-runs the relation-scoped proof, so boot resumes
+    // the moment the dump stops holding what the pending migrations name.
+    let announcedWait = false;
+    for (;;) {
+      const tryLock = await client<{ acquired: boolean }[]>`
+        SELECT pg_try_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})) AS acquired`;
+      if (tryLock[0]?.acquired === true) {
+        backupMigrationLockHeld = true;
+        if (announcedWait) {
+          console.log('[boot-migrate] backup migration rendezvous acquired — resuming migration preflight');
+        }
+        break;
       }
-
-      if (migrationFiles !== null) {
-        noPendingUnlockedSnapshot = new Set(migrationFiles);
-        console.log(
-          `[boot-migrate] backup rendezvous busy, but all ${migrationFiles.length} migration(s) in this tree are already applied — continuing without a migration lock`,
-        );
-      } else {
+      const proof = await proveBusyRendezvousSafe(client, sqlDir);
+      if (proof.safe) {
+        noPendingUnlockedSnapshot = new Set(proof.migrationFiles);
+        unlockedWithPending = proof.pendingFiles.length > 0;
+        console.log(`[boot-migrate] ${proof.message} — continuing without a migration lock`);
+        break;
+      }
+      if (!announcedWait) {
         // Request-only hosts cannot open HTTP until this safety wait finishes.
         // Name the barrier before entering the intentionally unbounded wait so
         // a desktop startup deadline does not look like an unexplained hang.
         console.log(
-          `[boot-migrate] waiting for backup migration rendezvous; ${
-            pendingMigrationFiles
-              ? `pending migrations: ${pendingMigrationFiles.join(', ')}`
-              : 'pending migration set could not be determined'
-          } — waiting for the current lock holder to finish`,
+          `[boot-migrate] waiting for backup migration rendezvous; ${proof.message} — waiting until the backup releases it or stops locking what the pending migrations touch`,
         );
-        await client`SET lock_timeout = '0'`;
-        await client`SET statement_timeout = '0'`;
-        await client`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
-        backupMigrationLockHeld = true;
-        console.log('[boot-migrate] backup migration rendezvous acquired — resuming migration preflight');
+        announcedWait = true;
       }
+      await sleep(BACKUP_RENDEZVOUS_POLL_MS);
     }
     await client`SET lock_timeout = '15s'`;
     // Retry ONLY pure transaction contention (lock timeout / deadlock /
