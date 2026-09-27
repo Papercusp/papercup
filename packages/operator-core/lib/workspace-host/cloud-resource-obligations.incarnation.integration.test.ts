@@ -10,7 +10,9 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 import {
   closeCloudResourceObligation,
   createCloudResourceObligationCloseObserver,
+  listDischargedOpenCloudResourceObligationEscalations,
   listOpenCloudResourceObligations,
+  markCloudResourceObligationEscalated,
   recordCloudResourceObligation,
 } from './cloud-resource-obligations';
 
@@ -148,5 +150,73 @@ describe('cloud resource obligation VM incarnation lifecycle (real Postgres)', (
     const open = await listOpenCloudResourceObligations(db.adminSql, { workspaceId: absentWorkspace });
     expect(open).toHaveLength(1);
     expect(open[0]).toMatchObject({ incarnationId: 'gce-instance-2002', teardownOwed: true, closedAtMs: null });
+  });
+
+  // WI-10003512: the discharged-escalation read decides which "Undischarged …" work-items the
+  // sweep retires. Its HAVING/EXISTS predicate is exactly what a fake SQL cannot check.
+  it('lists an escalation only when every referencing obligation is closed and the work-item is still open', async () => {
+    const ws = 'cloud-resource-obligation-discharge-ws';
+    const common = { workspaceId: ws, provider: 'gcp' as const, projectId: 'p', graceMs: 60_000 };
+    const insertWorkItem = async (featureId: string, status: string) => {
+      await db.adminSql`
+        INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, status)
+        VALUES (${ws}, 'papercusp', ${featureId}, ${status})`;
+    };
+    const escalateAndMaybeClose = async (resourceKind: string, resourceId: string, workItemId: string, close: boolean) => {
+      await recordCloudResourceObligation(db.adminSql, { ...common, resourceKind, resourceId, purpose: 'discharge test' });
+      const [row] = (await listOpenCloudResourceObligations(db.adminSql, { workspaceId: ws })).filter(
+        (r) => r.resourceId === resourceId,
+      );
+      await markCloudResourceObligationEscalated(db.adminSql, row!.id, workItemId);
+      if (close) {
+        expect(
+          await closeCloudResourceObligation(db.adminSql, {
+            ...common,
+            resourceKind,
+            resourceId,
+            reason: `provider confirmed ${resourceId} destroy`,
+          }),
+        ).toEqual({ closed: true });
+      }
+    };
+
+    // (a) discharged + open work-item → listed.
+    await insertWorkItem('EI-discharged', 'open');
+    await escalateAndMaybeClose('nat', 'nat-discharged', 'EI-discharged', true);
+    // (b) two rows share one escalation; one is still open → NOT listed.
+    await insertWorkItem('EI-half', 'blocked');
+    await escalateAndMaybeClose('router', 'router-half-closed', 'EI-half', true);
+    await escalateAndMaybeClose('firewall', 'fw-half-open', 'EI-half', false);
+    // (c) discharged but the work-item is already terminal → NOT listed (nothing to retire).
+    await insertWorkItem('EI-already-resolved', 'resolved');
+    await escalateAndMaybeClose('disk', 'disk-already', 'EI-already-resolved', true);
+    // (d) still undischarged → NOT listed.
+    await insertWorkItem('EI-live-leak', 'open');
+    await escalateAndMaybeClose('subnetwork', 'subnet-live', 'EI-live-leak', false);
+
+    const listed = (await listDischargedOpenCloudResourceObligationEscalations(db.adminSql)).filter(
+      (d) => d.workspaceId === ws,
+    );
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toMatchObject({
+      workspaceId: ws,
+      workItemId: 'EI-discharged',
+      resources: ['nat nat-discharged'],
+      closedReasons: ['provider confirmed nat-discharged destroy'],
+    });
+    expect(Number.isFinite(listed[0]!.lastClosedAtMs)).toBe(true);
+
+    // Closing the last open row of the shared escalation makes it eligible too.
+    await closeCloudResourceObligation(db.adminSql, {
+      ...common,
+      resourceKind: 'firewall',
+      resourceId: 'fw-half-open',
+      reason: 'provider confirmed fw destroy',
+    });
+    const after = (await listDischargedOpenCloudResourceObligationEscalations(db.adminSql))
+      .filter((d) => d.workspaceId === ws)
+      .map((d) => d.workItemId)
+      .sort();
+    expect(after).toEqual(['EI-discharged', 'EI-half']);
   });
 });

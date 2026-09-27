@@ -14,13 +14,51 @@ import {
   type RefAnnouncePayload,
   type SignedRefAnnouncement,
   acceptRefAnnouncement,
+  fetchedSnapshotHonoursAnnouncement,
   isSignedRefAnnouncement,
   refAnnounceSigningBytes,
   shouldFetchOnAnnouncement,
   takeAnnounceBudget,
   verifyRefAnnouncement,
 } from './ref-announce';
+import type { SignedSigrefs } from './sigrefs';
 import { makeSignedProtocolContext } from './signed-context';
+
+describe('fetchedSnapshotHonoursAnnouncement (WI-2142873: a fetch brings the peer AS IT IS NOW)', () => {
+  const ctx = makeSignedProtocolContext('hive-a', 'gh-1', 'sg2-1-' + 'a'.repeat(40));
+  const ann = (version: number, oid: string) => ({ ...ctx, version, sigrefs_oid: oid }) as unknown as SignedRefAnnouncement;
+  const snap = (version: number, context = ctx) => ({ ...context, version }) as unknown as SignedSigrefs;
+  const OID_ANNOUNCED = '1'.repeat(40);
+  const OID_OTHER = '2'.repeat(40);
+
+  it('accepts a NEWER device-signed snapshot than the queued announcement that drove the fetch', () => {
+    // The Mac VM drained v2..v2683 while the tower was at v2921: every fetch was newer.
+    expect(fetchedSnapshotHonoursAnnouncement(snap(2921), OID_OTHER, ann(2683, OID_ANNOUNCED))).toBe(true);
+  });
+
+  it('accepts exactly the announced snapshot', () => {
+    expect(fetchedSnapshotHonoursAnnouncement(snap(7), OID_ANNOUNCED, ann(7, OID_ANNOUNCED))).toBe(true);
+  });
+
+  it('refuses the same version under a different blob (equivocation)', () => {
+    expect(fetchedSnapshotHonoursAnnouncement(snap(7), OID_OTHER, ann(7, OID_ANNOUNCED))).toBe(false);
+  });
+
+  it('refuses a snapshot OLDER than announced (relay rollback)', () => {
+    expect(fetchedSnapshotHonoursAnnouncement(snap(6), OID_OTHER, ann(7, OID_ANNOUNCED))).toBe(false);
+  });
+
+  it('refuses a newer snapshot from a different signed context or store generation', () => {
+    const otherGen = makeSignedProtocolContext('hive-a', 'gh-1', 'sg2-2-' + 'b'.repeat(40));
+    const otherRepo = makeSignedProtocolContext('hive-a', 'gh-2', 'sg2-1-' + 'a'.repeat(40));
+    expect(fetchedSnapshotHonoursAnnouncement(snap(9, otherGen), OID_OTHER, ann(7, OID_ANNOUNCED))).toBe(false);
+    expect(fetchedSnapshotHonoursAnnouncement(snap(9, otherRepo), OID_OTHER, ann(7, OID_ANNOUNCED))).toBe(false);
+  });
+
+  it('refuses a newer snapshot whose sigrefs ref could not be read back', () => {
+    expect(fetchedSnapshotHonoursAnnouncement(snap(9), null, ann(7, OID_ANNOUNCED))).toBe(false);
+  });
+});
 
 function mkSigner(): { pubkeyBase64: string; sign: (bytes: Buffer) => Promise<Buffer> } {
   const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();

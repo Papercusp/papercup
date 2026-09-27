@@ -37,6 +37,7 @@ import {
   getTxPool,
   getResource,
   listResources,
+  listLiveResourceDomains,
   readResourceQueue,
   type ResourceHolder,
   type ResourceRegistryRow,
@@ -239,9 +240,16 @@ export default defineTool({
     // holder from another domain is safe (a reader waits); under-reporting
     // reads as permission to write on a resource a peer holds, and enforcement
     // on these rows is `advisory`, so nothing downstream would stop it.
+    //
+    // EI-24434173247501787: those three are still only the domains THIS process
+    // computes. A caller-tree domain is the serving operator's checkout, so a
+    // lease taken through the other operator (:3070 vs :3170) sits in a domain
+    // none of them names, and this read reported `holders: []` for a rig held
+    // exclusive. Union in every domain that actually holds a live lease.
     const hgDomain = hostGlobalLockDomain();
     const wsDomain = workspaceScopedLockDomain();
-    const domains = [...new Set([callerDomain, hgDomain, wsDomain])];
+    const liveDomains = await listLiveResourceDomains(pool, args.resource);
+    const domains = [...new Set([callerDomain, hgDomain, wsDomain, ...liveDomains])];
 
     const queues = await Promise.all(
       domains.map(async (coordinationDomain) => ({

@@ -2132,14 +2132,33 @@ async function cloudResourceObligationSweepTick(): Promise<void> {
       if (shouldShedHeavyTick('cloud-resource-obligation-sweep')) return;
       try {
         const { runCloudResourceObligationSweepOnce } = await import('../workspace-host/cloud-resource-obligations');
-        const { captureImprovement } = await import('../harness/improvements/capture-core');
+        const { captureImprovement, WATCHDOG_AUTO_CLOSE_OWNER } = await import('../harness/improvements/capture-core');
+        const { commentIssue, setIssueState } = await import('../issues-engineer');
         const { sql } = getOrgPg();
-        const r = await runCloudResourceObligationSweepOnce(sql, { capture: captureImprovement });
-        if (r.candidates > 0 || r.errors.length > 0) {
+        const r = await runCloudResourceObligationSweepOnce(sql, {
+          capture: captureImprovement,
+          // WI-10003512: a discharged obligation retires its escalation. Resolved under the
+          // watchdog auto-close owner so an exact-key recurrence reopens THIS row (capture-core
+          // P-004); skipCompletionGate because a ledger discharge is a lifecycle marker, not a
+          // completion of work on the escalation.
+          resolveEscalation: async ({ workspaceId, workItemId, reason }) => {
+            await commentIssue(
+              workItemId,
+              `🟢 Resolved by the cloud-resource-obligation sweep: ${reason}. If this resource leaks ` +
+                `again under the same name, the next escalation reopens this item.`,
+              'system:cloud-resource-obligation-sweep',
+              { workspaceId },
+            );
+            await setIssueState(workItemId, 'resolved', WATCHDOG_AUTO_CLOSE_OWNER, undefined, {
+              skipCompletionGate: true,
+            });
+          },
+        });
+        if (r.candidates > 0 || r.errors.length > 0 || (r.resolved ?? 0) > 0) {
           console.log(
             `[cloud-resource-obligation-sweep] ${r.candidates} past-grace obligation(s), ` +
-              `${r.escalated} escalated` +
-              (r.errors.length > 0 ? `, ${r.errors.length} capture failure(s): ${JSON.stringify(r.errors)}` : ''),
+              `${r.escalated} escalated, ${r.resolved ?? 0} discharged escalation(s) resolved` +
+              (r.errors.length > 0 ? `, ${r.errors.length} failure(s): ${JSON.stringify(r.errors)}` : ''),
           );
         }
       } catch (err) {

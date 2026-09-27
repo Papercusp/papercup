@@ -17,6 +17,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -36,6 +37,10 @@ import {
   runSummaryLine,
   type ScenarioOutcome,
 } from '@papercusp/operator-core/lib/llm-testing/run-exit-code';
+import {
+  beginLlmScenarioLedger,
+  recordLlmScenarioTestRun,
+} from '@papercusp/operator-core/lib/llm-testing/test-run-ledger';
 
 type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay' | 'export-fixture' | 'lint';
 
@@ -400,6 +405,7 @@ async function main(): Promise<void> {
     const scenarioFilePath = resolveScenarioFilePath(scenario);
     process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
     let report;
+    const ledgerBefore = args.noPersist ? null : beginLlmScenarioLedger();
     try {
       report = await runScenario(scenario, {
         forceRepeat: args.noMatrix ? 1 : undefined,
@@ -420,6 +426,14 @@ async function main(): Promise<void> {
       return 'failed';
     }
     printReport(report);
+    // A live-model run is the `llm` test layer; record it in the shared test ledger so
+    // acceptance BARs requiring `llm` can bind to it (EI-24434635346407728).
+    if (!args.noPersist) {
+      const testRunId = await recordLlmScenarioTestRun(report, scenarioFilePath, ledgerBefore);
+      process.stdout.write(testRunId === null
+        ? `  ⚠ test_runs ledger row not recorded [${scenario.id}]\n`
+        : `  ledger test_runs.id=${testRunId} layer=llm\n`);
+    }
     // Verdict for the UI/PG ('preview' for single-run per plan §2.4);
     // exit-code from the per-run status so CI still flags single-run
     // failures.
@@ -455,7 +469,13 @@ function resolveScenarioFilePath(scenario: { id: string; target: string }): stri
   // Architect:          'architect-A1-...' → files 'A1-...'
   const here = dirname(fileURLToPath(import.meta.url));
   const idPart = scenario.id.replace(/^(op|oracle|architect|su)-/, '');
-  return join(here, '..', 'lib', 'llm-testing', 'scenarios', scenario.target, `${idPart}.ts`);
+  // Scenarios live in operator-core (EI-24434635346407728 found the apps/operator path
+  // below no longer exists, which silently made every scenario hash + ledger path absent).
+  const candidates = [
+    join(here, '..', '..', '..', 'packages', 'operator-core', 'lib', 'llm-testing', 'scenarios', scenario.target, `${idPart}.ts`),
+    join(here, '..', 'lib', 'llm-testing', 'scenarios', scenario.target, `${idPart}.ts`),
+  ];
+  return candidates.find((p) => existsSync(p)) ?? candidates[0];
 }
 
 function printReport(report: ReturnType<typeof runScenario> extends Promise<infer R> ? R : never): void {

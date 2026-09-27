@@ -19,6 +19,10 @@ import {
   isValidSourceSha,
   buildCutEnv,
   buildCutArgv,
+  orchestratorNeedsStagingSyncLock,
+  wrapWithStagingSyncLock,
+  STAGING_SYNC_LOCK,
+  STAGING_SYNC_LOCK_TIMEOUT_EXIT,
   parseCutStartedMarker,
   readCutStatus,
   collectHandoff,
@@ -598,6 +602,137 @@ describe('legsForPlatform', () => {
     expect(legsForPlatform('mac')).toEqual({ mac: true });
     expect(legsForPlatform('windows')).toEqual({ windows: true });
     expect(legsForPlatform('arm64')).toEqual({ arm64: true });
+  });
+});
+
+// WI-10003515: a cut fired through :3170 sources its orchestration from the staging
+// checkout, which papercup-staging-sync re-clones IN PLACE on every staging advance. The
+// 0.0.22 mac leg died sourcing bin/lib/source-roots.sh during one such re-clone.
+describe('buildCutArgv — a staging-checkout orchestrator holds the staging-sync lock', () => {
+  const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
+  const innerFor = (orchestrator: string): string => {
+    const argv = buildCutArgv(
+      '/ws/papercusp-relcut-0022/papercusp-desktop',
+      '0.0.22',
+      'alpha',
+      { mac: true },
+      sourceSha,
+      '/usr/bin:/bin',
+      { ownerName: 'Avi' },
+      undefined,
+      orchestrator,
+    );
+    return argv[argv.length - 1];
+  };
+
+  it('recognises only the staging checkouts as re-cloned orchestrator roots', () => {
+    expect(orchestratorNeedsStagingSyncLock('/ws/papercusp-staging/papercusp-desktop')).toBe(true);
+    expect(orchestratorNeedsStagingSyncLock('/ws/papercup-staging/papercusp-desktop')).toBe(true);
+    expect(orchestratorNeedsStagingSyncLock('/ws/papercusp/papercusp-desktop')).toBe(false);
+    expect(orchestratorNeedsStagingSyncLock('/ws/papercusp-relcut-0022/papercusp-desktop')).toBe(false);
+  });
+
+  it('wraps the cutter in a SHARED, fd-closing, bounded flock on the staging-sync lock', () => {
+    const inner = innerFor('/ws/papercusp-staging/papercusp-desktop');
+    expect(inner).toContain(
+      `flock --shared --close --verbose --timeout 1200 --conflict-exit-code ${STAGING_SYNC_LOCK_TIMEOUT_EXIT} '${STAGING_SYNC_LOCK}' bash -c 'source "$1" "$2" "$3"'`,
+    );
+    // The DONE sentinel still records the wrapped cutter's exit code.
+    expect(inner).toContain(`echo "DONE:$?" > ${CUT_DONE}`);
+  });
+
+  it('leaves a cut whose orchestrator is not the staging checkout unwrapped', () => {
+    const inner = innerFor('/ws/papercusp/papercusp-desktop');
+    expect(inner).not.toContain('flock');
+    expect(inner).toContain(`bash -c 'source "$1" "$2" "$3"'`);
+  });
+});
+
+// Behavioural: run the real wrapper with the real flock(1) against a private lock file, and
+// check the three properties the fix depends on, using the exact lock shapes
+// sync-staging-checkout.sh (exclusive, non-blocking) and :3170's ExecStartPre (shared) take.
+describe.skipIf(process.platform !== 'linux')('wrapWithStagingSyncLock — real flock semantics', () => {
+  // Runs one cut under `wrap`, returning what staging-sync / a staging restart observed while
+  // it ran and after it exited. A daemon the cut spawned is still alive at the end.
+  function runCutScenario(wrap: (command: string, lockPath: string) => string) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-staging-lock-'));
+    const lock = path.join(dir, 'staging-sync.lock');
+    const holding = path.join(dir, 'holding');
+    const release = path.join(dir, 'release');
+    const daemonPidFile = path.join(dir, 'daemon.pid');
+    const trySync = () => spawnSync('bash', ['-c', `exec 9>'${lock}'; flock -n 9`]).status;
+    const tryRestart = () => spawnSync('flock', ['-s', '-n', lock, 'true']).status;
+    // The "cut": spawn a detached long-lived daemon (as sccache would), signal that the
+    // lock is held, then wait for the test to release it.
+    const cut =
+      // `\$!` survives the OUTER shell's double quotes so the inner cut expands it.
+      `sleep 300 </dev/null >/dev/null 2>&1 & echo \\$! > '${daemonPidFile}'; ` +
+      `touch '${holding}'; while [ ! -e '${release}' ]; do sleep 0.05; done`;
+    const child = spawnSync('bash', ['-c', `${wrap(`bash -c "${cut}"`, lock)} & ` +
+      `while [ ! -e '${holding}' ]; do sleep 0.05; done; ` +
+      // While the cut runs: staging-sync's exclusive try-lock must fail, a shared restart must pass.
+      `exec 9>'${lock}'; if flock -n 9; then echo SYNC=acquired; else echo SYNC=blocked; fi; exec 9>&-; ` +
+      `if flock -s -n '${lock}' true; then echo RESTART=ok; else echo RESTART=blocked; fi; ` +
+      `touch '${release}'; wait`], { encoding: 'utf8', timeout: 20_000 });
+    let daemonPid = 0;
+    try {
+      daemonPid = Number(fs.readFileSync(daemonPidFile, 'utf8').trim());
+      let daemonAlive = true;
+      try {
+        process.kill(daemonPid, 0);
+      } catch {
+        daemonAlive = false;
+      }
+      return { stdout: child.stdout, daemonAlive, syncAfter: trySync(), restartAfter: tryRestart() };
+    } finally {
+      if (daemonPid > 0) {
+        try {
+          // Re-verify identity before killing a pid read from a file (pid reuse).
+          const cmdline = fs.readFileSync(`/proc/${daemonPid}/cmdline`, 'utf8');
+          if (cmdline.split('\x00').slice(0, 2).join(' ') === 'sleep 300') process.kill(daemonPid, 'SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it('blocks staging-sync, admits a staging restart, and never leaks the lock to a spawned daemon', () => {
+    const r = runCutScenario((command, lockPath) => wrapWithStagingSyncLock(command, lockPath, 5));
+    expect(r.stdout).toContain('SYNC=blocked');
+    expect(r.stdout).toContain('RESTART=ok');
+    // The daemon outlived the cut, yet staging-sync can take the lock the moment the cut exits.
+    expect(r.daemonAlive).toBe(true);
+    expect(r.syncAfter).toBe(0);
+    expect(r.restartAfter).toBe(0);
+  });
+
+  it('control: the same scenario DETECTS a wrapper that lets the spawned daemon inherit the lock', () => {
+    // Calibrates the instrument above: without --close the daemon keeps staging frozen after
+    // the cut exits, and this scenario must be able to see that.
+    const leaky = (command: string, lockPath: string) =>
+      wrapWithStagingSyncLock(command, lockPath, 5).replace('--close ', '');
+    expect(leaky('true', '/x')).not.toContain('--close');
+    const r = runCutScenario(leaky);
+    expect(r.stdout).toContain('SYNC=blocked');
+    expect(r.daemonAlive).toBe(true);
+    expect(r.syncAfter).not.toBe(0);
+  });
+
+  it('exits with the distinct timeout code when staging-sync holds the lock past the wait', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cut-staging-lock-'));
+    const lock = path.join(dir, 'staging-sync.lock');
+    try {
+      const r = spawnSync(
+        'bash',
+        ['-c', `exec 9>'${lock}'; flock -n 9 || exit 99; ${wrapWithStagingSyncLock('true', lock, 1)} 9>&-`],
+        { encoding: 'utf8', timeout: 20_000 },
+      );
+      expect(r.status).toBe(STAGING_SYNC_LOCK_TIMEOUT_EXIT);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

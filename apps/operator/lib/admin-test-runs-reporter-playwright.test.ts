@@ -31,7 +31,10 @@ vi.mock('@papercusp/operator-core/lib/testing-run-source', () => ({
 }));
 vi.mock('postgres', () => ({ default: () => mocks.sql }));
 
-import AdminTestRunsPlaywrightReporter from '../test/reporters/admin-test-runs-reporter-playwright';
+import AdminTestRunsPlaywrightReporter, {
+  playwrightExecutionDetails,
+} from '../test/reporters/admin-test-runs-reporter-playwright';
+import { parseTestRunExecutionDetails, recordedTestLayer } from '@papercusp/test-config/execution-details';
 
 describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
   beforeEach(() => {
@@ -67,6 +70,47 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     // `playwright` is a SQL-template literal, so commit_sha is value slot 9.
     expect(values[9]).toBe('after-sha');
     expect(values).not.toContain('stale-cached-sha');
-    expect(values.at(-1)).toBe(true);
+    // worktree_dirty precedes execution_details (EI-24434635346407728).
+    expect(values.at(-2)).toBe(true);
+
+    // The persisted execution_details must parse through the SAME reader the
+    // acceptance-bar layer check uses, and must say e2e — otherwise no Playwright
+    // run can ever satisfy a BAR clause whose requiredTestLayers includes e2e.
+    const stored = JSON.parse(values.at(-1) as string);
+    expect(parseTestRunExecutionDetails(stored)).toBeDefined();
+    expect(recordedTestLayer(stored)).toBe('e2e');
+    expect(stored).toMatchObject({
+      filePath: 'specs/example.spec.ts',
+      commitSha: 'after-sha',
+      worktreeDirty: true,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+    });
+  });
+});
+
+describe('playwrightExecutionDetails', () => {
+  it('stamps the e2e runtime layer with counts that the shared parser accepts', () => {
+    const details = playwrightExecutionDetails(
+      {
+        filePath: 'apps/operator/e2e/x.spec.ts',
+        status: 'fail',
+        durationMs: 5,
+        startedAt: new Date(0),
+        finishedAt: new Date(5),
+        outputTail: null,
+        worktreeDirty: false,
+        passed: 2,
+        failed: 1,
+        skipped: 3,
+      },
+      { root: '/repo', runGroupId: 'g1', workspaceId: 'w1', harnessSlug: 'papercusp', commitSha: 'abc' },
+    );
+    expect(details.testLayer).toBe('e2e');
+    const parsed = parseTestRunExecutionDetails(details);
+    expect(parsed).toBeDefined();
+    expect(recordedTestLayer(details)).toBe('e2e');
+    expect(parsed).toMatchObject({ passed: 2, failed: 1, skipped: 3, collectionFailed: false, commitSha: 'abc' });
   });
 });

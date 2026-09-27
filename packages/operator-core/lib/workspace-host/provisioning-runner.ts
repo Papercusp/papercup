@@ -2150,6 +2150,33 @@ export async function runWorkspaceHostDestroy(
           ...(evidence ? { evidence } : {}),
         };
       } catch (error) {
+        // WI-10003514: every resource already has its provider-read absence receipt by now, so a
+        // transport blip while READING the terminal census says nothing about the teardown. Keep
+        // the operation running and let the durable workflow re-read (bounded by its turn budget),
+        // exactly as a per-resource delete does on the same error. Failing here stranded measured
+        // finished teardowns at failed/99 until someone re-POSTed them by hand. The open release
+        // stages stay pending, not refused: the next attempt of this operation adopts them.
+        // Deterministic evidence failures (unclean census, missing receipt, 403) stay terminal below.
+        if (isTransientNetworkError(error)) {
+          await store.updateOperation({
+            workspaceId,
+            operationId,
+            status: 'running',
+            percent: 99,
+            message: 'Resources are deleted; the terminal evidence census read failed transiently and will be retried',
+          });
+          await store.appendEvent({
+            workspaceId,
+            hostId,
+            operationId,
+            phase: 'destroy-evidence',
+            status: 'running',
+            level: 'warn',
+            message: 'Terminal census read failed transiently; the workflow will re-read it',
+            details: { error: message(error) },
+          });
+          return { status: 'in-progress', operationId, hostId, plan, checkpoints, retryAfterMs: DEFAULT_RETRY_AFTER_MS };
+        }
         // Only the error's class name reaches the release journal: an unclean-census message names
         // provider resources, which belong in the host timeline, not in release evidence.
         await release?.refuseOpen([`destroy-failure:${error instanceof Error ? error.name : 'unknown'}`]);

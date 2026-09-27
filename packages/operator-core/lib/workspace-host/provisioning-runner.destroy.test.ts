@@ -729,23 +729,49 @@ describe('runWorkspaceHostDestroy', () => {
   });
 
   // The r39 destroy (2026-09-24) stored `{ reason: 'fetch failed' }` and nothing else, so its
-  // census failure could not tell a connect timeout from a closed socket.
-  it('records the transport CAUSE CODE when the terminal census read dies on a bare fetch failure', async () => {
+  // census failure could not tell a connect timeout from a closed socket. WI-10003514: the same
+  // blip (measured as ETIMEDOUT on owner-wait-20260916, twice) used to END a teardown whose every
+  // resource already had its provider-read absence receipt, at failed/99, until someone re-POSTed it.
+  it('keeps a finished teardown running on a transient census read, naming the transport CAUSE CODE, and completes on the re-read', async () => {
     const inventoryError = Object.assign(new TypeError('fetch failed'), {
       cause: { code: 'UND_ERR_CONNECT_TIMEOUT', message: 'Connect Timeout Error' },
     });
-    const { provider } = providerHarness({ inventoryError });
+    const { provider, apply, inventoryManagedResources } = providerHarness();
+    inventoryManagedResources.mockRejectedValueOnce(inventoryError);
+    const { store, updateHostState, updateOperation } = storeHarness();
+
+    const first = await runWorkspaceHostDestroy(runInput(provider, store));
+
+    expect(first).toMatchObject({ status: 'in-progress', retryAfterMs: expect.any(Number) });
+    expect(updateOperation).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'running', percent: 99 }));
+    expect(updateOperation).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'failed' }));
+    expect(store.appendEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        phase: 'destroy-evidence',
+        status: 'running',
+        level: 'warn',
+        details: { error: 'fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error)' },
+      }),
+    );
+    expect(updateHostState).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'absent' }));
+    const deletesBeforeReplay = apply.mock.calls.length;
+
+    const replay = await runWorkspaceHostDestroy(runInput(provider, store));
+
+    expect(replay.status).toBe('succeeded');
+    // The re-read is a census, not a second teardown: no destructive request is re-issued.
+    expect(apply.mock.calls.length).toBe(deletesBeforeReplay);
+    expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent' }));
+  });
+
+  it('still fails closed on a NON-transient terminal census error', async () => {
+    const { provider } = providerHarness({ inventoryError: new Error('Provider managed-resource inventory is incomplete') });
     const { store, updateOperation } = storeHarness();
 
     const result = await runWorkspaceHostDestroy(runInput(provider, store));
 
     expect(result.status).toBe('failed');
-    expect(updateOperation).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        status: 'failed',
-        error: { reason: 'fetch failed (UND_ERR_CONNECT_TIMEOUT: Connect Timeout Error)' },
-      }),
-    );
+    expect(updateOperation).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'failed', percent: 99 }));
   });
 
   it('rejects invalid cumulative evidence before planning or deleting any provider resource', async () => {
@@ -966,6 +992,29 @@ describe('runWorkspaceHostDestroy release census receipt', () => {
         'census-kind:nat:deterministic-name:gcp://inventory/nat',
       ]),
     });
+  });
+
+  // WI-10003514: refusing here would turn one transport blip into a refused teardown receipt for a
+  // release whose teardown then completes on the re-read.
+  it('leaves the census and billing stages pending on a transient census read, then commits on the re-read', async () => {
+    const { provider, inventoryManagedResources } = providerHarness();
+    inventoryManagedResources.mockRejectedValueOnce(
+      Object.assign(new TypeError('fetch failed'), { cause: { code: 'ETIMEDOUT', message: 'connect ETIMEDOUT' } }),
+    );
+    const { store } = storeHarness();
+    const journal = releaseStore();
+
+    const first = await runWorkspaceHostDestroy({ ...releaseInput(provider, store), ...recorded(journal) });
+
+    expect(first.status).toBe('in-progress');
+    for (const stage of [WORKSPACE_HOST_RESOURCE_CENSUS_STAGE, WORKSPACE_HOST_BILLING_CLOSURE_STAGE]) {
+      expect(receiptsFor(journal, stage).some((entry) => entry.state === 'refused')).toBe(false);
+    }
+
+    const replay = await runWorkspaceHostDestroy({ ...releaseInput(provider, store), ...recorded(journal) });
+
+    expect(replay.status).toBe('succeeded');
+    expect(receiptsFor(journal, WORKSPACE_HOST_RESOURCE_CENSUS_STAGE).at(-1)).toMatchObject({ state: 'committed' });
   });
 
   it('opens billing.closure for the reconciler and points the persisted cost signal at it', async () => {
@@ -1294,6 +1343,24 @@ describe('canary identity survives provision → destroy (WI-2144027)', () => {
     signal: new AbortController().signal,
   };
 
+  /**
+   * A complete pre-run economic admission for `runId`. Provision refuses a canary declared by runId
+   * alone since `validateWorkspaceHostCanaryAdmission` (dae49a2ce2); the admission carries evidence,
+   * never labels, so the round trip below still proves the route synthesizes the identity labels.
+   */
+  function admission(runId: string = RUN_ID): Record<string, unknown> {
+    const { canary } = runInput(providerHarness().provider, storeHarness().store);
+    return {
+      runId,
+      workspaceId: WORKSPACE_ID,
+      maxSpendCents: canary!.maxSpendCents,
+      teardownDeadlineAt: canary!.teardownDeadlineAt,
+      budgetEvidenceRef: canary!.budgetEvidenceRef,
+      preRunZeroBaseline: canary!.preRunZeroBaseline,
+      contractApproval: canary!.contractApproval,
+    };
+  }
+
   /** The fixture spec with the canary labels REMOVED — a caller never supplies them. */
   function requestedDesired(): Record<string, unknown> {
     const request: Record<string, unknown> = { ...(desired as unknown as Record<string, unknown>) };
@@ -1350,7 +1417,7 @@ describe('canary identity survives provision → destroy (WI-2144027)', () => {
       connectionId: 'connection-1',
       name: 'Canary host',
       desired: requestedDesired(),
-      canary: { runId: RUN_ID },
+      canary: admission(),
     });
     expect(response.status).toBe(201);
     // Derived by the operator from the declared run and its own workspace. Nothing in this file
@@ -1410,7 +1477,7 @@ describe('canary identity survives provision → destroy (WI-2144027)', () => {
       connectionId: 'connection-1',
       name: 'Canary host',
       desired: requestedDesired(),
-      canary: { runId: 'canary_2' },
+      canary: admission('canary_2'),
     });
     expect(persisted?.labels?.papercusp_run_id).toBe('canary_2');
 

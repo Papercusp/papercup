@@ -27,10 +27,11 @@ vi.mock('./coordination-domain', () => ({
 vi.mock('./su-lock-store', () => ({
   getTxPool: vi.fn(() => ({ mockPool: true })),
   readResourceQueue: vi.fn(),
+  listLiveResourceDomains: vi.fn(async (): Promise<string[]> => []),
 }));
 
 import { candidateResourceLockDomains } from './coordination-domain';
-import { readResourceQueue, type ResourceHolder } from './su-lock-store';
+import { listLiveResourceDomains, readResourceQueue, type ResourceHolder } from './su-lock-store';
 import {
   selectCrossDomainConflicts,
   findCrossDomainResourceConflicts,
@@ -41,6 +42,7 @@ import {
 
 const domainsM = vi.mocked(candidateResourceLockDomains);
 const queueM = vi.mocked(readResourceQueue);
+const liveDomainsM = vi.mocked(listLiveResourceDomains);
 
 const ACQ = new Date('2026-08-28T20:00:00Z');
 const EXP = new Date('2026-08-28T21:00:00Z');
@@ -71,6 +73,7 @@ const wsHolds = (h: ResourceHolder = holder()): DomainHolders[] => [
 beforeEach(() => {
   vi.clearAllMocks();
   domainsM.mockReturnValue(['caller-tree', 'papercusp-host-global', 'papercusp-workspace']);
+  liveDomainsM.mockResolvedValue([]);
 });
 
 // ───────────────────────── the predicate ─────────────────────────
@@ -188,8 +191,9 @@ describe('findCrossDomainResourceConflicts', () => {
     }
   });
 
-  it('issues NO query at all when the candidate set collapses to the target domain (zero cost on a single-domain host)', async () => {
+  it('issues NO queue read when neither the candidates nor any live lease name another domain', async () => {
     domainsM.mockReturnValue(['only-domain']);
+    liveDomainsM.mockResolvedValue(['only-domain']);
     const c = await findCrossDomainResourceConflicts({
       resource: 'r',
       targetDomain: 'only-domain',
@@ -197,6 +201,62 @@ describe('findCrossDomainResourceConflicts', () => {
       owner: 'su-1',
     });
     expect(c).toEqual([]);
+    expect(liveDomainsM).toHaveBeenCalledWith({ mockPool: true }, 'r');
+    expect(queueM).not.toHaveBeenCalled();
+  });
+
+  // EI-24434173247501787: the caller-tree domain is the SERVING operator's
+  // checkout. Measured 2026-09-27: `p013-benchmark-rig` was held exclusive in
+  // the papercup-release domain (acquired through :3070) while an exclusive
+  // acquire routed through :3170 was GRANTED in the staging domain — neither
+  // domain is among the other process's three candidates.
+  it('REFUSES an exclusive acquire over a live exclusive held through ANOTHER checkout (found by name)', async () => {
+    liveDomainsM.mockResolvedValue(['/home/x/papercup-release']);
+    const rig = holder({ resource: 'p013-benchmark-rig', owner: 'su-d', owner_label: 'su-d' });
+    queueM.mockImplementation(async (_sql, params) =>
+      params.coordinationDomain === '/home/x/papercup-release'
+        ? { holders: [rig], draining: false }
+        : { holders: [], draining: false },
+    );
+    const c = await findCrossDomainResourceConflicts({
+      resource: 'p013-benchmark-rig',
+      targetDomain: '/home/x/papercusp-staging',
+      requestedMode: 'exclusive',
+      owner: 'su-a',
+    });
+    expect(c).toEqual([
+      expect.objectContaining({
+        coordination_domain: '/home/x/papercup-release',
+        owner: 'su-d',
+        resource: 'p013-benchmark-rig',
+        mode: 'exclusive',
+      }),
+    ]);
+  });
+
+  it('reads a domain once when it is both a candidate and a live-lease domain', async () => {
+    liveDomainsM.mockResolvedValue(['papercusp-workspace', '/other/checkout']);
+    queueM.mockResolvedValue({ holders: [], draining: false });
+    await findCrossDomainResourceConflicts({
+      resource: 'r',
+      targetDomain: 'caller-tree',
+      requestedMode: 'exclusive',
+      owner: 'su-1',
+    });
+    const domains = queueM.mock.calls.map((c) => c[1].coordinationDomain);
+    expect(domains.sort()).toEqual(['/other/checkout', 'papercusp-host-global', 'papercusp-workspace']);
+  });
+
+  it('does NOT swallow a failed live-domain discovery — it propagates like a queue-read failure', async () => {
+    liveDomainsM.mockRejectedValue(new Error('discovery failed'));
+    await expect(
+      findCrossDomainResourceConflicts({
+        resource: 'r',
+        targetDomain: 'caller-tree',
+        requestedMode: 'exclusive',
+        owner: 'su-1',
+      }),
+    ).rejects.toThrow('discovery failed');
     expect(queueM).not.toHaveBeenCalled();
   });
 

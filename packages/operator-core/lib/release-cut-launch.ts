@@ -283,6 +283,45 @@ export function buildCutEnv(
   return env;
 }
 
+/** The flock file papercup-staging-sync (apps/operator/bin/release/sync-staging-checkout.sh)
+ *  takes EXCLUSIVELY (non-blocking) before setup-release-checkout.sh re-clones every submodule
+ *  IN PLACE inside the staging checkout, and that :3170's ExecStartPre takes SHARED. */
+export const STAGING_SYNC_LOCK = '/tmp/papercup-staging-sync.lock';
+/** How long a cut waits for an in-flight staging-sync to finish mutating the tree before it
+ *  gives up (staging-sync's own TimeoutStartSec is 900). */
+export const STAGING_SYNC_LOCK_WAIT_SEC = 1200;
+/** Distinct cut exit code (`DONE:75`) when that wait expires, so a lock timeout never reads
+ *  like a build failure. */
+export const STAGING_SYNC_LOCK_TIMEOUT_EXIT = 75;
+
+/** WI-10003515: does this orchestrator root live in the staging checkout that
+ *  papercup-staging-sync rewrites every time staging advances? A cut fired through :3170
+ *  sources its orchestration (release-local.sh, build-desktop-sidecar.sh, bin/lib/*) from
+ *  `papercusp-staging/papercusp-desktop` for its whole 30–90 min life, and staging-sync deletes
+ *  and re-extracts that submodule in place on every advance — measured 2026-09-27, the 0.0.22
+ *  mac leg died sourcing bin/lib/source-roots.sh in the second it was being re-extracted. */
+export function orchestratorNeedsStagingSyncLock(orchestratorRoot: string): boolean {
+  const worktree = path.basename(path.dirname(path.resolve(orchestratorRoot)));
+  return worktree === 'papercusp-staging' || worktree === 'papercup-staging';
+}
+
+/** Pure: wrap a shell command so it runs holding staging-sync's lock SHARED for its whole
+ *  lifetime. staging-sync's exclusive try-lock then skips its ticks, while :3170's shared
+ *  ExecStartPre lock stays compatible. `--close` keeps the lock fd OUT of the command's process
+ *  tree, so a daemon the build spawns (sccache, a gradle daemon) cannot outlive the cut still
+ *  holding staging frozen; the flock process itself holds the lock until the command exits.
+ *  `lockPath` / `waitSec` are overridable for the behavioural test only. */
+export function wrapWithStagingSyncLock(
+  command: string,
+  lockPath: string = STAGING_SYNC_LOCK,
+  waitSec: number = STAGING_SYNC_LOCK_WAIT_SEC,
+): string {
+  return (
+    `flock --shared --close --verbose --timeout ${waitSec} ` +
+    `--conflict-exit-code ${STAGING_SYNC_LOCK_TIMEOUT_EXIT} ${shellSingleQuote(lockPath)} ${command}`
+  );
+}
+
 /** Pure: the full `systemd-run` argv for the detached LOCAL cut. Mirrors
  *  release-deploy-launch.buildSystemdRunArgv (PATH passthrough so the transient unit
  *  doesn't depend on the systemd-manager env). The inner command clears a stale DONE
@@ -321,10 +360,14 @@ export function buildCutArgv(
   // its current path through BASH_SOURCE[0] and deliberately keeps both roots.
   const targetEntrypoint = path.join(root, 'bin', 'release-local.sh');
   const orchestratorEntrypoint = path.join(orchestratorRoot ?? root, 'bin', 'release-local.sh');
-  const cutterInvocation =
+  const sourceCutter =
     `bash -c 'source "$1" "$2" "$3"' ` +
     `${shellSingleQuote(targetEntrypoint)} ${shellSingleQuote(orchestratorEntrypoint)} ` +
     `${shellSingleQuote(version)} ${shellSingleQuote(channel)}`;
+  // WI-10003515: an orchestrator in the staging checkout must not be re-cloned under the cut.
+  const cutterInvocation = orchestratorNeedsStagingSyncLock(orchestratorRoot ?? root)
+    ? wrapWithStagingSyncLock(sourceCutter)
+    : sourceCutter;
   // The started marker carries the OPERATION IDENTITY, not just a timestamp (P-001).
   // The sentinels are per-PLATFORM and therefore SHARED across successive cuts of the
   // same leg, so an anonymous marker cannot distinguish "my cut is still running" from

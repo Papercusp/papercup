@@ -22,6 +22,8 @@ import {
   tryHeartbeatResource,
   readResourceLockStatus,
   readResourceQueue,
+  listLiveResourceDomains,
+  registerResource,
   releaseAllResourcesForOwner,
   listResources,
   getResource,
@@ -626,6 +628,38 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(r.released).toBe(1);
     // The drain completed atomically with the (previously-overflowing) NOTIFY.
     expect((await status(b.lock_id)).status).toBe('held');
+  });
+
+  // EI-24434173247501787: two operators serving from different checkouts put
+  // the same undeclared resource in two caller-tree domains. Only a read keyed
+  // on the NAME can see both — this pins that read against real SQL.
+  it.skipIf(!live)('listLiveResourceDomains finds every domain holding a live lease on a name, and drops lapsed ones', async () => {
+    await ensureBootstrap();
+    // A unique registered name, NOT a real one such as `dev-server`: the
+    // acquire guard now scans by name across domains, so a test lease on a
+    // real resource in the live DB would briefly refuse a real acquirer.
+    const res = `live-domains-${Date.now()}`;
+    await inWorkspaceTxn(uniqueWs(), 'admin', (tx) => registerResource(tx, { resource: res, description: 'test' }));
+    const wsA = uniqueWs();
+    const wsB = uniqueWs();
+    const a = await acq(wsA, 'A', res, 'exclusive');
+    const b = await acq(wsB, 'B', res, 'exclusive', 1);
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+
+    const byName = await listLiveResourceDomains(getTxPool(), res);
+    expect([...byName].sort()).toEqual([wsA, wsB].sort());
+    const any = await listLiveResourceDomains(getTxPool());
+    expect(any).toEqual(expect.arrayContaining([wsA, wsB]));
+    // A different name never reports these domains.
+    expect(await listLiveResourceDomains(getTxPool(), 'db-schema')).not.toContain(wsA);
+
+    // B's 1s lease lapses; an expired row must not read as a holder.
+    await new Promise((r) => setTimeout(r, 1500));
+    expect(await listLiveResourceDomains(getTxPool(), res)).toEqual([wsA]);
+
+    await rel(wsA, 'A', a.lock_id);
+    expect(await listLiveResourceDomains(getTxPool(), res)).toEqual([]);
   });
 
   it.skipIf(!live)('seeds the dev-server and db-schema resources with their enforcement levels', async () => {

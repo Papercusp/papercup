@@ -430,13 +430,23 @@ function makeSweepFakeSql(
     failCustomerWorkspaceRead?: boolean;
     activeHosts?: Array<{ workspaceId: string; hostId: string }>;
     activeCustomerWorkspaceHosts?: Array<{ workspaceId: string; hostId: string }>;
+    /** Rows the discharged-escalation read returns (WI-10003512). */
+    dischargedEscalations?: Array<Record<string, unknown>>;
+    failDischargedRead?: boolean;
   } = {},
 ) {
   const markCalls: Array<{ id: number; workItemId: string }> = [];
+  const dischargedProbeCalls: Array<{ text: string; values: unknown[] }> = [];
   const activeHostProbeCalls: Array<{ text: string; values: unknown[] }> = [];
   const customerWorkspaceProbeCalls: Array<{ text: string; values: unknown[] }> = [];
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
+    // Checked FIRST: this read also names harness_shared.work_items (in its EXISTS clause).
+    if (text.includes('bool_and(o.closed_at IS NOT NULL)')) {
+      dischargedProbeCalls.push({ text, values });
+      if (opts.failDischargedRead) return Promise.reject(new Error('discharged probe exploded'));
+      return Promise.resolve(opts.dischargedEscalations ?? []);
+    }
     if (text.includes('SELECT * FROM harness_shared.cloud_resource_obligations')) {
       return Promise.resolve(openRows.map(toDbRow));
     }
@@ -468,7 +478,7 @@ function makeSweepFakeSql(
     }
     throw new Error(`unexpected query in sweep fake sql: ${text}`);
   }) as unknown as postgres.Sql;
-  return { sql, markCalls, activeHostProbeCalls, customerWorkspaceProbeCalls };
+  return { sql, markCalls, activeHostProbeCalls, customerWorkspaceProbeCalls, dischargedProbeCalls };
 }
 
 describe('runCloudResourceObligationSweepOnce', () => {
@@ -615,6 +625,98 @@ describe('runCloudResourceObligationSweepOnce', () => {
     expect(result.escalated).toBe(1);
     expect(result.errors).toEqual([{ id: 1, error: 'capture backend unavailable' }]);
     expect(markCalls).toEqual([{ id: 2, workItemId: 'EI-good' }]);
+  });
+
+  // WI-10003512 — a discharged obligation must retire its escalation work-item.
+  const noCapture: CloudResourceObligationCaptureDep = async () => {
+    throw new Error('capture must not run: there are no open obligations');
+  };
+
+  it('resolves every discharged escalation and reports the count', async () => {
+    const { sql, dischargedProbeCalls } = makeSweepFakeSql([], [], {
+      dischargedEscalations: [
+        {
+          workspace_id: 'ws-a',
+          escalation_work_item_id: 'EI-vm-escalation',
+          resources: ['vm pc-host-r55-vm'],
+          closed_reasons: ['provider confirmed destroy'],
+          last_closed_at: '2026-09-27T15:55:41.000Z',
+        },
+        {
+          workspace_id: 'ws-a',
+          escalation_work_item_id: 'EI-disk-escalation',
+          resources: ['disk pc-host-r55-data'],
+          closed_reasons: [''],
+          last_closed_at: '2026-09-27T15:55:56.000Z',
+        },
+      ],
+    });
+    const resolveCalls: Array<{ workspaceId: string; workItemId: string; reason: string }> = [];
+    const result = await runCloudResourceObligationSweepOnce(sql, {
+      capture: noCapture,
+      resolveEscalation: async (input) => {
+        resolveCalls.push(input);
+      },
+    });
+    expect(result).toEqual({ candidates: 0, escalated: 0, errors: [], resolved: 2 });
+    expect(resolveCalls.map((c) => c.workItemId)).toEqual(['EI-vm-escalation', 'EI-disk-escalation']);
+    expect(resolveCalls[0]!.workspaceId).toBe('ws-a');
+    expect(resolveCalls[0]!.reason).toContain('vm pc-host-r55-vm');
+    expect(resolveCalls[0]!.reason).toContain('last closed 2026-09-27T15:55:41.000Z');
+    expect(resolveCalls[0]!.reason).toContain('recorded reason: provider confirmed destroy');
+    // An empty closed_reason is dropped rather than rendered as a blank "recorded reason".
+    expect(resolveCalls[1]!.reason).not.toContain('recorded reason');
+    // The read excludes terminal work-items using the shared terminal vocabulary.
+    expect(dischargedProbeCalls).toHaveLength(1);
+    expect(dischargedProbeCalls[0]!.values).toContainEqual([...ANY_FAMILY_TERMINAL_STATES]);
+  });
+
+  it('keeps the escalate-only sweep (no discharged read) when resolveEscalation is omitted', async () => {
+    const { sql, dischargedProbeCalls } = makeSweepFakeSql([], [], {
+      dischargedEscalations: [
+        { workspace_id: 'ws-a', escalation_work_item_id: 'EI-x', resources: [], closed_reasons: [], last_closed_at: null },
+      ],
+    });
+    const result = await runCloudResourceObligationSweepOnce(sql, { capture: noCapture });
+    expect(result).toEqual({ candidates: 0, escalated: 0, errors: [] });
+    expect(dischargedProbeCalls).toHaveLength(0);
+  });
+
+  it('records a per-escalation resolve failure without aborting the rest', async () => {
+    const { sql } = makeSweepFakeSql([], [], {
+      dischargedEscalations: [
+        { workspace_id: 'ws-a', escalation_work_item_id: 'EI-bad', resources: ['nat n'], closed_reasons: [], last_closed_at: null },
+        { workspace_id: 'ws-a', escalation_work_item_id: 'EI-good', resources: ['nat m'], closed_reasons: [], last_closed_at: null },
+      ],
+    });
+    const resolved: string[] = [];
+    const result = await runCloudResourceObligationSweepOnce(sql, {
+      capture: noCapture,
+      resolveEscalation: async ({ workItemId, reason }) => {
+        if (workItemId === 'EI-bad') throw new Error('work-item store unavailable');
+        expect(reason).toContain('last closed unknown');
+        resolved.push(workItemId);
+      },
+    });
+    expect(result.resolved).toBe(1);
+    expect(resolved).toEqual(['EI-good']);
+    expect(result.errors).toEqual([{ id: 0, error: 'escalation EI-bad resolve failed: work-item store unavailable' }]);
+  });
+
+  it('reports a failed discharged-escalation read as an error, not as zero resolved silently', async () => {
+    const { sql } = makeSweepFakeSql([], [], { failDischargedRead: true });
+    const result = await runCloudResourceObligationSweepOnce(sql, {
+      capture: noCapture,
+      resolveEscalation: async () => {
+        throw new Error('must not be called when the read failed');
+      },
+    });
+    expect(result).toEqual({
+      candidates: 0,
+      escalated: 0,
+      resolved: 0,
+      errors: [{ id: 0, error: 'discharged-escalation read failed: discharged probe exploded' }],
+    });
   });
 
   it('does not mark escalated when capture coalesced without returning an issue id', async () => {

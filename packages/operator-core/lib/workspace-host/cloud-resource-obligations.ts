@@ -1040,14 +1040,82 @@ export interface CloudResourceObligationCaptureDep {
   }): Promise<{ ok: true; created: boolean; issue?: { id: string } }>;
 }
 
+/**
+ * Resolves one escalation work-item whose obligations are ALL discharged (WI-10003512).
+ * The DBOS wiring flips it to `resolved` under the watchdog auto-close terminal owner, so
+ * an exact-key recurrence (the same resource name leaking again) REOPENS that row via
+ * capture-core instead of minting a sibling.
+ */
+export interface CloudResourceObligationEscalationResolveDep {
+  (input: { workspaceId: string; workItemId: string; reason: string }): Promise<void>;
+}
+
 export interface CloudResourceObligationSweepDeps {
   capture: CloudResourceObligationCaptureDep;
+  /**
+   * OMITTED keeps the escalate-only sweep. Supplied, the sweep also retires every open
+   * escalation whose referencing obligations have all closed — without it, each discharged
+   * leak left a phantom "Undischarged …" bug open forever (24 measured 2026-09-27).
+   */
+  resolveEscalation?: CloudResourceObligationEscalationResolveDep;
 }
 
 export interface CloudResourceObligationSweepResult {
   candidates: number;
   escalated: number;
   errors: Array<{ id: number; error: string }>;
+  /** Escalations retired this tick; present only when `resolveEscalation` was supplied. */
+  resolved?: number;
+}
+
+/** An open escalation work-item whose every referencing obligation is closed. */
+export interface DischargedCloudResourceObligationEscalation {
+  workspaceId: string;
+  workItemId: string;
+  /** `<kind> <resourceId>` for each obligation that referenced the escalation. */
+  resources: string[];
+  closedReasons: string[];
+  lastClosedAtMs: number;
+}
+
+/**
+ * Escalations that should no longer be open: every obligation row pointing at the work-item
+ * is closed, and the work-item itself is still non-terminal. One open row sharing the
+ * escalation (a same-name replacement that already re-escalated onto it) keeps it open.
+ * A replacement still inside its grace period does not reference the item yet; if it later
+ * leaks, capture's exact-key recurrence reopens the resolved row.
+ */
+export async function listDischargedOpenCloudResourceObligationEscalations(
+  sql: postgres.Sql,
+): Promise<DischargedCloudResourceObligationEscalation[]> {
+  const rows = (await sql`
+    SELECT o.workspace_id,
+           o.escalation_work_item_id,
+           array_agg(o.resource_kind || ' ' || o.resource_id ORDER BY o.id) AS resources,
+           array_agg(DISTINCT o.closed_reason) AS closed_reasons,
+           max(o.closed_at) AS last_closed_at
+      FROM harness_shared.cloud_resource_obligations o
+     WHERE o.escalation_work_item_id <> ''
+     GROUP BY o.workspace_id, o.escalation_work_item_id
+    HAVING bool_and(o.closed_at IS NOT NULL)
+       AND EXISTS (
+         SELECT 1
+           FROM harness_shared.work_items w
+          WHERE w.workspace_id = o.workspace_id
+            AND w.feature_id = o.escalation_work_item_id
+            AND NOT (w.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))
+       )
+     ORDER BY max(o.closed_at) ASC
+  `) as unknown as Array<Record<string, unknown>>;
+  return rows.map((raw) => ({
+    workspaceId: String(raw.workspace_id ?? ''),
+    workItemId: String(raw.escalation_work_item_id ?? ''),
+    resources: Array.isArray(raw.resources) ? raw.resources.map(String) : [],
+    closedReasons: Array.isArray(raw.closed_reasons)
+      ? raw.closed_reasons.map(String).filter((s) => s !== '')
+      : [],
+    lastClosedAtMs: raw.last_closed_at ? new Date(raw.last_closed_at as string | Date).getTime() : Number.NaN,
+  }));
 }
 
 /**
@@ -1154,5 +1222,29 @@ export async function runCloudResourceObligationSweepOnce(
       errors.push({ id: c.id, error: (err as Error).message });
     }
   }
-  return { candidates: candidates.length, escalated, errors };
+  if (!deps.resolveEscalation) return { candidates: candidates.length, escalated, errors };
+  // WI-10003512: retire escalations whose obligations have all been discharged. The
+  // escalation body tells its reader to close the obligation "so this escalation stops
+  // re-firing" — this is the half that makes that closure also close the work-item.
+  let resolved = 0;
+  let discharged: DischargedCloudResourceObligationEscalation[] = [];
+  try {
+    discharged = await listDischargedOpenCloudResourceObligationEscalations(sql);
+  } catch (err) {
+    errors.push({ id: 0, error: `discharged-escalation read failed: ${(err as Error).message}` });
+  }
+  for (const d of discharged) {
+    const closedAt = Number.isFinite(d.lastClosedAtMs) ? new Date(d.lastClosedAtMs).toISOString() : 'unknown';
+    const reason =
+      `every obligation this escalation tracked is closed (${d.resources.join(', ')}; last closed ${closedAt}` +
+      (d.closedReasons.length > 0 ? `; recorded reason: ${d.closedReasons.join(' | ')}` : '') +
+      ')';
+    try {
+      await deps.resolveEscalation({ workspaceId: d.workspaceId, workItemId: d.workItemId, reason });
+      resolved += 1;
+    } catch (err) {
+      errors.push({ id: 0, error: `escalation ${d.workItemId} resolve failed: ${(err as Error).message}` });
+    }
+  }
+  return { candidates: candidates.length, escalated, errors, resolved };
 }

@@ -33,6 +33,9 @@ vi.mock('./su-lock-store', () => ({
   getResource: vi.fn(),
   listResources: vi.fn(),
   readResourceQueue: vi.fn(),
+  // EI-24434173247501787: domains holding a live lease, discovered by name.
+  // Default: none beyond the three the process computes.
+  listLiveResourceDomains: vi.fn(async (): Promise<string[]> => []),
   // EI-20192110087737961: the handler now also measures the FILE plane.
   readQueue: vi.fn(async () => ({ active_locks: [], waiting: [] })),
 }));
@@ -40,11 +43,13 @@ vi.mock('./su-lock-store', () => ({
 import {
   getResource,
   listResources,
+  listLiveResourceDomains,
   readResourceQueue,
   readQueue,
   type ActiveLockRow,
   type WaiterRow,
 } from './su-lock-store';
+const liveDomainsM = vi.mocked(listLiveResourceDomains);
 const getResourceM = vi.mocked(getResource);
 const listResourcesM = vi.mocked(listResources);
 const queueM = vi.mocked(readResourceQueue);
@@ -217,6 +222,48 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
       owner: 'system:git-sync:1856221:ff20faa8',
       coordination_domain: 'ws-scoped-domain',
     });
+  });
+
+  // EI-24434173247501787: the caller-tree domain is the SERVING operator's
+  // checkout. A lease taken through the other operator (:3070 papercup-release
+  // vs :3170 papercusp-staging) lives in a domain none of the three computed
+  // domains names; measured 2026-09-27, this read reported `holders: []` for a
+  // benchmark rig held exclusive through the other operator.
+  it('scoped to an undeclared resource held through ANOTHER checkout: reports the holder and its domain', async () => {
+    mockResolvedTyped(getResourceM, {
+      resource: 'p013-benchmark-rig',
+      description: '',
+      rule_text: '',
+      enforcement: 'advisory',
+      match_patterns: [],
+      max_holders: null,
+    });
+    liveDomainsM.mockResolvedValueOnce(['/other/checkout']);
+    heldOnlyIn('/other/checkout', [holder('su-rig-holder', 'p013-benchmark-rig')]);
+
+    const b = await call({ resource: 'p013-benchmark-rig' });
+
+    expect(liveDomainsM).toHaveBeenCalledWith(expect.anything(), 'p013-benchmark-rig');
+    expect(b.data.holders).toHaveLength(1);
+    expect(b.data.holders[0]).toMatchObject({
+      owner: 'su-rig-holder',
+      coordination_domain: '/other/checkout',
+    });
+    expect(b.data.resources[0]).toMatchObject({ resource: 'p013-benchmark-rig', held: true });
+  });
+
+  it('unscoped listing also reads every domain that holds a live lease, not only the three computed ones', async () => {
+    listResourcesM.mockResolvedValue([]);
+    liveDomainsM.mockResolvedValueOnce(['/other/checkout', 'papercusp-host-global']);
+    heldOnlyIn('/other/checkout', [holder('su-rig-holder', 'p013-benchmark-rig')]);
+
+    const b = await call({});
+
+    expect(liveDomainsM).toHaveBeenCalledWith(expect.anything(), undefined);
+    const domains = queueM.mock.calls.map((c) => c[1].coordinationDomain);
+    // de-duplicated: host-global is both computed and live, read once
+    expect(domains.sort()).toEqual(['/caller/tree', '/other/checkout', 'papercusp-host-global', 'ws-scoped-domain']);
+    expect(b.data.holders).toEqual([expect.objectContaining({ owner: 'su-rig-holder', coordination_domain: '/other/checkout' })]);
   });
 
   it('unscoped listing merges the caller domain, host-global domain, AND workspace-scoped domain, OR-ing draining', async () => {

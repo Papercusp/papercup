@@ -17,14 +17,24 @@
  * before granting, look for a live conflicting holder in the OTHER candidate
  * domains and refuse instead, naming the holder AND the domain it holds in.
  *
- * Two properties make this safe rather than a source of false conflicts:
+ * What the guard scans, and why it now includes other checkouts:
  *
- *  - **It cannot see another checkout's locks.** `candidateResourceLockDomains()`
- *    returns exactly three values computed for THIS process —
- *    `lockCoordinationDomain()`, `hostGlobalLockDomain()`,
- *    `workspaceScopedLockDomain()`. A different tree's caller-tree domain is not
- *    among them, so an unrelated same-named lock elsewhere stays invisible,
- *    exactly as today.
+ *  - **Every domain that holds a live lease on the NAME** (EI-24434173247501787),
+ *    unioned with `candidateResourceLockDomains()`. The first version scanned
+ *    only the three candidates computed for THIS process, on the premise that a
+ *    same-named lock in another checkout's caller-tree domain is unrelated. On
+ *    this box that premise is false: the caller-tree domain is the repo root of
+ *    the SERVING operator (:3070 = papercup-release, :3170 = papercusp-staging),
+ *    which is an accident of MCP routing, not a property of the resource. Every
+ *    agent edits the same canonical tree, and every registered tree-kind
+ *    resource is a physical host thing (a rig, a service, a VM). Measured
+ *    2026-09-27: `p013-benchmark-rig` was held exclusive in the
+ *    papercup-release domain while a :3170-routed exclusive acquire was
+ *    granted in the staging domain, and `locks:list` reported `holders: []`.
+ *    A same-named lease in another domain is therefore treated as a conflict.
+ *    Over-refusing is the safe direction (the caller sees the holder and its
+ *    domain, and waits); under-reporting grants an exclusivity that does not
+ *    hold, which is the defect this module exists to prevent.
  *
  *  - **It is symmetric with the already-landed read-side fix.** `locks:list`
  *    (EI-21733256625452096) stopped inferring one domain and now queries all
@@ -40,7 +50,7 @@
  */
 
 import { candidateResourceLockDomains } from './coordination-domain';
-import { getTxPool, readResourceQueue, type ResourceHolder } from './su-lock-store';
+import { getTxPool, listLiveResourceDomains, readResourceQueue, type ResourceHolder } from './su-lock-store';
 
 export type ResourceAcquireMode = 'shared' | 'exclusive';
 
@@ -115,15 +125,15 @@ export function selectCrossDomainConflicts(params: {
 }
 
 /**
- * Read every candidate domain OTHER than the one this acquire targets and
- * return the conflicting holders. Empty when the acquire is safe.
+ * Read every domain OTHER than the one this acquire targets — the process's
+ * candidate domains plus every domain holding a live lease on this resource
+ * name — and return the conflicting holders. Empty when the acquire is safe.
  *
- * Costs nothing on a single-domain host: when the candidate set collapses to
- * the target domain (`PAPERCUSP_LOCK_DOMAIN` set, or a workspace whose id
- * equals the repo root) no query is issued at all and the acquire path is
- * byte-identical to before this guard.
+ * One name-keyed discovery read (`listLiveResourceDomains`) always runs; the
+ * per-domain queue reads run only for domains other than the target, so a
+ * resource with no foreign lease costs exactly that one small read.
  *
- * Expired rows are excluded by `readResourceQueue`'s own
+ * Expired rows are excluded by both reads' own
  * `expires_ts > clock_timestamp()` predicate, so a lapsed hold never blocks.
  *
  * Errors are NOT swallowed: a failed read means the caller does not know
@@ -137,10 +147,13 @@ export async function findCrossDomainResourceConflicts(params: {
   owner: string;
 }): Promise<CrossDomainHolder[]> {
   const { resource, targetDomain, requestedMode, owner } = params;
-  const foreignDomains = candidateResourceLockDomains().filter((d) => d !== targetDomain);
+  const pool = getTxPool();
+  const liveDomains = await listLiveResourceDomains(pool, resource);
+  const foreignDomains = [...new Set([...candidateResourceLockDomains(), ...liveDomains])].filter(
+    (d) => d !== targetDomain,
+  );
   if (foreignDomains.length === 0) return [];
 
-  const pool = getTxPool();
   const foreign = await Promise.all(
     foreignDomains.map(async (coordinationDomain) => ({
       coordinationDomain,

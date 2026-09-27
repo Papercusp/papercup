@@ -30,6 +30,10 @@ import {
 } from '@papercusp/operator-core/lib/testing-worktree';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
 import { posix, relative } from 'node:path';
+import {
+  TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+  type TestRunExecutionDetails,
+} from '@papercusp/test-config/execution-details';
 
 interface TestRunRow {
   filePath: string;
@@ -39,6 +43,38 @@ interface TestRunRow {
   finishedAt: Date;
   outputTail: string | null;
   worktreeDirty: boolean;
+  passed: number;
+  failed: number;
+  skipped: number;
+}
+
+/**
+ * EI-24434635346407728: stamp the RUNTIME layer. This reporter only ever runs inside a
+ * Playwright process, so every row it writes is an e2e execution — the fact acceptance
+ * BARs requiring `e2e` bind against. Before this the row carried no execution_details at
+ * all, so no e2e run could ever satisfy an `e2e` layer requirement.
+ */
+export function playwrightExecutionDetails(
+  row: TestRunRow,
+  ctx: { root: string; runGroupId: string | null; workspaceId: string | null; harnessSlug: string | null; commitSha: string | null },
+): TestRunExecutionDetails {
+  return {
+    schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
+    root: ctx.root,
+    filePath: row.filePath,
+    runGroupId: ctx.runGroupId,
+    workspaceId: ctx.workspaceId,
+    harnessSlug: ctx.harnessSlug,
+    testNamePattern: null,
+    testLayer: 'e2e',
+    passed: row.passed,
+    failed: row.failed,
+    skipped: row.skipped,
+    collectionFailed: false,
+    mutationPhase: null,
+    commitSha: ctx.commitSha,
+    worktreeDirty: row.worktreeDirty,
+  };
 }
 
 function captureReporterSaturationSnapshot(): { loopLagP95Ms: number | null; rssMb: number | null } {
@@ -114,10 +150,11 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot): P
     await Promise.race([
       pg.sql`
         INSERT INTO harness_shared.test_runs
-          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty)
+          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty, execution_details)
         VALUES
           (${row.filePath}, 'playwright', ${row.status}, ${row.durationMs}, ${row.startedAt},
-           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${row.worktreeDirty})
+           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${row.worktreeDirty},
+           ${JSON.stringify(playwrightExecutionDetails(row, { root: resolveAgentWorkspaceRoot({}), runGroupId, workspaceId, harnessSlug, commitSha: commit }))}::jsonb)
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => {
@@ -135,6 +172,9 @@ interface PerFile {
   anyPass: boolean;
   allSkipped: boolean;
   errors: string[];
+  passed: number;
+  failed: number;
+  skipped: number;
 }
 
 export default class AdminTestRunsPlaywrightReporter implements Reporter {
@@ -160,6 +200,9 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
         anyPass: false,
         allSkipped: true,
         errors: [],
+        passed: 0,
+        failed: 0,
+        skipped: 0,
       };
 
       const endMs = (result.startTime?.getTime() ?? Date.now()) + result.duration;
@@ -168,12 +211,14 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
 
       switch (result.status) {
         case 'passed':
+          existing.passed += 1;
           existing.anyPass = true;
           existing.allSkipped = false;
           break;
         case 'failed':
         case 'timedOut':
         case 'interrupted':
+          existing.failed += 1;
           existing.anyFail = true;
           existing.allSkipped = false;
           for (const e of result.errors ?? []) {
@@ -181,6 +226,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
           }
           break;
         case 'skipped':
+          existing.skipped += 1;
           // keep allSkipped flag until something else lands
           break;
       }
@@ -222,6 +268,9 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               finishedAt: new Date(agg.finishedAt),
               outputTail,
               worktreeDirty,
+              passed: agg.passed,
+              failed: agg.failed,
+              skipped: agg.skipped,
             }, worktreeAfter),
           );
         } catch {
