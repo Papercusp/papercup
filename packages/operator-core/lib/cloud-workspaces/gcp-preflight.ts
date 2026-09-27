@@ -14,6 +14,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { promisify } from 'node:util';
 import type { CloudCredentialRef } from '@papercusp/deployment-driver';
+import { describeFetchError } from '../loopback-fetch';
 
 const requireCjs = createRequire(import.meta.url);
 type ExecFileP = (
@@ -655,9 +656,52 @@ function gcpTransportCloseFailure(error: unknown): boolean {
     if (name === 'AbortError') return false;
     if (typeof code === 'string' && GCP_RETRYABLE_TRANSPORT_CODES.has(code)) return true;
     if (typeof message === 'string' && /other side closed|socket hang up/i.test(message)) return true;
+    if (gcpConnectPhaseFailure(node)) return true;
     node = (node as { cause?: unknown }).cause;
   }
   return false;
+}
+
+/**
+ * A failure while CONNECTING: no request byte reached Google, so a replay cannot duplicate
+ * anything. The measured case (WI-10003516): with Node's happy-eyeballs connect, a main-thread
+ * stall of 500ms or more lets the per-address attempt timer abort an IPv4 connect that had
+ * already succeeded; the IPv6 fallback has no route, and the socket fails with an
+ * `AggregateError` (code ETIMEDOUT, empty message) whose attempts are all `syscall: 'connect'`.
+ * That turned a finished teardown's census read into a failed operation. A mid-request timeout
+ * (`syscall: 'read'`) is deliberately NOT matched here — its request may have been applied.
+ */
+function gcpConnectPhaseFailure(node: unknown): boolean {
+  const { code, syscall, errors } = node as { code?: unknown; syscall?: unknown; errors?: unknown };
+  if (code === 'UND_ERR_CONNECT_TIMEOUT') return true;
+  if (syscall === 'connect') return true;
+  return (
+    Array.isArray(errors) &&
+    errors.length > 0 &&
+    errors.every((attempt) => (attempt as { syscall?: unknown } | null)?.syscall === 'connect')
+  );
+}
+
+/**
+ * The error a caller sees once replays are exhausted (or the failure was not replayable). undici's
+ * `TypeError: fetch failed` names no request, so four census failures could not be attributed to
+ * a URL (WI-10003516). Name the method and host+path — never the query string, headers, or token —
+ * and keep the original as `cause` so chain-walking classifiers still see the undici code. The
+ * message keeps `describeFetchError`'s text, so message-based transient detection is unchanged.
+ */
+function gcpTransportFailure(error: unknown, url: string, init: RequestInit): Error {
+  if (init.signal?.aborted || (error as { name?: unknown } | null)?.name === 'AbortError') {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+  let target = 'unparseable-url';
+  try {
+    const parsed = new URL(url);
+    target = `${parsed.host}${parsed.pathname}`;
+  } catch {
+    // keep the placeholder: a malformed URL must not turn the transport error into a TypeError
+  }
+  const method = (init.method ?? 'GET').toUpperCase();
+  return new Error(`gcp_transport_failed ${method} ${target}: ${describeFetchError(error)}`, { cause: error });
 }
 
 /**
@@ -701,7 +745,9 @@ export async function fetchGcpApiJson<T>(
           },
         });
       } catch (error) {
-        if (attempt >= replays || init.signal?.aborted || !gcpTransportCloseFailure(error)) throw error;
+        if (attempt >= replays || init.signal?.aborted || !gcpTransportCloseFailure(error)) {
+          throw gcpTransportFailure(error, url, init);
+        }
         await sleep(GCP_TRANSPORT_RETRY_DELAYS_MS[attempt]!);
       }
     }

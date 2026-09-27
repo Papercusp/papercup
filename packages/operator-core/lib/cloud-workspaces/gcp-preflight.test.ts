@@ -9,6 +9,7 @@ import {
   runGcpWorkspaceHostPreflight,
   type GcpPreflightDeps,
 } from './gcp-preflight';
+import { isTransientNetworkError } from '../loopback-fetch';
 
 const SECRET = 'ya29.this-access-token-must-never-escape';
 const PROJECT = 'active-alcove-504205-q3';
@@ -717,5 +718,85 @@ describe('transport replay on a closed pooled socket', () => {
       fetchGcpApiJson(fetchImpl, SECRET, 'https://compute.googleapis.com/compute/v1/x', {}, NEVER_SLEEP),
     ).rejects.toThrow('gcp_preflight_http_500');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+// WI-10003516: a bg-host main-thread stall of 500ms or more lets Node's happy-eyeballs attempt
+// timer abort an IPv4 connect that had already succeeded; the IPv6 fallback has no route, so the
+// socket fails with an AggregateError (code ETIMEDOUT, empty message) whose attempts are all
+// `syscall: 'connect'`. Four teardown census reads died on it as a bare "fetch failed (ETIMEDOUT)".
+// Shape measured on Node v25.9 (.papercusp/scratch/probe-he-attempt-stall.mts, 5/5).
+describe('connect-phase transport failures (WI-10003516)', () => {
+  const NEVER_SLEEP = { sleep: async () => {} };
+  const CENSUS_URL =
+    'https://compute.googleapis.com/compute/v1/projects/p/aggregated/instances?filter=labels.secretish%3Dvalue&maxResults=500';
+
+  function happyEyeballsTimeout(): Error {
+    const v4 = Object.assign(new Error('connect ETIMEDOUT 142.251.211.170:443'), {
+      code: 'ETIMEDOUT',
+      syscall: 'connect',
+    });
+    const v6 = Object.assign(new Error('connect ENETUNREACH 2607:f8b0:4006:804::200a:443 - Local (:::0)'), {
+      code: 'ENETUNREACH',
+      syscall: 'connect',
+    });
+    return new TypeError('fetch failed', { cause: Object.assign(new AggregateError([v4, v6], ''), { code: 'ETIMEDOUT' }) });
+  }
+
+  it('replays a GET past a happy-eyeballs connect timeout — no request byte was sent', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(happyEyeballsTimeout())
+      .mockResolvedValueOnce(json({ items: {} })) as unknown as typeof fetch;
+
+    await expect(fetchGcpApiJson(fetchImpl, SECRET, CENSUS_URL, {}, NEVER_SLEEP)).resolves.toEqual({ items: {} });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('replays an undici connect timeout', async () => {
+    const error = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('Connect Timeout Error'), { code: 'UND_ERR_CONNECT_TIMEOUT' }),
+    });
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(error)
+      .mockResolvedValueOnce(json({ ok: true })) as unknown as typeof fetch;
+
+    await expect(fetchGcpApiJson(fetchImpl, SECRET, CENSUS_URL, {}, NEVER_SLEEP)).resolves.toEqual({ ok: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  // The control: a timeout AFTER the connection was established may follow a request Google
+  // already applied, so it is not a connect-phase failure and must not be replayed here.
+  it('does not replay a mid-request read timeout', async () => {
+    const error = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('read ETIMEDOUT'), { code: 'ETIMEDOUT', syscall: 'read' }),
+    });
+    const fetchImpl = vi.fn().mockRejectedValue(error) as unknown as typeof fetch;
+
+    await expect(fetchGcpApiJson(fetchImpl, SECRET, CENSUS_URL, {}, NEVER_SLEEP)).rejects.toThrow('ETIMEDOUT');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('names the method, host and path — never the query or token — once replays are exhausted', async () => {
+    const original = happyEyeballsTimeout();
+    const fetchImpl = vi.fn().mockRejectedValue(original) as unknown as typeof fetch;
+
+    const failure = await fetchGcpApiJson(fetchImpl, SECRET, CENSUS_URL, {}, NEVER_SLEEP).then(
+      () => undefined,
+      (error: unknown) => error as Error,
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(failure?.message).toBe(
+      'gcp_transport_failed GET compute.googleapis.com/compute/v1/projects/p/aggregated/instances: ' +
+        'fetch failed (ETIMEDOUT: connect ETIMEDOUT 142.251.211.170:443; ' +
+        'connect ENETUNREACH 2607:f8b0:4006:804::200a:443 - Local (:::0))',
+    );
+    expect(failure?.message).not.toContain('secretish');
+    expect(failure?.message).not.toContain(SECRET);
+    expect(failure?.cause).toBe(original);
+    // The provisioning runner retries a census read only when this classifies transient.
+    expect(isTransientNetworkError(failure)).toBe(true);
   });
 });

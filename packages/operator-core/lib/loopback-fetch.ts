@@ -120,11 +120,45 @@ export function isTransientNetworkError(err: unknown): boolean {
  */
 export function describeFetchError(err: unknown): string {
   const base = err instanceof Error ? err.message : String(err);
-  const cause = (err as { cause?: { code?: string; message?: string } } | null)?.cause;
+  const cause = (err as { cause?: FetchErrorCause } | null)?.cause;
   const code = cause?.code;
   if (!code || base.includes(code)) return base;
-  const detail = cause?.message && cause.message !== base ? `: ${cause.message}` : '';
-  return `${base} (${code}${detail})`;
+  const detail = describeCauseDetail(cause, base);
+  return `${base} (${code}${detail ? `: ${detail}` : ''})`;
+}
+
+interface FetchErrorCause {
+  code?: string;
+  message?: string;
+  syscall?: string;
+  address?: string;
+  port?: number;
+  errors?: unknown;
+}
+
+/**
+ * The human half of a cause. Node's happy-eyeballs connect (`autoSelectFamily`) fails with an
+ * `AggregateError` whose OWN message is EMPTY and whose code is copied from its first attempt, so
+ * rendering only `.message` produced a bare `fetch failed (ETIMEDOUT)` that named neither the
+ * address nor the address family (WI-10003516: four GCP census failures nobody could attribute).
+ * The per-attempt errors (`connect ETIMEDOUT <ip>:443`, `connect ENETUNREACH <ipv6>:443`) are the
+ * diagnosis, so render them; fall back to syscall/address/port for a message-less socket error.
+ */
+function describeCauseDetail(cause: FetchErrorCause, base: string): string {
+  const parts: string[] = [];
+  if (cause.message && cause.message !== base) parts.push(cause.message);
+  if (Array.isArray(cause.errors)) {
+    for (const attempt of cause.errors) {
+      const text =
+        (attempt as { message?: unknown } | null)?.message || (attempt as { code?: unknown } | null)?.code;
+      if (typeof text === 'string' && text) parts.push(text);
+    }
+  }
+  if (parts.length === 0 && cause.syscall) {
+    const where = cause.address ? ` ${cause.address}${cause.port === undefined ? '' : `:${cause.port}`}` : '';
+    parts.push(`${cause.syscall}${where}`);
+  }
+  return parts.join('; ');
 }
 
 /** @deprecated Use isTransientNetworkError instead. */

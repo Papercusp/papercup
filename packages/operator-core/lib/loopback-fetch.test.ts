@@ -201,6 +201,28 @@ describe('describeFetchError (EI-390: self-diagnosing persisted failures)', () =
   it('handles a non-Error value', () => {
     expect(describeFetchError('weird')).toBe('weird');
   });
+  // WI-10003516: Node's happy-eyeballs connect fails with an AggregateError whose own message is
+  // EMPTY; the old rendering was a bare "fetch failed (ETIMEDOUT)" naming no address or family.
+  // Shape measured on Node v25.9 (.papercusp/scratch/probe-he-attempt-stall.mts).
+  it('renders each happy-eyeballs connect attempt when the AggregateError cause has no message', () => {
+    const v4 = Object.assign(new Error('connect ETIMEDOUT 142.251.211.170:443'), {
+      code: 'ETIMEDOUT',
+      syscall: 'connect',
+    });
+    const v6 = Object.assign(new Error('connect ENETUNREACH 2607:f8b0:4006:804::200a:443 - Local (:::0)'), {
+      code: 'ENETUNREACH',
+      syscall: 'connect',
+    });
+    const err = new TypeError('fetch failed', { cause: Object.assign(new AggregateError([v4, v6], ''), { code: 'ETIMEDOUT' }) });
+    expect(describeFetchError(err)).toBe(
+      'fetch failed (ETIMEDOUT: connect ETIMEDOUT 142.251.211.170:443; ' +
+        'connect ENETUNREACH 2607:f8b0:4006:804::200a:443 - Local (:::0))',
+    );
+  });
+  it('falls back to syscall + address:port when the cause carries neither a message nor attempts', () => {
+    const cause = { code: 'ETIMEDOUT', message: '', syscall: 'connect', address: '10.0.0.1', port: 443 };
+    expect(describeFetchError(new TypeError('fetch failed', { cause }))).toBe('fetch failed (ETIMEDOUT: connect 10.0.0.1:443)');
+  });
 });
 
 describe('readJsonBody (EI-20: attributable JSON parse, no frame-less fatal exit)', () => {
