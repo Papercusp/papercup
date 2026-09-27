@@ -6,9 +6,9 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
-import { TEST_PG_IMAGE } from '@papercusp/test-config/pg';
+import { startDedicatedTestPg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { installDeterministicEmbedder, type InstalledDeterministicEmbedder } from '../../test/_deterministic-embedder';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
@@ -102,9 +102,11 @@ beforeAll(async () => {
     // two flags mirror the shared container's non-durability settings. Routed
     // through getTestPg's existing PAPERCUSP_TEST_PG_ADMIN_URL seam, set before
     // this process's first createFreshTestDb call.
-    dedicatedPg = await new PostgreSqlContainer(TEST_PG_IMAGE)
-      .withCommand(['postgres', '-c', 'max_connections=200', '-c', 'dynamic_shared_memory_type=mmap'])
-      .start();
+    // startDedicatedTestPg: the stock pg_isready healthcheck crash-restarted
+    // this cluster mid-run under load (2026-09-27 warm smoke, see the helper).
+    dedicatedPg = await startDedicatedTestPg({
+      command: ['postgres', '-c', 'max_connections=200', '-c', 'dynamic_shared_memory_type=mmap'],
+    });
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
     stamp('dedicated-pg-started');
   }
