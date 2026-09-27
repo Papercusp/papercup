@@ -1,6 +1,10 @@
+import { spawn } from "node:child_process";
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
-import { resolve } from "node:path";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
@@ -74,6 +78,44 @@ describe("Cloud Portal stable front-door proxy", () => {
     } finally {
       errorLog.mockRestore();
       await close(proxy);
+    }
+  });
+
+  // WI-10003268: deploy-cloud-portal.sh installs the proxy into ~/.local/bin, outside every
+  // node_modules tree. A workspace import resolved fine here and in the repo, then crash-looped
+  // :3081 with ERR_MODULE_NOT_FOUND the first time the installed copy was started.
+  it("starts as a standalone program copied outside every node_modules tree", async () => {
+    const installDir = mkdtempSync(join(tmpdir(), "portal-proxy-install-"));
+    const installed = join(installDir, "papercusp-cloud-portal-proxy.mjs");
+    copyFileSync(PROXY, installed);
+    // Control: the copy must sit where workspace packages do NOT resolve, or this test
+    // would pass even with the workspace import back in place.
+    expect(() => createRequire(installed).resolve("@papercusp/operator-core/package.json")).toThrow();
+
+    const listenPort = await reservePort();
+    const child = spawn(process.execPath, [installed], {
+      cwd: installDir,
+      env: {
+        ...process.env,
+        PAPERCUSP_CLOUD_PORTAL_PROXY_LISTEN_PORT: String(listenPort),
+        PAPERCUSP_CLOUD_PORTAL_PROXY_TARGET_PORT: String(await reservePort()),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.stderr.on("data", (chunk) => (output += chunk));
+
+    try {
+      const deadline = Date.now() + 5_000;
+      while (!output.includes("front door listening") && child.exitCode === null && Date.now() < deadline) {
+        await delay(25);
+      }
+      expect(output).not.toContain("ERR_MODULE_NOT_FOUND");
+      expect(output).toContain(`front door listening on http://127.0.0.1:${listenPort}/`);
+    } finally {
+      child.kill();
+      rmSync(installDir, { recursive: true, force: true });
     }
   });
 });

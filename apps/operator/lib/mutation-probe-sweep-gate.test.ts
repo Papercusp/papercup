@@ -487,7 +487,7 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).toContain('target=in-tree:lock-held');
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat']);
+    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat', 'locks:list']);
     expect(calls[1].args).toMatchObject({ paths: ['subject.txt'], coordination_domain: scratch });
     expect(calls[2].args).toMatchObject({ ttl_sec: 1200, coordination_domain: scratch });
     // Every call must send a projection the real dispatch accepts (WI-10002758).
@@ -516,8 +516,8 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
   });
 
-  it('requires an exclusive harness git-sync lock when probing a submodule', () => {
-    const nestedSubject = join(scratch, 'nested', 'subject.txt');
+  it.each(['superproject', 'submodule'] as const)('requires an exclusive harness git-sync lock when probing a %s', (kind) => {
+    const nestedSubject = kind === 'submodule' ? join(scratch, 'nested', 'subject.txt') : subject;
     const refused = runLockedProbe([
       '--file', nestedSubject,
       '--mutate', 's/GOOD/BAD/',

@@ -9,7 +9,24 @@
  */
 import http from 'node:http';
 import net from 'node:net';
-import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+// deploy-cloud-portal.sh installs this file as a STANDALONE program in ~/.local/bin, outside
+// every node_modules tree, so it may import only `node:` builtins. A workspace import here
+// (it once used @papercusp/operator-core's isCliEntry) resolves in the repo and in tests but
+// dies with ERR_MODULE_NOT_FOUND at the installed path — which stayed latent until a reboot
+// first started the installed copy and :3081 crash-looped (WI-10003268). Realpath both sides:
+// argv[1] keeps a symlinked invocation path while import.meta.url is already resolved.
+function isDirectEntry(importMetaUrl) {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  try {
+    return realpathSync(fileURLToPath(importMetaUrl)) === realpathSync(argv1);
+  } catch {
+    return false;
+  }
+}
 
 function positiveNumber(value, fallback) {
   const parsed = Number(value);
@@ -175,4 +192,4 @@ export function startPortalProxy(overrides = {}) {
   return server;
 }
 
-if (isCliEntry(import.meta.url)) startPortalProxy();
+if (isDirectEntry(import.meta.url)) startPortalProxy();

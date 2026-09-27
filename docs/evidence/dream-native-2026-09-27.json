@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Dream native isolated seeded control and history journey",
+  "framework": "operational",
+  "command": ["bash", "scripts/verify-dream-native.sh"],
+  "startedAt": "2026-09-27T03:31:44Z",
+  "finishedAt": "2026-09-27T03:33:49.401Z",
+  "exitCode": 0,
+  "summary": "Recovered completed task0muj9ap4l1nf3kv5mmc without rerunning. Assertion script ran in the frozen isolated Tauri verifier with disposable PostgreSQL. This proves seeded UI/control behavior, not paid generation, human calibration, benefit, or deployment.",
+  "assertions": [
+    {"id":"start","passed":true,"evidence":"Start manual dreaming click changed displayed runtime state from paused to scheduled; selector and no-errors checks passed."},
+    {"id":"pause-resume","passed":true,"evidence":"Pause changed state to paused, resume changed it to scheduled, final pause returned to paused."},
+    {"id":"history","passed":true,"evidence":"Analyze rendered seeded history and Combine the A output with the B check.; disclosure opened Dream native-fixture-run."},
+    {"id":"source-and-science","passed":true,"evidence":"Source link resolved to its rendered target; detail showed Catalogue coverage: partial and Falsifiable experiment."},
+    {"id":"negative-control","passed":true,"evidence":"Impossible selector .dream-native-impossible-sentinel correctly failed; script printed negative control confirmed."},
+    {"id":"target-freshness","passed":true,"evidence":"Shared SPA rebuilt after freeze, but every recorded Dream target source stayed byte-identical. Frozen bundle contained These earn no new-discovery credit."},
+    {"id":"screenshot","passed":true,"evidence":"Three X11 window imports failed; root fallback produced readable dream-native.png. Visually inspected desktop Analyze history with dream-native selected. Screenshot does not expose the entire expanded detail at once."}
+  ],
+  "provenance": {
+    "taskId": "0muj9ap4l1nf3kv5mmc",
+    "log": ".papercusp/scratch/bash-bb17dc35-5f5.log",
+    "logSha256": "f6075330437c172226954d6bb2675ae3a6789d717c8b3815ead64ba86ea9ffde",
+    "screenshot": "/tmp/dream-native-20260927T033144Z/dream-native.png",
+    "screenshotSha256": "1f6764c65400a7f08159c38bd8248577ba9e358e32981873e3dd04791f9c5680",
+    "sourceManifest": "/tmp/dream-native-20260927T033144Z/target-sources.sha256",
+    "evidencePlane": "isolated-current-build",
+    "limitations": ["Seeded candidate, no provider generation", "No independent human judgment", "No beneficial experiment", "No deployed-main verification", "Impossible-selector control checks the instrument, not mutation of runtime transition logic"]
+  }
+}

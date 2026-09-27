@@ -5401,6 +5401,12 @@ export async function runMcpReconnectMacro({
     }
     return null;
   };
+  // Claude 2.1.280 handles `/mcp` as a direct reconnect command and prints
+  // `Reconnected to <server>.` instead of opening the older selection dialog.
+  // Accept only the exact success line for this server: a partial reconnect
+  // message (for example, "but fetching tools failed") is not readiness.
+  const directReconnectSucceeded = (v) =>
+    v.split('\n').some((line) => line.trim() === `Reconnected to ${serverName}.`);
 
   // (1) open the dialog
   resetTap();
@@ -5413,6 +5419,9 @@ export async function runMcpReconnectMacro({
   if (!painted) {
     await closeOut();
     return { ok: false, step: 'open-dialog', detail: `'${serverName}' never painted within ${paintBudgetMs}ms` };
+  }
+  if (directReconnectSucceeded(painted)) {
+    return { ok: true, step: 'direct-reconnected', detail: 'Claude /mcp confirmed this server reconnected' };
   }
   if (targetRowStatus(painted) === 'connected') {
     await closeOut();

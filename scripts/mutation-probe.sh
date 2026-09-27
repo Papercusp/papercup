@@ -160,8 +160,9 @@
 #                            this session owns it and extends its lease
 #       --accept-sweep-race  you consciously accept the race (an unswept
 #                            checkout, or a run short enough that you judged it)
-#   For a submodule, --sweep-lock-held also requires this session's exclusive
-#   git-sync:<harness> resource lock. Evidence binders refuse paths carrying the
+#   For EVERY repository, --sweep-lock-held also requires this session's exclusive
+#   git-sync:<harness> resource lock. A file-lock census cannot atomically exclude
+#   a mutation starting after git-sync reads that census. Evidence binders refuse paths carrying the
 #   active 'mutation probe' file-lock intent. A bare acknowledgement never opens
 #   the gate; the verified lock state is echoed into MUTATION_PROBE_RESULT.
 #
@@ -431,20 +432,21 @@ verify_sweep_fence() {
     || die "the file-lock heartbeat did not confirm ownership; refusing an unverified in-tree mutation."
   log "verified this session's live file lock for $lock_path"
 
-  superproject_root="$(git -C "$(dirname "$FILE")" rev-parse --show-superproject-working-tree 2>/dev/null || true)"
-  if [ -n "$superproject_root" ]; then
+  # EI-24386061509279889: superproject probes need the same atomic sweep fence
+  # as submodules; a live file lock alone allowed a mutant into a real commit.
+  {
     harness_scope="${PAPERCUSP_TEST_RUN_HARNESS:-${HARNESS_SLUG:-${PAPERCUSP_HARNESS_SLUG:-}}}"
-    [ -n "$harness_scope" ] || die "a submodule in-tree probe requires a harness slug to verify the git-sync resource lock; use copy-out mode or set PAPERCUSP_TEST_RUN_HARNESS."
+    [ -n "$harness_scope" ] || die "an in-tree probe requires a harness slug to verify the git-sync resource lock; use copy-out mode or set PAPERCUSP_TEST_RUN_HARNESS."
     resource="git-sync:$harness_scope"
     lock_list_args="$(node -e 'process.stdout.write(JSON.stringify({resource:process.argv[1]}))' "$resource")" \
-      || die "could not build the named-resource lock query; refusing a submodule mutation."
+      || die "could not build the named-resource lock query; refusing an in-tree mutation."
     lock_list_json="$(ptool_json locks:list "$lock_list_args" '{"pick":["holders[].resource","holders[].owner","holders[].mode","holders[].status","holders[].expires_ts"]}')" \
-      || die "could not read the named-resource lock list; refusing a submodule mutation."
+      || die "could not read the named-resource lock list; refusing an in-tree mutation."
     minimum_resource_ms=$(( (GUARD_MAX_SEC + 120) * 1000 ))
     printf '%s' "$lock_list_json" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{const owner=process.argv[1],resource=process.argv[2],minimum=Number(process.argv[3]);const h=(JSON.parse(s).holders||[]).find(x=>x.resource===resource&&x.owner===owner&&x.mode==="exclusive"&&x.status==="held"&&Date.parse(x.expires_ts)>=Date.now()+minimum);if(!h)process.exit(1)}catch{process.exit(2)}})' "$owner_id" "$resource" "$minimum_resource_ms" \
-      || die "this session must hold an exclusive '$resource' lock through the mutation window before probing a submodule."
+      || die "this session must hold an exclusive '$resource' lock through the mutation window before probing in-tree."
     log "verified this session's exclusive $resource lock through the mutation window"
-  fi
+  }
 }
 
 while [ $# -gt 0 ]; do
@@ -1424,7 +1426,7 @@ if [ "$IN_TREE" = "1" ]; then
   if [ "$SWEEP_ACK" = "lock-held" ]; then
     log "⚠️  Sweep: you declared a file lock on $(sweep_lock_path) HELD — git-sync will exclude that path."
     log "⚠️  The lock owner and path will be verified immediately before mutation."
-    log "⚠️  A submodule additionally requires the exclusive git-sync resource lock."
+    log "⚠️  Every repository additionally requires the exclusive git-sync resource lock."
   else
     log "⚠️  Sweep: race ACCEPTED — nothing is holding git-sync off. If a tick lands"
     log "⚠️  during this run, the mutant is committed to the shared tree."
