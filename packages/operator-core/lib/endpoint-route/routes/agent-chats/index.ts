@@ -49,6 +49,7 @@ import { pgLoopSessionStore } from '../../../agent-loop/session-store';
 import type { LoopTool } from '../../../agent-loop/loop';
 import { MODEL_EFFORT_LEVELS, SURFACE_KEYS, type SurfaceKey } from '../../../agent-config-constants';
 import { listPendingLoopApprovals, resolveLoopApproval } from '../../../agent-loop/approval-store';
+import { chatModelFailureFields } from '../../../chat-model-failure';
 import { taskOpsRoute } from './task-ops';
 import { suSessionRoutes } from './su-session';
 import externalTurnRoutes from './external-turns';
@@ -820,7 +821,7 @@ const messagesRoute = defineTool({
             } catch {
               /* best-effort — still emit the terminal error below */
             }
-            sink.event('error', { type: 'error', message: terminalError });
+            sink.event('error', { type: 'error', message: terminalError, ...chatModelFailureFields(terminalError) });
             sink.close();
             return;
           }
@@ -1059,7 +1060,14 @@ const messagesRoute = defineTool({
           } catch {
             /* best-effort — still emit the error event */
           }
-          sink.event('error', { message: failureMessage, ...(lastErrorStderr ? { stderr: lastErrorStderr } : {}) });
+          sink.event('error', {
+            message: failureMessage,
+            // WI-10003494: a stable code for an actionable model-account failure
+            // (usage cap / sign-in / rate limit) so the portal can say WHY without
+            // forwarding this prose.
+            ...chatModelFailureFields(failureMessage),
+            ...(lastErrorStderr ? { stderr: lastErrorStderr } : {}),
+          });
           sink.close();
           return;
         }
