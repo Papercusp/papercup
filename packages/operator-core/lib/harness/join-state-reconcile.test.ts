@@ -207,6 +207,49 @@ describe('ensureJoinStatesReconciledOnce (boot trigger)', () => {
     await vi.waitFor(() => expect(lists).toHaveLength(1)); // ran exactly once
   });
 
+  it('WI-10003546: re-seeds git-sync after the sweep heals a row (boot-all ran git-sync reconcile first)', async () => {
+    __resetJoinStateReconcileForTests();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const reseeded: string[] = [];
+      let projects: HarnessRegistry['projects'] = [{ slug: 'pot', path: '/clones/pot' }];
+      ensureJoinStatesReconciledOnce('ws', {
+        listJoinStates: async () => [js('pot', '/clones/pot')],
+        loadRegistry: async () => ({ projects }),
+        mutateRegistry: (async (fn: (r: HarnessRegistry) => HarnessRegistry) => {
+          projects = fn({ projects }).projects;
+          return undefined as never;
+        }) as never,
+        reseedGitSync: async (ws) => {
+          reseeded.push(ws);
+        },
+      });
+      await vi.waitFor(() => expect(reseeded).toEqual(['ws']));
+      expect(projects[0]).toMatchObject({ joined_via_link: true, remote_hive: true, self_repo: true });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('WI-10003546: no git-sync re-seed when the sweep changed nothing', async () => {
+    __resetJoinStateReconcileForTests();
+    const reseeded: string[] = [];
+    const lists: number[] = [];
+    ensureJoinStatesReconciledOnce('ws', {
+      listJoinStates: async () => {
+        lists.push(1);
+        return [];
+      },
+      loadRegistry: async () => ({ projects: [] }),
+      reseedGitSync: async (ws) => {
+        reseeded.push(ws);
+      },
+    });
+    await vi.waitFor(() => expect(lists).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(reseeded).toEqual([]);
+  });
+
   it('no-ops under vitest WITHOUT seams (the boot-wiring guard — never touches real FS)', async () => {
     __resetJoinStateReconcileForTests();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});

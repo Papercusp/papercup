@@ -111,6 +111,9 @@ export interface ReconcileJoinStatesOpts {
   mutateRegistry?: typeof mutateHarnessRegistry;
   /** Clone-dir existence check (test seam; default fs.existsSync). */
   pathExists?: (p: string) => boolean;
+  /** Boot trigger only: re-run git-sync routine seeding after this sweep
+   *  changed the registry (test seam; default reconcileGitSyncRoutines). */
+  reseedGitSync?: (workspaceId: string) => Promise<unknown>;
 }
 
 export interface ReconcileJoinStatesResult {
@@ -250,6 +253,23 @@ export function ensureJoinStatesReconciledOnce(
           (r.abandoned.length ? ` abandoned=[${r.abandoned.join(', ')}]` : '') +
           (r.enriched.length ? ` enriched=[${r.enriched.join(', ')}]` : ''),
       );
+    }
+    // boot-all fires git-sync reconcile BEFORE this sweep, both detached, so it
+    // judged the pre-heal registry: a bare link-joined row read as
+    // eligible-but-UNSEEDED and stayed without a git-sync routine until the next
+    // boot (rig VM hello-world-3-pot, 2026-09-27T21:34:39Z, WI-10003546). Seed
+    // again against the healed registry; the reconcile is idempotent.
+    if (!r.error && (r.enriched.length || r.reregistered.length)) {
+      const reseed =
+        seams?.reseedGitSync ??
+        (async (ws: string) => {
+          const { reconcileGitSyncRoutines } = await import('./git-sync/git-sync-reconcile');
+          const g = await reconcileGitSyncRoutines({ workspaceId: ws });
+          console.log(
+            `[join-state-reconcile] git-sync re-seed after heal (${ws}): seeded=[${g.seeded.join(', ')}]`,
+          );
+        });
+      await reseed(workspaceId);
     }
   })().catch((e) => {
     // unreachable (reconcileJoinStates never throws) — belt and braces
