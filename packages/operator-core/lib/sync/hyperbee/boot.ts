@@ -67,7 +67,9 @@ import { stampOpHlc } from './hlc-stamp';
 import type { HlcClock } from '@papercusp/locks-core';
 import {
   createMergeCursor,
+  createMergeProgressProbe,
   createPgMergeCursorSeedCache,
+  describeMergeProgress,
   mergeAdmittedLogsIncremental,
   seedCursorFromSnapshots,
   persistCursor,
@@ -3280,13 +3282,19 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   let mergePassStartedAt: number | null = null;
   let mergePassStage = 'idle';
   let mergePassStallTimer: ReturnType<typeof setTimeout> | null = null;
+  // Stamped in place by the incremental fold (IncrementalMergeOpts.progress), so a
+  // stall inside it names the log, position and phase — not just the stage.
+  const mergeProgress = createMergeProgressProbe();
   /** Name the top-level await the running pass is about to enter. */
   function markMergeStage(stage: string): void {
     mergePassStage = stage;
   }
   function describeMergePass(): string {
     if (mergePassStartedAt == null) return `no pass in flight`;
-    return `pass in flight ${Math.round((Date.now() - mergePassStartedAt) / 1000)}s at stage '${mergePassStage}'`;
+    const base = `pass in flight ${Math.round((Date.now() - mergePassStartedAt) / 1000)}s at stage '${mergePassStage}'`;
+    return mergePassStage.startsWith('incremental-merge') || mergePassStage === 'memory-replay-merge'
+      ? `${base} (${describeMergeProgress(mergeProgress)})`
+      : base;
   }
   function armMergePassWatchdog(delayMs: number): void {
     mergePassStallTimer = setTimeout(() => {
@@ -3306,6 +3314,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     const startedAt = Date.now();
     mergePassStartedAt = startedAt;
     mergePassStage = 'start';
+    Object.assign(mergeProgress, createMergeProgressProbe());
     if (mergePassStallMs > 0) armMergePassWatchdog(mergePassStallMs);
     try {
       return await mergeOnePass();
@@ -4458,6 +4467,8 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // log is folded by many harnesses at many positions, so a line naming only
         // the log is ambiguous across all of them (39 cursors on cb54460d98d8).
         cursorLabel: `${opts.workspaceId}/${opts.harnessSlug}`,
+        // WI-10003427: the pass watchdog's stall line reads this (describeMergePass).
+        progress: mergeProgress,
         // p2p-join-catchup-speed-2026-09-23 P-002 (WI-10002479): look up the stored PG order
         // for each window of upcoming ops so a replayed op strictly older than its row is
         // skipped in memory instead of paying an apply the LWW guard would reject. Reads
