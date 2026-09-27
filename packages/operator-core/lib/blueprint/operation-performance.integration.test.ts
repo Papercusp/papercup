@@ -183,12 +183,19 @@ describe('P-013 workload A fixture', () => {
   it('creates and completes matching 1 KiB direct items; blueprint arm leaves zero plan rows', async () => {
     const runArm = (arm: Arm, index: number) => runP013WorkloadA(db.adminSql, warmTools, arm, index);
     let sequence = 0;
-    if (process.env.P013_COLD_PILOT === '1') {
+    if (matrixRequested()) {
       // Each cold sample owns a fresh Node process, module graph and PG client.
       // The parent retains the migrated database and checks all terminal rows.
+      // Warm samples run in this process against the same database, so ONE code
+      // path serves the whole D-016 matrix (P013_MODES x P013_CONCURRENCIES).
+      const matrix = matrixShape();
       let coldStarts = 0;
+      let childrenInFlight = 0;
       const counterRows: Array<{
         arm: Arm; sequence: number; embedderCalls: number | null; eventRecovery: P013Sample['eventRecovery'];
+        /** Children already running when this one spawned. >0 means the per-sample
+         * counter delta overlaps a sibling's (concurrency 8): only trial totals are exact. */
+        overlappingChildren: number;
       } & PgCounters> = [];
       const benchmarkArm = (arm: Arm): BenchmarkArm => ({
         warmup: async () => { await runArm(arm, sequence++); },
@@ -232,6 +239,7 @@ describe('P-013 workload A fixture', () => {
             signal: AbortSignal.timeout(90_000),
           });
           coldStarts++;
+          const overlappingChildren = childrenInFlight++;
           let stderr = '';
           let stage = 'spawned';
           // stdio[2] is 'pipe', so stderr exists; fail loudly rather than lose diagnostics.
@@ -262,6 +270,8 @@ describe('P-013 workload A fixture', () => {
             writeFileSync(`${profileDir}/p013-${arm}-${childSequence}.pgsamples.json`,
               JSON.stringify(pgSamples));
           };
+          const settled = () => { childrenInFlight--; };
+          void exit.then(settled, settled);
           void exit.then(stopSampler, stopSampler);
           return {
             run: async () => {
@@ -278,7 +288,8 @@ describe('P-013 workload A fixture', () => {
               // and every pg_stat_activity sampler poll.
               delta.xactCommit -= 1 + pgSamples.length;
               counterRows.push({
-                arm, sequence: childSequence, embedderCalls, eventRecovery: sample!.eventRecovery, ...delta,
+                arm, sequence: childSequence, embedderCalls, eventRecovery: sample!.eventRecovery,
+                overlappingChildren, ...delta,
               });
               return sample!.marks;
             },
@@ -287,16 +298,16 @@ describe('P-013 workload A fixture', () => {
         },
       });
       // One code path for the pilot (1x1) and the D-016 matrix (P013_PROTOCOL's
-      // 5 repetitions x 50 cold samples): the paired runner interleaves the arms.
-      const repetitions = Number(process.env.P013_REPETITIONS ?? '1');
-      const coldSamples = Number(process.env.P013_COLD_SAMPLES ?? '1');
+      // 5 repetitions x 200 warm + 50 cold at concurrency 1 and 8): the paired
+      // runner interleaves the arms; P013_REPETITION_OFFSET keeps that order when
+      // each repetition runs as its own process.
+      const { repetitions, coldSamples, warmSamples, warmups, repetitionOffset, modes, concurrencies } = matrix;
       const trials = await runPairedBenchmark({ control: benchmarkArm('control'),
         candidate: benchmarkArm('candidate') }, {
-        warmups: 0, repetitions, warmSamples: 1, coldSamples,
-        concurrencies: [1], modes: ['cold'],
+        warmups, repetitions, warmSamples, coldSamples, concurrencies, modes, repetitionOffset,
       });
-      expect(coldStarts).toBe(2 * repetitions * coldSamples);
-      expect(trials).toHaveLength(2 * repetitions);
+      expect(coldStarts).toBe(modes.includes('cold') ? 2 * repetitions * coldSamples * concurrencies.length : 0);
+      expect(trials).toHaveLength(2 * repetitions * modes.length * concurrencies.length);
       expect(counterRows).toHaveLength(coldStarts);
       // A sample whose normal done-fire missed P013_NORMAL_FIRE_BUDGET_MS was
       // completed by production's reconciler; its business-event mark is the
@@ -312,9 +323,10 @@ describe('P-013 workload A fixture', () => {
         rows: counterRows }));
       // The complete trial rows (every percentile, per repetition, wall time and
       // throughput) so separate per-repetition runs aggregate without re-running.
-      console.info('P-013 workload A cold trials', JSON.stringify({
-        repetitions, coldSamples, cluster: dedicatedPg ? 'dedicated' : 'shared',
-        fixtureEmbedder: Boolean(fixtureEmbedder), trials }));
+      // A cold-only run keeps the historical 'P-013 workload A cold trials' label.
+      console.info(`P-013 workload A ${modes.join('+')} trials`, JSON.stringify({
+        repetitions, repetitionOffset, coldSamples, warmSamples, warmups, modes, concurrencies,
+        cluster: dedicatedPg ? 'dedicated' : 'shared', fixtureEmbedder: Boolean(fixtureEmbedder), trials }));
       // Per-phase split, not just the total: the cold cost must be attributed to a
       // D-016 phase (accept / dispatch / terminal / business event) before any
       // fixture decision is taken on it (WI-10002948).
@@ -366,12 +378,45 @@ describe('P-013 workload A fixture', () => {
   }, coldMatrixBudgetMs());
 });
 
-/** A cold matrix run (P013_REPETITIONS x P013_COLD_SAMPLES per arm) spawns one
- * child per sample; budget each at its 90 s spawn ceiling plus setup margin,
- * capped under the router's 120-minute maximum. The pilot (1x1) keeps 180 s. */
+/** P013_MATRIX=1 (or the historical P013_COLD_PILOT=1) selects the paired D-016 matrix. */
+function matrixRequested(): boolean {
+  return process.env.P013_MATRIX === '1' || process.env.P013_COLD_PILOT === '1';
+}
+
+/** The matrix shape from env. Defaults reproduce the historical cold-only
+ * concurrency-1 pilot, so an existing P013_COLD_PILOT invocation is unchanged. */
+function matrixShape() {
+  const count = (name: string, fallback: number, min: number) => {
+    const value = Number(process.env[name] ?? String(fallback));
+    if (!Number.isInteger(value) || value < min) throw new Error(`P-013 ${name} must be an integer >= ${min}`);
+    return value;
+  };
+  const list = <T extends string>(name: string, fallback: string, allowed: readonly T[]): T[] => {
+    const values = (process.env[name] ?? fallback).split(',').map((value) => value.trim()).filter(Boolean);
+    if (values.length === 0 || values.some((value) => !allowed.includes(value as T))) {
+      throw new Error(`P-013 ${name} must be a comma list of ${allowed.join('|')}`);
+    }
+    return values as T[];
+  };
+  return {
+    repetitions: count('P013_REPETITIONS', 1, 1),
+    repetitionOffset: count('P013_REPETITION_OFFSET', 0, 0),
+    coldSamples: count('P013_COLD_SAMPLES', 1, 1),
+    warmSamples: count('P013_WARM_SAMPLES', 1, 1),
+    warmups: count('P013_WARMUPS', 0, 0),
+    modes: list('P013_MODES', 'cold', ['warm', 'cold'] as const),
+    concurrencies: list('P013_CONCURRENCIES', '1', ['1', '8'] as const).map(Number) as Array<1 | 8>,
+  };
+}
+
+/** A cold sample spawns one child (90 s spawn ceiling); a warm sample or warmup
+ * runs in-process and may wait up to P013_NORMAL_FIRE_BUDGET_MS for its business
+ * event, so budget each warm call generously. Capped under the router's
+ * 120-minute maximum; the non-matrix smoke keeps 180 s. */
 function coldMatrixBudgetMs(): number {
-  if (process.env.P013_COLD_PILOT !== '1') return 180_000;
-  const children = 2 * Number(process.env.P013_REPETITIONS ?? '1') *
-    Number(process.env.P013_COLD_SAMPLES ?? '1');
-  return Math.min(115 * 60_000, Math.max(180_000, children * 90_000 + 120_000));
+  if (!matrixRequested()) return 180_000;
+  const m = matrixShape();
+  const perConcurrency = (m.modes.includes('cold') ? m.repetitions * m.coldSamples * 90_000 : 0) +
+    (m.modes.includes('warm') ? m.repetitions * m.warmSamples * 10_000 : 0) + m.warmups * 10_000;
+  return Math.min(115 * 60_000, Math.max(180_000, 2 * m.concurrencies.length * perConcurrency + 120_000));
 }
