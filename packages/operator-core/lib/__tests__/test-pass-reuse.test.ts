@@ -1,13 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   formatTestReuseLine,
   isGlobalRunnerInput,
+  REUSE_SKIP_LIST_SCHEMA,
+  reuseCandidates,
   selectReusablePasses,
   testReuseEnabled,
   testReuseMaxAgeMs,
   TEST_REUSE_MAX_AGE_MS_DEFAULT,
+  writeReuseSkipList,
 } from '../../../../scripts/lib/test-pass-reuse.mjs';
+import {
+  decideReuseSkip,
+  parseReuseSkipList,
+  REUSE_SKIP_LIST_SCHEMA as READER_SCHEMA,
+} from '@papercusp/test-config/test-pass-reuse-skip';
 
 /**
  * gate-file-level-test-reuse-2026-09-27 P-008 / D-004: a selected test file is SKIPPED only
@@ -157,5 +168,82 @@ describe('env toggles and the report line', () => {
   it('prints every counter on one greppable line', () => {
     const r = run([T], new Map([[T, proof(T)]]), new Set());
     expect(formatTestReuseLine('@papercusp/x', r.summary)).toMatch(/^TEST_PASS_REUSE ws=@papercusp\/x candidates=1 reused=1 /);
+  });
+});
+
+describe('reuseCandidates', () => {
+  it('uses a narrowed selection, re-anchored repo-relative', () => {
+    expect(
+      reuseCandidates({ wsRel: 'packages/x', relatedFiles: ['lib/a.test.ts', './lib/b.test.ts'], proofFiles: [] }),
+    ).toEqual(['packages/x/lib/a.test.ts', 'packages/x/lib/b.test.ts']);
+  });
+
+  it('falls back to every proof under the workspace for an un-narrowed task', () => {
+    const proofFiles = ['packages/x/lib/a.test.ts', 'packages/xy/lib/c.test.ts', 'packages/y/lib/b.test.ts'];
+    expect(reuseCandidates({ wsRel: 'packages/x', relatedFiles: undefined, proofFiles })).toEqual([
+      'packages/x/lib/a.test.ts',
+    ]);
+    expect(reuseCandidates({ wsRel: 'packages/x', relatedFiles: [], proofFiles })).toEqual([
+      'packages/x/lib/a.test.ts',
+    ]);
+    // The repo-root workspace owns every path.
+    expect(reuseCandidates({ wsRel: '', relatedFiles: null, proofFiles })).toEqual(proofFiles);
+  });
+});
+
+describe('skip-list channel: affected-tests writer -> vitest-config reader', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  const tmp = () => {
+    const d = mkdtempSync(join(tmpdir(), 'reuse-skip-'));
+    dirs.push(d);
+    return d;
+  };
+  const META = { runContext: CTX, runnerIdentity: RUNNER, judgedSha: 'abc123' };
+
+  it('writes a sorted, de-duplicated, content-addressed list the reader accepts', () => {
+    const dir = tmp();
+    const a = writeReuseSkipList(dir, { files: ['lib/b.test.ts', 'lib/a.test.ts', 'lib/b.test.ts'], ...META });
+    const again = writeReuseSkipList(dir, { files: ['lib/a.test.ts', 'lib/b.test.ts'], ...META });
+    const other = writeReuseSkipList(dir, { files: ['lib/a.test.ts'], ...META });
+    expect(a.count).toBe(2);
+    expect(again.path).toBe(a.path); // same content => same file (EEXIST tolerated)
+    expect(other.digest).not.toBe(a.digest);
+    const parsed = parseReuseSkipList(readFileSync(a.path, 'utf8'));
+    expect(parsed.files).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+    expect(parsed).toMatchObject(META);
+    expect(REUSE_SKIP_LIST_SCHEMA).toBe(READER_SCHEMA);
+  });
+
+  it('applies only in the same run context and runner identity', () => {
+    const list = parseReuseSkipList(
+      readFileSync(writeReuseSkipList(tmp(), { files: ['lib/a.test.ts'], ...META }).path, 'utf8'),
+    );
+    expect(decideReuseSkip(list, { runContext: CTX, runnerIdentity: RUNNER })).toEqual({
+      applied: true,
+      exclude: ['lib/a.test.ts'],
+      skipped: 1,
+    });
+    expect(decideReuseSkip(list, { runContext: 'clean-local', runnerIdentity: RUNNER }).applied).toBe(false);
+    expect(decideReuseSkip(list, { runContext: CTX, runnerIdentity: 'v24.0.0 linux x64' }).applied).toBe(false);
+  });
+
+  it('escapes glob metacharacters so a route-group or dynamic-segment path excludes only itself', () => {
+    // Measured against tinyglobby (vitest's matcher): an UNESCAPED `app/(grp)/[id]/page.test.ts`
+    // in `ignore` does not match its own file, so reuse would silently run it; escaped, it
+    // excludes exactly that file and not its sibling.
+    const list = parseReuseSkipList(
+      readFileSync(writeReuseSkipList(tmp(), { files: ['app/(grp)/[id]/page.test.ts'], ...META }).path, 'utf8'),
+    );
+    const d = decideReuseSkip(list, { runContext: CTX, runnerIdentity: RUNNER });
+    expect(d.applied && d.exclude).toEqual(['app/\\(grp\\)/\\[id\\]/page.test.ts']);
+  });
+
+  it('refuses a malformed or foreign-schema list (the caller then runs every file)', () => {
+    expect(() => parseReuseSkipList('["lib/a.test.ts"]')).toThrow();
+    expect(() => parseReuseSkipList(JSON.stringify({ schema: 2, files: [], ...META }))).toThrow();
+    expect(() => parseReuseSkipList(JSON.stringify({ schema: 1, files: [''], ...META }))).toThrow();
   });
 });

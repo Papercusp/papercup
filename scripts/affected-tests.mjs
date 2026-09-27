@@ -73,7 +73,17 @@ import {
   formatExecutedMapLine,
   gitChangedBetween,
   loadExecutedSourceMap,
+  loadReuseProofs,
 } from "./lib/executed-source-map.mjs";
+import {
+  TEST_REUSE_SKIP_LIST_ENV,
+  formatTestReuseLine,
+  reuseCandidates,
+  selectReusablePasses,
+  testReuseEnabled,
+  testReuseMaxAgeMs,
+  writeReuseSkipList,
+} from "./lib/test-pass-reuse.mjs";
 import {
   decideRetry,
   deriveRetryBudget,
@@ -5327,12 +5337,149 @@ outSync(
   `Full run log: ${RUN_LOG_PATH} (grep this — not just the exit code or a truncated tail — for the real per-suite verdict)`,
 );
 
+// Before the dry-run exit on purpose: `--dry` then shows what WOULD be reused (it only reads).
+await armTestPassReuse(tasks);
+
 if (dry) {
   outSync(
     `AFFECTED_TESTS_RESULT status=dry-run tasks=${tasks.length} failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0`,
   );
   terminalEmitted = true;
   process.exit(0);
+}
+
+// P-008 (gate-file-level-test-reuse-2026-09-27, WI-10003476): per-test-file PASS reuse. A file
+// whose clean-run pass proof (harness_shared.test_executed_sources, recorded by
+// libs/test-config/src/executed-source-map-reporter.ts) is still valid at the judged sha is
+// SKIPPED — the rule is scripts/lib/test-pass-reuse.mjs (D-004). Each unit vitest task gets a
+// content-addressed skip list, carried to its vitest config by PC_TEST_REUSE_SKIP_LIST and applied
+// as `exclude` (libs/test-config/src/test-pass-reuse-skip.ts, which re-checks run context and
+// runner identity). Everything about reaching the proofs is fail-OPEN toward running MORE: kill
+// switch, dirty checkout, no HEAD, no database, a slow read — each yields no skip list.
+async function armTestPassReuse(taskList) {
+  const unitTasks = taskList.filter(
+    (t) =>
+      (t.script === "test" || LANE_SCRIPTS.includes(t.script)) &&
+      // An all-reused task runs zero files; only a script that treats that as a pass may skip.
+      /--passWithNoTests\b/.test(t.ws.scripts?.[t.script] ?? ""),
+  );
+  if (unitTasks.length === 0) return;
+  const off = (reason) => outSync(`TEST_PASS_REUSE applied=false reason=${reason}`);
+  if (!testReuseEnabled()) return off("disabled-by-env");
+  let judgedSha = null;
+  try {
+    judgedSha = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    judgedSha = null;
+  }
+  if (!judgedSha) return off("no-judged-sha");
+  // Drift is computed commit-to-commit, so an uncommitted edit (or an untracked file where a proof
+  // read an absent path) would be invisible to it: reuse needs a checkout that IS the judged sha.
+  let dirtyPaths = null;
+  try {
+    dirtyPaths = execFileSync("git", ["status", "--porcelain", "--ignore-submodules=none"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 120_000,
+      maxBuffer: 64 * 1024 * 1024,
+    })
+      .split("\n")
+      .filter((l) => l.trim().length > 0);
+  } catch {
+    dirtyPaths = null;
+  }
+  if (dirtyPaths === null) return off("checkout-status-unknown");
+  if (dirtyPaths.length > 0) {
+    return off(
+      `dirty-checkout(${dirtyPaths.length}: ${dirtyPaths
+        .slice(0, 3)
+        .map((l) => l.slice(3).trim())
+        .join(",")})`,
+    );
+  }
+  // The identity of the node the task will spawn (npm -> PATH node), not this process's: the
+  // proof was stamped by the vitest process. vitest-config re-checks it against its own process.
+  let runnerIdentity = null;
+  try {
+    runnerIdentity = execFileSync(
+      "node",
+      ["-p", "process.version + ' ' + process.platform + ' ' + process.arch"],
+      { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30_000 },
+    ).trim();
+  } catch {
+    runnerIdentity = null;
+  }
+  if (!runnerIdentity) return off("no-runner-identity");
+  const runContext = process.env.GREEN_CHECKPOINT === "1" ? "green-checkpoint" : "clean-local";
+  let client = null;
+  try {
+    client = await connectExecutedMapPg();
+  } catch (err) {
+    return off(`pg-unavailable(${String((err && err.message) || err).replace(/\s+/g, "_")})`);
+  }
+  const changedBetween = gitChangedBetween({ repoRoot: ROOT, relative: true });
+  const maxAgeMs = testReuseMaxAgeMs();
+  const nowMs = Date.now();
+  const loaded = new Map();
+  try {
+    for (const t of unitTasks) {
+      if (!loaded.has(t.ws.name)) {
+        let out;
+        try {
+          out = await Promise.race([
+            loadReuseProofs({ client, workspaceName: t.ws.name, runContext }),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("reuse-proof read timed out")), 15_000).unref(),
+            ),
+          ]);
+          out = { ...out, error: null };
+        } catch (err) {
+          out = { proofs: new Map(), rows: 0, error: String((err && err.message) || err).replace(/\s+/g, "_") };
+        }
+        loaded.set(t.ws.name, out);
+      }
+      const { proofs, rows, error } = loaded.get(t.ws.name);
+      const label = `${t.ws.name}::${t.script}`;
+      if (error) {
+        outSync(`TEST_PASS_REUSE ws=${label} applied=false reason=proofs-unavailable(${error})`);
+        continue;
+      }
+      const wsRel = relative(ROOT, join(ROOT, t.ws.dir)).replaceAll("\\", "/");
+      const prefix = wsRel === "" ? "" : `${wsRel}/`;
+      const { skip, summary } = selectReusablePasses({
+        candidates: reuseCandidates({ wsRel, relatedFiles: t.relatedFiles, proofFiles: proofs.keys() }),
+        proofs,
+        judgedSha,
+        changedBetween,
+        runContext,
+        runnerIdentity,
+        nowMs,
+        maxAgeMs,
+      });
+      if (skip.length > 0) {
+        t.reuseSkipList = writeReuseSkipList(RUN_LOG_ROOT, {
+          files: skip.map((f) => f.slice(prefix.length)),
+          runContext,
+          runnerIdentity,
+          judgedSha,
+        });
+      }
+      outSync(
+        formatTestReuseLine(label, summary, ` rows=${rows} narrowed=${Array.isArray(t.relatedFiles)}`),
+      );
+    }
+  } finally {
+    try {
+      await client.end();
+    } catch {
+      /* the read is done; a close failure changes nothing */
+    }
+  }
 }
 
 // AFFECTED_RETRY_FAILED=1 (the green-checkpoint sets it): re-run a FAILED
@@ -5970,10 +6117,20 @@ function runCapturedTask(
     extraArgs.length === 0 && Array.isArray(spawnTask.relatedFiles) && spawnTask.relatedFiles.length > 0
       ? writeRelatedFilterList(RUN_LOG_ROOT, spawnTask.relatedFiles)
       : null;
+  // P-008 (gate-file-level-test-reuse-2026-09-27): the task's per-file pass-reuse skip list, armed
+  // by armTestPassReuse. Same scoping as the related selection: only the initial, complete
+  // invocation of the task's OWN script — a retry or override runs exactly what it names. A value
+  // inherited from an outer environment is stripped, so a skip list never leaks across runs.
+  const reuseSkipList =
+    extraArgs.length === 0 && scriptOverride == null && spawnTask.reuseSkipList
+      ? spawnTask.reuseSkipList
+      : null;
+  const { [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList, ...parentEnv } = process.env;
   const childEnv = {
-    ...process.env,
+    ...parentEnv,
     ...(specEnv ?? {}),
     ...(relatedFilterList ? { [RELATED_FILTER_LIST_ENV]: relatedFilterList.path } : {}),
+    ...(reuseSkipList ? { [TEST_REUSE_SKIP_LIST_ENV]: reuseSkipList.path } : {}),
     // P-002 (gate-latency-selection-and-retry-policy-2026-09-06): arm the executed-source-map
     // reporter on every unit vitest task (the `test` script and the lane split), naming the
     // workspace whose map it records. The reporter itself rails the recording to a CLEAN,
@@ -6062,6 +6219,9 @@ function runCapturedTask(
             // EXPLICITLY (not just via the env hash) — a narrowed run must never be replayed
             // as a full-suite pass, and two different selections must never alias.
             relatedFilterDigest: relatedFilterList?.digest ?? null,
+            // P-008: a run that skipped reused files is pinned by its skip list, so it can never
+            // be replayed as a run that executed them.
+            reuseSkipDigest: reuseSkipList?.digest ?? null,
           },
           gateConfig: {
             ...taskVerdictGateConfig,
