@@ -150,6 +150,20 @@ beforeAll(async () => {
   // applied the DDL for it (unlike the sibling work-items-claim-issue-scope-reread
   // .integration.test.ts, which does), so those paths hit "relation … does not exist".
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  // Claim and terminal-write admission read the active operation-worker receipt.
+  // Ordinary issue tests have no role session, so these empty tables yield the
+  // production reader's `none` verdict instead of an unavailable-schema refusal.
+  await db.sql.unsafe(`
+    CREATE TABLE harness_shared.adv_sessions (
+      id bigserial PRIMARY KEY, workspace_id text NOT NULL, coord_owner_id text,
+      role text, started_at timestamptz NOT NULL DEFAULT now(),
+      ended_at timestamptz, ended_by text, launch_spec jsonb
+    );
+    CREATE TABLE harness_shared.session_briefs (
+      workspace_id text NOT NULL, owner_id text NOT NULL, control_state jsonb,
+      PRIMARY KEY (workspace_id, owner_id)
+    );
+  `).simple();
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
@@ -461,6 +475,7 @@ describe('engineer issues surface (real PG)', () => {
     // Simulate the exact watchdog coalescer mutation: visible subject + exact-key identity
     // change while the original holder is still working.
     await issues.updateIssue(original.id, {
+      kind: 'change',
       title: 'new coalesced subject',
       body: 'new coalesced observation',
       silent: true,
@@ -471,7 +486,7 @@ describe('engineer issues surface (real PG)', () => {
     // An explicit same-holder re-claim accepts the refreshed subject as the new baseline.
     const sameHolder = await issues.claimIssue(original.id, 'agB');
     const refreshedBaseline = {
-      kind: 'bug',
+      kind: 'change',
       title: 'new coalesced subject',
       summary: 'new coalesced observation',
       body: 'new coalesced observation',
