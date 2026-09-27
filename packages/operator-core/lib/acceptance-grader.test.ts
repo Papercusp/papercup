@@ -13,7 +13,9 @@ import {
   ACCEPTANCE_GRADING_REQUEST_UNHELD_GRACE_MS,
   resolveAcceptanceGraderDiscoveryExtraExclusions,
   resolveAcceptanceGrader,
+  resolveShipperId,
   selectableGraderLiveness,
+  ACCEPTANCE_GRADING_SWEEP_ACTOR,
 } from './acceptance-grader';
 
 describe('advanceUndispatchableGradingCascade (EI-23939542953304626)', () => {
@@ -222,6 +224,7 @@ const callerCtx = (ownerId: string) => ({ ...baseCtx, uiClientId: ownerId }) as 
 describe('resolveAcceptanceGraderDiscoveryExtraExclusions', () => {
   const SCOPE = { workspaceId: 'papercusp-workspace', planSlug: 'ship-the-thing' };
   const noDecliners = async () => [] as string[];
+  const noImplementers = async () => [] as string[];
 
   it('adds current-revision work-item vetting critics to the discovery exclusion set', async () => {
     const readVettingCritics = vi.fn(async () => ({
@@ -240,10 +243,79 @@ describe('resolveAcceptanceGraderDiscoveryExtraExclusions', () => {
       SCOPE,
       readVettingCritics,
       noDecliners,
+      noImplementers,
     );
 
-    expect(readVettingCritics).toHaveBeenCalledWith('acceptance-ship-the-thing', 2);
+    expect(readVettingCritics).toHaveBeenCalledWith('acceptance-ship-the-thing', 2, null, null);
     expect(result).toEqual(['su-author', 'su-shipper', 'su-work-item-critic', 'su-second-critic']);
+  });
+
+  /**
+   * EI-24402913315950329. `resolveAggregatedVettingCritics` classifies a vetting
+   * card as current from (revision, criteriaHash, meaningRevision); the emit-side
+   * sole-critic guard passes all three. The recruiter passed only the revision, so
+   * on declared-gate-recovery-contract-2026-09-21 it read ZERO critics (measured:
+   * cardsConsidered 0 vs the guard's 1) and routed the sole critic's fork, which
+   * scorecards:emit then refuses. Forwarding all three is the parity contract.
+   */
+  it('forwards criteriaHash and meaningRevision to the critic read, exactly as the emit guard does', async () => {
+    const readVettingCritics = vi.fn(async () => ({ critics: ['su-sole-critic'], cardsConsidered: 1 }));
+
+    const result = await resolveAcceptanceGraderDiscoveryExtraExclusions(
+      {
+        rubricId: 'acceptance-ship-the-thing',
+        revision: 15,
+        criteriaHash: 'a9c28408',
+        barContract: { meaningRevision: 15 },
+      },
+      null,
+      SCOPE,
+      readVettingCritics,
+      noDecliners,
+      noImplementers,
+    );
+
+    expect(readVettingCritics).toHaveBeenCalledWith('acceptance-ship-the-thing', 15, 'a9c28408', 15);
+    expect(result).toEqual(['su-sole-critic']);
+  });
+
+  /**
+   * EI-24402913315950329. The emit guard refuses every principal implementer
+   * (`resolvePlanImplementerIdentities`: claimant history + completion/activation
+   * auditors), but the recruiter never read that population — so an implementer
+   * whose work-item was not sourced from the plan was routed as an "independent"
+   * grader and forked. The recruiter must exclude the SAME population.
+   */
+  it('excludes the principal-implementer population the emit guard refuses', async () => {
+    const readPlanImplementers = vi.fn(async () => ['su-completion-auditor', 'su-handed-off-claimant']);
+
+    const result = await resolveAcceptanceGraderDiscoveryExtraExclusions(
+      { rubricId: 'acceptance-ship-the-thing', revision: 1, createdBy: 'su-author' },
+      null,
+      SCOPE,
+      async () => ({ critics: [], cardsConsidered: 0 }),
+      noDecliners,
+      readPlanImplementers,
+    );
+
+    expect(readPlanImplementers).toHaveBeenCalledWith('ship-the-thing', { workspaceId: 'papercusp-workspace' });
+    expect(result).toEqual(['su-author', 'su-completion-auditor', 'su-handed-off-claimant']);
+  });
+
+  /** CONTROL — same fail-closed stance as the decline read below. */
+  it('propagates an implementer-read fault instead of degrading to "no implementers"', async () => {
+    await expect(
+      resolveAcceptanceGraderDiscoveryExtraExclusions(
+        { rubricId: 'acceptance-ship-the-thing', revision: 1 },
+        null,
+        SCOPE,
+        async () => ({ critics: [], cardsConsidered: 0 }),
+        noDecliners,
+        async () => {
+          throw new Error('acceptance_lineage_unreadable');
+        },
+      ),
+    ).rejects.toThrow('acceptance_lineage_unreadable');
   });
 
   /**
@@ -261,6 +333,7 @@ describe('resolveAcceptanceGraderDiscoveryExtraExclusions', () => {
       SCOPE,
       async () => ({ critics: [], cardsConsidered: 0 }),
       readPriorDecliners,
+      noImplementers,
     );
 
     expect(readPriorDecliners).toHaveBeenCalledWith(SCOPE, 'acceptance-ship-the-thing');
@@ -275,6 +348,7 @@ describe('resolveAcceptanceGraderDiscoveryExtraExclusions', () => {
       SCOPE,
       async () => ({ critics: ['su-both'], cardsConsidered: 1 }),
       async () => ['su-both'],
+      noImplementers,
     );
 
     expect(result).toEqual(['su-both']);
@@ -295,8 +369,34 @@ describe('resolveAcceptanceGraderDiscoveryExtraExclusions', () => {
         async () => {
           throw new Error('consult_post_meta unreachable');
         },
+        noImplementers,
       ),
     ).rejects.toThrow('consult_post_meta unreachable');
+  });
+});
+
+describe('resolveShipperId (EI-24402913315950329)', () => {
+  /**
+   * The ship gate re-launches recruitment under the SYSTEM actor (for launch
+   * lineage). Without the carried caller, the shipper D-009 excludes resolved to
+   * that system actor and the real shipper — the implementer — stayed routable.
+   */
+  it('prefers the carried real shipper over the system-actor identity of the rewritten ctx', async () => {
+    const systemCtx = {
+      workspaceId: 'papercusp-workspace',
+      uiClientId: null,
+      isSuperuser: false,
+      isPowerUser: false,
+      principal: { kind: 'system', slug: ACCEPTANCE_GRADING_SWEEP_ACTOR, workspaceId: 'papercusp-workspace' },
+      ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+      acceptanceShipperOwnerId: 'su-implementer-shipper',
+    };
+    await expect(resolveShipperId(systemCtx as never)).resolves.toBe('su-implementer-shipper');
+  });
+
+  it('falls back to the ctx identity when nothing is carried', async () => {
+    const callerCtxNoCarry = { workspaceId: 'papercusp-workspace', isSuperuser: true, uiClientId: 'su-direct-caller' };
+    await expect(resolveShipperId(callerCtxNoCarry as never)).resolves.toBe('su-direct-caller');
   });
 });
 
