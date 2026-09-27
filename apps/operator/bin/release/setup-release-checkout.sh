@@ -567,6 +567,51 @@ clone_submodule_repo() {  # <repo-relative path> <pinned sha>
   return 0
 }
 
+# EI-24341465306631575 fix (b): both materializers above start with `rm -rf` of the
+# whole submodule path, which also deletes the gitignored node_modules trees a
+# previous run materialized there from an immutable dependency generation. The
+# checkpoint re-runs this step before every dependency pass, so every pass
+# re-copied those trees (~3.7 GiB, most of it papercusp-desktop's sidecar). Move
+# ONLY trees stamped `generation=v1-…` aside before the re-clone and put them back
+# afterwards. Their source content is still a fresh clone; whether a kept tree is
+# reusable is decided later by the same per-tree marker check as every other tree
+# (pinned_generation_tree_current), and a stale one is re-materialized. Trees of
+# the live deploy's hardlink mode carry no generation marker and are removed
+# exactly as before. Best-effort: a failed move leaves the tree where `rm -rf`
+# removes it, which is the old behaviour.
+stash_pinned_submodule_node_modules() {  # <repo-relative submodule path> <stash dir>
+  local rel_path="$1" stash="$2" nm rel marker
+  [ -d "$RELEASE_ROOT/$rel_path" ] && [ ! -L "$RELEASE_ROOT/$rel_path" ] || return 0
+  while IFS= read -r nm; do
+    [ -n "$nm" ] || continue
+    marker="$nm/.papercusp-isolated-snapshot"
+    [ -f "$marker" ] && [ ! -L "$marker" ] || continue
+    grep -q '^generation=v1-' "$marker" 2>/dev/null || continue
+    rel="${nm#"$RELEASE_ROOT"/}"
+    mkdir -p "$stash/$(dirname "$rel")" 2>/dev/null || continue
+    mv "$nm" "$stash/$rel" 2>/dev/null || true
+  done < <(dependency_generation_enumerate_node_modules "$RELEASE_ROOT/$rel_path" 2>/dev/null || true)
+  return 0
+}
+
+restore_pinned_submodule_node_modules() {  # <repo-relative submodule path> <stash dir>
+  local rel_path="$1" stash="$2" nm rel dest
+  [ -d "$stash/$rel_path" ] || return 0
+  while IFS= read -r nm; do
+    [ -n "$nm" ] || continue
+    rel="${nm#"$stash"/}"
+    dest="$RELEASE_ROOT/$rel"
+    # Only into a directory the new pin still has, and never over a tree the
+    # clone itself produced (a tracked node_modules would be source content).
+    if [ -d "$(dirname "$dest")" ] && [ ! -L "$(dirname "$dest")" ] && [ ! -e "$dest" ] \
+      && mv "$nm" "$dest" 2>/dev/null; then
+      SUBMODULE_NODE_MODULES_KEPT=$(( ${SUBMODULE_NODE_MODULES_KEPT:-0} + 1 ))
+    fi
+  done < <(find "$stash/$rel_path" -type d -name node_modules -prune -print 2>/dev/null)
+  rm -rf "${stash:?}/$rel_path"
+  return 0
+}
+
 if [ "$PREPARE_EXISTING" = "0" ]; then
 log "cloning submodule repos at pinned shas (local objects; real .git so --recurse-submodules works)"
 _sub_cloned=0
@@ -577,12 +622,25 @@ _sub_fallback=0
 # object-sourced and pin-exact. This counter is the one that means "this tree
 # contains content that is in no commit".
 _sub_live_tree=0
+# Sibling of the release root, so moving a tree there is a rename on the same
+# filesystem and the stash is never part of the judged tree. A leftover from a
+# run that died mid-loop is discarded first.
+SUBMODULE_NODE_MODULES_KEPT=0
+_nm_stash="$(dirname "$RELEASE_ROOT")/.$(basename "$RELEASE_ROOT").submodule-node-modules"
+rm -rf "$_nm_stash"
+if [ "$(filesystem_device "$(dirname "$RELEASE_ROOT")")" = "$(filesystem_device "$RELEASE_ROOT")" ] \
+  && mkdir -p "$_nm_stash" 2>/dev/null; then
+  :
+else
+  _nm_stash=""
+fi
 while IFS= read -r P; do
   [ -n "$P" ] || continue
   [ -d "$INTEGRATION_ROOT/$P" ] || { log "WARN integration submodule missing: $P — skipping"; continue; }
   # The gitlink sha recorded at the release worktree's HEAD for this path.
   S="$(git -C "$RELEASE_ROOT" ls-tree HEAD "$P" 2>/dev/null | awk '{print $3}')"
   [ -n "$S" ] || { log "WARN no gitlink sha for $P — skipping"; continue; }
+  [ -z "$_nm_stash" ] || stash_pinned_submodule_node_modules "$P" "$_nm_stash"
   if clone_submodule_repo "$P" "$S"; then
     _sub_cloned=$((_sub_cloned + 1))
   else
@@ -601,12 +659,15 @@ while IFS= read -r P; do
     fi
     [ "$_LAST_EXTRACT_USED_LIVE_TREE" -eq 0 ] || _sub_live_tree=$((_sub_live_tree + 1))
   fi
+  [ -z "$_nm_stash" ] || restore_pinned_submodule_node_modules "$P" "$_nm_stash"
 # P-009: read the submodule list from the TARGET commit's .gitmodules blob, NOT the
 # integration tree's current working copy — a submodule added/removed on staging while
 # the target still pins the old set would otherwise be extracted from the wrong list
 # during the transition window. `git config --blob <sha>:.gitmodules` reads the committed
 # config; 2>/dev/null + an empty loop is the correct no-op when a sha has no .gitmodules.
 done < <(git -C "$INTEGRATION_ROOT" config --blob "${TARGET_SHA}:.gitmodules" --get-regexp '\.path$' 2>/dev/null | awk '{print $2}')
+[ -z "$_nm_stash" ] || rm -rf "$_nm_stash"
+log "SUBMODULE_NODE_MODULES_KEPT trees=$SUBMODULE_NODE_MODULES_KEPT (pinned-generation trees carried across the submodule re-clone)"
 
 # 2a. Recursion sanity (EI-19299565558496583) ---------------------------------
 # The defect this replaced was SILENT — no error, just a smaller file list — and

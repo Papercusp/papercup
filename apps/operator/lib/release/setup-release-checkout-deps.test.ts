@@ -621,6 +621,130 @@ describe('clone_submodule_repo — filesystem-aware local object transport', () 
 });
 
 /**
+ * EI-24341465306631575 fix (b). Both submodule materializers start with `rm -rf` of the
+ * submodule path, which deleted the pinned node_modules trees a previous pass materialized
+ * there, so every checkpoint pass re-copied them (~3.7 GiB). Trees stamped with a
+ * `generation=` marker are now moved aside across the re-clone and put back; everything
+ * else is removed exactly as before.
+ */
+describe('setup-release-checkout.sh pinned submodule node_modules survive the re-clone (EI-24341465306631575)', () => {
+  const generationMarker = `generation=v1-${'e'.repeat(64)}\n`;
+  let work: string;
+  let releaseRoot: string;
+  let stash: string;
+
+  function run(fn: 'stash' | 'restore', subPath: string): { status: number | null; stdout: string; stderr: string } {
+    const wrapper = [
+      'set -euo pipefail',
+      'source "$GENERATION_SCRIPT"',
+      'source <(sed -n "/^stash_pinned_submodule_node_modules()/,/^}/p; /^restore_pinned_submodule_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
+      `${fn}_pinned_submodule_node_modules "$SUB" "$STASH"`,
+      'printf "kept=%s\\n" "${SUBMODULE_NODE_MODULES_KEPT:-0}"',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        GENERATION_SCRIPT: DEPENDENCY_GENERATION_SCRIPT,
+        RELEASE_ROOT: releaseRoot,
+        SUB: subPath,
+        STASH: stash,
+      },
+      encoding: 'utf8',
+    });
+    return { status: r.status, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') };
+  }
+
+  function addTree(rel: string, marker: string | null): void {
+    mkdirSync(join(releaseRoot, rel, 'dep'), { recursive: true });
+    writeFileSync(join(releaseRoot, rel, 'dep/index.js'), `CONTENT:${rel}`);
+    if (marker !== null) writeFileSync(join(releaseRoot, rel, '.papercusp-isolated-snapshot'), marker);
+  }
+
+  /** What clone_submodule_repo / extract_submodule_source do to the path. */
+  function reclone(subPath: string, dirs: string[]): void {
+    rmSync(join(releaseRoot, subPath), { recursive: true, force: true });
+    for (const d of dirs) mkdirSync(join(releaseRoot, subPath, d), { recursive: true });
+  }
+
+  beforeEach(() => {
+    work = mkdtempSync(join(tmpdir(), 'sub-nm-keep-'));
+    releaseRoot = join(work, 'checkpoint');
+    stash = join(work, '.checkpoint.submodule-node-modules');
+    mkdirSync(stash, { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(work, { recursive: true, force: true });
+  });
+
+  it('carries generation-stamped trees across the re-clone and drops the rest', () => {
+    addTree('libs/sub/node_modules', generationMarker);
+    addTree('libs/sub/packages/a/node_modules', generationMarker);
+    addTree('libs/sub/packages/b/node_modules', 'source=abc\nsnapshot=def\n');
+    addTree('libs/sub/packages/c/node_modules', null);
+    const keptInode = statSync(join(releaseRoot, 'libs/sub/node_modules/dep/index.js')).ino;
+
+    expect(run('stash', 'libs/sub').status).toBe(0);
+    reclone('libs/sub', ['packages/a', 'packages/b', 'packages/c']);
+    const restored = run('restore', 'libs/sub');
+
+    expect(restored.status, restored.stderr).toBe(0);
+    expect(restored.stdout).toBe('kept=2\n');
+    expect(statSync(join(releaseRoot, 'libs/sub/node_modules/dep/index.js')).ino).toBe(keptInode);
+    expect(readFileSync(join(releaseRoot, 'libs/sub/packages/a/node_modules/dep/index.js'), 'utf8')).toBe(
+      'CONTENT:libs/sub/packages/a/node_modules',
+    );
+    expect(existsSync(join(releaseRoot, 'libs/sub/packages/b/node_modules'))).toBe(false);
+    expect(existsSync(join(releaseRoot, 'libs/sub/packages/c/node_modules'))).toBe(false);
+    expect(existsSync(join(stash, 'libs/sub'))).toBe(false);
+  });
+
+  it('drops a kept tree whose package the new pin removed, and never overwrites clone output', () => {
+    addTree('libs/sub/packages/gone/node_modules', generationMarker);
+    addTree('libs/sub/packages/tracked/node_modules', generationMarker);
+
+    run('stash', 'libs/sub');
+    reclone('libs/sub', ['packages/tracked/node_modules']);
+    writeFileSync(join(releaseRoot, 'libs/sub/packages/tracked/node_modules/from-clone.txt'), 'CLONE');
+    const restored = run('restore', 'libs/sub');
+
+    expect(restored.stdout).toBe('kept=0\n');
+    expect(existsSync(join(releaseRoot, 'libs/sub/packages/gone'))).toBe(false);
+    expect(readdirSync(join(releaseRoot, 'libs/sub/packages/tracked/node_modules'))).toEqual(['from-clone.txt']);
+    expect(existsSync(join(stash, 'libs/sub'))).toBe(false);
+  });
+
+  it('ignores a symlinked marker and a missing submodule path', () => {
+    addTree('libs/sub/node_modules', null);
+    const outsideMarker = join(work, 'outside-marker');
+    writeFileSync(outsideMarker, generationMarker);
+    symlinkSync(outsideMarker, join(releaseRoot, 'libs/sub/node_modules/.papercusp-isolated-snapshot'));
+
+    run('stash', 'libs/sub');
+    expect(existsSync(join(releaseRoot, 'libs/sub/node_modules/dep/index.js'))).toBe(true);
+    expect(run('stash', 'libs/absent').status).toBe(0);
+    expect(run('restore', 'libs/absent').stdout).toBe('kept=0\n');
+  });
+
+  it('wraps every submodule materialization in the stash/restore pair', () => {
+    const source = readFileSync(SCRIPT_PATH, 'utf8');
+    const loop = source.indexOf('while IFS= read -r P; do');
+    const stashCall = source.indexOf('stash_pinned_submodule_node_modules "$P" "$_nm_stash"', loop);
+    const clone = source.indexOf('if clone_submodule_repo "$P" "$S"; then', loop);
+    const extract = source.indexOf('extract_submodule_source "$P" "$S"', loop);
+    const restoreCall = source.indexOf('restore_pinned_submodule_node_modules "$P" "$_nm_stash"', loop);
+    const loopEnd = source.indexOf('done < <(git -C "$INTEGRATION_ROOT" config --blob', loop);
+
+    expect(loop).toBeGreaterThan(-1);
+    expect(stashCall).toBeGreaterThan(loop);
+    expect(clone).toBeGreaterThan(stashCall);
+    expect(extract).toBeGreaterThan(clone);
+    expect(restoreCall).toBeGreaterThan(extract);
+    expect(loopEnd).toBeGreaterThan(restoreCall);
+  });
+});
+
+/**
  * sync_one_node_modules() — the ATOMIC node_modules refresh (2026-06-25 all-pages
  * connection-refused outage). The old in-place `rm -rf "$dest"; cp -al` left the LIVE
  * operator looking at a deleted/half-populated node_modules for the ~minute the root
