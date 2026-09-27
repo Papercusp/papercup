@@ -41,7 +41,7 @@ import { lstat, open, readFile, readlink, readdir, realpath, unlink, writeFile }
 import { join } from 'node:path';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
 import { projectDirForSlug } from '../../operator-notes';
-import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
+import { gitSidecarEnabled, isSidecarInfrastructureFault, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 import { detectContentOffenders, parseDirtyPaths, type ContentOffender } from './content-guard';
 import { detectUnsafeDeletions, normalizeModulePath, RESOLVABLE_EXTS } from './deletion-import-guard';
 import { detectWholesaleDeletion } from './wholesale-deletion-guard';
@@ -387,6 +387,13 @@ const runGitBoundedUnchecked = async (
 
 /** Spawn `git <args>` in `cwd` with the default per-subcommand ceiling (never throws). */
 const defaultRunGit: RunGit = (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args));
+
+/** No Git child ran on a sidecar admission refusal; do not diagnose a Git merge conflict. */
+export function gitSyncPreDispatchError(result: Awaited<ReturnType<RunGit>>): string | null {
+  return isSidecarInfrastructureFault(result)
+    ? `git-sync sidecar infrastructure refusal before Git dispatch: ${result.stderr.slice(0, 300)}`
+    : null;
+}
 
 const TOOL_CATALOG_GENERATOR_PATH = 'scripts/gen-tool-catalog.ts';
 const TOOL_CATALOG_ARTIFACT_PATH = '.papercusp/tool-catalog.json';
@@ -4306,6 +4313,8 @@ async function reconcileAndPushOneRepo(
   // merge commit git-sync makes is never misattributed to the owner either.
   const merge = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`], repoPath);
   if (merge.code !== 0) {
+    const infrastructureError = gitSyncPreDispatchError(merge);
+    if (infrastructureError) return { status: 'error', message: infrastructureError };
     const conflicted = await conflictedFiles(runGit, repoPath);
     const mergeOut = `${merge.stdout}\n${merge.stderr}`.trim();
     await runGit(['merge', '--abort'], repoPath); // clean tree
@@ -4368,6 +4377,8 @@ async function reconcileAndPushOneRepo(
         await runNetworkGitWithGitHubHttpsFallback(runGit, ['fetch', remote, branch], repoPath, o.log);
         const m2 = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`], repoPath);
         if (m2.code !== 0) {
+          const infrastructureError = gitSyncPreDispatchError(m2);
+          if (infrastructureError) return { status: 'error', message: infrastructureError };
           const conflicted = await conflictedFiles(runGit, repoPath);
           const m2Out = `${m2.stdout}\n${m2.stderr}`.trim();
           await runGit(['merge', '--abort'], repoPath);
