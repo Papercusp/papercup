@@ -158,6 +158,13 @@ export type BootHistoryKind =
   | 'announce_clock_skew'
   | 'announce_error'
   | 'merge_error'
+  // WI-10003427: a merge pass stayed in flight past mergePassStallMs (names the stage it
+  // is sitting in; re-armed with doubling back-off) / later settled / an identity-admitted
+  // announce waited that long queued behind it. Every admission drains INSIDE a pass, so
+  // a wedged pass silently starves admission — before these, nothing recorded it.
+  | 'merge_stalled'
+  | 'merge_stall_cleared'
+  | 'announce_admission_stalled'
   // WI-280 (part B): the owner's re-key epoch-key grant to a freshly-admitted peer
   // failed. The grant is fire-and-forget (it must not block merge-gated admission),
   // so this is how the failure stays LOUD + queryable instead of a swallowed console.error.

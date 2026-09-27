@@ -304,6 +304,19 @@ const BOOT_PENDING_GRACE_MS = 30 * 60 * 1000; // 30 minutes
  */
 const DEFAULT_SWARM_JOIN_RETRY_MS = 15_000;
 const SWARM_JOIN_RETRY_CAP_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * WI-10003427 — pass-level merge watchdog. Every admission is drained INSIDE a
+ * merge pass (drainAdmissionQueue under the merge gate), so a pass that never
+ * settles silently starves every later announce: no announce_admitted /
+ * rejected / pending line, and the harness still reads "healthy". While a pass
+ * stays in flight past this threshold, a `merge_stalled` boot event names the
+ * stage it is sitting in (re-armed with doubling back-off up to the cap), and
+ * an announce queued for this long records `announce_admission_stalled`.
+ * Diagnostic only — never cancels the pass. `mergePassStallMs: 0` disables.
+ */
+const MERGE_PASS_STALL_MS = 120_000;
+const MERGE_PASS_STALL_MAX_REARM_MS = 30 * 60 * 1000;
 // Stage 6 (DoS Phase-4 reshape): cap how many ops the merge ingests from any
 // single author per pass. A noisy/Sybil peer bloats only its OWN log, so this
 // bounds per-pass ingest rather than mitigating a shared-structure flood.
@@ -788,6 +801,13 @@ export interface BootHarnessOpts {
    * timeout path deterministically.
    */
   scopedInitWaitMs?: number;
+  /**
+   * WI-10003427: how long a merge pass may stay in flight (and an announce may
+   * wait queued behind it) before `merge_stalled` / `announce_admission_stalled`
+   * boot events are recorded. Default MERGE_PASS_STALL_MS; 0 disables. Tests
+   * set it small to exercise the watchdog deterministically.
+   */
+  mergePassStallMs?: number;
 }
 
 /** The slice of a booted harness's resolved announce identity that peers can
@@ -3254,10 +3274,63 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // fires ~1Hz — a repeating failure logs once a minute, not 60 times).
   let lastMergeErrorMsg = '';
   let lastMergeErrorLogTs = 0;
+
+  // WI-10003427: pass-level merge watchdog state (see MERGE_PASS_STALL_MS).
+  const mergePassStallMs = Math.max(0, opts.mergePassStallMs ?? MERGE_PASS_STALL_MS);
+  let mergePassStartedAt: number | null = null;
+  let mergePassStage = 'idle';
+  let mergePassStallTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Name the top-level await the running pass is about to enter. */
+  function markMergeStage(stage: string): void {
+    mergePassStage = stage;
+  }
+  function describeMergePass(): string {
+    if (mergePassStartedAt == null) return `no pass in flight`;
+    return `pass in flight ${Math.round((Date.now() - mergePassStartedAt) / 1000)}s at stage '${mergePassStage}'`;
+  }
+  function armMergePassWatchdog(delayMs: number): void {
+    mergePassStallTimer = setTimeout(() => {
+      mergePassStallTimer = null;
+      if (mergePassStartedAt == null || stopped) return;
+      const msg =
+        `${describeMergePass()} — ${admissionQueue.length} queued admission(s) and every later ` +
+        `merge wait behind it`;
+      recordBootEvent(opts.workspaceId, opts.harnessSlug, 'merge_stalled', msg);
+      console.error(`[read-merge] [${opts.workspaceId}/${opts.harnessSlug}] MERGE PASS STALL: ${msg}`);
+      armMergePassWatchdog(Math.min(delayMs * 2, MERGE_PASS_STALL_MAX_REARM_MS));
+    }, delayMs);
+    mergePassStallTimer.unref?.();
+  }
+  /** mergeOnePass wrapped with the pass-level watchdog. Only ever called from mergeNow's gate. */
+  async function runTrackedMergePass(): Promise<number> {
+    const startedAt = Date.now();
+    mergePassStartedAt = startedAt;
+    mergePassStage = 'start';
+    if (mergePassStallMs > 0) armMergePassWatchdog(mergePassStallMs);
+    try {
+      return await mergeOnePass();
+    } finally {
+      if (mergePassStallTimer) {
+        clearTimeout(mergePassStallTimer);
+        mergePassStallTimer = null;
+      }
+      const elapsedMs = Date.now() - startedAt;
+      if (mergePassStallMs > 0 && elapsedMs >= mergePassStallMs) {
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'merge_stall_cleared',
+          `merge pass settled after ${Math.round(elapsedMs / 1000)}s (last stage '${mergePassStage}')`,
+        );
+      }
+      mergePassStartedAt = null;
+      mergePassStage = 'idle';
+    }
+  }
   function mergeNow(): Promise<number> {
     if (stopped) return Promise.resolve(0);
     if (!runningMerge) {
-      runningMerge = mergeOnePass().finally(() => {
+      runningMerge = runTrackedMergePass().finally(() => {
         runningMerge = null;
       });
       return runningMerge;
@@ -3828,6 +3901,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   async function mergeOnePass(): Promise<number> {
     // P-019 — BEFORE anything that can return early (notably the `!changed` idle
     // short-circuit further down). See servicePendingHeadSnapshot's doc comment.
+    markMergeStage('head-snapshot');
     await servicePendingHeadSnapshot();
     // WI-10002836 — also before the idle early-return, for the same reason.
     maybeStartOwnCompaction();
@@ -3835,6 +3909,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Snapshot the dynamic memory gate under the merge lock before any cursor
       // binding, seeding, or projection apply for this pass. A live OFF→ON edge
       // starts one memory-only replay; OFF cancels an incomplete replay.
+      markMergeStage('memory-federation-flag');
       const memoryFederationEnabledNow = await readMemoryFederationFlag();
       if (!memoryFederationEnabledNow) {
         memoryReplayCursor = null;
@@ -3883,6 +3958,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       pendingMemberContent.holdExpiry(!evictionReFold.isCaughtUp);
 
       // Queued admissions land first so THIS pass merges them (P-022).
+      markMergeStage('drain-admissions');
       await drainAdmissionQueue();
 
       // Apply any channel-2 re-verify drops the LOCKLESS producer enqueued
@@ -3893,6 +3969,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // WI-3684 repair-on-detect: apply queued zombie-log session re-attaches
       // under the same gate (see drainRepairQueue above) — the liveness episode
       // that enqueued them fired inside a PRIOR pass.
+      markMergeStage('drain-repairs');
       await drainRepairQueue();
 
       // ── Revocation refresh BEFORE collecting the merge set (G7 fix) ──
@@ -3909,6 +3986,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // the outer catch and abort EVERY pass, ring-only, silently stalling all
       // federation. A failed refresh now skips only the refresh; the next pass
       // retries it.
+      markMergeStage('revocation-refresh');
       try {
         await applyRevocationRefresh();
       } catch (e) {
@@ -3938,6 +4016,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               // a timed-out remote is merged at its last-known length (the
               // catch already tolerates a failed update), and the next pass
               // retries. Per-remote so one stalled peer doesn't block others.
+              markMergeStage('remote-update');
               await raceWithTimeout(maybeRemote.update(), UPDATE_TIMEOUT_MS);
             } catch {
               // A remote that can't refresh (peer offline / stream closed /
@@ -4066,6 +4145,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Isolated (WI-1544): a load failure means "start at 0" (slower, correct) —
       // never aborts the pass via the outer catch.
       if (pgMergeCursorStore && pgCursorSeedCache) {
+        markMergeStage('pg-cursor-seed');
         try {
           await pgCursorSeedCache.seed(mergeCursor, pgMergeCursorStore, currentApplyBinding(), logKeys);
         } catch (e) {
@@ -4091,6 +4171,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (snapshotReaderEnabled) {
         // WI-1544 isolation: a seed failure means "start that log at 0" (slower,
         // still correct) — it must never abort the pass via the outer catch.
+        markMergeStage('snapshot-seed');
         try {
           await seedCursorFromSnapshots(logs, mergeCursor);
           // WI-3985: the live OFF→ON memory replay is also a FRESH cursor. Reuse
@@ -4189,6 +4270,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // of this pass; on the idle tick maybeReverifyAdmitted only re-drains and
         // (cadence permitting) kicks off the LOCKLESS verify — zero I/O here.
         // Isolated (WI-1544): a reverify kick-off failure never aborts the pass.
+        markMergeStage('reverify-admitted');
         try {
           await maybeReverifyAdmitted();
         } catch (e) {
@@ -4245,6 +4327,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // rebind) wins when set, else the general hive-home resolution, else this boot's
       // own slug (today's fallback, preserved for the non-hive-peered case).
       const policyScopeSlug = hiveHomeProjectionSlug ?? resolvedPotHomeSlug ?? opts.harnessSlug;
+      markMergeStage('hive-policy');
       const ownerPolicy: HivePolicy | null =
         (await getHivePolicyCached(opts.workspaceId, policyScopeSlug).catch(() => null))?.policy ?? null;
       // Compose the single enforcement decorator EXACTLY as policy-admission.ts documents:
@@ -4445,6 +4528,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           (b.length - (mergeCursor.positions.get(b.keyHex) ?? 0)),
       );
       const positionsBeforeFold = new Map(mergeCursor.positions);
+      markMergeStage('incremental-merge');
       let result = await mergeAdmittedLogsIncremental(orderedLogs, mergeCursor, mergeOpts);
       // EI-79 step 3 (correctness escape hatch): a TRUNCATED log (length dropped
       // below its cursor — a reset/forked peer log) invalidates the standing fold.
@@ -4467,6 +4551,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         pgCursorSeedCache?.invalidate();
         // Reset positions ⇒ orderedLogs is now length-ascending, still a valid
         // fold order (WI-2105 acceleration); reuse it rather than re-sorting.
+        markMergeStage('incremental-merge (truncation re-fold)');
         result = await mergeAdmittedLogsIncremental(orderedLogs, mergeCursor, mergeOpts);
       }
       // P-522: whether this pass left every log unable to advance further (the re-fold gate).
@@ -4506,6 +4591,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // the key row it finds; the main fold's seek supplies the key.
           keySeek: undefined,
         };
+        markMergeStage('memory-replay-merge');
         let replayResult = await mergeAdmittedLogsIncremental(orderedLogs, memoryReplayCursor, replayOpts);
         if (replayResult.truncated) {
           memoryReplayCursor = createMergeCursor();
@@ -4539,6 +4625,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // WI-1544 isolation: the pass already merged its ops — a drain failure
         // must not discard that progress via the outer catch (the queue keeps
         // its entries; the next keyed pass re-drains).
+        markMergeStage('epoch-content');
         try {
           await drainQueuedEpochContent({
             pending: rekeyDeps.pending,
@@ -4577,6 +4664,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // No `verifyBinding` network call ever runs under this lock.
       // Isolated (WI-1544): the pass's `applied` count is already earned —
       // a reverify kick-off failure must not turn it into a merge_error+0.
+      markMergeStage('reverify-admitted (post-merge)');
       try {
         await maybeReverifyAdmitted();
       } catch (e) {
@@ -4612,6 +4700,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // settled pass into a thrown/masked result; a `finally` guarantees it runs
       // on every exit path (success, early return, or the catch above) without
       // needing to duplicate the call at each one.
+      markMergeStage('plan-parts-recompose');
       await planPartsRecomposeBatch.drain();
     }
   }
@@ -5218,7 +5307,26 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    */
   async function admitPeer(frame: SignedAnnounce, channel2Verified: boolean): Promise<AdmissionResult> {
     admissionQueue.push({ frame, channel2Verified });
-    await mergeNow();
+    // WI-10003427: an admission decided here only LANDS when a merge pass drains the
+    // queue. If that pass is wedged, this await never settles and the peer is silently
+    // never admitted (no announce_admitted/rejected/pending). Name the blocker loudly.
+    const queuedAt = Date.now();
+    const waitTimer =
+      mergePassStallMs > 0
+        ? setTimeout(() => {
+            const msg =
+              `${peerLabel(frame.log_core_key)} identity-admitted but queued ` +
+              `${Math.round((Date.now() - queuedAt) / 1000)}s with no drain — blocked behind merge ${describeMergePass()}`;
+            recordBootEvent(opts.workspaceId, opts.harnessSlug, 'announce_admission_stalled', msg);
+            console.error(`[boot] ADMISSION STALL harness=${opts.harnessSlug} ${msg}`);
+          }, mergePassStallMs)
+        : null;
+    waitTimer?.unref?.();
+    try {
+      await mergeNow();
+    } finally {
+      if (waitTimer) clearTimeout(waitTimer);
+    }
     return { admit: true };
   }
 
