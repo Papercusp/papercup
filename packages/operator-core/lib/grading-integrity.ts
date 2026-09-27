@@ -463,13 +463,35 @@ export async function gradingAuditProviderCanServe(
       import('./workspace-registry'),
     ]);
     const rows = await accountStatus(activeWorkspaceId(), nowMs);
-    const verdict = poolVerdictByProvider(rows, nowMs).find((row) => row.provider === provider);
-    // No verdict for this provider is IGNORANCE, not a measured wall — fail open.
-    if (!verdict) return true;
-    return !verdict.atCapacity;
+    return gradingAuditFallbackVerdictCanServe(
+      poolVerdictByProvider(rows, nowMs).find((row) => row.provider === provider),
+    );
   } catch {
     return true;
   }
+}
+
+/**
+ * The routing decision itself, pure over one provider's pool verdict.
+ *
+ * Spending the single bounded retry on the fallback provider is only worth it
+ * when that provider has a MEASURED serviceable account. `!atCapacity` is the
+ * wrong test: `poolVerdictByProvider` deliberately reports a pool with stale or
+ * unmeasured readings as NOT at capacity, so a provider with zero serviceable
+ * accounts still read as "can serve". Measured 2026-09-27 (WI-10003463): codex
+ * read serviceable=0 unknown=3 atCapacity=false while claude had serviceable=1;
+ * the audit was routed to codex, landed on an account whose OAuth refresh token
+ * was invalidated, and died on a 502. Staying on the primary then costs nothing:
+ * its auto-routed gateway pool is the one with measured headroom.
+ *
+ * No verdict at all means no accounts registered for the provider — nothing can
+ * serve there either, so that is false too. Only a failed ledger READ fails open
+ * (see gradingAuditProviderCanServe).
+ */
+export function gradingAuditFallbackVerdictCanServe(
+  verdict: { serviceable: number } | undefined,
+): boolean {
+  return (verdict?.serviceable ?? 0) > 0;
 }
 
 /**

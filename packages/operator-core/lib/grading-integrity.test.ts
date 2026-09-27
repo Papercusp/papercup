@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { poolVerdictByProvider, type AccountStatusRow } from './deployment/account-pool-store';
 import type { Rubric } from './rubrics';
 import type { ScorecardRow } from './scorecards';
 import type { TaskRow } from './task-manager/types';
@@ -13,6 +14,7 @@ import {
   GRADING_AUDIT_QUOTA_BACKOFF_MIN_MS,
   GRADING_AUDIT_DISPATCH_ACTOR,
   GRADING_INTEGRITY_RUBRIC_REF,
+  gradingAuditFallbackVerdictCanServe,
   gradingAuditorLaunchCtx,
   readGradingAuditDispatchSuppression,
   reconcilePendingGradingAudits,
@@ -2125,5 +2127,92 @@ describe('terminal grading-audit failures record a backoff only for a quota wall
       reservedAt: '2026-09-08T00:00:00.000Z',
     });
     expect(result.receipts[0]?.reason).not.toContain('suppressed');
+  });
+});
+
+// WI-10003463: the bounded retry is routed to the fallback provider only when
+// that provider can MEASURABLY serve. These cases drive the real pool rollup, so
+// a change to poolVerdictByProvider's unknown/at-capacity semantics is caught here.
+describe('gradingAuditFallbackVerdictCanServe', () => {
+  const NOW = Date.parse('2026-09-27T12:15:00.000Z');
+  const row = (over: Partial<AccountStatusRow> & { id: string; provider: AccountStatusRow['provider'] }) =>
+    ({
+      credentialRef: `token:${over.id}`,
+      boundTo: [],
+      available: true,
+      usageWalled: false,
+      sustainedlyLimited: false,
+      edgeThrottleKnown: false,
+      edgeThrottled: false,
+      edgeThrottleCooledIps: 0,
+      edgeThrottleBare429Streak: 0,
+      rate: { pausedUntil: 0, penaltyCount: 0, lastPenaltyAt: 0, windowStartedAt: 0 },
+      liveBuckets: [],
+      readingStatus: 'fresh',
+      burn: {
+        burnRatePerHr: null,
+        headroomFraction: null,
+        projectedExhaustionAt: null,
+        exhaustsBeforeReset: false,
+        action: 'none',
+        utilization7d: null,
+        disposition: 'no-verdict',
+        reason: 'fixture',
+      },
+      ...over,
+    }) as AccountStatusRow;
+  const verdictFor = (rows: AccountStatusRow[], provider: AccountStatusRow['provider']) =>
+    poolVerdictByProvider(rows, NOW).find((v) => v.provider === provider);
+
+  it('THE INCIDENT: 0 serviceable + stale rows is NOT at capacity, but still cannot serve the fallback', () => {
+    // The codex pool shape measured by accounts:status at 2026-09-27T12:15Z.
+    const codex = [
+      row({ id: 'chatgpt-sub-cli', provider: 'codex', available: false, usageWalled: true }),
+      row({
+        id: 'aviynw2_codex',
+        provider: 'codex',
+        available: false,
+        usageWalled: true,
+        readingStatus: 'stale',
+        lastProbeFailedAt: NOW - 60_000,
+      }),
+      row({ id: 'aviynw_3', provider: 'codex', readingStatus: 'stale' }),
+      row({ id: 'aviynw4_codex', provider: 'codex', available: false, usageWalled: true }),
+      row({ id: 'aviynw5_codex', provider: 'codex', available: false, usageWalled: true }),
+      row({ id: 'aviynw3_codex', provider: 'codex', readingStatus: 'stale' }),
+      row({ id: 'aviynw6_codex', provider: 'codex', available: false, usageWalled: true }),
+    ];
+    const verdict = verdictFor(codex, 'codex');
+    // Calibration: the rollup really does call this pool "not at capacity" —
+    // exactly the reading the old `!atCapacity` predicate trusted.
+    expect(verdict?.atCapacity).toBe(false);
+    expect(verdict?.serviceable).toBe(0);
+    expect(verdict?.unknown).toBe(3);
+    expect(gradingAuditFallbackVerdictCanServe(verdict)).toBe(false);
+  });
+
+  it('a provider with one measured serviceable account can serve the fallback', () => {
+    const claude = [
+      row({ id: 'aviynw10', provider: 'claude' }),
+      row({ id: 'aviynw2', provider: 'claude', available: false, usageWalled: true }),
+      row({ id: 'aviynw9', provider: 'claude', readingStatus: 'stale' }),
+    ];
+    const verdict = verdictFor(claude, 'claude');
+    expect(verdict?.serviceable).toBe(1);
+    expect(gradingAuditFallbackVerdictCanServe(verdict)).toBe(true);
+  });
+
+  it('an all-stale pool is unmeasured, so the retry stays on the primary', () => {
+    const verdict = verdictFor(
+      [row({ id: 'c1', provider: 'codex', readingStatus: 'stale' }), row({ id: 'c2', provider: 'codex', readingStatus: 'never-observed' })],
+      'codex',
+    );
+    expect(verdict?.atCapacity).toBe(false);
+    expect(gradingAuditFallbackVerdictCanServe(verdict)).toBe(false);
+  });
+
+  it('a provider with no registered accounts cannot serve', () => {
+    expect(verdictFor([row({ id: 'a', provider: 'claude' })], 'codex')).toBeUndefined();
+    expect(gradingAuditFallbackVerdictCanServe(undefined)).toBe(false);
   });
 });
