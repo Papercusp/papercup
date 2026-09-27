@@ -147,50 +147,79 @@ describe('isSidecarInfrastructureFault (WI-10002709)', () => {
 
 describe('spawner-sidecar process progress guard', () => {
   it('drains already-written progress before judging an idle deadline after a parent-loop stall', async () => {
+    // Gate red at repair head c5865549 (and 6bf86578), 2026-09-27: the old
+    // version let the child exit on its own and asserted code 0, so under gate
+    // load a child that was slow to start or to be reaped hit the 150ms idle
+    // window AFTER the drain this test is about. The child now writes forever
+    // and the test ends it deterministically, so the verdict depends only on
+    // loop-phase ordering, never on how fast a loaded host schedules a child.
+    const idleTimeoutMs = 1_000; // generous: a loaded host must still start the child inside it
+    const stallMs = 1_500; // > idleTimeoutMs, so the idle deadline expires inside the stall
     const script = [
       "const send = phase => process.stderr.write(JSON.stringify({ phase, at: Date.now() }) + '\\n');",
-      "send('ready'); let n = 0; const timer = setInterval(() => { send('progress'); if (++n === 10) clearInterval(timer); }, 40);",
+      "send('ready'); setInterval(() => send('progress'), 40);",
     ].join(' ');
+    const abort = new AbortController();
     let queuedBlock = false;
     let blockedFrom = 0;
     let blockedUntil = 0;
+    let drainedAfterStall = false;
     const res = await execProcess({
       command: process.execPath,
       args: ['-e', script],
-      idleTimeoutMs: 150,
-      timeoutMs: 3000,
+      idleTimeoutMs,
+      timeoutMs: 15_000,
     }, {
       ...executionDeps,
+      signal: abort.signal,
       onOutputActivity: () => {
+        if (blockedUntil > 0) {
+          if (drainedAfterStall) return;
+          drainedAfterStall = true;
+          // This is the POLL-phase drain of output written during the stall.
+          // The expired idle deadline queued its verdict (an immediate) in the
+          // TIMERS phase BEFORE this drain, so an immediate queued here runs
+          // AFTER it in the same CHECK phase: a verdict the drain failed to
+          // cancel would kill the child first, as 'no output progress'.
+          setImmediate(() => abort.abort());
+          return;
+        }
         if (queuedBlock) return;
         queuedBlock = true;
         // The child has reported readiness. Occupy the CHECK phase while it
         // keeps writing, so the expired timer races the next POLL phase.
         setImmediate(() => {
           blockedFrom = Date.now();
-          while (Date.now() - blockedFrom < 450) { /* deliberate parent-loop stall */ }
+          while (Date.now() - blockedFrom < stallMs) { /* deliberate parent-loop stall */ }
           blockedUntil = Date.now();
         });
       },
     });
     const writes = res.stderr.split('\n').filter((line) => line.startsWith('{')).map((line) => JSON.parse(line));
-    // Distinguish absent child progress from progress waiting in the OS pipe.
+    // The stall really outlasted the idle deadline, and the child really wrote
+    // during it: distinguish absent child progress from progress in the OS pipe.
+    expect(blockedUntil - blockedFrom).toBeGreaterThanOrEqual(stallMs);
     expect(writes.filter((entry) => entry.phase === 'progress' && entry.at > blockedFrom && entry.at < blockedUntil).length).toBeGreaterThanOrEqual(3);
-    expect(res.code, res.stderr).toBe(0);
+    expect(drainedAfterStall).toBe(true);
     expect(res.stderr).not.toContain('no output progress');
-  });
+    expect(res.stderr).toContain('aborted by caller');
+    expect(res.code).toBe(-1);
+  }, 20_000);
 
   it('does not kill a child that exited while the parent loop stalled past the idle deadline', async () => {
     // Gate red at repair head 6bf86578 (2026-09-27): a lagging host loop resumes
     // with the idle timer expired AND the child's EOF/exit pending. The idle
     // verdict runs in CHECK, but 'close' (and the exit fence) land after it, so
     // an already-finished child was killed and reported as a guard failure.
+    // The idle window must still let a loaded host START the child (its
+    // 'ready' is the first output), and the stall must outlast both that
+    // window and the child's own exit; tighter margins flaked under gate load.
     let queuedBlock = false;
     const res = await execProcess({
       command: process.execPath,
       args: ['-e', "process.stderr.write('ready\\n'); setTimeout(() => process.exit(0), 100);"],
-      idleTimeoutMs: 150,
-      timeoutMs: 5_000,
+      idleTimeoutMs: 1_000,
+      timeoutMs: 15_000,
     }, {
       ...executionDeps,
       onOutputActivity: () => {
@@ -198,13 +227,13 @@ describe('spawner-sidecar process progress guard', () => {
         queuedBlock = true;
         setImmediate(() => {
           const from = Date.now();
-          while (Date.now() - from < 600) { /* stall until the child has exited */ }
+          while (Date.now() - from < 2_500) { /* stall until the child has exited */ }
         });
       },
     });
     expect(res.stderr).not.toContain('no output progress');
     expect(res.code, res.stderr).toBe(0);
-  });
+  }, 20_000);
 
   it('still idle-kills a child that closed its pipes but stays alive past the exit grace', async () => {
     const res = await execProcess({
