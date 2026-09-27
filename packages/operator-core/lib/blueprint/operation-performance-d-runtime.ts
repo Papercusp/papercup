@@ -41,6 +41,11 @@ export async function bootP013DRuntime(opts: {
   // D-022(a): no provider in the timed path. Any embed on either arm (e.g. a memory recall
   // reached through the tool catalog) is served by the deterministic in-process fixture;
   // installed before any tool module loads so no lazy import can capture the real embedder.
+  // The memoryHost override does NOT reach the search-side QUERY embedder
+  // (agent-tools/search/embedder buildQueryEmbedderResolved), which in a cold child
+  // loaded real onnx embeddinggemma (CUDA OOM/SIGABRT, >120s cpu fallback — EI-24442961772316947).
+  // Pin that leg off for both arms: search degrades to BM25, no model load in the timed path.
+  process.env.PAPERCUSP_MEMORY_EMBEDDER = 'disabled';
   const embedder = await (await import('../../test/_deterministic-embedder')).installDeterministicEmbedder();
   const { registerProjectedTool } = await import('@papercusp/tooldef');
   await ensureP013DSchema(opts.sql);
