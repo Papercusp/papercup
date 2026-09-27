@@ -88,12 +88,30 @@ describe('P-013 workload A fixture', () => {
         warmup: async () => { await runArm(arm, sequence++); },
         run: async () => (await runArm(arm, sequence++)).marks,
         coldStart: async () => {
+          const childSequence = sequence++;
+          // Attribution probe (WI-10002948): the child's CPU profile shows its
+          // accept phase is almost all (idle), so sample the database side on
+          // the wall clock to see whether those waits are backend waits.
+          const profileDir = process.env.P013_COLD_PROFILE_DIR;
+          let sampling = Boolean(profileDir);
+          const pgSamples: unknown[] = [];
+          const sampler = (async () => {
+            while (sampling) {
+              const rows = await db.adminSql`
+                SELECT pid, state, wait_event_type, wait_event, application_name,
+                       left(query, 200) AS query
+                  FROM pg_stat_activity
+                 WHERE datname = current_database() AND pid <> pg_backend_pid()`;
+              pgSamples.push({ at: Date.now(), rows });
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+          })();
           const child = spawn(process.execPath, [
             '--import', 'tsx', fileURLToPath(new URL('./operation-performance-child.ts', import.meta.url)),
           ], {
             cwd: process.cwd(),
             env: { ...process.env, P013_COLD_DSN: db.adminDsn, P013_COLD_ARM: arm,
-              P013_COLD_SEQUENCE: String(sequence++), PAPERCUSP_WORKSPACE_ID: WS,
+              P013_COLD_SEQUENCE: String(childSequence), PAPERCUSP_WORKSPACE_ID: WS,
               HARNESS_ADMIN_DATABASE_URL: db.adminDsn, HARNESS_DATABASE_URL: db.appDsn },
             stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
             signal: AbortSignal.timeout(90_000),
@@ -119,9 +137,20 @@ describe('P-013 workload A fixture', () => {
             if (message?.kind === 'p013-stage') stage = message.stage ?? stage;
             if (message?.kind === 'p013-sample') sample = message.sample;
           });
+          const stopSampler = async () => {
+            if (!profileDir || !sampling) return;
+            sampling = false;
+            await sampler;
+            const { mkdirSync, writeFileSync } = await import('node:fs');
+            mkdirSync(profileDir, { recursive: true });
+            writeFileSync(`${profileDir}/p013-${arm}-${childSequence}.pgsamples.json`,
+              JSON.stringify(pgSamples));
+          };
+          void exit.then(stopSampler, stopSampler);
           return {
             run: async () => {
               await exit;
+              await stopSampler();
               expect(sample?.arm).toBe(arm);
               return sample!.marks;
             },
