@@ -139,6 +139,38 @@ afterAll(async () => {
     `P013_TEARDOWN step=${step} elapsedMs=${Date.now() - teardownStartedAt}`);
   await db?.cleanup();
   stamp('org-test-db-cleaned');
+  if (dedicatedPg) {
+    // WI-10002948: the 12:26Z 5-repetition matrix lost its connection to this
+    // cluster mid-run (CONNECTION_CLOSED), and stop() below removed the
+    // container, taking with it the server log, the one record that separates
+    // a backend crash / crash-restart from a terminated session. Keep the log
+    // tail first. testcontainers' logs() follows the stream, so read it for a
+    // bounded window and then destroy it.
+    try {
+      const stream = await dedicatedPg.logs({ tail: 2_000 });
+      const text = await new Promise<string>((resolve) => {
+        let out = '';
+        const finish = () => { stream.destroy(); resolve(out); };
+        stream.on('data', (chunk) => { out += String(chunk); });
+        stream.once('end', finish);
+        stream.once('error', finish);
+        setTimeout(finish, 3_000);
+      });
+      const { mkdirSync, writeFileSync } = await import('node:fs');
+      const dir = process.env.P013_COLD_PROFILE_DIR ?? '/tmp/pcv';
+      mkdirSync(dir, { recursive: true });
+      const logPath = `${dir}/p013-dedicated-pg-${Date.now()}.log`;
+      writeFileSync(logPath, text);
+      const notable = text.split('\n')
+        .filter((line) => /FATAL|PANIC|terminat|was terminated|shut ?down|server process|out of memory|killed|recovery/i.test(line))
+        .slice(-20);
+      console.error(`P013_TEARDOWN dedicated-pg-log=${logPath} bytes=${text.length} notable=${notable.length}` +
+        (notable.length ? `\n${notable.join('\n')}` : ''));
+    } catch (error) {
+      console.error(`P013_TEARDOWN dedicated-pg-log-failed ${String(error)}`);
+    }
+    stamp('dedicated-pg-log-captured');
+  }
   await dedicatedPg?.stop({ timeout: 10_000 });
   if (dedicatedPg) stamp('dedicated-pg-stopped');
   if (dedicatedPg) {
