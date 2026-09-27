@@ -171,6 +171,47 @@ describe('recordRecallStats', () => {
     warn.mockRestore();
   });
 
+  it('serializes concurrent writes per SQL handle without dropping a recall', async () => {
+    const started: string[] = [];
+    const releases: Array<() => void> = [];
+    let active = 0;
+    let maxActive = 0;
+    const sql = ((_s: TemplateStringsArray, ...values: unknown[]) => {
+      started.push(values[0] as string);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      return new Promise<unknown[]>((resolve) => {
+        releases.push(() => {
+          active -= 1;
+          resolve([]);
+        });
+      });
+    }) as unknown as Sql;
+
+    const writes = ['turn-start', 'compact', 'brief'].map((surface) =>
+      recordRecallStats(sql, { surface, entries: [] }),
+    );
+    // A resolved predecessor must not start telemetry in the same microtask
+    // drain; foreground recall work gets an event-loop turn to acquire the
+    // shared org pool first.
+    await Promise.resolve();
+    expect(started).toEqual([]);
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    expect(started).toEqual(['turn-start']);
+
+    for (let index = 0; index < writes.length; index += 1) {
+      expect(releases).toHaveLength(1);
+      releases.shift()!();
+      await writes[index];
+      if (index + 1 < writes.length) {
+        await vi.waitFor(() => expect(started).toHaveLength(index + 2));
+      }
+    }
+
+    expect(started).toEqual(['turn-start', 'compact', 'brief']);
+    expect(maxActive).toBe(1);
+  });
+
   // memory-delivery-unification-2026-07-12 P-005 (D-006): the surface column is
   // free-text, so each per-entry-point PORT records under its own label — the
   // union is documentation, not a DB constraint. Pins that a port label writes

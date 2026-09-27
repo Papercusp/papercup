@@ -1767,6 +1767,41 @@ if [ "$TEST_RC" -eq 1 ] && [ -n "$MUTANT_MISUSE_HITS" ]; then
       Inspect the captured guard output above for the exact runner message."
 fi
 
+# A passing copy-out test does not prove it ever imported the mutant. The repo
+# mirror symlinks test files/configs; Node/Vite can realpath a symlinked test
+# before resolving its relative imports, sending them back to the real tree.
+# An unmutated-copy baseline cannot detect this (both paths behave identically).
+# On a JS/TS module that "survived", replace only the SCRATCH copy with a
+# distinctive top-level throw and rerun the SAME command. Credit survival only
+# if this run fails AND prints the thrown marker: a generic runner error is not
+# evidence that the module was loaded. Never touch the tracked source.
+if [ "$TARGET_MODE" = "copy-out" ] && [ "$TEST_RC" -eq 0 ]; then
+  case "$FILE" in
+    *.js|*.jsx|*.mjs|*.cjs|*.ts|*.tsx|*.mts|*.cts)
+      LOAD_MARKER="PAPERCUSP_MUTATION_TARGET_LOADED_CHECK"
+      LOAD_LOG="$SCRATCH/load-check.log"
+      cp -- "$TARGET" "$SCRATCH/mutant-before-load-check" \
+        || die "cannot preserve scratch mutant for the module-load control"
+      printf 'throw new Error("%s");\n' "$LOAD_MARKER" > "$TARGET" \
+        || die "cannot install module-load control in scratch copy"
+      run_guard load-check "module-load control" "$CMD" "$LOAD_LOG"
+      LOAD_RC=$?
+      cp -- "$SCRATCH/mutant-before-load-check" "$TARGET" \
+        || die "cannot restore scratch mutant after module-load control"
+      if [ "$LOAD_RC" -eq 0 ] || ! grep -Fq "$LOAD_MARKER" "$LOAD_LOG"; then
+        printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=%d module_loaded=no\n' \
+          "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC"
+        die "the mutated module was not loaded by --test: the scratch copy threw a distinctive marker, but the same guard did not fail with that marker.
+
+      A symlinked test/config in the copy-out mirror may resolve imports against
+      the REAL tree (not the mutant). A survived verdict would be false. Make
+      the guard import {} directly from the mirror, or use the fenced --in-tree
+      tier when that test runner cannot load mirrored modules."
+      fi
+      ;;
+  esac
+fi
+
 if [ "$TEST_RC" -eq 1 ]; then
   VERDICT="caught"
   log "VERDICT: MUTANT CAUGHT (guard exited $TEST_RC) — the guard is falsifiable ✓"

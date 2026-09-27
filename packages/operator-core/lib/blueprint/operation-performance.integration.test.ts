@@ -136,9 +136,13 @@ describe('P-013 workload A fixture', () => {
       });
       expect(coldStarts).toBe(2);
       expect(trials).toHaveLength(2);
+      // Per-phase split, not just the total: the cold cost must be attributed to a
+      // D-016 phase (accept / dispatch / terminal / business event) before any
+      // fixture decision is taken on it (WI-10002948).
       console.info('P-013 workload A process-isolated cold-boundary pilot; no D-016 grade',
         JSON.stringify(trials.map((trial) => ({ arm: trial.arm, mode: trial.mode,
-          totalMs: +trial.phasesMs.total.p50.toFixed(2) }))));
+          phasesP50Ms: Object.fromEntries(Object.entries(trial.phasesMs)
+            .map(([phase, dist]) => [phase, +dist.p50.toFixed(2)])) }))));
     } else if (process.env.P013_PAIRED_SMOKE === '1') {
       const benchmarkArm = (arm: Arm): BenchmarkArm => ({
         warmup: async () => { await runArm(arm, sequence++); },

@@ -243,6 +243,46 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  it('refuses a false survived verdict when a symlinked test resolves to the original module', () => {
+    const repo = join(dir, 'symlink-test-repo');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    const modulePath = join(repo, 'subject.cjs');
+    writeFileSync(modulePath, 'module.exports = 1;\n');
+    writeFileSync(join(repo, 'guard.cjs'), "if (require('./subject.cjs') !== 1) process.exit(1);\n");
+    // The mirror symlinks guard.cjs to the real tree. Node (like Vite) resolves
+    // that symlink before loading its relative import, bypassing the mutant.
+    const { code, out } = runProbeIO([
+      '--file', modulePath,
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', 'node "$(dirname {})/guard.cjs"',
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/verdict=harness-error/);
+    expect(out).toMatch(/mutated module.*not loaded|target.*not loaded/i);
+    expect(out).not.toMatch(/verdict=survived/);
+    expect(readFileSync(modulePath, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
+  it('allows an actual surviving module mutant after proving the mirrored module loads', () => {
+    const repo = join(dir, 'loaded-module-repo');
+    mkdirSync(repo);
+    git(repo, ['init', '-q']);
+    const modulePath = join(repo, 'subject.cjs');
+    writeFileSync(modulePath, 'module.exports = 1;\n');
+    // This guard exercises the actual {} module, but only asserts that it
+    // exports a number; the semantic mutation legitimately survives.
+    const { code, out } = runProbeIO([
+      '--file', modulePath,
+      '--mutate', 's/module.exports = 1;/module.exports = 2;/',
+      '--test', 'node -e "if (typeof require(process.argv[1]) !== \'number\') process.exit(1)" {}',
+      '--expect', 'survived',
+    ]);
+    expect(code).toBe(0);
+    expect(out).toMatch(/verdict=survived/);
+    expect(readFileSync(modulePath, 'utf8')).toBe('module.exports = 1;\n');
+  });
+
   it('reports a baseline harness failure as an error, never as a caught mutant', () => {
     const { code, out } = runProbeIO([
       '--file',

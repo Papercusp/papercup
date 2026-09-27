@@ -37,6 +37,10 @@ import { getMemoryBlockBoundedResult, MEMORY_BLOCK_COLD_DEADLINE_MS } from '../i
 let db: OrgTestDb;
 let backend: MemoryBackend;
 const writes = new Set<Promise<unknown>>();
+let recallStatsCalls = 0;
+let measuredCalls = 0;
+let blockBuilds = 0;
+const recallStatsCallsByQuery = new Map<string, number>();
 const verbatimOnlyExtractionLlm: ExtractionLlm = {
   async generateResponse() {
     throw new Error('P-006 verbatim seed unexpectedly invoked fact extraction');
@@ -74,6 +78,9 @@ vi.mock('../recall-stats', async (original) => {
   return {
     ...actual,
     recordRecallStats: (...args: Parameters<typeof actual.recordRecallStats>) => {
+      recallStatsCalls += 1;
+      const row = context.getStore();
+      if (row) recallStatsCallsByQuery.set(row.queryId, (recallStatsCallsByQuery.get(row.queryId) ?? 0) + 1);
       if (process.env.PAPERCUSP_P006_RECALL_STATS === 'off') return Promise.resolve();
       const p = actual.recordRecallStats(...args);
       writes.add(p);
@@ -158,6 +165,7 @@ function summarize(rows: Reading[]) {
 }
 
 async function measure(query: GoldQuery): Promise<Reading> {
+  measuredCalls += 1;
   const row: Reading = {
     queryId: query.id,
     className: query.class,
@@ -181,6 +189,7 @@ async function measure(query: GoldQuery): Promise<Reading> {
       workspaceId,
       id,
       () => {
+        blockBuilds += 1;
         const buildStarted = performance.now();
         build = buildMemoryContextBlock({
           workspaceId,
@@ -310,6 +319,7 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
       const sourcePaths = [
         'packages/operator-core/lib/memory/injection.ts',
         'packages/operator-core/lib/memory/injection-block-cache.ts',
+        'packages/operator-core/lib/memory/recall-stats.ts',
         'libs/generic/memory/src/mem0-backend.ts',
         'libs/generic/memory/src/mem0-client.ts',
         'libs/generic/memory/src/hybrid-backend.ts',
@@ -354,6 +364,46 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
         );
         profiles.push({ name, concurrency, rows });
         console.log('[P-006 result]', JSON.stringify({ name, concurrency, ...summarize(rows), rows }));
+      }
+      // The warm profile intentionally primes each query once, so the three
+      // measured profiles issue four recalls per gold query. Wait until every
+      // fire-and-forget call has reached the mocked writer, then drain the
+      // writer promises and prove serialization preserved one durable row per
+      // recall. A latency-only pass could otherwise hide a queue that merely
+      // shed telemetry to get out of the retrieval path.
+      const expectedRecallStatsCalls = queries.length * 4;
+      await vi.waitFor(() => expect(blockBuilds).toBe(measuredCalls), { timeout: 5_000 });
+      // A completed block means its `finally` scheduled telemetry; it does not
+      // mean the fire-and-forget async continuation has crossed the dynamic
+      // import/corpus join and invoked the writer yet. Join that scheduling
+      // boundary explicitly before snapshotting `writes`, otherwise a fast
+      // profile can misclassify pending rows as dropped rows.
+      await vi.waitFor(() => expect(recallStatsCalls).toBe(expectedRecallStatsCalls), { timeout: 5_000 });
+      const missingTelemetry = queries
+        .map((query) => ({ queryId: query.id, calls: recallStatsCallsByQuery.get(query.id) ?? 0 }))
+        .filter((entry) => entry.calls !== 4);
+      console.log(
+        '[P-006 telemetry-scheduling]',
+        JSON.stringify({ measuredCalls, blockBuilds, recallStatsCalls, expectedRecallStatsCalls, missingTelemetry }),
+      );
+      expect(
+        recallStatsCalls,
+        JSON.stringify({ measuredCalls, blockBuilds, recallStatsCalls, expectedRecallStatsCalls, missingTelemetry }),
+      ).toBe(expectedRecallStatsCalls);
+      await Promise.allSettled([...writes]);
+      const countRows = await db.adminSql`
+        SELECT count(*)::int AS recall_count
+        FROM harness_shared.memory_recall_stats
+        WHERE surface = 'turn-start'
+      `;
+      const recallCount = Number(countRows[0]?.recall_count);
+      const expectedRecallCount = process.env.PAPERCUSP_P006_RECALL_STATS === 'off' ? 0 : expectedRecallStatsCalls;
+      console.log(
+        '[P-006 telemetry]',
+        JSON.stringify({ calls: recallStatsCalls, expectedRows: expectedRecallCount, persistedRows: recallCount }),
+      );
+      if (recallCount !== expectedRecallCount) {
+        throw new Error(`recall telemetry row mismatch: expected ${expectedRecallCount}, got ${recallCount}`);
       }
     } catch (error) {
       setupError = error;

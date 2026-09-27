@@ -496,6 +496,38 @@ const RECALL_STATS_WARN_WINDOW_MS = 5 * 60_000;
 let _lastWarnedAt = 0;
 let _suppressedSinceWarn = 0;
 
+// Retrieval and its telemetry deliberately share the org SQL handle: the row
+// must land in the same database as the recall it describes.  Do not let that
+// turn into an unbounded fan-out on the shared connection pool, though.  A
+// burst of fire-and-forget INSERTs can otherwise occupy the pool ahead of the
+// next retrieval query and make the observer create the deadline it records.
+//
+// Serialize per Sql handle rather than globally so independent org databases
+// cannot head-of-line block one another. Every caller still receives its own
+// promise and every recall still executes one write; this bounds CONCURRENCY,
+// not fidelity. Weak keys also let a throwaway/test database disappear without
+// a process-lifetime registry entry.
+const recallStatsWriteTails = new WeakMap<Sql, Promise<void>>();
+
+function enqueueRecallStatsWrite(sql: Sql, write: () => Promise<void>): Promise<void> {
+  const previous = recallStatsWriteTails.get(sql) ?? Promise.resolve();
+  // Yield one event-loop turn between telemetry writes. Without this handoff a
+  // settled INSERT schedules its successor in the same microtask drain, so a
+  // long FIFO can repeatedly reclaim a small org pool ahead of the feedback /
+  // dedup queries on the next recall. Concurrency=1 alone prevents a stampede;
+  // the macrotask handoff supplies fairness to the path being measured.
+  const current = previous
+    .catch(() => undefined)
+    .then(() => new Promise<void>((resolve) => setImmediate(resolve)))
+    .then(write);
+  recallStatsWriteTails.set(sql, current);
+  const clearIfTail = (): void => {
+    if (recallStatsWriteTails.get(sql) === current) recallStatsWriteTails.delete(sql);
+  };
+  void current.then(clearIfTail, clearIfTail);
+  return current;
+}
+
 /** Finite scores only — a non-numeric or NaN score is absent, not zero. */
 function finiteScores(entries: readonly MemoryEntry[]): number[] {
   return entries
@@ -626,8 +658,8 @@ export async function recordRecallQueryText(
   }
 }
 
-/** Insert one stats row. Never throws; never load-bearing. Call WITHOUT awaiting. */
-export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Promise<void> {
+/** Insert one stats row. Never throws; never load-bearing. */
+async function recordRecallStatsNow(sql: Sql, input: RecallStatsInput): Promise<void> {
   try {
     // A per-pool input DERIVES its flat totals, so hit_count/top_score/scores keep
     // exactly the meaning they have always had and cannot disagree with `pools`.
@@ -705,6 +737,15 @@ export async function recordRecallStats(sql: Sql, input: RecallStatsInput): Prom
       _suppressedSinceWarn = 0;
     }
   }
+}
+
+/**
+ * Queue one stats row behind earlier telemetry for this SQL handle. Callers on
+ * the recall path should still call WITHOUT awaiting: the returned promise is
+ * for teardown/tests and preserves the one-call/one-row completion contract.
+ */
+export function recordRecallStats(sql: Sql, input: RecallStatsInput): Promise<void> {
+  return enqueueRecallStatsWrite(sql, () => recordRecallStatsNow(sql, input));
 }
 
 /** Test hook: reset the warn throttle so a suite can assert re-warn behavior. */

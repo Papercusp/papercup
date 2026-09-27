@@ -34,6 +34,19 @@ try {
     import('../agent-tools/blueprint/result-operation'),
   ]);
   process.send?.({ kind: 'p013-stage', stage: 'running-workload' });
+  // Attribution probe (WI-10002948): the child SIGKILLs itself, so `--cpu-prof`
+  // never writes. P013_COLD_PROFILE_DIR records a sampling profile through the
+  // inspector instead, stopped and written before the sample leaves the process.
+  const profileDir = process.env.P013_COLD_PROFILE_DIR;
+  const profiler = profileDir ? new (await import('node:inspector/promises')).Session() : undefined;
+  let profileStartedAt = 0;
+  if (profiler) {
+    profiler.connect();
+    await profiler.post('Profiler.enable');
+    await profiler.post('Profiler.setSamplingInterval', { interval: 500 });
+    profileStartedAt = performance.timeOrigin + performance.now();
+    await profiler.post('Profiler.start');
+  }
   const sample = await runP013WorkloadA(sql, {
     createWorkItemTool: create.default,
     claimWorkItemTool: claim.default,
@@ -43,6 +56,15 @@ try {
     operationEventsTool: events.default,
     operationResultTool: result.default,
   }, arm as P013Arm, sequence);
+  if (profiler && profileDir) {
+    const { profile } = await profiler.post('Profiler.stop');
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(profileDir, { recursive: true });
+    writeFileSync(`${profileDir}/p013-${arm}-${sequence}.cpuprofile`, JSON.stringify(profile));
+    writeFileSync(`${profileDir}/p013-${arm}-${sequence}.marks.json`,
+      JSON.stringify({ profileStartedAt, marks: sample.marks, phasesMs: sample.phasesMs }));
+    profiler.disconnect();
+  }
   if (!process.send) throw new Error('P-013 cold child requires an IPC channel');
   await new Promise<void>((resolve, reject) => process.send!({ kind: 'p013-sample', sample }, (error) =>
     error ? reject(error) : resolve()));
