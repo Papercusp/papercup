@@ -4288,7 +4288,9 @@ async function amendAcceptanceBarRubric(
       const desiredMappings = parseBarMappings(subjectRow.content, new Set(requirements.bars.map((bar) => bar.barKey)));
       if (!desiredMappings.ok) {
         throw new Error(
-          `acceptance_bar_amendment_mapping_invalid:${desiredMappings.problems.map((problem) => problem.code).join(',')}`,
+          `acceptance_bar_amendment_mapping_invalid:${desiredMappings.problems.map((problem) =>
+            [problem.code, problem.barKey, problem.planItemId, problem.detail].filter(Boolean).join(': '),
+          ).join('; ')}`,
         );
       }
       const desiredMappingByBar = new Map(desiredMappings.mappings.map((mapping) => [mapping.barKey, mapping]));

@@ -1678,6 +1678,26 @@ describe('template_data persistence boundary — the set-template-data door', ()
     return { ...seeded, workspaceId, subject };
   }
 
+  it('names the offending BAR and missing Requirements record in an amendment refusal', async () => {
+    const seeded = await seedBarContract('amendment-missing-requirement');
+    const [subject] = await db.adminSql<{ content: string }[]>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+    const content = subject!.content.replace('| R-2 | P-002 | tree |', '| R-2 | P-002 | tree |\n| R-8 | P-001 | tree |');
+    await db.adminSql`
+      UPDATE harness_shared.harness_plans SET content=${content}, version=version+1
+       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp'
+         AND plan_slug=${seeded.subject}`;
+
+    await expect(rubrics.previewAcceptanceBarAmendment({
+      rubricId: seeded.rubricSlug,
+      actorId: 'missing-requirement-preview',
+      reason: 'Diagnose an invalid BAR map before amending.',
+      classRef: 'plan-class-feature-ship',
+    })).rejects.toThrow(/acceptance_bar_amendment_mapping_invalid:bar_mapping_requirement_missing.*R-8.*no Requirements record/);
+  });
+
   it('refuses a changed automated BAR without a test layer before approval or proof', async () => {
     const seeded = await seedBarContract('amendment-missing-proof-layer');
     const before = (await rubrics.getRubric(seeded.rubricSlug))!;
