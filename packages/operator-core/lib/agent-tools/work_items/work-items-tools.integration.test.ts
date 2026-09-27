@@ -61,6 +61,44 @@ const COORD_EVENT_LOG_DDL = `
     surface text NOT NULL, writer_key text, msg_id text NOT NULL,
     body jsonb NOT NULL, ts timestamptz NOT NULL DEFAULT now())`;
 
+// Claim admission reads the append-only fleet membership fact even for callers
+// outside a fleet. Keep the focused fixture's relation column-faithful to
+// migration 430 without installing its unrelated presence projection triggers.
+const FLEET_MEMBERSHIP_EVENTS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.fleet_membership_events (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL DEFAULT 'default',
+    owner_id text NOT NULL,
+    owner_label text,
+    fleet_slug text,
+    fleet_role text,
+    event text NOT NULL DEFAULT 'join',
+    at timestamptz NOT NULL DEFAULT now()
+  )`;
+
+// This suite verifies work-item tool envelopes, not the independently tested
+// fleet-assignment projection. Give claim admission a faithful view of claimed
+// work items; no live presence or plan-item claims exist in this fixture.
+const FLEET_ASSIGNMENT_DDL = `
+  CREATE VIEW harness_shared.fleet_assignment AS
+  SELECT 'work_item'::text AS source, w.workspace_id,
+    w.taken_by AS agent_id, NULL::text AS agent_label,
+    NULL::text AS agent_name, w.harness_slug,
+    NULL::text AS plan_slug, NULL::text AS item_id,
+    w.feature_id AS work_item_id, w.item_kind AS item_kind,
+    w.title AS detail, w.status, w.taken_at AS claim_acquired_ts,
+    NULL::timestamptz AS claim_expires_ts, true AS claim_active,
+    NULL::text AS liveness_mode, NULL::timestamptz AS last_activity_ts,
+    false AS holder_present, false AS holder_alive,
+    NULL::timestamptz AS holder_heartbeat_at,
+    NULL::text AS holder_intent, NULL::text AS holder_plan_slug,
+    false AS orphaned, NULL::boolean AS declared_plan_matches,
+    w.assignee_rank, w.rank_writer, w.last_progress_at,
+    false AS stalled, NULL::text AS fleet_slug, NULL::text AS fleet_role
+  FROM harness_shared.work_items w
+  WHERE w.taken_by IS NOT NULL AND w.taken_by <> ''
+    AND w.status NOT IN ('done', 'passed', 'deprecated', 'resolved', 'closed', 'dropped')`;
+
 // Canonical complete consolidated-features schema (single source of truth) — see
 // test/_work-items-schema.ts (D-014 fixture-completeness debt).
 const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
@@ -197,7 +235,9 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('541-predicate-watches.sql')).simple();
   await db.sql.unsafe(readMigration('871-lifecycle-bound-watches.sql')).simple();
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  await db.sql.unsafe(FLEET_MEMBERSHIP_EVENTS_DDL);
   await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(FLEET_ASSIGNMENT_DDL);
   // EI-22040912157347872: claim refusal details evaluate the same durable
   // assignment floor as the engine claim path. Keep this focused fixture on the
   // production schema so a missing table cannot collapse the refusal envelope.
@@ -226,6 +266,7 @@ beforeEach(async () => {
   // work_item_blocked are the readiness sidecars HFC_DDL now creates, cleared too.
   await db.sql`TRUNCATE harness_shared.work_items,
                        harness_shared.work_item_deps, harness_shared.work_item_blocked,
+                       harness_shared.fleet_membership_events,
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
                        harness_shared.coord_links, harness_shared.coord_topics,
@@ -390,6 +431,7 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
   // ownerId. An explicit `assignee` wins over `mine` when both are passed.
   it('assignee/mine filter to items assigned to a given (or the caller\'s own) agent — issue + feature', async () => {
     const bug = await createOne({ kind: 'bug', title: 'assigned bug', harness: 'papercup', assign_to: 'su-tester' });
+    expect(bug, JSON.stringify(bug)).toHaveProperty('workItem');
     const bugId = (bug.workItem as Record<string, unknown>).id as string;
     const feat = await createOne({ kind: 'feature', title: 'assigned feature', harness: 'papercup', assign_to: 'agent-other' });
     const featId = (feat.workItem as Record<string, unknown>).id as string;
