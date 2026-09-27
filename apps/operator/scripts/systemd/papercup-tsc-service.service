@@ -25,6 +25,10 @@ ExecStart=/usr/bin/env node scripts/tsc-service/server.mjs
 Restart=on-failure
 RestartSec=2
 Nice=10
+# Under cgroup v2, Nice only orders threads INSIDE this unit's cgroup; the
+# cross-unit share comes from CPUWeight (WI-10002636 guard). 50 = half the
+# default: still deprioritised, but agents block on scoped lint:tsc answers.
+CPUWeight=50
 MemoryAccounting=yes
 MemoryHigh=14G
 MemoryMax=16G
