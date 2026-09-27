@@ -16,6 +16,7 @@
  */
 import { resolveBarEvidenceRuntime, type BarEvidenceRuntime } from './acceptance-bar-evidence-runtime';
 import type { ServingRuntimeId } from './serving-runtimes';
+import { currentBuildRoutesForRuntime } from './serving-runtimes';
 import { withBoundedTimeout } from './bounded-timeout';
 import {
   hasNarrowDeployedMainException,
@@ -173,11 +174,18 @@ export function buildAcceptancePlaneAdvisory(bars: ReadonlyArray<HeldLiveBar>): 
     byRuntime.set(runtime, list);
   }
   const where = [...byRuntime.entries()].map(([runtime, keys]) => `${runtime}: ${keys.join(', ')}`).join('; ');
+  const routes = [...byRuntime.keys()].flatMap((runtime) =>
+    currentBuildRoutesForRuntime(runtime).map((route) =>
+      `${route.id}: ${route.readiness === 'gap' ? 'GAP — prepare isolated runtime first' : route.route} ` +
+      `[${route.isolation}; prerequisites: ${route.prerequisites.join(', ')}]`,
+    ),
+  );
   const releaseBars = bars.filter((b) => b.resolution.runtime === 'release-operator').map((b) => `${b.planSlug}#${b.barKey}`);
   return (
     `ACCEPTANCE-PLANE ADVISORY: this wait is on the release operator (:3070 / green main), but the live/deployed ` +
     `acceptance bars you hold are measured on other runtimes — ${where}. Measure those NOW on their runtime ` +
     `(dev:pipeline_position { path } → servingRuntimes names each runtime's build and whether it runs your change); ` +
+    (routes.length ? `Current-build test route(s): ${routes.join('; ')}. ` : '') +
     `a :3070 deploy does not change code they execute. ` +
     (releaseBars.length
       ? `Only ${releaseBars.join(', ')} genuinely need the release operator. `

@@ -15,6 +15,7 @@ import { buildKey } from '../../events/await/catalog';
 import { CELL_READ_SPAWN_ID } from '../../cell-read';
 import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { statePlaneForDoor } from '../state-plane-door';
+import { CURRENT_BUILD_TEST_CLASSES, currentBuildTestRoute } from '../../serving-runtimes';
 
 const TOOL_NAME = 'dev:pipeline_position';
 
@@ -542,7 +543,7 @@ function minimalPipelineResult(
 export function shapePipelinePosition(
   result: PipelinePosition,
   extras: JsonRecord = {},
-  rereadArgs: { path?: string; sha?: string; marker?: string } = {},
+  rereadArgs: { path?: string; sha?: string; marker?: string; testClass?: string } = {},
   opts: { unbounded?: boolean } = {},
 ): JsonRecord | PipelinePosition {
   const original = { ...(result as unknown as JsonRecord), ...extras };
@@ -670,13 +671,13 @@ export default defineTool({
   skipWorkspaceTx: true,
   capability: 'intel:read',
   guidance: {
-    when: 'After leaving an edit in the tree (git-sync owns commit/push): to confirm it reached staging/main/:3070, to see WHY it is stuck (gate red/stalled) — or, whenever the code you touched might not be operator code, to find out whether a deploy or a RESTART is what activates it. Pass `path`, not `sha`: the sha cannot tell you which host runs the code.',
+    when: 'After leaving an edit, pass `path` to measure which runtime loaded it. For a functional test, add `testClass` (e.g. operator-api, background-federation, desktop-native, multi-machine-p2p-git) to get the maintained current-build route, isolation boundary and prerequisites before waiting on main. A route marked gap is NOT ready.',
     notWhen: 'To PAUSE sync (use locks:acquire_resource on git-sync:<slug>). For the whole-pipeline dashboard use the /admin Git tab; this is the targeted per-path/sha probe.',
-    chaining: 'Edit → dev:pipeline_position{path} → if `activation` is present, dev:restart{target} (a deploy would be a no-op); else deploy:await / release:deploy.',
+    chaining: 'Edit → dev:pipeline_position{path,testClass} → inspect currentBuildTestRoute.readiness, prerequisites and servingRuntimes containment → run matching current-build route; use deploy:await only for explicit final-release evidence.',
     // EI-21631524117377159 (`work_item`), EI-21717329651353280 (`harness`),
     // EI-21690472537735874 (`harness` + `workspace`) — one shape: a caller forwards the
     // scope they are holding (a work-item id, their harness, their workspace) to a probe
-    // whose ONLY selectors are `path` / `sha` / `marker`. The rejection lists those three
+    // whose selectors are `path` / `sha` / `marker` / `testClass`. The rejection lists them
     // and stops there, which is why `work_item` was re-filed after a caller "retried with
     // sha only" (EI-21052251222436407): they dropped the semantics rather than
     // translating them, and a bare sha cannot answer "which process runs this code".
@@ -818,6 +819,8 @@ export default defineTool({
   args: z.object({
     path: z.string().min(1).max(400).optional(),
     sha: z.string().min(4).max(64).optional(),
+    testClass: z.string().min(1).max(100).optional()
+      .describe('Select a maintained pre-release test class route. Unknown values fail closed with the supported class ids; `gap` is not executable and final-release remains release-only.'),
     /**
      * EI-18797292094433710. Kept OPTIONAL rather than folded into `path` because it is a
      * different KIND of input — the caller's own change, which nothing on this box can
@@ -847,6 +850,14 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    const testRoute = args.testClass ? currentBuildTestRoute(args.testClass) : null;
+    if (args.testClass && !testRoute) {
+      return { data: {
+        error: 'unknown_test_class',
+        supportedClasses: CURRENT_BUILD_TEST_CLASSES.map(({ id }) => id),
+      } };
+    }
+    const routeHint = testRoute ? { currentBuildTestRoute: testRoute } : {};
     /**
      * unified-agent-state-plane-2026-07-27 P-007: a NO-ARG call is now legal and returns
      * the PIPELINE-WIDE legs (`gate`, `deployedSha`, `verdictProvenance`) with the
@@ -883,7 +894,7 @@ export default defineTool({
       { path: args.path, sha: args.sha },
       ctx,
     );
-    const rereadArgs = { path: args.path, sha: args.sha, marker: args.marker };
+    const rereadArgs = { path: args.path, sha: args.sha, marker: args.marker, testClass: args.testClass };
 
     /**
      * WI-38266 — `readCell` is a machine consumer walking declared paths, not an agent
@@ -908,6 +919,7 @@ export default defineTool({
           result,
           {
             ...subjectStamp,
+            ...routeHint,
             ...(plane ? { plane } : {}),
             activations: runtimes.map((r) => ({
               hint: r.activation,
@@ -954,6 +966,7 @@ export default defineTool({
           result,
           {
             ...subjectStamp,
+            ...routeHint,
             ...(plane ? { plane } : {}),
             activation: {
               hint: runtime.activation,
@@ -1030,6 +1043,7 @@ export default defineTool({
         result,
         {
           ...subjectStamp,
+          ...routeHint,
           ...(plane ? { plane } : {}),
           ...(awaitable ? { awaitable } : {}),
         },

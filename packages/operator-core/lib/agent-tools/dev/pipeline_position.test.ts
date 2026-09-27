@@ -47,6 +47,45 @@ describe('dev:pipeline_position transaction boundary', () => {
   });
 });
 
+describe('dev:pipeline_position current-build test route selection', () => {
+  const PATH = 'packages/operator-core/lib/serving-runtimes.ts';
+  const running = {
+    input: { path: PATH, sha: null },
+    positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+    runtime: { host: 'bg-host', releasePipelineApplies: false, restartTarget: 'bg-host', activation: 'restart' },
+    runtimes: [{ host: 'bg-host', releasePipelineApplies: false }],
+    servingRuntimes: { entries: [] },
+  } as unknown as PipelinePosition;
+
+  it('returns an exact route with isolation and prerequisites before main is green', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue(running);
+    const out = await tool.handler({ path: PATH, testClass: 'operator-api' } as never, {} as never) as {
+      data: { currentBuildTestRoute?: { id: string; readiness: string; isolation: string; prerequisites: string[] } };
+    };
+    expect(out.data.currentBuildTestRoute).toMatchObject({
+      id: 'operator-api', readiness: 'ready',
+      prerequisites: ['Containing staging commit loaded', 'private test identity/data for writes'],
+    });
+    expect(out.data.currentBuildTestRoute?.isolation).toMatch(/database and workspace are not isolated/i);
+  });
+
+  it('does not pretend an unprepared background child is runnable', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue(running);
+    const out = await tool.handler({ path: PATH, testClass: 'background-federation' } as never, {} as never) as {
+      data: { currentBuildTestRoute?: { readiness: string; runtime: string } };
+    };
+    expect(out.data.currentBuildTestRoute).toMatchObject({ readiness: 'gap', runtime: 'bg-host' });
+  });
+
+  it('rejects unknown classes rather than defaulting them to the release route', async () => {
+    const out = await tool.handler({ path: PATH, testClass: 'anything' } as never, {} as never) as {
+      data: { error: string; supportedClasses: string[] };
+    };
+    expect(out.data.error).toBe('unknown_test_class');
+    expect(out.data.supportedClasses).toContain('final-release');
+  });
+});
+
 describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)', () => {
   type Out = { data: Record<string, unknown> };
 
