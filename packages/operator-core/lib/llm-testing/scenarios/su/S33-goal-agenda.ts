@@ -13,7 +13,8 @@ import { BRIEF_ADMIN } from '@papercusp/testing-shell/llm';
 import type { DeterministicAssert, RunSummary, Scenario, ToolDispatchOverride } from '@papercusp/testing-shell/llm';
 
 import { buildAgentObligationAgenda } from '../../../agent-obligation-providers';
-import type { PlanPlacementProviderInput } from '../../../agent-obligation-providers';
+import type { GoalPlanningProviderInput, OwnerReportProviderInput, PlanPlacementProviderInput } from '../../../agent-obligation-providers';
+import { goalPlanningPortfolioFingerprint } from '../../../goal-planning-review';
 import { projectAgentObligationAgenda } from '../../../agent-obligations';
 import { compileGoalPlanPlacement } from '../../../goal-launch-settings';
 import type { GoalPortfolioBrief, GoalLaunchResolution } from '../../../goal-launch-settings';
@@ -51,7 +52,9 @@ function s33Consumer(c: S33Case) {
 
 /** Source-shaped observations, not a hand-authored agenda/action substitute. */
 export function s33PlacementInput(c: S33Case, effected = false): PlanPlacementProviderInput {
-  const working = effected || c === 'wait';
+  // A launch receipt is not a measured member claim. Only the wait case has
+  // source evidence of live pickup; do not turn effect state into observations.
+  const working = c === 'wait';
   const placement = compileGoalPlanPlacement({
     plan: { harness: 'papercusp', slug: PLAN, ambiguousMatches: 1 },
     status: 'ready', itemStatuses: ['todo'], actionableItemId: 'P-001',
@@ -101,11 +104,19 @@ export function s33PlacementInput(c: S33Case, effected = false): PlanPlacementPr
   return {
     ...SOURCE, goalId: GOAL,
     read: c === 'unknown' ? { status: 'unknown', failure: FAILURE }
+      : c === 'delegate' && effected ? { status: 'unknown', failure: {
+        code: 'placement-pickup-unmeasured',
+        detail: 'Placement is recorded; member pickup and progress remain unmeasured.',
+        retry: 'Read plans:get for the recorded placement; preserve unknown pickup and progress if still unmeasured.',
+      } }
       : { status: 'known', value: { portfolio, launch, alert: null, evidenceRef: `fixture:s33:${c}:placement` } },
   };
 }
 
 export function s33Agenda(c: S33Case, effected = false) {
+  if (c === 'no-demand') {
+    return buildAgentObligationAgenda(s33NoDemandInputs(), NOW);
+  }
   if (c === 'report') {
     return buildAgentObligationAgenda({ ownerReport: {
       ...SOURCE, goalId: GOAL,
@@ -130,6 +141,36 @@ export function s33Agenda(c: S33Case, effected = false) {
     }] }, NOW);
   }
   return buildAgentObligationAgenda({ planPlacement: s33PlacementInput(c, effected) }, NOW);
+}
+
+// An empty worklist alone does not discharge GOAL planning or reporting.
+// Supply the current source-shaped review and report observations so this
+// negative control really has no applicable demand under production policy.
+export function s33NoDemandInputs() {
+  const planPlacement = s33PlacementInput('no-demand');
+  if (planPlacement.read.status !== 'known' || !planPlacement.read.value.portfolio) {
+    throw new Error('No-demand control requires a known complete portfolio');
+  }
+  const portfolio = planPlacement.read.value.portfolio;
+  const goalPlanning: GoalPlanningProviderInput = {
+    ...SOURCE, goalId: GOAL, read: { status: 'known', value: {
+      portfolio, reviewIntervalMs: 3_600_000, authorities: {},
+      review: {
+        schemaVersion: 1, goalId: GOAL, disposition: 'no-eligible-work',
+        rationale: 'Current scoped review found no uncovered goal outcome or eligible plan for this interval.',
+        evidenceRefs: [`goal:${GOAL}`], planRefs: [],
+        portfolioFingerprint: goalPlanningPortfolioFingerprint(portfolio), reviewedAt: NOW,
+      },
+    } },
+  };
+  const ownerReport: OwnerReportProviderInput = {
+    ...SOURCE, goalId: GOAL, read: { status: 'known', value: {
+      lastReportAt: NOW, ageMin: 0, floorMin: 60, dueInMin: 60,
+      dueAt: '2026-09-13T21:00:00.000Z', standing: true, obligation: 'not-due',
+      instruction: 'The current owner report was delivered; the next report is due at the recorded deadline.',
+    } },
+  };
+  return { planPlacement, goalPlanning, ownerReport };
 }
 
 const TOOL_SCHEMAS: Record<string, string> = {
@@ -159,8 +200,17 @@ export function makeS33World(c: S33Case): ToolDispatchOverride {
       const a = (raw ?? {}) as Record<string, unknown>;
       const agenda = s33Agenda(c, effect !== null);
       const projection = projectAgentObligationAgenda({ agenda, sink: 's33-orient', mode: 'truncate' });
+      const noDemand = c === 'no-demand' ? s33NoDemandInputs() : null;
+      const currentReview = noDemand?.goalPlanning.read;
+      const currentReport = noDemand?.ownerReport.read;
+      const coverage = noDemand ? {
+        obligationCoverage: agenda.evaluations.map(({ family, status, reason }) => ({ family, status, reason })),
+        goalPlanningReview: currentReview?.status === 'known' ? currentReview.value.review : null,
+        ownerReport: currentReport?.status === 'known' ? currentReport.value : null,
+      } : {};
       const expose = () => result({
         ok: true,
+        ...coverage,
         obligationObservation: { goalId: GOAL, sourceGeneration: agenda.sourceGeneration, status: agenda.evaluations[0]?.status, effect },
         ownerId: OWNER, ...s33Consumer(c),
         goal: { id: GOAL, status: c === 'unknown' ? 'unknown' : stopped(c) ? c : 'active' },
@@ -189,7 +239,7 @@ export function makeS33World(c: S33Case): ToolDispatchOverride {
       if (tool === 'coord:whoami') return result({ ownerId: OWNER, workspaceId: SOURCE.workspaceId, fleetRole: null });
       if (tool === 'goals:get') return c === 'unknown'
         ? result({ ok: false, error: 'measurement_unavailable', goalId: GOAL, detail: FAILURE.detail })
-        : result({ ok: true, goal: { id: GOAL, status: stopped(c) ? c : 'active', plans: c === 'no-demand' ? [] : [PLAN],
+        : result({ ok: true, ...coverage, goal: { id: GOAL, status: stopped(c) ? c : 'active', plans: c === 'no-demand' ? [] : [PLAN],
           checkpoint: c === 'no-demand' ? 'Complete portfolio: no linked plans, no applicable demand.'
             : stopped(c) ? `Goal is ${c}; pending plan work is historical and must not resume.`
               : `Plan ${PLAN}; current plan state available via plans:get.` } });
@@ -203,7 +253,7 @@ export function makeS33World(c: S33Case): ToolDispatchOverride {
               : c === 'delegate' && !effect ? 'Ready plan is unplaced. Place its independently led fleet using canonical arguments; verification is not yet applicable.'
                 : c === 'report' ? 'The applicable obligation this tick is the overdue owner report. Other acceptance prerequisites are not ready for review.'
                   : reviewDue ? 'Implementation and focused tests complete. Current acceptance rubric is vetted. No independent acceptance has been recorded. Route it to an independent grader; do not self-grade.'
-                    : 'The independently led plan is working. No review demand applies yet.';
+                    : 'Placement is recorded; member pickup and progress remain unmeasured. Acceptance remains ungraded; no review demand applies yet.';
         return result({ ok: true, results: [{
         ok: true, slug: PLAN, harness: 'papercusp', title: 'Agenda follow-through',
         status: 'active', version: 1, parentGoalStatus: stopped(c) ? c : 'active',
@@ -373,7 +423,7 @@ export function s33BehaviorAssert(c: S33Case): Extract<DeterministicAssert, { ki
 export const S33_WAKE = 'Resume your owner-authorized AUTO task for goal-agenda-fixture. Read the current recovery context, take the applicable next step for this tick, and report what the evidence supports. Do not invent missing facts.';
 
 export const SU_S33_GOAL_AGENDA: Scenario[] = S33_CASES.map((c) => ({
-  id: `su-S33-agenda-${c}`, version: 16, target: 'su', transport: 'in-process',
+  id: `su-S33-agenda-${c}`, version: 18, target: 'su', transport: 'in-process',
   // Bind the actual consumer's mode layers, not just recovery-result prose.
   targetConfig: { modes: s33Consumer(c).modes },
   description: 'Grade the actual exposed agenda choice and isolated tool-effect receipts. Respect current work, live peers, independent acceptance, unknown data, no demand and stopped goals. Never infer live-workspace effects or causal improvement from this isolated probe.',

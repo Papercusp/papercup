@@ -3,8 +3,9 @@ import { readFileSync } from 'node:fs';
 import type { RunSummary } from '@papercusp/testing-shell/llm';
 import { captureToolResultEvidence } from '../../tool-result-evidence';
 import { loadPlaybookBody, parseSuTargetConfig } from '../../targets/su';
+import { buildAgentObligationAgenda } from '../../../agent-obligation-providers';
 
-import { makeS33World, S33_CASES, S33_WAKE, s33Agenda, s33BehaviorAssert, SU_S33_GOAL_AGENDA } from './S33-goal-agenda';
+import { makeS33World, S33_CASES, S33_WAKE, s33Agenda, s33BehaviorAssert, s33NoDemandInputs, SU_S33_GOAL_AGENDA } from './S33-goal-agenda';
 
 async function call(world: ReturnType<typeof makeS33World>, tool: string, args = {}) {
   const r = await world.override(tool, args) as { content: Array<{ text: string }> };
@@ -85,6 +86,15 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect(engineer).not.toContain('SCOPED CONTINUATIONS ARE NOT NEW KICKOFFS.');
   }, 60_000);
 
+  it.each([['auto'], ['auto', 'ideate', 'goal']])('seals scoped persistence in the canonical kernel for modes %j', async (...modes) => {
+    const body = await loadPlaybookBody(modes);
+    const kernel = body.slice(body.indexOf('<!-- PAPERCUSP-KERNEL:SEAL -->'));
+    expect(kernel).toContain('Persistence follows current scope and measured demand.');
+    expect(kernel).toContain('perform that retry and retain unknown if it remains unmeasured');
+    expect(kernel).toContain('explicit diagnosis task still requires the investigation below');
+    expect(kernel).toContain('A blocker is work, not a stop sign');
+  }, 60_000);
+
   it.each(['paused', 'achieved', 'killed', 'no-demand'] as const)('%s has no actionable agenda and cannot launch', async (c) => {
     expect(s33Agenda(c).primary).toEqual([]);
     const world = makeS33World(c);
@@ -99,7 +109,7 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect((await call(world, 'goals:resume')).ok).toBe(false);
   });
 
-  it('requires the canonical placement arguments and re-reads the satisfied effect', async () => {
+  it('requires canonical placement arguments and preserves unmeasured pickup on every read', async () => {
     const world = makeS33World('delegate');
     expect((await call(world, 'fleet:launch-on-plan', { plan: 'wrong-plan' })).ok).toBe(false);
     const action = s33Agenda('delegate').primary[0]!.action!;
@@ -107,7 +117,15 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
       effect: 'placement-verified', memberPickup: 'unmeasured',
       planProgress: 'unmeasured', acceptance: 'ungraded',
     });
-    expect((await call(world, 'coord:orient')).s33.status).toBe('satisfied');
+    const recovery = await call(world, 'coord:orient');
+    expect(recovery.s33.status).toBe('unknown');
+    expect(recovery.obligations).not.toContain('live independent placement');
+    const plan = (await call(world, 'plans:get')).results[0];
+    expect(plan.section.body).toContain('pickup and progress remain unmeasured');
+    expect(plan.section.body).not.toContain('plan is working');
+    expect(plan.items[0].effectiveStatus).toBe('todo');
+    expect((await call(world, 'fleet:assignments')).fleets).toEqual([]);
+    expect((await call(world, 'coord:presence')).active.some((r: { claimedItems?: string[] }) => r.claimedItems?.length)).toBe(false);
   });
 
   it('does not accept live ownership or acceptance claims from a placement-only receipt', () => {
@@ -237,6 +255,34 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect((await call(world, 'goals:get')).goal.plans).toEqual([]);
     expect((await call(world, 'plans:get')).results).toEqual([]);
     expect((await call(world, 'work_items:get')).results).toEqual([]);
+  });
+
+  it('no-demand measures current planning and reporting instead of inferring them from an empty worklist', async () => {
+    const recovery = await call(makeS33World('no-demand'), 'coord:orient');
+    expect(recovery.obligationCoverage).toEqual(expect.arrayContaining([
+      expect.objectContaining({ family: 'planning-needed', status: 'satisfied' }),
+      expect.objectContaining({ family: 'owner-report', status: 'satisfied' }),
+      expect.objectContaining({ family: 'plan-placement', status: 'not-applicable' }),
+    ]));
+    expect(recovery.goalPlanningReview).toMatchObject({ disposition: 'no-eligible-work', reviewedAt: '2026-09-13T20:00:00.000Z' });
+    expect(recovery.ownerReport).toMatchObject({ obligation: 'not-due', ageMin: 0 });
+    expect(s33Agenda('no-demand').primary).toEqual([]);
+    const goal = await call(makeS33World('no-demand'), 'goals:get');
+    expect(goal.goalPlanningReview).toEqual(recovery.goalPlanningReview);
+    expect(goal.ownerReport).toEqual(recovery.ownerReport);
+  });
+
+  it('restores real planning demand if the no-demand review is absent or stale', () => {
+    for (const condition of ['absent', 'stale'] as const) {
+      const inputs = s33NoDemandInputs();
+      if (inputs.goalPlanning.read.status !== 'known') throw new Error('Expected known review source');
+      if (condition === 'absent') inputs.goalPlanning.read.value.review = null;
+      else inputs.goalPlanning.read.value.review!.reviewedAt = '2026-09-13T18:00:00.000Z';
+      const agenda = buildAgentObligationAgenda(inputs, '2026-09-13T20:00:00.000Z');
+      expect(agenda.primary).toEqual(expect.arrayContaining([
+        expect.objectContaining({ family: 'planning-needed', status: 'due' }),
+      ]));
+    }
   });
 
   it.each(['paused', 'achieved', 'killed'] as const)('%s remains stopped across goal, plan and work-item reads', async (c) => {
