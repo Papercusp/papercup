@@ -22,6 +22,7 @@ const {
   setEstimateMock,
   setLimitMock,
   deathMock,
+  toolRefDeathMock,
   resolveSessionRefMock,
   resolveSessionRefReconciledMock,
   resolveLaunchLimitMock,
@@ -60,6 +61,12 @@ const {
   setEstimateMock: vi.fn(async () => {}),
   setLimitMock: vi.fn(async () => {}),
   deathMock: vi.fn(async (_owner: string) => false),
+  // WI-10003466: default null = no tool-reference death, so every pre-existing
+  // test keeps its sweep path unchanged.
+  toolRefDeathMock: vi.fn(
+    async (_owner: string) =>
+      null as null | { turns: number; toolName: string | null; evidence: string | null },
+  ),
   resolveSessionRefMock: vi.fn(
     async (_owner: string) => null as null | { agent: string | null; sessionId: string | null; sessionKey?: number | null },
   ),
@@ -108,6 +115,7 @@ vi.mock('../compaction-usage', () => ({
   estimateContextWindowForOwner: contextWindowMock,
   resolveModelSpecForOwner: specMock,
   detectContextDeathForOwner: deathMock,
+  detectToolReferenceDeathForOwner: toolRefDeathMock,
   resolveSessionRef: resolveSessionRefMock,
   // EI-13477: the watchdog now resolves through the RECONCILED ref (same
   // reasoning as resolveLiveTranscriptPath in compaction-usage.ts) — route it
@@ -267,6 +275,7 @@ beforeEach(() => {
   setEstimateMock.mockResolvedValue(undefined);
   setLimitMock.mockResolvedValue(undefined);
   deathMock.mockResolvedValue(false);
+  toolRefDeathMock.mockResolvedValue(null);
   clearEstimateMock.mockResolvedValue(undefined);
   codexProvenanceMock.mockResolvedValue(null);
   resetFrozenCodexReadingsForTests();
@@ -1598,6 +1607,107 @@ describe('context-death detector (context-trimming-tiers P-019)', () => {
     const again = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(again.contextDeaths).toEqual(['dead']);
     expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('tool-reference death detector (WI-10003466)', () => {
+  const strandedTail = {
+    turns: 3,
+    toolName: 'mcp__papercusp-su__capability_bash',
+    evidence: "API Error: 400 Tool reference 'mcp__papercusp-su__capability_bash' not found in available tools",
+  };
+  const seeded = [
+    { owner_id: 'stranded', owner_label: 'su · stranded', workspace_id: 'ws-s', compaction_limit: 158_000 },
+    { owner_id: 'fine', owner_label: 'su · fine', workspace_id: 'ws-s', compaction_limit: 158_000 },
+  ];
+
+  it('heals a stranded live session with a forced carry-respawn instead of leaving it beating', async () => {
+    resetContextDeathEscalationsForTests();
+    resetCarryRespawnForTests();
+    estimateMock.mockResolvedValue(40_000);
+    contextWindowMock.mockResolvedValue(1_000_000);
+    toolRefDeathMock.mockImplementation(async (owner: string) => (owner === 'stranded' ? strandedTail : null));
+    getFlagMock.mockResolvedValue(true);
+    resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'native-stranded' });
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/stranded.sock', caps: ['carry-respawn'] });
+    hostSupportsMock.mockReturnValue(true);
+
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+
+    expect(out.toolReferenceDeaths).toEqual(['stranded']);
+    expect(out.contextDeaths).toEqual([]);
+    expect(out.carryRespawned).toContain('stranded');
+    expect(out.estimated).not.toContain('stranded'); // a dead session is never estimated
+    expect(openEscalationMock).not.toHaveBeenCalled();
+    // Forced boundary: a death is never a deliberate/self-requested cut.
+    expect(buildOwnerRespawnMock).toHaveBeenCalledWith(
+      'stranded',
+      expect.objectContaining({
+        effectiveWindowTokens: 1_000_000,
+        buildOpts: expect.objectContaining({ boundaryDeliberate: false, boundarySelfRequested: false }),
+      }),
+    );
+    // No firstPrompt from the carry ⇒ the watchdog's own continue note names the cause.
+    expect(injectMock).toHaveBeenCalledWith(
+      '/tmp/stranded.sock',
+      expect.objectContaining({
+        mode: 'carry-respawn',
+        ownerId: 'stranded',
+        data: expect.stringContaining('referenced a tool that was no longer available'),
+      }),
+    );
+
+    // Same tail on the next pass while the host replaces the child: grace, no duplicate.
+    const again = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(again.toolReferenceDeaths).toEqual(['stranded']);
+    expect(again.carryRespawned).not.toContain('stranded');
+    expect(injectMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('escalates once, under its own condition key, when no host can carry-respawn it', async () => {
+    resetContextDeathEscalationsForTests();
+    resetCarryRespawnForTests();
+    estimateMock.mockResolvedValue(40_000);
+    toolRefDeathMock.mockImplementation(async (owner: string) => (owner === 'stranded' ? strandedTail : null));
+    // Default: no live host ⇒ maybeCarryRespawn cannot queue a successor.
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+
+    expect(out.toolReferenceDeaths).toEqual(['stranded']);
+    expect(out.carryRespawned).toEqual([]);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    const [, input] = openEscalationMock.mock.calls[0] as unknown as [
+      { ownerId: string },
+      { severity: string; summary: string; meta?: { subjectSignature?: string } },
+    ];
+    expect(input.severity).toBe('blocker');
+    expect(input.summary).toContain('references a tool that is no longer available');
+    expect(input.summary).not.toContain('Prompt is too long');
+    expect(input.meta?.subjectSignature).toBe('compaction-watchdog:tool-reference-death:stranded');
+
+    const again = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(again.toolReferenceDeaths).toEqual(['stranded']);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a context-dead owner is recovered once as a context death, never double-counted', async () => {
+    resetContextDeathEscalationsForTests();
+    resetCarryRespawnForTests();
+    deathMock.mockImplementation(async (owner: string) => owner === 'stranded');
+    toolRefDeathMock.mockResolvedValue(strandedTail);
+
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+
+    expect(out.contextDeaths).toEqual(['stranded']);
+    expect(out.toolReferenceDeaths).toEqual(['fine']);
+    expect(toolRefDeathMock).not.toHaveBeenCalledWith('stranded');
+    expect(openEscalationMock).toHaveBeenCalledTimes(2);
+    const signatures = openEscalationMock.mock.calls.map(
+      (c) => (c as unknown as [unknown, { meta?: { subjectSignature?: string } }])[1].meta?.subjectSignature,
+    );
+    expect(signatures).toEqual([
+      'compaction-watchdog:context-death:stranded',
+      'compaction-watchdog:tool-reference-death:fine',
+    ]);
   });
 });
 

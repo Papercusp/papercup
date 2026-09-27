@@ -14,7 +14,7 @@
  * the real death from doc-steward runs, the false positives from kettle/cup runs.
  */
 import { describe, expect, it } from 'vitest';
-import { tailCarriesContextDeath } from './compaction-usage';
+import { tailCarriesContextDeath, tailCarriesToolReferenceDeath } from './compaction-usage';
 
 describe('tailCarriesContextDeath — real overflow vs. phrase-as-data (WI-4608)', () => {
   it('TRUE: a real claude-code overflow — the marker is a standalone assistant text-block value', () => {
@@ -96,5 +96,46 @@ describe('tailCarriesContextDeath — real overflow vs. phrase-as-data (WI-4608)
       '{"type":"assistant","message":{"content":[{"type":"text","text":"Prompt is too long"}]},"error":"invalid_request"}\n' +
       '{"type":"summary","isCompactSummary":false,"summary":"hook trailer"}\n';
     expect(tailCarriesContextDeath(tail)).toBe(true);
+  });
+});
+
+describe('tailCarriesToolReferenceDeath — synthetic rejection streak vs. quoted prose (WI-10003466)', () => {
+  const TOOL = 'mcp__papercusp-su__capability_bash';
+  const rejection = `API Error: 400 Tool reference '${TOOL}' not found in available tools`;
+  // The live record shape claude writes for a provider rejection (transcript 8fa32217,
+  // su-7dc2cf9d, 2026-09-27): synthetic model, isApiErrorMessage, never model prose.
+  const synthetic = JSON.stringify({
+    type: 'assistant',
+    error: 'unknown',
+    isApiErrorMessage: true,
+    apiErrorStatus: 400,
+    message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: rejection }] },
+  });
+  const wake = JSON.stringify({ type: 'user', message: { role: 'user', content: 'loop wake: continue' } });
+  const prose = (text: string) =>
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+  const tailOf = (...lines: string[]) => lines.join('\n') + '\n';
+
+  it('TRUE: two consecutive synthetic rejections strand the session (the su-7dc2cf9d shape)', () => {
+    const death = tailCarriesToolReferenceDeath(tailOf(prose('working'), wake, synthetic, wake, synthetic));
+    expect(death).toEqual({ turns: 2, toolName: TOOL, evidence: expect.stringContaining(TOOL) });
+  });
+
+  it('FALSE: a single rejection is below the recovery threshold (the resume seed may still cure it)', () => {
+    expect(tailCarriesToolReferenceDeath(tailOf(prose('working'), wake, synthetic))).toBeNull();
+  });
+
+  it('FALSE: a healthy assistant turn after the streak ends it — the session recovered on its own', () => {
+    expect(tailCarriesToolReferenceDeath(tailOf(synthetic, wake, synthetic, wake, prose('back to work')))).toBeNull();
+  });
+
+  it('FALSE: an agent QUOTING the rejection while diagnosing it is prose, never a death', () => {
+    const quoting = prose(`Root cause: the turns failed with "${rejection}" after the MCP flap.`);
+    expect(tailCarriesToolReferenceDeath(tailOf(quoting, wake, quoting, wake, quoting))).toBeNull();
+  });
+
+  it('FALSE: empty tail and a partial leading record are not evidence', () => {
+    expect(tailCarriesToolReferenceDeath('')).toBeNull();
+    expect(tailCarriesToolReferenceDeath(synthetic.slice(40) + '\n' + wake + '\n' + synthetic + '\n')).toBeNull();
   });
 });

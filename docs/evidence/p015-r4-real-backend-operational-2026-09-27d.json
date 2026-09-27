@@ -1,0 +1,438 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-10002713",
+  "observer": "su-fcbb3fed-83b5-4c34-9dab-72e191d76491",
+  "exitCode": 0,
+  "name": "P-015 R-4 real-backend identities journey with review-diff and alternatives-not-applied checks (2026-09-27b)",
+  "command": [
+    "PAPERCUSP_HOME=<operator-home> VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_DOM_TIMEOUT=120 scripts/verify-tauri-headless.sh -- env P015_R4_REAL_BACKEND=1 P015_R4_REAL_RECOVERY=1 TAURI_SURFACE_VERIFY_P015_R4_OUT=<run-directory> node scripts/verify-identities-r4.mjs"
+  ],
+  "startedAt": "2026-09-27T14:44:39.976Z",
+  "finishedAt": "2026-09-27T14:48:02.277Z",
+  "timeBasis": "Start is the capability task ledger started_at of the launching job (0mujtiq6c1brvv8b16v); finish is the raw evidence artifact mtime written when the driver passed. Teardown is outside this interval.",
+  "summary": "Current-build real pointer select/review/switch/rollback, URL recovery, provider boundary, forced CAS failure retaining state, retry and SSE invalidation passed. Fixture delivery was confirmed through production delivery ledger. Six exact source hashes matched the immutable operator snapshot after the final selected-model launch repair. This run adds a rendered review diff (201 rows) and proves that no identity outside the applied stack is shown as applied, both at review and after a switch is requested (the driver now reads the Library tab for alternatives and the agent tab for the applied stack).",
+  "subject": {
+    "ownerId": "p015-r4-owned-3066780-1790520399252",
+    "treeHead": "ecb97b7ae50e9ff14b8e75cb442ec23adcc5682a",
+    "bridgePid": 3057790,
+    "launchProvenance": "agent:su-fcbb3fed-83b5-4c34-9dab-72e191d76491:run:1790520280080813371-2980040-29562",
+    "isolatedDatabase": true,
+    "syntheticMutationResponses": false,
+    "frozenSpaIndexSha256": "906f501bd84adde80a8d2e403511e299bdfe506937661ffa44f5d190f342ec7e"
+  },
+  "sourcePaths": [
+    "apps/operator/app/settings/identities/page.tsx",
+    "packages/operator-core/lib/identity-management.ts",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "packages/operator-core/lib/role-launch-spec.ts",
+    "scripts/verify-identities-r4.mjs"
+  ],
+  "sourceBlobs": [
+    {
+      "path": "apps/operator/app/settings/identities/page.tsx",
+      "blob": "2a6200f770a658f7c415feb0a76c5a79b0f7499f",
+      "blobAtRunTreeHead": "2a6200f770a658f7c415feb0a76c5a79b0f7499f",
+      "sha256": "af738360e9fa384f49d93af86cf27212eddc62b0774c4c2c85ac69d47dc52dfd"
+    },
+    {
+      "path": "packages/operator-core/lib/identity-management.ts",
+      "blob": "2bbfe6564c3e8b7f878feb8386dcd25543e74402",
+      "blobAtRunTreeHead": "2bbfe6564c3e8b7f878feb8386dcd25543e74402",
+      "sha256": "254d4304e4a191114f7f325ee533f20f9b0b53006a52315af03858ea0d674c08"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/identity-management.ts",
+      "blob": "01c52268a165fe89cdd6604c2cccb45199e683d3",
+      "blobAtRunTreeHead": "01c52268a165fe89cdd6604c2cccb45199e683d3",
+      "sha256": "de2f9cd51239e506fd4e3bce2c4f8c212f075eb4b8b321037f1b28e4745bcffb"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+      "blob": "77a612a416b2f2677ea826b042a96871562a4e1b",
+      "blobAtRunTreeHead": "77a612a416b2f2677ea826b042a96871562a4e1b",
+      "sha256": "607a721a7315159a76dc0c7647a11b1672a6498dbd62aa6f800ec6573596564c"
+    },
+    {
+      "path": "packages/operator-core/lib/role-launch-spec.ts",
+      "blob": "87e03e2bfee7409c7e917b6e95cb0e995e95d62a",
+      "blobAtRunTreeHead": "87e03e2bfee7409c7e917b6e95cb0e995e95d62a",
+      "sha256": "5b47e1afd0a2c4f4ea474504e50aae62ef4b482289cc8924507c3950ec33cecb"
+    },
+    {
+      "path": "scripts/verify-identities-r4.mjs",
+      "blob": "0883c5b382e5b09c564290c2b8e55da36969df97",
+      "blobAtRunTreeHead": "0883c5b382e5b09c564290c2b8e55da36969df97",
+      "sha256": "f4110069e2c82e2bb98add71d9fadf1102cca81f9e5dfd5a8a43c27668b8f946"
+    }
+  ],
+  "snapshotSourceCheckedAt": "2026-09-27T14:55:03.408Z",
+  "bootDriverSha256": "3c1212f4a52e757f509eb443a72be82fec3aca3191c8ea3f48562c3deb257544",
+  "rawEvidence": {
+    "path": ".papercusp/scratch/r4-0927/run4/evidence.json",
+    "sha256": "30bda815fb682f84486a6413fededc986690c3751facdda13184dda00440fdd0",
+    "log": ".papercusp/scratch/r4-0927/rig4.log"
+  },
+  "observed": [
+    "owned-roster-selection",
+    "real-backend-review",
+    "real-review-diff-rows-rendered",
+    "real-review-alternatives-not-applied",
+    "real-switch-requested-alternatives-not-applied",
+    "real-switch-change-requested",
+    "real-switch-applied",
+    "real-rollback-change-requested",
+    "real-rollback-applied"
+  ],
+  "recoveryObserved": [
+    "nuqs-selection-written",
+    "nuqs-tab-written",
+    "provider-bindings-boundary",
+    "nuqs-state-restored-from-url",
+    "forced-real-apply-failure",
+    "prior-state-retained",
+    "retry-reachable",
+    "retry-switch-change-requested",
+    "sse-sync-invalidation",
+    "rollback-applied"
+  ],
+  "activations": [
+    {
+      "label": "forced-failure-activation-before",
+      "controlGeneration": 0,
+      "controlDeliveredGeneration": 0,
+      "activation": {
+        "status": "applied",
+        "applied": {
+          "stateRevision": "seed-old-state",
+          "specificationRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "desired": {
+          "stateRevision": "seed-new-state",
+          "specificationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "prepared": null,
+        "attribution": {
+          "actorId": "p015-r4-owned-3066780-1790520399252",
+          "sessionId": "p015-r4-owned-3066780-1790520399252",
+          "principalId": "p015-r4-owned-3066780-1790520399252"
+        },
+        "schemaVersion": 1
+      }
+    },
+    {
+      "label": "forced-failure-activation-after",
+      "controlGeneration": 0,
+      "controlDeliveredGeneration": 0,
+      "activation": {
+        "status": "applied",
+        "applied": {
+          "stateRevision": "seed-old-state",
+          "specificationRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "desired": {
+          "stateRevision": "seed-new-state",
+          "specificationRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        },
+        "prepared": null,
+        "attribution": {
+          "actorId": "p015-r4-owned-3066780-1790520399252",
+          "sessionId": "p015-r4-owned-3066780-1790520399252",
+          "principalId": "p015-r4-owned-3066780-1790520399252"
+        },
+        "schemaVersion": 1
+      }
+    },
+    {
+      "label": "real-switch-requested",
+      "controlGeneration": 1,
+      "controlDeliveredGeneration": 0,
+      "activation": {
+        "status": "desired",
+        "applied": {
+          "stateRevision": "seed-old-state",
+          "specificationRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "desired": {
+          "stateRevision": "a2451f97ae4d538798925570",
+          "specificationRevision": "ddcc24dda373dc04c2d7063fe57efebf7c45d16387605fe604d89f3b64d907cd"
+        },
+        "prepared": null,
+        "attribution": {
+          "actorId": "p015-r4-owned-3066780-1790520399252",
+          "sessionId": "p015-r4-owned-3066780-1790520399252",
+          "principalId": "p015-r4-owned-3066780-1790520399252"
+        },
+        "schemaVersion": 1
+      }
+    },
+    {
+      "label": "real-switch-applied",
+      "controlGeneration": 1,
+      "controlDeliveredGeneration": 1,
+      "activation": {
+        "status": "applied",
+        "applied": {
+          "stateRevision": "a2451f97ae4d538798925570",
+          "specificationRevision": "ddcc24dda373dc04c2d7063fe57efebf7c45d16387605fe604d89f3b64d907cd"
+        },
+        "desired": {
+          "stateRevision": "a2451f97ae4d538798925570",
+          "specificationRevision": "ddcc24dda373dc04c2d7063fe57efebf7c45d16387605fe604d89f3b64d907cd"
+        },
+        "prepared": null,
+        "attribution": {
+          "actorId": "p015-r4-owned-3066780-1790520399252",
+          "sessionId": "p015-r4-owned-3066780-1790520399252",
+          "principalId": "p015-r4-owned-3066780-1790520399252"
+        },
+        "schemaVersion": 1
+      }
+    },
+    {
+      "label": "real-rollback-requested",
+      "controlGeneration": 2,
+      "controlDeliveredGeneration": 1,
+      "activation": {
+        "status": "desired",
+        "applied": {
+          "stateRevision": "a2451f97ae4d538798925570",
+          "specificationRevision": "ddcc24dda373dc04c2d7063fe57efebf7c45d16387605fe604d89f3b64d907cd"
+        },
+        "desired": {
+          "stateRevision": "a2451f97ae4d538798925570",
+          "specificationRevision": "538e3f10cb51fbc04599c8030fc3260cce20371e3e3c9488e422b3b8c50ed6ce"
+        },
+        "prepared": null,
+        "attribution": {
+          "actorId": "p015-r4-owned-3066780-1790520399252",
+          "sessionId": "p015-r4-owned-3066780-1790520399252",
+          "principalId": "p015-r4-owned-3066780-1790520399252"
+        },
+        "schemaVersion": 1
+      }
+    },
+    {
+      "label": "real-rollback-applied",
+      "controlGeneration": 2,
+      "controlDeliveredGeneration": 2,
+      "activation": {
+        "status": "applied",
+        "applied": {
+          "stateRevision": "a2451f97ae4d538798925570",
+          "specificationRevision": "538e3f10cb51fbc04599c8030fc3260cce20371e3e3c9488e422b3b8c50ed6ce"
+        },
+        "desired": {
+          "stateRevision": "a2451f97ae4d538798925570",
+          "specificationRevision": "538e3f10cb51fbc04599c8030fc3260cce20371e3e3c9488e422b3b8c50ed6ce"
+        },
+        "prepared": null,
+        "attribution": {
+          "actorId": "p015-r4-owned-3066780-1790520399252",
+          "sessionId": "p015-r4-owned-3066780-1790520399252",
+          "principalId": "p015-r4-owned-3066780-1790520399252"
+        },
+        "schemaVersion": 1
+      }
+    }
+  ],
+  "responses": [
+    {
+      "label": "real-review-response",
+      "status": 200,
+      "action": null,
+      "ok": null,
+      "error": null,
+      "bodySha256": "8a51d17db89958ca91cef5402d7e6dd0756ee5ac07f74b53996abeea8a5efe43"
+    },
+    {
+      "label": "forced-failure-response",
+      "status": 409,
+      "action": null,
+      "ok": null,
+      "error": null,
+      "bodySha256": "81673535011a24bea06853a49c413db7ce08f82247cdc36242fe5ffdf3472358"
+    },
+    {
+      "label": "real-switch-response",
+      "status": 200,
+      "action": null,
+      "ok": null,
+      "error": null,
+      "bodySha256": "9624834789c8e8a405568ed7a62fe4833914cb85cb2f8285d23801ebdb589765"
+    },
+    {
+      "label": "real-switch-host-ack",
+      "status": 200,
+      "action": null,
+      "ok": null,
+      "error": null,
+      "bodySha256": "218401ce35f684ffae7f618bb2d0b2a3e7f3fc2835974fc3a6f141f793399315"
+    },
+    {
+      "label": "real-switch-host-ack-confirm-delivery",
+      "status": 200,
+      "action": null,
+      "ok": null,
+      "error": null,
+      "bodySha256": "4857bcb1af5c5d8c88467d802452727779e7a4991ab0f8f9ffca85c1ac8a2fef"
+    },
+    {
+      "label": "real-rollback-response",
+      "status": 200,
+      "action": null,
+      "ok": null,
+      "error": null,
+      "bodySha256": "687660d9130c87af98023eedc9d818e6b73810bad7bd2544420e1fac86a4b236"
+    },
+    {
+      "label": "real-rollback-host-ack",
+      "status": 200,
+      "action": null,
+      "ok": null,
+      "error": null,
+      "bodySha256": "211a64a79a0961888e3fe38a56d02091caa6eef1b521d2dcc25c35ac9c0e78ba"
+    },
+    {
+      "label": "real-rollback-host-ack-confirm-delivery",
+      "status": 200,
+      "action": null,
+      "ok": null,
+      "error": null,
+      "bodySha256": "5ca1939ffc18aa35ec936b5183602638033d86a98c5fd606c977a3a7a0258dbe"
+    }
+  ],
+  "retainedState": {
+    "launchSpecUnchanged": true,
+    "stack": [
+      "domain:papercusp-engineer"
+    ],
+    "activationEventsBefore": 1,
+    "activationEventsAfter": 1,
+    "activationUnchanged": true
+  },
+  "assertions": [
+    {
+      "id": "owned-roster-selection",
+      "passed": true,
+      "evidence": "Driver passed owned-roster-selection using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-backend-review",
+      "passed": true,
+      "evidence": "Driver passed real-backend-review using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-switch-change-requested",
+      "passed": true,
+      "evidence": "Driver passed real-switch-change-requested using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-switch-applied",
+      "passed": true,
+      "evidence": "Driver passed real-switch-applied using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-rollback-change-requested",
+      "passed": true,
+      "evidence": "Driver passed real-rollback-change-requested using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-rollback-applied",
+      "passed": true,
+      "evidence": "Driver passed real-rollback-applied using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "nuqs-selection-written",
+      "passed": true,
+      "evidence": "Driver passed nuqs-selection-written using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "nuqs-tab-written",
+      "passed": true,
+      "evidence": "Driver passed nuqs-tab-written using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "provider-bindings-boundary",
+      "passed": true,
+      "evidence": "Driver passed provider-bindings-boundary using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "nuqs-state-restored-from-url",
+      "passed": true,
+      "evidence": "Driver passed nuqs-state-restored-from-url using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "forced-real-apply-failure",
+      "passed": true,
+      "evidence": "Driver passed forced-real-apply-failure using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "prior-state-retained",
+      "passed": true,
+      "evidence": "Driver passed prior-state-retained using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "retry-reachable",
+      "passed": true,
+      "evidence": "Driver passed retry-reachable using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "retry-switch-change-requested",
+      "passed": true,
+      "evidence": "Driver passed retry-switch-change-requested using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "sse-sync-invalidation",
+      "passed": true,
+      "evidence": "Driver passed sse-sync-invalidation using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "rollback-applied",
+      "passed": true,
+      "evidence": "Driver passed rollback-applied using real backend requests and pointer input; exact raw artifact SHA256 retained."
+    },
+    {
+      "id": "real-review-diff-rows-rendered",
+      "passed": true,
+      "evidence": "Review grid rendered 201 role=row diff rows (no empty notice). First rows: FIELD APPLIED SELECTED ORIGIN | configuration.roles[0].stack[0] domain:papercusp-engineer — — | configuration.id — effective-launch-identity effective-launch-identity"
+    },
+    {
+      "id": "real-review-alternatives-not-applied",
+      "passed": true,
+      "evidence": "15 library identities inspected; the 1 applied-stack member(s) (papercusp-engineer) wear .pc-identities__pill--applied (positive control) and the 14 alternatives outside the stack do not. Applied stack reads: d revisions remain pending above until acknowledgement.domain:papercusp-engineer; start tab agent."
+    },
+    {
+      "id": "real-switch-requested-alternatives-not-applied",
+      "passed": true,
+      "evidence": "15 library identities inspected; the 1 applied-stack member(s) (papercusp-engineer) wear .pc-identities__pill--applied (positive control) and the 14 alternatives outside the stack do not. Applied stack reads: d revisions remain pending above until acknowledgement.domain:papercusp-engineer; start tab agent."
+    },
+    {
+      "id": "confirmed-host-activation",
+      "passed": true,
+      "evidence": "Switch and rollback are applied at matching current/delivered generations (real-switch-applied: 1/1; real-rollback-applied: 2/2)."
+    },
+    {
+      "id": "forced-backend-refusal",
+      "passed": true,
+      "evidence": "Forced CAS race returned HTTP409 from the actual route (forced-failure-response)."
+    },
+    {
+      "id": "driver-integrity",
+      "passed": true,
+      "evidence": "Wrapper logged 'assertion input integrity OK: 1 file-backed argument(s) unchanged since boot' before running the driver; driver sha256 recorded in sourceBlobs."
+    }
+  ],
+  "supersedes": "docs/evidence/p015-r4-real-backend-operational-2026-09-27.json; the driver scripts/verify-identities-r4.mjs gained the review-diff and alternatives-not-applied checks, so the earlier run no longer matches current source. This is a genuine repeated live journey.",
+  "notProven": [
+    "A real launched R4 subject: this host is an isolated fixture; R7 separately covers the real subject.",
+    "Final release deployment."
+  ],
+  "bootDriver": "scripts/verify-tauri-headless.sh",
+  "runSourceProvenance": []
+}

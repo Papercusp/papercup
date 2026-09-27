@@ -59,7 +59,7 @@ vi.mock('../papercusp-root', async (importOriginal) => ({
   papercuspPathForWorkspace: vi.fn(() => join(tmpdir(), 'wi-2142501-guard')),
 }));
 
-import { defaultSpawnMembers, type SpawnMembersRequest } from './delegated-spawn-honor';
+import { defaultSpawnMembers, resolveDelegatedSeatAgent, type SpawnMembersRequest } from './delegated-spawn-honor';
 
 function request(overrides: Partial<SpawnMembersRequest> = {}): SpawnMembersRequest {
   return {
@@ -125,5 +125,60 @@ describe('WI-2142501 — the headless fallback greeting must keep the member inj
     for (const greeting of captured.headless) {
       expect(greeting).toContain('--headless');
     }
+  });
+});
+
+/**
+ * WI-10003468 — the member's backend follows the seat MODEL FAMILY.
+ *
+ * Measured failure (P-202 run 20260927144532, refusal receipt 8ed8d788): the honor
+ * path chose `isOmpLocalModel ? omp : claude`, so a codex seat (gpt-5.6-sol:xhigh)
+ * launched `psu --agent=claude`; psu refused the cross-backend model at boot
+ * ("model gpt-5.6-sol:xhigh belongs to the codex backend, but this launch requested
+ * --agent=claude") and the consumed seat settled refused:spawn_failed. Both greetings
+ * (console + headless fallback) are asserted, because either one reaching psu with
+ * the wrong --agent reproduces the boot death.
+ */
+describe('WI-10003468 — delegated member backend follows the seat model family', () => {
+  beforeEach(() => {
+    captured.console = [];
+    captured.headless = [];
+  });
+
+  it('launches a codex-family seat with --agent=codex, never --agent=claude', async () => {
+    await defaultSpawnMembers(
+      request({
+        seatRef: 'gpt-5.6-sol:xhigh:default',
+        launch: { model: 'gpt-5.6-sol:xhigh', account: 'default' },
+      }),
+    );
+
+    // Calibration: both backends were handed a real psu command for THIS seat.
+    expect(captured.console).toHaveLength(1);
+    expect(captured.headless).toHaveLength(1);
+    for (const greeting of [...captured.console, ...captured.headless]) {
+      expect(greeting).toContain('psu');
+      expect(greeting).toContain('gpt-5.6-sol');
+      // THE INVARIANT.
+      expect(greeting).toContain('--agent=codex');
+      expect(greeting).not.toContain('--agent=claude');
+    }
+  });
+
+  it('keeps a claude-family seat on --agent=claude (control)', async () => {
+    await defaultSpawnMembers(request());
+
+    expect(captured.console).toHaveLength(1);
+    expect(captured.console[0]).toContain('--agent=claude');
+    expect(captured.console[0]).not.toContain('--agent=codex');
+  });
+
+  it('resolves the backend by model family: omp for local ids, codex for gpt/sol, claude otherwise', async () => {
+    await expect(resolveDelegatedSeatAgent('gpt-5.6-sol:xhigh')).resolves.toBe('codex');
+    await expect(resolveDelegatedSeatAgent('sol')).resolves.toBe('codex');
+    await expect(resolveDelegatedSeatAgent('ollama-cc/ornith:latest')).resolves.toBe('omp');
+    await expect(resolveDelegatedSeatAgent('opus:xhigh')).resolves.toBe('claude');
+    await expect(resolveDelegatedSeatAgent('sonnet-5')).resolves.toBe('claude');
+    await expect(resolveDelegatedSeatAgent(undefined)).resolves.toBe('claude');
   });
 });
