@@ -3375,7 +3375,6 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // coordinates; map them into this repo's own root so exclusion is not a silent no-op.
     const lockRepoPrefix = await nestedInstallLockPrefix(slug, workspaceId, repoPath);
     if (lockRepoPrefix) liveLockHoldingRows = mapLiveLockHoldingsForRepo(liveLockHoldingRows, lockRepoPrefix);
-    const liveLockPaths = liveLockHoldingRows.map((holding) => holding.path);
 
     // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
     outcome = await guarded('run-git-sync', () =>
@@ -3434,7 +3433,8 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
           const { sql } = getOrgPg();
           await assertDirtyMigrationReservations(sql, dirtyPaths);
         },
-        ...(liveLockPaths.length > 0 ? { excludePaths: liveLockPaths } : {}),
+        // Holdings may be released during setup. Do not also copy them into
+        // explicit exclusions, which intentionally survive every refresh.
         ...(liveLockHoldingRows.length > 0 ? { liveLockHoldings: liveLockHoldingRows } : {}),
         // Re-read the edit-lock plane at the final commit seam for every repo. The
         // initial census above protects setup, while this guarded callback closes
