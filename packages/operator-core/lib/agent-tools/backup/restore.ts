@@ -18,8 +18,10 @@ export default defineTool({
   profile: 'engineer',
   description:
     'Restore a kopia snapshot. mode="clone" (default) writes to .restored/<id>/ ' +
-    'and never overwrites live state; mode="in_place" overwrites the target ' +
-    'after taking a safety snapshot first.',
+    'and never overwrites live state. Clone source is an optional relative POSIX ' +
+    'path inside the snapshot (file or directory), not a live filesystem path; ' +
+    'omitting it restores the full snapshot. mode="in_place" overwrites the target ' +
+    'after taking a safety snapshot first; source does not narrow in_place.',
   capability: 'backup:write',
   guidance: {
     when: `Restore a backup snapshot — replay PG dump + filesystem into the workspace. Destructive: replaces current state.`,
@@ -34,7 +36,7 @@ export default defineTool({
   agentRoles: [...RESTORE_ROLES],
   args: z.object({
     kopiaSnapshotId: z.string().min(1),
-    source: z.string().min(1).optional(),
+    source: z.string().min(1).optional().describe('Clone only: relative path to one file or directory INSIDE the snapshot. No absolute path or .. traversal. Omit for a full snapshot restore.'),
     target: z.string().min(1).optional(),
     mode: z.enum(['clone', 'in_place']).default('clone'),
   }),

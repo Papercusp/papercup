@@ -17,7 +17,7 @@
 
 import { spawn } from 'node:child_process';
 import { mkdir, access, rename, writeFile, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   backupHost,
   backupStepRunner,
@@ -46,6 +46,21 @@ import { BACKUP_APPLICATION_NAMES } from './application-names';
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 const SNAPSHOT_HEARTBEAT_INTERVAL_MS = 30_000;
 const SNAPSHOT_ROW_TAG_KEY = 'papercusp-backup-row-id';
+
+/** Kopia accepts `<snapshot-id>/<relative-path>` to restore one snapshot entry. */
+function snapshotSubpath(source: string): string {
+  if (
+    !source ||
+    source.startsWith('/') ||
+    /^[A-Za-z]:/.test(source) ||
+    source.includes('\\') ||
+    source.includes('\0') ||
+    source.split('/').some((part) => !part || part === '.' || part === '..')
+  ) {
+    throw new Error('restore source must be a relative snapshot subpath without empty or traversal components');
+  }
+  return source;
+}
 
 /**
  * Keep standalone @papercusp/backup usable without importing the operator's
@@ -1092,24 +1107,30 @@ export class WorkspaceBackup {
 
   /**
    * Restore-to-clone — never writes over live data. Target defaults to
-   * `<workspaceRoot>/.restored/<kopiaSnapshotId>/<basename-of-source>`.
-   * Caller diffs / promotes manually.
+   * `<workspaceRoot>/.restored/<kopiaSnapshotId>/<source-slug>`.
+   * `source`, when supplied, is a POSIX path INSIDE the snapshot, not a
+   * filesystem source or merely a name for the target. Caller diffs /
+   * promotes manually.
    */
   async restoreToClone(opts: {
     kopiaSnapshotId: string;
     source?: string;
     target?: string;
   }): Promise<{ targetPath: string }> {
+    // Validate BEFORE deriving a password or creating a target. A malformed
+    // source must never silently turn a bounded restore into a full restore.
+    const source = opts.source === undefined ? undefined : snapshotSubpath(opts.source);
     const password = await deriveRepoPassword(this.workspaceId);
     const env = this.envWithPassword(password);
-    const source = opts.source ?? this.workspaceRoot;
-    const slug = source.replace(/\W+/g, '_').replace(/^_+|_+$/g, '');
+    const slug = (source ?? this.workspaceRoot).replace(/\W+/g, '_').replace(/^_+|_+$/g, '');
     const target = opts.target
       ?? join(this.workspaceRoot, '.restored', opts.kopiaSnapshotId, slug);
-    await mkdir(target, { recursive: true });
+    // A subpath may be a FILE. Pre-creating its target as a directory makes
+    // Kopia's single-file restore fail (or change the resulting layout).
+    await mkdir(source ? dirname(target) : target, { recursive: true });
     await this.detachedEvent('restore', { phase: 'started', kopiaSnapshotId: opts.kopiaSnapshotId, target });
     try {
-      await this.kopia(['snapshot', 'restore', opts.kopiaSnapshotId, target], { env });
+      await this.kopia(['snapshot', 'restore', source ? `${opts.kopiaSnapshotId}/${source}` : opts.kopiaSnapshotId, target], { env });
       await this.detachedEvent('restore', { phase: 'done', target });
     } catch (err) {
       await this.markMissingSnapshotReceipt(opts.kopiaSnapshotId, err);

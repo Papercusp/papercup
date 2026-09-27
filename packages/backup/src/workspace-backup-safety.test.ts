@@ -407,9 +407,19 @@ describe('headless repository credentials (EI-24372599771023070)', () => {
     await wb.ensureRepo();
     await mkdir(join(root, 'data'));
     await writeFile(join(root, 'data', 'proof.txt'), 'headless backup round trip');
+    await mkdir(join(root, 'data', 'nested'));
+    await writeFile(join(root, 'data', 'nested', 'second.txt'), 'bounded directory proof');
     const snapshot = await wb.kopiaTraced(['snapshot', 'create', join(root, 'data'), '--json']);
     expect(snapshot.exitCode, snapshot.stderr).toBe(0);
     const { snapshotId } = parseKopiaSnapshotJson(snapshot.stdout);
+    // Exercise the public clone method against REAL Kopia: a file target must
+    // be a file, and selecting one subtree must not materialize its sibling.
+    const fileClone = await wb.restoreToClone({ kopiaSnapshotId: snapshotId, source: 'proof.txt' });
+    expect(await readFile(fileClone.targetPath, 'utf8')).toBe('headless backup round trip');
+    expect(await exists(join(fileClone.targetPath, 'nested'))).toBe(false);
+    const dirClone = await wb.restoreToClone({ kopiaSnapshotId: snapshotId, source: 'nested' });
+    expect(await readFile(join(dirClone.targetPath, 'second.txt'), 'utf8')).toBe('bounded directory proof');
+    expect(await exists(join(dirClone.targetPath, 'proof.txt'))).toBe(false);
     const restored = await wb.kopiaTraced(['snapshot', 'restore', snapshotId, join(root, 'restored')]);
     expect(restored.exitCode, restored.stderr).toBe(0);
     expect(await readFile(join(root, 'restored', 'proof.txt'), 'utf8')).toBe('headless backup round trip');
@@ -577,6 +587,32 @@ describe('parseKopiaSnapshotJson (Gap 3)', () => {
 // Single instance, FS real, kopia stubbed (mirrors destructive-ops harness).
 // -------------------------------------------------------------------------
 describe('restoreToClone — slug/path + dir creation + failure event (Gap 4)', () => {
+  it('passes a bounded file or directory source to Kopia, without pre-creating a file target', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const kopiaSpy = vi.spyOn(wb as any, 'kopia').mockResolvedValue('');
+    for (const source of ['db-dumps/pg-embedded.sql.gz', 'db-dumps']) {
+      const { targetPath } = await wb.restoreToClone({ kopiaSnapshotId: 'snapBounded', source });
+      expect(kopiaSpy).toHaveBeenLastCalledWith(
+        ['snapshot', 'restore', `snapBounded/${source}`, targetPath],
+        expect.anything(),
+      );
+      expect(await exists(targetPath)).toBe(false);
+      expect(await exists(join(targetPath, '..'))).toBe(true);
+    }
+  });
+
+  it.each([
+    '', '/', '/db-dumps/file', '../secret', 'db-dumps/../secret',
+    './db-dumps', 'db-dumps//file', 'db-dumps/', 'C:/Windows', 'db-dumps\\file', 'file\0suffix',
+  ])('rejects unsafe snapshot source %j before any restore or target write', async (source) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const kopiaSpy = vi.spyOn(wb as any, 'kopia').mockResolvedValue('');
+    await expect(wb.restoreToClone({ kopiaSnapshotId: 'snapUnsafe', source }))
+      .rejects.toThrow(/relative snapshot subpath/);
+    expect(kopiaSpy).not.toHaveBeenCalled();
+    expect(await exists(join(root, '.restored', 'snapUnsafe'))).toBe(false);
+  });
+
   it('no target → returns <root>/.restored/<id>/<slug> and the dir exists', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const kopiaSpy = vi.spyOn(wb as any, 'kopia').mockResolvedValue('');
