@@ -58,6 +58,7 @@ import {
   deriveDatabaseTuning,
   detectResourceSignals,
   diffPgSettings,
+  requiredPgHugePagesForTarget,
   type PgLiveSetting,
 } from '@papercusp/resource-profile';
 
@@ -153,15 +154,16 @@ const target: Record<string, string> = {
 // refresh never turns into an unannounced shared PostgreSQL restart.
 if (enableHugePages) target.huge_pages = 'on';
 
-// shared_memory_size_in_huge_pages is PostgreSQL's own estimate for the current
-// cluster. The derived shared_buffers floor covers a fresh/unreachable cluster;
-// 1,024 extra 2 MiB pages covers the postmaster's non-buffer shared structures
-// and keeps this preflight conservative across a first native provision.
+// shared_memory_size_in_huge_pages describes the CURRENT cache. A shrink must
+// subtract the old cache before adding the target cache, or the old 64 GiB
+// estimate wrongly rejects a valid 18,000-page pool for the new 32 GiB target.
+// The shared resource-profile helper retains measured non-buffer overhead and
+// a conservative 1,024-page floor if the current cluster is unreachable.
 const pgHugePagesEstimate = Number(psql('show shared_memory_size_in_huge_pages'));
-const derivedHugePagesFloor = Math.ceil(tuning.sharedBuffersMb / 2) + 1024;
-const requiredHugePages = Math.max(
-  derivedHugePagesFloor,
-  Number.isSafeInteger(pgHugePagesEstimate) && pgHugePagesEstimate > 0 ? pgHugePagesEstimate : 0,
+const requiredHugePages = requiredPgHugePagesForTarget(
+  tuning.sharedBuffersMb,
+  liveSb,
+  pgHugePagesEstimate,
 );
 let reservedHugePages: number | null = null;
 try {
@@ -255,7 +257,7 @@ if (enableHugePages && (reservedHugePages === null || reservedHugePages < requir
     `\n✗ refusing to enable huge_pages=on: kernel reservation is ` +
       `${reservedHugePages ?? 'unreadable'}, but PostgreSQL needs at least ${requiredHugePages}.\n` +
       `  Install/enable apps/operator/scripts/systemd/papercusp-host-performance.service ` +
-      `and reboot so its 34,000-page reservation runs before ${service}; then re-run --apply. ` +
+      `and reboot so its 18,000-page reservation runs before ${service}; then re-run --apply. ` +
       `No PostgreSQL config was changed.`,
   );
   process.exit(1);

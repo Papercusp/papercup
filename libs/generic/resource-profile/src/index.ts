@@ -237,14 +237,14 @@ function clamp(n: number, lo: number, hi: number): number {
  * |-------------------------------|----------------------------------------------------|-------|----------|
  * | maxConnections                | cores * 4                                          |  100  |   1000   |
  * | superuserReservedConnections  | round(maxConnections * 0.02)                       |    3  |     12   |
- * | sharedBuffersMb               | RAM * (embeddedPg ? 0.15 : 0.25)                   |  128  |  65536   |
+ * | sharedBuffersMb               | RAM * (embeddedPg ? 0.15 : 0.25)                   |  128  |  32768   |
  * | effectiveCacheSizeMb          | RAM * (embeddedPg ? 0.50 : 0.75)                   |  256  | 786432   |
  * | maintenanceWorkMemMb          | RAM / 16                                            |   64  |   2048   |
  * | workMemMb                     | (RAM - sharedBuffers) / (maxConnections * 4)       |    4  |     64   |
  * | randomPageCost                | supported SSD/NVMe storage profile                 |  1.1  |    1.1   |
  * | effectiveIoConcurrency        | supported SSD/NVMe storage profile                 |  200  |    200   |
  * | walBuffersMb                  | sharedBuffers * 0.03                                |    4  |     64   |
- * | maxWalSizeMb                  | sharedBuffers / 8                                   | 1024  |   8192   |
+ * | maxWalSizeMb                  | pre-cap host-scaled sharedBuffers / 8               | 1024  |   8192   |
  * | maxWorkerProcesses            | cores                                              |    8  |    256   |
  * | maxParallelWorkers            | cores                                              |    8  |    256   |
  * | maxParallelWorkersPerGather   | round(cores / 2)                                   |    1  |      8   |
@@ -272,7 +272,12 @@ export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
 
   const maxConnections = clamp(cores * 4, 100, 1000);
   const superuserReservedConnections = clamp(Math.round(maxConnections * 0.02), 3, 12);
-  const sharedBuffersMb = clamp(Math.round(totalMb * (embeddedPg ? 0.15 : 0.25)), 128, 65536);
+  // Keep the host-scaled fraction separately: shared_buffers is a fixed startup
+  // allocation, while max_wal_size protects write-heavy hosts from premature
+  // forced checkpoints and must retain its prior 8 GiB ceiling on this class of
+  // machine even though the cache itself is now capped at 32 GiB.
+  const hostScaledSharedBuffersMb = clamp(Math.round(totalMb * (embeddedPg ? 0.15 : 0.25)), 128, 65536);
+  const sharedBuffersMb = Math.min(hostScaledSharedBuffersMb, 32768);
   const effectiveCacheSizeMb = clamp(Math.round(totalMb * (embeddedPg ? 0.5 : 0.75)), 256, 786432);
   const maintenanceWorkMemMb = clamp(Math.round(totalMb / 16), 64, 2048);
   const workMemMb = clamp(Math.round((totalMb - sharedBuffersMb) / (maxConnections * 4)), 4, 64);
@@ -288,10 +293,11 @@ export function deriveDatabaseTuning(signals: ResourceSignals): DatabaseTuning {
   // image, which inflates WAL and brings the next forced checkpoint closer. Measured
   // on the 128-core / 252 GiB dev host (2026-09-23): 2,217 of 5,338 checkpoints
   // were REQUESTED (WAL-volume forced) rather than timed, while 43-71 of ~110
-  // active backends queued on LWLock:WALInsert. Scale with shared_buffers so a
-  // small/embedded host keeps the stock 1 GB (bounded disk) and a big dedicated
-  // host gets room to reach checkpoint_timeout instead of being forced early.
-  const maxWalSizeMb = clamp(Math.round(sharedBuffersMb / 8), 1024, 8192);
+  // active backends queued on LWLock:WALInsert. Scale with the pre-cap host
+  // fraction so a small/embedded host keeps the stock 1 GB (bounded disk) and a
+  // big dedicated host retains room to reach checkpoint_timeout instead of
+  // being forced early.
+  const maxWalSizeMb = clamp(Math.round(hostScaledSharedBuffersMb / 8), 1024, 8192);
   const maxWorkerProcesses = clamp(cores, 8, 256);
   const maxParallelWorkers = clamp(cores, 8, 256);
   const maxParallelWorkersPerGather = clamp(Math.round(cores / 2), 1, 8);
@@ -596,6 +602,29 @@ export function parsePgSizeToBytes(value: string, defaultUnitBytes = 1): number 
   if (!Number.isFinite(n)) return null;
   if (!m[2]) return n * defaultUnitBytes;
   return n * SIZE_UNIT_BYTES[m[2]];
+}
+
+/**
+ * Conservative huge-page reservation for a native PostgreSQL cache change.
+ * The server's estimate describes its CURRENT shared_buffers, so carrying it
+ * unchanged across a smaller target would refuse a safe, already-backed pool.
+ * Retain the measured non-buffer overhead and at least 1,024 pages of margin.
+ */
+export function requiredPgHugePagesForTarget(
+  targetSharedBuffersMb: number,
+  liveSharedBuffers: string | null,
+  liveEstimatedPages: number | null,
+): number {
+  const targetBufferPages = Math.ceil(targetSharedBuffersMb / 2);
+  const conservativeFloor = targetBufferPages + 1024;
+  const liveBufferBytes = liveSharedBuffers === null ? null : parsePgSizeToBytes(liveSharedBuffers);
+  if (
+    liveBufferBytes === null || !Number.isFinite(liveBufferBytes) || liveBufferBytes <= 0 ||
+    liveEstimatedPages === null || !Number.isSafeInteger(liveEstimatedPages) || liveEstimatedPages <= 0
+  ) return conservativeFloor;
+  const liveBufferPages = Math.ceil(liveBufferBytes / (2 * 1024 ** 2));
+  const measuredOtherPages = Math.max(0, liveEstimatedPages - liveBufferPages);
+  return Math.max(conservativeFloor, targetBufferPages + measuredOtherPages);
 }
 
 /** PostgreSQL's time units, in milliseconds (the units `pg_settings.unit` and config files use). */

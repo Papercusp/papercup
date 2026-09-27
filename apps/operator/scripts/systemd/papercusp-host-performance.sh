@@ -6,7 +6,7 @@ set -euo pipefail
 SYSFS_ROOT="${PAPERCUSP_CPU_SYSFS_ROOT:-/sys/devices/system/cpu/cpufreq}"
 NR_HUGEPAGES_REQUEST_PATH="${PAPERCUSP_NR_HUGEPAGES_REQUEST_PATH:-/proc/sys/vm/nr_hugepages}"
 NR_HUGEPAGES_STATUS_PATH="${PAPERCUSP_NR_HUGEPAGES_STATUS_PATH:-$NR_HUGEPAGES_REQUEST_PATH}"
-NR_HUGEPAGES_TARGET="${PAPERCUSP_NR_HUGEPAGES_TARGET:-34000}"
+NR_HUGEPAGES_TARGET="${PAPERCUSP_NR_HUGEPAGES_TARGET:-18000}"
 changed=0
 seen=0
 
@@ -39,11 +39,12 @@ done
 printf '[papercusp-host-performance] performance policy verified on %d CPU policies (%d writes)\n' \
   "$seen" "$changed"
 
-# PostgreSQL's native cluster needs 32,983 x 2 MiB pages at the current
-# host-scaled shared_buffers setting. Reserve a small explicit margin before
-# PostgreSQL starts. Linux can accept a write while allocating fewer pages when
-# memory is fragmented, so the read-back is the authority: never let the unit
-# look green when PG will silently fall back from huge_pages=try.
+# A 32 GiB shared_buffers allocation needs 16,384 x 2 MiB pages before
+# PostgreSQL's other shared structures. Reserve 18,000 pages to leave explicit
+# headroom before PostgreSQL starts. Linux can accept a write while allocating
+# fewer pages when memory is fragmented, so the read-back is the authority:
+# never let the unit look green when PG will silently fall back from
+# huge_pages=try.
 [[ "$NR_HUGEPAGES_TARGET" =~ ^[1-9][0-9]*$ ]] || {
   printf '[papercusp-host-performance] invalid huge-page target: %s\n' "$NR_HUGEPAGES_TARGET" >&2
   exit 1

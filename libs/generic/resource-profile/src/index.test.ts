@@ -11,6 +11,7 @@ import {
   parsePgDurationToMs,
   pgSettingRequiresRestart,
   PG_RESTART_ONLY_SETTINGS,
+  requiredPgHugePagesForTarget,
   resetResourceProfile,
   type PgLiveSetting,
   type ResourceSignals,
@@ -398,8 +399,8 @@ describe('deriveDatabaseTuning — server (128 cores, 256 GiB, native PG)', () =
     expect(t.superuserReservedConnections).toBe(10); // round(512 * 0.02)
   });
 
-  it('hits the shared_buffers ceiling at 64 GiB (256 GiB * 0.25 = 64 GiB)', () => {
-    expect(t.sharedBuffersMb).toBe(65536);
+  it('caps shared_buffers at 32 GiB even when the host-scaled fraction is 64 GiB', () => {
+    expect(t.sharedBuffersMb).toBe(32768);
   });
 
   it('sets effective_cache_size to ~75% RAM (planner hint)', () => {
@@ -550,7 +551,7 @@ describe('databaseTuningToSettings — renders GUC strings with units', () => {
     const t = deriveDatabaseTuning(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB }));
     const s = databaseTuningToSettings(t);
     expect(s.max_connections).toBe('512');
-    expect(s.shared_buffers).toBe('65536MB');
+    expect(s.shared_buffers).toBe('32768MB');
     expect(s.effective_cache_size).toBe('196608MB');
     expect(s.work_mem).toBe('64MB');
     expect(s.random_page_cost).toBe('1.1');
@@ -608,7 +609,7 @@ describe('databaseTuningToSettings — renders GUC strings with units', () => {
     }
   });
 
-  it('scales max_wal_size with shared_buffers: big hosts stop forcing early checkpoints, small hosts keep the 1GB default', () => {
+  it('scales max_wal_size with the pre-cap host fraction so big hosts retain 8 GiB WAL capacity', () => {
     // 2026-09-23 dev host (128 cores / 252 GiB): at PG's 1 GB default, 2,217 of
     // 5,338 checkpoints were WAL-volume FORCED, and every forced checkpoint
     // re-arms full-page images for every hot page. A big dedicated host must
@@ -622,6 +623,7 @@ describe('databaseTuningToSettings — renders GUC strings with units', () => {
     const small = databaseTuningToSettings(
       deriveDatabaseTuning(signals({ cores: 2, embeddedPg: true, totalMemBytes: 4 * GIB })),
     );
+    expect(big.shared_buffers).toBe('32768MB');
     expect(big.max_wal_size).toBe('8192MB');
     expect(mid.max_wal_size).toBe('2048MB');
     expect(small.max_wal_size).toBe('1024MB');
@@ -728,6 +730,23 @@ describe('pgSettingRequiresRestart — the live context wins over the static set
     );
     emitted.add('shared_preload_libraries'); // added by the applier, not the map
     for (const name of PG_RESTART_ONLY_SETTINGS) expect(emitted.has(name)).toBe(true);
+  });
+});
+
+describe('requiredPgHugePagesForTarget', () => {
+  it('permits a 32 GiB target to use an 18,000-page pool after a 64 GiB cluster', () => {
+    // The 32,983-page server estimate describes the OLD 64 GiB allocation.
+    expect(requiredPgHugePagesForTarget(32768, '64392MB', 32983)).toBe(17408);
+    expect(requiredPgHugePagesForTarget(32768, '64392MB', 32983)).toBeLessThan(18000);
+  });
+
+  it('retains measured non-buffer shared-memory overhead when it exceeds the margin', () => {
+    expect(requiredPgHugePagesForTarget(32768, '64392MB', 34000)).toBe(18188);
+  });
+
+  it('uses the conservative target floor when the live server is unreadable', () => {
+    expect(requiredPgHugePagesForTarget(32768, null, null)).toBe(17408);
+    expect(requiredPgHugePagesForTarget(32768, 'unreadable', 32983)).toBe(17408);
   });
 });
 
@@ -854,7 +873,7 @@ describe('resource profile exposes the database tuning', () => {
   it('the memoized profile carries the derived DB knobs', () => {
     const p = deriveResourceProfile(signals({ cores: 128, embeddedPg: false, totalMemBytes: 256 * GIB, freeMemBytes: 256 * GIB }));
     expect(p.database.maxConnections).toBe(512);
-    expect(p.database.sharedBuffersMb).toBe(65536);
+    expect(p.database.sharedBuffersMb).toBe(32768);
   });
 });
 

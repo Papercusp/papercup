@@ -2,7 +2,7 @@
 
 `papercusp-host-performance.service` sets both cpufreq's governor and the
 independent `amd-pstate-epp` preference to `performance` on every CPU policy. It
-also reserves 34,000 × 2 MiB huge pages before PostgreSQL starts. The unit is a
+also reserves 18,000 × 2 MiB huge pages before PostgreSQL starts. The unit is a
 `RequiredBy` dependency of `postgresql@18-main.service`: if Linux cannot reserve
 all pages, it fails loud and PostgreSQL does not start with a silent
 `huge_pages=try` fallback.
@@ -35,10 +35,10 @@ sudo -u postgres psql -tAc "show shared_memory_size_in_huge_pages; show huge_pag
 ```
 
 Both CPU populations must contain only `performance`, `nr_hugepages` must be at
-least 34,000, and PostgreSQL must report `huge_pages=on` plus
+least 18,000, and PostgreSQL must report `huge_pages=on` plus
 `huge_pages_status=on`. A live fragmented host may accept only part of the
 reservation; the service deliberately fails in that case. Reboot so allocation
-happens before PostgreSQL consumes ~64 GiB, then run
+happens before PostgreSQL consumes ~32 GiB, then run
 `npx tsx scripts/pg-autotune.ts --apply` through the normal DB-resource drain.
 
 Roll back with

@@ -19,7 +19,7 @@ describe('WI-37533 host performance assets', () => {
     expect(unit).toContain('ProtectKernelTunables=no');
   });
 
-  it('sets and verifies governor plus EPP for every policy in a fake sysfs tree', () => {
+  it('sets and verifies governor plus EPP and the 18,000-page default in a fake sysfs tree', () => {
     const root = mkdtempSync(join(tmpdir(), 'papercusp-cpufreq-'));
     const nrHugepages = join(root, 'nr_hugepages');
     try {
@@ -35,13 +35,12 @@ describe('WI-37533 host performance assets', () => {
           ...process.env,
           PAPERCUSP_CPU_SYSFS_ROOT: root,
           PAPERCUSP_NR_HUGEPAGES_REQUEST_PATH: nrHugepages,
-          PAPERCUSP_NR_HUGEPAGES_TARGET: '34000',
         },
         encoding: 'utf8',
       });
       expect(output).toContain('verified on 2 CPU policies');
-      expect(output).toContain('huge-page reservation verified: reserved=34000 required=34000');
-      expect(readFileSync(nrHugepages, 'utf8').trim()).toBe('34000');
+      expect(output).toContain('huge-page reservation verified: reserved=18000 required=18000');
+      expect(readFileSync(nrHugepages, 'utf8').trim()).toBe('18000');
       for (const name of ['policy0', 'policy7']) {
         expect(readFileSync(join(root, name, 'scaling_governor'), 'utf8').trim()).toBe('performance');
         expect(readFileSync(join(root, name, 'energy_performance_preference'), 'utf8').trim()).toBe('performance');
@@ -89,13 +88,13 @@ describe('WI-37533 host performance assets', () => {
             PAPERCUSP_CPU_SYSFS_ROOT: root,
             PAPERCUSP_NR_HUGEPAGES_REQUEST_PATH: requested,
             PAPERCUSP_NR_HUGEPAGES_STATUS_PATH: observed,
-            PAPERCUSP_NR_HUGEPAGES_TARGET: '34000',
+            PAPERCUSP_NR_HUGEPAGES_TARGET: '18000',
           },
           encoding: 'utf8',
           stdio: 'pipe',
         }),
       ).toThrow();
-      expect(readFileSync(requested, 'utf8').trim()).toBe('34000');
+      expect(readFileSync(requested, 'utf8').trim()).toBe('18000');
       expect(readFileSync(observed, 'utf8').trim()).toBe('618');
     } finally {
       rmSync(root, { recursive: true, force: true });
