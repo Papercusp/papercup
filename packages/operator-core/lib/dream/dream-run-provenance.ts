@@ -55,6 +55,7 @@ const HeaderSchema = z
         protocolPin: z.string().regex(/^[a-f0-9]{64}$/),
         arm: z.enum(['uniform-pair', 'structured-pair', 'structured-triple']),
         matchedPairIndex: z.number().int().min(0).max(49).optional(),
+        inputHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
       })
       .strict()
       .optional(),
@@ -189,4 +190,47 @@ export type DreamRunAssessment = z.infer<typeof DreamRunAssessmentSchema>;
 export function dreamRunAssessments(run: { outcome: Record<string, unknown> | null }): DreamRunAssessment[] {
   if (!run.outcome || !Object.hasOwn(run.outcome, 'assessments')) return [];
   return z.array(DreamRunAssessmentSchema).max(16).parse(run.outcome.assessments);
+}
+
+/** A historical reuse view, not a fresh source check or permission to route work.
+ * Family and utility come only from recorded, hash-bound assessments. */
+export function dreamRunReuse(run: {
+  workspaceId: string; potSlug: string;
+  outcome: Record<string, unknown> | null; review: Record<string, unknown> | null;
+}) {
+  const review = run.review;
+  if (review?.verdict !== 'reject' || !['duplicate', 'refinement'].includes(String(review.reason))) return null;
+  const priorSchema = z.object({
+    ref: z.string().min(1).max(500),
+    scope: z.object({ workspaceId: z.string(), potSlug: z.string() }),
+    text: z.string().max(12_000), contentHash: z.string(),
+    candidateHash: z.string().nullable(), evidenceHash: z.string().nullable(),
+  });
+  const comparisons = z.array(z.object({
+    ref: z.string(), disposition: z.string(),
+    evidence: z.array(z.object({ ref: z.string(), quote: z.string().min(1) })),
+  })).max(8).safeParse((review.judgment as Record<string, unknown> | null)?.comparisons).data ?? [];
+  const priors = z.array(priorSchema).max(40).safeParse(review.priorMatches).data ?? [];
+  const priorRefs = priors.filter(p => p.scope.workspaceId === run.workspaceId && p.scope.potSlug === run.potSlug &&
+    p.contentHash === capabilityHash(p.text) && (
+      (typeof review.candidateHash === 'string' && typeof review.evidenceHash === 'string' &&
+        p.candidateHash === review.candidateHash && p.evidenceHash === review.evidenceHash) ||
+      comparisons.some(c => c.ref === p.ref && c.disposition === review.reason &&
+        c.evidence.some(e => e.ref === 'prior:' + p.ref && p.text.includes(e.quote)))
+    )).map(p => p.ref);
+  const assessments = new Map<string, DreamRunAssessment>();
+  for (const a of dreamRunAssessments(run)) {
+    if (a.candidateHash !== review.candidateHash || a.evidenceHash !== review.evidenceHash) continue;
+    const previous = assessments.get(a.assessor);
+    if (!previous || a.recordedAt >= previous.recordedAt) assessments.set(a.assessor, a);
+  }
+  const current = [...assessments.values()];
+  const utility = new Set(current.map(a => a.usefulness));
+  return {
+    kind: review.reason === 'refinement' ? 'refinement' as const : 'rediscovery' as const,
+    priorRefs: [...new Set(priorRefs)],
+    familyIds: [...new Set(current.flatMap(a => a.familyId ? [a.familyId] : []))],
+    usefulness: utility.size === 1 ? [...utility][0]! : 'unknown' as const,
+    noveltyCredit: 'none' as const,
+  };
 }

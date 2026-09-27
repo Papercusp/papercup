@@ -10,10 +10,11 @@ import {
   type DreamPassConfig,
   type DreamReviewConfig,
 } from './dream-config';
-import { CAPABILITY_DREAM_PROMPT_VERSION, runCapabilityDreamPass } from './capability-pass';
+import { CAPABILITY_DREAM_PROMPT_VERSION, runCapabilityDreamPass, scopeDreamProblems, type DreamProblemContext } from './capability-pass';
 import {
   CAPABILITY_REVIEW_VERSION,
   runCapabilityDreamReview,
+  preflightCapabilityReview,
   rerankCapabilityPriors,
   type CapabilityReviewSources,
 } from './capability-review';
@@ -44,6 +45,7 @@ export interface DreamCycleInput {
   sampler?: Omit<CapabilitySamplingOptions, 'seed' | 'now' | 'promptVersion' | 'history' | 'exposures'>;
   pass?: Partial<DreamPassConfig>;
   review?: Partial<DreamReviewConfig>;
+  problemMode?: DreamProblemContext['mode'];
   signal?: AbortSignal;
   /** Explicit evaluation runs require a frozen protocol; ordinary manual cycles keep their existing controls. */
   pilot?: DreamPilotPin;
@@ -60,6 +62,7 @@ export interface DreamCycleDeps {
   loadPackets: (signal: AbortSignal) => Promise<CapabilityPacket[]>;
   loadHistory: () => Promise<DreamRun[]>;
   reviewSources: (packets: CapabilityPacket[]) => CapabilityReviewSources;
+  loadProblems?: () => Promise<DreamProblemContext>;
   beginRun: (input: {
     runId: string;
     cycleId: string;
@@ -105,6 +108,7 @@ export type DreamCycleReason =
   | 'cycle-cost-cap'
   | 'rolling-cost-cap'
   | 'governor-refused'
+  | 'review-unavailable'
   | 'aborted'
   | 'in-progress';
 export interface DreamCycleResult {
@@ -163,6 +167,8 @@ async function abortable<T>(operation: () => Promise<T>, signal: AbortSignal): P
 /** Terminal replays spend nothing. A recent in-flight run is left to its owner;
  * an expired interrupted run retains its reservations as unknown usage. */
 export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps): Promise<DreamCycleResult> {
+  if (input.problemMode !== undefined && !['observed-problems', 'open-exploration'].includes(input.problemMode))
+    throw new RangeError('Unsupported Dream problem mode');
   const config = resolveDreamCycleConfig(input.cycle);
   const pass = resolveDreamPassConfig({ maxOutputTokens: 4096, ...input.pass });
   const reviewConfig = resolveDreamReviewConfig({ maxOutputTokens: 4096, ...input.review });
@@ -175,6 +181,8 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
         samplerMode: input.sampler?.mode ?? 'structured',
         arity: input.sampler?.arity ?? 2,
         cycle: config,
+        manifestRevision: input.manifest.revision,
+        scope: { workspaceId: input.workspaceId, potSlug: input.potSlug },
       }
     : null;
   // Validate the protocol pin and policy before any adapter can perform work.
@@ -270,6 +278,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
                 evaluation: {
                   protocolPin: pilot.pin,
                   arm: pilot.arm as 'uniform-pair' | 'structured-pair' | 'structured-triple',
+                  ...(pilot.protocol.comparison ? { inputHash: pilot.protocol.comparison.inputHash } : {}),
                   ...(pilot.matchedPairIndex !== undefined ? { matchedPairIndex: pilot.matchedPairIndex + index } : {}),
                 },
               }
@@ -281,6 +290,10 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
         summarize(begun.run, true);
         if (begun.run.status === 'no-pair') {
           result.reason = 'no-pair';
+          break;
+        }
+        if (begun.run.review?.schemaVersion === 'dream-capability-preflight-v1') {
+          result.reason = 'review-unavailable';
           break;
         }
         continue;
@@ -455,15 +468,45 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
           throw new Error(
             'Dream pilot triple arm requires a role-labeled C; pair fallback is not a triple observation',
           );
+        const reviewPreflight = await local('retrieval:review-preflight', 'retrieval', () =>
+          preflightCapabilityReview({
+            selection: sampling.selection, rootPath: input.rootPath, manifest: input.manifest,
+            sources: deps.reviewSources(packets!), dreamerModel: pass.model, config: reviewConfig,
+            signal, cycleDeadlineMs: deadlineMs,
+          }, {
+            verifyPacket: verifyCapabilityPacket,
+            rerank: (query, priors, options) => local('rerank:preflight', 'rerank', () =>
+              (deps.rerank ?? rerankCapabilityPriors)(query, priors, options)),
+          }),
+        );
+        if (!reviewPreflight.ready) {
+          await finish({ runId, status: 'rejected',
+            outcome: { verdict: 'unverified', generationSkipped: true },
+            review: { ...reviewPreflight, verdict: 'unverified', schemaVersion: 'dream-capability-preflight-v1' },
+          });
+          result.reason = 'review-unavailable';
+          // A required dependency is down; do not repeat the same probe or spend
+          // on additional attempts within this cycle.
+          break;
+        }
+        // Frozen legacy pilots retain their original input. An ordinary cycle is
+        // problem-led by default, with an explicit open-exploration comparison.
+        const problemContext = pilot?.protocol.comparison?.problemContext ?? (!pilot && input.problemMode !== 'open-exploration' && deps.loadProblems
+          ? await local('retrieval:problems', 'retrieval', async () => {
+              const found = await deps.loadProblems!();
+              return scopeDreamProblems(found.evidence, input, found.mode);
+            })
+          : scopeDreamProblems([], input, 'open-exploration'));
         const dreamed = await (deps.dream ?? runCapabilityDreamPass)({
           selection: sampling.selection,
           llmCall: llmFor('generation'),
           config: pass,
           signal,
           cycleDeadlineMs: deadlineMs,
+          problemContext,
         });
         await Promise.allSettled([...pending]);
-        outcome = record(dreamed);
+        outcome = record({ ...dreamed, problemContext });
         if (dreamed.verdict !== 'insight') {
           await finish({
             runId,
@@ -487,6 +530,7 @@ export async function runDreamCycle(input: DreamCycleInput, deps: DreamCycleDeps
               config: reviewConfig,
               signal,
               cycleDeadlineMs: deadlineMs,
+              problemContext,
             },
             {
               verifyPacket: verifyCapabilityPacket,

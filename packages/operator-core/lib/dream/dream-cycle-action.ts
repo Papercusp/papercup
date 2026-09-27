@@ -123,7 +123,7 @@ export async function productionDreamCycle(
   const registered = await registry.loadHarnessRegistry(ctx.workspaceId);
   const rootPath = registry.resolveHarnessContentPath(registered, ctx.installSlug);
   if (!rootPath) throw new Error('Dream requires the registered repository for ' + ctx.installSlug);
-  const manifest = catalog.getPilotCapabilityManifest();
+  const manifest = config.pilot && !config.pilot.protocol.comparison ? catalog.getPilotCapabilityManifest() : catalog.getCurrentCapabilityManifest();
   const scope = { workspaceId: ctx.workspaceId, potSlug: ctx.installSlug, repositoryId: ctx.installSlug };
   const cycleId = stableCycleId(ctx);
   const llmCall: ScoutLlmCall = (input) => llm.llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug });

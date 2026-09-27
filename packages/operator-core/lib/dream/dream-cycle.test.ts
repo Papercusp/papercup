@@ -7,8 +7,10 @@ import { DreamAdmissionError } from './dream-governor';
 import { dreamCapabilityRun, dreamCallTotals, newDreamCapabilityRun } from './dream-run-provenance';
 import type { DreamRun } from './dream-run-store';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from './capability-sampler';
-import { freezeDreamEvaluationProtocol } from './dream-evaluation';
+import { freezeDreamEvaluationProtocol, dreamComparisonInputHash } from './dream-evaluation';
 import { dreamRunOutcome } from './dream-config';
+import { scopeDreamProblems } from './capability-pass';
+import { capabilityHash } from './capability-contracts';
 
 type Fixture = Awaited<ReturnType<typeof createDreamCapabilityFixture>>;
 let f: Fixture;
@@ -175,6 +177,24 @@ function harness() {
 }
 
 describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
+  it('DREAM-PROBLEM-GROUNDING: persists only attributable same-pot context and preserves an explicit open comparison', async () => {
+    const h = harness();
+    const text = 'Input state is missing from reproduced failures.';
+    const p = { ...f.scope, ref: 'observation:EI-problem', kind: 'observation' as const, attributedTo: 'reporter', capturedAt: '2026-09-27T00:00:00Z', text, contentHash: capabilityHash(text) };
+    const { repositoryId: _repositoryId, ...evidence } = p;
+    h.d.loadProblems = vi.fn(async () => scopeDreamProblems([evidence], h.input));
+    const candidate = { ...f.candidate, problemFit: { refs: [p.ref], beneficiary: 'Debugging engineers', proposedImprovement: 'Restore inputs before replaying the failure.' } };
+    h.llm.mockResolvedValue({ text: '', json: { schemaVersion: 'dream-capability-result-v1', verdict: 'insight', candidate }, costUsd: 0.01, inputTokens: 100, outputTokens: 10 });
+    await runDreamCycle(h.input, h.d);
+    expect(h.row('cycle-1:dream:1').outcome).toMatchObject({ problemContext: { mode: 'observed-problems', evidence: [evidence] } });
+    expect(JSON.parse(h.llm.mock.calls[0]![0].messages[0]!.content as string).problemContext.evidence).toEqual([evidence]);
+    expect(vi.mocked(h.d.review!).mock.calls[0]![0].problemContext?.evidence).toEqual([evidence]);
+    const open = harness(); open.input.problemMode = 'open-exploration'; open.d.loadProblems = h.d.loadProblems;
+    vi.mocked(h.d.loadProblems).mockClear();
+    await runDreamCycle(open.input, open.d);
+    expect(h.d.loadProblems).not.toHaveBeenCalled();
+    expect(open.row('cycle-1:dream:1').outcome).toMatchObject({ problemContext: { mode: 'open-exploration', evidence: [] } });
+  });
   it.each(['retrieval', 'rerank'] as const)('DREAM-REVIEW-PREFLIGHT: refuses unavailable %s before paid generation', async (dependency) => {
     const h = harness();
     h.input.cycle = { maxDreamsPerCycle: 3 };
@@ -215,6 +235,17 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(dreamRunOutcome(run.status, run.review)).toBe('insufficient evidence');
     expect(h.d.sink).not.toHaveBeenCalled();
   });
+  it.each(['duplicate', 'refinement'] as const)('DREAM-REDISCOVERY: retains %s evidence without routing duplicate work on replay', async reason => {
+    const h = harness();
+    h.d.review = vi.fn<NonNullable<DreamCycleDeps['review']>>(async () => ({ ...f.review, verdict: 'reject', reason }));
+    await runDreamCycle(h.input, h.d);
+    const run = h.row(dreamRunId(h.input.cycleId, 0));
+    expect(run.review).toMatchObject({ verdict: 'reject', reason, priorMatches: f.review.priorMatches });
+    expect(run.status).toBe(reason === 'duplicate' ? 'duplicate' : 'rejected');
+    await runDreamCycle(h.input, h.d);
+    expect(h.d.sink).not.toHaveBeenCalled();
+    expect(h.llm).toHaveBeenCalledTimes(1);
+  });
   async function pilot(h: ReturnType<typeof harness>) {
     const snapshot = await buildCapabilitySamplingSnapshot({
       rootPath: f.root,
@@ -245,6 +276,25 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     await expect(runDreamCycle(h.input, h.d)).rejects.toThrow('changed');
     expect(h.d.beginRun).not.toHaveBeenCalled();
     expect(h.llm).not.toHaveBeenCalled();
+  });
+  it('DREAM-COMPARABLE: supplies frozen problem input to a new pilot and records its shared hash', async () => {
+    const h = harness();
+    const original = await pilot(h);
+    const text = 'Replay should reproduce an observed failure.';
+    const common = { manifestRevision: f.manifest.revision,
+      scope: { workspaceId: h.input.workspaceId, potSlug: h.input.potSlug },
+      problemContext: { mode: 'observed-problems' as const, note: 'Frozen comparison input.', evidence: [{
+        ref: 'observation:EI-1', kind: 'observation' as const, workspaceId: h.input.workspaceId, potSlug: h.input.potSlug,
+        attributedTo: 'reporter', capturedAt: '2026-09-27T00:00:00Z', text, contentHash: capabilityHash(text),
+      }] } };
+    const comparison = { ...common, inputHash: dreamComparisonInputHash({ ...common, sourceSnapshot: original.protocol.sourceSnapshot }) };
+    h.input.pilot = { ...freezeDreamEvaluationProtocol({ ...original.protocol, comparison }), arm: 'structured-pair' };
+    h.d.dream = vi.fn(async () => ({ verdict: 'none' as const, usage: { model: 'dreamer', costUsd: 0, inputTokens: 0, outputTokens: 0 } }));
+    await runDreamCycle(h.input, h.d);
+    expect(h.d.dream).toHaveBeenCalledWith(expect.objectContaining({ problemContext: common.problemContext }));
+    const run = h.row(dreamRunId(h.input.cycleId, 0));
+    expect(dreamCapabilityRun(run)?.evaluation?.inputHash).toBe(comparison.inputHash);
+    expect(run.outcome?.problemContext).toEqual(common.problemContext);
   });
 
   it.each([{ maxCostUsd: 10 }, { rolling24hCostUsd: 200 }])(

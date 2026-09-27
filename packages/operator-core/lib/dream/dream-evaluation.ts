@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { capabilityHash } from './capability-contracts';
 import { DEFAULT_DREAM_CYCLE_CONFIG, type DreamCycleConfig } from './dream-config';
+import { DreamProblemContextSchema, scopeDreamProblems, type DreamProblemContext } from './capability-pass';
 
 /** Protocol and evidence for the existing Dream/Blender experiment paths. No scheduler or spend switch. */
 export const DREAM_EVALUATION_ARMS = ['blender', 'uniform-pair', 'structured-pair', 'structured-triple'] as const;
@@ -33,6 +34,14 @@ export const DreamEvaluationProtocolSchema = z
     benchmarkHash: sha,
     oracleHash: sha,
     independentLabelsRef: text,
+    // New comparisons explicitly freeze the shared problem input. Absence retains
+    // the original pilot protocol byte-for-byte and its open-exploration behavior.
+    comparison: z.object({
+      manifestRevision: text,
+      scope: z.object({ workspaceId: text, potSlug: text }).strict(),
+      problemContext: DreamProblemContextSchema,
+      inputHash: sha,
+    }).strict().optional(),
     seed: text,
     models: z.object({ generator: text, reviewer: text }).strict(),
     arms: z.tuple([
@@ -82,7 +91,7 @@ export type DreamEvaluationProtocol = z.infer<typeof DreamEvaluationProtocolSche
 export function freezeDreamEvaluationProtocol(
   input: Pick<
     DreamEvaluationProtocol,
-    'sourceSnapshot' | 'benchmarkHash' | 'oracleHash' | 'independentLabelsRef' | 'seed' | 'models'
+    'sourceSnapshot' | 'benchmarkHash' | 'oracleHash' | 'independentLabelsRef' | 'seed' | 'models' | 'comparison'
   > &
     Partial<
       Pick<
@@ -133,6 +142,20 @@ export function dreamEvaluationProtocolHash(value: unknown): string {
   return capabilityHash(JSON.stringify(DreamEvaluationProtocolSchema.parse(value)));
 }
 
+/** Same evidence and attributed problem input for each arm. This does not imply
+ * equal representations/prompts or certify the independentLabelsRef as human. */
+export function dreamComparisonInputHash(input: {
+  sourceSnapshot: string; manifestRevision: string;
+  scope: { workspaceId: string; potSlug: string }; problemContext: DreamProblemContext;
+}) {
+  const context = DreamProblemContextSchema.parse(input.problemContext);
+  const scoped = scopeDreamProblems(context.evidence, input.scope, context.mode);
+  if (JSON.stringify(scoped.evidence) !== JSON.stringify(context.evidence) || scoped.mode !== context.mode)
+    throw new Error('Comparable Dream input contains invalid or foreign problem evidence');
+  return capabilityHash(JSON.stringify([input.sourceSnapshot, input.manifestRevision,
+    input.scope.workspaceId, input.scope.potSlug, context.mode, context.evidence]));
+}
+
 export interface DreamPilotPin {
   protocol: unknown;
   pin: string;
@@ -161,6 +184,8 @@ export function requireDreamPilotProtocol(
     samplerMode: string;
     arity: number | 'mixed';
     cycle: Pick<DreamCycleConfig, 'maxCostUsd' | 'rolling24hCostUsd'>;
+    manifestRevision?: string;
+    scope?: { workspaceId: string; potSlug: string };
   },
 ) {
   const protocol = DreamEvaluationProtocolSchema.parse(input.protocol);
@@ -169,6 +194,13 @@ export function requireDreamPilotProtocol(
   if (protocol.utilityHash !== capabilityHash(JSON.stringify(DREAM_UTILITY_CONTRACT)))
     throw new Error('Dream pilot utility contract changed');
   if (protocol.sourceSnapshot !== current.sourceSnapshot) throw new Error('Dream pilot source snapshot changed');
+  if (protocol.comparison) {
+    const comparison = protocol.comparison;
+    if (current.manifestRevision !== comparison.manifestRevision ||
+        current.scope?.workspaceId !== comparison.scope.workspaceId || current.scope.potSlug !== comparison.scope.potSlug ||
+        dreamComparisonInputHash({ ...comparison, sourceSnapshot: current.sourceSnapshot }) !== comparison.inputHash)
+      throw new Error('Comparable Dream source/problem input changed');
+  }
   if (protocol.models.generator !== current.generator || protocol.models.reviewer !== current.reviewer)
     throw new Error('Dream pilot model configuration changed');
   if (current.mode !== 'manual') throw new Error('Dream pilot requires manual control');
@@ -199,6 +231,12 @@ export interface DreamEvaluationCost {
   qualifiedFamilies: string[];
   verifiedBeneficialExperiments: number;
   engineerMinutes: number;
+  /** Missing historical time remains unknown, rather than an invented zero. */
+  reviewerMinutes?: number | null;
+  maintenanceMinutes?: number | null;
+  /** Receipt of the actual common input supplied to this arm, not its intended input. */
+  inputHash?: string;
+  spendCapUsd?: number;
 }
 
 /** Same numerator, denominator and accounting for every arm, including ordinary Blender. */
@@ -209,7 +247,16 @@ export function summarizeDreamEvaluationCosts(rows: readonly DreamEvaluationCost
     let discovery: number | null = 0,
       experiment: number | null = 0;
     const families = new Set<string>();
+    const time = (key: 'reviewerMinutes' | 'maintenanceMinutes') => {
+      if (!selected.length || selected.some(r => r[key] == null)) return null;
+      return selected.reduce((n, r) => n + r[key]!, 0);
+    };
     for (const row of selected) {
+      if (row.spendCapUsd !== undefined && (!Number.isFinite(row.spendCapUsd) || row.spendCapUsd < 0))
+        throw new Error('Invalid evaluation spend cap');
+      for (const key of ['reviewerMinutes', 'maintenanceMinutes'] as const)
+        if (row[key] != null && (!Number.isFinite(row[key]) || row[key]! < 0))
+          throw new Error('Invalid evaluation time: ' + key);
       for (const phase of DREAM_EVALUATION_COSTS) {
         const cost = row.phases[phase];
         if (cost !== null && (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0))
@@ -241,9 +288,35 @@ export function summarizeDreamEvaluationCosts(rows: readonly DreamEvaluationCost
       verifiedBeneficialExperiments: verified,
       beneficialPerTotalUsd: total !== null && total > 0 ? verified / total : null,
       engineerMinutes: selected.reduce((n, r) => n + r.engineerMinutes, 0),
+      reviewerMinutes: time('reviewerMinutes'),
+      maintenanceMinutes: time('maintenanceMinutes'),
       verdict: 'inconclusive' as const,
     };
   });
+}
+
+/** Describe comparability before interpreting differences. Unmatched, absent or
+ * uncalibrated arms cannot provide an effect estimate or an automatic winner. */
+export function summarizeDreamComparison(input: {
+  inputHash: string; rows: readonly DreamEvaluationCost[];
+  humanCalibrationRef: string | null;
+}) {
+  sha.parse(input.inputHash);
+  const arms = summarizeDreamEvaluationCosts(input.rows);
+  const missingArms = arms.filter(a => !a.attempts).map(a => a.arm);
+  const mismatchedInputAttempts = input.rows.filter(r => r.inputHash !== input.inputHash).length;
+  return {
+    arms, missingArms, mismatchedInputAttempts,
+    commonInput: input.rows.length > 0 && mismatchedInputAttempts === 0,
+    equalAttemptCounts: missingArms.length === 0 && new Set(arms.map(a => a.attempts)).size === 1,
+    equalSpendCaps: missingArms.length === 0 && input.rows.every(r => r.spendCapUsd !== undefined) &&
+      new Set(input.rows.map(r => r.spendCapUsd)).size === 1,
+    costsComplete: missingArms.length === 0 && arms.every(a => a.discoveryUsd !== null && a.experimentUsd !== null),
+    effortComplete: missingArms.length === 0 && arms.every(a => a.reviewerMinutes !== null && a.maintenanceMinutes !== null),
+    humanCalibrationRef: input.humanCalibrationRef?.trim() || null,
+    humanCalibration: input.humanCalibrationRef?.trim() ? 'referenced-not-independently-verified' as const : 'missing' as const,
+    verdict: 'inconclusive' as const,
+  };
 }
 
 export type DreamBenchmarkVerdict = 'accept' | 'reject' | 'unverified';

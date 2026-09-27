@@ -15,6 +15,8 @@ import {
   freezeDreamEvaluationProtocol,
   requireDreamPilotProtocol,
   summarizeDreamEvaluationCosts,
+  summarizeDreamComparison,
+  dreamComparisonInputHash,
   type DreamEvaluationCost,
 } from './dream-evaluation';
 
@@ -45,6 +47,45 @@ const costs = (arm: DreamEvaluationCost['arm']): DreamEvaluationCost => ({
 });
 
 describe('frozen Dream evaluation protocol — P017', () => {
+  it('DREAM-COMPARABLE: binds current catalogue and attributed problem input without altering old protocol pins', () => {
+    const original = frozen();
+    const scope = { workspaceId: 'ws', potSlug: 'pot' };
+    const evidence = { ref: 'observation:EI-1', kind: 'observation' as const, ...scope,
+      attributedTo: 'reporter', capturedAt: '2026-09-27T00:00:00Z', text: 'A repeated replay problem.',
+      contentHash: capabilityHash('A repeated replay problem.') };
+    const common = { manifestRevision: 'current-v2', scope,
+      problemContext: { mode: 'observed-problems' as const, evidence: [evidence], note: 'Frozen report.' } };
+    const comparison = { ...common, inputHash: dreamComparisonInputHash({ ...common, sourceSnapshot: current.sourceSnapshot }) };
+    const bound = freezeDreamEvaluationProtocol({ ...original.protocol, comparison });
+    const now = { ...current, scope, manifestRevision: common.manifestRevision };
+    expect(requireDreamPilotProtocol({ ...bound, arm: 'structured-pair' }, now)).toEqual(bound.protocol);
+    expect(() => requireDreamPilotProtocol({ ...bound, arm: 'structured-pair' }, { ...now, scope: { ...scope, potSlug: 'foreign' } })).toThrow('input changed');
+    expect(() => requireDreamPilotProtocol({ ...bound, arm: 'structured-pair' }, { ...now, manifestRevision: 'drifted' })).toThrow('input changed');
+    expect(() => dreamComparisonInputHash({ ...common, sourceSnapshot: current.sourceSnapshot,
+      problemContext: { ...common.problemContext, evidence: [{ ...evidence, text: 'changed without a matching hash' }] } })).toThrow('invalid or foreign');
+    expect(dreamEvaluationProtocolHash(original.protocol)).toBe(original.pin);
+    expect(original.protocol.comparison).toBeUndefined();
+  });
+  it('DREAM-COMPARABLE: reports missing human calibration, input/spend mismatch and unknown effort honestly', () => {
+    const inputHash = 'c'.repeat(64);
+    const rows = DREAM_EVALUATION_ARMS.map(arm => ({ ...costs(arm), inputHash, spendCapUsd: 1 }));
+    const report = summarizeDreamComparison({ inputHash, rows, humanCalibrationRef: null });
+    expect(report).toMatchObject({ commonInput: true, equalAttemptCounts: true, equalSpendCaps: true,
+      costsComplete: true, effortComplete: false, humanCalibration: 'missing', verdict: 'inconclusive' });
+    expect(report.arms.every(a => a.reviewerMinutes === null && a.maintenanceMinutes === null)).toBe(true);
+    rows[0]!.inputHash = 'd'.repeat(64); rows[0]!.spendCapUsd = 2;
+    expect(summarizeDreamComparison({ inputHash, rows, humanCalibrationRef: 'recorded-human-receipt' })).toMatchObject({
+      commonInput: false, equalSpendCaps: false, mismatchedInputAttempts: 1,
+      humanCalibration: 'referenced-not-independently-verified', verdict: 'inconclusive',
+    });
+    expect(summarizeDreamComparison({ inputHash, rows: [], humanCalibrationRef: null }).missingArms).toEqual(DREAM_EVALUATION_ARMS);
+  });
+  it('DREAM-COMPARABLE: accounts reviewer and maintenance minutes without converting them into model dollars', () => {
+    const row = { ...costs('blender'), reviewerMinutes: 3, maintenanceMinutes: 5 };
+    expect(summarizeDreamEvaluationCosts([row])[0]).toMatchObject({ discoveryUsd: 1, experimentUsd: 1, reviewerMinutes: 3, maintenanceMinutes: 5 });
+    expect(() => summarizeDreamEvaluationCosts([{ ...row, reviewerMinutes: -1 }])).toThrow('time');
+    expect(summarizeDreamEvaluationCosts([row, { ...row, maintenanceMinutes: null }])[0]!.maintenanceMinutes).toBeNull();
+  });
   it('freezes comparable arms, full costs, common utility, seeds and hard limits', () => {
     const { protocol, pin } = frozen();
     expect(pin).toBe(dreamEvaluationProtocolHash(structuredClone(protocol)));
