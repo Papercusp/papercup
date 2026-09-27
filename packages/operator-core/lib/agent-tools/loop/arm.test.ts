@@ -1281,7 +1281,23 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
 
   it('EI-24357920053367503: explicit harness beats an active plan brief during a cold re-arm', async () => {
     mockPriorLoopOnce({ harnessSlug: 'papercusp', goal: 'continue the loop' });
-    briefM.mockResolvedValue({ currentPlanSlug: 'papercusp-plan', harnessSlug: 'papercusp' });
+    briefM.mockResolvedValue({
+      ownerId: 'su-caller-own-id',
+      workspaceId: 'ws-1',
+      ownerLabel: 'su · caller',
+      source: 'active-plan',
+      intent: 'continue the papercusp plan',
+      currentPlanSlug: 'papercusp-plan',
+      currentFiles: [],
+      ambientExcludedRefs: null,
+      harnessSlug: 'papercusp',
+      potSlug: null,
+      goalId: null,
+      nativeSessionId: null,
+      lifecycle: null,
+      firstSeenAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
     potHomeM.mockImplementation((explicit, ctxSlug) => explicit ?? ctxSlug ?? null);
 
     const out = (await tool.handler(
