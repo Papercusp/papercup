@@ -225,8 +225,45 @@ describe('scorecards:emit — author acceptance by exact reference (P-003), real
       acceptance: {
         verdict: 'accept',
         adoptedRatingsFrom: { scorecardId: independentId, gradedBy: GRADER },
+        independentGrading: { scorecardId: independentId, gradedBy: GRADER, selectedBy: 'acceptanceOf' },
       },
     });
+  });
+
+  // WI-10003534: the rail admits an author verdict only against a complete grading
+  // from outside the implementer's lineage, but it used to record WHICH card only on
+  // the adoption path. A verdict with transcribed ratings and no `acceptanceOf` must
+  // still cite the reviewer the scan admitted it against.
+  it('cites the scan-admitted independent reviewer on a TRANSCRIBED verdict with no acceptanceOf', async () => {
+    const independentId = await fileIndependentGrading({ createdBy: GRADER });
+    const authorRatings = {
+      'reference-fidelity': { rating: 'pass', evidence: 'author transcription of reference fidelity' },
+      'no-transcription': { rating: 'pass', evidence: 'author transcription of the no-transcription property' },
+    };
+
+    const r = await emitScorecard(
+      {
+        rubricRef: RUBRIC,
+        subject: { kind: 'plan', ref: SUBJECT_PLAN },
+        acceptance: ACCEPT,
+        ratings: authorRatings,
+      } as never,
+      asAuthor as never,
+    );
+    expect(r, JSON.stringify(r)).toMatchObject({ ok: true, created: true });
+
+    const persisted = await readBackAcceptanceCard(db);
+    expect(persisted).not.toBeNull();
+    expect(persisted!.created_by).toBe(AUTHOR);
+    const acceptance = persisted!.observation.acceptance as Record<string, unknown>;
+    expect(acceptance).toMatchObject({
+      verdict: 'accept',
+      independentGrading: { scorecardId: independentId, gradedBy: GRADER, selectedBy: 'scan' },
+    });
+    // The author rated these themselves, so the ratings are NOT marked as adopted.
+    expect(acceptance.adoptedRatingsFrom).toBeUndefined();
+    // The cited reviewer is never the implementer.
+    expect((acceptance.independentGrading as { gradedBy: string }).gradedBy).not.toBe(AUTHOR);
   });
 
   it('refuses a card that graded a DIFFERENT SUBJECT — wrong-subject negative control', async () => {

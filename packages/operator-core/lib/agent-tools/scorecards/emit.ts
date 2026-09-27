@@ -1866,6 +1866,22 @@ export async function emitScorecard(
                 },
               }
             : {}),
+          // WI-10003534: cite the grading this verdict was ADMITTED against on EVERY
+          // author verdict, not only on adoption. The rail above refuses the verdict
+          // unless `acceptedIndependent` exists, so on this path it is always set —
+          // the verdict simply used to discard which card satisfied it.
+          ...(acceptedIndependent?.createdBy
+            ? {
+                independentGrading: {
+                  scorecardId: acceptedIndependent.issueId,
+                  gradedBy: acceptedIndependent.createdBy,
+                  ...(acceptedIndependent.rubricRevision != null
+                    ? { rubricRevision: acceptedIndependent.rubricRevision }
+                    : {}),
+                  selectedBy: acceptanceOf ? ('acceptanceOf' as const) : ('scan' as const),
+                },
+              }
+            : {}),
         }
       : undefined;
     const instrumentSnapshots = await resolveScorecardInstrumentSnapshots({

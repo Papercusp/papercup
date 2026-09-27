@@ -184,6 +184,28 @@ export interface ScorecardAcceptance {
     /** The rubric revision that card graded; equal to the accepting card's by construction. */
     rubricRevision?: number;
   };
+  /**
+   * WI-10003534: the independent grading this verdict was ADMITTED against, stamped by
+   * the server on EVERY author verdict — whether the ratings were adopted, transcribed,
+   * or the card was found by the scan instead of named in `acceptanceOf`.
+   *
+   * The emit door already refuses an author verdict unless a complete grading from
+   * outside the implementer's lineage exists, but before this stamp it recorded WHICH
+   * card satisfied that rail only on the adoption path. A census on 2026-09-27 found
+   * 13 of 31 verdicts since 2026-09-20 citing no reviewer at all, one of them the final
+   * `accept` on a shipped plan. Independence held; the verdict could not show it.
+   * `adoptedRatingsFrom` keeps its narrower meaning ("these ratings are that card's").
+   */
+  independentGrading?: {
+    /** The gate-verified independent scorecard's issue id. */
+    scorecardId: string;
+    /** Its grader — outside the implementer's (and any seat successor's) lineage. */
+    gradedBy: string;
+    /** The rubric revision that card graded, when recorded. */
+    rubricRevision?: number;
+    /** `acceptanceOf` = the author named it; `scan` = the server picked the first eligible card. */
+    selectedBy: 'acceptanceOf' | 'scan';
+  };
 }
 
 /**
