@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-3 live-plane NATURAL observation (2026-09-27): a two-layer span whose tool AND inference rows join to the launch-receipt specification, and a pending-specification stale-artifact fail-closed denial with recovery after the applied receipt",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-10003422",
+  "rubricCriterion": "launch-activation-attribution-hold (R-3)",
+  "observer": "su-fcbb3fed-83b5-4c34-9dab-72e191d76491",
+  "capturedAt": "2026-09-27T10:56:03.281Z",
+  "command": [
+    "sudo -n -u postgres psql -d papercusp -X -v ON_ERROR_STOP=1 -F' | ' -A < .papercusp/scratch/r3-natural-0927/q1.sql   # read-only; SQL + output in replication[]",
+    "sudo -n -u postgres psql -d papercusp -X -v ON_ERROR_STOP=1 -F' | ' -A < .papercusp/scratch/r3-natural-0927/q2.sql",
+    "sudo -n -u postgres psql -d papercusp -X -v ON_ERROR_STOP=1 -F' | ' -A < .papercusp/scratch/r3-natural-0927/q3.sql"
+  ],
+  "exitCode": 0,
+  "timeBasis": "recorded_at / invoked_at / ts values are stored UTC; psql rendered them in the box zone (-04). 23:17:24-04 on 09-26 = 03:17:24Z on 09-27.",
+  "summary": "Two independent live readings complement the 2026-09-26b confirmed-delivery drill. (1) Attribution on the revision actually consumed: Codex session su-d652716d (adv_sessions 30858, launch receipt specificationRevision 464c5be9dc19, principal system:superuser) holds applied activation 22909 (gen 46) with persisted per-layer spans autonomy:su.mode-auto and fleet-posture:su.fleet-member (03:17:24Z-04:00:45Z). On that span 116 tool rows (69 served by the STAGING operator :3170, 47 by :3070) and 59 OpenAI inference usage samples (ids 696537-697944, 19,119 output tokens, source interactive) all join to activation 22909 with both stack refs and specification 464c5be9dc19, equal to the launch receipt. Spans are closed by the successor activation (22909 until 23025), so desired/prepared state is never billed. (2) Fail closed on a pending authority change: Claude session su-5b9cde39 carry-respawned; desired activation 23558 (gen 72, spec 4b15b1eb9aeb) was written at 10:20:51.979Z while applied still held 23551 (spec 78a28d23b4d9). Inside that 1.8 s lag the kernel preflight on :3070 (build 7708e704d9) refused two activity:report calls (tool rows 29861696 at 10:20:52.134Z, 29861698 at 10:20:53.559Z) with authorization_denied \"Identity capability (unresolved): stale-artifact\". prepared 23559 (10:20:53.684Z) and applied 23560 (10:20:53.791Z) followed, and every one of the next 11 calls from 10:20:59.353Z succeeded. The session is now converged (generation 75 delivered 75, applied = desired = launch receipt d4a6abdb5a66).",
+  "subject": {
+    "ownerIds": [
+      "su-d652716d-b3f5-44e8-ac34-044f1fbd12f2",
+      "su-5b9cde39-3b1c-45ad-bd5c-3f6aa0e0cff9"
+    ],
+    "treeHead": "29b2524406de48d26365c40e0ff0ce56a82f33d9"
+  },
+  "sourcePaths": [
+    "packages/operator-core/lib/capability-envelope/identity-grants-port.ts",
+    "packages/operator-core/lib/identity-management.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "packages/operator-core/lib/session-identity-attribution.ts"
+  ],
+  "sourceBlobs": [
+    {
+      "path": "packages/operator-core/lib/capability-envelope/identity-grants-port.ts",
+      "blob": "f5ddd86ef485e0ffac646f96e905a70498bbe6b4",
+      "sha256": "293c0d95001235b24e716c59954677afa5a3841a0817bf6fa87d75cb1184409b"
+    },
+    {
+      "path": "packages/operator-core/lib/identity-management.ts",
+      "blob": "2bbfe6564c3e8b7f878feb8386dcd25543e74402",
+      "sha256": "254d4304e4a191114f7f325ee533f20f9b0b53006a52315af03858ea0d674c08"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+      "blob": "afa7ff8103287ff21a89f7954d735b56e2b8ca36",
+      "sha256": "14ec68156dbfbdd58e552363a03be69bb9f8dce29e14074b9b80940302f67968"
+    },
+    {
+      "path": "packages/operator-core/lib/session-identity-attribution.ts",
+      "blob": "cb25149512b7bbb177572734189fc93e3032dd9e",
+      "sha256": "8f6600ddbadf766003a50537f1632327859c2a07e470cd7042777e409de3d904"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "span-launch-receipt-equality",
+      "passed": true,
+      "evidence": "adv_sessions 30858 launch_spec specificationRevision 464c5be9dc19 equals the applied activation 22909 specification and the specification stamped on every joined tool and inference row (q1 B1/B3, q2 B4/B5)."
+    },
+    {
+      "id": "per-layer-span-tool-join",
+      "passed": true,
+      "evidence": "tool_invocations_identity_attribution joins 116 rows to activation 22909 with identity_stack_refs [autonomy:su.mode-auto, fleet-posture:su.fleet-member]: 69 served by port-3170 (staging), 47 by port-3070, 1 by port-3271; all status ok (q1 B3)."
+    },
+    {
+      "id": "per-layer-span-inference-join",
+      "passed": true,
+      "evidence": "agent_usage_samples_identity_attribution joins 59 samples (ids 696537-697944, 03:17:32Z-03:40:53Z, provider openai, model_class gpt, source interactive, 19,119 output tokens) to activation 22909 with both stack refs and specification 464c5be9dc19 (q2 B4)."
+    },
+    {
+      "id": "spans-closed-by-successor",
+      "passed": true,
+      "evidence": "Each persisted layer span ends exactly at the next applied activation (22884->22891->22904->22909->23025->23479); only the current span 23479 is open (q1 B2). Prepared-only generations (48 at 04:49:50Z) open no span."
+    },
+    {
+      "id": "stable-actor-principal",
+      "passed": true,
+      "evidence": "Every activation event for both subjects has actor_id = owner_id and principal system:superuser across relaunches (q1 B1, q3 C1)."
+    },
+    {
+      "id": "pending-spec-fails-closed",
+      "passed": true,
+      "evidence": "While desired 23558 (spec 4b15b1eb9aeb) was unapplied and applied held 78a28d23b4d9, the kernel preflight denied activity:report twice with authorization_denied stale-artifact (tool rows 29861696, 29861698 on :3070 7708e704d9) (q3 C1/C2)."
+    },
+    {
+      "id": "recovery-after-applied",
+      "passed": true,
+      "evidence": "After prepared 23559 and applied 23560 (10:20:53.684Z/10:20:53.791Z) all 11 following calls 29861702-29861710 succeeded; current control_state generation 75 delivered 75, status applied, applied = desired = launch receipt d4a6abdb5a66 (q3 C2/C3/C4)."
+    }
+  ],
+  "notProven": [
+    "Which stale-artifact sub-reason fired for 29861696/29861698: the refusal row stores only the class; identity-grants-port.ts resolveIdentityArtifact can return replay-failed, record-revision-mismatch, receipt-missing or grants-asymmetric.",
+    "A forced authority REDUCTION specifically (a grant removed): the observed pending change is a relaunch specification change; the reduction-intersection property is carried by the grants-port tests and the 2026-09-24b observation.",
+    "Anthropic inference joins on this span: the joined samples are OpenAI (Codex). Claude-session joins are shown for su-fcbb3fed but that session is subject to open bug WI-10003459 (applied never advances after carry-respawn), so it is NOT offered as evidence here.",
+    "Final release deployment."
+  ],
+  "complements": [
+    "docs/evidence/p015-r3-live-observation-2026-09-26b.json",
+    "docs/evidence/p015-r3-live-observation-2026-09-24b.json"
+  ],
+  "replication": [
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r3-natural-0927/q1.sql",
+      "sha256": "ed94cfd15511c232ae88568cb94b92a76363f03f5f5a0029702145ae0d0bbcf7",
+      "sql": "\\pset footer off\nset statement_timeout='100s';\n\\echo === observed_at\nSELECT clock_timestamp() AS observed_at;\n\\echo === B1 applied activation events for su-d652716d (last 8h)\nSELECT e.id, e.control_generation AS gen, e.phase, e.source, e.stack_refs, left(e.specification_revision,12) AS spec, left(e.state_revision,12) AS state, e.adv_session_id AS adv, e.actor_id = e.owner_id AS actor_is_owner, e.principal_id, e.session_id, e.failure, e.recorded_at\n  FROM harness_shared.session_identity_activation_events e\n WHERE e.workspace_id='papercusp-workspace' AND e.owner_id='su-d652716d-b3f5-44e8-ac34-044f1fbd12f2' AND e.recorded_at > now() - interval '8 hours'\n ORDER BY e.id;\n\\echo === B2 per-layer spans (last 8h)\nSELECT activation_event_id, control_generation, layer_slot, layer_ref, left(specification_revision,12) AS spec, actor_id = owner_id AS actor_is_owner, principal_id, active_from, active_until\n  FROM harness_shared.session_identity_layer_spans\n WHERE owner_id='su-d652716d-b3f5-44e8-ac34-044f1fbd12f2' AND active_from > now() - interval '8 hours'\n ORDER BY activation_event_id, layer_slot;\n\\echo === B3 tool rows by activation (last 8h)\nSELECT identity_activation_event_id AS act, left(identity_specification_revision,12) AS spec, identity_stack_refs, serving_host, count(*) AS n, count(*) FILTER (WHERE status='ok') AS ok, min(invoked_at) AS first, max(invoked_at) AS last\n  FROM harness_shared.tool_invocations_identity_attribution\n WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-d652716d-b3f5-44e8-ac34-044f1fbd12f2' AND invoked_at > now() - interval '8 hours'\n GROUP BY 1,2,3,4 ORDER BY 1,4;\n\\echo === B4 inference samples by activation (last 8h)\nSELECT identity_activation_event_id AS act, left(identity_specification_revision,12) AS spec, identity_stack_refs, count(*) AS n, sum(output_tokens) AS output_tokens, min(id) AS min_id, max(id) AS max_id, min(to_timestamp(ts/1000.0)) AS first, max(to_timestamp(ts/1000.0)) AS last, array_agg(DISTINCT model_class) AS model_classes, array_agg(DISTINCT source) AS sources\n  FROM harness_shared.agent_usage_samples_identity_attribution\n WHERE workspace_id='papercusp-workspace' AND identity_owner_id='su-d652716d-b3f5-44e8-ac34-044f1fbd12f2'\n   AND ts > (extract(epoch FROM now() - interval '8 hours')*1000)::bigint\n GROUP BY 1,2,3 ORDER BY 1;\n",
+      "output": [
+        "=== observed_at",
+        "observed_at",
+        "2026-09-27 06:51:37.325114-04",
+        "=== B1 applied activation events for su-d652716d (last 8h)",
+        "id | gen | phase | source | stack_refs | spec | state | adv | actor_is_owner | principal_id | session_id | failure | recorded_at",
+        "22883 | 42 | prepared | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-26 23:08:41.613592-04",
+        "22884 | 42 | applied | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-26 23:08:41.639808-04",
+        "22890 | 43 | prepared | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-26 23:09:18.572947-04",
+        "22891 | 43 | applied | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-26 23:09:18.601986-04",
+        "22903 | 44 | prepared | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-26 23:14:02.912637-04",
+        "22904 | 44 | applied | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-26 23:14:02.934976-04",
+        "22908 | 46 | prepared | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-26 23:17:24.297743-04",
+        "22909 | 46 | applied | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-26 23:17:24.319429-04",
+        "23015 | 47 | prepared | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-26 23:57:28.060873-04",
+        "23025 | 47 | applied | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-27 00:00:45.098907-04",
+        "23120 | 48 | prepared | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-27 00:49:50.72561-04",
+        "23474 | 49 | prepared | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-27 04:55:08.132688-04",
+        "23479 | 49 | applied | control | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 464c5be9dc19 | 472f1f09e54c | 30858 | t | system:superuser | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 |  | 2026-09-27 04:57:07.500254-04",
+        "=== B2 per-layer spans (last 8h)",
+        "activation_event_id | control_generation | layer_slot | layer_ref | spec | actor_is_owner | principal_id | active_from | active_until",
+        "22884 | 42 | autonomy | autonomy:su.mode-auto | 464c5be9dc19 | t | system:superuser | 2026-09-26 23:08:41.639808-04 | 2026-09-26 23:09:18.601986-04",
+        "22884 | 42 | fleet-posture | fleet-posture:su.fleet-member | 464c5be9dc19 | t | system:superuser | 2026-09-26 23:08:41.639808-04 | 2026-09-26 23:09:18.601986-04",
+        "22891 | 43 | autonomy | autonomy:su.mode-auto | 464c5be9dc19 | t | system:superuser | 2026-09-26 23:09:18.601986-04 | 2026-09-26 23:14:02.934976-04",
+        "22891 | 43 | fleet-posture | fleet-posture:su.fleet-member | 464c5be9dc19 | t | system:superuser | 2026-09-26 23:09:18.601986-04 | 2026-09-26 23:14:02.934976-04",
+        "22904 | 44 | autonomy | autonomy:su.mode-auto | 464c5be9dc19 | t | system:superuser | 2026-09-26 23:14:02.934976-04 | 2026-09-26 23:17:24.319429-04",
+        "22904 | 44 | fleet-posture | fleet-posture:su.fleet-member | 464c5be9dc19 | t | system:superuser | 2026-09-26 23:14:02.934976-04 | 2026-09-26 23:17:24.319429-04",
+        "22909 | 46 | autonomy | autonomy:su.mode-auto | 464c5be9dc19 | t | system:superuser | 2026-09-26 23:17:24.319429-04 | 2026-09-27 00:00:45.098907-04",
+        "22909 | 46 | fleet-posture | fleet-posture:su.fleet-member | 464c5be9dc19 | t | system:superuser | 2026-09-26 23:17:24.319429-04 | 2026-09-27 00:00:45.098907-04",
+        "23025 | 47 | autonomy | autonomy:su.mode-auto | 464c5be9dc19 | t | system:superuser | 2026-09-27 00:00:45.098907-04 | 2026-09-27 04:57:07.500254-04",
+        "23025 | 47 | fleet-posture | fleet-posture:su.fleet-member | 464c5be9dc19 | t | system:superuser | 2026-09-27 00:00:45.098907-04 | 2026-09-27 04:57:07.500254-04",
+        "23479 | 49 | autonomy | autonomy:su.mode-auto | 464c5be9dc19 | t | system:superuser | 2026-09-27 04:57:07.500254-04 | ",
+        "23479 | 49 | fleet-posture | fleet-posture:su.fleet-member | 464c5be9dc19 | t | system:superuser | 2026-09-27 04:57:07.500254-04 | ",
+        "=== B3 tool rows by activation (last 8h)",
+        "act | spec | identity_stack_refs | serving_host | n | ok | first | last",
+        "22787 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | port-3170 | 1 | 1 | 2026-09-26 23:08:41.415-04 | 2026-09-26 23:08:41.415-04",
+        "22884 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | port-3170 | 1 | 1 | 2026-09-26 23:09:18.378-04 | 2026-09-26 23:09:18.378-04",
+        "22891 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | port-3070 | 1 | 1 | 2026-09-26 23:14:02.92-04 | 2026-09-26 23:14:02.92-04",
+        "22904 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | port-3070 | 5 | 5 | 2026-09-26 23:14:27.819-04 | 2026-09-26 23:17:24.239-04",
+        "22904 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | port-3170 | 16 | 16 | 2026-09-26 23:14:24.278-04 | 2026-09-26 23:16:42.394-04",
+        "22909 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | port-3070 | 47 | 47 | 2026-09-26 23:17:31.29-04 | 2026-09-26 23:38:31.162-04",
+        "22909 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | port-3170 | 69 | 69 | 2026-09-26 23:17:40.763-04 | 2026-09-26 23:57:28.032-04",
+        "22909 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | port-3271 | 1 | 1 | 2026-09-26 23:23:29.333-04 | 2026-09-26 23:23:29.333-04",
+        "23025 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | port-3170 | 1 | 1 | 2026-09-27 00:49:50.549-04 | 2026-09-27 00:49:50.549-04",
+        "23479 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | port-3170 | 1 | 1 | 2026-09-27 04:57:07.571-04 | 2026-09-27 04:57:07.571-04",
+        "=== B4 inference samples by activation (last 8h)",
+        "ERROR:  canceling statement due to statement timeout"
+      ]
+    },
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r3-natural-0927/q2.sql",
+      "sha256": "7f3e69831f615886af78913012db80b3ec19bb4b7da3499f006ad8f26ef93b4d",
+      "sql": "\\pset footer off\nset statement_timeout='200s';\n\\echo === B4 inference samples joined to su-d652716d activations inside span 22909..23025 window\nSELECT identity_activation_event_id AS act, left(identity_specification_revision,12) AS spec, identity_stack_refs, count(*) AS n, sum(output_tokens) AS output_tokens, min(id) AS min_id, max(id) AS max_id, min(to_timestamp(ts/1000.0)) AS first, max(to_timestamp(ts/1000.0)) AS last, array_agg(DISTINCT model_class) AS model_classes, array_agg(DISTINCT source) AS sources, array_agg(DISTINCT provider) AS providers\n  FROM harness_shared.agent_usage_samples_identity_attribution\n WHERE workspace_id='papercusp-workspace' AND identity_owner_id='su-d652716d-b3f5-44e8-ac34-044f1fbd12f2'\n   AND ts >= (extract(epoch FROM timestamptz '2026-09-27 03:17:24.319429+00')*1000)::bigint\n   AND ts <  (extract(epoch FROM timestamptz '2026-09-27 04:00:45.098907+00')*1000)::bigint\n GROUP BY 1,2,3 ORDER BY 1;\n\\echo === B5 launch receipt adv_sessions 30858\nSELECT id, coord_owner_id, session_id, launch_spec->>'agent' AS agent, launch_spec->'stack' AS stack, launch_spec->>'principalId' AS principal, left(launch_spec->>'specificationRevision',12) AS launch_spec_rev, left(launch_spec->>'stateRevision',12) AS launch_state_rev, launch_spec->>'launchedBy' AS launched_by\n  FROM harness_shared.adv_sessions WHERE id = 30858;\n",
+      "output": [
+        "=== B4 inference samples joined to su-d652716d activations inside span 22909..23025 window",
+        "act | spec | identity_stack_refs | n | output_tokens | min_id | max_id | first | last | model_classes | sources | providers",
+        "22909 | 464c5be9dc19 | [\"autonomy:su.mode-auto\", \"fleet-posture:su.fleet-member\"] | 59 | 19119 | 696537 | 697944 | 2026-09-26 23:17:32.127-04 | 2026-09-26 23:40:53.502-04 | {gpt} | {interactive} | {openai}",
+        "=== B5 launch receipt adv_sessions 30858",
+        "id | coord_owner_id | session_id | agent | stack | principal | launch_spec_rev | launch_state_rev | launched_by",
+        "30858 | su-d652716d-b3f5-44e8-ac34-044f1fbd12f2 | 01a0e214-a36c-7541-8627-7eab43f8927b | codex | [] | system:superuser | 464c5be9dc19 | 37b21f82cba4 | "
+      ]
+    },
+    {
+      "tool": "psql (read-only)",
+      "file": ".papercusp/scratch/r3-natural-0927/q3.sql",
+      "sha256": "0b635ab7e8b617b14b2c39ebf77c37a5186389939c6436ce4d6e75bf33f42bcc",
+      "sql": "\\pset footer off\nset statement_timeout='60s';\n\\echo === C1 su-5b9cde39 activation events gen 70..72 (the pending-spec lag window)\nSELECT e.id, e.control_generation AS gen, e.phase, e.source, e.stack_refs, left(e.specification_revision,12) AS spec, left(e.state_revision,12) AS state, e.adv_session_id AS adv, e.actor_id = e.owner_id AS actor_is_owner, e.principal_id, e.failure, e.recorded_at\n  FROM harness_shared.session_identity_activation_events e\n WHERE e.workspace_id='papercusp-workspace' AND e.owner_id='su-5b9cde39-3b1c-45ad-bd5c-3f6aa0e0cff9' AND e.control_generation BETWEEN 70 AND 72\n ORDER BY e.id;\n\\echo === C2 su-5b9cde39 tool rows 10:20:45Z..10:21:02Z (denials inside the lag, successes after applied)\nSELECT id, tool_name, status, error_code, left(error_message,140) AS error_message, serving_host, serving_build_sha, invoked_at\n  FROM harness_shared.tool_invocations\n WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-5b9cde39-3b1c-45ad-bd5c-3f6aa0e0cff9'\n   AND invoked_at >= '2026-09-27 10:20:45Z' AND invoked_at < '2026-09-27 10:21:02Z'\n ORDER BY invoked_at;\n\\echo === C3 launch receipt for the relaunched process (adv_sessions 30866)\nSELECT id, coord_owner_id, launch_spec->>'agent' AS agent, launch_spec->>'principalId' AS principal, left(launch_spec->>'specificationRevision',12) AS launch_spec_rev, left(launch_spec->>'stateRevision',12) AS launch_state_rev\n  FROM harness_shared.adv_sessions WHERE id = 30866;\n\\echo === C4 current control_state for su-5b9cde39\nSELECT control_generation, control_delivered_generation, control_state->'activation'->>'status' AS status, left(control_state->'activation'->'desired'->>'specificationRevision',12) AS desired_spec, left(control_state->'activation'->'applied'->>'specificationRevision',12) AS applied_spec\n  FROM harness_shared.session_briefs WHERE owner_id='su-5b9cde39-3b1c-45ad-bd5c-3f6aa0e0cff9' AND workspace_id='papercusp-workspace';\n",
+      "output": [
+        "=== C1 su-5b9cde39 activation events gen 70..72 (the pending-spec lag window)",
+        "id | gen | phase | source | stack_refs | spec | state | adv | actor_is_owner | principal_id | failure | recorded_at",
+        "23549 | 70 | desired | restart | [] | 78a28d23b4d9 | 37b21f82cba4 | 30866 | t | system:superuser |  | 2026-09-27 06:04:58.268926-04",
+        "23550 | 70 | prepared | control | [] | 78a28d23b4d9 | 37b21f82cba4 | 30866 | t | system:superuser |  | 2026-09-27 06:04:59.896956-04",
+        "23551 | 70 | applied | control | [] | 78a28d23b4d9 | 37b21f82cba4 | 30866 | t | system:superuser |  | 2026-09-27 06:05:00.088263-04",
+        "23558 | 72 | desired | restart | [] | 4b15b1eb9aeb | 37b21f82cba4 | 30866 | t | system:superuser |  | 2026-09-27 06:20:51.979102-04",
+        "23559 | 72 | prepared | control | [] | 4b15b1eb9aeb | 37b21f82cba4 | 30866 | t | system:superuser |  | 2026-09-27 06:20:53.683646-04",
+        "23560 | 72 | applied | control | [] | 4b15b1eb9aeb | 37b21f82cba4 | 30866 | t | system:superuser |  | 2026-09-27 06:20:53.790618-04",
+        "=== C2 su-5b9cde39 tool rows 10:20:45Z..10:21:02Z (denials inside the lag, successes after applied)",
+        "id | tool_name | status | error_code | error_message | serving_host | serving_build_sha | invoked_at",
+        "29861694 | sessions:ingest-gate-event | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:20:50.353-04",
+        "29861695 | journal:record-turn | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:20:50.389-04",
+        "29861696 | activity:report | error | authorization_denied | Kernel preflight denied tool \"activity:report\": Identity capability (unresolved): stale-artifact (activity:report) | port-3070 | 7708e704d9 | 2026-09-27 06:20:52.134-04",
+        "29861698 | activity:report | error | authorization_denied | Kernel preflight denied tool \"activity:report\": Identity capability (unresolved): stale-artifact (activity:report) | port-3070 | 7708e704d9 | 2026-09-27 06:20:53.559-04",
+        "29861702 | coord:whoami | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:20:59.353-04",
+        "29861703 | activity:report | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:20:59.478-04",
+        "29861704 | work_items:list | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:21:00.994-04",
+        "29861705 | coord:inbox | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:21:01.114-04",
+        "29861706 | work_items:observe | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:21:01.2-04",
+        "29861707 | fleet:assignments | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:21:01.648-04",
+        "29861708 | coord:whoami | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:21:01.662-04",
+        "29861709 | coord:plan-events | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:21:01.817-04",
+        "29861710 | plans:get | ok |  |  | port-3070 | 7708e704d9 | 2026-09-27 06:21:01.864-04",
+        "=== C3 launch receipt for the relaunched process (adv_sessions 30866)",
+        "id | coord_owner_id | agent | principal | launch_spec_rev | launch_state_rev",
+        "30866 | su-5b9cde39-3b1c-45ad-bd5c-3f6aa0e0cff9 | claude | system:superuser | d4a6abdb5a66 | 37b21f82cba4",
+        "=== C4 current control_state for su-5b9cde39",
+        "control_generation | control_delivered_generation | status | desired_spec | applied_spec",
+        "75 | 75 | applied | d4a6abdb5a66 | d4a6abdb5a66"
+      ]
+    }
+  ]
+}
