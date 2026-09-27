@@ -218,8 +218,21 @@ export const durableOrchestrationWorkflow = idempotentRegisterWorkflow(DURABLE_O
   }),
 );
 
+/**
+ * Queue poll floor for durable runs (WI-10003560, plan blueprint-backed D-023). DBOS polls each
+ * queue every `minPollingIntervalMs` (default 1000 ms, doubled on contention) and nothing wakes
+ * the runner on enqueue, so at the default every durable run waited U(0, 1 s) before dispatch —
+ * the dominant P-013 workload-D overhead (warm p50 1010 ms vs a 157 ms ceiling). 50 ms bounds that
+ * wait at the cost of about 20 idle dequeue reads/s per DBOS executor. The in-memory queue config
+ * wins over any persisted queue row, so this value is authoritative.
+ */
+export const DURABLE_ORCHESTRATION_QUEUE_MIN_POLL_MS = 50;
+
 export const durableOrchestrationQueue = idempotentWorkflowQueue('durable-orchestration', () =>
-  new WorkflowQueue('durable-orchestration', { concurrency: queueConcurrency(4) }),
+  new WorkflowQueue('durable-orchestration', {
+    concurrency: queueConcurrency(4),
+    minPollingIntervalMs: DURABLE_ORCHESTRATION_QUEUE_MIN_POLL_MS,
+  }),
 );
 
 /** The DBOSClient subset a request-side host drives; tests replace it. */

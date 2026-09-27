@@ -86,7 +86,11 @@ export async function bootP013DRuntime(opts: {
     await import('../agent-tools/index');
     await DBOS.launch();
     (globalThis as { __papercuspDbosStarted?: boolean }).__papercuspDbosStarted = true;
-    awaitDurable = (workflowId, timeoutSec) => DBOS.getResult(workflowId, timeoutSec);
+    // DBOS.getResult by id re-reads workflow_status every 1000 ms by default, which quantized the
+    // candidate's terminal mark to accepted + k*1000 ms (WI-10003560). Poll at 5 ms so the
+    // instrument adds at most 5 ms, charged to the candidate.
+    awaitDurable = (workflowId, timeoutSec) =>
+      DBOS.getResult(workflowId, { timeoutSeconds: timeoutSec, pollingIntervalMs: 5 });
     shutdown = async () => {
       (globalThis as { __papercuspDbosStarted?: boolean }).__papercuspDbosStarted = false;
       await DBOS.shutdown();
