@@ -5332,6 +5332,18 @@ describe("psu-launcher arg parsing", () => {
       .toBe("claude-bridge/claude-opus-4-8");
   });
 
+  it("fresh SU native argv uses the identity-selected server model over the picker default", () => {
+    const selected = requestedRoleModelFromBootstrap(
+      { agent: "codex", model: "gpt-5.6-terra:xhigh" }, "gpt-5.6-sol:xhigh",
+    );
+    const argv = suWrapperExtraArgs("codex", { model: selected });
+    expect(argv).toContain("gpt-5.6-terra");
+    expect(argv).not.toContain("gpt-5.6-sol");
+    const source = readFileSync(new URL("../scripts/psu-launcher.mjs", import.meta.url), "utf8");
+    const fresh = source.slice(source.indexOf("async function launchFreshSu("));
+    expect(fresh).toContain("requestedRoleModelFromBootstrap(res, args.model)");
+  });
+
   it("buildResumeEnv: P-022 native-compaction retirement is re-stamped on Claude resumes only", () => {
     // A resume spawns a NEW CLI process — without the stamp a resumed Claude
     // session silently regains native auto-compact + /compact (the fresh-launch
@@ -9177,6 +9189,7 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
     it("reads both flag spellings, and reports absence as null", () => {
       expect(modelSpecFromRecycleArgv(["claude", "--model", LAUNCHED])).toBe(LAUNCHED);
       expect(modelSpecFromRecycleArgv(["claude", `--model=${LAUNCHED}`])).toBe(LAUNCHED);
+      expect(modelSpecFromRecycleArgv(["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="xhigh"'])).toBe("gpt-5.6-sol:xhigh");
       expect(modelSpecFromRecycleArgv(["claude", "--session-id", UUID])).toBeNull();
     });
   });
@@ -9262,6 +9275,44 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
 
   describe("detectRespawnModelSpec", () => {
     const argv = ["claude", "--session-id", UUID, "--model", LAUNCHED];
+
+    it("Codex carry uses the repaired isolated-home model when the old launch model was still active", () => {
+      const home = mkdtempSync(join(tmpdir(), "codex-model-carry-"));
+      const codexHome = join(home, "isolated");
+      mkdirSync(codexHome, { recursive: true });
+      try {
+        writeFileSync(join(codexHome, "config.toml"),
+          'model = "gpt-6-sol"\nmodel_reasoning_effort = "xhigh"\n[mcp_servers.papercusp-su]\n');
+        const previous = ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="xhigh"', "--dangerously-bypass-hook-trust"];
+        const selected = detectRespawnModelSpec(previous, {
+          agent: "codex",
+          codexHome,
+          advSessionId: 30870,
+          modelSource: "configured-default",
+          readLatestCodexRollout: () => ({ id: UUID }),
+          readLastActiveModel: () => "gpt-5.6-sol",
+        });
+        expect(selected).toBe("gpt-6-sol:xhigh");
+        const minted = mintRecycleArgs(previous, { agent: "codex", model: selected });
+        expect(minted.args).toEqual(["-m", "gpt-6-sol", "-c", 'model_reasoning_effort="xhigh"', "--dangerously-bypass-hook-trust"]);
+        expect(mintRecycleArgs(previous, { agent: "codex", model: "gpt-6-sol:high" }).args).toEqual(
+          ["-m", "gpt-6-sol", "-c", 'model_reasoning_effort="high"', "--dangerously-bypass-hook-trust"],
+        );
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it("Codex carry preserves an intentional in-session model switch over the home default", () => {
+      const selected = detectRespawnModelSpec(["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="xhigh"'], {
+        agent: "codex",
+        codexHome: join(tmpdir(), "codex-model-carry-test"),
+        modelSource: "configured-default",
+        readLatestCodexRollout: () => ({ id: UUID }),
+        readLastActiveModel: () => "gpt-6-sol",
+      });
+      expect(selected).toBe("gpt-6-sol:xhigh");
+    });
 
     it("reads the session's own transcript and reports the switched-to model", () => {
       expect(
