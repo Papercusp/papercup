@@ -129,6 +129,21 @@ describe.sequential('bundle-psu.mjs builds psu from the committed generation', (
     }
   });
 
+  test('AUTO-BAR-R-11-P-018: unrelated package scripts do not prevent a committed-generation build', { timeout: 240_000 }, () => {
+    const manifest = 'packages/operator-core/package.json';
+    const committed = JSON.parse(git('show', `${HEAD}:${manifest}`)) as Record<string, unknown>;
+    const marker = `P018-COMMITTED-SCRIPTS-${randomBytes(8).toString('hex')}`;
+    const sha = variant({
+      [manifest]: `${JSON.stringify({ ...committed, scripts: { 'probe:must-not-run': 'exit 99' } }, null, 2)}\n`,
+      [ENTRY]: `${git('show', `${HEAD}:${ENTRY}`)}\nglobalThis.__p018ScriptMetadata = ${JSON.stringify(marker)};\n`,
+    });
+    const { run, out } = bundle(sha, 'script-metadata');
+    expect(run.status, output(run)).toBe(0);
+    expect(readFileSync(path.join(out, 'lib', 'psu', 'psu.mjs'), 'utf8')).toContain(marker);
+    expect(JSON.parse(readFileSync(path.join(out, 'summary.json'), 'utf8')).sourcePins['.']).toBe(sha);
+    expect(readFileSync(path.join(REPO_ROOT, ENTRY), 'utf8')).not.toContain(marker);
+  });
+
   test('AUTO-BAR-R-11-P-018: a module-resolution file that differs from the commit is refused', { timeout: 240_000 }, () => {
     const manifest = 'apps/operator/package.json';
     const committed = JSON.parse(git('show', `${HEAD}:${manifest}`)) as Record<string, unknown>;
