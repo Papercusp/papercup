@@ -18,7 +18,7 @@ import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { resolveSpawnerSocketPath, SPAWNER_SOCKET_ENV } from './spawner-socket-path';
-import { probeUnixSocketAlive } from '../sidecar-socket/pid-keyed-socket';
+import { probeUnixSocketAlive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 import {
   resolveSidecarSpawnPlan,
   gracefulStopChild,
@@ -487,6 +487,14 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
     });
 
     child.on('exit', (code) => {
+      // The child found a LIVE sidecar on the shared path and declined to start
+      // (listenUnixSocketExclusive). Same outcome as the stderr bind-race case above,
+      // read off the exit code because this event can arrive before that stderr line.
+      if (code === SIDECAR_EXIT_SOCKET_IN_USE && !adoptedSocketPath) {
+        deliberateStop = true;
+        adoptedSocketPath = resolvedSocket;
+        console.log(`[spawner-sidecar] a live sidecar already serves ${resolvedSocket}; adopting it.`);
+      }
       const msg = code !== null ? `exit code ${code}` : 'killed';
       // A deliberate stopSpawnerSidecar() is a graceful shutdown, not a crash —
       // "died" here would be misleading noise (mirrors substrate's same guard).

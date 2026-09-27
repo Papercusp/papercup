@@ -97,6 +97,7 @@ import {
   hasAdoptedSpawnerSidecar,
   spawnSpawnerSidecar,
 } from './spawner-sidecar-spawn';
+import { SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 import { probeScopeSupport, resetScopeProbe } from '../task-manager/managed-spawn';
 import { setTaskManagerEnabledForTest } from '../task-manager/enabled';
 
@@ -468,6 +469,26 @@ describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
     expect(hasAdoptedSpawnerSidecar()).toBe(true);
 
     // And no respawn was scheduled: re-losing the race would just repeat this.
+    await flush();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('adopts on the in-use EXIT CODE alone, when exit arrives before any stderr (host-memory-reduction P-005)', async () => {
+    // The child now refuses to take a live sidecar's path (listenUnixSocketExclusive)
+    // and exits SIDECAR_EXIT_SOCKET_IN_USE. Node can deliver `exit` before the last
+    // stderr chunk, so the exit code alone must settle this as adoption. A crash exit
+    // (137 etc.) still respawns; spawner-sidecar-spawn.test.ts covers that half.
+    probeAliveMock.mockResolvedValueOnce(false);
+    const child = makeChild();
+    spawnMock.mockImplementationOnce(() => child);
+
+    const p = spawnSpawnerSidecar(SOCK);
+    await flush();
+
+    child.emit('exit', SIDECAR_EXIT_SOCKET_IN_USE);
+
+    await expect(p).resolves.toBeUndefined();
+    expect(hasAdoptedSpawnerSidecar()).toBe(true);
     await flush();
     expect(spawnMock).toHaveBeenCalledTimes(1);
   });

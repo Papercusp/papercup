@@ -62,6 +62,7 @@ import {
   reapOrphanedSpawnerSockets,
 } from './spawner-socket-path';
 import { execProcess, type ExecParams, type ExecResult } from './sidecar-exec-process';
+import { listenUnixSocketExclusive, SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 import { captureSidecarContainment, SPAWNER_SCOPE_ENV } from './sidecar-exec-lifetime';
 
 // JSON-RPC 2.0 response builders
@@ -120,12 +121,13 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
   const socketDir = path.dirname(socketPath);
 
   if (!fs.existsSync(socketDir)) fs.mkdirSync(socketDir, { recursive: true });
-  if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+  // No unconditional unlink of our own path here: `listenUnixSocketExclusive` below
+  // reclaims it only when nothing is listening on it (host-memory-reduction P-005).
 
   // Sweep OTHER hosts' orphaned socket files (dead owner pids) before claiming ours
   // — the EI-7832 fix the substrate sidecar got and this one did not.
   //
-  // The `existsSync/unlinkSync` above can only ever catch OUR OWN path. The scheme is
+  // The bind below can only ever reclaim OUR OWN path. The scheme is
   // pid-keyed, so an unpinned restart computes a brand-new path every time and a
   // PRIOR process's leftover file lives at a different (dead) pid's path that nothing
   // here ever looks at. With no reaper these accumulate without bound: measured in
@@ -372,15 +374,29 @@ export function runSpawnerSidecarServer(deps: { executeProcess?: typeof execProc
     });
   });
 
-  server.listen(socketPath, () => {
-    console.log(`[spawner-sidecar] listening on ${socketPath}`);
-    console.log(`PAPERCUSP_SPAWNER_READY socket=${socketPath}`);
-  });
-
-  server.on('error', (err) => {
-    console.error('[spawner-server-error]', err.message);
-    process.exit(1);
-  });
+  void listenUnixSocketExclusive(server, socketPath).then(
+    (outcome) => {
+      if (outcome === 'in-use') {
+        // A sibling's sidecar is live on this path, so we were spawned in error. Exit
+        // WITHOUT the exit hook: `unlinkSocket` would delete the path the live
+        // sidecar serves. The host adopts that sidecar on this exit code.
+        process.off('exit', unlinkSocket);
+        console.error(`[spawner-sidecar] EADDRINUSE: a live sidecar already serves ${socketPath}; exiting so the host adopts it`);
+        process.exit(SIDECAR_EXIT_SOCKET_IN_USE);
+      }
+      // Attached only after the bind: during it, an EADDRINUSE belongs to the helper.
+      server.on('error', (err) => {
+        console.error('[spawner-server-error]', err.message);
+        process.exit(1);
+      });
+      console.log(`[spawner-sidecar] listening on ${socketPath}`);
+      console.log(`PAPERCUSP_SPAWNER_READY socket=${socketPath}`);
+    },
+    (err: Error) => {
+      console.error('[spawner-server-error]', err.message);
+      process.exit(1);
+    },
+  );
 
   const shutdown = (signal: string): void => {
     if (shuttingDown) return;
