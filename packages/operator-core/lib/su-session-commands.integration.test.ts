@@ -138,7 +138,7 @@ describe('SU command acceptance through real PostgreSQL', () => {
       timeoutSec: 0.01,
       handler: (request, context) => {
         context.signal.addEventListener('abort', reportDeadline, { once: true });
-        return route.handler(request, context);
+        return route.handler(request, { ...context, input: undefined });
       },
     });
     const send = () => runWithWorkspace(workspaceId, () => app.request(
