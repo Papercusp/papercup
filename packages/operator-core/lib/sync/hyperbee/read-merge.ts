@@ -458,7 +458,13 @@ export type MergeApplyOutcome =
 interface PendingMergeApply {
   /** Resolves after FIFO admission, immediately before the physical write starts. */
   started: Promise<void>;
-  /** Keeps the admission slot until the physical write settles, even after a timeout. */
+  /** True once {@link started} has resolved (the write holds, or held, an admission slot). */
+  admitted: boolean;
+  /**
+   * The physical write's outcome. Its admission slot is held until it settles or, when it
+   * outlives the apply timeout, until the slot lease expires (WI-10003427: see
+   * {@link holdMergeApplySlot}).
+   */
   result: Promise<boolean | MergeApplyOutcome>;
 }
 
@@ -2069,18 +2075,101 @@ export const MERGE_APPLY_TIMEOUT_MS = 45_000;
  */
 export const DEFAULT_MERGE_APPLY_CONCURRENCY = 4;
 
+/**
+ * WI-10003427: at most this many physical writes may run DETACHED from an admission slot
+ * (see {@link holdMergeApplySlot}). Past it a write that outlives its lease keeps its slot,
+ * so a systemic hang cannot pile up unbounded concurrent PG work behind the gate's back.
+ */
+export const MAX_MERGE_APPLY_ZOMBIES = 32;
+
 interface MergeApplyAdmissionState {
   /** Optional so a process retaining a pre-fix pinned object upgrades in place. */
   gate?: ConcurrencyGate;
+  /** Physical writes whose slot lease expired while they kept running. */
+  zombies?: number;
+  /** Lease expiries since boot (each one is a write that outlived the apply timeout). */
+  zombiesTotal?: number;
 }
 
 const mergeApplyAdmissionState = pinModuleState<MergeApplyAdmissionState>(
   '@papercusp/operator-core.hyperbeeMergeApplyAdmission',
-  () => ({ gate: createConcurrencyGate(DEFAULT_MERGE_APPLY_CONCURRENCY) }),
+  () => ({ gate: createConcurrencyGate(DEFAULT_MERGE_APPLY_CONCURRENCY), zombies: 0, zombiesTotal: 0 }),
 );
 mergeApplyAdmissionState.gate ??= createConcurrencyGate(DEFAULT_MERGE_APPLY_CONCURRENCY);
 mergeApplyAdmissionState.gate.setLimit(DEFAULT_MERGE_APPLY_CONCURRENCY);
+mergeApplyAdmissionState.zombies ??= 0;
+mergeApplyAdmissionState.zombiesTotal ??= 0;
 const mergeApplyAdmission = mergeApplyAdmissionState.gate;
+
+/** WI-10003427: the process-wide merge-apply gate, for stall reports and health reads. */
+export interface MergeApplyAdmissionSnapshot {
+  limit: number;
+  inFlight: number;
+  queued: number;
+  /** Writes running detached from a slot right now. */
+  zombies: number;
+  zombiesTotal: number;
+}
+
+export function mergeApplyAdmissionSnapshot(): MergeApplyAdmissionSnapshot {
+  return {
+    limit: mergeApplyAdmission.limit,
+    inFlight: mergeApplyAdmission.inFlight,
+    queued: mergeApplyAdmission.queued,
+    zombies: mergeApplyAdmissionState.zombies ?? 0,
+    zombiesTotal: mergeApplyAdmissionState.zombiesTotal ?? 0,
+  };
+}
+
+/**
+ * WI-10003427 — hold a physical write's admission slot until the write settles or its lease
+ * (`leaseMs`, the apply timeout) expires, whichever comes first.
+ *
+ * The gate is PROCESS-WIDE (every booted harness shares {@link DEFAULT_MERGE_APPLY_CONCURRENCY}
+ * slots). Before this, a slot was held until its write settled, so a write that never settled
+ * kept its slot forever. Measured on the tower bg-host: postgres.js stranded statements on
+ * batch connections Postgres had killed for idle-in-transaction; four such writes held all four
+ * slots and every harness's federation stopped, with every per-harness health read healthy.
+ *
+ * On expiry the write keeps running (it is not cancellable) and is counted as a zombie until it
+ * settles; its caller already saw {@link MergeApplyTimeoutError} and holds the cursor. Past
+ * {@link MAX_MERGE_APPLY_ZOMBIES} the slot is kept, bounding detached concurrency. Both
+ * transitions log loudly. `leaseMs <= 0` holds until the write settles (the pre-fix behavior).
+ */
+async function holdMergeApplySlot(groupKey: string, write: Promise<unknown>, leaseMs: number): Promise<void> {
+  const settled = write.then(
+    () => undefined,
+    () => undefined,
+  );
+  if (leaseMs <= 0) return settled;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = await Promise.race([
+    settled.then(() => false),
+    new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(true), leaseMs);
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (!expired) return;
+  const state = mergeApplyAdmissionState;
+  if ((state.zombies ?? 0) >= MAX_MERGE_APPLY_ZOMBIES) {
+    console.error(
+      `[read-merge] MERGE-APPLY ZOMBIE CAP: ${groupKey} still running after ${leaseMs}ms and ` +
+        `${state.zombies} writes already run detached; keeping its admission slot (WI-10003427)`,
+    );
+    return settled;
+  }
+  state.zombies = (state.zombies ?? 0) + 1;
+  state.zombiesTotal = (state.zombiesTotal ?? 0) + 1;
+  console.error(
+    `[read-merge] MERGE-APPLY ZOMBIE: ${groupKey} still running after ${leaseMs}ms; admission slot ` +
+      `released, write detached (${state.zombies} detached now, ${state.zombiesTotal} since boot) (WI-10003427)`,
+  );
+  void settled.then(() => {
+    state.zombies = Math.max(0, (state.zombies ?? 1) - 1);
+  });
+}
 
 /**
  * Thrown when a single apply exceeds its bound. A timeout is retryable, never
@@ -2197,6 +2286,13 @@ async function applyRecordingWinner(
     const pending = (cursor.pendingApplies ??= new Map<string, PendingMergeApply>());
     let physical = pending.get(ident);
     if (!physical) {
+      // WI-10003427: never wait for admission while holding an open batch transaction. The
+      // gate is process-wide, so the wait can outlast Postgres's idle-in-transaction timeout;
+      // the server then kills the batch connection and postgres.js strands every statement
+      // queued on it, which hung the next op inside its slot forever. Take a free slot now,
+      // or commit the batch before queueing (a lost commit fails the batch; the fold replays).
+      let slot = mergeApplyAdmission.tryAcquire();
+      if (!slot && batch?.fold.holdsTransaction) await batch.fold.commit();
       // A reused in-flight apply (above) started outside this batch and autocommits,
       // so only a fresh apply is bound to the batch.
       const bound = batch ? batch.fold.beginOp(batch.pos, apply) : null;
@@ -2206,24 +2302,44 @@ async function applyRecordingWinner(
       const started = new Promise<void>((resolve) => {
         markStarted = resolve;
       });
-      const result = mergeApplyAdmission.run(async () => {
+      let settleResult: (write: Promise<boolean | MergeApplyOutcome>) => void = () => {};
+      const result = new Promise<boolean | MergeApplyOutcome>((resolve) => {
+        settleResult = resolve;
+      });
+      const entry: PendingMergeApply = { started, admitted: false, result };
+      const admitted = async (): Promise<void> => {
         // Queue time is safe backpressure, not a slow PG write. Start both the
         // named-stage clock and the hard apply timeout only after admission.
+        entry.admitted = true;
         markStarted();
         // D-016: entered here, after admission, so the source is this op's and never that
         // of whichever apply released the admission slot.
-        return logIfStageStalls(
+        const write = logIfStageStalls(
           scope,
           `merge-apply (${groupKey})`,
           Promise.resolve().then(() => runWithDeferralSource(source, () => run(env))),
         );
-      });
-      physical = { started, result };
+        settleResult(write);
+        await holdMergeApplySlot(groupKey, write, applyTimeoutMs);
+      };
+      let admission: Promise<void>;
+      if (slot) {
+        const release = slot;
+        slot = null;
+        admission = admitted().finally(release);
+      } else {
+        admission = mergeApplyAdmission.run(admitted);
+      }
+      void admission.catch((err: unknown) => settleResult(Promise.reject(err)));
+      physical = entry;
       pending.set(ident, physical);
       const current = physical;
       void result.finally(() => {
         if (pending.get(ident) === current) pending.delete(ident);
       }).catch(() => {});
+    } else if (!physical.admitted && batch?.fold.holdsTransaction) {
+      // The same rule for a queued write reused from an earlier pass.
+      await batch.fold.commit();
     }
     await physical.started;
     const result = await raceApplyTimeout(groupKey, physical.result, applyTimeoutMs);
@@ -2500,6 +2616,21 @@ class FoldBatch {
     return this.failureReason ?? 'unknown';
   }
 
+  /** A transaction is open, or opening, on a reserved connection (WI-10003427). */
+  get holdsTransaction(): boolean {
+    return this.reserved !== null || this.opening !== null;
+  }
+
+  /**
+   * WI-10003427: run one statement on the reserved connection and wait at most the batch
+   * deadline for it. postgres.js 3.4.9 queues a statement issued while the connection is busy
+   * in a private queue that nothing drains or rejects once the server closes the connection
+   * (measured: an idle-in-transaction kill), so an unbounded await here never settles.
+   */
+  private async stmt(reserved: postgres.ReservedSql, text: string): Promise<void> {
+    await raceMergeDeadline(reserved.unsafe(text), this.commitTimeoutMs, `batch ${text}`);
+  }
+
   /** The open transaction reached its op or age bound. */
   get due(): boolean {
     return this.reserved !== null && (this.opsInTx >= this.maxOps || Date.now() - this.openedAt >= this.maxMs);
@@ -2578,8 +2709,8 @@ class FoldBatch {
     this.afterCommitHooks = this.afterCommitHooks.filter((h) => h.opId !== opId);
     if (!savepoint) return true;
     try {
-      await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT}`);
-      await reserved.unsafe(`RELEASE SAVEPOINT ${BATCH_SAVEPOINT}`);
+      await this.stmt(reserved, `ROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT}`);
+      await this.stmt(reserved, `RELEASE SAVEPOINT ${BATCH_SAVEPOINT}`);
     } catch (err) {
       this.fail(err);
     }
@@ -2838,7 +2969,7 @@ class FoldBatch {
           `writing them one at a time`,
       );
       try {
-        await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${GROUP_SAVEPOINT}`);
+        await this.stmt(reserved, `ROLLBACK TO SAVEPOINT ${GROUP_SAVEPOINT}`);
       } catch (err) {
         this.fail(err);
         return false;
@@ -2851,7 +2982,7 @@ class FoldBatch {
             throw new MergeBatchLostError('a group record cannot commit its batch');
           },
           recover: async () => {
-            await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${GROUP_ROW_SAVEPOINT}`);
+            await this.stmt(reserved, `ROLLBACK TO SAVEPOINT ${GROUP_ROW_SAVEPOINT}`);
           },
         };
         try {
@@ -2921,7 +3052,7 @@ class FoldBatch {
       return;
     }
     try {
-      await reserved.unsafe(`ROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT}`);
+      await this.stmt(reserved, `ROLLBACK TO SAVEPOINT ${BATCH_SAVEPOINT}`);
     } catch (err) {
       this.fail(err);
     }
@@ -2932,9 +3063,22 @@ class FoldBatch {
 function abandonReserved(reserved: postgres.ReservedSql): void {
   // Queued behind any statement still running on this connection, so the release
   // waits for it; ROLLBACK after a completed COMMIT is a harmless warning.
-  void Promise.resolve(reserved.unsafe('ROLLBACK'))
-    .catch(() => {})
-    .finally(() => reserved.release());
+  const rollback = Promise.resolve(reserved.unsafe('ROLLBACK'));
+  void rollback.catch(() => {}).finally(() => reserved.release());
+  // WI-10003427: nothing awaits this, but a ROLLBACK stranded in postgres.js's reserve queue
+  // (the server closed the connection) never settles, so the connection is never handed
+  // back. Keeping it out of the pool is deliberate (its transaction state is unknown); say so.
+  const timer = setTimeout(() => {
+    console.error(
+      `[read-merge] abandoned batch connection: ROLLBACK unanswered after ${MERGE_BATCH_COMMIT_TIMEOUT_MS}ms; ` +
+        `the connection stays out of the pool until it settles (WI-10003427)`,
+    );
+  }, MERGE_BATCH_COMMIT_TIMEOUT_MS);
+  timer.unref?.();
+  void rollback.then(
+    () => clearTimeout(timer),
+    () => clearTimeout(timer),
+  );
 }
 
 async function raceMergeDeadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
