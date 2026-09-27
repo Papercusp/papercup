@@ -1534,11 +1534,14 @@ export default defineTool({
               account: args.account ?? null,
               // Resume/fork does not pass --agent, but the command builder
               // still needs the recorded backend to apply Codex's model
-              // policy. The target's model is the durable fallback when the
-              // caller did not explicitly override it.
+              // policy. A Codex source may have changed model OR reasoning
+              // effort inside its live TUI after launch. Do not pass the stale
+              // launch argv back as an explicit --model: psu's native resume
+              // reader selects the latest turn_context model:effort, falling
+              // back to recorded launch metadata only if no transcript exists.
               agent: resumeAgent,
-              model: args.model ?? resumeModel,
-              modelSource: args.model ? 'explicit' : resumeModelSource,
+              model: args.model ?? (resumeAgent === 'codex' ? null : resumeModel),
+              modelSource: args.model ? 'explicit' : (resumeAgent === 'codex' ? null : resumeModelSource),
               headless: !!args.headless,
               carry: savedLaunchCarry ?? null,
               launchMode,
