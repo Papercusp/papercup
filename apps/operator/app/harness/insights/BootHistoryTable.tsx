@@ -88,6 +88,10 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   announce_clock_skew: '🕒',
   announce_error: '✗',
   merge_error: '✗',
+  // WI-10003427: a wedged merge pass (names its stage) / its settle / an admission starved behind it.
+  merge_stalled: '⧗',
+  merge_stall_cleared: '✓',
+  announce_admission_stalled: '⧗',
   rekey_grant_failed: '✗',
   rekey_grant_skipped: '⤼',
   rekey_boundary_skipped: '⤳',

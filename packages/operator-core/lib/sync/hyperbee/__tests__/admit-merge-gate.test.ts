@@ -15,7 +15,7 @@
  *     setInterval(async …) double-processed pending peers).
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,7 +27,7 @@ import {
 import { buildAnnounce, type SignedAnnounce } from '../announce';
 import { _resetCacheForTests } from '../corestore';
 import { _clearRegistryForTests } from '../projection';
-import { _resetBootHistoryForTests } from '../boot-history';
+import { _resetBootHistoryForTests, listBootHistory } from '../boot-history';
 
 /**
  * Keep this suite hermetic. Production resolves re-key dependencies
@@ -158,6 +158,97 @@ describe('admission is serialized with the merge gate (audit P-022)', () => {
     const frame2 = await validAnnounce('ef'.repeat(32));
     await handle.onAnnounce(frame2);
     expect(events).toHaveLength(1);
+  });
+});
+
+describe('merge-pass watchdog (WI-10003427)', () => {
+  it('a wedged pass records merge_stalled naming its stage, and a queued announce records announce_admission_stalled', async () => {
+    // Every admission drains INSIDE a merge pass, so a pass that never settles used to
+    // starve admission with ZERO signal (no admitted/rejected/pending line; verdict
+    // "healthy"). Pin a pass open at its incremental merge and prove both detectors fire.
+    const errors: string[] = [];
+    const errSpy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+    cleanups.push(() => errSpy.mockRestore());
+    let releaseApply!: () => void;
+    const applyGate = new Promise<void>((r) => (releaseApply = r));
+    let applies = 0;
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('mb-watchdog-'),
+      workspaceId: 'ws-watchdog-1',
+      harnessSlug: 'watchdog-1',
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      mergePassStallMs: 40,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'verified',
+      applyOverride: async () => {
+        applies++;
+        if (applies === 1) await applyGate;
+        return true;
+      },
+    });
+    cleanups.push(() => handle.close());
+    await handle.append({
+      type: 'put',
+      table: 'perf-rep',
+      hbKey: 'k-wedge',
+      value: { v: 1 },
+      ts: Date.now(),
+      schema_version: 1,
+    });
+    const mergeInFlight = handle.mergeNow(); // pinned open on apply #1
+    const logCoreKey = 'cd'.repeat(32);
+    const announced = handle.onAnnounce(await validAnnounce(logCoreKey));
+    // 40ms first fire, re-armed at 80ms: by ~200ms both detectors have fired.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(handle.admitted.has(logCoreKey)).toBe(false);
+
+    const scope = { workspaceId: 'ws-watchdog-1', harnessSlug: 'watchdog-1' };
+    const stalled = listBootHistory({ ...scope, kinds: ['merge_stalled'] });
+    expect(stalled.length).toBeGreaterThanOrEqual(2); // first fire + at least one re-arm
+    expect(stalled[stalled.length - 1]!.message).toMatch(/stage 'incremental-merge'/);
+    const admissionStalled = listBootHistory({ ...scope, kinds: ['announce_admission_stalled'] });
+    expect(admissionStalled).toHaveLength(1);
+    expect(admissionStalled[0]!.message).toMatch(/cdcdcdcd/);
+    expect(admissionStalled[0]!.message).toMatch(/blocked behind merge pass in flight \d+s at stage 'incremental-merge'/);
+    expect(errors.some((l) => l.includes('MERGE PASS STALL'))).toBe(true);
+    expect(errors.some((l) => l.includes('ADMISSION STALL'))).toBe(true);
+
+    // Release: the pass settles (merge_stall_cleared), the coalesced follower drains the
+    // queue, and the announce is admitted — the watchdog never cancels anything.
+    releaseApply();
+    expect(await announced).toEqual({ admit: true });
+    await mergeInFlight;
+    expect(handle.admitted.has(logCoreKey)).toBe(true);
+    expect(listBootHistory({ ...scope, kinds: ['merge_stall_cleared'] })).toHaveLength(1);
+    const firesAtRelease = listBootHistory({ ...scope, kinds: ['merge_stalled'] }).length;
+    await new Promise((r) => setTimeout(r, 120));
+    // Timers cleared on settle: no further stall events, and a healthy pass stays silent.
+    expect(listBootHistory({ ...scope, kinds: ['merge_stalled'] })).toHaveLength(firesAtRelease);
+  });
+
+  it('a healthy pass records nothing', async () => {
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('mb-watchdog-ok-'),
+      workspaceId: 'ws-watchdog-2',
+      harnessSlug: 'watchdog-2',
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      mergePassStallMs: 150,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'verified',
+    });
+    cleanups.push(() => handle.close());
+    const logCoreKey = 'ef'.repeat(32);
+    expect(await handle.onAnnounce(await validAnnounce(logCoreKey))).toEqual({ admit: true });
+    // Wait well past the threshold: timers armed for the settled pass/admission must be cleared.
+    await new Promise((r) => setTimeout(r, 400));
+    const scope = { workspaceId: 'ws-watchdog-2', harnessSlug: 'watchdog-2' };
+    expect(
+      listBootHistory({ ...scope, kinds: ['merge_stalled', 'merge_stall_cleared', 'announce_admission_stalled'] }),
+    ).toHaveLength(0);
   });
 });
 

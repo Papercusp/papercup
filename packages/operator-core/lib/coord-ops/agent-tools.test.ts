@@ -25,6 +25,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/coord-ops/agent-tools.test.ts
  */
 import { describe, expect, it, vi } from 'vitest';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import { askOwnerArgs } from './agent-tools';
 import { askOp } from './ops/compose';
 import type { CoordOpCaps, CoordOpCtx } from './types';
@@ -38,6 +39,46 @@ const makeCtx = (caps: Partial<CoordOpCaps>): CoordOpCtx => ({
 });
 
 describe('coord:ask-owner tool args (askOwnerArgs)', () => {
+  it('accepts the declared owner question and refuses the legacy options/context payload', async () => {
+    const tool = lookupByMcpName('coord:ask-owner');
+    expect(tool, 'the live tool must be registered').toBeDefined();
+    const run = vi.spyOn(askOp, 'run').mockResolvedValue({
+      answered: false,
+      answer: null,
+      conversation_id: 'fixture-owner-question',
+    });
+    const context = {
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      emit: vi.fn(),
+      workspaceId: 'papercusp-workspace',
+      role: 'operator',
+      runId: 'owner-ask-contract',
+    } as unknown as Parameters<typeof dispatchProjectedTool>[3];
+    const dispatch = (args: Record<string, unknown>) =>
+      dispatchProjectedTool(tool!, 'coord:ask-owner', args, context, {});
+    try {
+      const valid = await dispatch({
+        question: 'Which route should we take?',
+        body: 'The two candidates are A and B.',
+      });
+      expect(valid.ok, JSON.stringify(valid)).toBe(true);
+      expect(run).toHaveBeenCalledTimes(1);
+
+      const legacy = await dispatch({
+        question: 'Which route should we take?',
+        options: ['A', 'B'],
+        context: { decision: 'route' },
+      });
+      expect(legacy.ok).toBe(false);
+      expect(legacy.error?.message).toMatch(/options.*context|context.*options/);
+      expect(run).toHaveBeenCalledTimes(1);
+    } finally {
+      run.mockRestore();
+    }
+  });
+
   it('defaults timeout_s to 0 — NOT the op\'s 120s default', () => {
     const parsed = askOwnerArgs.parse({ question: 'A or B?' });
     expect(parsed.timeout_s).toBe(0);

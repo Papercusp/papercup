@@ -1,5 +1,6 @@
 /** Fresh process boundary for one P-013 cold sample. The parent owns the
  * migrated throwaway database; this process only opens and closes its client. */
+import { readFileSync } from 'node:fs';
 import postgres from 'postgres';
 import {
   PG_BIGINT_AS_NUMBER_TYPES, PG_TIMESTAMP_NO_TZ_AS_UTC_TYPES,
@@ -46,11 +47,17 @@ try {
   if (!process.send) throw new Error('P-013 cold child requires an IPC channel');
   await new Promise<void>((resolve, reject) => process.send!({ kind: 'p013-sample', sample }, (error) =>
     error ? reject(error) : resolve()));
+  process.send?.({ kind: 'p013-stage', stage: 'sample-sent' });
 } catch (error) {
   console.error('P-013 cold child failed:', error);
   process.exitCode = 1;
 } finally {
   await sql.end({ timeout: 5 });
+  // Name the native addons still mapped at teardown: an abort after this stage
+  // is a process-exit fault, not a workload fault.
+  const addons = [...new Set(readFileSync('/proc/self/maps', 'utf8').split('\n')
+    .map((line) => line.split(/\s+/).at(-1) ?? '').filter((path) => path.endsWith('.node')))];
+  process.send?.({ kind: 'p013-stage', stage: `exiting addons=${addons.map((p) => p.split('node_modules/').at(-1)).join(',') || 'none'}` });
   process.disconnect?.();
   // A disposable cold sample may import modules with background handles. Its
   // boundary is one operation, so release the process after flushing IPC + SQL.

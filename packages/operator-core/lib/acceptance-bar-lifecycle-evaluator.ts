@@ -361,7 +361,9 @@ function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecycl
     // stale/depth/adequacy verdicts describe the lifecycle gap, not the proof. Mirror the
     // snapshot: name the gap instead. A pre-field snapshot (undefined) keeps the old codes.
     const clausesNotAccepted = bar.readiness.clauseAcceptance === 'not-accepted';
-    if (clausesNotAccepted) addCode(codes, 'bar_snapshot_clause_not_accepted');
+    // Seeded clauses begin as drafts; accepting them is a ship obligation, not
+    // a pre-grading gate (phaseSnapshotCodes applies the same phase contract).
+    if (clausesNotAccepted && phase === 'ship') addCode(codes, 'bar_snapshot_clause_not_accepted');
     if (!clausesNotAccepted && bar.role === 'outcome' && automatedProofRequired(bar)) {
       if (!bar.requiredTestLayers?.length) addCode(codes, 'bar_snapshot_proof_depth_missing');
       else if (bar.proof.adequacy?.state !== 'pass') addCode(codes, 'bar_snapshot_proof_inadequate');

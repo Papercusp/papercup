@@ -166,6 +166,8 @@ beforeAll(async () => {
       '953-event-announcement-logical-gate.sql',
       '1110-work-items-admission-flags-generated-columns.sql',
       '1135-work-items-epoch-ms-timestamp-guard.sql',
+      '1194-work-items-directive-ref.sql',
+      '1216-event-await-fired-delivery-intent-marker.sql',
     ],
     {
       label: 'condition-upsert.integration',
