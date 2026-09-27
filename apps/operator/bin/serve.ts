@@ -37,7 +37,11 @@
  *   PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane
  *                                 start only the hosted API allowlist + same-origin SPA
  */
-// MUST remain the first import. Projection/background modules can resolve
+// Cap glibc malloc arenas by re-executing in place when the launcher did not
+// (boot-malloc-arena.ts). It reads no flags, so boot-flag-store below is still the
+// first module that can observe one.
+import "./boot-malloc-arena";
+// MUST remain the first flag-reading import. Projection/background modules can resolve
 // flags during ESM evaluation, before main() runs; without this side effect the
 // packaged/headless serve process logs "No override store installed" and
 // silently serves dark defaults even after flags:set wrote a runtime override.

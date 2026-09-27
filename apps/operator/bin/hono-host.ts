@@ -14,6 +14,10 @@
  * Final home (Phase H): moves to `apps/operator-vite/server/` once `_hono/`
  * relocates there. See operator-vite-migration-2026-05-20.md (Phase C/H).
  */
+// ZEROTH: cap glibc malloc arenas by re-executing in place when the launcher did
+// not (boot-malloc-arena.ts). It reads no flags and loads nothing, so it precedes
+// the integrity preflight rather than making every uncapped boot run it twice.
+import './boot-malloc-arena';
 // MUST be first: runs the release-integrity preflight before the heavy import graph
 // (host-bootstrap → @papercusp/plugin-loader → MCP SDK → mem0 …) evaluates, so an
 // inconsistent checkout fails fast + named instead of crash-looping every worker on
