@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -35,6 +35,45 @@ describe('pg-autotune host-backup exclusion', () => {
       expect(result.stdout).not.toContain('writing /etc/postgresql');
     } finally {
       holder.kill();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  it('holds the producer lock for the entire apply child', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercusp-pg-autotune-hold-'));
+    const bin = join(dir, 'bin');
+    const lock = join(dir, 'db-backup.lock');
+    const entered = join(dir, 'apply-entered');
+    mkdirSync(bin);
+    const fakeNpx = join(bin, 'npx');
+    writeFileSync(fakeNpx, '#!/usr/bin/env bash\nprintf ready >"$AUTOTUNE_ENTERED"\nsleep 2\n');
+    chmodSync(fakeNpx, 0o755);
+    const apply = spawn(process.execPath, ['--import', 'tsx', AUTOTUNE, '--apply'], {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        PC_BACKUP_LOCK: lock,
+        AUTOTUNE_ENTERED: entered,
+        PAPERCUSP_PG_AUTOTUNE_BACKUP_LOCK_HELD: '',
+      },
+      stdio: 'ignore',
+    });
+    try {
+      let held = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (existsSync(entered)) {
+          held = spawnSync('flock', ['-n', lock, 'true']).status === 1;
+          break;
+        }
+        await delay(20);
+      }
+      expect(held).toBe(true);
+      const exited = await new Promise<number | null>((resolveExit) => apply.on('close', resolveExit));
+      expect(exited).toBe(0);
+      expect(spawnSync('flock', ['-n', lock, 'true']).status).toBe(0);
+    } finally {
+      if (apply.exitCode === null) apply.kill();
       rmSync(dir, { recursive: true, force: true });
     }
   }, 15_000);
