@@ -13,6 +13,7 @@ import type { ResolvedAgentSpecification } from '@papercusp/orchestrator/bluepri
 import {
   IDENTITY_HISTORY_LIMIT,
   carryIdentityReceiptForControlActivation,
+  retainSuLaunchIdentityHistory,
   type SuLaunchArtifactHistoryEntry,
   type SuLaunchSpecRecord,
 } from './su-persona-render';
@@ -55,6 +56,36 @@ function entry(overrides: Partial<SuLaunchArtifactHistoryEntry> = {}): SuLaunchA
     ...overrides,
   };
 }
+
+describe('launch replacement receipt retention', () => {
+  it('does not invent the missing applied artifact from a newly prepared render', () => {
+    const next = record({ specificationRevision: 'spec-b', specificationArtifact: OTHER_ARTIFACT });
+    expect(retainSuLaunchIdentityHistory(null, next, {
+      specificationRevision: 'spec-a', stateRevision: 'state-1',
+    })).toEqual(next);
+    expect(retainSuLaunchIdentityHistory(record({ specificationArtifact: undefined }), next, {
+      specificationRevision: 'spec-a', stateRevision: 'state-1',
+    })).toEqual(next);
+  });
+
+  it('keeps persisted receipt bytes when a stale caller supplies a conflicting history entry', () => {
+    const persisted = entry();
+    const conflicting = entry({ stack: ['unacknowledged'], recordedAt: 'later' });
+    const next = record({
+      specificationRevision: 'spec-b', specificationArtifact: OTHER_ARTIFACT,
+      identityHistory: [conflicting],
+    });
+    const merged = retainSuLaunchIdentityHistory(record({ identityHistory: [persisted] }), next, {
+      specificationRevision: 'spec-a', stateRevision: 'state-0',
+    });
+    expect(merged).toMatchObject({ identityHistory: [
+      { specificationRevision: 'spec-a', stateRevision: 'state-1' }, persisted,
+    ] });
+    expect(retainSuLaunchIdentityHistory(merged, next, {
+      specificationRevision: 'spec-a', stateRevision: 'state-0',
+    })).toEqual(merged);
+  });
+});
 
 describe('carryIdentityReceiptForControlActivation', () => {
   it('carries a receipt when a control activation advances only the state revision', () => {

@@ -317,6 +317,50 @@ export interface SuLaunchArtifactHistoryEntry {
  */
 export const IDENTITY_HISTORY_LIMIT = 12;
 
+/** Preserve stored receipts when a launch replaces its render. The applied
+ * pair is only a retention pin: this never creates or acknowledges a receipt. */
+export function retainSuLaunchIdentityHistory(previous: unknown, next: unknown, applied: unknown): unknown {
+  const object = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown> : null;
+  const before = object(previous);
+  const after = object(next);
+  if (!after) return next;
+  const samePair = (a: Record<string, unknown>, b: Record<string, unknown>) =>
+    a.specificationRevision === b.specificationRevision && a.stateRevision === b.stateRevision;
+  const candidates = [
+    before,
+    ...(Array.isArray(before?.identityHistory) ? before.identityHistory : []),
+    ...(Array.isArray(after.identityHistory) ? after.identityHistory : []),
+  ];
+  const seen = new Set<string>();
+  const history: Record<string, unknown>[] = [];
+  for (const candidate of candidates) {
+    const entry = object(candidate);
+    const artifact = object(entry?.specificationArtifact);
+    if (!entry || !artifact || typeof entry.specificationRevision !== 'string' || !entry.specificationRevision ||
+        typeof entry.stateRevision !== 'string' || !entry.stateRevision ||
+        artifact.specificationRevision !== entry.specificationRevision || samePair(entry, after)) continue;
+    const key = JSON.stringify([entry.specificationRevision, entry.stateRevision]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    history.push({
+      stack: Array.isArray(entry.stack) ? entry.stack : [],
+      ...(entry.selectedIdentity !== undefined ? { selectedIdentity: entry.selectedIdentity } : {}),
+      specificationRevision: entry.specificationRevision,
+      stateRevision: entry.stateRevision,
+      specificationArtifact: artifact,
+      recordedAt: typeof entry.recordedAt === 'string' ? entry.recordedAt : new Date().toISOString(),
+    });
+  }
+  const retained = history.slice(0, IDENTITY_HISTORY_LIMIT);
+  const appliedPair = object(applied);
+  const pinned = appliedPair && history.find((entry) => samePair(entry, appliedPair));
+  if (pinned && !retained.includes(pinned)) retained[IDENTITY_HISTORY_LIMIT - 1] = pinned;
+  return retained.length || Array.isArray(after.identityHistory)
+    ? { ...after, identityHistory: retained } : next;
+}
+
 /**
  * P-009 (EI-23431478594488191): a CONTROL-source activation — a `mode:set` or
  * fleet-membership transition — advances the applied STATE revision while
