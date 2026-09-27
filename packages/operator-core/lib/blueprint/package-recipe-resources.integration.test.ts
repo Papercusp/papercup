@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import postgres from 'postgres';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { pinPackageInput } from '@papercusp/orchestrator/blueprint';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getRecipe, upsertRecipe } from '../code-recipes-store';
@@ -77,5 +78,50 @@ describe('recipe package resource ownership (real PG)', () => {
       pin: tampered, workspaceId: 'recipe-tampered', dependentId: 'wearer',
     })).rejects.toThrow(/package-hash-mismatch/);
     expect(await getRecipe(db.adminSql, exact.ref)).toBeNull();
+  });
+
+  it('preserves an edit committed while cleanup waits for the recipe row', async () => {
+    const selected = pin('concurrent-edit-recipe');
+    const workspaceId = 'recipe-concurrent-edit';
+    const receipt = await prepareRecipePackageResource(db.adminSql, {
+      pin: selected, workspaceId, dependentId: 'wearer',
+    });
+    const planned = planRecipePackageResource(selected, workspaceId);
+    const cleanupSql = postgres(db.adminDsn, {
+      max: 1, onnotice: () => {}, connection: { application_name: 'p006-recipe-cleanup-race' },
+    });
+    let markLocked!: () => void;
+    let rejectLocked!: (error: unknown) => void;
+    const locked = new Promise<void>((resolve, reject) => { markLocked = resolve; rejectLocked = reject; });
+    let releaseEdit!: () => void;
+    const editMayCommit = new Promise<void>((resolve) => { releaseEdit = resolve; });
+    const edit = db.adminSql.begin(async (tx) => {
+      await tx`UPDATE harness_shared.code_recipes SET script = 'return { edited: true };'
+        WHERE id = ${selected.ref}`;
+      markLocked();
+      await editMayCommit;
+    });
+    void edit.catch(rejectLocked);
+    let cleanup: ReturnType<ReturnType<typeof packageRecipeDriver>['removeIfUnchanged']> | undefined;
+    try {
+      await locked;
+      cleanup = packageRecipeDriver(cleanupSql, planned.address, planned.value)
+        .removeIfUnchanged(receipt.external_refs[0]!);
+      await vi.waitFor(async () => {
+        const waiting = await db.adminSql`SELECT 1 FROM pg_stat_activity
+          WHERE application_name = 'p006-recipe-cleanup-race' AND datname = ${db.dbName}
+            AND wait_event_type = 'Lock'`;
+        expect(waiting).toHaveLength(1);
+      }, { timeout: 10_000, interval: 25 });
+      releaseEdit();
+      await edit;
+      expect(await cleanup).toBe('changed');
+      expect(await getRecipe(db.adminSql, selected.ref)).toMatchObject({ script: 'return { edited: true };' });
+    } finally {
+      releaseEdit();
+      await edit.catch(() => {});
+      await cleanup?.catch(() => {});
+      await cleanupSql.end({ timeout: 5 });
+    }
   });
 });
