@@ -99,7 +99,21 @@ const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
 const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
   ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
 const dedicatedPgRequested = dedicatedPgMode !== null;
-const DEDICATED_PG_SETTINGS = { max_connections: '200', dynamic_shared_memory_type: 'mmap' };
+const DEDICATED_PG_SETTINGS: Record<string, string> = {
+  max_connections: '200',
+  dynamic_shared_memory_type: 'mmap',
+  // Forensics: P013_PG_LOG_DIR=<abs dir> captures every data-modifying statement with its
+  // backend pid + xid, so a write collision can be attributed to the exact writer.
+  ...(process.env.P013_PG_LOG_DIR
+    ? {
+        logging_collector: 'on',
+        log_directory: process.env.P013_PG_LOG_DIR,
+        log_statement: 'mod',
+        log_min_error_statement: 'error',
+        log_line_prefix: '%m [%p] x%x ',
+      }
+    : {}),
+};
 beforeAll(async () => {
   if (dedicatedPgMode === 'native') {
     dedicatedPg = await startDedicatedNativePg({ settings: DEDICATED_PG_SETTINGS });
