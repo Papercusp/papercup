@@ -847,6 +847,20 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(commands[1]).toContain('--stack=domain:papercusp-engineer');
   });
 
+  it.each([
+    { stack: ['papercusp-engineer'] },
+    { members: [{ stack: ['papercusp-engineer'] }] },
+  ])('refuses malformed stack bindings before claiming admission: %j', async (bad) => {
+    const result = await launchAgent.handler({ brief: 'should not launch', ...bad } as never, ctx);
+
+    expect(result.content[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringContaining('expected "<slot>:<id>"'),
+    });
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
   it('propagates flat carry to an existing-fleet plan launch with per-member precedence', async () => {
     const res = await launchAgent.handler(
       {
