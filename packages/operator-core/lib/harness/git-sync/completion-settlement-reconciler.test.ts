@@ -343,6 +343,37 @@ describe('reconcileProposedCompletionsAtCommit — liveness', () => {
     expect(onProgress).toHaveBeenCalledWith({ completed: 1, total: 1, featureId: 'WI-42476' });
   });
 
+  it('settles independent candidates concurrently and reports completed work', async () => {
+    const payload = { [TERMINAL_COMPLETION_EVIDENCE_KEY]: { settlementManifest: manifest } };
+    const sql = vi.fn(async (strings: TemplateStringsArray) => {
+      const query = strings.join('?');
+      if (query.includes('SELECT feature_id, harness_slug, payload')) {
+        return ['WI-FIRST', 'WI-SECOND'].map((feature_id) => ({ feature_id, harness_slug: 'papercusp', payload }));
+      }
+      if (query.includes('UPDATE harness_shared.work_items')) return [];
+      throw new Error(`unexpected SQL: ${query}`);
+    }) as unknown as ReturnType<typeof import('@papercusp/db-org').getOrgPg>['sql'];
+    (sql as unknown as { json: (value: unknown) => unknown }).json = (value) => value;
+    let active = 0;
+    let peak = 0;
+    const lookup = vi.fn(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      active -= 1;
+      return matchingLookup();
+    });
+    const onProgress = vi.fn();
+
+    const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql, lookup, emit: settlementEmitMock(), onProgress,
+    });
+
+    expect(peak).toBe(2);
+    expect(result).toMatchObject({ inspected: 2, upgraded: [], residual: 0, unreadable: [] });
+    expect(onProgress.mock.calls.map(([progress]) => progress.completed)).toEqual([1, 2]);
+  });
+
   it('stops before a late settlement write when the action signal aborts', async () => {
     const controller = new AbortController();
     const sql = settlementSql({ updateHits: [true] });

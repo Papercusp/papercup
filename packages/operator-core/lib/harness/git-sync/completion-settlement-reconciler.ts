@@ -14,6 +14,7 @@ import { emitAwaitedEvent } from '../../events/await/engine';
 
 const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 const MAX_CANDIDATES = 200;
+const SETTLEMENT_CONCURRENCY = 8;
 
 export type SettlementResidualReason = 'identity-unavailable' | 'missing-from-commit' | 'content-mismatch';
 export type SettlementResidualPath = { path: string; reason: SettlementResidualReason };
@@ -264,17 +265,17 @@ export async function reconcileProposedCompletionsAtCommit(
 
   if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
 
-  const upgraded: string[] = [];
-  let residualCount = 0;
+  const upgradedByIndex: Array<string | undefined> = [];
+  const residualByIndex: number[] = [];
   // WI-1409142: a candidate this pass could not READ is the failure mode that hurts
   // most, because it is indistinguishable from one that settled cleanly: the row is
   // skipped, no residualPaths are written, and it therefore shows up in NEITHER the
   // settled nor the unsettled count. 110 closes sat permanently stuck that way for
   // four days with not one line of output. Skipping is still correct — one malformed
   // row must not stall the batch — but it must never again be SILENT.
-  const unreadable: string[] = [];
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index]!;
+  const unreadableByIndex: Array<string | undefined> = [];
+  let completed = 0;
+  const settleRow = async (row: CandidateRow, index: number): Promise<void> => {
     try {
       if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
       let payload: Record<string, unknown>;
@@ -284,15 +285,15 @@ export async function reconcileProposedCompletionsAtCommit(
             ? (JSON.parse(row.payload) as Record<string, unknown>)
             : (row.payload as Record<string, unknown>);
       } catch {
-        unreadable.push(row.feature_id);
-        continue;
+        unreadableByIndex[index] = row.feature_id;
+        return;
       }
       const evidence = payload?.[TERMINAL_COMPLETION_EVIDENCE_KEY] as Record<string, unknown> | undefined;
       const manifest = evidence?.settlementManifest;
       const parsed = CompletionSettlementManifestSchema.safeParse(normalizeStoredSettlementManifest(manifest));
       if (!parsed.success) {
-        unreadable.push(row.feature_id);
-        continue;
+        unreadableByIndex[index] = row.feature_id;
+        return;
       }
       let emittedTree: ReadonlyMap<string, HeadBlobResolution> | undefined;
       const captureLookup: CompletionHeadBlobLookup = async (root, sha, paths, opts) => {
@@ -309,8 +310,8 @@ export async function reconcileProposedCompletionsAtCommit(
         (path, workingTreeBlobSha) => historyMatches.set(path, workingTreeBlobSha),
       );
       if (deps.signal?.aborted) throw deps.signal.reason ?? new Error('completion settlement aborted');
-      if (!residualPaths) continue;
-      residualCount += residualPaths.length;
+      if (!residualPaths) return;
+      residualByIndex[index] = residualPaths.length;
       const nextManifest = { ...parsed.data, residualPaths };
       const historyAttestation: SettlementHistoryAttestation | null =
         residualPaths.length === 0 && historyMatches.size > 0
@@ -361,7 +362,7 @@ export async function reconcileProposedCompletionsAtCommit(
        RETURNING feature_id`;
       if (residualPaths.length === 0 && result[0]) {
         const id = result[0].feature_id;
-        upgraded.push(id);
+        upgradedByIndex[index] = id;
         // D-003: the generation/evidence-scoped CAS above is the exact-once gate.
         // Replays and stale generations miss RETURNING and therefore cannot re-fire.
         await emit({
@@ -379,9 +380,35 @@ export async function reconcileProposedCompletionsAtCommit(
         });
       }
     } finally {
-      await deps.onProgress?.({ completed: index + 1, total: rows.length, featureId: row.feature_id });
+      completed += 1;
+      await deps.onProgress?.({ completed, total: rows.length, featureId: row.feature_id });
     }
-  }
+  };
+  // Each candidate has its own generation/evidence CAS. Run a bounded group of
+  // independent Git lookups and writes together so old proposed completions do
+  // not consume the entire per-fire settlement budget one at a time. Drain every
+  // worker before this reconciler returns, including after an error.
+  let nextIndex = 0;
+  let stopped = false;
+  const worker = async (): Promise<void> => {
+    while (!stopped && nextIndex < rows.length) {
+      const index = nextIndex++;
+      try {
+        await settleRow(rows[index]!, index);
+      } catch (error) {
+        stopped = true;
+        throw error;
+      }
+    }
+  };
+  const outcomes = await Promise.allSettled(
+    Array.from({ length: Math.min(SETTLEMENT_CONCURRENCY, rows.length) }, () => worker()),
+  );
+  const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+  if (failure?.status === 'rejected') throw failure.reason;
+  const upgraded = upgradedByIndex.filter((id): id is string => id !== undefined);
+  const unreadable = unreadableByIndex.filter((id): id is string => id !== undefined);
+  const residualCount = residualByIndex.reduce((sum, count) => sum + count, 0);
   if (unreadable.length > 0) {
     // Named ids, not just a count: the whole point is that someone can go LOOK at one.
     console.warn(
