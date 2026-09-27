@@ -19,7 +19,9 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { gcGovernorReceipts, GOVERNOR_RECEIPT_RETENTION_HOURS } = await import('./receipt-gc');
+// scripts/mutation-probe.sh points this at a mutated copy (an ABSOLUTE path); unset, it is the real module.
+const SUBJECT = process.env.RECEIPT_GC_PROBE_SUBJECT ?? './receipt-gc';
+const { gcGovernorReceipts, GOVERNOR_RECEIPT_RETENTION_HOURS } = (await import(SUBJECT)) as typeof import('./receipt-gc');
 
 let rootSql: postgres.Sql;
 
