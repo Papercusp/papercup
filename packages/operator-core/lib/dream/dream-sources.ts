@@ -18,6 +18,10 @@ import { readAnalyzeSnapshot, type AnalyzeSnapshot } from '../sync-resolver/lear
 import { resolveBackfillEmbedder } from '../search/embed-backfill';
 import { resolveDreamSamplerConfig, type DreamSamplerConfig } from './dream-config';
 import { indexDreamFragments, type DreamFragment } from './fragment-sampler';
+import { runWithWorkspace } from '../workspace-als';
+import { resolveIssuesScopeWorkspace } from '../issues-engineer';
+import { capabilityHash } from './capability-contracts';
+import { scopeDreamProblems, type DreamProblemContext, type DreamProblemEvidence } from './capability-pass';
 
 const SOURCE_READ_LIMIT = 2_000;
 const DEFAULT_EMBED_CONCURRENCY = 4;
@@ -44,6 +48,40 @@ const defaultDeps: DreamSourceDeps = {
   readAnalyze: (sql, workspaceId) => readAnalyzeSnapshot(sql, workspaceId),
   resolveEmbedder: () => resolveBackfillEmbedder(),
 };
+
+/** Bounded problem context reuses the observation and work-item readers. No new
+ * corpus/index or automatic work creation. A report is attributable, not proven. */
+export async function readDreamProblemContext(
+  input: { workspaceId: string; potSlug: string },
+  deps: Pick<DreamSourceDeps, 'readObservations' | 'readWorkItems'> = defaultDeps,
+): Promise<DreamProblemContext> {
+  const workspaceId = required(input.workspaceId, 'workspaceId');
+  const potSlug = required(input.potSlug, 'potSlug');
+  return runWithWorkspace(workspaceId, async () => {
+    // Legacy shared issue storage cannot establish this workspace's provenance.
+    if (deps === defaultDeps && resolveIssuesScopeWorkspace(workspaceId) !== workspaceId)
+      return { mode: 'open-exploration', evidence: [], note: 'Problem evidence unavailable: issue storage cannot establish workspace scope.' };
+    const [observations, requirements] = await Promise.all([
+      deps.readObservations({ harnessScopes: ['harness:' + potSlug], state: 'open', limit: 12 }),
+      deps.readWorkItems({ harness: potSlug, kind: 'feature', notTerminal: true, limit: 12 }),
+    ]);
+    const evidence: DreamProblemEvidence[] = [];
+    const add = (ref: string, kind: DreamProblemEvidence['kind'], attributedTo: string | null | undefined, capturedAt: string | undefined, content: string) => {
+      if (!attributedTo?.trim() || !capturedAt || !Number.isFinite(Date.parse(capturedAt)) || !content.trim()) return;
+      const excerpt = content.trim().slice(0, 4_000);
+      evidence.push({ ref, kind, workspaceId, potSlug, attributedTo, capturedAt: new Date(capturedAt).toISOString(), text: excerpt, contentHash: capabilityHash(excerpt) });
+    };
+    for (const row of observations) {
+      if (row.scope !== 'harness:' + potSlug || (row.state && row.state !== 'open')) continue;
+      add('observation:' + row.id, 'observation', row.createdBy, row.updatedAt ?? row.createdAt, text(row.title, row.body));
+    }
+    for (const row of requirements) {
+      if (row.harness !== potSlug || row.kind !== 'feature' || TERMINAL_WORK_ITEM_STATES.includes(row.state as never)) continue;
+      add('wi:' + row.id, 'requirement', row.createdBy, row.updatedAt, text(row.title, row.summary));
+    }
+    return scopeDreamProblems(evidence, { workspaceId, potSlug });
+  });
+}
 
 export interface ReadDreamSourcesInput {
   sql: Sql;

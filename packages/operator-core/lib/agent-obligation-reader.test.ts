@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { goalPlanningPortfolioFingerprint } from './goal-planning-review';
 import { advanceGoalPlacementProgress, goalPlacementProgressScopeKey } from './goal-placement-progress';
+import { buildGoalOwnerReportDraft } from './goal-owner-report';
 
 import {
   PLAN_CONTEXT_MAX,
@@ -300,19 +301,46 @@ describe('shared agent obligation reader', () => {
   });
 
   it('keeps the generation stable when only observation clocks change', async () => {
+    // The production portfolio embeds its observation clock in the generated
+    // report text as well as assembledAt. Exercise both copies of that clock.
+    const withReporting = (assembledAt: string): GoalPortfolioBrief => ({
+      ...portfolio(assembledAt),
+      reporting: {
+        cadence: null,
+        draft: buildGoalOwnerReportDraft({
+          goalId: 'goal-1', observedAt: assembledAt, previousReportAt: null,
+          movements: [], ownerWalls: [], killed: [], artifactReads: [],
+          cost: { spentCents: null, budgetCents: null, source: null, coverage: 'unknown', unmeasuredPricedSpend: false },
+        }),
+        movementTruncated: false,
+        killedTruncated: false,
+      },
+    });
     const first = await readAgentObligationAgenda({
       workspaceId: 'ws',
       ownerId: 'su-goal',
       now: NOW,
-      deps: deps(),
+      deps: deps({ goalPortfolio: vi.fn(async () => withReporting(NOW.toISOString())) }),
     });
     const second = await readAgentObligationAgenda({
       workspaceId: 'ws',
       ownerId: 'su-goal',
       now: new Date('2026-09-05T20:01:00.000Z'),
-      deps: deps({ goalPortfolio: vi.fn(async () => portfolio('2026-09-05T20:01:00.000Z')) }),
+      deps: deps({ goalPortfolio: vi.fn(async () => withReporting('2026-09-05T20:01:00.000Z')) }),
     });
+    expect(second.portfolio?.reporting?.draft.text).not.toBe(first.portfolio?.reporting?.draft.text);
     expect(second.agenda.sourceGeneration).toBe(first.agenda.sourceGeneration);
+    expect(second.agenda.evaluations.map((entry) => entry.id)).toEqual(first.agenda.evaluations.map((entry) => entry.id));
+
+    // Actual placement authority must still invalidate the same generation.
+    const stopped = withReporting('2026-09-05T20:01:00.000Z');
+    stopped.goal.status = 'paused';
+    const third = await readAgentObligationAgenda({
+      workspaceId: 'ws', ownerId: 'su-goal', now: NOW,
+      deps: deps({ goalPortfolio: vi.fn(async () => stopped) }),
+    });
+    expect(third.agenda.sourceGeneration).not.toBe(first.agenda.sourceGeneration);
+    expect(third.agenda.evaluations.find((entry) => entry.ruleId === 'goal-plan-placement')?.status).toBe('not-applicable');
   });
 
   it.each(['goal', 'plan'] as const)('keeps failed %s scope discovery visibly unknown', async (scope) => {

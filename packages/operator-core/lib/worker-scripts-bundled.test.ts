@@ -31,8 +31,11 @@
  * instances two and four through.
  */
 
-import { describe, expect, it } from 'vitest';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { Worker } from 'node:worker_threads';
 import { join, relative, resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -50,6 +53,10 @@ const BUNDLERS: { label: string; path: string }[] = [
     path:
       process.env.PROBE_DESKTOP_SCRIPT ??
       join(REPO_ROOT, 'papercusp-desktop/bin/build-desktop-sidecar.sh'),
+  },
+  {
+    label: 'papercusp-desktop/bin/vm-rig/compose-rig-sidecar-current.sh (current-build rig)',
+    path: join(REPO_ROOT, 'papercusp-desktop/bin/vm-rig/compose-rig-sidecar-current.sh'),
   },
 ];
 
@@ -144,6 +151,81 @@ function executableText(source: string): string {
     .join('\n');
 }
 
+function bundlerExecutable(file: string): string {
+  const source = executableText(readFileSync(file, 'utf8'));
+  // A shared recipe counts only when the caller actually sources and invokes it.
+  if (/^source .*bundle-host-common\.sh/m.test(source) && /^bundle_host_workers /m.test(source)) {
+    return source + '\n' + executableText(readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh'), 'utf8'));
+  }
+  return source;
+}
+
+describe('shared worker recipe executes in the bundled plain-node runtime', () => {
+  let output: string;
+  const recipe = join(REPO_ROOT, 'apps/operator/bin/bundle-host-common.sh');
+  const build = (extraEnv: NodeJS.ProcessEnv = {}) => spawnSync('bash', [
+    '-c', 'source "$1"; bundle_host_workers "$2" "$3" "${PAPERCUSP_EMBED_WORKER_SCRIPT:-}"', 'worker-recipe-test', recipe, REPO_ROOT, output,
+  ], {
+    cwd: REPO_ROOT,
+    env: { ...process.env, PAPERCUSP_EMBED_WORKER_SCRIPT: '', ...extraEnv },
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+
+  beforeAll(() => {
+    output = mkdtempSync(join(tmpdir(), 'bundled-workers-'));
+    symlinkSync(join(REPO_ROOT, 'node_modules'), join(output, 'node_modules'), 'dir');
+    const result = build();
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+  }, 40_000);
+
+  afterAll(() => {
+    if (output) rmSync(output, { recursive: true, force: true });
+  });
+
+  it('runs snapshot compaction in the emitted worker without a TypeScript loader', async () => {
+    const worker = new Worker(join(output, 'snapshot-fold.worker.mjs'), { execArgv: [] });
+    const request = (message: Record<string, unknown>): Promise<Record<string, unknown>> => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { cleanup(); reject(new Error('bundled worker response timed out')); }, 5000);
+      const cleanup = () => {
+        clearTimeout(timer);
+        worker.off('message', onMessage);
+        worker.off('error', onError);
+      };
+      const onMessage = (response: Record<string, unknown>) => { cleanup(); resolve(response); };
+      const onError = (error: Error) => { cleanup(); reject(error); };
+      worker.once('message', onMessage);
+      worker.once('error', onError);
+      worker.postMessage(message);
+    });
+    try {
+      expect(await request({ kind: 'init', id: 1, excludeTables: [] })).toEqual({ kind: 'ok', id: 1 });
+      const block = new TextEncoder().encode(JSON.stringify({
+        type: 'put', table: 'test', hbKey: 'row', value: { answer: 42 },
+        ts: 1, schema_version: 1, author_pubkey: 'test',
+      }));
+      expect(await request({ kind: 'fold', id: 2, buf: block.buffer, lengths: [block.byteLength] }))
+        .toMatchObject({ kind: 'folded', decodedOps: 1, keyCount: 1 });
+      const result = await request({
+        kind: 'finish', id: 3, now: 2, coversUpTo: 1, author_pubkey: 'test',
+        ts: 2, schema_version: 1, excludeTables: [],
+      });
+      expect(result).toMatchObject({ kind: 'finished', rowCount: 1 });
+      expect(new TextDecoder().decode(result.buf as ArrayBuffer)).toContain('"answer":42');
+    } finally {
+      await worker.terminate();
+    }
+  }, 15_000);
+
+  it('refuses an unavailable required source even when an older bundle exists', () => {
+    const before = readFileSync(join(output, 'local-embedder-worker.script.mjs'), 'utf8');
+    const result = build({ PAPERCUSP_EMBED_WORKER_SCRIPT: join(output, 'does-not-exist.mjs') });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('FATAL: missing runtime worker');
+    expect(readFileSync(join(output, 'local-embedder-worker.script.mjs'), 'utf8')).toBe(before);
+  });
+});
+
 describe('worker scripts are staged beside every bundled entry', () => {
   const scripts = findWorkerScripts(REPO_ROOT);
 
@@ -176,7 +258,7 @@ describe('worker scripts are staged beside every bundled entry', () => {
 
   for (const bundler of BUNDLERS) {
     it(`stages every source *.script.mjs — ${bundler.label}`, () => {
-      const executable = executableText(readFileSync(bundler.path, 'utf8'));
+      const executable = bundlerExecutable(bundler.path);
 
       const missing = scripts
         .map((s) => relative(REPO_ROOT, s))
@@ -193,7 +275,7 @@ describe('worker scripts are staged beside every bundled entry', () => {
     });
 
     it(`stages every source esbuild worker — ${bundler.label}`, () => {
-      const executable = executableText(readFileSync(bundler.path, 'utf8'));
+      const executable = bundlerExecutable(bundler.path);
 
       const missing = ESBUILD_WORKERS.filter(({ output }) => !executable.includes(output));
 
@@ -205,7 +287,7 @@ describe('worker scripts are staged beside every bundled entry', () => {
     });
 
     it(`stages every required sibling runtime asset — ${bundler.label}`, () => {
-      const executable = executableText(readFileSync(bundler.path, 'utf8'));
+      const executable = bundlerExecutable(bundler.path);
       const missing = REQUIRED_RUNTIME_SIBLING_ASSETS.filter(
         ({ output }) => !executable.includes(output),
       );

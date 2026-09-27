@@ -335,8 +335,8 @@ describe('test execution carries mappings into the real evidence ledger', () => 
     expect(pending).toHaveLength(1);
     expect(pending[0].details.adequacy).toMatchObject({ outcome: 'pending', executed: false, causalPairIds: ['original-reconnect'] });
     const [run] = await db.sql<{ id: number }[]>`INSERT INTO harness_shared.test_runs
-      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id)
-      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${runId}) RETURNING id`;
+      (workspace_id,harness_slug,file_path,status,finished_at,run_group_id,commit_sha,worktree_dirty)
+      VALUES (${WORKSPACE},${HARNESS},${testPath},'pass',now(),${runId},'fixture-commit',false) RETURNING id`;
     await db.sql`INSERT INTO harness_shared.test_runs (workspace_id,harness_slug,file_path,status,finished_at,run_group_id)
       VALUES (${OTHER_WORKSPACE},${HARNESS},${testPath},'fail',now(),${runId})`;
     const result = { ok: true, runId, root: h.repoRoot, passed: 1, failed: 0, skipped: 0, files: 1,
@@ -344,6 +344,14 @@ describe('test execution carries mappings into the real evidence ledger', () => 
       byFile: { [testPath]: { passed: 1, failed: 0, skipped: 0, collectionFailed: false } } };
     const bundle = await finishTestEvidence(prepared, runId, runId, scope, result, deps);
     expect(bundle.rows[0]).toMatchObject({ testRunId: Number(run.id), phase: 'settled', outcome: 'pass' });
+    await db.sql`UPDATE harness_shared.test_runs SET worktree_dirty = true WHERE id = ${run.id}`;
+    const [bound] = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS, planSlugs: ['reconnect-plan'], workItemIds: ['WI-101'],
+    });
+    expect(bound.testRunProvenance).toEqual({
+      filePath: testPath, commitSha: 'fixture-commit', worktreeDirty: true,
+    });
+    await db.sql`UPDATE harness_shared.test_runs SET worktree_dirty = false WHERE id = ${run.id}`;
     // Integrated continuation: persist once, cross the reader boundary, and use
     // the exact automatically recorded run without opening a transcript/history.
     const { setWorkItemCheckpoint, getWorkItemCheckpointWithMeta } = await import('../../work-item-checkpoint');

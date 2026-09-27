@@ -543,6 +543,29 @@ export function eventLogPathForOwner(ownerId: any, dir?: string): string;
  *  FAIL-SOFT by contract: an event-log write must never break the session —
  *  any fs error is swallowed (the stderr diagnostic still fires next to it). */
 export function appendHostEvent(ownerId: any, kind: any, extra?: {}, dir?: string): boolean;
+/** EI-24353430528930250: process-scoped startup evidence for Codex's isolated
+ * SQLite homes. Host-wide paging samples could not distinguish the failed
+ * launch wave from a later successful one. These Linux counters belong to the
+ * actual PTY child and retain their sampling time in the existing host log. */
+export function readLinuxStartupCounters(pid: any, readFile?: typeof readFileSync): {
+    pid: any;
+    comm: string;
+    majorFaults: number;
+    blockIoTicks: number | null;
+    readBytes: number | null;
+    writeBytes: number | null;
+} | null;
+/** Bound the trace to startup, stop it on child replacement, and never let a
+ * diagnostic timer keep a finished agent alive. One row every 500 ms for at
+ * most 30 s is small enough for the existing capped per-owner event log. */
+export function startCodexStartupProcessTrace({ agent, ownerId, pid, readCounters, emit, now, interval, clear, platform, }?: {
+    readCounters?: typeof readLinuxStartupCounters | undefined;
+    emit?: typeof appendHostEvent | undefined;
+    now?: (() => number) | undefined;
+    interval?: typeof setInterval | undefined;
+    clear?: typeof clearInterval | undefined;
+    platform?: NodeJS.Platform | undefined;
+}): (reason?: string) => void;
 /** Small, non-secret error identity for durable host events. Exception messages can
  * contain command arguments or credentials; the local stderr keeps the full
  * diagnostic while the shared event store gets only a stable error class/code. */
@@ -2736,4 +2759,5 @@ export type EnvironmentMap = Record<string, string | undefined>;
  * the file/IO/safety logic (which is exactly how this stayed codex-only).
  */
 export type TurnRowVerdict = "turn-completed" | "turn-started" | "ignore";
+import { readFileSync } from 'node:fs';
 import { stageAgentIdentityTty } from '../../../libs/papercusp-shared/src/agent/loopback-identity-tty.mjs';

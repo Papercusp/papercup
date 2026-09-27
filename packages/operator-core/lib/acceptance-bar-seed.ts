@@ -363,7 +363,17 @@ export function parseBarMappings(planContent: string, requirementKeys: ReadonlyS
     const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
     if (cells.length < 2 || /^bar$/i.test(cells[0] ?? '') || /^[-:]+$/.test((cells[0] ?? '').replace(/\s/g, ''))) continue;
     const barKey = (cells[0] ?? '').replace(/`/g, '').trim();
-    if (!/^R-\d+$/.test(barKey)) continue;
+    if (!/^R-\d+$/.test(barKey)) {
+      const requirementKey = barKey.match(/^R-\d+\b/)?.[0];
+      if (requirementKey) {
+        problems.push({
+          code: 'bar_mapping_invalid',
+          barKey: requirementKey,
+          detail: `Bar-to-work map first cell must be the bare ${requirementKey} key, not its title (received ${JSON.stringify(cells[0])})`,
+        });
+      }
+      continue;
+    }
     if (seen.has(barKey)) {
       problems.push({ code: 'bar_mapping_duplicate', barKey, detail: `Bar-to-work map has duplicate row ${barKey}` });
       continue;

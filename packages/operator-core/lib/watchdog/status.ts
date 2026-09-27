@@ -33,10 +33,8 @@ export interface WatchdogSchedulerStatus {
 }
 
 export interface WatchdogEligibilityStatus {
-  pendingCount: number;
-  eligibleCount: number;
-  oldestRoutedAt: string | null;
-  firstEligibleAt: string | null;
+  byOrigin: Record<string, { pendingCount: number; eligibleCount: number; oldestRoutedAt: string | null }>;
+  total: { pendingCount: number; eligibleCount: number; oldestRoutedAt: string | null; firstEligibleAt: string | null };
 }
 
 export interface WatchdogFireStatus {
@@ -110,10 +108,14 @@ export function classifyScheduledWatchdogStatus(
       },
     };
   }
-  if (eligibility.eligibleCount > 0) {
+  if (eligibility.total.eligibleCount > 0) {
     const executionMs = timeMs(scheduler.lastExecutionAt);
-    const firstEligibleMs = timeMs(eligibility.firstEligibleAt);
+    const firstEligibleMs = timeMs(eligibility.total.firstEligibleAt);
     const fireMs = timeMs(fire.lastFireAt);
+    const origins = Object.entries(eligibility.byOrigin)
+      .filter(([, value]) => value.eligibleCount > 0)
+      .map(([origin, value]) => `${origin}: ${value.eligibleCount}`)
+      .join(', ');
     const sweptAfterEligibility = executionMs != null && firstEligibleMs != null && executionMs >= firstEligibleMs;
     const firedAfterEligibility = fireMs != null && firstEligibleMs != null && fireMs >= firstEligibleMs;
     if (sweptAfterEligibility && scheduler.lastResultCount === 0) {
@@ -121,7 +123,7 @@ export function classifyScheduledWatchdogStatus(
         ok: false,
         effectiveState: 'eligible-sweep-empty',
         summary:
-          `${eligibility.eligibleCount} eligible filing(s) remained after a successful sweep that evaluated ` +
+          `${eligibility.total.eligibleCount} eligible filing(s) (${origins}) remained after a successful sweep that evaluated ` +
           'zero scopes; the grading backstop made no progress.',
         nextVerb: {
           name: 'mode:set',
@@ -139,7 +141,7 @@ export function classifyScheduledWatchdogStatus(
       return {
         ok: false,
         effectiveState: 'eligible-no-fire',
-        summary: `${eligibility.eligibleCount} eligible filing(s) were present before a successful sweep, but no matching fire was recorded.`,
+        summary: `${eligibility.total.eligibleCount} eligible filing(s) (${origins}) were present before a successful sweep, but no matching fire was recorded.`,
         nextVerb: {
           name: 'mode:set',
           args: {
@@ -155,7 +157,7 @@ export function classifyScheduledWatchdogStatus(
     return {
       ok: true,
       effectiveState: 'eligible-awaiting-sweep',
-      summary: `${eligibility.eligibleCount} filing(s) are eligible; the latest sweep predates their eligibility.`,
+      summary: `${eligibility.total.eligibleCount} filing(s) (${origins}) are eligible; the latest sweep predates their eligibility.`,
       nextVerb: null,
     };
   }
@@ -170,7 +172,7 @@ export function classifyScheduledWatchdogStatus(
   return {
     ok: true,
     effectiveState: 'healthy-idle',
-    summary: `No filing is currently eligible; zero fires is correct until ${eligibility.firstEligibleAt ?? 'a scoped filing reaches the threshold'}.`,
+    summary: `No filing is currently eligible; zero fires is correct until ${eligibility.total.firstEligibleAt ?? 'a scoped filing reaches the threshold'}.`,
     nextVerb: null,
   };
 }
@@ -360,7 +362,8 @@ export async function readScheduledWatchdogStatus(args: {
     : Number.isFinite(completedMs)
       ? completedMs
       : null;
-  const oldestMs = eligibility.oldestRoutedAtMs ?? Number.NaN;
+  const eligibleRows = Object.entries(eligibility.byOrigin);
+  const oldestMs = Math.min(...eligibleRows.map(([, row]) => row.oldestRoutedAtMs ?? Infinity));
   const firstEligibleMs = Number.isFinite(oldestMs)
     ? oldestMs + Math.max(0, config.effectiveThresholdSec) * 1_000
     : null;
@@ -381,10 +384,17 @@ export async function readScheduledWatchdogStatus(args: {
       lastNudgedCount: runSummary.nudgedCount ?? null,
     },
     eligibility: {
-      pendingCount: eligibility.pendingCount,
-      eligibleCount: config.enabled ? eligibility.eligibleCount : 0,
-      oldestRoutedAt: Number.isFinite(oldestMs) ? new Date(oldestMs).toISOString() : null,
-      firstEligibleAt: firstEligibleMs == null ? null : new Date(firstEligibleMs).toISOString(),
+      byOrigin: Object.fromEntries(eligibleRows.map(([origin, row]) => [origin, {
+        pendingCount: row.pendingCount,
+        eligibleCount: config.enabled ? row.eligibleCount : 0,
+        oldestRoutedAt: row.oldestRoutedAtMs == null ? null : new Date(row.oldestRoutedAtMs).toISOString(),
+      }])),
+      total: {
+        pendingCount: eligibleRows.reduce((sum, [, row]) => sum + row.pendingCount, 0),
+        eligibleCount: config.enabled ? eligibleRows.reduce((sum, [, row]) => sum + row.eligibleCount, 0) : 0,
+        oldestRoutedAt: Number.isFinite(oldestMs) ? new Date(oldestMs).toISOString() : null,
+        firstEligibleAt: firstEligibleMs == null ? null : new Date(firstEligibleMs).toISOString(),
+      },
     },
     fire: {
       source: 'su-ideate-ungraded' as const,

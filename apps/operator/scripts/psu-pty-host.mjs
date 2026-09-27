@@ -1750,6 +1750,99 @@ export function appendHostEvent(ownerId, kind, extra = {}, dir = PSU_PTY_DIR) {
   }
 }
 
+/** EI-24353430528930250: process-scoped startup evidence for Codex's isolated
+ * SQLite homes. Host-wide paging samples could not distinguish the failed
+ * launch wave from a later successful one. These Linux counters belong to the
+ * actual PTY child and retain their sampling time in the existing host log. */
+export function readLinuxStartupCounters(pid, readFile = readFileSync) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  let stat;
+  try {
+    stat = readFile(`/proc/${pid}/stat`, 'utf8');
+  } catch {
+    return null;
+  }
+  const close = stat.lastIndexOf(')');
+  if (close < 0 || stat[close + 1] !== ' ') return null;
+  // /proc/PID/stat has a parenthesized comm that can contain spaces or ')'.
+  // The remaining array starts at field 3 (state); majflt is field 12 and
+  // delayacct_blkio_ticks is field 42.
+  const fields = stat.slice(close + 2).trim().split(/\s+/);
+  const numberAt = (field) => {
+    const value = Number(fields[field - 3]);
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  };
+  const majorFaults = numberAt(12);
+  if (majorFaults === null) return null;
+  let io = '';
+  try {
+    io = readFile(`/proc/${pid}/io`, 'utf8');
+  } catch {
+    // The stat counters remain useful if procfs denies the optional IO file.
+  }
+  const ioNumber = (key) => {
+    const match = io.match(new RegExp(`^${key}:\\s*(\\d+)$`, 'm'));
+    if (!match) return null;
+    const value = Number(match[1]);
+    return Number.isSafeInteger(value) ? value : null;
+  };
+  return {
+    pid,
+    comm: stat.slice(stat.indexOf('(') + 1, close).slice(0, 64),
+    majorFaults,
+    blockIoTicks: numberAt(42),
+    readBytes: ioNumber('read_bytes'),
+    writeBytes: ioNumber('write_bytes'),
+  };
+}
+
+/** Bound the trace to startup, stop it on child replacement, and never let a
+ * diagnostic timer keep a finished agent alive. One row every 500 ms for at
+ * most 30 s is small enough for the existing capped per-owner event log. */
+export function startCodexStartupProcessTrace({
+  agent,
+  ownerId,
+  pid,
+  readCounters = readLinuxStartupCounters,
+  emit = appendHostEvent,
+  now = Date.now,
+  interval = setInterval,
+  clear = clearInterval,
+  platform = process.platform,
+} = {}) {
+  if (agent !== 'codex' || platform !== 'linux' || !Number.isInteger(pid) || pid <= 0) {
+    return () => {};
+  }
+  const startedAt = now();
+  let samples = 0;
+  let stopped = false;
+  let timer;
+  const sample = () => {
+    if (stopped) return;
+    const elapsedMs = now() - startedAt;
+    const counters = readCounters(pid);
+    if (counters) {
+      samples++;
+      emit(ownerId, 'codex-startup-process-sample', { elapsedMs, ...counters });
+    }
+    if (elapsedMs >= 30_000) stop('window-ended');
+  };
+  const stop = (reason = 'child-exit') => {
+    if (stopped) return;
+    stopped = true;
+    if (timer) clear(timer);
+    emit(ownerId, 'codex-startup-process-trace-ended', {
+      pid, elapsedMs: now() - startedAt, samples, reason,
+    });
+  };
+  sample();
+  if (!stopped) {
+    timer = interval(sample, 500);
+    timer.unref?.();
+  }
+  return stop;
+}
+
 /** Small, non-secret error identity for durable host events. Exception messages can
  * contain command arguments or credentials; the local stderr keeps the full
  * diagnostic while the shared event store gets only a stable error class/code. */
@@ -6443,6 +6536,9 @@ export function hostThroughPty(o) {
     process.stderr.write(`psu: failed to spawn '${command}' under a pty: ${e.message}\n`);
     throw e;
   }
+  let stopStartupTrace = startCodexStartupProcessTrace({
+    agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
+  });
   try {
     const acknowledgement = onSpawn();
     void Promise.resolve(acknowledgement).catch((error) => {
@@ -9405,6 +9501,7 @@ export function hostThroughPty(o) {
     const cleanup = (code, signal = null) => {
       if (cleaned) return;
       cleaned = true;
+      stopStartupTrace('host-cleanup');
       const endedSignal = signal ?? teardownSignal;
       // A PTY leader can exit before its descendants. Reap the group while its
       // forkpty pgid is still unambiguous, then remove our signal listeners.
@@ -9969,6 +10066,7 @@ export function hostThroughPty(o) {
       const priorDisableAutoCompact = env.DISABLE_AUTO_COMPACT;
       const priorDisableCompact = env.DISABLE_COMPACT;
       try {
+        stopStartupTrace('recycle');
         const dead = new Promise((res) => {
           try {
             child.onExit(() => res());
@@ -10064,6 +10162,9 @@ export function hostThroughPty(o) {
           /* keep the old pin — the respawn itself matters more */
         }
         child = spawnChild(recycleArgs);
+        stopStartupTrace = startCodexStartupProcessTrace({
+          agent: env.PAPERCUSP_AGENT, ownerId, pid: child.pid,
+        });
         // Re-anchor the fresh native id → coord ownerId so a LATER untracked
         // resume still recovers this identity (else the 2026-07-02 orphaning bug
         // recurs). The launcher callback also repairs the authoritative

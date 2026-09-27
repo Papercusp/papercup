@@ -176,6 +176,33 @@ describe('managed Codex PreCompact bridge', () => {
     expect(invalid.systemMessage).toContain('invalid PreCompact payload');
     expect(invalidFetch).not.toHaveBeenCalled();
   });
+
+  it.each(['json', 'sse'])('preserves a plain-text MCP refusal over %s without allowing native compaction', async (format) => {
+    const refusal = 'tool_not_allowed: session:request-compaction is unavailable on this route. Use the managed session route.';
+    const frame = JSON.stringify({
+      jsonrpc: '2.0', id: 1,
+      result: { isError: true, content: [{ type: 'text', text: refusal }] },
+    });
+    const fetchImpl = vi.fn(async () => new Response(
+      format === 'sse' ? `event: message\ndata: ${frame}\n\n` : frame,
+    ));
+    const decision = await runManagedPreCompact(PAYLOAD, { env: ENV, fetchImpl });
+
+    expect(decision.continue).toBe(false);
+    expect(decision.systemMessage).toContain(refusal);
+    expect(decision.systemMessage).not.toContain('unreadable tool error');
+    expect(decision.systemMessage).not.toContain('QUEUED');
+  });
+
+  it('bounds plain-text MCP error details and preserves the fail-closed decision', () => {
+    const parsed = parseManagedCarryResponse(JSON.stringify({
+      result: { isError: true, content: [{ type: 'text', text: `request_timeout: ${'x'.repeat(2000)}` }] },
+    }));
+    expect(parsed.ok).toBe(false);
+    expect(parsed.detail).toMatch(/^request_timeout:/);
+    expect(parsed.detail?.length).toBeLessThanOrEqual(700);
+    expect(preCompactDecision(parsed).continue).toBe(false);
+  });
 });
 
 /**

@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  CURRENT_BUILD_TEST_CLASSES,
   SERVING_RUNTIME_IDS,
   describeServingRuntimes,
   evaluateServingRuntime,
@@ -51,6 +52,16 @@ const vintage = (over: Partial<RuntimeVintageRow>): RuntimeVintageRow => ({
 });
 
 describe('runtime selection', () => {
+  it('keeps pre-release route gaps explicit instead of claiming :3170 covers every class', () => {
+    expect(CURRENT_BUILD_TEST_CLASSES.map(({ id }) => id)).toEqual([
+      'unit-integration', 'operator-api', 'background-federation', 'migration',
+      'desktop-native', 'multi-machine-p2p-git', 'candidate-install-upgrade', 'final-release',
+    ]);
+    expect(CURRENT_BUILD_TEST_CLASSES.filter(({ readiness }) => readiness === 'gap').map(({ id }) => id))
+      .toEqual(['background-federation', 'candidate-install-upgrade']);
+    expect(CURRENT_BUILD_TEST_CLASSES.find(({ id }) => id === 'final-release')?.readiness).toBe('release-only');
+  });
+
   it('maps every ownership host to at least one runtime, and the operator to BOTH checkouts', () => {
     expect(runtimesForHost('operator-release')).toEqual(['release-operator', 'staging-operator']);
     expect(runtimesForHost('bg-host')).toEqual(['bg-host']);

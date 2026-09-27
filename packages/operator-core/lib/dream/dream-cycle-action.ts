@@ -14,7 +14,7 @@ import { DreamPilotPinSchema, type DreamPilotPin } from './dream-evaluation';
 
 export const DREAM_CYCLE_ACTION = 'dream-cycle';
 
-export interface DreamCycleActionConfig extends Pick<DreamCycleInput, 'cycle' | 'sampler' | 'pass' | 'review'> {
+export interface DreamCycleActionConfig extends Pick<DreamCycleInput, 'cycle' | 'sampler' | 'pass' | 'review' | 'problemMode'> {
   mode: DreamRunMode;
   pilot?: DreamPilotPin;
 }
@@ -27,6 +27,8 @@ export function parseDreamCycleActionConfig(payload: Record<string, unknown> | n
   const root = object(payload) ?? {};
   const mode = root.mode ?? 'manual';
   if (mode !== 'manual' && mode !== 'auto') throw new RangeError(`unsupported dream-cycle mode ${String(mode)}`);
+  if (root.problemMode !== undefined && !['observed-problems', 'open-exploration'].includes(String(root.problemMode)))
+    throw new RangeError('Unsupported Dream problem mode');
   resolveDreamCycleConfig(object(root.cycle) ?? {});
   const sampler = object(root.sampler);
   if (
@@ -38,6 +40,7 @@ export function parseDreamCycleActionConfig(payload: Record<string, unknown> | n
     throw new RangeError('Unsupported capability sampler setting');
   return {
     mode,
+    ...(root.problemMode !== undefined ? { problemMode: root.problemMode as DreamCycleInput['problemMode'] } : {}),
     ...(root.pilot !== undefined ? { pilot: DreamPilotPinSchema.parse(root.pilot) } : {}),
     ...(object(root.cycle) ? { cycle: object(root.cycle) as Partial<DreamCycleConfig> } : {}),
     ...(object(root.sampler) ? { sampler: object(root.sampler)! } : {}),
@@ -104,7 +107,7 @@ export async function productionDreamCycle(
       if (!process.env[key]) process.env[key] = value;
     }
   }
-  const [{ getOrgPg }, llm, governor, store, registry, catalog, packets, reviewSources, sink] = await Promise.all([
+  const [{ getOrgPg }, llm, governor, store, registry, catalog, packets, reviewSources, sink, problemSources] = await Promise.all([
     import('@papercusp/db-org'),
     import('../llm-testing/llm-client'),
     import('./dream-governor'),
@@ -114,6 +117,7 @@ export async function productionDreamCycle(
     import('./capability-packets'),
     import('./capability-review-sources'),
     import('./dream-sink'),
+    import('./dream-sources'),
   ]);
   const { sql } = getOrgPg();
   const registered = await registry.loadHarnessRegistry(ctx.workspaceId);
@@ -142,6 +146,7 @@ export async function productionDreamCycle(
       sampler: config.sampler,
       pass: config.pass,
       review: config.review,
+      problemMode: config.problemMode,
       pilot: config.pilot,
     },
     {
@@ -173,6 +178,7 @@ export async function productionDreamCycle(
       },
       loadHistory: () => store.listDreamRuns(sql, { ...scope, limit: 500 }),
       reviewSources: sources,
+      loadProblems: () => problemSources.readDreamProblemContext(scope),
       beginRun: ({ runId, capability }) =>
         changing(() =>
           store.beginDreamRun(sql, {

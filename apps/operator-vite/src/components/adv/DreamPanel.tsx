@@ -7,6 +7,7 @@ import { Select } from '@/app/harness/Select';
 import { Button } from '@/app/harness/Button';
 import { Table } from '@/app/harness/Table';
 import type { DreamMetrics } from '@papercusp/operator-core/lib/dream/dream-metrics';
+import { dreamRunOutcome } from '@papercusp/operator-core/lib/dream/dream-config';
 import type { DreamDetail, DreamHistory } from '@papercusp/operator-core/lib/dream/dream-read';
 import {
   LearningDisclosure, LearningPageHeader, LearningVisualEmpty, LearningVisualError,
@@ -108,7 +109,7 @@ function DreamPotHistory({ potSlug, runId, setRun, cursor, setCursor, active }: 
             body="This history includes accepted, rejected, duplicate, abstained, malformed, failed and running attempts." /> : null}
           <div className="pc-dreams__runs">
             {page.runs.map(run => <LearningDisclosure key={run.runId}
-              label={`${when(run.startedAt)} · ${run.status} · ${run.title ?? run.runId}`}
+              label={`${when(run.startedAt)} · ${dreamRunOutcome(run.status, run.review)} · ${run.title ?? run.runId}`}
               subtitle={`${run.mode} · ${money(run.costUsd)} accounted · cycle ${run.cycleId}`}
               open={runId === run.runId} onOpenChange={open => setRun(open ? run.runId : '')}>
               <DreamDetailLoader potSlug={potSlug} runId={run.runId} />
@@ -136,7 +137,8 @@ export function DreamFunnel({ metrics: m }: { metrics: DreamMetrics }) {
         <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}
     </dl>
     <p>Claim rate (eligible attempts): {rate(f.proposalsPerEligibleAttempt)}.</p>
-    <p>Review pass rate (reviewed attempts): {rate(f.reviewPassRate)}.</p>
+    <p>Review pass rate (decisive reviews): {rate(f.reviewPassRate)}.</p>
+    {f.reviewOutcomes ? <p>Review outcomes: {Object.entries(f.reviewOutcomes).map(([key, n]) => `${key}: ${n}`).join(' · ')}. Unverified and unavailable reviews are not substantive rejections.</p> : null}
     <p>Dedupe / sink survival (review-passed attempts): {rate(f.dedupeSurvival)}.</p>
     <p className="pc-dreams__quiet">Metrics cover every attempt in this window, including older pages. Acceptance is a review decision; downstream usefulness is measured separately.</p>
     <p>Known model charges: {money(m.cost.knownCallUsd)} · unresolved reservations: {money(m.cost.unresolvedBoundUsd)} · fully attributed discovery cost: {money(m.cost.fullyAttributedDiscoveryUsd)}.</p>
@@ -180,7 +182,7 @@ export function DreamRunDetail({ detail: d }: { detail: DreamDetail }) {
   const citations = (refs: Array<{ unit: string; evidenceId: string }>) => refs.map((ref, i) =>
     <a key={`${ref.unit}:${ref.evidenceId}:${i}`} href={`#${sourceId(run.runId, ref.unit, ref.evidenceId)}`}>{ref.unit}/{ref.evidenceId} </a>);
   return <article aria-label={`Dream ${run.runId}`}>
-    <p><strong>{run.status}</strong> · {run.mode} · {when(run.startedAt)} · {money(run.costUsd)} accounted</p>
+    <p><strong>{dreamRunOutcome(run.status, run.review)}</strong> · {run.mode} · {when(run.startedAt)} · {money(run.costUsd)} accounted</p>
     <p>Run {run.runId} · cycle {run.cycleId}</p>
     {run.error ? <p role="alert">{run.error}</p> : null}
     {run.routedRef ? <a href={learningLink({ lview: 'improvements', impq: run.routedRef.replace(/^[a-z-]+:/i, ''), lscope: 'all' })}>Open accepted proposal in Improvements: {run.routedRef}</a> : null}
@@ -220,7 +222,13 @@ export function DreamRunDetail({ detail: d }: { detail: DreamDetail }) {
     <h4>Independent review</h4>
     <p>Dreamer: {run.dreamerModel ?? 'unknown'} · reviewer: {run.reviewerModel ?? 'unknown'}</p>
     {run.review ? <p>{text(run.review.verdict)} · {text(run.review.reason)} · {text(run.review.note ?? run.review.rejectionReason)}</p> : <p>No review recorded.</p>}
+    {d.nextCheck ? <section aria-label="Next evidence check">
+      <h4>Next evidence check</h4><p>{d.nextCheck.instruction}</p>
+      {d.nextCheck.evidenceNeeded.length ? <ul>{d.nextCheck.evidenceNeeded.map((needed, i) => <li key={i}>{needed}</li>)}</ul> : null}
+      <p>At most {d.nextCheck.maxSourceQueries} source searches per review. Opening this result starts no work.</p>
+    </section> : null}
     {review ? <>
+      {review.evidenceFollowUp ? <p>Missing-evidence follow-up: {review.evidenceFollowUp.queries.length} / {review.evidenceFollowUp.maxQueries} bounded searches; {review.evidenceFollowUp.deferred.length} further requests deferred. Retrieval alone does not establish the claim.</p> : null}
       <p>Review evidence: {review.evidenceHash} · candidate: {review.candidateHash}</p>
       <p>Novelty beyond the searched corpus: {review.coverage.globalNovelty}.</p>
       {review.coverage.unknown.map((note, i) => <p key={i}>Unknown: {note}</p>)}

@@ -124,6 +124,34 @@ function makeHistoricalTsRepo(): { repo: string; file: string; oldSha: string } 
 }
 
 describe('mutation-probe.sh — copy-out mode (the default)', () => {
+  it('runs from a frozen source when the launched script is rewritten during baseline', async () => {
+    const launched = join(dir, 'mutable-probe.sh');
+    const marker = join(dir, 'baseline-started');
+    writeFileSync(launched, readFileSync(SCRIPT));
+    const env = { ...process.env };
+    delete env.MUTATION_PROBE_FROZEN_SOURCE;
+    const guard = `test -f "$MUTATION_PROBE_FROZEN_SOURCE" && bash -n "$MUTATION_PROBE_FROZEN_SOURCE" && if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then touch ${JSON.stringify(marker)}; sleep 1; fi; grep -q '^beta$' {}`;
+    const child = spawn('bash', [launched, '--file', subject, '--mutate', 's/beta/BETA/', '--test', guard], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += String(chunk); });
+    child.stderr.on('data', (chunk) => { output += String(chunk); });
+    const closed = new Promise<number>((resolve) => child.once('close', (code) => resolve(code ?? -1)));
+    try {
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(marker) && Date.now() < deadline) await sleep(25);
+      expect(existsSync(marker), output).toBe(true);
+      writeFileSync(launched, '#!/usr/bin/env bash\ninvalid shell ) fragment\n');
+      expect(await closed, output).toBe(0);
+      expect(output).toMatch(/MUTANT CAUGHT/);
+      expect(read()).toBe(ORIGINAL);
+    } finally {
+      child.kill('SIGTERM');
+    }
+  });
+
   it('propagates available legacy scope aliases to canonical test-run variables', () => {
     const env = { ...process.env };
     delete env.PAPERCUSP_TEST_RUN_HARNESS;

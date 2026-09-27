@@ -18,6 +18,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parse as parseToml } from '@iarna/toml';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // os.homedir() reads the OS password DB on Linux, NOT $HOME — so we mock it
@@ -836,6 +837,36 @@ describe('writeSuCodexHome', () => {
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).not.toContain('http_headers');
     expect(toml).not.toContain('Authorization');
+  });
+
+  it('carries project HTTP MCP servers into fresh and repaired Codex SU homes', async () => {
+    const projectDir = join(fakeHome, 'project');
+    mkdirSync(projectDir);
+    const claudeConfig = join(fakeHome, '.claude.json');
+    const writeProjectServers = (url: string) => writeFileSync(claudeConfig, JSON.stringify({
+      mcpServers: { global: { type: 'http', url: 'https://global.example/mcp' } },
+      projects: { [projectDir]: { mcpServers: {
+        tsenta: { type: 'http', url, headers: { 'X-Project': 'yes' } },
+        local: { type: 'stdio', command: 'never-run' },
+        'papercusp-su': { type: 'http', url: 'https://override.example/mcp' },
+      } } },
+    }));
+    writeProjectServers('https://tsenta.example/mcp');
+    const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
+    const opts = { sessionKey: 111, mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-project', trustDir: projectDir };
+    const home = writeSuCodexHome(opts);
+    const fresh = readFileSync(home.configPath, 'utf8');
+    expect(fresh).toContain('[mcp_servers."tsenta"]\nurl = "https://tsenta.example/mcp"\nhttp_headers = { "X-Project" = "yes" }');
+    expect(fresh).not.toContain('global.example');
+    expect(fresh).not.toContain('never-run');
+    expect(fresh).not.toContain('override.example');
+    const parsed = parseToml(fresh) as { mcp_servers: Record<string, { url: string; http_headers?: Record<string, string> }> };
+    expect(parsed.mcp_servers.tsenta).toEqual({ url: 'https://tsenta.example/mcp', http_headers: { 'X-Project': 'yes' } });
+    writeProjectServers('https://tsenta.example/updated');
+    const repaired = ensureSuCodexHomeConfig({ ...opts, projectDir, trustDir: null });
+    expect(repaired.repaired).toBe(true);
+    expect(readFileSync(home.configPath, 'utf8')).toContain('https://tsenta.example/updated');
+    expect(ensureSuCodexHomeConfig({ ...opts, projectDir, trustDir: null }).repaired).toBe(false);
   });
 
   it('symlinks auth.json (shared OAuth) + rebuilds fresh', async () => {

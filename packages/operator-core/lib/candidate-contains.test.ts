@@ -4,6 +4,7 @@ import {
   blobInWorkingTree,
   callerEditsInCandidate,
   classifyPathsAgainstCandidate,
+  committedBlobAtHead,
   excludedCommitsTouchingPath,
   gitReadFromExecSync,
   markerAtCommit,
@@ -597,6 +598,20 @@ describe('submodule paths — the false "uncommitted" verdict (EI-18828378090895
     expect(r.inCandidate).toBe(true);
     // The regression guard proper: the old code said false/'uncommitted' here.
     expect(r.reason).toBeNull();
+  });
+
+  it('resolves a committed instrument through the superproject gitlink', async () => {
+    const git = fakeSuperGit({
+      pins: { HEAD: 'e0ebb3c6' },
+      subBlobs: { [`e0ebb3c6:${REL}`]: FIXED, [`HEAD:${REL}`]: OLD },
+      subTree: { [REL]: FIXED },
+    });
+    expect(await committedBlobAtHead(git, FILE)).toBe(FIXED);
+  });
+
+  it("fails closed when an instrument's gitlink cannot be read", async () => {
+    const git = fakeSuperGit({ gitlinkUnreadable: true, subTree: { [REL]: FIXED } });
+    expect(await committedBlobAtHead(git, FILE)).toBeNull();
   });
 
   it('never prescribes git-sync:run for a file already committed in the submodule', async () => {

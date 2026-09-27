@@ -6,7 +6,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import type { OrgTestDb } from '../../test/_org-test-db';
 import {
@@ -29,6 +29,9 @@ import { rm } from 'node:fs/promises';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
 import { beginDreamRunCall, settleDreamRunCall, recordDreamRunReview } from './dream-run-store';
 import { dreamCapabilityRun, dreamCallTotals } from './dream-run-provenance';
+import { runDreamCycle, type DreamCycleDeps } from './dream-cycle';
+import { buildCapabilityReviewSources } from './capability-review-sources';
+import { readDreamDetail } from './dream-read';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ARMED = path.resolve(HERE, '../../../../libs/papercusp/libs/db/sql/862-dream-runs-ledger.sql');
@@ -74,6 +77,43 @@ describe('migration 862 + dream run accounting (real PG)', () => {
   afterAll(async () => {
     await db?.cleanup();
     if (!process.env.KEEP_TEST_PG) await teardownTestPg();
+  });
+
+  it('DREAM-REVIEW-PREFLIGHT: persists a no-spend refusal through real source readers, phase ledger and detail projection', async () => {
+    const workspaceId = WS + '-preflight';
+    const f = await createDreamCapabilityFixture(workspaceId, POT);
+    const sql = db.adminSql;
+    try {
+      const llmCall = vi.fn<DreamCycleDeps['llmCall']>(async () => { throw new Error('Must not pay for generation'); });
+      const sink = vi.fn<DreamCycleDeps['sink']>(async () => { throw new Error('Must not route an unreviewed proposal'); });
+      const result = await runDreamCycle({ ...f.scope, rootPath: f.root, manifest: f.manifest, mode: 'manual', cycleId: 'preflight-pg', cycle: { maxDreamsPerCycle: 3 }, pass: { model: 'generator' }, review: { model: 'reviewer' } }, {
+        llmCall, sink,
+        preflight: async () => ({ allow: true, loopId: 'test', cycleRemainingUsd: 1, rollingSpentUsd: 0, rollingRemainingUsd: 5, rollingLoopCount: 0 }),
+        loadPackets: async () => f.packets,
+        loadHistory: () => listDreamRuns(sql, { workspaceId, potSlug: POT }),
+        sample: () => f.sampling,
+        reviewSources: packets => buildCapabilityReviewSources({ sql, scope: f.scope, rootPath: f.root, manifest: f.manifest, packets }),
+        beginRun: input => beginDreamRun(sql, { ...input, workspaceId, potSlug: POT, mode: 'manual' }),
+        recordSelection: input => recordDreamRunSelection(sql, { ...input, workspaceId }),
+        beginCall: input => beginDreamRunCall(sql, { ...input, workspaceId }),
+        settleCall: input => settleDreamRunCall(sql, { ...input, workspaceId }),
+        recordReview: input => recordDreamRunReview(sql, { ...input, workspaceId }),
+        finalizeRun: input => finalizeDreamRun(sql, { ...input, workspaceId }),
+        recordSpend: run => recordDreamRunSpend(sql, { workspaceId, potSlug: POT, runId: run.runId }),
+        rerank: async (_query, priors) => ({ priors, outcome: { attempted: false, reason: 'Scorer offline' } }),
+      });
+      expect(result).toMatchObject({ reason: 'review-unavailable', attempts: 1, accepted: 0, costUsd: 0 });
+      const detail = await readDreamDetail(sql, { workspaceId, potSlug: POT, runId: result.runs[0]!.runId });
+      expect(detail?.run.review).toMatchObject({ verdict: 'unverified', reason: 'rerank-unavailable' });
+      expect(detail?.run.outcome).toMatchObject({ generationSkipped: true });
+      expect(detail?.nextCheck).toMatchObject({ kind: 'dependency', maxSourceQueries: 2 });
+      expect(detail?.proposal).toBeNull();
+      expect(detail?.provenance!.calls.map(c => c.callId)).toContain('rerank:preflight');
+      expect(detail?.provenance!.calls.every(c => c.reservedUsd === 0 && c.status === 'settled')).toBe(true);
+      expect(llmCall).not.toHaveBeenCalled(); expect(sink).not.toHaveBeenCalled();
+    } finally {
+      await rm(f.root, { recursive: true, force: true });
+    }
   });
 
   it('applies idempotently and keeps the declared mode/status checks armed', async () => {

@@ -1,6 +1,7 @@
 /** Dream measurement over the existing run, routed-idea and experiment ledgers. */
 import type { Sql } from 'postgres';
 import type { CapabilityReviewResult } from './capability-review';
+import { DREAM_REVIEW_OUTCOMES, dreamReviewOutcome } from './dream-config';
 import { DREAM_RUN_TERMINAL_STATUSES, mapDreamRun, type DreamRun } from './dream-run-store';
 import {
   DREAM_CALL_PHASES, dreamCapabilityRun, dreamRunAssessments,
@@ -66,6 +67,7 @@ class DreamMetricsFold {
   private readonly phases = Object.fromEntries(DREAM_CALL_PHASES.map(p => [p, cost()])) as Record<string, Cost>;
   private readonly models: Record<string, Cost> = {};
   private readonly statuses: Record<string, number> = Object.fromEntries(['running', ...DREAM_RUN_TERMINAL_STATUSES].map(s => [s, 0]));
+  private readonly reviewOutcomes: Record<string, number> = Object.fromEntries(DREAM_REVIEW_OUTCOMES.map(s => [s, 0]));
   private readonly arities: Record<string, number> = {};
   private readonly recipes: Record<string, number> = {};
   private readonly versions: Record<string, number> = {};
@@ -112,6 +114,7 @@ class DreamMetricsFold {
     this.seen.add(run.runId);
     this.attempts++;
     increment(this.statuses, run.status);
+    increment(this.reviewOutcomes, dreamReviewOutcome(run.review));
     const provenance = dreamCapabilityRun(run);
     increment(this.versions, provenance?.schemaVersion ?? 'legacy');
     const selected = provenance?.sampling?.status === 'selected' ? provenance.sampling.selection : null;
@@ -277,7 +280,9 @@ class DreamMetricsFold {
         statuses: this.statuses, terminal: this.attempts - this.statuses.running!, eligibleAttempts: this.eligible,
         proposalAttempts: this.proposals, reviewedAttempts: this.reviewed, assessedAttempts: this.assessed,
         reviewPassedAttempts: this.reviewPassed,
-        reviewPassRate: ratio(this.reviewPassed, this.reviewed),
+        reviewOutcomes: this.reviewOutcomes,
+        reviewPassRate: ratio(this.reviewPassed,
+          this.reviewOutcomes.accepted! + this.reviewOutcomes.rejected! + this.reviewOutcomes.duplicate!),
         dedupeSurvival: ratio(this.statuses.accepted!, this.reviewPassed),
         routedAttempts: this.routed, uniqueRoutedArtifacts: this.routedRefs.size, qualifiedFamilies: this.qualified.size,
         proposalsPerEligibleAttempt: ratio(this.proposals, this.eligible),

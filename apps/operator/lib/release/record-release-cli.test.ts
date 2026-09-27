@@ -734,6 +734,35 @@ describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
     }
   });
 
+  it('does not scan an unrelated sibling mobile build during desktop-only recording', () => {
+    const previous = process.env.PAPERCUSP_MOBILE_ROOT;
+    delete process.env.PAPERCUSP_MOBILE_ROOT;
+    try {
+      const desktop = buildRunOpts(['--version', '0.0.21', '--bundle', '/tmp/desktop-bundle']);
+      expect(desktop.mobileRoot).toBeNull();
+      expect(scanMobileArtifacts(desktop.mobileRoot, desktop.version, 'desktop-v0.0.21-alpha')).toEqual([]);
+
+      // Supplying a mobile root is still an affirmative request: a raw Android
+      // output without provenance must fail closed, even for a desktop bundle.
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mob-residue-'));
+      try {
+        const apkDir = path.join(root, 'android/app/build/outputs/apk/debug');
+        fs.mkdirSync(apkDir, { recursive: true });
+        fs.writeFileSync(path.join(apkDir, 'app-debug.apk'), plausibleBytes('debug'));
+        const withMobile = buildRunOpts([
+          '--version', '0.0.21', '--bundle', '/tmp/desktop-bundle', '--mobile-root', root,
+        ]);
+        expect(() => scanMobileArtifacts(withMobile.mobileRoot, withMobile.version, 'desktop-v0.0.21-alpha'))
+          .toThrow(/without .*provenance/i);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_MOBILE_ROOT;
+      else process.env.PAPERCUSP_MOBILE_ROOT = previous;
+    }
+  });
+
   it('carries the channel + dry-run flags through the same object', () => {
     const opts = buildRunOpts([
       '--version',

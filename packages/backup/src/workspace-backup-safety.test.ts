@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, writeFile, readFile, rm, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 vi.mock('./password', () => ({ deriveRepoPassword: async () => 'test-password' }));
 
@@ -312,7 +313,69 @@ beforeEach(async () => {
 afterEach(async () => {
   configureBackupStepRunner(null);
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
+});
+
+describe('headless repository credentials (EI-24372599771023070)', () => {
+  it.each([false, true])('initializes with an unavailable keyring (existing repo: %s)', async (existingRepo) => {
+    vi.stubEnv('KOPIA_PERSIST_CREDENTIALS_ON_CONNECT', 'true');
+    const backup = wb as any;
+    vi.spyOn(backup, 'applyGlobalPolicy').mockResolvedValue(undefined);
+    const commands: string[][] = [];
+    vi.spyOn(backup, 'kopiaTry').mockImplementation(async (...call: unknown[]) => {
+      const [args, opts] = call as [string[], { env: NodeJS.ProcessEnv }];
+      commands.push(args);
+      if (args[1] === 'status') return { ok: false };
+      expect(opts.env.KOPIA_PASSWORD).toBe('test-password');
+      if (opts.env.KOPIA_PERSIST_CREDENTIALS_ON_CONNECT !== 'false') {
+        return { ok: false, stderr: 'unable to persist password in OS keyring: exit status 195' };
+      }
+      return { ok: existingRepo };
+    });
+    vi.spyOn(backup, 'kopia').mockImplementation(async (...call: unknown[]) => {
+      const [args, opts] = call as [string[], { env: NodeJS.ProcessEnv }];
+      commands.push(args);
+      if (opts.env.KOPIA_PERSIST_CREDENTIALS_ON_CONNECT !== 'false') {
+        throw new Error('unable to persist password in OS keyring: exit status 195');
+      }
+      expect(opts.env.KOPIA_PASSWORD).toBe('test-password');
+      return '';
+    });
+
+    await wb.ensureRepo();
+    expect(commands.map((args) => args[1])).toEqual(
+      existingRepo ? ['status', 'connect'] : ['status', 'connect', 'create'],
+    );
+  });
+
+  const kopiaAvailable = spawnSync(process.env.KOPIA_BIN ?? 'kopia', ['--version'], { stdio: 'ignore' }).status === 0;
+  it.skipIf(!kopiaAvailable)('creates, reconnects and restores using only the supplied password (real Kopia)', async () => {
+    vi.stubEnv('KOPIA_USE_KEYRING', 'true');
+    vi.stubEnv('KOPIA_PERSIST_CREDENTIALS_ON_CONNECT', 'true');
+    // Policy SQL is independent of credential persistence; the repository,
+    // snapshot and restore operations below use the real subprocess boundary.
+    vi.spyOn(wb as any, 'applyGlobalPolicy').mockResolvedValue(undefined);
+    await wb.ensureRepo();
+    expect((await wb.kopiaTraced(['repository', 'status'])).exitCode).toBe(0);
+    const withoutPassword = await (wb as any).kopiaTry(['repository', 'status'], {
+      env: { ...(wb as any).envWithPassword('test-password'), KOPIA_PASSWORD: undefined },
+    });
+    expect(withoutPassword.ok).toBe(false);
+
+    // A lost local config (including a partially initialized first attempt)
+    // must reconnect to the same repo without creating it again.
+    await rm(join(root, 'backups', 'repository.config'));
+    await wb.ensureRepo();
+    await mkdir(join(root, 'data'));
+    await writeFile(join(root, 'data', 'proof.txt'), 'headless backup round trip');
+    const snapshot = await wb.kopiaTraced(['snapshot', 'create', join(root, 'data'), '--json']);
+    expect(snapshot.exitCode, snapshot.stderr).toBe(0);
+    const { snapshotId } = parseKopiaSnapshotJson(snapshot.stdout);
+    const restored = await wb.kopiaTraced(['snapshot', 'restore', snapshotId, join(root, 'restored')]);
+    expect(restored.exitCode, restored.stderr).toBe(0);
+    expect(await readFile(join(root, 'restored', 'proof.txt'), 'utf8')).toBe('headless backup round trip');
+  }, 60_000);
 });
 
 // -------------------------------------------------------------------------

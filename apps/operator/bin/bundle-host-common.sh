@@ -48,3 +48,51 @@ HOST_COMMON_EXTERNALS=(
   --external:@opentelemetry/exporter-logs-otlp-proto
   --external:@opentelemetry/exporter-metrics-otlp-proto
 )
+
+# The host, packaged desktop and current-build rig execute the same worker
+# graph. Keep its complete sibling set here; a successful build must not
+# silently substitute inline work or omit compaction/sentinel workers.
+HOST_WORKER_OUTPUTS=(
+  local-embedder-worker.script.mjs
+  cpu-task-worker.script.mjs
+  local-reranker-worker.script.mjs
+  event-loop-sentinel.worker.mjs
+  snapshot-fold.worker.mjs
+)
+
+bundle_host_workers() {
+  local repo_root="$1" out_dir="$2" source output tmp
+  local -a sources=(
+    "${3:-$repo_root/libs/generic/memory/src/local-embedder-worker.script.mjs}"
+    "$repo_root/packages/operator-core/lib/cpu-task-worker.script.mjs"
+    "$repo_root/libs/generic/rerank/src/local-reranker-worker.script.mjs"
+  )
+  local index=0
+  mkdir -p "$out_dir" || return 1
+  for source in "${sources[@]}"; do
+    output="${HOST_WORKER_OUTPUTS[$index]}"
+    [ -s "$source" ] || { echo "FATAL: missing runtime worker $source" >&2; return 1; }
+    tmp="$out_dir/$output.new.$$"
+    cp "$source" "$tmp" && mv -f "$tmp" "$out_dir/$output" || return 1
+    index=$((index + 1))
+  done
+  for source in \
+    "$repo_root/packages/operator-core/lib/event-loop-sentinel.worker.ts" \
+    "$repo_root/packages/operator-core/lib/sync/hyperbee/snapshot-fold.worker.ts"; do
+    output="${HOST_WORKER_OUTPUTS[$index]}"
+    [ -s "$source" ] || { echo "FATAL: missing runtime worker $source" >&2; return 1; }
+    tmp="$out_dir/$output.new.$$.mjs"
+    if ! npx --yes esbuild@0.25.0 "$source" \
+      --bundle --platform=node --format=esm --target=node22 \
+      --external:sodium-native --outfile="$tmp" --log-limit=5; then
+      rm -f "$tmp"
+      echo "FATAL: failed to bundle runtime worker $source" >&2
+      return 1
+    fi
+    [ -s "$tmp" ] && mv -f "$tmp" "$out_dir/$output" || return 1
+    index=$((index + 1))
+  done
+  for output in "${HOST_WORKER_OUTPUTS[@]}"; do
+    [ -s "$out_dir/$output" ] || { echo "FATAL: missing bundled worker $output" >&2; return 1; }
+  done
+}

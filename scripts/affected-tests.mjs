@@ -1729,13 +1729,14 @@ const NON_WORKSPACE_PATH_ROUTES = [
 // ⚠ CORRECTED 2026-09-20 (WI-10002061): this sentence used to make the SAME claim
 // for lint:no-unenrolled-spawn. That half was FALSE, and it survived review because
 // the claim is true of the guard named beside it. Measured: no-unenrolled-spawn has
-// an npm script but ZERO references in green-checkpoint.ts, so no blocking path runs
-// its TREE SCAN — it exits 1 on two real offenders right now. It nevertheless reads
-// as covered, because check-lint-guard-reachability.mjs credits the `test` category
+// an npm script but ZERO references in green-checkpoint.ts, so no blocking path ran
+// its TREE SCAN. Its two process-group-only sites are now reasoned allowlist entries,
+// and the repo-wide invariant registration below runs the green tree scan on source edits.
+// Before that registration it nevertheless read as covered, because
+// check-lint-guard-reachability.mjs credits the `test` category
 // from no-unenrolled-spawn-guard.test.ts, which exercises only the PREDICATE against
-// synthetic fixtures and never enumerates tracked files. Do NOT add it to this list
-// while it is RED: resolve the offenders first, or the entry lands a new red leg for
-// every agent on every edit.
+// synthetic fixtures and never enumerates tracked files. The offenders were resolved
+// before registration so this entry did not introduce a red leg for every source edit.
 // MIRRORS `SOURCE_ROOTS` / `SCHEMA_FILE_REL` in scripts/check-partial-index-alignment.mjs.
 // Deliberately COPIED rather than imported: this router is the entry point for every
 // agent's test loop, and the guard mechanism above is documented to fail OPEN — a static
@@ -1950,6 +1951,45 @@ const SU_SPLICE_MARKER_TRIGGER_PATHS = new Set([
 ]);
 
 const REPO_WIDE_INVARIANT_GUARDS = [
+  {
+    // EI-24368307678871025 — the host's real esbuild graph must resolve imports
+    // against the committed operator-core tree before a restart uses that graph.
+    // The existing check builds into a temporary directory, so it cannot replace
+    // the running host bundle. Keep this as a separate task: operator-core's
+    // Vitest suite does not execute the host bundler.
+    workspace: "@papercusp/operator-core",
+    script: "lint:host-bundle-builds",
+    appliesTo: (f) =>
+      f === "apps/operator/bin/hono-host.ts" ||
+      f === "apps/operator/bin/bundle-host.sh" ||
+      f === "scripts/check-host-bundle-builds.mjs" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/package.json" ||
+      f === "package.json" ||
+      f === "package-lock.json" ||
+      (/\.[cm]?[jt]sx?$/.test(f) &&
+        !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(f) &&
+        (f.startsWith("apps/operator/lib/") ||
+          f.startsWith("packages/operator-core/lib/"))),
+  },
+  {
+    // WI-10002061 — this guard scans tracked TS/TSX source across the entire tree.
+    // Predicate-only unit tests cannot catch a newly introduced detached spawn,
+    // and the root npm script was previously absent from every blocking runner.
+    // Attach the real-tree scan to each source edit, including edits outside the
+    // host workspace. Its own checker and routing configuration also attach.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-unenrolled-spawn",
+    appliesTo: (f) =>
+      (/\.tsx?$/.test(f) &&
+        !/\.(?:test|spec)\.tsx?$/.test(f) &&
+        !f.includes("node_modules/") &&
+        !f.includes("_retired/")) ||
+      f === "scripts/check-no-unenrolled-detached-spawn.mjs" ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "packages/operator-core/package.json" ||
+      f === "package.json",
+  },
   {
     // The packaged WDIO runner lives outside npm workspaces. Its Node unit
     // suite is part of the package's `test` script, but the affected-workspace

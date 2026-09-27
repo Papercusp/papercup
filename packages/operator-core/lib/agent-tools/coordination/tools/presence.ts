@@ -89,6 +89,11 @@ export default defineTool({
         args: { view: 'live', project: 'ids' },
         note: 'coord:presence is a scope-bounded VIEW, not a paged query surface — narrow it with owner/owners/pot rather than a row cap. A broad census belongs in coord:roster, which projects ids cheaply',
       },
+      sessionState: {
+        tool: 'coord:roster',
+        args: { view: 'live', states: ['live'], project: 'liveness' },
+        note: 'coord:presence returns sessionState on each row but does not filter by it. Use coord:roster with states:["live"] (or the desired state) to filter the live view.',
+      },
       plan: {
         tool: 'coord:roster',
         args: { view: 'claims', plan: '<plan-slug>' },

@@ -136,6 +136,22 @@ export async function submoduleGitlinkAt(git: GitRead, sha: string, sub: string)
   return m ? { state: 'pinned', pin: m[1] } : { state: 'absent' };
 }
 
+/** The blob pinned by the superproject HEAD, including a file inside a submodule.
+ * A submodule checkout's own HEAD may be newer than the gitlink, so always read
+ * the pinned commit rather than treating its current checkout as committed here. */
+export async function committedBlobAtHead(
+  git: GitRead,
+  path: string,
+  submodules?: readonly string[],
+): Promise<string | null> {
+  const sub = (submodules ?? await submodulePrefixes(git)).find(prefix => path.startsWith(`${prefix}/`));
+  if (!sub) return blobAtCommit(git, 'HEAD', path);
+  const link = await submoduleGitlinkAt(git, 'HEAD', sub);
+  return link.state === 'pinned'
+    ? blobAtCommit(gitReadInSubdir(git, sub), link.pin, path.slice(sub.length + 1))
+    : null;
+}
+
 /**
  * Containment for one path inside `sub`, evaluated in the submodule's own object store.
  *

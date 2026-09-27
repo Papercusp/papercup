@@ -5,14 +5,14 @@
 /** Parse JSON, JSON-RPC/SSE, and CallToolResult envelopes into the tool body. */
 export function parseManagedCarryResponse(rawText: any): {
     ok: boolean;
-    detail: string;
-    inner?: undefined;
-    isError?: undefined;
-} | {
-    ok: boolean;
     inner: any;
     isError: boolean;
     detail?: undefined;
+} | {
+    ok: boolean;
+    detail: any;
+    inner?: undefined;
+    isError?: undefined;
 };
 /** Convert every managed outcome to Codex's fail-closed PreCompact response. */
 export function preCompactDecision(parsed: any): {

@@ -24,3 +24,14 @@ export class AsyncLocalStorage<T> {
     this.value = undefined;
   }
 }
+
+/** Server-only context binding; exported so the SPA can link reachable workflow modules. */
+export class AsyncResource {
+  constructor() {
+    throw new Error('node:async_hooks AsyncResource is server-only in the operator-vite browser bundle');
+  }
+
+  static bind(): never {
+    throw new Error('node:async_hooks AsyncResource is server-only in the operator-vite browser bundle');
+  }
+}

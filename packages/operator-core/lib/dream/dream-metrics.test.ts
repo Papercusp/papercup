@@ -81,6 +81,19 @@ describe('Dream metrics reconcile evidence rather than wording, retries or missi
     expect(report.leading.qualifiedFamiliesPerUsd).toBeNull();
   });
 
+  it('excludes unresolved reviews from substantive decisions without rewriting historical status counts', () => {
+    const accepted = row('accepted'), rejected = row('rejected', 'rejected');
+    rejected.run.review = { ...rejected.run.review, verdict: 'reject', reason: 'one-unit-only' };
+    const unknown = row('unknown', 'rejected'), unavailable = row('unavailable', 'rejected');
+    unknown.run.review = { ...unknown.run.review, verdict: 'unverified', reason: 'counterfactual-unknown' };
+    unavailable.run.review = { ...unavailable.run.review, verdict: 'unverified', reason: 'rerank-unavailable' };
+    const report = computeDreamMetrics([accepted, rejected, unknown, unavailable], scope);
+    expect(report.funnel.statuses.rejected).toBe(3);
+    expect(report.funnel.reviewOutcomes).toMatchObject({ accepted: 1, rejected: 1, unverified: 1, unavailable: 1 });
+    expect(report.funnel.reviewPassRate).toEqual({ numerator: 1, denominator: 2, value: 0.5 });
+    expect(computeDreamMetrics([unknown, unavailable], scope).funnel.reviewPassRate.value).toBeNull();
+  });
+
   it('preserves unknown charges and reports their reservation separately from actual spend', () => {
     const r = row('unknown', 'error');
     const p = dreamCapabilityRun(r.run)!;

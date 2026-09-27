@@ -111,6 +111,16 @@ describe('Requirements BAR parser', () => {
       ]),
     });
   });
+
+  it('identifies a title-bearing map cell as an invalid key', () => {
+    const result = parseBarMappings(plan({ map: '| R-1 — First outcome | P-001 | tree |\n| R-2 | P-002 | live |' }), new Set(['R-1', 'R-2']));
+    expect(result).toMatchObject({
+      ok: false,
+      problems: expect.arrayContaining([
+        expect.objectContaining({ code: 'bar_mapping_invalid', barKey: 'R-1', detail: expect.stringContaining('bare R-1 key') }),
+      ]),
+    });
+  });
 });
 
 describe('acceptance BAR seed builder', () => {

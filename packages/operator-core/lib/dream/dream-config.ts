@@ -4,6 +4,28 @@ export const DREAM_FRAGMENT_KINDS = ['observation', 'work_item', 'memory', 'stat
 
 export type DreamFragmentKind = (typeof DREAM_FRAGMENT_KINDS)[number];
 
+/** Review truth is separate from the immutable execution status in old ledgers. */
+export const DREAM_REVIEW_OUTCOMES = ['not-reviewed', 'accepted', 'rejected', 'duplicate', 'unverified', 'unavailable'] as const;
+export type DreamReviewOutcome = (typeof DREAM_REVIEW_OUTCOMES)[number];
+type ReviewSummary = { verdict?: unknown; reason?: unknown } | null | undefined;
+const unavailableReviewReasons = new Set([
+  'review-unavailable', 'search-unavailable', 'rerank-unavailable', 'grader-error', 'malformed',
+]);
+export function dreamReviewOutcome(review: ReviewSummary): DreamReviewOutcome {
+  if (!review) return 'not-reviewed';
+  if (review.verdict === 'accept') return 'accepted';
+  if (unavailableReviewReasons.has(String(review.reason))) return 'unavailable';
+  if (review.verdict === 'reject') return review.reason === 'duplicate' ? 'duplicate' : 'rejected';
+  return 'unverified';
+}
+export function dreamRunOutcome(status: string, review: ReviewSummary): string {
+  if (status !== 'rejected') return status;
+  const outcome = dreamReviewOutcome(review);
+  if (outcome === 'unavailable') return 'review unavailable';
+  if (outcome === 'unverified') return 'insufficient evidence';
+  return status;
+}
+
 const HOUR_MS = 60 * 60 * 1_000;
 const DAY_MS = 24 * HOUR_MS;
 

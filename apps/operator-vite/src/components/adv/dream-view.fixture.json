@@ -1276,6 +1276,14 @@
       "reviewedAttempts": 1,
       "assessedAttempts": 0,
       "reviewPassedAttempts": 1,
+      "reviewOutcomes": {
+        "not-reviewed": 0,
+        "accepted": 1,
+        "rejected": 0,
+        "duplicate": 0,
+        "unverified": 0,
+        "unavailable": 0
+      },
       "reviewPassRate": {
         "numerator": 1,
         "denominator": 1,
@@ -1532,6 +1540,14 @@
       "reviewedAttempts": 0,
       "assessedAttempts": 0,
       "reviewPassedAttempts": 0,
+      "reviewOutcomes": {
+        "not-reviewed": 0,
+        "accepted": 0,
+        "rejected": 0,
+        "duplicate": 0,
+        "unverified": 0,
+        "unavailable": 0
+      },
       "reviewPassRate": {
         "numerator": 0,
         "denominator": 0,

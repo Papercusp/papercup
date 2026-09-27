@@ -285,14 +285,17 @@ function mainThreadActivity(): MainThreadActivitySnapshot {
     wchan,
     cpuPsiSome60,
   };
+  // Every caller has already established a stale heartbeat. Capture children
+  // even when the CPU sample is partial or wchan changes between observations:
+  // those were the only surviving clues after the 2026-09-26 staging host kill.
+  // The stricter classifier below names the likely block mode, never the child.
+  const children = readMainThreadChildren();
+  if (children.length) out.mainThreadLiveChildren = children.join(' | ');
   // Complete the PARKED branch. `parked` + `ep_poll` is where an idle loop also
-  // sits, so the bare label reads as "healthy" — but the caller only asks once
-  // the heartbeat is already stale, and an idle loop still runs its timers.
-  // Report the mode and name the children; never suppress the kill.
+  // sits, so the bare label reads as "healthy" — but an idle loop still runs
+  // its timers. Report the mode without suppressing the kill.
   if (isLikelySyncSubprocessBlock(activity)) {
     out.mainThreadBlockMode = 'sync-subprocess-suspected';
-    const children = readMainThreadChildren();
-    if (children.length) out.mainThreadLiveChildren = children.join(' | ');
   }
   return { ...activity, fields: out };
 }

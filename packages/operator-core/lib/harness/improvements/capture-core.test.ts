@@ -2113,6 +2113,50 @@ describe('captureImprovement — observation coalescing by conditionKey (EI-1544
     });
   });
 
+  it('folds differently worded reports of the same native shell refusal without rewriting the first account', async () => {
+    const d = coalesceDeps();
+    const first = await captureImprovement({
+      title: 'exec_command rejects safe temporary-log cleanup',
+      body: 'CreateProcess refused: rm -f style commands are not permitted',
+      kind: 'change', lane: 'observation', createdBy: 'su-first',
+    }, d);
+    const second = await captureImprovement({
+      title: 'shell guard blocks explicit mktemp cleanup',
+      body: 'The sandbox says RM -F STYLE COMMANDS ARE NOT PERMITTED.',
+      kind: 'change', lane: 'observation', createdBy: 'su-second',
+    }, d);
+
+    expect(first.created).toBe(true);
+    expect(second).toMatchObject({ created: false, reason: 'coalesced' });
+    expect(second.coalescedOnto).toMatchObject({ identity: 'derived', textDisposition: 'append-only' });
+    expect(d.created).toHaveLength(1);
+    expect(d.store[0].title).toBe('exec_command rejects safe temporary-log cleanup');
+    expect((d.store[0].payload as Record<string, unknown>)).toMatchObject({
+      watchdogKey: 'native-exec-refusal:rm-f-style-commands-not-permitted',
+      repeatCount: 2,
+    });
+    expect(d.occurrences.map((row) => row.reportKind)).toEqual(['canonical-created', 'coalesced']);
+    expect(d.occurrences.map((row) => row.reporter)).toEqual(['su-first', 'su-second']);
+  });
+
+  it('keeps distinct cleanup failures and immutable verdicts separate from the native refusal identity', async () => {
+    const d = coalesceDeps();
+    const filings = [
+      { title: 'exec_command refuses rm -f cleanup', body: 'rm -f style commands are not permitted' },
+      { title: 'shell cleanup failed', body: 'rm -f returned permission denied from the container filesystem' },
+      { title: 'exec_command had a quoting error', body: 'the shell did not expand the mktemp path' },
+    ];
+    for (const filing of filings) {
+      expect((await captureImprovement({ ...filing, kind: 'change', lane: 'observation' }, d)).created).toBe(true);
+    }
+    expect((await captureImprovement({
+      ...filings[0], kind: 'change', lane: 'observation', initialState: 'done',
+    }, d)).created).toBe(true);
+    expect(d.created).toHaveLength(4);
+    expect(d.created[3].state).toBe('done');
+    expect((d.created[3].payload as Record<string, unknown>).watchdogKey).toBeUndefined();
+  });
+
   // P-006/D-004: a coalesce used to return ok:true / created:false / reason:'coalesced'
   // and nothing more — identical whether the caller's text replaced the row's or was
   // silently dropped by the refresh's `.catch(() => null)`, and identical whether the

@@ -623,6 +623,7 @@ async function defaultEnsureCodexHomeForWake(
         codexGatewayAuto: input.requireGatewayProvider === true,
         codexGatewayPriority: input.requireGatewayProvider === true ? 'su' : null,
         trustDir: null,
+        projectDir: input.sessionRow?.cwd,
       }),
     };
   } catch (err) {

@@ -113,7 +113,7 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
     );
     expect(result.results[0]).toMatchObject({ ok: true, slug: 'plan-a', itemId: 'P-001' });
     expect(slugScopeM.recover).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'papercusp-workspace' }), ['plan-a']);
-    expect(lockM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'papercusp' }), expect.anything(), expect.anything());
+    expect(lockM).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ harnessSlug: 'papercusp' }), expect.anything());
     expect(metadata).toHaveBeenCalledWith({ harnessAutoResolved: { 'plan-a': 'papercusp' } });
   });
 
@@ -128,7 +128,12 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
       { slug: 'plan-a', item: 'P-001', status: 'todo' },
       { workspaceId: 'papercusp-workspace', harnessSlug: '*' },
     );
-    expect(result.results[0]).toMatchObject({ ok: false, slug: 'plan-a', itemId: 'P-001' });
+    expect(result.results[0]).toMatchObject({
+      ok: false,
+      error: 'plan_slug_ambiguous_across_harnesses',
+      slug: 'plan-a',
+      itemId: 'P-001',
+    });
     expect(lockM).not.toHaveBeenCalled();
   });
 

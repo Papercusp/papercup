@@ -1454,6 +1454,10 @@ export class WorkspaceBackup {
     return {
       ...process.env,
       KOPIA_PASSWORD: password,
+      // Every invocation receives the derived password. Persisting a second
+      // copy is unnecessary and fails in macOS launchd/SSH sessions without
+      // an unlocked keychain (including after repository creation succeeds).
+      KOPIA_PERSIST_CREDENTIALS_ON_CONNECT: 'false',
       KOPIA_CONFIG_PATH: join(this.workspaceRoot, 'backups', 'repository.config'),
       KOPIA_LOG_DIR: join(this.workspaceRoot, 'backups', 'logs'),
       KOPIA_CACHE_DIRECTORY: join(this.workspaceRoot, 'backups', 'cache'),

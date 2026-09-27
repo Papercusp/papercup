@@ -1535,7 +1535,7 @@ export interface GoalHolderRespawnDeps {
   /** Atomically reserve one durable per-goal launch slot before a process is minted. */
   reserveRateSlot?: (goal: GoalRowLike, nowMs: number) => Promise<GoalHolderRespawnRateDecision>;
   /** Move a capped goal onto the canonical non-terminal human-attention hold. */
-  pauseNeedsHuman?: (goal: GoalRowLike, attemptsInWindow: number, nowMs: number) => Promise<void>;
+  pauseNeedsHuman?: (goal: GoalRowLike, attemptsInWindow: number, nowMs: number) => Promise<boolean>;
   /**
    * Converge a needs-human latch that no health-gated branch below can reach.
    * Runs for EVERY swept goal, healthy or not — that is the whole point: the
@@ -1819,7 +1819,7 @@ export async function pauseGoalForHolderRespawnRateCap(
   goal: Pick<GoalRowLike, 'goalId' | 'workspaceId'>,
   attemptsInWindow: number,
   nowMs: number,
-): Promise<void> {
+): Promise<boolean> {
   const reason =
     `Automatic holder recovery reached its safety cap (${attemptsInWindow}/` +
     `${GOAL_HOLDER_RESPAWN_RATE_LIMIT} attempts in ${GOAL_HOLDER_RESPAWN_RATE_WINDOW_MS / 60_000} minutes); ` +
@@ -1868,7 +1868,7 @@ export async function pauseGoalForHolderRespawnRateCap(
        AND metadata #>> '{holderRespawn,needsHuman}' = 'true'
     RETURNING id
   `;
-  if (!changed) return;
+  if (!changed) return false;
 
   await appendGoalWriteAudit(sql as unknown as GoalSqlTag, {
     workspaceId: goal.workspaceId,
@@ -1900,6 +1900,7 @@ export async function pauseGoalForHolderRespawnRateCap(
         `(${stopped.unattributedActiveLoops} unattributed loop(s) remain)`,
     );
   }
+  return true;
 }
 
 /**
@@ -2150,6 +2151,14 @@ export async function runGoalHolderRespawnOnce(
   overrides: Partial<GoalHolderRespawnDeps> = {},
 ): Promise<GoalHolderRespawnSummary> {
   const deps = holderRespawnDeps(sql, overrides);
+  const pauseNeedsHuman = async (goal: GoalRowLike, attemptsInWindow: number): Promise<void> => {
+    const paused = await (deps.pauseNeedsHuman ?? (async () => false))(
+      goal, attemptsInWindow, deps.now(),
+    );
+    if (!paused) {
+      throw new Error(`needs-human pause matched no active, flagged goal row for ${goal.goalId}`);
+    }
+  };
   const summary: GoalHolderRespawnSummary = {
     scanned: 0,
     eligible: 0,
@@ -2223,7 +2232,7 @@ export async function runGoalHolderRespawnOnce(
         // dedups on subjectSignature, and the pause WHERE guard matches only a
         // latch that still has no escalatedAtMs.
         await deps.escalateGiveUp(goal, latch.attemptsInWindow);
-        await (deps.pauseNeedsHuman ?? (async () => {}))(goal, latch.attemptsInWindow, deps.now());
+        await pauseNeedsHuman(goal, latch.attemptsInWindow);
         summary.gaveUp += 1;
         continue;
       }
@@ -2491,7 +2500,7 @@ export async function runGoalHolderRespawnOnce(
         continue;
       }
       try {
-        await (deps.pauseNeedsHuman ?? (async () => {}))(goal, decision.action.restartsInWindow, deps.now());
+        await pauseNeedsHuman(goal, decision.action.restartsInWindow);
         summary.gaveUp += 1;
       } catch (error) {
         deps.states.set(key, { ...decision.nextState, gaveUp: false });
@@ -2531,7 +2540,7 @@ export async function runGoalHolderRespawnOnce(
         continue;
       }
       try {
-        await (deps.pauseNeedsHuman ?? (async () => {}))(goal, rate.attemptsInWindow, deps.now());
+        await pauseNeedsHuman(goal, rate.attemptsInWindow);
         summary.gaveUp += 1;
       } catch (error) {
         deps.states.set(key, { ...cappedState, gaveUp: false });

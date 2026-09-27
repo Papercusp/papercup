@@ -88,8 +88,11 @@ import {
   mintRoleLaunchIdentity,
   buildLaunchSpec,
   compileLaunchSpecificationArtifact,
+  resolveLaunchIdentityModelDefault,
   SU_EXTRA_MCP_TOOL_NAMES,
   stewardSeedToolNames,
+  SuInstancePromptDriftError,
+  verifyPapercuspSuInstanceOverride,
 } from './role-launch-spec';
 
 // WI-2140338: switchable partial mock of the projected-tool registry read, so the
@@ -103,6 +106,50 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
     ...real,
     listMcpProjections: (...args: unknown[]) => stewardMockState.listings ?? realList(...args),
   };
+});
+
+describe('Papercusp su instance override source guard', () => {
+  it('accepts the decoded tenant-scoped store value and rejects JSON-encoded or stale text', () => {
+    const root = mkdtempSync(join(tmpdir(), 'su-instance-override-'));
+    try {
+      const sourcePath = join(root, 'pot-instances', 'papercup-pot.su.md');
+      const source = 'Papercusp su override\nUnicode → and a "quote".\n';
+      mkdirSync(dirname(sourcePath), { recursive: true });
+      writeFileSync(sourcePath, source);
+      const input = {
+        workspaceId: 'papercusp-workspace',
+        potSlug: 'papercusp',
+        promptsDirectory: root,
+        storedOverride: source,
+      };
+
+      expect(() => verifyPapercuspSuInstanceOverride(input)).not.toThrow();
+      expect(() => verifyPapercuspSuInstanceOverride({ ...input, storedOverride: JSON.stringify(source) })).toThrow(
+        SuInstancePromptDriftError,
+      );
+      expect(() => verifyPapercuspSuInstanceOverride({ ...input, storedOverride: 'stale' })).toThrow(
+        /re-seed promptOverride\.su/,
+      );
+      expect(() => verifyPapercuspSuInstanceOverride({ ...input, storedOverride: null })).toThrow(
+        SuInstancePromptDriftError,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not compare another tenant or pot against Papercusp source', () => {
+    const input = {
+      workspaceId: 'another-workspace',
+      potSlug: 'papercusp',
+      promptsDirectory: undefined,
+      storedOverride: null,
+    };
+    expect(() => verifyPapercuspSuInstanceOverride(input)).not.toThrow();
+    expect(() =>
+      verifyPapercuspSuInstanceOverride({ ...input, workspaceId: 'papercusp-workspace', potSlug: 'other-pot' }),
+    ).not.toThrow();
+  });
 });
 import { resolveProjectDir } from './spawn-config';
 import { readSuperuserToken } from './superuser-token';
@@ -263,6 +310,12 @@ describe('buildRoleLaunchSpec', () => {
         state: { schemaVersion: 1 },
         renderStack: true,
       });
+      expect(await resolveLaunchIdentityModelDefault({ cwd: dir, harnessSlug: 'fixture', role: 'worker' }))
+        .toBe('selected-domain-model');
+      await expect(compileLaunchSpecificationArtifact({ promptText: 'ROLE KERNEL', cwd: dir,
+        workspaceId: 'fixture-workspace', harnessSlug: 'fixture', role: 'worker',
+        expectedModelDefault: 'changed-after-preflight', state: { schemaVersion: 1 } }))
+        .rejects.toThrow('selected identity model default changed after launch preflight');
       expect(fromDefault.compositionSource).toBe('blueprint');
       expect(fromDefault.stack).toEqual(['domain:fixture-domain']);
       expect(fromDefault.promptText.indexOf('FIXTURE DOMAIN IDENTITY')).toBeLessThan(
@@ -546,13 +599,18 @@ describe('buildRoleLaunchSpec', () => {
         const componentDir = join(dir, '.papercusp', 'blueprints', id!);
         mkdirSync(join(componentDir, 'prompts'), { recursive: true });
         writeFileSync(join(componentDir, 'blueprint.yaml'),
-          `id: ${id}\nextends: base\nversion: 1.0.0\nslots:\n  - slot: ${slot}\n`);
+          `id: ${id}\nextends: base\nversion: 1.0.0\nslots:\n  - slot: ${slot}\n` +
+          (slot === 'domain' ? 'knobs:\n  aiBackend:\n    default: { model: named-default }\n    roles:\n      su: { model: named-su }\n' : ''));
         writeFileSync(join(componentDir, 'prompts', `${slot}.md`), `${prompt}\n`);
       }
       const selection = { id: 'named-review', repoDir: dir,
         componentRefs: ['domain:named-domain', 'practice:named-practice'] };
       await previewNamedIdentityComposition(selection);
       await saveNamedIdentityComposition(selection);
+      expect(await resolveLaunchIdentityModelDefault({ cwd: dir, role: 'su',
+        stack: ['composition:named-review'] })).toBe('named-su');
+      expect(await resolveLaunchIdentityModelDefault({ cwd: dir, role: 'worker',
+        stack: ['composition:named-review'] })).toBe('named-default');
       const { papercuspPathForWorkspace } = await import('./papercusp-root');
       const flags = await import('@papercusp/flags/server');
       const flagSpy = vi.spyOn(flags, 'getFlag').mockResolvedValueOnce(false);

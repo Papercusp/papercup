@@ -157,6 +157,35 @@ describe('plans:new parse admission (EI-22005620513894909)', () => {
     expect(JSON.parse(out.content[0]!.text)).toMatchObject({ ok: true, itemsParsed: 1 });
   });
 
+  it('explains that a title-bearing bar cell must use a bare R-N key', async () => {
+    const out = await call([
+      '## Requirements',
+      '',
+      '**R-1 — Export data.** Every matching customer is exported exactly once.',
+      '',
+      '## Design',
+      '',
+      '### Bar-to-work map for this plan',
+      '',
+      '| bar | implementing plan items | evidence plane |',
+      '|---|---|---|',
+      '| R-1 Export data | P-001 | tree |',
+      '',
+      '## Phase 1',
+      '',
+      '- **P-001** `todo` implement the exporter',
+      '',
+    ].join('\n'));
+
+    expect(out.isError).toBe(true);
+    expect(withPlanLockM).not.toHaveBeenCalled();
+    const payload = JSON.parse(out.content[0]!.text) as Record<string, any>;
+    expect(payload.acceptanceBar.problems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'bar_mapping_invalid', barKey: 'R-1', detail: expect.stringContaining('bare R-1 key') }),
+    ]));
+    expect(payload.acceptanceBar.hint).toContain('| R-1 | P-001 | tree |');
+  });
+
   it('documents the plans:start spec-triad prerequisite in guidance', () => {
     const guidance = (tool as { guidance: { when: string; chaining: string } }).guidance;
     expect(guidance.when).toContain('Requirements');

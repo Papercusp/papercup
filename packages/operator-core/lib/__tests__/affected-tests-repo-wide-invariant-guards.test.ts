@@ -2096,6 +2096,56 @@ describe('affected-tests: declarations freshness guard (WI-38089)', () => {
  * stays invisible to `test:affected` until the later fleet typecheck. These probes pin both
  * directions of the routing predicate and the three non-TS inputs that can change its verdict.
  */
+describe('affected-tests: detached-spawn tree guard (WI-10002061)', () => {
+  const SCRIPT = 'lint:no-unenrolled-spawn';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+
+  it('attaches the real-tree scan for source outside its host workspace', () => {
+    expect(dryTasks('packages/backup/src/hook.ts')).toContain(TASK);
+    expect(dryTasks('apps/operator/lib/release/deploy-cli.ts')).toContain(TASK);
+  });
+
+  it('attaches for its own detector and routing configuration', () => {
+    expect(dryTasks('scripts/check-no-unenrolled-detached-spawn.mjs')).toContain(TASK);
+    expect(dryTasks('scripts/affected-tests.mjs')).toContain(TASK);
+  });
+
+  it('does not attach to a file the tree scan excludes', () => {
+    expect(dryTasks('apps/operator/docs/nuqs-audit-2026-05-11.md')).not.toContain(TASK);
+    expect(dryTasks('packages/backup/src/hook.test.ts')).not.toContain(TASK);
+  });
+
+  it('keeps the host script pointed at the real-tree checker', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[SCRIPT]).toContain('check-no-unenrolled-detached-spawn.mjs');
+  });
+});
+
+describe('affected-tests: real host bundle guard (EI-24368307678871025)', () => {
+  const SCRIPT = 'lint:host-bundle-builds';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+
+  it('runs for cross-workspace host imports and operator-core exports', () => {
+    expect(dryTasks('apps/operator/lib/release/deploy-cli.ts')).toContain(TASK);
+    expect(dryTasks('packages/operator-core/lib/blueprint/package-resource-receipts.ts')).toContain(TASK);
+  });
+
+  it('runs when the bundle recipe or routing changes, but skips test-only edits', () => {
+    expect(dryTasks('apps/operator/bin/bundle-host.sh')).toContain(TASK);
+    expect(dryTasks('scripts/affected-tests.mjs')).toContain(TASK);
+    expect(dryTasks('apps/operator/lib/release/deploy.test.ts')).not.toContain(TASK);
+  });
+
+  it('resolves the real bundle check from its selected workspace', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[SCRIPT]).toContain('check-host-bundle-builds.mjs');
+  });
+});
+
 describe('affected-tests: unenrolled .mjs import guard (WI-7025)', () => {
   const SCRIPT = 'lint:no-unenrolled-mjs-imports';
   const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;

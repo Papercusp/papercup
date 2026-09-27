@@ -335,6 +335,19 @@ describe('facts:assert TTL spelling contract', () => {
     expect(formatIssues(parsed.error.issues)).toMatch(/ttlSec/);
   });
 
+  it('explains why a permanent conclusion is refused and accepts its bounded form', () => {
+    const conclusion = { ...base, kind: 'conclusion' as const, confidence: 'verified' as const };
+    const parsed = assertTool.args.safeParse({ ...conclusion, ttlSec: undefined, permanent: true });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(formatIssues(parsed.error.issues)).toMatch(/permanent:true/i);
+    }
+    expect(assertTool.args.safeParse(conclusion).success).toBe(true);
+
+    const schema = schemaToText(z.toJSONSchema(assertTool.args as never)) ?? '';
+    expect(schema).toContain('permanent:true is allowed only for conventions/typed keys');
+  });
+
   it('mirrors the store lifetime exceptions and slot normalization', () => {
     expect(
       assertTool.args.safeParse({

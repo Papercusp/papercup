@@ -1476,9 +1476,12 @@ export function buildRunOpts(argv: string[]): RecordOpts {
     collectedLinuxBundleRoot(desktopRoot);
   const bundleDirs = releaseBundleRoots(bundleDir, desktopRoot);
   // Mobile (Android/iOS) artifacts live in the separate papercup-rust-mobile repo.
-  // Optional: null root → no mobile artifacts recorded (a legal desktop-only cut).
+  // Ordinary recording opts into mobile through --mobile-root or the environment.
+  // The uploader's --scan-mobile command still discovers the sibling by default.
+  // Otherwise unrelated Android build residue can block a desktop-only cut.
   const mobileRoot =
-    arg(argv, '--mobile-root') ?? process.env.PAPERCUSP_MOBILE_ROOT ?? resolveMobileRoot();
+    arg(argv, '--mobile-root') ?? process.env.PAPERCUSP_MOBILE_ROOT ??
+    (argv.includes('--scan-mobile') ? resolveMobileRoot() : null);
   const mobileProductName = assertPapercuspMobileProductName(
     arg(argv, '--mobile-product-name') ?? process.env.PAPERCUSP_MOBILE_PRODUCT_NAME ?? 'Papercusp',
   );

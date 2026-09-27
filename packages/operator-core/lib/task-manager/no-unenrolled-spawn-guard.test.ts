@@ -57,6 +57,26 @@ describe('isUnenrolledDetachedSpawn', () => {
     expect(check('packages/operator-core/lib/brand-new-thing.ts', enrolled)).toBe(false);
   });
 
+  it('does not count erased type-only enrolment imports as runtime enrolment', () => {
+    expect(check(NEW, `import type { beginSyncEnrolment } from '../task-manager/enroll-sync';\n${RAW}`)).toBe(true);
+    expect(check(NEW, `import { type beginSyncEnrolment } from '../task-manager/enroll-sync';\n${RAW}`)).toBe(true);
+  });
+
+  it('accepts an injected sync enrolment seam only when its functions are called', () => {
+    const injected = `
+import type { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from '../task-manager/enroll-sync';
+type Enrollment = { begin: typeof beginSyncEnrolment; complete: typeof completeSyncEnrolment; finish: typeof finishSyncEnrolment };
+export function go(opts: { enrollment?: Enrollment }) {
+  const receipt = opts.enrollment?.begin({});
+  const child = spawn('node', ['worker.js'], { detached: true });
+  opts.enrollment?.complete(receipt, {}, child.pid);
+  opts.enrollment?.finish(receipt, {});
+  return child;
+}`;
+    expect(check(NEW, injected)).toBe(false);
+    expect(check(NEW, injected.replace('opts.enrollment?.finish(receipt, {});', ''))).toBe(true);
+  });
+
   it('passes once the file enrols through the async chokepoint', () => {
     const enrolled = `import { managedSpawn } from '../task-manager/managed-spawn';\n${RAW}`;
     expect(check('packages/operator-core/lib/brand-new-thing.ts', enrolled)).toBe(false);
@@ -297,10 +317,10 @@ export function run() {
         expect(check(a11y, source)).toBe(false);
       });
 
-      it('FALSIFIABILITY: drop the enrolment import and the guard convicts it again', () => {
+      it('FALSIFIABILITY: drop the injected begin call and the guard convicts it again', () => {
         // A pure string transform on an in-memory copy — never a tree mutation,
         // which the git-sync sweep would commit while the probe ran.
-        const unenrolled = source.split("from '../task-manager/enroll-sync'").join("from '../task-manager/gone'");
+        const unenrolled = source.replace('opts.enrollment?.begin(', 'opts.unenrolled?.begin(');
         expect(unenrolled).not.toEqual(source); // the transform actually did something
         expect(check(a11y, unenrolled)).toBe(true);
       });

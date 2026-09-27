@@ -6,11 +6,33 @@ import {
   DEFAULT_DREAM_REVIEW_CONFIG,
   DEFAULT_DREAM_SAMPLER_CONFIG,
   DREAM_FRAGMENT_KINDS,
+  dreamReviewOutcome,
+  dreamRunOutcome,
   resolveDreamPassConfig,
   resolveDreamCycleConfig,
   resolveDreamReviewConfig,
   resolveDreamSamplerConfig,
 } from './dream-config';
+
+describe('scientific outcomes from immutable Dream history', () => {
+  it.each([
+    ['counterfactual-unknown', 'unverified', 'insufficient evidence'],
+    ['source-unavailable', 'unverified', 'insufficient evidence'],
+    ['rerank-unavailable', 'unavailable', 'review unavailable'],
+    ['review-unavailable', 'unavailable', 'review unavailable'],
+  ])('keeps %s separate from rejection', (reason, outcome, label) => {
+    const run = { status: 'rejected', review: { verdict: 'unverified', reason } };
+    expect(dreamReviewOutcome(run.review)).toBe(outcome);
+    expect(dreamRunOutcome(run.status, run.review)).toBe(label);
+    expect(run.status).toBe('rejected');
+  });
+  it('preserves substantive rejection, missing review and execution failure', () => {
+    expect(dreamReviewOutcome({ verdict: 'reject', reason: 'one-unit-only' })).toBe('rejected');
+    expect(dreamReviewOutcome({ verdict: 'reject', reason: 'duplicate' })).toBe('duplicate');
+    expect(dreamReviewOutcome(null)).toBe('not-reviewed');
+    expect(dreamRunOutcome('error', { verdict: 'accept' })).toBe('error');
+  });
+});
 
 describe('resolveDreamCycleConfig', () => {
   it('ships bounded manual-first cycle defaults without enabling automatic dreaming', () => {

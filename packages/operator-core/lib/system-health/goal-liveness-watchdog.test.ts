@@ -796,7 +796,7 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     // EI-23821882158913073 block at the bottom), so without a stub it issues a real
     // query against that stub and warns on every unrelated test in this file.
     reconcileStrandedLatch: async () => ({ kind: 'noop' }),
-    pauseNeedsHuman: async () => {},
+    pauseNeedsHuman: async () => true,
     escalateGiveUp: async () => {},
     // Existing holder-recovery cases model a completed first turn. Without an
     // explicit attestation, the production default reads the live ledger via
@@ -1159,7 +1159,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
   it('halts at the durable hourly cap even after process-local damping state is lost', async () => {
     const launch = vi.fn(async () => ({ ownerId: 'must-not-launch', warnings: [] }));
     const escalateGiveUp = vi.fn(async () => {});
-    const pauseNeedsHuman = vi.fn(async () => {});
+    const pauseNeedsHuman = vi.fn(async () => true);
 
     const result = await runGoalHolderRespawnOnce(
       sql,
@@ -1176,6 +1176,31 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
     expect(launch).not.toHaveBeenCalled();
     expect(escalateGiveUp).toHaveBeenCalledWith(expect.anything(), 6);
     expect(pauseNeedsHuman).toHaveBeenCalledWith(expect.anything(), 6, NOW);
+  });
+
+  it('does not report a give-up when the capped goal pause matches no row', async () => {
+    const target = respawnGoal();
+    const key = goalHolderRespawnKey(target);
+    const states: GoalHolderRespawnDeps['states'] = new Map();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({
+          states,
+          reserveRateSlot: async () => ({ kind: 'capped', attemptsInWindow: 6 }),
+          pauseNeedsHuman: async () => false,
+        }),
+      );
+
+      expect(result).toMatchObject({ attempted: 0, gaveUp: 0 });
+      expect(states.get(key)?.gaveUp).toBe(false);
+      expect(warn.mock.calls.some(([message]) =>
+        String(message).includes('needs-human pause matched no active, flagged goal row')))
+        .toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('retries a failed give-up escalation instead of silently keeping its latch', async () => {
@@ -2257,6 +2282,7 @@ describe('stranded needs-human latch is reconciled on the HEALTHY path (EI-23821
         },
         pauseNeedsHuman: async (_goal, n) => {
           paused.push(n);
+          return true;
         },
         launch: async (g) => {
           launches.push(g.goalId);

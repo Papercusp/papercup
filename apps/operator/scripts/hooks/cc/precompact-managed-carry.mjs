@@ -102,7 +102,13 @@ export function parseManagedCarryResponse(rawText) {
   return {
     ok: false,
     detail: result.isError === true
-      ? 'session:request-compaction returned an unreadable tool error'
+      ? boundedDetail(
+        (result.content ?? [])
+          .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+          .map((part) => part.text)
+          .join(' '),
+        'session:request-compaction returned an unreadable tool error',
+      )
       : 'MCP result carried no JSON text',
   };
 }

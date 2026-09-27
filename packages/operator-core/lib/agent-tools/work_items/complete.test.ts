@@ -11,7 +11,7 @@
  * near the end of this file.
  */
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -1559,6 +1559,28 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.workItem.state).toBe('passed');
     });
 
+    it('rejects a live-UI close advertising a scratch screenshot as retained evidence', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const scratchPath = join(artifactDir, '.papercusp/scratch/portal.png');
+      await mkdir(join(artifactDir, '.papercusp/scratch'), { recursive: true });
+      await writeFile(scratchPath, contentPng());
+
+      const completion = {
+        summary: `Durable captures: ${scratchPath}`,
+        testResult: `Inspected screenshot ${scratchPath}`,
+        verifiedHow: 'live-drove-ui',
+      };
+      const preview = await one({ id: 'F-12', state: 'passed', completion, validateOnly: true });
+      expect(preview.completionAuthority).toBe('proposed');
+      expect(preview.ephemeralDeliverableWarning).toContain(scratchPath);
+
+      const result = await one({ id: 'F-12', state: 'passed', completion });
+      expect(result.ok).toBe(false);
+      expect(result.error).toMatch(/retained live-UI evidence under session scratch/);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(result.completion).toMatchObject({ summary: completion.summary });
+    });
+
     it('canonical nested verification evidence wins over weaker legacy aliases', async () => {
       getWorkItem.mockResolvedValue(item);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
@@ -1800,7 +1822,7 @@ describe('work_items:complete (keyed-array)', () => {
         // or the close is refused for `added-tests-without-path` and never reaches the
         // content-identity gate at all. Which real path does not matter: see the authority
         // assertion below for why this test no longer depends on its git state.
-        filesChanged: ['packages/operator-core/package.json'],
+        filesChanged: ['packages/operator-core/vitest.config.ts'],
         verifiedHow: 'unit',
         addedTests: true,
       },
@@ -1838,7 +1860,7 @@ describe('work_items:complete (keyed-array)', () => {
         // stamp's presence AND to the real repo's current HEAD. What this test is FOR is
         // that every caller-supplied field rides through — which is what it still asserts.
         completionEvidence: expect.objectContaining({
-          filesChanged: ['packages/operator-core/package.json'],
+          filesChanged: ['packages/operator-core/vitest.config.ts'],
           testsRun: 'pnpm vitest complete.test.ts --run',
           testResult: '1/1 green',
           verifiedHow: 'unit',
@@ -1851,7 +1873,7 @@ describe('work_items:complete (keyed-array)', () => {
     expect(persisted?.settlementManifest).toMatchObject({
       version: 1,
       generation: 1,
-      normalizedPaths: ['packages/operator-core/package.json'],
+      normalizedPaths: ['packages/operator-core/vitest.config.ts'],
     });
     expect(persisted?.settlementManifest?.evidenceHash).toMatch(/^[0-9a-f]{64}$/);
     expect(setWorkItemStateWithAliasInfo.mock.calls[0][2]).not.toHaveProperty('completionRef');
@@ -4370,7 +4392,7 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
       id: 'WI-ephemeral-durable',
       completion: {
         summary: 'The source report was copied from https://claude.ai/artifacts/durable-handler-source.',
-        filesChanged: ['packages/operator-core/package.json'],
+        filesChanged: ['packages/operator-core/vitest.config.ts'],
       },
     });
 

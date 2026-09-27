@@ -17,6 +17,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { join, relative } from 'node:path';
+import { committedBlobAtHead, submodulePrefixes, type GitRead } from '../packages/operator-core/lib/candidate-contains.ts';
 import { getOrgPg } from '@papercusp/db-org';
 import { MODEL_PRICES } from '@papercusp/model-pricing';
 import { CODEX_GATEWAY_PROVIDER_ID, codexGatewayConfigToml } from '@papercusp/orchestrator/codex-gateway-config';
@@ -151,6 +152,9 @@ function priorAttemptRefs() {
 }
 
 const git = (...args: string[]) => execFileSync('git', args, { cwd: REPO, encoding: 'utf8' }).trim();
+const gitRead: GitRead = async args => {
+  try { return git(...args); } catch { return null; }
+};
 const instrumentPaths = [
   'scripts/run-carry-cohort.mts',
   'packages/operator-core/lib/launch-cost/carry-cohort-driver.ts',
@@ -172,14 +176,14 @@ const provider = {
   tableLines: providerTable,
 };
 
-function freezeManifest() {
+async function freezeManifest() {
   // A frozen root binds committed instruments. A local dirty edit would make
   // git hash-object and gitHeadAtFreeze disagree before the first charged turn.
+  const submodules = await submodulePrefixes(gitRead);
   for (const path of instrumentPaths) {
     const working = git('hash-object', path);
-    let committed: string;
-    try { committed = git('rev-parse', `HEAD:${path}`); }
-    catch { throw new Error(`cohort instrument ${path} is not committed at HEAD`); }
+    const committed = await committedBlobAtHead(gitRead, path, submodules);
+    if (!committed) throw new Error(`cohort instrument ${path} is not committed at HEAD`);
     if (working !== committed) throw new Error(`cohort instrument ${path} differs from committed HEAD`);
   }
   const prior = existsSync(MANIFEST) ? JSON.parse(readFileSync(MANIFEST, 'utf8')) as {
@@ -242,7 +246,7 @@ function freezeManifest() {
   return manifest;
 }
 
-const manifest = freezeManifest();
+const manifest = await freezeManifest();
 const activePreparations = new Map<string, { threadId: string; home: string }>();
 const observations = new Map<string, GatewayObservation[]>();
 const sourceBindingHashes = new Map(rows<RuntimeSourceBinding>(SOURCE_BINDINGS)

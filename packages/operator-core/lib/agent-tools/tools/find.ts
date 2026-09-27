@@ -401,6 +401,9 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
   // evidence metadata while retaining source order for everything else.
   const contractPriority = (name: string): number => {
     if (name === 'rootCauseVerification') return 100;
+    // plans:set-specs has a wide clause shape; its required discriminator was
+    // elided behind optional fields in both `spec` and `items` discovery.
+    if (name === 'behaviorClass') return 95;
     if (name === 'verification') return 90;
     // rerunRecipe.current.supplied is a required decision input. A wide
     // selection object must not push that shape behind the segment tail.

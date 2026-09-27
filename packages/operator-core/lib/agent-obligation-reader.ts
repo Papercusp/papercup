@@ -133,7 +133,10 @@ async function boundedRead<T>(
 
 function stablePortfolio(portfolio: GoalPortfolioBrief | null): unknown {
   if (!portfolio) return null;
-  const { assembledAt: _observationClock, ...stable } = portfolio;
+  // Reporting has its own obligation provider. Its derived draft embeds the
+  // portfolio read time, so hashing it would make unchanged placement demand
+  // appear new on every read and defeat warm-context delivery deduplication.
+  const { assembledAt: _observationClock, reporting: _reporting, ...stable } = portfolio;
   return stable;
 }
 

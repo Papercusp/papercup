@@ -273,12 +273,28 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     }
   });
 
-  it('uses the installed guard path by default and respects the shared override', () => {
-    const configured = process.env.KOPIA_BACKUP_GUARD_BIN;
-    delete process.env.KOPIA_BACKUP_GUARD_BIN;
-    expect(resolveKopiaBackupGuard()).toBe(join(homedir(), '.config', 'kopia', 'kopia-backup-guard.sh'));
-    process.env.KOPIA_BACKUP_GUARD_BIN = configured;
-    expect(resolveKopiaBackupGuard()).toBe(h.guardBin);
+  it.each(['linux', 'darwin', 'win32'])('uses the %s guard default and respects an explicit override', async (platform) => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...descriptor, value: platform });
+    try {
+      delete process.env.KOPIA_BACKUP_GUARD_BIN;
+      const expected = platform === 'linux'
+        ? join(homedir(), '.config', 'kopia', 'kopia-backup-guard.sh')
+        : null;
+      expect(resolveKopiaBackupGuard()).toBe(expected);
+      await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({ ok: true });
+      expect(pgDumpCall()!.cmd).toBe(expected ?? 'pg_dump');
+
+      // A caller-selected guard is honored on every platform, never silently
+      // bypassed just because it is not the systemd host's default path.
+      h.spawnCalls = [];
+      process.env.KOPIA_BACKUP_GUARD_BIN = h.guardBin;
+      expect(resolveKopiaBackupGuard()).toBe(h.guardBin);
+      await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({ ok: true });
+      expect(pgDumpCall()!.cmd).toBe(h.guardBin);
+    } finally {
+      Object.defineProperty(process, 'platform', descriptor);
+    }
   });
 
   it('does not re-enter the wait-mode guard when already running inside it', async () => {

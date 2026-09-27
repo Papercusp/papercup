@@ -16,6 +16,7 @@ import {
   capabilityProposalHash,
   capabilityReviewEvidenceHash,
   capabilityReviewQueries,
+  preflightCapabilityReview,
   runCapabilityDreamReview,
   type CapabilityReviewControl,
   type CapabilityReviewDeps,
@@ -311,6 +312,58 @@ async function fixture() {
 }
 
 describe('independent capability source and skeptical review', () => {
+  it('DREAM-REVIEW-PREFLIGHT: scores real primary excerpts and validates independent current priors', async () => {
+    const f = await fixture();
+    expect(await preflightCapabilityReview(f.options, f.deps)).toMatchObject({ ready: true });
+    const [, probes, budget] = vi.mocked(f.deps.rerank).mock.calls[0]!;
+    expect(probes.map(p => p.text)).toEqual([textA, textB]);
+    expect(budget!.timeoutMs).toBeGreaterThan(0);
+    expect(f.sources.readCurrent).toHaveBeenCalledWith(f.priors[0], expect.any(AbortSignal));
+    expect(f.calls).toHaveLength(0);
+  });
+  it.each(['stale', 'foreign', 'partial-rerank', 'failed-rerank', 'same-model'] as const)('keeps preflight %s failures actionable and unpaid', async (fault) => {
+    const f = await fixture();
+    if (fault === 'stale') f.sources.readCurrent = async () => null;
+    if (fault === 'foreign') f.priors[0]!.scope = { ...scope, potSlug: 'foreign' };
+    if (fault === 'partial-rerank') f.deps.rerank = async (_q, priors) => ({ priors, outcome: { attempted: true, scored: 1 } });
+    if (fault === 'failed-rerank') f.deps.rerank = async () => { throw new Error('Scorer unavailable'); };
+    if (fault === 'same-model') f.options.dreamerModel = 'reviewer-model';
+    const result = await preflightCapabilityReview(f.options, f.deps);
+    expect(result.ready).toBe(false);
+    expect(result.nextCheck!.instruction.length).toBeGreaterThan(30);
+    expect(result.nextCheck!.maxSourceQueries).toBe(2);
+    expect(f.calls).toHaveLength(0);
+  });
+  it('bounds a nonresponsive source reader by the existing cycle deadline', async () => {
+    const f = await fixture();
+    f.sources.search = () => new Promise(() => {});
+    const result = await preflightCapabilityReview({ ...f.options, cycleDeadlineMs: Date.now() + 80 }, f.deps);
+    expect(result).toMatchObject({ ready: false, nextCheck: { maxSourceQueries: 2 } });
+    expect(result.note).toMatch(/deadline/);
+    expect(f.calls).toHaveLength(0);
+  });
+  it('DREAM-REVIEW-NEXT-CHECK: limits evidence follow-up to two explicit requests without changing controls or certifying benefit', async () => {
+    const f = await fixture();
+    f.options.candidate.missingEvidence = ['Read the scoped state contract.', 'Read the replay test.', 'Run the combined experiment.'];
+    f.controlA.unchanged = null;
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result).toMatchObject({ verdict: 'unverified', reason: 'counterfactual-unknown', nextCheck: { kind: 'counterfactual', maxSourceQueries: 2 }, evidenceFollowUp: { queries: f.options.candidate.missingEvidence.slice(0, 2), deferred: ['Run the combined experiment.'] } });
+    expect(f.queries).toHaveLength(5);
+    expect(f.calls).toHaveLength(2);
+    expect(result.coverage.globalNovelty).toBe('not-established');
+    const control = JSON.parse(f.calls[0]!.messages[0]!.content as string);
+    expect(control.retained.label).toBe('A');
+    expect(control.priors).toBeUndefined();
+  });
+  it('freshness-checks evidence found only by follow-up before permitting any paid review', async () => {
+    const f = await fixture();
+    const stale = prior('plan:missing-evidence');
+    const search = f.sources.search;
+    f.sources.search = async (input, signal) => ({ ...await search(input, signal), matches: input.query === f.options.candidate.missingEvidence[0] ? [stale] : f.priors });
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result).toMatchObject({ verdict: 'unverified', reason: 'search-unavailable', nextCheck: { maxSourceQueries: 2 } });
+    expect(f.calls).toHaveLength(0);
+  });
   it('publishes the enforced response schema to both controls and final adjudication', async () => {
     const f = await fixture();
     const result = await runCapabilityDreamReview(f.options, f.deps);
@@ -477,12 +530,13 @@ describe('independent capability source and skeptical review', () => {
     const result = await runCapabilityDreamReview(f.options, f.deps);
     expect(result.verdict, result.note).toBe('accept');
     expect(result.coverage.globalNovelty).toBe('not-established');
-    expect(f.queries.map((q) => q.facet)).toEqual(['purpose', 'mechanism', 'evaluation']);
+    expect(f.queries.map((q) => q.facet)).toEqual(['purpose', 'mechanism', 'evaluation', 'evaluation']);
     for (const q of f.queries) {
       expect(q.scope).toEqual(scope);
       expect(q.kinds).toEqual(CAPABILITY_PRIOR_KINDS);
-      expect(q.query).toContain(f.options.candidate.behavior);
     }
+    for (const q of f.queries.slice(0, 3)) expect(q.query).toContain(f.options.candidate.behavior);
+    expect(f.queries[3]!.query).toBe(f.options.candidate.missingEvidence[0]);
     expect(capabilityReviewQueries(f.options.candidate, f.options.selection)[1]!.query).toContain(
       'State-dependent evaluation replay.',
     );
@@ -571,7 +625,7 @@ describe('independent capability source and skeptical review', () => {
     };
     const result = await runCapabilityDreamReview(f.options, f.deps);
     expect(result.verdict).toBe('unverified');
-    expect(result.coverage.searches.map((s) => s.facet)).toEqual(['purpose', 'mechanism', 'evaluation']);
+    expect(result.coverage.searches.map((s) => s.facet)).toEqual(['purpose', 'mechanism', 'evaluation', 'evaluation']);
     expect(
       result.coverage.searches.every((s) => s.status === 'unavailable' && s.note === 'history backend unavailable'),
     ).toBe(true);
@@ -763,6 +817,14 @@ describe('independent capability source and skeptical review', () => {
 });
 
 describe('production capability and Blender source adapter', () => {
+  it('runs preflight through the real source adapter and refuses a failed canonical plan reader', async () => {
+    const a = await adapterFixture();
+    expect(await preflightCapabilityReview({ ...a.f.options, sources: a.sources }, a.f.deps)).toMatchObject({ ready: true });
+    a.deps.plans = async () => { throw new Error('Canonical plan reader offline'); };
+    const failed = await preflightCapabilityReview({ ...a.f.options, sources: a.sources }, a.f.deps);
+    expect(failed).toMatchObject({ ready: false, reason: 'search-unavailable', nextCheck: { kind: 'dependency' } });
+    expect(a.f.calls).toHaveLength(0);
+  });
   async function adapterFixture() {
     const f = await fixture();
     let plan = {

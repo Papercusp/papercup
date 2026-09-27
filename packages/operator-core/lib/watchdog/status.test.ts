@@ -29,10 +29,8 @@ function base(patch: Partial<Pick<ScheduledWatchdogStatus, 'config' | 'scheduler
       ...patch.scheduler,
     },
     eligibility: {
-      pendingCount: 0,
-      eligibleCount: 0,
-      oldestRoutedAt: null,
-      firstEligibleAt: null,
+      byOrigin: {},
+      total: { pendingCount: 0, eligibleCount: 0, oldestRoutedAt: null, firstEligibleAt: null },
       ...patch.eligibility,
     },
     fire: {
@@ -70,10 +68,8 @@ describe('classifyScheduledWatchdogStatus', () => {
 
   it('distinguishes eligible-awaiting-sweep from eligible-no-fire', () => {
     const eligibility = {
-      pendingCount: 1,
-      eligibleCount: 1,
-      oldestRoutedAt: '2026-07-11T00:00:00.000Z',
-      firstEligibleAt: '2026-07-18T00:00:00.000Z',
+      byOrigin: { 'su-ideate': { pendingCount: 1, eligibleCount: 1, oldestRoutedAt: '2026-07-11T00:00:00.000Z' } },
+      total: { pendingCount: 1, eligibleCount: 1, oldestRoutedAt: '2026-07-11T00:00:00.000Z', firstEligibleAt: '2026-07-18T00:00:00.000Z' },
     } as const;
     expect(
       classifyScheduledWatchdogStatus(
@@ -103,10 +99,8 @@ describe('classifyScheduledWatchdogStatus', () => {
           lastNudgedCount: 0,
         } as never,
         eligibility: {
-          pendingCount: 13,
-          eligibleCount: 13,
-          oldestRoutedAt: '2026-07-11T00:00:00.000Z',
-          firstEligibleAt: '2026-07-18T00:00:00.000Z',
+          byOrigin: { scout: { pendingCount: 13, eligibleCount: 13, oldestRoutedAt: '2026-07-11T00:00:00.000Z' } },
+          total: { pendingCount: 13, eligibleCount: 13, oldestRoutedAt: '2026-07-11T00:00:00.000Z', firstEligibleAt: '2026-07-18T00:00:00.000Z' },
         } as never,
       }),
     );
@@ -172,7 +166,10 @@ describe('classifyScheduledWatchdogStatus', () => {
         ]);
       }
       if (text.includes('FROM harness_shared.scout_routed_ideas')) {
-        return Promise.resolve([{ pending_count: 1, eligible_count: 1, oldest_routed_at: oldestMs }]);
+        return Promise.resolve([
+          { origin: 'su-ideate', pending_count: 1, eligible_count: 1, oldest_routed_at: oldestMs },
+          { origin: 'scout', pending_count: 3, eligible_count: 3, oldest_routed_at: oldestMs + 1000 },
+        ]);
       }
       if (text.includes('FROM harness_shared.pot_watchdog_fires')) {
         return Promise.resolve([{ fire_count: 0, last_fire_at: null, last_reason: null }]);
@@ -184,7 +181,7 @@ describe('classifyScheduledWatchdogStatus', () => {
       const status = await readScheduledWatchdogStatus({
         id: 'su-ideate-ungraded',
         workspaceId: 'ws',
-        harnessSlug: 'pot',
+        harnessSlug: 'papercusp',
         nowMs,
         sql,
       });
@@ -194,7 +191,20 @@ describe('classifyScheduledWatchdogStatus', () => {
         overrideSource: 'environment',
         rawOverride: '172800',
       });
-      expect(status.eligibility.firstEligibleAt).toBe(new Date(oldestMs + 172_800_000).toISOString());
+      expect(status.eligibility.total.firstEligibleAt).toBe(new Date(oldestMs + 172_800_000).toISOString());
+      expect(status.eligibility.total.pendingCount).toBe(4);
+      expect(status.eligibility.byOrigin).toMatchObject({
+        'su-ideate': { pendingCount: 1 },
+        scout: { pendingCount: 3 },
+      });
+      // A human-facing status must expose the producer axis. A bare count was
+      // repeatedly mistaken for the su-ideate population when it included others.
+      expect(Object.keys(status.eligibility).sort()).toEqual(['byOrigin', 'total']);
+      expect(status.eligibility.byOrigin['su-ideate']?.pendingCount).toBe(1);
+      expect(status.eligibility.byOrigin.scout?.pendingCount).toBe(3);
+      expect(status.eligibility.total.pendingCount).toBe(
+        Object.values(status.eligibility.byOrigin).reduce((sum, origin) => sum + origin.pendingCount, 0),
+      );
       expect(status.scheduler).toMatchObject({ lastResultCount: 0, lastNudgedCount: 0 });
       expect(status).toMatchObject({ ok: false, effectiveState: 'eligible-sweep-empty' });
       const eligibilityCall = calls.find((call) => call.text.includes('FROM harness_shared.scout_routed_ideas'));
@@ -202,6 +212,9 @@ describe('classifyScheduledWatchdogStatus', () => {
       // leading binds are the per-origin floor policy — so assert the threshold is
       // BOUND, not that it sits at a fixed position that the contract does not promise.
       expect(eligibilityCall?.values).toContain(nowMs - 172_800_000);
+      expect(eligibilityCall?.text).toContain('GROUP BY origin');
+      expect(eligibilityCall?.values).toContain(true);
+      expect(eligibilityCall?.values).toContain('ws');
     } finally {
       vi.unstubAllEnvs();
     }

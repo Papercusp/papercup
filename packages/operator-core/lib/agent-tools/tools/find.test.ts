@@ -18,6 +18,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import releaseTrace from '../release/trace';
 import plansNew from '../plans/new';
 import plansAudit from '../plans/audit';
+import plansSetSpecs from '../plans/set-specs';
 import bindSpecEvidence from '../plans/bind-spec-evidence';
 import plansSearch from '../plans/search';
 import crossHarnessPlansSearch from '../cross_harness/plans_search';
@@ -315,6 +316,14 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(hit?.returns).toContain('posts:array');
     expect(hit?.returns).toContain('workItem?');
     expect(hit?.returns?.length ?? 0).toBeLessThanOrEqual(2_200);
+  });
+
+  it('shows required behaviorClass in plans:set-specs compact discovery', async () => {
+    expect(plansSetSpecs.name).toBe('plans:set-specs');
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('plans:set-specs')) ?? '';
+    expect(compact).toMatch(/spec\?:object\{[^}]*behaviorClass:enum\(/);
+    expect(compact).toMatch(/items\?:array[^;]*\{[^}]*behaviorClass:enum\(/);
   });
 
   it('publishes work_items:get resume exclusivity before dispatch', async () => {
@@ -1046,7 +1055,7 @@ describe('handler — graceful degrade + result shape', () => {
     const out = await callHandler({ query: 'facts:assert', limit: 1 });
     const hit = out.hits.find((candidate) => candidate.tool === 'facts:assert');
     expect(hit?.argSchema).toContain('body:string(1-4000)');
-    expect(hit?.description).toContain('1200 characters are refused');
+    expect(hit?.description).toContain('1200 chars are refused');
     expect(hit?.description).toContain('acceptTruncation:true');
   });
 

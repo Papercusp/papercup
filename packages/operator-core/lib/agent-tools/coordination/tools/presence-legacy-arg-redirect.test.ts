@@ -18,6 +18,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import presenceTool from './presence';
+import rosterTool from './roster';
 
 /** The keys the tool's OWN description names as invalid, parsed rather than restated. */
 function legacyKeysNamedInDescription(): string[] {
@@ -88,6 +89,17 @@ describe('coord:presence guidance.argRedirects', () => {
     // Exact synonyms of a declared key use the terse string form ("pass it as `X` instead").
     expect(redirects.hive).toBe('pot');
     expect(redirects.agent).toBe('owner');
+  });
+
+  it('redirects a sessionState filter to a valid coord:roster states filter', () => {
+    const redirect = presenceTool.guidance?.argRedirects?.sessionState;
+    expect(redirect).toEqual({
+      tool: 'coord:roster',
+      args: { view: 'live', states: ['live'], project: 'liveness' },
+      note: expect.stringContaining('does not filter by it'),
+    });
+    expect(presenceTool.args.safeParse({ sessionState: 'live' }).success).toBe(false);
+    expect(rosterTool.args.safeParse(redirect?.args).success).toBe(true);
   });
 
   it('answers the `items` collection-key guess with the bounded `owners` selector', () => {

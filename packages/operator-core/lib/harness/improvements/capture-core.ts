@@ -1251,6 +1251,16 @@ async function promoteToolFailureProbation(
  */
 export const WATCHDOG_AUTO_CLOSE_OWNER = 'watchdog-auto-close';
 
+/** A quoted native exec refusal is a stable condition even when agents give it
+ * different titles. Require the exact diagnostic and an exec/shell context:
+ * prose about a different cleanup failure must keep its own row. */
+function nativeShellRefusalKey(title: string, body: string | undefined): string | null {
+  const report = `${title}\n${body ?? ''}`;
+  if (!/rm -f style commands are not permitted/i.test(report)) return null;
+  if (!/\b(?:exec_command|CreateProcess|shell|sandbox)\b/i.test(report)) return null;
+  return 'native-exec-refusal:rm-f-style-commands-not-permitted';
+}
+
 /**
  * P-006/D-004: the coalesce report — what the write actually DID. Shared by the
  * observation-lane coalesce (EI-15448) and the non-observation detector coalesce
@@ -1296,6 +1306,8 @@ function buildCoalesceEffect(args: {
       ? 'exact titleKey match — keyless non-observation filer, no conditionKey supplied'
       : identity === 'class-key'
         ? `stable tool-failure class identity carried by \`${input.watchdogKey}\``
+        : identity === 'derived' && !fold
+          ? `derived conditionKey \`${input.watchdogKey}\``
         : fold
           ? `derived identity — ${fold.rule}` +
             (typeof fold.candidate?.similarity === 'number' ? `, cosine ${fold.candidate.similarity.toFixed(3)}` : '')
@@ -1787,6 +1799,13 @@ export async function captureImprovement(
   // origin participate in dedup + decided-recall — a drill row deduping against an
   // organic capture (or vice versa) would let synthetic signals suppress real ones.
   const isObservation = input.lane === 'observation';
+  // Use the existing keyed recurrence path for this exact native diagnostic.
+  // This key is INFERRED, so its coalesce below keeps the first row's text and
+  // records later accounts only in the occurrence ledger (D-042).
+  const inferredShellRefusalKey = isObservation && input.initialState !== 'done' && !input.watchdogKey && !input.force
+    ? nativeShellRefusalKey(input.title, input.body)
+    : null;
+  if (inferredShellRefusalKey) input = { ...input, watchdogKey: inferredShellRefusalKey };
   // Scorecards are immutable event records, not recurring sensor observations. They
   // use `initialState:'done'` as the scorecards:emit-only marker; letting that filing
   // enter the derived observation-fold path can shallow-merge its nested observation
@@ -2694,7 +2713,7 @@ export async function captureImprovement(
       // trip or transient error just keeps the prior text; the payload bump above is
       // the load-bearing part). Silent: a routine status refresh shouldn't fan out
       // subscriber notifications every wake.
-      const refreshed = await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
+      const refreshed = inferredShellRefusalKey ? null : await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
         title: input.title,
         body: input.body,
         silent: true,
@@ -2722,6 +2741,7 @@ export async function captureImprovement(
         input,
         repeatCount,
         bodyPersisted,
+        ...(inferredShellRefusalKey ? { identityRoute: 'derived' as const, textDisposition: 'append-only' as const } : {}),
       });
       return {
         ok: true,

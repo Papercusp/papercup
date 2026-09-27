@@ -150,6 +150,113 @@ export const SERVING_RUNTIMES: Readonly<Record<ServingRuntimeId, ServingRuntimeS
   },
 };
 
+/**
+ * A test class is not the same thing as a serving process. These routes name
+ * the current-build source and the isolation boundary an agent must verify
+ * before executing a test. A gap stays a gap until its runner exists; :3170
+ * cannot stand in for bg-host, a desktop binary, or a second machine.
+ */
+export const CURRENT_BUILD_TEST_CLASSES = [
+  {
+    id: 'unit-integration',
+    source: 'canonical staging tree',
+    runtime: null,
+    route: 'npm run test:file -- <exact test path>',
+    routeFile: 'scripts/test-files.mjs',
+    isolation: 'Test process only; database and external effects depend on the named suite.',
+    prerequisites: ['Exact test path', 'suite-specific fixture and database ownership'],
+    verification: 'Stamped test run with the exact source revision and fixture identity.',
+    readiness: 'ready',
+  },
+  {
+    id: 'operator-api',
+    source: 'origin/staging mirror, not the uncommitted edit tree',
+    runtime: 'staging-operator',
+    route: 'http://127.0.0.1:3170 after dev:pipeline_position containment check',
+    routeFile: 'apps/operator/scripts/systemd/papercup-staging-api.service.d/50-staging-checkout.conf',
+    isolation: 'Separate port, process and checkout; database and workspace are not isolated.',
+    prerequisites: ['Containing staging commit loaded', 'private test identity/data for writes'],
+    verification: 'Measured :3170 build identity plus request/response on that build.',
+    readiness: 'ready',
+  },
+  {
+    id: 'background-federation',
+    source: 'canonical tree loaded by bg-host, not the :3170 API bundle',
+    runtime: 'bg-host',
+    route: 'isolated current-build background child (P-003)',
+    routeFile: null,
+    isolation: 'No dedicated staging background/database/identity/IPC ownership yet.',
+    prerequisites: ['Private database and workspace identity', 'private IPC endpoints and cleanup receipt'],
+    verification: 'Child build identity, actual background behavior and no live-state writes.',
+    readiness: 'gap',
+  },
+  {
+    id: 'migration',
+    source: 'current Tauri verifier source snapshot',
+    runtime: 'desktop-shell',
+    route: 'VERIFY_TAURI_ISOLATED_DB=1 scripts/verify-tauri-headless.sh -- <assertion>',
+    routeFile: 'scripts/verify-tauri-headless.sh',
+    isolation: 'Disposable embedded PG, workspace, home and WebView profile; not a full bg-host.',
+    prerequisites: ['Embedded PG prerequisites', 'explicit migration/restore assertion'],
+    verification: 'Applied migration identity, isolated database and teardown receipt.',
+    readiness: 'requires-prerequisites',
+  },
+  {
+    id: 'desktop-native',
+    source: 'frozen current-build SPA and locally compiled Tauri shell',
+    runtime: 'desktop-shell',
+    route: 'scripts/verify-tauri-headless.sh -- <native assertion>',
+    routeFile: 'scripts/verify-tauri-headless.sh',
+    isolation: 'Display, ports and process only by default; opt into isolated DB for writes.',
+    prerequisites: ['Matching OS/native dependencies', 'VERIFY_TAURI_ISOLATED_DB=1 for write paths'],
+    verification: 'Bridge process provenance, compiled binary and native assertion.',
+    readiness: 'requires-prerequisites',
+  },
+  {
+    id: 'multi-machine-p2p-git',
+    source: 'current staging rig payload with a sealed file manifest',
+    runtime: null,
+    route: 'papercusp-desktop/bin/vm-rig/compose-rig-sidecar-current.sh --no-push, then protected rig launch',
+    routeFile: 'papercusp-desktop/bin/vm-rig/compose-rig-sidecar-current.sh',
+    isolation: 'Code payload only; rig database and identity remain shared with its running rig.',
+    prerequisites: ['Two distinct reachable machines', 'rig custody and data backup', 'test identities'],
+    verification: 'Manifest and source stamp on each peer, real coordination/Git convergence and restoration.',
+    readiness: 'requires-prerequisites',
+  },
+  {
+    id: 'candidate-install-upgrade',
+    source: 'packaged current-build candidate, not the :3170 service',
+    runtime: 'desktop-shell',
+    route: 'packaged-candidate lifecycle route (P-004)',
+    routeFile: null,
+    isolation: 'Candidate install target and previous version must be explicitly owned.',
+    prerequisites: ['Target platform', 'signing/install credentials', 'rollback target'],
+    verification: 'Exact package hash, install/upgrade result and rollback receipt.',
+    readiness: 'gap',
+  },
+  {
+    id: 'final-release',
+    source: 'green main release artifact',
+    runtime: 'release-operator',
+    route: 'release verification on the deployed :3070 artifact',
+    routeFile: null,
+    isolation: 'Real release; not a substitute for a pre-release functional test route.',
+    prerequisites: ['Green candidate', 'release authorization'],
+    verification: 'Exact shipped artifact and production deploy/rollback result.',
+    readiness: 'release-only',
+  },
+] as const satisfies ReadonlyArray<{
+  id: string;
+  source: string;
+  runtime: ServingRuntimeId | null;
+  route: string;
+  routeFile: string | null;
+  isolation: string;
+  prerequisites: readonly string[];
+  verification: string;
+  readiness: 'ready' | 'requires-prerequisites' | 'gap' | 'release-only';
+}>;
+
 /** The runtimes that EXECUTE code classified to an ownership host. */
 export function runtimesForHost(host: RuntimeHost): ServingRuntimeId[] {
   switch (host) {

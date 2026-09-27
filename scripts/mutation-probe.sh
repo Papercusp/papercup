@@ -226,6 +226,20 @@
 # every other nonzero exit is treated as a harness error because a shell/test
 # crash must never be reported as falsifiability evidence.
 #
+# Bash reads a script incrementally. A peer edit while a long baseline guard is
+# running can shift the reader's offset and turn a later diagnostic string into
+# a shell fragment (EI-24365912571955838). Execute a validated, private copy;
+# the caller's file may then change without changing this run's program.
+if [ "${MUTATION_PROBE_FROZEN_SOURCE:-}" != "$0" ]; then
+  frozen_source="$(mktemp "${TMPDIR:-/tmp}/mutation-probe-source.XXXXXX")" || exit 2
+  trap 'rm -f -- "$frozen_source"' EXIT
+  cp -- "$0" "$frozen_source" || exit 2
+  bash -n "$frozen_source" || exit 2
+  export MUTATION_PROBE_FROZEN_SOURCE="$frozen_source"
+  exec bash "$frozen_source" "$@"
+fi
+trap 'rm -f -- "$MUTATION_PROBE_FROZEN_SOURCE"' EXIT
+
 set -uo pipefail
 
 readonly PROG="mutation-probe"
@@ -720,6 +734,7 @@ finish() {
     # hold a bwrap bind to the immutable original snapshot.
     cp "$BASE" "$FILE" 2>/dev/null || true
   fi
+  rm -f -- "$MUTATION_PROBE_FROZEN_SOURCE"
   # Once the shared-tree invariant is restored, reap the probe's own child and
   # every descendant so a cancelled npm/node/vitest guard cannot run orphaned.
   if [ -n "$CHILD" ]; then

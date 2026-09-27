@@ -33,7 +33,7 @@ beforeEach(() => {
   vi.clearAllMocks(); h.initial = {}; h.errors = {}; h.flag = true; h.loading = false;
   const run = { ...fixture.run, status: 'accepted' as const, routedRef: 'engineer-issue:EI-123' };
   const history: DreamHistory = { scope, runs: [{ runId: run.runId, cycleId: run.cycleId, potSlug: run.potSlug,
-    status: run.status, mode: run.mode, startedAt: run.startedAt, costUsd: run.costUsd,
+    status: run.status, review: { verdict: 'accept', reason: 'supported-delta' }, mode: run.mode, startedAt: run.startedAt, costUsd: run.costUsd,
     title: fixture.candidate.behavior, routedRef: run.routedRef, version: 'dream-capability-run-v1' }],
     nextCursor: JSON.stringify([run.startedAt, run.runId]) };
   h.data = { 'harnessProjects.lite': [{ slug: 'pot-a', harness_kind: 'hive' }, { slug: 'repo-only', harness_kind: 'project' }],
@@ -42,6 +42,32 @@ beforeEach(() => {
 });
 
 describe('Dreams in Analyze', () => {
+  it.each(['dependency', 'source', 'counterfactual'] as const)('DREAM-REVIEW-NEXT-CHECK: shows the bounded %s check without dispatching work', (kind) => {
+    const d = structuredClone(captured);
+    d.run.status = 'rejected'; d.run.review = { verdict: 'unverified', reason: 'review-unavailable' };
+    d.nextCheck = { kind, instruction: 'Read the scoped source and its executable test before reassessment.', evidenceNeeded: ['Snapshot removal effect remains unknown.'], maxSourceQueries: 2 };
+    render(<DreamRunDetail detail={d} />);
+    const next = screen.getByRole('region', { name: 'Next evidence check' });
+    expect(within(next).getByText(d.nextCheck.instruction)).toBeTruthy();
+    expect(within(next).getByText('Snapshot removal effect remains unknown.')).toBeTruthy();
+    expect(within(next).getByText(/At most 2 source searches/)).toBeTruthy();
+    expect(h.queries).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['counterfactual-unknown', 'insufficient evidence'],
+    ['rerank-unavailable', 'review unavailable'],
+  ])('labels historical %s outcomes honestly in history and detail', (reason, label) => {
+    h.initial.dreamPot = 'pot-a';
+    const review = { verdict: 'unverified', reason };
+    const history = h.data.history![0] as DreamHistory;
+    history.runs[0]!.status = 'rejected'; history.runs[0]!.review = review;
+    (h.data.run![0] as DreamDetail).run.status = 'rejected';
+    (h.data.run![0] as DreamDetail).run.review = review;
+    render(<DreamPanel />);
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(label + '.*Combine the A output') }));
+    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.queryByText('rejected')).toBeNull();
+  });
   it('asks for a pot and does not read attempts until one is selected', () => {
     render(<DreamPanel />);
     expect(screen.getByRole('combobox', { name: 'Dream pot' })).toBeTruthy();
@@ -74,7 +100,7 @@ describe('Dreams in Analyze', () => {
   });
   it('does not report zero percent when no attempts were reviewed', () => {
     render(<DreamFunnel metrics={frozen.emptyMetrics as DreamMetrics} />);
-    expect(screen.getByText('Review pass rate (reviewed attempts): 0 / 0 · not available.')).toBeTruthy();
+    expect(screen.getByText('Review pass rate (decisive reviews): 0 / 0 · not available.')).toBeTruthy();
     expect(screen.getByText('Dedupe / sink survival (review-passed attempts): 0 / 0 · not available.')).toBeTruthy();
   });
   it('shows missing, loading, transport and degraded detail states separately', () => {

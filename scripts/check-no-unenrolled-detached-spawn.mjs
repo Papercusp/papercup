@@ -73,7 +73,6 @@
  * is a durably verified property rather than green-on-a-clean-tree (the same
  * discipline check-no-raw-agent-spawn.mjs applies to its own bypass predicate).
  */
-import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { describeUnscanned, listTrackedFiles } from './lib/tracked-files.mjs';
 import { readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -270,6 +269,39 @@ const ENROLMENT_IMPORTS = [
   './enroll-sync',
 ];
 
+/** A type-only import disappears at runtime and cannot enrol a spawned child. */
+function hasEnrolmentEvidence(relPath, source) {
+  const t = ts();
+  const sf = t.createSourceFile(relPath, source, t.ScriptTarget.Latest, false, relPath.endsWith('.tsx') ? t.ScriptKind.TSX : t.ScriptKind.TS);
+  for (const stmt of sf.statements) {
+    if (!t.isImportDeclaration(stmt) || !t.isStringLiteral(stmt.moduleSpecifier)) continue;
+    if (!ENROLMENT_IMPORTS.some((name) => stmt.moduleSpecifier.text.includes(name))) continue;
+    const clause = stmt.importClause;
+    if (!clause || clause.isTypeOnly) continue;
+    if (clause.name || (clause.namedBindings && !t.isNamedImports(clause.namedBindings))) return true;
+    if (clause.namedBindings?.elements.some((element) => !element.isTypeOnly)) return true;
+  }
+
+  // A reusable core can receive the three runtime functions from its adapter.
+  // Require both typed primitives and actual calls through the injected seam;
+  // merely naming enroll-sync in an erased import must not clear the guard.
+  const typed = new Set();
+  const called = new Set();
+  const visit = (node) => {
+    if (t.isTypeQueryNode(node) && t.isIdentifier(node.exprName)) typed.add(node.exprName.text);
+    if (t.isCallExpression(node) && t.isPropertyAccessExpression(node.expression)) {
+      const access = node.expression;
+      if (t.isPropertyAccessExpression(access.expression) && access.expression.name.text === 'enrollment') {
+        called.add(access.name.text);
+      }
+    }
+    t.forEachChild(node, visit);
+  };
+  visit(sf);
+  return ['beginSyncEnrolment', 'completeSyncEnrolment', 'finishSyncEnrolment'].every((name) => typed.has(name))
+    && ['begin', 'complete', 'finish'].every((name) => called.has(name));
+}
+
 /** Callee names treated as process launches. `spawnFn` is the repo's DI seam name. */
 const SPAWN_CALLEES = new Set(['spawn', 'childSpawn', 'spawnFn', 'fork']);
 
@@ -336,13 +368,10 @@ function ts() {
 export function isUnenrolledDetachedSpawn(relPath, source) {
   const { detachedNotFalse, storedOnProperty, selfDaemonizing } = spawnTriggers(relPath, source);
   if (!detachedNotFalse && !storedOnProperty && !selfDaemonizing) return false;
-  // The EXEMPTION needs a mask that keeps STRINGS: it reads a string VALUE — the enrolment
-  // module SPECIFIER — so a strings-blanking mask would erase the very evidence and score
-  // every file unenrolled (mass false POSITIVES). Masking nothing is the opposite failure and
-  // the worse one: a COMMENT that merely NAMES managed-spawn buys an exemption the file never
-  // earned, a false NEGATIVE, the direction that silently loses real findings.
-  const prose = stripCommentsOnly(source, relPath);
-  if (ENROLMENT_IMPORTS.some((m) => prose.includes(m))) return false;
+  // Inspect import declarations, not source substrings: comments and erased type
+  // imports provide no runtime enrolment. A DI seam must call all three injected
+  // lifecycle functions to qualify.
+  if (hasEnrolmentEvidence(relPath, source)) return false;
   if (ALLOWLIST.has(relPath)) return false;
   return !KNOWN_DEFECTS.has(relPath);
 }

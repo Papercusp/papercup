@@ -783,7 +783,8 @@ describe('holder-respawn safety cap actually pauses the goal (WI-10002085)', () 
     });
 
     const nowMs = Date.now();
-    await pauseGoalForHolderRespawnRateCap(rootSql, { goalId, workspaceId: WS }, 6, nowMs);
+    expect(await pauseGoalForHolderRespawnRateCap(rootSql, { goalId, workspaceId: WS }, 6, nowMs))
+      .toBe(true);
 
     const [row] = await rootSql<Array<{ status: string; metadata: GoalMeta }>>`
       SELECT status, metadata FROM harness_shared.goals WHERE id = ${goalId}`;
@@ -818,7 +819,8 @@ describe('holder-respawn safety cap actually pauses the goal (WI-10002085)', () 
       return { goalId: input.goalId, status: input.status, potsStopped: [] } as unknown as GoalStopReport;
     });
 
-    await pauseGoalForHolderRespawnRateCap(rootSql, { goalId, workspaceId: WS }, 6, Date.now());
+    expect(await pauseGoalForHolderRespawnRateCap(rootSql, { goalId, workspaceId: WS }, 6, Date.now()))
+      .toBe(false);
 
     const [row] = await rootSql<Array<{ status: string }>>`
       SELECT status FROM harness_shared.goals WHERE id = ${goalId}`;

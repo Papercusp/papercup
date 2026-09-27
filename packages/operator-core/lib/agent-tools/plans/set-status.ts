@@ -1000,7 +1000,11 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
     );
     if (decision.status !== 'resolved') {
-      return { ...slugScopeErrorResult('plans:set-status', decision), slug: it.slug, itemId: it.itemId };
+      const failure = JSON.parse(slugScopeErrorResult('plans:set-status', decision).content[0].text) as {
+        error: string;
+        detail: string;
+      };
+      return { ok: false, ...failure, slug: it.slug, itemId: it.itemId };
     }
     sctx = { ...ctx, harnessSlug: decision.harnessSlug };
     (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({

@@ -315,7 +315,7 @@ const completionSpec = z
       // nowhere else; `verifiedHow`'s own describe defines the labels but not these floors.
       "For a terminal close, `verifiedHow:'live-drove-ui'` requires a real artifact citation in " +
       '`summary`, `testsRun`, `testResult`, or `filesChanged` — DESKTOP: a screenshot/capture image ' +
-      'path, or a recorded `tauri-agent-tools` capture/screenshot/check invocation; WEB: the deployed ' +
+      'path retained outside session scratch, or a recorded `tauri-agent-tools` capture/screenshot/check invocation; WEB: the deployed ' +
       'URL with its HTTP status, or a recorded browser-driver run (playwright/puppeteer/verdict) naming ' +
       "the http(s) target it drove. `verifiedHow:'live-service'` requires `testsRun`/`testResult` to " +
       'jointly name the concrete service/unit/process and a falsifiable runtime observation (`MainPID`, ' +
@@ -4237,8 +4237,30 @@ async function completeOne(
           : ` Authority was already '${authorityWithFindings}', so this did not change it.`) +
       (terminalCriteria.refusedDeclaration ? ` Note: ${terminalCriteria.refusedDeclaration}` : '')
     : undefined;
+  // A screenshot in session scratch can exist at close time and vanish before an
+  // independent reviewer opens it. The existing ephemeral-reference detector
+  // already distinguishes Git-tracked paths from scratch-only deliverables;
+  // apply its result to live-UI terminal authority as well as the advisory.
+  let ephemeralDeliverableWarning: string | undefined;
+  let unretainedLiveUiPaths: string[] = [];
+  try {
+    const references = completionEphemeralDeliverableReferences(it.completion, completionEvidenceToPersist, {
+      repoRoots: registeredRepoRoots ?? [completionRoot()],
+      treeStamp: completionEvidenceToPersist?.treeStamp,
+    });
+    ephemeralDeliverableWarning = renderEphemeralDeliverableWarning(`completion for ${it.id}`, references);
+    if (closeIntentRequested && completionEvidenceToPersist?.verifiedHow === 'live-drove-ui') {
+      unretainedLiveUiPaths = references
+        .filter((reference) => reference.kind === 'scratch-path')
+        .map((reference) => reference.reference);
+    }
+  } catch {
+    /* fail-open: an evidence-detector fault must never lose the completion record */
+  }
   const completionAuthority =
-    committedContentIdentityMissing || terminalCriteriaUnmet ? 'proposed' : authorityWithFindings;
+    committedContentIdentityMissing || terminalCriteriaUnmet || unretainedLiveUiPaths.length > 0
+      ? 'proposed'
+      : authorityWithFindings;
   // EI-23241378625604548: validateOnly must use the same read-only settlement verdict as
   // the real close. Returning above this point exposed only the contract requirements and
   // skipped the findings that can downgrade an otherwise complete evidence record (for
@@ -4253,25 +4275,9 @@ async function completeOne(
       completionAuthority,
       countsTowardBurnDown: countsTowardBurnDown(completionAuthority, true, isAbandonedClose),
       ...(completionEvidenceFindings ? { completionEvidenceFindings } : {}),
+      ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
       completionContract: completionContract(),
     };
-  }
-  // EI-20268156880922192: the completion record is durable, but a cited
-  // session-local scratch path or account-local artifact URL is not. Scan the
-  // exact persisted evidence shape, warn after recording, and fail open if the
-  // advisory detector encounters malformed input.
-  let ephemeralDeliverableWarning: string | undefined;
-  try {
-    const references = completionEphemeralDeliverableReferences(it.completion, completionEvidenceToPersist, {
-      // Reuse the roots already resolved for completion evidence; ordinary relative paths
-      // still use the canonical completion root, while cross-repository absolute paths retain
-      // the registered-root candidates discovered above.
-      repoRoots: registeredRepoRoots ?? [completionRoot()],
-      treeStamp: completionEvidenceToPersist?.treeStamp,
-    });
-    ephemeralDeliverableWarning = renderEphemeralDeliverableWarning(`completion for ${it.id}`, references);
-  } catch {
-    /* fail-open: the completion record must never be lost to an advisory check */
   }
   // EI-20008560598714546: summary is also a natural place to cite the live
   // artifact. Scan the persisted evidence shape for that citation, while the
@@ -4353,6 +4359,11 @@ async function completeOne(
 
   if (assumptionsError) {
     stateError = `REJECTED — ${assumptionsError}`;
+  } else if (unretainedLiveUiPaths.length > 0) {
+    stateError =
+      `REJECTED — ${it.id} claims retained live-UI evidence under session scratch: ` +
+      `${unretainedLiveUiPaths.join(', ')}. Copy the capture to a retained artifact path, ` +
+      'verify that copy exists, and cite the retained path in the completion.';
   } else if (unbackedLiveServiceClose) {
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-service' to close ${it.id}, but ` +

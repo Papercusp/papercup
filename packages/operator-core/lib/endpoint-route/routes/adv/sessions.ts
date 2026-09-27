@@ -1552,6 +1552,7 @@ const ensureCodexHome = defineTool({
       codexGatewayAuto: body.requireGatewayProvider === true,
       codexGatewayPriority: body.requireGatewayProvider === true ? 'su' : null,
       trustDir: null, // the home's inherited trust tables already cover the cwd
+      projectDir: sessionRow?.cwd,
       promptText,
       recoverMissingHome: sessionRow?.coordOwnerId === owner,
     });

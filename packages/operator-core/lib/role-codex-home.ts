@@ -1116,6 +1116,38 @@ export interface SuCodexConfigInput {
   codexGatewayAuto?: boolean;
   codexGatewayPriority?: string | null;
   trustDir?: string | null;
+  /** Launch cwd for project-scoped external HTTP MCP servers. */
+  projectDir?: string | null;
+}
+
+/** Claude stores project MCP choices in its user config. Carry HTTP entries
+ * into the isolated Codex home so changing clients does not hide a connector.
+ * The platform server remains session-scoped and always wins name collisions. */
+function projectHttpMcpToml(projectDir: string | null | undefined): string[] {
+  const lines = ['# BEGIN inherited project HTTP MCP', '# END inherited project HTTP MCP'];
+  if (!projectDir) return lines;
+  try {
+    const config = JSON.parse(readFileSync(join(homedir(), '.claude.json'), 'utf8')) as {
+      projects?: Record<string, { mcpServers?: Record<string, unknown> }>;
+    };
+    const servers = config.projects?.[resolve(projectDir)]?.mcpServers ?? {};
+    const entries: string[] = [];
+    for (const [name, raw] of Object.entries(servers).sort(([a], [b]) => a.localeCompare(b))) {
+      if (name === 'papercusp' || name === 'papercusp-su' || !raw || typeof raw !== 'object') continue;
+      const server = raw as { type?: unknown; url?: unknown; headers?: unknown };
+      if (server.type !== 'http' || typeof server.url !== 'string' || !/^https?:\/\//.test(server.url)) continue;
+      entries.push(`[mcp_servers."${tomlEscape(name)}"]`, `url = "${tomlEscape(server.url)}"`);
+      if (server.headers && typeof server.headers === 'object' && !Array.isArray(server.headers)) {
+        const headers = Object.entries(server.headers)
+          .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+          .map(([key, value]) => `"${tomlEscape(key)}" = "${tomlEscape(value)}"`);
+        if (headers.length) entries.push(`http_headers = { ${headers.join(', ')} }`);
+      }
+    }
+    return [lines[0], ...entries, lines[1]];
+  } catch {
+    return lines;
+  }
 }
 
 /** Append the per-session MCP client exactly once without reserializing signed
@@ -1166,6 +1198,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
     '[mcp_servers.papercusp-su]',
     `url = "${tomlEscape(url)}"`,
     ...(opts.token ? [`http_headers = { Authorization = "Bearer ${tomlEscape(opts.token)}" }`] : []),
+    ...projectHttpMcpToml(opts.projectDir ?? opts.trustDir),
     '',
   ].join('\n');
 }
@@ -1229,6 +1262,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
     ownerId: opts.sid,
     priority: opts.codexGatewayPriority,
   });
+  const expectedProjectMcp = projectHttpMcpToml(opts.projectDir ?? opts.trustDir).join('\n');
   let configReady = false;
   try {
     const current = readFileSync(configPath, 'utf8');
@@ -1241,6 +1275,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & {
       : !current.includes('PAPERCUSP_CODEX_GATEWAY_ROOT') && !current.includes('PAPERCUSP_CODEX_GATEWAY_PROVIDER');
     configReady =
       current.includes('[mcp_servers.papercusp-su]') &&
+      current.includes(expectedProjectMcp) &&
       current.includes(expectedClient) &&
       contextMatches &&
       current.includes(expectedLogDir) &&

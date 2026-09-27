@@ -627,7 +627,7 @@ describe('agent-chat SU-session route registration', () => {
       ...route, timeoutSec: 0.01,
       handler: (request, context) => {
         context.signal.addEventListener('abort', reportDeadline, { once: true });
-        return route.handler(request, context);
+        return route.handler(request, { ...context, input: undefined });
       },
     }, DEFAULT_ROUTE_STACK.filter((step) => step.name === 'invoke'));
     const turn = command('owner_turn');
@@ -635,7 +635,7 @@ describe('agent-chat SU-session route registration', () => {
       '/harness/papercusp/agent-chats/chat-1/su-session/commands',
       { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(turn) },
     ));
-    const pending = send();
+    const pending = Promise.resolve(send());
     try {
       await Promise.race([deadline, pending.then((response) => {
         throw new Error(`command settled before the held reservation: ${response.status}`);

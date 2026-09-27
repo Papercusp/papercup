@@ -8,6 +8,7 @@ import { dreamCapabilityRun, dreamCallTotals, newDreamCapabilityRun } from './dr
 import type { DreamRun } from './dream-run-store';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from './capability-sampler';
 import { freezeDreamEvaluationProtocol } from './dream-evaluation';
+import { dreamRunOutcome } from './dream-config';
 
 type Fixture = Awaited<ReturnType<typeof createDreamCapabilityFixture>>;
 let f: Fixture;
@@ -57,7 +58,7 @@ function harness() {
     })),
     loadPackets: vi.fn(async () => f.packets),
     loadHistory: vi.fn(async () => []),
-    reviewSources: () => f.sources,
+    reviewSources: () => ({ ...f.sources, search: async () => ({ scope: f.scope, kinds: CAPABILITY_PRIOR_KINDS, status: 'current', matches: f.review.priorMatches, truncated: false, note: 'Current fixture priors.' }) }),
     sample: vi.fn(() => f.sampling),
     beginRun: vi.fn(async ({ runId, cycleId, capability }) => {
       if (runs.has(runId)) return { created: false, run: structuredClone(row(runId)) };
@@ -115,6 +116,7 @@ function harness() {
         Object.assign(r, {
           status: value.status,
           error: value.error ?? null,
+          review: value.review ?? r.review,
           outcome: value.outcome ? { ...value.outcome, capabilityRun: r.outcome!.capabilityRun } : r.outcome,
         });
       return structuredClone(r);
@@ -173,6 +175,46 @@ function harness() {
 }
 
 describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
+  it.each(['retrieval', 'rerank'] as const)('DREAM-REVIEW-PREFLIGHT: refuses unavailable %s before paid generation', async (dependency) => {
+    const h = harness();
+    h.input.cycle = { maxDreamsPerCycle: 3 };
+    if (dependency === 'retrieval') h.d.reviewSources = () => ({ ...f.sources, search: async () => { throw new Error('Source reader offline'); } });
+    if (dependency === 'rerank') h.d.rerank = vi.fn(async (_q, priors) => ({ priors, outcome: { attempted: false, reason: 'offline' } }));
+    const result = await runDreamCycle(h.input, h.d);
+    const run = h.row(dreamRunId(h.input.cycleId, 0));
+    expect(result).toMatchObject({ reason: 'review-unavailable', attempts: 1, accepted: 0, costUsd: 0 });
+    expect(run.outcome).toMatchObject({ generationSkipped: true });
+    expect(run.review).toMatchObject({ verdict: 'unverified', nextCheck: { kind: 'dependency', maxSourceQueries: 2 } });
+    expect(h.llm).not.toHaveBeenCalled();
+    expect(h.d.review).not.toHaveBeenCalled();
+    expect(h.d.sink).not.toHaveBeenCalled();
+    expect(dreamCapabilityRun(run)!.calls.every(c => c.reservedUsd === 0)).toBe(true);
+    expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'review-unavailable', attempts: 1, costUsd: 0 });
+    expect(h.runs.size).toBe(1);
+  });
+  it('refuses same-model provenance before starting a paid call', async () => {
+    const h = harness(); h.input.review = { model: 'dreamer' };
+    await expect(runDreamCycle(h.input, h.d)).rejects.toThrow('different model');
+    expect(h.llm).not.toHaveBeenCalled();
+  });
+  it('rechecks dependencies after readiness rather than treating preflight as proposal approval', async () => {
+    const h = harness();
+    h.d.review = vi.fn<NonNullable<DreamCycleDeps['review']>>(async () => ({ ...f.review, verdict: 'unverified', reason: 'source-changed-during-review' }));
+    const result = await runDreamCycle(h.input, h.d);
+    expect(result).toMatchObject({ accepted: 0, costUsd: 0.01 });
+    expect(h.d.rerank).toHaveBeenCalledTimes(1);
+    expect(h.llm).toHaveBeenCalledTimes(1);
+    expect(h.d.sink).not.toHaveBeenCalled();
+  });
+  it('retains an unresolved review for honest display and never routes it', async () => {
+    const h = harness();
+    h.d.review = vi.fn<NonNullable<DreamCycleDeps['review']>>(async () => ({ ...f.review, verdict: 'unverified', reason: 'counterfactual-unknown' }));
+    await runDreamCycle(h.input, h.d);
+    const run = h.row(dreamRunId(h.input.cycleId, 0));
+    expect(run.review?.verdict).toBe('unverified');
+    expect(dreamRunOutcome(run.status, run.review)).toBe('insufficient evidence');
+    expect(h.d.sink).not.toHaveBeenCalled();
+  });
   async function pilot(h: ReturnType<typeof harness>) {
     const snapshot = await buildCapabilitySamplingSnapshot({
       rootPath: f.root,
@@ -400,6 +442,8 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
       'packet:catalogue',
       'retrieval:history',
       'retrieval:snapshot',
+      'retrieval:review-preflight',
+      'rerank:preflight',
       'generation',
       'retrieval:review',
       'rerank',

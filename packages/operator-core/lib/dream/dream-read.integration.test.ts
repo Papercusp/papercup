@@ -97,6 +97,14 @@ describe('Analyze Dream history (real PostgreSQL)', () => {
     expect(await readDreamDetail(db.adminSql, { ...scope, runId: 'other-pot' })).toBeNull();
     expect(await readDreamDetail(db.adminSql, { ...scope, runId: 'other-workspace' })).toBeNull();
   });
+  it('DREAM-REVIEW-NEXT-CHECK: supplies an actionable bounded check for legacy unknown controls without changing stored history', async () => {
+    const review = { verdict: 'unverified', reason: 'counterfactual-unknown', note: 'A-only comparison is unresolved.' };
+    await db.adminSql`UPDATE harness_shared.dream_runs SET review = ${JSON.stringify(review)}::text::jsonb WHERE workspace_id = ${scope.workspaceId} AND run_id = 'r-01'`;
+    const detail = await readDreamDetail(db.adminSql, { ...scope, runId: 'r-01' });
+    expect(detail?.nextCheck).toMatchObject({ kind: 'counterfactual', maxSourceQueries: 2, evidenceNeeded: [review.note] });
+    expect(detail?.run.review).toEqual(review);
+    expect(detail?.nextCheck?.instruction).toContain('in isolation');
+  });
   it('preserves frozen packets, rejection, unknown usage and title without executing or charging anything', async () => {
     const outcome = structuredClone(fixture.run.outcome!);
     const provenance: DreamCapabilityRun = structuredClone(fixture.provenance);
@@ -113,6 +121,18 @@ describe('Analyze Dream history (real PostgreSQL)', () => {
     expect((await readDreamHistory(db.adminSql, scope)).runs[0]?.title).toBe(fixture.candidate.behavior);
     const [row] = await db.adminSql`SELECT cost_usd, status FROM harness_shared.dream_runs WHERE workspace_id = ${scope.workspaceId} AND run_id = 'r-25'`;
     expect(Number(row!.cost_usd)).toBe(0.16);
+    expect(row!.status).toBe('rejected');
+  });
+  it('projects the scientific verdict of an old rejected row without rewriting the ledger', async () => {
+    await db.adminSql`UPDATE harness_shared.dream_runs SET status = 'rejected',
+      review = '{"verdict":"unverified","reason":"rerank-unavailable"}'::jsonb
+      WHERE workspace_id = ${scope.workspaceId} AND run_id = 'r-24'`;
+    const history = await readDreamHistory(db.adminSql, scope);
+    expect(history.runs.find(r => r.runId === 'r-24')).toMatchObject({
+      status: 'rejected', review: { verdict: 'unverified', reason: 'rerank-unavailable' },
+    });
+    expect((await readDreamMetrics(db.adminSql, scope)).funnel.reviewOutcomes.unavailable).toBe(1);
+    const [row] = await db.adminSql`SELECT status FROM harness_shared.dream_runs WHERE workspace_id = ${scope.workspaceId} AND run_id = 'r-24'`;
     expect(row!.status).toBe('rejected');
   });
 });

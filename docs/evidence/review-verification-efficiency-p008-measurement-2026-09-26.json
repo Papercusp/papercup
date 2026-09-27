@@ -7,24 +7,30 @@
     "work_items:complete validateOnly on :3170",
     "work_items:get WI-10000985 after both controls",
     "dev:pg_query scoped tool_invocations cohort",
-    "npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-coverage-accounting.test.ts"
+    "npm run test:file -- packages/operator-core/lib/__tests__/affected-tests-coverage-accounting.test.ts",
+    "testing:runs exact P-008 matrix receipts and rerun-group rollup",
+    "work_items:get detail for seven frozen P-008 defect IDs",
+    "work_items:get P-003 through P-007 plan-item creation, closure and completion authority"
   ],
   "startedAt": "2026-09-26T20:40:00.000Z",
-  "finishedAt": "2026-09-26T21:10:42.000Z",
+  "finishedAt": "2026-09-27T00:47:01.000Z",
   "exitCode": 0,
-  "summary": "Two current-build validateOnly inputs and one focused coverage-accounting suite behaved as expected. A predeclared seven-day dispatch slice was measured, but its population is not comparable to the frozen P-001 baseline, so no causal efficiency improvement or no-sprawl verdict is asserted. Deployed-only certification remains unmeasured by this artifact.",
+  "summary": "Two current-build validateOnly inputs and one focused coverage-accounting suite behaved as expected. A predeclared seven-day dispatch slice, a bounded P-008 test-rerun slice, a seven-defect sample, and five plan-item promotion-to-completion intervals were measured. Their populations are not comparable to the frozen P-001 baseline, so no causal efficiency improvement or no-sprawl verdict is asserted. Deployed-only certification remains unmeasured by this artifact.",
   "population": {
     "checked": [
       "WI-10000985 complete-shaped feature evidence under work_items:complete validateOnly on :3170",
       "WI-10000985 deliberately partial feature evidence under work_items:complete validateOnly on :3170",
       "WI-10000985 post-control state and completion read",
       "2026-09-19T21:07:00Z through 2026-09-26T21:07:00Z agent-origin Papercusp tool_invocations for five declared workflow verbs",
-      "affected-tests-coverage-accounting.test.ts at clean named test-path HEAD 411d591c47"
+      "affected-tests-coverage-accounting.test.ts at clean named test-path HEAD 411d591c47",
+      "P-008 twelve-file matrix at HEAD 411d591c47 and its post-revision rerun group f83a7cc9-4d8f-4032-ab95-6fd376ae3d43",
+      "Current state and recorded reopen history of the seven named defects in the frozen September 13 P-008 artifact",
+      "Creation, terminal closure and committed completion authority of P-003 through P-007 plan work-items"
     ],
     "notChecked": [
-      "Historical P-001 completion cohort with the same live query and population",
-      "Representative workflow acceptance wait and justified rerun totals",
-      "Escaped or reopened defect census for the declared cohort",
+      "Historical P-001 completion cohort with the same live query and population (outside the 14-day tool-invocation retention window)",
+      "Acceptance wait beyond five plan-promotion-to-terminal intervals, and whole-cohort justified rerun totals beyond the bounded P-008 matrix slice",
+      "Complete escaped or reopened defect census beyond the frozen seven-defect sample",
       "Standing schedule, routine, watch and ledger inventory diff against a P-001 baseline",
       "Final green-checkpoint content containment and deployed release identity"
     ],
@@ -33,7 +39,7 @@
       "A randomized verification-free counterfactual"
     ],
     "residue": [
-      "No matched historical live rows or inventory snapshot was established for a like-for-like P-001 comparison.",
+      "The P-001 September 2-9 tool-invocation rows have expired under the 14-day retention policy; the frozen snapshot lacks a matching complete workflow cohort and inventory baseline.",
       "A separate live gate owner must supply final deployment identity for the deployed-only clause."
     ]
   },
@@ -81,7 +87,14 @@
       "snapshotCompletionCalls": 9140,
       "snapshotNonOk": 1833,
       "snapshotSentenceGrammarRefusals": 1429,
-      "limitation": "The historical snapshot is preserved, but a scoped current query returned no baseline rows for an undetermined reason. Window lengths, serving builds and cohort populations differ; no same-instrument improvement percentage follows."
+      "liveLedgerRetention": {
+        "writer": "packages/operator-core/lib/harness/routines/telemetry-retention-targets.ts: tool-invocations retention_days=14",
+        "earliestPapercuspRowAtRead": "2026-09-13T05:48:39.721Z",
+        "baselineWindowRowsAtRead": 0,
+        "baselineWindowAnyToolRowsAtRead": 0,
+        "positiveControl": "A Papercusp work_items:complete row on September 26 was returned from the same tool_invocations table and scope."
+      },
+      "limitation": "The historical September 2-9 tool-invocation rows are outside the configured 14-day retention window. The frozen snapshot preserves reported aggregates but cannot be rerun against the live ledger; window lengths, serving builds and cohort populations differ, so no same-instrument improvement percentage follows."
     },
     "coverageAccountingTest": {
       "path": "packages/operator-core/lib/__tests__/affected-tests-coverage-accounting.test.ts",
@@ -91,6 +104,56 @@
       "testedHead": "411d591c47",
       "namedTestPathCleanBeforeAndAfter": true,
       "scopeLimit": "The router stamped only the named test path; this does not prove the full imported source graph remained unchanged."
+    },
+    "p008MatrixRerunSlice": {
+      "writer": "packages/operator-core/test/reporters/admin-test-runs-reporter.ts: per-file harness_shared.test_runs rows; packages/operator-core/lib/agent-tools/testing/runs.ts: runGroup rollup uses the latest verdict per file",
+      "population": "The exact same twelve P-008 Vitest file paths in the September 26 local matrix and September 27 admin-ui run group; no other tests or reruns included",
+      "initialTestRunIds": "19662113-19662122, 19662147-19662148",
+      "initialHead": "411d591c4741f0972a8bd5b4706d7ad282a958d2",
+      "initialFileExecutions": 12,
+      "initialFailedFiles": 0,
+      "rerunGroup": "f83a7cc9-4d8f-4032-ab95-6fd376ae3d43",
+      "rerunTestRunIds": "19681991-19681992, 19682913-19682922",
+      "rerunHead": "dae49a2ce2d9df926ce08f3c30698dcd96abb198",
+      "rerunFileExecutions": 12,
+      "rerunFailedFiles": 3,
+      "totalFileExecutionsInSlice": 24,
+      "rerunReason": "The acceptance rubric changed to revision 4 and prior matrix proof became stale; the later run tested the new candidate rather than repeating an unchanged verdict. The three failures are recorded by rows 19682919-19682921 and cannot be counted as passing acceptance.",
+      "scopeLimit": "This is one observed matrix rerun, not a census of all P-008 or P-001 reruns. Both sets of rows have worktreeDirty=true, and the two candidate SHAs differ; no elapsed acceptance wait or saved cost follows from file execution counts."
+    },
+    "knownDefectSample": {
+      "writer": "work_items:get detail projects each work item's current state and lifecycle.reopenHistory; lifecycle.coverage states that non-terminal transitions are not recorded",
+      "population": "The seven exact defect IDs listed in docs/evidence/review-verification-efficiency-p008-measurement-2026-09-13.json; no discovery of other defects is implied",
+      "ids": [
+        "EI-23074025929199961",
+        "EI-23131390361609814",
+        "EI-23131564135958331",
+        "EI-23131720079991421",
+        "EI-20253384051880991",
+        "EI-23133597080653238",
+        "EI-23134487722445604"
+      ],
+      "doneAtRead": 7,
+      "openAtRead": 0,
+      "recordedReopenEvents": 1,
+      "reopenedItem": "EI-20253384051880991",
+      "reopenedAt": "2026-09-13T08:03:34.197Z",
+      "escapedDefectCount": "unmeasured",
+      "scopeLimit": "Current done state does not establish that a defect never escaped or later recurred. The one recorded reopen was from resolved/watchdog-auto-close, and the work-item lifecycle explicitly omits non-terminal transitions. This named sample is not the full declared-workflow defect census."
+    },
+    "planItemPromotionToCompletion": {
+      "writer": "packages/operator-core/lib/agent-tools/work_items/get-shape.ts projects createdAt and closedAt; burn_down.ts uses closedAt for terminal transitions rather than updatedAt; completionAuthority=committed is read from each work item",
+      "population": "The five exact plan-promotion work-items WI-10000980 through WI-10000984, corresponding to P-003 through P-007; all are currently done with committed completion authority",
+      "elapsedHoursByPlanItem": {
+        "P-003": 74.2,
+        "P-004": 77.801,
+        "P-005": 79.13,
+        "P-006": 73.612,
+        "P-007": 86.363
+      },
+      "medianElapsedHours": 77.801,
+      "calculation": "(closedAt - createdAt) in hours for each named work item, then median of five; source timestamps are available from work_items:get",
+      "scopeLimit": "Creation happened at plan promotion for all five items. The interval includes queueing, dependencies, idle time, implementation and review; takenAt is null on all five, so this cannot be interpreted as claim-to-acceptance time or exclusive engineering effort. No matching P-001 cohort was measured."
     }
   },
   "assertions": [
@@ -124,6 +187,6 @@
     "baselineReport": "docs/evidence/review-verification-efficiency-p008-measurement-2026-09-13.json",
     "completionHandler": "packages/operator-core/lib/agent-tools/work_items/complete.ts",
     "completionTelemetryWriter": "packages/operator-core/lib/projected-tool-deps.ts",
-    "verifiedVia": "current-build :3170, read-only durable ledgers and focused Vitest"
+    "verifiedVia": "current-build :3170, read-only tool-invocation/test-run/work-item ledgers and focused Vitest"
   }
 }

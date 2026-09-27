@@ -531,12 +531,7 @@ export async function countActionableUngradedOutsideScopes(
 
 /** What `watchdog:status` reports about the nudge rail's pending/eligible backlog. */
 export interface UngradedEligibility {
-  /** Actionable ungraded rows in this scope, any age. */
-  pendingCount: number;
-  /** Of those, the ones already past the rail's staleness deadline. */
-  eligibleCount: number;
-  /** Oldest actionable row's routed_at, or null when the scope is empty. */
-  oldestRoutedAtMs: number | null;
+  byOrigin: Record<string, { pendingCount: number; eligibleCount: number; oldestRoutedAtMs: number | null }>;
 }
 
 /**
@@ -559,31 +554,41 @@ export async function readUngradedEligibility(
   const { workspaceId, harnessSlug, policy, eligibleBeforeMs } = args;
   const floors = JSON.stringify(policy.byOrigin);
   const fallback = policy.fallbackMs;
+  const scope = workspaceGlobalScopeFor(workspaceId, harnessSlug);
   const rows = await sql<
-    { pending_count: number | string | null; eligible_count: number | string | null; oldest_routed_at: string | number | null }[]
+    { origin: string; pending_count: number | string | null; eligible_count: number | string | null; oldest_routed_at: string | number | null }[]
   >`
     WITH scoped AS (
       SELECT origin, routed_at,
              coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
         FROM harness_shared.scout_routed_ideas
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       WHERE workspace_id = ${workspaceId}
+         AND (
+              harness_slug = ${harnessSlug}
+           OR (${scope.absorbsWorkspaceGlobal}
+               AND (harness_slug = ANY(${scope.labels}) OR harness_slug LIKE ${scope.likePattern}))
+         )
          AND origin <> ${SHADOW_VARIANT_ORIGIN}
          AND human_grade IS NULL
          AND (outcome IS NULL OR outcome = 'pending')
     ), actionable AS (
-      SELECT routed_at FROM scoped WHERE routed_at >= epoch_ms
+      SELECT origin, routed_at FROM scoped WHERE routed_at >= epoch_ms
     )
-    SELECT count(*)::int AS pending_count,
+    SELECT origin, count(*)::int AS pending_count,
            count(*) FILTER (WHERE routed_at <= ${eligibleBeforeMs})::int AS eligible_count,
            min(routed_at) AS oldest_routed_at
-      FROM actionable`;
-  const row = rows[0];
-  const oldest = Number(row?.oldest_routed_at ?? Number.NaN);
-  return {
-    pendingCount: Math.max(0, Number(row?.pending_count ?? 0)),
-    eligibleCount: Math.max(0, Number(row?.eligible_count ?? 0)),
-    oldestRoutedAtMs: Number.isFinite(oldest) ? oldest : null,
-  };
+      FROM actionable
+     GROUP BY origin`;
+  const byOrigin: UngradedEligibility['byOrigin'] = {};
+  for (const row of rows) {
+    const oldest = Number(row.oldest_routed_at ?? Number.NaN);
+    byOrigin[row.origin] = {
+      pendingCount: Math.max(0, Number(row.pending_count ?? 0)),
+      eligibleCount: Math.max(0, Number(row.eligible_count ?? 0)),
+      oldestRoutedAtMs: Number.isFinite(oldest) ? oldest : null,
+    };
+  }
+  return { byOrigin };
 }
 
 /** PURE: split a mixed-origin filing list into one bucket per origin, insertion-ordered. */

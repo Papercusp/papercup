@@ -128,8 +128,10 @@ const GIB = 1024n * 1024n * 1024n;
  *
  * Keep the override name aligned with the systemd scripts so tests and
  * isolated deployments can point every producer at one guard instance. The
- * installed symlink is the production default (the versioned script lives in
- * apps/operator/scripts/systemd/).
+ * installed symlink is the Linux production default (the versioned script
+ * lives in apps/operator/scripts/systemd/ and requires flock and /proc).
+ * Other platforms have no systemd producer to coordinate with; they retain
+ * the in-process dump queue and the snapshot's database migration lock.
  */
 export const WORKSPACE_BACKUP_GUARD_LABEL = 'workspace-db-dump';
 const DEFAULT_BACKUP_GUARD_PATH = join(homedir(), '.config', 'kopia', 'kopia-backup-guard.sh');
@@ -142,7 +144,8 @@ const DEFAULT_BACKUP_GUARD_PATH = join(homedir(), '.config', 'kopia', 'kopia-bac
  */
 export function resolveKopiaBackupGuard(): string | null {
   if (process.env.KOPIA_BACKUP_GUARD_ACTIVE === '1') return null;
-  return process.env.KOPIA_BACKUP_GUARD_BIN?.trim() || DEFAULT_BACKUP_GUARD_PATH;
+  return process.env.KOPIA_BACKUP_GUARD_BIN?.trim()
+    || (process.platform === 'linux' ? DEFAULT_BACKUP_GUARD_PATH : null);
 }
 
 /**

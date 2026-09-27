@@ -112,6 +112,19 @@ describe('startEventLoopSentinel', () => {
     expect(source).toContain('Object.assign(out, readMainThreadDirectoryWait(wchan))');
   });
 
+  it('captures live children before the zero-CPU block-mode classifier', () => {
+    // EI-24367382715904715: the staging host changed from anon_pipe_read to
+    // ep_poll and consumed partial CPU before SIGKILL. The former conditional
+    // child read left the kill record without the operation to investigate.
+    const source = readFileSync(resolve(__dirname, 'event-loop-sentinel.worker.ts'), 'utf8');
+    const activity = source.slice(source.indexOf('function mainThreadActivity()'));
+    expect(activity.indexOf('const children = readMainThreadChildren();')).toBeGreaterThan(0);
+    expect(activity.indexOf('const children = readMainThreadChildren();')).toBeLessThan(
+      activity.indexOf('if (isLikelySyncSubprocessBlock(activity))'),
+    );
+    expect(activity).toContain('if (children.length) out.mainThreadLiveChildren = children.join');
+  });
+
   it('mode=off spawns nothing and reports inactive', () => {
     const lines: string[] = [];
     const h = startEventLoopSentinel({

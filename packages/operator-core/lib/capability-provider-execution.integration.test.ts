@@ -6,10 +6,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   bindCapabilityProviderToPot,
+  defineCapabilityClass,
   getPotCapabilityProviderBinding,
   listActiveCapabilityProviderCandidates,
   listProviderBindings,
+  recordProviderConformance,
+  validateProviderInterface,
 } from './capability-class-registry-store';
+import { resolveIdentityClassProvider } from './agent-identities/class-provider';
 
 const migration = (name: string) => fileURLToPath(
   new URL(`../../../libs/papercusp/libs/db/sql/${name}`, import.meta.url),
@@ -24,6 +28,7 @@ describe('capability provider execution attestation (real PG)', () => {
     await db.sql.unsafe('CREATE EXTENSION IF NOT EXISTS vector');
     await applyMigrationForTest(db.sql, migration('1140-capability-class-registry.sql'));
     await applyMigrationForTest(db.sql, migration('1141-enforce-capability-class-passing-bindings.sql'));
+    await applyMigrationForTest(db.sql, migration('1161-capability-class-embedding-profile.sql'));
     await db.sql`
       INSERT INTO harness_shared.capability_class_registry
         (workspace_id, id, version, title, description, interface_verbs)
@@ -183,4 +188,79 @@ describe('capability provider execution attestation (real PG)', () => {
     await expect(bindCapabilityProviderToPot(db.sql, { ...input, providerKind: 'recipe' }))
       .rejects.toThrow(/inactive/);
   });
+
+  async function installToolVersion(workspaceId: string, version: string, bind = true) {
+    const outputSchema = { type: 'string', maxLength: 128 };
+    const inputSchema = { type: 'object', additionalProperties: false };
+    const { capabilityClass } = await defineCapabilityClass(db.sql, {
+      workspaceId, id: 'context.notes', version, title: 'Notes', description: 'Read local notes',
+      interfaceVerbs: { read: { inputSchema, outputSchema }, unchecked: { inputSchema } },
+    });
+    const verbBindings = { read: 'notes:read', unchecked: 'notes:unchecked' };
+    const report = validateProviderInterface({
+      capabilityClass, providerPackage: 'notes-tool', providerVersion: '1.0.0',
+      registryRevision: 'registry-1', verbBindings,
+      lookup: (name) => ({ name, pluginName: 'notes-tool', inputSchema, outputSchema }),
+    });
+    await recordProviderConformance(db.sql, {
+      workspaceId, classId: capabilityClass.id, classVersion: version,
+      providerPackage: 'notes-tool', providerVersion: '1.0.0', verbBindings, report,
+    });
+    if (bind) await bindCapabilityProviderToPot(db.sql, {
+      workspaceId, potSlug: 'context-pot', classId: capabilityClass.id, classVersion: version,
+      providerPackage: 'notes-tool', providerVersion: '1.0.0',
+    });
+    return { workspaceId, potSlug: 'context-pot', classRef: 'context.notes@1', verb: 'read' };
+  }
+
+  it('pins a major to the newest stable pot-selected contract in numeric version order', async () => {
+    const request = await installToolVersion('ws-major', '1.10.0');
+    // Insert later to catch both lexicographic and created-at ordering mistakes.
+    await installToolVersion('ws-major', '1.9.0');
+    await installToolVersion('ws-major', '1.11.0-beta');
+    await installToolVersion('ws-major', '2.0.0');
+    await installToolVersion('ws-major', '1.12x0');
+    await installToolVersion('ws-major', '1.99.0', false);
+    expect(await resolveIdentityClassProvider(db.sql, request)).toMatchObject({
+      ok: true, requestedClassRef: 'context.notes@1', classRef: 'context.notes@1.10.0', verb: 'read',
+      contract: { outputSchema: { type: 'string', maxLength: 128 } },
+      provider: { providerKind: 'tool', latencyClass: 'sync', classRef: 'context.notes@1.10.0' },
+    });
+    expect(await resolveIdentityClassProvider(db.sql, { ...request, workspaceId: 'another-workspace' }))
+      .toMatchObject({ ok: false, code: 'class-unknown' });
+    expect(await resolveIdentityClassProvider(db.sql, { ...request, potSlug: 'another-pot' }))
+      .toMatchObject({ ok: false, code: 'class-unbound' });
+    for (const classRef of ['context.notes', 'context.notes@1.0.0', 'context.notes@01', 'context.notes@1.*']) {
+      expect(await resolveIdentityClassProvider(db.sql, { ...request, classRef }))
+        .toMatchObject({ ok: false, code: 'invalid-class-major' });
+    }
+    expect(await resolveIdentityClassProvider(db.sql, { ...request, verb: 'missing' }))
+      .toMatchObject({ ok: false, code: 'verb-unknown' });
+    expect(await resolveIdentityClassProvider(db.sql, { ...request, verb: '__proto__' }))
+      .toMatchObject({ ok: false, code: 'verb-unknown' });
+    expect(await resolveIdentityClassProvider(db.sql, { ...request, verb: 'unchecked' }))
+      .toMatchObject({ ok: false, code: 'output-schema-missing' });
+  });
+
+  it('does not fall back to an older provider when the selected version is retired', async () => {
+    const request = await installToolVersion('ws-retired-major', '1.0.0');
+    await installToolVersion('ws-retired-major', '1.1.0');
+    await db.sql`
+      UPDATE harness_shared.capability_class_provider_bindings SET status = 'retired'
+      WHERE workspace_id = 'ws-retired-major' AND class_version = '1.1.0'`;
+    expect(await resolveIdentityClassProvider(db.sql, request))
+      .toMatchObject({ ok: false, code: 'provider-unavailable' });
+  });
+
+  it.each([['operation', 'async', 'operation-unavailable'], ['recipe', 'sync', 'recipe-unavailable']])(
+    'does not turn a stored %s kind into inline execution authority', async (kind, latency, code) => {
+      const id = `unavailable-${kind}`;
+      await insertRun(id, kind, latency);
+      await insertProvider(id, kind, latency);
+      await insertPot(id, kind, latency);
+      expect(await resolveIdentityClassProvider(db.sql, {
+        workspaceId: 'ws-execution', potSlug: id, classRef: 'context.notes@1', verb: 'read',
+      })).toMatchObject({ ok: false, code });
+    },
+  );
 });

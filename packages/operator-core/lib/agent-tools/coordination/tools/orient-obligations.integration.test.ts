@@ -268,7 +268,7 @@ describe('GOAL-holder complete agenda recovery through coord:orient', () => {
     const failure = `P007 controlled portfolio read failure ${RUN}`;
     const portfolio = vi.spyOn(goalSettings, 'readGoalPortfolioBrief').mockRejectedValueOnce(new Error(failure));
     const failed = await readOrientation();
-    expect(portfolio).toHaveBeenCalledWith({ workspaceId: WS, goalId: GOAL });
+    expect(portfolio).toHaveBeenCalledWith({ workspaceId: WS, goalId: GOAL, attestOwnerId: OWNER });
     const placement = failed.obligations.evaluations.find((entry) => entry.ruleId === 'goal-plan-placement');
     expect(placement?.status).toBe('unknown');
     expect(placement?.measurementFailure?.detail).toContain(failure);
