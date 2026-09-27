@@ -76,13 +76,15 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
   it('records real child PID counters and a terminal trace row in the per-owner host log', async () => {
     if (process.platform !== 'linux') return;
     const root = mkdtempSync(join(tmpdir(), 'psu-codex-startup-trace-'));
+    const codexRuntime = join(root, 'codex');
+    symlinkSync('/usr/bin/sleep', codexRuntime);
     const ownerId = `su-startup-trace-${process.pid}-${Math.floor(performance.now())}`;
     const logPath = eventLogPathForOwner(ownerId);
     const { io } = fakeIo();
     try {
       await hostThroughPty({
-        command: execPath,
-        args: ['-e', 'setTimeout(() => process.exit(0), 250)'],
+        command: '/bin/bash',
+        args: ['-c', `"${codexRuntime}" 1.5 & wait`],
         cwd: root,
         env: { ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', TERM: 'xterm-256color' },
         ownerId,
@@ -93,9 +95,16 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
       });
       const rows = readFileSync(logPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
       const sample = rows.find((row) => row.kind === 'codex-startup-process-sample');
+      const selected = rows.find((row) => row.kind === 'codex-startup-process-target-selected');
       const ended = rows.find((row) => row.kind === 'codex-startup-process-trace-ended');
-      expect(sample).toMatchObject({ pid: expect.any(Number), majorFaults: expect.any(Number) });
-      expect(ended).toMatchObject({ pid: sample.pid, reason: 'host-cleanup', samples: expect.any(Number) });
+      expect(selected).toMatchObject({ rootPid: expect.any(Number), pid: expect.any(Number) });
+      expect(selected.pid).not.toBe(selected.rootPid);
+      expect(sample).toMatchObject({
+        rootPid: selected.rootPid, pid: selected.pid, comm: 'codex', majorFaults: expect.any(Number),
+      });
+      expect(ended).toMatchObject({
+        rootPid: selected.rootPid, pid: selected.pid, reason: 'host-cleanup', samples: expect.any(Number),
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(logPath, { force: true });
