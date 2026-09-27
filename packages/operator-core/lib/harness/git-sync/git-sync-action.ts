@@ -5682,8 +5682,23 @@ async function resolveHiveGitProtocolScope(
   potHomeSlug: string,
   repoKey: string,
 ): Promise<SignedProtocolScope> {
-  const hive = await getHiveBySlug(workspaceId, potHomeSlug);
-  if (!hive?.pubkeyBase64) throw new Error('pot-git: stable hive identity unavailable; refusing unscoped protocol');
+  let hive = await getHiveBySlug(workspaceId, potHomeSlug);
+  if (!hive?.pubkeyBase64) {
+    // WI-10003559: a member that joined via a bare invite link never learned the
+    // Pot pubkey, so no row exists. Backfill it from already-received data,
+    // verified against the join's link topic, then re-read. Every tick retries,
+    // so a member whose first peer ref-announce arrives after boot heals then.
+    const { healJoinedPotIdentity } = await import('../joined-pot-identity-heal');
+    const heal = await healJoinedPotIdentity({ workspaceId, homeSlug: potHomeSlug });
+    if (heal.status === 'healed') hive = await getHiveBySlug(workspaceId, potHomeSlug);
+    if (!hive?.pubkeyBase64) {
+      throw new Error(
+        `pot-git: stable hive identity unavailable (identity heal: ${heal.status}` +
+          `${heal.status === 'no-verified-candidate' ? `, ${heal.candidatesSeen} candidate(s)` : ''}` +
+          `${heal.status === 'error' ? `: ${heal.reason}` : ''}); refusing unscoped protocol`,
+      );
+    }
+  }
   return { hive_id: hive.pubkeyBase64, repo_key: repoKey };
 }
 
