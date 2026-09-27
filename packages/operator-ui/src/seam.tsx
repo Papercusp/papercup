@@ -21,7 +21,7 @@
  * that forgets to configure gets silent console toasts instead of an error.
  * `operatorUiConfigured()` exists so a host can assert it wired the seam.
  */
-import type { ComponentType, ReactNode } from 'react';
+import { createContext, useContext, type ComponentType, type ReactNode } from 'react';
 import { pinModuleState } from '@papercusp/module-singleton';
 
 /** Props every host's link component must accept — the subset the panels use. */
@@ -97,4 +97,41 @@ export function operatorUiConfigured(): boolean {
 /** The live seam. Read at call time, never destructured at module scope. */
 export function operatorUi(): OperatorUiSeam {
   return state.seam;
+}
+
+/**
+ * Which machine the workspace's files live on — the one host answer that is
+ * per-SESSION rather than per-boot, so it is a React context and not a
+ * configure() field: the portal only learns it after its session check.
+ *
+ * Panels that ask for a filesystem path ("New local directory", "Existing
+ * local repo") mean "on the machine running the operator". On the desktop
+ * that is the user's own computer; for a signed-in portal user it is their
+ * cloud workspace machine, where "local" names the wrong machine
+ * (WI-10003268).
+ *
+ * The context OBJECT is pinned for the same reason the seam is: a second
+ * module record would hand the provider and the reader two different
+ * contexts, and the reader would silently see the default.
+ */
+export type OperatorWorkspaceLocation = 'local' | 'cloud';
+
+const locationState = pinModuleState('@papercusp/operator-ui.workspace-location', () => ({
+  context: createContext<OperatorWorkspaceLocation>('local'),
+}));
+
+export function OperatorWorkspaceLocationProvider({
+  location,
+  children,
+}: {
+  location: OperatorWorkspaceLocation;
+  children?: ReactNode;
+}) {
+  const { Provider } = locationState.context;
+  return <Provider value={location}>{children}</Provider>;
+}
+
+/** `'local'` unless a host provided otherwise — the desktop's own answer. */
+export function useOperatorWorkspaceLocation(): OperatorWorkspaceLocation {
+  return useContext(locationState.context);
 }

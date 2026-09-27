@@ -2249,7 +2249,7 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
 
     const scarce = await admittedCohortSize(6, {
       PC_HEAVY_SLOTS: '6',
-      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '24', // 24 / 12 GiB-per-slot => 2
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '28', // 28 / 14 GiB-per-slot => 2
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
     });
     // Clamps a FIXED slot count too: this is a physical ceiling, not load
@@ -2257,13 +2257,14 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
     expect(scarce).toBe(2);
 
     // WI-10003344's observed six concurrent operator-core compiles cannot all
-    // enter through this wrapper with 48 GiB free, even before PSI backoff.
+    // enter through this wrapper with 48 GiB free, even before PSI backoff:
+    // 48 / 14 GiB-per-slot (the measured 12.74 GiB peak plus margin) => 3.
     const reportedHeadroom = await admittedCohortSize(6, {
       PC_HEAVY_SLOTS: '6',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '48',
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
     });
-    expect(reportedHeadroom).toBe(4);
+    expect(reportedHeadroom).toBe(3);
     const oldBudget = await admittedCohortSize(6, {
       PC_HEAVY_SLOTS: '6',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '48',
@@ -2275,19 +2276,19 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
 
   it('halves the budget once memory PSI says the box is already in reclaim', async () => {
     // The budget must be sized to bind EXACTLY at the ask, or the halving is
-    // invisible: 48 GiB / 12 GiB-per-slot => 4, the same as PC_HEAVY_SLOTS. The
+    // invisible: 56 GiB / 14 GiB-per-slot => 4, the same as PC_HEAVY_SLOTS. The
     // calm arm then pins that baseline, so the drop to 2 in the second arm is
     // attributable to PSI alone.
     const calm = await admittedCohortSize(4, {
       PC_HEAVY_SLOTS: '4',
-      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '48', // budget 4 — exactly the ask
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '56', // budget 4 — exactly the ask
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
     });
     expect(calm).toBe(4);
 
     const reclaiming = await admittedCohortSize(4, {
       PC_HEAVY_SLOTS: '4',
-      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '48',
+      PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '56',
       PC_HEAVY_MEM_PSI_OVERRIDE: '9', // >= PC_HEAVY_MEM_PSI_BACKOFF (5)
     });
     expect(reclaiming).toBe(2);

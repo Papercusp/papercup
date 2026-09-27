@@ -280,7 +280,7 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch BAR seeding requires `## Requirements` entries in `**R-N — Title.** outcome` form or one fenced `requirement` JSON block plus Design map; changed BAR source returns `barSeedPendingAmendment`; invalid pinned rubrics return `barSeedPendingRepair`.",
+    "Record a plan audit. Activation: any nonempty `unresolvedBlockers` list refuses the audit and records nothing; map resolved conditions in `mappings`/`summary` instead. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs and previews readiness. BAR seeding requires `## Requirements` entries in `**R-N — Title.** outcome` form or fenced `requirement` JSON plus Design map.",
   guidance: {
     when: "Before ready/active, read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions. Author `## Requirements` with exact `**R-N — Title.** outcome` records (or a fenced `requirement` JSON block), map each R-N in Design's Bar-to-work table (`tree|deployed|live`); ordinary bullet lists do not satisfy the BAR parser. Use `activation`; before shipped use `completion` against ACTUAL CODE.",
     returns:

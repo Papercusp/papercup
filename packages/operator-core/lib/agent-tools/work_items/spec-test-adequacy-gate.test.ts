@@ -116,6 +116,7 @@ function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
     createdBy: 'su-test',
     createdAt: '2026-08-20T00:01:31.000Z',
     ...evidence(),
+    testRunProvenance: null,
     ...over,
   };
 }

@@ -964,6 +964,21 @@ describe('applyCheckpointProcessAuthority (P-009 pre-lock liveness)', () => {
 });
 
 describe('selectActiveCheckpointRoot', () => {
+  it('EI-24349243151786500: probes the canonical gate unit when a staging operator serves a mirror', () => {
+    const mirror = '/workspace/papercusp-staging';
+    const canonical = '/workspace/papercusp';
+    const input = {
+      pipeline: 'papercusp',
+      projectPaths: [mirror, canonical],
+      defaultPipeline: 'papercusp',
+      defaultRoot: mirror,
+      canonicalRoot: canonical,
+    };
+    expect(selectActiveCheckpointRoot(input)).toBe(canonical);
+    expect(selectActiveCheckpointRoot({ ...input, canonicalRoot: '   ' })).toBe(mirror);
+    expect(selectActiveCheckpointRoot({ ...input, pipeline: 'other' })).toBeNull();
+  });
+
   it('selects the requested harness root instead of the operator integration root', () => {
     expect(
       selectActiveCheckpointRoot({

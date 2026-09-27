@@ -49,6 +49,7 @@ const binding = (id: number, specId: string, overall: 'current' | 'stale' | 'unk
   },
   coverageEvidenceRef: null,
   testRunId: 1000 + id,
+  testRunProvenance: null,
   observedAt: '2026-09-23T00:00:00.000Z',
   bindingFingerprint: `sha256:binding-${id}`,
   createdBy: 'su-binder',

@@ -46,9 +46,10 @@
 #                         scarce. Applies to a FIXED PC_HEAVY_SLOTS too, never
 #                         clamps below 1, and fails open on any unreadable
 #                         input. off/false/no also disable.
-#   PC_HEAVY_MEM_PER_SLOT_GIB  GiB budgeted per admitted heavy run (default 12 —
-#                         measured `tsc -p packages/operator-core` RSS reached
-#                         11.2 GiB; WI-10003344).
+#   PC_HEAVY_MEM_PER_SLOT_GIB  GiB budgeted per admitted heavy run (default 14 —
+#                         measured `tsc -p packages/operator-core` peak RSS
+#                         12.74 GiB on 2026-09-27; plan
+#                         host-memory-reduction-2026-09-27 P-003).
 #   PC_HEAVY_MEM_PSI_BACKOFF  memory PSI full avg10 at or above which the
 #                         budget is HALVED (default 5, the threshold
 #                         infra-liveness already alerts on). A box in reclaim
@@ -2013,8 +2014,12 @@ _gate_recheck_refusal() {
 # ceil 16. Cost per slot is not small — `lint:tsc` is one
 # `tsc -p packages/operator-core` node process. The original 4.7–6.9 GiB
 # samples understated the later measured 9.1–11.2 GiB RSS compiles
-# (WI-10003344). Budget 12 GiB per slot so six compiles cannot be admitted
-# against only 48 GiB of headroom. Every agent runs it after editing. 16 ×
+# (WI-10003344), and on 2026-09-27 the peak was 12.74 GiB, above the old
+# 12 GiB budget. Budget 14 GiB per slot (that peak plus ~10%) so one admitted
+# compile fits its slot. This is a measured constant, not a derived one: an
+# admitted job runs in the caller's cgroup, so pc-heavy has no per-run peak to
+# derive from. Re-measure when the compile grows. Scoped `lint:tsc --files` no
+# longer reaches this path (it uses the shared tsc service, P-004). 16 ×
 # ~12 GiB ≈ 192 GiB transient against
 # 54 GiB MemAvailable, on a box already ~118 GiB resident (QEMU VMs, PG,
 # dev-api). Slots stagger CONCURRENCY; nothing was staggering FOOTPRINT.
@@ -2043,8 +2048,8 @@ _mem_clamp_slots() {
   # Unreadable/garbage MemAvailable ⇒ fail open, exactly as if no clamp existed.
   case "$_avail_gib" in ''|*[!0-9]*) echo "$_n"; return ;; esac
 
-  local _per="${PC_HEAVY_MEM_PER_SLOT_GIB:-12}"
-  case "$_per" in ''|*[!0-9]*) _per=12 ;; esac
+  local _per="${PC_HEAVY_MEM_PER_SLOT_GIB:-14}"
+  case "$_per" in ''|*[!0-9]*) _per=14 ;; esac
   [ "$_per" -lt 1 ] && _per=1
 
   local _budget=$(( _avail_gib / _per ))

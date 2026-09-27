@@ -553,6 +553,8 @@ describe('frozen lineage carry policy', () => {
   it.each([
     'Run focused unit tests on staging while the repair is admitted separately.',
     'Canonical tree is the shared checkout root on staging.',
+    'Main editable tree measured by git status/worktree list is /workspace/papercusp on staging.',
+    'The git worktree list shows the editable checkout on staging.',
     'Frozen candidate is 09d0c118d5df, 32 commits behind staging.',
     'The frozen candidate is 32 commits behind origin/staging; repair admission remains the sanctioned route.',
     'The candidate is 2 commits ahead of staging.',
@@ -589,6 +591,7 @@ describe('frozen lineage carry policy', () => {
     'Run the canonical verification against staging as the judged candidate.',
     'Pin staging as the candidate for the next verdict.',
     'Cut staging as the judged candidate for the next canonical verdict.',
+    'The judged worktree is on staging for the next canonical verdict.',
   ])('still detects an explicit selection or execution instruction: %s', (text) => {
     expect(detectUnsafeFrozenCarryInstruction(text)).toMatchObject({ unsafeSource: 'staging' });
   });

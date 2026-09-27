@@ -12,12 +12,13 @@
  * Run: npm run test:file -- packages/operator-core/lib/sync/pot-git/own-head-publish.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile, access } from 'node:fs/promises';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   defaultRunGit,
+  ensurePotGitRepo,
   hiveGitRepoPath,
   listNamespaces,
   readNamespaceRef,
@@ -206,6 +207,42 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
 
   describe('shallow source worktree (WI-5163: from-repo shallow:true default must not permanently refuse)', () => {
     const REPO_S = 'repo-ohp-shallow';
+
+    it.each(['unshallow', 'transfer'] as const)('reclaims only new partial packs after a failed %s, without publishing a ref', async (leg) => {
+      const local = await mkdtemp(join(root, 'failed-fetch-'));
+      await git(['init', '-q', '-b', BRANCH, local], root);
+      await commitFile(local, 'head.txt', 'head', 'head');
+      const key = `failed-${leg}`;
+      const bare = await ensurePotGitRepo(HIVE, key);
+      const packDir = join(leg === 'unshallow' ? join(local, '.git') : bare, 'objects', 'pack');
+      await mkdir(packDir, { recursive: true });
+      const preexisting = join(packDir, 'tmp_pack_preexisting');
+      const partial = join(packDir, 'tmp_pack_failed-attempt');
+      await writeFile(preexisting, 'preserve prior attempt');
+      const calls: string[][] = [];
+      const device = devicePubkey();
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE, repoKey: key, worktreePath: local,
+        branch: BRANCH, devicePubkeyBase64: device,
+        runGit: async (args, cwd, options) => {
+          calls.push(args);
+          if (leg === 'unshallow' && args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') {
+            return { code: 0, stdout: 'true\n', stderr: '' };
+          }
+          if (args[0] === 'fetch') {
+            await writeFile(partial, Buffer.alloc(8192, 7));
+            return { code: 128, stdout: '', stderr: 'fatal: write error: No space left on device' };
+          }
+          return defaultRunGit(args, cwd, options);
+        },
+      });
+      expect(out.changed).toBe(false);
+      expect(out.errors.join('; ')).toContain('No space left on device');
+      expect(await readFile(preexisting, 'utf8')).toBe('preserve prior attempt');
+      await expect(access(partial)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(calls.filter((args) => args[0] === 'fetch')).toHaveLength(1);
+      expect(await readNamespaceRef(bare, device, `refs/heads/${BRANCH}`)).toBeNull();
+    });
 
     it('a shallow clone is unshallowed before transfer, so publish lands instead of fail-closing forever', async () => {
       // A real "origin" with enough history that a depth-1 clone is a

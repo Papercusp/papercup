@@ -21,9 +21,12 @@ export {
   configureOperatorUi,
   operatorUi,
   operatorUiConfigured,
+  OperatorWorkspaceLocationProvider,
+  useOperatorWorkspaceLocation,
   type OperatorUiSeam,
   type OperatorUiLinkProps,
   type OperatorUiToast,
+  type OperatorWorkspaceLocation,
 } from './seam';
 
 // The one Papercup chat (papercup-chat-one-component-one-contract-2026-09-06,

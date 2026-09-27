@@ -626,6 +626,10 @@ describe('plans:audit phase:activation', () => {
 
   it('publishes the activation blocker contract on the live schema and guidance', () => {
     const projected = lookupByMcpName('plans:audit');
+    // EI-24379978800956217: compact tool discovery can omit late optional
+    // field descriptions, so the bounded top-level description must carry the
+    // refusal rule even when callers never request the full JSON schema.
+    expect(projected?.description?.slice(0, 320)).toContain('any nonempty `unresolvedBlockers` list refuses the audit and records nothing');
     const schema = projected?.inputSchema as {
       properties?: {
         unresolvedBlockers?: { description?: string };

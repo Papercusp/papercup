@@ -52,6 +52,7 @@ import {
   resolveIncrementalPublishSha,
 } from './publish-guard';
 import type { SecretFinding } from './secrets-guard';
+import { listTempPackFiles, pruneFailedFetchTempPacks } from '../../harness/git-sync/run-git-sync';
 
 export interface OwnHeadPublishTickInput {
   /** Hive home slug — the bare-store directory key (storage.ts G-1). */
@@ -191,9 +192,9 @@ export async function runOwnHeadPublishTick(
   // was never transferred and fail-closes (correct guard behavior, but the
   // net effect is this device can NEVER publish its own head — every tick
   // refuses forever, silently). Detect + unshallow the SOURCE worktree first
-  // so the objects transferred are always full, walkable history. Best-effort:
-  // an unshallow failure (e.g. no network / no remote) is recorded and the
-  // tick falls through to the pre-existing fail-closed behavior, unchanged.
+  // so the objects transferred are always full, walkable history. On failure,
+  // reclaim this attempt's partial packs and stop before transferring incomplete
+  // history. Reuse the normal git-sync cleanup for this separate fetch path.
   const shallowCheck = await runGit(['rev-parse', '--is-shallow-repository'], input.worktreePath);
   if (shallowCheck.code === 0 && shallowCheck.stdout.trim() === 'true') {
     const remotesRes = await runGit(['remote'], input.worktreePath);
@@ -207,19 +208,36 @@ export async function runOwnHeadPublishTick(
     // Generous network timeout — a real remote (e.g. GitHub) unshallow can
     // legitimately transfer a lot of history, not a local-op-speed transfer
     // (github-bridge-ingress-timeout-too-short-2026-07-20, EI-18189246091367226).
-    const unshallow = await runGit(['fetch', '--quiet', '--unshallow', remoteName], input.worktreePath, {
-      timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS,
-    });
+    const beforeUnshallow = await listTempPackFiles(runGit, input.worktreePath);
+    let unshallow: Awaited<ReturnType<RunGit>> | undefined;
+    try {
+      unshallow = await runGit(['fetch', '--quiet', '--unshallow', remoteName], input.worktreePath, {
+        timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS,
+      });
+    } finally {
+      if (unshallow?.code !== 0) {
+        await pruneFailedFetchTempPacks(runGit, input.worktreePath, beforeUnshallow, (message) => errors.push(message));
+      }
+    }
     if (unshallow.code !== 0) {
       errors.push(
         `source worktree is shallow and could not be unshallowed (remote '${remoteName}'): ${unshallow.stderr.trim().slice(0, 500)}`,
       );
+      return { ...noop(branch), ran: true, headSha, priorSha };
     }
   }
 
   // Ref-less object transfer: ODB + FETCH_HEAD only — no ref is created, so
   // upload-pack advertises nothing new until the guard below allows the write.
-  const fetch = await runGit(['fetch', '--quiet', input.worktreePath, branchRef], repoPath);
+  const beforeTransfer = await listTempPackFiles(runGit, repoPath);
+  let fetch: Awaited<ReturnType<RunGit>> | undefined;
+  try {
+    fetch = await runGit(['fetch', '--quiet', input.worktreePath, branchRef], repoPath);
+  } finally {
+    if (fetch?.code !== 0) {
+      await pruneFailedFetchTempPacks(runGit, repoPath, beforeTransfer, (message) => errors.push(message));
+    }
+  }
   if (fetch.code !== 0) {
     errors.push(`object transfer from worktree failed: ${fetch.stderr.trim().slice(0, 500)}`);
     return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], errors };

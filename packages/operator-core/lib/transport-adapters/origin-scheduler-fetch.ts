@@ -329,6 +329,23 @@ export function classifyOriginSchedulerFetch(
   };
 }
 
+/**
+ * The scheduler deadline for one request: `0` (none) for a write, the
+ * scheduler's default for a read.
+ *
+ * Aborting a write client-side cannot undo it — the server keeps running the
+ * handler — so a client deadline only turns a write that later succeeds into a
+ * reported failure. Pot create takes 10–25s at normal load, and the 20s default
+ * showed "scheduler task timed out" for pots that had been created
+ * (WI-10003268). The route's own budget (`timeoutSec`, answered with a 408) is
+ * the authority on how long a write may take; those budgets reach 45 minutes.
+ * A read keeps the default: abandoning it has no side effect, and that deadline
+ * is what frees a slot held by a stuck read.
+ */
+export function schedulerTimeoutForMethod(method: string): number | undefined {
+  return NON_MUTATING_METHODS.has(method.toUpperCase()) ? undefined : 0;
+}
+
 /** Whether the method is safe for a transparent retry. Kept private to this
  * adapter so the scheduler never acquires retry semantics of its own. */
 export function isIdempotentReadMethod(method: string): boolean {
@@ -507,11 +524,14 @@ function runScheduledFetch(
   init: RequestInit | undefined,
   origin: string,
   requestClass: OriginSchedulerClass,
+  method: string,
   signal: AbortSignal | undefined,
 ): Promise<Response> {
   const scheduler = getOriginScheduler(origin);
+  const timeoutMs = schedulerTimeoutForMethod(method);
   const runOptions: OriginSchedulerRunOptions = {
     class: requestClass,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     ...(signal ? { signal } : {}),
   };
 
@@ -552,10 +572,13 @@ export function installOriginSchedulerFetch(): InstallHandle | null {
     }
 
     const { origin, requestClass } = decision;
+    const method = decision.method ?? methodOf(input, init);
     const signal = requestSignalOf(input, init);
 
     const key = coalescableReadKey(input, init, decision);
-    if (key === null) return runScheduledFetch(inner, input, init, origin, requestClass, signal);
+    if (key === null) {
+      return runScheduledFetch(inner, input, init, origin, requestClass, method, signal);
+    }
 
     const { inFlightReads } = dedupeState;
     const existing = inFlightReads.get(key);
@@ -563,7 +586,7 @@ export function installOriginSchedulerFetch(): InstallHandle | null {
 
     const controller = typeof AbortController === 'function' ? new AbortController() : null;
     const entry: InFlightRead = {
-      promise: runScheduledFetch(inner, input, init, origin, requestClass, controller?.signal),
+      promise: runScheduledFetch(inner, input, init, origin, requestClass, method, controller?.signal),
       waiting: 0,
       joined: 0,
       controller,

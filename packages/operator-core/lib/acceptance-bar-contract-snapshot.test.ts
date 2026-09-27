@@ -200,6 +200,7 @@ function fixture(n = 2): AcceptanceBarContractSnapshotInput {
         // cases exist to exercise. Real evidence for an exercised outcome
         // carries a test run id; the fixture must too.
         testRunId: index + 1,
+        testRunProvenance: null,
         details: {},
         observedAt: iso,
         bindingFingerprint: `binding-${index + 1}`,
