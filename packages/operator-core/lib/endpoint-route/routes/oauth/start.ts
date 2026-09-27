@@ -4,8 +4,8 @@
  * Creates the provider authorize URL with an HMAC-signed state token
  * (plugin/harness/field/provider — read by the callback from the verified
  * state, never from URL params). The default response redirects in place;
- * `response=json` returns the URL for the owned desktop shell to open in the
- * operating system browser.
+ * `response=json` returns the immediate-use URL for the owned desktop shell
+ * and a shareable start URL that mints fresh state when visited.
  *
  * Ported from app/api/oauth/start/route.ts. `auth: 'public'` — the
  * caller is an un-authed browser starting an OAuth flow.
@@ -174,8 +174,15 @@ export default defineTool({
     );
     const authorizationUrl = provider.buildAuthorizeUrl(scopes, state, privateContext);
     if (responseMode === 'json') {
+      const shareUrl = new URL(url);
+      shareUrl.searchParams.delete('response');
       return Response.json(
-        { ok: true, authorizationUrl },
+        {
+          ok: true,
+          authorizationUrl,
+          shareUrl: shareUrl.toString(),
+          instruction: 'Open authorizationUrl immediately. Share shareUrl with another person; it creates fresh OAuth state when opened.',
+        },
         { headers: { 'cache-control': 'no-store' } },
       );
     }

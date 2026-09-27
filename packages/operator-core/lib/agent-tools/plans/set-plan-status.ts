@@ -344,8 +344,17 @@ export async function launchAcceptanceGraderForGate(
   // auditable origin instead of weakening the direct-author guard. Idempotent
   // ship retries therefore re-enter the same launcher's terminal-log recovery
   // (including its one-shot backend fallback) under that stable system origin.
+  //
+  // EI-24402913315950329: the rewrite replaces the CALLER too, so the recruiter's
+  // D-009 shipper exclusion read the system actor and the real shipper (routinely
+  // the implementer) stayed routable — measured on
+  // declared-gate-recovery-contract-2026-09-21, where the router forked the
+  // implementer as its "independent" grader. Carry the caller's identity through
+  // as an exclusion input; it grants nothing.
+  const acceptanceShipperOwnerId = resolveRatifierOwnerId(scopedCtx);
   return launch(slug, {
     ...scopedCtx,
+    acceptanceShipperOwnerId,
     uiClientId: null,
     isSuperuser: false,
     isPowerUser: false,

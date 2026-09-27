@@ -69,6 +69,7 @@ import { z } from 'zod';
 import { execFile, spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { readProcessCgroupPath } from '../../task-manager/cgroup-read';
 import { promisify } from 'node:util';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -549,14 +550,26 @@ function isLiveMainPid(value: unknown): value is number {
 }
 
 /**
- * Prove that the new systemd MainPID owns the gateway's TCP listener before
+ * Prove that the new systemd service owns the gateway's TCP listener before
  * probing HTTP. A reachable /healthz endpoint is not enough: an orphaned
  * process can keep :8788 alive while the replacement exits with EADDRINUSE.
  *
  * The listen-table helper distinguishes "bound but owner hidden" from "not
- * bound". Both are fail-closed here because neither proves that this MainPID
- * owns the port.
+ * bound". Both are fail-closed here because neither proves that this service
+ * owns the port. Gateway launch wrappers may spawn the actual listener as a child.
  */
+export function gatewayListenerBelongsToService(
+  mainPid: number,
+  listenerPid: number,
+  readCgroup: (pid: number) => string | null = readProcessCgroupPath,
+): boolean {
+  if (listenerPid === mainPid) return true;
+  const serviceCgroup = readCgroup(mainPid);
+  const listenerCgroup = readCgroup(listenerPid);
+  if (!serviceCgroup || serviceCgroup === '/' || !listenerCgroup) return false;
+  return listenerCgroup === serviceCgroup || listenerCgroup.startsWith(`${serviceCgroup}/`);
+}
+
 async function probeGatewayListenerOwnership(pid: number): Promise<GatewayListenerReadiness> {
   const port = gatewayPort();
   try {
@@ -568,19 +581,22 @@ async function probeGatewayListenerOwnership(pid: number): Promise<GatewayListen
       ),
     ];
     const ownerVisible = sockets.some((socket) => socket.ownerVisible);
-    const ownedByPid = sockets.some(
-      (socket) => socket.ownerVisible && (socket.pids.includes(pid) || socket.pid === pid),
+    const ownedByPid = sockets.some((socket) =>
+      socket.ownerVisible &&
+      (socket.pids.length > 0 ? socket.pids : socket.pid == null ? [] : [socket.pid]).some((listenerPid) =>
+        gatewayListenerBelongsToService(pid, listenerPid),
+      ),
     );
 
     let detail: string;
     if (ownedByPid) {
-      detail = `listener on :${port} is owned by new MainPID ${pid}`;
+      detail = `listener on :${port} belongs to new MainPID ${pid}'s service cgroup`;
     } else if (sockets.length === 0) {
       detail = `no listener was observed on :${port}`;
     } else if (!ownerVisible) {
       detail = `:${port} is listening, but its owning PID is not visible to this process`;
     } else {
-      detail = `:${port} is owned by PID(s) ${observedPids.join(', ') || 'unknown'}, not new MainPID ${pid}`;
+      detail = `:${port} is owned by PID(s) ${observedPids.join(', ') || 'unknown'}, outside new MainPID ${pid}'s service cgroup`;
     }
 
     return {

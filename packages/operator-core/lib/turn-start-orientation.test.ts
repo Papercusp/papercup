@@ -690,6 +690,19 @@ describe('turn-start-orientation — what it says', () => {
     expect(out).toContain('holding: nothing');
   });
 
+  it('does not report holding nothing when the held-item read fails', async () => {
+    const state = await resolveOrientationState('su-1', 'ws-1', {
+      ...quietDeps,
+      held: async () => { throw new Error('held-item read failed'); },
+    });
+    const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH });
+    expect(out).toContain('held work-items: unavailable');
+    expect(out).not.toContain('holding: nothing');
+    expect(fingerprintOrientation(state, EPOCH).held).toBe('!unavailable');
+    expect(fingerprintOrientation({ ...state, held: withWork.held, heldReadFailed: false }, EPOCH).held)
+      .toBe(fingerprintOrientation(withWork, EPOCH).held);
+  });
+
   it('folds held checkpoints, staleness, announced gates, and actionable inbox headlines', () => {
     const state: OrientationState = {
       ...withWork,

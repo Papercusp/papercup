@@ -54,6 +54,10 @@ vi.mock('../../listening-sockets', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../listening-sockets')>();
   return { ...actual, listListeningSockets: vi.fn() };
 });
+vi.mock('../../task-manager/cgroup-read', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../task-manager/cgroup-read')>();
+  return { ...actual, readProcessCgroupPath: vi.fn(() => null) };
+});
 // EI-18661647550414959: the pre-kill "can this tree actually boot?" check. Mocked so
 // the suite never shells out to systemctl; its own logic is covered in
 // restart-preflight.test.ts. The default (set in beforeEach) is a clean tree.
@@ -97,6 +101,7 @@ import { spawn } from 'node:child_process';
 import { probeServiceStart, probeSystemdDaemonReloadNeed } from './systemd-service-probe';
 import { probeHttpReachable } from '../../escalating-http-probe';
 import { listListeningSockets } from '../../listening-sockets';
+import { readProcessCgroupPath } from '../../task-manager/cgroup-read';
 import { preflightRestartTarget } from './restart-preflight';
 import { resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { getOrgPg } from '@papercusp/db-org';
@@ -225,6 +230,7 @@ const {
   SYSTEMD_DAEMON_RELOAD_TIMEOUT_MS,
   SYSTEMD_USER_DAEMON_RELOAD,
   waitForStagingRestartReadiness,
+  gatewayListenerBelongsToService,
 } = restartModule;
 
 type Out = { content: { text: string }[] };
@@ -1791,6 +1797,40 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
 });
 
 describe('dev:restart gateway readiness (EI-21651903020639415)', () => {
+  it('accepts a listener in the new MainPID service cgroup and rejects an unrelated listener', () => {
+    const cgroups = new Map([
+      [5252, '/user.slice/gateway.service'],
+      [5353, '/user.slice/gateway.service'],
+      [5454, '/user.slice/gateway.service/worker.scope'],
+      [5555, '/user.slice/other.service'],
+    ]);
+    const read = (pid: number) => cgroups.get(pid) ?? null;
+    expect(gatewayListenerBelongsToService(5252, 5353, read)).toBe(true);
+    expect(gatewayListenerBelongsToService(5252, 5454, read)).toBe(true);
+    expect(gatewayListenerBelongsToService(5252, 5555, read)).toBe(false);
+    expect(gatewayListenerBelongsToService(5252, 5656, read)).toBe(false);
+    expect(gatewayListenerBelongsToService(5252, 5353, () => '/')).toBe(false);
+  });
+
+  it('reports the gateway ready when a child in the new service cgroup owns the listener', async () => {
+    mockResolvedTyped(acquireM, {
+      ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL-GATEWAY-CHILD',
+      expires_ts: new Date(), shared_holders: [], fence_seq: 33,
+    } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
+    mockResolvedOnceTyped(probeM, { ok: true, mainPid: 5252, secondsSinceStart: 1 } as never);
+    listeningSocketsM.mockResolvedValue(gatewayListenerResult(5353));
+    vi.mocked(readProcessCgroupPath).mockImplementation((pid) =>
+      pid === 5252 || pid === 5353 ? '/user.slice/gateway.service' : null,
+    );
+    mockResolvedTyped(gatewayHealthM, { reachable: true, detail: 'HTTP 200' });
+    guardM.mockImplementation(runGuard(fenceOk(33)) as never);
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'gateway', reason: 'verify child listener readiness' }));
+
+    expect(b).toMatchObject({ ok: true, restarted: true, gatewayReadiness: { ready: true, observedPid: 5252 } });
+    expect(gatewayHealthM).toHaveBeenCalledTimes(1);
+  });
   beforeEach(() => {
     process.env.PAPERCUSP_ALLOW_DEV_RESTART = '1';
   });

@@ -138,6 +138,8 @@ describe('GET /api/oauth/start', () => {
       ok: true,
       authorizationUrl:
         'https://accounts.google.com/o/oauth2/v2/auth?state=test-state-token',
+      shareUrl: 'http://x/api/oauth/start?provider=google&plugin=p&harness=h&field=tok',
+      instruction: 'Open authorizationUrl immediately. Share shareUrl with another person; it creates fresh OAuth state when opened.',
     });
     expect(stateMocks.signState).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'google' }),
@@ -156,6 +158,21 @@ describe('GET /api/oauth/start', () => {
         returnMode: 'external-browser',
       },
     );
+  });
+
+  it('mints fresh state when a shared start URL is visited later', async () => {
+    registerProvider(stubProvider);
+    stateMocks.signState.mockResolvedValueOnce('initial-state').mockResolvedValueOnce('fresh-state');
+
+    const initial = await GET(new Request(
+      'http://x/api/oauth/start?provider=github&plugin=p&harness=h&field=tok&response=json',
+    ));
+    const { shareUrl } = await initial.json() as { shareUrl: string };
+    const laterVisit = await GET(new Request(shareUrl));
+
+    expect(laterVisit.status).toBe(302);
+    expect(laterVisit.headers.get('location')).toContain('state=fresh-state');
+    expect(stateMocks.signState).toHaveBeenCalledTimes(2);
   });
 
   it('rejects an unknown response mode before creating OAuth state', async () => {

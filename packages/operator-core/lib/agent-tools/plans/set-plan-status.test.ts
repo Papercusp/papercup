@@ -154,6 +154,8 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
     expect(launch).toHaveBeenCalledWith('plan-a', {
       workspaceId: 'ws-test',
       harnessSlug: 'sidestage',
+      // No attributable caller in this ctx → nothing to carry (EI-24402913315950329).
+      acceptanceShipperOwnerId: null,
       uiClientId: null,
       isSuperuser: false,
       isPowerUser: false,
@@ -167,6 +169,34 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
       userId: null,
     });
     expect(result?.state).toBe('launched');
+  });
+
+  /**
+   * EI-24402913315950329. The system-actor rewrite is for launch LINEAGE; it must
+   * not also erase WHO shipped. The real caller rides through as
+   * `acceptanceShipperOwnerId` so the recruiter's D-009 shipper exclusion keeps
+   * the implementer-shipper (and, by party collapse, its forks) off the menu.
+   */
+  it('carries the real ship-gate caller through the system-actor rewrite as an exclusion input', async () => {
+    const launch = vi.fn(async () => ({
+      state: 'launched' as const,
+      idempotencyKey: 'acceptance-grader:key',
+      label: 'acceptance-grader:rubric:key',
+    }));
+    await launchAcceptanceGraderForGate(
+      'plan-a',
+      { satisfied: false, code: 'acceptance_ungraded' },
+      { workspaceId: 'ws-test', isSuperuser: true, uiClientId: 'su-implementer-shipper' } as never,
+      'papercusp',
+      launch as never,
+    );
+    expect(launch).toHaveBeenCalledWith(
+      'plan-a',
+      expect.objectContaining({
+        ownerId: ACCEPTANCE_GRADING_SWEEP_ACTOR,
+        acceptanceShipperOwnerId: 'su-implementer-shipper',
+      }),
+    );
   });
 
   it('does not recruit a judge for unrelated acceptance failures', async () => {

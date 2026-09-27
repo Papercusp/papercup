@@ -121,6 +121,21 @@ describe('Requirements BAR parser', () => {
       ]),
     });
   });
+
+  it('distinguishes an absent plan item from a map row without a Requirements record', () => {
+    const keys = new Set(['R-1']);
+    const result = parseBarMappings(plan({
+      requirements: '**R-1 — First outcome.** The writer persists one canonical bar.',
+      map: '| R-1 | P-999 | tree |\n| R-8 | P-001 | tree |',
+    }), keys);
+    expect(result).toMatchObject({
+      ok: false,
+      problems: expect.arrayContaining([
+        expect.objectContaining({ code: 'bar_mapping_unknown', barKey: 'R-1', planItemId: 'P-999' }),
+        expect.objectContaining({ code: 'bar_mapping_requirement_missing', barKey: 'R-8', detail: expect.stringContaining('no Requirements record') }),
+      ]),
+    });
+  });
 });
 
 describe('acceptance BAR seed builder', () => {

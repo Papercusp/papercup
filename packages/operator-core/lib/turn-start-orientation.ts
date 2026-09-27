@@ -608,6 +608,8 @@ export interface OrientationCoupledPeer {
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
+  /** The held-item read failed; an empty array then cannot prove there is no claim. */
+  heldReadFailed?: boolean;
   /** Unresolved explicit directives and hook-captured pending owner turns. */
   ownerDirectives?: OrientationOwnerDirective[];
   /** `undefined` means the read failed and must preserve the prior cursor token. */
@@ -1121,6 +1123,7 @@ function nextDirectiveMark(
 export function isEmptyOrientation(state: OrientationState): boolean {
   return (
     state.held.length === 0 &&
+    !state.heldReadFailed &&
     (!state.ownerDirectives || state.ownerDirectives.length === 0) &&
     (!state.historyUpdates || state.historyUpdates.length === 0) &&
     (!state.effortUpdates || state.effortUpdates.length === 0) &&
@@ -1283,7 +1286,7 @@ export function fingerprintOrientation(
   committed: CursorState | null = null,
 ): CursorState {
   return {
-    held: state.held
+    held: state.heldReadFailed ? '!unavailable' : state.held
       .map(
         (h) =>
           `${h.id}:${h.status ?? ''}:${h.checkpoint ? 1 : 0}:` +
@@ -2739,7 +2742,8 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
       },
       {
         order: 150,
-        render: (held) => {
+        render: (held, state) => {
+          if (state.heldReadFailed) return ['- ⚠ held work-items: unavailable — check work_items:get before editing.'];
           if (held.length === 0) return ['- holding: nothing — claim before your first edit.'];
           const shown = held.slice(0, HELD_DISPLAY_CAP);
           const rest = held.length - shown.length;
@@ -3464,7 +3468,7 @@ export async function resolveOrientationState(
     toolSurface,
     carryBlindWindow,
   ] = await Promise.all([
-    d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
+    d.held(ownerId, workspaceId).catch(() => null),
     ownerDirectivesReader(workspaceId, ownerId).catch(() => [] as OrientationOwnerDirective[]),
     // Unknown must remain distinct from measured-empty. Otherwise a transient
     // read failure advances the shared cursor past history the agent never saw.
@@ -3529,7 +3533,8 @@ export async function resolveOrientationState(
     d.carryBlindWindow(ownerId, workspaceId).catch(() => null as CarryBlindWindow | null),
   ]);
   return {
-    held,
+    held: held ?? [],
+    ...(held === null ? { heldReadFailed: true } : {}),
     ...(ownerDirectives.length > 0 ? { ownerDirectives } : {}),
     historyUpdates,
     effortUpdates,
