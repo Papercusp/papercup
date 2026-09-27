@@ -13,6 +13,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
+import { deriveAgentRunEvidenceRecordSafe, type EvidenceRecordSql } from './agent-run-evidence-record';
 import {
   classifyRubricEvidenceCurrentness,
   getRubric,
@@ -2953,6 +2954,20 @@ export async function emitScorecard(
     }
 
     const gradedGeneration = await readCurrentGeneration();
+    // WI-10003539 / goal-agent-behavior-feedback-2026-09-06 R-1: a graded AGENT RUN
+    // carries a server-derived evidence record (goal, holder, window, launch
+    // generation, instruction exposure). Derived from durable records only, never
+    // from grader input, and written AFTER `subject` so nothing can override it.
+    const evidenceRecord =
+      args.subject?.kind === 'agent-run'
+        ? await deriveAgentRunEvidenceRecordSafe({
+            getSql: () => getOrgPg().sql as unknown as EvidenceRecordSql,
+            workspaceId: input.workspaceId || activeWorkspaceId(),
+            holder: args.subject.ref,
+            windowStart: args.subject.windowStart ?? null,
+            windowEnd: args.subject.windowEnd ?? null,
+          })
+        : null;
     // EI-23074025929199961: this stamp measures the SEPARATE Scout bg-host.
     // Its boot HEAD differing from the querying build says nothing about this
     // evaluator's freshness. Preserve and surface that telemetry, but never use
@@ -2991,6 +3006,7 @@ export async function emitScorecard(
           ...(provisional ? { provisional } : {}),
           ...(gradingAudit ? { gradingAudit } : {}),
           ...(args.subject ? { subject: args.subject } : {}),
+          ...(evidenceRecord ? { evidenceRecord } : {}),
           ...(subjectRubricIdentity ? { subjectRubricIdentity } : {}),
           ...(rollup ? { rollup } : {}),
           ...(vetting ? { vetting } : {}),
@@ -3112,6 +3128,7 @@ export async function emitScorecard(
             deployedSha: gradedGeneration.deployedSha,
           }
         : {}),
+      ...(evidenceRecord ? { evidenceRecord } : {}),
       // P-013: surfaced loudly — this card does not enter the trend until audited.
       // A bare boolean was NOT loud enough: it says THAT the card is pending but not what
       // settles it, so callers rediscovered the mechanism a gate-refusal later

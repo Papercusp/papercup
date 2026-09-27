@@ -59,6 +59,23 @@ vi.mock('../../rubrics', async (importOriginal) => {
 });
 vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: readRunningGenerationM }));
 vi.mock('../../harness/improvements/capture-core', () => ({ captureImprovement: vi.fn() }));
+// WI-10003539: agent-run cards derive an evidence record from durable PG sources. This UNIT
+// suite must never reach for the pool; the derivation is covered by its own unit and
+// integration suites, so here it is a fixed seam double.
+const AGENT_RUN_EVIDENCE_RECORD = {
+  schemaVersion: 1,
+  derivedBy: 'server',
+  holder: 'holder',
+  window: { start: '2026-09-05T00:00:00.000Z', end: '2026-09-06T00:00:00.000Z' },
+  goalId: null,
+  goalSource: 'not-found',
+  sourceGeneration: null,
+  instructionExposure: { status: 'not-recorded', reason: 'unit-test seam double' },
+} as const;
+const deriveAgentRunEvidenceRecordSafeM = vi.fn(async () => AGENT_RUN_EVIDENCE_RECORD);
+vi.mock('./agent-run-evidence-record', () => ({
+  deriveAgentRunEvidenceRecordSafe: (...args: unknown[]) => deriveAgentRunEvidenceRecordSafeM(...(args as [])),
+}));
 const readAndEvaluateAcceptanceBarLifecycleM = vi.fn();
 vi.mock('../../acceptance-bar-lifecycle-evaluator', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../acceptance-bar-lifecycle-evaluator')>()),
@@ -2166,7 +2183,12 @@ describe('Work on everything evidence contract through evaluate and emit', () =>
     expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: {
       subject, ratings, rollup: { verdict: 'pass' },
       instrumentSnapshots: { unsupported: { provenance: 'self-reported', value: { retainedCount: 42 } } },
+      evidenceRecord: AGENT_RUN_EVIDENCE_RECORD,
     } } });
+    // The derivation is asked about exactly the graded holder and window.
+    expect(deriveAgentRunEvidenceRecordSafeM).toHaveBeenCalledWith(expect.objectContaining({
+      holder: subject.ref, windowStart: subject.windowStart, windowEnd: subject.windowEnd,
+    }));
   });
 
   it('rejects a missing absence control at both handlers', async () => {
