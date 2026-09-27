@@ -773,9 +773,9 @@ export default defineTool({
   guidance: {
     when: 'You edited TypeScript and want to know whether a project typechecks, and exactly which errors are where. Also the way to check a workspace OUTSIDE operator-core, which `npm run lint:tsc` does not cover.',
     notWhen:
-      'You want the baseline VERDICT on whether your change added errors — that is `npm run lint:tsc -- --mine` (per-file ratchet, peer-drift aware), which this tool does not replace. Not for building/emitting, eslint, or cargo.',
+      'You want the baseline VERDICT on whether your change added errors — that is `npm run lint:tsc -- --files=…` (per-file ratchet, peer-drift aware), which this tool does not replace. Not for building/emitting, eslint, or cargo.',
     chaining:
-      'build:typecheck { project, files } → fix → re-run scoped to the same `files`; then `npm run lint:tsc -- --mine` for the gate verdict.',
+      'build:typecheck { project, files } → fix → re-run scoped to the same `files`; then `npm run lint:tsc -- --files=<same files>` for the gate verdict.',
   },
   capability: 'operator:write',
   requirePrincipal: false,
