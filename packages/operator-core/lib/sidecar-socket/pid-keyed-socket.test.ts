@@ -295,9 +295,14 @@ describe('listenUnixSocketExclusive — a sidecar must not take a live sidecar\'
   // detached the first from the path and both kept running (~2 GB each on :3070).
   const tmpSock = (tag: string) => path.join(os.tmpdir(), `pid-keyed-listen-${tag}-${process.pid}-${Date.now()}.sock`);
 
-  /** A server that answers every connection with its own name. */
+  /** A server that answers every connection with its own name. A probe hangs up as
+   *  soon as it connects, so the reply can hit ECONNRESET; the real sidecar servers
+   *  handle socket errors the same way. */
   function named(name: string): net.Server {
-    return net.createServer((c) => c.end(name));
+    return net.createServer((c) => {
+      c.on('error', () => {});
+      c.end(name);
+    });
   }
 
   async function whoAnswers(socketPath: string): Promise<string> {

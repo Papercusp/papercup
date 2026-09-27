@@ -3,6 +3,8 @@ import { once } from 'node:events';
 import { execFile, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +14,7 @@ import { SpawnerIpcClient } from './spawner-ipc-client';
 import { newTaskId, scopeUnitForTask } from '../task-manager/types';
 import { createTextCollector } from '../child-output';
 import type { SidecarContainment } from './sidecar-exec-lifetime';
+import { SIDECAR_EXIT_SOCKET_IN_USE } from '../sidecar-socket/pid-keyed-socket';
 
 // The subject here is real kernel containment, not the task ledger/flag store.
 vi.mock('../task-manager/enabled', () => ({ isTaskManagerEnabled: async () => true }));
@@ -140,3 +143,35 @@ it.runIf(process.platform === 'linux')(
   }, 60_000,
 );
 }
+
+// host-memory-reduction-2026-09-27 P-005: a sidecar spawned onto a path a LIVE sidecar
+// already serves used to unlink it and bind its own, leaving two ~2 GB sidecars running.
+// The real server must now exit SIDECAR_EXIT_SOCKET_IN_USE and leave the path alone,
+// including its exit hook, which would otherwise delete the live sidecar's path.
+it.runIf(process.platform === 'linux')('a real server refuses a live path: exits in-use, path and listener intact', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'sidecar-in-use-'));
+  dirs.push(dir);
+  const socketPath = join(dir, 'sidecar.sock');
+  const live = createServer((c) => {
+    c.on('error', () => {});
+    c.end('live');
+  }).listen(socketPath);
+  await once(live, 'listening');
+  try {
+    const argv = ['--import', 'tsx', fileURLToPath(new URL('./fixtures/sidecar-lifetime-server.ts', import.meta.url))];
+    const outcome = await exec(process.execPath, argv, {
+      env: { ...process.env, PAPERCUSP_SPAWNER_IPC_SOCKET: socketPath }, timeout: 30_000,
+    }).then(() => ({ code: 0, stderr: '' }), (e: { code?: number; stderr?: string }) => ({ code: e.code, stderr: e.stderr ?? '' }));
+    expect(outcome.code, outcome.stderr).toBe(SIDECAR_EXIT_SOCKET_IN_USE);
+    expect(outcome.stderr).toContain('EADDRINUSE');
+    expect(existsSync(socketPath)).toBe(true);
+    const c = createConnection(socketPath);
+    c.setEncoding('utf8');
+    let reply = '';
+    c.on('data', (d) => (reply += d));
+    await once(c, 'end');
+    expect(reply).toBe('live');
+  } finally {
+    live.close();
+  }
+}, 60_000);
