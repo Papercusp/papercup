@@ -28,8 +28,9 @@
  */
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,8 +39,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 const sep = process.argv.indexOf('--');
 const cmd = sep >= 0 ? process.argv.slice(sep + 1) : [];
-if (cmd.length === 0) {
-  console.error('usage: node scripts/with-test-pg.mjs -- <command> [args...]');
+const options = sep >= 0 ? process.argv.slice(2, sep) : process.argv.slice(2);
+const isolatedRuntime = options.length === 1 && options[0] === '--isolated-runtime';
+if (cmd.length === 0 || (options.length > 0 && !isolatedRuntime)) {
+  console.error('usage: node scripts/with-test-pg.mjs [--isolated-runtime] -- <command> [args...]');
   process.exit(2);
 }
 
@@ -72,6 +75,8 @@ const { startEmbeddedPostgresServer } = await import(
 );
 
 const dataDir = await mkdtemp(join(tmpdir(), 'papercusp-test-pg-'));
+const runtimeRoot = isolatedRuntime ? await mkdtemp(join(tmpdir(), 'papercusp-test-runtime-')) : null;
+const runtimeId = isolatedRuntime ? `test-runtime-${randomUUID().slice(0, 12)}` : null;
 const port = await freePort();
 const sqlDir = resolveSqlDir();
 
@@ -86,6 +91,7 @@ async function cleanup() {
     /* best effort — we still want the datadir gone */
   }
   await rm(dataDir, { recursive: true, force: true }).catch(() => {});
+  if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true }).catch(() => {});
 }
 
 console.log(`[with-test-pg] booting throwaway PG on :${port} (datadir ${dataDir})`);
@@ -100,11 +106,76 @@ try {
 }
 console.log(`[with-test-pg] ready — ${pg.urls.admin.replace(/:[^:@]*@/, ':***@')}`);
 
+let runtimeEnv = {};
+if (runtimeRoot && runtimeId) {
+  const home = join(runtimeRoot, 'home');
+  const papercuspHome = join(home, '.papercusp');
+  const workspacesRoot = join(runtimeRoot, 'workspaces');
+  await Promise.all([
+    mkdir(papercuspHome, { recursive: true }),
+    mkdir(join(workspacesRoot, runtimeId), { recursive: true }),
+  ]);
+  await writeFile(join(workspacesRoot, 'registry.json'), JSON.stringify({
+    current: runtimeId,
+    workspaces: [{ id: runtimeId, name: 'Disposable background test', createdAt: Date.now() }],
+  }), { mode: 0o600 });
+  const httpPort = await freePort();
+  const ptyPort = await freePort();
+  if (httpPort === ptyPort || httpPort === port || ptyPort === port) {
+    console.error('[with-test-pg] isolated runtime port collision — refusing to launch');
+    await cleanup();
+    process.exit(1);
+  }
+  runtimeEnv = {
+    HOME: home,
+    PAPERCUSP_HOME: papercuspHome,
+    PAPERCUSP_WORKSPACES_ROOT: workspacesRoot,
+    PAPERCUSP_WORKSPACE: runtimeId,
+    PAPERCUSP_WORKSPACE_ID: runtimeId,
+    HARNESS_ADMIN_DATABASE_URL: pg.urls.admin,
+    HARNESS_DATABASE_URL: pg.urls.app,
+    PAPERCUSP_HONO_PORT: String(httpPort),
+    OPERATOR_DEV_PORT: String(httpPort),
+    OPERATOR_DEV_PTY_PORT: String(ptyPort),
+    PAPERCUSP_BIND_HOST: '127.0.0.1',
+    PAPERCUSP_BACKGROUND_WORKERS: '1',
+    PAPERCUSP_DBOS_ENABLE: '1',
+    PAPERCUSP_DBOS_ORCHESTRATOR: '1',
+    PAPERCUSP_DBOS_ROUTINES: '1',
+    PAPERCUSP_DBOS_TIMERS: '1',
+    PAPERCUSP_DBOS_AUTOLOOP: '0',
+    DBOS__VMID: runtimeId,
+    DBOS__APPVERSION: runtimeId,
+    PAPERCUSP_CLUSTER: '0',
+    PAPERCUSP_CLUSTER_WORKERS: '0',
+    PAPERCUSP_SPAWNER_SIDECAR: '0',
+    PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR: '0',
+    PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR: '0',
+    PAPERCUSP_POT_GIT_SPAWN_SIDECAR: '0',
+    PAPERCUSP_HARNESS_DOCS_SPAWN_SIDECAR: '0',
+    PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR: '0',
+    XDG_DATA_HOME: join(runtimeRoot, 'xdg-data'),
+    XDG_CACHE_HOME: join(runtimeRoot, 'xdg-cache'),
+    XDG_CONFIG_HOME: join(runtimeRoot, 'xdg-config'),
+  };
+}
+
+const childEnv = { ...process.env };
+if (isolatedRuntime) {
+  // An isolated DB is not enough: inherited keychain/agent/cloud credentials
+  // would still let a background worker act as the live device or owner.
+  for (const key of Object.keys(childEnv)) {
+    if (/^(AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GH_|DATABASE_URL$|PGHOST$|PGPORT$|PGUSER$|PGPASSWORD$|PGDATABASE$|PAPERCUSP_SID$|PAPERCUSP_.*(?:TOKEN|SECRET|CREDENTIAL))/i.test(key)) {
+      delete childEnv[key];
+    }
+  }
+  delete childEnv.PAPERCUSP_SPAWNER_IPC_SOCKET;
+}
 const child = spawn(cmd[0], cmd.slice(1), {
   cwd: ROOT,
   stdio: 'inherit',
   env: {
-    ...process.env,
+    ...childEnv,
     // PAPERCUSP_PG_PORT is the repo's OWN isolation lever for "this process owns a
     // dedicated PG" (see connection.ts's two native fallbacks and its pgbouncer
     // opt-out, and harness-invoke-once.ts: "getHarnessAdminUrl() honors
@@ -120,16 +191,31 @@ const child = spawn(cmd[0], cmd.slice(1), {
     // Belt-and-braces: the unit layer pins this too, but a non-vitest child (a script,
     // a CLI) must also never resolve the *product's* live embedded PG.
     PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+    ...runtimeEnv,
   },
+  detached: isolatedRuntime,
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
-    child.kill(sig);
+    if (isolatedRuntime && child.pid) {
+      try { process.kill(-child.pid, sig); } catch { /* already exited */ }
+    } else child.kill(sig);
   });
 }
 
+child.on('error', async (error) => {
+  console.error(`[with-test-pg] child failed to start: ${error.message}`);
+  await cleanup();
+  process.exitCode = 1;
+});
+
 child.on('exit', async (code, signal) => {
+  if (isolatedRuntime && child.pid) {
+    // A short-lived assertion can spawn a long-lived test host. Reap its owned
+    // process group before deleting the private DB/identity it was using.
+    try { process.kill(-child.pid, 'SIGTERM'); } catch { /* already exited */ }
+  }
   await cleanup();
   if (signal) process.kill(process.pid, signal);
   else process.exit(code ?? 1);
