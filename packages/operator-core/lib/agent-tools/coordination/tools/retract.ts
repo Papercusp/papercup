@@ -71,34 +71,31 @@ function clampSummary(s: string | undefined, max = 140): string {
  * Find an existing retraction notice targeting `msgId` (the idempotency
  * check). PG fast path scans the messages surface for the RETRACTS_FIELD
  * stamp (rare call — coord:retract is human-scale — so no dedicated index);
- * falls back to the seam read for test/fs backends. Returns the notice's
- * `from`+`ts`, or null.
+ * the seam read is for test/fs backends only — on PG a query error PROPAGATES
+ * (host-memory-reduction-2026-09-27 D-011). Returns the notice's `from`+`ts`,
+ * or null.
  */
 async function findExistingRetraction(
   msgId: string,
 ): Promise<{ from: string; ts: string } | null> {
   if (coordHasPgFastPath()) {
-    try {
-      const sql = coordSql();
-      const rows = await sql<{ body: unknown }[]>`
-        SELECT body
-          FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${coordWorkspaceId()}
-           AND surface = 'messages'
-           AND body->>${RETRACTS_FIELD} = ${msgId}
-         LIMIT 1
-      `;
-      if (rows.length) {
-        const env = (typeof rows[0].body === 'string' ? JSON.parse(rows[0].body) : rows[0].body) as {
-          from?: string;
-          ts?: string;
-        };
-        return { from: env.from ?? RETRACT_NOTICE_OWNER, ts: env.ts ?? '' };
-      }
-      return null;
-    } catch {
-      // fall through to the seam read
+    const sql = coordSql();
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         AND body->>${RETRACTS_FIELD} = ${msgId}
+       LIMIT 1
+    `;
+    if (rows.length) {
+      const env = (typeof rows[0].body === 'string' ? JSON.parse(rows[0].body) : rows[0].body) as {
+        from?: string;
+        ts?: string;
+      };
+      return { from: env.from ?? RETRACT_NOTICE_OWNER, ts: env.ts ?? '' };
     }
+    return null;
   }
   const lines = await coordLog.readLines('messages');
   const hit = lines.find((l) => readRetractionTarget(l) === msgId);

@@ -34,8 +34,10 @@ export type CoordLineSurface = 'messages' | 'plan-events';
  *
  * PG fast path rides the `(workspace_id, msg_id)` index built for exactly this
  * `WHERE workspace_id = $1 AND surface = $2 AND msg_id = $3` shape (migration
- * 543). The `readLines` fallback covers the test/dev backends, where datasets
- * are small enough that a scan is both correct and cheap.
+ * 543). The `readLines` scan covers ONLY the non-PG test/dev backends, where
+ * datasets are small enough that a scan is both correct and cheap. On PG a query
+ * error PROPAGATES: there the scan would load and cache the whole surface
+ * (host-memory-reduction-2026-09-27 D-011).
  *
  * `harness_slug` is normalised from the COLUMN, not the stored blob: the column
  * is the federation source of truth, so a NULL there must erase a stale
@@ -47,27 +49,23 @@ export async function getLineEnvelopeById(
 ): Promise<CoordEnvelope | null> {
   if (!msgId) return null;
   if (coordHasPgFastPath()) {
-    try {
-      const sql = coordSql();
-      const rows = await sql<{ body: unknown; harness_slug: string | null }[]>`
-        SELECT body, harness_slug
-          FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${coordWorkspaceId()}
-           AND surface = ${surface}
-           AND msg_id = ${msgId}
-         LIMIT 1
-      `;
-      if (rows.length) {
-        const row = rows[0];
-        const envelope = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope;
-        if (row.harness_slug == null) delete envelope.harness_slug;
-        else envelope.harness_slug = row.harness_slug;
-        return envelope;
-      }
-      return null;
-    } catch {
-      // Fall through to the authoritative full-surface read below.
+    const sql = coordSql();
+    const rows = await sql<{ body: unknown; harness_slug: string | null }[]>`
+      SELECT body, harness_slug
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = ${surface}
+         AND msg_id = ${msgId}
+       LIMIT 1
+    `;
+    if (rows.length) {
+      const row = rows[0];
+      const envelope = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope;
+      if (row.harness_slug == null) delete envelope.harness_slug;
+      else envelope.harness_slug = row.harness_slug;
+      return envelope;
     }
+    return null;
   }
   const lines = await coordLog.readLines(surface);
   return lines.find((l) => l.msg_id === msgId) ?? null;

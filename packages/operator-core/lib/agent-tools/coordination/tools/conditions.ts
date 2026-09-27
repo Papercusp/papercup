@@ -214,8 +214,9 @@ export function computeConditionStates(
  */
 export async function readConditionEnvelopes(): Promise<Record<string, unknown>[]> {
   // PG pushdown: condition rows are a tiny sliver of the messages surface —
-  // filter server-side on the jsonb keys (mirrors readInbox's fast path,
-  // including the fall-through to the seam on any error / non-PG backend).
+  // filter server-side on the jsonb keys (mirrors readInbox's fast path: the
+  // seam read is for a non-PG backend only; on PG a query error PROPAGATES,
+  // never the whole-surface read — host-memory-reduction-2026-09-27 D-011).
   //
   // EI-9447 (WI-3937/WI-3869 furnace class): this was an UNBOUNDED scan of the
   // WHOLE `messages` surface — no ts/id lower bound, no LIMIT — averaging
@@ -233,29 +234,25 @@ export async function readConditionEnvelopes(): Promise<Record<string, unknown>[
   // outside the retention window is, by definition, not "wrong right now" —
   // GC would have already reaped it.
   if (coordHasPgFastPath()) {
-    try {
-      const sql = coordSql();
-      const sinceBound = new Date(Date.now() - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
-      const rows = await sql<{ body: unknown }[]>`
-        SELECT body
-          FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${coordWorkspaceId()}
-           AND surface = 'messages'
-           AND ts >= ${sinceBound}
-           AND (body ? 'condition_key' OR body ? 'resolves_condition')
-         ORDER BY id ASC
-         LIMIT ${CONDITIONS_FAST_PATH_ROW_CAP}
-      `;
-      return rows.map(
-        (r) =>
-          (typeof r.body === "string" ? JSON.parse(r.body) : r.body) as Record<
-            string,
-            unknown
-          >,
-      );
-    } catch {
-      // fall through to the seam read
-    }
+    const sql = coordSql();
+    const sinceBound = new Date(Date.now() - MESSAGE_GC_RETENTION_DAYS * 86_400_000).toISOString();
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         AND ts >= ${sinceBound}
+         AND (body ? 'condition_key' OR body ? 'resolves_condition')
+       ORDER BY id ASC
+       LIMIT ${CONDITIONS_FAST_PATH_ROW_CAP}
+    `;
+    return rows.map(
+      (r) =>
+        (typeof r.body === "string" ? JSON.parse(r.body) : r.body) as Record<
+          string,
+          unknown
+        >,
+    );
   }
   const lines = (await coordLog.readLines("messages")) as CoordEnvelope[];
   return (lines as unknown as Record<string, unknown>[]).filter(
