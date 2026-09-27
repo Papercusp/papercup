@@ -185,6 +185,14 @@ export function listProcesses(procRoot?: string, opts?: {
     readIdentity?: boolean;
     readGateIdentity?: boolean;
 }): ProcRow[];
+/** Refuse a host-liveness answer when /proc belongs to the capability:bash sandbox. */
+export function hostProcessVisibility(procRoot?: string): {
+    visible: boolean;
+    reason: string;
+} | {
+    visible: boolean;
+    reason: null;
+};
 /**
  * pid + every ancestor up to (and including) pid 1, by walking `ppid` via
  * `byPid` (a Map<pid, ppid|null>). Cycle/depth-guarded so a corrupt or

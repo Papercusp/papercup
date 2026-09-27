@@ -27,6 +27,7 @@ import {
   matchesAdjacentArgvSequence,
   isStructuredPayloadArg,
   listProcesses,
+  hostProcessVisibility,
   matchExternalProcesses,
   matchExternalProcessesDetailed,
   parseArgv,
@@ -81,6 +82,28 @@ afterEach(() => {
     rmSync(fixtureRoot, { recursive: true, force: true });
     fixtureRoot = null;
   }
+});
+
+describe('hostProcessVisibility', () => {
+  it('refuses a sandbox PID 1 instead of treating unseen host processes as absent', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-visibility-fixture-'));
+    fixtureProc(fixtureRoot, 1, 0, [
+      '/usr/local/lib/node_modules/@anthropic-ai/sandbox-runtime/vendor/seccomp/x64/apply-seccomp',
+      '/usr/bin/bash', '-c', 'node scripts/proc-guard.mjs check hono-host',
+    ]);
+    fixtureProc(fixtureRoot, 2, 1, ['node', 'scripts/proc-guard.mjs', 'check', 'hono-host']);
+    expect(hostProcessVisibility(fixtureRoot)).toEqual({
+      visible: false,
+      reason: 'sandbox-pid-namespace',
+    });
+  });
+
+  it('accepts a small host-visible fixture and refuses an unreadable PID 1', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-visibility-fixture-'));
+    expect(hostProcessVisibility(fixtureRoot)).toEqual({ visible: false, reason: 'pid-1-unreadable' });
+    fixtureProc(fixtureRoot, 1, 0, ['/usr/lib/systemd/systemd']);
+    expect(hostProcessVisibility(fixtureRoot)).toEqual({ visible: true, reason: null });
+  });
 });
 
 describe('walkProcessTree — PID-bounded diagnostics', () => {

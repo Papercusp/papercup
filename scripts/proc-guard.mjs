@@ -90,6 +90,7 @@ import { readFileSync, readdirSync, readlinkSync } from "node:fs";
 import path from "node:path";
 
 const DEFAULT_PROC_ROOT = "/proc";
+const SANDBOX_PID_ONE_RE = /(?:@anthropic-ai\/sandbox-runtime|\/sandbox-runtime\/).*\/apply-seccomp(?:\s|$)/;
 const GREEN_CHECKPOINT_PATTERN = /green(?:\\?[-_])checkpoint/i;
 const GREEN_CHECKPOINT_CGROUP =
   /(?:^|\/)(?:papercup|papercusp)-green-checkpoint(?:[-./]|$)/i;
@@ -601,6 +602,21 @@ export function listProcesses(procRoot = DEFAULT_PROC_ROOT, opts = {}) {
   return out;
 }
 
+/** Refuse a host-liveness answer when /proc belongs to the capability:bash sandbox. */
+export function hostProcessVisibility(procRoot = DEFAULT_PROC_ROOT) {
+  let pidOne;
+  try {
+    pidOne = parseCmdline(readFileSync(path.join(procRoot, "1", "cmdline")));
+  } catch {
+    return { visible: false, reason: "pid-1-unreadable" };
+  }
+  if (!pidOne) return { visible: false, reason: "pid-1-unreadable" };
+  if (SANDBOX_PID_ONE_RE.test(pidOne)) {
+    return { visible: false, reason: "sandbox-pid-namespace" };
+  }
+  return { visible: true, reason: null };
+}
+
 /**
  * pid + every ancestor up to (and including) pid 1, by walking `ppid` via
  * `byPid` (a Map<pid, ppid|null>). Cycle/depth-guarded so a corrupt or
@@ -1058,6 +1074,17 @@ async function main(argv) {
   const maxDepth = maxDepthFlag
     ? Number(maxDepthFlag.slice("--max-depth=".length))
     : 32;
+  if (cmd === "check" || cmd === "tree") {
+    const visibility = hostProcessVisibility();
+    if (!visibility.visible) {
+      console.error(
+        `proc-guard: cannot observe host processes (${visibility.reason}); ` +
+          "use processes:list { live:true } for managed tasks or a host-visible process tool."
+      );
+      process.exit(2);
+      return;
+    }
+  }
   if (cmd === "tree") {
     const rootPid = Number(pattern);
     if (

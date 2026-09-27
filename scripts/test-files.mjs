@@ -2075,6 +2075,46 @@ const SYSTEMD_RUN_PATH = process.platform === 'linux'
 const SETSID_PATH = process.platform === 'linux'
   ? ['/usr/bin/setsid', '/bin/setsid'].find((candidate) => existsSync(candidate)) ?? null
   : null;
+/**
+ * Slack added on top of the watchdog ceiling when deriving a test scope's `RuntimeMaxSec`. The
+ * router's own watchdog is the real timeout; this bound only exists for the case where the router
+ * itself is gone (SIGKILLed by a caller's deadline, OOM-killed), so it must never be the tighter
+ * of the two — a pc-heavy freeze can stall the router's timers while systemd's clock keeps going.
+ */
+const TEST_FILE_SCOPE_RUNTIME_SLACK_MS = 30 * 60_000;
+const TEST_FILE_SCOPE_STOP_TIMEOUT_SEC = 10;
+let testScopeSequence = 0;
+
+/**
+ * A unique, recognisable unit name for one test child's scope. An anonymous `run-uNNN.scope`
+ * cannot be stopped by the router (it never learns the name) nor attributed by a human reading
+ * `systemctl --user list-units`; host-memory-reduction-2026-09-27 P-008 found nine of them still
+ * holding leaked fixture loops 19 days after their routers had died.
+ */
+export function nextTestScopeUnit(pid = process.pid, nowMs = Date.now()) {
+  testScopeSequence += 1;
+  return `papercusp-test-${pid}-${nowMs.toString(36)}-${testScopeSequence}.scope`;
+}
+
+/** `RuntimeMaxSec` for a test scope: the watchdog ceiling plus its kill grace plus slack. */
+export function testScopeRuntimeMaxSec(watchdogMaxMs, killGraceMs = TEST_FILE_KILL_GRACE_MS) {
+  return Math.ceil((watchdogMaxMs + killGraceMs + TEST_FILE_SCOPE_RUNTIME_SLACK_MS) / 1000);
+}
+
+/**
+ * Stop one test scope, killing EVERY process still in its cgroup — including fixtures a test
+ * spawned `detached: true` into their own process group, which the process-group watchdog cannot
+ * reach. Reports how many tasks were still resident when the stop was requested, so a leak is
+ * visible in the run's output instead of in `ps` three weeks later. `--no-block` queues the stop
+ * (SIGTERM, then SIGKILL after TimeoutStopSec) without making the router wait on it.
+ */
+export function stopTestScope(unit, env = process.env, spawnSyncImpl = spawnSync) {
+  const options = { encoding: 'utf8', env, timeout: 5_000 };
+  const shown = spawnSyncImpl('systemctl', ['--user', 'show', '--property=TasksCurrent', '--value', unit], options);
+  const tasks = Number.parseInt(String(shown?.stdout ?? '').trim(), 10);
+  const stopped = spawnSyncImpl('systemctl', ['--user', 'stop', '--no-block', unit], options);
+  return { tasks: Number.isSafeInteger(tasks) ? tasks : null, stopStatus: stopped?.status ?? null };
+}
 
 /**
  * EI-21903376339103215: read the cumulative wall-clock ms pc-heavy has spent SIGSTOPping the
@@ -2147,7 +2187,15 @@ export function userBusReachable(env = process.env) {
  * env (a fixture, a cron job, a container without a user session) therefore falls back to the
  * `setsid --wait` process-group boundary instead of manufacturing a silent red.
  */
-export function resolveTestChildLauncher({ command, args, env, systemdRunPath, setsidPath }) {
+export function resolveTestChildLauncher({
+  command,
+  args,
+  env,
+  systemdRunPath,
+  setsidPath,
+  scopeUnit = null,
+  runtimeMaxSec = testScopeRuntimeMaxSec(MAX_TEST_FILE_RUN_TIMEOUT_MS),
+}) {
   const childEnv = env ?? process.env;
   // `testing:run` already places this router in a bounded managed task scope and
   // stamps both values below into the payload. Starting another user scope here
@@ -2168,13 +2216,25 @@ export function resolveTestChildLauncher({ command, args, env, systemdRunPath, s
       : null;
   const ownsProcessGroup = Boolean(systemd || setsidPath);
   const spawnCommand = systemd ?? setsidPath ?? command;
+  // A sibling scope escapes the caller's cgroup, so the caller's own deadline cannot reach it:
+  // name it (so this router can stop it) and bound it (so systemd stops it if this router dies).
+  const ownedScope = systemd ? scopeUnit ?? nextTestScopeUnit() : null;
   const spawnArgs = systemd
-    ? ['--user', '--scope', '--collect', command, ...args]
+    ? [
+      '--user',
+      '--scope',
+      '--collect',
+      `--unit=${ownedScope}`,
+      `--property=RuntimeMaxSec=${runtimeMaxSec}`,
+      `--property=TimeoutStopSec=${TEST_FILE_SCOPE_STOP_TIMEOUT_SEC}`,
+      command,
+      ...args,
+    ]
     : setsidPath
       ? ['--wait', command, ...args]
       : args;
   const launcher = systemd ? 'systemd-run' : setsidPath ? 'setsid' : 'direct';
-  return { launcher, ownsProcessGroup, spawnCommand, spawnArgs };
+  return { launcher, ownsProcessGroup, spawnCommand, spawnArgs, scopeUnit: ownedScope };
 }
 
 /**
@@ -2208,6 +2268,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     setsidPath = SETSID_PATH,
     spawnImpl = spawn,
     killProcessImpl = defaultKillOwnedProcess,
+    stopScopeImpl = stopTestScope,
     onProgress = (line) => console.error(line),
     onAllFilesComplete = () => null,
     // Tests may replace this narrow governance seam; production callers leave
@@ -2246,12 +2307,13 @@ export function runCapturedTestProcess(command, args, options = {}) {
     // sharing the same pc-heavy admission.
     const freezeMsAtStart = readPcHeavyFrozenTotalMs();
     const sampler = createGovernedProcessDemandSampler(plannedDemand);
-    const { ownsProcessGroup, spawnCommand, spawnArgs } = resolveTestChildLauncher({
+    const { ownsProcessGroup, spawnCommand, spawnArgs, scopeUnit } = resolveTestChildLauncher({
       command,
       args,
       env: governedEnv ?? env,
       systemdRunPath,
       setsidPath,
+      runtimeMaxSec: testScopeRuntimeMaxSec(watchdogMaxMs, killGraceMs),
     });
     const child = spawnImpl(spawnCommand, spawnArgs, {
       cwd,
@@ -2294,6 +2356,27 @@ export function runCapturedTestProcess(command, args, options = {}) {
         return 'gone';
       }
     };
+    // Anything still in the scope once the Vitest main process is gone is a leak by definition — a
+    // fixture spawned `detached: true` into its own process group, which `killOwned` cannot reach,
+    // or a worker that ignored teardown. Stopping the scope kills its whole cgroup, and that is
+    // also what lets `close` fire when such a straggler still holds the captured stdio pipes.
+    let scopeStopped = false;
+    const stopOwnedScope = (reason) => {
+      if (!scopeUnit || scopeStopped) return;
+      scopeStopped = true;
+      let stop = null;
+      try {
+        stop = stopScopeImpl(scopeUnit, governedEnv ?? env ?? process.env);
+      } catch {
+        stop = null;
+      }
+      if (stop?.tasks > 0) {
+        onProgress(
+          `TEST_FILE_LEAKED_PROCESSES scope=${scopeUnit} tasks=${stop.tasks} reason=${reason} ` +
+            `cwd=${JSON.stringify(cwdLabel)} files=${JSON.stringify(requestedFiles)}`,
+        );
+      }
+    };
     const terminate = (state) => {
       if (terminationStarted || settled) return;
       terminationStarted = true;
@@ -2304,6 +2387,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
         if (settled) return;
         emitProgress('reaping');
         killOwned('SIGKILL');
+        stopOwnedScope(state);
       }, killGraceMs);
       forceTimer.unref?.();
     };
@@ -2324,6 +2408,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
           if (settled) return;
           emitProgress(`parent-${signal.toLowerCase()}`);
           killOwned('SIGKILL');
+          stopOwnedScope(`parent-${signal.toLowerCase()}`);
           removeSignalForwarders();
           process.kill(process.pid, signal);
         };
@@ -2394,6 +2479,7 @@ export function runCapturedTestProcess(command, args, options = {}) {
     child.stdout?.on('data', capture('stdout', stdout));
     child.stderr?.on('data', capture('stderr', stderr));
     child.once('error', (error) => { spawnError = error; });
+    child.once('exit', () => stopOwnedScope('exit'));
 
     let progressTimer = null;
     const scheduleProgress = () => {

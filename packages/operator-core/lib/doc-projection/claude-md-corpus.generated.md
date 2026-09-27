@@ -2275,16 +2275,10 @@ defence.
 ⚠ **The same self-match trap applies across SSH.** In `ssh host 'for p in $(pgrep -f "DISPLAY=:111"); do sudo kill "$p"; done; <rest>'`, the remote shell's argv contains the literal pattern, so `pgrep -f` can match and kill that shell. SSH then reports the generic `exit 255` with no output, and every later command is silently skipped, leaving the remote host partially torn down. Bracket the first character (`pgrep -f '[D]ISPLAY=:111'`) or resolve PIDs by another identity, and keep the remote script single-quoted so the local shell cannot expand `$p` or other variables before SSH receives it. Treat `exit 255` with no output as a possible remote self-kill, not automatically as a network or authentication failure.
 A peer burned 27 silent minutes exactly here (EI-19312699396945642).
 
-✅ **There is a purpose-built tool for this and you should reach for it FIRST —
-`node scripts/proc-guard.mjs check <pattern>`.** It walks the CALLER's own
-ancestor chain and excludes every pid in it before matching, so it cannot
-self-match no matter where the pattern appears in your command (the pgrep
-argument, an `echo` label, a comment, an `ls` path). For `green-checkpoint`, it
-also recognizes the gate-owned identity markers (`GREEN_CHECKPOINT=1` together
-with `PC_HEAVY_RELEASE_GATE=1`) and the checkpoint systemd cgroup. This catches
-gate descendants whose argv only names the `papercusp-checkpoint` tree; the report
-labels those rows as identity matches. Other patterns remain operational-argv
-matches, and a peer's prose or JSON payload is still ignored. Exit 0 + the matching rows
+✅ **The purpose-built tool for a managed task is `processes:list { live:true }`.** For a host-visible shell, `node scripts/proc-guard.mjs check <pattern>` walks the CALLER's own ancestor chain and excludes every pid in it before matching, so it cannot self-match no matter where the pattern appears in your command (the pgrep argument, an `echo` label, a comment, an `ls` path). For `green-checkpoint`, it also recognizes gate-owned identity markers (`GREEN_CHECKPOINT=1` together with `PC_HEAVY_RELEASE_GATE=1`) and the checkpoint systemd cgroup. Other patterns remain operational-argv matches, and a peer's prose or JSON payload is ignored.
+
+`capability:bash` can run in a separate PID namespace with only its own processes. There `proc-guard` exits 2 with an explicit visibility error; a zero match from `pgrep` or a missing `/proc/<pid>` through that door says nothing about host liveness. Bracketing a `pgrep` pattern does not prevent self-matching when the literal also appears in a shell label, comment, or heredoc carried in the wrapper argv. Use `processes:list { live:true }` for managed work, or a verified host-visible tool for a whole-host census.
+Exit 0 + the matching rows
 (pid + full cmdline) when a genuinely external process matches; exit 1 + a "no
 match" line otherwise — and it never prints a bare count without the rows,
 because a count alone hides exactly this failure. Verified: `check
