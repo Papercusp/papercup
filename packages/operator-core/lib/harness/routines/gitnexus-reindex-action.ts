@@ -1628,6 +1628,37 @@ export function findAdoptableWriter(
   return best;
 }
 
+/**
+ * P-012 (host-memory-reduction-2026-09-27) — the routine's own analyze processes for `root`,
+ * found by ARGV instead of by an open index handle. `detectLiveAnalyzeWriter` only sees a run
+ * once it holds the shadow, `lbug.wal` or `lbug`, but a `--force` rebuild parses for many
+ * minutes before it opens any of them, and a run still queued for a pc-heavy slot opens
+ * nothing. Measured 2026-09-27: bg-host restarted at 09:41:39Z, 6.5 min into the 09:35Z run
+ * (pid 1080156, still parsing, no index file held), and the new host spawned a second
+ * `--force` analyze at 09:41:53Z that sat in the heavy-slot queue until it was killed by hand.
+ * The pc-heavy wrapper carries the same argv tail, so a queued run is found too. Ascending.
+ */
+export function findRoutineAnalyzePids(
+  root: string,
+  repoName: string,
+  procRoot = '/proc',
+  cliPath: string = analyzeCliPath(),
+): number[] {
+  let names: string[];
+  try {
+    names = readdirSync(procRoot);
+  } catch {
+    return [];
+  }
+  const pids: number[] = [];
+  for (const name of names) {
+    if (!/^\d+$/.test(name)) continue;
+    const pid = Number(name);
+    if (argvIsRoutineAnalyze(readProcessArgv(pid, procRoot), root, repoName, cliPath)) pids.push(pid);
+  }
+  return pids.sort((a, b) => a - b);
+}
+
 /** Signal-0 liveness. EPERM means "alive, not ours" — still alive. */
 export function isPidAlive(pid: number): boolean {
   try {
@@ -2565,7 +2596,16 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   // knows about an analyze THIS host is awaiting; one launched by a previous host
   // incarnation survives the restart in its own scope and is invisible here. Yield to it:
   // no residue cleanup (its WAL would read as orphan), no spawn (two writers corrupt it).
-  const writer = detectLiveAnalyzeWriter(root);
+  let writer = detectLiveAnalyzeWriter(root);
+  // P-012 — no handle held is not "no run": a --force rebuild parses for minutes before it
+  // opens the index, and a run queued for a pc-heavy slot opens nothing. Fall back to argv.
+  if (!writer.live) {
+    const pids = findRoutineAnalyzePids(root, repoName);
+    if (pids.length > 0) writer = { live: true, verdict: 'live', pids, files: [] };
+  }
+  const held = writer.files.length
+    ? `${writer.files.join(' + ')} held for write`
+    : 'no index file open yet — parsing, or queued for a heavy slot';
   if (writer.live) {
     const ages = writer.pids.map((p) => {
       const age = processAgeMs(p);
@@ -2590,7 +2630,7 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
         : 'unstamped, matched by the routine argv; spawn time from process age';
       console.log(
         `[gitnexus-reindex] adopting live analyze pid ${adoptable.pid} (spawned ${spawnedAt} by a previous host ` +
-          `incarnation — ${how}; ${writer.files.join(' + ')} held for write) — waiting up to ` +
+          `incarnation — ${how}; ${held}) — waiting up to ` +
           `${Math.max(0, Math.round((deadlineMs - Date.now()) / 60_000))} min for it to finish (WI-2146015)`,
       );
       const waited = await waitForPidExit(adoptable.pid, deadlineMs);
@@ -2634,8 +2674,8 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
       return;
     }
     const line =
-      `[gitnexus-reindex] skip: an analyze writer is ALIVE on ${root} — pid(s) ${ages.join(', ')} hold ` +
-      `${writer.files.join(' + ')} open for write; not cleaning residue, not spawning (WI-2146606)`;
+      `[gitnexus-reindex] skip: an analyze writer is ALIVE on ${root} — pid(s) ${ages.join(', ')}, ` +
+      `${held}; not cleaning residue, not spawning (WI-2146606)`;
     if (overBudget) {
       console.warn(
         `${line} ⚠ older than the ${Math.round(timeoutMs / 60_000)}-min timeout budget. A routine-launched ` +

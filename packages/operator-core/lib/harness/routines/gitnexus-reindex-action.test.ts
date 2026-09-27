@@ -95,6 +95,7 @@ import {
   GITNEXUS_REINDEX_SPAWN_MARKER_ENV,
   readRoutineSpawnMarker,
   findAdoptableWriter,
+  findRoutineAnalyzePids,
   argvIsRoutineAnalyze,
   readProcessArgv,
   waitForPidExit,
@@ -2149,7 +2150,7 @@ describe('WI-2146606 — the WAL and the index get the open-handle discriminator
     it('detectLiveAnalyzeWriter → return precedes cleanCrashResidue, which precedes runGitnexusAnalyze', () => {
       const handler = src.indexOf("registerSystemAction('gitnexus-reindex'");
       expect(handler).toBeGreaterThan(0);
-      const guard = src.indexOf('const writer = detectLiveAnalyzeWriter(root);', handler);
+      const guard = src.indexOf('let writer = detectLiveAnalyzeWriter(root);', handler);
       const residue = src.indexOf('const residue = cleanCrashResidue(root);', handler);
       const spawn = src.indexOf('await runGitnexusAnalyze(root, repoName, timeoutMs)', handler);
       expect(guard).toBeGreaterThan(handler);
@@ -2640,6 +2641,31 @@ describe('WI-2146015 — a routine-launched analyze is ADOPTED across a bg-host 
     expect(readProcessArgv(22, proc)).toBeNull();
   });
 
+  // P-012 (2026-09-27): bg-host restarted 6.5 min into a --force run that was still parsing;
+  // no index file was held, so the handle probe saw nothing and a duplicate was spawned.
+  it('findRoutineAnalyzePids finds a routine analyze that holds NO index file — parsing, or queued behind pc-heavy', () => {
+    const cli = '/vendor/gitnexus/dist/cli/index.js';
+    const args = buildAnalyzeArgs('/repo', 'papercusp');
+    const proc = fakeProc({ 31: null, 32: null, 33: null, 34: null });
+    const cmdline = (argv: string[]): string => [...argv, ''].join('\0');
+    writeFileSync(join(proc, '31', 'cmdline'), cmdline(['/usr/bin/node', '--stack-size=4096', cli, ...args]));
+    // The pc-heavy wrapper of a QUEUED run carries the same argv tail.
+    writeFileSync(join(proc, '32', 'cmdline'), cmdline(['bash', '/tmp/pc-heavy/self.32.sh', '--', '/usr/bin/node', cli, ...args]));
+    // Another repo's routine run, and a hand-typed analyze: neither is ours.
+    writeFileSync(join(proc, '33', 'cmdline'), cmdline(['/usr/bin/node', cli, ...buildAnalyzeArgs('/other', 'other')]));
+    writeFileSync(join(proc, '34', 'cmdline'), cmdline(['gitnexus', 'analyze', '--force']));
+    mkdirSync(join(proc, 'self'));
+    expect(findRoutineAnalyzePids('/repo', 'papercusp', proc, cli)).toEqual([31, 32]);
+    expect(findRoutineAnalyzePids('/repo', 'papercusp', join(proc, 'missing'), cli)).toEqual([]);
+  });
+
+  it('the tick gate falls back to the argv scan when no handle is held, BEFORE any residue cleanup', () => {
+    expect(src).toMatch(/if \(!writer\.live\) \{\s*const pids = findRoutineAnalyzePids\(root, repoName\);/);
+    const scanAt = src.indexOf('findRoutineAnalyzePids(root, repoName)');
+    expect(scanAt).toBeGreaterThan(src.indexOf('let writer = detectLiveAnalyzeWriter(root)'));
+    expect(scanAt).toBeLessThan(src.indexOf('const residue = cleanCrashResidue(root)'));
+  });
+
   it('waitForPidExit resolves when the pid disappears and gives up at the deadline (injected clock + sleep)', async () => {
     let t = 1_000;
     const sleep = async (ms: number): Promise<void> => {
@@ -2705,7 +2731,7 @@ describe('WI-2146015 — a routine-launched analyze is ADOPTED across a bg-host 
     expect(src.indexOf('[GITNEXUS_REINDEX_SPAWN_MARKER_ENV]: String(spawnedAtMs)', spawn)).toBeGreaterThan(spawn);
 
     const handler = src.indexOf("registerSystemAction('gitnexus-reindex'");
-    const guard = src.indexOf('const writer = detectLiveAnalyzeWriter(root);', handler);
+    const guard = src.indexOf('let writer = detectLiveAnalyzeWriter(root);', handler);
     const adopt = src.indexOf('findAdoptableWriter(writer.pids,', guard);
     const finish = src.indexOf('await finishAnalyzeTick({', adopt);
     const residue = src.indexOf('const residue = cleanCrashResidue(root);', handler);
