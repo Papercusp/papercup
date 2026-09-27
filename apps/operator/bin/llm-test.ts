@@ -17,7 +17,6 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -40,6 +39,7 @@ import {
 import {
   beginLlmScenarioLedger,
   recordLlmScenarioTestRun,
+  resolveScenarioSourceFile,
 } from '@papercusp/operator-core/lib/llm-testing/test-run-ledger';
 
 type Verb = 'run' | 'promote-candidates' | 'promote' | 'replay' | 'export-fixture' | 'lint';
@@ -468,14 +468,13 @@ function resolveScenarioFilePath(scenario: { id: string; target: string }): stri
   // Oracle scenarios:   'oracle-O1-...' → files 'O1-...'
   // Architect:          'architect-A1-...' → files 'A1-...'
   const here = dirname(fileURLToPath(import.meta.url));
-  const idPart = scenario.id.replace(/^(op|oracle|architect|su)-/, '');
-  // Scenarios live in operator-core (EI-24434635346407728 found the apps/operator path
-  // below no longer exists, which silently made every scenario hash + ledger path absent).
-  const candidates = [
-    join(here, '..', '..', '..', 'packages', 'operator-core', 'lib', 'llm-testing', 'scenarios', scenario.target, `${idPart}.ts`),
-    join(here, '..', 'lib', 'llm-testing', 'scenarios', scenario.target, `${idPart}.ts`),
-  ];
-  return candidates.find((p) => existsSync(p)) ?? candidates[0];
+  // Scenarios live in operator-core. One file may define many scenarios (S33), so the id
+  // is not the basename — resolveScenarioSourceFile maps it (EI-24434635346407728).
+  return resolveScenarioSourceFile(
+    scenario.id,
+    scenario.target,
+    join(here, '..', '..', '..', 'packages', 'operator-core', 'lib', 'llm-testing', 'scenarios'),
+  );
 }
 
 function printReport(report: ReturnType<typeof runScenario> extends Promise<infer R> ? R : never): void {

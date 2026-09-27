@@ -46,6 +46,7 @@ import {
   type StoredFrozenRepairConvergence,
 } from './release/frozen-candidate-repair-queue';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
+import { parseTestPassReuseHealth, type TestPassReuseHealth } from './release/test-pass-reuse-report';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 import { parseRepairTickLegs, type StoredRepairTickLegs } from './release/repair-tick-legs-snapshot';
 import { readFreezeAndConverge, type FreezeAndConvergeGateHealth } from './release/freeze-disposition';
@@ -329,6 +330,14 @@ export interface GitPipelineSnapshot {
      * queue is healthy, and NOT that it is stuck.
      */
     convergence?: StoredFrozenRepairConvergence | null;
+    /**
+     * P-013 (plan gate-file-level-test-reuse-2026-09-27): what per-test-file pass reuse did in
+     * the latest gate round — files reused of candidates, a lower bound on test time saved, any
+     * TEST_PASS_REUSE_ALARM, and why reuse was off where it was. `judgedSha` names the round.
+     * Null means the routine row carries no readable reuse record (a runner predating the
+     * field, or a malformed blob) — NOT that reuse saved nothing.
+     */
+    testPassReuse?: TestPassReuseHealth | null;
     /** Whether the sibling `failingTests` array came from a real code verdict.
      * `false` means the latest checkpoint ended before rendering one; `null` is a legacy or
      * malformed blob whose measurement state cannot be established. */
@@ -1769,6 +1778,8 @@ export async function gitPipelineSnapshot(
       // this to JSON null when a cycle retires, so an absent/null/unrecognized blob must
       // read as "not measured" rather than as a convergence summary with holes in it.
       convergence: parseFrozenRepairConvergence(gateHealth['convergence']),
+      // P-013: same shape-checked discipline — an absent or wrong-typed blob reads as null.
+      testPassReuse: parseTestPassReuseHealth(gateHealth['testPassReuse']),
     },
     openConflict,
     windows: { day, week },

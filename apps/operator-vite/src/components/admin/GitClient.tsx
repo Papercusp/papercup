@@ -121,6 +121,13 @@ interface GitPipelineSnapshot {
       manifest: RepairManifestView | null;
       manifestSummary: RepairManifestSummaryView | null;
     } | null;
+    // gate-file-level-test-reuse-2026-09-27 P-013: what per-test-file pass reuse did in the
+    // latest gate round. Null/absent = not measured (a runner predating the field), never "0".
+    testPassReuse?: {
+      judgedSha: string;
+      headline: string;
+      alarms: { ws: string; file: string; proof: string }[];
+    } | null;
   };
 }
 interface RepairManifestView {
@@ -675,6 +682,27 @@ export default function GitClient() {
                       <StatusPill tone="warn" label={st.gate.flakyWorkspaces.join(', ')} />
                     ) : (
                       'none'
+                    )}
+                  </span>
+                  <span className="pc-git__k">test reuse</span>
+                  <span className="pc-git__v" data-testid="gate-test-pass-reuse">
+                    {st.gate.testPassReuse ? (
+                      <>
+                        {st.gate.testPassReuse.alarms.length > 0 && (
+                          <>
+                            <StatusPill
+                              tone="bad"
+                              label={`${st.gate.testPassReuse.alarms.length} reuse alarm(s)`}
+                            />{' '}
+                          </>
+                        )}
+                        {st.gate.testPassReuse.headline}{' '}
+                        <span className="pc-git__muted mono">
+                          {st.gate.testPassReuse.judgedSha.slice(0, 8)}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="pc-git__muted">not measured</span>
                     )}
                   </span>
                 </div>

@@ -133,6 +133,10 @@ describe('scenario registry', () => {
       'su-S33-agenda-paused',
       'su-S33-agenda-achieved',
       'su-S33-agenda-killed',
+      'su-S34-grader-r1-evidence-record',
+      'su-S34-grader-r3-no-opportunity',
+      'su-S34-grader-r4-unmatched-effect',
+      'su-S34-grader-r7-verdict-complete',
       // pui-loop — the owned loop's su-derived prompt profile (D-034)
       'pui-loop-P01-owned-door-read',
       // onboarding-tutor scenario suite (onboarding-tutor target)

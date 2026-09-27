@@ -632,6 +632,7 @@ export function selectEscalationSlaReroutes(
     const from = concrete(escalation.from)!;
     const author = byOwner.get(from);
     const authorFleet = author?.fleetSlug ?? null;
+    const authorLive = author?.sessionState === 'live';
     const planSlug = concrete(escalation.plan_slug) ?? author?.currentPlanSlug ?? null;
     const harnessSlug =
       concrete(escalation.harness_slug) ?? concrete(escalation.harnessSlug) ?? author?.potSlug ?? null;
@@ -658,6 +659,14 @@ export function selectEscalationSlaReroutes(
           if (authorFleet && leaderByFleet.get(authorFleet) === candidate.ownerId) {
             return { candidate, rank: 0, reason: 'author-fleet-leader' };
           }
+          // WI-10003519: a LIVE author is already the live driver this SLA
+          // looks for. Only an UPWARD hop (to the author's fleet leader, above)
+          // adds anything; a lateral peer or the author's own subordinate can
+          // neither drive the escalation harder than its author nor supply the
+          // human decision it waits on (measured: a leader's owner-spend ask
+          // rerouted to its own fleet member, twice in one afternoon). A
+          // non-live or absent author keeps the full fall-through below.
+          if (authorLive) return null;
           if (authorFleet && candidate.fleetSlug === authorFleet) {
             return { candidate, rank: 1, reason: 'author-fleet-member' };
           }

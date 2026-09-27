@@ -574,7 +574,9 @@ describe('selectEscalationSlaReroutes (EI-7024)', () => {
 
   it('falls through deterministically and never chooses the author or a non-su/non-live/contextless agent', () => {
     const roster = [
-      driver('su-author', { currentPlanSlug: 'plan-a' }),
+      // Non-live author: a LIVE author would suppress every non-leader hop
+      // (WI-10003519), and this case is about the fall-through order.
+      driver('su-author', { sessionState: 'ended', currentPlanSlug: 'plan-a' }),
       driver('su-contextless'),
       driver('cup-plan', { agentRole: 'cup', currentPlanSlug: 'plan-a' }),
       driver('su-parked-plan', { sessionState: 'parked', currentPlanSlug: 'plan-a' }),
@@ -586,6 +588,56 @@ describe('selectEscalationSlaReroutes (EI-7024)', () => {
       slaMs: 30 * 60 * 1000,
     });
     expect(selected[0]).toMatchObject({ targetOwnerId: 'su-a-plan', reason: 'same-plan' });
+  });
+
+  // WI-10003519: measured 2026-09-27 — a live fleet leader's owner-spend ask
+  // (to:['human']) was rerouted 'author-fleet-member' to its own member, twice.
+  it('never reroutes a LIVE fleet leader author down to its own member or sideways to a peer', () => {
+    const roster = [
+      driver('su-author', { fleetSlug: 'alpha', currentPlanSlug: 'plan-a', potSlug: 'pot-a' }),
+      driver('su-member', { fleetSlug: 'alpha' }),
+      driver('su-plan', { currentPlanSlug: 'plan-a' }),
+      driver('su-harness', { potSlug: 'pot-a' }),
+    ];
+    const selected = selectEscalationSlaReroutes([rerouteRow({})], roster, {
+      nowMs: NOW,
+      slaMs: 30 * 60 * 1000,
+      leaderByFleet: new Map([['alpha', 'su-author']]),
+    });
+    expect(selected).toEqual([]);
+  });
+
+  it('a LIVE member author reroutes only UP to its fleet leader, never to a sibling or plan peer', () => {
+    const base = [
+      driver('su-author', { fleetSlug: 'alpha', currentPlanSlug: 'plan-a' }),
+      driver('su-sibling', { fleetSlug: 'alpha' }),
+      driver('su-plan', { currentPlanSlug: 'plan-a' }),
+    ];
+    const ctx = { nowMs: NOW, slaMs: 30 * 60 * 1000, leaderByFleet: new Map([['alpha', 'su-leader']]) };
+    // Leader not live → nobody above the author is available → no reroute.
+    expect(selectEscalationSlaReroutes([rerouteRow({})], base, ctx)).toEqual([]);
+    // Leader live → the upward hop is still taken.
+    const withLeader = [...base, driver('su-leader', { fleetSlug: 'alpha' })];
+    expect(selectEscalationSlaReroutes([rerouteRow({})], withLeader, ctx)[0]).toMatchObject({
+      targetOwnerId: 'su-leader',
+      reason: 'author-fleet-leader',
+    });
+  });
+
+  it('a NON-live author (dead leader) still falls through to its fleet member', () => {
+    for (const authorState of ['ended', 'suspect', null] as const) {
+      const roster = [
+        driver('su-author', { sessionState: authorState, fleetSlug: 'alpha', currentPlanSlug: 'plan-a' }),
+        driver('su-member', { fleetSlug: 'alpha' }),
+        driver('su-plan', { currentPlanSlug: 'plan-a' }),
+      ];
+      const selected = selectEscalationSlaReroutes([rerouteRow({})], roster, {
+        nowMs: NOW,
+        slaMs: 30 * 60 * 1000,
+        leaderByFleet: new Map([['alpha', 'su-author']]),
+      });
+      expect(selected[0]).toMatchObject({ targetOwnerId: 'su-member', reason: 'author-fleet-member' });
+    }
   });
 
   it('rejects young, operational, non-agent, loopback-test, acknowledged, and contextless rows', () => {
@@ -618,7 +670,8 @@ describe('selectEscalationSlaReroutes (EI-7024)', () => {
   describe('global stand-down guard (EI-21451978219397190)', () => {
     it('skips a stood-down driver and lands on whoever the owner left running', () => {
       const roster = [
-        driver('su-author', { currentPlanSlug: 'plan-a' }),
+        // Non-live author: a live one would suppress the same-plan hop (WI-10003519).
+        driver('su-author', { sessionState: 'ended', currentPlanSlug: 'plan-a' }),
         // Sorts first, so it wins on every tie-break EXCEPT the stand-down.
         driver('su-a-plan', { currentPlanSlug: 'plan-a', standdownHeld: true }),
         driver('su-z-plan', { currentPlanSlug: 'plan-a' }),

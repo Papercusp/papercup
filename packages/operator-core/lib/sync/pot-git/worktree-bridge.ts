@@ -53,10 +53,24 @@ import {
   acceptStagingAdvanceFF,
 } from './staging-advance';
 import { type WorktreeAdvanceResult, advanceWorktree } from './worktree-advance';
+import { scavengeStaleTempPacks } from '../../harness/git-sync/run-git-sync';
 
 /** Where the worktree-side repo tracks the canonical staging it last bridged
  *  (a plain local ref — NEVER a branch anyone works on). */
 export const WORKTREE_STAGING_REF = 'refs/hive/staging';
+
+/**
+ * WI-2142873: ceiling for the object-bridge fetch (mirror → worktree). Both
+ * repos share one disk, so this is not an RPC: `pack-objects` builds a thin
+ * pack against the worktree's SHALLOW boundary and the cost scales with the
+ * history the worktree lacks. `defaultRunGit`'s 60s RPC default killed it on
+ * EVERY attempt on the P-203 VM (2026-09-27: a first bridge needed a 2.98 GB
+ * pack, 3m39s wall), so the worktree never received the objects and each kill
+ * leaked a 300–700 MB `tmp_pack_*` (199 orphans, 8.4 GB, disk at 99%).
+ * Must stay BELOW the git-sync action idle ceiling (LOCK_TTL_SEC=600s in
+ * git-sync-action.ts) so a slow fetch fails this leg, not the whole action.
+ */
+export const WORKTREE_OBJECT_BRIDGE_FETCH_TIMEOUT_MS = 8 * 60_000;
 
 export interface WorktreeBridgeConfig {
   /** The local pot-git bare mirror for this (hive, managed repo) — G-1. */
@@ -146,21 +160,47 @@ export async function bridgeStagingShaToWorktree(
   worktreePath: string,
   integratorDevicePubkeyBase64: string,
   sha: string,
-  opts: { runGit?: RunGit } = {},
+  opts: {
+    runGit?: RunGit;
+    fetchTimeoutMs?: number;
+    /** Test seam for the post-failure temp-pack reclaim (defaults to the real scavenger). */
+    reclaimTempPacks?: (worktreePath: string) => Promise<{ removed: string[]; bytesReclaimed: number }>;
+  } = {},
 ): Promise<WorktreeAdvanceResult> {
   const runGit = opts.runGit ?? defaultRunGit;
+  const reclaimTempPacks =
+    opts.reclaimTempPacks ??
+    ((repo: string) =>
+      // staleMs 0: a killed fetch's own partial pack is reclaimed at once. The
+      // scavenger still refuses any file that is open (a concurrent fetch in the
+      // same worktree is writing it), referenced, or changing — so this never
+      // races a live index-pack, and it also clears older crash-left leaks.
+      scavengeStaleTempPacks(runGit, repo, (m) => console.warn(m), { staleMs: 0 }));
   try {
     const nsStaging = `refs/namespaces/${deviceNamespaceKey(integratorDevicePubkeyBase64)}/${STAGING_REF}`;
     const fetched = await runGit(
       ['fetch', '-q', bareRepoPath, `+${nsStaging}:${WORKTREE_STAGING_REF}`],
       worktreePath,
+      { timeoutMs: opts.fetchTimeoutMs ?? WORKTREE_OBJECT_BRIDGE_FETCH_TIMEOUT_MS },
     );
     if (fetched.code !== 0) {
+      // WI-2142873: a timed-out/killed fetch strands index-pack's partial
+      // `tmp_pack_*` (SIGKILL skips git's own cleanup). Reclaim it now; waiting
+      // for age-based GC let 8.4 GB accumulate on the P-203 VM in 16h.
+      let reclaimed = '';
+      try {
+        const r = await reclaimTempPacks(worktreePath);
+        if (r.removed.length > 0) {
+          reclaimed = `; reclaimed ${r.removed.length} partial temp pack(s), ${r.bytesReclaimed} bytes`;
+        }
+      } catch {
+        // best-effort: a reclaim failure must never mask the fetch error
+      }
       return {
         outcome: 'error',
         from: null,
         to: sha,
-        detail: `object-bridge fetch from the mirror failed: ${fetched.stderr.trim()}`,
+        detail: `object-bridge fetch from the mirror failed: ${fetched.stderr.trim()}${reclaimed}`,
       };
     }
     return advanceWorktree(worktreePath, sha, { runGit });

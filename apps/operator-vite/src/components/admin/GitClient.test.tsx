@@ -104,6 +104,34 @@ describe('GitClient', () => {
     expect(screen.getByText(/Loading pipeline/i)).toBeTruthy();
   });
 
+  // gate-file-level-test-reuse-2026-09-27 P-013: the gate card's per-file reuse row.
+  it('gate card: test reuse reads "not measured" when the snapshot carries no reuse record', () => {
+    mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.getByText('test reuse')).toBeTruthy();
+    expect(screen.getByTestId('gate-test-pass-reuse').textContent).toBe('not measured');
+  });
+
+  it('gate card: test reuse shows the round headline, its sha, and an alarm pill', () => {
+    const withReuse = {
+      ...snapshot,
+      gate: {
+        ...snapshot.gate,
+        testPassReuse: {
+          judgedSha: 'c58655490ce1a3be734de61df08aa7f8159122d4',
+          headline: 'per-file reuse: 797 of 810 candidate file(s) reused, at least 15m 01s test time saved, 1 ALARM(s)',
+          alarms: [{ ws: '@papercusp/operator-core', file: 'lib/x.test.ts', proof: 'expired' }],
+        },
+      },
+    };
+    mockResult = { data: [withReuse], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    const cell = screen.getByTestId('gate-test-pass-reuse');
+    expect(cell.textContent).toContain('797 of 810 candidate file(s) reused');
+    expect(cell.textContent).toContain('c5865549');
+    expect(screen.getByText('1 reuse alarm(s)')).toBeTruthy();
+  });
+
   // ── per-hive surface (P-014) ──
   it('per-hive section: empty state when no gated coding hives', () => {
     mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };

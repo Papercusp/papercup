@@ -15,8 +15,8 @@
  * scenario verdict or the CLI exit code.
  */
 
-import { existsSync } from 'node:fs';
-import { posix, relative } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join, posix, relative } from 'node:path';
 
 import type { RunReport } from '@papercusp/testing-shell/llm';
 import {
@@ -100,6 +100,60 @@ export function llmScenarioLedgerRow(report: RunReport, ctx: LlmScenarioLedgerCo
       worktreeDirty: ctx.worktreeDirty,
     },
   };
+}
+
+/**
+ * Absolute path of the source file that defines `scenarioId`, or undefined.
+ *
+ * Neither the id prefix nor the basename follows one convention (`op-S01-…` lives in
+ * `operator/S01-….ts`, `sn-S01-…` in `papercup/SN01-….ts`), and ONE file may define
+ * many scenarios (`S33-goal-agenda.ts` builds `` `su-S33-agenda-${c}` ``). So the file
+ * is found by CONTENT: the non-test source (target dir first, then the whole tree)
+ * holding the id as a string literal, else the longest templated prefix of it. A tie
+ * or no match returns undefined — never a guessed path, because a wrong path
+ * silently drops the ledger row or misattributes the evidence.
+ */
+export function resolveScenarioSourceFile(
+  scenarioId: string,
+  target: string,
+  scenariosRoot: string,
+): string | undefined {
+  if (!existsSync(scenariosRoot)) return undefined;
+  const files = listScenarioSources(scenariosRoot);
+  const targetDir = join(scenariosRoot, target);
+  for (const pool of [files.filter((f) => f.startsWith(`${targetDir}/`)), files]) {
+    let best: { file: string; score: number } | null = null;
+    let tie = false;
+    for (const file of pool) {
+      const score = idMatchScore(readFileSync(file, 'utf8'), scenarioId);
+      if (score === 0) continue;
+      if (!best || score > best.score) { best = { file, score }; tie = false; }
+      else if (score === best.score) tie = true;
+    }
+    if (best) return tie ? undefined : best.file;
+  }
+  return undefined;
+}
+
+function listScenarioSources(dir: string): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...listScenarioSources(p));
+    else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) out.push(p);
+  }
+  return out;
+}
+
+/** Infinity for an exact quoted id; else the length of the longest `` `prefix${ `` it extends. */
+function idMatchScore(source: string, id: string): number {
+  for (const q of ["'", '"', '`']) if (source.includes(`${q}${id}${q}`)) return Number.POSITIVE_INFINITY;
+  let best = 0;
+  for (const m of source.matchAll(/`([A-Za-z0-9_-]+)\$\{/g)) {
+    const prefix = m[1]!;
+    if (prefix.includes('-') && id.startsWith(prefix) && id.length > prefix.length) best = Math.max(best, prefix.length);
+  }
+  return best;
 }
 
 /** Workspace-relative POSIX path, or null when the scenario file is not on disk. */

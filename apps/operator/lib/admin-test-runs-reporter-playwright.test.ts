@@ -76,7 +76,7 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
     // The persisted execution_details must parse through the SAME reader the
     // acceptance-bar layer check uses, and must say e2e — otherwise no Playwright
     // run can ever satisfy a BAR clause whose requiredTestLayers includes e2e.
-    const stored = JSON.parse(values.at(-1) as string);
+    const stored = JSON.parse(String(values.at(-1)));
     expect(parseTestRunExecutionDetails(stored)).toBeDefined();
     expect(recordedTestLayer(stored)).toBe('e2e');
     expect(stored).toMatchObject({

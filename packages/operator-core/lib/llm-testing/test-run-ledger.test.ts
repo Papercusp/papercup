@@ -10,7 +10,43 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseTestRunExecutionDetails, recordedTestLayer } from '@papercusp/test-config/execution-details';
 
-import { llmScenarioLedgerRow, scenarioLedgerPath } from './test-run-ledger';
+import { SCENARIOS } from './scenarios';
+import { llmScenarioLedgerRow, resolveScenarioSourceFile, scenarioLedgerPath } from './test-run-ledger';
+
+const SCENARIOS_ROOT = join(__dirname, 'scenarios');
+
+describe('resolveScenarioSourceFile', () => {
+  // Recurrence guard: an id that fails to resolve silently drops the live run's
+  // llm-layer ledger row, which strands any BAR clause requiring `llm`
+  // (su-S33-agenda-* did exactly this — ten cases, one file).
+  it('resolves every registered scenario to its defining source file', () => {
+    const unresolved = SCENARIOS.filter(
+      (s) => !resolveScenarioSourceFile(s.id, s.target, SCENARIOS_ROOT),
+    ).map((s) => `${s.target}:${s.id}`);
+    expect(unresolved).toEqual([]);
+  });
+
+  it('maps a multi-scenario file by its id token and refuses ambiguity', () => {
+    expect(resolveScenarioSourceFile('su-S33-agenda-delegate', 'su', SCENARIOS_ROOT)).toBe(
+      join(SCENARIOS_ROOT, 'su', 'S33-goal-agenda.ts'),
+    );
+    expect(resolveScenarioSourceFile('su-S02-tauri-only', 'su', SCENARIOS_ROOT)).toBe(
+      join(SCENARIOS_ROOT, 'su', 'S02-tauri-only.ts'),
+    );
+    const dir = mkdtempSync(join(tmpdir(), 'scen-resolve-'));
+    try {
+      mkdirSync(join(dir, 'su'));
+      writeFileSync(join(dir, 'su', 'S40-a.ts'), '');
+      writeFileSync(join(dir, 'su', 'S40-b.ts'), '');
+      writeFileSync(join(dir, 'su', 'S41-x.test.ts'), '');
+      expect(resolveScenarioSourceFile('su-S40-case', 'su', dir)).toBeUndefined();
+      expect(resolveScenarioSourceFile('su-S41-case', 'su', dir)).toBeUndefined();
+      expect(resolveScenarioSourceFile('su-S99-none', 'nope', dir)).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 function run(status: 'passed' | 'failed' | 'errored', startIso: string, endIso: string) {
   return { status, summary: { startedAt: new Date(startIso), finishedAt: new Date(endIso) } };

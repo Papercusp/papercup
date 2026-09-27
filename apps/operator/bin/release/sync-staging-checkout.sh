@@ -439,10 +439,18 @@ current_commit_age_sec() {
 }
 
 # Single-flight: a second timer tick (or a manual run) waits/skips rather than
-# racing two setups on the same checkout.
+# racing two setups on the same checkout. A release cut whose orchestrator is this
+# checkout also holds the lock SHARED for its whole run (WI-10003515,
+# release-cut-launch.ts wrapWithStagingSyncLock), so re-cloning submodules in place
+# cannot delete scripts out from under an in-flight cut.
 exec 9>"/tmp/papercup-staging-sync.lock"
 if ! flock -n 9; then
-  log "another staging-sync holds the lock — skipping this tick"
+  cut_note=""
+  active_cuts="$(systemctl --user list-units --state=active --no-legend --plain 'papercup-release-cut*' 2>/dev/null | awk '{print $1}' | paste -sd, -)"
+  if [[ -n "$active_cuts" ]]; then
+    cut_note=" (release cut running: ${active_cuts} — it holds the lock shared until it exits)"
+  fi
+  log "staging-sync lock is held — another staging-sync, a staging restart, or a release cut${cut_note} — skipping this tick"
   exit 0
 fi
 
