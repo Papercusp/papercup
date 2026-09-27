@@ -11,6 +11,29 @@ export function createStreamingSecretRedactor(
   values: readonly string[] | undefined,
 ): StreamingSecretRedactor | null;
 
+/** A redaction pattern carried as plain data so the runner can rebuild it. */
+export interface StreamingRedactionPatternSpec {
+  source: string;
+  flags?: string;
+  replacement?: string;
+}
+
+export const STREAMING_PATTERN_MAX_HOLD: number;
+
+export function createStreamingPatternRedactor(
+  patterns: readonly StreamingRedactionPatternSpec[] | undefined,
+  maxHold?: number,
+): StreamingSecretRedactor | null;
+
+export function composeStreamingRedactors(
+  ...redactors: readonly (StreamingSecretRedactor | null | undefined)[]
+): StreamingSecretRedactor | null;
+
+export function decodeRedactions(encoded: string): {
+  values: string[];
+  patterns: StreamingRedactionPatternSpec[];
+};
+
 export function main(argv?: string[]): void;
 
 /**

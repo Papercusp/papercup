@@ -23,9 +23,22 @@ const SENSITIVE_VALUE_KEY_RE =
   /(?:authorization|cookie|password|passphrase|secret|token|private.?key|access.?key|api.?key|client.?secret)/i;
 const SAFE_REFERENCE_KEY_RE = /(?:credential|secret|token|key)ref$/i;
 
+/**
+ * The self-identifying set as plain data, for a redactor that must rebuild it
+ * elsewhere — capability:bash streams it chunk-safely and ships it to its
+ * durable systemd runner, which cannot import TypeScript (WI-10003538). This
+ * stays the ONE definition; consumers must not fork the regex.
+ */
+export const SELF_IDENTIFYING_SECRET_PATTERN: Readonly<{ source: string; flags: string; replacement: string }> =
+  Object.freeze({
+    source: SELF_IDENTIFYING_SECRET_RE.source,
+    flags: SELF_IDENTIFYING_SECRET_RE.flags,
+    replacement: '[redacted]',
+  });
+
 /** Scrub token shapes that identify themselves without any surrounding key. */
 export function redactSelfIdentifyingSecrets(text: string): string {
-  return text.replace(SELF_IDENTIFYING_SECRET_RE, '[redacted]');
+  return text.replace(SELF_IDENTIFYING_SECRET_RE, SELF_IDENTIFYING_SECRET_PATTERN.replacement);
 }
 
 /**

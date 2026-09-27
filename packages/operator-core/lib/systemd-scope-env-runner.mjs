@@ -136,13 +136,103 @@ export function createStreamingSecretRedactor(values) {
   };
 }
 
-function decodeRedactions(encoded) {
-  if (!encoded) return [];
+/**
+ * Characters a self-identifying credential shape may contain. Every pattern in
+ * `sensitive-text.ts`'s self-identifying set draws only from this class (the
+ * JWT shape adds `.`), so any character OUTSIDE it is a hard match boundary.
+ */
+const PATTERN_TOKEN_CHAR_RE = /[A-Za-z0-9_.-]/;
+
+/**
+ * Upper bound on a held-back trailing token run. A run with no delimiter longer
+ * than this is a blob (base64, minified bundle), not a credential line; it is
+ * scanned and released rather than buffered without limit.
+ */
+export const STREAMING_PATTERN_MAX_HOLD = 64 * 1024;
+
+/**
+ * Chunk-boundary-safe PATTERN redaction (WI-10003538). Exact-value redaction
+ * covers credentials the operator knows; this covers credential SHAPES it does
+ * not know (a `ghp_…`/`AKIA…`/`sk-…` token printed by the command itself).
+ *
+ * `patterns` is a list of `{ source, flags, replacement }` specs so the caller
+ * owns the pattern set — capability:bash passes `sensitive-text.ts`'s set, and
+ * this runner (which cannot import TypeScript) receives the same specs in its
+ * redaction payload. One implementation serves the live stream and the
+ * restart-surviving log, so they cannot diverge.
+ *
+ * Every match is composed only of token characters, so a chunk is safe to scan
+ * up to and including its LAST non-token character; the trailing token run is
+ * held until the next chunk (or `flush()`) proves where it ends.
+ */
+export function createStreamingPatternRedactor(patterns, maxHold = STREAMING_PATTERN_MAX_HOLD) {
+  const compiled = (patterns ?? [])
+    .filter((spec) => spec && typeof spec.source === 'string' && spec.source.length > 0)
+    .map((spec) => ({
+      re: new RegExp(spec.source, String(spec.flags ?? '').includes('g') ? spec.flags : `${spec.flags ?? ''}g`),
+      replacement: typeof spec.replacement === 'string' ? spec.replacement : '[redacted]',
+    }));
+  if (compiled.length === 0) return null;
+  const redact = (text) => compiled.reduce((out, { re, replacement }) => out.replace(re, replacement), text);
+  let pending = '';
+
+  return {
+    push(chunk) {
+      const input = pending + chunk;
+      pending = '';
+      let cut = input.length;
+      while (cut > 0 && PATTERN_TOKEN_CHAR_RE.test(input[cut - 1])) cut -= 1;
+      if (input.length - cut > maxHold) return redact(input);
+      pending = input.slice(cut);
+      return redact(input.slice(0, cut));
+    },
+    flush() {
+      const input = pending;
+      pending = '';
+      return redact(input);
+    },
+  };
+}
+
+/**
+ * Chain redactors in order (exact values first, then patterns). Each stage's
+ * safe prefix feeds the next; `flush()` drains every stage front to back so a
+ * suffix held by an early stage still passes through the later ones.
+ */
+export function composeStreamingRedactors(...redactors) {
+  const stages = redactors.filter(Boolean);
+  if (stages.length === 0) return null;
+  if (stages.length === 1) return stages[0];
+  return {
+    push(chunk) {
+      return stages.reduce((text, stage) => stage.push(text), chunk);
+    },
+    flush() {
+      let carried = '';
+      for (const stage of stages) carried = stage.push(carried) + stage.flush();
+      return carried;
+    },
+  };
+}
+
+/**
+ * Decode the durable-output redaction payload: `{ values, patterns }`. A bare
+ * string array (the pre-WI-10003538 shape) is still accepted as values-only.
+ */
+export function decodeRedactions(encoded) {
+  if (!encoded) return { values: [], patterns: [] };
   const parsed = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
-  if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== 'string')) {
+  const values = Array.isArray(parsed) ? parsed : parsed?.values;
+  const patterns = Array.isArray(parsed) ? [] : (parsed?.patterns ?? []);
+  if (
+    !Array.isArray(values) ||
+    values.some((value) => typeof value !== 'string') ||
+    !Array.isArray(patterns) ||
+    patterns.some((spec) => !spec || typeof spec.source !== 'string')
+  ) {
     throw new Error('invalid durable-output redaction payload');
   }
-  return parsed;
+  return { values, patterns };
 }
 
 function bestEffortMirror(stream) {
@@ -184,7 +274,10 @@ function runDurablePayload(command, args, environment, logPath, redactions) {
   });
   const mirrorOut = bestEffortMirror(process.stdout);
   const mirrorErr = bestEffortMirror(process.stderr);
-  const redactor = createStreamingSecretRedactor(redactions);
+  const redactor = composeStreamingRedactors(
+    createStreamingSecretRedactor(redactions.values),
+    createStreamingPatternRedactor(redactions.patterns),
+  );
   // WI-972553: keep ONE decoder per stream across `data` events. Decoding each
   // chunk in isolation (`chunk.toString('utf8')`) turns any multi-byte code
   // point that straddles a chunk boundary into U+FFFD — the same defect

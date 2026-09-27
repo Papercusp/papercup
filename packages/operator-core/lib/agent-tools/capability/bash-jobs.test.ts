@@ -544,9 +544,14 @@ describe('background jobs', () => {
       expect(wrappedEnv).not.toHaveProperty('DATABASE_URL');
       expect(job.runnerOwnsLog).toBe(true);
       expect(wrappedEnv?.[SYSTEMD_RUNNER_OUTPUT_PATH_ENV]).toBe(job.logPath);
+      // WI-10003538: the runner receives the exact values AND the same shape
+      // patterns the live stream applies, so its durable log cannot diverge.
       expect(
         JSON.parse(Buffer.from(wrappedEnv?.[SYSTEMD_RUNNER_REDACTIONS_ENV] ?? '', 'base64').toString('utf8')),
-      ).toEqual(['durable-redaction-secret']);
+      ).toEqual({
+        values: ['durable-redaction-secret'],
+        patterns: [{ ...SELF_IDENTIFYING_SECRET_PATTERN }],
+      });
 
       const output = readJobOutput(job);
       expect(output).toContain('SID=service-payload-session');

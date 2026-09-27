@@ -33,7 +33,13 @@ import {
   type BuildSandboxOpts,
 } from './exec-sandbox';
 import { resolveAgentMcpBaseUrl } from '../../mcp-base-url';
-import { SYSTEMD_RUNNER_OUTPUT_PATH_ENV, SYSTEMD_RUNNER_REDACTIONS_ENV } from '../../systemd-scope-env-runner.mjs';
+import {
+  composeStreamingRedactors,
+  createStreamingPatternRedactor,
+  SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
+  SYSTEMD_RUNNER_REDACTIONS_ENV,
+} from '../../systemd-scope-env-runner.mjs';
+import { redactSelfIdentifyingSecrets, SELF_IDENTIFYING_SECRET_PATTERN } from '../../sensitive-text';
 import {
   absCgroupDir,
   CGROUP_ROOT,
@@ -335,12 +341,14 @@ function boundedSnapshotText(value: string | null, maxLength: number): string | 
 }
 
 function redactSnapshotText(value: string | null, redactValues: readonly string[] | undefined): string | null {
-  if (value == null || !redactValues?.length) return value;
+  if (value == null) return value;
   let safe = value;
-  for (const secret of redactValues) {
+  for (const secret of redactValues ?? []) {
     if (secret) safe = safe.split(secret).join('[REDACTED]');
   }
-  return safe;
+  // WI-10003538: a process cmdline can carry a credential SHAPE the operator
+  // never bound (e.g. `curl -H "Authorization: token ghp_…"`).
+  return redactSelfIdentifyingSecrets(safe);
 }
 
 /**
@@ -554,7 +562,8 @@ onTaskKillRequested((taskId, _signal) => {
 export function scratchDir(stateDir: string | undefined): string {
   const base = stateDir && stateDir.trim() ? stateDir : join(tmpdir(), 'papercusp-capability');
   const dir = join(base, 'scratch');
-  mkdirSync(dir, { recursive: true });
+  // Owner-only when created here; files inside are 0600 regardless (SPILL_LOG_MODE).
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
 
@@ -2199,6 +2208,28 @@ export function createStreamingSecretRedactor(values: readonly string[] | undefi
   };
 }
 
+/**
+ * Credential SHAPES redacted from every capability:bash output sink — inline
+ * result, streamed chunks, bash_output reads and the spill log (WI-10003538).
+ * Sourced from `sensitive-text.ts`; never fork the regex here.
+ */
+export const CAPABILITY_OUTPUT_REDACTION_PATTERNS = Object.freeze([SELF_IDENTIFYING_SECRET_PATTERN]);
+
+/**
+ * The complete capability:bash output redactor: exact operator-bound values
+ * first, then self-identifying credential shapes. Never null — shape redaction
+ * applies even when the call binds no integration credential, because the
+ * command itself can print a token the operator never saw.
+ */
+export function createCapabilityOutputRedactor(values: readonly string[] | undefined): StreamingSecretRedactor {
+  const redactor = composeStreamingRedactors(
+    createStreamingSecretRedactor(values),
+    createStreamingPatternRedactor(CAPABILITY_OUTPUT_REDACTION_PATTERNS),
+  );
+  if (!redactor) throw new Error('capability:bash output redaction patterns are empty');
+  return redactor;
+}
+
 export interface StreamingLineCap {
   /** Consume a safe output chunk and return only the bounded stream portion. */
   push(chunk: string): string;
@@ -2324,7 +2355,7 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
     let settled = false;
     let timedOut = false;
     let aborted = false;
-    const redactor = createStreamingSecretRedactor(opts.redactValues);
+    const redactor = createCapabilityOutputRedactor(opts.redactValues);
     const streamLineCap = createStreamingLineCap();
     const missingCommandDetector = createMissingCommandMarkerDetector(id);
     // Child streams can split a UTF-8 code point across arbitrary data events.
@@ -2520,7 +2551,12 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     // keeps recording after that pipe reader disappears. The runner consumes
     // and deletes both fields before spawning the workload.
     childEnv[SYSTEMD_RUNNER_OUTPUT_PATH_ENV] = logPath;
-    childEnv[SYSTEMD_RUNNER_REDACTIONS_ENV] = Buffer.from(JSON.stringify(opts.redactValues ?? []), 'utf8').toString(
+    // WI-10003538: ship the SAME shape patterns so the restart-surviving log is
+    // redacted identically to the live stream.
+    childEnv[SYSTEMD_RUNNER_REDACTIONS_ENV] = Buffer.from(
+      JSON.stringify({ values: opts.redactValues ?? [], patterns: CAPABILITY_OUTPUT_REDACTION_PATTERNS }),
+      'utf8',
+    ).toString(
       'base64',
     );
   }
@@ -2591,7 +2627,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     }
   };
 
-  const redactor = createStreamingSecretRedactor(opts.redactValues);
+  const redactor = createCapabilityOutputRedactor(opts.redactValues);
   const streamLineCap = opts.onChunk ? createStreamingLineCap() : null;
   const missingCommandDetector = createMissingCommandMarkerDetector(id);
   const preflightFailureDetector = createPreflightFailureMarkerDetector();
@@ -3019,9 +3055,12 @@ function headTail(s: string): string {
   return `${head}\n\n… [${omitted} chars omitted — full output in the log file] …\n\n${tail}`;
 }
 
+/** Spill logs hold full command output: owner-only, like the durable runner's (WI-10003538). */
+export const SPILL_LOG_MODE = 0o600;
+
 function safeWriteStream(path: string, flags: 'w' | 'a' = 'w'): WriteStream | null {
   try {
-    const stream = createWriteStream(path, { flags });
+    const stream = createWriteStream(path, { flags, mode: SPILL_LOG_MODE });
     // EI-18764990059061608's own test suite surfaced this: a stream with no
     // 'error' listener turns ANY write-time fault (ENOSPC, EBADF, or a write
     // racing an `end()` issued elsewhere — e.g. __resetBashJobs tearing down a
