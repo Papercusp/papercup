@@ -93,6 +93,9 @@ describe('coord:presence guidance.argRedirects', () => {
 
   it('redirects a sessionState filter to a valid coord:roster states filter', () => {
     const redirect = presenceTool.guidance?.argRedirects?.sessionState;
+    if (typeof redirect !== 'object' || redirect === null || !('tool' in redirect)) {
+      throw new Error('sessionState guidance must be a corrective tool call');
+    }
     expect(redirect).toEqual({
       tool: 'coord:roster',
       args: { view: 'live', states: ['live'], project: 'liveness' },
