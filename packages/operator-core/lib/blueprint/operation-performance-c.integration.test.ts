@@ -10,7 +10,7 @@ import type { Sql } from 'postgres';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
-import { startDedicatedTestPg } from '@papercusp/test-config/pg';
+import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { runPairedBenchmark, gradePairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import { projectBlueprintToPg } from './project-to-pg';
@@ -52,19 +52,29 @@ async function readPgCounters(sql: Sql): Promise<PgCounters> {
 let db: OrgTestDb;
 let DBOS: typeof DBOSType | undefined;
 let tools: P013CTools;
-let dedicatedPg: StartedPostgreSqlContainer | undefined;
+let dedicatedPg: StartedPostgreSqlContainer | DedicatedNativePg | undefined;
 const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
-const dedicatedPgRequested = process.env.P013_DEDICATED_PG === '1';
+// P013_DEDICATED_PG=1 → a dedicated Docker container; =native → a dedicated
+// native cluster (same as workloads A/D). `native` exists because Docker
+// container create on this host hung 2–30 min (WI-10003403).
+const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
+  ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
+const dedicatedPgRequested = dedicatedPgMode !== null;
+const DEDICATED_PG_SETTINGS = { max_connections: '200', dynamic_shared_memory_type: 'mmap' };
 
 beforeAll(async () => {
   const startedAt = Date.now();
   const stamp = (step: string) => console.error(`P013C_SETUP step=${step} elapsedMs=${Date.now() - startedAt}`);
-  if (dedicatedPgRequested) {
-    // D-022(c): a cluster owned by this run, so cluster-wide WAL counters belong to the arms.
+  // D-022(c): a cluster owned by this run, so cluster-wide WAL counters belong to the arms.
+  if (dedicatedPgMode === 'native') {
+    dedicatedPg = await startDedicatedNativePg({ settings: DEDICATED_PG_SETTINGS });
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
+    stamp('dedicated-native-pg-started');
+  } else if (dedicatedPgMode === 'container') {
     // startDedicatedTestPg: the stock pg_isready healthcheck crash-restarts a
     // dedicated cluster mid-run under load (2026-09-27, see the helper).
     dedicatedPg = await startDedicatedTestPg({
-      command: ['postgres', '-c', 'max_connections=200', '-c', 'dynamic_shared_memory_type=mmap'],
+      command: ['postgres', ...Object.entries(DEDICATED_PG_SETTINGS).flatMap(([k, v]) => ['-c', `${k}=${v}`])],
     });
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
     stamp('dedicated-pg-started');
