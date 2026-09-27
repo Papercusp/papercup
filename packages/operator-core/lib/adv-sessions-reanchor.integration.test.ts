@@ -26,6 +26,7 @@ import {
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
   recordSuLaunchSpec,
+  reactivateAdvSessionByOwner,
   setAdvSessionPid,
   type AdvSessionExpectedBinding,
 } from './adv-sessions';
@@ -34,6 +35,9 @@ import { resolveSessionRef } from './compaction-usage';
 import { requestSessionIdentityActivation } from './agent-tools/coordination/control-anchor';
 import { acknowledgeActivation, normalizeSessionActivation, prepareActivation } from './session-activation';
 import { readActiveOperationWorkerClaimBinding } from './blueprint/operation-worker-binding';
+import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { resolveIdentityArtifact } from './capability-envelope/identity-grants-port';
+import { IDENTITY_HISTORY_LIMIT } from './su-persona-render';
 
 // Exercise the lifecycle SQL without scheduling real delayed cleanup of test rows.
 vi.mock('./session-end-lease-release-hook', () => ({ scheduleSessionEndLeaseRelease: vi.fn() }));
@@ -79,6 +83,84 @@ beforeEach(async () => {
 });
 
 describe('grant-bearing role receipt and activation (canonical PostgreSQL client)', () => {
+  it.each(['exact', 'owner'] as const)(
+    'retains the applied receipt across prepared resume revisions through the %s writer',
+    async (target) => {
+      const owner = `su-resume-receipt-${target}`;
+      const id = await seedAdv({ coordOwnerId: owner });
+      const makeRecord = (text: string) => {
+        const artifact = compileAgentSpecification({
+          source: {
+            id: 'resume-receipt', workItem: { kind: 'feature' },
+            spine: { edges: { DONE: { to: 'done' } } },
+            grants: { requires: [], optional: [] },
+          },
+          prompt: { role: 'worker', text }, inputClosure: [],
+        });
+        return {
+          v: 1, workspaceId: WS, harnessSlug: 'papercusp', role: 'worker',
+          stack: ['domain:blueprint-operation-worker'],
+          specificationRevision: artifact.specificationRevision,
+          stateRevision: 'unchanged-control-state', specificationArtifact: artifact,
+        };
+      };
+      const original = makeRecord('Original delivered instructions');
+      const applied = {
+        specificationRevision: original.specificationRevision, stateRevision: original.stateRevision,
+      };
+      const write = (record: unknown) => recordSuLaunchSpec(target === 'exact' ? id : null, owner, record);
+      try {
+        expect(await write(original)).toBe(true);
+        const initial = await requestSessionIdentityActivation({
+          ownerId: owner, workspaceId: WS, revision: applied, source: 'launch',
+          attribution: { actorId: owner, principalId: owner, sessionId: owner },
+        });
+        const delivered = acknowledgeActivation(prepareActivation(initial.state.activation!, applied), applied);
+        await admin`
+          UPDATE harness_shared.session_briefs
+             SET control_state = jsonb_set(control_state, '{activation}', ${admin.json(delivered)}, true)
+           WHERE workspace_id = ${WS} AND owner_id = ${owner}
+        `;
+        // More pending refreshes than the retention limit must not evict the
+        // one artifact the host actually acknowledged. A new launch is not ACK.
+        for (let n = 0; n < IDENTITY_HISTORY_LIMIT + 2; n++) {
+          const next = makeRecord(`Prepared successor ${n}`);
+          expect(await write(next)).toBe(true);
+          const desired = { specificationRevision: next.specificationRevision, stateRevision: next.stateRevision };
+          const requested = await requestSessionIdentityActivation({
+            ownerId: owner, workspaceId: WS, revision: desired, source: 'launch',
+            attribution: { actorId: owner, principalId: owner, sessionId: owner },
+          });
+          const prepared = prepareActivation(requested.state.activation!, desired);
+          await admin`
+            UPDATE harness_shared.session_briefs
+               SET control_state = jsonb_set(control_state, '{activation}', ${admin.json(prepared)}, true)
+             WHERE workspace_id = ${WS} AND owner_id = ${owner}
+          `;
+          const [stored] = await admin<{ launch_spec: Record<string, unknown>; activation: unknown }[]>`
+            SELECT a.launch_spec, b.control_state->'activation' AS activation
+              FROM harness_shared.adv_sessions a
+              JOIN harness_shared.session_briefs b ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
+             WHERE a.id = ${id}
+          `;
+          expect(stored.activation).toMatchObject({ status: 'prepared', desired, prepared: desired, applied });
+          expect(stored.launch_spec).toMatchObject(next);
+          const resolution = resolveIdentityArtifact(stored.launch_spec, applied);
+          expect(resolution).toMatchObject({
+            kind: 'governed', artifact: original.specificationArtifact, current: next.specificationArtifact,
+          });
+          expect(stored.launch_spec.identityHistory).toEqual(expect.any(Array));
+          expect((stored.launch_spec.identityHistory as unknown[]).length).toBeLessThanOrEqual(IDENTITY_HISTORY_LIMIT);
+          // Idempotent replay must neither duplicate nor discard the receipts.
+          expect(await write(next)).toBe(true);
+          expect(await readSuLaunchSpecByOwner(owner)).toEqual(stored.launch_spec);
+        }
+      } finally {
+        await admin`DELETE FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id = ${owner}`;
+      }
+    },
+  );
+
   it('adopts the launch row with its reserved owner and role metadata, without a duplicate', async () => {
     const id = await seedAdv({ coordOwnerId: OWNER });
     await admin`UPDATE harness_shared.adv_sessions SET display = 'terminal' WHERE id = ${id}`;
@@ -195,6 +277,31 @@ describe('active operation worker claim receipt', () => {
 });
 
 describe('successor lifecycle compare-and-swap (EI-22446987530949437, real PG)', () => {
+  it('does not resurrect a terminal predecessor when owner activity belongs to an active successor', async () => {
+    const predecessorId = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID, ended: true });
+    await admin`UPDATE harness_shared.adv_sessions SET ended_by = 'reconciler' WHERE id = ${predecessorId}`;
+    const successorId = await seedAdv({ coordOwnerId: OWNER, sessionId: FRESH_ID, startedAgoSec: 0 });
+    const before = await admin<{ id: number; ended_at: Date | null; ended_by: string | null; started_at: Date }[]>`
+      SELECT id, ended_at, ended_by, started_at FROM harness_shared.adv_sessions ORDER BY id
+    `;
+    expect(await reactivateAdvSessionByOwner(OWNER)).toBe(false);
+    const after = await admin<{ id: number; ended_at: Date | null; ended_by: string | null; started_at: Date }[]>`
+      SELECT id, ended_at, ended_by, started_at FROM harness_shared.adv_sessions ORDER BY id
+    `;
+    expect(after).toEqual(before);
+    expect(after.find((row) => row.id === successorId)?.ended_at).toBeNull();
+  });
+
+  it('still reactivates the sole terminal owner row when no successor is active', async () => {
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID, ended: true });
+    await admin`UPDATE harness_shared.adv_sessions SET ended_by = 'signal' WHERE id = ${id}`;
+    expect(await reactivateAdvSessionByOwner(OWNER)).toBe(true);
+    const [row] = await admin<{ ended_at: Date | null; ended_by: string | null }[]>`
+      SELECT ended_at, ended_by FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    expect(row).toEqual({ ended_at: null, ended_by: null });
+  });
+
   async function predecessor(): Promise<{ id: number; binding: AdvSessionExpectedBinding }> {
     const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID });
     await admin`UPDATE harness_shared.adv_sessions SET started_at = '2026-09-05 18:00:00.123456+00'::timestamptz WHERE id = ${id}`;

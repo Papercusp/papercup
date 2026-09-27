@@ -1602,7 +1602,7 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
     // leave both the reservation and terminal evidence intact. Keep this on
     // the UPDATE, so a concurrent acquire is rechecked under the row lock.
     const rows = await sql<{ id: number }[]>`
-      UPDATE harness_shared.adv_sessions
+      UPDATE harness_shared.adv_sessions AS target
          SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
              started_at = now(), shutdown_accepted_at = NULL
        WHERE id = (
@@ -1613,6 +1613,14 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
           LIMIT 1
        )
          AND resume_claim_key IS NULL
+         -- Owner activity may come from a NEW row. Reviving its retired
+         -- predecessor would make that older artifact newest to the kernel.
+         AND NOT EXISTS (
+           SELECT 1 FROM harness_shared.adv_sessions active
+            WHERE active.coord_owner_id = target.coord_owner_id
+              AND active.workspace_id = target.workspace_id
+              AND active.ended_at IS NULL AND active.ended_by IS NULL
+         )
       RETURNING id
     `;
     return rows.length > 0;
@@ -1762,9 +1770,9 @@ export async function reanchorAdvSessionNativeIdByOwner(
  * sources instead of inheriting the predecessor's already-rendered file
  * (stale-prompt-render-in-live-sessions-2026-08-02 P-002).
  *
- * Best-effort and never throws: a launch must not fail because this bookkeeping
- * did. The cost of it missing is bounded and known — that session's respawns keep
- * the inherited render, i.e. exactly today's behaviour.
+ * Returns false on failure so launch callers can refuse without a receipt.
+ * Replacing a render must retain the still-applied artifact until real delivery
+ * acknowledges its successor; persisting a launch is not an activation ACK.
  */
 export async function recordSuLaunchSpec(
   advSessionId: number | null,
@@ -1774,32 +1782,33 @@ export async function recordSuLaunchSpec(
   if (!launchSpec) return false;
   if ((advSessionId == null || advSessionId <= 0) && !coordOwnerId) return false;
   try {
-    const { sql } = getOrgPg();
-    const payload = JSON.stringify(launchSpec);
+    const { retainSuLaunchIdentityHistory } = await import('./su-persona-render');
     // Prefer the exact row id; fall back to the owner's NEWEST row for the
-    // interactive cohort, which never carries PAPERCUSP_ADV_SESSION_ID (the same
-    // keying reanchorAdvSessionNativeIdByOwner uses, so the two agree by
-    // construction).
-    const rows =
-      advSessionId != null && advSessionId > 0
-        ? await sql<{ id: number }[]>`
-            UPDATE harness_shared.adv_sessions
-               SET launch_spec = ${payload}::jsonb
-             WHERE id = ${advSessionId}
-            RETURNING id
-          `
-        : await sql<{ id: number }[]>`
-            UPDATE harness_shared.adv_sessions
-               SET launch_spec = ${payload}::jsonb
-             WHERE id = (
-               SELECT id FROM harness_shared.adv_sessions
-                WHERE coord_owner_id = ${coordOwnerId}
-                ORDER BY started_at DESC
-                LIMIT 1
-             )
-            RETURNING id
-          `;
-    return rows.length > 0;
+    // interactive cohort. Lock the selected row across read/merge/write so two
+    // concurrent refreshes cannot discard each other's immutable receipts.
+    return await boundedOrgTxn(async (tx) => {
+      const exactId = advSessionId != null && advSessionId > 0 ? advSessionId : null;
+      const rows = await tx<{ id: number; launch_spec: unknown; applied: unknown }[]>`
+        SELECT a.id, a.launch_spec, b.control_state->'activation'->'applied' AS applied
+          FROM harness_shared.adv_sessions a
+          LEFT JOIN harness_shared.session_briefs b
+            ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
+         WHERE (${exactId}::bigint IS NOT NULL AND a.id = ${exactId})
+            OR (${exactId}::bigint IS NULL AND a.coord_owner_id = ${coordOwnerId})
+         ORDER BY a.started_at DESC, a.id DESC
+         LIMIT 1
+         FOR UPDATE OF a
+      `;
+      const row = rows[0];
+      if (!row) return false;
+      const payload = JSON.stringify(retainSuLaunchIdentityHistory(row.launch_spec, launchSpec, row.applied));
+      const updated = await tx<{ id: number }[]>`
+        UPDATE harness_shared.adv_sessions SET launch_spec = ${payload}::jsonb
+         WHERE id = ${row.id}
+        RETURNING id
+      `;
+      return updated.length > 0;
+    });
   } catch (e) {
     warnUnlessMissingTable(e, 'recordSuLaunchSpec');
     return false;
