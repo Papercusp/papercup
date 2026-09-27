@@ -528,13 +528,14 @@ function nextDecision(
   reason: string,
   evidence: Readonly<Record<string, DecisionValue>> = {},
 ): DurableAdmissionRecord {
+  const transitionAtMs = Math.max(nowMs, record.enqueuedAtMs, record.updatedAtMs);
   return {
     ...record,
     state,
-    updatedAtMs: nowMs,
+    updatedAtMs: transitionAtMs,
     decision: {
       generation: record.decision.generation + 1,
-      atMs: nowMs,
+      atMs: transitionAtMs,
       reason,
       evidence,
     },

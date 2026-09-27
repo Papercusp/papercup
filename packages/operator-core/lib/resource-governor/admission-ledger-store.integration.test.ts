@@ -144,6 +144,25 @@ describe('PgAdmissionLedgerQueueStore', () => {
     ]);
   });
 
+  it('keeps supersession time monotonic when the newer request comes from a clock behind the prior receipt', async () => {
+    await instance('old', { now: () => 20_000 }).governor.admit({
+      idempotencyKey: 'old', admissionClass: 'indexing', coalesceKey: 'index:skew',
+    });
+    await instance('new', { now: () => 10_000 }).governor.admit({
+      idempotencyKey: 'new', admissionClass: 'indexing', coalesceKey: 'index:skew',
+    });
+    const [old] = await db.sql<Array<{ state: string; enqueued_at_ms: number; updated_at_ms: number; record: {
+      decision: { atMs: number };
+    } }>>`
+      SELECT state, enqueued_at_ms, updated_at_ms, record
+        FROM harness_shared.resource_governor_admissions
+       WHERE workspace_id = 'ws-ledger' AND idempotency_key = 'old'`;
+    expect(old).toMatchObject({
+      state: 'superseded', enqueued_at_ms: 20_000, updated_at_ms: 20_000,
+      record: { decision: { atMs: 20_000 } },
+    });
+  });
+
   it('reads one complete queue census from the ledger plus bounded legacy overlap', async () => {
     const clock = { now: 100_000 };
     const legacyRecord = {

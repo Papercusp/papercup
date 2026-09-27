@@ -13,9 +13,11 @@ vi.mock('../../fleet/git-via-sidecar', () => ({
   gitSidecarEnabled: sidecar.enabled,
   runGitViaSpawnerSidecar: sidecar.run,
   noteSidecarFallback: sidecar.fallback,
+  isSidecarInfrastructureFault: (result: { code: number; stderr: string }) =>
+    result.code === -1 && result.stderr.startsWith('spawner sidecar '),
 }));
 
-import { runGitBounded } from './run-git-sync';
+import { gitSyncPreDispatchError, runGitBounded } from './run-git-sync';
 
 beforeEach(() => {
   sidecar.enabled.mockClear();
@@ -24,6 +26,18 @@ beforeEach(() => {
 });
 
 describe('git-sync signal-bearing sidecar routing', () => {
+  it('reports admission refusal as infrastructure, without replaying a mutation or treating it as a Git merge error', async () => {
+    sidecar.run.mockResolvedValue({
+      code: -1, stdout: '', stderr: 'spawner sidecar admission failed: resource_governor_admissions_time_chk',
+    });
+    const result = await runGitBounded(['merge', '--no-edit', 'origin/staging'], '/tmp', 5000);
+    expect(result.code).toBe(-1);
+    expect(gitSyncPreDispatchError(result)).toContain('infrastructure refusal before Git dispatch');
+    expect(gitSyncPreDispatchError(result)).toContain('resource_governor_admissions_time_chk');
+    expect(sidecar.run).toHaveBeenCalledOnce();
+    expect(sidecar.fallback).not.toHaveBeenCalled();
+    expect(gitSyncPreDispatchError({ code: 1, stdout: '', stderr: 'Git failed' })).toBeNull();
+  });
   it('routes a read-only Git call with cancellation, progress and optional locks disabled', async () => {
     const controller = new AbortController();
     const progress = vi.fn();

@@ -35,7 +35,7 @@ import {
   ESCALATION_SLA_REROUTE_WAKE_SOURCE,
   wakeRecipients,
 } from '../agent-tools/coordination/inbox-wake';
-import { coordLog, coordSql, coordWorkspaceId } from '../agent-tools/coordination/log';
+import { coordLog, coordSql, coordWorkspaceId, coordHasPgFastPath } from '../agent-tools/coordination/log';
 import { AGENT_SESSION_SENDER_PATTERN } from '../agent-tools/coordination/machine-authored';
 import { readEvidence } from '../agent-tools/coordination/relay-provenance';
 import {
@@ -694,45 +694,51 @@ export function selectEscalationSlaReroutes(
 /** Any messages-surface sibling carrying related_msg_id retires rerouting for
  * the escalation. A reroute notice cannot use related_msg_id when the original
  * escalation has been pruned, so its explicit lifecycle marker does the same
- * job. The explicit key-presence predicate is required by the live partial
- * index; keep it even though the equality looks sufficient. */
+ * job.
+ *
+ * Two UNIONed legs, each an index scan on its own partial index (691 for
+ * related_msg_id, 1235 for the reroute marker). The key-presence predicates are
+ * required by those partial indexes; keep them even though the equality looks
+ * sufficient. The marker key is a SQL LITERAL on purpose: a postgres.js
+ * interpolation inside quotes becomes a quoted '$n', which is how this query
+ * used to fail every prepare and fall back to the whole messages surface
+ * (host-memory-reduction-2026-09-27 D-012). It must equal
+ * ESCALATION_REROUTE_MARKER_FIELD — pinned behaviourally by
+ * reconcile-escalations.reroute.integration.test.ts, which seeds a real marker
+ * row against real PG (no fallback left to mask a mismatch).
+ * On PG a query error PROPAGATES (D-011); only a non-PG seam scans readLines. */
 async function readEscalationResponseMarkers(msgIds: readonly string[]): Promise<Set<string>> {
   const ids = [...new Set(msgIds.filter(Boolean))];
   if (ids.length === 0) return new Set();
-  try {
+  if (coordHasPgFastPath()) {
     const sql = coordSql();
-    const rows = await sql<{
-      related_msg_id: string | null;
-      escalation_reroute_of: string | null;
-    }[]>`
-      SELECT DISTINCT
-             body->>'related_msg_id' AS related_msg_id,
-             body->>'${ESCALATION_REROUTE_MARKER_FIELD}' AS escalation_reroute_of
+    const ws = coordWorkspaceId();
+    const rows = await sql<{ msg_id: string | null }[]>`
+      SELECT body->>'related_msg_id' AS msg_id
         FROM harness_shared.coord_event_log
-       WHERE workspace_id = ${coordWorkspaceId()}
+       WHERE workspace_id = ${ws}
          AND surface = 'messages'
-         AND (
-           (body ? 'related_msg_id' AND body->>'related_msg_id' = ANY(${ids}))
-           OR
-           (body ? '${ESCALATION_REROUTE_MARKER_FIELD}' AND body->>'${ESCALATION_REROUTE_MARKER_FIELD}' = ANY(${ids}))
-         )
+         AND body ? 'related_msg_id'
+         AND body->>'related_msg_id' = ANY(${ids})
+      UNION
+      SELECT body->>'escalationRerouteOf' AS msg_id
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${ws}
+         AND surface = 'messages'
+         AND body ? 'escalationRerouteOf'
+         AND body->>'escalationRerouteOf' = ANY(${ids})
     `;
-    return new Set(
-      rows
-        .flatMap((row) => [row.related_msg_id, row.escalation_reroute_of])
-        .filter((id): id is string => typeof id === 'string'),
-    );
-  } catch {
-    const idSet = new Set(ids);
-    const lines = await coordLog.readLines('messages');
-    return new Set(lines.flatMap((line) => {
-      const marker = (line as unknown as Record<string, unknown>)[ESCALATION_REROUTE_MARKER_FIELD];
-      return [
-        line.related_msg_id,
-        typeof marker === 'string' ? marker : null,
-      ].filter((id): id is string => typeof id === 'string' && idSet.has(id));
-    }));
+    return new Set(rows.map((row) => row.msg_id).filter((id): id is string => typeof id === 'string'));
   }
+  const idSet = new Set(ids);
+  const lines = await coordLog.readLines('messages');
+  return new Set(lines.flatMap((line) => {
+    const marker = (line as unknown as Record<string, unknown>)[ESCALATION_REROUTE_MARKER_FIELD];
+    return [
+      line.related_msg_id,
+      typeof marker === 'string' ? marker : null,
+    ].filter((id): id is string => typeof id === 'string' && idSet.has(id));
+  }));
 }
 
 export interface EscalationRerouteResult {

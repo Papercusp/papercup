@@ -102,13 +102,17 @@ function nextDecision(
   reason: string,
   evidence: Readonly<Record<string, DecisionValue>> = {},
 ): DurableAdmissionRecord {
+  // A newer request can carry an earlier wall-clock reading than an existing
+  // receipt (different hosts or a clock adjustment). Never move a receipt's
+  // persisted transition behind its enqueue/previous transition timestamp.
+  const transitionAtMs = Math.max(nowMs, record.enqueuedAtMs, record.updatedAtMs);
   return {
     ...record,
     state,
-    updatedAtMs: nowMs,
+    updatedAtMs: transitionAtMs,
     decision: {
       generation: record.decision.generation + 1,
-      atMs: nowMs,
+      atMs: transitionAtMs,
       reason,
       evidence,
     },
