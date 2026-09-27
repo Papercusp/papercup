@@ -680,6 +680,27 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(edges).toHaveLength(1);
   });
 
+  it("WI-10003495: the run instance inherits the template's output_schema (plans:publish-outputs needs it)", async () => {
+    const outputSchema = {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+      required: ['value'],
+      additionalProperties: false,
+    };
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET output_schema = ${sql.json(outputSchema)}
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    await stampClaim(new Date('2026-06-16T09:30:00.000Z'));
+    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });
+    expect(res).not.toBeNull();
+    const inst = await sql<Array<{ output_schema: unknown }>>`
+      SELECT output_schema FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${res!.instanceSlug}`;
+    expect(inst).toHaveLength(1);
+    expect(inst[0].output_schema).toEqual(outputSchema);
+  });
+
   it('drives template instance → canonical promotion → stable assignment/wake across replay and dependency release', async () => {
     const execution = { appHarnessSlug: APP_HARNESS, agentName: 'email-agent' };
     const wakeOwner = 'su-email-plan-run-it';

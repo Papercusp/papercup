@@ -262,11 +262,12 @@ async function runScheduledPlanFireTx(
       template: string | null;
       template_data: unknown;
       input_schema: unknown;
+      output_schema: unknown;
       acceptance_bar_epoch: number | string | null;
     }>
   >`
     SELECT content, content_hash, version, title, items, decisions, schedule, template, template_data, input_schema,
-           acceptance_bar_epoch
+           output_schema, acceptance_bar_epoch
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${planStorageSlug}
        AND plan_slug = ${templateSlug}
@@ -540,6 +541,10 @@ async function runScheduledPlanFireTx(
   //    hash must reflect what is actually stored, not the template's.
   const runInputsJson = runInputs === null || runInputs === undefined ? null : JSON.stringify(runInputs);
   const inputSchemaJson = template.input_schema == null ? null : JSON.stringify(template.input_schema);
+  // WI-10003495: the run's RETURN contract travels with it too. plans:publish-outputs
+  // validates against the INSTANCE row's output_schema, so dropping it made every run
+  // of an output-declaring template refuse `no_outputs_declared`.
+  const outputSchemaJson = template.output_schema == null ? null : JSON.stringify(template.output_schema);
   // The template's `items` jsonb is the canonical derived index consumed by
   // promotePlanItems. Copy it with the content snapshot: historical fixtures
   // (and imported plans) may have a populated index even when their markdown
@@ -571,11 +576,13 @@ async function runScheduledPlanFireTx(
   await sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
-       items, decisions, template_slug, run_seq, origin, template, template_data, input_schema)
+       items, decisions, template_slug, run_seq, origin, template, template_data, input_schema,
+       output_schema)
     VALUES (${workspaceId}, ${appPlanStorageSlug}, ${instanceSlug}, ${template.title}, 'active',
             ${instanceContent}, ${instanceContentHash}, ${itemsJson}::text::jsonb, ${decisionsJson}::text::jsonb,
             ${templateSlug}, ${runSeq}, 'local',
-            ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb)
+            ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb,
+            ${outputSchemaJson}::text::jsonb)
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
   `;
   // Raw instance creation is a plan WRITE and therefore owes the same derived
