@@ -1979,3 +1979,71 @@ esac
     expect(result.output).not.toContain('release acceptance green');
   });
 });
+
+// WI-10003543: runIntegratorTick is an owner-key-gated hive effect. A Leg D
+// heredoc that omits `authority` is silently skipped as 'not-integrator', and a
+// non-null assertion on its announcement then crashed Leg D with no diagnosis.
+describe('Leg D heredoc wires the owner-key authority and diagnoses a null announcement', () => {
+  const start = drill.indexOf('cat > "$LEGD_SCRIPT" <<EOF');
+  const legD = drill.slice(start, drill.indexOf('\nEOF\n', start));
+
+  it('locates the Leg D heredoc (calibration)', () => {
+    expect(start).toBeGreaterThan(0);
+    expect(legD).toContain('runIntegratorTick(');
+  });
+
+  it('passes context, accepted floors and authority to every integrator tick', () => {
+    const ticks = legD.split('runIntegratorTick({').slice(1).map((t) => t.slice(0, t.indexOf('});')));
+    expect(ticks).toHaveLength(2);
+    for (const tick of ticks) expect(tick).toMatch(/context, acceptedSnapshots: await acceptedFloors\(\), authority,/);
+  });
+
+  it('never non-null-asserts an announcement and pins expectedContext on the bridge', () => {
+    expect(legD).not.toMatch(/announcement!/);
+    expect(legD).toContain("if (!out.announcement) return failNoAnnouncement('first-tick', out);");
+    expect(legD).toContain("if (!out2.announcement) return failNoAnnouncement('second-tick', out2);");
+    expect(legD.match(/accept: \{ expectedContext: context, expectedDevice:/g)).toHaveLength(2);
+  });
+});
+
+// WI-2039874 / P-505 run 3 (2026-09-27): the phase A tower readiness probe passed
+// `--client` to the tower ptool, which has never accepted it ("unknown flag
+// --client"). The scenario tests fake ptool, so nothing caught it until the rig.
+// Derive ptool's accepted flags from ptool.mjs itself so the set cannot drift.
+describe('physical scenario tower ptool calls use only flags ptool accepts', () => {
+  const ptoolSrc = readFileSync(join(repoRoot(), 'apps', 'operator', 'scripts', 'ptool.mjs'), 'utf8');
+  const accepted = new Set([
+    ...[...ptoolSrc.matchAll(/'(--[a-z][a-z-]*)'\s*:/g)].map((m) => m[1]),
+    ...[...ptoolSrc.matchAll(/a === '(--[a-z][a-z-]*)'/g)].map((m) => m[1]),
+  ]);
+  function towerCallFlags(script: string): string[][] {
+    const lines = script.split('\n');
+    const calls: string[][] = [];
+    lines.forEach((line, i) => {
+      if (!line.includes('"$TOWER_CALL"')) return;
+      let text = line;
+      for (let j = i; lines[j]?.trimEnd().endsWith('\\') && j + 1 < lines.length; j++) text += `\n${lines[j + 1]}`;
+      calls.push([...text.matchAll(/(?<![\w-])(--[a-z][a-z-]*)/g)].map((m) => m[1]));
+    });
+    return calls;
+  }
+
+  it('reads a real flag table from ptool.mjs (calibration)', () => {
+    expect(accepted.has('--json')).toBe(true);
+    expect(accepted.has('--workspace')).toBe(true);
+    expect(accepted.has('--client')).toBe(false);
+  });
+
+  it('every "$TOWER_CALL" invocation passes only accepted flags', () => {
+    const calls = towerCallFlags(physicalScenario);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    const unsupported = calls.flat().filter((flag) => !accepted.has(flag));
+    expect(unsupported).toEqual([]);
+  });
+
+  it('flags a reintroduced --client on a tower call (falsifiability control)', () => {
+    const mutant = physicalScenario.replace('dev:dogfood_substrate_status --json -', 'dev:dogfood_substrate_status --json - --client x');
+    expect(mutant).not.toBe(physicalScenario);
+    expect(towerCallFlags(mutant).flat().filter((flag) => !accepted.has(flag))).toEqual(['--client']);
+  });
+});
