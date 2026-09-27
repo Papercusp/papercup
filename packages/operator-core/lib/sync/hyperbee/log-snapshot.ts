@@ -432,7 +432,7 @@ export class SnapshotRowFolder {
   }
 }
 
-function cmpStr(a: string, b: string): number {
+export function cmpStr(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
@@ -517,7 +517,7 @@ export function chunkSnapshotRows(
  *  of a set share `coversUpTo`; `chunkIdx` / `chunkCount` let the reader recognize
  *  the set and require every chunk before seeding a cursor. The hbKey is unique
  *  per (coversUpTo, chunkIdx). */
-function buildSnapshotChunkOp(opts: {
+export function buildSnapshotChunkOp(opts: {
   rows: SnapshotRow[];
   coversUpTo: number;
   chunkIdx: number;
@@ -1394,6 +1394,13 @@ export async function produceLogSnapshot(
     foldWorker?: SnapshotFoldWorkerFactory;
     /** P-530 — current PG receipt census + the pre-census own-log boundary. */
     governorReceiptFilter?: GovernorReceiptSnapshotFilter;
+    /**
+     * P-006 — where the offloaded fold persists its mid-scan state, so a fold interrupted by
+     * a restart or an abort resumes from its cursor instead of index 0. Worker path only.
+     */
+    foldCheckpoint?: SnapshotFoldCheckpointStore;
+    /** P-006 — minimum spacing between checkpoint saves. Default `SNAPSHOT_FOLD_CHECKPOINT_INTERVAL_MS`. */
+    checkpointIntervalMs?: number;
   },
 ): Promise<ProduceSnapshotResult> {
   if (opts.foldWorker) return produceLogSnapshotOffloaded(ownLog, opts, opts.foldWorker);
@@ -1615,6 +1622,31 @@ function assertSnapshotAnchorHeld(anchorOp: PeerLogOp | null, coversUpTo: number
 }
 
 /**
+ * P-006 — durable storage for one own-log fold's resume checkpoint (the bytes are opaque to
+ * the producer; `SnapshotIndexFolder` validates them). `fileSnapshotFoldCheckpointStore`
+ * (snapshot-fold-offload.ts) is the production implementation.
+ */
+export interface SnapshotFoldCheckpointStore {
+  load(): Promise<Uint8Array | null>;
+  save(bytes: Uint8Array): Promise<void>;
+  clear(): Promise<void>;
+}
+
+/**
+ * P-006 — how often the offloaded fold persists its resume checkpoint. A save serializes the
+ * whole scan state (keys + positions, never values), so it is paced rather than per window;
+ * the worst case lost to a crash is this much fold time. An abort saves immediately.
+ */
+export const SNAPSHOT_FOLD_CHECKPOINT_INTERVAL_MS = 2 * 60 * 1000;
+
+/**
+ * P-006 — target bytes per materialize batch. Winner blocks include prior-snapshot chunks of
+ * up to `SNAPSHOT_MAX_CHUNK_BYTES` each, so a fixed 256-block window could pull ~1 GiB onto
+ * the main thread at once (the WI-10002836 failure shape). The batch size adapts to this.
+ */
+const SNAPSHOT_MATERIALIZE_BATCH_BYTES = 64 * 1024 * 1024;
+
+/**
  * WI-10002855 — the fold, run somewhere other than the caller's event loop. Implemented
  * by `SnapshotFoldWorker` (snapshot-fold-offload.ts, a worker thread). Declared here, not
  * imported, so this module stays pure: the worker bundle imports THIS file.
@@ -1631,6 +1663,20 @@ export interface SnapshotFoldWorkerLike {
   ): Promise<SnapshotFoldWindowResult>;
   /** Decode stored blocks WITHOUT their bulk (a snapshot op keeps its metadata, not its rows). */
   inspect(blocks: ReadonlyArray<Uint8Array | null>): Promise<Array<PeerLogOp | null>>;
+  /**
+   * P-006 — the fold is INDEX-ONLY (snapshot-index-fold.ts): during the scan it keeps each
+   * key's winning position, never its value. Before `finish`, every winner's block is read
+   * back once: `pendingIndexes` names them, `materialize` turns them into row JSON.
+   */
+  pendingIndexes(): Promise<number[]>;
+  materialize(blocks: ReadonlyArray<Uint8Array | null>, indexes: readonly number[], now: number): Promise<void>;
+  /** P-006 — the scan state covering every op below `cursor`, for a later `restore`. */
+  checkpoint(args: { logKey: string; cursor: number }): Promise<Uint8Array>;
+  /** P-006 — load a checkpoint into the fresh fold; `cursor: null` (with a reason) when it does not fit. */
+  restore(
+    bytes: Uint8Array,
+    args: { logKey: string; minCursor?: number; maxCursor: number },
+  ): Promise<{ cursor: number | null; reason?: string }>;
   /** Emit the set as stored blocks, byte-identical to what `appendBatch(buildSnapshotOpsFromRows(...))` writes. */
   finish(args: {
     now: number;
@@ -1721,11 +1767,35 @@ async function produceLogSnapshotOffloaded(
       get: inspectAt,
     };
 
+    // P-006 — the resume checkpoint. Saved only from contiguous ranges (skipSnapshotOps),
+    // never mid-seed: a cursor inside the seed set would make a resumed fold SKIP the
+    // chunks it had not yet expanded. A hole disables saving too (the hole rule needs the
+    // skip state to restart at the hole, which a cursor alone cannot carry).
+    const store = opts.foldCheckpoint;
+    const checkpointIntervalMs = opts.checkpointIntervalMs ?? SNAPSHOT_FOLD_CHECKPOINT_INTERVAL_MS;
+    let lastCheckpointAt = Date.now();
+    let materializing = false;
+    const saveCheckpoint = async (cursor: number, force: boolean): Promise<void> => {
+      if (!store || materializing) return;
+      if (!force && Date.now() - lastCheckpointAt < checkpointIntervalMs) return;
+      lastCheckpointAt = Date.now();
+      try {
+        await store.save(await worker.checkpoint({ logKey: ownLog.keyHex, cursor }));
+      } catch (e) {
+        // Resume is an optimization; a failed save must never fail the compaction.
+        console.error(
+          `[snapshot] own compaction: checkpoint save at ${cursor} failed (the fold continues; ` +
+            `a restart would resume from the previous checkpoint): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    };
+
     // `skipSnapshotOps` is false ONLY for the seed range: that range IS the prior set,
     // whose rows are the whole point. Every other range continues contiguously from
     // what the worker already holds (see `FoldLogRangeOptions.skipSnapshotOps`).
     const foldRange = (from: number, to: number, skipSnapshotOps = true): Promise<void> =>
       foldLogRangeViaWorker(getRaw, worker, from, to, {
+        ...(skipSnapshotOps ? { checkpoint: saveCheckpoint } : {}),
         phase: 'own-compaction',
         coreKey: ownLog.keyHex,
         onProgress: opts.onProgress,
@@ -1748,6 +1818,7 @@ async function produceLogSnapshotOffloaded(
       ...(opts.priorSnapshotHint ? { hint: opts.priorSnapshotHint } : {}),
     });
     let foldedUpTo = 0;
+    let seed: ProducerSnapshotSeed | null = null;
     if (priorSnapshot) {
       const conflict = conflictingSnapshotExclusion(priorSnapshot, new Set(excludeTables));
       if (conflict) {
@@ -1757,10 +1828,45 @@ async function produceLogSnapshotOffloaded(
             `(correct, but O(history) — see conflictingSnapshotExclusion)`,
         );
       } else {
-        const seedEnd = priorSnapshot.coversUpTo + priorSnapshot.chunkCount;
-        await foldRange(priorSnapshot.coversUpTo, seedEnd, false);
-        foldedUpTo = seedEnd;
+        seed = priorSnapshot;
       }
+    }
+    const seedEnd = seed ? seed.coversUpTo + seed.chunkCount : 0;
+
+    // P-006 — resume an interrupted fold when its checkpoint gets further than the seed.
+    // The log is append-only, so a state that folded every op below `cursor` is still
+    // exactly that state; the restore refuses anything for another log, other exclusions,
+    // a cursor past the end, or one behind the seed (then seeding is less work).
+    let resumedFrom: number | null = null;
+    if (store) {
+      const bytes = await store.load().catch((e: unknown) => {
+        console.error(
+          `[snapshot] own compaction: checkpoint unreadable, not resuming: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        return null;
+      });
+      if (bytes) {
+        const restored = await worker.restore(bytes, {
+          logKey: ownLog.keyHex,
+          minCursor: seedEnd,
+          maxCursor: ownLog.length,
+        });
+        if (restored.cursor !== null) {
+          resumedFrom = restored.cursor;
+          console.error(
+            `[snapshot] own compaction: resuming the fold from checkpoint cursor ${restored.cursor} ` +
+              `(log length ${ownLog.length}) instead of ${seed ? `seed end ${seedEnd}` : 'index 0'}`,
+          );
+        } else {
+          console.error(`[snapshot] own compaction: checkpoint not used: ${restored.reason ?? 'unknown'}`);
+        }
+      }
+    }
+    if (resumedFrom !== null) {
+      foldedUpTo = resumedFrom;
+    } else if (seed) {
+      await foldRange(seed.coversUpTo, seedEnd, false);
+      foldedUpTo = seedEnd;
     }
 
     await foldRange(foldedUpTo, coversUpTo);
@@ -1772,15 +1878,27 @@ async function produceLogSnapshotOffloaded(
       await foldRange(foldedUpTo, target);
       foldedUpTo = target;
     }
+    // A last save at the end of the scan: a restart during materialization resumes here.
+    await saveCheckpoint(foldedUpTo, true);
+
+    // P-006 — read each winner's block back once and turn it into row JSON, OUTSIDE the
+    // append hold (it is O(live keys) of I/O). Only the delta folded under the hold needs
+    // materializing again below.
+    const materializePending = async (): Promise<void> => {
+      materializing = true;
+      await materializeWinnersViaWorker(getRaw, worker, opts.now, opts.shouldAbort);
+    };
+    await materializePending();
 
     // D-025 — the final re-anchor, the worker's build and the append run under the
     // own log's append hold; see produceLogSnapshot.
-    return await withOwnLogAppendsHeld(ownLog, async (held) => {
+    const result = await withOwnLogAppendsHeld(ownLog, async (held) => {
       if (ownLog.length > foldedUpTo) {
         const target = ownLog.length;
         await foldRange(foldedUpTo, target);
         foldedUpTo = target;
       }
+      await materializePending();
       coversUpTo = foldedUpTo;
 
       const { blocks, rowCount, droppedGovernorReceipts, unopenedGovernorEnvelopes } = await worker.finish({
@@ -1810,8 +1928,47 @@ async function produceLogSnapshotOffloaded(
         ...(unopenedGovernorEnvelopes !== undefined ? { unopenedGovernorEnvelopes } : {}),
       };
     });
+    // The set just appended now seeds the next fold, so the checkpoint is superseded. Only
+    // after the anchor verified: a failed append must keep the resume point.
+    await store?.clear().catch(() => {});
+    return result;
   } finally {
     await worker.close().catch(() => {});
+  }
+}
+
+/**
+ * P-006 — read every unmaterialized winner's block and hand it to the worker, in ascending
+ * index order and in byte-bounded batches (`SNAPSHOT_MATERIALIZE_BATCH_BYTES`): a batch of
+ * prior-snapshot chunks is ~4 MiB per block, so the count adapts to what the last batch
+ * actually weighed.
+ */
+async function materializeWinnersViaWorker(
+  getRaw: (index: number) => Promise<Uint8Array | null>,
+  worker: SnapshotFoldWorkerLike,
+  now: number,
+  shouldAbort?: () => boolean,
+): Promise<void> {
+  const indexes = await worker.pendingIndexes();
+  let batch = SNAPSHOT_READ_CONCURRENCY;
+  for (let at = 0; at < indexes.length; ) {
+    if (shouldAbort?.()) {
+      throw new SnapshotAbortedError(
+        `[snapshot] own compaction aborted while materializing (${at}/${indexes.length} winner blocks): the caller is stopping`,
+      );
+    }
+    const slice = indexes.slice(at, at + batch);
+    const blocks = await Promise.all(slice.map((i) => getRaw(i)));
+    let bytes = 0;
+    for (const b of blocks) if (b) bytes += b.byteLength;
+    await worker.materialize(blocks, slice, now);
+    at += slice.length;
+    batch = Math.max(
+      1,
+      Math.min(SNAPSHOT_READ_CONCURRENCY, Math.floor((slice.length * SNAPSHOT_MATERIALIZE_BATCH_BYTES) / Math.max(1, bytes))),
+    );
+    // Same macrotask yield as the scan: keep the host's timers alive (see foldLogRangeInto).
+    await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
 
@@ -1824,7 +1981,14 @@ async function foldLogRangeViaWorker(
   worker: SnapshotFoldWorkerLike,
   from: number,
   to: number,
-  opts: FoldLogRangeOptions & { shouldAbort?: () => boolean },
+  opts: FoldLogRangeOptions & {
+    shouldAbort?: () => boolean;
+    /**
+     * P-006 — offered the cursor after every folded window (`force: false`, the callee paces
+     * itself) and at an abort (`force: true`). Never called once a hole has been seen.
+     */
+    checkpoint?: (cursor: number, force: boolean) => Promise<void>;
+  },
 ): Promise<void> {
   const watchdog =
     opts.onStall && opts.stallMs !== undefined && opts.stallMs > 0
@@ -1852,6 +2016,8 @@ async function foldLogRangeViaWorker(
       const raw = await next!;
       next = end < to ? readWindow(end) : null;
       if (opts.shouldAbort?.()) {
+        // Everything below `start` is folded: persist it so the next run resumes here.
+        if (!sawHole) await opts.checkpoint?.(start, true);
         throw new SnapshotAbortedError(
           `[snapshot] own compaction aborted mid-fold at ${start}/${to}: the caller is stopping`,
         );
@@ -1896,6 +2062,7 @@ async function foldLogRangeViaWorker(
           ? { workerHeapUsedMb: Math.round(counts.heapUsedBytes / 1_048_576) }
           : {}),
       });
+      if (!sawHole) await opts.checkpoint?.(end, false);
     }
   } finally {
     watchdog?.stop();
