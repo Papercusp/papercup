@@ -318,6 +318,26 @@ describe('emitScorecard', () => {
     });
   });
 
+  it('stamps a graded subject rubric separately from the scoring rubric', async () => {
+    getRubricM.mockImplementation(async (ref) => ref === 'subject-rubric'
+      ? { ...RUBRIC, rubricId: ref, revision: 4, criteriaHash: 'subject-hash' }
+      : RUBRIC);
+    getRubricPlanRevisionM.mockImplementation(async (ref) => ref === 'subject-rubric' ? 4 : 7);
+    getRubricCriteriaHashM.mockImplementation(async (ref) => ref === 'subject-rubric' ? 'subject-hash' : 'meta-hash');
+
+    const result = await emitScorecard({
+      rubricRef: 'test-rubric',
+      subject: { kind: 'rubric', ref: 'subject-rubric' },
+      ratings: RATINGS,
+    }, { createdBy: 'su-1' });
+
+    expect(result).toMatchObject({ ok: true, created: true });
+    expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: {
+      rubricRef: 'test-rubric', rubricRevision: 7, criteriaHash: 'meta-hash',
+      subjectRubricIdentity: { rubricRef: 'subject-rubric', revision: 4, criteriaHash: 'subject-hash' },
+    } } });
+  });
+
   it('publishes the vetting channel XOR and accepts exactly one, either, or neither channel', () => {
     const schema = z.toJSONSchema(scorecardEmitArgs) as {
       oneOf?: Array<{ required?: string[] }>;
