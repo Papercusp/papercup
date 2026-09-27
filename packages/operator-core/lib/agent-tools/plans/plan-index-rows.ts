@@ -18,6 +18,7 @@
  * upsert or a concurrent reader can observe a plan with no items.
  */
 import type { PlanIndexDecision, PlanIndexItem } from './source';
+import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './plan-lock-key';
 
 /** Minimal transaction shape — a postgres-js tagged-template executor. */
 type Tx = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
@@ -87,6 +88,18 @@ export async function writePlanIndexRows(
     itemRefs: asStringArray(d.itemRefs),
     affects: asStringArray(d.affects),
   }));
+
+  // WI-10003498: take the plan's advisory lock HERE, not only in the caller. Under
+  // READ COMMITTED two unserialized delete+insert rewrites of one plan collide: the
+  // second DELETE waits on the first's old rows, then cannot see its new ones, and
+  // its INSERT fails `plan_items_pkey` (measured: concurrent work_items:complete of
+  // two fork items stranded one plan item at `todo`). Not every caller of this
+  // writer holds the lock; xact advisory locks are re-entrant, so this costs a
+  // caller that already holds it nothing and serializes every one that does not.
+  await tx`
+    SELECT pg_advisory_xact_lock(hashtext(${PLAN_ADVISORY_LOCK_NAMESPACE}),
+                                 hashtext(${planAdvisoryLockKey(workspaceId, harnessSlug, planSlug)}))
+  `;
 
   // Unconditional delete: an edit that removes the last item must clear the
   // rows, so this cannot be skipped when the arrays are empty.

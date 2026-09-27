@@ -2631,6 +2631,8 @@ export interface FinishWorkReceipt {
   checkpointCleared: boolean;
   /** The linked plan item's actual committed stored status after reflection. */
   planItem: string;
+  /** Present only when `planItem` did not reach the reflected status: what plans:set-status answered. */
+  planItemReflection?: string;
   claimRelease: 'not-linked' | 'released-or-absent' | 'failed';
   errors?: string[];
 }
@@ -2689,13 +2691,20 @@ export function reactionBody(result: unknown): Record<string, unknown> | null {
   if (!result || typeof result !== 'object') return null;
   const content = (result as { content?: Array<{ text?: unknown }> }).content;
   if (Array.isArray(content)) {
-    const text = content.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('');
-    try {
-      const parsed = JSON.parse(text);
-      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
-    } catch {
-      return null;
+    // WI-10003498: the dispatcher appends advisory text parts ("See also: …") after the
+    // JSON body. Joining every part made JSON.parse fail, so a body-level `ok:false`
+    // (e.g. a plan_items_pkey collision) read as "no body" and complete() reported the
+    // stranded plan item as converged. Parse part-by-part; fall back to the join.
+    const texts = content.map((part) => (typeof part?.text === 'string' ? part.text : ''));
+    for (const text of [...texts, texts.join('')]) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>;
+      } catch {
+        // not this part
+      }
     }
+    return null;
   }
   return result as Record<string, unknown>;
 }
@@ -2788,6 +2797,7 @@ export async function synchronizeFinishWork(
   }
 
   let planItem: FinishWorkReceipt['planItem'] = 'not-linked';
+  let planItemReflection: string | undefined;
   let claimRelease: FinishWorkReceipt['claimRelease'] = 'not-linked';
   if (stamp && reflected) {
     const fireSetStatus = () => fire({
@@ -2849,8 +2859,13 @@ export async function synchronizeFinishWork(
         if (committedStatus) {
           planItem = committedStatus;
           // A guard skip (`skipped:'coverage_guard'` etc.) is a legitimate no-op and stays
-          // silent; a body-level refusal (`ok:false`, e.g. busy after every retry) is not.
+          // non-failing; a body-level refusal (`ok:false`, e.g. busy after every retry) is not.
           const body = reactionBody((statusResult as { result?: unknown }).result);
+          // WI-10003498: a non-converged reflection must still say WHY, or a guard skip
+          // computed from a stale read is indistinguishable from a lost write.
+          if (committedStatus !== reflected) {
+            planItemReflection = describeReactionResult((statusResult as { result?: unknown }).result);
+          }
           if (committedStatus !== reflected && body && body.ok === false) {
             // `complete:false` tells the caller the saga did not converge (retry-safe).
             planItem = 'failed';
@@ -2908,6 +2923,7 @@ export async function synchronizeFinishWork(
     completionEvidenceStored: opts.completionEvidenceStored,
     checkpointCleared,
     planItem,
+    ...(planItemReflection ? { planItemReflection } : {}),
     claimRelease,
     ...(errors.length ? { errors } : {}),
   };
