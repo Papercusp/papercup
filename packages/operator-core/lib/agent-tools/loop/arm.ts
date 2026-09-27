@@ -614,7 +614,7 @@ export default defineTool({
       // accepted by the shared nullable payload shape.
       .nullish()
       .describe(
-        "The WI-/EI-/F- work-item this loop is DRIVING. On an active-loop retune, explicit null clears the prior binding while omission preserves it. The loop attempts to auto-CLAIM a provided item for the loop owner at arm time (WI-2429), subject to the same fleet-scope admission as work_items:claim; an out-of-scope binding is refused while the loop itself remains armed. When admitted, the item is HELD from wake 1 — the per-item work_items:checkpoint death-resilience net engages and a successor/reclaimer inherits it if the session dies. Safe: the claim never steals a live peer's item (a conflict is reported, not forced). If omitted on a COLD loop, a single WI-/EI-/F- id mentioned in `goal` is auto-detected and attempted the same way.",
+        "The WI-/EI-/F- work-item this WORK loop is driving. For mode:'monitor', pass workItem only when monitor.authority is kind:'work-item' and names this same already-held item. For monitor.authority kind:'fleet-leader' or 'owner-turn', OMIT workItem even if you hold one separately; the fleet/turn authority already governs the monitor. On an active-loop retune, explicit null clears the prior binding while omission preserves it. A work loop attempts to auto-CLAIM a provided item for the loop owner at arm time (WI-2429), subject to fleet-scope admission. When admitted, the item is HELD from wake 1 and a successor/reclaimer inherits it if the session dies. A conflict never steals a live peer's item. If omitted on a COLD work loop, a single WI-/EI-/F- id mentioned in goal is auto-detected and attempted the same way.",
       ),
     carry: z
       .enum(['warm', 'cold'])
@@ -637,7 +637,7 @@ export default defineTool({
     monitor: monitorArmConfigSchema
       .optional()
       .describe(
-        "REQUIRED when mode:'monitor' and refused for work loops. Names the normalized watched predicate, concrete stop condition, finite consecutive no-delta budget (default 1, max 100), and exactly one verified authority: an already-held nonterminal work-item, live durable fleet leadership, or an exact owner-turn ref + quote. Admission is read-only and completes before any work-item claim or routine materialization.",
+        "REQUIRED when mode:'monitor' and refused for work loops. Names the normalized watched predicate, concrete stop condition, finite consecutive no-delta budget (default 1, max 100), and exactly one verified authority: an already-held nonterminal work-item, live durable fleet leadership, or an exact owner-turn ref + quote. With fleet-leader or owner-turn authority, omit the separate top-level workItem argument. Admission is read-only and completes before any work-item claim or routine materialization.",
       ),
     costCapCents: z
       .number()
@@ -1103,7 +1103,7 @@ export default defineTool({
       if (explicitWorkItem && admission.config.authority.kind !== 'work-item') {
         return monitorRefusal(
           'monitor_work_item_authority_mismatch',
-          'A monitor may pass workItem only when its authority is that same already-held work-item; fleet/owner-turn monitors must not claim an unrelated item.',
+          `Omit top-level workItem ${explicitWorkItem.toUpperCase()} when monitor.authority.kind is ${admission.config.authority.kind}; only work-item authority may pass that same already-held item.`,
         );
       }
       if (

@@ -509,6 +509,20 @@ describe('loop:arm — anti-babysitting P-003 typed monitor admission', () => {
     expect(materializeM).toHaveBeenCalledTimes(1);
   });
 
+  it('explains that fleet-leader monitors must omit a separate held workItem', async () => {
+    const b = body(await call({
+      mode: 'monitor',
+      monitor: monitorConfig({ authority: { kind: 'fleet-leader', fleet: 'alpha' } }),
+      workItem: 'WI-42',
+    }));
+    expect(b).toMatchObject({ ok: false, error: 'monitor_work_item_authority_mismatch' });
+    expect(b.message).toContain('Omit top-level workItem WI-42');
+    expect(b.message).toContain('fleet-leader');
+    expect(claimM).not.toHaveBeenCalled();
+    expect(materializeM).not.toHaveBeenCalled();
+    expect(armWakeM).not.toHaveBeenCalled();
+  });
+
   it('refuses a monitor when the owner already has the same exact await, before mutation', async () => {
     exactAwaitM.mockResolvedValueOnce(true);
     const b = body(await call({ mode: 'monitor', monitor: monitorConfig() }));
