@@ -1,5 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -46,6 +47,7 @@ describe('current-build execution route contract', () => {
         dbScoped: e.HARNESS_ADMIN_DATABASE_URL !== process.env.TEST_LIVE_DB,
         portScoped: e.PAPERCUSP_HONO_PORT !== process.env.TEST_LIVE_PORT,
         background: e.PAPERCUSP_BACKGROUND_WORKERS === '1',
+        noVitestMarker: !e.VITEST && !e.VITEST_WORKER_ID,
         noLiveCredential: !e.PAPERCUSP_SID && !e.GOOGLE_APPLICATION_CREDENTIALS,
         noLiveIpc: !e.PAPERCUSP_SUBSTRATE_IPC_SOCKET && !e.PAPERCUSP_SPAWNER_IPC_SOCKET,
         noLiveDht: !e.PAPERCUSP_DHT_BOOTSTRAP,
@@ -84,6 +86,45 @@ describe('current-build execution route contract', () => {
     for (const [key, value] of Object.entries(checks)) expect(value, key).toBe(true);
     expect(existsSync(home as string)).toBe(false);
   }, 125_000);
+
+  it('mints a distinct device keychain identity for each isolated child', () => {
+    const wrapper = resolve(root, 'scripts/with-test-pg.mjs');
+    const keychainId = `current-build-isolation-${randomUUID()}`;
+    const probe = `
+      import { generateKeyPairSync, createHash } from 'node:crypto';
+      import { keychainLoad, keychainStore } from './packages/operator-core/lib/identity/keychain.ts';
+      const id = process.env.TEST_KEYCHAIN_ID!;
+      const before = await keychainLoad(id);
+      if (before.kind !== 'error' || before.error.kind !== 'not_found') throw new Error('device key escaped its isolated home');
+      const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+      await keychainStore(id, privateKey.export({ type: 'pkcs8', format: 'der' }));
+      const after = await keychainLoad(id);
+      if (after.kind !== 'ok') throw new Error('private key did not persist in the isolated keychain');
+      const pub = publicKey.export({ type: 'spki', format: 'der' });
+      console.log('DEVICE_IDENTITY_PROBE ' + JSON.stringify({
+        publicKeyHash: createHash('sha256').update(pub).digest('hex'),
+        privateIdentityDir: process.env.PAPERCUSP_IDENTITY_DIR === process.env.PAPERCUSP_HOME + '/identity',
+        noLiveKeyringBus: !process.env.DBUS_SESSION_BUS_ADDRESS && !process.env.GNOME_KEYRING_CONTROL,
+        home: process.env.HOME,
+      }));
+    `;
+    const keys = [];
+    for (let i = 0; i < 2; i++) {
+      const result = spawnSync(process.execPath, [wrapper, '--isolated-runtime', '--', process.execPath, '--import', 'tsx', '-e', probe], {
+        cwd: root, encoding: 'utf8', timeout: 120_000,
+        env: { ...process.env, TEST_KEYCHAIN_ID: keychainId, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/live/keyring-bus' },
+      });
+      expect(result.status, `${result.stdout.slice(-1000)}\n${result.stderr.slice(-1000)}`).toBe(0);
+      const payload = result.stdout.match(/^DEVICE_IDENTITY_PROBE (.+)$/m)?.[1];
+      expect(payload).toBeTruthy();
+      const identity = JSON.parse(payload!) as { publicKeyHash: string; privateIdentityDir: boolean; noLiveKeyringBus: boolean; home: string };
+      expect(identity.privateIdentityDir).toBe(true);
+      expect(identity.noLiveKeyringBus).toBe(true);
+      expect(existsSync(identity.home)).toBe(false);
+      keys.push(identity.publicKeyHash);
+    }
+    expect(keys[0]).not.toBe(keys[1]);
+  }, 245_000);
 
   it('boots the real background host with private DBOS readiness and reaps it', () => {
     const wrapper = resolve(root, 'scripts/with-test-pg.mjs');

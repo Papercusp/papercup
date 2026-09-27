@@ -131,6 +131,7 @@ if (runtimeRoot && runtimeId) {
   runtimeEnv = {
     HOME: home,
     PAPERCUSP_HOME: papercuspHome,
+    PAPERCUSP_IDENTITY_DIR: join(papercuspHome, 'identity'),
     PAPERCUSP_WORKSPACES_ROOT: workspacesRoot,
     PAPERCUSP_WORKSPACE: runtimeId,
     PAPERCUSP_WORKSPACE_ID: runtimeId,
@@ -174,7 +175,7 @@ if (isolatedRuntime) {
   // HOME alone is insufficient: an inherited PAPERCUSP_SUBSTRATE_IPC_SOCKET,
   // API base or DHT bootstrap can still join the running operator.
   for (const key of Object.keys(childEnv)) {
-    if (/^(PAPERCUSP_|HARNESS_|DBOS__|PG[A-Z]|DATABASE_URL$|AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GH_|CLOUDSDK_|DOCKER_|GIT_ASKPASS$|GIT_CONFIG_|SSH_AUTH_SOCK$|CODEX_HOME$)/i.test(key)) {
+    if (/^(PAPERCUSP_|HARNESS_|DBOS__|PG[A-Z]|DATABASE_URL$|AWS_|AZURE_|GOOGLE_|GCP_|OPENAI_|ANTHROPIC_|GITHUB_|GH_|CLOUDSDK_|DOCKER_|GIT_ASKPASS$|GIT_CONFIG_|SSH_AUTH_SOCK$|CODEX_HOME$|VITEST(?:_|$)|DBUS_SESSION_BUS_ADDRESS$|GNOME_KEYRING_CONTROL$)/i.test(key)) {
       delete childEnv[key];
     }
   }
