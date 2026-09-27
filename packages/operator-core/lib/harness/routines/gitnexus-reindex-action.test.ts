@@ -18,6 +18,7 @@ import {
   openSync,
   closeSync,
   rmSync,
+  readdirSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -27,6 +28,9 @@ import {
   canaryCypherArgv,
   buildAnalyzeInvocation,
   analyzeEnv,
+  analyzeLogPath,
+  pruneAnalyzeLogs,
+  readAnalyzeLogTail,
   selectiveSourceLimitKb,
   GITNEXUS_KNOWN_SOURCE_PATH,
   analyzeNodeArgs,
@@ -385,17 +389,60 @@ describe('runGitnexusAnalyze — scheduled task-manager isolation (WI-40213)', (
     'GITNEXUS_LBUG_BUFFER_POOL_SIZE',
     'GITNEXUS_EMBEDDING_DEVICE',
     'GITNEXUS_EMBEDDING_THREADS',
+    'MALLOC_ARENA_MAX',
+    'GITNEXUS_WAL_MANUAL_CHECKPOINT',
+    // Redirected below so a run never writes into the real ~/.papercusp/logs.
+    'PAPERCUSP_GITNEXUS_ANALYZE_LOG_DIR',
   ] as const;
   let savedRunnerEnv: Array<[string, string | undefined]> = [];
+  let logDir = '';
   beforeEach(() => {
     savedRunnerEnv = RUNNER_ENV_KEYS.map((key) => [key, process.env[key]]);
     for (const key of RUNNER_ENV_KEYS) delete process.env[key];
+    logDir = mkdtempSync(join(tmpdir(), 'gitnexus-analyze-log-'));
+    process.env.PAPERCUSP_GITNEXUS_ANALYZE_LOG_DIR = logDir;
   });
   afterEach(() => {
     for (const [key, value] of savedRunnerEnv) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    rmSync(logDir, { recursive: true, force: true });
+  });
+
+  it('sends the analyze output to a log file the task owns, and returns its tail (P-012, D-015)', async () => {
+    const child = fakeManagedChild();
+    taskManager.managedSpawn.mockResolvedValue({ child, taskId: 'task-gitnexus-log' });
+
+    const resultPromise = runGitnexusAnalyze('/repo', 'papercusp', 61_001);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const [, , spec, options] = taskManager.managedSpawn.mock.calls[0] as [
+      string,
+      string[],
+      Record<string, unknown>,
+      { spawnOptions: { stdio?: unknown[]; env: Record<string, string> } },
+    ];
+    // The log is named by the same stamp an adopting host reads from the child's environ.
+    const stamp = Number(options.spawnOptions.env[GITNEXUS_REINDEX_SPAWN_MARKER_ENV]);
+    const logPath = analyzeLogPath(stamp, logDir);
+    expect(spec.logPath).toBe(logPath);
+    // No pipe into this host: stdout and stderr are both the log's fd.
+    const stdio = options.spawnOptions.stdio;
+    expect(stdio?.[0]).toBe('ignore');
+    expect(typeof stdio?.[1]).toBe('number');
+    expect(stdio?.[2]).toBe(stdio?.[1]);
+    expect(existsSync(logPath)).toBe(true);
+
+    // What the child wrote is what the run reports, even though no pipe carried it.
+    writeFileSync(logPath, 'Skipped 21 large files\nindexed 25,007 files\n');
+    child.emit('close', 0);
+    await expect(resultPromise).resolves.toEqual({
+      code: 0,
+      stdout: 'Skipped 21 large files\nindexed 25,007 files\n',
+      stderr: '',
+      timedOut: false,
+    });
   });
 
   it('uses the managed build scope with provenance, resource cap, and a real deadline', async () => {
@@ -606,6 +653,36 @@ describe('analyzeEnv — the native-memory and WAL-checkpoint pins (P-012)', () 
     );
     expect(env.MALLOC_ARENA_MAX).toBe('8');
     expect(env.GITNEXUS_WAL_MANUAL_CHECKPOINT).toBe('1');
+  });
+});
+
+describe('analyze log files (P-012, D-015)', () => {
+  let dir = '';
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'gitnexus-analyze-logs-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('prunes to the newest N by spawn stamp, never touching a file that is not an analyze log', () => {
+    for (const stamp of [900, 10000, 2000, 50000, 4000]) writeFileSync(analyzeLogPath(stamp, dir), '');
+    writeFileSync(join(dir, 'notes.txt'), '');
+    pruneAnalyzeLogs(dir, 2);
+    // Numeric, not lexical: a lexical sort would keep analyze-900 and analyze-50000.
+    expect(readdirSync(dir).sort()).toEqual(['analyze-10000.log', 'analyze-50000.log', 'notes.txt']);
+  });
+
+  it('a missing directory is a no-op, not a throw', () => {
+    expect(() => pruneAnalyzeLogs(join(dir, 'absent'), 2)).not.toThrow();
+  });
+
+  it('reads the last bytes of a log, and null for a run that has none', () => {
+    const p = analyzeLogPath(1, dir);
+    writeFileSync(p, 'a'.repeat(100) + 'THE END');
+    expect(readAnalyzeLogTail(p, 7)).toBe('THE END');
+    expect(readAnalyzeLogTail(p)).toBe('a'.repeat(100) + 'THE END');
+    expect(readAnalyzeLogTail(analyzeLogPath(2, dir))).toBeNull();
   });
 });
 
@@ -2623,7 +2700,9 @@ describe('WI-2146015 — a routine-launched analyze is ADOPTED across a bg-host 
   it('the spawn is STAMPED, the live-writer guard ADOPTS before the residue preflight, and a manual writer is still only yielded to', () => {
     const spawn = src.indexOf('export function runGitnexusAnalyze(');
     expect(spawn).toBeGreaterThan(0);
-    expect(src.indexOf('[GITNEXUS_REINDEX_SPAWN_MARKER_ENV]: String(Date.now())', spawn)).toBeGreaterThan(spawn);
+    // One stamp names both the environ marker and the log file (analyzeLogPath) an adopter reads.
+    expect(src.indexOf('const spawnedAtMs = Date.now();', spawn)).toBeGreaterThan(spawn);
+    expect(src.indexOf('[GITNEXUS_REINDEX_SPAWN_MARKER_ENV]: String(spawnedAtMs)', spawn)).toBeGreaterThan(spawn);
 
     const handler = src.indexOf("registerSystemAction('gitnexus-reindex'");
     const guard = src.indexOf('const writer = detectLiveAnalyzeWriter(root);', handler);

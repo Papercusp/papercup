@@ -78,6 +78,10 @@ import {
   readlinkSync,
   realpathSync,
   statfsSync,
+  mkdirSync,
+  openSync,
+  closeSync,
+  readSync,
 } from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
@@ -2231,44 +2235,133 @@ export function analyzeTickSucceeded(run: AnalyzeRunResult, canary: CanaryVerdic
   return !run.timedOut && run.code === 0 && canary?.healthy === true;
 }
 
+/**
+ * P-012 (D-015) — where the analyze's combined stdout+stderr goes: a FILE the task owns, not a
+ * pipe into this host. Through a pipe, a bg-host restart mid-run killed pc-heavy's capture
+ * `tee` (SIGPIPE on its stdout), stranded the output FIFO with no reader, and left the
+ * adopting host nothing to say — measured 2026-09-27, 8 of 15 runs in 3 days read
+ * `ended_unobserved` with no reason, and one 2 h run's capture stopped at 605 bytes.
+ */
+export function analyzeLogDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.PAPERCUSP_GITNEXUS_ANALYZE_LOG_DIR ?? path.join(os.homedir(), '.papercusp', 'logs', 'gitnexus-analyze');
+}
+
+/** Named by the spawn stamp, so an adopting host incarnation finds it from the stamp alone. */
+export function analyzeLogPath(spawnedAtMs: number, dir: string = analyzeLogDir()): string {
+  return path.join(dir, `analyze-${spawnedAtMs}.log`);
+}
+
+/** Two days of hourly ticks. */
+export const GITNEXUS_ANALYZE_LOGS_KEPT = 48;
+
+/** Delete all but the newest `keep` analyze logs in `dir`. Best-effort: a failed prune never blocks a run. */
+export function pruneAnalyzeLogs(dir: string, keep: number = GITNEXUS_ANALYZE_LOGS_KEPT): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const stamped = names
+    .map((name) => ({ name, stamp: /^analyze-(\d+)\.log$/.exec(name)?.[1] }))
+    .filter((e): e is { name: string; stamp: string } => e.stamp != null)
+    .sort((a, b) => Number(b.stamp) - Number(a.stamp));
+  for (const e of stamped.slice(Math.max(0, keep))) {
+    try {
+      unlinkSync(path.join(dir, e.name));
+    } catch {
+      /* raced another prune, or not ours to delete */
+    }
+  }
+}
+
+/** The last `maxBytes` of an analyze log; null when it cannot be read (e.g. a pre-P-012 run had none). */
+export function readAnalyzeLogTail(logPath: string, maxBytes = 16 * 1024): string | null {
+  let fd: number | null = null;
+  try {
+    const size = statSync(logPath).size;
+    fd = openSync(logPath, 'r');
+    const len = Math.min(size, maxBytes);
+    const buf = Buffer.alloc(len);
+    const read = readSync(fd, buf, 0, len, size - len);
+    return buf.subarray(0, read).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* already closed */
+      }
+    }
+  }
+}
+
+/** Create the log for one spawn and return its fd, or null to fall back to piped stdio. */
+function openAnalyzeLog(logPath: string): number | null {
+  try {
+    const dir = path.dirname(logPath);
+    mkdirSync(dir, { recursive: true });
+    // keep - 1: the file about to be created is the newest.
+    pruneAnalyzeLogs(dir, GITNEXUS_ANALYZE_LOGS_KEPT - 1);
+    return openSync(logPath, 'a');
+  } catch (e) {
+    console.warn(`[gitnexus-reindex] cannot open analyze log ${logPath} — falling back to piped output: ${String(e)}`);
+    return null;
+  }
+}
+
 export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: number): Promise<AnalyzeRunResult> {
   return (async () => {
     const directCommand = process.env.GITNEXUS_NODE_BIN ?? process.execPath;
     const directArgs = analyzeNodeArgs(analyzeCliPath(), root, repoName);
     const invocation = buildAnalyzeInvocation(root, directCommand, directArgs);
-    const managed = await managedSpawn(
-      invocation.command,
-      invocation.args,
-      {
-        class: 'build',
-        title: `gitnexus analyze ${repoName}`,
-        argv: [invocation.command, ...invocation.args],
-        cwd: root,
-        launchedBy: 'system:gitnexus-reindex',
-        memoryMaxBytes: GITNEXUS_ANALYZE_MEMORY_MAX_BYTES,
-        runtimeMaxSec: Math.max(1, Math.ceil(timeoutMs / 1000)),
-        detail: { subsystem: 'gitnexus', operation: 'analyze', repoName },
-      },
-      {
-        // Keep the process-group kill fallback for unconfined hosts. On Linux,
-        // managedSpawn adds the same deadline to the transient scope, so the
-        // payload remains bounded even if this operator process dies mid-run.
-        spawnOptions: {
+    const spawnedAtMs = Date.now();
+    const logPath = analyzeLogPath(spawnedAtMs);
+    const logFd = openAnalyzeLog(logPath);
+    let managed: Awaited<ReturnType<typeof managedSpawn>>;
+    try {
+      managed = await managedSpawn(
+        invocation.command,
+        invocation.args,
+        {
+          class: 'build',
+          title: `gitnexus analyze ${repoName}`,
+          argv: [invocation.command, ...invocation.args],
           cwd: root,
-          // The spawn stamp is what lets a LATER host incarnation adopt this run (WI-2146015).
-          env: {
-            ...analyzeEnv(
-              process.env,
-              GITNEXUS_ANALYZE_HEAP_MB,
-              GITNEXUS_ANALYZE_SEMI_SPACE_MB,
-              selectiveSourceLimitKb(root),
-            ),
-            [GITNEXUS_REINDEX_SPAWN_MARKER_ENV]: String(Date.now()),
-          },
-          detached: true,
+          launchedBy: 'system:gitnexus-reindex',
+          memoryMaxBytes: GITNEXUS_ANALYZE_MEMORY_MAX_BYTES,
+          runtimeMaxSec: Math.max(1, Math.ceil(timeoutMs / 1000)),
+          ...(logFd == null ? {} : { logPath }),
+          detail: { subsystem: 'gitnexus', operation: 'analyze', repoName },
         },
-      },
-    );
+        {
+          // Keep the process-group kill fallback for unconfined hosts. On Linux,
+          // managedSpawn adds the same deadline to the transient scope, so the
+          // payload remains bounded even if this operator process dies mid-run.
+          spawnOptions: {
+            cwd: root,
+            // The spawn stamp is what lets a LATER host incarnation adopt this run (WI-2146015),
+            // and it names the log that incarnation reads (analyzeLogPath).
+            env: {
+              ...analyzeEnv(
+                process.env,
+                GITNEXUS_ANALYZE_HEAP_MB,
+                GITNEXUS_ANALYZE_SEMI_SPACE_MB,
+                selectiveSourceLimitKb(root),
+              ),
+              [GITNEXUS_REINDEX_SPAWN_MARKER_ENV]: String(spawnedAtMs),
+            },
+            ...(logFd == null ? {} : { stdio: ['ignore', logFd, logFd] as const }),
+            detached: true,
+          },
+        },
+      );
+    } finally {
+      // The child holds its own copy; ours would only keep the file open past the run.
+      if (logFd != null) closeSync(logFd);
+    }
     const child = managed.child;
 
     return new Promise<AnalyzeRunResult>((resolvePromise) => {
@@ -2299,7 +2392,9 @@ export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: nu
     const finish = (res: AnalyzeRunResult): void => {
       clearTimeout(killer);
       if (escalate) clearTimeout(escalate);
-      resolvePromise(res);
+      // With file stdio the child's pipes are null, so its output is the log's tail.
+      const logged = logFd == null ? null : readAnalyzeLogTail(logPath);
+      resolvePromise(logged == null ? res : { ...res, stdout: logged + res.stdout });
     };
     child.stdout?.on('data', (d) => (stdout += d.toString()));
     child.stderr?.on('data', (d) => (stderr += d.toString()));
@@ -2513,8 +2608,12 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
         readStrandedIncompleteIndex(root),
       );
       const elapsedSec = Math.round((Date.now() - adoptable.spawnedAtMs) / 1000);
+      // Only a stamped spawn names its log exactly; an unstamped one's time is a process-age estimate.
+      const adoptedLogPath = adoptable.stamped ? analyzeLogPath(adoptable.spawnedAtMs) : null;
+      const logged = (adoptedLogPath ? readAnalyzeLogTail(adoptedLogPath) : null) ?? '';
       console.log(
-        `[gitnexus-reindex] adopted analyze pid ${adoptable.pid} exited (waited ${Math.round(waited.waitedMs / 1000)}s) — ${verdict.reason}`,
+        `[gitnexus-reindex] adopted analyze pid ${adoptable.pid} exited (waited ${Math.round(waited.waitedMs / 1000)}s) — ${verdict.reason}` +
+          (adoptedLogPath ? ` (log: ${adoptedLogPath})` : ''),
       );
       await finishAnalyzeTick({
         ctx,
@@ -2524,7 +2623,13 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
         timeoutMs,
         elapsedSec,
         adopted: { pid: adoptable.pid, spawnedAt },
-        r: { code: verdict.code, stdout: '', stderr: verdict.code === 0 ? '' : verdict.reason, timedOut: false },
+        // The reason goes LAST: failure messages keep the tail of stderr.
+        r: {
+          code: verdict.code,
+          stdout: logged,
+          stderr: verdict.code === 0 ? '' : `${logged.trimEnd()}\n${verdict.reason}`.trimStart(),
+          timedOut: false,
+        },
       });
       return;
     }
