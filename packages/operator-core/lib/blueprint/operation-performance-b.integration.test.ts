@@ -14,7 +14,7 @@ import type { Sql } from 'postgres';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
-import { startDedicatedTestPg } from '@papercusp/test-config/pg';
+import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { installDeterministicEmbedder, type InstalledDeterministicEmbedder } from '../../test/_deterministic-embedder';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
@@ -90,17 +90,25 @@ const SOURCE = {
 };
 
 let db: OrgTestDb;
-let dedicatedPg: StartedPostgreSqlContainer | undefined;
+let dedicatedPg: Pick<StartedPostgreSqlContainer, 'getConnectionUri' | 'stop'> | DedicatedNativePg | undefined;
 let fixtureEmbedder: InstalledDeterministicEmbedder | undefined;
 const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
-const dedicatedPgRequested = process.env.P013_DEDICATED_PG === '1';
+// P013_DEDICATED_PG=1 → a dedicated Docker container; =native → a dedicated cluster from the
+// host's own PG binaries (no Docker; Docker create hangs 2–30 min here, WI-10003403). Both are
+// D-022(c) run-owned clusters with server-default durability (D-022(b)).
+const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
+  ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
+const dedicatedPgRequested = dedicatedPgMode !== null;
+const DEDICATED_PG_SETTINGS = { max_connections: '200', dynamic_shared_memory_type: 'mmap' };
 beforeAll(async () => {
-  if (dedicatedPgRequested) {
-    // D-022(c): a cluster owned by this run; durability left at server defaults (D-022(b)).
+  if (dedicatedPgMode === 'native') {
+    dedicatedPg = await startDedicatedNativePg({ settings: DEDICATED_PG_SETTINGS });
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
+  } else if (dedicatedPgMode === 'container') {
     // startDedicatedTestPg: the stock pg_isready healthcheck crash-restarts a
     // dedicated cluster mid-run under load (2026-09-27, see the helper).
     dedicatedPg = await startDedicatedTestPg({
-      command: ['postgres', '-c', 'max_connections=200', '-c', 'dynamic_shared_memory_type=mmap'],
+      command: ['postgres', ...Object.entries(DEDICATED_PG_SETTINGS).flatMap(([k, v]) => ['-c', `${k}=${v}`])],
     });
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
   }
@@ -205,7 +213,7 @@ describe('P-013 workload B fixture', () => {
         ? 2 * matrix.repetitions * matrix.coldSamples * matrix.concurrencies.length : 0);
       expect(trials).toHaveLength(2 * matrix.repetitions * matrix.modes.length * matrix.concurrencies.length);
       console.info(`P-013 workload B ${matrix.modes.join('+')} trials`, JSON.stringify({
-        ...matrix, cluster: dedicatedPg ? 'dedicated' : 'shared', fixtureEmbedder: Boolean(fixtureEmbedder), trials }));
+        ...matrix, cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', fixtureEmbedder: Boolean(fixtureEmbedder), trials }));
     } else {
       for (const arm of ['control', 'candidate'] as const) samples.push(await runArm(arm, sequence++));
       console.info('P-013 workload B admission/invariant smoke; no grade', JSON.stringify(
