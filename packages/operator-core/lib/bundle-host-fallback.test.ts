@@ -222,7 +222,7 @@ describe('bundle-host.sh last-known-good fallback', () => {
       // generated-file exemption; future banner changes must preserve it.
       // The banner is ASCII-only ON PURPOSE (a plain hyphen, not an em dash):
       // bundle-host.sh runs ascii-escape-bundle.mjs over the finished bundle
-      // (WI-38221 widen-avoidance), which rewrites every char >= U+0100 as a
+      // (WI-38221 widen-avoidance), which rewrites every non-ASCII char as a
       // \uXXXX escape — a non-ASCII banner therefore (a) guaranteed the pass had
       // ≥1 hit on EVERY bundle and (b) came out as `—` on disk, which is
       // what this assertion caught red on the frozen candidate (WI-2141194 #6b).
