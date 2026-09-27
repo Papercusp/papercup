@@ -4598,7 +4598,7 @@ describe("psu-launcher arg parsing", () => {
     expect(plain2).not.toHaveProperty("seat");
   });
 
-  it("roleBootstrapBody folds a chosen account into role launches", () => {
+  it("roleBootstrapBody preserves the launch owner and chosen account", () => {
     expect(
       roleBootstrapBody({
         role: "worker",
@@ -4608,6 +4608,7 @@ describe("psu-launcher arg parsing", () => {
         feature: "F-001",
         plan: null,
         account: "codex-main",
+        ownerId: "su-auditor-canonical",
       }),
     ).toEqual({
       role: "worker",
@@ -4617,6 +4618,7 @@ describe("psu-launcher arg parsing", () => {
       feature: "F-001",
       plan: null,
       account: "codex-main",
+      owner_id: "su-auditor-canonical",
       model: "gpt-5.6-sol:xhigh",
       model_source: "configured-default",
     });
