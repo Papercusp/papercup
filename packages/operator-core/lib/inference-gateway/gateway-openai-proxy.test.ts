@@ -1745,9 +1745,14 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
     const fetchImpl = vi.fn(async () => {
       calls += 1;
       if (calls <= 2) {
+        // The SECOND 429's park is the window the test observes, so it must dwarf
+        // scheduler jitter: under the gate's loaded stateful lane a 5ms poll timer can
+        // be delayed past a 200ms park, so the poller wakes to calls===3 having never
+        // seen it and reports a release that did happen as missing (WI-10003256).
+        const retryAfter = calls === 1 ? '20ms' : '1500ms';
         return new Response(JSON.stringify({ error: { message: 'pool burst' } }), {
           status: 429,
-          headers: { 'content-type': 'application/json', 'retry-after': '200ms' },
+          headers: { 'content-type': 'application/json', 'retry-after': retryAfter },
         });
       }
       return new Response('data: [DONE]\n\n', {
@@ -1764,7 +1769,7 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
       ),
       codexOAuthProxy: true,
       fetchImpl,
-      requestAbsorbMs: 500,
+      requestAbsorbMs: 5_000,
       internalRetryDeadlineMs: 1,
       selfHeal: { enabled: false },
     });
@@ -1774,7 +1779,9 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
       { model: 'gpt-5.5', input: 'absorb me', stream: true },
       { [ACCOUNT_HEADER]: 'chatgpt-a' },
     );
-    const observedUntil = Date.now() + 800;
+    // A generous CEILING, not a pacing interval: both loops exit on their condition,
+    // so this only bounds a genuinely broken release.
+    const observedUntil = Date.now() + 10_000;
     while (calls < 2 && Date.now() < observedUntil) await new Promise((resolve) => setTimeout(resolve, 5));
     expect(calls).toBeGreaterThanOrEqual(2);
     // fetchImpl counts the second call before its 429 has released admission.
