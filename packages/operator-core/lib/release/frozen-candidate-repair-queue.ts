@@ -415,7 +415,7 @@ export interface FrozenRepairDispatchReservation {
 export interface FrozenRepairAdmissionPrecheck {
   schemaVersion: 1;
   operationId: string;
-  status: 'running' | 'passed' | 'failed';
+  status: 'running' | 'passed' | 'deferred' | 'failed';
   candidate: string;
   repairHead: string;
   builtCommit: string;
@@ -1418,7 +1418,7 @@ function parseAdmissionPrecheck(value: unknown): FrozenRepairAdmissionPrecheck |
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const row = value as Record<string, unknown>;
   if (row.schemaVersion !== 1) return undefined;
-  if (row.status !== 'running' && row.status !== 'passed' && row.status !== 'failed') return undefined;
+  if (row.status !== 'running' && row.status !== 'passed' && row.status !== 'deferred' && row.status !== 'failed') return undefined;
   const files = Array.isArray(row.files) ? row.files : null;
   if (
     !nonBlank(row.operationId) ||
