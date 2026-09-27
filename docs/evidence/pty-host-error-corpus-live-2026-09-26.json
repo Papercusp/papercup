@@ -15,19 +15,19 @@
   ],
   "scriptSha256": "ebfc9023869e71f549e8a6bc7b92bf596e35229559099dee25c5b3fb860fc693",
   "exitCode": 0,
-  "startedAt": "2026-09-26T23:00:05.613Z",
-  "finishedAt": "2026-09-26T23:00:10.890Z",
+  "startedAt": "2026-09-27T00:02:01.644Z",
+  "finishedAt": "2026-09-27T00:02:05.639Z",
   "summary": "Live host su-febbbe5f-9ee3-4f73-a734-86c51a310031 (~/.papercusp/psu-pty/su-febbbe5f-9ee3-4f73-a734-86c51a310031.events.jsonl): 4 failure kind(s) traced JSONL -> psu_pty_host_events -> Blender corpus pattern -> flattenDigest; loaded-vs-disk host code compared.",
   "assertions": [
     {
       "id": "jsonl-to-store",
       "passed": true,
-      "evidence": "7/7 failure-class JSONL rows from ~/.papercusp/psu-pty/su-febbbe5f-9ee3-4f73-a734-86c51a310031.events.jsonl are persisted in psu_pty_host_events"
+      "evidence": "9/9 failure-class JSONL rows from ~/.papercusp/psu-pty/su-febbbe5f-9ee3-4f73-a734-86c51a310031.events.jsonl are persisted in psu_pty_host_events"
     },
     {
       "id": "store-to-corpus",
       "passed": true,
-      "evidence": "turn-start-unverified: store id 7874946 cited by pty-host:kind:turn-start-unverified and present in flattenDigest=true; respawn-carry-dropped: store id 7874947 cited by pty-host:kind:respawn-carry-dropped and present in flattenDigest=true; busy-gate-expired: store id 8175099 cited by pty-host:kind:busy-gate-expired and present in flattenDigest=true; host-code-stale: store id 8020071 cited by pty-host:kind:host-code-stale and present in flattenDigest=true"
+      "evidence": "turn-start-unverified: store id 7874946 cited by pty-host:kind:turn-start-unverified and present in flattenDigest=true; respawn-carry-dropped: store id 7874947 cited by pty-host:kind:respawn-carry-dropped and present in flattenDigest=true; busy-gate-expired: store id 8212945 cited by pty-host:kind:busy-gate-expired and present in flattenDigest=true; host-code-stale: store id 8212933 cited by pty-host:kind:host-code-stale and present in flattenDigest=true"
     },
     {
       "id": "no-unaccounted-failure-class",
@@ -37,7 +37,7 @@
     {
       "id": "loaded-code-disposition",
       "passed": true,
-      "evidence": "host pid 968045 started 2026-09-26T17:59:47.521Z loaded ca8d9f2b7196 (= apps/operator/scripts/psu-pty-host.mjs at 389a5adf1c committed 2026-09-26T12:40:15-04:00); disk 5515d90cda18; host logged host-code-stale at 2026-09-26T20:55:25.006Z with willAdopt=false notAdoptingReason=interactive-tty: no forced restart of an interactive owner TTY; new code loads on the next host start"
+      "evidence": "host pid 968045 started 2026-09-26T17:59:47.521Z loaded ca8d9f2b7196 (= apps/operator/scripts/psu-pty-host.mjs at 389a5adf1c committed 2026-09-26T12:40:15-04:00); disk 04dde72cb0a0; host logged host-code-stale at 2026-09-26T23:03:17.819Z with willAdopt=false notAdoptingReason=interactive-tty: no forced restart of an interactive owner TTY; new code loads on the next host start"
     }
   ],
   "observed": {
@@ -47,17 +47,17 @@
       "startedAt": "2026-09-26T17:59:47.521Z",
       "ledger": "~/.papercusp/psu-pty/su-febbbe5f-9ee3-4f73-a734-86c51a310031.events.jsonl",
       "loadedHostCode": "ca8d9f2b7196b9402e78093c7b1caf64dc825aeeb26da7ffcdcfe6490d73e84f",
-      "diskHostCode": "5515d90cda18b698024fb3e715a851b0dea4dcb388652ce900100f420ba5f43a",
+      "diskHostCode": "04dde72cb0a039977866bc52f40274b90100d2940e10042ae202f53654999c76",
       "loadedCommit": {
         "sha": "389a5adf1cad6834d137983b47de426bab05ae3c",
         "committedAt": "2026-09-26T12:40:15-04:00"
       },
       "hostCodeStale": {
-        "ts": "2026-09-26T20:55:25.006Z",
+        "ts": "2026-09-26T23:03:17.819Z",
         "kind": "host-code-stale",
         "mode": "carry-respawn",
         "loaded": "ca8d9f2b7196b9402e78093c7b1caf64dc825aeeb26da7ffcdcfe6490d73e84f",
-        "onDisk": "28f982d1dd82453351a22765dfcf5317b7a629b7944b234b0b92e254e5ee67b9",
+        "onDisk": "5515d90cda18b698024fb3e715a851b0dea4dcb388652ce900100f420ba5f43a",
         "adoptable": false,
         "willAdopt": false,
         "notAdoptingReason": "interactive-tty",
@@ -108,6 +108,18 @@
         "kind": "busy-gate-expired",
         "storeId": "8175099",
         "ingestedAt": "2026-09-26 18:59:25.157318-04"
+      },
+      {
+        "ts": "2026-09-26T23:03:17.819Z",
+        "kind": "host-code-stale",
+        "storeId": "8212933",
+        "ingestedAt": "2026-09-26 19:17:08.473094-04"
+      },
+      {
+        "ts": "2026-09-26T23:09:12.745Z",
+        "kind": "busy-gate-expired",
+        "storeId": "8212945",
+        "ingestedAt": "2026-09-26 19:17:08.473094-04"
       }
     ],
     "hops": [
@@ -131,21 +143,21 @@
       },
       {
         "kind": "busy-gate-expired",
-        "jsonlTs": "2026-09-26T22:57:15.154Z",
-        "storeId": "8175099",
+        "jsonlTs": "2026-09-26T23:09:12.745Z",
+        "storeId": "8212945",
         "corpusRef": "pty-host:kind:busy-gate-expired",
         "cited": true,
         "flattened": true,
-        "summary": "busy-gate-expired: 675 PTY-host event(s) across 92 session(s) in 24h"
+        "summary": "busy-gate-expired: 691 PTY-host event(s) across 92 session(s) in 24h"
       },
       {
         "kind": "host-code-stale",
-        "jsonlTs": "2026-09-26T20:55:25.006Z",
-        "storeId": "8020071",
+        "jsonlTs": "2026-09-26T23:03:17.819Z",
+        "storeId": "8212933",
         "corpusRef": "pty-host:kind:host-code-stale",
         "cited": true,
         "flattened": true,
-        "summary": "host-code-stale: 252 PTY-host event(s) across 54 session(s) in 24h"
+        "summary": "host-code-stale: 291 PTY-host event(s) across 75 session(s) in 24h"
       }
     ],
     "corpusRefsAtCapture": [
@@ -158,16 +170,16 @@
       "pty-host:kind:model-capacity-detected",
       "pty-host:kind:startup-turn-dropped",
       "pty-host:kind:persona-refresh-skipped",
-      "pty-host:kind:wake-rearm-unsupported",
       "pty-host:kind:launch-kickoff-marker-echo-unconfirmed",
+      "pty-host:kind:wake-rearm-unsupported",
       "pty-host:kind:inject-mutex-stuck",
       "pty-host:kind:quota-block-detected",
       "pty-host:kind:launch-kickoff-backend-frame-timeout",
+      "pty-host:kind:launch-role-mcp-unavailable",
       "pty-host:kind:submit-verify-unconfirmed",
       "pty-host:kind:wake-rearm-dropped",
       "pty-host:kind:headless-claude-onboarding-expired",
       "pty-host:kind:orphan-teardown",
-      "pty-host:kind:respawn-report-timeout",
       "pty-host:kind:turn-delivered-after-retry",
       "pty-host:coverage-residue"
     ]

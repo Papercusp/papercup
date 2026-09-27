@@ -312,7 +312,9 @@ export async function persistPilotParticipantBindingReceipt(
       "'{pilotBindingReceipts}', COALESCE(CASE WHEN jsonb_typeof(payload->'pilotBindingReceipts') = 'array' " +
       "THEN payload->'pilotBindingReceipts' END, '[]'::jsonb) || $6::jsonb, true) " +
       'WHERE workspace_id = $1 AND harness_slug = $2 AND feature_id = $3 AND taken_by = $4 ' +
-      'AND taken_at = $5::timestamptz RETURNING feature_id',
+      // Tool-boundary claimVersion is ISO milliseconds; Postgres taken_at can
+      // carry microseconds. Compare at the precision the caller actually read.
+      "AND date_trunc('milliseconds', taken_at) = $5::timestamptz RETURNING feature_id",
     [input.workspaceId, input.harnessSlug, input.itemId, input.ownerId, input.claimVersion, JSON.stringify([receipt])],
   ) as unknown as Array<{ feature_id: string }>;
   if (rows.length !== 1) {
@@ -344,7 +346,7 @@ export async function persistPilotParticipantDispatchReceipt(
       "'{pilotDispatchReceipts}', COALESCE(CASE WHEN jsonb_typeof(payload->'pilotDispatchReceipts') = 'array' " +
       "THEN payload->'pilotDispatchReceipts' END, '[]'::jsonb) || $7::jsonb, true) " +
       'WHERE workspace_id = $1 AND harness_slug = $2 AND feature_id = $3 AND taken_by = $4 ' +
-      'AND taken_at = $5::timestamptz AND EXISTS (SELECT 1 FROM jsonb_array_elements(' +
+      "AND date_trunc('milliseconds', taken_at) = $5::timestamptz AND EXISTS (SELECT 1 FROM jsonb_array_elements(" +
       "COALESCE(CASE WHEN jsonb_typeof(payload->'pilotBindingReceipts') = 'array' " +
       "THEN payload->'pilotBindingReceipts' END, '[]'::jsonb)) receipt " +
       "WHERE receipt->>'receiptId' = $6) RETURNING feature_id",

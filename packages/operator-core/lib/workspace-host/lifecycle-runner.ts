@@ -47,9 +47,11 @@ import {
   bindWorkspaceHostPlanRevision,
   nextWorkspaceHostControllerAuthority,
   resolveControllerWorkspaceHostBootstrap,
+  validateWorkspaceHostCanaryAdmission,
   WorkspaceHostProvisioningRequestError,
   workspaceHostPlanDesiredRevision,
   type WorkspaceHostProvisioningResult,
+  type WorkspaceHostCanaryAdmission,
 } from './provisioning-runner';
 import {
   WorkspaceHostInitializationReplayInFlightError,
@@ -80,6 +82,8 @@ export interface RunWorkspaceHostLifecycleInput {
   rollbackImage?: WorkspaceHostImageRef;
   snapshot?: WorkspaceHostSnapshotRef;
   desired?: StoredWorkspaceHostDestroyTarget['desired'];
+  /** A restore creates a new billable population and needs its own admission evidence. */
+  canary?: WorkspaceHostCanaryAdmission;
   operationId?: string;
   actorId?: string;
   signal?: AbortSignal;
@@ -881,6 +885,15 @@ export async function runWorkspaceHostLifecycle(
     input.controllerAuthority ?? nextWorkspaceHostControllerAuthority(target.controllerAuthority);
   const store = controllerStore(baseStore, controllerAuthority, operationId);
 
+  if (input.action === 'restore') {
+    if (!input.desired) throw new WorkspaceHostProvisioningRequestError(['restore desired host spec is required']);
+    validateWorkspaceHostCanaryAdmission({
+      ...input,
+      desired: input.desired,
+      sourceLabels: target.desired.labels,
+    });
+  }
+
   let hostBootstrapScript: string | undefined;
   let runtimeRelease = input.runtimeRelease;
   if (
@@ -1063,6 +1076,7 @@ export async function runWorkspaceHostLifecycle(
     message: `Workspace-host ${input.action} started`,
     request: {
       sourceHostId: hostId,
+      ...(input.action === 'restore' && input.canary ? { canary: input.canary } : {}),
       ...(input.name ? { name: input.name } : {}),
       // The whole resolved plan, step inputs and rollbacks included: every later turn reads it
       // back instead of re-planning, and the request fence proves each turn executes this one.

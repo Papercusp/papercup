@@ -48,6 +48,7 @@ import { hashPlanContent } from './content-hash';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 import { stampTerminalNowBlock } from './terminal-now-stamp';
+import { parseRequirementBars } from '../../acceptance-bar-seed';
 
 /**
  * `dev:pg_query` exposes PostgreSQL bigint values as decimal strings, while
@@ -473,6 +474,30 @@ export async function evaluateSetContent(
   if (terminalStamp !== null) {
     body = terminalStamp;
     proposed = parsePlan(body, { filePath });
+  }
+
+  // A raw edit may change the BAR source without crossing a lifecycle gate.
+  // Ratchet a previously parseable Requirements section here, at the shared
+  // write path, so a malformed nested fence cannot sit in the plan until a
+  // later audit or shipment attempt discovers it. Existing invalid plans must
+  // remain editable so a sequence of small repairs can restore them.
+  const priorBars = parseRequirementBars(current);
+  if (priorBars.ok) {
+    const nextBars = parseRequirementBars(body);
+    if (!nextBars.ok) {
+      return {
+        newBody: null,
+        value: {
+          ok: false,
+          code: 'lint_failed',
+          errors: nextBars.problems.map((problem) => ({
+            level: 'error',
+            code: problem.code,
+            message: problem.detail,
+          })),
+        },
+      };
+    }
   }
 
   // 3. Lint the proposed body in-memory; errors block the write — but only the

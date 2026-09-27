@@ -120,7 +120,7 @@ describe('pilot receipt PG CAS', () => {
 
     expect(receipt).toMatchObject({ itemId: 'WI-1', ownerId: 'su-1', sessionId: 'session-1' });
     const [query, params] = db.unsafe.mock.calls[1];
-    expect(query).toMatch(/taken_by = \$4.*taken_at = \$5::timestamptz/s);
+    expect(query).toMatch(/taken_by = \$4.*date_trunc\('milliseconds', taken_at\) = \$5::timestamptz/s);
     expect(params.slice(0, 5)).toEqual(['ws-1', 'papercusp', 'WI-1', 'su-1', claimVersion]);
   });
 
@@ -147,7 +147,7 @@ describe('pilot receipt PG CAS', () => {
 
     expect(receipt).toMatchObject({ bindingReceiptId: 'binding-1', sessionId: 'session-1', role: 'director' });
     const [query, params] = db.unsafe.mock.calls[2];
-    expect(query).toMatch(/taken_by = \$4.*taken_at = \$5::timestamptz.*receipt->>'receiptId' = \$6/s);
+    expect(query).toMatch(/taken_by = \$4.*date_trunc\('milliseconds', taken_at\) = \$5::timestamptz.*receipt->>'receiptId' = \$6/s);
     expect(params.slice(0, 6)).toEqual([
       'ws-1', 'papercusp', 'WI-1', 'su-1', claimVersion, 'binding-1',
     ]);

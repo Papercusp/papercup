@@ -95,6 +95,9 @@ export async function applySessionPackageResources(tx: TransactionSql, input: {
   artifact: CompiledAgentSpecification | null;
   attemptId?: string;
 }): Promise<void> {
+  if (input.attemptId !== undefined && !input.artifact) {
+    throw new Error('package activation attempt requires a verified artifact');
+  }
   const artifact = input.artifact ? replayAgentSpecification(input.artifact) : null;
   if (artifact && artifact.specificationRevision !== input.revision.specificationRevision) {
     throw new Error('package activation artifact revision mismatch');

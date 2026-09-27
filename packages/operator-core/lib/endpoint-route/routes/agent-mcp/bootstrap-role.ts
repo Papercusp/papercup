@@ -27,7 +27,20 @@ import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, isKnownWorkspace } from '../../../workspace-registry';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
-import { recordAdvSession, recordSuLaunchSpec } from '../../../adv-sessions';
+import {
+  adoptStartingTerminalLaunch,
+  markAdvSessionEnded,
+  recordAdvSession,
+  recordSuLaunchSpec,
+  repairStaleAdvSessionTerminalMarkers,
+} from '../../../adv-sessions';
+import { resolveSessionStates } from '../../../agent-tools/coordination/liveness-oracle';
+import {
+  classifyPrePinnedOwnerRows,
+  describePrePinnedConflicts,
+  mapPrePinnedOwnerSessionState,
+  type PrePinnedOwnerRow,
+} from './pre-pinned-owner-rows';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import { roleConsumes } from '../../../role-registry';
@@ -167,6 +180,8 @@ const post = defineTool({
     let body: {
       role?: string;
       agent?: string;
+      /** Coordination identity reserved by the canonical launcher. Does not change role authority. */
+      owner_id?: string | null;
       workspace?: string | null;
       harness_slug?: string | null;
       feature?: string | null;
@@ -318,10 +333,50 @@ const post = defineTool({
         return jsonRes({ status: 'error', code: error?.code ?? 'codex_model_denied', error: error?.message ?? String(error) }, 400);
       }
     }
+    // Honor the same pre-pinned identity contract as bootstrap-su. A role
+    // launch must not detach the actual worker from its canonical receipt.
+    if (body.owner_id != null && typeof body.owner_id !== 'string') {
+      return jsonRes({ status: 'error', error: 'owner_id must be a string' }, 400);
+    }
+    const requestedSid = body.owner_id?.trim() || null;
+    let adoptableStartingRowId: number | null = null;
+    if (requestedSid) {
+      if (!/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/.test(requestedSid)) {
+        return jsonRes({ status: 'error', error: 'owner_id must match su-<slug> (6-119 chars of [A-Za-z0-9._-])' }, 400);
+      }
+      await repairStaleAdvSessionTerminalMarkers(requestedSid);
+      const { sql } = getOrgPg();
+      const live = await sql<PrePinnedOwnerRow[]>`
+        SELECT id::text, display, (session_id IS NOT NULL) AS has_session,
+               (launched_at IS NOT NULL) AS launched
+          FROM harness_shared.adv_sessions
+         WHERE coord_owner_id = ${requestedSid} AND ended_at IS NULL
+         ORDER BY id DESC
+      `;
+      const oracleState = await resolveSessionStates([{ ownerId: requestedSid }], { hydratePerId: true })
+        .then((verdicts) => verdicts.get(requestedSid)?.sessionState)
+        .catch(() => undefined);
+      const liveness = mapPrePinnedOwnerSessionState(oracleState);
+      const { precursors, reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows(
+        live.map((row) => ({ ...row, liveness })),
+      );
+      if (conflicts.length > 0) {
+        return jsonRes({ status: 'error',
+          error: `owner_id ${requestedSid} is already bound to live adv session ${conflicts[0].id} — pre-pinned owners must be fresh [live rows: ${describePrePinnedConflicts(conflicts)}]`,
+        }, 409);
+      }
+      for (const stranded of reclaimableConflicts) {
+        await markAdvSessionEnded(Number(stranded.id), null, 'reconciler');
+      }
+      adoptableStartingRowId = precursors.length > 0 ? Number(precursors[0].id) : null;
+    }
     // Mint from the shared role-launch primitive before account preflight.
     // Gateway-routed requests then carry this exact owner ID, while a refused
     // account route still exits before composition writes any launch artifact.
-    const launchIdentity = mintRoleLaunchIdentity();
+    const launchIdentity = {
+      ...mintRoleLaunchIdentity(),
+      ...(requestedSid ? { sid: requestedSid } : {}),
+    };
     const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent, launchIdentity.sid, false, model);
     if (accountPin.error) {
       return jsonRes({ status: 'error', error: accountPin.error }, 409);
@@ -504,20 +559,43 @@ const post = defineTool({
       fleet: body.fleet?.trim() || body.fleet_name?.trim() || null,
     });
 
-    // Record the tracked session first so the prompt/mcp files key off its id.
-    const sessionId = await recordAdvSession({
-      workspaceId: workspace,
-      role,
-      feature,
-      agent,
-      planSlug: planContext ? plan : null,
-      mode: agent === 'omp' ? 'omp' : 'console',
-      cwd: spec.cwd,
-      label: feature ? `${role} · ${feature}` : (planContext ? `${role} · ${plan}` : role),
-      coordOwnerId: sid,
-      launchArgv,
-      ...(nativeSessionId ? { sessionId: nativeSessionId } : {}),
-    });
+    // Complete the canonical launcher's precursor rather than introducing a
+    // second roster row. A lost adoption race must not create a duplicate.
+    const label = feature ? `${role} · ${feature}` : (planContext ? `${role} · ${plan}` : role);
+    let sessionId: number | null = null;
+    if (adoptableStartingRowId != null) {
+      const adopted = await adoptStartingTerminalLaunch({
+        id: adoptableStartingRowId,
+        sessionId: nativeSessionId,
+        role,
+        feature,
+        planSlug: planContext ? plan : null,
+        label,
+        cwd: spec.cwd,
+        mode: agent === 'omp' ? 'omp' : 'console',
+        launchArgv,
+      });
+      if (!adopted) {
+        return jsonRes({ status: 'error', code: 'role_launch_adoption_conflict',
+          error: `owner_id ${sid} starting row ${adoptableStartingRowId} changed during bootstrap; refusing duplicate registration`,
+        }, 409);
+      }
+      sessionId = adoptableStartingRowId;
+    } else {
+      sessionId = await recordAdvSession({
+        workspaceId: workspace,
+        role,
+        feature,
+        agent,
+        planSlug: planContext ? plan : null,
+        mode: agent === 'omp' ? 'omp' : 'console',
+        cwd: spec.cwd,
+        label,
+        coordOwnerId: sid,
+        launchArgv,
+        ...(nativeSessionId ? { sessionId: nativeSessionId } : {}),
+      });
+    }
 
     // A grant-bearing role identity must reach the same database-owned kernel
     // receipt as an SU identity. Merely compiling its prompt/artifact leaves

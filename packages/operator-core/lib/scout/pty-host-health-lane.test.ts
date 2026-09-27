@@ -109,6 +109,19 @@ describe('PTY host event classification for Blender', () => {
     expect(patterns[0]?.detail).toContain('Failure signal');
   });
 
+  it('keeps failed role MCP readiness while omitting a ready connection', () => {
+    const patterns = buildPtyHostHealthPatterns([
+      row('launch-role-mcp-ready', 20),
+      row('launch-role-mcp-unavailable', 1, '44'),
+    ]);
+    expect(classifyPtyHostEvent('launch-role-mcp-ready')).toBe('routine');
+    expect(classifyPtyHostEvent('launch-role-mcp-unavailable')).toBe('failure');
+    expect(patterns.map((pattern) => pattern.ref)).toEqual([
+      'pty-host:kind:launch-role-mcp-unavailable',
+    ]);
+    expect(patterns[0]?.detail).toContain('Failure signal');
+  });
+
   it('classifies every kind observed in the production 24-hour host-event census', () => {
     const observed = [
       'wake-turn-deferred-for-pending-respawn', 'turn-delivered', 'respawn-carry-delivered',

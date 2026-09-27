@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "identities-v1 P-037 orchestrator typecheck after trusted-mode schema extension",
+  "framework": "shell",
+  "command": [
+    "npx",
+    "tsc",
+    "--noEmit",
+    "--incremental",
+    "false",
+    "-p",
+    "libs/papercusp/packages/orchestrator/tsconfig.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-26T23:51:35.204332+00:00",
+  "finishedAt": "2026-09-26T23:51:36.329332+00:00",
+  "timeBasis": "Log file creation and measured exec-command wall time (1.125 seconds); timestamps approximate the observed command interval.",
+  "summary": "Full non-incremental orchestrator project typecheck exited zero with no diagnostics after schema.ts added trusted mode activation metadata. Existing src/**/*.ts project inclusion covers the source-kind contracts and loaders. This refreshes typecheck proof for the measured schema drift; it does not claim deployment.",
+  "testLayer": "typecheck",
+  "planSlug": "identities-v1-2026-08-30",
+  "specIds": [
+    "identities.p037.contracts.failure",
+    "identities.p037.source-kind.boundary"
+  ],
+  "workItemId": "WI-2144483",
+  "sourcePaths": [
+    "libs/papercusp/packages/orchestrator/src/blueprint/schema.ts",
+    "libs/papercusp/packages/orchestrator/src/blueprint/loader.ts",
+    "libs/papercusp/packages/orchestrator/src/blueprint/composition-compiler.ts",
+    "libs/papercusp/packages/orchestrator/src/blueprint/stack-mutation.ts",
+    "libs/papercusp/packages/orchestrator/src/blueprint/contracts.test.ts",
+    "libs/papercusp/packages/orchestrator/src/blueprint/loader.layers.test.ts",
+    "libs/papercusp/packages/orchestrator/src/blueprint/loader.test.ts"
+  ],
+  "sourceBlobs": [
+    {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/schema.ts",
+      "sha256": "3673a1beee733f43316316a0190ab6c9d4586749dc51e7fd9974861e04de98df",
+      "blob": "bc7013a654ef43848ed60781d0df11b31a3f0579"
+    },
+    {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/loader.ts",
+      "sha256": "bff8cdf341f25cb78db4a500ca8aa84b02e69733ce8c1fab922ee9d735c19393",
+      "blob": "55ae51d6b01fc43d6e9efdb36eddfebe2d216c24"
+    },
+    {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/composition-compiler.ts",
+      "sha256": "cdc5481a6147b96d7ea280a08d2628ae34cf2f5fc893b049d1921c729ac0c52f",
+      "blob": "1f659e73bebc9606b847435891f6f08fc6b8f2f6"
+    },
+    {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/stack-mutation.ts",
+      "sha256": "2c7dcf4ddd491a5cd682ffd44e966e2c2d4e406b85b36201144de0f09c7a6453",
+      "blob": "82e26321444cd155297b241f6fe75b227c4ea4f9"
+    },
+    {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/contracts.test.ts",
+      "sha256": "8658f5f3b39ec258f814168a710b954e44b6db81c1b7ed9ef3525d1c92bdb3a8",
+      "blob": "7a9057408a2a0bba4609b1fffec3101c47cc26df"
+    },
+    {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/loader.layers.test.ts",
+      "sha256": "2cff10f8cad9cbd1b803c34585631ddfdb85e53a84c4656e568a34d39a37ea84",
+      "blob": "35469010e09184125e9bf6f81d7944542e808bf8"
+    },
+    {
+      "path": "libs/papercusp/packages/orchestrator/src/blueprint/loader.test.ts",
+      "sha256": "a20df3aecb83d41244ed79809d2d5dffc0e9dc62c54d27ca82bc7e4b34a520e5",
+      "blob": "88865bd22778a7329e3c181417c6273a34fb4794"
+    }
+  ],
+  "subjectRepo": {
+    "path": "libs/papercusp",
+    "head": "522c93c2772f11474b934e4a0e10badad715c1b1"
+  },
+  "assertions": [
+    {
+      "id": "full-project-typecheck",
+      "passed": true,
+      "evidence": "npx tsc --noEmit --incremental false -p libs/papercusp/packages/orchestrator/tsconfig.json: exec exit0, empty diagnostics log."
+    },
+    {
+      "id": "project-inclusion",
+      "passed": true,
+      "evidence": "Same maintained project include covers src/**/*.ts, including schema, loader, composition compiler, stack mutation and the P-037 contract/loader tests."
+    }
+  ],
+  "notProven": [
+    "Final release deployment."
+  ]
+}

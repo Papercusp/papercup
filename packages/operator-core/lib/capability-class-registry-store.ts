@@ -454,6 +454,17 @@ export function validateProviderInterface(input: {
   };
 }
 
+export type CapabilityProviderKind = 'tool' | 'recipe' | 'operation';
+export type CapabilityProviderLatencyClass = 'sync' | 'async';
+
+/** Attested execution metadata returned by current registry reads. Historical
+ * tool-only snapshots retain ProviderBindingRow's original contract; a new
+ * execution consumer must require this contract as well, never infer a kind. */
+export interface ProviderExecutionContract {
+  providerKind: CapabilityProviderKind;
+  latencyClass: CapabilityProviderLatencyClass;
+}
+
 export interface ProviderBindingRow {
   classRef: string;
   providerPackage: string;
@@ -504,6 +515,8 @@ type BindingDbRow = {
   class_version: string;
   provider_package: string;
   provider_version: string;
+  provider_kind: string;
+  latency_class: string;
   verb_bindings: unknown;
   conformance_run_id: string;
   structural_passed: boolean;
@@ -537,14 +550,22 @@ type ProviderDependentDbRow = {
   updated_at: Date | string;
 };
 
-function mapBinding(row: BindingDbRow): ProviderBindingRow {
+function mapBinding(row: BindingDbRow): ProviderBindingRow & ProviderExecutionContract {
   if (!row.structural_passed) {
     throw new Error(`provider binding ${row.conformance_run_id} does not reference a passing conformance run`);
+  }
+  if (!(
+    ((row.provider_kind === 'tool' || row.provider_kind === 'recipe') && row.latency_class === 'sync') ||
+    (row.provider_kind === 'operation' && row.latency_class === 'async')
+  )) {
+    throw new Error(`provider binding ${row.conformance_run_id} has an invalid execution contract`);
   }
   return {
     classRef: `${row.class_id}@${row.class_version}`,
     providerPackage: row.provider_package,
     providerVersion: row.provider_version,
+    providerKind: row.provider_kind as CapabilityProviderKind,
+    latencyClass: row.latency_class as CapabilityProviderLatencyClass,
     verbBindings: jsonObject(row.verb_bindings) as Record<string, string>,
     conformanceRunId: row.conformance_run_id,
     conformanceStatus: 'passed',
@@ -557,7 +578,7 @@ function mapBinding(row: BindingDbRow): ProviderBindingRow {
 }
 
 const BINDING_SELECT = (sql: postgres.Sql | postgres.TransactionSql) => sql`
-  b.class_id, b.class_version, b.provider_package, b.provider_version,
+  b.class_id, b.class_version, b.provider_package, b.provider_version, b.provider_kind, b.latency_class,
   r.verb_bindings, b.conformance_run_id, r.structural_passed,
   r.behavioral_status, r.behavioral_run_ref, r.registry_revision,
   b.status, b.updated_at
@@ -576,7 +597,7 @@ export async function recordProviderConformance(
     report: ProviderConformanceReport;
     performedBy?: string | null;
   },
-): Promise<{ runId: string; binding: ProviderBindingRow | null }> {
+): Promise<{ runId: string; binding: (ProviderBindingRow & ProviderExecutionContract) | null }> {
   const expectedClassRef = `${input.classId}@${input.classVersion}`;
   if (
     input.report.classRef !== expectedClassRef ||
@@ -593,11 +614,11 @@ export async function recordProviderConformance(
     await tx`
       INSERT INTO harness_shared.capability_class_conformance_runs
         (id, workspace_id, class_id, class_version, provider_package, provider_version,
-         registry_revision, verb_bindings, structural_passed, behavioral_status,
+         provider_kind, latency_class, registry_revision, verb_bindings, structural_passed, behavioral_status,
          behavioral_run_ref, report, performed_by)
       VALUES (
         ${runId}, ${input.workspaceId}, ${input.classId}, ${input.classVersion},
-        ${input.providerPackage}, ${input.providerVersion}, ${input.report.registryRevision},
+        ${input.providerPackage}, ${input.providerVersion}, 'tool', 'sync', ${input.report.registryRevision},
         ${JSON.stringify(input.verbBindings)}::text::jsonb, ${input.report.ok},
         ${input.report.behavioral.status}, NULL,
         ${JSON.stringify(input.report)}::text::jsonb, ${input.performedBy ?? null}
@@ -607,22 +628,24 @@ export async function recordProviderConformance(
       WITH upserted AS (
       INSERT INTO harness_shared.capability_class_provider_bindings
         (workspace_id, class_id, class_version, provider_package, provider_version,
-         conformance_run_id)
+         conformance_run_id, provider_kind, latency_class)
       VALUES (
         ${input.workspaceId}, ${input.classId}, ${input.classVersion},
-        ${input.providerPackage}, ${input.providerVersion}, ${runId}
+        ${input.providerPackage}, ${input.providerVersion}, ${runId}, 'tool', 'sync'
       )
       ON CONFLICT (workspace_id, class_id, class_version, provider_package, provider_version)
       DO UPDATE SET
         conformance_run_id = EXCLUDED.conformance_run_id,
+        provider_kind = EXCLUDED.provider_kind,
+        latency_class = EXCLUDED.latency_class,
         status = 'active',
         updated_at = now()
       RETURNING
         class_id, class_version, provider_package, provider_version,
-        conformance_run_id, status, updated_at
+        conformance_run_id, provider_kind, latency_class, status, updated_at
       )
       SELECT
-        u.class_id, u.class_version, u.provider_package, u.provider_version,
+        u.class_id, u.class_version, u.provider_package, u.provider_version, u.provider_kind, u.latency_class,
         r.verb_bindings, u.conformance_run_id, r.structural_passed,
         r.behavioral_status, r.behavioral_run_ref, r.registry_revision,
         u.status, u.updated_at
@@ -638,7 +661,7 @@ export async function listProviderBindings(
   workspaceId: string,
   classId: string,
   classVersion: string,
-): Promise<ProviderBindingRow[]> {
+): Promise<Array<ProviderBindingRow & ProviderExecutionContract>> {
   const rows = await sql<BindingDbRow[]>`
     SELECT ${BINDING_SELECT(sql)}
       FROM harness_shared.capability_class_provider_bindings b
@@ -653,7 +676,7 @@ export async function listProviderBindings(
   return rows.map(mapBinding);
 }
 
-function mapCandidate(row: CandidateDbRow): CapabilityProviderCandidateRow {
+function mapCandidate(row: CandidateDbRow): CapabilityProviderCandidateRow & ProviderExecutionContract {
   return {
     ...mapBinding(row),
     passingStructuralRuns: Number(row.passing_structural_runs),
@@ -662,7 +685,7 @@ function mapCandidate(row: CandidateDbRow): CapabilityProviderCandidateRow {
   };
 }
 
-function mapPotBinding(row: PotBindingDbRow): PotCapabilityProviderBindingRow {
+function mapPotBinding(row: PotBindingDbRow): PotCapabilityProviderBindingRow & ProviderExecutionContract {
   return {
     ...mapBinding(row),
     potSlug: row.pot_slug,
@@ -684,8 +707,13 @@ export async function getPotCapabilityProviderBinding(
     classId: string;
     classVersion: string;
     includeInactiveProvider?: boolean;
+    /** Legacy grant/compiler callers resolve tools only. New typed execution
+     * callers opt in to other kinds, then enforce their own admission policy. */
+    providerKinds?: readonly CapabilityProviderKind[];
   },
-): Promise<PotCapabilityProviderBindingRow | null> {
+): Promise<(PotCapabilityProviderBindingRow & ProviderExecutionContract) | null> {
+  const providerKinds = input.providerKinds ?? ['tool'];
+  if (providerKinds.length === 0) return null;
   const statusClause = input.includeInactiveProvider ? sql`` : sql`AND b.status = 'active'`;
   const rows = await sql<PotBindingDbRow[]>`
     SELECT ${BINDING_SELECT(sql)},
@@ -697,12 +725,15 @@ export async function getPotCapabilityProviderBinding(
        AND b.class_version = p.class_version
        AND b.provider_package = p.provider_package
        AND b.provider_version = p.provider_version
+       AND b.provider_kind = p.provider_kind
+       AND b.latency_class = p.latency_class
       JOIN harness_shared.capability_class_conformance_runs r
         ON r.id = b.conformance_run_id
      WHERE p.workspace_id = ${input.workspaceId}
        AND p.pot_slug = ${input.potSlug}
        AND p.class_id = ${input.classId}
        AND p.class_version = ${input.classVersion}
+       AND b.provider_kind IN ${sql(providerKinds)}
        ${statusClause}
        AND r.structural_passed = true
      LIMIT 1`;
@@ -719,7 +750,7 @@ export async function listActiveCapabilityProviderCandidates(
   workspaceId: string,
   classId: string,
   classVersion: string,
-): Promise<CapabilityProviderCandidateRow[]> {
+): Promise<Array<CapabilityProviderCandidateRow & ProviderExecutionContract>> {
   const rows = await sql<CandidateDbRow[]>`
     SELECT ${BINDING_SELECT(sql)},
            (
@@ -756,6 +787,7 @@ export async function listActiveCapabilityProviderCandidates(
      WHERE b.workspace_id = ${workspaceId}
        AND b.class_id = ${classId}
        AND b.class_version = ${classVersion}
+       AND b.provider_kind = 'tool'
        AND b.status = 'active'
        AND r.structural_passed = true
      ORDER BY b.provider_package, b.provider_version DESC`;
@@ -808,21 +840,32 @@ export async function bindCapabilityProviderToPot(
     providerPackage: string;
     providerVersion: string;
     boundBy?: string | null;
+    /** Omission is the old tool-only selection contract. A typed caller must
+     * explicitly select any other kind; the DB proves its run and latency. */
+    providerKind?: CapabilityProviderKind;
   },
 ): Promise<void> {
-  await sql`
+  const rows = await sql<{ pot_slug: string }[]>`
     INSERT INTO harness_shared.pot_capability_class_bindings
-      (workspace_id, pot_slug, class_id, class_version, provider_package, provider_version, bound_by)
-    VALUES (
-      ${input.workspaceId}, ${input.potSlug}, ${input.classId}, ${input.classVersion},
-      ${input.providerPackage}, ${input.providerVersion}, ${input.boundBy ?? null}
-    )
+      (workspace_id, pot_slug, class_id, class_version, provider_package, provider_version, bound_by,
+       provider_kind, latency_class)
+    SELECT b.workspace_id, ${input.potSlug}, b.class_id, b.class_version,
+           b.provider_package, b.provider_version, ${input.boundBy ?? null}, b.provider_kind, b.latency_class
+      FROM harness_shared.capability_class_provider_bindings b
+     WHERE b.workspace_id = ${input.workspaceId} AND b.class_id = ${input.classId}
+       AND b.class_version = ${input.classVersion} AND b.provider_package = ${input.providerPackage}
+       AND b.provider_version = ${input.providerVersion}
+       AND b.provider_kind = ${input.providerKind ?? 'tool'} AND b.status = 'active'
     ON CONFLICT (workspace_id, pot_slug, class_id, class_version)
     DO UPDATE SET
       provider_package = EXCLUDED.provider_package,
       provider_version = EXCLUDED.provider_version,
+      provider_kind = EXCLUDED.provider_kind,
+      latency_class = EXCLUDED.latency_class,
       bound_by = EXCLUDED.bound_by,
-      updated_at = now()`;
+      updated_at = now()
+    RETURNING pot_slug`;
+  if (rows.length === 0) throw new Error('capability provider is absent, inactive, or has a different execution kind');
 }
 
 /**

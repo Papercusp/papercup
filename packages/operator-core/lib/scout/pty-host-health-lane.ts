@@ -71,6 +71,7 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'model-capacity-detected' ||
     kind === 'turn-deferred-quota-blocked' ||
     kind === 'launch-kickoff-model-turn-absent' ||
+    kind === 'launch-role-mcp-unavailable' ||
     kind === 'busy-gate-expired' ||
     /(?:^|-)(?:failed|error|expired|timeout|timed-out|unconfirmed|unverified|exhausted|truncated|dropped|refused|stuck|starvation|suspected|partial)$/.test(kind)
   ) return 'failure';

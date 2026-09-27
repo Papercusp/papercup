@@ -26,6 +26,11 @@ afterAll(() => {
 
 const recordAdvSessionMock = vi.fn(async (_o: unknown) => 7 as number | null);
 const recordSuLaunchSpecMock = vi.fn(async () => true);
+const adoptStartingTerminalLaunchMock = vi.fn(async (_opts: unknown) => true);
+const repairStaleAdvSessionTerminalMarkersMock = vi.fn(async (_owner: string) => 0);
+const markAdvSessionEndedMock = vi.fn(async (..._args: unknown[]) => {});
+const ownerRowsSqlMock = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+const resolveSessionStatesMock = vi.fn(async (..._args: unknown[]) => new Map<string, { sessionState: string }>());
 const requestSessionIdentityActivationMock = vi.fn(async () => ({}));
 const buildRoleLaunchSpecMock = vi.fn();
 const mintRoleLaunchIdentityMock = vi.fn(() => ({ sid: 'role-abc', nativeSessionId: 'nsid-abc' }));
@@ -87,6 +92,12 @@ vi.mock('../../adv-sessions', async (orig) => ({
   ...(await orig<typeof import('../../adv-sessions')>()),
   recordAdvSession: recordAdvSessionMock,
   recordSuLaunchSpec: recordSuLaunchSpecMock,
+  adoptStartingTerminalLaunch: adoptStartingTerminalLaunchMock,
+  repairStaleAdvSessionTerminalMarkers: repairStaleAdvSessionTerminalMarkersMock,
+  markAdvSessionEnded: markAdvSessionEndedMock,
+}));
+vi.mock('../../agent-tools/coordination/liveness-oracle', () => ({
+  resolveSessionStates: (...args: unknown[]) => resolveSessionStatesMock(...args),
 }));
 vi.mock('../../agent-tools/coordination/control-anchor', async (orig) => ({
   ...(await orig<typeof import('../../agent-tools/coordination/control-anchor')>()),
@@ -108,7 +119,7 @@ vi.mock('../../spawn-config', async (orig) => ({
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: vi.fn() }),
+  getOrgPg: () => ({ sql: ownerRowsSqlMock }),
 }));
 vi.mock('../../role-codex-home', () => ({ writeRoleCodexHome: (...a: unknown[]) => writeRoleCodexHomeMock(...a) }));
 // Keep this unit suite off the live flag store. Without this mock the first
@@ -203,6 +214,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   recordAdvSessionMock.mockResolvedValue(7);
   recordSuLaunchSpecMock.mockResolvedValue(true);
+  adoptStartingTerminalLaunchMock.mockReset().mockResolvedValue(true);
+  ownerRowsSqlMock.mockReset().mockResolvedValue([]);
+  resolveSessionStatesMock.mockReset().mockResolvedValue(new Map());
   requestSessionIdentityActivationMock.mockResolvedValue({});
   resolveAcceptedOperationWorkerBindingMock.mockResolvedValue(null);
   selectAcceptedOperationWorkerModelMock.mockReset().mockReturnValue(null);
@@ -218,13 +232,13 @@ beforeEach(() => {
     agentsPath: '/tmp/role-codex-homes/session-7/AGENTS.md',
     configPath: '/tmp/role-codex-homes/session-7/config.toml',
   });
-  buildRoleLaunchSpecMock.mockImplementation(async (input: { stack?: string[] | null; acceptedOperation?: unknown }) => ({
+  buildRoleLaunchSpecMock.mockImplementation(async (input: { stack?: string[] | null; acceptedOperation?: unknown; launchIdentity?: { sid: string; nativeSessionId: string } }) => ({
     role: 'worker', runId: 'worker-F-001-1', spawnId: 'sp-1', harnessSlug: 'papercup', featureId: 'F-001',
     cwd: LC_DIR, promptText: 'WORKER PROMPT', promptFile: '/h/prompts/worker.md',
     mcpUrl: 'http://localhost:3070/api/mcp?role=worker&sig=x',
     mcpJsonContents: JSON.stringify({ mcpServers: { papercusp: { type: 'http', url: 'http://localhost:3070/api/mcp?role=worker&sig=x' } } }),
     // Launch invariants the primitive now produces (unify-launch-mechanics P-002).
-    sid: 'role-abc', nativeSessionId: 'nsid-abc',
+    sid: input.launchIdentity?.sid ?? 'role-abc', nativeSessionId: input.launchIdentity?.nativeSessionId ?? 'nsid-abc',
     claudeConfigDir: join(LC_DIR, 'session-claude', 'role-abc'),
     sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-abc'),
     contextSize: 'trimmed',
@@ -238,6 +252,81 @@ beforeEach(() => {
 });
 
 describe('bootstrap-role', () => {
+  const pinnedOwner = 'su-auditor-canonical';
+  const pinnedRequest = { role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', owner_id: pinnedOwner };
+
+  it('preserves a pre-pinned owner through account routing, role composition, record and environment', async () => {
+    const response = await callPost(pinnedRequest);
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', null, 'claude', pinnedOwner, false, null);
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({
+      role: 'worker', launchIdentity: { sid: pinnedOwner, nativeSessionId: 'nsid-abc' },
+    }));
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ coordOwnerId: pinnedOwner, role: 'worker' }));
+    expect(result.envelopeEnv.PAPERCUSP_SID).toBe(pinnedOwner);
+    expect(result.envelopeEnv.PAPERCUSP_ROLE).toBe('worker');
+    expect(readFileSync(result.mcpJsonPath, 'utf8')).toContain('role=worker');
+    expect(repairStaleAdvSessionTerminalMarkersMock).toHaveBeenCalledWith(pinnedOwner);
+  });
+
+  it.each(['live', 'parked', 'recorded', undefined])('refuses a bound pre-pinned owner with %s liveness', async (sessionState) => {
+    ownerRowsSqlMock.mockResolvedValue([{ id: '21', display: 'console', has_session: true, launched: true }]);
+    if (sessionState) resolveSessionStatesMock.mockResolvedValue(new Map([[pinnedOwner, { sessionState }]]));
+    const response = await callPost(pinnedRequest);
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain('already bound to live adv session 21');
+    expect(resolveAccountPinMock).not.toHaveBeenCalled();
+    expect(buildRoleLaunchSpecMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on a liveness read error', async () => {
+    ownerRowsSqlMock.mockResolvedValue([{ id: '21', display: 'console', has_session: true, launched: true }]);
+    resolveSessionStatesMock.mockRejectedValueOnce(new Error('oracle unavailable'));
+    expect((await callPost(pinnedRequest)).status).toBe(409);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['ended', 'suspect'])('reclaims only a positively terminal %s binding', async (sessionState) => {
+    ownerRowsSqlMock.mockResolvedValue([{ id: '21', display: 'console', has_session: true, launched: true }]);
+    resolveSessionStatesMock.mockResolvedValue(new Map([[pinnedOwner, { sessionState }]]));
+    expect((await callPost(pinnedRequest)).status).toBe(200);
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(21, null, 'reconciler');
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ coordOwnerId: pinnedOwner }));
+  });
+
+  it.each(['terminal', 'workbench'])('adopts the existing %s starting row without inserting a duplicate', async (display) => {
+    ownerRowsSqlMock.mockResolvedValue([{ id: '42', display, has_session: false, launched: true }]);
+    const response = await callPost(pinnedRequest);
+    expect(response.status).toBe(200);
+    expect((await response.json()).sessionId).toBe(42);
+    expect(adoptStartingTerminalLaunchMock).toHaveBeenCalledWith(expect.objectContaining({
+      id: 42, sessionId: 'nsid-abc', role: 'worker', feature: 'F-001',
+    }));
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unclaimed workbench row', async () => {
+    ownerRowsSqlMock.mockResolvedValue([{ id: '42', display: 'workbench', has_session: false, launched: false }]);
+    expect((await callPost(pinnedRequest)).status).toBe(409);
+    expect(adoptStartingTerminalLaunchMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a lost adoption race rather than minting a duplicate owner row', async () => {
+    ownerRowsSqlMock.mockResolvedValue([{ id: '42', display: 'terminal', has_session: false, launched: true }]);
+    adoptStartingTerminalLaunchMock.mockResolvedValue(false);
+    expect((await callPost(pinnedRequest)).status).toBe(409);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['bad-owner', 42, 'su-../bad'])('rejects malformed owner_id %s before routing', async (owner_id) => {
+    expect((await callPost({ ...pinnedRequest, owner_id })).status).toBe(400);
+    expect(resolveAccountPinMock).not.toHaveBeenCalled();
+    expect(buildRoleLaunchSpecMock).not.toHaveBeenCalled();
+  });
+
   it('selects the accepted operation model before account routing and persists its selection', async () => {
     const modelPolicy = { mode: 'exact', models: ['claude-opus-4-8'], onUnavailable: 'fail' };
     const modelSelection = { model: 'claude-opus-4-8', requestedModel: 'claude-opus-4-8',

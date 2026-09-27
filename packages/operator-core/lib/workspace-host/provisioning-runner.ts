@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   assertWorkspaceHostSecretIsolation,
+  isWorkspaceHostCanaryIdentityLabelKey,
   createWorkspaceHostManualDestroyReceipt,
   nextWorkspaceHostControllerAction,
   workspaceHostCanaryIdentityAudit,
@@ -274,6 +275,7 @@ export interface RunWorkspaceHostProvisioningInput {
   desired: WorkspaceHostDesiredSpec;
   connection: WorkspaceHostProviderConnection;
   provider: WorkspaceHostProvider;
+  canary?: WorkspaceHostCanaryAdmission;
   operationId?: string;
   actorId?: string;
   signal?: AbortSignal;
@@ -288,6 +290,68 @@ export interface RunWorkspaceHostProvisioningInput {
    * provider declares `capabilities.lifecycle.hostBootstrap`.
    */
   renderHostBootstrap?: (hostId: string) => Promise<string>;
+}
+
+/** Pre-creation subset of the evidence needed to retire and account for a canary. */
+export type WorkspaceHostCanaryAdmission = Pick<
+  WorkspaceHostDestroyCanaryEvidence,
+  'runId' | 'workspaceId' | 'maxSpendCents' | 'teardownDeadlineAt' | 'budgetEvidenceRef' | 'preRunZeroBaseline'
+> & { contractApproval: WorkspaceHostContractApproval };
+
+/** Shared by both creation paths, before planning/persisting/provider work. */
+export function validateWorkspaceHostCanaryAdmission(input: {
+  workspaceId: string;
+  desired: WorkspaceHostDesiredSpec;
+  connection: WorkspaceHostProviderConnection;
+  canary?: WorkspaceHostCanaryAdmission;
+  sourceLabels?: Readonly<Record<string, string>>;
+}): void {
+  const labelled = [input.desired.labels, input.sourceLabels].some((labels) =>
+    Object.keys(labels ?? {}).some(isWorkspaceHostCanaryIdentityLabelKey),
+  );
+  const evidence = input.canary;
+  if (evidence === undefined && !labelled) return;
+  if (!evidence || typeof evidence !== 'object') {
+    throw new WorkspaceHostProvisioningRequestError(['canary creation requires pre-run economic admission evidence']);
+  }
+  try {
+    if (
+      typeof evidence.runId !== 'string' || typeof evidence.workspaceId !== 'string' ||
+      !SAFE_CANARY_ID.test(evidence.runId) || !SAFE_CANARY_ID.test(evidence.workspaceId)
+    ) {
+      throw new Error('canary runId and workspaceId must be lowercase identifiers of at most 63 characters');
+    }
+    if (evidence.workspaceId !== input.workspaceId) throw new Error('canary.workspaceId must match the active workspace');
+    const identity = workspaceHostCanaryIdentityAudit(input.desired.labels, evidence);
+    if (identity.missing.length || identity.mismatched.length) {
+      throw new WorkspaceHostProvisioningRequestError([...identity.missing, ...identity.mismatched]);
+    }
+    externalEvidenceRef(evidence.budgetEvidenceRef, 'canary.budgetEvidenceRef');
+    const baseline = evidence.preRunZeroBaseline;
+    if (!baseline || baseline.cents !== 0 || baseline.reservationId) {
+      throw new Error('canary.preRunZeroBaseline must be passive exact zero-cent provider evidence');
+    }
+    externalEvidenceRef(baseline.providerEvidenceRef, 'canary.preRunZeroBaseline.providerEvidenceRef');
+    isoTimestamp(baseline.observedAt, 'canary.preRunZeroBaseline.observedAt');
+    if (Date.parse(baseline.observedAt) > Date.now()) throw new Error('canary baseline must precede provider work');
+    // Reuse the live-canary authority, spend-ceiling and deadline contract. A failed-run
+    // teardown authorization must never authorize a NEW resource population.
+    const ledger = new WorkspaceHostLiveCanaryHarness({
+      runId: evidence.runId,
+      workspaceId: input.workspaceId,
+      target: input.desired.target,
+      scope: input.desired.scope,
+      cloudCredentialRef: input.connection.cloudCredentialRef,
+      contractApproval: evidence.contractApproval,
+      maxSpendCents: evidence.maxSpendCents,
+      teardownDeadlineAt: evidence.teardownDeadlineAt,
+    });
+    ledger.assertCanStartProviderWork();
+    assertWorkspaceHostSecretIsolation(evidence, 'workspaceHost.canaryAdmission');
+  } catch (error) {
+    if (error instanceof WorkspaceHostProvisioningRequestError) throw error;
+    throw new WorkspaceHostProvisioningRequestError([message(error)]);
+  }
 }
 
 export interface WorkspaceHostProvisioningResult {
@@ -917,6 +981,8 @@ export async function runWorkspaceHostProvisioning(
   }
   if (requestProblems.length > 0) throw new WorkspaceHostProvisioningRequestError(requestProblems);
 
+  validateWorkspaceHostCanaryAdmission(input);
+
   // Render the controller-authored host bootstrap BEFORE anything is created.
   //
   // Order is the whole point: this is the last cheap moment to refuse. The bootstrap installs the
@@ -1039,6 +1105,7 @@ export async function runWorkspaceHostProvisioning(
       connectionId,
       name,
       desired: input.desired,
+      ...(input.canary ? { canary: input.canary } : {}),
       plan: {
         planId: plan.planId,
         steps: plan.steps.map(({ id, idempotencyKey }) => ({ id, idempotencyKey })),

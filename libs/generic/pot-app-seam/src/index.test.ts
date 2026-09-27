@@ -205,6 +205,51 @@ describe('createPotAppSeam', () => {
     });
   });
 
+  it("refuses status and result reads that drift to a different durable target", async () => {
+    const h = host();
+    const seam = createPotAppSeam(h);
+    const [handle] = await seam.submitOperations([
+      {
+        harnessSlug: "shop",
+        operationId: "review-candidate",
+        requestKey: "candidate:a",
+        input: {},
+      },
+    ]);
+    const driftedHandle: BlueprintOperationHandle = {
+      ...handle!,
+      target: { kind: "plan", runId: 999, instanceSlug: "review@run-999" },
+    };
+    h.readBlueprintOperationStatus = () => ({
+      handle: driftedHandle,
+      phase: "terminal",
+      outcome: "succeeded",
+      items: [],
+      planRun: { status: "done", outcome: "success" },
+      cancellationRequested: false,
+      wait: null,
+    });
+    await expect(seam.operationStatus(handle!)).rejects.toThrow(
+      /different durable handle/,
+    );
+
+    h.readBlueprintOperationResult = () => ({
+      state: "pending",
+      status: {
+        handle: driftedHandle,
+        phase: "dispatched",
+        outcome: null,
+        items: [],
+        planRun: { status: "running", outcome: null },
+        cancellationRequested: false,
+        wait: null,
+      },
+    });
+    await expect(seam.operationResult(handle!)).rejects.toThrow(
+      /different durable handle/,
+    );
+  });
+
   it('refuses a non-ready result that smuggles an output payload', async () => {
     const h = host();
     const seam = createPotAppSeam(h);

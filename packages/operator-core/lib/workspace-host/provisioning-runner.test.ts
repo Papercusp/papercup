@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   makeFakeWorkspaceHostProvider,
+  WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+  workspaceHostCanaryIdentityLabels,
   type WorkspaceHostApplyResult,
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostPlan,
@@ -18,6 +20,7 @@ import {
   WorkspaceHostProvisioningRequestError,
   WorkspaceHostProvisioningTransientError,
   type WorkspaceHostProvisioningStore,
+  type WorkspaceHostCanaryAdmission,
 } from './provisioning-runner';
 
 const desired: WorkspaceHostDesiredSpec = {
@@ -171,6 +174,58 @@ describe('workspace-host controller revision identity', () => {
 });
 
 describe('runWorkspaceHostProvisioning', () => {
+  const canary: WorkspaceHostCanaryAdmission = {
+    runId: 'canary-1', workspaceId: 'ws-1', maxSpendCents: 100,
+    teardownDeadlineAt: '2099-01-01T00:00:00Z',
+    budgetEvidenceRef: 'gcp://billing/budgets/canary-1',
+    preRunZeroBaseline: { cents: 0, observedAt: '2020-01-01T00:00:00Z', providerEvidenceRef: 'gcp://billing/baseline-1' },
+    contractApproval: {
+      status: 'approved', suiteVersion: WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+      approvedBy: 'test-reviewer', approvedAt: '2020-01-01T00:00:00Z', reportRef: 'report://gcp/contract-1',
+    },
+  };
+  const canaryDesired = { ...desired, labels: workspaceHostCanaryIdentityLabels(canary) };
+
+  it.each([
+    ['missing admission', undefined],
+    ['missing baseline', { ...canary, preRunZeroBaseline: undefined }],
+    ['nonzero baseline', { ...canary, preRunZeroBaseline: { ...canary.preRunZeroBaseline, cents: 1 } }],
+    ['future baseline', { ...canary, preRunZeroBaseline: { ...canary.preRunZeroBaseline, observedAt: '2199-01-01T00:00:00Z' } }],
+    ['missing budget', { ...canary, budgetEvidenceRef: '' }],
+    ['wrong run', { ...canary, runId: 'different-run' }],
+    ['unapproved contract', { ...canary, contractApproval: undefined }],
+    ['expired deadline', { ...canary, teardownDeadlineAt: '2020-01-01T00:00:00Z' }],
+    ['oversized budget', { ...canary, maxSpendCents: 100_000 }],
+  ])('refuses canary creation with %s before durable writes or provider access', async (_label, evidence) => {
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness([planStep('create-instance')]);
+    await expect(runWorkspaceHostProvisioning({
+      ...runInput(provider, store), desired: canaryDesired, canary: evidence as WorkspaceHostCanaryAdmission | undefined,
+    })).rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+    expect(provider.validateConnection).not.toHaveBeenCalled();
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+    expect(store.upsertHost).not.toHaveBeenCalled();
+    expect(store.beginOperation).not.toHaveBeenCalled();
+  });
+
+  it('persists the exact pre-run economics before creating a canary resource', async () => {
+    const { store } = storeHarness();
+    vi.mocked(store.upsertHost).mockResolvedValue(undefined);
+    const { provider, apply } = providerHarness([planStep('create-instance')]);
+    apply.mockImplementation(async (request) => {
+      expect(store.beginOperation).toHaveBeenCalledWith(expect.objectContaining({ request: expect.objectContaining({ canary }) }));
+      return {
+        operationId: 'op-1', stepId: request.step.id, state: 'applied', observedAt: '2026-08-25T00:00:05Z',
+        resource: { target: 'gcp', kind: 'vm', providerId: 'canary-vm' },
+      };
+    });
+    await expect(runWorkspaceHostProvisioning({
+      ...runInput(provider, store), desired: canaryDesired, canary,
+    })).resolves.toMatchObject({ status: 'succeeded' });
+    expect(apply).toHaveBeenCalledOnce();
+  });
+
   it('persists intent and every resource plan before the first provider mutation', async () => {
     const steps = [planStep('create-network'), planStep('create-instance', ['create-network'])];
     const { store, calls, checkpoints } = storeHarness();

@@ -1,5 +1,6 @@
 /** Real-PG recurrence guard for migration 1140 and the P-016 registry/binding store. */
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   applyMigrationForTest,
@@ -33,6 +34,9 @@ const MIGRATION_1141_BASE = fileURLToPath(
 );
 const MIGRATION_1161_PROFILE = fileURLToPath(
   new URL('../../../libs/papercusp/libs/db/sql/1161-capability-class-embedding-profile.sql', import.meta.url),
+);
+const MIGRATION_1233_EXECUTION = fileURLToPath(
+  new URL('../../../libs/papercusp/libs/db/sql/1233-capability-provider-execution-kind.sql', import.meta.url),
 );
 const embedding = (): number[] => Array.from({ length: PROSE_VECTOR_DIMS }, () => 0.2);
 const verbs = {
@@ -168,6 +172,8 @@ describe('capability class registry (real PG)', () => {
     await applyMigrationForTest(db.sql, MIGRATION_1140);
     await applyMigrationForTest(db.sql, MIGRATION_1141_BASE);
     await applyMigrationForTest(db.sql, MIGRATION_1161_PROFILE);
+    await applyMigrationForTest(db.sql, existsSync(MIGRATION_1233_EXECUTION)
+      ? MIGRATION_1233_EXECUTION : `${MIGRATION_1233_EXECUTION}.DRAFT`);
   }, 120_000);
 
   afterAll(async () => {
@@ -279,6 +285,8 @@ describe('capability class registry (real PG)', () => {
       providerPackage: 'acme-crm',
       conformanceRunId: passed.runId,
       conformanceStatus: 'passed',
+      providerKind: 'tool',
+      latencyClass: 'sync',
     });
     const providers = await listProviderBindings(db.sql, workspaceId, 'crm.email', '1.0.0');
     expect(providers).toHaveLength(1);
@@ -318,6 +326,8 @@ describe('capability class registry (real PG)', () => {
       providerVersion: '2.0.0',
       conformanceRunId: passed.runId,
     });
+    expect(current?.providerKind).toBe('tool');
+    expect(current?.latencyClass).toBe('sync');
     expect(await getPotCapabilityProviderBinding(db.sql, {
       workspaceId,
       potSlug: 'other-pot',

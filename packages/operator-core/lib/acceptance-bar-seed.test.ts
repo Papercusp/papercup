@@ -75,6 +75,25 @@ describe('Requirements BAR parser', () => {
     });
   });
 
+  it('refuses nested requirement insertion without accepting the remaining bars', () => {
+    const parsed = parseRequirementBars(plan({
+      requirements: `**R-3 — Deliberate scope.**
+
+**R-4 — Immutable publication.**
+\`\`\`requirement
+{}
+\`\`\`**`,
+    }));
+
+    expect(parsed).toMatchObject({
+      ok: false,
+      problems: expect.arrayContaining([
+        expect.objectContaining({ code: 'bar_requirement_parse_failed', barKey: 'R-3' }),
+        expect.objectContaining({ code: 'bar_requirement_parse_failed', barKey: 'R-4' }),
+      ]),
+    });
+  });
+
   it('requires an exact non-dropped map row per bar and validates the evidence plane', () => {
     const keys = new Set(['R-1', 'R-2']);
     expect(parseBarMappings(plan(), keys)).toMatchObject({

@@ -37,6 +37,41 @@ Where it stands now. The single next concrete action and who does it.
 
 const CURRENT = FRONTMATTER + BODY;
 
+describe('evaluateSetContent — requirement BAR write guard', () => {
+  const valid = CURRENT.replace('## Decisions', `## Requirements
+
+**R-3 — Deliberate scope.** The retained live acceptance duties remain explicit.
+
+**R-4 — Immutable publication.** The published bytes match the approved identity.
+
+## Decisions`);
+  const malformed = valid.replace(
+    '**R-3 — Deliberate scope.** The retained live acceptance duties remain explicit.',
+    '**R-3 — Deliberate scope.**',
+  ).replace(
+    '**R-4 — Immutable publication.** The published bytes match the approved identity.',
+    '**R-4 — Immutable publication.**\n\n```requirement\n{}\n```**',
+  );
+
+  it('rejects a newly nested and malformed requirement insertion on the shared raw-write path', async () => {
+    const result = await evaluateSetContent(valid, malformed, 'ei-1812-test', undefined);
+    expect(result.newBody).toBeNull();
+    expect(result.value).toMatchObject({
+      ok: false,
+      code: 'lint_failed',
+      errors: expect.arrayContaining([
+        expect.objectContaining({ code: 'bar_requirement_parse_failed' }),
+      ]),
+    });
+  });
+
+  it('permits a repair of an already malformed requirements section', async () => {
+    const result = await evaluateSetContent(malformed, valid, 'ei-1812-test', undefined);
+    expect(result.value.ok).toBe(true);
+    expect(result.newBody).toBe(valid);
+  });
+});
+
 describe('plans:set-content expectedVersion args (EI-21189868558705461)', () => {
   const base = { slug: 'ei-1812-test', content: CURRENT };
 

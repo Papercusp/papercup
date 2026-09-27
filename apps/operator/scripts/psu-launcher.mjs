@@ -12974,6 +12974,7 @@ export function freshSuBootstrapBody(
 export function roleBootstrapBody({
   role,
   agent,
+  ownerId,
   workspace,
   harness,
   feature,
@@ -13002,6 +13003,7 @@ export function roleBootstrapBody({
     harness_slug: harness,
     feature,
     plan,
+    ...(ownerId ? { owner_id: ownerId } : {}),
     ...(account ? { account } : {}),
     ...(effectiveModel ? { model: effectiveModel } : {}),
     ...(codexSelection ? { model_source: codexSelection.source } : {}),
@@ -14752,6 +14754,7 @@ async function roleFlow(args, role, rolesMeta) {
       roleBootstrapBody({
         role,
         agent,
+        ownerId: args.ownerId,
         workspace,
         harness,
         feature,

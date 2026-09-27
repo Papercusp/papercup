@@ -1087,6 +1087,15 @@ function nativeKickoffTurnActivityAfterMarker({
   return { available: markerSeen, started: false };
 }
 
+/** A queued kickoff retry may wait behind the original turn. At the final
+ * write boundary only positive native execution proof cancels the retry;
+ * missing or unreadable evidence preserves the existing bounded recovery. */
+export function firstKickoffTurnStartedBeforeRetry(nativeTurnActivity) {
+  if (typeof nativeTurnActivity !== 'function') return false;
+  try { return nativeTurnActivity()?.started === true; }
+  catch { return false; }
+}
+
 /**
  * Did the agent's native turn genuinely complete, per THIS transcript?
  *
@@ -5163,6 +5172,24 @@ export function mcpConnectedVerdict(visible, name) {
   return false;
 }
 
+/** A scripted, fresh headless role must have its signed MCP server before its
+ * first task turn. Claude does not reliably retry a failed startup catalog fetch. */
+export function headlessRoleKickoffRequiresMcp({ agent, role, headless, hasKickoff, isResume }) {
+  return agent === 'claude' && Boolean(role) && headless === true &&
+    hasKickoff === true && isResume !== true;
+}
+
+/** Reuse the existing closed-loop /mcp walker, with one bounded second chance
+ * for a server that was still connecting when the first dialog opened. */
+export async function verifyHeadlessRoleMcp(connect, attempts = 2) {
+  let last = { ok: false, step: 'not-attempted', detail: 'no MCP check ran' };
+  for (let i = 0; i < attempts; i++) {
+    last = await connect();
+    if (last.ok) return { ...last, attempts: i + 1 };
+  }
+  return { ...last, attempts };
+}
+
 /** Is the ❯ selection cursor on the (freshest) dialog row matching `test`?
  *  Parses an ANSI-stripped visible chunk; the LAST matching line reflects the
  *  most recent repaint. Pure — exported for tests. */
@@ -7075,6 +7102,8 @@ export function hostThroughPty(o) {
     submitVerificationRequired = terminateOnSubmitVerifyExhaustion,
     promptAlreadyVerified = false,
     freshChildOwnerInputGeneration = null,
+    abortBeforeWrite = null,
+    prepareBeforeWrite = null,
   }) => {
     if (!text) return { delivered: false, reason: 'no-text', attempts: 0 };
     const injectChild = child; // bail if a newer recycle supersedes this one
@@ -7236,6 +7265,20 @@ export function hostThroughPty(o) {
             await verifySubmitted(label);
             dropReason = 'submit-verification-aborted-quota-blocked';
             break;
+          }
+          // A kickoff retry may have waited behind the original model turn for
+          // minutes. Recheck at the actual write boundary, not when the retry
+          // was queued: otherwise the completed first turn receives the same
+          // kickoff again as a new user message (EI-24357651658566267).
+          if (abortBeforeWrite?.()) {
+            return { delivered: false, reason: 'first-turn-started', attempts };
+          }
+          if (prepareBeforeWrite) {
+            const prepared = await prepareBeforeWrite();
+            if (!prepared.ok) {
+              return { delivered: false, reason: prepared.reason ?? 'prewrite-rejected', attempts };
+            }
+            if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
           }
           // The text is the first step; later steps are delayed submit CRs, so
           // readiness is captured now, not after them.
@@ -7502,6 +7545,13 @@ export function hostThroughPty(o) {
   // prompts stay out of argv. Only a fresh Codex thread can use startup proof
   // instead of output silence. Resume/fork may already be running a turn.
   if (launchKickoff) {
+    const requireRoleMcp = headlessRoleKickoffRequiresMcp({
+      agent: env.PAPERCUSP_AGENT,
+      role: env.PAPERCUSP_ROLE,
+      headless: env.PAPERCUSP_PSU_HEADLESS === '1',
+      hasKickoff: true,
+      isResume: args.some((arg) => arg === 'resume' || arg === 'fork'),
+    });
     const verifyKickoffMarkerEcho =
       String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'codex' &&
       !args.some((arg) => arg === 'resume' || arg === 'fork') &&
@@ -7516,6 +7566,25 @@ export function hostThroughPty(o) {
           : {}),
         requireInitialOutput: true,
         verifyKickoffMarkerEcho,
+        prepareBeforeWrite: requireRoleMcp ? async () => {
+          const tap = makeOutputTap();
+          try {
+            const result = await verifyHeadlessRoleMcp(() => runMcpReconnectMacro({
+              serverName: 'papercusp',
+              write: (bytes) => child.write(bytes),
+              readTap: tap.read,
+              resetTap: tap.reset,
+            }));
+            appendHostEvent(ownerId, result.ok ? 'launch-role-mcp-ready' : 'launch-role-mcp-unavailable', {
+              step: result.step,
+              attempts: result.attempts,
+              detail: result.detail,
+            });
+            return { ok: result.ok, reason: 'role-mcp-unavailable' };
+          } finally {
+            tap.close();
+          }
+        } : null,
         freshChildOwnerInputGeneration: env.PAPERCUSP_AGENT === 'codex' &&
           !args.some((arg) => arg === 'resume' || arg === 'fork')
           ? ownerInputGeneration
@@ -7640,7 +7709,6 @@ export function hostThroughPty(o) {
         let turnStart = await observeTurnStart();
         let modelRetried = false;
         if (turnStart.observed && !turnStart.started) {
-          modelRetried = true;
           appendHostEvent(ownerId, 'launch-kickoff-model-turn-absent', {
             budgetMs: turnStart.budgetMs,
             polls: turnStart.polls,
@@ -7655,13 +7723,20 @@ export function hostThroughPty(o) {
           // exactly the case those gates exist to defer. Never terminate on this
           // path: the child is still usable and the first turn already persisted.
           try {
-            await injectTurnAtPrompt({
+            const retry = await injectTurnAtPrompt({
               text: launchKickoff,
               label: 'launch kickoff (model-turn retry)',
               requireInitialOutput: false,
               verifyKickoffMarkerEcho,
               terminateOnSubmitVerifyExhaustion: false,
+              abortBeforeWrite: () => firstKickoffTurnStartedBeforeRetry(nativeTurnActivity),
             });
+            modelRetried = retry.delivered === true;
+            if (retry.reason === 'first-turn-started') {
+              appendHostEvent(ownerId, 'launch-kickoff-model-turn-retry-skipped', {
+                reason: 'first-turn-started-before-rewrite',
+              });
+            }
           } catch (error) {
             appendHostEvent(ownerId, 'launch-kickoff-model-turn-retry-error', {
               error: String(error?.message ?? error).slice(0, 200),

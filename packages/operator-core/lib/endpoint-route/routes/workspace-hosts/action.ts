@@ -27,6 +27,8 @@ import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
   WorkspaceHostProvisioningTransientError,
+  validateWorkspaceHostCanaryAdmission,
+  type WorkspaceHostCanaryAdmission,
   type WorkspaceHostDestroyCanaryEvidence,
 } from '../../../workspace-host/provisioning-runner';
 import {
@@ -439,6 +441,16 @@ export function createWorkspaceHostActionRoute(
 
       try {
         const releaseTaskId = typeof body.releaseTaskId === 'string' ? body.releaseTaskId : undefined;
+        const restoreCanary = action === 'restore' ? body.canary as WorkspaceHostCanaryAdmission | undefined : undefined;
+        if (action === 'restore' && isRecord(body.desired)) {
+          validateWorkspaceHostCanaryAdmission({
+            workspaceId,
+            desired: body.desired as unknown as WorkspaceHostDesiredSpec,
+            connection: stored.connection,
+            canary: restoreCanary,
+            sourceLabels: target.desired.labels,
+          });
+        }
         // A census receipt names the destroy it came from, so the operation id is fixed HERE when
         // one is recorded: the admission check and the durable run must agree on it.
         const operationId =
@@ -482,6 +494,7 @@ export function createWorkspaceHostActionRoute(
                 : {}),
               ...(isRecord(body.snapshot) ? { snapshot: body.snapshot as unknown as WorkspaceHostSnapshotRef } : {}),
               ...(isRecord(body.desired) ? { desired: body.desired as unknown as WorkspaceHostDesiredSpec } : {}),
+              ...(restoreCanary ? { canary: restoreCanary } : {}),
             });
         if (isWorkspaceHostOperationAcceptance(result)) {
           // Durably enqueued but still queued or running after the admission window: a 202 with

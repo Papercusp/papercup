@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
+import { WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION } from '@papercusp/deployment-driver';
 import type { RouteContext } from '../../define-route';
 import { createWorkspaceHostProvisionRoute, type WorkspaceHostProvisionRouteDependencies } from './provision';
 import { WorkspaceHostProvisioningConflictError } from '../../../dbos/workspace-host-provision-workflow';
@@ -84,6 +85,25 @@ beforeEach(() => {
 });
 
 describe('POST /workspace-hosts/provision', () => {
+  it('requires pre-run economics and passes admitted evidence into the durable workflow', async () => {
+    const { dependencies, startProvisioning } = harness();
+    const body = { connectionId: 'connection-1', name: 'Canary', desired, canary: { runId: 'run-1' } };
+    const refused = await post(dependencies, body);
+    expect(refused.status).toBe(422);
+    expect(startProvisioning).not.toHaveBeenCalled();
+    const canary = {
+      runId: 'run-1', workspaceId: 'ws-1', teardownDeadlineAt: '2099-01-01T00:00:00Z',
+      budgetEvidenceRef: 'gcp://billing/budgets/run-1',
+      preRunZeroBaseline: { cents: 0, observedAt: '2020-01-01T00:00:00Z', providerEvidenceRef: 'gcp://billing/zero' },
+      contractApproval: {
+        status: 'approved', suiteVersion: WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+        approvedBy: 'test-reviewer', approvedAt: '2020-01-01T00:00:00Z', reportRef: 'report://gcp/contract-1',
+      },
+    };
+    expect((await post(dependencies, { ...body, canary })).status).toBe(201);
+    expect(startProvisioning).toHaveBeenCalledWith(expect.objectContaining({ canary }));
+  });
+
   it('rejects malformed request identity before reading durable state', async () => {
     const { dependencies, readConnection } = harness();
     const response = await post(dependencies, { connectionId: '../bad', name: '', desired: {} });

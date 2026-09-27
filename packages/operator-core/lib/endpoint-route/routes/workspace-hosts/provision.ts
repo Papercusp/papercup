@@ -21,6 +21,8 @@ import {
 import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
+  validateWorkspaceHostCanaryAdmission,
+  type WorkspaceHostCanaryAdmission,
 } from '../../../workspace-host/provisioning-runner';
 import {
   defaultWorkspaceHostRequestForwarder,
@@ -34,7 +36,7 @@ interface ProvisionBody {
   name?: unknown;
   desired?: unknown;
   operationId?: unknown;
-  /** Declares this host as belonging to a canary run: `{ runId }`. See the identity note below. */
+  /** Declares the run together with its pre-creation economic admission evidence. */
   canary?: unknown;
 }
 
@@ -216,12 +218,15 @@ export function createWorkspaceHostProvisionRoute(
       } as WorkspaceHostDesiredSpec;
 
       try {
+        const canary = body.canary as WorkspaceHostCanaryAdmission | undefined;
+        validateWorkspaceHostCanaryAdmission({ workspaceId, desired, connection: stored.connection, canary });
         const result = await dependencies.startProvisioning({
           workspaceId,
           connectionId,
           name,
           desired,
           connection: { ...stored.connection, scope: desired.scope },
+          ...(canary ? { canary } : {}),
           ...(typeof body.operationId === 'string' ? { operationId: body.operationId } : {}),
         });
         if (isWorkspaceHostOperationAcceptance(result)) {

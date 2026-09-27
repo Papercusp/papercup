@@ -39,6 +39,7 @@ import {
   WorkspaceHostProvisioningRequestError,
   WorkspaceHostProvisioningTransientError,
   type WorkspaceHostDestroyCanaryEvidence,
+  type WorkspaceHostCanaryAdmission,
   type WorkspaceHostDestroyResult,
   type WorkspaceHostProvisioningResult,
 } from '../workspace-host/provisioning-runner';
@@ -67,6 +68,7 @@ export interface StartWorkspaceHostProvisioningInput {
   name: string;
   desired: WorkspaceHostDesiredSpec;
   connection: WorkspaceHostProviderConnection;
+  canary?: WorkspaceHostCanaryAdmission;
   operationId?: string;
   actorId?: string;
   /**

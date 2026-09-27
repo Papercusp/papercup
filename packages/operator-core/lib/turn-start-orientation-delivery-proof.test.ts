@@ -147,6 +147,7 @@ describe('turn-start orientation — ack-on-proof', () => {
     expect(assignmentReader).toHaveBeenCalledExactlyOnceWith('su-proof');
     expect(identityBindMock).toHaveBeenCalledWith(expect.objectContaining({
       identityId: 'su', sourceTier: 'builtin', outputs: [
+        { contributionId: 'turn-start-orientation', value: first.block },
         { contributionId: 'current-mode-state', value: modes },
         { contributionId: 'current-assignment', value: {
           ownerId: 'su-proof', intent: 'WI-9 current task', currentPlanSlug: 'current-plan',
@@ -155,7 +156,15 @@ describe('turn-start orientation — ack-on-proof', () => {
     }));
     await boundTurn(first.deliveryToken!);
     expect(store.acks[1]?.result.committed?.[TURN_START_IDENTITY_DELIVERY_KEY]).toMatchObject({
-      token: first.deliveryToken, status: 'bound', root: { identityId: 'su' },
+      token: first.deliveryToken, status: 'bound', root: {
+        identityId: 'su', contributions: expect.arrayContaining([
+          { contributionId: 'turn-start-orientation', value: first.block },
+          { contributionId: 'current-mode-state', value: modes },
+          { contributionId: 'current-assignment', value: {
+            ownerId: 'su-proof', intent: 'WI-9 current task', currentPlanSlug: 'current-plan',
+          } },
+        ]),
+      },
     });
   });
 

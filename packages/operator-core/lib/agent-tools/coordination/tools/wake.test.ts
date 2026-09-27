@@ -75,8 +75,11 @@ describe('coord:wake', () => {
   });
 
   it('refuses a wildcard/selector target (no thunder-herd)', async () => {
-    const res = out(await wake.handler({ to: '*' } as never, ctx));
+    const raw = await wake.handler({ to: '*' } as never, ctx);
+    const res = out(raw);
     expect(res).toMatchObject({ ok: false, error: 'not_a_single_target' });
+    expectWireEqual(raw);
+    expect(structured(raw)).toMatchObject({ to: '*', queued: 0, woken: 0, pickupConfirmed: false });
     expect(wakeRecipients).not.toHaveBeenCalled();
   });
 
@@ -126,8 +129,11 @@ describe('coord:wake', () => {
 
   it('an unknown recipient is a loud error — nothing woken', async () => {
     resolveRecipients.mockResolvedValue({ resolved: [], unknown: ['nope'], ambiguous: [] });
-    const res = out(await wake.handler({ to: 'nope' } as never, ctx));
+    const raw = await wake.handler({ to: 'nope' } as never, ctx);
+    const res = out(raw);
     expect(res).toMatchObject({ ok: false, error: 'unknown_recipient' });
+    expectWireEqual(raw);
+    expect(structured(raw)).toMatchObject({ to: 'nope', queued: 0, woken: 0, pickupConfirmed: false });
     expect(wakeRecipients).not.toHaveBeenCalled();
   });
 });

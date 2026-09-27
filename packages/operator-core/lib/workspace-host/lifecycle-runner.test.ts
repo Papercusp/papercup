@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
+  WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+  workspaceHostCanaryIdentityLabels,
   fakeWorkspaceHostCapabilities,
   makeFakeWorkspaceHostProvider,
   planWorkspaceHostRecovery,
@@ -19,7 +21,7 @@ import {
   type WorkspaceHostProductLifecycleStage,
   type WorkspaceHostProductStageRequest,
 } from './lifecycle-runner';
-import { WorkspaceHostProvisioningRequestError } from './provisioning-runner';
+import { WorkspaceHostProvisioningRequestError, type WorkspaceHostCanaryAdmission } from './provisioning-runner';
 import { WorkspaceHostControllerFenceError } from './observability-store';
 
 const vm = {
@@ -260,6 +262,27 @@ function productHarness(
 }
 
 describe('runWorkspaceHostLifecycle', () => {
+  it.each(['replacement-labels', 'source-labels'] as const)(
+    'refuses an unadmitted canary restore detected from %s before any provider access', async (labelLocation) => {
+      const { store } = storeHarness();
+      const { provider, apply } = providerHarness();
+      const labels = workspaceHostCanaryIdentityLabels({ runId: 'restore-run', workspaceId: 'workspace-1' });
+      if (labelLocation === 'source-labels') {
+        const target = await store.readTarget('workspace-1', 'host-1');
+        vi.mocked(store.readTarget).mockResolvedValue({ ...target!, desired: { ...desired, labels } });
+      }
+      await expect(runWorkspaceHostLifecycle({
+        ...input(provider, store), action: 'restore',
+        snapshot: { target: 'gcp', providerId: 'snapshot-1', hostId: 'host-1' },
+        desired: { ...desired, hostId: 'host-restored', ...(labelLocation === 'replacement-labels' ? { labels } : {}) },
+      })).rejects.toThrow('pre-run economic admission');
+      expect(provider.validateConnection).not.toHaveBeenCalled();
+      expect(provider.plan).not.toHaveBeenCalled();
+      expect(apply).not.toHaveBeenCalled();
+      expect(store.upsertHost).not.toHaveBeenCalled();
+    },
+  );
+
   it('persists the plan before mutation and passes the complete stored resource graph', async () => {
     const { store, checkpoints } = storeHarness();
     const { provider, apply } = providerHarness();
@@ -541,23 +564,38 @@ describe('runWorkspaceHostLifecycle', () => {
     expect(provider.plan).not.toHaveBeenCalled();
   });
 
-  it('creates a replacement Host identity while preserving Workspace data and permissions', async () => {
+  it.each([false, true])('creates a replacement Host preserving data and permissions (canary=%s)', async (isCanary) => {
+    const canary: WorkspaceHostCanaryAdmission = {
+      runId: 'restore-run', workspaceId: 'workspace-1', maxSpendCents: 100,
+      teardownDeadlineAt: '2099-01-01T00:00:00Z', budgetEvidenceRef: 'gcp://billing/budgets/restore-run',
+      preRunZeroBaseline: { cents: 0, observedAt: '2020-01-01T00:00:00Z', providerEvidenceRef: 'gcp://billing/restore-zero' },
+      contractApproval: {
+        status: 'approved', suiteVersion: WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+        approvedBy: 'test-reviewer', approvedAt: '2020-01-01T00:00:00Z', reportRef: 'report://gcp/contract-1',
+      },
+    };
     const { store } = storeHarness();
     const { provider, apply, plan, planProvider } = providerHarness();
     planProvider.mockResolvedValue({ ...plan, hostId: 'host-restored' });
-    apply.mockResolvedValue({
-      operationId: 'op-1',
-      stepId: 'start-instance',
-      state: 'applied',
-      observedAt: '2026-08-27T00:00:05Z',
-      resource: { ...vm, providerId: 'pc-host-restored' },
+    apply.mockImplementation(async () => {
+      if (isCanary) expect(store.beginOperation).toHaveBeenCalledWith(
+        expect.objectContaining({ request: expect.objectContaining({ canary }) }),
+      );
+      return {
+        operationId: 'op-1',
+        stepId: 'start-instance',
+        state: 'applied',
+        observedAt: '2026-08-27T00:00:05Z',
+        resource: { ...vm, providerId: 'pc-host-restored' },
+      };
     });
 
     await runWorkspaceHostLifecycle({
       ...input(provider, store),
       action: 'restore',
       snapshot: { target: 'gcp', providerId: 'snapshot-1', hostId: 'host-1' },
-      desired: { ...desired, hostId: 'host-restored' },
+      desired: { ...desired, hostId: 'host-restored', ...(isCanary ? { labels: workspaceHostCanaryIdentityLabels(canary) } : {}) },
+      ...(isCanary ? { canary } : {}),
     });
 
     expect(store.upsertHost).toHaveBeenCalledWith(
