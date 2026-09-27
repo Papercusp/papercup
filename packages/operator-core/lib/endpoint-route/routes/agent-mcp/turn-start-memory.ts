@@ -187,6 +187,7 @@ const turnStartMemory = defineTool({
             markControlTransitionPrepared,
             failControlTransitionActivation,
             convergeActivationToLaunchRecord,
+            applyRelaunchedActivation,
             acknowledgeControlTransition,
             renderControlTransitionContext,
           } = await import(
@@ -302,6 +303,14 @@ const turnStartMemory = defineTool({
           }
           let activationPrepared = true;
           if (stackRendered && !awaitingRelaunch && activationRevision) {
+            // WI-10003459: a carry-respawn's launch artifact IS the consumption of
+            // `desired`, so attribution must follow it from this first turn — not
+            // from the next turn's delivery proof. Refuses (no write) unless the
+            // latest desired was a restart onto this revision AND the launch record
+            // carries it; in-place transitions keep waiting for proof. Never touches
+            // the delivery watermark, so the prepare/ack below still run as before.
+            await applyRelaunchedActivation(owner, workspaceId, transition.generation, activationRevision)
+              .catch(() => false);
             // A verified successor already runs this launch artifact. Preserve
             // that independently-proven authority while the hook receipt is
             // pending, or the successor's first turn can lose every tool to

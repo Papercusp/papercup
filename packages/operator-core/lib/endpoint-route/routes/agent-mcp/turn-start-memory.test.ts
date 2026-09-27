@@ -26,6 +26,7 @@ const {
   markControlTransitionPreparedMock,
   failControlTransitionActivationMock,
   convergeActivationToLaunchRecordMock,
+  applyRelaunchedActivationMock,
   acknowledgeControlTransitionMock,
   renderStackTransitionContextResultMock,
   detectHarnessSlugSyncMock,
@@ -41,6 +42,7 @@ const {
   markControlTransitionPreparedMock: vi.fn(),
   failControlTransitionActivationMock: vi.fn(),
   convergeActivationToLaunchRecordMock: vi.fn(),
+  applyRelaunchedActivationMock: vi.fn(),
   acknowledgeControlTransitionMock: vi.fn(),
   renderStackTransitionContextResultMock: vi.fn(),
   detectHarnessSlugSyncMock: vi.fn(),
@@ -64,6 +66,7 @@ vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   markControlTransitionPrepared: markControlTransitionPreparedMock,
   failControlTransitionActivation: failControlTransitionActivationMock,
   convergeActivationToLaunchRecord: convergeActivationToLaunchRecordMock,
+  applyRelaunchedActivation: applyRelaunchedActivationMock,
   acknowledgeControlTransition: acknowledgeControlTransitionMock,
   renderControlTransitionContext: (t: unknown) => `CTRL:${String((t as { kind?: string }).kind)}`,
 }));
@@ -119,6 +122,7 @@ beforeEach(() => {
   markControlTransitionPreparedMock.mockReset().mockResolvedValue(true);
   failControlTransitionActivationMock.mockReset().mockResolvedValue(true);
   convergeActivationToLaunchRecordMock.mockReset().mockResolvedValue(false);
+  applyRelaunchedActivationMock.mockReset().mockResolvedValue(false);
   acknowledgeControlTransitionMock.mockReset().mockResolvedValue(true);
   renderStackTransitionContextResultMock.mockReset().mockResolvedValue({ text: '', rendered: true });
   detectHarnessSlugSyncMock.mockReset().mockReturnValue({ slug: null, source: null });
@@ -639,6 +643,77 @@ describe('relaunch-with-carry convergence (WI-10002021)', () => {
     expect(readSuLaunchSpecByOwnerMock).not.toHaveBeenCalled();
     expect(convergeActivationToLaunchRecordMock).not.toHaveBeenCalled();
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * WI-10003459 (residual): a carry-respawn's launch artifact IS the consumption of
+ * `desired`. Turn-start offers the launch-proven receipt on the FIRST turn after a
+ * relaunch — before prepare, without touching the delivery ack — so the new
+ * process's usage never bills the predecessor's revision for a whole turn. The
+ * restart/launch-record guards live in applyRelaunchedActivation (real-PG tested in
+ * session-identity-attribution.integration.test.ts); here we pin the call contract.
+ */
+describe('carry-respawn applies at the relaunch, not a turn later (WI-10003459)', () => {
+  const desired = { specificationRevision: 'spec-relaunched', stateRevision: 'state-relaunched' };
+  const arm = (requiresFreshContext: boolean) => {
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+    preparePendingControlTransitionMock.mockResolvedValue({ kind: 'mode', generation: 21, state: { activation: { desired } } });
+    renderStackTransitionContextResultMock.mockResolvedValue({ text: 'STACK', rendered: true, requiresFreshContext });
+    readSuLaunchSpecByOwnerMock.mockResolvedValue({ specificationRevision: 'spec-relaunched' });
+  };
+
+  it('offers the launch-proven receipt before prepare on the first turn, and still defers the ack', async () => {
+    arm(false);
+    applyRelaunchedActivationMock.mockResolvedValue(true);
+
+    const out = await post({ owner: 'sess-1', prompt: 'first turn after carry-respawn' });
+
+    expect(out.text).toBe('CTRL:mode\n\nSTACK');
+    expect(applyRelaunchedActivationMock).toHaveBeenCalledTimes(1);
+    expect(applyRelaunchedActivationMock).toHaveBeenCalledWith('sess-1', 'ws-test', 21, desired);
+    expect(applyRelaunchedActivationMock.mock.invocationCallOrder[0]).toBeLessThan(
+      markControlTransitionPreparedMock.mock.invocationCallOrder[0]!,
+    );
+    // Authority/attribution moved; the prompt text still awaits delivery proof.
+    expect(acknowledgeControlTransitionMock).not.toHaveBeenCalled();
+    expect(out.deliveryToken).toBeTruthy();
+    await post({ owner: 'sess-1', prompt: 'second turn', confirmedDelivery: out.deliveryToken });
+    expect(acknowledgeControlTransitionMock).toHaveBeenCalledWith('sess-1', 'ws-test', 21, undefined, desired);
+  });
+
+  it('is offered on the relaunch-with-carry path too, ahead of the denial rescue', async () => {
+    arm(true);
+
+    await post({ owner: 'sess-1', prompt: 'successor of a stack relaunch' });
+
+    expect(applyRelaunchedActivationMock).toHaveBeenCalledWith('sess-1', 'ws-test', 21, desired);
+    expect(applyRelaunchedActivationMock.mock.invocationCallOrder[0]).toBeLessThan(
+      convergeActivationToLaunchRecordMock.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('a refused or throwing receipt never costs the turn — prepare and delivery proceed', async () => {
+    arm(false);
+    applyRelaunchedActivationMock.mockRejectedValue(new Error('pg down'));
+
+    const out = await post({ owner: 'sess-1', prompt: 'receipt write fails' });
+
+    expect(out.text).toBe('CTRL:mode\n\nSTACK');
+    expect(markControlTransitionPreparedMock).toHaveBeenCalledWith('sess-1', 'ws-test', 21, desired);
+    expect(out.deliveryToken).toBeTruthy();
+  });
+
+  it('is never offered when no activation rides the transition, or the stack failed to render', async () => {
+    buildMemoryContextBlockMock.mockResolvedValue(null);
+    preparePendingControlTransitionMock.mockResolvedValue({ kind: 'mode', generation: 22, state: {} });
+    await post({ owner: 'sess-1', prompt: 'no activation' });
+    expect(applyRelaunchedActivationMock).not.toHaveBeenCalled();
+
+    preparePendingControlTransitionMock.mockResolvedValue({ kind: 'mode', generation: 23, state: { activation: { desired } } });
+    renderStackTransitionContextResultMock.mockResolvedValue({ text: '', rendered: false });
+    await post({ owner: 'sess-1', prompt: 'render failed' });
+    expect(applyRelaunchedActivationMock).not.toHaveBeenCalled();
   });
 });
 
