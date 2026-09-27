@@ -589,6 +589,26 @@ describe('readGateOwnership', () => {
     expect(own.eventKey).toBe('green-stall:papercusp');
   });
 
+  it('resolves the operator-home condition for a workspace-wide harness sentinel', async () => {
+    const seen: { keys?: string[]; harnessSlug?: string } = {};
+    const own = await readGateOwnership({
+      harness: '*',
+      findConditionObjects: (async (keys: string[], scope: { harnessSlug: string }) => {
+        seen.keys = keys;
+        seen.harnessSlug = scope.harnessSlug;
+        return new Map([['green-stall:papercusp', mkObj({ claimState: 'held', takenBy: 'su-live' })]]);
+      }) as never,
+      resolveSessionStates: oracle('live'),
+    });
+
+    expect(seen).toEqual({
+      keys: ['green-stall:papercusp', 'gate-red-streak:papercusp'],
+      harnessSlug: 'papercusp',
+    });
+    expect(own.eventKey).toBe('green-stall:papercusp');
+    expect(own.assessment).toBe('held-live');
+  });
+
   // A cell must ALWAYS render, but it must render UNMEASURED — never "no owner".
   it('degrades to UNMEASURED when the store is unreachable, never throws', async () => {
     const own = await readGateOwnership({

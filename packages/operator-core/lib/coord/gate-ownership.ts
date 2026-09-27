@@ -534,7 +534,9 @@ export async function readGateOwnership(
     nowMs?: number;
   } = {},
 ): Promise<CellOwnership> {
-  const harness = opts.harness?.trim() || operatorHomeHarnessSlug();
+  // Workspace-scoped tool dispatch uses '*' as a sentinel, not a harness slug.
+  const requestedHarness = opts.harness?.trim();
+  const harness = requestedHarness && requestedHarness !== '*' ? requestedHarness : operatorHomeHarnessSlug();
   const stallKey = gateStallConditionKey(harness);
   const redStreakKey = gateRedStreakConditionKey(harness);
 

@@ -26,6 +26,9 @@ export default defineTool({
       data: {
         gate: { ownership },
         assessments: { gateOwnership: ownership.assessment },
+        verdictUnknown: ownership.unknown
+          ? [{ leg: 'gate.ownership.claimState', unknown: ownership.unknown }]
+          : [],
       },
     };
   },

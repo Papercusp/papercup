@@ -33,4 +33,16 @@ describe('dev:gate_ownership', () => {
       kind: 'poll', tool: 'dev:gate_ownership', path: 'gate.ownership.claimState',
     });
   });
+
+  it('emits the ownership unknown through the cell declared verdict channel', async () => {
+    const unknown = { code: 'resolver-failed', detail: 'ownership store unreachable' };
+    vi.mocked(readGateOwnership).mockResolvedValue({ assessment: null, claimState: null, unknown } as never);
+
+    const result = await tool.handler({}, { harnessSlug: '*' } as never);
+
+    expect(readGateOwnership).toHaveBeenCalledWith({ harness: '*' });
+    expect(result).toMatchObject({
+      data: { verdictUnknown: [{ leg: 'gate.ownership.claimState', unknown }] },
+    });
+  });
 });
