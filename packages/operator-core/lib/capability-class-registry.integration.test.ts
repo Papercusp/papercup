@@ -176,9 +176,12 @@ describe('capability class registry (real PG)', () => {
       ? MIGRATION_1233_EXECUTION : `${MIGRATION_1233_EXECUTION}.DRAFT`);
   }, 120_000);
 
+  // Explicit budget, matching beforeAll: cleanup drops a testcontainers database and
+  // must not inherit whichever hookTimeout the invoking config happens to set (a
+  // default-config run gives hooks only 10s, which a loaded host can exceed).
   afterAll(async () => {
     await db?.cleanup();
-  });
+  }, 120_000);
 
   it('keeps class@version immutable and discovers it through tsv/embedding fields', async () => {
     const base = {
