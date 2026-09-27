@@ -222,3 +222,64 @@ describe('probeUnixSocketAlive — the cross-process question', () => {
     await expect(probeUnixSocketAlive('/tmp/x.sock', { connect: throwing })).resolves.toBe(false);
   });
 });
+
+describe('probeUnixSocketAlive — a STALLED prober must not read a live listener as dead', () => {
+  // host-memory-reduction-2026-09-27 P-005: a busy :3070 worker whose event loop
+  // stalled past the timeout right after dialling saw the timer fire before the
+  // poll phase delivered its (already completed) connect, concluded "dead", and
+  // spawned a second full spawner sidecar. Real sockets here, because the defect
+  // lives in event-loop phase ordering that a fake connect cannot reproduce.
+  const TIMEOUT_MS = 20;
+  const STALL_MS = 80;
+
+  // Deliberately-wrong control, kept PERMANENTLY: the pre-fix probe, which
+  // settles "dead" straight from the timer. It must read the live listener as
+  // dead under the same stall, or the trial is not exercising the race at all.
+  function legacyProbe(socketPath: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const sock = net.createConnection(socketPath, () => done(true));
+      const done = (alive: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        sock.destroy();
+        resolve(alive);
+      };
+      const timer = setTimeout(() => done(false), TIMEOUT_MS);
+      sock.on('error', () => done(false));
+    });
+  }
+
+  // Start from the check phase, so the stall ends before the next timers phase —
+  // the ordering a busy worker hits.
+  async function stalledTrial(probe: (p: string) => Promise<boolean>, socketPath: string): Promise<boolean> {
+    await new Promise((r) => setImmediate(r));
+    const verdict = probe(socketPath);
+    const t0 = Date.now();
+    while (Date.now() - t0 < STALL_MS) {
+      /* synchronous work right after the probe dialled */
+    }
+    return verdict;
+  }
+
+  it('is TRUE under a stall that makes the pre-fix control report the same live listener dead', async () => {
+    const socketPath = path.join(os.tmpdir(), `pid-keyed-probe-${process.pid}-${Date.now()}.sock`);
+    const server = net.createServer((c) => c.end()).listen(socketPath);
+    await once(server, 'listening');
+    try {
+      expect(await stalledTrial(legacyProbe, socketPath)).toBe(false);
+      for (let i = 0; i < 5; i++) {
+        expect(await stalledTrial((p) => probeUnixSocketAlive(p, { timeoutMs: TIMEOUT_MS }), socketPath)).toBe(true);
+      }
+    } finally {
+      server.close();
+      rmSync(socketPath, { force: true });
+    }
+  });
+
+  it('is still FALSE under the same stall when nothing is listening', async () => {
+    const socketPath = path.join(os.tmpdir(), `pid-keyed-probe-none-${process.pid}-${Date.now()}.sock`);
+    expect(await stalledTrial((p) => probeUnixSocketAlive(p, { timeoutMs: TIMEOUT_MS }), socketPath)).toBe(false);
+  });
+});

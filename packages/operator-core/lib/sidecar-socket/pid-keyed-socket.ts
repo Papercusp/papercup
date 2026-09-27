@@ -217,7 +217,17 @@ export function probeUnixSocketAlive(
       }
       resolve(alive);
     };
-    const timer = setTimeout(() => done(false), timeoutMs);
+    // The timeout must not out-race a connect that has ALREADY completed. Both
+    // callbacks run on THIS process's event loop, and the timers phase runs before
+    // the poll phase that delivers a finished connect — so a prober that stalls
+    // past `timeoutMs` right after dialling (a busy cluster worker) read a LIVE
+    // listener as dead and spawned a second full sidecar, which then took over the
+    // socket path. Measured 2026-09-27 (host-memory-reduction P-005): :3070 ran two
+    // spawner sidecars, the second spawned by a sibling worker 12 min after the
+    // first. Deferring the "dead" verdict by one setImmediate lets that poll phase
+    // deliver the completed connect first; a listener that never completes the
+    // connect still resolves false.
+    const timer = setTimeout(() => setImmediate(() => done(false)), timeoutMs);
     // Do not hold the event loop open on the probe's account — a boot-path probe
     // must never be the reason a short-lived process refuses to exit.
     timer.unref?.();
