@@ -192,6 +192,8 @@ export function mintRoleLaunchIdentity(): RoleLaunchIdentity {
 }
 
 export interface BuildRoleLaunchSpecInput {
+  /** Model default read before account routing; reject source drift at compilation. */
+  expectedModelDefault?: string | null;
   /** Pipeline/kernel role id (worker, validator, reviewer, …). */
   role: string;
   /** Active workspace id. */
@@ -325,6 +327,8 @@ export interface RoleLaunchSpec {
 }
 
 export interface LaunchArtifactInput {
+  /** undefined = no preflight; null = preflight found no identity model default. */
+  expectedModelDefault?: string | null;
   promptText: string;
   promptFile?: string | null;
   cwd: string;
@@ -681,6 +685,32 @@ async function selectedLaunchCompositionSource(
     : { source: resolved, configuration: resolved.blueprint, pinnedFixedPromptFiles, providerInputs, contributionOmissions };
 }
 
+function identityModelDefault(configuration: EffectiveLaunchSource['configuration'], role: string): string | null {
+  const backend = configuration.knobs?.aiBackend;
+  return backend?.roles?.[role]?.model?.trim() || backend?.default?.model?.trim() || null;
+}
+
+/** Read through the same selected-source resolver before native account/model
+ * selection. This provisions no resources and writes no launch artifacts.
+ * Final compilation checks the default again to refuse a source-change race. */
+export async function resolveLaunchIdentityModelDefault(
+  input: Pick<LaunchArtifactInput, 'cwd' | 'harnessSlug' | 'role' | 'stack' | 'producerBindings'>,
+): Promise<string | null> {
+  const source = await launchCompositionSource(input);
+  let stack = input.stack == null
+    ? [...(source.loaded?.blueprint.roles.find((entry) => entry.id === input.role)?.stack ?? [])]
+    : [...input.stack];
+  let compositionRootId: string | null = null;
+  if (stack.length === 1 && stack[0]?.startsWith('composition:')) {
+    compositionRootId = stack[0].slice('composition:'.length);
+    const { resolveNamedIdentityCompositionSelection } = await import('./agent-identities/source');
+    stack = (await resolveNamedIdentityCompositionSelection(compositionRootId, input.cwd)).stack;
+  }
+  const composition = await selectedLaunchCompositionSource(source, stack, input.cwd,
+    input.producerBindings, compositionRootId);
+  return identityModelDefault(composition.configuration, input.role);
+}
+
 /** Compile the exact final launch bytes through the one P-038 artifact boundary. */
 export async function compileLaunchSpecificationArtifact(input: LaunchArtifactInput): Promise<LaunchArtifactResult> {
   const source = await launchCompositionSource(input);
@@ -694,6 +724,10 @@ export async function compileLaunchSpecificationArtifact(input: LaunchArtifactIn
   const resourceArtifacts: CompiledAgentSpecification[] = [];
   const composition = await selectedLaunchCompositionSource(source, stack, input.cwd,
     input.producerBindings, input.compositionRootId);
+  if (input.expectedModelDefault !== undefined &&
+      input.expectedModelDefault !== identityModelDefault(composition.configuration, input.role)) {
+    throw new Error('selected identity model default changed after launch preflight');
+  }
   const prompt = input.renderStack && stack.length > 0
     ? { role: input.role, documents: await roleStackDocuments({ ...input, stack }) }
     : { role: input.role, text: input.promptText };
@@ -890,6 +924,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     harnessSlug,
     role: input.role,
     stack: acceptedOperation?.stack ?? input.stack,
+    expectedModelDefault: input.expectedModelDefault,
     renderStack: true,
     state: {
       schemaVersion: 1,
@@ -1178,6 +1213,44 @@ export async function buildLaunchSpec(input: BuildLaunchSpecInput): Promise<Laun
   return buildSuLaunchSpec(input);
 }
 
+export class SuInstancePromptDriftError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SuInstancePromptDriftError';
+  }
+}
+
+/** The Papercusp pot's authored su override must be the one a new session reads. */
+export function verifyPapercuspSuInstanceOverride(input: {
+  workspaceId: string;
+  potSlug: string;
+  promptsDirectory: string | undefined;
+  storedOverride: string | null;
+}): void {
+  if (input.workspaceId !== 'papercusp-workspace' || input.potSlug !== 'papercusp') return;
+  const sourcePath = input.promptsDirectory
+    ? path.join(input.promptsDirectory, 'pot-instances', 'papercup-pot.su.md')
+    : null;
+  if (!sourcePath) {
+    throw new SuInstancePromptDriftError('Papercusp su override source directory is unavailable');
+  }
+  let source: string;
+  try {
+    source = fsSync.readFileSync(sourcePath, 'utf8');
+  } catch (error) {
+    throw new SuInstancePromptDriftError(
+      `Papercusp su override source cannot be read at ${sourcePath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  // getHiveInstancePromptOverride already JSON-decodes the tenant-scoped pot_settings
+  // value. Comparing its string to the source avoids false drift from JSON escapes.
+  if (input.storedOverride !== source) {
+    throw new SuInstancePromptDriftError(
+      `Papercusp su override differs from ${sourcePath}; re-seed promptOverride.su for papercusp before launching an su session`,
+    );
+  }
+}
+
 async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchSpec> {
   const spawnId = randomUUID();
   const runId = randomUUID();
@@ -1440,9 +1513,16 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
       const potSlug = await potHomeSlugForHarness(input.workspaceId, harnessSlug);
       if (potSlug) {
         const inst = await getHiveInstancePromptOverride(input.workspaceId, potSlug, 'su');
+        verifyPapercuspSuInstanceOverride({
+          workspaceId: input.workspaceId,
+          potSlug,
+          promptsDirectory: suOverlayDir,
+          storedOverride: inst,
+        });
         if (inst) suPersonaText = `${suPersonaText.replace(/\n+$/, '')}\n\n${inst}`;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof SuInstancePromptDriftError) throw error;
       /* best-effort hive-instance su override */
     }
   }
