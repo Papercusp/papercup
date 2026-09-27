@@ -226,6 +226,10 @@ interface OperatorKernelState extends KernelContextState {
   authorityUnavailable?: boolean;
   /** The server-resolved owner whose active launch/control rows were read. */
   operationOwnerId?: string;
+  /** The workspace those rows were read under (the resolver's own scope). */
+  operationWorkspaceId?: string;
+  /** session_briefs.control_generation at the read, when a brief exists. */
+  controlGeneration?: number;
 }
 
 /**
@@ -479,8 +483,11 @@ export async function readControlAnchorKernelState(
   );
   const launchSessionId = stateRow?.adv_session_id ?? null;
   const launchHeader = resolveLaunchHeader(memoKey, knownHeader, stateRow);
+  const controlGeneration = generation === null ? NaN : Number(generation);
   return {
     operationOwnerId: ownerId,
+    operationWorkspaceId: workspaceId,
+    ...(Number.isSafeInteger(controlGeneration) && controlGeneration >= 0 ? { controlGeneration } : {}),
     ...(controlReadFailed ? { authorityUnavailable: true } : {}),
     ...(identityLaunchRecordMissing ? { identityLaunchRecordMissing: true } : {}),
     ...(stateRow && Object.prototype.hasOwnProperty.call(stateRow, 'launch_spec_type')
@@ -574,8 +581,123 @@ function evaluateOperatorKernelRequest(
   return { decision: 'allow', availability: 'unavailable', applied: false };
 }
 
+/**
+ * EI-23703586803892464: a gate-side convergence request, raised only when the
+ * identity gate resolved this session's artifact as `stale-artifact`.
+ */
+interface StaleArtifactHeal {
+  ownerId: string;
+  workspaceId: string;
+  generation: number;
+  desired: NonNullable<NonNullable<KernelContextState['activation']>['desired']>;
+  appliedKey: string;
+}
+
+/** A failed convergence is retried no sooner than this, per exact revision pair. */
+export const STALE_ARTIFACT_HEAL_RETRY_MS = 2_000;
+const STALE_ARTIFACT_HEAL_MEMO_MAX = 1_000;
+type StaleArtifactConverger =
+  typeof import('./agent-tools/coordination/control-anchor').convergeActivationToLaunchRecord;
+const staleArtifactHealState: { attempts: Map<string, number>; converge?: StaleArtifactConverger | null } =
+  pinModuleState(
+    '@papercusp/operator-core.projected-tool-deps.staleArtifactHeal',
+    () => ({ attempts: new Map<string, number>(), converge: null as StaleArtifactConverger | null }),
+  );
+
+/**
+ * Seam for the authority-safe convergence writer. `null` (the default) resolves
+ * the real `convergeActivationToLaunchRecord` lazily; control-anchor is imported
+ * dynamically because it sits above this module in the dependency graph. A unit
+ * test injects its verdict here: a `vi.mock` of that dynamic import was measured
+ * NOT to reach this call site (the resolver received the unmocked module record).
+ */
+export function setStaleArtifactConverger(converge: StaleArtifactConverger | null): void {
+  staleArtifactHealState.converge = converge;
+}
+
+function isStaleArtifactResolution(result: KernelEnforcementResult): boolean {
+  if (result.decision === 'deny') {
+    const obligations = result.obligations as { capabilityUnsatisfied?: { cause?: unknown } } | undefined;
+    return obligations?.capabilityUnsatisfied?.cause === 'stale-artifact';
+  }
+  // The recovery door (coord:orient / its dispatch wrapper) is admitted with no
+  // grants on the same resolution; converge there too so the door runs with the
+  // authority the launch already carries.
+  return result.code === 'identity-recovery' && /stale-artifact/.test(result.reason ?? '');
+}
+
+function staleArtifactHealFor(state: OperatorKernelState): StaleArtifactHeal | null {
+  const desired = state.activation?.desired;
+  if (!desired || !state.operationOwnerId || !state.operationWorkspaceId) return null;
+  if (state.controlGeneration === undefined) return null;
+  const applied = state.activation?.applied ?? state.appliedRevision ?? null;
+  return {
+    ownerId: state.operationOwnerId,
+    workspaceId: state.operationWorkspaceId,
+    generation: state.controlGeneration,
+    desired,
+    appliedKey: applied ? `${applied.specificationRevision}:${applied.stateRevision}` : '-',
+  };
+}
+
+/**
+ * EI-23703586803892464: converge a `stale-artifact` session from the gate itself.
+ *
+ * Measured 2026-09-27 (12 owners in one hour): every carry-respawn writes the
+ * successor's launch record and a restart-sourced `desired`, and the successor's
+ * startup hooks (activity:report, coord:glance, flags:get) reach this gate 2-5s
+ * BEFORE the first turn-start runs the relaunch convergence. Each of those calls
+ * was denied `stale-artifact` although the process was already running `desired`.
+ * Earlier variants of the same class bricked sessions until hand-written SQL.
+ *
+ * `convergeActivationToLaunchRecord` is the authority-safe writer: it moves
+ * `applied` to `desired` only when the gate-selected launch record admits
+ * `desired` AND no longer admits the current `applied` — i.e. only when it
+ * replaces a certain total denial with the authority the launch already carries.
+ * An in-place mode flip keeps the old `applied` admitted, so it never fires there,
+ * and the delivery watermark is never touched (the CTRL text still awaits proof).
+ * Running it here makes recovery a property of the gate: the first tool call of
+ * ANY kind converges the session, instead of one particular hook.
+ */
+async function healStaleArtifactFromLaunchRecord(heal: StaleArtifactHeal): Promise<boolean> {
+  const key = [
+    heal.ownerId, heal.workspaceId,
+    heal.desired.specificationRevision, heal.desired.stateRevision, heal.appliedKey,
+  ].join('|');
+  const attempts = staleArtifactHealState.attempts;
+  const now = Date.now();
+  const last = attempts.get(key);
+  if (last !== undefined && now - last < STALE_ARTIFACT_HEAL_RETRY_MS) return false;
+  if (attempts.size >= STALE_ARTIFACT_HEAL_MEMO_MAX) attempts.clear();
+  attempts.set(key, now);
+  try {
+    const converge = staleArtifactHealState.converge
+      ?? (await import('./agent-tools/coordination/control-anchor')).convergeActivationToLaunchRecord;
+    const converged = await converge(heal.ownerId, heal.workspaceId, heal.generation, heal.desired);
+    if (converged) attempts.delete(key);
+    return converged;
+  } catch {
+    return false;
+  }
+}
+
 /** Live control-anchor resolver installed by the operator bootstrap. */
 export const controlAnchorKernelResolver: KernelEnforcementPort = async (request) => {
+  const pending: { heal?: StaleArtifactHeal } = {};
+  const first = await resolveControlAnchorKernelOnce(request, (heal) => { pending.heal = heal; });
+  if (!pending.heal) return first;
+  // Re-resolve from a fresh read only when the convergence actually wrote; the
+  // second pass never heals again, so a session the launch record cannot vouch
+  // for keeps its original denial.
+  return (await healStaleArtifactFromLaunchRecord(pending.heal))
+    ? resolveControlAnchorKernelOnce(request)
+    : first;
+};
+
+async function resolveControlAnchorKernelOnce(
+  request: KernelEnforcementRequest,
+  onStaleArtifact?: (heal: StaleArtifactHeal) => void,
+): Promise<KernelEnforcementResult> {
   let state: OperatorKernelState | null;
   try {
     state = await readControlAnchorKernelState(request);
@@ -599,7 +721,13 @@ export const controlAnchorKernelResolver: KernelEnforcementPort = async (request
         request, state, state.identityLaunchRecord, undefined, undefined,
         (stamp) => { ungoverned.stamp = stamp; },
       );
-      if (grants) return grants;
+      if (grants) {
+        if (onStaleArtifact && isStaleArtifactResolution(grants)) {
+          const heal = staleArtifactHealFor(state);
+          if (heal) onStaleArtifact(heal);
+        }
+        return grants;
+      }
     } catch {
       // The generic optional port catches throws as unavailable/allow. This
       // resolver owns real authority, so it must publish an explicit denial —

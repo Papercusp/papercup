@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { dispatchProjectedTool, type ProjectedTool } from '@papercusp/agent-mcp';
@@ -87,12 +87,20 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   },
 }));
 
+// EI-23703586803892464: the authority-safe writer is exercised against real PG in
+// session-identity-attribution.integration.test.ts; here only its verdict is
+// injected (through the resolver's own seam — a vi.mock of the dynamic import
+// does not reach the call site) so the heal-then-re-resolve contract is observable.
+const heal = { converge: vi.fn(async (..._args: unknown[]) => false) };
+
 import {
   controlAnchorKernelResolver,
   installControlAnchorKernelResolver,
   operatorKernelEnforcement,
   readControlAnchorKernelState,
   setKernelEnforcementResolver,
+  setStaleArtifactConverger,
+  STALE_ARTIFACT_HEAL_RETRY_MS,
   wrapOperatorKernelSpawn,
 } from './projected-tool-deps';
 import type { KernelEnforcementRequest, UnifiedToolContext } from '@papercusp/agent-mcp';
@@ -164,12 +172,18 @@ beforeEach(() => {
   // test must not turn the next test's miss into a hit.
   pinModuleState('@papercusp/operator-core.identity-resolution-cache', () => new Map<string, unknown>()).clear();
   pinModuleState('@papercusp/operator-core.identity-launch-header-memo', () => new Map<string, unknown>()).clear();
+  pinModuleState('@papercusp/operator-core.projected-tool-deps.staleArtifactHeal',
+    () => ({ attempts: new Map<string, number>() })).attempts.clear();
+  heal.converge.mockReset().mockResolvedValue(false);
+  setStaleArtifactConverger(heal.converge as never);
   db.sql.mockClear();
   db.failClient = false;
   grants.read.mockReset();
   grants.claim.mockReset().mockResolvedValue(true);
   setKernelEnforcementResolver(null);
 });
+
+afterAll(() => setStaleArtifactConverger(null));
 
 describe('control-anchor kernel resolver (D-030)', () => {
   it('reads only the caller workspace and preserves the applied revision attribution', async () => {
@@ -535,6 +549,85 @@ describe('control-anchor kernel resolver (D-030)', () => {
     await expect(controlAnchorKernelResolver(request({
       ctx: ctx({ isSuperuser: false, isPowerUser: true, uiClientId: 'pus-a' }),
     }))).resolves.toMatchObject({ decision: 'deny', code: 'policy-unavailable' });
+  });
+});
+
+describe('a stale-artifact session converges from the gate itself (EI-23703586803892464)', () => {
+  // The launch record runs REVISION_A; the activation still names REVISION_B as
+  // applied — the carry-respawn startup race measured live on 2026-09-27, where a
+  // successor's hook calls reached the gate before turn-start converged `applied`.
+  function relaunchedBehind() {
+    return anchorRow({
+      activation: {
+        schemaVersion: 1,
+        attribution: { actorId: 'actor', principalId: 'principal', sessionId: 'session' },
+        desired: REVISION_A,
+        prepared: null,
+        applied: REVISION_B,
+        status: 'desired',
+      },
+    });
+  }
+  const STALE = { decision: 'deny', obligations: { capabilityUnsatisfied: { cause: 'stale-artifact' } } };
+
+  it('converges applied to the launched desired revision and admits the same call on a fresh read', async () => {
+    db.rows.push([relaunchedBehind()], [anchorRow({ activation: appliedActivation(REVISION_A) })]);
+    heal.converge.mockResolvedValueOnce(true);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({
+      decision: 'allow', applied: true, executionRevision: REVISION_A,
+    });
+    expect(heal.converge).toHaveBeenCalledTimes(1);
+    // The DESIRED revision (the one the launch carries) at the anchor's own
+    // workspace and generation — never the stale applied one.
+    expect(heal.converge).toHaveBeenCalledWith(expect.any(String), 'ws-a', 9, REVISION_A);
+  });
+
+  it('keeps the original stale-artifact denial when the launch record cannot vouch for desired', async () => {
+    db.rows.push([relaunchedBehind()]);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject(STALE);
+    expect(heal.converge).toHaveBeenCalledTimes(1);
+    // A refused convergence never re-reads: one anchor read only.
+    expect(db.sql.mock.calls.filter(([strings]) =>
+      (strings as readonly string[]).join(' ').includes('control_generation')).length).toBe(1);
+  });
+
+  it('does not re-attempt a refused convergence for the same revision pair within the retry window', async () => {
+    db.rows.push([relaunchedBehind()], [relaunchedBehind()]);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject(STALE);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject(STALE);
+    expect(heal.converge).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a refused convergence once the retry window has passed', async () => {
+    vi.useFakeTimers({ now: 1_000_000, toFake: ['Date'] });
+    try {
+      db.rows.push([relaunchedBehind()], [relaunchedBehind()]);
+      await controlAnchorKernelResolver(request());
+      vi.setSystemTime(1_000_000 + STALE_ARTIFACT_HEAL_RETRY_MS);
+      await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject(STALE);
+      expect(heal.converge).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the original denial when the convergence writer throws', async () => {
+    db.rows.push([relaunchedBehind()]);
+    heal.converge.mockRejectedValueOnce(new Error('writer unavailable'));
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject(STALE);
+    expect(heal.converge).toHaveBeenCalledTimes(1);
+  });
+
+  it('never attempts a convergence for a session the gate already admits', async () => {
+    db.rows.push([anchorRow({ activation: appliedActivation(REVISION_A) })]);
+    await expect(controlAnchorKernelResolver(request())).resolves.toMatchObject({ decision: 'allow' });
+    expect(heal.converge).not.toHaveBeenCalled();
+  });
+
+  it('never attempts a convergence without a desired revision to converge to', async () => {
+    db.rows.push([anchorRow({ activation: { ...appliedActivation(REVISION_B), desired: undefined } })]);
+    await controlAnchorKernelResolver(request());
+    expect(heal.converge).not.toHaveBeenCalled();
   });
 });
 
