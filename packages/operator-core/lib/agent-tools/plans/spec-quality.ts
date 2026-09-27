@@ -73,15 +73,18 @@ function clauseReference(clause: SpecClauseRevision): string {
     : clause.specId;
 }
 
-function projectedRepairSuggestion(
-  clauses: readonly SpecClauseRevision[],
-  fallback: string,
-): string {
+function projectedRepairSuggestion(clauses: readonly SpecClauseRevision[], fallback: string): string {
   const projected = clauses.filter((clause) => clause.sourceBar || clause.specId.startsWith('AUTO-BAR-'));
   if (projected.length === 0) return fallback;
-  const sources = [...new Set(projected.map((clause) => clause.sourceBar
-    ? `${clause.sourceBar.rubricSlug} BAR ${clause.sourceBar.barKey}`
-    : `${clause.specId} (source pin unavailable; inspect plans:get-specs)`))];
+  const sources = [
+    ...new Set(
+      projected.map((clause) =>
+        clause.sourceBar
+          ? `${clause.sourceBar.rubricSlug} BAR ${clause.sourceBar.barKey}`
+          : `${clause.specId} (source pin unavailable; inspect plans:get-specs)`,
+      ),
+    ),
+  ];
   return (
     `These AUTO-BAR clauses are projections from ${sources.join(', ')}. ` +
     'Amend the canonical criterion.model/acceptance condition with rubrics:amend; do not repair ' +
@@ -105,10 +108,7 @@ function rerunnableEvidence(
   expectedSpecSetHash: string,
 ): string {
   const planArgs = `slug:${JSON.stringify(input.planSlug)}, harness:${JSON.stringify(input.harnessSlug)}`;
-  const evaluationArgs =
-    planArgs +
-    ', classRef:' +
-    JSON.stringify(input.classRef);
+  const evaluationArgs = planArgs + ', classRef:' + JSON.stringify(input.classRef);
   return (
     `Source store: plans:get-specs { ${planArgs} }. ` +
     `Re-run exactly: plans:evaluate-spec-quality { ${evaluationArgs} }; ` +
@@ -136,7 +136,7 @@ function implementationCouplingReason(behavior: string): string | null {
     /\b(?:function|class|method|variable|private field|implementation detail)\s+(`[^`]+`|'[^']+'|"[^"]+"|[A-Za-z_$][A-Za-z0-9_$]*)/gi;
   for (const match of behavior.matchAll(constructReference)) {
     const token = match[1];
-    const explicitlyQuoted = new RegExp('^[`' + "'\"" + ']').test(token);
+    const explicitlyQuoted = new RegExp('^[`' + '\'"' + ']').test(token);
     const identifier = explicitlyQuoted ? token.slice(1, -1) : token;
     const identifierLooksLikeSymbol =
       /^[A-Z_$]/.test(identifier) || /[_$]/.test(identifier) || /[A-Z0-9]/.test(identifier.slice(1));
@@ -263,8 +263,38 @@ export function evaluatePlanSpecQuality(input: {
     group.push(clause);
     behaviorGroups.set(key, group);
   }
+  // EI-24372921924901236: BAR projection deliberately repeats the canonical
+  // behavior for every mapped item. It supplements, but cannot replace, unique
+  // item contracts. Keep ordinary copies and mismatched source pins uncertain.
+  const independentContractItems = new Set(
+    [...behaviorGroups.values()]
+      .filter((group) => new Set(group.map((clause) => clause.planItemId)).size === 1)
+      .flatMap((group) =>
+        group
+          .filter((clause) => !clause.sourceBar && !clause.specId.startsWith('AUTO-BAR-'))
+          .map((clause) => clause.planItemId),
+      ),
+  );
+  const corroboratedSharedBar = (group: SpecClauseRevision[]): boolean => {
+    const pin = group[0]?.sourceBar;
+    if (!pin) return false;
+    return group.every((clause) => {
+      const source = clause.sourceBar;
+      return (
+        source != null &&
+        source.rubricSlug === pin.rubricSlug &&
+        source.rubricRevision === pin.rubricRevision &&
+        source.barKey === pin.barKey &&
+        source.barHash === pin.barHash &&
+        source.barSetHash === pin.barSetHash &&
+        source.evidencePlane === pin.evidencePlane &&
+        independentContractItems.has(clause.planItemId)
+      );
+    });
+  };
   const duplicateBehaviorReuse = [...behaviorGroups.values()]
     .filter((group) => new Set(group.map((clause) => clause.planItemId)).size > 1)
+    .filter((group) => !corroboratedSharedBar(group))
     .map((group) => {
       const specIds = [...new Set(group.map((clause) => clause.specId))].sort();
       const itemIds = [...new Set(group.map((clause) => clause.planItemId))].sort();
@@ -370,7 +400,13 @@ export function evaluatePlanSpecQuality(input: {
             specSetHash +
             '; the replayed probe describes a different clause set.',
         )
-      : pass('Verdict is pinned to exact current specSetHash ' + specSetHash + ' over ' + currentSet.length + ' clause(s).');
+      : pass(
+          'Verdict is pinned to exact current specSetHash ' +
+            specSetHash +
+            ' over ' +
+            currentSet.length +
+            ' clause(s).',
+        );
 
   // The start gate pins the exact ratings fingerprint, so the evaluator itself
   // must emit evidence that a non-author can execute verbatim. Otherwise a
