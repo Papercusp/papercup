@@ -271,14 +271,47 @@ const evalFile = (source, name) => {
 // R-4: an installed identity may wear the Applied badge only when one of its
 // refs is in the APPLIED stack. The reviewed/requested alternative
 // (research-steward) must never borrow it before the host applies it.
-const assertAlternativesNotApplied = (label) => {
-  const state = JSON.parse(evalFile(`JSON.stringify({
-    stack: document.querySelector('.pc-identities__stack-card')?.textContent ?? '',
+// The applied stack renders on the "Current agent" tab and the installed-identity
+// badges on the paginated "Library" tab, so the check reads the stack where it is,
+// visits Library (paging with "Load more" until both identities are listed), then
+// returns to the starting tab. Review/selection state is page-level, so the round
+// trip does not discard it; callers re-check what they depend on.
+const IDENTITY_TABS = { library: 1, agent: 2, bindings: 3 };
+const identityTab = (name) => `[aria-label="Identity management sections"] [role="tab"]:nth-child(${IDENTITY_TABS[name]})`;
+const readLibraryRows = (label, scanned) => JSON.parse(evalFile(`JSON.stringify((() => {
+  const next = document.querySelector('[aria-label="Identity catalog pages"] button:last-child');
+  return {
     rows: [...document.querySelectorAll('.pc-identities__identity')].map((row) => ({
       id: row.querySelector('strong')?.textContent?.trim() ?? '',
       applied: !!row.querySelector('.pc-identities__pill--applied'),
     })),
-  })`, label));
+    canAdvance: !!next && !next.disabled && next.textContent.trim() === 'Load more',
+  };
+})())`, `${label}-library-page-${scanned}`));
+
+const assertAlternativesNotApplied = (label) => {
+  const startTab = JSON.parse(evalFile("JSON.stringify(new URLSearchParams(location.search).get('identityTab') ?? 'library')", `${label}-start-tab`));
+  const stack = JSON.parse(evalFile("JSON.stringify(document.querySelector('.pc-identities__stack-card')?.textContent ?? '')", `${label}-stack`));
+  if (!stack.includes("Applied stack")) throw new Error(`${label}: applied stack card not readable on tab ${startTab}: ${JSON.stringify(stack)}`);
+  if (startTab !== "library") {
+    click(identityTab("library"), `${label}-library-tab`);
+    settle();
+    check(["--selector", ".pc-identities__identity"], `${label}-library-visible`);
+  }
+  const listed = new Map();
+  for (let scanned = 1; ; scanned += 1) {
+    const page = readLibraryRows(label, scanned);
+    for (const row of page.rows) listed.set(row.id, row);
+    if ((listed.has("research-steward") && listed.has("papercusp-engineer")) || !page.canAdvance || scanned >= 10) break;
+    click('[aria-label="Identity catalog pages"] button:last-child', `${label}-library-next-${scanned}`);
+    settle();
+  }
+  const state = { startTab, stack, rows: [...listed.values()] };
+  if (startTab !== "library") {
+    click(identityTab(startTab), `${label}-return-tab`);
+    settle();
+    check(["--eval", `new URLSearchParams(location.search).get('identityTab') === ${JSON.stringify(startTab)}`], `${label}-tab-restored`);
+  }
   evidence.appliedBadges = { ...(evidence.appliedBadges ?? {}), [label]: state };
   const alternative = state.rows.find((row) => row.id === "research-steward");
   const current = state.rows.find((row) => row.id === "papercusp-engineer");
@@ -687,6 +720,8 @@ try {
       throw new Error(`real review rendered no revision diff rows: ${JSON.stringify(reviewDiff)}`);
     }
     assertAlternativesNotApplied("real-review-alternatives-not-applied");
+    // The Library round trip must not have discarded the review the switch applies.
+    check(["--eval", "document.querySelector('.pc-identities__diff')?.querySelectorAll('[role=\"row\"]').length >= 2 && !document.querySelector('[aria-label=\"Apply identity\"]')?.disabled"], "real-review-survives-library-check");
 
     let syncBeforeSwitch = null;
     if (realRecovery) {
