@@ -30,34 +30,17 @@ import { getSessionBriefAmbientExcludedRefs } from '../session-brief';
 import { getMemoryBackend, type MemoryEntry, type SearchLegStats } from './backend';
 // Type-only: erased at build, so `recall-stats` stays a dynamic import on the
 // telemetry path (see the writer below) rather than being pulled in eagerly.
-import type {
-  CorpusAdmissionDropReason,
-  CorpusAdmissionStats,
-  RecallAdmissionStats,
-} from './recall-stats';
+import type { CorpusAdmissionDropReason, CorpusAdmissionStats, RecallAdmissionStats } from './recall-stats';
 import { admittedByLeg, collapseNearDuplicates } from './recall-admission';
 // P-003. Pure — no I/O, no PG, and its two imports are type-only, so this stays
 // a static import while the SNAPSHOT read (which does pull the search graph)
 // remains dynamic below, beside the rest of the corpus leg's dynamic imports.
-import {
-  assessCorpusCoverageGate,
-  CORPUS_GATE_SOURCES,
-  type CorpusGateDecision,
-} from './corpus-coverage-gate';
+import { assessCorpusCoverageGate, CORPUS_GATE_SOURCES, type CorpusGateDecision } from './corpus-coverage-gate';
 import { isMemoryWorkspaceScopedRecallOn, keepUserPoolHitForWorkspace } from './workspace-scope-recall';
 import { bumpLastSurfacedSql, recentlySurfacedIds } from './bump-last-surfaced';
-import {
-  alreadySurfacedIds,
-  currentSessionEpoch,
-  stampSurfaced,
-} from './session-epoch-ledger';
+import { alreadySurfacedIds, currentSessionEpoch, stampSurfaced } from './session-epoch-ledger';
 import { hiveScopeKey, potSlugFromScope, resolvePotSlugsForHarnesses } from './hive-scope';
-import {
-  lexicalQueryText,
-  retrievalQueryText,
-  toRecallQuery,
-  type RecallQueryInput,
-} from './recall-query';
+import { lexicalQueryText, retrievalQueryText, toRecallQuery, type RecallQueryInput } from './recall-query';
 import { memoryTierOf } from './two-tier';
 import { annotateSupersededMemory } from './temporal-render';
 import { systemDistinctId } from '../flag-distinct-id';
@@ -247,15 +230,10 @@ async function applyStoredMemoryStaleness(
 ): Promise<InjectionMemoryEntry[]> {
   if (entries.length === 0) return entries;
   try {
-    const [{ FLAGS }, { getFlag }] = await Promise.all([
-      import('@papercusp/flags'),
-      import('@papercusp/flags/server'),
-    ]);
+    const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
     if (!(await getFlag(FLAGS.MEMORY_STALENESS_IN_RECALL, systemDistinctId()))) return entries;
 
-    const ids = entries
-      .map((entry) => entry.id)
-      .filter((id): id is string => typeof id === 'string' && id.length > 0);
+    const ids = entries.map((entry) => entry.id).filter((id): id is string => typeof id === 'string' && id.length > 0);
     if (ids.length === 0) return entries;
 
     const { loadMemoryStaleness, applyMemoryStaleness } = await import('./recall-staleness');
@@ -397,9 +375,7 @@ function injectMinLexScore(): number | undefined {
  * one-flip revert if the zero-hit rate overshoots.
  */
 function injectFusionMode(): 'floored-union' | 'cosine-gated' {
-  return process.env.PAPERCUSP_MEMORY_FUSION_MODE === 'floored-union'
-    ? 'floored-union'
-    : 'cosine-gated';
+  return process.env.PAPERCUSP_MEMORY_FUSION_MODE === 'floored-union' ? 'floored-union' : 'cosine-gated';
 }
 
 /**
@@ -543,9 +519,7 @@ const MAX_ENTRY_CHARS = 450;
  */
 const SLOW_INJECTION_LOG_MS = 750;
 
-export async function buildMemoryContextBlock(
-  input: MemoryInjectionInput,
-): Promise<string | null> {
+export async function buildMemoryContextBlock(input: MemoryInjectionInput): Promise<string | null> {
   const marks: Array<[string, number]> = [];
   const t0 = Date.now();
   let corpus: CorpusLegResult | null = null;
@@ -563,11 +537,7 @@ export async function buildMemoryContextBlock(
     // only be done by a fixed priority, which D-011 names "a quota under
     // another name". See ./corpus-recall.
     const corpusP = startCorpusLeg(input);
-    const memoryBlock = await buildBlockInner(
-      input,
-      (label, ms) => marks.push([label, ms]),
-      corpusP,
-    );
+    const memoryBlock = await buildBlockInner(input, (label, ms) => marks.push([label, ms]), corpusP);
     // Settled HERE rather than inside the composer (P-001): the leg's own
     // health is a fact about this injection, not about how the block was
     // assembled, and the `finally` below has to be able to report it. The await
@@ -782,9 +752,7 @@ async function assessCorpusGate(
 ): Promise<CorpusGateDecision | null> {
   try {
     const { sql } = getOrgPg();
-    const { loadCoverageSnapshotCached, assessSearchCoverage } = await import(
-      '../search/coverage-gate'
-    );
+    const { loadCoverageSnapshotCached, assessSearchCoverage } = await import('../search/coverage-gate');
     const snapshot = await loadCoverageSnapshotCached(sql, workspaceId);
     return assessCorpusCoverageGate({
       coverage: assessSearchCoverage(CORPUS_GATE_SOURCES, snapshot),
@@ -832,21 +800,15 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         // failure is different: fail closed so a blind session never receives
         // an unreviewed corpus pointer while its exclusion policy is unknown.
         if (!fence.available) {
-          return emptyCorpusLeg(
-            CORPUS_BLOCK_HEADING,
-            false,
-            0,
-            null,
-            {
-              outcome: 'failed',
-              selected: 0,
-              dropped: emptyCorpusDrops(),
-              sessionDedup: 0,
-              legs: null,
-              retrievalDepth: 0,
-              rerank: 'nothing-to-reorder',
-            },
-          );
+          return emptyCorpusLeg(CORPUS_BLOCK_HEADING, false, 0, null, {
+            outcome: 'failed',
+            selected: 0,
+            dropped: emptyCorpusDrops(),
+            sessionDedup: 0,
+            legs: null,
+            retrievalDepth: 0,
+            rerank: 'nothing-to-reorder',
+          });
         }
         ambientExcludedRefs = fence.refs;
       }
@@ -900,13 +862,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       // Returning bare `null` here erased the one fact that explains an empty
       // section — whether the semantic half was even available.
       if (res.lines.length === 0) {
-        return emptyCorpusLeg(
-          CORPUS_BLOCK_HEADING,
-          res.embedderAvailable,
-          res.candidateCount,
-          gate,
-          baseTelemetry,
-        );
+        return emptyCorpusLeg(CORPUS_BLOCK_HEADING, res.embedderAvailable, res.candidateCount, gate, baseTelemetry);
       }
 
       // P-003 SIT OUT. The narrow case (see `assessCorpusCoverageGate`): the
@@ -920,13 +876,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       // must keep saying so. `gate` rides along, so a suppressed turn is
       // diagnosable rather than merely absent.
       if (gate?.verdict === 'sit-out') {
-        return emptyCorpusLeg(
-          CORPUS_BLOCK_HEADING,
-          res.embedderAvailable,
-          res.candidateCount,
-          gate,
-          baseTelemetry,
-        );
+        return emptyCorpusLeg(CORPUS_BLOCK_HEADING, res.embedderAvailable, res.candidateCount, gate, baseTelemetry);
       }
 
       // Suppression runs POST-selection: a handle ref only exists once the
@@ -938,9 +888,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       if (sessionId) {
         try {
           const { sql } = getOrgPg();
-          const { alreadySurfacedRefs, stampSurfacedRefs } = await import(
-            './corpus-surfaced-ledger'
-          );
+          const { alreadySurfacedRefs, stampSurfacedRefs } = await import('./corpus-surfaced-ledger');
           const seen = await alreadySurfacedRefs(
             sql,
             sessionId,
@@ -966,13 +914,10 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         }
       }
       if (lines.length === 0) {
-        return emptyCorpusLeg(
-          CORPUS_BLOCK_HEADING,
-          res.embedderAvailable,
-          res.candidateCount,
-          gate,
-          { ...baseTelemetry, sessionDedup },
-        );
+        return emptyCorpusLeg(CORPUS_BLOCK_HEADING, res.embedderAvailable, res.candidateCount, gate, {
+          ...baseTelemetry,
+          sessionDedup,
+        });
       }
 
       return {
@@ -1007,15 +952,9 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
  * event and must not render the same way — telling an agent its context is
  * degraded when retrieval was simply empty trains it to ignore the marker.
  */
-const CORPUS_DEGRADED_OUTCOMES: ReadonlySet<CorpusAdmissionStats['outcome']> = new Set([
-  'timed-out',
-  'failed',
-]);
+const CORPUS_DEGRADED_OUTCOMES: ReadonlySet<CorpusAdmissionStats['outcome']> = new Set(['timed-out', 'failed']);
 
-function composeWithCorpus(
-  memoryBlock: string | null,
-  corpus: CorpusLegResult | null,
-): string | null {
+function composeWithCorpus(memoryBlock: string | null, corpus: CorpusLegResult | null): string | null {
   if (!corpus || corpus.lines.length === 0) {
     // EI-16220: a leg that TIMED OUT or FAULTED produces no lines — so the
     // gate's own notice, which the block below attaches TO those lines, is
@@ -1220,7 +1159,12 @@ async function buildBlockInner(
         console.log(`[memory-injection] search-detail scopes=${scopes.length} searchMs=${searchMs}`);
       }
     });
-    ranked = await applyStoredMemoryStaleness(ranked, input.workspaceId);
+    const tStaleness = Date.now();
+    try {
+      ranked = await applyStoredMemoryStaleness(ranked, input.workspaceId);
+    } finally {
+      mark('stalenessMs', Date.now() - tStaleness);
+    }
 
     // Partition the ONE ranked result by pool, by each entry's own scope. The
     // entries are shared by reference with `ranked`, so the filters below shrink
@@ -1427,314 +1371,336 @@ async function buildBlockInner(
   };
 
   try {
+    if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
-  if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
-
-  // knowledge-packs P-009: a DISABLED pack's rows stay stored but stop being
-  // recalled. One settings read per hive in scope (usually 1); best-effort —
-  // a settings hiccup means no filtering, never a blocked turn.
-  if (hiveHits.length > 0) {
-    const before = surviving();
-    try {
-      const { disabledPacksFor } = await import('../knowledge-packs/manage');
-      const slugs = [...new Set(hiveHits.map(({ slug }) => slug))];
-      const disabledBySlug = new Map(
-        await Promise.all(
-          slugs.map(async (slug) => [slug, new Set(await disabledPacksFor(input.workspaceId, slug))] as const),
-        ),
-      );
-      hiveHits = hiveHits.filter(({ hit, slug }) => {
-        const m = hit.metadata ?? {};
-        const packId = m.source === 'pack' && typeof m.pack_id === 'string' ? m.pack_id : undefined;
-        return !(packId && disabledBySlug.get(slug)?.has(packId));
-      });
-    } catch {
-      /* best-effort — never load-bearing */
-    }
-    funnel.dropped.pack = before - surviving();
-  }
-  if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
-
-  // memory_feedback consumer (EI-366 / consume-edges P-031): the push path
-  // DROPS anything the user deleted — tombstoned ids (the lexical projection
-  // has no per-delete reconciliation, so deleted facts can ghost back through
-  // that leg) and re-extractions of deleted content. Injecting content the
-  // user deleted is worse than a missed recall; memory:search still finds it
-  // on demand (demoted, not hidden). Best-effort like the dedup below.
-  {
-    const before = surviving();
-    try {
-      const { sql } = getOrgPg();
-      const { loadFeedbackSignals, isFeedbackSuppressed } = await import('./feedback-rerank');
-      const signals = await loadFeedbackSignals(sql);
-      if (signals.deletedIds.size > 0 || signals.deletedTexts.size > 0) {
-        userResults = userResults.filter((h) => !isFeedbackSuppressed(h, signals));
-        harnessHits = harnessHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
-        hiveHits = hiveHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
+    // knowledge-packs P-009: a DISABLED pack's rows stay stored but stop being
+    // recalled. One settings read per hive in scope (usually 1); best-effort —
+    // a settings hiccup means no filtering, never a blocked turn.
+    {
+      const tPack = Date.now();
+      try {
+        if (hiveHits.length > 0) {
+          const before = surviving();
+          try {
+            const { disabledPacksFor } = await import('../knowledge-packs/manage');
+            const slugs = [...new Set(hiveHits.map(({ slug }) => slug))];
+            const disabledBySlug = new Map(
+              await Promise.all(
+                slugs.map(async (slug) => [slug, new Set(await disabledPacksFor(input.workspaceId, slug))] as const),
+              ),
+            );
+            hiveHits = hiveHits.filter(({ hit, slug }) => {
+              const m = hit.metadata ?? {};
+              const packId = m.source === 'pack' && typeof m.pack_id === 'string' ? m.pack_id : undefined;
+              return !(packId && disabledBySlug.get(slug)?.has(packId));
+            });
+          } catch {
+            /* best-effort — never load-bearing */
+          }
+          funnel.dropped.pack = before - surviving();
+        }
+      } finally {
+        mark('packMs', Date.now() - tPack);
       }
-    } catch {
-      /* hygiene, never load-bearing */
     }
-    funnel.dropped.feedback = before - surviving();
-  }
+    if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
 
-  // data-scoping-audit P-006 / D-004 / D-012 (dark cutover): workspace-scope the per-owner
-  // USER pool — drop a `project` hit explicitly tagged with a DIFFERENT workspace; keep
-  // owner-tier (user/feedback/reference) + legacy NULL-workspace rows. The harness/hive
-  // pools are already correctly scoped. Conservative + NULL-safe; OFF = today's behavior.
-  if (userResults.length > 0 && (await isMemoryWorkspaceScopedRecallOn())) {
-    const before = surviving();
-    userResults = userResults.filter((h) => keepUserPoolHitForWorkspace(h, input.workspaceId));
-    funnel.dropped.workspace = before - surviving();
-  }
-  if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
-
-  // D-006 — the pre-turn dedup: drop any memory surfaced within the recent
-  // watermark window so a stable fact is delivered ONCE, not re-injected
-  // turn-over-turn. Best-effort: a query failure returns an empty set (no
-  // filtering), so the injection degrades to its prior behavior, never breaks.
-  const candidateIds = [
-    ...userResults.map((h) => h.id),
-    ...harnessHits.map(({ hit }) => hit.id),
-    ...hiveHits.map(({ hit }) => hit.id),
-  ].filter((id): id is string => typeof id === 'string' && id.length > 0);
-  // (ids are always present on neutral entries; the filter guards legacy/odd rows)
-  // P-002: a warm session (input.session) dedups against its session-epoch
-  // ledger; the chat path keeps the wall-clock watermark. Same best-effort
-  // posture either way: a failed read = no filtering, never a broken inject.
-  let sessionEpoch: number | null = null;
-  if (candidateIds.length > 0) {
-    try {
-      const { sql } = getOrgPg();
-      let suppressed: Set<string>;
-      if (input.session?.sessionId) {
-        sessionEpoch =
-          input.session.epoch ?? (await currentSessionEpoch(sql, input.session.sessionId));
-        suppressed = await alreadySurfacedIds(
-          sql,
-          input.session.sessionId,
-          sessionEpoch,
-          candidateIds,
-        );
-      } else {
-        suppressed = await recentlySurfacedIds(sql, candidateIds, reinjectWindowMs());
-      }
-      if (suppressed.size > 0) {
-        const before = surviving();
-        userResults = userResults.filter((h) => !(h.id && suppressed.has(h.id)));
-        harnessHits = harnessHits.filter(({ hit }) => !(hit.id && suppressed.has(hit.id)));
-        hiveHits = hiveHits.filter(({ hit }) => !(hit.id && suppressed.has(hit.id)));
-        funnel.dropped.dedup = before - surviving();
-      }
-    } catch {
-      /* swallow — dedup is hygiene, never load-bearing */
-    }
-  }
-  if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
-
-  // Two-tier marker (self-learning-frontier P-022 / FB-08, D-006): with the
-  // transfer harness armed, probationary entries are visibly marked — STILL
-  // injected (admission is free); the marker just shows the trust level until
-  // a student-transfer test promotes them. Flag dark (the D-001 default) ⇒
-  // byte-identical output. Best-effort: a flags hiccup means no markers.
-  let tierMarkers = false;
-  try {
-    const { FLAGS } = await import('@papercusp/flags');
-    const { getFlag } = await import('@papercusp/flags/server');
-    tierMarkers = await getFlag(FLAGS.TRANSFER_HARNESS, 'memory-injection');
-  } catch {
-    /* never load-bearing */
-  }
-
-  const fmtScope = (entry: MemoryEntry, slug?: string): string => {
-    const kind = entry.kind ?? 'unknown';
-    const tier = tierMarkers && memoryTierOf(entry) === 'probationary' ? ' · probationary' : '';
-    if (slug) return `[${kind}${tier} @ ${slug}]`;
-    return `[${kind}${tier}]`;
-  };
-
-  // Phase 5 P-020: surface memory_id alongside each entry so the agent
-  // can call memory:forget when a user correction contradicts an
-  // injected memory. Suffix-style to keep the existing `[kind] <text>`
-  // format backward-compatible.
-  const fmtId = (h: { id?: string }): string =>
-    typeof h.id === 'string' && h.id ? ` (id=${h.id})` : '';
-
-  // Assembly under the P-011 budget, in RELEVANCE order — F-C (P-033, D-011).
-  //
-  // This used to render strictly by POOL (user → harness → hive-organic →
-  // hive-pack), which mattered because the char budget truncates in render
-  // order: the render order IS the real allocator. That made it a second quota
-  // on top of the per-pool item quotas, and the worse of the two — with the item
-  // quotas gone, a pool-ordered render would let the user pool (the 487-memory
-  // CROSS-PROJECT one P-033 blames for the oddsmith contamination) consume the
-  // whole block before the harness pool rendered a line. So the two had to move
-  // together: the single ranked search now supplies one comparable ordering, and
-  // the budget cut follows it.
-  //
-  // ONE exception is PRESERVED: hive-PACK rows still yield first. Packs are the
-  // most numerous and least turn-specific, and that is a trust-tier judgment
-  // recorded before this plan — independent of pool quotas, so F-C does not
-  // overturn it.
-  const isPackHit = (hit: MemoryEntry): boolean =>
-    hit.metadata?.source === 'pack' && typeof hit.metadata?.pack_id === 'string';
-
-  const budget =
-    input.budgetChars && input.budgetChars > 0 ? input.budgetChars : injectBudgetChars();
-  let spent = 0;
-  const lines: string[] = [];
-  const surfacedIds: string[] = [];
-  const admit = (line: string, id?: string): boolean => {
-    // The `&& lines.length > 0` is the ALWAYS-EMIT-ONE-ROW contract, and it is
-    // load-bearing across modules — do not "tighten" it again without reading
-    // mid-turn-context.ts:174-190, which documents this exact clause and depends on it:
-    // a caller with a small budget must get SOMETHING rather than null.
-    //
-    // WI-6870 removed it, reasoning that MAX_ENTRY_CHARS (above) already keeps any single
-    // line well under a normal budget so strict enforcement could no longer starve the
-    // other candidates (measured: one 4,901-char memory against a 4,000 budget). That is
-    // true for a NORMAL budget and false for a small one: the mid-turn endpoint passes
-    // MID_TURN_BUDGET_CHARS = 350, so a line clamped to 900 STILL overflows and the first
-    // row was rejected — buildMemoryContextBlock returned nothing and mid-turn context
-    // injection silently delivered NOTHING (WI-7163; caught by the P-018 acceptance
-    // replay, which red-pinned the green gate).
-    //
-    // MAX_ENTRY_CHARS is the real fix for WI-6870's starvation case and is retained; this
-    // exemption is bounded by it, so the 4,901-char scenario cannot recur through here.
-    // Small-budget callers clamp themselves — see mid-turn-context.ts `clampToBudget()`,
-    // which truncates keeping the HEAD precisely so scope + id + lede survive.
-    // NOTE: the corpus leg (corpus-recall.ts) is deliberately STRICT and stays that way —
-    // its no-first-entry-exemption behavior is pinned by corpus-recall.test.ts (WI-6870).
-    if (spent + line.length > budget && lines.length > 0) return false;
-    lines.push(line);
-    spent += line.length;
-    if (id) surfacedIds.push(id);
-    return true;
-  };
-  // Walk the ONE ranked result in relevance order, keeping only entries that
-  // survived the filters above (identity, not id — the filters preserve object
-  // references, and not every legacy row carries an id). Each pool keeps its own
-  // label: the hive pool is tagged `@ hive:<slug>` so an agent can tell
-  // shared-Hive knowledge from its harness's own pool.
-  const survivingHive = new Map(hiveHits.map(({ hit, slug }) => [hit, slug]));
-  const survivingHarness = new Map(harnessHits.map(({ hit, slug }) => [hit, slug]));
-  const survivingUser = new Set(userResults);
-  // P-002: each row carries its ENTRY so an ADMITTED line can be attributed back
-  // to the leg that produced it (`MemoryEntry.retrieval`). Attribution has to
-  // happen over the admitted set, not the candidate set — a leg that offers
-  // candidates and never lands one is contributing nothing, and that is exactly
-  // what a pre-filter count cannot show.
-  type RenderRow = { line: string; id?: string; text: string; entry: MemoryEntry };
-  const mainRows: RenderRow[] = [];
-  const packRows: RenderRow[] = [];
-  for (const hit of ranked) {
-    const row = (label?: string): RenderRow => {
-      const fullText = hit.text ?? '';
-      const displayText = hit.injectionText ?? fullText;
-      const annotatedText = annotateSupersededMemory(displayText, hit.metadata);
-      // WI-6870: clamp the RENDERED text to MAX_ENTRY_CHARS so a single oversized memory
-      // can't blow the whole budget by itself. Dedup below still compares the FULL text
-      // (not this clamped copy), so two distinct long entries that happen to share a
-      // >900-char prefix are never mistaken for near-duplicates.
-      const boundedText =
-        annotatedText.length > MAX_ENTRY_CHARS
-          ? `${annotatedText.slice(0, MAX_ENTRY_CHARS)}… (truncated — memory:search for the rest)`
-          : annotatedText;
-      return {
-        line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${boundedText}`,
-        id: hit.id,
-        text: fullText,
-        entry: hit,
-      };
-    };
-    if (survivingHive.has(hit)) {
-      const slug = survivingHive.get(hit)!;
-      (isPackHit(hit) ? packRows : mainRows).push(row(`hive:${slug}`));
-    } else if (survivingHarness.has(hit)) {
-      mainRows.push(row(survivingHarness.get(hit)!));
-    } else if (survivingUser.has(hit)) {
-      mainRows.push(row());
-    }
-  }
-  const rendered = [...mainRows, ...packRows];
-  // P-008 (WI-4538): collapse near-duplicate memories (the SAME fact stored under multiple ids
-  // — the id-based dedups above can't see it) BEFORE the budget, so a dupe never consumes a
-  // slot a distinct fact needed. Order is preserved, so post-F-C the highest-RELEVANCE copy of
-  // each cluster survives (it was the highest-priority-POOL copy before D-011).
-  const { kept: dedupedRendered } = collapseNearDuplicates(rendered, (r) => r.text);
-  funnel.dropped.nearDuplicate = rendered.length - dedupedRendered.length;
-  let truncated = false;
-  for (const { line, id, entry } of dedupedRendered) {
-    // WI-6870: skip-and-continue instead of a hard break. A `break` here discarded every
-    // remaining (lower-ranked but possibly SMALLER) entry once ONE entry didn't fit —
-    // measured mean 849 chars (21%) of the budget left on the table per turn, worst case
-    // 2,675 (67%). The result stays in relevance order (admitted entries are pushed in
-    // `dedupedRendered`'s rank order); this only lets a later, smaller entry fill space a
-    // single earlier oversized one would otherwise have wasted.
-    if (!admit(line, id)) {
-      truncated = true;
-      funnel.dropped.budget += 1;
-      continue;
-    }
-    admittedEntries.push(entry);
-  }
-  // P-002: the delivered end of the funnel. `admitted` counts CONTENT lines, so
-  // it is taken from admittedEntries rather than `lines` — the withheld-notice
-  // row appended below is a marker, not a recalled memory, and counting it would
-  // report a block that delivered nothing as having delivered one.
-  funnel.admitted = admittedEntries.length;
-  funnel.truncated = truncated;
-  // D-081: `truncated` alone cannot say WHICH constraint bound — an exhausted
-  // budget and a remainder of individually-oversized entries both set it, and
-  // they call for opposite fixes. Recording what was actually spent against the
-  // budget it was spent from makes utilization readable, which is the only way
-  // to tell "raise the budget" from "the MAX_ENTRY_CHARS clamp is the ceiling".
-  // Set HERE, beside the other delivered-end fields and before the
-  // `lines.length === 0` early return below, so a block that admitted nothing
-  // still records spent: 0 rather than going silently absent.
-  funnel.spent = spent;
-  funnel.budgetChars = budget;
-  // Attributed on the STATIC path, deliberately — never inside the deferred
-  // writer, whose failures are swallowed (see `admittedByLeg`'s note).
-  funnel.byLeg = admittedByLeg(admittedEntries);
-  if (lines.length === 0) return null;
-  if (truncated) {
-    lines.push('- (more learnings withheld this turn — the memory budget is full; memory:search pulls the rest on demand)');
-  }
-
-  // Phase 5 P-021: stamp last_surfaced_at on every memory we surfaced — this is
-  // ALSO the dedup watermark the next turn reads. Fire-and-forget: bumpLastSurfacedSql
-  // is fully defensive and its outcome doesn't affect the block we return.
-  // (Only ACTUALLY-injected ids are stamped — a budget-dropped memory must not
-  // be dedup-suppressed next turn.)
-  if (surfacedIds.length > 0) {
-    const session = input.session;
-    const epochForStamp = sessionEpoch;
-    void (async () => {
+    // memory_feedback consumer (EI-366 / consume-edges P-031): the push path
+    // DROPS anything the user deleted — tombstoned ids (the lexical projection
+    // has no per-delete reconciliation, so deleted facts can ghost back through
+    // that leg) and re-extractions of deleted content. Injecting content the
+    // user deleted is worse than a missed recall; memory:search still finds it
+    // on demand (demoted, not hidden). Best-effort like the dedup below.
+    {
+      const tFeedback = Date.now();
+      const before = surviving();
       try {
         const { sql } = getOrgPg();
-        // last_surfaced_at stays stamped for EVERY path — it feeds the
-        // Layer-3 "recently used" pickers, not just the chat dedup.
-        await bumpLastSurfacedSql(sql, surfacedIds);
-        // P-002: warm sessions ALSO stamp the port-agnostic epoch ledger so
-        // every later injection moment of this epoch dedups against it.
-        if (session?.sessionId) {
-          await stampSurfaced(
-            sql,
-            session.sessionId,
-            epochForStamp ?? (await currentSessionEpoch(sql, session.sessionId)),
-            surfacedIds,
-            session.port ?? 'injection',
-          );
+        const { loadFeedbackSignals, isFeedbackSuppressed } = await import('./feedback-rerank');
+        const signals = await loadFeedbackSignals(sql);
+        if (signals.deletedIds.size > 0 || signals.deletedTexts.size > 0) {
+          userResults = userResults.filter((h) => !isFeedbackSuppressed(h, signals));
+          harnessHits = harnessHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
+          hiveHits = hiveHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
         }
       } catch {
-        /* swallow — never load-bearing */
+        /* hygiene, never load-bearing */
+      } finally {
+        mark('feedbackMs', Date.now() - tFeedback);
       }
-    })();
-  }
+      funnel.dropped.feedback = before - surviving();
+    }
 
-  const heading = input.heading ?? 'Operator memory (relevant entries)';
-  return `## ${heading}\n\n${lines.join('\n')}`;
+    // data-scoping-audit P-006 / D-004 / D-012 (dark cutover): workspace-scope the per-owner
+    // USER pool — drop a `project` hit explicitly tagged with a DIFFERENT workspace; keep
+    // owner-tier (user/feedback/reference) + legacy NULL-workspace rows. The harness/hive
+    // pools are already correctly scoped. Conservative + NULL-safe; OFF = today's behavior.
+    {
+      const tWorkspace = Date.now();
+      try {
+        if (userResults.length > 0 && (await isMemoryWorkspaceScopedRecallOn())) {
+          const before = surviving();
+          userResults = userResults.filter((h) => keepUserPoolHitForWorkspace(h, input.workspaceId));
+          funnel.dropped.workspace = before - surviving();
+        }
+      } finally {
+        mark('workspaceMs', Date.now() - tWorkspace);
+      }
+    }
+    if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
+
+    // D-006 — the pre-turn dedup: drop any memory surfaced within the recent
+    // watermark window so a stable fact is delivered ONCE, not re-injected
+    // turn-over-turn. Best-effort: a query failure returns an empty set (no
+    // filtering), so the injection degrades to its prior behavior, never breaks.
+    const candidateIds = [
+      ...userResults.map((h) => h.id),
+      ...harnessHits.map(({ hit }) => hit.id),
+      ...hiveHits.map(({ hit }) => hit.id),
+    ].filter((id): id is string => typeof id === 'string' && id.length > 0);
+    // (ids are always present on neutral entries; the filter guards legacy/odd rows)
+    // P-002: a warm session (input.session) dedups against its session-epoch
+    // ledger; the chat path keeps the wall-clock watermark. Same best-effort
+    // posture either way: a failed read = no filtering, never a broken inject.
+    let sessionEpoch: number | null = null;
+    {
+      const tDedup = Date.now();
+      try {
+        if (candidateIds.length > 0) {
+          try {
+            const { sql } = getOrgPg();
+            let suppressed: Set<string>;
+            if (input.session?.sessionId) {
+              sessionEpoch = input.session.epoch ?? (await currentSessionEpoch(sql, input.session.sessionId));
+              suppressed = await alreadySurfacedIds(sql, input.session.sessionId, sessionEpoch, candidateIds);
+            } else {
+              suppressed = await recentlySurfacedIds(sql, candidateIds, reinjectWindowMs());
+            }
+            if (suppressed.size > 0) {
+              const before = surviving();
+              userResults = userResults.filter((h) => !(h.id && suppressed.has(h.id)));
+              harnessHits = harnessHits.filter(({ hit }) => !(hit.id && suppressed.has(hit.id)));
+              hiveHits = hiveHits.filter(({ hit }) => !(hit.id && suppressed.has(hit.id)));
+              funnel.dropped.dedup = before - surviving();
+            }
+          } catch {
+            /* swallow — dedup is hygiene, never load-bearing */
+          }
+        }
+      } finally {
+        mark('dedupMs', Date.now() - tDedup);
+      }
+    }
+    if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
+
+    // Two-tier marker (self-learning-frontier P-022 / FB-08, D-006): with the
+    // transfer harness armed, probationary entries are visibly marked — STILL
+    // injected (admission is free); the marker just shows the trust level until
+    // a student-transfer test promotes them. Flag dark (the D-001 default) ⇒
+    // byte-identical output. Best-effort: a flags hiccup means no markers.
+    let tierMarkers = false;
+    const tTierFlag = Date.now();
+    try {
+      const { FLAGS } = await import('@papercusp/flags');
+      const { getFlag } = await import('@papercusp/flags/server');
+      tierMarkers = await getFlag(FLAGS.TRANSFER_HARNESS, 'memory-injection');
+    } catch {
+      /* never load-bearing */
+    } finally {
+      mark('tierFlagMs', Date.now() - tTierFlag);
+    }
+
+    const tRender = Date.now();
+    const fmtScope = (entry: MemoryEntry, slug?: string): string => {
+      const kind = entry.kind ?? 'unknown';
+      const tier = tierMarkers && memoryTierOf(entry) === 'probationary' ? ' · probationary' : '';
+      if (slug) return `[${kind}${tier} @ ${slug}]`;
+      return `[${kind}${tier}]`;
+    };
+
+    // Phase 5 P-020: surface memory_id alongside each entry so the agent
+    // can call memory:forget when a user correction contradicts an
+    // injected memory. Suffix-style to keep the existing `[kind] <text>`
+    // format backward-compatible.
+    const fmtId = (h: { id?: string }): string => (typeof h.id === 'string' && h.id ? ` (id=${h.id})` : '');
+
+    // Assembly under the P-011 budget, in RELEVANCE order — F-C (P-033, D-011).
+    //
+    // This used to render strictly by POOL (user → harness → hive-organic →
+    // hive-pack), which mattered because the char budget truncates in render
+    // order: the render order IS the real allocator. That made it a second quota
+    // on top of the per-pool item quotas, and the worse of the two — with the item
+    // quotas gone, a pool-ordered render would let the user pool (the 487-memory
+    // CROSS-PROJECT one P-033 blames for the oddsmith contamination) consume the
+    // whole block before the harness pool rendered a line. So the two had to move
+    // together: the single ranked search now supplies one comparable ordering, and
+    // the budget cut follows it.
+    //
+    // ONE exception is PRESERVED: hive-PACK rows still yield first. Packs are the
+    // most numerous and least turn-specific, and that is a trust-tier judgment
+    // recorded before this plan — independent of pool quotas, so F-C does not
+    // overturn it.
+    const isPackHit = (hit: MemoryEntry): boolean =>
+      hit.metadata?.source === 'pack' && typeof hit.metadata?.pack_id === 'string';
+
+    const budget = input.budgetChars && input.budgetChars > 0 ? input.budgetChars : injectBudgetChars();
+    let spent = 0;
+    const lines: string[] = [];
+    const surfacedIds: string[] = [];
+    const admit = (line: string, id?: string): boolean => {
+      // The `&& lines.length > 0` is the ALWAYS-EMIT-ONE-ROW contract, and it is
+      // load-bearing across modules — do not "tighten" it again without reading
+      // mid-turn-context.ts:174-190, which documents this exact clause and depends on it:
+      // a caller with a small budget must get SOMETHING rather than null.
+      //
+      // WI-6870 removed it, reasoning that MAX_ENTRY_CHARS (above) already keeps any single
+      // line well under a normal budget so strict enforcement could no longer starve the
+      // other candidates (measured: one 4,901-char memory against a 4,000 budget). That is
+      // true for a NORMAL budget and false for a small one: the mid-turn endpoint passes
+      // MID_TURN_BUDGET_CHARS = 350, so a line clamped to 900 STILL overflows and the first
+      // row was rejected — buildMemoryContextBlock returned nothing and mid-turn context
+      // injection silently delivered NOTHING (WI-7163; caught by the P-018 acceptance
+      // replay, which red-pinned the green gate).
+      //
+      // MAX_ENTRY_CHARS is the real fix for WI-6870's starvation case and is retained; this
+      // exemption is bounded by it, so the 4,901-char scenario cannot recur through here.
+      // Small-budget callers clamp themselves — see mid-turn-context.ts `clampToBudget()`,
+      // which truncates keeping the HEAD precisely so scope + id + lede survive.
+      // NOTE: the corpus leg (corpus-recall.ts) is deliberately STRICT and stays that way —
+      // its no-first-entry-exemption behavior is pinned by corpus-recall.test.ts (WI-6870).
+      if (spent + line.length > budget && lines.length > 0) return false;
+      lines.push(line);
+      spent += line.length;
+      if (id) surfacedIds.push(id);
+      return true;
+    };
+    // Walk the ONE ranked result in relevance order, keeping only entries that
+    // survived the filters above (identity, not id — the filters preserve object
+    // references, and not every legacy row carries an id). Each pool keeps its own
+    // label: the hive pool is tagged `@ hive:<slug>` so an agent can tell
+    // shared-Hive knowledge from its harness's own pool.
+    const survivingHive = new Map(hiveHits.map(({ hit, slug }) => [hit, slug]));
+    const survivingHarness = new Map(harnessHits.map(({ hit, slug }) => [hit, slug]));
+    const survivingUser = new Set(userResults);
+    // P-002: each row carries its ENTRY so an ADMITTED line can be attributed back
+    // to the leg that produced it (`MemoryEntry.retrieval`). Attribution has to
+    // happen over the admitted set, not the candidate set — a leg that offers
+    // candidates and never lands one is contributing nothing, and that is exactly
+    // what a pre-filter count cannot show.
+    type RenderRow = { line: string; id?: string; text: string; entry: MemoryEntry };
+    const mainRows: RenderRow[] = [];
+    const packRows: RenderRow[] = [];
+    for (const hit of ranked) {
+      const row = (label?: string): RenderRow => {
+        const fullText = hit.text ?? '';
+        const displayText = hit.injectionText ?? fullText;
+        const annotatedText = annotateSupersededMemory(displayText, hit.metadata);
+        // WI-6870: clamp the RENDERED text to MAX_ENTRY_CHARS so a single oversized memory
+        // can't blow the whole budget by itself. Dedup below still compares the FULL text
+        // (not this clamped copy), so two distinct long entries that happen to share a
+        // >900-char prefix are never mistaken for near-duplicates.
+        const boundedText =
+          annotatedText.length > MAX_ENTRY_CHARS
+            ? `${annotatedText.slice(0, MAX_ENTRY_CHARS)}… (truncated — memory:search for the rest)`
+            : annotatedText;
+        return {
+          line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${boundedText}`,
+          id: hit.id,
+          text: fullText,
+          entry: hit,
+        };
+      };
+      if (survivingHive.has(hit)) {
+        const slug = survivingHive.get(hit)!;
+        (isPackHit(hit) ? packRows : mainRows).push(row(`hive:${slug}`));
+      } else if (survivingHarness.has(hit)) {
+        mainRows.push(row(survivingHarness.get(hit)!));
+      } else if (survivingUser.has(hit)) {
+        mainRows.push(row());
+      }
+    }
+    const rendered = [...mainRows, ...packRows];
+    // P-008 (WI-4538): collapse near-duplicate memories (the SAME fact stored under multiple ids
+    // — the id-based dedups above can't see it) BEFORE the budget, so a dupe never consumes a
+    // slot a distinct fact needed. Order is preserved, so post-F-C the highest-RELEVANCE copy of
+    // each cluster survives (it was the highest-priority-POOL copy before D-011).
+    const { kept: dedupedRendered } = collapseNearDuplicates(rendered, (r) => r.text);
+    funnel.dropped.nearDuplicate = rendered.length - dedupedRendered.length;
+    let truncated = false;
+    for (const { line, id, entry } of dedupedRendered) {
+      // WI-6870: skip-and-continue instead of a hard break. A `break` here discarded every
+      // remaining (lower-ranked but possibly SMALLER) entry once ONE entry didn't fit —
+      // measured mean 849 chars (21%) of the budget left on the table per turn, worst case
+      // 2,675 (67%). The result stays in relevance order (admitted entries are pushed in
+      // `dedupedRendered`'s rank order); this only lets a later, smaller entry fill space a
+      // single earlier oversized one would otherwise have wasted.
+      if (!admit(line, id)) {
+        truncated = true;
+        funnel.dropped.budget += 1;
+        continue;
+      }
+      admittedEntries.push(entry);
+    }
+    // P-002: the delivered end of the funnel. `admitted` counts CONTENT lines, so
+    // it is taken from admittedEntries rather than `lines` — the withheld-notice
+    // row appended below is a marker, not a recalled memory, and counting it would
+    // report a block that delivered nothing as having delivered one.
+    funnel.admitted = admittedEntries.length;
+    funnel.truncated = truncated;
+    // D-081: `truncated` alone cannot say WHICH constraint bound — an exhausted
+    // budget and a remainder of individually-oversized entries both set it, and
+    // they call for opposite fixes. Recording what was actually spent against the
+    // budget it was spent from makes utilization readable, which is the only way
+    // to tell "raise the budget" from "the MAX_ENTRY_CHARS clamp is the ceiling".
+    // Set HERE, beside the other delivered-end fields and before the
+    // `lines.length === 0` early return below, so a block that admitted nothing
+    // still records spent: 0 rather than going silently absent.
+    funnel.spent = spent;
+    funnel.budgetChars = budget;
+    // Attributed on the STATIC path, deliberately — never inside the deferred
+    // writer, whose failures are swallowed (see `admittedByLeg`'s note).
+    funnel.byLeg = admittedByLeg(admittedEntries);
+    mark('renderMs', Date.now() - tRender);
+    if (lines.length === 0) return null;
+    if (truncated) {
+      lines.push(
+        '- (more learnings withheld this turn — the memory budget is full; memory:search pulls the rest on demand)',
+      );
+    }
+
+    // Phase 5 P-021: stamp last_surfaced_at on every memory we surfaced — this is
+    // ALSO the dedup watermark the next turn reads. Fire-and-forget: bumpLastSurfacedSql
+    // is fully defensive and its outcome doesn't affect the block we return.
+    // (Only ACTUALLY-injected ids are stamped — a budget-dropped memory must not
+    // be dedup-suppressed next turn.)
+    if (surfacedIds.length > 0) {
+      const session = input.session;
+      const epochForStamp = sessionEpoch;
+      void (async () => {
+        try {
+          const { sql } = getOrgPg();
+          // last_surfaced_at stays stamped for EVERY path — it feeds the
+          // Layer-3 "recently used" pickers, not just the chat dedup.
+          await bumpLastSurfacedSql(sql, surfacedIds);
+          // P-002: warm sessions ALSO stamp the port-agnostic epoch ledger so
+          // every later injection moment of this epoch dedups against it.
+          if (session?.sessionId) {
+            await stampSurfaced(
+              sql,
+              session.sessionId,
+              epochForStamp ?? (await currentSessionEpoch(sql, session.sessionId)),
+              surfacedIds,
+              session.port ?? 'injection',
+            );
+          }
+        } catch {
+          /* swallow — never load-bearing */
+        }
+      })();
+    }
+
+    const heading = input.heading ?? 'Operator memory (relevant entries)';
+    return `## ${heading}\n\n${lines.join('\n')}`;
   } finally {
     // ONE row per recall, on EVERY exit path — the several `return null`s above,
     // the delivered-block return, and any throw. A `finally` rather than a call
@@ -1748,10 +1714,7 @@ async function buildBlockInner(
  * Convenience: pull the last N user-turn contents joined with newlines.
  * Matches the contract operator-converse already uses (default N=3).
  */
-export function lastUserContext(
-  messages: ReadonlyArray<{ role: string; content: string }>,
-  count = 3,
-): string {
+export function lastUserContext(messages: ReadonlyArray<{ role: string; content: string }>, count = 3): string {
   return messages
     .filter((m) => m.role === 'user')
     .slice(-count)

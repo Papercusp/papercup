@@ -6,10 +6,12 @@ import { MEMORY_INJECT_TIMEOUT_MS, MemoryTimeoutError, resetMemoryDegradedForTes
 // dedup test sets it to mark a memory id as recently-surfaced.
 let sqlRows: Array<Record<string, unknown>> = [];
 let sqlFailure: Error | null = null;
+let sqlDelayMs = 0;
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: async () => {
+      if (sqlDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, sqlDelayMs));
       if (sqlFailure) throw sqlFailure;
       return sqlRows;
     },
@@ -199,11 +201,41 @@ beforeEach(() => {
   recordRecallStatsMock.mockClear();
   sqlRows = [];
   sqlFailure = null;
+  sqlDelayMs = 0;
   registryProjects = [];
   corpusIoResult = null;
   coverageReport = null;
   _resetForTests();
   _resetCorpusLegHealthForTests();
+});
+
+it('attributes slow post-search database phases instead of hiding them inside postMs', async () => {
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  sqlDelayMs = 260;
+  useBackend(mockBackend([{
+    id: '11111111-1111-4111-8111-111111111111',
+    text: 'phase attribution guard',
+  }]));
+  try {
+    const block = await buildMemoryContextBlock({
+      userId: 'u1', workspaceId: 'ws', queryContext: 'trace the post-search path',
+      harnessSlugs: ['papercusp'], potSlugs: [],
+      session: { sessionId: 'phase-attribution-session', port: 'turn-start' },
+    });
+    expect(block).toContain('phase attribution guard');
+    const phaseLine = log.mock.calls
+      .map((args) => args.map(String).join(' '))
+      .find((line) => line.includes('[memory-injection] phases'));
+    const phases = Object.fromEntries(
+      Array.from(phaseLine?.matchAll(/(\w+Ms)=(\d+)/g) ?? [], (match) => [match[1], Number(match[2])]),
+    );
+    expect(phases.stalenessMs).toBeDefined();
+    expect(phases.feedbackMs).toBeGreaterThanOrEqual(200);
+    expect(phases.dedupMs).toBeGreaterThanOrEqual(450);
+    expect(phases.renderMs).toBeDefined();
+  } finally {
+    log.mockRestore();
+  }
 });
 
 /**
