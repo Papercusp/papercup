@@ -6,8 +6,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
+import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { TEST_PG_IMAGE } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { installDeterministicEmbedder, type InstalledDeterministicEmbedder } from '../../test/_deterministic-embedder';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import { projectBlueprintToPg } from './project-to-pg';
 import { P013_HARNESS, P013_WORKSPACE, runP013WorkloadA,
@@ -59,9 +62,59 @@ const SOURCE = {
   }],
 };
 
+/** D-022(c): per-sample persistence counters. xact_commit is scoped to the
+ * throwaway database; the WAL counters are CLUSTER-wide, so they attribute
+ * cleanly only on the dedicated cluster (P013_DEDICATED_PG=1). PG18 moved WAL
+ * write/fsync counts from pg_stat_wal to pg_stat_io (object 'wal'). */
+interface PgCounters {
+  xactCommit: number; walRecords: number; walBytes: number;
+  walWrites: number; walFsyncs: number; walFsyncMs: number;
+}
+async function readPgCounters(sql: Sql): Promise<PgCounters> {
+  const [row] = await sql<Array<PgCounters>>`
+    SELECT
+      (SELECT xact_commit FROM pg_stat_database WHERE datname = current_database())::float8 AS "xactCommit",
+      (SELECT wal_records FROM pg_stat_wal)::float8 AS "walRecords",
+      (SELECT wal_bytes FROM pg_stat_wal)::float8 AS "walBytes",
+      (SELECT coalesce(sum(writes), 0) FROM pg_stat_io WHERE object = 'wal')::float8 AS "walWrites",
+      (SELECT coalesce(sum(fsyncs), 0) FROM pg_stat_io WHERE object = 'wal')::float8 AS "walFsyncs",
+      (SELECT coalesce(sum(fsync_time), 0) FROM pg_stat_io WHERE object = 'wal')::float8 AS "walFsyncMs"`;
+  return row;
+}
+
 let db: OrgTestDb;
+let dedicatedPg: StartedPostgreSqlContainer | undefined;
+let fixtureEmbedder: InstalledDeterministicEmbedder | undefined;
+const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+const dedicatedPgRequested = process.env.P013_DEDICATED_PG === '1';
 beforeAll(async () => {
+  // Stamp each setup step so a hook timeout names the slow step (pilot 11
+  // timed out at 120 s with no attribution between container start, the
+  // fresh-cluster template build and the fixture install).
+  const setupStartedAt = Date.now();
+  const stamp = (step: string) => console.error(
+    `P013_SETUP step=${step} elapsedMs=${Date.now() - setupStartedAt}`);
+  if (dedicatedPgRequested) {
+    // D-022(c): a cluster owned by THIS run, so cluster-wide WAL counters and
+    // fsync waits belong to the measured arms alone rather than to whatever
+    // else shares the reused test container. Durability stays at the server
+    // defaults (D-022(b): no fsync=off / synchronous_commit=off / tmpfs); the
+    // two flags mirror the shared container's non-durability settings. Routed
+    // through getTestPg's existing PAPERCUSP_TEST_PG_ADMIN_URL seam, set before
+    // this process's first createFreshTestDb call.
+    dedicatedPg = await new PostgreSqlContainer(TEST_PG_IMAGE)
+      .withCommand(['postgres', '-c', 'max_connections=200', '-c', 'dynamic_shared_memory_type=mmap'])
+      .start();
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
+    stamp('dedicated-pg-started');
+  }
+  // D-022(a): in-process arms (warmups, warm samples) embed with the fixture too.
+  if (process.env.P013_FIXTURE_EMBEDDER === '1') {
+    fixtureEmbedder = await installDeterministicEmbedder();
+    stamp('fixture-embedder-installed');
+  }
   db = await createOrgTestDb();
+  stamp('org-test-db-ready');
   fixture.sql = db.adminSql;
   await db.adminSql`
     INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
@@ -73,8 +126,26 @@ beforeAll(async () => {
     blueprint: BlueprintSchema.parse(SOURCE),
     specification: compileAgentSpecification({ source: SOURCE }),
   });
-}, 120_000);
-afterAll(async () => db?.cleanup(), 30_000);
+  stamp('blueprint-projected');
+  // A dedicated cluster builds the migrated template from scratch inside this
+  // hook (global setup built it on the shared container), so it needs a
+  // larger budget than the shared-container path.
+}, dedicatedPgRequested ? 420_000 : 120_000);
+afterAll(async () => {
+  // Pilot 12 passed its test, then this hook hung past 60 s with no
+  // attribution; stamp each step so the slow one is named.
+  const teardownStartedAt = Date.now();
+  const stamp = (step: string) => console.error(
+    `P013_TEARDOWN step=${step} elapsedMs=${Date.now() - teardownStartedAt}`);
+  await db?.cleanup();
+  stamp('org-test-db-cleaned');
+  await dedicatedPg?.stop({ timeout: 10_000 });
+  if (dedicatedPg) stamp('dedicated-pg-stopped');
+  if (dedicatedPg) {
+    if (priorAdminUrl === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+    else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = priorAdminUrl;
+  }
+}, dedicatedPgRequested ? 180_000 : 60_000);
 
 describe('P-013 workload A fixture', () => {
   it('creates and completes matching 1 KiB direct items; blueprint arm leaves zero plan rows', async () => {
@@ -84,11 +155,16 @@ describe('P-013 workload A fixture', () => {
       // Each cold sample owns a fresh Node process, module graph and PG client.
       // The parent retains the migrated database and checks all terminal rows.
       let coldStarts = 0;
+      const counterRows: Array<{ arm: Arm; sequence: number; embedderCalls: number | null } & PgCounters> = [];
       const benchmarkArm = (arm: Arm): BenchmarkArm => ({
         warmup: async () => { await runArm(arm, sequence++); },
         run: async () => (await runArm(arm, sequence++)).marks,
         coldStart: async () => {
           const childSequence = sequence++;
+          // D-022(c): snapshot BEFORE the child exists. This read's own
+          // transaction commits after it reads, so the delta includes it (-1).
+          const countersBefore = await readPgCounters(db.adminSql);
+          let embedderCalls: number | null = null;
           // Attribution probe (WI-10002948): the child's CPU profile shows its
           // accept phase is almost all (idle), so sample the database side on
           // the wall clock to see whether those waits are backend waits.
@@ -138,8 +214,9 @@ describe('P-013 workload A fixture', () => {
               : reject(new Error(`P-013 cold child ${stage} exited ${code}/${signal} ` +
                 `(${sample ? 'sample received' : 'no sample'}): ${stderr}`)));
           });
-          child.on('message', (message: { kind?: string; stage?: string; sample?: P013Sample }) => {
+          child.on('message', (message: { kind?: string; stage?: string; sample?: P013Sample; calls?: number }) => {
             if (message?.kind === 'p013-stage') stage = message.stage ?? stage;
+            if (message?.kind === 'p013-embedder') embedderCalls = message.calls ?? null;
             if (message?.kind === 'p013-sample') sample = message.sample;
           });
           const stopSampler = async () => {
@@ -157,19 +234,42 @@ describe('P-013 workload A fixture', () => {
               await exit;
               await stopSampler();
               expect(sample?.arm).toBe(arm);
+              // Positive control for D-022(a): the fixture must have served the
+              // claim-time recall, or this sample re-measured the provider.
+              if (fixtureEmbedder) expect(embedderCalls).toBeGreaterThan(0);
+              const after = await readPgCounters(db.adminSql);
+              const delta = Object.fromEntries(Object.entries(after).map(([key, value]) =>
+                [key, value - countersBefore[key as keyof PgCounters]])) as unknown as PgCounters;
+              // Exclude this fixture's own read-only commits: the BEFORE snapshot
+              // and every pg_stat_activity sampler poll.
+              delta.xactCommit -= 1 + pgSamples.length;
+              counterRows.push({ arm, sequence: childSequence, embedderCalls, ...delta });
               return sample!.marks;
             },
             close: async () => { if (!child.killed && child.exitCode === null) child.kill(); await exit; },
           };
         },
       });
+      // One code path for the pilot (1x1) and the D-016 matrix (P013_PROTOCOL's
+      // 5 repetitions x 50 cold samples): the paired runner interleaves the arms.
+      const repetitions = Number(process.env.P013_REPETITIONS ?? '1');
+      const coldSamples = Number(process.env.P013_COLD_SAMPLES ?? '1');
       const trials = await runPairedBenchmark({ control: benchmarkArm('control'),
         candidate: benchmarkArm('candidate') }, {
-        warmups: 0, repetitions: 1, warmSamples: 1, coldSamples: 1,
+        warmups: 0, repetitions, warmSamples: 1, coldSamples,
         concurrencies: [1], modes: ['cold'],
       });
-      expect(coldStarts).toBe(2);
-      expect(trials).toHaveLength(2);
+      expect(coldStarts).toBe(2 * repetitions * coldSamples);
+      expect(trials).toHaveLength(2 * repetitions);
+      expect(counterRows).toHaveLength(coldStarts);
+      console.info('P-013 workload A per-sample persistence counters', JSON.stringify({
+        cluster: dedicatedPg ? 'dedicated' : 'shared', fixtureEmbedder: Boolean(fixtureEmbedder),
+        rows: counterRows }));
+      // The complete trial rows (every percentile, per repetition, wall time and
+      // throughput) so separate per-repetition runs aggregate without re-running.
+      console.info('P-013 workload A cold trials', JSON.stringify({
+        repetitions, coldSamples, cluster: dedicatedPg ? 'dedicated' : 'shared',
+        fixtureEmbedder: Boolean(fixtureEmbedder), trials }));
       // Per-phase split, not just the total: the cold cost must be attributed to a
       // D-016 phase (accept / dispatch / terminal / business event) before any
       // fixture decision is taken on it (WI-10002948).
@@ -218,5 +318,15 @@ describe('P-013 workload A fixture', () => {
           WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}) AS runs
     `;
     expect({ items, plans, runs }).toEqual({ items: sequence, plans: 0, runs: 0 });
-  }, 180_000);
+  }, coldMatrixBudgetMs());
 });
+
+/** A cold matrix run (P013_REPETITIONS x P013_COLD_SAMPLES per arm) spawns one
+ * child per sample; budget each at its 90 s spawn ceiling plus setup margin,
+ * capped under the router's 120-minute maximum. The pilot (1x1) keeps 180 s. */
+function coldMatrixBudgetMs(): number {
+  if (process.env.P013_COLD_PILOT !== '1') return 180_000;
+  const children = 2 * Number(process.env.P013_REPETITIONS ?? '1') *
+    Number(process.env.P013_COLD_SAMPLES ?? '1');
+  return Math.min(115 * 60_000, Math.max(180_000, children * 90_000 + 120_000));
+}
