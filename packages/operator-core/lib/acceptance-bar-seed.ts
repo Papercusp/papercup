@@ -59,6 +59,7 @@ export type AcceptanceBarSeedCode =
   | 'bar_mapping_missing'
   | 'bar_mapping_duplicate'
   | 'bar_mapping_unknown'
+  | 'bar_mapping_requirement_missing'
   | 'bar_mapping_invalid'
   | 'bar_mapping_dropped_only'
   | 'bar_evidence_plane_invalid'
@@ -429,7 +430,7 @@ export function parseBarMappings(planContent: string, requirementKeys: ReadonlyS
   for (const mapping of mappings) {
     if (!requirementKeys.has(mapping.barKey)) {
       problems.push({
-        code: 'bar_mapping_unknown',
+        code: 'bar_mapping_requirement_missing',
         barKey: mapping.barKey,
         detail: `Bar-to-work map contains ${mapping.barKey}, which has no Requirements record`,
       });
