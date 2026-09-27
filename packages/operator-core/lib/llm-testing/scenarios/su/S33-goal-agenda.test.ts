@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import type { RunSummary } from '@papercusp/testing-shell/llm';
 import { captureToolResultEvidence } from '../../tool-result-evidence';
+import { loadPlaybookBody, parseSuTargetConfig } from '../../targets/su';
 
 import { makeS33World, S33_CASES, S33_WAKE, s33Agenda, s33BehaviorAssert, SU_S33_GOAL_AGENDA } from './S33-goal-agenda';
 
@@ -48,6 +49,38 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     // The public sourceGeneration intentionally contains "s33" in this fixture.
     expect(retained.output).not.toMatch(/isolated|phase|test world/i);
   });
+
+  it.each(S33_CASES)('%s binds the same canonical mode layers its recovery registry declares', async (c) => {
+    const scenario = SU_S33_GOAL_AGENDA.find((s) => s.id === `su-S33-agenda-${c}`)!;
+    const recovery = await call(makeS33World(c), 'coord:orient');
+    expect(recovery.modes).toContain('auto');
+    expect(parseSuTargetConfig(scenario.targetConfig).modes).toEqual(recovery.modes);
+  });
+
+  it.each(S33_CASES)('%s binds the consumer authority required by its production source', async (c) => {
+    // goalSubject and the owner-report population require a GOAL registration.
+    // Independent acceptance is session/plan scoped; D-010 held verification
+    // must not acquire a GOAL build ban. Wait is still a goal-placement source.
+    const engineer = ['continue', 'verify'].includes(c);
+    const expectedModes = engineer ? ['auto'] : ['auto', 'ideate', 'goal'];
+    const scenario = SU_S33_GOAL_AGENDA.find((s) => s.id === `su-S33-agenda-${c}`)!;
+    const recovery = await call(makeS33World(c), 'coord:orient');
+    expect(parseSuTargetConfig(scenario.targetConfig).modes).toEqual(expectedModes);
+    expect(recovery.modes).toEqual(expectedModes);
+    expect(recovery.role).toBe(engineer ? 'engineer' : 'goal supervisor');
+  });
+
+  it('renders the canonical GOAL report rail only for the GOAL consumer', async () => {
+    const modes = (c: string) => parseSuTargetConfig(
+      SU_S33_GOAL_AGENDA.find((s) => s.id === `su-S33-agenda-${c}`)!.targetConfig,
+    ).modes;
+    const [report, engineer] = await Promise.all([
+      loadPlaybookBody(modes('report')), loadPlaybookBody(modes('continue')),
+    ]);
+    const reportRail = 'REPORT on a standing cadence via coord:escalate / notifyAttention / coord:send';
+    expect(report).toContain(reportRail);
+    expect(engineer).not.toContain(reportRail);
+  }, 60_000);
 
   it.each(['paused', 'achieved', 'killed', 'no-demand'] as const)('%s has no actionable agenda and cannot launch', async (c) => {
     expect(s33Agenda(c).primary).toEqual([]);

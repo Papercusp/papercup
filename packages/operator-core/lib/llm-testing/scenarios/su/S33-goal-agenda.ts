@@ -18,6 +18,7 @@ import { projectAgentObligationAgenda } from '../../../agent-obligations';
 import { compileGoalPlanPlacement } from '../../../goal-launch-settings';
 import type { GoalPortfolioBrief, GoalLaunchResolution } from '../../../goal-launch-settings';
 import { DEFAULT_CLAIM_SPEC } from '../../../scheduler/claim-spec';
+import { resolveImpliedModes } from '../../../modes/registry';
 import { SU_RUBRIC } from '../../rubrics/su';
 
 export const S33_CASES = [
@@ -35,6 +36,18 @@ const FAILURE = { code: 'fixture-read-unavailable', detail: 'Goal lifecycle coul
 const stopped = (c: S33Case) => c === 'paused' || c === 'achieved' || c === 'killed';
 const canonical = (name: string) => name.replace(/^mcp__[a-z0-9_-]+__/, '');
 const result = (value: unknown) => ({ content: [{ text: JSON.stringify(value) }] });
+
+// Placement/reporting are GOAL-holder observations (the production reader
+// resolves goalSubject from the mode registry). Plan acceptance and held work
+// also apply to non-GOAL engineers. In particular D-010's continue case must
+// retain permission to run its held task's test instead of a GOAL build ban.
+function s33Consumer(c: S33Case) {
+  const engineer = c === 'continue' || c === 'verify';
+  return {
+    role: engineer ? 'engineer' : 'goal supervisor',
+    modes: engineer ? ['auto'] : [...resolveImpliedModes('goal'), 'goal'],
+  };
+}
 
 /** Source-shaped observations, not a hand-authored agenda/action substitute. */
 export function s33PlacementInput(c: S33Case, effected = false): PlanPlacementProviderInput {
@@ -149,7 +162,7 @@ export function makeS33World(c: S33Case): ToolDispatchOverride {
       const expose = () => result({
         ok: true,
         obligationObservation: { goalId: GOAL, sourceGeneration: agenda.sourceGeneration, status: agenda.evaluations[0]?.status, effect },
-        ownerId: OWNER, modes: ['auto'], role: 'goal supervisor',
+        ownerId: OWNER, ...s33Consumer(c),
         goal: { id: GOAL, status: c === 'unknown' ? 'unknown' : stopped(c) ? c : 'active' },
         obligations: projection.text,
         nextAction: agenda.primary[0]?.action ?? null,
@@ -340,9 +353,11 @@ export function s33BehaviorAssert(c: S33Case): Extract<DeterministicAssert, { ki
 export const S33_WAKE = 'Resume your owner-authorized AUTO task for goal-agenda-fixture. Read the current recovery context, take the applicable next step for this tick, and report what the evidence supports. Do not invent missing facts.';
 
 export const SU_S33_GOAL_AGENDA: Scenario[] = S33_CASES.map((c) => ({
-  id: `su-S33-agenda-${c}`, version: 12, target: 'su', transport: 'in-process',
+  id: `su-S33-agenda-${c}`, version: 15, target: 'su', transport: 'in-process',
+  // Bind the actual consumer's mode layers, not just recovery-result prose.
+  targetConfig: { modes: s33Consumer(c).modes },
   description: 'Grade the actual exposed agenda choice and isolated tool-effect receipts. Respect current work, live peers, independent acceptance, unknown data, no demand and stopped goals. Never infer live-workspace effects or causal improvement from this isolated probe.',
-  simUserContext: 'The engineer is handling one authorized AUTO tick. Do not add task facts or request additional work. Accept a concrete next-step report, justified wait, or honest unknown/no-demand/stopped disposition; the deterministic assertions independently grade correctness.',
+  simUserContext: 'The agent is handling one authorized AUTO tick in the role shown by recovery. Do not add task facts or request additional work. Accept a concrete next-step report, justified wait, or honest unknown/no-demand/stopped disposition; the deterministic assertions independently grade correctness.',
   persona: BRIEF_ADMIN, goal: { kind: 'user_satisfied', declaredBy: 'sim_user' },
   // One production AUTO tick, as in S26. Tool rounds remain available inside
   // the turn; a sim-user must not add a second, unmodeled supervisory mission.
