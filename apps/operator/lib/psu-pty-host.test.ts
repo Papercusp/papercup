@@ -114,6 +114,7 @@ const {
   eventLogPathForOwner,
   appendHostEvent,
   readLinuxStartupCounters,
+  resolveLinuxCodexStartupPid,
   startCodexStartupProcessTrace,
   hostErrorEvidence,
   sharedDrillLedgerPath,
@@ -3761,6 +3762,27 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
     expect(readLinuxStartupCounters(123, () => { throw new Error('process exited'); })).toBeNull();
   });
 
+  it('selects the Rust codex descendant instead of the persistent node launcher', () => {
+    const stat = (pid: number, comm: string) => {
+      const fields = Array(45).fill('0');
+      fields[0] = 'S';
+      fields[9] = '0';
+      fields[39] = '0';
+      return `${pid} (${comm}) ${fields.join(' ')}`;
+    };
+    const files = new Map<string, string>([
+      ['/proc/100/stat', stat(100, 'node-MainThread')],
+      ['/proc/100/task/100/children', '200\n'],
+      ['/proc/200/stat', stat(200, 'codex')],
+    ]);
+    const read = (path: string) => {
+      const value = files.get(path);
+      if (value === undefined) throw new Error(`unexpected proc path: ${path}`);
+      return value;
+    };
+    expect(resolveLinuxCodexStartupPid(100, { readFile: read })).toBe(200);
+  });
+
   it('samples only Codex on Linux, ends at the bound and stops on child replacement', () => {
     let elapsedMs = 0;
     let tick: (() => void) | undefined;
@@ -3769,16 +3791,25 @@ describe('Codex startup process trace (EI-24353430528930250)', () => {
     const options = {
       agent: 'codex', ownerId: 'su-trace', pid: 123, platform: 'linux',
       now: () => elapsedMs,
-      readCounters: () => ({ pid: 123, majorFaults: 1, blockIoTicks: 2, readBytes: 3 }),
+      resolveTargetPid: () => 456,
+      readCounters: (targetPid: number) => ({ pid: targetPid, majorFaults: 1, blockIoTicks: 2, readBytes: 3 }),
       emit: (_owner: string, kind: string, data: Record<string, unknown>) => { events.push({ kind, data }); return true; },
       interval: (fn: () => void, ms: number) => { expect(ms).toBe(500); tick = fn; return { unref: vi.fn() }; },
       clear,
     };
     const stop = startCodexStartupProcessTrace(options);
-    expect(events[0]).toMatchObject({ kind: 'codex-startup-process-sample', data: { elapsedMs: 0, majorFaults: 1 } });
+    expect(events[0]).toMatchObject({
+      kind: 'codex-startup-process-target-selected', data: { rootPid: 123, pid: 456, elapsedMs: 0 },
+    });
+    expect(events[1]).toMatchObject({
+      kind: 'codex-startup-process-sample', data: { elapsedMs: 0, rootPid: 123, majorFaults: 1 },
+    });
     elapsedMs = 30_000;
     tick?.();
-    expect(events.at(-1)).toMatchObject({ kind: 'codex-startup-process-trace-ended', data: { reason: 'window-ended', samples: 2 } });
+    expect(events.at(-1)).toMatchObject({
+      kind: 'codex-startup-process-trace-ended',
+      data: { rootPid: 123, pid: 456, reason: 'window-ended', samples: 2 },
+    });
     expect(clear).toHaveBeenCalledTimes(1);
     const count = events.length;
     tick?.();
