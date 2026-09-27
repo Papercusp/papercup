@@ -21,6 +21,7 @@ import {
   askErrorMessage,
   askRetryTarget,
   askTurnRefusalState,
+  formatResetAt,
   parsePapercupFrame,
   reduceAskFrame,
   usePapercupChat,
@@ -140,6 +141,43 @@ describe('ported portal helpers (parity pt-refusal-state / pt-error-taxonomy / p
     );
     expect(askErrorMessage('portal_chat_turn_rate_limited', 'turn', 1000)).toMatch(/1 second\./);
     expect(askErrorMessage('some_unknown_code', 'turn')).not.toMatch(/some_unknown_code/);
+  });
+
+  // WI-10003494 (owner #723): a capped / signed-out workspace AI account must say so,
+  // not "That turn did not complete" or "Papercup is not reachable".
+  it('askErrorMessage names a model-account failure and what to do about it', () => {
+    const resetAt = Date.parse('2026-10-03T21:30:00Z');
+    const capped = askErrorMessage('portal_chat_model_usage_limited', 'turn', null, resetAt);
+    expect(capped).toMatch(/^This workspace's AI account has reached its usage limit until /);
+    expect(capped).toContain(formatResetAt(resetAt)!);
+    expect(capped).toMatch(/Connect a different account/);
+    expect(askErrorMessage('portal_chat_model_usage_limited', 'turn')).toBe(
+      "This workspace's AI account has reached its usage limit. Connect a different account for this workspace, or try again later.",
+    );
+    expect(askErrorMessage('portal_chat_model_auth_required', 'turn')).toMatch(/signed out or its access was revoked/);
+    expect(askErrorMessage('portal_chat_model_rate_limited', 'turn', 30_000)).toMatch(/Try again in 30 seconds\./);
+    expect(askErrorMessage('portal_chat_model_rate_limited', 'turn')).toMatch(/Wait a moment/);
+    for (const code of ['portal_chat_model_usage_limited', 'portal_chat_model_auth_required', 'portal_chat_model_rate_limited']) {
+      const sentence = askErrorMessage(code, 'turn');
+      expect(sentence).not.toMatch(/not reachable|did not complete/);
+      expect(sentence).not.toContain(code);
+    }
+  });
+
+  it('a live usage-limit frame reaches the transcript with its reset time', () => {
+    const resetAt = Date.parse('2026-10-03T21:30:00Z');
+    const frame = parsePapercupFrame('error', { message: '', code: 'portal_chat_model_usage_limited', resetAt });
+    expect(frame).toMatchObject({ type: 'error', code: 'portal_chat_model_usage_limited', resetAt });
+    const state = reduceAskFrame(EMPTY_TURN, frame!);
+    expect(state.resetAt).toBe(resetAt);
+    expect(askCompletedTurn(state)).toEqual({
+      content: askErrorMessage('portal_chat_model_usage_limited', 'turn', null, resetAt),
+      error: true,
+    });
+    // A malformed resetAt is dropped rather than rendered as a bogus date.
+    expect(parsePapercupFrame('error', { message: '', code: 'x', resetAt: 'soon' })).not.toHaveProperty('resetAt');
+    expect(formatResetAt(null)).toBeNull();
+    expect(formatResetAt(-5)).toBeNull();
   });
 
   it('askCompletedTurn distinguishes a successful tool-only answer from an empty turn', () => {

@@ -47,6 +47,8 @@ export interface PapercupChatErrorFrame {
   message: string;
   code?: string;
   retryAfterMs?: number | null;
+  /** Epoch ms a capped model account's usage limit lifts (WI-10003494). */
+  resetAt?: number;
 }
 
 export type PapercupChatFrame = Exclude<ChatEvent, { type: 'error' }> | PapercupChatErrorFrame;
@@ -80,7 +82,17 @@ export function parsePapercupFrame(eventName: string, data: unknown): PapercupCh
     typeof record.retryAfterMs === 'number' && Number.isSafeInteger(record.retryAfterMs) && record.retryAfterMs > 0
       ? record.retryAfterMs
       : null;
-  return { type: 'error', message: base.message, ...(code ? { code } : {}), retryAfterMs };
+  const resetAt =
+    typeof record.resetAt === 'number' && Number.isSafeInteger(record.resetAt) && record.resetAt > 0
+      ? record.resetAt
+      : null;
+  return {
+    type: 'error',
+    message: base.message,
+    ...(code ? { code } : {}),
+    retryAfterMs,
+    ...(resetAt !== null ? { resetAt } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +122,8 @@ export interface AskTurnState {
   errorMessage: string | null;
   /** Host-provided backoff for a refused turn; null when the failure has none. */
   retryAfterMs: number | null;
+  /** When a capped model account's usage limit lifts (epoch ms); absent/null when unknown. */
+  resetAt?: number | null;
   /** Current last-write-wins interactive card state for this turn. */
   cards: OpenCardSnapshot[];
   /** The turn ended — cleanly or not. */
@@ -200,6 +214,7 @@ export function reduceAskFrame(state: AskTurnState, frame: PapercupChatFrame): A
         errorCode: frame.code ?? CHAT_TURN_FAILED,
         errorMessage: frame.message || null,
         retryAfterMs: frame.retryAfterMs ?? null,
+        resetAt: frame.resetAt ?? null,
         done: true,
       };
     case 'done':
@@ -257,6 +272,14 @@ export type AskFailureContext = 'turn' | 'conversation' | 'card';
 /** The one sentence for every way the operator can be out of reach. */
 const OPERATOR_DOWN = 'Papercup is not reachable right now. Try again in a moment.';
 
+/** "Oct 3, 5:30 PM" in the viewer's own locale and time zone; null when unknown or invalid. */
+export function formatResetAt(resetAt: number | null | undefined): string | null {
+  if (typeof resetAt !== 'number' || !Number.isSafeInteger(resetAt) || resetAt <= 0) return null;
+  const date = new Date(resetAt);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
 function askGenericFailure(context: AskFailureContext): string {
   switch (context) {
     case 'conversation':
@@ -286,6 +309,7 @@ export function askErrorMessage(
   code: string | null,
   context: AskFailureContext,
   retryAfterMs: number | null = null,
+  resetAt: number | null = null,
 ): string {
   if (code === null) return askGenericFailure(context);
   if (code.startsWith('portal_operator_status_')) return OPERATOR_DOWN;
@@ -317,6 +341,25 @@ export function askErrorMessage(
       return OPERATOR_DOWN;
     case CHAT_TURN_ABORTED:
       return 'You stopped that turn.';
+    // WI-10003494: the workspace's AI account, not Papercup, is why the turn failed.
+    // Written by the portal host's error-frame projection (apps/host/src/agent-chats.ts).
+    case 'portal_chat_model_usage_limited': {
+      const until = formatResetAt(resetAt);
+      return until
+        ? `This workspace's AI account has reached its usage limit until ${until}. Connect a different account for this workspace, or try again then.`
+        : "This workspace's AI account has reached its usage limit. Connect a different account for this workspace, or try again later.";
+    }
+    case 'portal_chat_model_auth_required':
+      return "This workspace's AI account is signed out or its access was revoked. Sign it in again, then ask again.";
+    case 'portal_chat_model_rate_limited': {
+      const seconds =
+        typeof retryAfterMs === 'number' && Number.isSafeInteger(retryAfterMs) && retryAfterMs > 0
+          ? Math.max(1, Math.ceil(retryAfterMs / 1_000))
+          : null;
+      return seconds === null
+        ? "This workspace's AI service is busy right now. Wait a moment and try again."
+        : `This workspace's AI service is busy right now. Try again in ${seconds} second${seconds === 1 ? '' : 's'}.`;
+    }
     case 'portal_chat_card_workspace_unbound':
       return 'This conversation is not connected to a workspace, so it cannot take that answer.';
     case 'portal_chat_card_response_invalid':
@@ -337,7 +380,7 @@ export function askErrorMessage(
  */
 export function askCompletedTurn(final: AskTurnState): { content: string; error: boolean } {
   if (final.errorCode) {
-    return { content: askErrorMessage(final.errorCode, 'turn', final.retryAfterMs), error: true };
+    return { content: askErrorMessage(final.errorCode, 'turn', final.retryAfterMs, final.resetAt ?? null), error: true };
   }
   if (final.text.trim()) return { content: final.text, error: false };
   if (final.toolCalls.length > 0) return { content: '', error: false };
