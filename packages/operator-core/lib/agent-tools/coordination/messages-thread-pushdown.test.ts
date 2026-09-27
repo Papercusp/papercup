@@ -109,13 +109,10 @@ describe('readThread — PG graph pushdown', () => {
     expect(entry?.ts).toBe('2026-08-28T00:00:01.000Z');
   });
 
-  it('falls back to the authoritative seam when the query fails', async () => {
+  it('a query error propagates and never loads the whole surface (host-memory-reduction-2026-09-27 D-011)', async () => {
     sqlMock.mockRejectedValue(new Error('connection terminated'));
-    readLinesMock.mockResolvedValue([env({ msg_id: 'root-msg' })]);
 
-    const thread = await readThread('root-msg');
-
-    expect(thread.map((entry) => entry.msg_id)).toEqual(['root-msg']);
-    expect(readLinesMock).toHaveBeenCalledWith('messages');
+    await expect(readThread('root-msg')).rejects.toThrow('connection terminated');
+    expect(readLinesMock).not.toHaveBeenCalled();
   });
 });

@@ -132,15 +132,12 @@ describe('readInvolvingOwner — PG fast path (sender-or-recipient pushdown)', (
     warn.mockRestore();
   });
 
-  it('a query error falls back to the authoritative full read rather than losing the involving-set', async () => {
+  it('a query error propagates and never loads the whole surface (host-memory-reduction-2026-09-27 D-011)', async () => {
     sqlMock.mockImplementation(() => {
       throw new Error('connection terminated');
     });
-    const all = [env({ msg_id: 'a1' })];
-    readLinesMock.mockResolvedValue(all);
-    const out = await readInvolvingOwner('alice');
-    expect(out).toEqual(all);
-    expect(readLinesMock).toHaveBeenCalledWith('messages');
+    await expect(readInvolvingOwner('alice')).rejects.toThrow('connection terminated');
+    expect(readLinesMock).not.toHaveBeenCalled();
   });
 
   it('both paths return the SAME result for the same data (no drift between fast path and fallback)', async () => {

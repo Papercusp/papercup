@@ -89,14 +89,12 @@ describe('getMessageById (WI-3832)', () => {
     expect(readLinesMock).not.toHaveBeenCalled();
   });
 
-  it('PG fast path: a query error falls through to the readLines fallback', async () => {
+  it('PG fast path: a query error propagates and never scans readLines (host-memory-reduction-2026-09-27 D-011)', async () => {
     fastPathState.on = true;
     sqlMock.mockImplementationOnce(async () => {
       throw new Error('boom');
     });
-    readLinesMock.mockResolvedValueOnce([{ msg_id: 'orig', from: 'a', to: ['b'], kind: 'note', ts: 't' }]);
-    const found = await getMessageById('orig');
-    expect(found?.msg_id).toBe('orig');
-    expect(readLinesMock).toHaveBeenCalledWith('messages');
+    await expect(getMessageById('orig')).rejects.toThrow('boom');
+    expect(readLinesMock).not.toHaveBeenCalled();
   });
 });

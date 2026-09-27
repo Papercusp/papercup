@@ -202,16 +202,14 @@ describe('readOutbox — PG fast path (sender pushdown)', () => {
     warn.mockRestore();
   });
 
-  it('a query error falls back to the authoritative full read rather than losing the outbox', async () => {
+  it('a query error propagates and never loads the whole surface (host-memory-reduction-2026-09-27 D-011)', async () => {
     sqlMock.mockImplementation((strings: TemplateStringsArray) => {
       const text = Array.isArray(strings) ? strings.join('?') : String(strings);
       if (!text.includes('SELECT body')) return { fragment: text, values: [] };
       throw new Error('connection terminated');
     });
-    readLinesMock.mockResolvedValue([env({ msg_id: 'a1' }), env({ msg_id: 'b1', from: 'bob' })]);
-    const out = await readOutbox('alice');
-    expect(out.map((e) => e.msg_id)).toEqual(['a1']);
-    expect(readLinesMock).toHaveBeenCalledWith('messages');
+    await expect(readOutbox('alice')).rejects.toThrow('connection terminated');
+    expect(readLinesMock).not.toHaveBeenCalled();
   });
 
   it('both paths return the SAME result for the same data (no drift between fast path and fallback)', async () => {

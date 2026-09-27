@@ -726,6 +726,9 @@ export class PgCoordLog implements CoordEventLog {
       `;
       const liveCount = countRows[0]?.n ?? 0;
       if (liveCount < entry.rows.length) {
+        // Disarm first: the idle timer's closure would otherwise keep this whole
+        // superseded snapshot alive beside the rebuilt one until it fired.
+        clearTimeout(entry.idleTimer);
         entry = undefined; // a deletion happened — fall through to the full rebuild below
       } else {
         // Nothing deleted — re-arm the TTL clock without paying for the body
@@ -924,6 +927,7 @@ export class PgCoordLog implements CoordEventLog {
       `;
       const liveCount = countRows[0]?.n ?? 0;
       if (liveCount < entry.byMsgId.size) {
+        clearTimeout(entry.idleTimer); // same reason as readLines
         entry = undefined; // a deletion happened — fall through to the full rebuild below
       } else {
         // Nothing deleted — re-arm the TTL clock without paying for the body
