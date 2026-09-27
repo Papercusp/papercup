@@ -1910,7 +1910,12 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
     return r.stdout.trim();
   };
 
-  function runRefresh(fuserScript?: string): {
+  // The holder probe's deadline is PER TEST. Only the stall test needs a short
+  // one; a fake `fuser` that answers immediately still has to exec bash, and
+  // under gate load that exec alone exceeded 0.1s (red at repair head
+  // c5865549, 2026-09-27): the probe timed out, reported "unavailable", and the
+  // live-holder / unowned verdicts under test were never reached.
+  function runRefresh(fuserScript?: string, probeTimeoutSec = '30'): {
     status: number | null;
     stdout: string;
     stderr: string;
@@ -1938,7 +1943,7 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
         TARGET_SHA: targetSha,
         TMPDIR: quarantineRoot,
         PATH: path,
-        INDEX_LOCK_HOLDER_PROBE_TIMEOUT_SEC: '0.1',
+        INDEX_LOCK_HOLDER_PROBE_TIMEOUT_SEC: probeTimeoutSec,
       },
       encoding: 'utf8',
     });
@@ -2012,7 +2017,7 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
   it('fails closed promptly when the live-holder probe stalls', () => {
     const lockPath = createIndexLock(10 * 60_000);
     const startedAt = Date.now();
-    const result = runRefresh('sleep 60\n');
+    const result = runRefresh('sleep 60\n', '0.1');
 
     expect(Date.now() - startedAt).toBeLessThan(5_000);
     expect(result.status).not.toBe(0);
