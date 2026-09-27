@@ -4,7 +4,7 @@
  * log, wall-clock timeout, abort, and the background job lifecycle
  * (start → incremental read → completion / kill).
  */
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,8 +28,11 @@ import {
   STREAM_LINE_OUTPUT_CAP,
   STREAM_LINE_TRUNCATION_MARKER,
   __resetBashJobs,
+  CAPABILITY_OUTPUT_REDACTION_PATTERNS,
+  createCapabilityOutputRedactor,
   createStreamingSecretRedactor,
   createStreamingLineCap,
+  SPILL_LOG_MODE,
   detectBufferingLastStage,
   detectMissingCommandDiagnostic,
   detectSelfOutputRedirect,
@@ -54,9 +57,13 @@ import { taskManagerEnabledSync } from '../../task-manager/enabled';
 import * as enrollSync from '../../task-manager/enroll-sync';
 import { notifyTaskKillRequested } from '../../task-manager/kill-notify';
 import {
+  composeStreamingRedactors,
+  createStreamingPatternRedactor,
+  decodeRedactions,
   SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
   SYSTEMD_RUNNER_REDACTIONS_ENV,
 } from '../../systemd-scope-env-runner.mjs';
+import { SELF_IDENTIFYING_SECRET_PATTERN } from '../../sensitive-text';
 import {
   PIDS_PER_CONCURRENT_TASK,
   PIDS_RESERVE,
@@ -469,6 +476,96 @@ describe('integration credential output redaction (EI-20478240377353884)', () =>
     expect(spill).toContain('[REDACTED integration credential]');
     expect(output).not.toContain(secret);
     expect(spill).not.toContain(secret);
+  });
+});
+
+describe('credential-SHAPE output redaction + owner-only spill (WI-10003538)', () => {
+  // Assembled at runtime so this file never carries a secret-shaped literal
+  // (the secrets guard and content-lint would rightly flag one).
+  const FAKE_GITHUB = ['gh', 'p_', 'Q'.repeat(36)].join('');
+  const FAKE_AWS = ['AK', 'IA', 'Z'.repeat(16)].join('');
+  const FAKE_ANTHROPIC = ['sk', '-ant-', 'x'.repeat(40)].join('');
+  const FAKES = [FAKE_GITHUB, FAKE_AWS, FAKE_ANTHROPIC];
+  const shapeEnv = { WI3538_GH: FAKE_GITHUB, WI3538_AWS: FAKE_AWS, WI3538_ANT: FAKE_ANTHROPIC };
+  const shapeCommand = 'printf "gh=%s aws=%s ant=%s\\n" "$WI3538_GH" "$WI3538_AWS" "$WI3538_ANT"';
+  const shapeRedacted = 'gh=[redacted] aws=[redacted] ant=[redacted]';
+
+  it('sources its patterns from sensitive-text rather than a forked list', () => {
+    expect(CAPABILITY_OUTPUT_REDACTION_PATTERNS).toEqual([SELF_IDENTIFYING_SECRET_PATTERN]);
+  });
+
+  it('redacts a token split across chunks and never emits a partial token prefix', () => {
+    const redactor = createStreamingPatternRedactor([SELF_IDENTIFYING_SECRET_PATTERN])!;
+    const pieces = [
+      redactor.push(`token=${FAKE_GITHUB.slice(0, 6)}`),
+      redactor.push(FAKE_GITHUB.slice(6, 20)),
+      redactor.push(`${FAKE_GITHUB.slice(20)} done\n`),
+      redactor.flush(),
+    ];
+
+    expect(pieces.join('')).toBe('token=[redacted] done\n');
+    for (const piece of pieces) expect(piece).not.toContain(FAKE_GITHUB.slice(0, 6));
+  });
+
+  it('holds only the trailing token run, and releases a delimiter-free blob past maxHold', () => {
+    const redactor = createStreamingPatternRedactor([SELF_IDENTIFYING_SECRET_PATTERN], 8)!;
+    expect(redactor.push('ok: abc')).toBe('ok: ');
+    expect(redactor.push('defghijkl')).toBe('abcdefghijkl');
+    expect(redactor.flush()).toBe('');
+  });
+
+  it('chains exact values before shapes, and flush drains every stage', () => {
+    const exact = 'opaque-bound-credential-0123456789';
+    const redactor = composeStreamingRedactors(
+      createStreamingSecretRedactor([exact]),
+      createStreamingPatternRedactor([SELF_IDENTIFYING_SECRET_PATTERN]),
+    )!;
+    const safe = redactor.push(`a=${exact.slice(0, 10)}`) + redactor.push(`${exact.slice(10)} b=${FAKE_AWS}`) + redactor.flush();
+
+    expect(safe).toBe('a=[REDACTED integration credential] b=[redacted]');
+    expect(createCapabilityOutputRedactor(undefined).push(`x ${FAKE_ANTHROPIC} `)).toBe('x [redacted] ');
+  });
+
+  it('decodes the runner payload in both the object and the legacy bare-array shape', () => {
+    const encode = (value: unknown): string => Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
+    expect(decodeRedactions(encode(['v1']))).toEqual({ values: ['v1'], patterns: [] });
+    expect(decodeRedactions(encode({ values: ['v1'], patterns: [SELF_IDENTIFYING_SECRET_PATTERN] }))).toEqual({
+      values: ['v1'],
+      patterns: [{ ...SELF_IDENTIFYING_SECRET_PATTERN }],
+    });
+    expect(decodeRedactions('')).toEqual({ values: [], patterns: [] });
+    expect(() => decodeRedactions(encode({ values: [1] }))).toThrow('invalid durable-output redaction payload');
+  });
+
+  it('foreground: redacts shapes nobody bound from result, stream events and spill; spill is 0600', async () => {
+    const streamed: string[] = [];
+    const r = await runForeground(
+      { command: shapeCommand, cwd: STATE, stateDir: STATE, env: shapeEnv, onChunk: (chunk) => streamed.push(chunk) },
+      never,
+      10_000,
+    );
+    const spill = readFileSync(r.logPath, 'utf8');
+
+    for (const surface of [r.output, streamed.join(''), spill]) {
+      expect(surface).toContain(shapeRedacted);
+      for (const fake of FAKES) expect(surface).not.toContain(fake);
+    }
+    expect(statSync(r.logPath).mode & 0o777).toBe(SPILL_LOG_MODE);
+  });
+
+  it('background: redacts shapes from retained output and the spill log; spill is 0600', async () => {
+    const job = startBackground({ command: shapeCommand, cwd: STATE, stateDir: STATE, env: shapeEnv }, 10_000);
+    await waitForStatus(job.id);
+    const finished = getJob(job.id)!;
+    expect(finished.status).toBe('completed');
+    const output = readJobOutput(finished);
+    const spill = readFileSync(job.logPath, 'utf8');
+
+    for (const surface of [output, spill]) {
+      expect(surface).toContain(shapeRedacted);
+      for (const fake of FAKES) expect(surface).not.toContain(fake);
+    }
+    expect(statSync(job.logPath).mode & 0o777).toBe(SPILL_LOG_MODE);
   });
 });
 

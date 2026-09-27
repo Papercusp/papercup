@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { SELF_IDENTIFYING_SECRET_PATTERN } from './sensitive-text';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -216,6 +217,50 @@ describe('transient service payload escaping', () => {
       expect(output).toContain('second:[REDACTED integration credential] internal=none');
       expect(output).toContain(`${SYSTEMD_RUNNER_JOB_END_PREFIX}: status=completed exit=0`);
       expect(output).not.toContain(secret);
+    } finally {
+      transport.release();
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+  });
+
+  it('redacts an unbound credential SHAPE split across runner chunks in its 0600 durable log (WI-10003538)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'systemd-runner-shape-'));
+    const logPath = join(dir, 'durable.log');
+    // Assembled at runtime so this file never carries a secret-shaped literal.
+    const fake = ['gh', 'p_', 'R'.repeat(36)].join('');
+    const transport = createSecretEnvironmentTransport({
+      PATH: process.env.PATH,
+      RUNNER_SHAPE: fake,
+      [SYSTEMD_RUNNER_OUTPUT_PATH_ENV]: logPath,
+      [SYSTEMD_RUNNER_REDACTIONS_ENV]: Buffer.from(
+        JSON.stringify({ values: [], patterns: [SELF_IDENTIFYING_SECRET_PATTERN] }),
+        'utf8',
+      ).toString('base64'),
+    });
+    // The token straddles two separate writes, so two distinct `data` events.
+    const script =
+      `const t = process.env.RUNNER_SHAPE; process.stdout.write('tok=' + t.slice(0, 9));` +
+      `setTimeout(() => process.stdout.write(t.slice(9) + ' end\\n'), 150);`;
+    const child = spawn(
+      process.execPath,
+      [SYSTEMD_ENV_RUNNER_PATH, '--env-fd-path', transport.sourcePath, '--', process.execPath, '-e', script],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let mirrored = '';
+    child.stdout?.on('data', (chunk: Buffer) => {
+      mirrored += chunk.toString('utf8');
+    });
+
+    try {
+      const [code, signal] = (await once(child, 'close')) as [number | null, NodeJS.Signals | null];
+
+      expect({ code, signal }).toEqual({ code: 0, signal: null });
+      const output = readFileSync(logPath, 'utf8');
+      expect(output).toContain('tok=[redacted] end');
+      expect(mirrored).toContain('tok=[redacted] end');
+      expect(output).not.toContain(fake.slice(0, 9));
+      expect(mirrored).not.toContain(fake.slice(0, 9));
+      expect(statSync(logPath).mode & 0o777).toBe(0o600);
     } finally {
       transport.release();
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
