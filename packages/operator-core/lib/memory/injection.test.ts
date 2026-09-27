@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { MEMORY_INJECT_TIMEOUT_MS, MemoryTimeoutError, resetMemoryDegradedForTest } from './op-deadline';
+import {
+  MEMORY_INJECT_TIMEOUT_MS,
+  MemoryTimeoutError,
+  noteMemoryFailure,
+  resetMemoryDegradedForTest,
+} from './op-deadline';
 
 // db-org is mocked so the dedup/bump paths (getOrgPg().sql) are deterministic and
 // never touch a real PG. `sqlRows` is the canned result the sql tag returns; the
@@ -1066,6 +1071,28 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       });
     });
 
+    it('still writes exactly one zero-hit row when the search itself fails', async () => {
+      const backend = mockBackend([]);
+      backend.search.mockRejectedValue(new Error('search transport failed'));
+      useBackend(backend);
+
+      const block = await buildMemoryContextBlock({
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why did the recall fail',
+        harnessSlugs: ['papercusp'],
+        potSlugs: [],
+      });
+      await flush();
+
+      expect(block).toBeNull();
+      expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+      expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({
+        pools: { user: { entries: [] }, harness: { entries: [] } },
+        admission: { returned: 0, admitted: 0 },
+      });
+    });
+
     it('writes EXACTLY ONE row per recall', async () => {
       useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
       await buildMemoryContextBlock({
@@ -1259,6 +1286,53 @@ describe('buildMemoryContextBlock', () => {
     useBackend(mockBackend([], { ok: false, reason: 'mem0_unavailable' }));
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
     expect(block).toBeNull();
+    expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+    expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({
+      pools: { user: { entries: [] } },
+      admission: { returned: 0, admitted: 0 },
+    });
+  });
+
+  it('surfaces an early-zero telemetry scheduling fault only in P-006 strict mode', async () => {
+    const originalStrict = process.env.PAPERCUSP_P006_RECALL_STATS_STRICT;
+    const telemetryFailure = new Error('synthetic early telemetry failure');
+    process.env.PAPERCUSP_P006_RECALL_STATS_STRICT = 'on';
+    recordRecallStatsMock.mockImplementationOnce(() => {
+      throw telemetryFailure;
+    });
+    useBackend(mockBackend([]));
+    noteMemoryFailure(new MemoryTimeoutError('prior recall timed out'));
+    try {
+      const build = buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'strict early' });
+      await expect(build).rejects.toMatchObject({
+        message: expect.stringContaining('"phase":"early-zero"'),
+        cause: telemetryFailure,
+      });
+    } finally {
+      resetMemoryDegradedForTest();
+      if (originalStrict === undefined) delete process.env.PAPERCUSP_P006_RECALL_STATS_STRICT;
+      else process.env.PAPERCUSP_P006_RECALL_STATS_STRICT = originalStrict;
+    }
+  });
+
+  it('surfaces a normal telemetry scheduling fault only in P-006 strict mode', async () => {
+    const originalStrict = process.env.PAPERCUSP_P006_RECALL_STATS_STRICT;
+    const telemetryFailure = new Error('synthetic snapshot telemetry failure');
+    process.env.PAPERCUSP_P006_RECALL_STATS_STRICT = 'on';
+    recordRecallStatsMock.mockImplementationOnce(() => {
+      throw telemetryFailure;
+    });
+    useBackend(mockBackend([]));
+    try {
+      const build = buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'strict snapshot' });
+      await expect(build).rejects.toMatchObject({
+        message: expect.stringContaining('"phase":"snapshot"'),
+        cause: telemetryFailure,
+      });
+    } finally {
+      if (originalStrict === undefined) delete process.env.PAPERCUSP_P006_RECALL_STATS_STRICT;
+      else process.env.PAPERCUSP_P006_RECALL_STATS_STRICT = originalStrict;
+    }
   });
 
   it('returns null when the availability probe throws', async () => {
@@ -1267,6 +1341,10 @@ describe('buildMemoryContextBlock', () => {
     useBackend(b);
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
     expect(block).toBeNull();
+    expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+    expect(recordRecallStatsMock.mock.calls[0]![1]).toMatchObject({
+      admission: { returned: 0, admitted: 0 },
+    });
   });
 
   it('returns null when search throws', async () => {
@@ -1275,6 +1353,28 @@ describe('buildMemoryContextBlock', () => {
     useBackend(b);
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
     expect(block).toBeNull();
+    expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('schedules one zero-hit row before every degraded-latch build resolves', async () => {
+    const backend = mockBackend([]);
+    useBackend(backend);
+    noteMemoryFailure(new MemoryTimeoutError('prior recall timed out'));
+    try {
+      for (let index = 0; index < 6; index += 1) {
+        const block = await buildMemoryContextBlock({
+          userId: 'u1',
+          workspaceId: 'ws',
+          queryContext: `degraded recall ${index}`,
+        });
+        expect(block).toBeNull();
+        expect(recordRecallStatsMock).toHaveBeenCalledTimes(index + 1);
+      }
+      expect(backend.available).not.toHaveBeenCalled();
+      expect(backend.search).not.toHaveBeenCalled();
+    } finally {
+      resetMemoryDegradedForTest();
+    }
   });
 
   it('returns null when no hits', async () => {

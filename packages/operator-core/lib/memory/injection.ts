@@ -1010,15 +1010,96 @@ async function buildBlockInner(
   const queryText = retrievalQueryText(query);
   const lexText = lexicalQueryText(query);
   if (!queryText.trim()) return null;
-  if (isMemoryDegraded()) return null;
 
   const backend = getMemoryBackend();
+  const earlyTotalLimit = input.limit ?? INJECTION_TOTAL_LIMIT;
+  const earlyHarnessSlugs = (input.harnessSlugs ?? [])
+    .filter((slug) => typeof slug === 'string' && slug.length > 0)
+    .filter((slug) => !EPHEMERAL_SLUG_RE.test(slug))
+    .slice(0, MAX_HARNESS_FANOUT);
+  // An implicit hive set is resolved only after availability succeeds. On an
+  // early degraded/unavailable exit no hive was queried, so omit that pool
+  // rather than fabricating an empty one; explicit potSlugs remain truthful.
+  const earlyPotSlugs = (input.potSlugs ?? [])
+    .filter((slug) => typeof slug === 'string' && slug.length > 0)
+    .slice(0, MAX_HARNESS_FANOUT);
+  let earlyStatsSchedule: Promise<void> | null = null;
+  const writeEarlyZeroRecallStats = (): Promise<void> => {
+    if (earlyStatsSchedule) return earlyStatsSchedule;
+    earlyStatsSchedule = (async () => {
+      try {
+        const { sql } = getOrgPg();
+        const { recordRecallStats } = await import('./recall-stats');
+        // Join only the SCHEDULING boundary. The insert itself stays
+        // fire-and-forget, so telemetry can never delay or fail a turn.
+        void recordRecallStats(sql, {
+          surface: input.telemetrySurface ?? input.session?.port ?? 'injection',
+          client: input.session?.client ?? null,
+          workspaceId: input.workspaceId ?? null,
+          potSlug: earlyHarnessSlugs[0] ?? null,
+          scoreScale: backend.scoreScale ?? null,
+          query: queryText,
+          sessionId: input.session?.sessionId ?? null,
+          pools: {
+            ...(input.userId ? { user: { entries: [], limit: earlyTotalLimit, scopes: [input.userId] } } : {}),
+            ...(earlyHarnessSlugs.length > 0
+              ? {
+                  harness: {
+                    entries: [],
+                    limit: earlyTotalLimit,
+                    scopes: earlyHarnessSlugs.map((slug) => `harness:${slug}`),
+                  },
+                }
+              : {}),
+            ...(earlyPotSlugs.length > 0
+              ? {
+                  hive: {
+                    entries: [],
+                    limit: earlyTotalLimit,
+                    scopes: earlyPotSlugs.map(hiveScopeKey),
+                  },
+                }
+              : {}),
+          },
+          legs: null,
+          admission: {
+            returned: 0,
+            admitted: 0,
+            truncated: false,
+            dropped: { pack: 0, feedback: 0, workspace: 0, dedup: 0, nearDuplicate: 0, budget: 0 },
+            byLeg: { cosineOnly: 0, lexicalOnly: 0, both: 0 },
+          },
+        });
+      } catch (error) {
+        if (process.env.PAPERCUSP_P006_RECALL_STATS_STRICT === 'on') {
+          throw new Error(
+            `[P-006 recall-stats-strict] ${JSON.stringify({
+              phase: 'early-zero',
+              query: queryText,
+              workspaceId: input.workspaceId ?? null,
+            })}`,
+            { cause: error },
+          );
+        }
+        /* swallow — telemetry never blocks a turn */
+      }
+    })();
+    return earlyStatsSchedule;
+  };
+  if (isMemoryDegraded()) {
+    await writeEarlyZeroRecallStats();
+    return null;
+  }
   const tAvail = Date.now();
   try {
     const avail = await withMemoryTimeout(backend.available(), 'available()', MEMORY_INJECT_TIMEOUT_MS);
-    if (!avail.ok) return null;
+    if (!avail.ok) {
+      await writeEarlyZeroRecallStats();
+      return null;
+    }
   } catch (err) {
     noteMemoryFailure(err);
+    await writeEarlyZeroRecallStats();
     return null;
   } finally {
     mark('availableMs', Date.now() - tAvail);
@@ -1077,6 +1158,89 @@ async function buildBlockInner(
   // when the backend has no legs to report (a single-leg store), which is a
   // shape statement rather than a missing measurement — see RecallStatsInput.legs.
   let legStats: SearchLegStats | null = null;
+  const userScopes = input.userId ? [input.userId] : [];
+  const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
+  const hiveScopes = potSlugs.map(hiveScopeKey);
+  let statsSchedule: Promise<void> | null = null;
+  const writeRecallStatsSnapshot = (
+    entries: {
+      user: readonly MemoryEntry[];
+      harness: readonly MemoryEntry[];
+      hive: readonly MemoryEntry[];
+    },
+    admission: RecallAdmissionStats,
+  ): Promise<void> => {
+    if (statsSchedule) return statsSchedule; // exactly one row per attempted recall
+    statsSchedule = (async () => {
+      try {
+        // P-009: the corpus search was already started beside this mem0 leg.
+        // The outer builder already joins this SAME promise before returning,
+        // so joining it here adds no corpus latency. It does guarantee that a
+        // completed build has actually invoked the writer rather than merely
+        // leaving an untracked async continuation behind.
+        const corpus = await corpusP.catch(() => null);
+        admission.corpus = corpus
+          ? {
+              outcome: corpus.outcome,
+              returned: corpus.candidateCount,
+              selected: corpus.selected,
+              admitted: corpus.lines.length,
+              dropped: corpus.dropped,
+              gate: corpus.gate
+                ? {
+                    verdict: corpus.gate.verdict,
+                    reasons: [...corpus.gate.reasons],
+                    dropped: corpus.gate.verdict === 'sit-out' ? corpus.selected : 0,
+                  }
+                : null,
+              sessionDedup: corpus.sessionDedup,
+              embedderAvailable: corpus.embedderAvailable,
+              legs: corpus.legs,
+              retrievalDepth: corpus.retrievalDepth,
+              rerank: corpus.rerank,
+            }
+          : null;
+        const { sql } = getOrgPg();
+        const { recordRecallStats } = await import('./recall-stats');
+        // Join only scheduling; the queued insert remains fire-and-forget.
+        void recordRecallStats(sql, {
+          surface: input.telemetrySurface ?? input.session?.port ?? 'injection',
+          client: input.session?.client ?? null,
+          workspaceId: input.workspaceId ?? null,
+          potSlug: harnessSlugs[0] ?? null,
+          scoreScale: backend.scoreScale ?? null,
+          query: queryText,
+          sessionId: input.session?.sessionId ?? null,
+          pools: {
+            ...(userScopes.length > 0
+              ? { user: { entries: entries.user, limit: totalLimit, scopes: userScopes } }
+              : {}),
+            ...(harnessScopes.length > 0
+              ? { harness: { entries: entries.harness, limit: totalLimit, scopes: harnessScopes } }
+              : {}),
+            ...(hiveScopes.length > 0
+              ? { hive: { entries: entries.hive, limit: totalLimit, scopes: hiveScopes } }
+              : {}),
+          },
+          legs: legStats,
+          admission,
+        });
+      } catch (error) {
+        if (process.env.PAPERCUSP_P006_RECALL_STATS_STRICT === 'on') {
+          throw new Error(
+            `[P-006 recall-stats-strict] ${JSON.stringify({
+              phase: 'snapshot',
+              query: queryText,
+              workspaceId: input.workspaceId ?? null,
+            })}`,
+            { cause: error },
+          );
+        }
+        /* swallow — telemetry never blocks a turn */
+      }
+    })();
+    return statsSchedule;
+  };
   try {
     // P-002: read the admission contract from the ONE exported constructor the
     // recurrence guard also calls, so the guard cannot drift from this path.
@@ -1188,6 +1352,20 @@ async function buildBlockInner(
     if (!(err instanceof MemoryTimeoutError) && process.env.NODE_ENV !== 'test') {
       console.warn('[memory-injection] search failed:', (err as Error).message);
     }
+    // The main admission funnel below cannot be built after a failed search,
+    // but the failure is still a recall outcome. Record its empty pools once;
+    // otherwise the telemetry table systematically erases precisely the slow
+    // or failed searches it is meant to reveal.
+    await writeRecallStatsSnapshot(
+      { user: [], harness: [], hive: [] },
+      {
+        returned: 0,
+        admitted: 0,
+        truncated: false,
+        dropped: { pack: 0, feedback: 0, workspace: 0, dedup: 0, nearDuplicate: 0, budget: 0 },
+        byLeg: { cosineOnly: 0, lexicalOnly: 0, both: 0 },
+      },
+    );
     return null;
   }
 
@@ -1256,118 +1434,8 @@ async function buildBlockInner(
    * early-return path, which is the honest reading (nothing was delivered).
    */
   const admittedEntries: MemoryEntry[] = [];
-  let statsWritten = false;
-  const writeRecallStats = (): void => {
-    if (statsWritten) return; // exactly one row per recall
-    statsWritten = true;
-    const userScopes = input.userId ? [input.userId] : [];
-    const harnessScopes = harnessSlugs.map((slug) => `harness:${slug}`);
-    const hiveScopes = potSlugs.map(hiveScopeKey);
-    void (async () => {
-      try {
-        // P-009: the corpus search was already started beside this mem0 leg.
-        // Await it only inside the fire-and-forget writer, preserving both the
-        // single stats row and the injection critical path.
-        const corpus = await corpusP.catch(() => null);
-        funnel.corpus = corpus
-          ? {
-              outcome: corpus.outcome,
-              returned: corpus.candidateCount,
-              selected: corpus.selected,
-              admitted: corpus.lines.length,
-              dropped: corpus.dropped,
-              gate: corpus.gate
-                ? {
-                    verdict: corpus.gate.verdict,
-                    reasons: [...corpus.gate.reasons],
-                    dropped: corpus.gate.verdict === 'sit-out' ? corpus.selected : 0,
-                  }
-                : null,
-              sessionDedup: corpus.sessionDedup,
-              embedderAvailable: corpus.embedderAvailable,
-              legs: corpus.legs,
-              retrievalDepth: corpus.retrievalDepth,
-              rerank: corpus.rerank,
-            }
-          : null;
-        const { sql } = getOrgPg();
-        const { recordRecallStats } = await import('./recall-stats');
-        // P-005: tag the recall with its injection PORT so per-entry-point
-        // recall quality is measurable separately. session.port carries the
-        // port for every launch/injection surface (initialize / compact /
-        // turn-start / claim / create / orient / brief); an unstamped generic
-        // injection falls back to 'injection'.
-        await recordRecallStats(sql, {
-          surface: input.telemetrySurface ?? input.session?.port ?? 'injection',
-          // P-005 / migration 770: WHICH TUI received this. Purely descriptive —
-          // nothing on this path branches on it. Absent ⇒ NULL ⇒ unattributed.
-          client: input.session?.client ?? null,
-          workspaceId: input.workspaceId ?? null,
-          potSlug: harnessSlugs[0] ?? null,
-          // P-036 / migration 705: stamp the SCALE these scores are on. Taken
-          // from the backend that produced them, never inferred from the value
-          // — the push path's fused RRF tops out at 0.033 while a cosine hit
-          // starts at 0.45, and a reader that cannot tell them apart reports
-          // the workload mix as if it were retrieval quality. Always the
-          // `search()` scale here: this path has no lexical-fallback branch.
-          scoreScale: backend.scoreScale ?? null,
-          // P-041 / migration 706: what was ASKED. This is the push path, so
-          // this IS the injected query — for turn-start, the raw submitted
-          // prompt (envelope and all), which is precisely what makes the origin
-          // recoverable for free and the boilerplate rate measurable. Shape
-          // only; the text never leaves this call.
-          //
-          // P-042: record the EFFECTIVE retrieval text, not `userText`.
-          //
-          // P-044 made those diverge for real, and this records the COSINE
-          // leg's query — deliberately. That is the text whose SHAPE this
-          // instrument was built to judge (it is the one that gets embedded,
-          // and the one whose identifier pollution D-041 measured), so the
-          // mid-turn de-dilution shows up here as a real before/after rather
-          // than being averaged away against a lexical query that still carries
-          // every path. The lexical half is not lost — it is derivable from the
-          // signals, and P-045 measures the legs separately on the bench.
-          query: queryText,
-          sessionId: input.session?.sessionId ?? null,
-          // The PRE-FILTER snapshots — see the warning above. These columns mean
-          // "what the index returned" and must keep meaning that.
-          //
-          // ⚠ EI-19920080383279759 (gate-2, following the same-shaped WI-6933/
-          // WI-7154 class): a pool whose scope list is EMPTY was never queried at
-          // all — `doSearch` only fires for a scope actually in the union above,
-          // and userScopes/harnessScopes/hiveScopes are each `[]` exactly when
-          // their caller structurally has nothing to key on (no userId — several
-          // surfaces are deliberately non-user, e.g. the Mug's 'brief' brief:
-          // "the Mug is not a user" — or `harnessSlugs`/`potSlugs` explicitly
-          // omitted to "skip the pool entirely", per their own doc comments
-          // above). Recording that non-call as a pool row is indistinguishable,
-          // downstream, from a pool that WAS asked and genuinely found nothing —
-          // which is exactly the "100% empty-scope, 100% zero-hit" shape gate-2/
-          // gate-3 keep re-flagging as a caller bug to fix. Omit the key instead
-          // of writing an empty stub, so a recall with nothing to ask a given
-          // pool contributes NO row for it (jsonb_each has nothing to iterate),
-          // rather than a phantom always-empty pool. The flat hit_count/top_score
-          // derived from `pools` are unaffected either way — an omitted pool's
-          // `entries` was already always `[]`.
-          pools: {
-            ...(userScopes.length > 0
-              ? { user: { entries: preFilterUser, limit: totalLimit, scopes: userScopes } }
-              : {}),
-            ...(harnessScopes.length > 0
-              ? { harness: { entries: preFilterHarness, limit: totalLimit, scopes: harnessScopes } }
-              : {}),
-            ...(hiveScopes.length > 0
-              ? { hive: { entries: preFilterHive, limit: totalLimit, scopes: hiveScopes } }
-              : {}),
-          },
-          // P-002 / migration 758: what each LEG did, and what actually landed.
-          legs: legStats,
-          admission: funnel,
-        });
-      } catch {
-        /* swallow — telemetry never blocks a turn */
-      }
-    })();
+  const writeRecallStats = (): Promise<void> => {
+    return writeRecallStatsSnapshot({ user: preFilterUser, harness: preFilterHarness, hive: preFilterHive }, funnel);
   };
 
   try {
@@ -1706,7 +1774,7 @@ async function buildBlockInner(
     // the delivered-block return, and any throw. A `finally` rather than a call
     // at each return so that an early return added later cannot silently stop
     // recording; the `statsWritten` latch keeps it to exactly one.
-    writeRecallStats();
+    await writeRecallStats();
   }
 }
 
