@@ -121,6 +121,29 @@ export async function runCloudDeviceStartSmoke(origin = 'https://app.papercusp.c
 }
 
 const STOCK_LINUX_IMAGES = ['ubuntu:24.04', 'debian:stable-slim'];
+const DOCKER_START_PROBE_TIMEOUT_MS = 20_000;
+const DOCKER_START_PROBE_ATTEMPTS = 3;
+type DockerRun = (args: string[], timeout: number) => { status: number | null; error?: { message: string } };
+const defaultDockerRun: DockerRun = (args, timeout) => spawnSync('docker', args, { encoding: 'utf8', timeout });
+
+/** Detect a responsive daemon whose overlay create/start path is stalled. */
+export function probeDockerCreateStart(run: DockerRun = defaultDockerRun): string | null {
+  // A fresh release host may not have the image yet. The stock smoke below
+  // pulls it; the offline create/start probe applies only to an existing image.
+  const image = STOCK_LINUX_IMAGES[0];
+  const cached = run(['image', 'inspect', image], 5_000);
+  if (cached.status !== 0 || cached.error) return null;
+  for (let attempt = 1; attempt <= DOCKER_START_PROBE_ATTEMPTS; attempt++) {
+    const result = run(['run', '--rm', '--pull=never', '--network=none',
+      '--entrypoint', '/bin/sh', image, '-c', 'true'], DOCKER_START_PROBE_TIMEOUT_MS);
+    if (result.status !== 0 || result.error) {
+      return `Docker create/start preflight failed on attempt ${attempt}/${DOCKER_START_PROBE_ATTEMPTS} `
+        + `(status ${result.status ?? 'none'}${result.error ? `; ${result.error.message}` : ''}). `
+        + 'The daemon may answer docker info while container creation is stalled.';
+    }
+  }
+  return null;
+}
 const STOCK_MACHINE_SCRIPT = `set -eu
 mkdir -p "$HOME"
 cd /candidate
@@ -145,7 +168,13 @@ case "$psu_version" in
 esac`;
 
 /** Exercise the shipped unit on stock Linux, without host libraries or network. */
-export function runStockMachineSmoke(unit: string, images = STOCK_LINUX_IMAGES): StockMachineResult[] {
+export function runStockMachineSmoke(
+  unit: string, images = STOCK_LINUX_IMAGES, probe = probeDockerCreateStart,
+): StockMachineResult[] {
+  const dockerProblem = probe();
+  if (dockerProblem) {
+    return images.map((image) => ({ image, status: null, output: dockerProblem }));
+  }
   return images.map((image) => {
     const run = spawnSync('docker', [
       'run', '--rm', '--pull=missing', '--network=none', '--read-only',

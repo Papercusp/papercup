@@ -5,7 +5,51 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
 import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
-import { runCloudDeviceStartSmoke, runReleaseAcceptance } from './release-acceptance-run';
+import { probeDockerCreateStart, runCloudDeviceStartSmoke, runReleaseAcceptance, runStockMachineSmoke } from './release-acceptance-run';
+
+describe('Docker create/start release preflight', () => {
+  it('runs a bounded offline stock-container launch three times', () => {
+    const calls: Array<{ args: string[]; timeout: number }> = [];
+    const problem = probeDockerCreateStart((args, timeout) => {
+      calls.push({ args, timeout });
+      return { status: 0 };
+    });
+    expect(problem).toBeNull();
+    expect(calls).toHaveLength(4);
+    expect(calls[0]).toEqual({ args: ['image', 'inspect', 'ubuntu:24.04'], timeout: 5_000 });
+    expect(calls.slice(1).every(({ args, timeout }) => timeout === 20_000
+      && args.includes('--pull=never') && args.includes('--network=none')
+      && args.includes('ubuntu:24.04'))).toBe(true);
+  });
+
+  it('fails immediately when Docker times out even if its daemon is responsive', () => {
+    let calls = 0;
+    const problem = probeDockerCreateStart(() => {
+      calls++;
+      return calls === 3 ? { status: null, error: { message: 'ETIMEDOUT' } } : { status: 0 };
+    });
+    expect(calls).toBe(3);
+    expect(problem).toContain('attempt 2/3');
+    expect(problem).toContain('ETIMEDOUT');
+  });
+
+  it('defers image pulling to the stock smoke on a fresh host', () => {
+    let calls = 0;
+    expect(probeDockerCreateStart(() => {
+      calls++;
+      return { status: 1 };
+    })).toBeNull();
+    expect(calls).toBe(1);
+  });
+
+  it('skips every stock smoke when the create/start preflight fails', () => {
+    const result = runStockMachineSmoke('/missing-candidate', ['ubuntu:24.04', 'debian:stable-slim'],
+      () => 'Docker create/start preflight timed out');
+    expect(result).toHaveLength(2);
+    expect(result.every(({ status, output }) => status === null
+      && output.includes('preflight timed out'))).toBe(true);
+  });
+});
 
 describe('release acceptance test-process verdict', () => {
   it('refuses a failed or interrupted leg even when every required evidence row passes', () => {
