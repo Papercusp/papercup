@@ -4146,6 +4146,32 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       expect(writes).toEqual(['/mcp', '\r']);
     });
 
+    it('ignores slash autocomplete while waiting for a delayed direct reconnect result', async () => {
+      let output = '';
+      let commandSubmitted = false;
+      let postSubmitSleeps = 0;
+      const writes: string[] = [];
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp',
+        write: (bytes: string) => {
+          writes.push(bytes);
+          if (bytes === '/mcp') output = '/mcp  Manage MCP servers\n/papercusp:tool:plans:get (MCP)';
+          if (bytes === '\r') commandSubmitted = true;
+        },
+        readTap: () => output,
+        resetTap: () => { output = ''; },
+        sleep: async (ms: number) => {
+          if (commandSubmitted && ++postSubmitSleeps === 2) output = 'Reconnected to papercusp.\n';
+          await fastSleep(ms);
+        },
+        crDelayMs: 1,
+        paintBudgetMs: 100,
+      });
+      expect(result.step).toBe('direct-reconnected');
+      expect(result.ok).toBe(true);
+      expect(writes).toEqual(['/mcp', '\r']);
+    });
+
     it('does not count a partial reconnect with a tool-fetch failure as ready', async () => {
       let output = '';
       const result = await runMcpReconnectMacro({
