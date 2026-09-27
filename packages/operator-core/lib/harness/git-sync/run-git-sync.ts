@@ -4445,7 +4445,20 @@ async function reconcileAndPushOneRepo(
   // WI-5111: a non-fast-forward merge creates its own commit under the box's git
   // identity too — same bot-identity override as the commit calls above, so a
   // merge commit git-sync makes is never misattributed to the owner either.
-  const merge = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`], repoPath);
+  // WI-10003529: the merge writes the index too, so it gets the same stale-orphan
+  // recovery as add/commit. A clean submodule never runs `git add`, so before this
+  // its merge was the FIRST index writer to meet an orphaned index.lock — and it
+  // returned "merge failed (no conflicted paths)" every tick forever (P-203 Mac VM,
+  // libs/papercusp-db, 2026-09-27: lock 65+ min old, lsof proved no holder).
+  const mergeArgs = [...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`];
+  const merge = await recoverIndexLockContention(
+    await runGit(mergeArgs, repoPath),
+    () => runGit(mergeArgs, repoPath),
+    runGit,
+    repoPath,
+    'git merge',
+    o.log,
+  );
   if (merge.code !== 0) {
     const infrastructureError = gitSyncPreDispatchError(merge);
     if (infrastructureError) return { status: 'error', message: infrastructureError };
@@ -4509,7 +4522,14 @@ async function reconcileAndPushOneRepo(
       if (push.code !== 0 && rejectedNonFastForward(push)) {
         // A peer pushed between our fetch and push — re-fetch + re-merge once.
         await runNetworkGitWithGitHubHttpsFallback(runGit, ['fetch', remote, branch], repoPath, o.log);
-        const m2 = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`], repoPath);
+        const m2 = await recoverIndexLockContention(
+          await runGit(mergeArgs, repoPath),
+          () => runGit(mergeArgs, repoPath),
+          runGit,
+          repoPath,
+          'git merge (non-ff retry)',
+          o.log,
+        );
         if (m2.code !== 0) {
           const infrastructureError = gitSyncPreDispatchError(m2);
           if (infrastructureError) return { status: 'error', message: infrastructureError };

@@ -1629,6 +1629,41 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(existsSync(lockPath)).toBe(true); // the live writer keeps its lock
   });
 
+  it('WI-10003529: a CLEAN repo behind origin reclaims an orphaned index.lock at the MERGE (its first index writer) instead of failing "merge failed (no conflicted paths)" every tick', async () => {
+    // Upstream advances while the working clone has nothing to commit, so no
+    // `git add`/`git commit` ever runs — the merge is the first operation that
+    // needs the index lock (the P-203 Mac VM's libs/papercusp-db, 2026-09-27).
+    const seed = join(root, 'seed');
+    writeFileSync(join(seed, 'upstream.txt'), 'from a peer\n');
+    git(seed, 'add', '-A');
+    git(seed, 'commit', '--no-verify', '-m', 'upstream advance');
+    git(seed, 'push', 'origin', 'main');
+    const lockPath = join(repo, '.git', 'index.lock');
+    writeFileSync(lockPath, ''); // what a git killed by a restart leaves: empty, unheld
+    const tenMinAgo = (Date.now() - 10 * 60_000) / 1000;
+    utimesSync(lockPath, tenMinAgo, tenMinAgo);
+
+    const metLock: string[] = [];
+    const runGit: RunGit = async (args, cwd) => {
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      const res = { code: r.status ?? -1, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') };
+      if (res.code !== 0 && isIndexLockFailure(`${res.stdout}\n${res.stderr}`)) metLock.push(args.join(' '));
+      return res;
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
+
+    // Pin the scenario: the MERGE met the orphan (not an add/commit path, which
+    // has had recovery since 2026-07-04) — otherwise this test guards nothing new.
+    expect(metLock.length).toBeGreaterThan(0);
+    expect(metLock[0]).toMatch(/\bmerge\b/);
+    // Before the fix: status 'error' ("merge failed (no conflicted paths)") on every
+    // tick until a human deleted the lock. After: reclaimed once, merge proceeds.
+    expect(out.status).not.toBe('error');
+    expect(existsSync(lockPath)).toBe(false);
+    expect(git(repo, 'rev-parse', 'HEAD')).toBe(git(originDir, 'rev-parse', 'main'));
+  });
+
   it('EI-21872458801896676: repairs a truncated canonical index before the dirty census and still commits the working tree', async () => {
     writeFileSync(join(repo, 'real-work.txt'), 'agents work here\n');
     const indexPath = join(repo, '.git', 'index');
