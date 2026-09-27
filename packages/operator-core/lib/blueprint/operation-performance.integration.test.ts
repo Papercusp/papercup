@@ -101,6 +101,8 @@ describe('P-013 workload A fixture', () => {
           coldStarts++;
           let stderr = '';
           let stage = 'spawned';
+          // stdio[2] is 'pipe', so stderr exists; fail loudly rather than lose diagnostics.
+          if (!child.stderr) throw new Error('P-013 cold child spawned without a stderr pipe');
           child.stderr.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-4_000); });
           let sample: P013Sample | undefined;
           const exit = new Promise<void>((resolve, reject) => {
