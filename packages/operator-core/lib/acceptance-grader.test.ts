@@ -15,8 +15,58 @@ import {
   resolveAcceptanceGrader,
   resolveShipperId,
   selectableGraderLiveness,
+  spentGradingCascadeAnswer,
   ACCEPTANCE_GRADING_SWEEP_ACTOR,
+  CONSULT_EXPIRY_REVIEW_AUTHOR,
+  GRADING_CASCADE_ANSWER_GRACE_MS,
 } from './acceptance-grader';
+
+describe('spentGradingCascadeAnswer (WI-10003451)', () => {
+  const NOW = Date.parse('2026-09-27T09:25:00.000Z');
+  // The exact digest shape measured on conv-mujhh8sa (identities-v1, 2026-09-27):
+  // a failed dispatch, a decline, then the answer whose card later went cohort-stale.
+  const answered = [
+    { at: '2026-09-27T07:48:29.626Z', kind: 'dispatch_failed', ownerId: 'su-bb07b887', excerpt: 'implicit decline' },
+    { at: '2026-09-27T07:52:15.918Z', kind: 'decline', ownerId: 'su-07f4a0cb', excerpt: 'capacity' },
+    { at: '2026-09-27T08:11:44.559Z', kind: 'answer', ownerId: 'su-cbdfc50b', excerpt: 'scorecard EI-24401435844141024' },
+  ];
+
+  it('reports an answered cascade past the grace window as SPENT, naming the answer', () => {
+    expect(spentGradingCascadeAnswer(answered, NOW)).toEqual({
+      ownerId: 'su-cbdfc50b',
+      at: '2026-09-27T08:11:44.559Z',
+    });
+  });
+
+  it('accepts the digest as a JSON string (a text-typed driver read)', () => {
+    expect(spentGradingCascadeAnswer(JSON.stringify(answered), NOW)?.ownerId).toBe('su-cbdfc50b');
+  });
+
+  it('keeps a cascade with no answer LIVE — declines and failed dispatches are the cascade still working', () => {
+    expect(spentGradingCascadeAnswer(answered.slice(0, 2), NOW)).toBeNull();
+    expect(spentGradingCascadeAnswer([], NOW)).toBeNull();
+    expect(spentGradingCascadeAnswer(null, NOW)).toBeNull();
+  });
+
+  it('keeps a JUST-answered cascade live inside the grace window, and spends it the moment the window closes', () => {
+    const answerMs = Date.parse('2026-09-27T08:11:44.559Z');
+    expect(spentGradingCascadeAnswer(answered, answerMs + GRADING_CASCADE_ANSWER_GRACE_MS - 1)).toBeNull();
+    expect(spentGradingCascadeAnswer(answered, answerMs + GRADING_CASCADE_ANSWER_GRACE_MS)).not.toBeNull();
+  });
+
+  it('judges by the LATEST answer: a fresh second answer holds the cascade live even when an older one is past grace', () => {
+    const reAnswered = [...answered, { at: '2026-09-27T09:20:00.000Z', kind: 'answer', ownerId: 'su-second' }];
+    expect(spentGradingCascadeAnswer(reAnswered, NOW)).toBeNull();
+    expect(spentGradingCascadeAnswer(reAnswered, Date.parse('2026-09-27T09:31:00.000Z'))?.ownerId).toBe('su-second');
+  });
+
+  it('never spends on a malformed digest or an answer with an unparseable timestamp (fail toward the live dispatch)', () => {
+    expect(spentGradingCascadeAnswer('{not json', NOW)).toBeNull();
+    expect(spentGradingCascadeAnswer({ kind: 'answer' }, NOW)).toBeNull();
+    expect(spentGradingCascadeAnswer([{ kind: 'answer', ownerId: 'su-x', at: 'yesterday' }], NOW)).toBeNull();
+    expect(spentGradingCascadeAnswer([{ kind: 'answer', at: '2026-09-27T08:00:00.000Z' }], NOW)).toBeNull();
+  });
+});
 
 describe('advanceUndispatchableGradingCascade (EI-23939542953304626)', () => {
   const graders = ['su-a', 'su-b', 'su-c'].map((ownerId) => ({ ownerId }));
@@ -401,6 +451,61 @@ describe('resolveShipperId (EI-24402913315950329)', () => {
 });
 
 describe('isAcceptanceGradingRequestForPlan', () => {
+  /**
+   * WI-10003450 (measured 2026-09-27 on declared-gate-recovery-contract-2026-09-21):
+   * an unassigned consult-expiry rubric-vetting review suppressed grader recruitment
+   * because its instructions quote `scorecards:emit` and it names the plan.
+   */
+  const VETTING_REVIEW = {
+    title:
+      'Review needed (rubric-vetting) — Vet acceptance rubric `acceptance-ship-the-thing` rev 8 (criteriaHash a6a269f3…)',
+    summary:
+      'PULLABLE REVIEW (review-system-rework-reduction-2026-09-23 P-014). … The rubric author then records vetting ' +
+      "with scorecards:emit { vettingWorkItem: '<this id>' }.\n\nOriginal request:\nVet acceptance rubric for " +
+      'subject plan: ship-the-thing',
+    createdBy: CONSULT_EXPIRY_REVIEW_AUTHOR,
+  };
+
+  it('does NOT treat a consult-expiry rubric-vetting review as a grading request', () => {
+    expect(isAcceptanceGradingRequestForPlan(VETTING_REVIEW, 'ship-the-thing')).toBe(false);
+  });
+
+  /** CONTROL: the same prose authored by anyone else still matches, so the exclusion is
+   * authorship-scoped rather than a weakened marker set. */
+  it('still matches the same prose when it is not consult-expiry-authored', () => {
+    expect(
+      isAcceptanceGradingRequestForPlan({ ...VETTING_REVIEW, createdBy: 'su-delegator' }, 'ship-the-thing'),
+    ).toBe(true);
+  });
+
+  it('still treats a consult-expiry ACCEPTANCE-GRADING review as a grading request', () => {
+    expect(
+      isAcceptanceGradingRequestForPlan(
+        {
+          title: 'Acceptance review-target reservation — ship-the-thing (acceptance-ship-the-thing)',
+          summary: 'PULLABLE REVIEW … (acceptance-grading) …',
+          createdBy: CONSULT_EXPIRY_REVIEW_AUTHOR,
+        },
+        'ship-the-thing',
+      ),
+    ).toBe(true);
+    expect(
+      isAcceptanceGradingRequestForPlan(
+        {
+          title: 'Review needed (acceptance-grading) — Grade plan ship-the-thing',
+          summary: 'PULLABLE REVIEW …',
+          createdBy: CONSULT_EXPIRY_REVIEW_AUTHOR,
+        },
+        'ship-the-thing',
+      ),
+    ).toBe(true);
+  });
+
+  it('pins the local consult-expiry author to the filer’s exported constant', async () => {
+    const { CONSULT_EXPIRY_SWEEP_OWNER_ID } = await import('./consult/consult-expiry-adapters');
+    expect(CONSULT_EXPIRY_REVIEW_AUTHOR).toBe(CONSULT_EXPIRY_SWEEP_OWNER_ID);
+  });
+
   it('matches a non-lineage acceptance grade when the plan slug is in the title', () => {
     expect(
       isAcceptanceGradingRequestForPlan(

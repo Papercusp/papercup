@@ -112,6 +112,20 @@ function containsPlanSlug(text: string, planSlug: string): boolean {
  * the plan graded, and nobody is ever recruited (WI-10002453). Authorship, not
  * wording, decides it.
  */
+/**
+ * Author of consult-expiry pullable-review items (`consultExpiryFileReviewWorkItem`).
+ * Kept local rather than imported: that adapter module pulls the task-manager reaper
+ * and get-feedback-core at runtime. `acceptance-grader.test.ts` pins this literal to
+ * the exported `CONSULT_EXPIRY_SWEEP_OWNER_ID` so the two cannot drift.
+ */
+export const CONSULT_EXPIRY_REVIEW_AUTHOR = 'system:consult-expiry-sweep';
+
+/** The two titles the consult-expiry filer writes for an ACCEPTANCE-GRADING review
+ * (reservation-backed, or a plain `Review needed (acceptance-grading)`). Every other
+ * kind it converts — rubric-vetting above all — is not a grading request. */
+const CONSULT_EXPIRY_GRADING_TITLE_RE =
+  /^(?:Acceptance review-target reservation\b|Review needed \(acceptance-grading\))/;
+
 export function isAcceptanceGradingRequestForPlan(
   workItem: Pick<WorkItem, 'title' | 'summary' | 'createdBy'>,
   planSlug: string,
@@ -119,6 +133,17 @@ export function isAcceptanceGradingRequestForPlan(
   const normalizedPlanSlug = planSlug.trim();
   if (!normalizedPlanSlug) return false;
   if (workItem.createdBy === ACCEPTANCE_DRAIN_ACTOR) return false;
+  // WI-10003450: a consult-expiry RUBRIC-VETTING review names the plan and quotes
+  // `scorecards:emit { vettingWorkItem }` in its instructions, so the prose markers
+  // below matched it and an unheld vetting item suppressed grader recruitment for the
+  // whole unheld grace window. Same class as the drain filing above: for a
+  // system-authored item, its fixed title template decides, never its wording.
+  if (workItem.createdBy === CONSULT_EXPIRY_REVIEW_AUTHOR) {
+    return (
+      CONSULT_EXPIRY_GRADING_TITLE_RE.test(workItem.title ?? '') &&
+      containsPlanSlug(`${workItem.title ?? ''}\n${workItem.summary ?? ''}`, normalizedPlanSlug)
+    );
+  }
   const text = `${workItem.title ?? ''}\n${workItem.summary ?? ''}`;
   return (
     containsPlanSlug(text, normalizedPlanSlug) &&
@@ -1354,6 +1379,133 @@ export interface OpenGradingCascadeResult {
   status: 'active' | 'existing' | 'exhausted' | 'raced';
 }
 
+/**
+ * WI-10003451 — how long after a grader's `answer` its cascade still counts as the
+ * live dispatch. The grader brief says to emit the card FIRST and reply after, so an
+ * answer normally post-dates the card it reports. The window only absorbs a grader
+ * who replied before their emit landed: a re-dispatch in those minutes must not
+ * route a second grader to a grading that is about to count (D-009 makes the
+ * eligible pool non-replenishable, so a redundant grader is a permanent loss).
+ */
+export const GRADING_CASCADE_ANSWER_GRACE_MS = 10 * 60_000;
+
+/**
+ * WI-10003451 — has this OPEN grading cascade already SPENT its dispatch?
+ *
+ * The recruiter only reaches a cascade open after the settlement guard reported the
+ * grading NOT decided, and both of its callers (the ship gate's
+ * `acceptance_ungraded`/`self_graded_only` refusal and the stall sweep's gate read)
+ * only recruit when no COUNTING independent card exists. So a cascade whose digest
+ * already carries an `answer` produced a card that does not count — cohort-stale,
+ * lineage-related or incomplete. It is not "the live dispatch" any more: its grader
+ * finished, and nobody on its menu will be asked again. Treating it as live deduped
+ * every re-dispatch onto a dead conversation until the expiry sweep closed it
+ * (~4.5h), which is what stranded identities-v1-2026-08-30 on 2026-09-27 after its
+ * evidence cohort moved under a finished grade.
+ *
+ * Returns the LATEST answer when it is older than the grace window, else null (no
+ * answer, a malformed digest, or an answer that may still be about to count).
+ */
+export function spentGradingCascadeAnswer(
+  digestRaw: unknown,
+  nowMs: number,
+  graceMs: number = GRADING_CASCADE_ANSWER_GRACE_MS,
+): { ownerId: string; at: string } | null {
+  let digest: unknown = digestRaw;
+  if (typeof digest === 'string') {
+    try {
+      digest = JSON.parse(digest) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(digest)) return null;
+  let latest: { ownerId: string; at: string; atMs: number } | null = null;
+  for (const entry of digest) {
+    const e = entry as { kind?: unknown; ownerId?: unknown; at?: unknown } | null;
+    if (!e || e.kind !== 'answer' || typeof e.ownerId !== 'string' || typeof e.at !== 'string') continue;
+    const atMs = Date.parse(e.at);
+    if (!Number.isFinite(atMs)) continue;
+    if (!latest || atMs > latest.atMs) latest = { ownerId: e.ownerId, at: e.at, atMs };
+  }
+  if (!latest || nowMs - latest.atMs < graceMs) return null;
+  return { ownerId: latest.ownerId, at: latest.at };
+}
+
+/**
+ * The dedupe half of {@link prodOpenGradingCascade}, split out so its database
+ * behaviour is testable on real PG without the dispatch half (which launches a
+ * session). Every open cascade matching this plan + rubric (+ reservation) is read;
+ * each one whose answer already spent it ({@link spentGradingCascadeAnswer}) is
+ * CLOSED as `closed_answered` with an outcome naming why, and the newest remaining
+ * one is returned as the live dispatch. `liveConversationId: null` means the caller
+ * must open a fresh cascade.
+ *
+ * The close is CAS-guarded on the same open states the read matched, so a
+ * concurrent decline/expiry/advance that already moved the row wins and this
+ * becomes a no-op for it.
+ */
+export async function reconcileOpenGradingCascades(
+  params: Pick<OpenGradingCascadeParams, 'workspaceId' | 'planSlug' | 'rubricId' | 'reservation'>,
+  deps: { nowMs?: number } = {},
+): Promise<{
+  liveConversationId: string | null;
+  closedSpent: Array<{ conversationId: string; answeredBy: string; answeredAt: string }>;
+}> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const sql = getOrgPg().sql;
+  const nowMs = deps.nowMs ?? Date.now();
+  const rows = (await sql`
+    SELECT conversation_id, cascade_digest
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${params.workspaceId}
+       AND closed_at IS NULL
+       AND state IN ('awaiting_responder', 'active')
+       AND routing -> 'cascade' ->> 'flavor' = ${GRADING_CASCADE_FLAVOR}
+       AND routing -> 'cascade' ->> 'planSlug' = ${params.planSlug}
+       AND routing -> 'cascade' ->> 'rubricId' = ${params.rubricId}
+       AND (
+         ${params.reservation?.conditionKey ?? null}::text IS NULL
+         OR routing -> 'cascade' -> 'reservation' ->> 'conditionKey' = ${params.reservation?.conditionKey ?? null}
+         OR NOT (routing -> 'cascade' ? 'reservation')
+       )
+     ORDER BY created_at DESC
+     LIMIT 16
+  `) as unknown as Array<{ conversation_id: string; cascade_digest: unknown }>;
+
+  let liveConversationId: string | null = null;
+  const closedSpent: Array<{ conversationId: string; answeredBy: string; answeredAt: string }> = [];
+  const nowIso = new Date(nowMs).toISOString();
+  for (const row of rows) {
+    const spent = spentGradingCascadeAnswer(row.cascade_digest, nowMs);
+    if (!spent) {
+      liveConversationId ??= row.conversation_id;
+      continue;
+    }
+    const closed = (await sql`
+      UPDATE harness_shared.consult_state
+         SET state = 'closed_answered',
+             closed_at = ${nowIso}::timestamptz,
+             updated_at = ${nowIso}::timestamptz,
+             outcome = jsonb_build_object(
+               'source', 'acceptance-recruiter',
+               'reason', 'answer_not_counted',
+               'answeredBy', ${spent.ownerId}::text,
+               'answeredAt', ${spent.at}::text
+             )
+       WHERE workspace_id = ${params.workspaceId}
+         AND conversation_id = ${row.conversation_id}
+         AND closed_at IS NULL
+         AND state IN ('awaiting_responder', 'active')
+      RETURNING conversation_id
+    `) as unknown as Array<{ conversation_id: string }>;
+    if (closed[0]) {
+      closedSpent.push({ conversationId: row.conversation_id, answeredBy: spent.ownerId, answeredAt: spent.at });
+    }
+  }
+  return { liveConversationId, closedSpent };
+}
+
 type GradingDispatchFailureEvent = {
   ownerId: string;
   kind: 'dispatch_failed';
@@ -1477,23 +1629,23 @@ async function prodOpenGradingCascade(
   // for this rubric IS the live dispatch, and its own expiry sweep is what
   // retries a silent grader — so re-dispatch reports it rather than duplicating
   // it. (`woke: 0` is honest: nobody was woken by THIS call.)
-  const existing = (await sql`
-    SELECT conversation_id
-      FROM harness_shared.consult_state
-     WHERE workspace_id = ${params.workspaceId}
-       AND closed_at IS NULL
-       AND state IN ('awaiting_responder', 'active')
-       AND routing -> 'cascade' ->> 'flavor' = ${GRADING_CASCADE_FLAVOR}
-       AND routing -> 'cascade' ->> 'planSlug' = ${params.planSlug}
-       AND routing -> 'cascade' ->> 'rubricId' = ${params.rubricId}
-       AND (
-         ${params.reservation?.conditionKey ?? null}::text IS NULL
-         OR routing -> 'cascade' -> 'reservation' ->> 'conditionKey' = ${params.reservation?.conditionKey ?? null}
-         OR NOT (routing -> 'cascade' ? 'reservation')
-       )
-     LIMIT 1
-  `) as unknown as Array<{ conversation_id: string }>;
-  if (existing[0]) return { conversationId: existing[0].conversation_id, woke: 0, status: 'existing' };
+  //
+  // WI-10003451: but an open cascade that already carries an ANSWER is not the live
+  // dispatch — its grade did not count (we would not be here otherwise), and the
+  // reservation key has no evidence-cohort component, so a cohort-stale re-grade
+  // matched it and woke nobody for hours. The reconcile closes spent cascades and
+  // only reports a genuinely live one.
+  const reconciled = await reconcileOpenGradingCascades(params);
+  if (reconciled.closedSpent.length > 0) {
+    console.warn(
+      `[acceptance-grader] closed ${reconciled.closedSpent.length} answered grading cascade(s) for plan ` +
+        `${params.planSlug} (rubric ${params.rubricId}) whose grade no longer counts: ` +
+        reconciled.closedSpent.map((c) => `${c.conversationId} answered by ${c.answeredBy} at ${c.answeredAt}`).join('; '),
+    );
+  }
+  if (reconciled.liveConversationId) {
+    return { conversationId: reconciled.liveConversationId, woke: 0, status: 'existing' };
+  }
 
   const head = params.graders[0]!;
   const brief =

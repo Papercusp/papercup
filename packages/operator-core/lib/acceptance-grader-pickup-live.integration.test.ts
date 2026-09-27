@@ -28,7 +28,12 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { observeGraderPickup } from './acceptance-grader-pickup';
-import { isInFlightAcceptanceGradingRequest, resolveAcceptanceGrader } from './acceptance-grader';
+import {
+  isInFlightAcceptanceGradingRequest,
+  reconcileOpenGradingCascades,
+  resolveAcceptanceGrader,
+} from './acceptance-grader';
+import { GRADING_CASCADE_FLAVOR } from './consult/grading-cascade';
 import { activeWorkspaceId } from './workspace-registry';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
@@ -278,6 +283,121 @@ describe('R-3 grader recruitment idempotence + three-valued pickup (real PG)', (
       // one found it. No new consult cascade (no re-recruit), no new
       // conversation (no re-wake), no second grading request.
       expect(await dispatchFootprint(db)).toEqual(before);
+    });
+  });
+
+  /**
+   * WI-10003451 — the open-cascade dedupe must not treat an ANSWERED grading cascade
+   * as the live dispatch. Real PG because the defect lived in the SQL read (a
+   * `LIMIT 1` over every open row) and the fix is a CAS-guarded close: both are facts
+   * about rows, which a mocked sql cannot show.
+   */
+  describe('open-cascade reconcile closes answered cascades (WI-10003451)', () => {
+    const RECONCILE_WS = 'wi-10003451-reconcile-ws';
+    const RECONCILE_PLAN = 'wi-10003451-subject-plan';
+    const RECONCILE_RUBRIC = 'acceptance-wi-10003451-subject-plan';
+    const RESERVATION = { conditionKey: 'acceptance-review-target:wi-10003451', id: 'EI-WI10003451-RES' };
+
+    async function seedCascade(opts: {
+      conversationId: string;
+      planSlug?: string;
+      createdAgoMs: number;
+      digest: Array<{ at: string; kind: string; ownerId: string; excerpt?: string }>;
+    }): Promise<void> {
+      const routing = {
+        cascade: {
+          flavor: GRADING_CASCADE_FLAVOR,
+          planSlug: opts.planSlug ?? RECONCILE_PLAN,
+          rubricId: RECONCILE_RUBRIC,
+          harnessSlug: HARNESS,
+          reservation: RESERVATION,
+        },
+      };
+      const createdAt = new Date(Date.now() - opts.createdAgoMs).toISOString();
+      await db.adminSql`
+        INSERT INTO harness_shared.consult_state
+          (workspace_id, conversation_id, requester_id, responder_id, state, question, latency_contract,
+           routing, cascade_digest, created_at, updated_at, expires_at)
+        VALUES
+          (${RECONCILE_WS}, ${opts.conversationId}, ${'acceptance-grading-sweep'}, ${'su-head'}, ${'active'},
+           ${'grade it'}, ${'proceed'}, ${db.adminSql.json(routing as never)},
+           ${db.adminSql.json(opts.digest as never)}, ${createdAt}::timestamptz, ${createdAt}::timestamptz,
+           ${new Date(Date.now() + 3_600_000).toISOString()}::timestamptz)`;
+    }
+
+    async function stateOf(conversationId: string): Promise<{
+      state: string;
+      closed: boolean;
+      outcome: Record<string, unknown> | null;
+    }> {
+      const [row] = await db.adminSql<{ state: string; closed: boolean; outcome: Record<string, unknown> | null }[]>`
+        SELECT state, closed_at IS NOT NULL AS closed, outcome
+          FROM harness_shared.consult_state
+         WHERE workspace_id = ${RECONCILE_WS} AND conversation_id = ${conversationId}`;
+      return row!;
+    }
+
+    const agoIso = (ms: number) => new Date(Date.now() - ms).toISOString();
+    const params = {
+      workspaceId: RECONCILE_WS,
+      planSlug: RECONCILE_PLAN,
+      rubricId: RECONCILE_RUBRIC,
+      reservation: RESERVATION,
+    };
+
+    it('closes an answered cascade whose answer is past grace and falls through to "open a fresh one"', async () => {
+      await seedCascade({
+        conversationId: 'conv-wi10003451-answered',
+        createdAgoMs: 3 * 3_600_000,
+        digest: [
+          { at: agoIso(2.5 * 3_600_000), kind: 'decline', ownerId: 'su-decliner' },
+          { at: agoIso(2 * 3_600_000), kind: 'answer', ownerId: 'su-stale-grader', excerpt: 'card went cohort-stale' },
+        ],
+      });
+      // Same stale shape on ANOTHER plan: the reconcile is plan-scoped and must not touch it.
+      await seedCascade({
+        conversationId: 'conv-wi10003451-other-plan',
+        planSlug: 'wi-10003451-other-plan',
+        createdAgoMs: 3 * 3_600_000,
+        digest: [{ at: agoIso(2 * 3_600_000), kind: 'answer', ownerId: 'su-elsewhere' }],
+      });
+
+      const first = await reconcileOpenGradingCascades(params);
+      expect(first.liveConversationId).toBeNull();
+      expect(first.closedSpent).toEqual([
+        expect.objectContaining({ conversationId: 'conv-wi10003451-answered', answeredBy: 'su-stale-grader' }),
+      ]);
+      const closed = await stateOf('conv-wi10003451-answered');
+      expect(closed).toMatchObject({ state: 'closed_answered', closed: true });
+      expect(closed.outcome).toMatchObject({
+        source: 'acceptance-recruiter',
+        reason: 'answer_not_counted',
+        answeredBy: 'su-stale-grader',
+      });
+      expect(await stateOf('conv-wi10003451-other-plan')).toMatchObject({ state: 'active', closed: false });
+
+      // Idempotent: the closed row is no longer an open match, so a retry closes nothing more.
+      const second = await reconcileOpenGradingCascades(params);
+      expect(second).toEqual({ liveConversationId: null, closedSpent: [] });
+    });
+
+    it('keeps an unanswered cascade and a just-answered one LIVE, returning the newest as the dispatch', async () => {
+      await seedCascade({
+        conversationId: 'conv-wi10003451-declined-only',
+        createdAgoMs: 2 * 3_600_000,
+        digest: [{ at: agoIso(90 * 60_000), kind: 'decline', ownerId: 'su-decliner' }],
+      });
+      await seedCascade({
+        conversationId: 'conv-wi10003451-just-answered',
+        createdAgoMs: 30 * 60_000,
+        digest: [{ at: agoIso(60_000), kind: 'answer', ownerId: 'su-filing-now' }],
+      });
+
+      const res = await reconcileOpenGradingCascades(params);
+      expect(res.closedSpent).toEqual([]);
+      expect(res.liveConversationId).toBe('conv-wi10003451-just-answered');
+      expect(await stateOf('conv-wi10003451-declined-only')).toMatchObject({ state: 'active', closed: false });
+      expect(await stateOf('conv-wi10003451-just-answered')).toMatchObject({ state: 'active', closed: false });
     });
   });
 });
