@@ -113,7 +113,10 @@ describe('descriptor persistence under streaming output', () => {
       expect(persist).toHaveBeenCalledTimes(1);
       host.transition('running');
       for (let i = 0; i < 100; i++) {
-        host.emit({ type: 'transcript', role: 'assistant', phase: 'delta', content: String(i), turnId: 'turn-1' });
+        host.emit({
+          type: 'transcript', role: 'assistant', phase: 'delta', channel: 'text',
+          content: String(i), turnId: 'turn-1',
+        });
       }
       host.transition('waiting-for-owner');
       host.transition('ended');
@@ -138,7 +141,10 @@ describe('descriptor persistence under streaming output', () => {
     try {
       await host.persistDescriptorNow();
       persist.mockClear();
-      host.emit({ type: 'transcript', role: 'assistant', phase: 'delta', content: 'hello', turnId: 'turn-1' });
+      host.emit({
+        type: 'transcript', role: 'assistant', phase: 'delta', channel: 'text',
+        content: 'hello', turnId: 'turn-1',
+      });
       host.emit({ type: 'command_result', commandId: 'cmd', commandType: 'owner_turn', status: 'accepted' });
       host.emit({ type: 'session', descriptor: host.descriptor() });
       await Promise.resolve();
