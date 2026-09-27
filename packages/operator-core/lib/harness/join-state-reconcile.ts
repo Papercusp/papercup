@@ -44,6 +44,35 @@ import {
 } from '../harness-registry';
 import type { JoinState } from './join-shared-harness';
 
+/**
+ * Complete the registered row of every join-state whose clone it IS (same slug,
+ * same path) to the full link-joined shape. `healLinkJoinedEntries` only
+ * recognizes a row that already carries `joined_via_link`, but the pre-WI-10003277
+ * boot heal wrote a bare `{ slug, path }` row with no marker at all, so that row
+ * stayed short on every later boot and its hive never ran git-sync or counted as
+ * shared (WI-10003546: the rig VM's link-joined hello-world-3-pot, 2026-09-27).
+ * The join-state record is the proof the row is a link join: join-shared-harness
+ * is its only writer. A same-slug row at a DIFFERENT path is another checkout and
+ * is left alone (upsertLinkJoinedEntry's own guard).
+ */
+function enrichJoinedClones(
+  reg: HarnessRegistry,
+  states: JoinState[],
+): { registry: HarnessRegistry; enriched: string[] } {
+  let cur = reg;
+  const enriched: string[] = [];
+  for (const js of states) {
+    if (!js.cloneDir) continue;
+    const existing = cur.projects.find((p) => p.slug === js.slug);
+    if (!existing || existing.path !== js.cloneDir) continue;
+    const next = upsertLinkJoinedEntry(cur, { slug: js.slug, path: js.cloneDir });
+    if (next === cur) continue;
+    cur = next;
+    enriched.push(js.slug);
+  }
+  return { registry: cur, enriched };
+}
+
 function joinStateDir(): string {
   return resolve(homedir(), '.papercusp', 'join-state');
 }
@@ -125,8 +154,11 @@ export async function reconcileJoinStates(
   try {
     states = await listJoinStates();
     const reg = await loadRegistry(opts.workspaceId);
-    registered = new Set((reg.projects ?? []).map((p) => p.slug));
-    needsHeal = healLinkJoinedEntries({ ...reg, projects: reg.projects ?? [] }).healed.length > 0;
+    const current = { ...reg, projects: reg.projects ?? [] };
+    registered = new Set(current.projects.map((p) => p.slug));
+    needsHeal =
+      healLinkJoinedEntries(current).healed.length > 0 ||
+      enrichJoinedClones(current, states).enriched.length > 0;
   } catch (e) {
     result.error = e instanceof Error ? e.message : String(e);
     return result;
@@ -137,9 +169,12 @@ export async function reconcileJoinStates(
   if (needsHeal) {
     try {
       await mutate((cur: HarnessRegistry) => {
-        const { registry, healed } = healLinkJoinedEntries(cur);
-        result.enriched = healed;
-        return registry;
+        // Marked rows first, then bare rows proven link-joined by their record;
+        // a row the first pass completed is a no-op for the second.
+        const marked = healLinkJoinedEntries(cur);
+        const bare = enrichJoinedClones(marked.registry, states);
+        result.enriched = [...marked.healed, ...bare.enriched];
+        return bare.registry;
       }, opts.workspaceId);
     } catch {
       // best-effort — a registry write blip; next boot retries.

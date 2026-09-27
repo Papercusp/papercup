@@ -82,6 +82,44 @@ describe('reconcileJoinStates (P-013)', () => {
     ]);
   });
 
+  it('WI-10003546: completes a BARE registered row (no joined_via_link) at its join-state clone dir', async () => {
+    // The pre-WI-10003277 boot heal wrote `{ slug, path }` with no marker, so
+    // healLinkJoinedEntries alone never recognized it (rig VM hello-world-3-pot).
+    const bareRow = {
+      slug: 'hello-world-3-pot',
+      path: '/clones/hello-world-3-pot',
+      pot_repo_key: 'hello-world-3-pot',
+      pot_repo_key_source: 'local',
+    };
+    const { opts, calls } = fakes([js('hello-world-3-pot', '/clones/hello-world-3-pot')], [], []);
+    calls.registry = [bareRow] as HarnessRegistry['projects'];
+    const r = await reconcileJoinStates(opts);
+    expect(r.enriched).toEqual(['hello-world-3-pot']);
+    expect(r.healedByBoot).toEqual(['hello-world-3-pot']);
+    expect(calls.registry).toEqual([
+      { ...bareRow, joined_via_link: true, harness_kind: 'hive', remote_hive: true, self_repo: true },
+    ]);
+    // Idempotent: the completed row needs nothing on the next boot.
+    const again = await reconcileJoinStates(opts);
+    expect(again.enriched).toEqual([]);
+  });
+
+  it('WI-10003546: a bare same-slug row at a DIFFERENT path is another checkout — never stamped', async () => {
+    let writes = 0;
+    const other = { slug: 'shop', path: '/r/shop' };
+    const r = await reconcileJoinStates({
+      workspaceId: 'ws',
+      listJoinStates: async () => [js('shop', '/clones/shop')],
+      loadRegistry: async () => ({ projects: [other] }),
+      mutateRegistry: (async () => {
+        writes += 1;
+        return undefined as never;
+      }) as never,
+    });
+    expect(r.enriched).toEqual([]);
+    expect(writes).toBe(0);
+  });
+
   it('WI-10003277: no registry write when every link-joined row is already complete', async () => {
     const full = {
       slug: 'papercusp',

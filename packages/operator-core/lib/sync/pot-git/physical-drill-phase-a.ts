@@ -18,7 +18,13 @@ export const PHASE_A_RESULT_SCHEMA = 'hive-git-physical-phase-a-result/v1' as co
 export const PHASE_A_PLAN_ITEM = 'P-302' as const;
 export const PHASE_A_POT_HOME = 'hello-world-3-pot' as const;
 export const PHASE_A_TOWER_GIT_SYNC_SLUG = PHASE_A_POT_HOME;
-export const PHASE_A_VM_GIT_SYNC_SLUG = 'hello-world' as const;
+// The VM joins through the canonical invite LINK (D-061/D-068), which registers
+// the pot's own repo clone under the pot slug in the link-joined shape
+// (joined_via_link + remote_hive + self_repo, WI-10003277) — git-sync eligible,
+// and the entry that owns system:git-sync there. The old joinHiveAsView layout
+// (a repo-less view + a separate 'hello-world' member) no longer exists on the
+// rig after the P-007 fresh join (WI-10003546).
+export const PHASE_A_VM_GIT_SYNC_SLUG = PHASE_A_POT_HOME;
 // The fixed canary's registry pin was re-keyed from the original Hello-World
 // upstream id (gh-1296269) to the self-hive repo id (gh-1303510992). Keep this
 // explicit: the physical drill must target the same immutable bare store the
@@ -31,9 +37,10 @@ export type PhysicalDrillGitSyncSlug =
   | typeof PHASE_A_VM_GIT_SYNC_SLUG;
 
 /**
- * The fixed rig's pot-home slug is not the joiner's runnable member slug.
- * On the VM, hello-world-3-pot is an intentionally ineligible remote-hive
- * view; hello-world is its self_repo member and owns system:git-sync.
+ * The install that owns system:git-sync for the fixed pot on each host. Both
+ * are the pot slug today: the tower is the pot's owner (self_repo home), and the
+ * VM's link join registers the same repo under the same slug. Kept as a function
+ * so a future per-host divergence stays a one-line change.
  */
 export function physicalDrillGitSyncSlug(host: PhysicalDrillHost): PhysicalDrillGitSyncSlug {
   return host === 'tower' ? PHASE_A_TOWER_GIT_SYNC_SLUG : PHASE_A_VM_GIT_SYNC_SLUG;
