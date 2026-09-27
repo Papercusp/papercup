@@ -109,7 +109,8 @@ describe('P-013 workload A fixture', () => {
             child.once('error', (error) => reject(new Error(
               `P-013 cold child ${stage}: ${error.message}; stderr: ${stderr}`)));
             child.once('exit', (code, signal) => code === 0 ? resolve()
-              : reject(new Error(`P-013 cold child ${stage} exited ${code}/${signal}: ${stderr}`)));
+              : reject(new Error(`P-013 cold child ${stage} exited ${code}/${signal} ` +
+                `(${sample ? 'sample received' : 'no sample'}): ${stderr}`)));
           });
           child.on('message', (message: { kind?: string; stage?: string; sample?: P013Sample }) => {
             if (message?.kind === 'p013-stage') stage = message.stage ?? stage;
