@@ -36,6 +36,7 @@
 import { spawn } from 'node:child_process';
 import { collectChildOutput } from '../../child-output.js';
 import { processGroupLifetime } from '../../fleet/process-group-lifetime';
+import { withGitFetchHeadroom } from './git-fetch-headroom';
 import { lstat, open, readFile, readlink, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { mapLiveLockHoldingsForRepo } from './live-lock-coordinates';
@@ -313,6 +314,16 @@ const runGitLocalBounded = (
   });
 
 export const runGitBounded = async (
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+  options: GitRunExecutionOptions = {},
+): Promise<{ code: number; stdout: string; stderr: string }> =>
+  withGitFetchHeadroom(args,
+    (guardedArgs, signal) => runGitBoundedUnchecked(guardedArgs, cwd, timeoutMs, { ...options, signal }),
+    options.signal);
+
+const runGitBoundedUnchecked = async (
   args: string[],
   cwd: string,
   timeoutMs: number,
