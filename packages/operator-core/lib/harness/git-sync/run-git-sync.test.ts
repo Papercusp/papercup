@@ -2253,6 +2253,36 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('WI-10003527: a shallow clone whose HEAD and origin/main are both depth-1 deepens to a merge-base and fast-forwards instead of "refusing to merge unrelated histories"', async () => {
+    // Model the P-203 VM submodule: HEAD is a depth-1 older remote commit, and
+    // origin/main was later fetched at depth 1, so no merge-base exists locally
+    // and a plain `git fetch` (tip already present) never supplies one.
+    const seed = join(root, 'seed');
+    const commit = (name: string) => {
+      writeFileSync(join(seed, `${name}.txt`), `${name}\n`);
+      git(seed, 'add', '-A');
+      git(seed, 'commit', '--no-verify', '-m', name);
+    };
+    commit('c2');
+    git(seed, 'push', 'origin', 'main');
+    const shallowRepo = join(root, 'shallow');
+    git(root, 'clone', '--depth', '1', `file://${originDir}`, shallowRepo);
+    configUser(shallowRepo);
+    for (const n of ['c3', 'c4', 'c5', 'c6']) commit(n);
+    git(seed, 'push', 'origin', 'main');
+    git(shallowRepo, 'fetch', '--depth', '1', 'origin', 'main');
+    const originTip = git(originDir, 'rev-parse', 'main');
+    expect(git(shallowRepo, 'rev-parse', 'origin/main')).toBe(originTip);
+    expect(git(shallowRepo, 'rev-parse', '--is-shallow-repository')).toBe('true');
+    expect(() => git(shallowRepo, 'merge-base', 'HEAD', 'origin/main')).toThrow();
+
+    const out = await runGitSync('test', { repoPath: shallowRepo, config: cfg });
+
+    if (out.status === 'error') throw new Error(out.errors.map((e) => e.message).join('\n'));
+    expect(git(shallowRepo, 'rev-parse', 'HEAD')).toBe(originTip);
+    expect(git(shallowRepo, 'status', '--porcelain')).toBe('');
+  });
+
   it('EI-20216304202023591: failed fetch removes only its fresh interrupted tmp_pack and reports reclaimed bytes', async () => {
     const packDir = join(repo, '.git', 'objects', 'pack');
     mkdirSync(packDir, { recursive: true });

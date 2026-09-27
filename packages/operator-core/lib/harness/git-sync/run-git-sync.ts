@@ -4192,6 +4192,65 @@ export async function bridgeContainedReleaseMain(
   });
 }
 
+/** WI-10003527: `--deepen` rung sizes for {@link deepenShallowUntilMergeBase}; `--unshallow` is the last rung. */
+export const SHALLOW_MERGE_BASE_DEEPEN_RUNGS = [64, 512, 4096] as const;
+
+type ShallowDeepenOutcome =
+  | { status: 'not-shallow' }
+  | { status: 'found'; rung: string }
+  | { status: 'exhausted'; message: string };
+
+/**
+ * WI-10003527: a SHALLOW clone has no merge-base with `<remote>/<branch>` until
+ * enough history is present, and a plain `git fetch` never supplies it once the
+ * remote tip is already local. Measured on the P-203 Mac VM: depth-1 submodules
+ * (HEAD 8564ae4 depth 1, origin/main 4c32764 depth 1, HEAD really 26 commits
+ * behind) failed `git merge` with "refusing to merge unrelated histories" on 55
+ * consecutive ticks, because the merge leg's only no-merge-base recovery was the
+ * installer-seed transplant, which a plain shallow clone never matches.
+ *
+ * Deepen in bounded rungs until `merge-base HEAD <remoteRef>` resolves, ending
+ * with `--unshallow`. If the repo is complete and there is STILL no merge-base,
+ * the histories really are unrelated: report it and let the caller keep that a
+ * loud error (never `--allow-unrelated-histories`).
+ */
+async function deepenShallowUntilMergeBase(
+  runGit: RunGit,
+  repo: string,
+  remote: string,
+  branch: string,
+  remoteRef: string,
+  log: (m: string) => void,
+): Promise<ShallowDeepenOutcome> {
+  const isShallow = async (): Promise<boolean> => {
+    const r = await runGit(['rev-parse', '--is-shallow-repository'], repo);
+    return r.code === 0 && r.stdout.trim() === 'true';
+  };
+  if (!(await isShallow())) return { status: 'not-shallow' };
+  const rungs = [
+    ...SHALLOW_MERGE_BASE_DEEPEN_RUNGS.map((n) => ({ label: `--deepen=${n}`, arg: `--deepen=${n}` })),
+    { label: '--unshallow', arg: '--unshallow' },
+  ];
+  let lastError = '';
+  for (const rung of rungs) {
+    const fetched = await runNetworkGitWithGitHubHttpsFallback(runGit, ['fetch', rung.arg, remote, branch], repo, log);
+    if (fetched.code !== 0) {
+      lastError = `fetch ${rung.label} failed: ${(fetched.stderr || fetched.stdout).trim().slice(0, 240)}`;
+      log(`[git-sync] ${repo}: shallow deepen ${lastError}`);
+      continue;
+    }
+    const base = await runGit(['merge-base', 'HEAD', remoteRef], repo);
+    if (base.code === 0) {
+      log(`[git-sync] ${repo}: shallow repo had no merge-base with ${remoteRef}; ${rung.label} recovered one`);
+      return { status: 'found', rung: rung.label };
+    }
+    if (!(await isShallow())) {
+      return { status: 'exhausted', message: `repo is complete after ${rung.label} and still has no merge-base with ${remoteRef}` };
+    }
+  }
+  return { status: 'exhausted', message: lastError || `no merge-base with ${remoteRef} after every deepen rung` };
+}
+
 /**
  * WI-1416: the RECONCILE+PUSH half of one repo's sync — resolve branch → fetch →
  * merge (handles diverged/behind) → push (one non-FF retry). Replay-safe: a re-run
@@ -4302,7 +4361,14 @@ async function reconcileAndPushOneRepo(
   const remoteRef = `${remote}/${branch}`;
   let seedTransplanted = false;
   const base = await runGit(['merge-base', 'HEAD', remoteRef], repoPath);
-  if (base.code !== 0) {
+  // WI-10003527: a shallow clone first gets the history a merge-base needs; only a
+  // repo that still has none (not shallow, or genuinely unrelated) reaches the seed path.
+  const deepened =
+    base.code !== 0
+      ? await deepenShallowUntilMergeBase(runGit, repoPath, remote, branch, remoteRef, o.log)
+      : null;
+  if (base.code !== 0 && deepened?.status !== 'found') {
+    if (deepened?.status === 'exhausted') o.log(`[git-sync] ${repoPath}: shallow deepen exhausted: ${deepened.message}`);
     const seed = await transplantInstallerSeedSnapshot(runGit, repoPath, remoteRef, remote, o.log);
     if (seed.status === 'error') return { status: 'error', message: seed.message };
     seedTransplanted = seed.status === 'transplanted';
