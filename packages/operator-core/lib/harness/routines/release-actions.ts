@@ -45,6 +45,7 @@ import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-n
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import type { FreezeAndConvergeDisposition } from '../../release/freeze-disposition';
 import { parseTestPassReuseHealth, type TestPassReuseHealth } from '../../release/test-pass-reuse-report';
+import { parseGateRoundPhases, type GateRoundPhases } from '../../release/gate-round-phases';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
 import {
@@ -1165,6 +1166,9 @@ export interface CheckpointVerdict {
    *  this verdict. Re-validated with parseTestPassReuseHealth before it is stored, because the
    *  version-skew fallback reads it back out of JSON. ABSENT ⇒ not reported this round. */
   testPassReuse?: TestPassReuseHealth;
+  /** P-013: structural mirror of CheckpointResult.roundPhases — where this round's time went.
+   *  Re-validated with parseGateRoundPhases before storage. ABSENT ⇒ not measured. */
+  roundPhases?: GateRoundPhases;
   advancedTo?: string;
   /** WI-4494: the CLI sets this when IT recorded the verdict (gate_health + pipeline event).
    *  The routine then MUST NOT record it again — a second `trackGateStall` for one verdict would
@@ -1752,6 +1756,10 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
       alarms: reuse.alarms.length,
     };
   }
+  // P-013: the round's phase breakdown rides the append-only event whole (it is capped at
+  // GATE_ROUND_PHASES_MAX entries), so "where did the time go" is answerable per round.
+  const roundPhases = parseGateRoundPhases(v.roundPhases);
+  if (roundPhases) detail.roundPhases = roundPhases;
   // WI-4957: persist the run identity + exact log reference so /admin/git history (and
   // gate-verdict-freshness's readers) can tell WHICH run produced this row and open its
   // full output directly, instead of only the de-noised failing-test names.
@@ -2133,6 +2141,7 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
       postSuiteMeasured: verdict.postSuiteMeasured,
       postSuiteLegs: verdict.postSuiteLegs,
       testPassReuse: verdict.testPassReuse,
+      roundPhases: verdict.roundPhases,
       repairQueue: verdict.repairQueue,
       repairTickLegs: verdict.repairTickLegs,
     },
@@ -2201,6 +2210,7 @@ export async function recordPendingCheckpointVerdict(
       postSuiteMeasured: verdict.postSuiteMeasured,
       postSuiteLegs: verdict.postSuiteLegs,
       testPassReuse: verdict.testPassReuse,
+      roundPhases: verdict.roundPhases,
       repairQueue: verdict.repairQueue,
     },
   );
@@ -2692,6 +2702,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         postSuiteMeasured: parsed?.postSuiteMeasured,
         postSuiteLegs: parsed?.postSuiteLegs,
         testPassReuse: parsed?.testPassReuse,
+        roundPhases: parsed?.roundPhases,
         repairQueue: parsed?.repairQueue,
         repairTickLegs: parsed?.repairTickLegs,
       },
@@ -3823,6 +3834,8 @@ export async function trackGateStall(
     /** P-013: the verdict's per-file reuse record. `unknown` on purpose — it is shape-checked
      *  here, so a malformed or pre-emitter value is dropped instead of stored. */
     testPassReuse?: unknown;
+    /** P-013: the round's phase breakdown; shape-checked here like testPassReuse. */
+    roundPhases?: unknown;
   } = {},
 ): Promise<void> {
   if (isPinnedCheckpointVerdict(options)) return;
@@ -4424,6 +4437,10 @@ export async function trackGateStall(
   // MERGES, so a round that reported nothing leaves the previous record in place — labelled with
   // its own judgedSha — rather than overwriting it with a zero nobody measured.
   const testPassReuseRecord = parseTestPassReuseHealth(options.testPassReuse);
+  // P-013: unlike testPassReuse, the phase breakdown carries no sha of its own — it describes the
+  // round beside `observedCandidate` — so an unmeasured round CLEARS it (explicit null) instead of
+  // leaving an older round's phases next to a newer candidate.
+  const roundPhasesRecord = parseGateRoundPhases(options.roundPhases);
   // EI-20706962612084953: where `main` is left AFTER this run — the value the NEXT tick
   // compares its live pin against (see `lastObservedMainPin` above). 'advanced' fast-forwards
   // main to the candidate; every non-advancing status leaves it exactly where this run found
@@ -4509,6 +4526,7 @@ export async function trackGateStall(
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
           ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
+          roundPhases: roundPhasesRecord,
           candidateSnapshot: verdictCandidateSnapshot,
           retriageStaleTip: null,
           retriageDetail: null,
@@ -4551,6 +4569,7 @@ export async function trackGateStall(
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
           ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
+          roundPhases: roundPhasesRecord,
           retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
           retriageDetail: retriageBlocked ? retriage!.detail : null,
           retriageClassification: retriage?.classification ?? null,
@@ -5004,6 +5023,7 @@ export async function trackGateStall(
       observedAt: Date.now(),
       observedCandidate: candidate?.slice(0, 12) ?? null,
       ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
+      roundPhases: roundPhasesRecord,
       candidateSnapshot: verdictCandidateSnapshot,
       retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
       retriageDetail: retriageBlocked ? retriage!.detail : null,

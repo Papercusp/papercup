@@ -3226,6 +3226,20 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect('testPassReuse' in bad).toBe(false);
   });
 
+  it('P-013: buildCheckpointDetail carries the round phase breakdown whole, and drops a malformed one', () => {
+    const roundPhases = {
+      totalMs: 90_000,
+      phases: [
+        { phase: 'candidate-suite', ms: 60_000 },
+        { phase: 'other', ms: 30_000 },
+      ],
+      breakdown: 'total 1m 30s: candidate-suite 1m 00s (67%), other 30s (33%)',
+    };
+    expect(buildCheckpointDetail({ reason: 'advanced', green: true, roundPhases }).roundPhases).toEqual(roundPhases);
+    const bad = buildCheckpointDetail({ reason: 'advanced', green: true, roundPhases: { ...roundPhases, totalMs: 0 } });
+    expect('roundPhases' in bad).toBe(false);
+  });
+
   it('P-001: buildCheckpointDetail preserves the producer gate-fire identity or a valid fallback', () => {
     const direct = buildCheckpointDetail(
       { reason: 'advanced', green: true, gateFireId: 'producer-fire' },

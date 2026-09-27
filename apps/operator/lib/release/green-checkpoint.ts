@@ -64,6 +64,10 @@ import {
   buildTestPassReuseHealth,
   type TestPassReuseHealth,
 } from "@papercusp/operator-core/lib/release/test-pass-reuse-report";
+import {
+  buildGateRoundPhases,
+  type GateRoundPhases,
+} from "@papercusp/operator-core/lib/release/gate-round-phases";
 import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
 import { parseTscDiagnostics } from "@papercusp/operator-core/lib/tsc-diagnostics";
 import type { TscDiagnostic } from "@papercusp/operator-core/lib/tsc-diagnostics";
@@ -211,6 +215,7 @@ import {
   formatDominantPhaseClause,
   formatSetupSubPhaseLine,
   summarizeSetupStretch,
+  type SetupStretchStamp,
 } from "./setup-stretch-stamps";
 import { typecheckFailureBanner } from "../gate-artifact-verdict-tail";
 // WI-6441 — the ONE seam that parses vitest's output. Reaching across into `scripts/`
@@ -1575,6 +1580,13 @@ export interface CheckpointResult {
    *  `gate_health.testPassReuse`. It rides every result that carries `postSuiteLegs`, because both
    *  describe the suite that formed this verdict. ABSENT ⇒ not reported this round. */
   testPassReuse?: TestPassReuseHealth;
+  /** P-013: where this round's wall-clock time went — the stamped setup phases, the candidate
+   *  suite, and `other` for everything unstamped, against the whole pass's measured time. Built
+   *  by runGreenCheckpoint; ABSENT ⇒ the round never reached its candidate suite. */
+  roundPhases?: GateRoundPhases;
+  /** Internal carrier from runGreenCheckpointInner to runGreenCheckpoint, which consumes it to
+   *  build `roundPhases` and removes it. Never present on a result that leaves the gate. */
+  roundPhaseStamps?: SetupStretchStamp[];
   /** P-005 / D-008: present ⇒ this candidate advanced with HYGIENE failures outstanding. The
    *  gate promoted because no product-correctness test failed, not because nothing failed —
    *  these are the drafts the caller owes the ledger. Same reasoning as `cleanGreen` directly
@@ -12250,6 +12262,9 @@ async function runGreenCheckpointInner(
         ? { affectedTestProofGroup: repairQueue.affectedTestProofGroup }
         : {}),
     }));
+  // P-013: the candidate suite is the round's main phase. Stamp it into the same recorder the
+  // setup phases use so the round breakdown adds up; never stamped when the suite did not run.
+  if (!earlyPreflightFailure) setupStretch.stamp("candidate-suite", candidateSuiteStartedAtMs);
   // EI-21434759422783893: the best first-confirm predictor is the candidate suite we
   // just measured, not the whole process lifetime. `runStartedAtMs` also includes checkout
   // setup, dependency generation, preflights, and slot waits; using it reduced the admission
@@ -12288,6 +12303,13 @@ async function runGreenCheckpointInner(
     infraFault,
     testPassReuse,
   } = candidateSuiteResult;
+  // P-013: what this round observed about itself, attached once to every result that carries
+  // the suite's verdict. `roundPhaseStamps` is a carrier only: runGreenCheckpoint turns it into
+  // `roundPhases` against the whole pass's measured time and drops it from the public result.
+  const roundObservations: Pick<CheckpointResult, "testPassReuse" | "roundPhaseStamps"> = {
+    ...(testPassReuse ? { testPassReuse } : {}),
+    roundPhaseStamps: [...setupStretch.stamps],
+  };
   const splitPairNote =
     !green && splitSourceTestPairs.length > 0
       ? `\n\n⚠ SPLIT-PAIR SUSPECTED: the quiet-cut candidate contains one half while the sibling's newest commit is outside the cut: ` +
@@ -12454,7 +12476,7 @@ async function runGreenCheckpointInner(
         ...(isolationNote ? { isolationNote } : {}),
         ...(failureShape ? { failureShape } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-        ...(testPassReuse ? { testPassReuse } : {}),
+        ...roundObservations,
       };
     }
   }
@@ -12496,7 +12518,7 @@ async function runGreenCheckpointInner(
       ...(isolationNote ? { isolationNote } : {}),
       ...(failureShape ? { failureShape } : {}),
       ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-      ...(testPassReuse ? { testPassReuse } : {}),
+      ...roundObservations,
     };
   }
   // WI-39450 / WI-39671: publish the verdict NOW, before any optional post-verdict leg can kill
@@ -12644,7 +12666,7 @@ async function runGreenCheckpointInner(
         ...(isolationNote ? { isolationNote } : {}),
         ...(failureShape ? { failureShape } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-        ...(testPassReuse ? { testPassReuse } : {}),
+        ...roundObservations,
       };
     }
     // WI-479091: carries the repair-queue narration to the ORDINARY terminal exit below.
@@ -12924,7 +12946,7 @@ async function runGreenCheckpointInner(
               ...(checkpointEvidence ? { checkpointEvidence } : {}),
               ...(typecheckPreflight ? { typecheckPreflight } : {}),
               ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-              ...(testPassReuse ? { testPassReuse } : {}),
+              ...roundObservations,
             };
             await emitTerminalRed(terminalResult);
             return terminalResult;
@@ -13067,7 +13089,7 @@ async function runGreenCheckpointInner(
         ...(failureShape ? { failureShape } : {}),
         ...(lineage ? { lineage } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-        ...(testPassReuse ? { testPassReuse } : {}),
+        ...roundObservations,
       });
     // WI-2997 (EI-7443 follow-up): best-effort 7d historical flake annotation for
     // the failing file(s) — purely informational, same fail-soft shape as the
@@ -14195,7 +14217,7 @@ async function runGreenCheckpointInner(
         ...(deps.runId ? { runId: deps.runId } : {}),
         ...(logPath ? { logPath } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-        ...(testPassReuse ? { testPassReuse } : {}),
+        ...roundObservations,
       };
     }
     deps.log(
@@ -14244,7 +14266,7 @@ async function runGreenCheckpointInner(
         ...(deps.runId ? { runId: deps.runId } : {}),
         ...(logPath ? { logPath } : {}),
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-        ...(testPassReuse ? { testPassReuse } : {}),
+        ...roundObservations,
       });
     }
 
@@ -14419,7 +14441,7 @@ async function runGreenCheckpointInner(
     ...(repairQueue ? { repairQueue } : {}),
     ...(logPath ? { logPath } : {}),
     ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-    ...(testPassReuse ? { testPassReuse } : {}),
+    ...roundObservations,
   };
 }
 
@@ -14752,7 +14774,21 @@ export async function runGreenCheckpoint(
     ...(diagnostic ? { diagnostic } : {}),
     ...(deps.gateFireId ? { gateFireId: deps.gateFireId } : {}),
   };
-  const result = await runGreenCheckpointInner(cfg, deps, innerOpts);
+  const { roundPhaseStamps, ...innerResult } = await runGreenCheckpointInner(
+    cfg,
+    deps,
+    innerOpts,
+  );
+  // P-013: the round's phase breakdown, against this whole pass's measured time. Built HERE
+  // rather than at each of the inner function's result sites, so `other` covers every step after
+  // the candidate suite (re-runs, salvage, promotion) whichever branch the pass took.
+  const roundPhases = roundPhaseStamps
+    ? buildGateRoundPhases(roundPhaseStamps, Date.now() - admissionPassStartedAtMs)
+    : null;
+  if (roundPhases) deps.log(`GATE_ROUND_PHASES ${roundPhases.breakdown}`);
+  const result: CheckpointResult = roundPhases
+    ? { ...innerResult, roundPhases }
+    : innerResult;
   const judgedRepairHead = result.repairVerificationHead ?? result.candidate;
   const repairIdentity = result.repairQueue
     ? buildFrozenRepairStatusIdentity(result.repairQueue)

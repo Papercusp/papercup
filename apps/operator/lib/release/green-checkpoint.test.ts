@@ -8064,6 +8064,11 @@ describe("runGreenCheckpoint", () => {
       const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
       expect(r).toMatchObject({ advanced: true, green: true });
       expect(r.testPassReuse).toEqual(reuse);
+      // The round's phase breakdown is built once, against the whole pass: the candidate suite
+      // is stamped, the parts add up to the total, and the internal carrier never leaks out.
+      expect(r.roundPhases?.phases.map((p) => p.phase)).toContain("candidate-suite");
+      expect(r.roundPhases?.phases.reduce((sum, p) => sum + p.ms, 0)).toBe(r.roundPhases?.totalMs);
+      expect("roundPhaseStamps" in r).toBe(false);
     });
 
     it("carries it onto a RED verdict", async () => {
@@ -8083,6 +8088,8 @@ describe("runGreenCheckpoint", () => {
       const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
       expect(r.green).toBe(false);
       expect(r.testPassReuse).toEqual(reuse);
+      expect(r.roundPhases?.phases.map((p) => p.phase)).toContain("candidate-suite");
+      expect("roundPhaseStamps" in r).toBe(false);
     });
 
     it("leaves it ABSENT when the round reported nothing — never a zero", async () => {

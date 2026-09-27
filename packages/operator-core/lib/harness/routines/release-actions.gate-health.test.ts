@@ -2382,4 +2382,24 @@ describe('P-013 (gate-file-level-test-reuse-2026-09-27): gate_health.testPassReu
     expect(written).not.toBeNull();
     expect('testPassReuse' in written!).toBe(false);
   });
+
+  it.each([
+    ['a green verdict', 'advanced'],
+    ['a red verdict', 'not-green'],
+  ])('⭐ stores the round phase breakdown on %s, and an unmeasured round CLEARS it', async (_label, status) => {
+    const roundPhases = {
+      totalMs: 3_000_000,
+      phases: [
+        { phase: 'candidate-suite', ms: 2_400_000 },
+        { phase: 'other', ms: 600_000 },
+      ],
+      breakdown: 'total 50m 00s: candidate-suite 40m 00s (80%), other 10m 00s (20%)',
+    };
+    await trackGateStall(ctx, status, undefined, undefined, null, undefined, null, undefined, { roundPhases });
+    expect(lastGateHealthWrite()?.roundPhases).toEqual(roundPhases);
+    // No sha of its own: leaving it would pair an old round's phases with a newer candidate.
+    seededGh = { consecutiveReds: 0, lastGreenAt: Date.now(), roundPhases };
+    await trackGateStall(ctx, status, undefined, undefined, null, undefined, null, undefined, {});
+    expect(lastGateHealthWrite()?.roundPhases).toBeNull();
+  });
 });
