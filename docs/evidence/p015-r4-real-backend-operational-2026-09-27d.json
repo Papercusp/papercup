@@ -14,7 +14,7 @@
   ],
   "startedAt": "2026-09-27T14:44:39.976Z",
   "finishedAt": "2026-09-27T14:48:02.277Z",
-  "timeBasis": "Start is the capability task ledger started_at of the launching job (0mujtiq6c1brvv8b16v); finish is the raw evidence artifact mtime written when the driver passed. Teardown is outside this interval.",
+  "timeBasis": "Start is the start of the launching capability:bash task 0mujxjm301fop4vrugf (its ledger deadline 15:44:39.976Z minus its 3600000 ms timeout; rig4.log START 14:44:40Z); finish is the raw evidence artifact mtime written when the driver passed. Teardown is outside this interval.",
   "summary": "Current-build real pointer select/review/switch/rollback, URL recovery, provider boundary, forced CAS failure retaining state, retry and SSE invalidation passed. Fixture delivery was confirmed through production delivery ledger. Six exact source hashes matched the immutable operator snapshot after the final selected-model launch repair. This run adds a rendered review diff (201 rows) and proves that no identity outside the applied stack is shown as applied, both at review and after a switch is requested (the driver now reads the Library tab for alternatives and the agent tab for the applied stack).",
   "subject": {
     "ownerId": "p015-r4-owned-3066780-1790520399252",
@@ -71,7 +71,7 @@
       "sha256": "f4110069e2c82e2bb98add71d9fadf1102cca81f9e5dfd5a8a43c27668b8f946"
     }
   ],
-  "snapshotSourceCheckedAt": "2026-09-27T14:55:03.408Z",
+  "snapshotSourceCheckedAt": "2026-09-27T14:59:34.160Z",
   "bootDriverSha256": "3c1212f4a52e757f509eb443a72be82fec3aca3191c8ea3f48562c3deb257544",
   "rawEvidence": {
     "path": ".papercusp/scratch/r4-0927/run4/evidence.json",
