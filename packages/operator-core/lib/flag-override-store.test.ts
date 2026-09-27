@@ -170,7 +170,7 @@ describe('installFlagOverrideStore', () => {
 describe('every standalone sidecar installs the override store (the actual regression guard)', () => {
   const ENTRYPOINTS: Array<{ file: string[]; startMarker: string; what: string }> = [
     { file: ['inference-gateway', 'sidecar-main.ts'], startMarker: 'await startGatewayService(', what: 'inference gateway' },
-    { file: ['fleet', 'spawner-sidecar-server.ts'], startMarker: 'server.listen(', what: 'spawner sidecar' },
+    { file: ['fleet', 'spawner-sidecar-server.ts'], startMarker: 'listenUnixSocketExclusive(server', what: 'spawner sidecar' },
     { file: ['sync', 'hyperbee', 'substrate-sidecar-server.ts'], startMarker: 'server.listen(', what: 'substrate sidecar' },
   ];
 
