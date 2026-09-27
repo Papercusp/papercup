@@ -8,6 +8,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   CURRENT_BUILD_TEST_CLASSES,
+  currentBuildRoutesForRuntime,
+  currentBuildTestRoute,
   SERVING_RUNTIME_IDS,
   describeServingRuntimes,
   evaluateServingRuntime,
@@ -52,13 +54,27 @@ const vintage = (over: Partial<RuntimeVintageRow>): RuntimeVintageRow => ({
 });
 
 describe('runtime selection', () => {
+  it('selects a concrete test class without promoting a background gap into staging readiness', () => {
+    expect(currentBuildTestRoute('operator-api')).toMatchObject({
+      runtime: 'staging-operator',
+      readiness: 'ready',
+    });
+    expect(currentBuildRoutesForRuntime('bg-host')).toMatchObject([
+      { id: 'background-federation', readiness: 'requires-prerequisites' },
+    ]);
+    expect(currentBuildRoutesForRuntime('desktop-shell').map(({ id }) => id))
+      .toEqual(['migration', 'desktop-native', 'candidate-install-upgrade']);
+    expect(currentBuildRoutesForRuntime('release-operator')).toEqual([]);
+    expect(currentBuildTestRoute('unrecognized')).toBeNull();
+  });
+
   it('keeps pre-release route gaps explicit instead of claiming :3170 covers every class', () => {
     expect(CURRENT_BUILD_TEST_CLASSES.map(({ id }) => id)).toEqual([
       'unit-integration', 'operator-api', 'background-federation', 'migration',
       'desktop-native', 'multi-machine-p2p-git', 'candidate-install-upgrade', 'final-release',
     ]);
     expect(CURRENT_BUILD_TEST_CLASSES.filter(({ readiness }) => readiness === 'gap').map(({ id }) => id))
-      .toEqual(['background-federation', 'candidate-install-upgrade']);
+      .toEqual(['candidate-install-upgrade']);
     expect(CURRENT_BUILD_TEST_CLASSES.find(({ id }) => id === 'final-release')?.readiness).toBe('release-only');
   });
 

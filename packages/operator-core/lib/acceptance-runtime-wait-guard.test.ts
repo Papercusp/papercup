@@ -197,6 +197,8 @@ describe('advisory construction', () => {
     const advisory = buildAcceptancePlaneAdvisory(bars);
     expect(advisory).toMatch(/bg-host: psu-pty-plan#R-1, psu-pty-plan#R-3 \(inferred\)/);
     expect(advisory).toMatch(/None of your held bars needs the release operator/);
+    expect(advisory).toMatch(/background-federation: node scripts\/with-test-pg\.mjs --isolated-runtime/);
+    expect(advisory).toMatch(/Disposable migrated DB, HOME\/device keychain/);
     expect(advisory).toMatch(/Registered anyway/);
   });
 
@@ -223,6 +225,7 @@ describe('advisory construction', () => {
       ]),
     );
     expect(buildAcceptancePlaneAdvisory(bars)).toMatch(/Only psu-pty-plan#R-9 genuinely need the release operator/);
+    expect(buildAcceptancePlaneAdvisory(bars)).toMatch(/operator-api: http:\/\/127\.0\.0\.1:3170/);
   });
 });
 

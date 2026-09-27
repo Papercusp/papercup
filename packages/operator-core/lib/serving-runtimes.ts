@@ -183,12 +183,12 @@ export const CURRENT_BUILD_TEST_CLASSES = [
     id: 'background-federation',
     source: 'canonical tree loaded by bg-host, not the :3170 API bundle',
     runtime: 'bg-host',
-    route: 'isolated current-build background child (P-003)',
-    routeFile: null,
-    isolation: 'No dedicated staging background/database/identity/IPC ownership yet.',
-    prerequisites: ['Private database and workspace identity', 'private IPC endpoints and cleanup receipt'],
-    verification: 'Child build identity, actual background behavior and no live-state writes.',
-    readiness: 'gap',
+    route: 'node scripts/with-test-pg.mjs --isolated-runtime -- <current-build background assertion>',
+    routeFile: 'scripts/with-test-pg.mjs',
+    isolation: 'Disposable migrated DB, HOME/device keychain, workspace and ports; runtime credentials stripped.',
+    prerequisites: ['Current-build background command', 'local embedded PG and migration assets', 'explicit teardown assertion'],
+    verification: 'Actual child environment and build identity, background behavior, private-state write and cleanup receipt.',
+    readiness: 'requires-prerequisites',
   },
   {
     id: 'migration',
@@ -256,6 +256,19 @@ export const CURRENT_BUILD_TEST_CLASSES = [
   verification: string;
   readiness: 'ready' | 'requires-prerequisites' | 'gap' | 'release-only';
 }>;
+
+export type CurrentBuildTestClassId = (typeof CURRENT_BUILD_TEST_CLASSES)[number]['id'];
+export type CurrentBuildTestRoute = (typeof CURRENT_BUILD_TEST_CLASSES)[number];
+
+/** One maintained route, or null for a caller spelling we have not audited. */
+export function currentBuildTestRoute(id: string): CurrentBuildTestRoute | null {
+  return CURRENT_BUILD_TEST_CLASSES.find((route) => route.id === id) ?? null;
+}
+
+/** An owning runtime may serve more than one test class; never infer universal readiness. */
+export function currentBuildRoutesForRuntime(runtime: ServingRuntimeId): CurrentBuildTestRoute[] {
+  return CURRENT_BUILD_TEST_CLASSES.filter((route) => route.runtime === runtime && route.readiness !== 'release-only');
+}
 
 /** The runtimes that EXECUTE code classified to an ownership host. */
 export function runtimesForHost(host: RuntimeHost): ServingRuntimeId[] {
