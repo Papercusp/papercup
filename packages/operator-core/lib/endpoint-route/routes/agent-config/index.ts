@@ -160,6 +160,13 @@ export default [
       // full-body shape; config:terminal-emulator is the explicit clear/set
       // surface, so an unrelated model edit cannot silently reset it.
       const current = await readAgentConfig();
+      // GET projects "no preference" as terminal:'' — so a client that
+      // round-trips the GET document echoes a blank back. A blank is NOT a
+      // value the parser dropped (WI-10003430: every fresh hosted host 422'd
+      // its own GET output), and like an absent field it must not clear a
+      // preference set via config:terminal-emulator.
+      const terminalBlank =
+        body.terminal == null || (typeof body.terminal === 'string' && body.terminal.trim() === '');
       const next: AgentConfig = {
         backend:
           body.backend === 'claude-code' || body.backend === 'omp' || body.backend === 'codex' ? body.backend : 'auto',
@@ -177,7 +184,7 @@ export default [
         surfaceModels: parseSurfaceModels(body.surfaceModels),
         tiers: parseTiers(body.tiers),
         tierCeilings: parseTierCeilings(body.tierCeilings, body.tiers),
-        terminal: body.terminal === undefined ? (current.terminal ?? '') : parseTerminalEmulator(body.terminal),
+        terminal: terminalBlank ? (current.terminal ?? '') : parseTerminalEmulator(body.terminal),
         resolverProfiles:
           body.resolverProfiles === undefined
             ? current.resolverProfiles
@@ -209,7 +216,7 @@ export default [
       if (body.tierCeilings != null && sentCount(body.tierCeilings) !== Object.keys(next.tierCeilings ?? {}).length) {
         dropped.push('tierCeilings: a ceiling names a tier absent from the menu');
       }
-      if (body.terminal != null && !next.terminal) {
+      if (!terminalBlank && !next.terminal) {
         dropped.push('terminal: must be a binary name, not a path or shell command');
       }
       if (body.resolverProfiles !== undefined) {

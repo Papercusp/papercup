@@ -245,6 +245,37 @@ describe('POST /agent-config strict save', () => {
     expect(written.resolverProfiles).toEqual(VALID_BODY.resolverProfiles);
   });
 
+  // WI-10003430: a host with no terminal preference (every fresh hosted
+  // workspace) projects terminal:'' on GET; saving that same document back
+  // was refused 422 "would silently drop: terminal".
+  it('accepts its own GET document back on a host with no terminal preference', async () => {
+    readMock.mockResolvedValue({ ...(await readMock()), terminal: '' });
+    const got = (await (await callGet()).json()) as { config: Record<string, unknown> };
+    expect(got.config.terminal).toBe('');
+    const res = await callPost(got.config);
+    expect(res.status).toBe(200);
+    expect(writeMock).toHaveBeenCalledTimes(1);
+    expect((writeMock.mock.calls[0][0] as { terminal: string }).terminal).toBe('');
+  });
+
+  it('treats a blank terminal like an absent one: keeps the stored preference', async () => {
+    readMock.mockResolvedValue({ ...(await readMock()), terminal: 'kitty' });
+    for (const blank of ['', '   ', null]) {
+      writeMock.mockClear();
+      const res = await callPost({ ...VALID_BODY, terminal: blank });
+      expect(res.status).toBe(200);
+      expect((writeMock.mock.calls[0][0] as { terminal: string }).terminal).toBe('kitty');
+    }
+  });
+
+  it('still rejects a non-blank terminal the parser would drop', async () => {
+    const res = await callPost({ ...VALID_BODY, terminal: '/usr/bin/kitty --hold' });
+    expect(res.status).toBe(422);
+    expect(writeMock).not.toHaveBeenCalled();
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toMatch(/terminal/);
+  });
+
   it('rejects (422, no write) a tier row the parser would drop', async () => {
     const res = await callPost({ ...VALID_BODY, tiers: [{ name: 'fast', spec: 'has space' }] });
     expect(res.status).toBe(422);
