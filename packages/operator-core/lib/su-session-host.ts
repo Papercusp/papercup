@@ -92,9 +92,9 @@ export interface SuSessionHostOptions<B extends SuSessionBackend> {
   executeCommand?: SuSessionCommandExecutor<B>;
   /** Live transports can withdraw readiness when their engine stream closes. */
   runtimeReady?: () => boolean;
-  /** Persist the descriptor after every identity/lifecycle mutation. The
-   * callback is deliberately fire-and-forget so a PG outage never blocks the
-   * live event stream; the adv row remains the authoritative identity. */
+  /** Persist changed descriptor snapshots in order, coalescing pending changes.
+   * Persistence never blocks the live stream; persistDescriptorNow is the
+   * explicit durability barrier for native identity materialization. */
   persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | boolean | Promise<void | boolean>;
   /**
    * How this host's runtime was reconciled against the durable adv row when it
@@ -247,6 +247,11 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
   private descriptorValue: SuSessionDescriptor<B>;
   private activeCommands = 0;
   private disposed = false;
+  private descriptorWrite: Promise<void> | null = null;
+  private descriptorWriteKey: string | undefined;
+  private descriptorWriteRevision = 0;
+  private pendingDescriptorWrite: { descriptor: SuSessionDescriptor<B>; key: string; revision: number } | null = null;
+  private descriptorWriteWaiters: Array<{ revision: number; resolve: (ok: boolean) => void }> = [];
 
   constructor(options: SuSessionHostOptions<B>) {
     validateDescriptor(options.descriptor);
@@ -326,13 +331,44 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
    * must reach the adv row before a fast process exit can trigger archival.
    */
   async persistDescriptorNow(): Promise<boolean> {
+    if (!this.persistDescriptor) return true;
+    const revision = this.queueDescriptorWrite(true);
+    return new Promise<boolean>((resolve) => { this.descriptorWriteWaiters.push({ revision, resolve }); });
+  }
+
+  private queueDescriptorWrite(force = false): number {
+    if (!this.persistDescriptor) return this.descriptorWriteRevision;
+    const descriptor = this.descriptor();
+    const key = canonicalJson(descriptor);
+    if (!force && key === this.descriptorWriteKey) return this.descriptorWriteRevision;
+    this.descriptorWriteKey = key;
+    const revision = ++this.descriptorWriteRevision;
+    this.pendingDescriptorWrite = { descriptor, key, revision };
+    this.drainDescriptorWrites();
+    return revision;
+  }
+
+  private drainDescriptorWrites(): void {
+    if (this.descriptorWrite || !this.persistDescriptor) return;
     const persist = this.persistDescriptor;
-    if (!persist) return true;
-    try {
-      return (await persist(this.descriptor())) !== false;
-    } catch {
-      return false;
-    }
+    // Start in a microtask so synchronous event bursts collapse to their latest
+    // snapshot and durability waiters register before any write can settle.
+    this.descriptorWrite = Promise.resolve().then(async () => {
+      while (this.pendingDescriptorWrite) {
+        const next = this.pendingDescriptorWrite;
+        this.pendingDescriptorWrite = null;
+        let ok = false;
+        try { ok = (await persist(next.descriptor)) !== false; } catch { /* best-effort stream persistence */ }
+        if (!ok && this.descriptorWriteKey === next.key) this.descriptorWriteKey = undefined;
+        const settled = this.descriptorWriteWaiters.filter((waiter) => waiter.revision <= next.revision);
+        this.descriptorWriteWaiters = this.descriptorWriteWaiters.filter((waiter) => waiter.revision > next.revision);
+        for (const waiter of settled) waiter.resolve(ok);
+      }
+    }).finally(() => {
+      this.descriptorWrite = null;
+      // A mutation can arrive between the drain settling and this finally.
+      if (this.pendingDescriptorWrite) this.drainDescriptorWrites();
+    });
   }
 
   snapshot(): SuSessionHostSnapshot<B> {
@@ -411,16 +447,11 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
       } as SuSessionDescriptor<B>;
     }
 
-    // Descriptor persistence is intentionally after local validation and
-    // before publication. A failed best-effort write cannot make the stream
-    // disappear, while a successful write means a restart can rehydrate the
-    // same agent-chat/adv/native identity and runtime generation.
-    try {
-      const persist = this.persistDescriptor;
-      if (persist) void Promise.resolve(persist(this.descriptor())).catch(() => undefined);
-    } catch {
-      // A persistence callback is bookkeeping, never a reason to drop a live
-      // session event or command acknowledgement.
+    // Transcript chunks, tool updates and receipts do not change the descriptor.
+    // Writing them used to create one overlapping adv_sessions UPDATE per event,
+    // competing with command acceptance and allowing older snapshots to win.
+    if (event.type === 'lifecycle' || event.type === 'session' || event.type === 'backend') {
+      this.queueDescriptorWrite();
     }
 
     const id = this.channel.publish(event);

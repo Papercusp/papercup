@@ -99,6 +99,64 @@ function eventTypes(host: SuSessionHost<'claude'>): string[] {
   return host.recent.map(({ event }) => event.type);
 }
 
+describe('descriptor persistence under streaming output', () => {
+  it('keeps one write in flight and persists the latest descriptor after a burst', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const persist = vi.fn(async (_snapshot: SuSessionDescriptor<'claude'>) => {
+      if (persist.mock.calls.length === 1) await held;
+      return true;
+    });
+    const host = new SuSessionHost({ descriptor: descriptor(), persistDescriptor: persist });
+    try {
+      await Promise.resolve();
+      expect(persist).toHaveBeenCalledTimes(1);
+      host.transition('running');
+      for (let i = 0; i < 100; i++) {
+        host.emit({ type: 'transcript', role: 'assistant', phase: 'delta', content: String(i), turnId: 'turn-1' });
+      }
+      host.transition('waiting-for-owner');
+      host.transition('ended');
+      expect(host.recent.at(-1)?.event).toMatchObject({ type: 'lifecycle', state: 'ended' });
+      expect(persist).toHaveBeenCalledTimes(1);
+      let settled = false;
+      const barrier = host.persistDescriptorNow().then((ok) => { settled = true; return ok; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      release();
+      await expect(barrier).resolves.toBe(true);
+      expect(persist.mock.calls.map(([snapshot]) => snapshot.lifecycle)).toEqual(['starting', 'ended']);
+    } finally {
+      release();
+      host.dispose();
+    }
+  });
+
+  it('does not rewrite an unchanged descriptor for transcript or receipt events', async () => {
+    const persist = vi.fn(async (_snapshot: SuSessionDescriptor<'claude'>) => true);
+    const host = new SuSessionHost({ descriptor: descriptor(), persistDescriptor: persist });
+    try {
+      await host.persistDescriptorNow();
+      persist.mockClear();
+      host.emit({ type: 'transcript', role: 'assistant', phase: 'delta', content: 'hello', turnId: 'turn-1' });
+      host.emit({ type: 'command_result', commandId: 'cmd', commandType: 'owner_turn', status: 'accepted' });
+      host.emit({ type: 'session', descriptor: host.descriptor() });
+      await Promise.resolve();
+      expect(persist).not.toHaveBeenCalled();
+    } finally { host.dispose(); }
+  });
+
+  it('reports a failed durability barrier and permits an explicit retry', async () => {
+    const persist = vi.fn(async (_snapshot: SuSessionDescriptor<'claude'>) => true)
+      .mockRejectedValueOnce(new Error('database unavailable'));
+    const host = new SuSessionHost({ descriptor: descriptor(), persistDescriptor: persist });
+    try {
+      await expect(host.persistDescriptorNow()).resolves.toBe(false);
+      await expect(host.persistDescriptorNow()).resolves.toBe(true);
+    } finally { host.dispose(); }
+  });
+});
+
 describe('runtime-assigned native identity', () => {
   it('reattaches a restored host on its existing stream with the same identity and receipts', async () => {
     const saved = { ...descriptor(), lifecycle: 'ended' as const };
