@@ -293,3 +293,42 @@ export function parseTestPassReuseHealth(value: unknown): TestPassReuseHealth | 
     headline: v.headline,
   };
 }
+
+/** Storage caps for `gate_health.testPassReuse`. The headline keeps the full alarm COUNT, so a
+ *  capped list never hides how many alarms fired — it only bounds the blob. */
+export const TEST_PASS_REUSE_HEALTH_MAX_ALARMS = 20;
+const HEALTH_HEADLINE_MAX_CHARS = 400;
+const HEALTH_ALARM_FIELD_MAX_CHARS = 300;
+
+/**
+ * P-013 runner half: the one record the gate keeps per suite round. The producer (the real
+ * `runGreen` in green-checkpoint.ts) builds it from the suite's OWN output — never the post-suite
+ * legs or an isolation re-run, which would double-count a task — and stamps the sha that suite
+ * actually ran at, so a reader never pairs one round's numbers with another round's verdict.
+ *
+ * Returns null when the round reported nothing (a candidate that predates the emitter, an early
+ * preflight abort) or when the sha is not a commit id. Null means NOT REPORTED, never "zero
+ * reused": the recorder then leaves the previous round's record in place, labelled with its own
+ * sha, rather than writing a zero that nobody measured.
+ */
+export function buildTestPassReuseHealth(
+  suiteOutput: string,
+  judgedSha: string | null | undefined,
+  recordedAtMs: number,
+): TestPassReuseHealth | null {
+  if (!judgedSha || !/^[0-9a-f]{7,64}$/.test(judgedSha)) return null;
+  if (!isCount(recordedAtMs)) return null;
+  const runs = parseTestPassReuse(suiteOutput);
+  if (runs.length === 0) return null;
+  const summary = summarizeTestPassReuse(runs);
+  const clip = (s: string) => s.slice(0, HEALTH_ALARM_FIELD_MAX_CHARS);
+  return {
+    ...summary,
+    alarms: summary.alarms
+      .slice(0, TEST_PASS_REUSE_HEALTH_MAX_ALARMS)
+      .map((a) => ({ ws: clip(a.ws), file: clip(a.file), proof: clip(a.proof) })),
+    headline: summary.headline.slice(0, HEALTH_HEADLINE_MAX_CHARS),
+    judgedSha,
+    recordedAtMs,
+  };
+}
