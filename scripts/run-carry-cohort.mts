@@ -174,7 +174,7 @@ const provider = {
 
 function freezeManifest() {
   // A frozen root binds committed instruments. A local dirty edit would make
-  git hash-object and gitHeadAtFreeze disagree before the first charged turn.
+  // git hash-object and gitHeadAtFreeze disagree before the first charged turn.
   for (const path of instrumentPaths) {
     const working = git('hash-object', path);
     let committed: string;
@@ -415,7 +415,7 @@ async function runSource(sourceId: string, pilot: boolean) {
     now: () => processMonotonicClock.now(),
     sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
     log,
-    admit,
+    admit: ({ sourceId: admittedSourceId, armIds }) => admit(admittedSourceId, armIds),
     afterPreparation: async ({ threadId, turnId }) => {
       activePreparations.set(sourceId, { threadId, home });
       await ingestHome(home);
