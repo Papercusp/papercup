@@ -939,6 +939,41 @@ describe('session-port managed seed + native persistence helpers', () => {
     expect(existsSync(sock)).toBe(false);
   }, 10_000);
 
+  it('checks role MCP connection before sending a fresh headless Claude kickoff', async () => {
+    const ownerId = `su-role-mcp-ready-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const frame = '\n❯\u00a0\x1b[2mTry\x1b[7G"how\x1b[12Gdoes\x1b[17Gtooldef\x1b[25Gwork?"\x1b[22m\n';
+    const childCode =
+      `process.stdout.write(${JSON.stringify(frame)});` +
+      "process.stdin.setEncoding('utf8');let input='',dialog=false;" +
+      "process.stdin.on('data',d=>{input+=d;if(!dialog&&/\\/mcp[\\r\\n]/.test(input)){dialog=true;process.stdout.write('MCP_DIALOG\\n❯ 1. papercusp connected\\n');}if(input.includes('BEGIN_ROLE_KICKOFF')){process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),50);}});" +
+      'setTimeout(()=>process.exit(2),10000);';
+    const done = hostThroughPty({
+      command: execPath, args: ['-e', childCode], cwd: '/tmp',
+      env: {
+        ...process.env, PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude',
+        PAPERCUSP_ROLE: 'judge', PAPERCUSP_PSU_HEADLESS: '1', TERM: 'xterm-256color',
+        PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+        PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '50',
+      },
+      ownerId, io, bridgeTty: false, kickoff: 'BEGIN_ROLE_KICKOFF',
+      signalSource: new EventEmitter(), onExit: () => undefined,
+    });
+    try {
+      const exitCode = await done;
+      const output = captured();
+      expect(output).toContain('MCP_DIALOG');
+      expect(output).toContain('KICKOFF_RECEIVED');
+      expect(output.indexOf('MCP_DIALOG')).toBeLessThan(output.indexOf('KICKOFF_RECEIVED'));
+      expect(exitCode).toBe(0);
+      expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8')).toContain('launch-role-mcp-ready');
+    } finally {
+      if (existsSync(sock)) await rawInject(sock, '\x04');
+    }
+  }, 15_000);
+
   it('auto-advances the headless Claude theme and Security notes prompts exactly once', async () => {
     const ownerId = `su-headless-onboarding-itest-${process.pid}-${Math.floor(performance.now())}`;
     const sock = socketPathFor(ownerId);
