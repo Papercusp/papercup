@@ -96,6 +96,41 @@ function previousGeneration(head: string): string {
   throw new Error(`no commit before ${head} carries the release tooling; two committed generations are required`);
 }
 
+/**
+ * Mutation-probe seam (WI-10003500). The packager reads only committed git, so a
+ * copy-out mutant can reach an archive only as a commit. With
+ * PUI_PUBLIC_PACKAGE_SUBJECT (a file, `{}` in scripts/mutation-probe.sh) and
+ * PUI_PUBLIC_PACKAGE_SUBJECT_PATH (the repo-relative path it stands in for), the
+ * suite packages a SIBLING of `head`: same parents, same dates, same tree except
+ * that one blob. It is written through a private index as a dangling commit, so
+ * no ref, the shared index and the worktree are all untouched. Unset, `head` is
+ * returned unchanged.
+ */
+function subjectGeneration(head: string, work: string): string {
+  const subject = process.env.PUI_PUBLIC_PACKAGE_SUBJECT;
+  if (!subject) return head;
+  const subjectPath = process.env.PUI_PUBLIC_PACKAGE_SUBJECT_PATH;
+  if (!subjectPath) {
+    throw new Error('PUI_PUBLIC_PACKAGE_SUBJECT needs PUI_PUBLIC_PACKAGE_SUBJECT_PATH (the repo-relative path it replaces)');
+  }
+  const mode = git('ls-tree', head, '--', subjectPath).split(/\s/)[0];
+  if (!/^100(644|755)$/.test(mode ?? '')) throw new Error(`${subjectPath} is not a regular file in ${head}`);
+  const env = {
+    ...process.env,
+    GIT_INDEX_FILE: path.join(work, 'subject-generation.index'),
+    GIT_AUTHOR_NAME: 'pui mutation probe', GIT_AUTHOR_EMAIL: 'probe@papercusp.invalid',
+    GIT_COMMITTER_NAME: 'pui mutation probe', GIT_COMMITTER_EMAIL: 'probe@papercusp.invalid',
+    GIT_AUTHOR_DATE: git('show', '-s', '--format=%aI', head),
+    GIT_COMMITTER_DATE: git('show', '-s', '--format=%cI', head),
+  };
+  const scoped = (...args: string[]) => execFileSync('git', ['-C', REPO_ROOT, ...args], { encoding: 'utf8', env }).trim();
+  scoped('read-tree', head);
+  const blob = scoped('hash-object', '-w', path.resolve(subject));
+  scoped('update-index', '--cacheinfo', `${mode},${blob},${subjectPath}`);
+  const parents = git('rev-parse', `${head}^@`).split('\n').filter(Boolean).flatMap((parent) => ['-p', parent]);
+  return scoped('commit-tree', scoped('write-tree'), ...parents, '-m', `pui mutation-probe subject ${subjectPath}`);
+}
+
 async function closedPort(): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -288,7 +323,7 @@ beforeAll(async () => {
     symlinkSync(execFileSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim(), path.join(TOOLS, tool));
   }
   NO_OPERATOR_PORT = await closedPort();
-  HEAD = git('rev-parse', 'HEAD');
+  HEAD = subjectGeneration(git('rev-parse', 'HEAD'), WORK);
   const previous = previousGeneration(HEAD);
   A = packageAt(previous, path.join(WORK, 'dist-a'));
   B = packageAt(HEAD, path.join(WORK, 'dist-b'));

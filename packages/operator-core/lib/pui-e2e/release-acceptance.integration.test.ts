@@ -12,7 +12,7 @@
  * of the stage: this file's own sha256 of the installed file and the archive's
  * own CONTENTS.sha256.
  */
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
@@ -23,9 +23,14 @@ import type {
 } from './release-acceptance';
 import { runReleaseAcceptance } from './release-acceptance-run';
 
-// Mutation-probe seam (copy-out tier): PUI_RELEASE_ACCEPTANCE_SUBJECT points this suite at a
-// mutated copy of release-acceptance.ts so a caught mutant proves the R-10/R-14 checks are
-// falsifiable without touching the shared tree. Unset, the suite loads the real module.
+// Mutation-probe seam (copy-out tier): PUI_RELEASE_ACCEPTANCE_SUBJECT substitutes a mutated
+// copy of release-acceptance.ts for EVERY importer — this suite and release-acceptance-run.ts,
+// whose runReleaseAcceptance applies the qualification rules the R-12 journey asserts — so a
+// caught mutant proves the R-10/R-12/R-14 checks are falsifiable without touching the shared
+// tree. Unset, every importer loads the real module.
+vi.mock('./release-acceptance', async (original) => (process.env.PUI_RELEASE_ACCEPTANCE_SUBJECT
+  ? import(process.env.PUI_RELEASE_ACCEPTANCE_SUBJECT)
+  : original<object>()));
 const subject: typeof import('./release-acceptance') =
   await import(process.env.PUI_RELEASE_ACCEPTANCE_SUBJECT || './release-acceptance');
 const { checkReleaseAcceptance, loadAcceptanceMatrix, loadRequiredMatrix, REPO_ROOT } = subject;
