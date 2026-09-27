@@ -10,7 +10,7 @@
  * never merge a generation-behind payload.
  */
 import { createHash } from 'node:crypto';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
@@ -943,7 +943,7 @@ export async function convergeActivationToLaunchRecord(
     if (typeof applied?.specificationRevision !== 'string' || typeof applied.stateRevision !== 'string') return false;
     const appliedRevision = { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision };
     if (launchRecordAdmitsApplied(launchSpec, appliedRevision)) return false;
-    return await writeLaunchProvenApplied(tx as unknown as Sql, ownerId, workspaceId, generation, revision, launchSpec);
+    return await writeLaunchProvenApplied(tx, ownerId, workspaceId, generation, revision, launchSpec);
   });
 }
 
@@ -1006,7 +1006,7 @@ export async function applyRelaunchedActivation(
     ) return false;
     const { launchRecordAdmitsApplied } = await import('../../capability-envelope/identity-grants-port');
     if (!launchRecordAdmitsApplied(launchSpec, revision)) return false;
-    return await writeLaunchProvenApplied(tx as unknown as Sql, ownerId, workspaceId, generation, revision, launchSpec);
+    return await writeLaunchProvenApplied(tx, ownerId, workspaceId, generation, revision, launchSpec);
   });
 }
 
@@ -1017,7 +1017,7 @@ export async function applyRelaunchedActivation(
  * retry never appends a second receipt.
  */
 async function writeLaunchProvenApplied(
-  tx: Sql,
+  tx: TransactionSql,
   ownerId: string,
   workspaceId: string,
   generation: number,
@@ -1046,7 +1046,7 @@ async function writeLaunchProvenApplied(
   `;
   if (rows.length === 0) return false;
   const recorded = await recordCurrentSessionIdentityActivation({
-    ownerId, workspaceId, generation, phase: 'applied', source: 'control', revision, sql: tx,
+    ownerId, workspaceId, generation, phase: 'applied', source: 'control', revision, sql: tx as unknown as Sql,
   });
   if (recorded === 'missing') {
     throw new Error('session_identity_activation_applied_not_recorded');

@@ -334,7 +334,7 @@ describe('P-009 activation span views', () => {
       const owner = `${OWNER}-relaunch`;
       const next = compiledLaunch('relaunch-next');
       const previous = compiledLaunch('relaunch-prev').revision;
-      await seed(owner, 9301, next, next.revision, previous, 'restart');
+      await seed(owner, 9401, next, next.revision, previous, 'restart');
 
       await expect(applyRelaunchedActivation(owner, WS, 69, next.revision, db.sql)).resolves.toBe(true);
       expect(await state(owner)).toEqual({ delivered: '67', applied: next.revision, status: 'applied', receipts: '1' });
@@ -351,7 +351,7 @@ describe('P-009 activation span views', () => {
       const owner = `${OWNER}-inplace`;
       const launched = compiledLaunch('inplace-launched');
       const flipped = compiledLaunch('inplace-flipped').revision;
-      await seed(owner, 9302, launched, launched.revision, flipped, 'control');
+      await seed(owner, 9402, launched, launched.revision, flipped, 'control');
 
       await expect(applyRelaunchedActivation(owner, WS, 69, launched.revision, db.sql)).resolves.toBe(false);
       expect(await state(owner)).toEqual({ delivered: '67', applied: flipped, status: 'desired', receipts: '0' });
@@ -361,7 +361,7 @@ describe('P-009 activation span views', () => {
       const owner = `${OWNER}-unlanded`;
       const predecessor = compiledLaunch('unlanded-prev');
       const wanted = compiledLaunch('unlanded-next').revision;
-      await seed(owner, 9303, predecessor, wanted, predecessor.revision, 'restart');
+      await seed(owner, 9403, predecessor, wanted, predecessor.revision, 'restart');
 
       await expect(applyRelaunchedActivation(owner, WS, 69, wanted, db.sql)).resolves.toBe(false);
       expect(await state(owner)).toEqual({ delivered: '67', applied: predecessor.revision, status: 'desired', receipts: '0' });
