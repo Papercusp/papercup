@@ -18,10 +18,16 @@ const context = (transcriptPath: string): ResumeTurnContext => ({
   transcriptPath,
 });
 
+// The real record shape Claude writes for a provider rejection (measured on live
+// transcripts, WI-10003466): a SYNTHETIC assistant entry, not model prose.
 const failure = (tool = 'mcp__papercusp-su__plans_audit') => JSON.stringify({
   type: 'assistant',
+  error: 'unknown',
+  isApiErrorMessage: true,
+  apiErrorStatus: 400,
   message: {
     role: 'assistant',
+    model: '<synthetic>',
     content: [{ type: 'text', text: `API Error: 400 Tool reference '${tool}' not found in available tools` }],
   },
 });

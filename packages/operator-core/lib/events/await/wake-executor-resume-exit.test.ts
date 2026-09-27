@@ -236,9 +236,15 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     try {
       const transcriptPath = join(root, 'native-A.jsonl');
       const error = "API Error: 400 Tool reference 'mcp__papercusp-su__plans_audit' not found in available tools";
-      const turn = () => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: error }] } });
+      const turn = () => JSON.stringify({
+        type: 'assistant',
+        isApiErrorMessage: true,
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: error }] },
+      });
       writeFileSync(transcriptPath, [turn(), turn(), turn()].join('\n'));
       const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
+      // No live host can carry-respawn it (WI-10003466): quarantine stays the last resort.
+      const recover = vi.fn(async () => 'unrecoverable' as const);
       const { deps, s } = await exitedClaudeResumeDeps({
         getSessionLifecycle: async () => null,
         collectSessionFiles: async () => [{

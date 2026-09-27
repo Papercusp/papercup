@@ -15,6 +15,16 @@ const MISSING_TOOL_REFERENCE_RE =
   /^\s*API Error(?::\s*400|\s+400\b)[^\r\n]{0,300}\bTool reference\s+['"][^'"]+['"]\s+not found in available tools\b/im;
 
 export const CLAUDE_TOOL_REFERENCE_POISON_TURNS = 3;
+/**
+ * WI-10003466: a LIVE session whose last two assistant turns were both the
+ * provider's unavailable-tool-reference rejection cannot take another turn on
+ * its own (the rejected reference is in its saved transcript, so every request
+ * replays it). Two — not one — because a single rejection can land while the
+ * client is mid-reconnect and clear on the next turn; two consecutive turns
+ * prove it persists. This is the carry-respawn RECOVERY threshold; the
+ * quarantine threshold above stays the last resort when no host can recover it.
+ */
+export const CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS = 2;
 export const MAX_CLAUDE_RESUME_TOOL_REFERENCES = 32;
 const MAX_TRANSCRIPT_CACHE_ENTRIES = 256;
 const transcriptCache = new Map();
@@ -59,6 +69,24 @@ function rememberMissingToolReference(text, found) {
   }
 }
 
+/**
+ * Claude records a provider rejection as a SYNTHETIC assistant entry —
+ * `isApiErrorMessage:true` with `message.model:'<synthetic>'` (measured on live
+ * transcripts, 2026-09-27) — never as model output. Only that structure counts
+ * toward a poison streak: an agent whose own prose QUOTES the error (while
+ * diagnosing exactly this failure) must not be counted as poisoned, which would
+ * quarantine or respawn a healthy session (the WI-4608 false-death class).
+ */
+function isSyntheticApiErrorRecord(record) {
+  return record?.isApiErrorMessage === true || record?.message?.model === '<synthetic>';
+}
+
+function missingToolReferenceName(text) {
+  if (typeof text !== 'string') return null;
+  const match = /\bTool reference\s+['"]([^'"]+)['"]\s+not found in available tools\b/i.exec(text);
+  return match?.[1] ?? null;
+}
+
 function assistantText(record) {
   const role = record?.message?.role ?? record?.role;
   if (record?.type !== 'assistant' && role !== 'assistant') return null;
@@ -85,6 +113,7 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
   const references = new Map();
   let trailingMissingToolReferenceTurns = 0;
   let lastMissingToolReferenceEvidence = null;
+  let lastMissingToolReferenceName = null;
 
   for (const line of String(jsonl ?? '').split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -99,10 +128,14 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     collectPapercuspToolReferences(record, references);
     const text = assistantText(record);
     if (text === null) continue;
-    rememberMissingToolReference(text, references);
-    const evidence = missingClaudeToolReferenceEvidence(text);
+    // Structure first (WI-10003466): prose that merely quotes the rejection is an
+    // ordinary assistant turn and resets the streak like any other.
+    const synthetic = isSyntheticApiErrorRecord(record);
+    if (synthetic) rememberMissingToolReference(text, references);
+    const evidence = synthetic ? missingClaudeToolReferenceEvidence(text) : null;
     trailingMissingToolReferenceTurns = evidence ? trailingMissingToolReferenceTurns + 1 : 0;
     lastMissingToolReferenceEvidence = evidence;
+    lastMissingToolReferenceName = evidence ? missingToolReferenceName(evidence) : null;
   }
 
   const toolReferences = maxReferences === 0
@@ -112,6 +145,8 @@ export function analyzeClaudeResumeTranscript(jsonl, options = {}) {
     toolReferences,
     trailingMissingToolReferenceTurns,
     lastMissingToolReferenceEvidence,
+    lastMissingToolReferenceName,
+    needsFreshContext: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
     poisoned: trailingMissingToolReferenceTurns >= CLAUDE_TOOL_REFERENCE_POISON_TURNS,
   };
 }

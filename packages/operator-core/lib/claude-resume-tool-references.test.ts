@@ -7,6 +7,7 @@ import {
   analyzeClaudeResumeTranscriptFile,
   appendClaudeToolReferencesToSeed,
   CLAUDE_TOOL_REFERENCE_POISON_TURNS,
+  CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
   __resetClaudeResumeTranscriptCacheForTests,
 } from './claude-resume-tool-references.mjs';
 
@@ -15,6 +16,14 @@ const missing = (tool: string, colon = true) =>
 const assistant = (text: string) => JSON.stringify({
   type: 'assistant',
   message: { role: 'assistant', content: [{ type: 'text', text }] },
+});
+/** The real record shape of a provider rejection (WI-10003466): synthetic, not model prose. */
+const apiError = (text: string) => JSON.stringify({
+  type: 'assistant',
+  error: 'unknown',
+  isApiErrorMessage: true,
+  apiErrorStatus: 400,
+  message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text }] },
 });
 
 afterEach(() => {
@@ -59,23 +68,55 @@ describe('Claude resume tool-reference recovery', () => {
     const ref = 'mcp__papercusp-su__plans_audit';
     const transcript = [
       assistant('Previous valid turn.'),
-      assistant(missing(ref)),
-      assistant(missing(ref, false)),
-      assistant(missing(ref)),
+      apiError(missing(ref)),
+      apiError(missing(ref, false)),
+      apiError(missing(ref)),
     ].join('\n');
 
     expect(analyzeClaudeResumeTranscript(transcript)).toMatchObject({
       trailingMissingToolReferenceTurns: CLAUDE_TOOL_REFERENCE_POISON_TURNS,
+      lastMissingToolReferenceName: ref,
+      needsFreshContext: true,
       poisoned: true,
+    });
+  });
+
+  it('flags a live session for fresh-context recovery at two consecutive rejections, before the quarantine threshold', () => {
+    const ref = 'mcp__papercusp-su__capability_bash';
+    const transcript = [assistant('Working.'), apiError(missing(ref)), apiError(missing(ref))].join('\n');
+
+    expect(CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS).toBeLessThan(CLAUDE_TOOL_REFERENCE_POISON_TURNS);
+    expect(analyzeClaudeResumeTranscript(transcript)).toMatchObject({
+      trailingMissingToolReferenceTurns: CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS,
+      needsFreshContext: true,
+      poisoned: false,
+    });
+    expect(analyzeClaudeResumeTranscript([assistant('Working.'), apiError(missing(ref))].join('\n')))
+      .toMatchObject({ trailingMissingToolReferenceTurns: 1, needsFreshContext: false });
+  });
+
+  it('never counts assistant PROSE that quotes the rejection (WI-10003466 false-death guard)', () => {
+    // An agent diagnosing this very failure writes the error text into its own
+    // reply. That is model output, not the provider's synthetic rejection record,
+    // so it must reset the streak instead of quarantining/respawning a healthy session.
+    const ref = 'mcp__papercusp-su__capability_bash';
+    const quoted = `Root cause:\n${missing(ref)}\n— the MCP transport dropped.`;
+    const transcript = [apiError(missing(ref)), assistant(quoted), assistant(missing(ref)), assistant(quoted)].join('\n');
+
+    expect(analyzeClaudeResumeTranscript(transcript)).toMatchObject({
+      trailingMissingToolReferenceTurns: 0,
+      lastMissingToolReferenceName: null,
+      needsFreshContext: false,
+      poisoned: false,
     });
   });
 
   it('resets the poison streak on a normal assistant turn and ignores malformed JSONL', () => {
     const ref = 'mcp__papercusp-su__plans_audit';
     const transcript = [
-      assistant(missing(ref)),
+      apiError(missing(ref)),
       '{partial JSON',
-      assistant(missing(ref)),
+      apiError(missing(ref)),
       assistant('I can continue normally.'),
     ].join('\n');
 
@@ -98,7 +139,7 @@ describe('Claude resume tool-reference recovery', () => {
       const file = join(root, 'session.jsonl');
       writeFileSync(file, assistant('Normal turn.'));
       expect(analyzeClaudeResumeTranscriptFile(file)?.trailingMissingToolReferenceTurns).toBe(0);
-      writeFileSync(file, `${assistant('Normal turn.')}\n${assistant(missing('mcp__papercusp-su__plans_audit'))}`);
+      writeFileSync(file, `${assistant('Normal turn.')}\n${apiError(missing('mcp__papercusp-su__plans_audit'))}`);
       expect(analyzeClaudeResumeTranscriptFile(file)?.trailingMissingToolReferenceTurns).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });

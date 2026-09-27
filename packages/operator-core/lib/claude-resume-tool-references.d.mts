@@ -1,10 +1,15 @@
 export const CLAUDE_TOOL_REFERENCE_POISON_TURNS: number;
+export const CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS: number;
 export const MAX_CLAUDE_RESUME_TOOL_REFERENCES: number;
 
 export interface ClaudeResumeTranscriptAnalysis {
   toolReferences: string[];
   trailingMissingToolReferenceTurns: number;
   lastMissingToolReferenceEvidence: string | null;
+  /** The tool name the latest counted rejection named, or null. */
+  lastMissingToolReferenceName: string | null;
+  /** Trailing streak ≥ CLAUDE_TOOL_REFERENCE_RECOVERY_TURNS: a live session must be moved onto fresh context. */
+  needsFreshContext: boolean;
   poisoned: boolean;
 }
 
