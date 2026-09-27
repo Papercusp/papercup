@@ -6,6 +6,36 @@
  */
 import { describe, it, expect, vi, afterAll } from 'vitest';
 import * as realHost from '../scripts/psu-pty-host.mjs';
+import { resolvePtoolOperatorBase } from '../scripts/ptool.mjs';
+
+describe('loop respawn operator environment (EI-24377966944594715)', () => {
+  it.each([
+    { PAPERCUSP_OPERATOR_BASE: 'http://127.0.0.1:3880' },
+    { PAPERCUSP_HONO_PORT: '3880' },
+    { PAPERCUSP_OPERATOR_BASE: 'http://127.0.0.1:3880', PAPERCUSP_HONO_PORT: '3880' },
+  ])('does not hand stale operator-host identity to an agent child: %j', (hints) => {
+    const hostEnv = {
+      ...hints,
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170',
+      PAPERCUSP_SID: 'su-example',
+    };
+    const target = realHost.resolveAgentPtyTarget({
+      command: 'codex', args: [], env: hostEnv, cwd: '/repo',
+    });
+    expect(resolvePtoolOperatorBase(target.env)).toBe('http://127.0.0.1:3170');
+    expect(target.env.PAPERCUSP_OPERATOR_BASE).toBeUndefined();
+    expect(target.env.PAPERCUSP_HONO_PORT).toBeUndefined();
+    expect(hostEnv).toMatchObject(hints); // preserve the host's own serving identity
+  });
+
+  it('keeps an operator-host self port when no child operator URL was selected', () => {
+    const env = { PAPERCUSP_HONO_PORT: '3170' };
+    const target = realHost.resolveAgentPtyTarget({
+      command: 'codex', args: [], env, cwd: '/repo',
+    });
+    expect(target.env.PAPERCUSP_HONO_PORT).toBe('3170');
+  });
+});
 
 // PSU_PTY_HOST_MODULE_PATH lets scripts/mutation-probe.sh (copy-out mode) point this
 // suite at a MUTATED copy of the host without dirtying the tracked file. It defaults
