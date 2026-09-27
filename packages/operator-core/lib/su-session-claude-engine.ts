@@ -413,9 +413,16 @@ export function startClaudeSuEngine(
     await done;
     await stopChild();
   }
+  // A single deadline covers several independent resume steps. Retain the
+  // current step so a timeout identifies the stalled boundary without logging
+  // credentials, transcript content, or child argv.
+  let startupStage = 'scope probe';
+  let stageStartedAt = Date.now();
+  const enterStartupStage = (stage: string) => { startupStage = stage; stageStartedAt = Date.now(); };
   const startup = (async () => {
     if (!options.query) await probeScopeSupport();
     if (closed) throw new Error('Claude startup was cancelled');
+    enterStartupStage('SDK launch');
     sdk = (options.query ?? query)({ prompt: input, options: sdkOptions });
     done = (async () => {
       try {
@@ -511,7 +518,9 @@ export function startClaudeSuEngine(
         }
       }
     })();
+    enterStartupStage('SDK initialization');
     await sdk.initializationResult();
+    enterStartupStage('SU tool connection');
     let servers = await sdk.mcpServerStatus();
     let suServer = servers.find((server) => server.name === 'papercusp-su');
     // SDK initialization can finish while an MCP connection is still pending.
@@ -537,9 +546,11 @@ export function startClaudeSuEngine(
     directiveDispositionSuTools = claudeDirectiveDispositionSuTools(suServer);
     if (options.resume) {
       adapter.host.transition('resuming', 'Restoring saved conversation before attaching the executor');
+      enterStartupStage('transcript restore');
       await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });
     }
     if (closed) throw new Error('Claude connection closed during startup');
+    enterStartupStage('resume finalization');
     await options.beforeReady?.(processId);
     if (closed) throw new Error('Claude connection closed while finalizing resume');
     ready = true;
@@ -548,7 +559,9 @@ export function startClaudeSuEngine(
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([
     startup,
-    new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error('Claude startup timed out; reconnect or choose another engine')), options.startupTimeoutMs ?? 45_000); }),
+    new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(
+      `Claude startup timed out during ${startupStage} (${Date.now() - stageStartedAt}ms in this step); reconnect or choose another engine${childStderrSuffix(childStderr.read())}`,
+    )), options.startupTimeoutMs ?? 45_000); }),
   ]).catch(async (error: unknown) => {
     if (!adapter.host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: false, reason: String(error) });
     await close();

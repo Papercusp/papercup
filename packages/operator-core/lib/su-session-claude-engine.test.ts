@@ -653,9 +653,25 @@ describe('structured Claude SU engine', () => {
     expect(p.prompts).toHaveLength(0);
   });
 
-  it.each([{ holdInit: true }, { holdMcp: true }])('bounds a stalled SDK control handshake and closes its peer: %j', async (config) => {
+  it.each([
+    { config: { holdInit: true }, stage: 'SDK initialization' },
+    { config: { holdMcp: true }, stage: 'SU tool connection' },
+  ])('bounds a stalled SDK control handshake and names its step: $stage', async ({ config, stage }) => {
     const p = peer(config); const engine = open(p, { startupTimeoutMs: 20 });
-    await expect(engine.ready).rejects.toThrow('timed out');
+    await expect(engine.ready).rejects.toThrow(`Claude startup timed out during ${stage}`);
+    expect(p.close).toHaveBeenCalled();
+    expect(engine.adapter.host.descriptor().lifecycle).toBe('failed');
+  });
+
+  it('names resume finalization when its hook stalls after transcript restore', async () => {
+    const transcriptPath = join(dir, 'stalled-finalization.jsonl');
+    writeFileSync(transcriptPath, JSON.stringify({ type: 'assistant', sessionId: nativeId,
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Saved reply' }] } }) + '\n');
+    const p = peer();
+    const engine = open(p, { resume: true, startupTimeoutMs: 80,
+      beforeReady: async () => { await new Promise(() => {}); },
+    }, { ...runtime, transcriptPath });
+    await expect(engine.ready).rejects.toThrow('Claude startup timed out during resume finalization');
     expect(p.close).toHaveBeenCalled();
     expect(engine.adapter.host.descriptor().lifecycle).toBe('failed');
   });
