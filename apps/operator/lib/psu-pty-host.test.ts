@@ -113,6 +113,8 @@ const {
   hostIdleMs,
   eventLogPathForOwner,
   appendHostEvent,
+  readLinuxStartupCounters,
+  startCodexStartupProcessTrace,
   hostErrorEvidence,
   sharedDrillLedgerPath,
   appendSharedDrillLedgerEvent,
@@ -3733,6 +3735,61 @@ describe('appendHostEvent / eventLogPathForOwner (EI-10412 — durable lifecycle
   });
   it('is fail-soft: an unwritable dir returns false, never throws', () => {
     expect(appendHostEvent('su-x', 'compact-submitted', {}, '/nonexistent-root-dir/nope')).toBe(false);
+  });
+});
+
+describe('Codex startup process trace (EI-24353430528930250)', () => {
+  it('reads the child PID counters despite spaces in procfs comm and optional IO denial', () => {
+    const fields = Array(45).fill('0');
+    fields[0] = 'S'; // field 3
+    fields[9] = '17'; // field 12: majflt
+    fields[39] = '23'; // field 42: delayacct_blkio_ticks
+    const stat = `123 (codex (tui)) ${fields.join(' ')}`;
+    const read = (path: string) => {
+      if (path === '/proc/123/stat') return stat;
+      if (path === '/proc/123/io') return 'read_bytes: 4096\nwrite_bytes: 8192\n';
+      throw new Error('unexpected proc path');
+    };
+    expect(readLinuxStartupCounters(123, read)).toEqual({
+      pid: 123, comm: 'codex (tui)', majorFaults: 17, blockIoTicks: 23,
+      readBytes: 4096, writeBytes: 8192,
+    });
+    expect(readLinuxStartupCounters(123, (path: string) => {
+      if (path === '/proc/123/stat') return stat;
+      throw new Error('optional io denied');
+    })).toMatchObject({ majorFaults: 17, readBytes: null, writeBytes: null });
+    expect(readLinuxStartupCounters(123, () => { throw new Error('process exited'); })).toBeNull();
+  });
+
+  it('samples only Codex on Linux, ends at the bound and stops on child replacement', () => {
+    let elapsedMs = 0;
+    let tick: (() => void) | undefined;
+    const clear = vi.fn();
+    const events: Array<{ kind: string; data: Record<string, unknown> }> = [];
+    const options = {
+      agent: 'codex', ownerId: 'su-trace', pid: 123, platform: 'linux',
+      now: () => elapsedMs,
+      readCounters: () => ({ pid: 123, majorFaults: 1, blockIoTicks: 2, readBytes: 3 }),
+      emit: (_owner: string, kind: string, data: Record<string, unknown>) => { events.push({ kind, data }); return true; },
+      interval: (fn: () => void, ms: number) => { expect(ms).toBe(500); tick = fn; return { unref: vi.fn() }; },
+      clear,
+    };
+    const stop = startCodexStartupProcessTrace(options);
+    expect(events[0]).toMatchObject({ kind: 'codex-startup-process-sample', data: { elapsedMs: 0, majorFaults: 1 } });
+    elapsedMs = 30_000;
+    tick?.();
+    expect(events.at(-1)).toMatchObject({ kind: 'codex-startup-process-trace-ended', data: { reason: 'window-ended', samples: 2 } });
+    expect(clear).toHaveBeenCalledTimes(1);
+    const count = events.length;
+    tick?.();
+    stop('recycle');
+    expect(events).toHaveLength(count);
+
+    events.length = 0;
+    elapsedMs = 0;
+    startCodexStartupProcessTrace({ ...options, agent: 'claude' })('host-cleanup');
+    startCodexStartupProcessTrace({ ...options, platform: 'win32' })('host-cleanup');
+    expect(events).toHaveLength(0);
   });
 });
 
