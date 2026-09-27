@@ -1,0 +1,583 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "P-013 workload A (direct one-item operation) COLD, concurrency 1: median of five process-isolated repetitions vs the matched work_items:create control, graded against the D-016 cold p95 floor",
+ "framework": "vitest",
+ "testLayer": "integration",
+ "evidencePlane": "isolated",
+ "plan": "blueprint-backed-work-item-execution-2026-09-23",
+ "planItem": "P-013",
+ "workItem": "WI-10002948",
+ "governingDecisions": [
+  "D-016",
+  "D-022"
+ ],
+ "observer": "su-fcbb3fed-83b5-4c34-9dab-72e191d76491",
+ "testFile": "packages/operator-core/lib/blueprint/operation-performance.integration.test.ts",
+ "command": "for r in 1..5: P013_COLD_PILOT=1 P013_FIXTURE_EMBEDDER=1 P013_DEDICATED_PG=1 P013_REPETITIONS=1 P013_COLD_SAMPLES=50 PAPERCUSP_TEST_FILE_TIMEOUT_MS=3600000 PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/blueprint/operation-performance.integration.test.ts > tmp-pcv/p013-matrixA-single-r$r.log (capability:bash task 0mujtzrbn1d345h1101)",
+ "runnerLog": [
+  "START 2026-09-27T13:05:14Z HEAD f57996fb97",
+  "REP 1 START 2026-09-27T13:05:14Z",
+  "REP 1 EXIT=0 END 2026-09-27T13:19:16Z",
+  "REP 2 START 2026-09-27T13:19:16Z",
+  "REP 2 EXIT=0 END 2026-09-27T13:32:52Z",
+  "REP 3 START 2026-09-27T13:32:52Z",
+  "REP 3 EXIT=0 END 2026-09-27T13:47:48Z",
+  "REP 4 START 2026-09-27T13:47:48Z",
+  "REP 4 EXIT=0 END 2026-09-27T14:02:05Z",
+  "REP 5 START 2026-09-27T14:02:05Z",
+  "REP 5 EXIT=0 END 2026-09-27T14:16:15Z",
+  "ALLDONE"
+ ],
+ "exitCode": 0,
+ "rig": "Dedicated PostgreSQL testcontainer per repetition (D-022: durable WAL kept, variance attributed not suppressed); deterministic claim-recall embedder (D-022 fixture); one repetition per process so a lost connection costs one repetition. The disk-heavy identities-v1 R-4 Tauri run exited at 12:56:01Z, before repetition 1 started at 13:05:14Z; nothing else heavy was started by this observer during the matrix.",
+ "grade": {
+  "rule": "D-016 cold p95 floor, workload A: candidate <= 1.75 x matched control cold + 500 ms (median of five repetitions)",
+  "controlColdP95MedianMs": 3961.287841796875,
+  "candidateColdP95MedianMs": 3827.7421875,
+  "ceilingMs": 7432.253723144531,
+  "verdict": "pass",
+  "repetitionsMeasured": 5
+ },
+ "armsTotal": {
+  "control": {
+   "p50": {
+    "perRep": [
+     2336.332763671875,
+     2311.01416015625,
+     2480.79296875,
+     2412.06982421875,
+     2443.618408203125
+    ],
+    "median": 2412.06982421875
+   },
+   "p95": {
+    "perRep": [
+     3716.827880859375,
+     6450.082763671875,
+     6206.6787109375,
+     3961.287841796875,
+     3819.88427734375
+    ],
+    "median": 3961.287841796875
+   },
+   "p99": {
+    "perRep": [
+     23788.8447265625,
+     8599.760986328125,
+     17213.93701171875,
+     11305.364501953125,
+     11391.06982421875
+    ],
+    "median": 11391.06982421875
+   },
+   "throughputPerSec": [
+    0.12362802797289865,
+    0.12865870065448531,
+    0.11973082836043379,
+    0.12368172560572904,
+    0.12106044470216105
+   ],
+   "throughputMedian": 0.12362802797289865,
+   "samplesPerRep": [
+    50,
+    50,
+    50,
+    50,
+    50
+   ]
+  },
+  "candidate": {
+   "p50": {
+    "perRep": [
+     2347.651611328125,
+     2398.815185546875,
+     2395.85498046875,
+     2484.389892578125,
+     2360.71337890625
+    ],
+    "median": 2395.85498046875
+   },
+   "p95": {
+    "perRep": [
+     3827.7421875,
+     3207.551025390625,
+     15126.57568359375,
+     5022.386474609375,
+     3704.540771484375
+    ],
+    "median": 3827.7421875
+   },
+   "p99": {
+    "perRep": [
+     16316.24072265625,
+     4160.65625,
+     19903.689453125,
+     6676.647705078125,
+     4139.403076171875
+    ],
+    "median": 6676.647705078125
+   },
+   "throughputPerSec": [
+    0.12628548135259568,
+    0.13041753188687136,
+    0.11453375715104262,
+    0.12216954366791506,
+    0.12770411917719696
+   ],
+   "throughputMedian": 0.12628548135259568,
+   "samplesPerRep": [
+    50,
+    50,
+    50,
+    50,
+    50
+   ]
+  }
+ },
+ "armsPhases": {
+  "control": {
+   "samplesPerRep": [
+    50,
+    50,
+    50,
+    50,
+    50
+   ],
+   "throughputPerSec": [
+    0.12362802797289865,
+    0.12865870065448531,
+    0.11973082836043379,
+    0.12368172560572904,
+    0.12106044470216105
+   ],
+   "ingressToAccepted": {
+    "p50": {
+     "perRep": [
+      1128.61328125,
+      1131.740966796875,
+      1177.415283203125,
+      1171.133056640625,
+      1179.52587890625
+     ],
+     "median": 1171.133056640625
+    },
+    "p95": {
+     "perRep": [
+      1485.12255859375,
+      2527.995361328125,
+      1656.14453125,
+      2560.4775390625,
+      1679.26708984375
+     ],
+     "median": 1679.26708984375
+    },
+    "p99": {
+     "perRep": [
+      15376.899658203125,
+      7390.96533203125,
+      7712.402587890625,
+      6084.189453125,
+      10124.740234375
+     ],
+     "median": 7712.402587890625
+    }
+   },
+   "acceptedToDispatch": {
+    "p50": {
+     "perRep": [
+      379.761474609375,
+      378.2431640625,
+      402.982421875,
+      400.44482421875,
+      398.135498046875
+     ],
+     "median": 398.135498046875
+    },
+    "p95": {
+     "perRep": [
+      456.6572265625,
+      427.7568359375,
+      1091.780029296875,
+      831.432861328125,
+      521.22607421875
+     ],
+     "median": 521.22607421875
+    },
+    "p99": {
+     "perRep": [
+      7376.9560546875,
+      1075.8623046875,
+      5345.1396484375,
+      3122.8359375,
+      1705.304931640625
+     ],
+     "median": 3122.8359375
+    }
+   },
+   "dispatchToTerminal": {
+    "p50": {
+     "perRep": [
+      250.777587890625,
+      247.990478515625,
+      265.7451171875,
+      259.392578125,
+      260.439697265625
+     ],
+     "median": 259.392578125
+    },
+    "p95": {
+     "perRep": [
+      286.10205078125,
+      303.3173828125,
+      298.794677734375,
+      297.738525390625,
+      298.149658203125
+     ],
+     "median": 298.149658203125
+    },
+    "p99": {
+     "perRep": [
+      352.2392578125,
+      545.942138671875,
+      460.011962890625,
+      308.20947265625,
+      308.960205078125
+     ],
+     "median": 352.2392578125
+    }
+   },
+   "terminalToBusinessEvent": {
+    "p50": {
+     "perRep": [
+      567,
+      545,
+      587,
+      583,
+      586
+     ],
+     "median": 583
+    },
+    "p95": {
+     "perRep": [
+      777,
+      822,
+      1024,
+      821,
+      1060
+     ],
+     "median": 822
+    },
+    "p99": {
+     "perRep": [
+      1904,
+      2460,
+      3889,
+      1857,
+      1340
+     ],
+     "median": 1904
+    }
+   },
+   "total": {
+    "p50": {
+     "perRep": [
+      2336.332763671875,
+      2311.01416015625,
+      2480.79296875,
+      2412.06982421875,
+      2443.618408203125
+     ],
+     "median": 2412.06982421875
+    },
+    "p95": {
+     "perRep": [
+      3716.827880859375,
+      6450.082763671875,
+      6206.6787109375,
+      3961.287841796875,
+      3819.88427734375
+     ],
+     "median": 3961.287841796875
+    },
+    "p99": {
+     "perRep": [
+      23788.8447265625,
+      8599.760986328125,
+      17213.93701171875,
+      11305.364501953125,
+      11391.06982421875
+     ],
+     "median": 11391.06982421875
+    }
+   },
+   "throughputMedian": 0.12362802797289865
+  },
+  "candidate": {
+   "samplesPerRep": [
+    50,
+    50,
+    50,
+    50,
+    50
+   ],
+   "throughputPerSec": [
+    0.12628548135259568,
+    0.13041753188687136,
+    0.11453375715104262,
+    0.12216954366791506,
+    0.12770411917719696
+   ],
+   "ingressToAccepted": {
+    "p50": {
+     "perRep": [
+      137.071533203125,
+      132.575927734375,
+      140.79296875,
+      145.373779296875,
+      138.85888671875
+     ],
+     "median": 138.85888671875
+    },
+    "p95": {
+     "perRep": [
+      931.735595703125,
+      398.102783203125,
+      1518.54150390625,
+      920.821533203125,
+      299.852294921875
+     ],
+     "median": 920.821533203125
+    },
+    "p99": {
+     "perRep": [
+      13837.151123046875,
+      895.611083984375,
+      8411.46533203125,
+      2668.148193359375,
+      1187.55615234375
+     ],
+     "median": 2668.148193359375
+    }
+   },
+   "acceptedToDispatch": {
+    "p50": {
+     "perRep": [
+      1382.61474609375,
+      1420.693603515625,
+      1406.546875,
+      1462.076171875,
+      1396.18212890625
+     ],
+     "median": 1406.546875
+    },
+    "p95": {
+     "perRep": [
+      1726.70947265625,
+      1915.5341796875,
+      3118.654541015625,
+      1857.30419921875,
+      2113.939453125
+     ],
+     "median": 1915.5341796875
+    },
+    "p99": {
+     "perRep": [
+      2477.14794921875,
+      2406.07666015625,
+      11370.05078125,
+      3889.674560546875,
+      2323.170166015625
+     ],
+     "median": 2477.14794921875
+    }
+   },
+   "dispatchToTerminal": {
+    "p50": {
+     "perRep": [
+      265.0166015625,
+      269.586669921875,
+      268.28564453125,
+      280.814208984375,
+      260.4306640625
+     ],
+     "median": 268.28564453125
+    },
+    "p95": {
+     "perRep": [
+      295.548583984375,
+      297.800537109375,
+      376.44677734375,
+      317.9130859375,
+      430.13134765625
+     ],
+     "median": 317.9130859375
+    },
+    "p99": {
+     "perRep": [
+      413.297119140625,
+      324.14111328125,
+      9286.46142578125,
+      676.75537109375,
+      490.072021484375
+     ],
+     "median": 490.072021484375
+    }
+   },
+   "terminalToBusinessEvent": {
+    "p50": {
+     "perRep": [
+      555,
+      560,
+      561,
+      587,
+      554
+     ],
+     "median": 560
+    },
+    "p95": {
+     "perRep": [
+      917,
+      605,
+      3987,
+      1243,
+      965
+     ],
+     "median": 965
+    },
+    "p99": {
+     "perRep": [
+      1850,
+      706,
+      4110,
+      2239,
+      971
+     ],
+     "median": 1850
+    }
+   },
+   "total": {
+    "p50": {
+     "perRep": [
+      2347.651611328125,
+      2398.815185546875,
+      2395.85498046875,
+      2484.389892578125,
+      2360.71337890625
+     ],
+     "median": 2395.85498046875
+    },
+    "p95": {
+     "perRep": [
+      3827.7421875,
+      3207.551025390625,
+      15126.57568359375,
+      5022.386474609375,
+      3704.540771484375
+     ],
+     "median": 3827.7421875
+    },
+    "p99": {
+     "perRep": [
+      16316.24072265625,
+      4160.65625,
+      19903.689453125,
+      6676.647705078125,
+      4139.403076171875
+     ],
+     "median": 6676.647705078125
+    }
+   },
+   "throughputMedian": 0.12628548135259568
+  }
+ },
+ "repetitions": [
+  {
+   "rep": 1,
+   "logFile": "tmp-pcv/p013-matrixA-single-r1.log",
+   "logSha256": "9875cc95d6f90433e482c9586e38a772787b9dc393ac6a7d81753a48dcf56c28",
+   "logBytes": 46039,
+   "cluster": "dedicated",
+   "fixtureEmbedder": true,
+   "coldSamples": 50,
+   "provenance": [
+    "TEST_FILE_PROVENANCE_HEAD_MOVED from=f57996fb97 to=ef0498c478; the named test paths did not change, but their imported source/change radius was not measured. Result provenance is UNKNOWN; re-run at se",
+    "TEST_FILE_PROVENANCE head=f57996fb97 testedPaths=1 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-09-27T13:05:15.610Z",
+    "TEST_FILE_PROVENANCE head=ef0498c478 testedPaths=1 uncommitted=0 unknown=0 phase=post-run startedAt=2026-09-27T13:19:16.036Z"
+   ]
+  },
+  {
+   "rep": 2,
+   "logFile": "tmp-pcv/p013-matrixA-single-r2.log",
+   "logSha256": "097a72b81d8c7b8f90308d10ee624d2a2cfc41322340b15fb82f145b55249f81",
+   "logBytes": 45606,
+   "cluster": "dedicated",
+   "fixtureEmbedder": true,
+   "coldSamples": 50,
+   "provenance": [
+    "TEST_FILE_PROVENANCE_HEAD_MOVED from=ef0498c478 to=2c676f75f4; the named test paths did not change, but their imported source/change radius was not measured. Result provenance is UNKNOWN; re-run at se",
+    "TEST_FILE_PROVENANCE head=ef0498c478 testedPaths=1 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-09-27T13:19:16.980Z",
+    "TEST_FILE_PROVENANCE head=2c676f75f4 testedPaths=1 uncommitted=0 unknown=0 phase=post-run startedAt=2026-09-27T13:32:47.808Z"
+   ]
+  },
+  {
+   "rep": 3,
+   "logFile": "tmp-pcv/p013-matrixA-single-r3.log",
+   "logSha256": "a37b1bfc59cc082c3f8b8ff6c23c3f026874cf3a7357af7e8b488d6f97a181cc",
+   "logBytes": 47124,
+   "cluster": "dedicated",
+   "fixtureEmbedder": true,
+   "coldSamples": 50,
+   "provenance": [
+    "TEST_FILE_PROVENANCE_HEAD_MOVED from=2c676f75f4 to=6d6efa82d9; the named test paths did not change, but their imported source/change radius was not measured. Result provenance is UNKNOWN; re-run at se",
+    "TEST_FILE_PROVENANCE head=2c676f75f4 testedPaths=1 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-09-27T13:32:52.800Z",
+    "TEST_FILE_PROVENANCE head=6d6efa82d9 testedPaths=1 uncommitted=0 unknown=0 phase=post-run startedAt=2026-09-27T13:47:48.362Z"
+   ]
+  },
+  {
+   "rep": 4,
+   "logFile": "tmp-pcv/p013-matrixA-single-r4.log",
+   "logSha256": "9f44d25e131568f7eef252d8a4fac58b7c93f8bdcfe10cb3caf7c291446a3a3b",
+   "logBytes": 46198,
+   "cluster": "dedicated",
+   "fixtureEmbedder": true,
+   "coldSamples": 50,
+   "provenance": [
+    "TEST_FILE_PROVENANCE_HEAD_MOVED from=6d6efa82d9 to=288579c89e; the named test paths did not change, but their imported source/change radius was not measured. Result provenance is UNKNOWN; re-run at se",
+    "TEST_FILE_PROVENANCE head=6d6efa82d9 testedPaths=1 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-09-27T13:47:50.197Z",
+    "TEST_FILE_PROVENANCE head=288579c89e testedPaths=1 uncommitted=0 unknown=0 phase=post-run startedAt=2026-09-27T14:02:05.450Z"
+   ]
+  },
+  {
+   "rep": 5,
+   "logFile": "tmp-pcv/p013-matrixA-single-r5.log",
+   "logSha256": "55a7d6e52c897116a809bc5740d34ddd55b9b66387109b06c1be68d7d3fab20a",
+   "logBytes": 46093,
+   "cluster": "dedicated",
+   "fixtureEmbedder": true,
+   "coldSamples": 50,
+   "provenance": [
+    "TEST_FILE_PROVENANCE_HEAD_MOVED from=288579c89e to=1f6bc9f7cd; the named test paths did not change, but their imported source/change radius was not measured. Result provenance is UNKNOWN; re-run at se",
+    "TEST_FILE_PROVENANCE head=288579c89e testedPaths=1 uncommitted=0 unknown=0 phase=pre-run startedAt=2026-09-27T14:02:06.811Z",
+    "TEST_FILE_PROVENANCE head=1f6bc9f7cd testedPaths=1 uncommitted=0 unknown=0 phase=post-run startedAt=2026-09-27T14:16:15.363Z"
+   ]
+  }
+ ],
+ "sourceDriftAcrossRepetitions": {
+  "heads": [
+   "f57996fb97",
+   "ef0498c478",
+   "2c676f75f4",
+   "6d6efa82d9",
+   "288579c89e",
+   "1f6bc9f7cd"
+  ],
+  "note": "git-sync advanced HEAD during every repetition (TEST_FILE_PROVENANCE_HEAD_MOVED). git diff --name-only f57996fb97 288579c89e lists 14 files: escalation state files, apps/operator/bin/release/setup-release-checkout.sh (+test), docs/evidence/p015-r4-real-backend-operational-2026-09-27c.json, libs/generic/resource-profile/src/index.ts (+test), packages/operator-core/lib/dbos/periodic-workflows.ts, packages/operator-core/lib/resource-governor/receipt-gc.ts (+test). None is under packages/operator-core/lib/blueprint; no gitlink moved. That none is reachable from the measured path is [inferred] from the file list, not from an import-graph walk."
+ },
+ "notProven": [
+  "Warm latency, concurrency-8 throughput and workloads B/C/D: this artifact grades ONLY the workload-A cold p95 floor at concurrency 1.",
+  "Cold p50/p99 are reported, not graded (D-016: unstable 50-sample tails).",
+  "Per-trial DB roundtrips/bytes and durable step counts: the trial JSON carries persistence nulls, which are UNKNOWN, not zero.",
+  "The bounded actual-provider smoke (kept separate from fixture latency by D-016)."
+ ]
+}
