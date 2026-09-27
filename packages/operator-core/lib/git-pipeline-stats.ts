@@ -47,6 +47,7 @@ import {
 } from './release/frozen-candidate-repair-queue';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseTestPassReuseHealth, type TestPassReuseHealth } from './release/test-pass-reuse-report';
+import { parseGateRoundPhases, type GateRoundPhases } from './release/gate-round-phases';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 import { parseRepairTickLegs, type StoredRepairTickLegs } from './release/repair-tick-legs-snapshot';
 import { readFreezeAndConverge, type FreezeAndConvergeGateHealth } from './release/freeze-disposition';
@@ -338,6 +339,9 @@ export interface GitPipelineSnapshot {
      * field, or a malformed blob) — NOT that reuse saved nothing.
      */
     testPassReuse?: TestPassReuseHealth | null;
+    /** P-013: where the latest gate round's wall-clock time went (stamped setup phases, the
+     *  candidate suite, and `other`). Null = not measured this round, never "took no time". */
+    roundPhases?: GateRoundPhases | null;
     /** Whether the sibling `failingTests` array came from a real code verdict.
      * `false` means the latest checkpoint ended before rendering one; `null` is a legacy or
      * malformed blob whose measurement state cannot be established. */
@@ -1780,6 +1784,7 @@ export async function gitPipelineSnapshot(
       convergence: parseFrozenRepairConvergence(gateHealth['convergence']),
       // P-013: same shape-checked discipline — an absent or wrong-typed blob reads as null.
       testPassReuse: parseTestPassReuseHealth(gateHealth['testPassReuse']),
+      roundPhases: parseGateRoundPhases(gateHealth['roundPhases']),
     },
     openConflict,
     windows: { day, week },

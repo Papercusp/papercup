@@ -128,6 +128,8 @@ interface GitPipelineSnapshot {
       headline: string;
       alarms: { ws: string; file: string; proof: string }[];
     } | null;
+    // P-013: where the latest round's time went. Null/absent = not measured this round.
+    roundPhases?: { breakdown: string } | null;
   };
 }
 interface RepairManifestView {
@@ -701,6 +703,14 @@ export default function GitClient() {
                           {st.gate.testPassReuse.judgedSha.slice(0, 8)}
                         </span>
                       </>
+                    ) : (
+                      <span className="pc-git__muted">not measured</span>
+                    )}
+                  </span>
+                  <span className="pc-git__k">round time</span>
+                  <span className="pc-git__v" data-testid="gate-round-phases">
+                    {st.gate.roundPhases ? (
+                      st.gate.roundPhases.breakdown
                     ) : (
                       <span className="pc-git__muted">not measured</span>
                     )}

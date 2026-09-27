@@ -132,6 +132,24 @@ describe('GitClient', () => {
     expect(screen.getByText('1 reuse alarm(s)')).toBeTruthy();
   });
 
+  it('gate card: round time reads "not measured" without a breakdown, and shows it when present (P-013)', () => {
+    mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
+    render(<GitClient />);
+    expect(screen.getByTestId('gate-round-phases').textContent).toBe('not measured');
+    cleanup();
+    const breakdown = 'total 50m 00s: setup-tree 2m 00s (4%), candidate-suite 40m 00s (80%), other 8m 00s (16%)';
+    mockResult = {
+      data: [{ ...snapshot, gate: { ...snapshot.gate, roundPhases: { breakdown } } }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+      transport: 'POLL',
+    };
+    render(<GitClient />);
+    expect(screen.getByTestId('gate-round-phases').textContent).toBe(breakdown);
+  });
+
   // ── per-hive surface (P-014) ──
   it('per-hive section: empty state when no gated coding hives', () => {
     mockResult = { data: [snapshot], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL' };
