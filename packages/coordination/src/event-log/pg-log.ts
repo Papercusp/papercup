@@ -376,6 +376,17 @@ function readEventsCacheEnabled(): boolean {
  */
 export const COORD_LOG_READ_PAGE_SIZE = 10_000;
 
+/**
+ * A FULL read at or above this many rows is announced with its caller's stack.
+ * Paging bounds each query, not the process: the readLines/readEvents caches keep
+ * every row they prime for the process lifetime, and the `messages` surface
+ * (536k rows, 1.14 GB of JSON text on 2026-09-27) retained 2,059 MB of V8 heap in
+ * a bare probe, which was most of papercusp-bg-host's resident set. Every
+ * `messages` reader has a scoped SQL fast path, so a full read of that size is a
+ * fallback firing; the stack names which one (host-memory-reduction-2026-09-27 P-005).
+ */
+export const COORD_LOG_FULL_READ_WARN_ROWS = 50_000;
+
 interface CoordLogRow {
   id: string | number;
   body: unknown;
@@ -391,6 +402,9 @@ async function readCoordLogRows(
 ): Promise<CoordLogRow[]> {
   const all: CoordLogRow[] = [];
   let afterId = startAfterId;
+  // Captured before the first await, while the caller's frames are still on the stack.
+  const fullReadCaller = startAfterId === null ? new Error('coord_event_log full read').stack : undefined;
+  const startedAtMs = Date.now();
 
   for (;;) {
     const page =
@@ -418,6 +432,13 @@ async function readCoordLogRows(
     if (page.length < COORD_LOG_READ_PAGE_SIZE) break;
   }
 
+  if (fullReadCaller && all.length >= COORD_LOG_FULL_READ_WARN_ROWS) {
+    console.warn(
+      `[coord-log] FULL read of surface=${surface} workspace=${workspaceId}: ${all.length} rows in ` +
+        `${Date.now() - startedAtMs} ms. A cached surface stays resident for this process's lifetime. Caller:\n` +
+        fullReadCaller.split('\n').slice(1, 13).join('\n'),
+    );
+  }
   return all;
 }
 /** The readEvents return contract: envelopes in `id ASC` (append) order —
