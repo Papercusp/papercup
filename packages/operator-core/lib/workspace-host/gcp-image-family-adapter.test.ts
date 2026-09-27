@@ -77,6 +77,7 @@ const BASE_SHA = 'b'.repeat(64);
 const SIGNING_PUBLIC_KEY = 'untrusted comment: Papercusp test key\nRWQtestkey';
 const SIGNING_KEY_SHA = createHash('sha256').update(SIGNING_PUBLIC_KEY).digest('hex');
 const PUBLISHED_AT = '2026-08-28T00:00:00.000Z';
+const CLEAN_ROOM_OBSERVED_AT = '2026-08-28T00:02:00.000Z';
 const CANDIDATE_NAME = `papercusp-workspace-host-${VERSION.replaceAll('.', '-')}-candidate`;
 const CANDIDATE_ID = `projects/${PROJECT}/global/images/${CANDIDATE_NAME}`;
 const IMAGE_NAME = `papercusp-workspace-host-${VERSION.replaceAll('.', '-')}`;
@@ -316,6 +317,8 @@ function baseOptions(
   return {
     compute,
     guestToolVersions: Object.fromEntries(GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name) => [name, '1.0'])),
+    // Keep fixture freshness deterministic instead of aging against the wall clock.
+    now: () => CLEAN_ROOM_OBSERVED_AT,
     ...overrides,
   };
 }
@@ -1089,10 +1092,10 @@ describe('GCP image-family production adapter', () => {
         computeRunning: true,
         osLoginReady: true,
         publicIpv4Assigned: false,
-        attestation: workspaceHostCleanRoomFixtureAttestation(input.fixture, '2026-08-28T00:02:00.000Z'),
+        attestation: workspaceHostCleanRoomFixtureAttestation(input.fixture, CLEAN_ROOM_OBSERVED_AT),
         terminated: true,
         residualResourceIds: [],
-        observedAt: '2026-08-28T00:02:00.000Z',
+        observedAt: CLEAN_ROOM_OBSERVED_AT,
         fixtureId: input.fixture.fixtureId,
         bootstrapScriptSha256: input.fixture.bootstrapScriptSha256,
       }),
