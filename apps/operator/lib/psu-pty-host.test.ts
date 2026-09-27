@@ -45,6 +45,7 @@ const hostOverride = process.env.PSU_PTY_HOST_MODULE_PATH;
 const host: typeof realHost = hostOverride ? await import(hostOverride) : realHost;
 const {
   sanitizeKey,
+  terminalPidFromEnv,
   socketPathFor,
   metaPathFor,
   encodeControl,
@@ -166,6 +167,20 @@ import { join as pathJoin } from 'node:path';
 import net from 'node:net';
 import { oscRecolorSequence, COLOR_SCHEMES } from '@papercusp/operator-core/lib/console-color-schemes';
 import { buildConsoleOneliner } from '@papercusp/operator-core/lib/console-spawn';
+
+describe('visible terminal discovery metadata', () => {
+  it.each([
+    ['4242', 4242],
+    [' 4242 ', 4242],
+    ['', null],
+    ['0', null],
+    ['1', null],
+    ['4.2', null],
+    ['not-a-pid', null],
+  ])('parses PAPERCUSP_TERMINAL_PID=%j as %j', (raw, expected) => {
+    expect(terminalPidFromEnv(raw)).toBe(expected);
+  });
+});
 
 describe('sanitizeKey', () => {
   it('passes SID-shaped ids through unchanged', () => {
