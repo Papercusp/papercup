@@ -293,7 +293,16 @@ describe('task lifecycle handlers', () => {
       execFileSyncMock.mockImplementation((_command: string, args: string[]) =>
         args[0] === 'rev-parse' ? 'detached-sha\n' : '',
       );
-      persistSqlMock.mockImplementation(() => Promise.resolve([{ id: 42 }]));
+      let resolveTerminalSnapshot!: () => void;
+      const terminalSnapshotPersisted = new Promise<void>((resolve) => {
+        resolveTerminalSnapshot = resolve;
+      });
+      persistSqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+        if (strings.join(' ').includes('INSERT INTO harness_shared.testing_run_snapshots') && values[5] === 'fail') {
+          resolveTerminalSnapshot();
+        }
+        return Promise.resolve([{ id: 42 }]);
+      });
 
       const snapshot = store.startRun(
         req({
@@ -311,12 +320,7 @@ describe('task lifecycle handlers', () => {
       lastChild._emitStdout('x'.repeat(16 * 1024));
       lastChild._emitClose(1);
 
-      await vi.waitFor(() => {
-        const snapshots = persistSqlMock.mock.calls.filter((call) =>
-          call[0]?.join(' ').includes('INSERT INTO harness_shared.testing_run_snapshots'),
-        );
-        expect(snapshots.some((call) => call[6] === 'fail')).toBe(true);
-      });
+      await terminalSnapshotPersisted;
       const [strings, ...values] = persistSqlMock.mock.calls.find((call) =>
         call[0]?.join(' ').includes('INSERT INTO harness_shared.test_runs'),
       ) ?? [];
@@ -1019,26 +1023,28 @@ describe('fallback persistence worktree snapshots (EI-18795303393201472)', () =>
     // Load the partial db-org mock before the close handler starts its 1s
     // persistence window; importOriginal is cold after resetModules.
     await import('@papercusp/db-org');
-    const commitAnswers = ['before-sha\n', 'after-sha\n'];
-    const porcelainAnswers = ['', ' M peer-edit.ts\n'];
+    let runClosed = false;
     execFileSyncMock.mockImplementation((_command: string, args: string[]) => {
-      if (args.includes('rev-parse')) return commitAnswers.shift();
-      if (args.includes('status')) return porcelainAnswers.shift();
+      if (args.includes('rev-parse')) return runClosed ? 'after-sha\n' : 'before-sha\n';
+      if (args.includes('status')) return runClosed ? ' M peer-edit.ts\n' : '';
       return '';
     });
+    let runId: string | undefined;
+    let resolveFallback!: (values: unknown[]) => void;
+    const fallbackPersisted = new Promise<unknown[]>((resolve) => {
+      resolveFallback = resolve;
+    });
     persistSqlMock.mockImplementation((_strings: TemplateStringsArray, ..._values: unknown[]) => {
+      if (runId && _values[7] === runId) resolveFallback(_values);
       return Promise.resolve([]);
     });
     const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
     process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
     try {
-      store.startRun(req({ kind: 'shell' }));
+      runId = store.startRun(req({ kind: 'shell' })).runId;
+      runClosed = true;
       lastChild._emitClose(0);
-      await vi.waitFor(() =>
-        expect(persistSqlMock.mock.calls.some((call) => call.at(-1) === true)).toBe(true),
-      );
-      const fallbackCall = persistSqlMock.mock.calls.find((call) => call.at(-1) === true);
-      const capturedValues = fallbackCall?.slice(1) ?? [];
+      const capturedValues = await fallbackPersisted;
       expect(capturedValues[10]).toBe('after-sha');
       expect(capturedValues.at(-1)).toBe(true);
     } finally {
