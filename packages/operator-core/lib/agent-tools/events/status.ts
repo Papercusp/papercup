@@ -23,15 +23,15 @@ import {
 } from '../../events/await/store';
 import { wakeChannelInvokesTurn, type KeyFireRow } from '../../events/await/types';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
-import { payloadMatchesFilter } from '../../events/await/pattern';
+import {
+  announcementExpectedVerdict as expectedVerdict,
+  announcementGenerationState as announcementState,
+  firedPayloadSha as payloadSha,
+} from '../../events/await/announcement-verdict';
 import type { AwaitRow } from '../../events/await/types';
 
 const EVENTS_SCOPE_NOTE =
   'Workspace-global read surface: scope comes from request context and caller identity; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected).';
-
-type ExpectedCondition =
-  | { kind: 'sha'; sha: string }
-  | { kind: 'predicate'; predicate: unknown };
 
 const STATUS_WAKE_PAYLOAD_MAX_CHARS = 2_000;
 
@@ -43,14 +43,6 @@ function statusWakePayload(payload: unknown): Record<string, unknown> {
     payload_chars: serialized.length,
     payload_truncated: true,
   };
-}
-
-function announcementState(row: AwaitRow): 'declared' | 'fired' | 'cancelled' | 'expired' | 'superseded' {
-  if (row.supersededAt) return 'superseded';
-  if (row.cancelledAt) return 'cancelled';
-  if (row.firedReason === 'expired') return 'expired';
-  if (row.firedAt) return 'fired';
-  return 'declared';
 }
 
 /**
@@ -73,29 +65,6 @@ function currentState(
   if (composedRoot) return `composed_${composedRoot.state}`;
   if (fireLatch) return 'fired_undeclared';
   return 'undeclared';
-}
-
-function payloadSha(payload: unknown): string | null {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
-  const p = payload as Record<string, unknown>;
-  for (const key of ['sha', 'commitSha', 'commit_sha', 'deployedSha', 'deployed_sha', 'testedSha', 'tested_sha']) {
-    if (typeof p[key] === 'string') return p[key].toLowerCase();
-  }
-  return null;
-}
-
-function expectedVerdict(row: AwaitRow): 'not-declared' | 'pending' | 'matched' | 'mismatched' | 'invalid' {
-  if (row.expectedCondition == null) return 'not-declared';
-  if (!row.firedAt) return 'pending';
-  const expected = row.expectedCondition as Partial<ExpectedCondition> & Record<string, unknown>;
-  if (expected.kind === 'sha' && typeof expected.sha === 'string') {
-    const actual = payloadSha(row.firedPayload);
-    return actual != null && actual === expected.sha.toLowerCase() ? 'matched' : 'mismatched';
-  }
-  if (expected.kind === 'predicate' && expected.predicate != null) {
-    return payloadMatchesFilter(expected.predicate, row.firedPayload) ? 'matched' : 'mismatched';
-  }
-  return 'invalid';
 }
 
 export type AnnouncementOwnership = {

@@ -1,11 +1,19 @@
 #!/usr/bin/env node
 /**
- * Rewrite a built host bundle so every character is <= U+00FF, by replacing each
- * char >= U+0100 with its `\uXXXX` escape.
+ * Rewrite a built host bundle so every character is ASCII (<= U+007F), by replacing
+ * each char >= U+0080 with its `\uXXXX` escape.
  *
  * WHY (WI-38221, measured 2026-08-12): V8 stores a JS string in one byte per
  * char ONLY if EVERY char is <= 0xFF; a single char above that widens the WHOLE
- * string to two-byte UTF-16. The host bundle carries ~9,150 such chars — 0.014%
+ * string to two-byte UTF-16.
+ *
+ * ⚠ For MODULE SOURCE the real threshold is ASCII, not Latin-1 (measured 2026-09-27,
+ * host-memory-reduction P-005, node 25.9, .papercusp/scratch/latin1-source-probe.mjs):
+ * a 40 MB ESM module holds 41 MB of external script source when pure ASCII and 81 MB
+ * when ONE comment carries U+00B7 — the same as an em-dash. Node's loader decodes a
+ * non-ASCII UTF-8 file straight to UTF-16. The first version of this pass escaped only
+ * >= U+0100, left ~180 lines of `·` / `×` / `§` / accented letters in place, and the
+ * live :3170 heap snapshot still showed the 63.5 MiB bundle held as a 127 MiB string. The host bundle carries ~9,150 such chars — 0.014%
  * of the file, and 5,017 lines of them sit in COMMENTS (em-dashes, box-drawing,
  * arrows) — which doubles the in-memory cost of all ~61 MB of source in EVERY
  * host process.
@@ -43,8 +51,8 @@ import { spawnSync } from 'node:child_process';
 const file = process.argv[2];
 const mb = (n) => (n / 1048576).toFixed(1);
 
-/** Escape only chars >= U+0100. Chars U+0080..U+00FF are already one-byte-safe. */
-const ESCAPE_RE = /[Ā-￿]/g;
+/** Escape every non-ASCII char. U+0080..U+00FF is NOT safe for module source (see header). */
+const ESCAPE_RE = /[\u0080-￿]/g;
 
 function warn(msg) {
   console.warn(`⚠ ascii-escape: ${msg} — leaving the bundle un-escaped (correct, just larger).`);
@@ -96,7 +104,7 @@ try {
 
   const after = statSync(file).size;
   console.log(
-    `→ ascii-escape: ${hits.length.toLocaleString()} chars >= U+0100 escaped ` +
+    `→ ascii-escape: ${hits.length.toLocaleString()} non-ASCII chars escaped ` +
       `(${mb(before)} MB → ${mb(after)} MB on disk; the win is in-memory: ` +
       `the source string stays one-byte in every host process)`,
   );

@@ -2135,6 +2135,50 @@ describe('proxyOpenAi — health and self-heal control-plane parity', () => {
     });
   });
 
+  it('counts only Codex accounts the automatic selector can serve under durable usage walls', () => {
+    const now = Date.UTC(2026, 8, 27, 7, 0, 0);
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const bearerPool = createFailoverPool([codexAcct('bearer-walled'), codexAcct('bearer-healthy')]);
+    const cliAccounts = [
+      { accountId: 'cli-walled', home: '/tmp/cli-walled' },
+      { accountId: 'cli-healthy', home: '/tmp/cli-healthy' },
+    ];
+    const cliPool = createFailoverPool(cliAccounts.map(({ accountId }) => codexAcct(accountId)));
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexPool: bearerPool,
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: cliPool,
+      selfHeal: { enabled: false },
+    });
+
+    gw.setAccountRateHints([
+      { accountId: 'bearer-walled', utilization7d: 1, windowResetAt7d: now + 60_000 },
+      { accountId: 'bearer-healthy', utilization7d: 0.2, windowResetAt7d: now + 60_000 },
+      { accountId: 'cli-walled', utilization7d: 1, windowResetAt7d: now + 120_000 },
+      { accountId: 'cli-healthy', utilization7d: 0.2, windowResetAt7d: now + 120_000 },
+    ]);
+    expect(gw.stats()).toMatchObject({
+      codexHealthyAccounts: 2,
+      codexTotalAccounts: 4,
+      codexEarliestRecoveryAt: 0,
+    });
+
+    gw.setAccountRateHints([
+      { accountId: 'bearer-walled', utilization7d: 1, windowResetAt7d: now + 60_000 },
+      { accountId: 'bearer-healthy', utilization7d: 1, windowResetAt7d: now + 90_000 },
+      { accountId: 'cli-walled', utilization7d: 1, windowResetAt7d: now + 120_000 },
+      { accountId: 'cli-healthy', utilization7d: 1, windowResetAt7d: now + 150_000 },
+    ]);
+    expect(gw.stats()).toMatchObject({
+      codexHealthyAccounts: 0,
+      codexTotalAccounts: 4,
+      codexEarliestRecoveryAt: now + 60_000,
+    });
+  });
+
   it('surfaces Codex admission/health in live config, includes ChatGPT egress, and readmits a paused Codex account', async () => {
     openaiUpstream = await startUpstream(ok);
     const codexPool = createFailoverPool([
