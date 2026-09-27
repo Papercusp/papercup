@@ -1406,8 +1406,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // that carried those disclosures.
               (parsedJsonBody
                 ? ''
-                : ` The spill FILE is plaintext — grep/tail it directly; \`base64 -d\` on ` +
-                  `args.file_path fails EMPTY, which reads as an empty spill.`) +
+                : ` The unwrapped spill payload is plaintext. Read it through capability:read; ` +
+                  `direct shell access to args.file_path can be sandbox-masked. Do not ` +
+                  `\`base64 -d\` the manifest-bearing file (response.data is base64).`) +
               (parsedJsonBody || partialJsonBody
                 ? ''
                 : upstreamProjection

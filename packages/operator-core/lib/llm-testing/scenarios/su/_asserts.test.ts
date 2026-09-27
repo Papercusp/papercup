@@ -24,8 +24,14 @@ import type { RunSummary, TurnResult } from '@papercusp/testing-shell/llm';
 
 import {
   assertCodeRunOrBulkOrSingleTurnFanout,
+  assertToolCallCountAtLeast,
+  assertToolCallCountAtMost,
+  assertToolCalled,
   assertToolCalledWithin,
   assertToolCalledWithArrayArg,
+  assertToolNotCalled,
+  assertToolGroupWithStringArg,
+  assertRequestedPlanItemsClaimed,
   assertToolSequence,
   assertTextForbidsAffirmed,
   assertTextForbidsInTurnAfter,
@@ -81,6 +87,43 @@ function mkRun(turns: TurnResult[]): RunSummary {
 }
 
 const META = { name: 't', claim: 'c' };
+
+describe('tools:invoke dispatch identity in su assertions', () => {
+  const invoked = (name: string, args: Record<string, unknown>) =>
+    ({ name: 'tools:invoke', input: { name, args } });
+  const run = mkRun([mkTurn({ toolCalls: [invoked('docs:author', { harness: 'engineering' })] })]);
+
+  it('sees the effective tool and its arguments in behavioral assertions', () => {
+    expect(assertToolCalled(['docs:author'], META).eval(run)).toEqual([]);
+    expect(assertToolCalledWithin(['docs:author'], 1, META).eval(run)).toEqual([]);
+    expect(assertToolGroupWithStringArg(['docs'], 'harness', META).eval(run)).toEqual([]);
+    expect(assertToolNotCalled(['docs:author'], META).eval(run)).toHaveLength(1);
+  });
+
+  it('still permits checks that intentionally assert use of the wrapper door', () => {
+    expect(assertToolCalled(['tools:invoke'], META).eval(run)).toEqual([]);
+    expect(assertToolNotCalled(['tools:invoke'], META).eval(run)).toHaveLength(1);
+  });
+
+  it('uses nested arguments for bulk and counts each dispatched call once', () => {
+    const bulk = mkRun([mkTurn({ toolCalls: [
+      invoked('work_items:get', { ids: ['a', 'b', 'c'] }),
+    ] })]);
+    expect(assertToolCalledWithArrayArg(['work_items:get'], 'ids', 3, META).eval(bulk)).toEqual([]);
+    expect(assertCodeRunOrBulkOrSingleTurnFanout(['work_items:get'], 3, META).eval(bulk)).toEqual([]);
+    expect(assertToolCallCountAtLeast(['work_items:get'], 1, META).eval(bulk)).toEqual([]);
+    expect(assertToolCallCountAtMost(['work_items:get'], 0, META).eval(bulk)).toHaveLength(1);
+  });
+
+  it('counts only real nested plan claims and rejects malformed wrapper args', () => {
+    const claims = mkRun([mkTurn({ toolCalls: [
+      invoked('plan_items:claim', { plan: 'plan-1', item: 'P-001' }),
+    ] })]);
+    expect(assertRequestedPlanItemsClaimed('plan-1', ['P-001'], META).eval(claims)).toEqual([]);
+    const invalid = mkRun([mkTurn({ toolCalls: [{ name: 'tools:invoke', input: { name: 'plan_items:claim', args: [] } }] })]);
+    expect(assertRequestedPlanItemsClaimed('plan-1', ['P-001'], META).eval(invalid)).toHaveLength(1);
+  });
+});
 
 describe('assertToolSequence', () => {
   const isWrite = (tc: { name: string }) => tc.name === 'capability:edit';

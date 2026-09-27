@@ -13,32 +13,20 @@ import { PATIENT_ADMIN } from '@papercusp/testing-shell/llm';
 import type { Scenario, ToolCallEvent } from '@papercusp/testing-shell/llm';
 
 import { SU_RUBRIC } from '../../rubrics/su';
-import { assertToolMatch, assertToolSequence } from './_asserts';
+import { assertToolMatch, assertToolSequence, effectiveToolCall } from './_asserts';
 import { makeDesignStatusBadgeContext } from './_overrides';
 
 function reachesForDesignSystem(tc: ToolCallEvent): boolean {
-  const name = tc.name.replace(/^mcp__agentmcp__/, '');
+  const { name, input } = effectiveToolCall(tc);
   if (name.startsWith('design-phase:')) return true;
   if (name.startsWith('docs:')) {
-    return /design/i.test(JSON.stringify(tc.input ?? {}));
+    return /design/i.test(JSON.stringify(input));
   }
   return false;
 }
 
-function effectiveCall(tc: ToolCallEvent): { name: string; input: Record<string, unknown> } {
-  const name = tc.name.replace(/^mcp__agentmcp__/, '');
-  const input = (tc.input ?? {}) as Record<string, unknown>;
-  if (name === 'tools:invoke' && typeof input.name === 'string') {
-    return {
-      name: input.name.replace(/^mcp__agentmcp__/, ''),
-      input: input.args && typeof input.args === 'object' ? (input.args as Record<string, unknown>) : {},
-    };
-  }
-  return { name, input };
-}
-
 function materializesApprovedComponent(tc: ToolCallEvent): boolean {
-  const { name, input: args } = effectiveCall(tc);
+  const { name, input: args } = effectiveToolCall(tc);
   const input = JSON.stringify(args);
   if (name === 'capability:write' || name === 'capability:edit') {
     return /HarnessCard\.tsx/i.test(input);
@@ -49,7 +37,7 @@ function materializesApprovedComponent(tc: ToolCallEvent): boolean {
 }
 
 function verifiesApprovedComponent(tc: ToolCallEvent): boolean {
-  const { name, input } = effectiveCall(tc);
+  const { name, input } = effectiveToolCall(tc);
   return name === 'capability:read' && /HarnessCard\.tsx/i.test(JSON.stringify(input));
 }
 

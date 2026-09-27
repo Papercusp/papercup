@@ -59,6 +59,8 @@ import {
   type ExpertBackend,
   type ExpertModelAllowlistDeps,
 } from './expert-model-allowlist';
+import type { ConsultReviewerModel } from './get-feedback-core';
+import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 
 /** How long the dispatcher waits for the answering session's pty host to
  * register before reporting verified:null (booting). Same budget and same
@@ -183,6 +185,8 @@ export interface BackendAvailability {
 
 /** Injectable seams — unit tests pass fakes; production omits (real impls). */
 export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
+  /** Test seam for the saved per-review model, read again on every cascade leg. */
+  readReviewerModel?: (workspaceId: string, conversationId: string) => Promise<ConsultReviewerModel | null>;
   resolveResumeTarget: typeof resolveResumeTarget;
   checkResumeTranscript: (target: ResumeTarget) => Promise<{ available: boolean; detail: string }>;
   buildAgentLaunchCommand: typeof buildAgentLaunchCommand;
@@ -765,6 +769,7 @@ export async function dispatchConsultResponder(
     /** The expert whose TRANSCRIPT is the knowledge source (the routed pick). */
     sourceOwnerId: string;
     conversationId: string;
+    reviewerModel?: ConsultReviewerModel;
     /** Router-matched transcript turns; exact native session wins over the
      * owner's newest session so the routed evidence and carried source agree. */
     evidence?: ConsultDispatchEvidenceRef[];
@@ -913,9 +918,19 @@ async function walkConsultDispatch(
       }
     }
 
-    const ranks = await resolveExpertModelAllowlist(ctx.workspaceId, d);
+    const allowedRanks = await resolveExpertModelAllowlist(ctx.workspaceId, d);
+    const requested = opts.reviewerModel;
+    const ranks = requested
+      ? allowedRanks.filter((rank) => rank.agent === requested.agent && rank.model === requested.model)
+        .map((rank) => ({
+          ...rank,
+          model: requested.effort ? `${rank.model}:${requested.effort}` : rank.model,
+        }))
+      : allowedRanks;
     if (ranks.length === 0) {
-      return give('the expert-model allowlist resolved empty — no model is allowed to answer consults');
+      return give(requested
+        ? `requested reviewer model ${requested.agent}/${requested.model} is absent from the current expert allowlist`
+        : 'the expert-model allowlist resolved empty — no model is allowed to answer consults');
     }
 
     for (const rank of ranks) {
@@ -1309,10 +1324,29 @@ export function makeConsultReachDispatcher(
   dispatch: ConsultDispatchResult;
 }> {
   return async (opts) => {
+    // The routed consult's saved snapshot is the authority on later reply,
+    // decline and expiry cascades. A closure from the initial call is gone by
+    // then, so never rely on it to keep the model constraint.
+    const reviewerModel = await (deps.readReviewerModel ?? readPersistedReviewerModel)(
+      ctx.workspaceId, opts.conversationId,
+    );
+    // Initial getFeedbackProd binds workspace ranks itself. Later decline and
+    // expiry writers construct a new dispatcher, so load that same workspace
+    // setting here instead of comparing the saved choice against the seed.
+    const dispatchDeps = reviewerModel && !deps.loadRanks
+      ? {
+          ...deps,
+          loadRanks: (workspaceId: string) =>
+            import('./expert-routing-settings')
+              .then(async ({ readConsultExpertRoutingSettings, bindConsultExpertRoutingSettings }) =>
+                bindConsultExpertRoutingSettings(await readConsultExpertRoutingSettings(workspaceId)).loadRanks(workspaceId)),
+        }
+      : deps;
     const dispatch = await dispatchConsultResponder(
       {
         sourceOwnerId: opts.responder,
         conversationId: opts.conversationId,
+        ...(reviewerModel ? { reviewerModel } : {}),
         ...(opts.evidence ? { evidence: opts.evidence } : {}),
         ...(opts.onAnsweringOwner ? { onAnsweringOwner: opts.onAnsweringOwner } : {}),
         // Per-rank, because a walled rank-1 can turn a fork into a conversion and
@@ -1327,7 +1361,7 @@ export function makeConsultReachDispatcher(
           }),
       },
       ctx,
-      deps,
+      dispatchDeps,
     );
     const pickupConfirmed = dispatch.dispatched && dispatch.verified === true;
     return {
@@ -1338,4 +1372,26 @@ export function makeConsultReachDispatcher(
       dispatch,
     };
   };
+}
+
+async function readPersistedReviewerModel(workspaceId: string, conversationId: string): Promise<ConsultReviewerModel | null> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const [row] = await getOrgPg().sql<Array<{ policy: string | null; reviewer_model: unknown }>>`
+    SELECT routing->>'policy' AS policy, routing->'reviewerModel' AS reviewer_model
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
+  `;
+  if (row?.reviewer_model == null) return null;
+  if (row.policy !== ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY) {
+    throw new Error('reviewer model exists outside its acceptance amendment policy');
+  }
+  const raw = typeof row.reviewer_model === 'string' ? JSON.parse(row.reviewer_model) as unknown : row.reviewer_model;
+  if (!raw || typeof raw !== 'object') throw new Error('invalid persisted reviewer model');
+  const model = raw as Record<string, unknown>;
+  if (!['claude', 'codex', 'omp'].includes(String(model.agent)) ||
+    typeof model.model !== 'string' || !/^[A-Za-z0-9._-]{1,80}$/.test(model.model) ||
+    (model.effort !== undefined && !['low', 'medium', 'high', 'xhigh', 'max'].includes(String(model.effort)))) {
+    throw new Error('invalid persisted reviewer model');
+  }
+  return model as unknown as ConsultReviewerModel;
 }

@@ -652,7 +652,21 @@ export default defineTool({
         let ownerId: string | null = null;
         if (reference.audience === 'owner') {
           try {
-            ownerId = resolveAgentIdentity(ctx as ResolveIdentityCtx).ownerId;
+            // The result door writes signed role-session spills under the
+            // HMAC-verified client id. Tool dispatch can subsequently install
+            // a synthesized role principal (system:judge, etc.); resolving
+            // that principal here would name a different owner and reject the
+            // creator's own spill. Only a verified signed spawn may bypass
+            // the synthesized principal, never an unsigned client id.
+            const identityCtx = ctx as ResolveIdentityCtx;
+            ownerId = resolveAgentIdentity(
+              identityCtx.sigVerifiedSpawn &&
+              !identityCtx.isSuperuser &&
+              !identityCtx.isPowerUser &&
+              identityCtx.uiClientId
+                ? { ...identityCtx, principal: undefined }
+                : identityCtx,
+            ).ownerId;
           } catch {
             ownerId = null;
           }

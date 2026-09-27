@@ -2985,6 +2985,31 @@ export interface CancellableReadLog extends AdmittedLog {
   getCancellable?(i: number): CancellableRead;
 }
 
+/**
+ * WI-10003427: where an incremental pass is RIGHT NOW. Mutated in place by the
+ * pass; `keyHex` is null before the first log is entered. `phaseSince` is the
+ * epoch-ms the current phase began.
+ */
+export interface MergeProgressProbe {
+  keyHex: string | null;
+  pos: number;
+  phase: string;
+  phaseSince: number;
+}
+
+export function createMergeProgressProbe(): MergeProgressProbe {
+  return { keyHex: null, pos: 0, phase: 'idle', phaseSince: Date.now() };
+}
+
+/** One-line rendering for a stall report: `log 5b00878b@7813646 phase 'settle-batch' for 42s`. */
+export function describeMergeProgress(probe: MergeProgressProbe, now: number = Date.now()): string {
+  if (probe.keyHex === null) return `no log entered yet (phase '${probe.phase}')`;
+  return (
+    `log ${probe.keyHex.slice(0, 8)}@${probe.pos} phase '${probe.phase}' ` +
+    `for ${Math.max(0, Math.round((now - probe.phaseSince) / 1000))}s`
+  );
+}
+
 export interface IncrementalMergeOpts {
   /** Override the apply sink (defaults to `applyHyperbeeOpToPg`). */
   applyImpl?: (op: OpEnvelope) => Promise<boolean | MergeApplyOutcome>;
@@ -3046,6 +3071,14 @@ export interface IncrementalMergeOpts {
    * near-miss invites correlating a number with the wrong harness entirely.
    */
   cursorLabel?: string;
+  /**
+   * WI-10003427: a caller-owned probe the pass stamps IN PLACE (no call, no
+   * allocation) before every await that has no bound of its own — so a pass
+   * that parks forever can be named down to `<log>@<pos>` and the phase it is
+   * waiting in. The boot-level merge watchdog reads it into its stall line; a
+   * stage name alone ('incremental-merge') left a 13h wedge undiagnosable.
+   */
+  progress?: MergeProgressProbe;
   /**
    * p2p-join-catchup-speed-2026-09-23 P-002 (WI-10002479): resolve the STORED PG
    * order for a window of upcoming ops in one query per opted-in table, and seed the
@@ -3544,6 +3577,16 @@ async function mergeIncrementalPass(
   // WI-2141796: prefix for the read-stall / quarantine lines. Without it those
   // lines name a LOG, which many harnesses fold independently — see cursorLabel.
   const cursorTag = opts?.cursorLabel ? `[${opts.cursorLabel}] ` : '';
+  // WI-10003427: stamp the caller's probe before each await that carries no bound
+  // of its own (see IncrementalMergeOpts.progress). A no-op without a probe.
+  const probe = opts?.progress;
+  const mark = (phase: string, keyHex: string, pos: number): void => {
+    if (!probe) return;
+    probe.keyHex = keyHex;
+    probe.pos = pos;
+    probe.phase = phase;
+    probe.phaseSince = Date.now();
+  };
   // p2p-join-catchup-speed-2026-09-23 P-002: optional stored-order look-ahead.
   const prefetchStoredOrder = opts?.prefetchStoredOrder;
   const prefetchWindow = Math.max(1, opts?.storedOrderPrefetchWindow ?? STORED_ORDER_PREFETCH_WINDOW);
@@ -3679,6 +3722,7 @@ async function mergeIncrementalPass(
     // `through` is the exclusive end of what the batch may hold: `pos` where the op
     // at `pos` has not started, `pos + 1` where it has.
     const settleBatch = async (through: number): Promise<boolean> => {
+      if (batch) mark('batch-commit', log.keyHex, pos);
       if (!batch || (await batch.commit())) {
         resolveSkips();
         return true;
@@ -3779,6 +3823,7 @@ async function mergeIncrementalPass(
           settled = true;
         }
         const startedAt = Date.now();
+        mark('key-seek', log.keyHex, pos);
         const r = await seekEpochKey({
           cursor,
           log,
@@ -3894,8 +3939,10 @@ async function mergeIncrementalPass(
         if (next[i] >= queue.length && !(await lane.commit())) halt.reason ??= 'lost';
       };
       for (;;) {
+        mark('snapshot-lanes', log.keyHex, pos);
         await Promise.all(queues.map((_, i) => runLane(i)));
         let lost = halt.reason === 'lost';
+        mark('lane-commit', log.keyHex, pos);
         for (const lane of lanes) if (!(await lane.commit())) lost = true;
         if (lost) {
           const reason = lanes.find((lane) => lane.failed)?.reason ?? 'unknown';
@@ -4063,6 +4110,7 @@ async function mergeIncrementalPass(
           cursor.applyFailures?.delete(log.keyHex);
         }
         try {
+          mark('cursor-persist', log.keyHex, pos);
           await onCursorAdvance(cursor.positions);
         } catch (err) {
           // best-effort: a failed persist must never abort the merge pass —
@@ -4081,6 +4129,7 @@ async function mergeIncrementalPass(
         // P-002 step 2: the look-ahead reads committed rows; commit first.
         if (!(await settleBatch(pos))) break;
         peekedUpTo = Math.min(upper, pos + prefetchWindow);
+        mark('stored-order-peek', log.keyHex, pos);
         await peekAndSeedStoredOrder({
           cursor,
           log,
@@ -4114,6 +4163,7 @@ async function mergeIncrementalPass(
         const peekedOp =
           cached || !peeked.has(pos) ? undefined : { kind: 'op' as const, op: peeked.get(pos) ?? null };
         peeked.delete(pos);
+        mark('read', log.keyHex, pos);
         const got =
           cached ??
           peekedOp ??
@@ -4235,6 +4285,7 @@ async function mergeIncrementalPass(
         const rows = snapshotRows(op);
         noteSnapshotCrossing(payload, disposition, rows.length);
         if (disposition === 'skip') {
+          mark('snapshot-jump', log.keyHex, pos);
           const jump = await jumpSkippedSet(op, payload);
           if (jump.kind === 'stalled') {
             pos++; // this chunk is crossed; the pass stops before the next one
@@ -4277,6 +4328,7 @@ async function mergeIncrementalPass(
             if (prev.seeded) storedOrderSkips++;
             continue;
           }
+          mark('apply-snapshot-row', log.keyHex, pos);
           const outcome = await applyRecordingWinner(
             cursor,
             groupKey,
@@ -4331,6 +4383,7 @@ async function mergeIncrementalPass(
         supersededSkips++;
         continue;
       }
+      mark('apply', log.keyHex, pos);
       const outcome = await applyRecordingWinner(
         cursor,
         groupKey,
@@ -4401,6 +4454,7 @@ async function mergeIncrementalPass(
     // unchanged log doesn't churn PG each 1Hz tick.
     if (onCursorAdvance && (pos > from || firstDeferredPos >= 0 || previousFailure)) {
       try {
+        mark('cursor-persist (log end)', log.keyHex, pos);
         await onCursorAdvance(cursor.positions);
       } catch (err) {
         // best-effort: a failed persist must never abort the merge pass
@@ -4417,6 +4471,10 @@ async function mergeIncrementalPass(
     }
   }
 
+  if (probe) {
+    probe.phase = 'folded';
+    probe.phaseSince = Date.now();
+  }
   // P-002 step 2: batch counters only when a batch transaction actually ran, so a
   // pass whose sink never joined one reports exactly what it did before.
   const batchStats =

@@ -88,6 +88,14 @@ export function consultParkKey(conversationId: string): string {
 
 export type LatencyContract = 'proceed' | 'hard-blocked';
 
+/** A reviewer-specific launch choice, persisted with the consult so every later
+ * cascade dispatch uses the same model as the first responder. */
+export interface ConsultReviewerModel {
+  agent: 'claude' | 'codex' | 'omp';
+  model: string;
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+}
+
 export interface GetFeedbackRequest {
   workspaceId: string;
   requesterId: string;
@@ -137,6 +145,7 @@ export interface GetFeedbackRequest {
    * quietly selecting under the wrong bounds is the failure this replaces.
    */
   policy?: string;
+  reviewerModel?: ConsultReviewerModel;
   /** Internal consumer metadata, persisted before any delivery or revival. */
   cascade?: SourceAuditCascadeMeta;
 }
@@ -1098,6 +1107,7 @@ export async function getFeedbackCore(
   // P-014: the policy rides on the persisted snapshot so the expiry sweep can
   // recognize a review consult (rubric-vetting) and convert it to pullable work.
   if (req.policy) route.snapshot.policy = req.policy;
+  if (req.reviewerModel) route.snapshot.reviewerModel = req.reviewerModel;
   const chosenSel = selected[0] ?? null;
   const chosen = chosenSel?.candidate ?? null;
   const chosenVia: SelectionVia | null = chosenSel?.via ?? null;

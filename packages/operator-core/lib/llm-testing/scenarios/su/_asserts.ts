@@ -38,8 +38,8 @@ function allToolCalls(run: RunSummary): ToolCallEvent[] {
  * directly, and the su target forwards it into the same scenario world (targets/su.ts
  * resolveToolResult). A predicate that reads only `tc.name` / `tc.input` therefore scores a
  * real filing made through that door as "never called". Predicates that check WHAT was done
- * (not which door was used) should read through this. The builders below still match the
- * outer name, because some scenarios (S31, S33) assert on the wrapper on purpose.
+ * (not which door was used) should read through this. Name-based builders retain
+ * the outer call when their spec explicitly names tools:invoke (S31/S33).
  */
 export function effectiveToolCall(tc: ToolCallEvent): { name: string; input: Record<string, unknown> } {
   const name = canonical(tc.name);
@@ -80,6 +80,16 @@ function nameMatches(name: string, specs: string[]): boolean {
   });
 }
 
+function matchingCall(
+  tc: ToolCallEvent,
+  specs: string[],
+): { name: string; input: Record<string, unknown> } | null {
+  const outer = { name: canonical(tc.name), input: (tc.input ?? {}) as Record<string, unknown> };
+  if (nameMatches(outer.name, specs)) return outer;
+  const effective = effectiveToolCall(tc);
+  return effective.name !== outer.name && nameMatches(effective.name, specs) ? effective : null;
+}
+
 /** ERROR unless at least one tool in any of `groups` was called with a
  *  non-empty STRING value at `argKey` (e.g. docs/plans called WITH a harness
  *  scope arg). */
@@ -94,8 +104,9 @@ export function assertToolGroupWithStringArg(
     name: meta.name,
     eval: (run) => {
       const hit = allToolCalls(run).some((tc) => {
-        if (!nameMatches(tc.name, specs)) return false;
-        const v = (tc.input as Record<string, unknown> | null | undefined)?.[argKey];
+        const match = matchingCall(tc, specs);
+        if (!match) return false;
+        const v = match.input[argKey];
         return typeof v === 'string' && v.trim().length > 0;
       });
       return hit ? [] : [violation(meta)];
@@ -108,7 +119,7 @@ export function assertToolCalled(specs: string[], meta: Meta): CustomAssert {
   return {
     kind: 'custom',
     name: meta.name,
-    eval: (run) => (allToolCalls(run).some((tc) => nameMatches(tc.name, specs)) ? [] : [violation(meta)]),
+    eval: (run) => (allToolCalls(run).some((tc) => matchingCall(tc, specs)) ? [] : [violation(meta)]),
   };
 }
 
@@ -125,7 +136,7 @@ export function assertToolCalledWithin(
     name: meta.name,
     eval: (run) => {
       const turns = run.turns.slice(0, Math.max(0, turnCount));
-      const hit = turns.some((turn) => turn.toolCalls.some((tc) => nameMatches(tc.name, specs)));
+      const hit = turns.some((turn) => turn.toolCalls.some((tc) => matchingCall(tc, specs)));
       return hit ? [] : [violation(meta)];
     },
   };
@@ -138,7 +149,7 @@ export function assertToolNotCalled(specs: string[], meta: Meta): CustomAssert {
     kind: 'custom',
     name: meta.name,
     eval: (run) => {
-      const hits = allToolCalls(run).filter((tc) => nameMatches(tc.name, specs));
+      const hits = allToolCalls(run).filter((tc) => matchingCall(tc, specs));
       return hits.length === 0 ? [] : [violation(meta)];
     },
   };
@@ -152,7 +163,7 @@ export function assertToolCallCountAtMost(specs: string[], max: number, meta: Me
     kind: 'custom',
     name: meta.name,
     eval: (run) => {
-      const count = allToolCalls(run).filter((tc) => nameMatches(tc.name, specs)).length;
+      const count = allToolCalls(run).filter((tc) => matchingCall(tc, specs)).length;
       return count <= max ? [] : [violation(meta)];
     },
   };
@@ -173,8 +184,9 @@ export function assertToolCalledWithArrayArg(
     name: meta.name,
     eval: (run) => {
       const hit = allToolCalls(run).some((tc) => {
-        if (!nameMatches(tc.name, specs)) return false;
-        const value = (tc.input as Record<string, unknown> | null | undefined)?.[argKey];
+        const match = matchingCall(tc, specs);
+        if (!match) return false;
+        const value = match.input[argKey];
         return Array.isArray(value) && value.length >= minLength;
       });
       return hit ? [] : [violation(meta)];
@@ -193,7 +205,7 @@ export function assertToolCallCountAtLeast(specs: string[], min: number, meta: M
     kind: 'custom',
     name: meta.name,
     eval: (run) => {
-      const count = allToolCalls(run).filter((tc) => nameMatches(tc.name, specs)).length;
+      const count = allToolCalls(run).filter((tc) => matchingCall(tc, specs)).length;
       return count >= min ? [] : [violation(meta)];
     },
   };
@@ -213,14 +225,15 @@ export function assertCodeRunOrBulkOrSingleTurnFanout(
     kind: 'custom',
     name: meta.name,
     eval: (run) => {
-      if (allToolCalls(run).some((tc) => nameMatches(tc.name, ['code:run']))) return [];
+      if (allToolCalls(run).some((tc) => matchingCall(tc, ['code:run']))) return [];
       if (allToolCalls(run).some((tc) => {
-        if (!nameMatches(tc.name, specs)) return false;
-        const ids = (tc.input as Record<string, unknown> | null | undefined)?.ids;
+        const match = matchingCall(tc, specs);
+        if (!match) return false;
+        const ids = match.input.ids;
         return Array.isArray(ids) && ids.length >= requiredDirectCalls;
       })) return [];
       const hitTurns = run.turns
-        .map((turn, index) => ({ index, count: turn.toolCalls.filter((tc) => nameMatches(tc.name, specs)).length }))
+        .map((turn, index) => ({ index, count: turn.toolCalls.filter((tc) => matchingCall(tc, specs)).length }))
         .filter((row) => row.count > 0);
       const directCount = hitTurns.reduce((sum, row) => sum + row.count, 0);
       return directCount >= requiredDirectCalls && hitTurns.length === 1
@@ -257,8 +270,7 @@ export function assertRequestedPlanItemsClaimed(
   const requested = [...new Set(requestedItems)];
 
   const itemsFromCall = (tc: ToolCallEvent): string[] => {
-    const name = canonical(tc.name);
-    const input = (tc.input ?? {}) as Record<string, unknown>;
+    const { name, input } = effectiveToolCall(tc);
 
     if (name === 'coord:orient') {
       return input.planSlug === planSlug ? stringItems(input.planItems) : [];

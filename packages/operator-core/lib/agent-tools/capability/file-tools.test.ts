@@ -404,6 +404,44 @@ describe('capability:read', () => {
     expect(parse(denied).reason).toBe('forbidden_reference');
   });
 
+  it('reads a signed judge session spill despite its synthesized role principal', async () => {
+    const f = join(DIR, 'judge-owner-reference.spill');
+    writeScratchReference({
+      filePath: f,
+      payload: 'judge spill bytes',
+      workspaceId: 'ws-1',
+      ownerId: 'judge-session-1',
+      mediaType: 'text/plain',
+    });
+    const signedJudgeCtx = {
+      ...baseCtx,
+      workspaceId: 'ws-1',
+      uiClientId: 'judge-session-1',
+      sigVerifiedSpawn: true,
+      principal: { kind: 'system', slug: 'system:judge', workspaceId: 'ws-1' },
+    };
+    const own = (await readTool.handler!(
+      { file_path: f, byte_offset: 0, byte_limit: 512 },
+      signedJudgeCtx as never,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(own.isError).not.toBe(true);
+    expect(Buffer.from(parse(own).data as string, 'base64').toString()).toBe('judge spill bytes');
+
+    const other = (await readTool.handler!(
+      { file_path: f, byte_offset: 0, byte_limit: 512 },
+      { ...signedJudgeCtx, uiClientId: 'judge-session-2' } as never,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(other.isError).toBe(true);
+    expect(parse(other).reason).toBe('forbidden_reference');
+
+    const unsigned = (await readTool.handler!(
+      { file_path: f, byte_offset: 0, byte_limit: 512 },
+      { ...signedJudgeCtx, sigVerifiedSpawn: false } as never,
+    )) as { content: Array<{ text: string }>; isError?: boolean };
+    expect(unsigned.isError).toBe(true);
+    expect(parse(unsigned).reason).toBe('forbidden_reference');
+  });
+
   it('resolves one typed evidence class from a shared result-door reference', async () => {
     const f = join(DIR, 'evidence-reference.json');
     writeScratchReference({

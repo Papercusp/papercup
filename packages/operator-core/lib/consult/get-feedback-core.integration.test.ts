@@ -793,6 +793,15 @@ async function stateRow(conversationId: string, ws: string = WS) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('getFeedbackCore — routed', () => {
+  it('persists the requested reviewer model with the consult for later cascades', async () => {
+    const reviewerModel = { agent: 'codex', model: 'sol', effort: 'xhigh' } as const;
+    const { deps } = makeDeps(routeOf([cand('agent-model')]));
+    const result = asOk(await getFeedbackCore({
+      ...baseReq, question: 'independent BAR model selection', reviewerModel,
+    }, deps));
+    expect((await stateRow(result.conversation_id)).routing).toMatchObject({ reviewerModel });
+  });
+
   it('routes to the top live candidate, persists the snapshot VERBATIM, wakes with evidence', async () => {
     const top = cand('agent-a');
     const second = cand('agent-b', { score: 0.6 });

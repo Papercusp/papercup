@@ -301,11 +301,13 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     ) as { _projection: { next: string } };
 
     expect(body._projection.next).toContain('response.data');
-    // The hazard itself: `base64 -d` on plaintext exits non-zero with EMPTY
-    // stdout, which reads as an empty spill rather than a wrong decoder.
+    // A capability sandbox masks the scratch directory: direct grep/tail can
+    // produce ENOENT for an existing spill, falsely implying no data exists.
+    expect(body._projection.next).not.toContain('grep/tail it directly');
+    expect(body._projection.next).toContain('direct shell access to args.file_path can be sandbox-masked');
     expect(body._projection.next).toContain('plaintext');
     expect(body._projection.next).toContain('base64 -d');
-    expect(body._projection.next).toContain('fails EMPTY');
+    expect(body._projection.next).toContain('response.data is base64');
   });
 
   it('keeps the referenced payload as plaintext — capability:read unwraps the manifest', () => {

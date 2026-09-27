@@ -224,10 +224,10 @@ describe('features:get', () => {
     expect(row.title).toBe('Auth login');
     expect(row.status).toBe('todo');
   });
-  it('not-found → that item fails (ok:false + error), batch ok stays true', async () => {
+  it('not-found → that item fails (ok:false + error), envelope ok reflects the failure', async () => {
     const { r } = await call('features:get', { slug: 'h1', feature_id: 'F-NOPE' });
     const env = payload(r) as { ok: boolean; results: Array<{ ok: boolean; error: string }>; counts: { failed: number } };
-    expect(env.ok).toBe(true);
+    expect(env.ok).toBe(false);
     expect(env.counts.failed).toBe(1);
     expect(env.results[0].ok).toBe(false);
     expect(env.results[0].error).toMatch(/not found/i);
@@ -246,7 +246,7 @@ describe('features:get', () => {
       ],
     });
     const env = payload(r) as { ok: boolean; results: Array<{ ok: boolean; feature_id: string }>; counts: { ok: number; failed: number } };
-    expect(env.ok).toBe(true);
+    expect(env.ok).toBe(false);
     expect(env.counts).toEqual({ ok: 1, failed: 1 });
     expect(env.results.map((x) => [x.feature_id, x.ok])).toEqual([
       ['F-1', true],
@@ -300,7 +300,7 @@ describe('features:list_related', () => {
   it('unknown source → that item fails (ok:false + error)', async () => {
     const { r } = await call('features:list_related', { slug: 'h1', feature_id: 'F-NOPE' });
     const env = payload(r) as { ok: boolean; results: Array<{ ok: boolean; error: string }> };
-    expect(env.ok).toBe(true);
+    expect(env.ok).toBe(false);
     expect(env.results[0].ok).toBe(false);
     expect(env.results[0].error).toMatch(/not found/i);
   });
@@ -329,7 +329,7 @@ describe('features:history', () => {
   it('no history → that item fails (ok:false + "no history yet")', async () => {
     const { r } = await call('features:history', { slug: 'h1', feature_id: 'F-2' });
     const env = payload(r) as { ok: boolean; results: Array<{ ok: boolean; error: string }> };
-    expect(env.ok).toBe(true);
+    expect(env.ok).toBe(false);
     expect(env.results[0].ok).toBe(false);
     expect(env.results[0].error).toMatch(/no history yet/i);
   });
@@ -377,10 +377,10 @@ describe('harness:status', () => {
     expect(row.recentActivity.length).toBeGreaterThan(0);
     expect(row.recentActivity[0].subject).toBe('h1');
   });
-  it('not-found → that item fails (ok:false), batch ok stays true', async () => {
+  it('not-found → that item fails (ok:false), envelope ok reflects the failure', async () => {
     const { r } = await call('harness:status', { slug: 'nope' });
     const env = payload(r) as { ok: boolean; results: Array<{ ok: boolean }> };
-    expect(env.ok).toBe(true);
+    expect(env.ok).toBe(false);
     expect(env.results[0].ok).toBe(false);
   });
 });
