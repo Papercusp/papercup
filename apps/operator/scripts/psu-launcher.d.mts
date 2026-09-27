@@ -1490,6 +1490,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     } | null;
     ownerId?: string | null;
 }): {
+    PAPERCUSP_ACCOUNT_ID?: any;
+    PAPERCUSP_ACCOUNT_ROUTING_MODE?: any;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -1504,6 +1506,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
 } | {
+    PAPERCUSP_ACCOUNT_ID?: any;
+    PAPERCUSP_ACCOUNT_ROUTING_MODE?: any;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -1518,6 +1522,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
 } | {
+    PAPERCUSP_ACCOUNT_ID?: any;
+    PAPERCUSP_ACCOUNT_ROUTING_MODE?: any;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -1532,6 +1538,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
 } | {
+    PAPERCUSP_ACCOUNT_ID?: any;
+    PAPERCUSP_ACCOUNT_ROUTING_MODE?: any;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -3720,16 +3728,24 @@ export function isCodexHomeLaunchReady(codexHome: string | null | undefined, exp
  * The server-side writer is idempotent and also reconciles project HTTP MCP
  * servers. A structurally ready home can still predate a newly inherited
  * connector, so every resume must reach that writer.
+ * @param {string | null} owner
+ * @param {string | null} codexHome
+ * @param {string | number | null} advSessionId
+ * @param {{requireGatewayProvider?: boolean, model?: string | null, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: typeof fetch, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, token?: string | null, timeoutMs?: number}} options
  */
-export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessionId: any, { requireGatewayProvider, model, fetchImpl, operatorUrl, env, probe, onRecovery, token, timeoutMs, }?: {
-    requireGatewayProvider?: boolean | undefined;
-    model?: null | undefined;
-    fetchImpl?: typeof fetch | undefined;
-    operatorUrl?: string | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
-    probe?: typeof probeOmpOperatorMcp | undefined;
-    token?: null | undefined;
-    timeoutMs?: number | undefined;
+export function ensureCodexHomeViaOperator(owner: string | null, codexHome: string | null, advSessionId: string | number | null, { requireGatewayProvider, model, routeMode, accountId, priority, fetchImpl, operatorUrl, env, probe, onRecovery, token, timeoutMs, }?: {
+    requireGatewayProvider?: boolean;
+    model?: string | null;
+    routeMode?: string | null;
+    accountId?: string | null;
+    priority?: string | null;
+    fetchImpl?: typeof fetch;
+    operatorUrl?: string;
+    env?: NodeJS.ProcessEnv;
+    probe?: typeof probeOmpOperatorMcp;
+    onRecovery?: Function;
+    token?: string | null;
+    timeoutMs?: number;
 }): Promise<any>;
 /** Pure launch-argument half of a session port. Keeping the same owner id is the
  * authority-continuity invariant: the new native backend is another body of the

@@ -1496,13 +1496,13 @@ describe('P-009 — terminal/release lifecycle retires cached goal refs', () => 
     });
     expect(closed?.assignee).toBeNull();
 
-    const [row] = await db.sql<{ status: string; taken_by: string | null }[]>`
-      SELECT status, taken_by
+    const [row] = await db.sql<{ status: string; taken_by: string | null; terminal_reason: string | null }[]>`
+      SELECT status, taken_by, terminal_reason
         FROM harness_shared.harness_features_consolidated
        WHERE harness_slug = 'papercup' AND feature_id = ${feature.id}`;
     // The unified work-item surface normalizes legacy feature `passed` to the
     // canonical terminal `done` state before the base-table write.
-    expect(row).toEqual({ status: 'done', taken_by: null });
+    expect(row).toEqual({ status: 'done', taken_by: null, terminal_reason: 'passed' });
     expect(readAgentStateStamp('agB').goalRef).toBeNull();
   });
 
@@ -2103,5 +2103,47 @@ describe('EI-15461 — a feature passing auto-resolves its promoted source issue
     // Must not throw when there is no linked issue to resolve.
     await expect(wi.setWorkItemState(featureId, 'passed', { by: 'agB', completionRef: 'shipped' })).resolves.toBeTruthy();
     await wi.autoResolveSourceIssueOnFeaturePassed(featureId, 'papercup');
+  });
+});
+
+describe('EI-24381068581558568 — terminal reason commits with terminal status', () => {
+  it('rejects a half-terminal UPDATE for both work-item families', async () => {
+    await db.sql`
+      CREATE FUNCTION harness_shared.assert_atomic_terminal_reason_test() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.title IN ('atomic terminal reason issue', 'atomic terminal reason feature')
+           AND NEW.status IN ('done', 'dropped') AND NEW.terminal_reason IS NULL THEN
+          RAISE EXCEPTION 'terminal status committed without terminal_reason';
+        END IF;
+        RETURN NEW;
+      END
+      $$`;
+    await db.sql`
+      CREATE TRIGGER assert_atomic_terminal_reason_test
+      AFTER UPDATE ON harness_shared.work_items
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.assert_atomic_terminal_reason_test()`;
+    try {
+      const issue = await wi.createWorkItem({
+        kind: 'bug', title: 'atomic terminal reason issue', harness: 'papercup', createdBy: 'agA',
+      });
+      const feature = await wi.createWorkItem({
+        kind: 'feature', title: 'atomic terminal reason feature', harness: 'papercup', createdBy: 'agA',
+      });
+      await wi.setWorkItemState(issue.id, 'resolved', { by: 'agA', completionRef: 'atomic reason test' });
+      await wi.setWorkItemState(feature.id, 'passed', {
+        harness: 'papercup', by: 'agA', completionRef: 'atomic reason test',
+      });
+      const rows = await db.sql<{ feature_id: string; status: string; terminal_reason: string | null }[]>`
+        SELECT feature_id, status, terminal_reason FROM harness_shared.work_items
+         WHERE feature_id IN (${issue.id}, ${feature.id}) ORDER BY feature_id`;
+      expect(rows).toEqual(expect.arrayContaining([
+        { feature_id: issue.id, status: 'done', terminal_reason: 'resolved' },
+        { feature_id: feature.id, status: 'done', terminal_reason: 'passed' },
+      ]));
+    } finally {
+      await db.sql`DROP TRIGGER assert_atomic_terminal_reason_test ON harness_shared.work_items`;
+      await db.sql`DROP FUNCTION harness_shared.assert_atomic_terminal_reason_test()`;
+    }
   });
 });

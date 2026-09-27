@@ -1636,7 +1636,7 @@
           "POST"
         ]
       },
-      "description": "Restore a kopia snapshot. mode=\"clone\" (default) writes to .restored/<id>/ and never overwrites live state; mode=\"in_place\" overwrites the target after taking a safety snapshot first.",
+      "description": "Restore a kopia snapshot. mode=\"clone\" (default) writes to .restored/<id>/ and never overwrites live state. Clone source is an optional relative POSIX path inside the snapshot (file or directory), not a live filesystem path; omitting it restores the full snapshot. mode=\"in_place\" overwrites the target after taking a safety snapshot first; source does not narrow in_place.",
       "capabilities": [
         "backup:write"
       ],
@@ -21030,7 +21030,7 @@
           "POST"
         ]
       },
-      "description": "Record a plan audit. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs, records the current revision, and previews readiness. Post-epoch BAR seeding requires `## Requirements` entries in `**R-N — Title.** outcome` form or one fenced `requirement` JSON block plus Design map; changed BAR source returns `barSeedPendingAmendment`; invalid pinned rubrics return `barSeedPendingRepair`.",
+      "description": "Record a plan audit. Activation: any nonempty `unresolvedBlockers` list refuses the audit and records nothing; map resolved conditions in `mappings`/`summary` instead. `completion` re-resolves code/test citations; `activation` resolves mapped `session_turn` refs and previews readiness. BAR seeding requires `## Requirements` entries in `**R-N — Title.** outcome` form or fenced `requirement` JSON plus Design map.",
       "capabilities": [
         "plans:write"
       ],

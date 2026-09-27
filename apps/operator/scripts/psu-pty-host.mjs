@@ -6354,10 +6354,19 @@ export async function healDeadOperatorPin(env, { fetchImpl = fetch, timeoutMs = 
  * @returns {{command: string, args: string[], env: Record<string,string|undefined>}}
  */
 export function resolveAgentPtyTarget({ command, args, env, cwd }, deps = {}) {
-  const rawSpec = env?.[AGENT_IDENTITY_SPEC_ENV];
-  if (!rawSpec) return { command, args, env };
+  // The host can retain serving-host hints across an in-place loop respawn.
+  // They identify the host, not its agent child: ptool would prefer either
+  // hint over the operator URL explicitly handed to that child. Keep the host
+  // environment untouched and sanitize on EVERY child spawn, including recycle.
+  const childEnv = { ...env };
+  if (childEnv.PAPERCUSP_OPERATOR_URL) {
+    delete childEnv.PAPERCUSP_OPERATOR_BASE;
+    delete childEnv.PAPERCUSP_HONO_PORT;
+  }
+  const rawSpec = childEnv[AGENT_IDENTITY_SPEC_ENV];
+  if (!rawSpec) return { command, args, env: childEnv };
   const stage = deps.stage ?? stageAgentIdentityTty;
-  const exec = stage(rawSpec, { command, args, env, cwd });
+  const exec = stage(rawSpec, { command, args, env: childEnv, cwd });
   return { command: exec.command, args: [...exec.args], env: exec.env };
 }
 
