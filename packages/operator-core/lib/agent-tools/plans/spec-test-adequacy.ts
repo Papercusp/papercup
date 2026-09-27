@@ -13,6 +13,7 @@ import type {
   SpecTestAdequacyCurrentFingerprint,
   SpecTestAdequacyRerunRecipe,
 } from '../../harness/improvements/observation-types';
+import { isRecordedTestLayer } from '@papercusp/test-config/execution-details';
 
 export const SPEC_TEST_ADEQUACY_RUBRIC_REF = 'spec-test-adequacy';
 
@@ -198,7 +199,7 @@ export function activeSpecEvidence<T extends SpecEvidenceForAdequacy>(rows: read
       binding.specRevision !== row.specRevision ||
       measurement.data.testPaths?.length !== 1 ||
       binding.testPath !== measurement.data.testPaths[0] ||
-      !['unit', 'integration', 'e2e'].includes(String(binding.testLayer))
+      !isRecordedTestLayer(binding.testLayer)
     )
       return null;
     const strings = (value: unknown): string[] | null =>

@@ -20,6 +20,7 @@
  * the criterion; the snapshot from its projection), and the caller passes the
  * verdict in. A second copy here would be a fourth definition of "manual".
  */
+import { RECORDED_TEST_LAYERS, type RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 
 export type AcceptanceBarContractGap =
@@ -46,18 +47,14 @@ export interface AcceptanceBarContractGapFinding {
  * Vitest config excludes `*.integration.test.*` / `*.browser.test.*`
  * (libs/test-config/src/vitest-config.ts), e2e is Playwright under `e2e/` or a
  * `*.spec.*`, and LLM scenarios live under `llm-testing/`. */
-export type CheckFileTestLayer = 'unit' | 'integration' | 'e2e' | 'llm' | 'browser';
+// ONE taxonomy with the ledger recorder (EI-24434635346407728): a BAR may only require a
+// layer that a test_runs row can record, so this is the recorder's type, not a copy of it.
+export type CheckFileTestLayer = RecordedTestLayer;
 
 /** Only declared layers in this vocabulary are judged against check files. Any other
  * declared layer (e.g. `mutation`, `property`) has no filename convention, so a
  * mismatch cannot be established and none is reported. */
-const JUDGED_LAYERS: ReadonlySet<string> = new Set<CheckFileTestLayer>([
-  'unit',
-  'integration',
-  'e2e',
-  'llm',
-  'browser',
-]);
+const JUDGED_LAYERS: ReadonlySet<string> = new Set<CheckFileTestLayer>(RECORDED_TEST_LAYERS);
 
 const SCRIPT_EXT = '[cm]?[jt]sx?';
 

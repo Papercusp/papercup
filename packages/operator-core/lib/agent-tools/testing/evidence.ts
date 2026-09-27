@@ -12,14 +12,16 @@ import { getRunAsync, readHarnessTestRunEvidence, countUnattributedTestRunRows,
 import { resolveScenarioRerunScope } from './scenario-rerun-scope';
 import type { TestFilesCoreResult } from './run';
 import { SPEC_PROOF_OBLIGATION_ID_RE } from '../plans/spec-clauses-store';
-import { parseTestRunExecutionDetails, recordedTestLayer } from '@papercusp/test-config/execution-details';
+import { RECORDED_TEST_LAYERS, parseTestRunExecutionDetails, recordedTestLayer } from '@papercusp/test-config/execution-details';
 
 const proofId = z.string().regex(SPEC_PROOF_OBLIGATION_ID_RE).max(200);
 const bindingSchema = z.object({
   specId: z.string().min(1).max(200), specRevision: z.number().int().positive(),
   testPath: z.string().min(1).max(500),
   sourcePaths: repoFilesEvidenceMeasurementSchema.shape.sourcePaths,
-  testLayer: z.enum(['unit', 'integration', 'e2e']),
+  // The ONE recorder taxonomy (EI-24434635346407728); a label the ledger row contradicts
+  // is still refused as a layer mismatch below, so widening the vocabulary grants nothing.
+  testLayer: z.enum(RECORDED_TEST_LAYERS),
   scenarioIds: z.array(proofId).min(1).max(100).optional(),
   causalPairId: proofId.optional(),
   counterexample: z.object({ test: z.string().min(1).max(500), messageIncludes: z.string().min(1).max(500) }).optional(),

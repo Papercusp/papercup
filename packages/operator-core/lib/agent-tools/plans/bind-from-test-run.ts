@@ -41,7 +41,7 @@
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
-import { recordedTestLayer } from '@papercusp/test-config/execution-details';
+import { recordedTestLayer, type RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import { withWorkspace } from '@papercusp/db-org';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { resolveRelative, runtimeSpecifiers, stripComments } from '../../search/import-graph';
@@ -239,7 +239,7 @@ interface RunFacts {
   skipped: boolean;
   executed: boolean;
   outcome: string;
-  testLayer?: 'unit' | 'integration' | 'browser';
+  testLayer?: RecordedTestLayer;
 }
 
 function runFacts(row: TestRunEvidenceRow, kind: DerivedTestRunBinding['evidenceKind']): RunFacts {
