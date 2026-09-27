@@ -14,7 +14,8 @@
  *    submodule, at the gitlink that commit pins), never from disk, so an
  *    uncommitted edit cannot reach the bundle;
  *  - the files esbuild consults from disk to RESOLVE modules (package.json,
- *    tsconfig.json and their relative `extends`) must equal their committed blobs;
+ *    tsconfig.json and their relative `extends`) must equal their committed blobs,
+ *    except package.json scripts, which esbuild never executes or resolves through;
  *  - esbuild and every npm package inlined or copied must be the version
  *    package-lock.json pins at --sha;
  *  - no output may carry the build host's home directory.
@@ -32,6 +33,7 @@ import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 
 const fail = (message) => {
   console.error(`bundle-psu: ERROR: ${message}`);
@@ -246,7 +248,21 @@ while (pending.length) {
 const drifted = [...consulted].filter((rel) => {
   const disk = existsSync(path.join(ROOT, rel)) ? readFileSync(path.join(ROOT, rel)) : null;
   const committed = tree.read(rel);
-  return disk === null || committed === null || !disk.equals(committed);
+  if (disk === null || committed === null) return true;
+  if (disk.equals(committed)) return false;
+  if (path.posix.basename(rel) === 'package.json') {
+    // A historical release must not be invalidated by unrelated lint/test
+    // scripts added since its commit. esbuild reads resolution metadata but
+    // never executes npm scripts. Preserve EVERY other field (including
+    // unknown future resolution fields) instead of maintaining an allowlist.
+    // If the manifest itself is imported, onLoad still supplies committed bytes.
+    const fromDisk = JSON.parse(disk.toString('utf8'));
+    const fromCommit = JSON.parse(committed.toString('utf8'));
+    delete fromDisk.scripts;
+    delete fromCommit.scripts;
+    return !isDeepStrictEqual(fromDisk, fromCommit);
+  }
+  return true;
 });
 if (drifted.length) {
   fail(`module resolution read files that differ from ${SHA}: ${drifted.sort().join(', ')}; commit them or package an older sha`);
