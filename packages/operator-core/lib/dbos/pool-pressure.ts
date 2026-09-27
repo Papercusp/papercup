@@ -202,8 +202,14 @@ export async function probePoolLatencyMs(
     }
     rawMs = now() - start;
   } catch (e) {
-    rawMs = now() - start;
     timedOut = e instanceof Error && e.message === 'pool-probe-timeout';
+    // A fired timeout means the full budget elapsed on the TIMER's clock. `now()` can
+    // read SHORT of it: libuv arms setTimeout from the loop's CACHED time, which lags
+    // wall-clock by however long the current loop iteration has been running, so after
+    // a synchronous burst setTimeout(20) fires with `Date.now() - start` at 19ms or
+    // less. Unfloored, that under-read makes `netMs >= timeoutMs` false on a genuine
+    // timeout with NO loop delay, and a starved pool classifies 'ok' (WI-10003256).
+    rawMs = timedOut ? Math.max(now() - start, timeoutMs) : now() - start;
   }
   // Discount the scheduler delay this probe's own `await` absorbed (LOOP-DELAY
   // CONTAMINATION in the header). No monitor ⇒ 0 ⇒ the raw reading is unchanged.
@@ -230,8 +236,9 @@ export async function poolPressure(
   runProbe: () => Promise<unknown> = defaultProbe,
   now: () => number = Date.now,
   timeoutMs: number = PROBE_TIMEOUT_MS,
+  readLoopLag: () => LoopLagSample | null = currentLoopLag,
 ): Promise<PoolPressure> {
-  return classifyPoolPressure(await probePoolLatencyMs(runProbe, now, timeoutMs));
+  return classifyPoolPressure(await probePoolLatencyMs(runProbe, now, timeoutMs, readLoopLag));
 }
 
 /** Test-only: reset the module-global probe + shed state between cases. */
