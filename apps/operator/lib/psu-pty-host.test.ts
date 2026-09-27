@@ -4095,6 +4095,44 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
 
     const fastSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, Math.min(ms, 2)));
 
+    it('accepts Claude direct reconnect output without trying to select a dialog row', async () => {
+      let output = '';
+      const writes: string[] = [];
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp',
+        write: (bytes: string) => {
+          writes.push(bytes);
+          if (bytes === '\r') output = 'Reconnected to papercusp.\n';
+        },
+        readTap: () => output,
+        resetTap: () => { output = ''; },
+        sleep: fastSleep,
+        crDelayMs: 1,
+        paintBudgetMs: 50,
+      });
+      expect(result).toEqual({
+        ok: true, step: 'direct-reconnected', detail: 'Claude /mcp confirmed this server reconnected',
+      });
+      expect(writes).toEqual(['/mcp', '\r']);
+    });
+
+    it('does not count a partial reconnect with a tool-fetch failure as ready', async () => {
+      let output = '';
+      const result = await runMcpReconnectMacro({
+        serverName: 'papercusp',
+        write: (bytes: string) => {
+          if (bytes === '\r') output = 'Reconnected to papercusp, but fetching tools failed: MCP error';
+        },
+        readTap: () => output,
+        resetTap: () => { output = ''; },
+        sleep: fastSleep,
+        crDelayMs: 1,
+        paintBudgetMs: 30,
+        maxArrows: 0,
+      });
+      expect(result.ok).toBe(false);
+    });
+
     it('heals a failed server end-to-end (open → select → reconnect → connected)', async () => {
       const tui = makeFakeTui([
         { name: 'playwright', status: '✔ connected' },
