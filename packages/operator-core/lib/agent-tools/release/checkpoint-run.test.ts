@@ -603,6 +603,50 @@ describe('release:checkpoint-run', () => {
     expect(String(b.note)).toContain('my just-landed fix');
   });
 
+  // WI-10003521: a launcher whose env declares no capacity contract silently runs the suite at
+  // SHARED capacity. The launch result carries the warning; the reply's note must render it.
+  it('WI-10003521: renders the launcher capacity warning in `note` and passes `capacity` through', async () => {
+    const warning = '⚠ CAPACITY: the launching process declares no PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE';
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual.log',
+      capacity: { mode: 'shared', source: 'default', declared: null, warning },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+    expect(b.ok).toBe(true);
+    expect(String(b.note)).toContain(warning);
+    expect(b.capacity).toMatchObject({ mode: 'shared', source: 'default' });
+  });
+
+  it('WI-10003521: a declared contract adds nothing to `note`', async () => {
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual.log',
+      capacity: { mode: 'reserved', source: 'process-env', declared: 'reserved', warning: null },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+    expect(b.ok).toBe(true);
+    expect(String(b.note)).not.toMatch(/CAPACITY/);
+  });
+
   // EI-18759622667757826: `excludedCommits` is resolved ~1-2s BEFORE the detached run re-resolves
   // its own candidate, and the quiet cut is a pure age test — so a commit seconds short of the
   // window ages in and IS judged. Reported as flat fact, that reading told the filer an expensive

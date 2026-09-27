@@ -2265,7 +2265,10 @@ export default defineTool({
         : agingIn.length
           ? ` ⚠ PREDICTION ONLY — and this one is probably PESSIMISTIC: ${agingIn.length} of ${excluded.length} commit(s) newer than the predicted candidate age into quiet-cut eligibility within ${CANDIDATE_RERESOLVE_WINDOW_SEC}s (soonest ~${soonestSec ?? 0}s), and this run re-resolves its OWN candidate ~1-2s after launch — so it will very likely judge them after all. ${touchedPart} Do NOT treat this as a verdict on your change and do NOT kill the run over it: wait for the real verdict (checkpoint:await), then release:trace to see what it actually judged.`
           : ` ⚠ PREDICTED exclusion: ${excluded.length} commit(s) newer than the predicted candidate are expected to fall outside this run${soonestSec == null ? '' : ` (soonest ages into eligibility in ~${soonestSec}s, past the ~1-2s re-resolution window)`}, so they would get the NEXT run. ${touchedPart} If you edited any of them, this run most likely judges the older version and a red from it is not evidence your change failed. The run re-resolves its candidate at start, so confirm with release:trace rather than assuming — and wait for the verdict either way; killing a live run is never the recovery.`;
-    const excludedWarning = `${containmentPart}${excludedPart}`;
+    // WI-10003521: a launcher with no (valid) capacity contract silently runs the suite at SHARED
+    // capacity. Lead with it — the run's own log says so only once the slow lane is an hour in.
+    const capacityPart = result.capacity?.warning ? ` ${result.capacity.warning}` : '';
+    const excludedWarning = `${containmentPart}${excludedPart}${capacityPart}`;
     return {
       content: [
         {

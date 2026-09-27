@@ -153,6 +153,68 @@ export const CHECKPOINT_SYSTEMCTL_PROBE_TIMEOUT_MS = 5_000;
 export const MANUAL_CHECKPOINT_WATCHDOG_ENV = 'PAPERCUSP_MANUAL_GREEN_CHECKPOINT_WATCHDOG_MS';
 export const MANUAL_CHECKPOINT_WATCHDOG_MS = GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + GREEN_CHECKPOINT_SIGKILL_GRACE_MS;
 
+export const CHECKPOINT_CAPACITY_MODE_ENV = 'PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE';
+
+/** WI-10003521: the capacity contract a manual launch forwarded, with its provenance. */
+export interface CheckpointCapacityReport {
+  /** The mode the run will actually execute under ('shared' when nothing valid was declared). */
+  mode: 'shared' | 'reserved';
+  /** Where `mode` came from: the caller's `extraEnv`, the LAUNCHING process's env, or nothing
+   *  (`default`) / an unrecognised value (`invalid`) — the last two are silent fallbacks. */
+  source: 'extraEnv' | 'process-env' | 'default' | 'invalid';
+  /** The raw declared value, verbatim (null when undeclared). */
+  declared: string | null;
+  /** Non-null when the run will silently get less capacity than the launcher's operator
+   *  probably intended. Callers must surface it, not bury it in a nested field. */
+  warning: string | null;
+}
+
+/**
+ * WI-10003521: resolve the capacity contract for a manual checkpoint launch, and say LOUDLY
+ * when it is a silent fallback.
+ *
+ * WI-39472 made the launcher forward its own capacity env into the detached run. That left a
+ * second, quieter seam: the contract is read from the LAUNCHING process, and manual runs are
+ * launched by whichever operator served `release:checkpoint-run` — on the dev box the staging
+ * operator (:3170), whose unit had no capacity drop-in while papercup-dev-api and
+ * papercup-bg-host did. Observed 2026-09-27: manual runs logged `mode=shared maxForks=2`,
+ * operator-core lane-stateful got one fork and ran 55 min and then >86 min (killed by the 3h
+ * backstop with no verdict), against ~20 min for scheduled runs at reserved. Nothing in the
+ * launch reply said so; only the run's own GREEN_CHECKPOINT_CAPACITY log line did, an hour in.
+ * An explicit `shared` is a choice and is not warned about; an absent or unrecognised value is.
+ */
+export function resolveCheckpointCapacity(
+  extraEnv: Record<string, string | undefined> | undefined,
+  env: Record<string, string | undefined> = process.env,
+): CheckpointCapacityReport {
+  const fromExtra = extraEnv?.[CHECKPOINT_CAPACITY_MODE_ENV];
+  const fromProcess = env[CHECKPOINT_CAPACITY_MODE_ENV];
+  const declared = fromExtra ?? fromProcess ?? null;
+  const declaredSource: 'extraEnv' | 'process-env' = fromExtra !== undefined ? 'extraEnv' : 'process-env';
+  if (declared === 'shared' || declared === 'reserved') {
+    return { mode: declared, source: declaredSource, declared, warning: null };
+  }
+  const fix =
+    `Set ${CHECKPOINT_CAPACITY_MODE_ENV}=reserved on the service that launched this run ` +
+    `(a systemd drop-in like the 20-green-checkpoint-capacity.conf on papercup-bg-host), restart it, ` +
+    `and confirm the run log's GREEN_CHECKPOINT_CAPACITY line. Scheduled gate runs use their own ` +
+    `host's contract, so this manual run may be several times slower than a scheduled one (WI-10003521).`;
+  if (declared === null) {
+    return {
+      mode: 'shared',
+      source: 'default',
+      declared: null,
+      warning: `⚠ CAPACITY: the launching process (pid ${process.pid}) declares no ${CHECKPOINT_CAPACITY_MODE_ENV}, so this manual run falls back to SHARED capacity (fewer vitest forks). ${fix}`,
+    };
+  }
+  return {
+    mode: 'shared',
+    source: 'invalid',
+    declared,
+    warning: `⚠ CAPACITY: ${CHECKPOINT_CAPACITY_MODE_ENV}=${JSON.stringify(declared.slice(0, 40))} is not 'shared' or 'reserved', so it was DROPPED and this manual run falls back to SHARED capacity. ${fix}`,
+  };
+}
+
 export interface LaunchCheckpointResult {
   launched: boolean;
   unit: string;
@@ -175,6 +237,11 @@ export interface LaunchCheckpointResult {
   /** EI-9672: set when `replaceStale:true` found the active run CONFIRMED stale and stopped
    *  it before this launch — the detail of what was stopped, for the caller's audit trail. */
   replacedStale?: ActiveCheckpointCheck;
+  /** WI-10003521: the capacity contract this launch actually forwarded, and where it came
+   *  from. Set on every launch attempt that reaches argv construction. `source: 'default'`
+   *  (the launcher's env declares nothing) and `'invalid'` (it declares an unrecognised value)
+   *  both mean the run silently falls back to SHARED — see `resolveCheckpointCapacity`. */
+  capacity?: CheckpointCapacityReport;
   /** WI-5124: which commit this launch is PREDICTED to judge, computed the same way the run
    *  itself resolves it (quiet-cut applied) — set on every launch attempt (successful or
    *  refused), so a caller who just committed a fix and re-fires can see, from the REPLY
@@ -2785,13 +2852,15 @@ export async function launchDetachedCheckpoint(
   // The request is computed with the SAME expression buildCheckpointSystemdArgv uses for its
   // MemoryMax property, so the admission and the scope can never disagree about the size of
   // this run. Fails open on an unmeasurable probe and on a sole run — see the module note.
-  const capacityMode =
-    opts.extraEnv?.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ??
-    process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ??
-    null;
+  // WI-10003521: resolve through the reporting resolver so the reply can say — at launch, not
+  // an hour into the run — when this launcher declared no (or no valid) capacity contract.
+  // Reported on the RESULT (callers render it), not console.warn: every caller already surfaces
+  // the result, and a log line from a library function is the channel nobody reads.
+  const capacity = resolveCheckpointCapacity(opts.extraEnv);
+  const capacityMode = capacity.source === 'default' || capacity.source === 'invalid' ? null : capacity.mode;
   const memoryAdmission = admitCheckpointMemory({
     requestG: checkpointScopeMemoryMaxG({
-      PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE: capacityMode ?? 'shared',
+      PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE: capacity.mode,
     }),
   });
   if (!memoryAdmission.admit) {
@@ -2802,6 +2871,7 @@ export async function launchDetachedCheckpoint(
       logPath,
       reason: 'memory_budget',
       memoryAdmission,
+      capacity,
     });
   }
 
@@ -2876,6 +2946,7 @@ export async function launchDetachedCheckpoint(
       argv,
       logPath: runLogPath,
       willJudge,
+      capacity,
       ...(replacedStale ? { replacedStale } : {}),
     };
     let stderr = '';

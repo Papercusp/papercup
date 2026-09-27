@@ -75,6 +75,8 @@ import {
   renderPreLaunchRefusal,
   PRELAUNCH_EXCLUSION_MAX_WAIT_SEC,
   cancelStaleCheckpointAwaits,
+  resolveCheckpointCapacity,
+  CHECKPOINT_CAPACITY_MODE_ENV,
 } from './release-checkpoint-launch';
 // WI-38356: the control + calibration cases below call the underlying reads directly, to prove
 // the submodule fixture is exercising the blind spot rather than a broken fake.
@@ -394,6 +396,74 @@ describe('buildCheckpointSystemdArgv', () => {
       expect(inner).toContain("PAPERCUSP_PARTIAL_GREEN_GATE='1'");
       expect(inner).toContain("PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE='reserved'");
       expect(inner).toContain('apps/operator/lib/release/green-checkpoint.ts');
+    });
+  });
+
+  describe('WI-10003521: an undeclared capacity contract is reported at launch, not an hour in', () => {
+    // Manual runs take the contract from the LAUNCHING process. On 2026-09-27 that was the
+    // staging operator, whose unit had no capacity drop-in: runs logged `mode=shared
+    // maxForks=2`, lane-stateful got one fork and ran 55 min and then >86 min (killed by the
+    // 3h backstop, no verdict) while scheduled runs at reserved took ~20. The launch reply said
+    // nothing. These pin that the silent fallback is now named in the reply.
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it.each(['shared', 'reserved'] as const)('a declared %s contract is honoured without a warning', (mode) => {
+      const r = resolveCheckpointCapacity(undefined, { [CHECKPOINT_CAPACITY_MODE_ENV]: mode });
+      expect(r).toEqual({ mode, source: 'process-env', declared: mode, warning: null });
+    });
+
+    it('the caller extraEnv wins over the launching process env', () => {
+      const r = resolveCheckpointCapacity(
+        { [CHECKPOINT_CAPACITY_MODE_ENV]: 'reserved' },
+        { [CHECKPOINT_CAPACITY_MODE_ENV]: 'shared' },
+      );
+      expect(r.mode).toBe('reserved');
+      expect(r.source).toBe('extraEnv');
+      expect(r.warning).toBeNull();
+    });
+
+    it('an undeclared contract falls back to shared AND says so', () => {
+      const r = resolveCheckpointCapacity(undefined, {});
+      expect(r.mode).toBe('shared');
+      expect(r.source).toBe('default');
+      expect(r.declared).toBeNull();
+      expect(r.warning).toMatch(/CAPACITY/);
+      expect(r.warning).toContain(CHECKPOINT_CAPACITY_MODE_ENV);
+      expect(r.warning).toMatch(/SHARED/);
+    });
+
+    it.each(['RESERVED', '8', ''])('an unrecognised value %j is reported as invalid, not honoured', (bad) => {
+      const r = resolveCheckpointCapacity(undefined, { [CHECKPOINT_CAPACITY_MODE_ENV]: bad });
+      expect(r.mode).toBe('shared');
+      expect(r.source).toBe('invalid');
+      expect(r.declared).toBe(bad);
+      expect(r.warning).toMatch(/DROPPED/);
+    });
+
+    it('a launch with no declared contract carries the warning on its result and forwards nothing', async () => {
+      vi.stubEnv(CHECKPOINT_CAPACITY_MODE_ENV, undefined);
+      const child = fakeChild();
+      const spawnFn = vi.fn(() => child) as never;
+      const p = launchDetachedCheckpoint({ root: '/tree' }, spawnFn);
+      child.emit('close', 0);
+      const r = await p;
+      expect(r.launched).toBe(true);
+      expect(r.capacity?.source).toBe('default');
+      expect(r.capacity?.warning).toMatch(/SHARED/);
+      expect(r.argv.at(-1)).not.toContain(CHECKPOINT_CAPACITY_MODE_ENV);
+    });
+
+    it('a launch under a reserved launcher reports it and forwards it', async () => {
+      vi.stubEnv(CHECKPOINT_CAPACITY_MODE_ENV, 'reserved');
+      const child = fakeChild();
+      const spawnFn = vi.fn(() => child) as never;
+      const p = launchDetachedCheckpoint({ root: '/tree' }, spawnFn);
+      child.emit('close', 0);
+      const r = await p;
+      expect(r.capacity).toEqual({ mode: 'reserved', source: 'process-env', declared: 'reserved', warning: null });
+      expect(r.argv.at(-1)).toContain(`${CHECKPOINT_CAPACITY_MODE_ENV}='reserved'`);
     });
   });
 
