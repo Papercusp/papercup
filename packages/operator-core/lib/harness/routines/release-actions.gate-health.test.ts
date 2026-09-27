@@ -2342,3 +2342,44 @@ describe('trackGateStall carries keys it does not own (C4, EI-22270968007901491)
     });
   });
 });
+
+describe('P-013 (gate-file-level-test-reuse-2026-09-27): gate_health.testPassReuse', () => {
+  const reuse = (over: Record<string, unknown> = {}) => ({
+    judgedSha: 'c58655490ce1a3be734de61df08aa7f8159122d4',
+    recordedAtMs: 1_790_530_000_000,
+    invocations: 1,
+    candidates: 10,
+    reused: 7,
+    minSavedTestMs: 30_000,
+    unmeasured: 0,
+    alarms: [],
+    offReasons: [],
+    headline: 'per-file reuse: 7 of 10 candidate file(s) reused, at least 30s test time saved, no alarms',
+    ...over,
+  });
+  const track = (status: string, testPassReuse?: unknown) =>
+    trackGateStall(ctx, status, undefined, undefined, null, undefined, null, undefined, { testPassReuse });
+
+  it.each([
+    ['a green verdict', 'advanced'],
+    ['a red verdict', 'not-green'],
+  ])('⭐ stores the round record on %s', async (_label, status) => {
+    await track(status, reuse());
+    expect(lastGateHealthWrite()?.testPassReuse).toEqual(reuse());
+  });
+
+  it('⭐ a round that reported nothing keeps the previous record, labelled with its own sha', async () => {
+    const prior = reuse({ judgedSha: '09e39c5dff58aa11', reused: 3 });
+    seededGh = { consecutiveReds: 0, lastGreenAt: Date.now(), testPassReuse: prior };
+    await track('advanced', undefined);
+    // Never a zero nobody measured: the older record survives and still names its sha.
+    expect(lastGateHealthWrite()?.testPassReuse).toEqual(prior);
+  });
+
+  it('drops a malformed value instead of storing it', async () => {
+    await track('advanced', { ...reuse(), judgedSha: 'main' });
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect('testPassReuse' in written!).toBe(false);
+  });
+});

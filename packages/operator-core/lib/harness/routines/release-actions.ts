@@ -44,6 +44,7 @@ import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../
 import { pipelineName, pipelineRef, pipelineTag } from '../../release/pipeline-name';
 import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-date';
 import type { FreezeAndConvergeDisposition } from '../../release/freeze-disposition';
+import { parseTestPassReuseHealth, type TestPassReuseHealth } from '../../release/test-pass-reuse-report';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
 import {
@@ -1159,6 +1160,11 @@ export interface CheckpointVerdict {
    *  CLI, or a red verdict, where the question has no referent). Never coerce absent to
    *  false — that would manufacture a "not clean" claim from no evidence. */
   cleanGreen?: boolean;
+  /** P-013 (gate-file-level-test-reuse-2026-09-27): structural mirror of
+   *  CheckpointResult.testPassReuse — what per-file pass reuse did in the suite round that formed
+   *  this verdict. Re-validated with parseTestPassReuseHealth before it is stored, because the
+   *  version-skew fallback reads it back out of JSON. ABSENT ⇒ not reported this round. */
+  testPassReuse?: TestPassReuseHealth;
   advancedTo?: string;
   /** WI-4494: the CLI sets this when IT recorded the verdict (gate_health + pipeline event).
    *  The routine then MUST NOT record it again — a second `trackGateStall` for one verdict would
@@ -1733,6 +1739,19 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
   // Recorded whenever the CLI stated it — INCLUDING `false`, which is the whole signal. A
   // truthiness check here would drop exactly the case worth persisting.
   if (typeof v.cleanGreen === 'boolean') detail.cleanGreen = v.cleanGreen;
+  // P-013: a compact per-round reuse record in the append-only event, so the hit rate stays
+  // readable across rounds after gate_health moves on. Full alarms live in gate_health.
+  const reuse = parseTestPassReuseHealth(v.testPassReuse);
+  if (reuse) {
+    detail.testPassReuse = {
+      judgedSha: reuse.judgedSha.slice(0, 12),
+      candidates: reuse.candidates,
+      reused: reuse.reused,
+      minSavedTestMs: reuse.minSavedTestMs,
+      unmeasured: reuse.unmeasured,
+      alarms: reuse.alarms.length,
+    };
+  }
   // WI-4957: persist the run identity + exact log reference so /admin/git history (and
   // gate-verdict-freshness's readers) can tell WHICH run produced this row and open its
   // full output directly, instead of only the de-noised failing-test names.
@@ -2113,6 +2132,7 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
       selectedAtMs: verdict.selectedAtMs,
       postSuiteMeasured: verdict.postSuiteMeasured,
       postSuiteLegs: verdict.postSuiteLegs,
+      testPassReuse: verdict.testPassReuse,
       repairQueue: verdict.repairQueue,
       repairTickLegs: verdict.repairTickLegs,
     },
@@ -2180,6 +2200,7 @@ export async function recordPendingCheckpointVerdict(
       selectedAtMs: verdict.selectedAtMs,
       postSuiteMeasured: verdict.postSuiteMeasured,
       postSuiteLegs: verdict.postSuiteLegs,
+      testPassReuse: verdict.testPassReuse,
       repairQueue: verdict.repairQueue,
     },
   );
@@ -2670,6 +2691,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         selectedAtMs: parsed?.selectedAtMs,
         postSuiteMeasured: parsed?.postSuiteMeasured,
         postSuiteLegs: parsed?.postSuiteLegs,
+        testPassReuse: parsed?.testPassReuse,
         repairQueue: parsed?.repairQueue,
         repairTickLegs: parsed?.repairTickLegs,
       },
@@ -3798,6 +3820,9 @@ export async function trackGateStall(
      *  Present ⇒ this "no-verdict" tick DID measure the non-test legs at repairHead, so the
      *  inconclusive path refreshes instead of stamping failingTestsMeasured:false. */
     repairTickLegs?: NonNullable<CheckpointVerdict['repairTickLegs']>;
+    /** P-013: the verdict's per-file reuse record. `unknown` on purpose — it is shape-checked
+     *  here, so a malformed or pre-emitter value is dropped instead of stored. */
+    testPassReuse?: unknown;
   } = {},
 ): Promise<void> {
   if (isPinnedCheckpointVerdict(options)) return;
@@ -4395,6 +4420,10 @@ export async function trackGateStall(
         }))
       : { candidateCommittedAt: null, commitsBehindTip: null };
   const verdictCandidateSnapshot = buildTrackCandidateSnapshot(staleness, true);
+  // P-013: the round's per-file reuse record, shape-checked before storage. The write below
+  // MERGES, so a round that reported nothing leaves the previous record in place — labelled with
+  // its own judgedSha — rather than overwriting it with a zero nobody measured.
+  const testPassReuseRecord = parseTestPassReuseHealth(options.testPassReuse);
   // EI-20706962612084953: where `main` is left AFTER this run — the value the NEXT tick
   // compares its live pin against (see `lastObservedMainPin` above). 'advanced' fast-forwards
   // main to the candidate; every non-advancing status leaves it exactly where this run found
@@ -4479,6 +4508,7 @@ export async function trackGateStall(
           failingTestsMeasured: true,
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
+          ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
           candidateSnapshot: verdictCandidateSnapshot,
           retriageStaleTip: null,
           retriageDetail: null,
@@ -4520,6 +4550,7 @@ export async function trackGateStall(
           failingTestsMeasured: true,
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
+          ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
           retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
           retriageDetail: retriageBlocked ? retriage!.detail : null,
           retriageClassification: retriage?.classification ?? null,
@@ -4972,6 +5003,7 @@ export async function trackGateStall(
       failingTestsMeasured: true,
       observedAt: Date.now(),
       observedCandidate: candidate?.slice(0, 12) ?? null,
+      ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
       candidateSnapshot: verdictCandidateSnapshot,
       retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
       retriageDetail: retriageBlocked ? retriage!.detail : null,

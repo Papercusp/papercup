@@ -3196,6 +3196,36 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect((d.failingTests as string[]).length).toBe(20);
   });
 
+  it('P-013: buildCheckpointDetail keeps a compact per-round reuse record, and drops a malformed one', () => {
+    const testPassReuse = {
+      judgedSha: 'c58655490ce1a3be734de61df08aa7f8159122d4',
+      recordedAtMs: 1_790_530_000_000,
+      invocations: 2,
+      candidates: 40,
+      reused: 31,
+      minSavedTestMs: 120_000,
+      unmeasured: 1,
+      alarms: [{ ws: '@papercusp/web', file: 'a.test.ts', proof: 'abc' }],
+      offReasons: [],
+      headline: 'per-file reuse: 31 of 40 candidate file(s) reused',
+    };
+    const d = buildCheckpointDetail({ reason: 'advanced', green: true, testPassReuse });
+    expect(d.testPassReuse).toEqual({
+      judgedSha: 'c58655490ce1',
+      candidates: 40,
+      reused: 31,
+      minSavedTestMs: 120_000,
+      unmeasured: 1,
+      alarms: 1,
+    });
+    const bad = buildCheckpointDetail({
+      reason: 'advanced',
+      green: true,
+      testPassReuse: { ...testPassReuse, reused: -1 },
+    });
+    expect('testPassReuse' in bad).toBe(false);
+  });
+
   it('P-001: buildCheckpointDetail preserves the producer gate-fire identity or a valid fallback', () => {
     const direct = buildCheckpointDetail(
       { reason: 'advanced', green: true, gateFireId: 'producer-fire' },

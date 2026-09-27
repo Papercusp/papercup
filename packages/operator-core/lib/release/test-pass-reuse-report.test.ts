@@ -9,10 +9,12 @@ import {
   formatTestReuseTotalLine,
 } from '../../../../scripts/lib/test-pass-reuse.mjs';
 import {
+  buildTestPassReuseHealth,
   formatDurationMs,
   parseTestPassReuse,
   parseTestPassReuseHealth,
   summarizeTestPassReuse,
+  TEST_PASS_REUSE_HEALTH_MAX_ALARMS,
 } from './test-pass-reuse-report';
 
 const summary = (over: Record<string, number> = {}) => ({
@@ -181,6 +183,41 @@ describe('parseTestPassReuseHealth', () => {
     ['an empty headline', { ...persisted(), headline: '' }],
   ])('reads %s as not measured', (_label, value) => {
     expect(parseTestPassReuseHealth(value)).toBeNull();
+  });
+});
+
+describe('buildTestPassReuseHealth (P-013 runner half)', () => {
+  const sha = 'c58655490ce1a3be734de61df08aa7f8159122d4';
+  const suiteOutput = (alarmCount = 1) =>
+    [
+      formatTestReuseLine('@papercusp/operator-core', summary(), ' minSavedTestMs=30000'),
+      formatTestReuseTotalLine({ tasks: 1, summaries: [summary()], savedMs: 30000, unmeasured: 0 }),
+      ...Array.from({ length: alarmCount }, (_, i) =>
+        formatReuseAlarmLine('@papercusp/operator-core', { file: `lib/a${i}.test.ts`, reason: 'expired' }),
+      ),
+    ].join('\n');
+
+  it('builds the record the recorder stores, and it survives the JSON verdict channel', () => {
+    const built = buildTestPassReuseHealth(suiteOutput(), sha, 1_790_530_000_000);
+    expect(built).toMatchObject({ judgedSha: sha, recordedAtMs: 1_790_530_000_000, reused: 7, candidates: 10 });
+    expect(built?.headline).toContain('7 of 10 candidate file(s) reused');
+    // The version-skew fallback reads it back out of JSON; the read-side check must accept it.
+    expect(parseTestPassReuseHealth(JSON.parse(JSON.stringify(built)))).toEqual(built);
+  });
+
+  it('caps stored alarms but keeps the full count in the headline', () => {
+    const n = TEST_PASS_REUSE_HEALTH_MAX_ALARMS + 5;
+    const built = buildTestPassReuseHealth(suiteOutput(n), sha, 1);
+    expect(built?.alarms).toHaveLength(TEST_PASS_REUSE_HEALTH_MAX_ALARMS);
+    expect(built?.headline).toContain(`${n} ALARM(s)`);
+  });
+
+  it.each([
+    ['a round with no reuse lines', 'plain vitest output only', sha],
+    ['a null sha', null, null],
+    ['a branch name instead of a sha', null, 'main'],
+  ])('returns null (not reported, never zero) for %s', (_label, output, judged) => {
+    expect(buildTestPassReuseHealth(output ?? suiteOutput(), judged, 1)).toBeNull();
   });
 });
 

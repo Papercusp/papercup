@@ -8036,6 +8036,66 @@ describe("runGreenCheckpoint", () => {
     ).toBe(true);
   });
 
+  // P-013 (gate-file-level-test-reuse-2026-09-27): the suite round's per-file reuse record
+  // must survive from runGreen onto the verdict the recorder stores, green or red.
+  describe("testPassReuse rides the verdict from runGreen [P-013]", () => {
+    const reuse = {
+      judgedSha: "c58655490ce1a3be734de61df08aa7f8159122d4",
+      recordedAtMs: 1_790_530_000_000,
+      invocations: 1,
+      candidates: 10,
+      reused: 7,
+      minSavedTestMs: 30_000,
+      unmeasured: 0,
+      alarms: [],
+      offReasons: [],
+      headline: "per-file reuse: 7 of 10 candidate file(s) reused",
+    };
+
+    it("carries it onto an ADVANCE verdict", async () => {
+      const c1 = await commit("a", "1", "c1");
+      await git(repo, ["branch", "ready", c1]);
+      await commit("a", "2", "c2");
+      const { deps, calls } = stubDeps(true);
+      deps.runGreen = async () => {
+        calls.push("runGreen");
+        return { green: true, summary: "all pass", testPassReuse: reuse };
+      };
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      expect(r).toMatchObject({ advanced: true, green: true });
+      expect(r.testPassReuse).toEqual(reuse);
+    });
+
+    it("carries it onto a RED verdict", async () => {
+      const c1 = await commit("a", "1", "c1");
+      await git(repo, ["branch", "ready", c1]);
+      await commit("a", "2", "c2");
+      const { deps, calls } = stubDeps(false, ["lib/x.test.ts"]);
+      deps.runGreen = async () => {
+        calls.push("runGreen");
+        return {
+          green: false,
+          summary: "1 failing",
+          failingTests: ["lib/x.test.ts"],
+          testPassReuse: reuse,
+        };
+      };
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      expect(r.green).toBe(false);
+      expect(r.testPassReuse).toEqual(reuse);
+    });
+
+    it("leaves it ABSENT when the round reported nothing — never a zero", async () => {
+      const c1 = await commit("a", "1", "c1");
+      await git(repo, ["branch", "ready", c1]);
+      await commit("a", "2", "c2");
+      const { deps } = stubDeps(true);
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      expect(r.green).toBe(true);
+      expect("testPassReuse" in r).toBe(false);
+    });
+  });
+
   // EI-18685042025868279: a green verdict could not distinguish a clean pass from a
   // retry-absorbed one — `failingTests: []` rendered identically either way, so a live
   // flake (or a live intermittent bug) was invisible to anything reading the verdict.
