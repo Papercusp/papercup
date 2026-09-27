@@ -397,6 +397,11 @@ export type RefAnnounceHandleResult =
       /** Heads whose fetched sha diverges from the signed snapshot (empty ⇒
        *  every head is exactly what the device signed). */
       mismatches: { ref: string; expected: string; actual: string | null }[];
+      /** The blob the mirror's sigrefs ref points at AFTER the fetch. It can be
+       *  NEWER than `incoming.sigrefs_oid` (the peer advanced before we dialed —
+       *  see `fetchedSnapshotHonoursAnnouncement`), so a replay floor recorded
+       *  from an accepted fetch must use this, never the announcement's oid. */
+      sigrefsOid?: string | null;
       budgetState: AnnounceBudgetState | null;
     };
 
@@ -598,16 +603,48 @@ export async function handleRefAnnouncement(
     replayFloor: rematerialize ? null : opts.replayFloor,
   });
   const fetchedOid = await readNamespaceRef(repoPath, device, SIGREFS_REF, runGit);
-  if (incoming.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT &&
-      (fetchedOid !== incoming.sigrefs_oid || fetched.version !== incoming.version ||
-       !signedProtocolContextMatches(fetched, incoming as SignedProtocolContext))) {
-    return { action: 'fetched', sigrefs: { accepted: false, reason: 'snapshot-mismatch' }, mismatches: [], budgetState: acceptance.budgetState };
+  if (incoming.v === REF_ANNOUNCE_SCHEMA_VERSION_CONTEXT && !fetchedSnapshotHonoursAnnouncement(fetched, fetchedOid, incoming)) {
+    return { action: 'fetched', sigrefs: { accepted: false, reason: 'snapshot-mismatch' }, mismatches: [], sigrefsOid: fetchedOid, budgetState: acceptance.budgetState };
   }
   const mismatches = await reconcileFetchedHeads(repoPath, device, fetched, runGit);
   return {
     action: 'fetched',
     sigrefs: verdict.ok ? { accepted: true, snapshot: fetched } : { accepted: false, reason: verdict.reason },
     mismatches,
+    sigrefsOid: fetchedOid,
     budgetState: acceptance.budgetState,
   };
+}
+
+/**
+ * WI-2142873 / P-203 Leg A — does a v2 fetch honour the announcement that drove it?
+ *
+ * A fetch mirrors the peer's namespace AS IT IS WHEN WE DIAL, not as it was when
+ * it announced. Requiring the fetched snapshot to be EXACTLY the announced one
+ * (the rule this replaces) therefore made every fetch driven by a queued
+ * announcement fail as `snapshot-mismatch` whenever the peer had announced
+ * again since. The receiver drains its backlog oldest-first, so after any stall
+ * that is every fetch. Measured on the Mac VM 2026-09-27T16:52Z: the batch held
+ * XPAsvso1 announcements v2..v2683, the fetch brought v2921, nothing was
+ * accepted, the replay floor stayed null, and with no floor every later row
+ * re-dialed into serve-wiring's `busy-streaming` refusal while the worktree
+ * bridge held forever on `unknown-generation`.
+ *
+ * A NEWER snapshot is legitimate: it is device-signed, and `acceptFetchedSigrefs`
+ * has already checked its signature, device, context and replay floor. The
+ * announcement only has to stop the relay from serving something OLDER than the
+ * device announced. That is the rollback this guard exists for. So:
+ *   - same signed context (hive, repo, store generation) — always required;
+ *   - newer version than announced — accepted (the peer advanced);
+ *   - same version — must be byte-identical (a different oid is equivocation);
+ *   - older version — refused (relay rollback).
+ */
+export function fetchedSnapshotHonoursAnnouncement(
+  fetched: SignedSigrefs,
+  fetchedOid: string | null,
+  incoming: SignedRefAnnouncement,
+): boolean {
+  if (!signedProtocolContextMatches(fetched, incoming as SignedProtocolContext)) return false;
+  if (fetched.version > incoming.version) return fetchedOid !== null;
+  return fetched.version === incoming.version && fetchedOid === incoming.sigrefs_oid;
 }

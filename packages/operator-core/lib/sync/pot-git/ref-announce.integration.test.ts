@@ -28,6 +28,7 @@ import {
   handleRefAnnouncement,
   type SignedRefAnnouncement,
 } from './ref-announce';
+import { makeSignedProtocolContext, type SignedSnapshotFloor } from './signed-context';
 
 function mkDevice(): { pubkeyBase64: string; sign: (bytes: Buffer) => Promise<Buffer> } {
   const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
@@ -374,5 +375,115 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     });
     expect(retried.action).toBe('fetched');
     expect(await readNamespaceRef(mirrorRepo, devB.pubkeyBase64, 'refs/heads/work')).toBe(sha7);
+  });
+});
+
+/**
+ * WI-2142873 / P-203 Leg A — the v2 (signed-context) receive path, draining a
+ * QUEUED announcement after the peer has already advanced past it. Measured on
+ * the Mac VM 2026-09-27T16:52Z: the batch held XPAsvso1 v2..v2683, the fetch
+ * brought v2921, and the old exact-version rule refused it as
+ * `snapshot-mismatch`, so the replay floor never moved and every later row
+ * re-dialed into `busy-streaming`.
+ */
+describe('pot-git ref announcements, v2 context: a queued announcement fetched after the peer advanced', () => {
+  let root: string;
+  let serverRepo: string;
+  let mirrorRepo: string;
+  let sockPath: string;
+  let server: Server;
+  const devA = mkDevice();
+  const devB = mkDevice();
+  const ctx = makeSignedProtocolContext('hive-v2', 'repo-v2', 'sg2-1-' + 'c'.repeat(40));
+  let now = 50_000;
+  const dial = (): Promise<Socket> =>
+    new Promise((resolve, reject) => {
+      const s = connect({ path: sockPath, allowHalfOpen: true });
+      s.once('connect', () => resolve(s));
+      s.once('error', reject);
+    });
+  const opts = (replayFloor: SignedSnapshotFloor | null, openStream: () => Promise<Socket> | Socket = dial) => ({
+    selfDevice: devA.pubkeyBase64,
+    allowedDevices: [devA.pubkeyBase64, devB.pubkeyBase64],
+    nowMs: ++now,
+    openStream,
+    timeoutMs: 30_000,
+    expectedContext: ctx,
+    allowLegacy: false,
+    replayFloor,
+  });
+  const advance = async (msg: string): Promise<{ sha: string; ann: SignedRefAnnouncement; oid: string }> => {
+    const sha = await mintCommit(serverRepo, msg);
+    await writeNamespaceRef(serverRepo, devB.pubkeyBase64, 'refs/heads/work', sha);
+    await buildSigrefs(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: ++now, context: ctx });
+    const ann = await buildRefAnnouncement(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: now, context: ctx });
+    const oid = await readNamespaceRef(serverRepo, devB.pubkeyBase64, SIGREFS_REF);
+    return { sha, ann, oid: oid! };
+  };
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'hgannounce-v2-'));
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
+    serverRepo = await ensurePotGitRepo('hive-v2', 'repo-v2');
+    mirrorRepo = await ensurePotGitRepo('hive-v2', 'repo-v2-mirror');
+    sockPath = join(root, 'link-v2.sock');
+    server = createServer({ allowHalfOpen: true }, (srvConn) => {
+      srvConn.on('error', () => {});
+      void serveUploadPack(serverRepo, srvConn);
+    });
+    await new Promise<void>((r) => server.listen(sockPath, () => r()));
+  });
+
+  afterAll(async () => {
+    try {
+      server.close();
+    } catch {
+      /* ignore */
+    }
+    delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  let acceptedFloor: SignedSnapshotFloor;
+  let v2: { sha: string; ann: SignedRefAnnouncement; oid: string };
+
+  it('accepts the peer\'s NEWER signed snapshot when an older queued announcement drives the fetch', async () => {
+    const v1 = await advance('B v2 work 1');
+    v2 = await advance('B v2 work 2');
+    expect(v1.ann.version).toBe(1);
+    expect(v2.ann.version).toBe(2);
+
+    // The queued v1 announcement is driven first (oldest-first drain); the relay serves v2.
+    const r = await handleRefAnnouncement(mirrorRepo, v1.ann, opts(null));
+    expect(r.action).toBe('fetched');
+    if (r.action !== 'fetched') return;
+    expect(r.sigrefs).toMatchObject({ accepted: true, snapshot: { version: 2 } });
+    expect(r.mismatches).toEqual([]);
+    // The floor must name the ACCEPTED blob, not the announcement's.
+    expect(r.sigrefsOid).toBe(v2.oid);
+    expect(r.sigrefsOid).not.toBe(v1.ann.sigrefs_oid);
+    expect(await readNamespaceRef(mirrorRepo, devB.pubkeyBase64, 'refs/heads/work')).toBe(v2.sha);
+    if (!r.sigrefs.accepted) return;
+    acceptedFloor = { ...ctx, version: r.sigrefs.snapshot.version, sigrefs_oid: r.sigrefsOid! } as SignedSnapshotFloor;
+  });
+
+  it('then rejects the rest of the queued backlog as stale WITHOUT dialing (no busy-streaming storm)', async () => {
+    let dials = 0;
+    const r = await handleRefAnnouncement(mirrorRepo, v2.ann, opts(acceptedFloor, () => {
+      dials += 1;
+      return dial();
+    }));
+    expect(r).toMatchObject({ action: 'rejected', reason: 'stale-version' });
+    expect(dials).toBe(0);
+  });
+
+  it('still refuses a relay that serves an OLDER snapshot than the device announced', async () => {
+    const v3 = await advance('B v2 work 3');
+    // The relay rolls B's sigrefs back to v2 after B announced v3.
+    await writeNamespaceRef(serverRepo, devB.pubkeyBase64, SIGREFS_REF, v2.oid);
+    const r = await handleRefAnnouncement(mirrorRepo, v3.ann, opts(acceptedFloor));
+    expect(r.action).toBe('fetched');
+    if (r.action !== 'fetched') return;
+    expect(r.sigrefs.accepted).toBe(false);
   });
 });

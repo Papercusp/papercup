@@ -399,7 +399,11 @@ export async function runRefAnnounceReceiveTick(
           repo_key: result.sigrefs.snapshot.repo_key,
           store_generation: result.sigrefs.snapshot.store_generation,
           version: result.sigrefs.snapshot.version,
-          sigrefs_oid: incoming.sigrefs_oid,
+          // WI-2142873: the ACCEPTED snapshot's own blob. It can be newer than the
+          // announcement that drove the fetch (the peer advanced before we dialed),
+          // and a floor pairing the fetched version with the announced oid would
+          // never match `exactAcceptedSnapshot` again.
+          sigrefs_oid: result.sigrefsOid ?? incoming.sigrefs_oid,
         };
       }
       budgetStates.set(device, result.budgetState);
@@ -479,12 +483,18 @@ export function formatRefAnnounceReceiveCensus(
 ): string {
   const actions = new Map<string, number>();
   const reasons = new Map<string, number>();
+  // WI-2142873: a fetch that landed but whose snapshot was NOT accepted counted
+  // as a plain `fetched=1`, which read as success while the replay floor never
+  // advanced and the worktree bridge held on `unknown-generation`. Break it out.
+  const unaccepted = new Map<string, number>();
   const devices = new Set<string>();
   for (const r of results) {
     devices.add(r.device);
     actions.set(r.result.action, (actions.get(r.result.action) ?? 0) + 1);
     if (r.result.action === 'rejected') {
       reasons.set(r.result.reason, (reasons.get(r.result.reason) ?? 0) + 1);
+    } else if (r.result.action === 'fetched' && !r.result.sigrefs.accepted) {
+      unaccepted.set(r.result.sigrefs.reason, (unaccepted.get(r.result.sigrefs.reason) ?? 0) + 1);
     }
   }
   const fmt = (m: Map<string, number>): string =>
@@ -496,6 +506,7 @@ export function formatRefAnnounceReceiveCensus(
     `[git-sync] ${slug}: ref-announce receive census — batch=${meta.batch} driven=${results.length} ` +
     `devices=${devices.size} ${fmt(actions) || 'no-results'}` +
     (reasons.size ? ` rejectedBy{${fmt(reasons)}}` : '') +
+    (unaccepted.size ? ` fetchedNotAcceptedBy{${fmt(unaccepted)}}` : '') +
     ` parked=${meta.parked} cursor ${meta.fromCursor}→${meta.toCursor}` +
     (meta.limit !== undefined && meta.rowsRead !== undefined && meta.rowsRead >= meta.limit
       ? ` BACKLOG: read a full ${meta.limit}-row batch, more rows are queued behind the cursor`

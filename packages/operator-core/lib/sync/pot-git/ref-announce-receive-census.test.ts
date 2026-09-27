@@ -42,6 +42,28 @@ describe('formatRefAnnounceReceiveCensus', () => {
     expect(line).toContain('parked=1 cursor 71553→71753');
   });
 
+  it('breaks out a fetch that landed but whose snapshot was NOT accepted (it is not a success)', () => {
+    // Measured 2026-09-27T16:52Z on the Mac VM: `fetched=1` while the fetch was a
+    // snapshot-mismatch, so the replay floor never moved and the bridge starved.
+    const snapshot = { version: 2921 } as never;
+    const line = formatRefAnnounceReceiveCensus(
+      'papercusp',
+      [
+        r('XPAsvso1AAAA', 2683, { action: 'fetched', sigrefs: { accepted: false, reason: 'snapshot-mismatch' }, mismatches: [], budgetState: null }),
+        r('XPAsvso1AAAA', 2684, { action: 'fetched', sigrefs: { accepted: true, snapshot }, mismatches: [], budgetState: null }),
+      ],
+      { batch: 2, fromCursor: 1, toCursor: 3, parked: 0 },
+    );
+    expect(line).toContain('fetched=2');
+    expect(line).toContain('fetchedNotAcceptedBy{snapshot-mismatch=1}');
+    const clean = formatRefAnnounceReceiveCensus(
+      'papercusp',
+      [r('XPAsvso1AAAA', 2684, { action: 'fetched', sigrefs: { accepted: true, snapshot }, mismatches: [], budgetState: null })],
+      { batch: 1, fromCursor: 1, toCursor: 2, parked: 0 },
+    );
+    expect(clean).not.toContain('fetchedNotAcceptedBy');
+  });
+
   it('still emits a line for an empty pass, so silence can only mean the leg did not run', () => {
     const line = formatRefAnnounceReceiveCensus('papercusp', [], { batch: 0, fromCursor: 10, toCursor: 10, parked: 0 });
     expect(line).toContain('no-results');
