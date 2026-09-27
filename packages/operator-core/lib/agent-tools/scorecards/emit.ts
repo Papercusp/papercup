@@ -777,6 +777,26 @@ function unwrapSpecTestAdequacyReplay(result: unknown): unknown {
 }
 
 /**
+ * The replay guard compares only clause identity, criterion ratings, and
+ * wouldBlock. Replaying an evaluator-authored `detail:"full"` recipe needlessly
+ * materializes every evidence narrative and another scorecard draft; real plans
+ * can exceed the result door and return a spill envelope instead of the payload
+ * the guard must inspect. Force the evaluator's contract-equivalent summary
+ * shape while retaining full-tier materialization so those compact fields are
+ * never tier-trimmed.
+ */
+function compactSpecTestAdequacyReplayArgs(
+  replayArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...replayArgs,
+    detail: 'summary',
+    includeDraft: false,
+    payloadTier: 'full',
+  };
+}
+
+/**
  * Re-run the evaluator before persisting a spec-test-adequacy card. The card's
  * ratings are caller input; the evaluator is the policy writer for
  * plan-class-risk-floor. Without this read-back, a caller can submit `pass`
@@ -811,10 +831,7 @@ async function validateSpecTestAdequacyReplay(
   let replay: unknown;
   try {
     replay = unwrapSpecTestAdequacyReplay(
-      await dispatchTool('plans:evaluate-spec-test-adequacy', {
-        ...replayArgs,
-        payloadTier: 'full',
-      }),
+      await dispatchTool('plans:evaluate-spec-test-adequacy', compactSpecTestAdequacyReplayArgs(replayArgs)),
     );
   } catch (error) {
     return {
@@ -968,10 +985,7 @@ export async function validateGradingAuditReplayConsistency(
   let replay: unknown;
   try {
     replay = unwrapSpecTestAdequacyReplay(
-      await dispatchTool('plans:evaluate-spec-test-adequacy', {
-        ...replayArgs,
-        payloadTier: 'full',
-      }),
+      await dispatchTool('plans:evaluate-spec-test-adequacy', compactSpecTestAdequacyReplayArgs(replayArgs)),
     );
   } catch (error) {
     return {
