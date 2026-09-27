@@ -16,6 +16,7 @@ import {
   type PgvectorIndexOperatorClass,
 } from '@papercusp/memory';
 import { canonicalJson } from './authority/authority-rpc-envelope';
+import type { IdentityRecipeClassConformanceReport } from './agent-identities/recipe-provider-conformance';
 
 export type JsonObject = Record<string, unknown>;
 
@@ -463,6 +464,9 @@ export type CapabilityProviderLatencyClass = 'sync' | 'async';
 export interface ProviderExecutionContract {
   providerKind: CapabilityProviderKind;
   latencyClass: CapabilityProviderLatencyClass;
+  /** Present only for recipes inspected through the canonical host inspector.
+   * Legacy/synthetic kind-only rows remain unavailable to execution consumers. */
+  recipeInspections?: IdentityRecipeClassConformanceReport['recipes'];
 }
 
 export interface ProviderBindingRow {
@@ -523,6 +527,7 @@ type BindingDbRow = {
   behavioral_status: string;
   behavioral_run_ref: string | null;
   registry_revision: string;
+  report?: unknown;
   status: string;
   updated_at: Date | string;
 };
@@ -560,12 +565,16 @@ function mapBinding(row: BindingDbRow): ProviderBindingRow & ProviderExecutionCo
   )) {
     throw new Error(`provider binding ${row.conformance_run_id} has an invalid execution contract`);
   }
+  const report = jsonObject(row.report);
+  const recipeInspections = row.provider_kind === 'recipe' && report.schemaVersion === 'capability-class-recipe-v1'
+    ? jsonObject(report.recipes) as IdentityRecipeClassConformanceReport['recipes'] : undefined;
   return {
     classRef: `${row.class_id}@${row.class_version}`,
     providerPackage: row.provider_package,
     providerVersion: row.provider_version,
     providerKind: row.provider_kind as CapabilityProviderKind,
     latencyClass: row.latency_class as CapabilityProviderLatencyClass,
+    ...(recipeInspections ? { recipeInspections } : {}),
     verbBindings: jsonObject(row.verb_bindings) as Record<string, string>,
     conformanceRunId: row.conformance_run_id,
     conformanceStatus: 'passed',
@@ -580,7 +589,7 @@ function mapBinding(row: BindingDbRow): ProviderBindingRow & ProviderExecutionCo
 const BINDING_SELECT = (sql: postgres.Sql | postgres.TransactionSql) => sql`
   b.class_id, b.class_version, b.provider_package, b.provider_version, b.provider_kind, b.latency_class,
   r.verb_bindings, b.conformance_run_id, r.structural_passed,
-  r.behavioral_status, r.behavioral_run_ref, r.registry_revision,
+  r.behavioral_status, r.behavioral_run_ref, r.registry_revision, r.report,
   b.status, b.updated_at
 `;
 
@@ -594,7 +603,7 @@ export async function recordProviderConformance(
     providerPackage: string;
     providerVersion: string;
     verbBindings: Record<string, string>;
-    report: ProviderConformanceReport;
+    report: ProviderConformanceReport | IdentityRecipeClassConformanceReport;
     performedBy?: string | null;
   },
 ): Promise<{ runId: string; binding: (ProviderBindingRow & ProviderExecutionContract) | null }> {
@@ -609,8 +618,19 @@ export async function recordProviderConformance(
   if (input.report.ok !== input.report.checks.every((check) => check.ok)) {
     throw new Error('conformance report verdict does not match its per-verb checks');
   }
+  if (input.report.schemaVersion !== 'capability-class-structural-v1' &&
+      input.report.schemaVersion !== 'capability-class-recipe-v1') {
+    throw new Error('unsupported provider conformance report schema');
+  }
+  const providerKind = input.report.schemaVersion === 'capability-class-recipe-v1' ? 'recipe' : 'tool';
   const runId = randomUUID();
   return sql.begin(async (tx) => {
+    if (input.report.schemaVersion === 'capability-class-recipe-v1') {
+      const capabilityClass = await getCapabilityClass(tx, input.workspaceId, input.classId, input.classVersion);
+      if (!capabilityClass) throw new Error('recipe conformance requires a registered class contract');
+      const { assertIdentityRecipeClassConformance } = await import('./agent-identities/recipe-provider-conformance');
+      assertIdentityRecipeClassConformance({ report: input.report, capabilityClass, verbBindings: input.verbBindings });
+    }
     await tx`
       INSERT INTO harness_shared.capability_class_conformance_runs
         (id, workspace_id, class_id, class_version, provider_package, provider_version,
@@ -618,7 +638,7 @@ export async function recordProviderConformance(
          behavioral_run_ref, report, performed_by)
       VALUES (
         ${runId}, ${input.workspaceId}, ${input.classId}, ${input.classVersion},
-        ${input.providerPackage}, ${input.providerVersion}, 'tool', 'sync', ${input.report.registryRevision},
+        ${input.providerPackage}, ${input.providerVersion}, ${providerKind}, 'sync', ${input.report.registryRevision},
         ${JSON.stringify(input.verbBindings)}::text::jsonb, ${input.report.ok},
         ${input.report.behavioral.status}, NULL,
         ${JSON.stringify(input.report)}::text::jsonb, ${input.performedBy ?? null}
@@ -631,7 +651,7 @@ export async function recordProviderConformance(
          conformance_run_id, provider_kind, latency_class)
       VALUES (
         ${input.workspaceId}, ${input.classId}, ${input.classVersion},
-        ${input.providerPackage}, ${input.providerVersion}, ${runId}, 'tool', 'sync'
+        ${input.providerPackage}, ${input.providerVersion}, ${runId}, ${providerKind}, 'sync'
       )
       ON CONFLICT (workspace_id, class_id, class_version, provider_package, provider_version)
       DO UPDATE SET
@@ -647,7 +667,7 @@ export async function recordProviderConformance(
       SELECT
         u.class_id, u.class_version, u.provider_package, u.provider_version, u.provider_kind, u.latency_class,
         r.verb_bindings, u.conformance_run_id, r.structural_passed,
-        r.behavioral_status, r.behavioral_run_ref, r.registry_revision,
+        r.behavioral_status, r.behavioral_run_ref, r.registry_revision, r.report,
         u.status, u.updated_at
       FROM upserted u
       JOIN harness_shared.capability_class_conformance_runs r

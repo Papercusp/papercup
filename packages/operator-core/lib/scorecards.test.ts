@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { classifyGradingAuditCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
+import { classifyGradingAuditCurrentness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
 import type { Rubric } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
 
@@ -473,6 +473,29 @@ describe('grading-audit rubric identity currentness (EI-22701281083010532)', () 
         criteriaHash: 'hash-new',
       }),
     ).toMatchObject({ state: 'unknown', reason: 'recorded-identity-missing' });
+  });
+});
+
+describe('graded subject rubric currentness (EI-23978920367779836)', () => {
+  const recorded = { rubricRef: 'acceptance-rubric', revision: 4, criteriaHash: 'old' };
+  const live = { rubricId: 'acceptance-rubric', revision: 5, criteriaHash: 'new' };
+
+  it('marks changed subject criteria stale even when the meta-rubric did not change', () => {
+    expect(classifySubjectRubricCurrentness('acceptance-rubric', recorded, live)).toMatchObject({
+      state: 'stale', reason: 'criteria-hash-mismatch', recordedRevision: 4, currentRevision: 5,
+    });
+  });
+
+  it('keeps pre-stamp cards unknown instead of assigning a historical revision from the live rubric', () => {
+    expect(classifySubjectRubricCurrentness('acceptance-rubric', undefined, live)).toMatchObject({
+      state: 'unknown', reason: 'recorded-identity-missing', currentRevision: 5,
+    });
+  });
+
+  it('preserves BAR meaning across a method-only edit', () => {
+    expect(classifySubjectRubricCurrentness('acceptance-rubric', { ...recorded, meaningRevision: 2 }, {
+      ...live, barContract: { meaningRevision: 2 },
+    } as never)).toMatchObject({ state: 'current', reason: 'current' });
   });
 });
 

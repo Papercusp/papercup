@@ -33,6 +33,7 @@ const ownerRowsSqlMock = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
 const resolveSessionStatesMock = vi.fn(async (..._args: unknown[]) => new Map<string, { sessionState: string }>());
 const requestSessionIdentityActivationMock = vi.fn(async () => ({}));
 const buildRoleLaunchSpecMock = vi.fn();
+const resolveLaunchIdentityModelDefaultMock = vi.fn();
 const mintRoleLaunchIdentityMock = vi.fn(() => ({ sid: 'role-abc', nativeSessionId: 'nsid-abc' }));
 const resolveAcceptedOperationWorkerBindingMock = vi.fn(async (_input: unknown) => null as unknown);
 const selectAcceptedOperationWorkerModelMock = vi.fn((_binding: unknown, _requested: unknown, _agent: unknown) => null as unknown);
@@ -104,9 +105,11 @@ vi.mock('../../agent-tools/coordination/control-anchor', async (orig) => ({
   requestSessionIdentityActivation: requestSessionIdentityActivationMock,
 }));
 vi.mock('../../role-registry', () => ({ roleConsumes: (...a: unknown[]) => roleConsumesMock(...a) }));
+vi.mock('../../papercusp-root', () => ({ papercuspPathForWorkspace: () => LC_DIR }));
 vi.mock('../../role-launch-spec', () => ({
   buildRoleLaunchSpec: (...a: unknown[]) => buildRoleLaunchSpecMock(...a),
   mintRoleLaunchIdentity: () => mintRoleLaunchIdentityMock(),
+  resolveLaunchIdentityModelDefault: (input: unknown) => resolveLaunchIdentityModelDefaultMock(input),
 }));
 vi.mock('../../blueprint/operation-worker-binding', () => ({
   resolveAcceptedOperationWorkerBinding: (input: unknown) => resolveAcceptedOperationWorkerBindingMock(input),
@@ -212,6 +215,7 @@ async function callPost(body: unknown): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resolveLaunchIdentityModelDefaultMock.mockReset().mockResolvedValue(null);
   recordAdvSessionMock.mockResolvedValue(7);
   recordSuLaunchSpecMock.mockResolvedValue(true);
   adoptStartingTerminalLaunchMock.mockReset().mockResolvedValue(true);
@@ -327,7 +331,24 @@ describe('bootstrap-role', () => {
     expect(buildRoleLaunchSpecMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { supplied: {}, model: 'gpt-5.6-terra:xhigh' },
+    { supplied: { model: 'gpt-5.6-sol:xhigh', model_source: 'configured-default' }, model: 'gpt-5.6-terra:xhigh' },
+    { supplied: { model: 'gpt-5.6-sol:xhigh' }, model: 'gpt-5.6-sol:xhigh' },
+  ])('routes the selected identity model default before native role launch: $supplied', async ({ supplied, model }) => {
+    resolveLaunchIdentityModelDefaultMock.mockResolvedValueOnce('gpt-5.6-terra:xhigh');
+    const res = await callPost({ role: 'worker', agent: 'codex', harness_slug: 'papercup',
+      feature: 'F-001', headless: true, stack: ['domain:research-steward'], ...supplied });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ model });
+    expect(resolveAccountPinMock).toHaveBeenCalledWith('default', null, 'codex', 'role-abc', false, model);
+    expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({ model }));
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedModelDefault: 'gpt-5.6-terra:xhigh' }));
+  });
+
   it('selects the accepted operation model before account routing and persists its selection', async () => {
+    resolveLaunchIdentityModelDefaultMock.mockResolvedValueOnce('claude-sonnet-4-6');
     const modelPolicy = { mode: 'exact', models: ['claude-opus-4-8'], onUnavailable: 'fail' };
     const modelSelection = { model: 'claude-opus-4-8', requestedModel: 'claude-opus-4-8',
       backend: 'claude', source: 'operation-policy' };
@@ -493,7 +514,8 @@ describe('bootstrap-role', () => {
 
   it('stamps a workspace-level role owner too, without inventing a harness scope', async () => {
     roleConsumesMock.mockReturnValue({ feature: 'none', plan: 'none' });
-    await callPost({ role: 'scoper', agent: 'codex' });
+    const response = await callPost({ role: 'scoper', agent: 'codex' });
+    expect(response.status, JSON.stringify(await response.clone().json())).toBe(200);
 
     expect(stampPresenceAtBootMock).toHaveBeenCalledWith({
       workspaceId: 'default',

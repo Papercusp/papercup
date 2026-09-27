@@ -1,0 +1,13 @@
+---
+authority: null
+body_embedding_mode: "gemma"
+body_embedding_profile: "gemma-embeddinggemma-300m-768@v1"
+body_tsv: "'1790469647242':18A '33':42A '38a22d0ff467':15A,28A '45m':48A '49e4':13A,26A '4c8e':12A,25A '8f78':14A,27A 'agent':54A 'agent-origin':53A 'attempt':34A 'birth':70A 'call':46A,57A 'complet':51A 'context':60A 'd99140b6':11A,24A 'dark':4A,32A,68A 'detail':19A 'emit':16A 'empti':67A 'epoch':61A 'exhaust':35A 'heal':33A 'hook':44A 'hook-origin':43A 'id':8A 'initi':63A 'interact':6A,20A,36A 'kind':1A 'load':66A 'mcp':3A,31A,56A 'mcp-dark':30A 'mcp-dark-watchdog-interact':2A 'origin':45A,55A 'owner':7A 'papercusp':37A 'role':10A,23A 'role-d99140b6-4c8e-49e4-8f78-38a22d0ff467':9A,22A 'session':21A,38A 'sinc':58A 'surfac':65A 'take':40A 'tool':64A 'turn':41A 'watchdog':5A 'zero':52A"
+escalation: "{\"kind\":\"mcp-dark-watchdog-interactive\",\"owner_id\":\"role-d99140b6-4c8e-49e4-8f78-38a22d0ff467\",\"emitted_at\":1790469647242,\"detail\":\"Interactive session role-d99140b6-4c8e-49e4-8f78-38a22d0ff467 is MCP-dark (heal attempts exhausted): interactive Papercusp session is taking turns (33 hook-origin calls over 45m) but has completed zero agent-origin MCP calls since its context epoch — the initial tool surface loaded empty (dark from birth).\"}"
+mtime_ms: 1790469647242
+phase: "mcp-dark-int:role-d99140b6-4c8e-49e4-8f78-38a22d0ff467"
+risk_tier: null
+supervisor_notes: null
+---
+
+

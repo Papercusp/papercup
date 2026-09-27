@@ -22,7 +22,7 @@
  *
  * Run: cd apps/operator && npx vitest run scripts/psu-launcher-codex-home-guard.test.ts
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   mkdtempSync,
   mkdirSync,
@@ -393,6 +393,46 @@ describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usa
       JSON.stringify(managedHooks(owner, true)),
     );
     expect(isCodexHomeLaunchReady(dir, owner)).toBe(true);
+  });
+});
+
+describe('Codex resume reconciles project MCP servers', () => {
+  it('calls the canonical repair route even for a structurally ready older home', async () => {
+    const owner = 'su-project-mcp-resume';
+    const advSessionId = Date.now() * 1_000 + (process.pid % 1_000);
+    const home = join(homedir(), '.papercusp', 'su-codex-homes', `session-${advSessionId}`);
+    mkdirSync(home, { recursive: true });
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      writeFileSync(join(home, 'AGENTS.md'), '# papercusp su\n');
+      writeFileSync(join(home, 'config.toml'), REAL_CONFIG.replace(
+        'command = "npx"',
+        `url = "http://operator/api/mcp?client=${owner}"`,
+      ));
+      writeFileSync(join(home, 'papercusp-diagnostics.json'), JSON.stringify({ lockOwnerSid: owner }));
+      writeFileSync(join(home, 'hooks.json'), JSON.stringify(managedHooks(owner)));
+      expect(isCodexHomeLaunchReady(home, owner)).toBe(true);
+
+      const result = await launcher.ensureCodexHomeViaOperator(owner, home, advSessionId, {
+        operatorUrl: 'http://operator',
+        token: 'test-token',
+        fetchImpl: async (url: string, opts: { body: string }) => {
+          calls.push({ url, body: JSON.parse(opts.body) });
+          return { json: async () => ({ ok: true, repaired: true }) };
+        },
+      });
+
+      expect(result).toEqual({ ok: true, repaired: true });
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('repaired this session'));
+      expect(calls).toEqual([{
+        url: 'http://operator/api/adv/sessions/ensure-codex-home',
+        body: { owner, advSessionId, requireGatewayProvider: false },
+      }]);
+    } finally {
+      errorSpy.mockRestore();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

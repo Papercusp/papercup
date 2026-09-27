@@ -21,26 +21,25 @@ import {
 } from './workspace-registry';
 import { runWithWorkspace, runInRequestScope } from './workspace-als';
 
-const REGISTRY_DIR = join(homedir(), '.papercusp-workspaces');
-const REGISTRY_PATH = join(REGISTRY_DIR, 'registry.json');
-const BACKUP_PATH = join(REGISTRY_DIR, 'registry.json.test-backup');
+// Every case in this file must use a private registry. Backing up and restoring
+// the live registry with writeFileSync briefly truncated it for other processes.
+let registryRoot: string;
+let previousRegistryRoot: string | undefined;
+beforeEach(() => {
+  previousRegistryRoot = process.env.PAPERCUSP_WORKSPACES_ROOT;
+  registryRoot = mkdtempSync(join(tmpdir(), 'workspace-registry-test-'));
+  process.env.PAPERCUSP_WORKSPACES_ROOT = registryRoot;
+});
+afterEach(() => {
+  if (previousRegistryRoot === undefined) delete process.env.PAPERCUSP_WORKSPACES_ROOT;
+  else process.env.PAPERCUSP_WORKSPACES_ROOT = previousRegistryRoot;
+  rmSync(registryRoot, { recursive: true, force: true });
+});
 
 describe('workspace-registry', () => {
-  beforeEach(() => {
-    if (existsSync(REGISTRY_PATH)) {
-      writeFileSync(BACKUP_PATH, readFileSync(REGISTRY_PATH));
-    }
-  });
-
-  afterEach(() => {
-    if (existsSync(BACKUP_PATH)) {
-      try {
-        writeFileSync(REGISTRY_PATH, readFileSync(BACKUP_PATH));
-        rmSync(BACKUP_PATH);
-      } catch {
-        /* ignore */
-      }
-    }
+  it('keeps registry mutations inside a private test root', () => {
+    expect(workspacesRoot()).toBe(registryRoot);
+    expect(registryRoot).not.toBe(join(homedir(), '.papercusp-workspaces'));
   });
 
   it('readRegistry returns the registry shape', () => {
@@ -144,28 +143,21 @@ describe('workspace-registry', () => {
     const id = activeWorkspaceId();
     // On a box with no registry (fresh clone / CI runner — WI-123) the
     // active id falls back to 'default', which is unregistered and makes
-    // setCompanyId throw "unknown workspace". Register it ourselves so the
-    // round-trip is hermetic; afterEach's backup-restore undoes this on dev
-    // boxes, and a registry created from nothing is removed below.
-    const hadRegistry = existsSync(REGISTRY_PATH);
+    // setCompanyId throw "unknown workspace". Register it in this test's
+    // private registry so the round-trip is hermetic.
+    const registryPath = join(registryRoot, 'registry.json');
     const reg = readRegistry();
     if (!reg.workspaces.some((w) => w.id === id)) {
-      mkdirSync(REGISTRY_DIR, { recursive: true });
       writeFileSync(
-        REGISTRY_PATH,
+        registryPath,
         JSON.stringify({ ...reg, workspaces: [...reg.workspaces, { id, name: id, createdAt: Date.now() }] }, null, 2),
       );
     }
     const tag = 'test-co-' + Date.now();
-    try {
-      setCompanyId(id, tag);
-      expect(companyIdFor(id)).toBe(tag);
-      setCompanyId(id, null);
-      expect(companyIdFor(id)).toBeNull();
-    } finally {
-      // best-effort cleanup; afterEach restores backup
-      if (!hadRegistry) rmSync(REGISTRY_PATH, { force: true });
-    }
+    setCompanyId(id, tag);
+    expect(companyIdFor(id)).toBe(tag);
+    setCompanyId(id, null);
+    expect(companyIdFor(id)).toBeNull();
   });
 
   it('setCompanyId throws on unknown workspace', () => {

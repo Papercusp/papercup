@@ -103,6 +103,12 @@ export interface SpecEvidenceForAdequacy {
   };
   coverageEvidenceRef: number | null;
   testRunId: number | null;
+  /** Canonical ledger attributes, independent of author-written evidenceRef prose. */
+  testRunProvenance?: {
+    filePath: string;
+    commitSha: string | null;
+    worktreeDirty: boolean | null;
+  } | null;
   details: Record<string, unknown>;
   observedAt?: string;
   createdAt?: string;
@@ -577,12 +583,17 @@ function clauseDeclarationProbe(clause: SpecClauseRevision, harness?: string): s
 function bindingDescription(row: SpecEvidenceForAdequacy): string {
   const details = detailsOf(row);
   const lineage = classifySpecEvidenceLineage(row);
+  // An authored reference can outlive the run it described. A dirty run cannot
+  // substantiate a claim about the committed HEAD, so omit that stale clause.
+  const evidenceRef = row.testRunProvenance?.worktreeDirty === true
+    ? row.evidenceRef.replace(/\s*,?\s*at current HEAD\.?$/i, '')
+    : row.evidenceRef;
   const fields = [
     // P-019: lead with the row id so a reader can act on THIS row (retract it, or re-bind
     // over it with supersedeAtRevision) without a separate plans:get-spec-evidence hunt.
     Number.isSafeInteger(row.id) ? `id=${row.id}` : null,
     `kind=${row.evidenceKind}`,
-    `ref=${JSON.stringify(row.evidenceRef)}`,
+    `ref=${JSON.stringify(evidenceRef)}`,
     `lineage=${lineage.lineage}`,
     `lineageReason=${JSON.stringify(lineage.reason)}`,
     details.provisionalProofBase ? 'provisionalProofBase=true' : null,
@@ -602,6 +613,11 @@ function bindingDescription(row: SpecEvidenceForAdequacy): string {
       : null,
     row.coverageEvidenceRef !== null ? `coverageEvidenceRef=${row.coverageEvidenceRef}` : null,
     row.testRunId !== null ? `testRunId=${row.testRunId}` : null,
+    row.testRunProvenance
+      ? `testRunLedgerFile=${JSON.stringify(row.testRunProvenance.filePath)}, ` +
+        `testRunLedgerCommit=${JSON.stringify(row.testRunProvenance.commitSha)}, ` +
+        `testRunLedgerWorktreeDirty=${row.testRunProvenance.worktreeDirty ?? 'unknown'}`
+      : null,
     details.fixtureCalibrated !== undefined ? `fixtureCalibrated=${details.fixtureCalibrated}` : null,
     details.falsifiable !== undefined ? `falsifiable=${details.falsifiable}` : null,
     details.testLayer !== undefined ? `testLayer=${JSON.stringify(details.testLayer)}` : null,

@@ -1,11 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import type { WorkItem } from '../work-items';
-import { dreamCorpusFromFragments, readDreamSources, type DreamSourceDeps } from './dream-sources';
+import { dreamCorpusFromFragments, readDreamSources, readDreamProblemContext, type DreamSourceDeps } from './dream-sources';
+import { activeWorkspaceId } from '../workspace-registry';
 
 const NOW = Date.parse('2026-08-20T12:00:00.000Z');
 const DAY_MS = 24 * 60 * 60_000;
 const sql = (() => Promise.resolve([])) as unknown as Sql;
+
+describe('bounded attributable Dream problem sources', () => {
+  it('uses the requested workspace and exact pot, excludes unowned/foreign reports and preserves requirement provenance', async () => {
+    const d = deps();
+    const report = { id: 'EI-1', kind: 'bug' as const, scope: 'harness:member', title: 'State disappears', createdBy: 'reporter', createdAt: new Date(NOW).toISOString() };
+    d.readObservations = vi.fn(async () => {
+      expect(activeWorkspaceId()).toBe('ws-problem');
+      return [report, { ...report, id: 'EI-foreign', scope: 'harness:elsewhere' }, { ...report, id: 'EI-unowned', createdBy: null }];
+    });
+    d.readWorkItems = vi.fn(async () => [workItem({ id: 'WI-request', kind: 'feature', state: 'open', createdBy: 'requester', closedAt: null }), workItem({ id: 'WI-done', kind: 'feature', createdBy: 'requester' })]);
+    const result = await readDreamProblemContext({ workspaceId: 'ws-problem', potSlug: 'member' }, d);
+    expect(result.evidence.map(p => p.ref)).toEqual(['observation:EI-1', 'wi:WI-request']);
+    expect(result.evidence.every(p => p.workspaceId === 'ws-problem' && p.potSlug === 'member')).toBe(true);
+    expect(d.readObservations).toHaveBeenCalledWith({ harnessScopes: ['harness:member'], state: 'open', limit: 12 });
+    expect(d.readWorkItems).toHaveBeenCalledWith({ harness: 'member', kind: 'feature', notTerminal: true, limit: 12 });
+  });
+  it('retains open exploration when no attributable context exists', async () => {
+    const d = deps();
+    expect(await readDreamProblemContext({ workspaceId: 'ws', potSlug: 'member' }, d)).toMatchObject({ mode: 'open-exploration', evidence: [] });
+  });
+});
 
 function workItem(overrides: Partial<WorkItem> = {}): WorkItem {
   return {

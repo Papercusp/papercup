@@ -131,22 +131,26 @@ describe('pre-destructive receipt vs. migration admission', () => {
     configureWithSql(makeSql(queries, null));
     const backup = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
 
-    await runSnapshot(backup);
+    await expect(runSnapshot(backup)).rejects.toThrow(/dump success not verified/);
 
     const update = receiptUpdate(queries);
     expect(update?.values).toEqual(expect.arrayContaining([null]));
     expect(update?.values).not.toEqual(expect.arrayContaining([true]));
+    expect(update?.text).toContain("status      = 'failed'");
+    expect((backup as any).kopia).not.toHaveBeenCalled();
   });
 
-  it('preserves a genuinely failed dump as degraded', async () => {
+  it('fails a pre-destructive backup before Kopia when the recovered dump failed', async () => {
     // Recovery must not launder a failure into a success.
     const queries: Array<{ text: string; values: unknown[] }> = [];
     replayingStepRunner(75744);
     configureWithSql(makeSql(queries, { ok: false, error: 'pg dump timed out after 900000ms' }));
     const backup = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
 
-    await runSnapshot(backup);
+    await expect(runSnapshot(backup)).rejects.toThrow(/requires a successful database dump/);
 
-    expect(receiptUpdate(queries)?.values).toEqual(expect.arrayContaining(['degraded', false]));
+    expect(receiptUpdate(queries)?.text).toContain("status      = 'failed'");
+    expect(receiptUpdate(queries)?.values).toEqual(expect.arrayContaining([false]));
+    expect((backup as any).kopia).not.toHaveBeenCalled();
   });
 });

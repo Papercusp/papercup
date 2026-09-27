@@ -183,7 +183,11 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       const bound = await bindSuSessionToAdvSession({ workspaceId, advSessionId: result.sessionId, agentChatId: input.agent_chat_id });
       if (bound.status !== 'bound' && bound.status !== 'already_bound') throw new Error('Could not bind the SU session to this conversation');
       const options = {
-        agentChatId: input.agent_chat_id, model: selectedModel, accountRoute: input.account,
+        agentChatId: input.agent_chat_id,
+        model: result.agent === 'claude'
+          ? normalizeModelSpecForAgent('claude', result.model ?? selectedModel)
+          : result.model ?? selectedModel,
+        accountRoute: input.account,
         carry: input.carry ?? 'warm', modes: input.mode ? [input.mode] : [],
         onExit: async () => { await markAdvSessionEnded(result.sessionId!, null, 'cleanup', { throwOnError: true }); },
         toolApproval: 'prompt' as const,

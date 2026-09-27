@@ -477,6 +477,28 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['plan-class-risk-floor'].evidence).toContain('coverageRungs=l3:true|l4:false');
   });
 
+  it('prints the bound run\'s ledger file and dirty-tree provenance beside its id', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({
+        evidenceRef: 'tests/claimed-file.test.ts — test-run: 43, at current HEAD.',
+        testRunProvenance: {
+          filePath: 'tests/actual-file.test.ts',
+          commitSha: 'abc123',
+          worktreeDirty: true,
+        },
+      })],
+      classRef: 'plan-class-feature-ship',
+    });
+    const rendered = result.ratings['execution-integrity'].evidence;
+    expect(rendered).toContain('testRunId=43');
+    expect(rendered).toContain('testRunLedgerFile="tests/actual-file.test.ts"');
+    expect(rendered).toContain('testRunLedgerCommit="abc123"');
+    expect(rendered).toContain('testRunLedgerWorktreeDirty=true');
+    expect(rendered).toContain('ref="tests/claimed-file.test.ts — test-run: 43"');
+    expect(rendered.split(' Re-run plans:evaluate-spec-test-adequacy')[0]).not.toContain('at current HEAD');
+  });
+
   it('does not treat a binder falsifiability attestation as a demonstrated negative control', () => {
     const result = evaluateSpecTestAdequacy({
       clause: clause(),

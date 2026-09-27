@@ -3419,7 +3419,39 @@ export function mintRecycleArgs(
     String(agent ?? "")
       .trim()
       .toLowerCase() === "claude";
-  if (!hasSessionId && !isClaude) return { args, nativeId: null };
+  if (!hasSessionId && !isClaude) {
+    // Codex has no --session-id, but a fresh carry still inherits its launch
+    // argv. Replace the single model flag when the predecessor or configured
+    // default has changed; otherwise an old -m overrides the repaired home.
+    if (String(agent ?? "").trim().toLowerCase() !== "codex" || !freshModel)
+      return { args, nativeId: null };
+    const selected = splitRespawnModelSpec(freshModel);
+    if (!selected.id) return { args, nativeId: null };
+    const out = [];
+    let replacedModel = false;
+    let replacedEffort = false;
+    for (let i = 0; i < raw.length; i++) {
+      const a = raw[i];
+      if (a === "-m" || a === "--model") {
+        out.push(a, selected.id);
+        replacedModel = true;
+        i++;
+      } else if (a.startsWith("--model=")) {
+        out.push(`--model=${selected.id}`);
+        replacedModel = true;
+      } else if (selected.effort && a === "-c" &&
+                 /^model_reasoning_effort=/.test(raw[i + 1] ?? "")) {
+        out.push("-c", `model_reasoning_effort="${selected.effort}"`);
+        replacedEffort = true;
+        i++;
+      } else {
+        out.push(a);
+      }
+    }
+    if (replacedModel && selected.effort && !replacedEffort)
+      out.push("-c", `model_reasoning_effort="${selected.effort}"`);
+    return { args: out, nativeId: null };
+  }
   // WI-37939: drop the launch kickoff BEFORE the copy loop, so no path below can
   // carry it into the successor argv. See stripKickoffPositional above.
   const src = stripKickoffPositional(raw);
@@ -4083,7 +4115,15 @@ export function reconcileRespawnModelSpec(inheritedSpec, detectedModel) {
 export function modelSpecFromRecycleArgv(args = []) {
   const raw = args.map((a) => String(a ?? ""));
   for (let i = 0; i < raw.length; i++) {
-    if (raw[i] === "--model") return (raw[i + 1] ?? "").trim() || null;
+    if (raw[i] === "--model" || raw[i] === "-m") {
+      const model = (raw[i + 1] ?? "").trim();
+      if (!model) return null;
+      if (raw[i] !== "-m") return model;
+      const effort = raw.find((value, index) =>
+        raw[index - 1] === "-c" && /^model_reasoning_effort=/.test(value));
+      const level = effort?.match(/^model_reasoning_effort=["']?(low|medium|high|xhigh|max)["']?$/)?.[1];
+      return level ? `${model}:${level}` : model;
+    }
     if (raw[i].startsWith("--model=")) return raw[i].slice(8).trim() || null;
   }
   return null;
@@ -4105,7 +4145,9 @@ export function modelSpecFromRecycleArgv(args = []) {
 /**
  * @param {string[]} [args]
  * @param {{ ownerId?: string | null, agent?: string | null, home?: string,
- *          configDir?: string | null,
+ *          configDir?: string | null, codexHome?: string | null,
+ *          advSessionId?: string | number | null, modelSource?: string | null,
+ *          readLatestCodexRollout?: (root: string) => {id: string} | null,
  *          readLastActiveModel?: (session: { agent: string, sessionId: string, coordOwnerId?: string | null, configDir?: string },
  *                                 opts?: { home?: string }) => string | null }} [opts]
  * @returns {string | null}
@@ -4117,6 +4159,10 @@ export function detectRespawnModelSpec(
     agent = null,
     home = homedir(),
     configDir = null,
+    codexHome = null,
+    advSessionId = null,
+    modelSource = null,
+    readLatestCodexRollout = latestCodexRollout,
     readLastActiveModel = lastActiveModelFor,
   } = {},
 ) {
@@ -4127,9 +4173,47 @@ export function detectRespawnModelSpec(
   const normalized = String(agent ?? "")
     .trim()
     .toLowerCase();
-  if (normalized && normalized !== "claude") return null;
   const inherited = modelSpecFromRecycleArgv(args);
   if (!inherited) return null; // no flag to replace — never ADD one
+  if (normalized === "codex") {
+    const latest = codexHome
+      ? readLatestCodexRollout(join(codexHome, "sessions"))
+      : null;
+    let active = null;
+    if (latest?.id) {
+      try {
+        active = readLastActiveModel(
+          { agent: "codex", id: advSessionId, sessionId: latest.id },
+          { home },
+        );
+      } catch {
+        // A missing or incomplete rollout must not block the carry.
+      }
+    }
+    const switched = reconcileRespawnModelSpec(inherited, active);
+    if (switched) {
+      try {
+        return resolveCodexModelSelection(switched, { source: "inherited" }).model;
+      } catch {
+        return null;
+      }
+    }
+    if (modelSource === "configured-default") {
+      try {
+        const text = readFileSync(join(codexHome, "config.toml"), "utf8").split(/^\s*\[/m, 1)[0];
+        const model = /^model\s*=\s*"([^"]+)"\s*$/m.exec(text)?.[1];
+        const effort = /^model_reasoning_effort\s*=\s*"(low|medium|high|xhigh|max)"\s*$/m.exec(text)?.[1];
+        const configured = model ? resolveCodexModelSelection(
+          `${model}${effort ? `:${effort}` : ""}`, { source: "inherited" },
+        ).model : null;
+        return configured && configured !== inherited ? configured : null;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+  if (normalized && normalized !== "claude") return null;
   const sessionId = nativeSessionIdFromLaunchArgs(args);
   if (!sessionId) return null;
   try {
@@ -11399,6 +11483,9 @@ export function runWrapper(options) {
                 ownerId,
                 agent: env.PAPERCUSP_AGENT,
                 configDir: env.CLAUDE_CONFIG_DIR || null,
+                codexHome: env.CODEX_HOME || null,
+                advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
+                modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
               }),
           }),
         mintCarryRespawnArgs: (a, o = {}) =>
@@ -11410,6 +11497,9 @@ export function runWrapper(options) {
                 ownerId,
                 agent: o.agent ?? env.PAPERCUSP_AGENT,
                 configDir: env.CLAUDE_CONFIG_DIR || null,
+                codexHome: env.CODEX_HOME || null,
+                advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
+                modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
               }),
           }),
         ensureCodexHome: () =>
@@ -11422,6 +11512,9 @@ export function runWrapper(options) {
                 ownerId,
                 agent: env.PAPERCUSP_AGENT,
                 configDir: env.CLAUDE_CONFIG_DIR || null,
+                codexHome: env.CODEX_HOME || null,
+                advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
+                modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
               }),
             },
           ),
@@ -14121,8 +14214,9 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
  * gateway-less config into the hole. Owner-hit 2026-08-14: 11 homes, 89
  * rollouts, all failing `thread/resume` on the missing provider.
  *
- * Idempotent and non-destructive: a healthy home is left byte-identical and the
- * call reports `repaired: false`.
+ * The server-side writer is idempotent and also reconciles project HTTP MCP
+ * servers. A structurally ready home can still predate a newly inherited
+ * connector, so every resume must reach that writer.
  */
 export async function ensureCodexHomeViaOperator(
   owner,
@@ -14153,7 +14247,6 @@ export async function ensureCodexHomeViaOperator(
     join(homedir(), ".papercusp", "su-codex-homes", `session-${advSessionId}`)
   )
     return null;
-  if (isCodexHomeLaunchReady(codexHome, owner)) return null; // healthy + same owner — no call, no write
   try {
     const resolvedOperatorUrl =
       operatorUrl ??
@@ -15726,10 +15819,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     // the pre-P-021 behavior. See ompLspArgs.
     allowNativeLsp: res.envelopeEnv?.PAPERCUSP_OMP_NATIVE_LSP === "1",
   });
-  const requestedLaunchModel =
-    res.agent === "omp"
-      ? res.envelopeEnv?.PAPERCUSP_OMP_MODEL_SELECTOR || args.model
-      : args.model;
+  const requestedLaunchModel = requestedRoleModelFromBootstrap(res, args.model);
   const launchModel =
     res.agent === "omp"
       ? normalizeOmpModelSpec(requestedLaunchModel)

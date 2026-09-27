@@ -937,6 +937,19 @@ describe('frozen-candidate repair queue', () => {
       runSuite: true,
       recordVerdict: true,
     });
+    // A completed fixer's retained spawn id is provenance, not a live lease.
+    // Its death must not turn an admitted head into a serialized repair hold.
+    expect(decideFrozenCandidateRepairQueue(finished, {
+      nowMs: T0 + 3,
+      fixerAlive: false,
+    })).toEqual({
+      kind: 'verify-repair',
+      candidate: C1,
+      originalCandidate: C,
+      gateDisposition: 'repair-verification',
+      runSuite: true,
+      recordVerdict: true,
+    });
   });
 
   it('rejects a late completion from a replaced fixer', () => {

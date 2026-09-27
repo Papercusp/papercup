@@ -1136,16 +1136,24 @@ export function modelSpecFromRecycleArgv(args?: any[]): string | null;
 /**
  * @param {string[]} [args]
  * @param {{ ownerId?: string | null, agent?: string | null, home?: string,
- *          configDir?: string | null,
+ *          configDir?: string | null, codexHome?: string | null,
+ *          advSessionId?: string | number | null, modelSource?: string | null,
+ *          readLatestCodexRollout?: (root: string) => {id: string} | null,
  *          readLastActiveModel?: (session: { agent: string, sessionId: string, coordOwnerId?: string | null, configDir?: string },
  *                                 opts?: { home?: string }) => string | null }} [opts]
  * @returns {string | null}
  */
-export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, configDir, readLastActiveModel, }?: {
+export function detectRespawnModelSpec(args?: string[], { ownerId, agent, home, configDir, codexHome, advSessionId, modelSource, readLatestCodexRollout, readLastActiveModel, }?: {
     ownerId?: string | null;
     agent?: string | null;
     home?: string;
     configDir?: string | null;
+    codexHome?: string | null;
+    advSessionId?: string | number | null;
+    modelSource?: string | null;
+    readLatestCodexRollout?: (root: string) => {
+        id: string;
+    } | null;
     readLastActiveModel?: (session: {
         agent: string;
         sessionId: string;
@@ -3709,8 +3717,9 @@ export function isCodexHomeLaunchReady(codexHome: string | null | undefined, exp
  * gateway-less config into the hole. Owner-hit 2026-08-14: 11 homes, 89
  * rollouts, all failing `thread/resume` on the missing provider.
  *
- * Idempotent and non-destructive: a healthy home is left byte-identical and the
- * call reports `repaired: false`.
+ * The server-side writer is idempotent and also reconciles project HTTP MCP
+ * servers. A structurally ready home can still predate a newly inherited
+ * connector, so every resume must reach that writer.
  */
 export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessionId: any, { requireGatewayProvider, model, fetchImpl, operatorUrl, env, probe, onRecovery, token, timeoutMs, }?: {
     requireGatewayProvider?: boolean | undefined;

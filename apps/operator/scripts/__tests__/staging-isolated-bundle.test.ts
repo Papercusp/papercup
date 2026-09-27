@@ -17,6 +17,10 @@ const DROPIN_ROOT = join(
   REPO_ROOT,
   "apps/operator/scripts/systemd/papercup-staging-api.service.d",
 );
+const STAGING_SYNC_SCRIPT = join(
+  REPO_ROOT,
+  "apps/operator/bin/release/sync-staging-checkout.sh",
+);
 
 describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated tree", () => {
   const checkout = readFileSync(
@@ -56,10 +60,23 @@ describe("staging systemd drop-ins keep sync, bundle and runtime on one isolated
   it("builds from that same tree and enables proof-bound reuse before plain-node start", () => {
     expect(bundle).toContain("Environment=PAPERCUSP_BUNDLE_REUSE_FRESH=1");
     expect(bundle).toContain(
-      "ExecStartPre=%h/papercupai-workspace/papercusp-staging/apps/operator/bin/bundle-host.sh",
+      "ExecStartPre=/usr/bin/flock -s /tmp/papercup-staging-sync.lock %h/papercupai-workspace/papercusp-staging/apps/operator/bin/bundle-host.sh",
     );
     expect(bundle).toContain("exec node dist-host/hono-host.mjs");
     expect(bundle).toContain("PAPERCUSP_BIND_HOST=127.0.0.1");
+  });
+
+  it("blocks a bundle read until the in-place checkout finishes", () => {
+    const sync = readFileSync(STAGING_SYNC_SCRIPT, "utf8");
+    const acquire = sync.indexOf('exec 9>"/tmp/papercup-staging-sync.lock"');
+    const setup = sync.indexOf('"$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
+    const downgrade = sync.indexOf("flock -s 9");
+    const prebuild = sync.indexOf('PAPERCUSP_BUNDLE_REUSE_FRESH=1 bash "$STAGING_BUNDLE_SCRIPT"');
+    expect(acquire).toBeGreaterThanOrEqual(0);
+    expect(setup).toBeGreaterThan(acquire);
+    expect(downgrade).toBeGreaterThan(setup);
+    expect(prebuild).toBeGreaterThan(downgrade);
+    expect(bundle).toContain("/usr/bin/flock -s /tmp/papercup-staging-sync.lock");
   });
 });
 

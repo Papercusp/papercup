@@ -21,6 +21,7 @@
  * DBOS workflow_status row.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { MODEL_CAPACITY_RE } from '@papercusp/papercusp-shared/agent';
 import type { Sql } from 'postgres';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { execFile } from 'node:child_process';
@@ -518,8 +519,8 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
     let invalidModelFailures = 0;
     try {
       const { sql } = getOrgPg();
-      const rows = await sql<{ n: number }[]>`
-        SELECT count(*)::int AS n
+      const rows = await sql<{ error_message: string | null; output_tail: string | null }[]>`
+        SELECT error_message, output_tail
           FROM harness_shared.spawned_agents
          WHERE workspace_id = ${ctx.ws}
            AND child_role IN ('cup', 'mug', 'kettle', 'blender')
@@ -535,7 +536,7 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
              OR coalesce(output_tail, '') ILIKE '%not exist%'
              OR coalesce(output_tail, '') ILIKE '%access%'
            )`;
-      invalidModelFailures = rows[0]?.n ?? 0;
+      invalidModelFailures = countInvalidModelFailures(rows);
     } catch { /* fail-soft — a bad diagnostic read must not grey the fleet panel */ }
     const data: BeesHealth = {
       running, alive, stale, orphanedClaims, totalLoad, invalidModelFailures,
@@ -564,6 +565,14 @@ async function collectBees(ctx: HealthCtx): Promise<HealthPanel<BeesHealth>> {
       ],
     };
   });
+}
+
+export function countInvalidModelFailures(
+  rows: readonly { error_message: string | null; output_tail: string | null }[],
+): number {
+  return rows.filter(({ error_message, output_tail }) =>
+    !MODEL_CAPACITY_RE.test(`${error_message ?? ''} ${output_tail ?? ''}`),
+  ).length;
 }
 
 async function collectWorkItems(ctx: HealthCtx): Promise<HealthPanel<WorkItemsHealth>> {

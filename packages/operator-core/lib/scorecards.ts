@@ -758,6 +758,10 @@ export interface ScorecardRow {
   rubricMeaningRevision?: number;
   /** The graded rubric's substantive criteria/method identity at emit time. */
   criteriaHash?: string;
+  /** Emit-time identity of a rubric named as the subject, distinct from rubricRef. */
+  subjectRubricIdentity?: NonNullable<StructuredObservation['subjectRubricIdentity']>;
+  /** Read-time comparison of the graded subject rubric with its live identity. */
+  subjectRubricCurrentness?: ScorecardSubjectRubricCurrentness;
   /** Per-criterion ratings, keyed by rubric criterion `key` (each {rating, evidence}). */
   ratings: ObservationRatings;
   /** Server-derived categorical roll-up when the rubric declares one. */
@@ -1048,6 +1052,40 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
  */
 export { scorecardAdmissionExclusion, type ScorecardAdmissionExclusion };
 export type { ScorecardGradingAuditCurrentness };
+
+export interface ScorecardSubjectRubricCurrentness {
+  state: 'current' | 'stale' | 'unknown';
+  reason: 'current' | 'subject-rubric-mismatch' | 'recorded-identity-missing' | 'live-identity-missing' |
+    'revision-mismatch' | 'meaning-revision-mismatch' | 'criteria-hash-mismatch';
+  recordedRevision: number | null;
+  currentRevision: number | null;
+  recordedCriteriaHash: string | null;
+  currentCriteriaHash: string | null;
+}
+
+export function classifySubjectRubricCurrentness(
+  subjectRef: string,
+  recorded: StructuredObservation['subjectRubricIdentity'],
+  live: Pick<Rubric, 'rubricId' | 'revision' | 'criteriaHash' | 'barContract'> | null,
+): ScorecardSubjectRubricCurrentness {
+  const base = {
+    recordedRevision: recorded?.revision ?? null,
+    currentRevision: live?.revision ?? null,
+    recordedCriteriaHash: recorded?.criteriaHash ?? null,
+    currentCriteriaHash: live?.criteriaHash ?? null,
+  };
+  if (!live) return { state: 'unknown', reason: 'live-identity-missing', ...base };
+  if (recorded?.rubricRef && recorded.rubricRef !== subjectRef) {
+    return { state: 'unknown', reason: 'subject-rubric-mismatch', ...base };
+  }
+  return {
+    ...classifyRubricEvidenceCurrentness(
+      recorded ?? {},
+      { revision: live.revision, criteriaHash: live.criteriaHash, meaningRevision: live.barContract?.meaningRevision },
+    ),
+    ...base,
+  };
+}
 
 /** A settled audit is admissible only when its read-time identity is current. */
 export function settledGradingAuditIsCurrent(row: {
@@ -2240,6 +2278,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
   const liveHostStartedAtMs = anyStamped ? await readLiveBoundary().catch(() => null) : null;
   let gradingAuditRubricRead = false;
   let gradingAuditRubric: Rubric | null = null;
+  const subjectRubrics = new Map<string, Rubric | null>();
 
   for (const row of rows) {
     const observation = asStructuredObservation((row.payload as { observation?: unknown } | null)?.observation);
@@ -2275,6 +2314,18 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
     if (gradingAudit && !gradingAuditRubricRead) {
       gradingAuditRubricRead = true;
       gradingAuditRubric = await getRubric(GRADING_INTEGRITY_RUBRIC_REF).catch(() => null);
+    }
+    let subjectRubricCurrentness: ScorecardSubjectRubricCurrentness | undefined;
+    if (observation.subject?.kind === 'rubric') {
+      const subjectRef = observation.subject.ref;
+      if (!subjectRubrics.has(subjectRef)) {
+        subjectRubrics.set(subjectRef, await getRubric(subjectRef).catch(() => null));
+      }
+      subjectRubricCurrentness = classifySubjectRubricCurrentness(
+        subjectRef,
+        observation.subjectRubricIdentity,
+        subjectRubrics.get(subjectRef) ?? null,
+      );
     }
     // Canonical READ boundary: historic `PASS`/`pass` rows project to the rubric's
     // exact scale spelling, so distributions, RLE, and direction math never split a
@@ -2321,6 +2372,8 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
         ? { rubricMeaningRevision: observation.rubricMeaningRevision }
         : {}),
       ...(observation.criteriaHash ? { criteriaHash: observation.criteriaHash } : {}),
+      ...(observation.subjectRubricIdentity ? { subjectRubricIdentity: observation.subjectRubricIdentity } : {}),
+      ...(subjectRubricCurrentness ? { subjectRubricCurrentness } : {}),
       ...(observation.rollup ? { rollup: observation.rollup } : {}),
       ratings,
       ...(observation.testedSha ? { testedSha: observation.testedSha } : {}),

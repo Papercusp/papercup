@@ -3800,7 +3800,16 @@ export function registerMcpHost(server: McpServer): void {
                     runId: dispatchSpawnCtx.runId ?? null,
                     ownerId: (() => {
                       try {
-                        return resolveAgentIdentity(baseCtx).ownerId;
+                        // Signed role sessions read scratch resources as the
+                        // HMAC-bound client, not the synthesized role principal.
+                        return resolveAgentIdentity(
+                          dispatchSpawnCtx.sigVerifiedSpawn &&
+                          !dispatchSpawnCtx.authenticatedPrincipal &&
+                          !dispatchSpawnCtx.isSuperuser &&
+                          !dispatchSpawnCtx.isPowerUser
+                            ? dispatchSpawnCtx
+                            : baseCtx,
+                        ).ownerId;
                       } catch {
                         return null;
                       }
@@ -3987,7 +3996,17 @@ export function registerMcpHost(server: McpServer): void {
                   // config:doors-set-session stamps (resolveAgentIdentity, never runId).
                   ownerId: (() => {
                     try {
-                      return resolveAgentIdentity(ctx).ownerId;
+                      // Resource reads synthesize a principal whose slug is
+                      // this signed session's client id. Match that identity
+                      // when writing the owner-only spill manifest.
+                      return resolveAgentIdentity(
+                        dispatchSpawnCtx.sigVerifiedSpawn &&
+                        !dispatchSpawnCtx.authenticatedPrincipal &&
+                        !dispatchSpawnCtx.isSuperuser &&
+                        !dispatchSpawnCtx.isPowerUser
+                          ? dispatchSpawnCtx
+                          : ctx,
+                      ).ownerId;
                     } catch {
                       return null;
                     }

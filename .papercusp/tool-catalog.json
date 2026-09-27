@@ -10460,9 +10460,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "After leaving an edit in the tree (git-sync owns commit/push): to confirm it reached staging/main/:3070, to see WHY it is stuck (gate red/stalled) — or, whenever the code you touched might not be operator code, to find out whether a deploy or a RESTART is what activates it. Pass `path`, not `sha`: the sha cannot tell you which host runs the code.",
+        "when": "After leaving an edit, pass `path` to measure which runtime loaded it. For a functional test, add `testClass` (e.g. operator-api, background-federation, desktop-native, multi-machine-p2p-git) to get the maintained current-build route, isolation boundary and prerequisites before waiting on main. A route marked gap is NOT ready.",
         "notWhen": "To PAUSE sync (use locks:acquire_resource on git-sync:<slug>). For the whole-pipeline dashboard use the /admin Git tab; this is the targeted per-path/sha probe.",
-        "chaining": "Edit → dev:pipeline_position{path} → if `activation` is present, dev:restart{target} (a deploy would be a no-op); else deploy:await / release:deploy."
+        "chaining": "Edit → dev:pipeline_position{path,testClass} → inspect currentBuildTestRoute.readiness, prerequisites and servingRuntimes containment → run matching current-build route; use deploy:await only for explicit final-release evidence."
       }
     },
     {

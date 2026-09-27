@@ -924,6 +924,9 @@ interface EvidenceRow extends CurrentnessRow {
   retracted_at: Date | string | null;
   retracted_by: string | null;
   retraction_reason: string | null;
+  test_run_file_path: string | null;
+  test_run_commit_sha: string | null;
+  test_run_worktree_dirty: boolean | null;
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
 }
@@ -1401,6 +1404,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            b.environment_fingerprint, b.coverage_evidence_ref, b.test_run_id,
            b.details, b.observed_at, b.binding_fingerprint, b.created_by, b.created_at,
            b.retracted_at, b.retracted_by, b.retraction_reason,
+           tr.file_path AS test_run_file_path,
+           tr.commit_sha AS test_run_commit_sha,
+           tr.worktree_dirty AS test_run_worktree_dirty,
            ${specIsCurrent} AS spec_is_current,
            (b.coverage_evidence_ref IS NOT NULL AND EXISTS (
               SELECT 1 FROM harness_shared.coverage_evidence ce
@@ -1414,6 +1420,9 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                  AND tr.workspace_id = b.workspace_id AND tr.harness_slug = b.harness_slug
            )) AS test_run_present
       FROM harness_shared.spec_evidence_bindings b
+      LEFT JOIN harness_shared.test_runs tr
+        ON tr.id = b.test_run_id
+       AND tr.workspace_id = b.workspace_id AND tr.harness_slug = b.harness_slug
       JOIN harness_shared.plan_spec_clauses c
         ON c.workspace_id = b.workspace_id AND c.harness_slug = b.harness_slug
        AND c.plan_slug = b.plan_slug AND c.spec_id = b.spec_id
@@ -1609,6 +1618,13 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       },
       coverageEvidenceRef: row.coverage_evidence_ref === null ? null : Number(row.coverage_evidence_ref),
       testRunId: row.test_run_id === null ? null : Number(row.test_run_id),
+      testRunProvenance: row.test_run_id === null || row.test_run_file_path == null
+        ? null
+        : {
+            filePath: row.test_run_file_path,
+            commitSha: row.test_run_commit_sha,
+            worktreeDirty: row.test_run_worktree_dirty,
+          },
       details: row.provisionalProofBase
         ? {
             ...row.details,

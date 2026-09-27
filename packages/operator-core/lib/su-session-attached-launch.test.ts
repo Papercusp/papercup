@@ -53,6 +53,18 @@ afterEach(() => {
 });
 
 describe('attached launch authority', () => {
+  it.each([
+    { agent: 'codex', selected: 'gpt-5.6-terra:xhigh', expected: 'gpt-5.6-terra:xhigh' },
+    { agent: 'claude', selected: 'sonnet:high', expected: 'sonnet[1m]:high' },
+    { agent: 'omp', selected: 'openai/gpt-5.6-terra', expected: 'openai/gpt-5.6-terra' },
+  ])('passes the bootstrap identity model to the native $agent engine', async ({ agent, selected, expected }) => {
+    mocks.bootstrap.mockImplementationOnce(async () => Response.json({ ...boot, agent, model: selected }));
+    const response = await launchAttachedSuSession(request(), { ...input, agent, agent_chat_id: `selected-${agent}` });
+    expect(response.status).toBe(200);
+    const call = (agent === 'claude' ? mocks.engine : mocks.rpc).mock.calls[0];
+    expect(call[agent === 'claude' ? 3 : 2]).toMatchObject({ model: expected });
+  });
+
   it('returns the durable identity before engine readiness and supervises initialization on the host', async () => {
     let ready!: () => void;
     mocks.engine.mockReturnValue({ ...mocks.engine(), ready: new Promise<void>((resolve) => { ready = resolve; }) });

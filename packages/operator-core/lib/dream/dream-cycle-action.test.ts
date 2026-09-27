@@ -25,6 +25,10 @@ function result(overrides: Partial<DreamCycleResult> = {}): DreamCycleResult {
 }
 
 describe('parseDreamCycleActionConfig', () => {
+  it('retains explicit open exploration and refuses unknown problem modes', () => {
+    expect(parseDreamCycleActionConfig({ problemMode: 'open-exploration' })).toEqual({ mode: 'manual', problemMode: 'open-exploration' });
+    expect(() => parseDreamCycleActionConfig({ problemMode: 'foreign-problems' })).toThrow('problem mode');
+  });
   it('refuses a declared pilot without its frozen protocol rather than treating it as an ordinary manual cycle', () => {
     expect(() => parseDreamCycleActionConfig({ mode: 'manual', pilot: null })).toThrow();
     expect(() => parseDreamCycleActionConfig({ mode: 'manual', pilot: { arm: 'structured-pair' } })).toThrow();

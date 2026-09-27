@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "kind": "historical-llm-cohort-provenance",
+  "workItemId": "WI-10000460",
+  "plan": "goal-agent-behavior-feedback-2026-09-06",
+  "disposition": "incomplete-acceptance-with-preserved-failures",
+  "recordedModels": {
+    "sut": "claude-sonnet-4-6",
+    "judge": "gpt-5.6-terra"
+  },
+  "execution": {
+    "commandTemplate": [
+      "env",
+      "LLM_TEST_JUDGE_MODEL=gpt-5.6-terra",
+      "npm",
+      "--prefix",
+      "apps/operator",
+      "run",
+      "llm-test",
+      "--",
+      "--scenario",
+      "su-S33-agenda-<case>"
+    ],
+    "selectionStart": "2026-09-27T00:48:30Z",
+    "selectionEndExclusive": "2026-09-27T01:24:00Z",
+    "repeat": 3,
+    "batches": [
+      {
+        "cases": [
+          "continue",
+          "verify",
+          "delegate",
+          "report"
+        ],
+        "exitCode": 1
+      },
+      {
+        "cases": [
+          "wait",
+          "unknown",
+          "no-demand",
+          "paused",
+          "achieved",
+          "killed"
+        ],
+        "exitCode": 0
+      },
+      {
+        "cases": [
+          "report"
+        ],
+        "exitCode": 1
+      }
+    ]
+  },
+  "recordedCounts": {
+    "passed": 31,
+    "failed": 2,
+    "errored": 0
+  },
+  "countsByScenarioVersion": {
+    "12": {
+      "passed": 17,
+      "failed": 1,
+      "errored": 0
+    },
+    "13": {
+      "passed": 14,
+      "failed": 1,
+      "errored": 0
+    }
+  },
+  "cohorts": {
+    "su-S33-agenda-continue@12": {
+      "matrix": "427b3268-be0b-49dc-901a-daaa78d87987",
+      "runs": "77c2e5be-9900-4c72-a953-11984f4cf3d2:passed,d69432e1-6652-4a80-bc26-f0ef44d5d140:passed,4ea1a18c-5402-4fa7-8529-a422dd9db2ec:passed",
+      "recordedCostUsd": "0.348637"
+    },
+    "su-S33-agenda-delegate@12": {
+      "matrix": "5bbd296e-d283-46fd-9eee-08bdfd53e573",
+      "runs": "11bf4d12-1f06-4ca1-b78d-54b1d575ddc8:passed,67cbd7d5-4cee-4fe7-9641-ff9c958e18e5:passed,bb856c03-285f-43fc-9e17-fb7b7febae1e:passed",
+      "recordedCostUsd": "0.129981"
+    },
+    "su-S33-agenda-report@12": {
+      "matrix": "ac7675f9-0cf4-457b-b092-7a24f9d6d746",
+      "runs": "8cd2c086-5c11-4405-b6bd-8ba7e6722fc9:failed,8a94b40b-3b67-49a8-92f4-614e38d2820c:passed,d168f4e2-796d-499b-8b6f-f37cfcfafd6b:passed",
+      "recordedCostUsd": "0.138800"
+    },
+    "su-S33-agenda-unknown@12": {
+      "matrix": "8f8e9cdc-fed2-4948-b899-92440e333cf5",
+      "runs": "b14cf52e-4624-48cb-ae4c-11ad6bba377b:passed,f743c5d6-69c6-4b0e-aba8-160df10d9b33:passed,88d3afd9-1528-42d1-aff1-d0c1c4fb0187:passed",
+      "recordedCostUsd": "0.326198"
+    },
+    "su-S33-agenda-verify@12": {
+      "matrix": "1a4a88ea-aed7-4ce7-845c-ab9b4eb542ac",
+      "runs": "bc40b1da-6f02-451b-be1e-0b4212503181:passed,551438fd-ccad-4fcc-8055-a9a178501bee:passed,d781c7b5-a077-426b-b3c4-727ead1c5e95:passed",
+      "recordedCostUsd": "0.132919"
+    },
+    "su-S33-agenda-wait@12": {
+      "matrix": "7b011ae5-c515-4ab4-b216-1f6478769a25",
+      "runs": "304d4e2b-8b18-45f0-99cf-bdc88230a176:passed,f50562ec-6567-4b73-b45f-bb98310823f3:passed,fb59392c-7de3-483b-838e-5ec07b20c48a:passed",
+      "recordedCostUsd": "0.135848"
+    },
+    "su-S33-agenda-achieved@13": {
+      "matrix": "d3e5f282-2618-48e4-96e2-f661a14e5c0e",
+      "runs": "525b3b2e-2efb-4ff2-95f6-6687ffd85bf6:passed,c05c9316-7b76-45e9-b6eb-d9c9d2cb4fca:passed,3e12983d-3ec7-4670-8038-1dd4c2fc130a:passed",
+      "recordedCostUsd": "0.070611"
+    },
+    "su-S33-agenda-killed@13": {
+      "matrix": "8cd9b361-fd67-4a51-b019-8a01ddde110e",
+      "runs": "21d48840-3a3d-4fe4-8c4b-e2e0f1e77939:passed,8aba1419-8ff3-4b80-865a-63294fe96d08:passed,aa04034b-62b3-4077-8e04-626d0662de6b:passed",
+      "recordedCostUsd": "0.042958"
+    },
+    "su-S33-agenda-no-demand@13": {
+      "matrix": "0a01c9a0-2027-492c-ac89-ef824e86acde",
+      "runs": "ebdcaff2-b7d0-4b9f-8ff1-75adeb8f0661:passed,01762752-4faf-47fd-9fa6-d3717b27dfa8:passed,3aa171a3-5d1c-479f-9898-bdd351f62ba4:passed",
+      "recordedCostUsd": "0.264734"
+    },
+    "su-S33-agenda-paused@13": {
+      "matrix": "b819c713-b6be-4d7d-a7dd-cd85f2c37e99",
+      "runs": "8583f161-3672-4b5d-a42a-8d42569f3248:passed,374cd6eb-99c4-4ef9-a02a-bd769d1129a5:passed,784ec8c2-c617-48cd-9094-d67989b4d96d:passed",
+      "recordedCostUsd": "0.138196"
+    },
+    "su-S33-agenda-report@13": {
+      "matrix": "f8119cb5-bd8e-490c-abab-c8fcb53542ec",
+      "runs": "00436401-66e0-4d81-ba32-8160286cc4eb:passed,b56a042e-7374-4677-8b53-0295d89886c1:passed,3fb36973-a2b7-40bb-a4a6-6206d87936ea:failed",
+      "recordedCostUsd": "0.164756"
+    }
+  },
+  "provenance": {
+    "store": "harness_shared.llm_test_runs",
+    "runEncoding": "Comma-separated immutable run-id:status pairs, ordered by started_at. Matrix IDs join the complete stored transcripts, tool results, original deterministic assertions, judge findings, scenario hashes and timing.",
+    "costMeaning": "Recorded run cost from persistSingleRun's summary.totalCostUsd. This is not independently reconciled account billing; same-model pilot and judge-only replay costs are outside these cohorts."
+  },
+  "findings": [
+    {
+      "item": "EI-24374082914296322",
+      "kind": "judge-instrument-defect",
+      "runId": "551438fd-ccad-4fcc-8055-a9a178501bee",
+      "observation": "Judge called plans:set-plan-status unavailable despite an intact successful tools:find receipt. Static registry omitted discovered tools.",
+      "verification": "New runner-to-judge regression failed before repair; all8 tests pass in ledger19692019. Canonical replay of unchanged subject transcript with same terra judge after repair passed with zero errors/warnings. Original row preserved.",
+      "scope": "Judge replay repairs assessment only; it is not a new subject run."
+    },
+    {
+      "item": "EI-24374443409954664",
+      "kind": "fixture-defect-and-unresolved-behavior",
+      "runIds": [
+        "8cd2c086-5c11-4405-b6bd-8ba7e6722fc9",
+        "3fb36973-a2b7-40bb-a4a6-6206d87936ea"
+      ],
+      "observation": "Both v12 and v13 report matrices had2passed/1failed; failing subjects produced prose without the required owner-report delivery effect.",
+      "fixtureRepair": "v12 exposed AUTO but did not bind its identity layer. Ten cross-contract tests failed in ledger19692993. v13 adds targetConfig.modes=['auto']; current unit/render suites pass53 tests in ledgers19693198/19693199.",
+      "remaining": "Mode omission alone is not a sufficient cause. Production reporting counts escalation/attention/to-human coord rails, not ordinary final prose. Resolve whether per-case GOAL versus engineer role binding is realistic before any further model or persona repair."
+    },
+    {
+      "item": "EI-24374387924088532",
+      "kind": "unresolved-grounding-finding",
+      "runId": "bb856c03-285f-43fc-9e17-fb7b7febae1e",
+      "observation": "Independent advisory judge found an unsupported claim of live fleet leader ownership from placement-only receipt. Deterministic passed status does not erase the advisory finding."
+    }
+  ],
+  "limitations": [
+    "These are isolated model opportunities using production agenda providers and explicit fixture effects; they do not prove live-workspace effects or matched causal improvement.",
+    "Versions12 and13 must not be combined into a current acceptance cohort. v12 lacks AUTO layer binding; only the version13 rows contain that repair.",
+    "The SU rubric makes judge findings advisory. A passed stored status does not mean zero judge errors or warnings; inspect the original judge_json.",
+    "Current version13 has no completed continue/delegate/verify/wait/unknown matrix in this artifact. Its report matrix failed once.",
+    "No full R-16 acceptance, independent plan acceptance, deployment containment, or shipment is asserted."
+  ]
+}

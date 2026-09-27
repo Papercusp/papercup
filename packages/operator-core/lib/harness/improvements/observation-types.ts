@@ -365,6 +365,13 @@ export interface StructuredObservation {
    * Absent on historical cards and whenever the hash read failed at emit time.
    */
   criteriaHash?: string;
+  /** Identity of a rubric named as the SUBJECT of this scorecard, distinct from rubricRef. */
+  subjectRubricIdentity?: {
+    rubricRef: string;
+    revision?: number;
+    criteriaHash?: string;
+    meaningRevision?: number;
+  };
   /** Per-criterion ratings against `rubricRef` — each carries MANDATORY evidence. */
   ratings?: ObservationRatings;
   /** Server- or grader-derived roll-up; categorical and non-compensating. */
@@ -1133,6 +1140,19 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   }
   if (typeof o.criteriaHash === 'string' && o.criteriaHash.trim()) {
     out.criteriaHash = o.criteriaHash;
+  }
+  if (o.subjectRubricIdentity && typeof o.subjectRubricIdentity === 'object' && !Array.isArray(o.subjectRubricIdentity)) {
+    const identity = o.subjectRubricIdentity as Record<string, unknown>;
+    if (typeof identity.rubricRef === 'string' && identity.rubricRef.trim()) {
+      out.subjectRubricIdentity = {
+        rubricRef: identity.rubricRef,
+        ...(typeof identity.revision === 'number' && Number.isFinite(identity.revision) ? { revision: identity.revision } : {}),
+        ...(typeof identity.criteriaHash === 'string' && identity.criteriaHash.trim() ? { criteriaHash: identity.criteriaHash } : {}),
+        ...(typeof identity.meaningRevision === 'number' && Number.isInteger(identity.meaningRevision) && identity.meaningRevision > 0
+          ? { meaningRevision: identity.meaningRevision }
+          : {}),
+      };
+    }
   }
   if (typeof o.testedSha === 'string' && o.testedSha.trim()) {
     out.testedSha = o.testedSha;

@@ -509,10 +509,10 @@ export class WorkspaceBackup {
       const password = await deriveRepoPassword(this.workspaceId);
       const env = this.envWithPassword(password);
 
-      // Step 2 — pre-snapshot DB dump hook. Failures are logged inside the hook
-      // and do not abort the snapshot — the file tree is still useful even if
-      // the dump didn't land. The hook overwrites its dump files atomically, so
-      // re-running it on a resume is idempotent.
+      // Step 2 — pre-snapshot DB dump hook. A periodic file-tree backup remains
+      // useful when the dump fails. A pre-destructive backup must prove its DB
+      // dump before spending disk space on a copy that cannot admit a migration.
+      // The hook overwrites dump files atomically, so replay is idempotent.
       await this.event(snapshotRowId!, 'progress', { phase: 'pre_snapshot_hook' });
       // The step RETURNS the hook's outcome rather than the event-write's, so a
       // crash-resume replays the degradation instead of silently recovering to a
@@ -553,6 +553,11 @@ export class WorkspaceBackup {
       // The resume path already resolves this the same way; so must this one.
       if (dbDumpOk === null) {
         dbDumpOk = await this.recoverDbDumpOkFromHookEvent(snapshotRowId!);
+      }
+      if (reason === 'pre_destructive' && dbDumpOk !== true) {
+        throw new Error(
+          `pre-destructive backup requires a successful database dump: ${dumpOutcome?.error ?? 'dump success not verified'}`,
+        );
       }
 
       try {

@@ -159,6 +159,7 @@ describe('the live gate is actually scanning', () => {
    */
   it('still parses the declarations real tools carry', () => {
     expect(scan.exemptions.map((e) => e.name).sort()).toEqual([
+      'consult:routing-health',
       'loop:status',
       'processes:list',
       'rubrics:amend-status',

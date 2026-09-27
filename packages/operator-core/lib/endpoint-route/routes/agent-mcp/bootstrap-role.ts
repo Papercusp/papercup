@@ -44,7 +44,7 @@ import {
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import { roleConsumes } from '../../../role-registry';
-import { buildRoleLaunchSpec, mintRoleLaunchIdentity } from '../../../role-launch-spec';
+import { buildRoleLaunchSpec, mintRoleLaunchIdentity, resolveLaunchIdentityModelDefault } from '../../../role-launch-spec';
 import { papercuspPathForWorkspace } from '../../../papercusp-root';
 import { getPlanContextBySlug } from '../../../plan-context-for-feature';
 import { FLAGS } from '@papercusp/flags';
@@ -294,7 +294,8 @@ const post = defineTool({
       return jsonRes({ status: 'error', error: 'headless must be a boolean' }, 400);
     }
     const headless = body.headless === true;
-    const requestedModel = body.model?.trim() || null;
+    const suppliedModel = body.model?.trim() || null;
+    const requestedModel = body.model_source === 'configured-default' ? null : suppliedModel;
     let acceptedOperation;
     try {
       acceptedOperation = feature && harnessSlug
@@ -311,6 +312,15 @@ const post = defineTool({
       return jsonRes({ status: 'error', code: 'operation_worker_denied',
         error: error instanceof Error ? error.message : String(error) }, 400);
     }
+    let identityModelDefault: string | null;
+    try {
+      identityModelDefault = await resolveLaunchIdentityModelDefault({
+        cwd: harnessSlug ? await resolveProjectDir(harnessSlug, workspace) ?? '' : papercuspPathForWorkspace(workspace),
+        harnessSlug, role, stack: acceptedOperation?.stack ?? body.stack,
+      });
+    } catch (error: any) {
+      return jsonRes({ status: 'error', code: 'identity_model_default_denied', error: error?.message ?? String(error) }, 400);
+    }
     let modelSelection;
     try {
       modelSelection = selectAcceptedOperationWorkerModel(acceptedOperation, requestedModel, agent);
@@ -318,13 +328,13 @@ const post = defineTool({
       return jsonRes({ status: 'error', code: 'operation_model_denied',
         error: error instanceof Error ? error.message : String(error) }, 409);
     }
-    let model = modelSelection?.model ?? requestedModel;
+    let model = modelSelection?.model ?? requestedModel ?? identityModelDefault ?? suppliedModel;
     let modelSource: 'explicit' | 'inherited' | 'configured-default' | null = null;
     if (agent === 'codex') {
       try {
         const selection = resolveCodexModelSelection(model, {
           source:
-            (modelSelection ? 'explicit' : body.model_source) ??
+            (modelSelection ? 'explicit' : !requestedModel && identityModelDefault ? 'inherited' : body.model_source) ??
             (requestedModel ? 'explicit' : headless ? 'explicit' : 'configured-default'),
         });
         model = selection.model;
@@ -449,6 +459,7 @@ const post = defineTool({
         featureId: feature,
         contextSize,
         stack: body.stack?.map((ref) => ref.trim()) ?? null,
+        expectedModelDefault: identityModelDefault,
         acceptedOperation: acceptedOperation && modelSelection
           ? { ...acceptedOperation, modelSelection } : acceptedOperation,
         launchIdentity,

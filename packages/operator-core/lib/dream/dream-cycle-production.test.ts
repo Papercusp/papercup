@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FLAGS } from '@papercusp/flags';
 import type { DreamCycleDeps, DreamCycleInput } from './dream-cycle';
 import { productionDreamCycle } from './dream-cycle-action';
+import { getCurrentCapabilityManifest } from './capability-catalog';
 
 const h = vi.hoisted(() => ({
   run: vi.fn(),
@@ -23,6 +24,7 @@ const h = vi.hoisted(() => ({
   idle: vi.fn(),
   notify: vi.fn(),
   llm: vi.fn(),
+  problems: vi.fn(),
 }));
 vi.mock('@dbos-inc/dbos-sdk', () => ({ DBOS: { workflowID: 'workflow-stable' } }));
 vi.mock('@papercusp/db-org', async (original) => ({ ...(await original<object>()), getOrgPg: () => ({ sql: h.sql }) }));
@@ -39,6 +41,7 @@ vi.mock('./dream-cycle', () => ({ runDreamCycle: h.run }));
 vi.mock('./capability-packets', () => ({ buildCapabilityPacket: h.packet }));
 vi.mock('./capability-review-sources', () => ({ buildCapabilityReviewSources: h.sources }));
 vi.mock('./dream-sink', () => ({ sinkDreamInsight: h.sink }));
+vi.mock('./dream-sources', () => ({ readDreamProblemContext: h.problems }));
 vi.mock('./dream-governor', () => ({
   preflightDreamCycle: h.preflight,
   admitDreamRunCall: h.admit,
@@ -88,6 +91,12 @@ it('preserves the cycle call identity through the real production transport wrap
 });
 
 describe('production capability Dream adapter', () => {
+  it('binds observed-problem loading to the real cycle workspace/pot and retains the open control', async () => {
+    await productionDreamCycle(ctx, { mode: 'manual', problemMode: 'open-exploration' });
+    expect(captured().input.problemMode).toBe('open-exploration');
+    await captured().deps.loadProblems!();
+    expect(h.problems).toHaveBeenCalledWith({ workspaceId: ctx.workspaceId, potSlug: ctx.installSlug, repositoryId: ctx.installSlug });
+  });
   it('records a refused cycle with no attempts and pushes the control snapshot', async () => {
     h.run.mockResolvedValue({ reason: 'governor-refused', cycleId: 'workflow-stable', attempts: 0, accepted: 0, costUsd: 0 });
     await productionDreamCycle(ctx, { mode: 'manual' });
@@ -106,6 +115,7 @@ describe('production capability Dream adapter', () => {
     expect(h.registry).toHaveBeenCalledWith(ctx.workspaceId);
     expect(input).toMatchObject({ workspaceId: ctx.workspaceId, potSlug: ctx.installSlug, cycleId: 'workflow-stable' });
     expect(captured().deps.exclusiveReplay).toBe(true);
+    expect(input.manifest).toEqual(getCurrentCapabilityManifest());
   });
 
   it('loads only the capability manifest and preserves scope across every write', async () => {

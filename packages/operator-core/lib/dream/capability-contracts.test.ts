@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getPilotCapabilityManifest } from './capability-catalog';
+import { getPilotCapabilityManifest, getCurrentCapabilityManifest } from './capability-catalog';
 import {
   CapabilityPacketSchema,
   CapabilityPathSchema,
@@ -58,6 +58,24 @@ function packet(): CapabilityPacket {
   };
 }
 describe('pilot capability catalog', () => {
+  it('DREAM-CATALOGUE-EVIDENCE / DREAM-CATALOGUE-LIMITS: expands current source-backed units while preserving the frozen study', () => {
+    const pilot = getPilotCapabilityManifest(), current = getCurrentCapabilityManifest();
+    expect(pilot.revision).toBe('pilot-2026-09-07-v1');
+    expect(pilot.units).toHaveLength(4);
+    expect(current.units.slice(0, pilot.units.length)).toEqual(pilot.units);
+    expect(current.units.map(u => u.id)).toEqual([...pilot.units.map(u => u.id), 'mechanism:scout.phase-deadline', 'capability:dream.source-freshness', 'mechanism:coord.event-fire-receipt']);
+    expect(current.coverage.status).toBe('partial');
+    expect(current.coverage.note).toContain('all other behavior remains unknown');
+    const root = resolve(import.meta.dirname, '../../../..');
+    for (const unit of current.units.slice(pilot.units.length)) {
+      expect(unit.contracts.prerequisites.some(c => c.status === 'unknown')).toBe(true);
+      for (const ref of unit.evidence) {
+        const source = readFileSync(resolve(root, ref.path), 'utf8');
+        expect(source, ref.path).toContain(ref.anchor);
+        if (ref.kind === 'test') expect(source.slice(source.indexOf(ref.anchor), source.indexOf(ref.anchor) + 3_000)).toContain('expect(');
+      }
+    }
+  });
   it('uses registered domains and distinct identities without claiming complete coverage', () => {
     const m = manifest();
     expect(new Set(m.units.map((unit) => unit.homeDomain)).size).toBeGreaterThan(2);

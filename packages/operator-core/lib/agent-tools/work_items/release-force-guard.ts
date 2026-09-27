@@ -93,11 +93,13 @@ export function assessCriticalClaimProgressLease(input: {
   const leaseMs = input.leaseMs ?? CRITICAL_CLAIM_PROGRESS_LEASE_MS;
   const progressMs = parseTs(input.lastProgressAt);
   const takenMs = parseTs(input.takenAt);
-  const anchorMs = Number.isFinite(progressMs)
-    ? progressMs
-    : Number.isFinite(takenMs)
-      ? takenMs
-      : null;
+  const anchorMs = Number.isFinite(progressMs) && Number.isFinite(takenMs)
+    ? Math.max(progressMs, takenMs)
+    : Number.isFinite(progressMs)
+      ? progressMs
+      : Number.isFinite(takenMs)
+        ? takenMs
+        : null;
   const ageMs = anchorMs == null ? null : Math.max(0, nowMs - anchorMs);
   return {
     expired: ageMs != null && ageMs >= leaseMs,

@@ -64,6 +64,20 @@ describe('P-008 critical-claim progress lease', () => {
     expect(verdict).toMatchObject({ expired: false, ageMs: min(3) });
   });
 
+  it('renews a reclaimed item at takenAt when prior progress belongs to the old claim', () => {
+    const takenAt = iso(min(3));
+    const verdict = assessCriticalClaimProgressLease({
+      takenAt,
+      lastProgressAt: iso(CRITICAL_CLAIM_PROGRESS_LEASE_MS + min(1)),
+      nowMs: NOW,
+    });
+    expect(verdict).toMatchObject({
+      expired: false,
+      anchorMs: Date.parse(takenAt),
+      ageMs: min(3),
+    });
+  });
+
   it('fails closed when neither progress nor claim time is readable', () => {
     expect(
       assessCriticalClaimProgressLease({ takenAt: null, lastProgressAt: null, nowMs: NOW }),

@@ -108,6 +108,21 @@ describe('toCellOwnership', () => {
     expect(own.assessment).toBe('held-stalled');
   });
 
+  it('projects a reclaimed gate item as held before its first new progress checkpoint', () => {
+    const own = toCellOwnership(
+      mkObj({
+        claimState: 'held',
+        takenBy: 'su-abc',
+        takenAt: ownershipAtAge(3 * 60_000),
+        lastProgressAt: ownershipAtAge(CRITICAL_CLAIM_PROGRESS_LEASE_MS + 1),
+      }),
+      'live',
+      noSubjectThread('test thread'),
+      OWNERSHIP_NOW_MS,
+    );
+    expect(own.assessment).toBe('held-live');
+  });
+
   // The distinction that earns the enum: both states have a non-null takenBy, so a
   // caller null-testing takenBy reports a dead agent's abandoned lease as live
   // ownership — which suppresses the next agent from picking the work up.

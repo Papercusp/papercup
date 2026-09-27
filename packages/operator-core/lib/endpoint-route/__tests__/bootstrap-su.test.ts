@@ -120,6 +120,7 @@ const compileLaunchSpecificationArtifactMock = vi.fn(async (input: any) => ({
   resourceArtifacts: [],
 }));
 const provisionLaunchIdentityResourcesMock = vi.fn(async () => {});
+const resolveLaunchIdentityModelDefaultMock = vi.fn(async (_input: unknown): Promise<string | null> => null);
 const writeSuCodexHomeMock = vi.fn((opts: any) => ({
   codexHome: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}`,
   agentsPath: `/fake/.papercusp/su-codex-homes/session-${opts.sessionKey}/AGENTS.md`,
@@ -289,6 +290,8 @@ vi.mock('../../role-launch-spec', () => ({
     compileLaunchSpecificationArtifactMock(...(args as [any])),
   provisionLaunchIdentityResources: (...args: unknown[]) =>
     provisionLaunchIdentityResourcesMock(...(args as [any])),
+  resolveLaunchIdentityModelDefault: (...args: unknown[]) =>
+    resolveLaunchIdentityModelDefaultMock(...(args as [any])),
 }));
 vi.mock('../../agent-launch-core', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-launch-core')>()),
@@ -568,6 +571,7 @@ async function callBrainGet(): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resolveLaunchIdentityModelDefaultMock.mockReset().mockResolvedValue(null);
   resolveSessionStatesMock.mockReset().mockResolvedValue(new Map());
   claimAgentLaunchMock.mockReset().mockResolvedValue({
     won: true,
@@ -1178,6 +1182,34 @@ describe('bootstrap-su', () => {
         ]),
       }),
     );
+  });
+
+  it.each([
+    { supplied: {}, model: 'gpt-5.6-terra:xhigh', source: 'inherited' },
+    { supplied: { model: 'gpt-5.6-sol:xhigh', model_source: 'configured-default' }, model: 'gpt-5.6-terra:xhigh', source: 'inherited' },
+    { supplied: { model: 'gpt-5.6-sol:xhigh', model_source: 'explicit' }, model: 'gpt-5.6-sol:xhigh', source: 'explicit' },
+  ])('uses the selected identity model default before native configuration: $source $supplied', async ({ supplied, model, source }) => {
+    resolveLaunchIdentityModelDefaultMock.mockResolvedValueOnce('gpt-5.6-terra:xhigh');
+    const res = await callPost({ agent: 'codex', headless: true,
+      stack: ['domain:research-steward'], ...supplied });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ model, modelSource: source });
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({ model }));
+    expect(buildLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ model }));
+    expect(compileLaunchSpecificationArtifactMock).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedModelDefault: 'gpt-5.6-terra:xhigh' }));
+    expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({
+      launchArgv: expect.arrayContaining([`--model=${model}`, `--model-source=${source}`]),
+    }));
+  });
+
+  it('refuses unavailable identity model defaults before native session effects', async () => {
+    resolveLaunchIdentityModelDefaultMock.mockRejectedValueOnce(new Error('selected source unavailable'));
+    const res = await callPost({ agent: 'codex', stack: ['domain:missing'] });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'identity_model_default_denied' });
+    expect(writeSuCodexHomeMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
   it('fails closed before session/home creation when an unattended Codex bootstrap has no model authority', async () => {

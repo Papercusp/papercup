@@ -204,6 +204,15 @@ assert_staging_unit_loopback() {
 # drop-ins pointed at the canonical shared tree while this script updated the
 # isolated papercusp-staging tree; builds and restarts therefore described
 # different source. Fail before touching either tree when that contract drifts.
+staging_exec_pre_uses_bundle() {
+  local exec_pre="${1:-}" expected_workdir="${2:-}" required_prefix
+  # systemctl show reports the EFFECTIVE executable in path=, which is flock
+  # after the bundle-time checkout lock was added. Pin the complete argv prefix:
+  # the same shared lock and the same isolated bundle script must both survive.
+  required_prefix="{ path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock $expected_workdir/bin/bundle-host.sh ; "
+  [[ "$exec_pre" == "$required_prefix"* ]]
+}
+
 assert_staging_unit_checkout() {
   local expected_root expected_workdir working_dir integration_env exec_pre reuse_env
   expected_root="$(realpath -m "$STAGING_ROOT")"
@@ -221,8 +230,8 @@ assert_staging_unit_checkout() {
     log "FATAL: $UNIT PAPERCUSP_INTEGRATION_ROOT does not name $expected_root; refusing cross-checkout staging sync"
     return 1
   fi
-  if [[ "$exec_pre" != *"path=$expected_workdir/bin/bundle-host.sh"* ]]; then
-    log "FATAL: $UNIT ExecStartPre does not build from $expected_workdir/bin/bundle-host.sh"
+  if ! staging_exec_pre_uses_bundle "$exec_pre" "$expected_workdir"; then
+    log "FATAL: $UNIT ExecStartPre must take the shared staging-sync lock and build from $expected_workdir/bin/bundle-host.sh"
     return 1
   fi
   if [[ " $integration_env " != *" $reuse_env "* ]]; then
@@ -527,6 +536,13 @@ if [ "$restart_required" = 0 ]; then
   log "✅ skipping restart — all ${changed_count} changed path(s) are restart-exempt (SPA/docs/tests); the rebuilt SPA is already live on :$STAGING_PORT at ${target:0:8}"
   exit 0
 fi
+
+# The checkout and its submodules are complete. Downgrade the single-flight
+# lock to shared before any host bundle read: :3170's ExecStartPre takes a
+# shared lock on this same file, so a peer restart cannot bundle a half-cloned
+# submodule while setup-release-checkout holds the exclusive lock. Keep our
+# shared lock through prebuild/restart so another sync still cannot mutate it.
+flock -s 9
 
 preflight_staging_migrations
 

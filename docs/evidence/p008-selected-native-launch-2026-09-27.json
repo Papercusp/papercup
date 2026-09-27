@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P008 selected native launch: prompt/model selection observed; MCP approval denied",
+  "framework": "operational",
+  "command": [
+    "VERIFY_TAURI_ISOLATED_DB=1 VERIFY_TAURI_ISOLATED_SEED=ready VERIFY_TAURI_ASSERT_SNAPSHOT_SCOPE=host VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS=identity_model_default_denied scripts/verify-tauri-headless.sh -- npm --prefix apps/operator test -- lib/endpoint-route/__tests__/selected-identity-native.integration.test.ts"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-09-27T00:53:48.045Z",
+  "finishedAt": "2026-09-27T00:54:31.642Z",
+  "summary": "The actual isolated catalog, bootstrap route, generated native home and Codex process delivered the selected component marker and model configuration. A native MCP coord:whoami request through tools:invoke was refused by Codex approval policy. The integration acceptance test failed and no Applied or native tool success is claimed.",
+  "assertions": [
+    {
+      "id": "catalog-and-pinned-bootstrap",
+      "passed": true,
+      "evidence": "Paginated catalog supplied sourceRevision 62f815d483a3a2c08ddbfe9360a3e0007cd2144aa761e76eeb6be2df30842b10. Actual bootstrap selected gpt-5.6-sol:low (inherited) over supplied configured-default gpt-5.6-terra:xhigh. Generated AGENTS.md contained marker; MCP config used disposable host origin."
+    },
+    {
+      "id": "generic-component-artifact",
+      "passed": true,
+      "evidence": "Canonical getOrgPg read of isolated adv_sessions row returned matching specificationRevision and selected blueprint-layer; configuration lacked workItem/spine/fleet. Scope: generic domain component hosted by SU, not role-scoped generic native launch."
+    },
+    {
+      "id": "pre-native-not-applied",
+      "passed": true,
+      "evidence": "Before starting Codex, session_briefs activation status was desired and desired specification matched launch e3fb8da2e194b87c172c7a5960746dc966e3ffa8723c8ee80012b857fb59c565. No manual acknowledgment."
+    },
+    {
+      "id": "real-native-selected-prompt",
+      "passed": true,
+      "evidence": "Native thread01a0e05a-d1e7-7740-8029-61b8c80840cd answered with P008_SELECTED_NATIVE_DOMAIN_20260927. Transcript spans 00:54:03.875Z to00:54:24.336Z; SHA25679963357ea2cc39bce0c4a86c604c3c54b91e6c9c643f40e0fa3d70ea6e0f50c."
+    },
+    {
+      "id": "real-native-mcp-owner-receipt",
+      "passed": false,
+      "evidence": "Native exec wrapper called tools:invoke({name:'coord:whoami',args:{}}). Native tool output: MCP tool call requires approval, but approval policy is never; isError:true. Final response explicitly said ownerId unavailable. Test expected su-cc2212af-c241-4b19-90fe-1dc3529f3502 and failed."
+    }
+  ],
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-008",
+  "workItem": "WI-10002965",
+  "operatorPlane": "Disposable verify-tauri-headless current-build host, isolated migrated PG and generated CODEX_HOME",
+  "subject": {
+    "ownerId": "su-cc2212af-c241-4b19-90fe-1dc3529f3502",
+    "nativeSessionId": "01a0e05a-d1e7-7740-8029-61b8c80840cd",
+    "specificationRevision": "e3fb8da2e194b87c172c7a5960746dc966e3ffa8723c8ee80012b857fb59c565",
+    "stateRevision": "a2451f97ae4d538798925570",
+    "nativeTranscript": "/tmp/verify-tauri-headless.Bird8C/su-codex-homes/session-1/sessions/2026/09/26/rollout-2026-09-26T20-54-03-01a0e05a-d1e7-7740-8029-61b8c80840cd.jsonl"
+  },
+  "evidenceRefs": [
+    "/tmp/p008-selected-native-integration-20260927.log",
+    "packages/operator-core/lib/endpoint-route/__tests__/selected-identity-native.integration.test.ts"
+  ],
+  "limitations": [
+    "Overall FAIL; not suitable for a passing spec binding.",
+    "Test runner stamped c809329d3f and clean fixture; host was frozen independently by verifier. Frozen host source tree was removed at teardown, so no current source hash is restamped as snapshot proof.",
+    "Requested/configured model is not provider actual-model attestation.",
+    "No current-build Applied receipt, role-scoped generic native execution, resources/knowledge/capability consumption, deployed-main or rollback proof.",
+    "Disposable read-only MCP approval question is pending with Avi; no policy bypass or retry was performed.",
+    "Attended30857 relaunch request remains separate and unanswered."
+  ]
+}

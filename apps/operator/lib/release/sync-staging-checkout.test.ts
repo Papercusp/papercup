@@ -97,6 +97,18 @@ function execForcesLoopback(execStart: string): boolean {
   return r.status === 0;
 }
 
+function execPreUsesBundle(execPre: string, expectedWorkdir = '/isolated/apps/operator'): boolean {
+  const r = runFn(
+    ['staging_exec_pre_uses_bundle'],
+    'staging_exec_pre_uses_bundle "$EXEC_PRE" "$EXPECTED_WORKDIR"',
+    { env: { EXEC_PRE: execPre, EXPECTED_WORKDIR: expectedWorkdir } },
+  );
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`staging_exec_pre_uses_bundle exited unexpectedly (${r.status}): ${r.stderr || r.stdout}`);
+  }
+  return r.status === 0;
+}
+
 function healthMatchesTarget(healthSha: string, targetSha: string): boolean {
   const r = runFn(
     ['health_sha_matches_target'],
@@ -305,6 +317,24 @@ describe('sync-staging-checkout.sh staging launch contract (EI-19457080109574347
 
   it('rejects an implicit/default bind because the effective staging policy is not proven', () => {
     expect(execForcesLoopback('exec node dist-host/hono-host.mjs')).toBe(false);
+  });
+});
+
+describe('sync-staging-checkout.sh bundle checkout lock (WI-10003374)', () => {
+  const effective = '{ path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock /isolated/apps/operator/bin/bundle-host.sh ; ignore_errors=no ; start_time=[n/a] ; status=0/0 }';
+
+  it('accepts the loaded shared-flock ExecStartPre from the isolated checkout', () => {
+    expect(execPreUsesBundle(effective)).toBe(true);
+  });
+
+  it('rejects the wrong checkout, wrong lock, exclusive lock, and direct bundle execution', () => {
+    expect(execPreUsesBundle(effective.replace('/isolated/', '/canonical/'))).toBe(false);
+    expect(execPreUsesBundle(effective.replace('papercup-staging-sync.lock', 'other.lock'))).toBe(false);
+    expect(execPreUsesBundle(effective.replace('flock -s', 'flock -x'))).toBe(false);
+    expect(execPreUsesBundle(effective.replace(
+      'path=/usr/bin/flock ; argv[]=/usr/bin/flock -s /tmp/papercup-staging-sync.lock ',
+      'path=/isolated/apps/operator/bin/bundle-host.sh ; argv[]=',
+    ))).toBe(false);
   });
 });
 

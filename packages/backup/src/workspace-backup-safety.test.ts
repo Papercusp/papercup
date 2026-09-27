@@ -317,6 +317,44 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+describe('pre-destructive backup disk admission (EI-24375077679385642)', () => {
+  it('records the dump failure and releases the lock without starting a filesystem copy', async () => {
+    const queries: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push({ text: strings.join('?'), values });
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    const release = vi.fn(async () => {});
+    configureBackup({
+      getSql: () => sql,
+      workspacesRoot: () => root,
+      ensureSchema: async () => {},
+      getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+      acquireMigrationLock: async () => ({ release }),
+    });
+    const steps: string[] = [];
+    configureBackupStepRunner({
+      runStep: async <T>(name: string): Promise<T> => {
+        steps.push(name);
+        if (name === 'backup-insert-row') return { id: 7, startedAtMs: 1000 } as T;
+        if (name === 'backup-pre-snapshot-hook') {
+          return { ok: false, error: 'insufficient free space' } as T;
+        }
+        return { snapshotId: 'must-not-copy' } as T;
+      },
+    });
+    vi.spyOn(wb, 'ensureRepo').mockResolvedValue(undefined);
+    const kopia = vi.spyOn(wb as any, 'kopia');
+
+    await expect(wb.snapshot('pre_destructive')).rejects.toThrow(/insufficient free space/);
+    expect(steps).not.toContain('backup-kopia-create');
+    expect(kopia).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+    const failed = queries.find((q) => q.text.includes("status      = 'failed'"));
+    expect(failed?.values).toEqual(expect.arrayContaining([false, 7]));
+  });
+});
+
 describe('headless repository credentials (EI-24372599771023070)', () => {
   it.each([false, true])('initializes with an unavailable keyring (existing repo: %s)', async (existingRepo) => {
     vi.stubEnv('KOPIA_PERSIST_CREDENTIALS_ON_CONNECT', 'true');

@@ -48,6 +48,7 @@ import type { Principal, UnifiedToolContext } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS, setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
+import { parseScratchReference } from '../../scratch-reference';
 import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
 import { PLATFORM_POT_SLUG } from '../../platform-pot-slug';
 import type { BuiltSpawnContext } from '../routes/transport/_mcp-host';
@@ -1273,6 +1274,29 @@ describe('public Papercup PI card transport (EI-22679615443261276)', () => {
 });
 
 describe('MCP scratch resource authentication', () => {
+  it('uses the same signed-session owner for a tools:invoke spill and its resource read', async () => {
+    const extra = extraFor(signedUrl({ client: 'scoper-session-spill' }));
+    const result = await callTool(
+      'tools:invoke',
+      { name: 'gatingtest:door_default', args: {} },
+      extra,
+    );
+    expect(result.isError).not.toBe(true);
+    const body = JSON.parse(textOf(result)) as {
+      _projection: { cursor: { uri: string; args: { file_path: string } } };
+    };
+    const reference = parseScratchReference(readFileSync(body._projection.cursor.args.file_path));
+    expect(reference).not.toBeNull();
+
+    await withSdkHost(extra, async client => {
+      await client.readResource({ uri: body._projection.cursor.uri });
+    }, 'memory');
+    expect(h.resourceReads).toHaveLength(1);
+    expect(reference?.manifest.ownerId).toBe(
+      (h.resourceReads[0]?.principal as Principal).slug,
+    );
+  });
+
   it('reads a judge scratch spill with its verified signed-spawn identity', async () => {
     const uri = 'papercusp://scratch/ws-test/tools:invoke/11111111-2222-4333-8444-555555555555/result.spill';
     await withSdkHost(

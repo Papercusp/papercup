@@ -64,7 +64,7 @@ import {
 import { resolveSessionStates } from '../../../agent-tools/coordination/liveness-oracle';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
-import { buildLaunchSpec, compileLaunchSpecificationArtifact, provisionLaunchIdentityResources } from '../../../role-launch-spec';
+import { buildLaunchSpec, compileLaunchSpecificationArtifact, provisionLaunchIdentityResources, resolveLaunchIdentityModelDefault } from '../../../role-launch-spec';
 import { SU_TIER_ROLES, isSuTierRole, resolveSuRoleAddendum } from '../../../su-role-addendum';
 import {
   blockingInstructionConflicts,
@@ -180,6 +180,9 @@ export interface BootstrapSuResult {
    *  (`claude --session-id`); omp/codex → null (they don't take a forced id). */
   nativeSessionId: string | null;
   agent: SuAgent;
+  /** Effective server-selected model, after identity defaults and launch overrides. */
+  model?: string | null;
+  modelSource?: 'explicit' | 'inherited' | 'configured-default' | null;
   /** Workspace the harness + session belong to. */
   workspaceId: string;
   /** Working directory the launcher should exec the agent in. */
@@ -1799,27 +1802,6 @@ export const bootstrapSu = defineTool({
     // configured platform default (D-002). Keep this separate from `headless`,
     // which controls the actual window/process posture below.
     const unattended = headless || normalizedLaunchArgv?.includes('--no-picker') === true;
-    // weak-model-tool-tier: the launch model drives the tool-tier gate in buildLaunchSpec.
-    const requestedModel = body.model?.trim() || null;
-    let model = requestedModel;
-    let modelSource: 'explicit' | 'inherited' | 'configured-default' | null = null;
-    if (agent === 'codex') {
-      try {
-        const selection = resolveCodexModelSelection(requestedModel, {
-          // A visible Codex selection is the owner's deliberate opt-in to the
-          // configured default (D-002). A headless/no-picker launch must carry
-          // an explicit/inherited/default-authorized selection and therefore
-          // fails closed when both model and provenance are absent.
-          source:
-            body.model_source ??
-            (requestedModel ? 'explicit' : unattended ? 'explicit' : 'configured-default'),
-        });
-        model = selection.model;
-        modelSource = selection.source;
-      } catch (error: any) {
-        return jsonRes({ status: 'error', code: error?.code ?? 'codex_model_denied', error: error?.message ?? String(error) }, 400);
-      }
-    }
     if (body.carry != null && body.carry !== 'warm' && body.carry !== 'cold') {
       return jsonRes(
         { status: 'error', error: `carry must be warm|cold (got ${String(body.carry).slice(0, 24)})` },
@@ -1866,6 +1848,34 @@ export const bootstrapSu = defineTool({
     // (config-dir isolation governs GLOBAL memory only, not cwd project memory).
     // resolveSuLaunchCwd relocates a $HOME cwd to envelope.cwd (never $HOME).
     const cwd = resolveSuLaunchCwd({ harnessSlug, callerCwd, envelopeCwd: envelope.cwd });
+
+    // Selected identity defaults must reach native configuration, account routing
+    // and the model-tier prompt budget. Explicit launch choices still win.
+    let identityModelDefault: string | null;
+    try {
+      identityModelDefault = await resolveLaunchIdentityModelDefault({
+        cwd, harnessSlug, role: suRoleRaw ?? 'su', stack: body.stack,
+      });
+    } catch (error: any) {
+      return jsonRes({ status: 'error', code: 'identity_model_default_denied', error: error?.message ?? String(error) }, 400);
+    }
+    const suppliedModel = body.model?.trim() || null;
+    const requestedModel = body.model_source === 'configured-default' ? null : suppliedModel;
+    let model = requestedModel ?? identityModelDefault ?? suppliedModel;
+    let modelSource: 'explicit' | 'inherited' | 'configured-default' | null = null;
+    if (agent === 'codex') {
+      try {
+        const selection = resolveCodexModelSelection(model, {
+          source: !requestedModel && identityModelDefault ? 'inherited' :
+            body.model_source ??
+            (requestedModel ? 'explicit' : unattended ? 'explicit' : 'configured-default'),
+        });
+        model = selection.model;
+        modelSource = selection.source;
+      } catch (error: any) {
+        return jsonRes({ status: 'error', code: error?.code ?? 'codex_model_denied', error: error?.message ?? String(error) }, 400);
+      }
+    }
 
     // Fetch the bound plan's `## Now` + title for the launch-context addendum
     // (best-effort — buildLaunchSpec composes the addendum from these). Lives in
@@ -2832,6 +2842,7 @@ export const bootstrapSu = defineTool({
         harnessSlug,
         role: suRoleRaw ?? 'su',
         stack: spec.stack,
+        expectedModelDefault: identityModelDefault,
         compositionRootId: body.stack?.length === 1 && body.stack[0]?.startsWith('composition:')
           ? body.stack[0].slice('composition:'.length) : null,
         stateRevision: precedence.watermark,
@@ -3239,6 +3250,8 @@ export const bootstrapSu = defineTool({
       sessionId,
       nativeSessionId,
       agent,
+      model,
+      modelSource,
       workspaceId: workspace,
       cwd,
       harnessSlug,
