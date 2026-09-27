@@ -195,7 +195,13 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
       let idleCheck: ReturnType<typeof setImmediate> | null = null;
       let killTimer: ReturnType<typeof setTimeout> | null = null;
       let idleGeneration = 0;
+      let exitGraceUsed = false;
       let observedStdoutBytes = 0;
+      const childOutputFinished = (): boolean => {
+        if (child.exitCode !== null || child.signalCode !== null) return true;
+        const pipes = [child.stdout, child.stderr].filter((s): s is NonNullable<typeof s> => s != null);
+        return pipes.length > 0 && pipes.every((s) => s.readableEnded);
+      };
       let removeAbortListener = (): void => {};
       const groupLifetime = processGroupLifetime(child, (message) => { stderr += `\nsidecar ${message}`; });
       const signalCommand = groupLifetime.signal;
@@ -277,6 +283,17 @@ export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}
                 armIdleTimer();
                 return;
               }
+            }
+            // A stalled parent can also resume with the child's EOF/exit already
+            // observed in POLL while 'close' — and so the exit fence that sets
+            // commandExited — only lands after this CHECK phase. A child that has
+            // finished its output is not idle: grant ONE more idle window for the
+            // fence. A child that closed its pipes yet stays alive past it is
+            // still killed, and the absolute deadline is never deferred.
+            if (!exitGraceUsed && childOutputFinished()) {
+              exitGraceUsed = true;
+              armIdleTimer();
+              return;
             }
             terminate(`made no output progress for ${idleTimeoutMs}ms`);
           });

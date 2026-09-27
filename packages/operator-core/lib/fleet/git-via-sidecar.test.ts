@@ -180,6 +180,43 @@ describe('spawner-sidecar process progress guard', () => {
     expect(res.stderr).not.toContain('no output progress');
   });
 
+  it('does not kill a child that exited while the parent loop stalled past the idle deadline', async () => {
+    // Gate red at repair head 6bf86578 (2026-09-27): a lagging host loop resumes
+    // with the idle timer expired AND the child's EOF/exit pending. The idle
+    // verdict runs in CHECK, but 'close' (and the exit fence) land after it, so
+    // an already-finished child was killed and reported as a guard failure.
+    let queuedBlock = false;
+    const res = await execProcess({
+      command: process.execPath,
+      args: ['-e', "process.stderr.write('ready\\n'); setTimeout(() => process.exit(0), 100);"],
+      idleTimeoutMs: 150,
+      timeoutMs: 5_000,
+    }, {
+      ...executionDeps,
+      onOutputActivity: () => {
+        if (queuedBlock) return;
+        queuedBlock = true;
+        setImmediate(() => {
+          const from = Date.now();
+          while (Date.now() - from < 600) { /* stall until the child has exited */ }
+        });
+      },
+    });
+    expect(res.stderr).not.toContain('no output progress');
+    expect(res.code, res.stderr).toBe(0);
+  });
+
+  it('still idle-kills a child that closed its pipes but stays alive past the exit grace', async () => {
+    const res = await execProcess({
+      command: process.execPath,
+      args: ['-e', "const fs = require('fs'); fs.closeSync(1); fs.closeSync(2); setTimeout(() => {}, 60_000);"],
+      idleTimeoutMs: 120,
+      timeoutMs: 5_000,
+    }, executionDeps);
+    expect(res.code).toBe(-1);
+    expect(res.stderr).toMatch(/made no output progress for 120ms/);
+  });
+
   it('retains the absolute deadline when output never stops', async () => {
     const res = await execProcess({
       command: process.execPath,
