@@ -28,11 +28,22 @@ import { runReleaseAcceptance } from './release-acceptance-run';
 // whose runReleaseAcceptance applies the qualification rules the R-12 journey asserts — so a
 // caught mutant proves the R-10/R-12/R-14 checks are falsifiable without touching the shared
 // tree. Unset, every importer loads the real module.
-vi.mock('./release-acceptance', async (original) => (process.env.PUI_RELEASE_ACCEPTANCE_SUBJECT
-  ? import(process.env.PUI_RELEASE_ACCEPTANCE_SUBJECT)
-  : original<object>()));
-const subject: typeof import('./release-acceptance') =
-  await import(process.env.PUI_RELEASE_ACCEPTANCE_SUBJECT || './release-acceptance');
+// The substitute supplies the module's LOGIC only. Its own REPO_ROOT resolves to the probe's
+// relocated mirror, which has no .git, node_modules or packaging scripts, so the repository
+// locations every importer derives from REPO_ROOT (git, the packager, vitest, the reporter)
+// stay those of the real tree.
+vi.mock('./release-acceptance', async (original) => {
+  const real = await original<typeof import('./release-acceptance')>();
+  if (!process.env.PUI_RELEASE_ACCEPTANCE_SUBJECT) return real;
+  const substitute: typeof import('./release-acceptance') = await import(process.env.PUI_RELEASE_ACCEPTANCE_SUBJECT);
+  return {
+    ...substitute,
+    REPO_ROOT: real.REPO_ROOT,
+    UX_CONTRACT: real.UX_CONTRACT,
+    ACCEPTANCE_MATRIX: real.ACCEPTANCE_MATRIX,
+  };
+});
+const subject: typeof import('./release-acceptance') = await import('./release-acceptance');
 const { checkReleaseAcceptance, loadAcceptanceMatrix, loadRequiredMatrix, REPO_ROOT } = subject;
 
 const required = loadRequiredMatrix();

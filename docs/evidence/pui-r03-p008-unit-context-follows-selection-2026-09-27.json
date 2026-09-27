@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "PUI P-008 R-03 unit: workbench Context follows the selected conversation, not the roster",
+  "framework": "cargo",
+  "command": [
+    "cargo",
+    "test",
+    "--manifest-path",
+    "apps/tui/Cargo.toml",
+    "--bin",
+    "pui",
+    "app::tests::workbench_context_follows_the_selected_conversation_not_the_roster",
+    "--",
+    "--exact"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-27T18:30:18.814Z",
+  "finishedAt": "2026-09-27T18:30:26.663Z",
+  "summary": "Unit-layer proof for AUTO-BAR-R-03-P-008 (plan pui-first-party-public-release-2026-09-07, item P-008). The Rust unit test drives the real App state machine in apps/tui/src/app.rs. When Agent Chat binds a conversation, the Context projection target is that conversation. Switching conversations re-targets it and discards the previous session's projection, task selection and pending task state. The live operator roster row never stands in for an unbound Agent Chat, and resetting the binding clears the target. Run at HEAD 1e372ce0985204879a68225cd36bcf761526bd53 with apps/tui clean; result: 1 passed, 0 failed, 1151 filtered out. Recorded by su-f08bc8c5 for WI-10003500.",
+  "assertions": [
+    {
+      "id": "roster-row-is-not-a-context-target",
+      "passed": true,
+      "evidence": "After set_roster with a live operator row and no Agent Chat binding, app.context_projection_target == None."
+    },
+    {
+      "id": "context-targets-the-bound-conversation",
+      "passed": true,
+      "evidence": "After load_agent_chat(chat-a), context_projection_target == agent_chat/chat-a in harness p8-project."
+    },
+    {
+      "id": "switching-retargets-and-discards-previous-state",
+      "passed": true,
+      "evidence": "After load_agent_chat(chat-b), the target session_id is chat-b, context_projection is None (chat-a's projection is not rendered as chat-b's), context_task_sel == 0, and context_task_pending == false."
+    },
+    {
+      "id": "reset-clears-the-target",
+      "passed": true,
+      "evidence": "After reset_agent_chat_binding(), context_projection_target == None."
+    },
+    {
+      "id": "cargo-exit",
+      "passed": true,
+      "evidence": "test app::tests::workbench_context_follows_the_selected_conversation_not_the_roster ... ok; test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1151 filtered out; exit code 0."
+    }
+  ]
+}
