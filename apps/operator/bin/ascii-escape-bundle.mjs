@@ -69,7 +69,7 @@ try {
 
   const hits = src.match(ESCAPE_RE);
   if (!hits) {
-    console.log('→ ascii-escape: bundle is already all <= U+00FF, nothing to do');
+    console.log('→ ascii-escape: bundle is already all ASCII, nothing to do');
     process.exit(0);
   }
 
