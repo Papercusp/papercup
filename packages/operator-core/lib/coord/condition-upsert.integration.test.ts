@@ -93,6 +93,16 @@ vi.mock('../modes/goal-context', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, resolveGoalContext: async () => null };
 });
+// The terminal-transition path asks whether the caller is a blueprint operation
+// worker by reading harness_shared.adv_sessions — a relation this fixture does not
+// build (it is outside the condition-upsert subject). A missing relation is caught
+// and reported as `unavailable`, which fails the settle closed (correct in
+// production, where adv_sessions always exists). These filers are not operation
+// workers, so answer exactly what the real read returns for a non-worker caller.
+vi.mock('../blueprint/operation-worker-binding', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' }) };
+});
 
 // Imported AFTER the mocks are registered (vi.mock is hoisted).
 const { upsertConditionWorkItem, CONDITION_UPSERT_MARKER } = await import('./condition-upsert');
