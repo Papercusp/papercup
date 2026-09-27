@@ -20,7 +20,11 @@ export type P013Tools = {
   operationEventsTool: { handler: (...args: never[]) => Promise<unknown> };
   operationResultTool: { handler: (...args: never[]) => Promise<unknown> };
 };
-export type P013Sample = { arm: P013Arm; phasesMs: number[]; eventLagMs: number; marks: PhaseMarks };
+export type P013Sample = {
+  arm: P013Arm; phasesMs: number[]; eventLagMs: number; marks: PhaseMarks;
+  /** How the terminal business event was observed; see waitForTerminalEvent. */
+  eventRecovery: P013EventRecovery;
+};
 
 async function timed<T>(run: () => Promise<T>): Promise<{
   value: T; ms: number; startedAt: number; endedAt: number;
@@ -32,10 +36,22 @@ async function timed<T>(run: () => Promise<T>): Promise<{
     startedAt: performance.timeOrigin + start, endedAt: performance.timeOrigin + end };
 }
 
-async function waitForTerminalEvent(sql: Sql, id: string): Promise<{
-  terminalAt: Date; eventAt: Date; eventIntentId: string;
-}> {
-  const deadline = performance.now() + 5_000;
+/** How long the normal post-commit `work-item:done` fire may take before the
+ * sample falls back to production's recovery path. It must sit well outside the
+ * measured tail. Rep1b (2026-09-27, 100 cold children) measured the
+ * terminal→business-event phase at p99 6.4 s (control) and 8.2 s (candidate).
+ * The former 5 s poll deadline therefore sat INSIDE that tail. One late fire
+ * (WI-113) then aborted a 200-child R=2 matrix after 23 minutes with no sample,
+ * and nothing said whether the fire was late or lost. */
+export const P013_NORMAL_FIRE_BUDGET_MS = 40_000;
+/** Bound for the fire the reconciler publishes once it has been invoked. */
+export const P013_REPAIR_FIRE_BUDGET_MS = 10_000;
+export type P013EventRecovery = 'normal' | 'reconciler';
+
+type TerminalEventMark = { terminalAt: Date; eventAt: Date; eventIntentId: string };
+
+async function pollTerminalEvent(sql: Sql, id: string, budgetMs: number): Promise<TerminalEventMark | null> {
+  const deadline = performance.now() + budgetMs;
   for (;;) {
     const rows = await sql<Array<{
       terminalAt: Date; eventAt: Date; eventIntentId: string | null;
@@ -50,12 +66,52 @@ async function waitForTerminalEvent(sql: Sql, id: string): Promise<{
        WHERE wi.workspace_id = ${P013_WORKSPACE} AND wi.harness_slug = ${P013_HARNESS}
          AND wi.feature_id = ${id} AND wi.status = 'done'
     `;
-    if (rows.length === 1 && rows[0]!.eventIntentId) {
-      return rows[0] as { terminalAt: Date; eventAt: Date; eventIntentId: string };
-    }
-    if (performance.now() >= deadline) throw new Error(`P-013 missing terminal business event for ${id}`);
+    if (rows.length === 1 && rows[0]!.eventIntentId) return rows[0] as TerminalEventMark;
+    if (performance.now() >= deadline) return null;
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
+}
+
+/** The state a missing fire leaves behind: separates "never emitted" (pending
+ * intent, no fire row) from "emitted without the intent id" and "item not done". */
+async function describeMissingTerminalEvent(sql: Sql, id: string): Promise<string> {
+  const [item] = await sql<Array<{ status: string; intentKeys: string[] | null }>>`
+    SELECT status,
+           (SELECT array_agg(k ORDER BY k) FROM jsonb_object_keys(COALESCE(payload, '{}'::jsonb)) k
+             WHERE k ILIKE '%intent%') AS "intentKeys"
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${P013_WORKSPACE} AND harness_slug = ${P013_HARNESS} AND feature_id = ${id}
+  `;
+  const fires = await sql<Array<{ workspaceId: string; firedAt: Date; intentId: string | null }>>`
+    SELECT workspace_id AS "workspaceId", last_fired_at AS "firedAt",
+           last_payload->>'completionIntentId' AS "intentId"
+      FROM harness_shared.event_key_fires
+     WHERE event_key = ${`work-item:done:${id}`}
+  `;
+  return JSON.stringify({ item: item ?? null, fires });
+}
+
+/** Production's recovery for a late or lost `work-item:done` fire is the await
+ * sweeper's completion-event reconciler. The cold child does not run the sweeper,
+ * so the rig invokes that reconciler once instead of aborting the matrix. The
+ * sample is flagged `reconciler`, so the report counts it rather than hiding it in
+ * the latency distribution. The import is lazy on purpose: a static import would
+ * add the reconciler graph to every cold child's measured module-load cost. */
+async function waitForTerminalEvent(sql: Sql, id: string): Promise<TerminalEventMark & {
+  recovery: P013EventRecovery;
+}> {
+  const normal = await pollTerminalEvent(sql, id, P013_NORMAL_FIRE_BUDGET_MS);
+  if (normal) return { ...normal, recovery: 'normal' };
+  const missing = await describeMissingTerminalEvent(sql, id);
+  const { reconcileWorkItemCompletionEventIntents } = await import('../work-item-completion-event-reconciler');
+  const repair = await reconcileWorkItemCompletionEventIntents(P013_WORKSPACE);
+  const repaired = await pollTerminalEvent(sql, id, P013_REPAIR_FIRE_BUDGET_MS);
+  if (repaired) {
+    console.warn(`P013_EVENT_RECOVERED id=${id} by=reconciler repair=${JSON.stringify(repair)} before=${missing}`);
+    return { ...repaired, recovery: 'reconciler' };
+  }
+  throw new Error(`P-013 missing terminal business event for ${id} after ${P013_NORMAL_FIRE_BUDGET_MS} ms ` +
+    `plus one reconciler pass (${JSON.stringify(repair)}); state before repair: ${missing}`);
 }
 
 export async function runP013WorkloadA(
@@ -194,5 +250,5 @@ export async function runP013WorkloadA(
   };
   assert.equal(phasesMs.length, 4);
   assert.ok(phasesMs.every((duration) => Number.isFinite(duration) && duration >= 0));
-  return { arm, phasesMs, eventLagMs, marks };
+  return { arm, phasesMs, eventLagMs, marks, eventRecovery: eventMark.recovery };
 }
