@@ -46,9 +46,12 @@ describe('cloud portal source reconciliation', () => {
       releaseAt: vi.fn().mockResolvedValue(release),
       receiptAt: vi.fn().mockResolvedValue(null),
       healthy: vi.fn().mockResolvedValue(true), run, writeReceipt,
+      linkLive: vi.fn().mockResolvedValue(true),
       withHandoffLock: vi.fn(async (handoff: () => Promise<unknown>) => handoff()),
     };
     await reconcilePortal(config, deps);
+    expect(deps.linkLive).toHaveBeenCalledWith('https://releases.example/pui');
+    expect(deps.linkLive).toHaveBeenCalledWith('https://releases.example/desktop');
     expect(run.mock.calls[0][3]).toMatchObject({
       NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL: 'https://releases.example/pui',
       NEXT_PUBLIC_PORTAL_DESKTOP_DOWNLOAD_URL: 'https://releases.example/desktop',
@@ -61,6 +64,22 @@ describe('cloud portal source reconciliation', () => {
     writeFileSync(config.publicLinksEnv, links.replace('/pui', '/pui-next'));
     expect((await reconcilePortal(config, deps)).status).toBe('deployed');
     expect(run.mock.calls[0][3].NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL).toBe('https://releases.example/pui-next');
+  });
+  it('refuses to build a Portal whose download link does not resolve (WI-10003250)', async () => {
+    const { config, release } = fixture();
+    writeFileSync(config.publicLinksEnv, 'NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL=https://releases.example/pui\nNEXT_PUBLIC_PORTAL_DESKTOP_DOWNLOAD_URL=https://releases.example/missing\n');
+    const run = vi.fn().mockResolvedValue(undefined);
+    const writeReceipt = vi.fn().mockResolvedValue(undefined);
+    await expect(reconcilePortal(config, {
+      fingerprint: vi.fn().mockResolvedValue({ digest: 'linked-1', rootDigest: 'root-1' }),
+      releaseAt: vi.fn().mockResolvedValue(release),
+      receiptAt: vi.fn().mockResolvedValue(null),
+      healthy: vi.fn().mockResolvedValue(true), run, writeReceipt,
+      linkLive: vi.fn(async (url: string) => !url.endsWith('/missing')),
+      withHandoffLock: vi.fn(async (handoff: () => Promise<unknown>) => handoff()),
+    })).rejects.toThrow('portal_public_links_dead_link:NEXT_PUBLIC_PORTAL_DESKTOP_DOWNLOAD_URL');
+    expect(run).not.toHaveBeenCalled();
+    expect(writeReceipt).not.toHaveBeenCalled();
   });
   it('exits a one-shot process after logging even when a dependency keeps a handle open', () => {
     const moduleUrl = new URL('../systemd/reconcile-cloud-portal.mjs', import.meta.url).href;
