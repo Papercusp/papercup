@@ -16,8 +16,13 @@
  * nothing here mutates the shared tree.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { once } from 'node:events';
+import { existsSync, renameSync, rmSync } from 'node:fs';
+import * as net from 'node:net';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  listenUnixSocketExclusive,
   ownerPidFromPidKeyedPath,
   pidKeyedSocketPath,
   pinSocketForCluster,
@@ -281,5 +286,108 @@ describe('probeUnixSocketAlive — a STALLED prober must not read a live listene
   it('is still FALSE under the same stall when nothing is listening', async () => {
     const socketPath = path.join(os.tmpdir(), `pid-keyed-probe-none-${process.pid}-${Date.now()}.sock`);
     expect(await stalledTrial((p) => probeUnixSocketAlive(p, { timeoutMs: TIMEOUT_MS }), socketPath)).toBe(false);
+  });
+});
+
+describe('listenUnixSocketExclusive — a sidecar must not take a live sidecar\'s path', () => {
+  // host-memory-reduction-2026-09-27 P-005: the sidecars unlinked their path and
+  // then listened, which on a unix socket always succeeds. A second sidecar thereby
+  // detached the first from the path and both kept running (~2 GB each on :3070).
+  const tmpSock = (tag: string) => path.join(os.tmpdir(), `pid-keyed-listen-${tag}-${process.pid}-${Date.now()}.sock`);
+
+  /** A server that answers every connection with its own name. */
+  function named(name: string): net.Server {
+    return net.createServer((c) => c.end(name));
+  }
+
+  async function whoAnswers(socketPath: string): Promise<string> {
+    const c = net.createConnection(socketPath);
+    c.setEncoding('utf8');
+    let data = '';
+    c.on('data', (d) => (data += d));
+    await once(c, 'end');
+    return data;
+  }
+
+  // Deliberately-wrong control, kept PERMANENTLY: the pre-fix bind. It must steal
+  // the path from the live server, or the in-use assertion below proves nothing.
+  async function legacyListen(server: net.Server, socketPath: string): Promise<void> {
+    rmSync(socketPath, { force: true });
+    server.listen(socketPath);
+    await once(server, 'listening');
+  }
+
+  it('the pre-fix bind STEALS a live path (control)', async () => {
+    const socketPath = tmpSock('legacy');
+    const first = named('first').listen(socketPath);
+    await once(first, 'listening');
+    const second = named('second');
+    try {
+      await legacyListen(second, socketPath);
+      expect(await whoAnswers(socketPath)).toBe('second');
+    } finally {
+      first.close();
+      second.close();
+      rmSync(socketPath, { force: true });
+    }
+  });
+
+  it('resolves in-use on a live path and leaves the live server reachable there', async () => {
+    const socketPath = tmpSock('live');
+    const first = named('first').listen(socketPath);
+    await once(first, 'listening');
+    const second = named('second');
+    try {
+      await expect(listenUnixSocketExclusive(second, socketPath)).resolves.toBe('in-use');
+      expect(second.listening).toBe(false);
+      expect(await whoAnswers(socketPath)).toBe('first');
+    } finally {
+      first.close();
+      rmSync(socketPath, { force: true });
+    }
+  });
+
+  it('reclaims a STALE socket file (no listener) and serves it', async () => {
+    const socketPath = tmpSock('stale');
+    // A real socket inode with nobody listening: bind elsewhere, move the name onto
+    // our path, then close. (close() only unlinks the ORIGINAL name.)
+    const bound = `${socketPath}.bound`;
+    const gone = net.createServer().listen(bound);
+    await once(gone, 'listening');
+    renameSync(bound, socketPath);
+    gone.close();
+    await once(gone, 'close');
+    expect(existsSync(socketPath)).toBe(true);
+    expect(await probeUnixSocketAlive(socketPath)).toBe(false);
+
+    const server = named('fresh');
+    try {
+      await expect(listenUnixSocketExclusive(server, socketPath)).resolves.toBe('listening');
+      expect(await whoAnswers(socketPath)).toBe('fresh');
+    } finally {
+      server.close();
+      rmSync(socketPath, { force: true });
+    }
+  });
+
+  it('listens normally on an empty path', async () => {
+    const socketPath = tmpSock('empty');
+    const server = named('only');
+    try {
+      await expect(listenUnixSocketExclusive(server, socketPath)).resolves.toBe('listening');
+      expect(await whoAnswers(socketPath)).toBe('only');
+    } finally {
+      server.close();
+      rmSync(socketPath, { force: true });
+    }
+  });
+
+  it('rejects a non-EADDRINUSE listen error instead of probing or unlinking', async () => {
+    const socketPath = path.join(os.tmpdir(), `pid-keyed-listen-nodir-${process.pid}-${Date.now()}`, 'x.sock');
+    const probe = vi.fn(async () => false);
+    const unlink = vi.fn();
+    await expect(listenUnixSocketExclusive(net.createServer(), socketPath, { probe, unlink })).rejects.toThrow();
+    expect(probe).not.toHaveBeenCalled();
+    expect(unlink).not.toHaveBeenCalled();
   });
 });

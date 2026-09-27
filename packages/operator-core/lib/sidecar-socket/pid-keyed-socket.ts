@@ -239,3 +239,70 @@ export function probeUnixSocketAlive(
     }
   });
 }
+
+/**
+ * Exit code for a sidecar that declines to start because a LIVE sidecar already
+ * serves its socket path. The host reads it off the child's `exit` event and adopts
+ * the sibling. An exit code, not a stderr line, because Node can deliver a child's
+ * `exit` before its last stderr chunk. A host that saw the exit first would book the
+ * sibling's healthy sidecar as a crash and respawn into the same refusal. 75 is
+ * sysexits' EX_TEMPFAIL, and nothing else in these sidecars exits with it.
+ */
+export const SIDECAR_EXIT_SOCKET_IN_USE = 75;
+
+/**
+ * Bind a unix-socket server WITHOUT taking the path away from a live listener.
+ *
+ * The sidecars used to `unlinkSync` their path and then listen. On a unix socket
+ * that never fails: the unlink detaches a LIVE server's inode from the path, and
+ * the new bind gets a fresh inode in its place. The old server keeps its clients
+ * but no new client can ever reach it. So a sidecar spawned in error (a host whose
+ * adoption probe misread a sibling's sidecar as dead) silently became a SECOND full
+ * sidecar instead of failing. Measured 2026-09-27 (host-memory-reduction P-005):
+ * two spawner sidecars on :3070, both LISTEN on one path, each ~2 GB.
+ *
+ * Listen first; only an EADDRINUSE earns a look at the path. A live listener there
+ * resolves `'in-use'`: the caller must exit and leave the path alone. A stale file
+ * (ECONNREFUSED, or no answer) is unlinked and the bind retried once. A second
+ * EADDRINUSE whose probe still finds no listener rejects rather than looping. Any
+ * other listen error rejects. Listeners are removed on settle, so the caller's own
+ * `error` handler owns everything after the bind.
+ */
+export function listenUnixSocketExclusive(
+  server: net.Server,
+  socketPath: string,
+  opts: { probe?: (p: string) => Promise<boolean>; unlink?: (p: string) => void } = {},
+): Promise<'listening' | 'in-use'> {
+  const probe = opts.probe ?? ((p: string) => probeUnixSocketAlive(p));
+  const unlink = opts.unlink ?? ((p: string) => fs.rmSync(p, { force: true }));
+  return new Promise((resolve, reject) => {
+    let reclaimed = false;
+    const settle = (fn: () => void) => {
+      server.off('listening', onListening);
+      server.off('error', onError);
+      fn();
+    };
+    const onListening = () => settle(() => resolve('listening'));
+    const onError = (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EADDRINUSE') {
+        settle(() => reject(err));
+        return;
+      }
+      void probe(socketPath).then((alive) => {
+        if (alive) return settle(() => resolve('in-use'));
+        if (reclaimed) return settle(() => reject(err));
+        reclaimed = true;
+        try {
+          unlink(socketPath);
+        } catch (e) {
+          return settle(() => reject(e));
+        }
+        // Node permits a second listen() after the first one errored.
+        server.listen(socketPath);
+      });
+    };
+    server.on('listening', onListening);
+    server.on('error', onError);
+    server.listen(socketPath);
+  });
+}
