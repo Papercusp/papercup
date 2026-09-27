@@ -1075,6 +1075,90 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
   });
 
+  it('restores a missing or stale VM driver through deploy.sh before any phase runs', () => {
+    // WI-2039874 (2026-09-27): the VM's /tmp lost vmcall.sh while its operator
+    // was healthy, and Phase A misreported "could not reach the VM operator".
+    const fnStart = physicalScenario.indexOf('vm_driver_digests() {');
+    const ensureStart = physicalScenario.indexOf('ensure_vm_driver_current() {');
+    expect(fnStart).toBeGreaterThan(-1);
+    expect(ensureStart).toBeGreaterThan(fnStart);
+    const functions = physicalScenario.slice(fnStart, physicalScenario.indexOf('\n}\n', ensureStart) + 3);
+    const callSite = physicalScenario.indexOf('\nverify_physical_vm_source\nensure_vm_driver_current\n');
+    expect(callSite).toBeGreaterThan(-1);
+    expect(callSite).toBeLessThan(physicalScenario.lastIndexOf('run_all_phases'));
+
+    const root = mkdtempSync(join(tmpdir(), 'hive-git-vm-driver-'));
+    try {
+      const here = join(root, 'vm-rig');
+      const repo = join(root, 'repo');
+      const vm = join(root, 'vm');
+      const bin = join(root, 'bin');
+      for (const dir of [here, join(repo, 'scripts'), vm, bin]) mkdirSync(dir, { recursive: true });
+      const srcCall = join(here, 'vmcall.sh');
+      const srcMcp = join(repo, 'scripts', 'mcp-call.mjs');
+      const vmCall = join(vm, 'vmcall.sh');
+      const vmMcp = join(vm, 'mcp-call.mjs');
+      const deployLog = join(root, 'deploy.log');
+      writeFileSync(srcCall, '#!/bin/sh\necho vmcall-current\n');
+      writeFileSync(srcMcp, '// mcp-call current\n');
+      // ssh stub: drop the -o options and the host, then run the remote command locally.
+      writeFileSync(join(bin, 'ssh'), '#!/usr/bin/env bash\nwhile [ "$1" = -o ]; do shift 2; done\nshift\nexec bash -c "$1"\n');
+      chmodSync(join(bin, 'ssh'), 0o755);
+
+      const run = (deployRestores: boolean) => {
+        rmSync(deployLog, { force: true });
+        const restore = deployRestores
+          ? `cp '${srcCall}' '${vmCall}'; chmod 755 '${vmCall}'; cp '${srcMcp}' '${vmMcp}'\n`
+          : '';
+        writeFileSync(join(here, 'deploy.sh'), `#!/usr/bin/env bash\necho "$*" >> '${deployLog}'\n${restore}`);
+        chmodSync(join(here, 'deploy.sh'), 0o755);
+        const script = [
+          'SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)',
+          'VM=stub@vm',
+          `HERE='${here}'`,
+          `REPO_ROOT='${repo}'`,
+          `VM_CALL='${vmCall}'`,
+          `VM_MCP_CALL='${vmMcp}'`,
+          'DEPLOY="$HERE/deploy.sh"',
+          "fail() { printf 'FAIL: %s\\n' \"$1\" >&2; exit 9; }",
+          functions,
+          'ensure_vm_driver_current',
+          'echo DRIVER_OK',
+        ].join('\n');
+        const result = spawnSync('bash', ['-c', script], {
+          encoding: 'utf8',
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
+          env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+        });
+        const deploys = existsSync(deployLog) ? readFileSync(deployLog, 'utf8').trim().split('\n') : [];
+        return { ...result, deploys };
+      };
+
+      // Missing driver (the observed incident): restored through deploy.sh, then the run proceeds.
+      const missing = run(true);
+      expect(missing.status, missing.stderr).toBe(0);
+      expect(missing.stdout).toContain('DRIVER_OK');
+      expect(missing.deploys).toEqual(['stub@vm']);
+      expect(readFileSync(vmCall, 'utf8')).toBe(readFileSync(srcCall, 'utf8'));
+
+      // Current driver: no redeploy.
+      const current = run(true);
+      expect(current.status, current.stderr).toBe(0);
+      expect(current.deploys).toEqual([]);
+
+      // Stale mcp-call.mjs whose deploy does not repair it: fail closed before any phase.
+      writeFileSync(vmMcp, '// mcp-call stale\n');
+      const stale = run(false);
+      expect(stale.status).toBe(9);
+      expect(stale.stdout).not.toContain('DRIVER_OK');
+      expect(stale.stderr).toContain('VM driver still missing or stale after');
+      expect(stale.deploys).toEqual(['stub@vm']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('pins a falsifiable Phase A cold-join adapter contract with no command override', () => {
     const phaseAScenario = physicalScenario.slice(
       physicalScenario.indexOf('phase_a_storage_join()'),
@@ -1198,11 +1282,21 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       'physical-drill-producer.ts',
     );
     const producerSha = createHash('sha256').update(readFileSync(producer)).digest('hex');
+    const sha = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
+    const driverDigests = `${sha(join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'vmcall.sh'))} ${sha(
+      join(repoRoot(), 'scripts', 'mcp-call.mjs'),
+    )}`;
+    // Tripwire: a stale-driver verdict would run the real deploy.sh, whose scp
+    // is not covered by the fake ssh and would reach the real rig VM.
+    const scpMarker = join(runDir, 'scp-attempted');
+    writeFileSync(join(fakeBin, 'scp'), `#!/bin/sh\nprintf '%s\\n' "$*" > '${scpMarker}'\nexit 97\n`);
+    chmodSync(join(fakeBin, 'scp'), 0o755);
     const fakeSsh = join(fakeBin, 'ssh');
     writeFileSync(
       fakeSsh,
       `#!/bin/sh
 case "$*" in
+  *vmcall.sh*mcp-call.mjs*shasum*) printf '%s\\n' '${driverDigests}' ;;
   *shasum*) printf '%s\\n' '${producerSha}' ;;
   *dev:dogfood_substrate_status*)
     if printf '%s\\n' "$*" | grep -F '"projection"' >/dev/null \
@@ -1245,6 +1339,7 @@ esac
     // spill wrapper observed on the physical VM and this marker stays absent.
     expect(existsSync(projectionMarker)).toBe(true);
     expect(existsSync(quarantineMarker)).toBe(false);
+    expect(existsSync(scpMarker)).toBe(false);
     expect(existsSync(output)).toBe(false);
   });
 
