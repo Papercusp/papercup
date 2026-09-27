@@ -640,7 +640,9 @@ export async function readInbox(
   //
   // Gated on a true PG backend (coordHasPgFastPath): an in-memory/fs seam (tests)
   // keeps using readLines, since coordSql() would otherwise read getOrgPg() and miss
-  // the swapped store. Any query error falls through to the authoritative full read.
+  // the swapped store. On PG a query error PROPAGATES: the full-surface read is not a
+  // safe fallback there — it materialises the whole messages surface and pins it in
+  // the process cache (~2 GB measured, host-memory-reduction-2026-09-27 D-011).
   if (coordHasPgFastPath()) {
     // WI-6939: a caller that only needs the most RECENT slice passes `window`, and
     // gets a bounded keyset-paged read instead of the 25k-row cap. Deliberately an
@@ -649,38 +651,34 @@ export async function readInbox(
     // would force each of those mocks to stub two functions that must agree — a
     // divergence trap. One seam, one mock, same behaviour when `window` is absent.
     if (window) return (await readInboxWindow(ownerId, opts, window.enough)).entries;
-    try {
-      const sql = coordSql();
-      const sinceBound = opts.since_ts
-        ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
-        : null;
-      const rows = await sql<{ body: unknown }[]>`
-        SELECT body
-          FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${coordWorkspaceId()}
-           AND surface = 'messages'
-           ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
-           AND jsonb_typeof(body->'to') = 'array'
-           -- Keep the native JSONB membership operator here: the partial
-           -- coord_event_log_msgs_to_gin index can answer the native operator,
-           -- while the semantically equivalent function-call spelling falls back to
-           -- a parallel sequential scan of the whole messages surface.
-           AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
-         ORDER BY id DESC
-         LIMIT ${INBOX_FAST_PATH_ROW_CAP}
-      `;
-      if (rows.length >= INBOX_FAST_PATH_ROW_CAP) {
-        console.warn(
-          `[readInbox] fast-path row cap (${INBOX_FAST_PATH_ROW_CAP}) hit for owner=${ownerId} ` +
-            `since_ts=${opts.since_ts ?? '(none)'} — the OLDEST matching rows beyond the cap were NOT ` +
-            'returned; a caller doing a genuine full-history backfill should page via since_ts.',
-        );
-      }
-      const lines = rows.map((r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
-      return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
-    } catch {
-      // Fall through to the authoritative full-surface read below.
+    const sql = coordSql();
+    const sinceBound = opts.since_ts
+      ? new Date(new Date(opts.since_ts).getTime() - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
+      : null;
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
+         AND jsonb_typeof(body->'to') = 'array'
+         -- Keep the native JSONB membership operator here: the partial
+         -- coord_event_log_msgs_to_gin index can answer the native operator,
+         -- while the semantically equivalent function-call spelling falls back to
+         -- a parallel sequential scan of the whole messages surface.
+         AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
+       ORDER BY id DESC
+       LIMIT ${INBOX_FAST_PATH_ROW_CAP}
+    `;
+    if (rows.length >= INBOX_FAST_PATH_ROW_CAP) {
+      console.warn(
+        `[readInbox] fast-path row cap (${INBOX_FAST_PATH_ROW_CAP}) hit for owner=${ownerId} ` +
+          `since_ts=${opts.since_ts ?? '(none)'} — the OLDEST matching rows beyond the cap were NOT ` +
+          'returned; a caller doing a genuine full-history backfill should page via since_ts.',
+      );
     }
+    const lines = rows.map((r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope);
+    return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
   }
   const lines = await coordLog.readLines('messages');
   return suppressRetracted(filterInbox(lines, ownerId, opts), collectRetractedIds(lines));
@@ -960,12 +958,14 @@ export async function drainAndDeliverUserMailbox(
  *
  * Optimized to query database directly (EI-401): avoid loading all messages
  * when table is large; use a narrow ack/unack + author filter at DB level and
- * fold in append order.
+ * fold in append order. Gated like readInbox: on a PG backend a query error
+ * PROPAGATES (never the whole-surface read — D-011); only a non-PG seam folds
+ * the seam's own readLines.
  */
 export async function readAckedMsgIds(ackerOwnerId: string): Promise<Set<string>> {
   const acked = new Set<string>();
   if (!ackerOwnerId) return acked;
-  try {
+  if (coordHasPgFastPath()) {
     // Run on the SAME handle + workspace the coordLog seam reads/writes (NOT
     // getOrgPg()+'default'): the acks were written through the seam, so a swapped
     // seam (tests, non-default workspace) would otherwise query the wrong DB /
@@ -986,14 +986,13 @@ export async function readAckedMsgIds(ackerOwnerId: string): Promise<Set<string>
         else if (row.kind === 'ack') acked.add(row.related_msg_id);
       }
     }
-  } catch {
-    // Fallback to the slow path if the query fails
-    const lines = await coordLog.readLines('messages');
-    for (const l of lines) {
-      if (l.from === ackerOwnerId && typeof l.related_msg_id === 'string') {
-        if (l.kind === 'unack') acked.delete(l.related_msg_id);
-        else if (l.kind === 'ack') acked.add(l.related_msg_id);
-      }
+    return acked;
+  }
+  const lines = await coordLog.readLines('messages');
+  for (const l of lines) {
+    if (l.from === ackerOwnerId && typeof l.related_msg_id === 'string') {
+      if (l.kind === 'unack') acked.delete(l.related_msg_id);
+      else if (l.kind === 'ack') acked.add(l.related_msg_id);
     }
   }
   return acked;
@@ -1013,14 +1012,16 @@ export async function readAckedMsgIds(ackerOwnerId: string): Promise<Set<string>
  *
  * Mirrors `readAckedMsgIds`'s scoping (own-sends only — never a global reply set, which
  * would let a THIRD party's reply to a broadcast wrongly suppress someone else's still-due
- * wake) and its DB-first-then-log-fallback shape. Bounded to the given `msgIds` (never a
- * full-log scan) — cheap even when called on every pump tick.
+ * wake) and its PG-gated shape: a query error PROPAGATES on PG (D-011; the wake-pump caller
+ * already fails open on a rejection), and only a non-PG seam scans its own readLines.
+ * Bounded to the given `msgIds` (never a full-log scan) — cheap even when called on every
+ * pump tick.
  */
 export async function repliedMsgIdsBatch(subscriberId: string, msgIds: readonly string[]): Promise<Set<string>> {
   const replied = new Set<string>();
   if (!subscriberId || msgIds.length === 0) return replied;
   const ids = [...new Set(msgIds)];
-  try {
+  if (coordHasPgFastPath()) {
     const sql = coordSql();
     const rows = await sql<{ related_msg_id: string | null }[]>`
       SELECT body->>'related_msg_id' AS related_msg_id
@@ -1041,14 +1042,13 @@ export async function repliedMsgIdsBatch(subscriberId: string, msgIds: readonly 
     for (const row of rows) {
       if (typeof row.related_msg_id === 'string') replied.add(row.related_msg_id);
     }
-  } catch {
-    // Fallback to the slow path if the query fails (mirrors readAckedMsgIds).
-    const lines = await coordLog.readLines('messages');
-    const idSet = new Set(ids);
-    for (const l of lines) {
-      if (l.from === subscriberId && typeof l.related_msg_id === 'string' && idSet.has(l.related_msg_id)) {
-        replied.add(l.related_msg_id);
-      }
+    return replied;
+  }
+  const lines = await coordLog.readLines('messages');
+  const idSet = new Set(ids);
+  for (const l of lines) {
+    if (l.from === subscriberId && typeof l.related_msg_id === 'string' && idSet.has(l.related_msg_id)) {
+      replied.add(l.related_msg_id);
     }
   }
   return replied;
@@ -1126,7 +1126,8 @@ export async function readOutbox(
   const sinceMs = opts.since_ts ? new Date(opts.since_ts).getTime() : 0;
   // Gated on a true PG backend: an in-memory/fs seam (tests) keeps using
   // readLines, since coordSql() would otherwise read getOrgPg() and miss the
-  // swapped store. Any query error falls through to the authoritative read.
+  // swapped store. On PG a query error PROPAGATES — never the whole-surface read
+  // (host-memory-reduction-2026-09-27 D-011, see readInbox).
   if (coordHasPgFastPath()) {
     // EI-19323045109346905: a caller that only needs the newest slice pages a
     // bounded window instead of pulling the whole sender history. DELEGATES to
@@ -1136,38 +1137,34 @@ export async function readOutbox(
     // only one implementation. A caller that also needs the BOUNDARY
     // (`exhausted`) calls readOutboxWindow directly; this shape discards it.
     if (window) return (await readOutboxWindow(ownerId, opts, window.enough)).entries;
-    try {
-      const sql = coordSql();
-      // Only pad a FINITE, positive cutoff — new Date(NaN).toISOString() throws.
-      const sinceBound =
-        Number.isFinite(sinceMs) && sinceMs > 0
-          ? new Date(sinceMs - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
-          : null;
+    const sql = coordSql();
+    // Only pad a FINITE, positive cutoff — new Date(NaN).toISOString() throws.
+    const sinceBound =
+      Number.isFinite(sinceMs) && sinceMs > 0
+        ? new Date(sinceMs - INBOX_SINCE_TS_SKEW_PAD_MS).toISOString()
+        : null;
 
-      const rows = await sql<{ body: unknown }[]>`
-        SELECT body
-          FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${coordWorkspaceId()}
-           AND surface = 'messages'
-           ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
-           AND body->>'from' = ${ownerId}
-         ORDER BY id DESC
-         LIMIT ${OUTBOX_FAST_PATH_ROW_CAP}
-      `;
-      if (rows.length >= OUTBOX_FAST_PATH_ROW_CAP) {
-        console.warn(
-          `[readOutbox] fast-path row cap (${OUTBOX_FAST_PATH_ROW_CAP}) hit for owner=${ownerId} ` +
-            `since_ts=${opts.since_ts ?? '(none)'} — the OLDEST matching rows beyond the cap were NOT ` +
-            'returned; a caller doing a genuine full-history backfill should page via since_ts.',
-        );
-      }
-      const lines = rows.map(
-        (r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope,
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         ${sinceBound ? sql`AND ts >= ${sinceBound}` : sql``}
+         AND body->>'from' = ${ownerId}
+       ORDER BY id DESC
+       LIMIT ${OUTBOX_FAST_PATH_ROW_CAP}
+    `;
+    if (rows.length >= OUTBOX_FAST_PATH_ROW_CAP) {
+      console.warn(
+        `[readOutbox] fast-path row cap (${OUTBOX_FAST_PATH_ROW_CAP}) hit for owner=${ownerId} ` +
+          `since_ts=${opts.since_ts ?? '(none)'} — the OLDEST matching rows beyond the cap were NOT ` +
+          'returned; a caller doing a genuine full-history backfill should page via since_ts.',
       );
-      return filterOutbox(lines, ownerId, sinceMs);
-    } catch {
-      // Fall through to the authoritative full-surface read below.
     }
+    const lines = rows.map(
+      (r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope,
+    );
+    return filterOutbox(lines, ownerId, sinceMs);
   }
   const lines = await coordLog.readLines('messages');
   return filterOutbox(lines, ownerId, sinceMs);
@@ -1285,43 +1282,39 @@ export const INVOLVING_FAST_PATH_ROW_CAP = 25_000;
  * operator directly; the semantically equivalent `jsonb_exists(...)` spelling
  * degrades this OR into a parallel sequential scan on the live log.
  *
- * Falls back to the authoritative `coordLog.readLines('messages')` on a
- * non-PG seam (tests) or any query error.
+ * Uses `coordLog.readLines('messages')` only on a non-PG seam (tests); on PG a
+ * query error PROPAGATES (host-memory-reduction-2026-09-27 D-011, see readInbox).
  */
 export async function readInvolvingOwner(
   ownerId: string,
   limit: number = INVOLVING_FAST_PATH_ROW_CAP,
 ): Promise<CoordEnvelope[]> {
   if (coordHasPgFastPath()) {
-    try {
-      const sql = coordSql();
-      const rows = await sql<{ body: unknown }[]>`
-        SELECT body
-          FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${coordWorkspaceId()}
-           AND surface = 'messages'
-           AND (
-             body->>'from' = ${ownerId}
-             OR (
-               jsonb_typeof(body->'to') = 'array'
-               AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
-             )
+    const sql = coordSql();
+    const rows = await sql<{ body: unknown }[]>`
+      SELECT body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         AND (
+           body->>'from' = ${ownerId}
+           OR (
+             jsonb_typeof(body->'to') = 'array'
+             AND ((body->'to') ? ${ownerId} OR (body->'to') ? '*')
            )
-         ORDER BY id DESC
-         LIMIT ${limit}
-      `;
-      if (rows.length >= limit) {
-        console.warn(
-          `[readInvolvingOwner] fast-path row cap (${limit}) hit for owner=${ownerId} — the ` +
-            'OLDEST matching rows beyond the cap were NOT returned.',
-        );
-      }
-      return rows.map(
-        (r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope,
+         )
+       ORDER BY id DESC
+       LIMIT ${limit}
+    `;
+    if (rows.length >= limit) {
+      console.warn(
+        `[readInvolvingOwner] fast-path row cap (${limit}) hit for owner=${ownerId} — the ` +
+          'OLDEST matching rows beyond the cap were NOT returned.',
       );
-    } catch {
-      // Fall through to the authoritative full-surface read below.
     }
+    return rows.map(
+      (r) => (typeof r.body === 'string' ? JSON.parse(r.body) : r.body) as CoordEnvelope,
+    );
   }
   return coordLog.readLines('messages');
 }
@@ -1560,25 +1553,22 @@ export type MessageRefResolution =
   | { status: 'not-found'; msgId: string; looksTruncated: boolean }
   | { status: 'ambiguous'; msgId: string; candidates: string[] };
 
-/** Ids whose msg_id starts with `prefix` (bounded). Prefix-only — never a substring match. */
+/** Ids whose msg_id starts with `prefix` (bounded). Prefix-only — never a substring match.
+ *  On PG a query error PROPAGATES (D-011); the scan below is the non-PG seam only. */
 async function findMessageIdsByPrefix(prefix: string, limit: number): Promise<string[]> {
   if (coordHasPgFastPath()) {
-    try {
-      const sql = coordSql();
-      // starts_with() rather than LIKE: no escaping of `%`/`_` in the ref.
-      const rows = await sql<{ msg_id: string }[]>`
-        SELECT msg_id
-          FROM harness_shared.coord_event_log
-         WHERE workspace_id = ${coordWorkspaceId()}
-           AND surface = 'messages'
-           AND starts_with(msg_id, ${prefix})
-         ORDER BY msg_id
-         LIMIT ${limit}
-      `;
-      return rows.map((r) => r.msg_id);
-    } catch {
-      // Fall through to the authoritative full-surface read below.
-    }
+    const sql = coordSql();
+    // starts_with() rather than LIKE: no escaping of `%`/`_` in the ref.
+    const rows = await sql<{ msg_id: string }[]>`
+      SELECT msg_id
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${coordWorkspaceId()}
+         AND surface = 'messages'
+         AND starts_with(msg_id, ${prefix})
+       ORDER BY msg_id
+       LIMIT ${limit}
+    `;
+    return rows.map((r) => r.msg_id);
   }
   const lines = await coordLog.readLines('messages');
   const seen: string[] = [];
