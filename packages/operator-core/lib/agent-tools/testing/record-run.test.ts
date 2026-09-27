@@ -101,4 +101,20 @@ describe('testing:record-run', () => {
       ),
     ).toThrow('evidence_time_order_invalid');
   });
+
+  it('names every failing field path in evidence_schema_invalid (WI-10003460)', () => {
+    const { startedAt: _startedAt, finishedAt: _finishedAt, ...withoutTimestamps } = ARTIFACT;
+    let message = '';
+    try {
+      parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(withoutTimestamps)));
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toMatch(/^evidence_schema_invalid: /);
+    expect(message).toContain('startedAt: ');
+    expect(message).toContain('finishedAt: ');
+    const nested = { ...ARTIFACT, assertions: [{ id: 'a', passed: 'yes', evidence: 'e' }] };
+    expect(() => parseOperationalEvidenceArtifact(Buffer.from(JSON.stringify(nested))))
+      .toThrow('assertions.0.passed: ');
+  });
 });

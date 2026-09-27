@@ -9,6 +9,8 @@
   "workItem": "WI-10003422",
   "rubricCriterion": "launch-activation-attribution-hold (R-3)",
   "observer": "su-fcbb3fed-83b5-4c34-9dab-72e191d76491",
+  "startedAt": "2026-09-27T10:51:37.243Z",
+  "finishedAt": "2026-09-27T10:55:25.400Z",
   "capturedAt": "2026-09-27T10:56:03.281Z",
   "command": [
     "sudo -n -u postgres psql -d papercusp -X -v ON_ERROR_STOP=1 -F' | ' -A < .papercusp/scratch/r3-natural-0927/q1.sql   # read-only; SQL + output in replication[]",
@@ -23,7 +25,7 @@
       "su-d652716d-b3f5-44e8-ac34-044f1fbd12f2",
       "su-5b9cde39-3b1c-45ad-bd5c-3f6aa0e0cff9"
     ],
-    "treeHead": "29b2524406de48d26365c40e0ff0ce56a82f33d9"
+    "treeHead": "d38014264a27f7d2f1e41c5a95810c001510805b"
   },
   "sourcePaths": [
     "packages/operator-core/lib/capability-envelope/identity-grants-port.ts",

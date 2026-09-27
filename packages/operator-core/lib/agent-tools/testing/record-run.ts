@@ -102,7 +102,14 @@ export function parseOperationalEvidenceArtifact(bytes: Buffer): OperationalEvid
     throw new Error('evidence_invalid_json');
   }
   const result = operationalEvidenceArtifactSchema.safeParse(parsed);
-  if (!result.success) throw new Error(`evidence_schema_invalid: ${result.error.issues[0]?.message ?? 'invalid'}`);
+  if (!result.success) {
+    // Name every failing field: a bare "expected string, received undefined"
+    // gives an artifact author nothing to fix (WI-10003460).
+    const issues = result.error.issues.slice(0, 5).map((issue) =>
+      `${issue.path.length > 0 ? issue.path.join('.') : '(root)'}: ${issue.message}`);
+    const more = result.error.issues.length > 5 ? ` (+${result.error.issues.length - 5} more)` : '';
+    throw new Error(`evidence_schema_invalid: ${issues.join('; ') || 'invalid'}${more}`);
+  }
   const startedAt = Date.parse(result.data.startedAt);
   const finishedAt = Date.parse(result.data.finishedAt);
   if (finishedAt < startedAt) throw new Error('evidence_time_order_invalid');
