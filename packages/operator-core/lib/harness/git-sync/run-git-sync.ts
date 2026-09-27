@@ -2355,7 +2355,7 @@ async function listTempPackEntries(
  * This avoids deleting an older leak (or a peer's pre-existing temp pack) while
  * reclaiming a large partial pack immediately instead of waiting for age-based GC.
  */
-async function listTempPackFiles(runGit: RunGit, repoPath: string): Promise<Map<string, number>> {
+export async function listTempPackFiles(runGit: RunGit, repoPath: string): Promise<Map<string, number>> {
   const { entries } = await listTempPackEntries(runGit, repoPath);
   const result = new Map<string, number>();
   for (const entry of entries) result.set(entry.name, entry.size);
@@ -2762,7 +2762,7 @@ export async function scavengeStaleTempPacks(
   return { removed, bytesReclaimed };
 }
 
-async function pruneFailedFetchTempPacks(
+export async function pruneFailedFetchTempPacks(
   runGit: RunGit,
   repoPath: string,
   beforeFetch: Map<string, number>,
@@ -4486,10 +4486,19 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       }
       throwIfAborted();
     }
-    const result = await baseRunGit(args, cwd);
-    reportProgress();
-    throwIfAborted();
-    return result;
+    const startedAt = performance.now();
+    try {
+      const result = await baseRunGit(args, cwd);
+      reportProgress();
+      throwIfAborted();
+      return result;
+    } finally {
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      if (elapsedMs >= 10_000) {
+        const scope = repo && cwd.startsWith(`${repo}/`) ? cwd.slice(repo.length + 1) : 'superproject';
+        log(`[git-sync] ${scope}: slow git ${gitSubcommand(args)} call (${elapsedMs}ms, includes dispatch/admission/child/transport)`);
+      }
+    }
   };
   const cfg = opts.config ?? {};
   const remote = cfg.remote ?? 'origin';
