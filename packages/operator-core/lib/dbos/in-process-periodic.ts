@@ -292,6 +292,24 @@ const pgTuningDriftCheck: PeriodicCheck = {
   },
 };
 
+// Every 10 min: sample unreclaimable kernel slab + dying memory cgroups into a
+// per-boot series and escalate on a sustained climb (host-memory-reduction-
+// 2026-09-27 P-010 / D-007). A 6.17 kernel leak reached 29.9 GiB of SUnreclaim
+// over ~20 days with nothing measuring it; this surfaces the same rate in ~a day.
+const kernelLeakCheck: PeriodicCheck = {
+  name: 'kernel-leak-watchdog',
+  intervalMs: 10 * 60_000,
+  // A standing condition, like pg-tuning-drift: record a sample at boot rather
+  // than 10 min later.
+  fireOnArm: true,
+  // D-004 (P-011): kernel memory has no change-event source.
+  classification: 'must-sample',
+  tick: async () => {
+    const { runKernelLeakCheckOnce } = await import('../system-health/kernel-leak-watchdog');
+    await runKernelLeakCheckOnce();
+  },
+};
+
 // Every 60s: probe the dev endpoints + broadcast on each up/down TRANSITION
 // (fleet-coordination-painpoints Phase 3b). External liveness has no event source,
 // so this is the one irreducible poll; transition-only, never a per-tick firehose.
@@ -1325,6 +1343,7 @@ export function buildDefaultChecks(): PeriodicCheck[] {
     harnessStatusSweepCheck,
     connectionPressureCheck,
     pgTuningDriftCheck,
+    kernelLeakCheck,
     serviceHealthCheck,
     completionRefVerifyCheck,
     spawnReclaimSweepCheck,

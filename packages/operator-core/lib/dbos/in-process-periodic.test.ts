@@ -261,6 +261,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
         'connection-pressure',
         'federation-drain-reconcile',
         'harness-status-sweep',
+        'kernel-leak-watchdog',
         'pot-epoch-key-reconcile',
         'learning-infra-health',
         'pg-tuning-drift',
@@ -294,6 +295,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
     expect(byName.get('shared-presence-reaper')!.intervalMs).toBe(300_000);
     expect(byName.get('scorecard-emission-pulse')!.intervalMs).toBe(600_000);
     expect(byName.get('pg-tuning-drift')!.intervalMs).toBe(30 * 60_000);
+    expect(byName.get('kernel-leak-watchdog')!.intervalMs).toBe(600_000);
     expect(byName.get('poll-suspect-scan')!.intervalMs).toBe(3600_000);
     expect(byName.get('timer-registration-scan')!.intervalMs).toBe(600_000);
   });
@@ -319,6 +321,7 @@ describe('buildDefaultChecks (the converted EI-1622 set)', () => {
       'completion-ref-verify',
       'learning-infra-health',
       'pg-tuning-drift', // a conf.d edit + SIGHUP happens entirely outside this process
+      'kernel-leak-watchdog', // kernel memory has no change-event source
       'steering-churn-sweep', // borderline (D-008), kept must-sample not violation
       'poll-suspect-scan', // borderline (D-008), kept must-sample not violation
       'timer-registration-scan', // same shape as poll-suspect-scan
