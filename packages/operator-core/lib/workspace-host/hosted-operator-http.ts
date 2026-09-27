@@ -12,7 +12,7 @@
  *
  *  1. DEFAULT-DENY ROUTES. Only the (method, path) pairs in
  *     {@link OPERATOR_HTTP_ROUTE_ALLOWLIST} are forwarded: the chat, conversation,
- *     session-launch and sync-read surfaces the portal renders. Everything else —
+ *     session-launch, sync-read and Add-a-pot surfaces the portal renders. Everything else —
  *     every other loopback admin surface (D-025) — answers 403 without a request.
  *  2. NO CALLER-SUPPLIED CREDENTIAL OR IDENTITY. Only a small header allowlist is
  *     forwarded (content type, accept, SSE resume). `authorization`, `cookie`,
@@ -42,7 +42,10 @@ export const HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES = 512 * 1024;
 export const HOSTED_OPERATOR_HTTP_BODY_CHUNK_BYTES = 48 * 1024;
 /** Concurrent requests per channel. A browser tab's sync client holds a handful of SSE streams. */
 export const HOSTED_OPERATOR_HTTP_MAX_INFLIGHT = 32;
-/** Response-header budget. A turn STREAMS for minutes; this bounds only the wait for headers. */
+/**
+ * Response-header budget. A turn STREAMS for minutes; this bounds only the wait for headers.
+ * Not applied to a route marked `awaitsRouteBudget` — see {@link OperatorHttpRoute}.
+ */
 export const HOSTED_OPERATOR_HTTP_HEADER_TIMEOUT_MS = 30_000;
 
 /**
@@ -59,11 +62,27 @@ export const HOSTED_PRINCIPAL_USER_HEADER = 'x-papercusp-hosted-user-id';
 export const HOSTED_PRINCIPAL_SESSION_HEADER = 'x-papercusp-hosted-session-id';
 
 const SEG = '[^/?#]+';
+
+export interface OperatorHttpRoute {
+  method: string;
+  pattern: RegExp;
+  surface: string;
+  /**
+   * The relay does not cut this route's wait for headers at
+   * {@link HOSTED_OPERATOR_HTTP_HEADER_TIMEOUT_MS}. For a slow WRITE — a pot create,
+   * a clone, an install — that cut reports a failure for a create the operator then
+   * finishes (WI-10003268). The bound is the operator route's own watchdog, which
+   * answers 408 at its `timeoutSec` (route-stack.ts). Set it only on a route that
+   * HAS a finite `timeoutSec`; the allowlist test pins that.
+   */
+  awaitsRouteBudget?: true;
+}
+
 /**
  * The ONLY routes the relay forwards. Default-deny: add a route here, with the
  * portal surface that needs it, or it answers 403 `route_not_relayed`.
  */
-export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<{ method: string; pattern: RegExp; surface: string }> = [
+export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
   // Sync transport behind useSyncQuery (chat lists, session rosters).
   { method: 'GET', pattern: /^\/api\/zero-harness\/rest-query$/, surface: 'sync read' },
   { method: 'GET', pattern: /^\/api\/zero-harness\/sse$/, surface: 'sync stream' },
@@ -90,10 +109,26 @@ export const OPERATOR_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<{ method: string; patt
   { method: 'GET', pattern: /^\/api\/adv\/sessions\/search-transcripts$/, surface: 'transcript search' },
   { method: 'POST', pattern: /^\/api\/adv\/sessions\/launch-su$/, surface: 'new session' },
   { method: 'GET', pattern: /^\/api\/agent-mcp\/console\/bootstrap-su\/options$/, surface: 'new session options' },
+  // The Add-a-pot popup (CreateHarnessPicker and the forms it opens, WI-10003268):
+  // a hosted user's pots live on THEIR workspace machine, so it is the one to create them.
+  { method: 'POST', pattern: /^\/api\/harness\/projects$/, surface: 'pot create (folder / repo)', awaitsRouteBudget: true },
+  { method: 'POST', pattern: /^\/api\/harness\/pots$/, surface: 'pot create', awaitsRouteBudget: true },
+  { method: 'POST', pattern: /^\/api\/harness\/pots\/from-repo$/, surface: 'pot create from GitHub', awaitsRouteBudget: true },
+  { method: 'POST', pattern: /^\/api\/harness\/join-link$/, surface: 'pot join link', awaitsRouteBudget: true },
+  { method: 'POST', pattern: /^\/api\/discovery\/join-pot$/, surface: 'pot join', awaitsRouteBudget: true },
+  { method: 'POST', pattern: /^\/api\/discovery\/join-invite$/, surface: 'pot invite join', awaitsRouteBudget: true },
+  { method: 'GET', pattern: /^\/api\/github\/search-repos$/, surface: 'GitHub repo search' },
+  { method: 'GET', pattern: /^\/api\/cupboard\/listings$/, surface: 'Cupboard search' },
+  { method: 'GET', pattern: /^\/api\/cupboard\/bindings$/, surface: 'Cupboard repo bindings' },
+  { method: 'POST', pattern: /^\/api\/cupboard\/install-blueprint$/, surface: 'Cupboard install', awaitsRouteBudget: true },
+  { method: 'GET', pattern: /^\/api\/discovery\/pot-meta$/, surface: 'pot share status' },
+  { method: 'POST', pattern: /^\/api\/discovery\/set-pot$/, surface: 'pot publish', awaitsRouteBudget: true },
+  // Which popup entries show (POT_FROM_GITHUB_URL among them) — the machine's own flags.
+  { method: 'GET', pattern: /^\/api\/flags\/bootstrap$/, surface: 'feature flags' },
 ];
 
 export type OperatorHttpRouteDecision =
-  | { ok: true; method: string; path: string; surface: string }
+  | { ok: true; method: string; path: string; surface: string; awaitsRouteBudget: boolean }
   | { ok: false; code: 'invalid_path' | 'route_not_relayed' };
 
 /**
@@ -114,7 +149,9 @@ export function decideOperatorHttpRoute(method: unknown, path: unknown): Operato
   }
   const upper = method.toUpperCase();
   const route = OPERATOR_HTTP_ROUTE_ALLOWLIST.find((entry) => entry.method === upper && entry.pattern.test(pathname));
-  return route ? { ok: true, method: upper, path, surface: route.surface } : { ok: false, code: 'route_not_relayed' };
+  return route
+    ? { ok: true, method: upper, path, surface: route.surface, awaitsRouteBudget: route.awaitsRouteBudget === true }
+    : { ok: false, code: 'route_not_relayed' };
 }
 
 /** Filter caller headers to the forwardable set and stamp the channel's principal. */
@@ -226,8 +263,8 @@ export class OperatorHttpChannel {
 
     const controller = new AbortController();
     this.inflight.set(requestId, controller);
-    const timer = setTimeout(() => controller.abort(), this.headerTimeoutMs);
-    timer.unref?.();
+    const timer = decision.awaitsRouteBudget ? undefined : setTimeout(() => controller.abort(), this.headerTimeoutMs);
+    timer?.unref?.();
     const logLine = `${decision.method} ${decision.path.split('?')[0]}`;
     let headersSent = false;
     try {
