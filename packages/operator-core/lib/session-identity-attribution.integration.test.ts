@@ -358,6 +358,33 @@ describe('P-009 activation span views', () => {
       expect(brief).toEqual({ delivered: '83', applied: seeded.revision, status: 'applied' });
       expect(events).toEqual([{ phase: 'applied', specification_revision: seeded.revision.specificationRevision }]);
     });
+
+    // WI-10003459: measured on a live Claude su session — every carry-respawn
+    // prepared generation N, then a non-identity control write (orient, loop,
+    // scope) bumped the brief to N+1 with the SAME activation. The ack's UPDATE
+    // accepts control_generation >= N, but the applied receipt demanded exact
+    // equality, returned 'missing', threw, and rolled the whole ack back — so
+    // `applied` never landed and the retry failed identically every turn.
+    it('acknowledges a prepared generation after an unrelated control bump, but never a future one', async () => {
+      const seeded = await seedInjection('bumped', 9304, 84, { prepared: 'revision', status: 'prepared' });
+      await db.sql`UPDATE harness_shared.session_briefs SET control_generation = 85 WHERE owner_id = ${seeded.owner}`;
+
+      // Negative control: the receipt still refuses a generation the brief has not reached.
+      await expect(recordCurrentSessionIdentityActivation({
+        ownerId: seeded.owner, workspaceId: WS, generation: 86, phase: 'prepared', source: 'control',
+        revision: seeded.revision, sql: db.sql,
+      })).resolves.toBe('missing');
+
+      await expect(acknowledgeControlTransition(seeded.owner, WS, 84, db.sql, seeded.revision)).resolves.toBe(true);
+
+      const { brief, events } = await readBack(seeded.owner);
+      expect(brief).toEqual({ delivered: '84', applied: seeded.revision, status: 'applied' });
+      expect(events).toEqual([{ phase: 'applied', specification_revision: seeded.revision.specificationRevision }]);
+      const [receipt] = await db.sql<Array<{ control_generation: string }>>`
+        SELECT control_generation::text FROM harness_shared.session_identity_activation_events
+         WHERE owner_id = ${seeded.owner} AND phase = 'applied'`;
+      expect(receipt).toEqual({ control_generation: '84' });
+    });
   });
 
   it('rolls back applied state and watermark when the event insert fails', async () => {

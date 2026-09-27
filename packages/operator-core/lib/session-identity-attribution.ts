@@ -86,7 +86,15 @@ export async function recordCurrentSessionIdentityActivation(input: {
       ) av ON true
      WHERE b.owner_id = ${input.ownerId}
        AND b.workspace_id = ${input.workspaceId}
-       AND b.control_generation = ${input.generation}
+       -- WI-10003459: the transition's generation may be OLDER than the brief's.
+       -- acknowledgeControlTransition and convergeActivationToLaunchRecord write
+       -- under control_generation >= generation (a later non-identity control
+       -- bump — loop, scope, orient — must not strand the prepared generation).
+       -- Exact equality here made the recorder return 'missing' for exactly
+       -- that case, so the applied write threw and rolled back on every turn.
+       -- The phase-revision match below is the truth guard; this only refuses
+       -- a generation the brief has not reached yet.
+       AND b.control_generation >= ${input.generation}
        AND CASE ${input.phase}
              WHEN 'desired' THEN b.control_state->'activation'->'desired'
              WHEN 'prepared' THEN b.control_state->'activation'->'prepared'
