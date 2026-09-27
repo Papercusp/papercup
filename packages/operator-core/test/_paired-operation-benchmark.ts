@@ -69,6 +69,11 @@ export interface BenchmarkProtocol {
   concurrencies: readonly (1 | 8)[];
   /** Instrumentation pilots may omit cold until the fixture has a real cold-start boundary. */
   modes?: readonly StartMode[];
+  /** First repetition index. A D-016 matrix run as separate single-repetition
+   * processes (so one lost connection costs one rep) passes rep N here, so the
+   * arm order still alternates across the five repetitions and each trial row
+   * carries its true repetition number. */
+  repetitionOffset?: number;
 }
 
 export type WorkloadClass = 'A' | 'B' | 'C' | 'D';
@@ -182,13 +187,17 @@ export async function runPairedBenchmark(
   if (modes.length === 0 || new Set(modes).size !== modes.length) {
     throw new Error('P-013 benchmark modes must be nonempty and unique');
   }
+  const offset = protocol.repetitionOffset ?? 0;
+  if (!Number.isInteger(offset) || offset < 0) {
+    throw new Error('P-013 benchmark repetitionOffset must be a nonnegative integer');
+  }
   const trials: Trial[] = [];
   for (const concurrency of protocol.concurrencies) {
     for (let i = 0; i < protocol.warmups; i++) {
       await arms.control.warmup();
       await arms.candidate.warmup();
     }
-    for (let repetition = 0; repetition < protocol.repetitions; repetition++) {
+    for (let repetition = offset; repetition < offset + protocol.repetitions; repetition++) {
       for (const mode of modes) {
         const order: ArmName[] = repetition % 2 === 0 ? ['control', 'candidate'] : ['candidate', 'control'];
         for (const arm of order) {

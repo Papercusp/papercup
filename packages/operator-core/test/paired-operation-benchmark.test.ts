@@ -40,6 +40,24 @@ describe('P-013 paired benchmark protocol', () => {
     expect(trials[0]?.persistence.dbRoundTrips).toBe(6);
   });
 
+  it('keeps the interleaved arm order when single repetitions run as separate processes', async () => {
+    const arm: BenchmarkArm = {
+      warmup: async () => {},
+      run: async () => ({ ingress: 1, accepted: 2, dispatched: 3, terminal: 4, businessEvent: 5 }),
+    };
+    const protocol = { warmups: 0, repetitions: 1, warmSamples: 1, coldSamples: 1,
+      concurrencies: [1] as const, modes: ['warm'] as const };
+    const perRep = await Promise.all([0, 1, 2].map((repetitionOffset) =>
+      runPairedBenchmark({ control: arm, candidate: arm }, { ...protocol, repetitionOffset })));
+    expect(perRep.map((trials) => trials.map((trial) => [trial.repetition, trial.arm]))).toEqual([
+      [[0, 'control'], [0, 'candidate']],
+      [[1, 'candidate'], [1, 'control']],
+      [[2, 'control'], [2, 'candidate']],
+    ]);
+    await expect(runPairedBenchmark({ control: arm, candidate: arm }, { ...protocol, repetitionOffset: -1 }))
+      .rejects.toThrow('repetitionOffset');
+  });
+
   it('rejects invalid distributions and phase order instead of reporting plausible numbers', async () => {
     expect(() => distribution([])).toThrow('nonempty');
     expect(() => distribution([1, Number.NaN])).toThrow('finite');
