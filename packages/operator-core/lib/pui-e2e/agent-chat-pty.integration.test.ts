@@ -4855,9 +4855,17 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
         await pane.waitFor(prompt);
         pane.enter();
         await vi.waitFor(() => expect(scriptedEngine.requests).toHaveLength(turn), { timeout: 60_000, interval: 50 });
+        // Exactly-once, by CONTENT (EI-24375699124551107): each turn reaches
+        // the engine as its own request. A count alone passes when a new
+        // message is folded into a reconciled older one, or when the older
+        // one is re-sent inside it.
+        const received = scriptedEngine.requests[turn - 1] ?? '';
+        expect(received).toContain(prompt);
+        expect(received.match(/P13 long \d+/g) ?? []).toHaveLength(1);
         await pane.waitFor('Message — Enter send', { timeoutMs: 30_000 });
         if (turn === 1) rssAfterFirstMiB = rssMiB(pane);
       }
+      expect(new Set(scriptedEngine.requests).size).toBe(turns);
       const rssAfterLastMiB = rssMiB(pane);
       const keyMs = await keyFeedback(pane, 'longsessionkeys0123456789');
       if (optimised()) expect(p95(keyMs)).toBeLessThanOrEqual(KEY_FEEDBACK_P95_MS);

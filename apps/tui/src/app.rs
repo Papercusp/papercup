@@ -3076,6 +3076,24 @@ impl App {
         self.last_error = None;
     }
 
+    /// The part of `composer` that is NOT an unacknowledged turn's draft.
+    ///
+    /// The composer keeps a pending turn's exact draft until acknowledgement
+    /// (the draft-retention contract), so new typing lands AFTER it. That
+    /// retained prefix belongs to the pending turn, which is reconciled by its
+    /// own commandId and must never be sent a second time inside a new turn.
+    /// An owner who edited the retained draft itself (no longer a prefix) has
+    /// written a new message, so the whole composer is returned.
+    fn text_beyond_pending_draft(&self, composer: &str) -> String {
+        match self.su_pending_turn.as_ref() {
+            Some(pending) if !pending.draft.is_empty() => composer
+                .strip_prefix(pending.draft.as_str())
+                .unwrap_or(composer)
+                .to_owned(),
+            _ => composer.to_owned(),
+        }
+    }
+
     fn fail_su_turn(&mut self, message: &str, uncertain: bool) {
         let pending_draft = self.su_pending_turn.is_some();
         if let Some(pending) = self.su_pending_turn.as_mut() {
@@ -4471,8 +4489,26 @@ impl App {
             }
             return Some(Action::CheckSessionSetup);
         }
+        // An uncertain turn is reconciled by its ORIGINAL command below. Its
+        // draft is still in the composer, so whatever the owner typed after it
+        // is the NEXT message: queue that to send once this turn settles.
+        // Folding it into the reconcile silently dropped it — the reconcile
+        // replays the old commandId, so the new text never became a command
+        // (EI-24375699124551107: turn 38 of 40 never reached the engine).
+        let reconciling = self.su_pending_turn.as_ref().is_some_and(|p| p.uncertain);
+        if reconciling {
+            let next = self.text_beyond_pending_draft(&draft);
+            if !next.trim().is_empty() {
+                self.chat_queued.push(next);
+                self.chat_history_idx = None;
+                self.chat_draft.clear();
+            }
+            if let Some(pending) = self.su_pending_turn.as_ref() {
+                self.chat_input = pending.draft.clone();
+            }
+        }
         let submitted = self.attachments.attach_to_prompt(&draft);
-        if submitted.trim().is_empty() {
+        if submitted.trim().is_empty() && !reconciling {
             return None;
         }
         // P-013: every writable PUI conversation now uses the typed
@@ -4548,7 +4584,9 @@ impl App {
     /// leading/trailing whitespace survives to its acknowledgement; trimming
     /// here would make a queued turn differ from the same text sent with Enter.
     fn queue_chat_turn(&mut self) -> Action {
-        let text = self.chat_input.clone();
+        // A slow acknowledgement leaves the in-flight turn's draft in the
+        // composer; only the text typed after it is the next message.
+        let text = self.text_beyond_pending_draft(&self.chat_input);
         if text.trim().is_empty() {
             return Action::Render;
         }
@@ -20107,6 +20145,85 @@ mod tests {
         });
         assert!(!app.chat_streaming);
         assert_eq!(app.chat_input, "do it once");
+    }
+
+    /// EI-24375699124551107 (P-027): an uncertain turn keeps its draft in the
+    /// composer; the owner types the NEXT message after it and presses Enter.
+    /// The reconcile must replay the ORIGINAL command, and the new text must be
+    /// queued and sent afterwards as its own command, never swallowed.
+    #[test]
+    fn uncertain_reconcile_queues_the_next_message_instead_of_swallowing_it() {
+        let mut app = composing("P13 long 37");
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let pending = app.su_pending_turn.clone().unwrap();
+        let command = json!({"commandId":pending.command_id,"content":pending.content});
+        app.update(Event::SuTurnPrepared {
+            command_id: pending.command_id.clone(),
+            command: command.clone(),
+        });
+        app.update(Event::SuTurnFailed {
+            command_id: pending.command_id.clone(),
+            message: "Acceptance timed out".into(),
+            uncertain: true,
+        });
+        assert_eq!(app.chat_input, "P13 long 37");
+
+        // Attached sessions send the turn; this fixture opens one with it.
+        fn turn_text(action: &Action) -> Option<&str> {
+            match action {
+                Action::SendSuSessionTurn(text) => Some(text),
+                Action::OpenSuSession { initial_turn, .. } => initial_turn.as_deref(),
+                _ => None,
+            }
+        }
+        app.chat_input.push_str("P13 long 38");
+        let action = app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+
+        assert_eq!(
+            turn_text(&action),
+            Some("P13 long 37"),
+            "reconcile must replay the original turn, got {action:?}"
+        );
+        let reconciling = app.su_pending_turn.as_ref().unwrap();
+        assert_eq!(reconciling.command_id, pending.command_id);
+        assert_eq!(reconciling.command.as_ref(), Some(&command));
+        assert_eq!(app.chat_queued, vec!["P13 long 38".to_string()]);
+        assert_eq!(app.chat_input, "P13 long 37");
+
+        app.acknowledge_su_turn(&pending.command_id);
+        app.chat_streaming = false;
+        app.su_open_in_flight = false;
+        let next = app.drain_queued_turn();
+        assert_eq!(
+            next.as_ref().and_then(turn_text),
+            Some("P13 long 38"),
+            "the queued message must send as its own turn, got {next:?}"
+        );
+        let sent = app.su_pending_turn.as_ref().unwrap();
+        assert_ne!(sent.command_id, pending.command_id);
+        assert_eq!(sent.content, "P13 long 38");
+        assert!(app.chat_queued.is_empty());
+    }
+
+    /// A slow acknowledgement keeps the in-flight draft visible; typing the
+    /// next message after it and pressing Enter queues ONLY the new text, so
+    /// the queued turn never re-sends the in-flight one inside itself.
+    #[test]
+    fn queue_during_slow_ack_takes_only_the_text_after_the_retained_draft() {
+        let mut app = composing("first");
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.chat_streaming);
+        assert_eq!(app.chat_input, "first");
+        app.chat_input.push_str(" second");
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.chat_queued, vec![" second".to_string()]);
+
+        // An edited retained draft is a new message as a whole.
+        let mut edited = composing("first");
+        edited.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        edited.chat_input = "fixed first".into();
+        edited.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(edited.chat_queued, vec!["fixed first".to_string()]);
     }
 
     #[test]

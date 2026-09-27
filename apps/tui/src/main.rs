@@ -5747,6 +5747,11 @@ fn startup_snapshot_can_send_initial_turn(
         && su_turn_target_matches(binding, &snapshot.descriptor.identity, harness, chat_id)
 }
 
+/// One acceptance POST's budget, and how many times the SAME command is
+/// re-checked before the turn is reported uncertain (~2 min in total).
+const SU_TURN_ACCEPT_ATTEMPT: Duration = Duration::from_secs(30);
+const SU_TURN_ACCEPT_ATTEMPTS: u32 = 4;
+
 async fn send_su_turn_with_client(
     client: &OperatorClient,
     harness: &str,
@@ -5818,12 +5823,25 @@ async fn send_su_turn_with_client(
         command_id: pending.command_id.clone(),
         command: command.clone(),
     });
-    match tokio::time::timeout(
-        Duration::from_secs(30),
-        client.send_su_session_command(harness, chat_id, command),
-    )
-    .await
-    {
+    // An acceptance that outlives one attempt is RE-CHECKED with the SAME
+    // command (same commandId and payload), never re-minted: the host replays
+    // a known commandId instead of executing it again. Without this, a slow
+    // durable reserve left the turn "uncertain" until the owner happened to
+    // press Enter (EI-24375699124551107).
+    let mut attempt = 1;
+    let outcome = loop {
+        let result = tokio::time::timeout(
+            SU_TURN_ACCEPT_ATTEMPT,
+            client.send_su_session_command(harness, chat_id, command.clone()),
+        )
+        .await;
+        if result.is_err() && attempt < SU_TURN_ACCEPT_ATTEMPTS {
+            attempt += 1;
+            continue;
+        }
+        break result;
+    };
+    match outcome {
         Ok(Ok(response)) => {
             let ack = &response["accepted"];
             if response["ok"] == true
