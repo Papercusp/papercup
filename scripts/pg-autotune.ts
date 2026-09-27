@@ -49,10 +49,10 @@
  * postgres-owned file and signals a system service). A restart briefly drops all
  * connections; pooled clients reconnect. A reload drops nothing.
  */
-import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import {
   databaseTuningToSettings,
   deriveDatabaseTuning,
@@ -73,6 +73,32 @@ const apply = has('--apply');
 const check = has('--check');
 const enableHugePages = has('--huge-pages');
 const forceRestart = has('--restart');
+
+// The scheduled host dump already holds this flock for its whole pg_dump
+// lifecycle. Re-enter under the SAME lock before deriving or writing settings:
+// a restart while pg_dump is copying closes its connection and fails the whole
+// backup. The child retains the lock until apply and live verification finish.
+// A scheduled backup that arrives during this short maintenance window sees its
+// existing EX_TEMPFAIL path and retries on its timer.
+if (apply && process.env.PAPERCUSP_PG_AUTOTUNE_BACKUP_LOCK_HELD !== '1') {
+  const backupLock = process.env.PC_BACKUP_LOCK || join(homedir(), '.cache/papercusp/db-backup.lock');
+  mkdirSync(dirname(backupLock), { recursive: true });
+  const guarded = spawnSync(
+    'flock',
+    ['-n', '-E', '75', backupLock, 'npx', 'tsx', process.argv[1], ...args],
+    {
+      stdio: 'inherit',
+      env: { ...process.env, PAPERCUSP_PG_AUTOTUNE_BACKUP_LOCK_HELD: '1' },
+    },
+  );
+  if (guarded.status === 75) {
+    console.error(`PostgreSQL apply deferred: host backup holds ${backupLock}; retry after the dump finishes.`);
+  } else if (guarded.error) {
+    console.error(`PostgreSQL apply could not establish the backup lock: ${guarded.error.message}`);
+  }
+  process.exit(guarded.status ?? 1);
+}
+
 const confDir = opt('--confd', '/etc/postgresql/18/main/conf.d');
 const service = opt('--service', 'postgresql@18-main.service');
 const port = opt('--port', '5432');
