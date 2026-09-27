@@ -325,7 +325,7 @@ describe('test-time evidence continuity', () => {
 
   const pendingEvidenceRow = (id: number, details: Record<string, unknown>): ListedSpecEvidenceRow => ({
     id, workItemId: 'WI-1', planSlug: 'p1', specId: 'R-1', specRevision: 2, evidenceKind: 'test',
-    evidenceRef: `test-run-group:${runId}:0`, testRunId: null, details,
+    evidenceRef: `test-run-group:${runId}:0`, testRunId: null, testRunProvenance: null, details,
     sourceValId: null, currentRevision: 2, specFingerprint: 'spec-fingerprint',
     fingerprints: {
       sourceFingerprint: 'source-before', testFingerprint: 'test-before',
@@ -614,7 +614,7 @@ describe('failed-scenario rerun scope (SPEC-P006-FAILED-SCENARIO-RERUN)', () => 
     sourceValId: null, specRevision: matrix.specRevision, currentRevision: matrix.specRevision,
     specFingerprint: 'matrix-spec-fingerprint',
     evidenceKind: 'test', evidenceRef: 'test-run-group:00000000-0000-4000-8000-00000000prio:0',
-    testRunId: 41, coverageEvidenceRef: null,
+    testRunId: 41, testRunProvenance: null, coverageEvidenceRef: null,
     fingerprints: {
       ...fingerprints, fixtureFingerprint: null, rubricFingerprint: null, environmentFingerprint: null,
     },
