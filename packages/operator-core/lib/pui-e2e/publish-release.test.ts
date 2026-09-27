@@ -11,6 +11,21 @@ const REPO_ROOT = resolve(__dirname, '../../../..');
 const PUBLISH = process.env.PUI_PUBLISH_SCRIPT || join(REPO_ROOT, 'apps/tui/scripts/publish-release.sh');
 const roots: string[] = [];
 
+// The publisher resolves its host as PAPERCUSP_UPDATE_BASE_URL ?? PAPERCUSP_RELEASE_HOST AFTER
+// sourcing the release-host env file, so an AMBIENT value wins over the fixture file. testing:run
+// spawns vitest from the operator process, whose environment carries the real release host, and
+// the suite then asserted production keys against fixture expectations (4 reds, run 5e50b3df,
+// 2026-09-27). Every spawn therefore starts from an env with the release-host, storage and
+// Portal-link variables removed; each test supplies exactly the ones it means to.
+const INHERITED_RELEASE_ENV = /^(PAPERCUSP_UPDATE_BASE_URL|PAPERCUSP_RELEASE_HOST|PUI_.*|R2_.*|AWS_.*|NEXT_PUBLIC_PORTAL_.*)$/;
+function hermeticEnv(overrides: Record<string, string>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!INHERITED_RELEASE_ENV.test(key)) env[key] = value;
+  }
+  return { ...env, ...overrides };
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -61,7 +76,7 @@ function run(files: ReturnType<typeof candidate>) {
   const result = spawnSync('bash', [PUBLISH, '--archive', files.archive, '--work', work], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
-    env: { ...process.env, DRY_RUN: '1', PUI_RELEASE_HOST_ENV: files.hostEnv },
+    env: hermeticEnv({ DRY_RUN: '1', PUI_RELEASE_HOST_ENV: files.hostEnv }),
   });
   return { result, work };
 }
@@ -130,12 +145,12 @@ if (path.basename(process.argv[1]) === 'curl') {
   const result = spawnSync('bash', [PUBLISH, '--archive', files.archive, '--work', work], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, DRY_RUN: '0',
+    env: hermeticEnv({ PATH: `${bin}:${process.env.PATH}`, DRY_RUN: '0',
       PUI_RELEASE_HOST_ENV: files.hostEnv, PUI_R2_ENV: r2Env,
       PUI_PORTAL_LINKS_ENV: portalEnv, PUI_SKIP_PORTAL_CONFIG: '0',
       MOCK_STORE: state, MOCK_EVENTS: events,
       MOCK_HEAD_FAILURE: options.headFailure ? '1' : '0',
-      MOCK_CORRUPT: options.corruptPublicArchive ? '1' : '0' },
+      MOCK_CORRUPT: options.corruptPublicArchive ? '1' : '0' }),
   });
   return { result, portalEnv, work, archiveKey,
     events: readFileSync(events, 'utf8').trim().split('\n').filter(Boolean)
