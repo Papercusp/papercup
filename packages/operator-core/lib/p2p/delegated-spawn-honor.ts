@@ -589,14 +589,35 @@ export async function probeAgentBinResolvable(agentBin: string): Promise<{ resol
 }
 
 /**
- * Default runtime preflight: pick the member's agent CLI from the seat model
- * (isOmpLocalModel ⇒ omp, else claude) and probe it. The launch-on-plan import
- * is DYNAMIC so this module — imported by the sync projection layer — never
- * drags the agent-tools graph in until a request is actually being honored.
+ * WI-10003468: the agent CLI a delegated seat's member runs under, derived from
+ * the seat MODEL alone — the honoring host has no calling agent whose backend it
+ * could inherit. Same precedence resolveFleetAgent (launch-on-plan) applies with
+ * no explicit agent and no caller: an ollama/ornith id ⇒ omp, a known cloud family
+ * ⇒ its native CLI (cloudModelBackendHint: gpt-* / o-series / luna|terra|sol /
+ * *codex* ⇒ codex; opus|sonnet|haiku|fable / claude-* ⇒ claude), unknown ⇒ claude.
+ *
+ * Before this the choice was `isOmpLocalModel ? 'omp' : 'claude'`, so a codex seat
+ * (gpt-5.6-sol:xhigh) launched `psu --agent=claude`, psu refused the cross-backend
+ * model at boot, and the seat settled refused:spawn_failed AFTER it was consumed
+ * (P-202 WD-5/WD-6, run 20260927144532, receipt 8ed8d788). The runtime probe had the
+ * same blind spot: it checked `claude` was on PATH for a member that needs `codex`.
+ *
+ * The launch-on-plan import is DYNAMIC so this module — imported by the sync
+ * projection layer — never drags the agent-tools graph in until a request is
+ * actually being honored.
+ */
+export async function resolveDelegatedSeatAgent(model: string | undefined): Promise<'claude' | 'omp' | 'codex'> {
+  const { isOmpLocalModel, cloudModelBackendHint } = await import('../agent-tools/fleet_registry/launch-on-plan');
+  if (isOmpLocalModel(model)) return 'omp';
+  return cloudModelBackendHint(model) ?? 'claude';
+}
+
+/**
+ * Default runtime preflight: probe the agent CLI the member will actually run
+ * under ({@link resolveDelegatedSeatAgent} — omp / codex / claude by model family).
  */
 async function defaultProbeAgentRuntime(model: string | undefined): Promise<{ resolved: boolean; detail: string }> {
-  const { isOmpLocalModel } = await import('../agent-tools/fleet_registry/launch-on-plan');
-  return probeAgentBinResolvable(isOmpLocalModel(model) ? 'omp' : 'claude');
+  return probeAgentBinResolvable(await resolveDelegatedSeatAgent(model));
 }
 
 /**
@@ -679,9 +700,12 @@ export async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<Spa
   const { createFleetIfAbsent } = await import('../agent-fleets-store');
   const { buildConsoleEnvelope } = await import('../console-launcher');
   const { spawnConsole, spawnHeadless } = await import('../console-spawn');
-  const { memberLaunchCommand, defaultMemberAccountRouting, composeMemberLaunchContext, isOmpLocalModel } = await import(
+  const { memberLaunchCommand, defaultMemberAccountRouting, composeMemberLaunchContext } = await import(
     '../agent-tools/fleet_registry/launch-on-plan'
   );
+  // WI-10003468: the backend follows the seat's model family (codex seats launch
+  // `--agent=codex`), never a hard-coded non-omp ⇒ claude fallback.
+  const memberAgent = await resolveDelegatedSeatAgent(req.launch.model);
 
   // WI-1408: bootstrap's fleet JOIN fail-softs without a local agent_fleets row
   // and the registry is machine-local — ensure it (idempotent), leader = the
@@ -724,7 +748,7 @@ export async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<Spa
   });
   const launchOpts = {
     fleetSlug: req.fleetSlug,
-    agent: isOmpLocalModel(req.launch.model) ? ('omp' as const) : ('claude' as const),
+    agent: memberAgent,
     harness: req.potHomeSlug,
     plan: req.planSlug,
     model: req.launch.model,
@@ -968,7 +992,8 @@ export async function honorSpawnRequestFromProjection(
   // while zero members run. Preflight the runtime and refuse LOUDLY (a
   // federated receipt) instead of claiming + phantom-spawning. Refused straight
   // from the null disposition, so no 'honoring' claim is left dangling. Model
-  // resolved from the matched slot, so it targets the RIGHT CLI (claude vs omp).
+  // resolved from the matched slot, so it targets the RIGHT CLI (claude / omp /
+  // codex — resolveDelegatedSeatAgent, WI-10003468).
   const runtime = await probeAgentRuntime(resolution.launch.model);
   if (!runtime.resolved) {
     return refuse('agent_runtime_missing', runtime.detail, 'refused:agent_runtime_missing');
