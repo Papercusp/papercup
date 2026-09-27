@@ -1433,6 +1433,12 @@ export async function emitScorecard(
     // WHAT changed). Same fail-open/unrecorded-on-failure contract as rubricRevision.
     const criteriaHash = rubricEvidenceIdentity.criteriaHash;
     const rubricMeaningRevision = rubricEvidenceIdentity.meaningRevision;
+    // A rubric named as the SUBJECT is distinct from the meta-rubric used to
+    // score it. Pin both identities so later subject edits can invalidate this
+    // attestation without mistaking the meta-rubric revision for the subject's.
+    const subjectRubricIdentity = args.subject?.kind === 'rubric'
+      ? { rubricRef: args.subject.ref, ...await getRubricEvidenceIdentity(args.subject.ref) }
+      : undefined;
     const acceptance = args.acceptance as ScorecardAcceptance | undefined;
     const acceptanceOf = typeof args.acceptanceOf === 'string' ? args.acceptanceOf.trim() : undefined;
     // WI-2141007: set when this verdict is recorded by a SUCCESSOR to a dead
@@ -2678,11 +2684,19 @@ export async function emitScorecard(
         },
         { revision: rubricRevision, criteriaHash, meaningRevision: rubricMeaningRevision },
       ).state !== 'current';
+    const subjectRubricIdentityChanged = subjectRubricIdentity != null && latest != null && (
+      latest.subjectRubricIdentity?.rubricRef !== subjectRubricIdentity.rubricRef ||
+      classifyRubricEvidenceCurrentness(
+        latest.subjectRubricIdentity ?? {},
+        subjectRubricIdentity,
+      ).state !== 'current'
+    );
     if (
       !args.force &&
       !finalityChanged &&
       !vettingChanged &&
       !rubricIdentityChanged &&
+      !subjectRubricIdentityChanged &&
       latestFingerprint === evidenceFingerprint &&
       (!args.supersedes || sameCorrectionAlreadyExists)
     ) {
@@ -2947,6 +2961,7 @@ export async function emitScorecard(
           ...(provisional ? { provisional } : {}),
           ...(gradingAudit ? { gradingAudit } : {}),
           ...(args.subject ? { subject: args.subject } : {}),
+          ...(subjectRubricIdentity ? { subjectRubricIdentity } : {}),
           ...(rollup ? { rollup } : {}),
           ...(vetting ? { vetting } : {}),
           ...(checkRuns ? { checkRuns } : {}),
