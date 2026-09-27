@@ -16,6 +16,10 @@
  * backups) follow this exact shape per the P-008 / D-016 classification.
  */
 import { DBOS } from '@dbos-inc/dbos-sdk';
+import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import type { PgssBaseline } from '../system-health/hot-seq-scan-detector';
@@ -40,6 +44,7 @@ import { runFleetLogsGc, runLaunchContextGc, runPapercuspWorkdirGc } from '../fl
 import { listLiveSessionRenders } from '../stale-prompt-render-sweep';
 import { gcLedgerDir } from '../turn-provenance/turn-provenance';
 import { readRegistry } from '../workspace-registry';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../harness-registry';
 import { sweepOrphanSnapshots, sweepRecoveryDebrisTick, sweepRestoredClonesTick } from '@papercusp/backup';
 import { gcScheduledPlanRuns } from '../harness/routines/gc-plan-runs';
 import { refreshAll as refreshPushCredentials } from '../device-push-credentials';
@@ -462,6 +467,7 @@ async function sessionDirGcTick(): Promise<void> {
     },
     { name: 'session-dir-gc' },
   );
+  await dependencyGenerationRetentionTick();
 }
 const sessionDirGcWorkflow = idempotentRegisterWorkflow('sessionDirGc', () =>
   DBOS.registerWorkflow(sessionDirGcTick, {
@@ -470,6 +476,42 @@ const sessionDirGcWorkflow = idempotentRegisterWorkflow('sessionDirGc', () =>
   }),
 );
 DBOS.registerScheduled(sessionDirGcWorkflow, { name: 'sessionDirGc', crontab: '0 50 * * * *' });
+
+// Reuse the already-armed hourly filesystem janitor cadence. Dependency
+// generations used to run retention only during checkout/prewarm, leaving a
+// quiet hive's dead selector leases and old generations stranded indefinitely.
+// The script's --prune-only path shares the publisher lock and never builds.
+async function dependencyGenerationRetentionTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    try {
+      const { resolveIntegrationRoot } = await import('../harness/routines/release-actions');
+      const script = join(resolveIntegrationRoot(), 'apps/operator/bin/release/dependency-generation.sh');
+      if (!existsSync(script)) return;
+      const roots = new Set<string>();
+      for (const workspace of readRegistry().workspaces) {
+        try {
+          const registry = await loadHarnessRegistry(workspace.id);
+          for (const project of registry.projects) {
+            const root = resolveHarnessContentPath(registry, project.slug);
+            if (root && existsSync(join(root, '.papercusp/dependency-generations'))) roots.add(root);
+          }
+        } catch (error) {
+          console.warn(`[dependency-generation-retention] workspace ${workspace.id}: ${(error as Error).message}`);
+        }
+      }
+      const run = promisify(execFile);
+      for (const root of roots) {
+        try {
+          await run('bash', [script, '--integration', root, '--prune-only'], { timeout: 120_000 });
+        } catch (error) {
+          console.warn(`[dependency-generation-retention] ${root}: ${(error as Error).message}`);
+        }
+      }
+    } catch (error) {
+      console.warn(`[dependency-generation-retention] tick failed: ${(error as Error).message}`);
+    }
+  }, { name: 'dependency-generation-retention' });
+}
 
 // Daily 04:45 (off the 04:00/04:15/04:30 GC stampede): per-plan retention cap for
 // the plan_revisions spine — keep the newest N revisions per plan, delete the older

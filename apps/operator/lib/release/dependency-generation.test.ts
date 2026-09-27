@@ -8,6 +8,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1638,6 +1639,38 @@ describe('immutable dependency generation', () => {
     expect(existsSync(orphan)).toBe(false);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('collects stale publish-lock quarantines after one day while preserving recent writer records (WI-10002319)', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const first = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '2' });
+    expect(first.status, first.stderr).toBe(0);
+
+    const now = Math.floor(Date.now() / 1000);
+    const old = join(generationRoot, `.stale-publish-lock.${now - 86401}.1234`);
+    const recent = join(generationRoot, `.stale-publish-lock.${now}.2345`);
+    for (const path of [old, recent]) {
+      mkdirSync(path);
+      writeFileSync(join(path, 'writer'), 'host=prior\npid=99999999\n');
+    }
+
+    const reused = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '2' });
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(existsSync(old)).toBe(false);
+    expect(readFileSync(join(recent, 'writer'), 'utf8')).toContain('pid=99999999');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('enrolls every created quarantine prefix in the retention collector (WI-10002319)', () => {
+    const script = readFileSync(SCRIPT, 'utf8');
+    const createdPrefixes = [...script.matchAll(/quarantine="\$generation_root\/(\.[a-z-]+[.-])/g)]
+      .map((match) => match[1]);
+    expect(createdPrefixes).toEqual(expect.arrayContaining(['.prune-', '.invalid-', '.stale-publish-lock.']));
+    const collection = script.match(/for quarantine in ([^\n]+); do/)?.[1];
+    expect(collection).toBeDefined();
+    for (const prefix of createdPrefixes) {
+      expect(collection).toContain(`"$generation_root"/${prefix}*`);
+    }
+  });
+
   it('imports direct sibling checkout pins and prunes them after their marker goes stale', () => {
     const integration = makeIntegration();
     const generationRoot = join(integration, '.papercusp/dependency-generations');
@@ -1721,6 +1754,74 @@ describe('immutable dependency generation', () => {
     expect(after.status, after.stderr).toBe(0);
     expect(existsSync(firstPath)).toBe(false);
   });
+
+  it('reclaims a selector lease when its PID was recycled (WI-10002317)', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const first = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    expect(first.status, first.stderr).toBe(0);
+    const firstIdentity = publishedIdentity(first.stdout);
+    const firstPath = publishedPath(first.stdout);
+    const lease = join(generationRoot, '.leases/recycled-pid');
+    mkdirSync(dirname(lease), { recursive: true });
+    writeFileSync(
+      lease,
+      `host=${execFileSync('hostname', { encoding: 'utf8' }).trim()}\n` +
+        `pid=${process.pid}\nprocess_start=proc:0\nidentity=${firstIdentity}\n`,
+    );
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'after-recycled-pid\n');
+    const after = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    expect(after.status, after.stderr).toBe(0);
+    expect(existsSync(lease)).toBe(false);
+    expect(existsSync(firstPath)).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('age-bounds legacy selector leases that lack process identity (WI-10002317)', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const first = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    expect(first.status, first.stderr).toBe(0);
+    const firstIdentity = publishedIdentity(first.stdout);
+    const firstPath = publishedPath(first.stdout);
+    const lease = join(generationRoot, '.leases/legacy-aged');
+    mkdirSync(dirname(lease), { recursive: true });
+    writeFileSync(
+      lease,
+      `host=${execFileSync('hostname', { encoding: 'utf8' }).trim()}\n` +
+        `pid=${process.pid}\nidentity=${firstIdentity}\n`,
+    );
+    const old = new Date(Date.now() - 2 * 86_400_000);
+    utimesSync(lease, old, old);
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'after-legacy-age\n');
+    const after = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    expect(after.status, after.stderr).toBe(0);
+    expect(existsSync(lease)).toBe(false);
+    expect(existsSync(firstPath)).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('sweeps a quiescent store without publishing from changed inputs (WI-10002317)', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const first = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    expect(first.status, first.stderr).toBe(0);
+    const firstIdentity = publishedIdentity(first.stdout);
+    const firstPath = publishedPath(first.stdout);
+    const lease = join(generationRoot, '.leases/dead-reader');
+    mkdirSync(dirname(lease), { recursive: true });
+    writeFileSync(
+      lease,
+      `host=${execFileSync('hostname', { encoding: 'utf8' }).trim()}\n` +
+        `pid=99999999\nidentity=${firstIdentity}\n`,
+    );
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'changed-without-publish\n');
+    const sweep = spawnSync('bash', [SCRIPT, '--integration', integration, '--prune-only'], {
+      encoding: 'utf8', env: { ...process.env, DEPENDENCY_GENERATION_RETAIN_COUNT: '1' },
+    });
+    expect(sweep.status, String(sweep.stderr)).toBe(0);
+    expect(existsSync(lease)).toBe(false);
+    expect(existsSync(firstPath)).toBe(true);
+    expect(readdirSync(generationRoot).filter((entry) => entry.startsWith('v1-'))).toEqual([firstIdentity]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('protects the selection-to-materialization handoff with a live controller-owned lease (WI-2144343)', () => {
     const integration = makeIntegration();

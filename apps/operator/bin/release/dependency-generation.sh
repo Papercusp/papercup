@@ -843,9 +843,27 @@ dependency_generation_cleanup_abandoned() {
 }
 
 dependency_generation_write_owner() {
-  local marker="$1" owner_pid="${2:-$$}"
-  printf 'host=%s\npid=%s\nstarted=%s\n' \
-    "$(dependency_generation_host)" "$owner_pid" "$(date +%s)" > "$marker"
+  local marker="$1" owner_pid="${2:-$$}" process_start="${3:-}"
+  [ -n "$process_start" ] || process_start="$(dependency_generation_process_start "$owner_pid" || true)"
+  printf 'host=%s\npid=%s\nstarted=%s\nprocess_start=%s\n' \
+    "$(dependency_generation_host)" "$owner_pid" "$(date +%s)" "$process_start" > "$marker"
+}
+
+# A PID alone is not an identity: the kernel can recycle it while a selector
+# lease survives. Linux start ticks are stable for that process's lifetime;
+# ps lstart supplies the same discriminator on hosts without procfs.
+dependency_generation_process_start() {
+  local pid="$1" value
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  if [ -r "/proc/$pid/stat" ]; then
+    value="$(sed -E 's/^.*\) //' "/proc/$pid/stat" | awk '{ print $20 }')"
+    case "$value" in ''|*[!0-9]*) return 1 ;; esac
+    printf 'proc:%s\n' "$value"
+    return 0
+  fi
+  value="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//; s/ *$//')"
+  [ -n "$value" ] || return 1
+  printf 'ps:%s\n' "$value"
 }
 
 # Name the current holder, so a timeout distinguishes ordinary contention from
@@ -931,7 +949,7 @@ dependency_generation_release_publish_lock() {
 # is preserved fail-closed because kill(2) cannot prove its liveness.
 dependency_generation_acquire_selector_lease() {
   local generation_root="$1" identity="$2" owner_pid="${3:-$$}" expected_token="${4:-}"
-  local lease current_token
+  local lease current_token owner_start
   if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]]; then
     dependency_generation_log "FATAL: invalid dependency-generation lease identity: $identity"
     return 2
@@ -942,7 +960,8 @@ dependency_generation_acquire_selector_lease() {
       return 2
       ;;
   esac
-  if ! kill -0 "$owner_pid" 2>/dev/null; then
+  owner_start="$(dependency_generation_process_start "$owner_pid" || true)"
+  if [ -z "$owner_start" ]; then
     dependency_generation_log "FATAL: dependency-generation lease owner pid is not live: $owner_pid"
     return 74
   fi
@@ -965,8 +984,19 @@ dependency_generation_acquire_selector_lease() {
   fi
   dependency_generation_ensure_store_root "$generation_root" "$generation_root/.leases"
   lease="$generation_root/.leases/selector-$$-$(date +%s)-${RANDOM:-0}"
-  dependency_generation_write_owner "$lease" "$owner_pid"
+  if [ "$(dependency_generation_process_start "$owner_pid" || true)" != "$owner_start" ]; then
+    dependency_generation_release_publish_lock
+    dependency_generation_log "FATAL: dependency-generation lease owner process changed: $owner_pid"
+    return 74
+  fi
+  dependency_generation_write_owner "$lease" "$owner_pid" "$owner_start"
   printf 'identity=%s\n' "$identity" >> "$lease"
+  if [ "$(dependency_generation_process_start "$owner_pid" || true)" != "$owner_start" ]; then
+    rm -f -- "$lease"
+    dependency_generation_release_publish_lock
+    dependency_generation_log "FATAL: dependency-generation lease owner process changed during acquisition: $owner_pid"
+    return 74
+  fi
   DEPENDENCY_GENERATION_SELECTOR_LEASE="$lease"
   dependency_generation_release_publish_lock
 }
@@ -1109,7 +1139,7 @@ dependency_generation_ensure_store_root() {
 
 dependency_generation_refresh_retention_state_locked() {
   local generation_root="$1" integration_root="$2"
-  local host pin pin_host identity checkout marker lease lease_host lease_pid parent sibling
+  local host pin pin_host identity checkout marker lease lease_host lease_pid lease_start current_start parent sibling
   host="$(dependency_generation_host)"
   dependency_generation_ensure_store_root "$generation_root" "$generation_root/.pins" "$generation_root/.leases"
 
@@ -1144,14 +1174,21 @@ dependency_generation_refresh_retention_state_locked() {
     [ -f "$lease" ] || continue
     lease_host="$(dependency_generation_read_field "$lease" host)"
     lease_pid="$(dependency_generation_read_field "$lease" pid)"
+    lease_start="$(dependency_generation_read_field "$lease" process_start)"
     identity="$(dependency_generation_read_field "$lease" identity)"
     if [ -n "$lease_host" ] && [ "$lease_host" != "$host" ] \
       && [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]]; then
       continue
     fi
+    current_start=''
+    if [[ "$lease_pid" =~ ^[0-9]+$ ]]; then
+      current_start="$(dependency_generation_process_start "$lease_pid" || true)"
+    fi
     if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]] \
       || [[ ! "$lease_pid" =~ ^[0-9]+$ ]] \
-      || ! kill -0 "$lease_pid" 2>/dev/null; then
+      || [ -z "$current_start" ] \
+      || { [ -n "$lease_start" ] && [ "$lease_start" != "$current_start" ]; } \
+      || { [ -z "$lease_start" ] && dependency_generation_path_is_old "$lease" 86400; }; then
       dependency_generation_log "removing stale selector lease $(basename "$lease")"
       rm -f -- "$lease"
     fi
@@ -1252,8 +1289,19 @@ dependency_generation_quarantine_unretained_locked() {
   # dead quarantines had stranded 39 GiB for 2-4 days and put the root filesystem
   # at 95%, which in turn made the cargo lane's disk-headroom admission REFUSE to
   # run and red-pinned @papercusp/desktop in the gate.
-  for quarantine in "$generation_root"/.prune-* "$generation_root"/.invalid-*; do
+  for quarantine in "$generation_root"/.prune-* "$generation_root"/.invalid-* "$generation_root"/.stale-publish-lock.*; do
     [ -d "$quarantine" ] || continue
+    # A stale publish lock holds only its writer record, which is useful for
+    # post-mortem inspection. Keep it for a day after the atomic quarantine
+    # rename; directory mtime may predate that rename, so use its name's epoch.
+    case "$quarantine" in
+      "$generation_root"/.stale-publish-lock.*)
+        local quarantine_epoch="${quarantine##*.stale-publish-lock.}"
+        quarantine_epoch="${quarantine_epoch%%.*}"
+        case "$quarantine_epoch" in ''|*[!0-9]*) continue ;; esac
+        [ $(( $(date +%s) - quarantine_epoch )) -ge 86400 ] || continue
+        ;;
+    esac
     DEPENDENCY_GENERATION_PRUNE_QUARANTINES+=("$quarantine")
   done
   for generation in "$generation_root"/v1-*; do
@@ -1745,7 +1793,7 @@ dependency_generation_ensure() {
 }
 
 dependency_generation_main() {
-  local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0
+  local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0 prune_only=''
   local input_before='' input_after='' exact_input='' selector='' lease_owner_pid=''
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
@@ -1757,6 +1805,7 @@ dependency_generation_main() {
       --lease-owner-pid) lease_owner_pid="$2"; shift 2 ;;
       --ensure-ref) ensure_ref="$2"; shift 2 ;;
       --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
+      --prune-only) prune_only='1'; shift ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
     esac
   done
@@ -1766,6 +1815,19 @@ dependency_generation_main() {
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
   generation_root="${generation_root:-$integration_root/.papercusp/dependency-generations}"
+  if [ -n "$prune_only" ]; then
+    [ -z "$select_inputs_from$ensure_ref$fingerprint_ref$lease_owner_pid" ] \
+      && [ "${#workspace_dirs[@]}" -eq 0 ] || {
+      dependency_generation_log '--prune-only cannot select or publish a generation'
+      return 2
+    }
+    # A quiescent hive still needs retention. Never create a store merely to
+    # sweep it; the same publish lock protects live selectors and generation
+    # publication when a checkout happens concurrently.
+    [ -d "$generation_root" ] || return 0
+    dependency_generation_apply_retention "$generation_root" "$integration_root"
+    return $?
+  fi
   if [ -n "$select_inputs_from" ] && { [ -n "$ensure_ref" ] || [ -n "$fingerprint_ref" ]; }; then
     dependency_generation_log '--select-inputs-from, --ensure-ref, and --fingerprint-ref are mutually exclusive'
     return 2
