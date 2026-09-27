@@ -559,7 +559,7 @@ async function settleAdmissionPrecheck(
       ...(dispatchReservation?.token === operationId ? {} : { dispatchReservation }),
       admissionPrecheck: {
         ...current,
-        status: verdict.ok ? 'passed' : 'failed',
+        status: verdict.ok ? (verdict.ran ? 'passed' : 'deferred') : 'failed',
         verdict,
         updatedAtMs: settledAtMs,
       },
@@ -1240,12 +1240,16 @@ export default defineTool({
               updatedAtMs: queue.updatedAtMs,
             },
             note:
-              'R6 pre-check is still running and NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity' +
+              'R6 pre-check is still running and NOTHING publishes in the background. Re-read op:get; after status=passed or status=deferred (checkpoint-tree-busy), repeat this confirmed admit with the refreshed exact queue identity' +
               (wholeBlob ? ` and wholeBlob:true, sourceCommit:'${retrySourceCommit}'` : '') +
               '.',
           });
         }
-        if (matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true) {
+        if (
+          (matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true && matchingPrecheck.verdict.ran) ||
+          (matchingPrecheck?.status === 'deferred' && matchingPrecheck.verdict?.ok === true &&
+            !matchingPrecheck.verdict.ran && matchingPrecheck.verdict.reason === 'checkpoint-tree-busy')
+        ) {
           precheck = matchingPrecheck.verdict;
         } else if (
           matchingPrecheck?.status === 'failed' &&
@@ -1367,7 +1371,7 @@ export default defineTool({
               updatedAtMs: pendingQueue.updatedAtMs,
             },
             note:
-              'R6 pre-check launched after its durable marker was written. NOTHING publishes in the background. Re-read op:get; after status=passed, repeat this confirmed admit with the refreshed exact queue identity' +
+              'R6 pre-check launched after its durable marker was written. NOTHING publishes in the background. Re-read op:get; after status=passed or status=deferred (checkpoint-tree-busy), repeat this confirmed admit with the refreshed exact queue identity' +
               (wholeBlob ? ` and wholeBlob:true, sourceCommit:'${operation.sourceCommit}'` : '') +
               '.',
           });

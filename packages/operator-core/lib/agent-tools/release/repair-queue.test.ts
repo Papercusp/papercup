@@ -1232,6 +1232,10 @@ describe('release:repair-queue', () => {
       );
       expect(started).toMatchObject({ ok: true, admitted: false, verdict: 'precheck-running' });
       const settled = await settledPrecheckQueue();
+      expect(settled.admissionPrecheck).toMatchObject({
+        status: 'deferred',
+        verdict: { ok: true, ran: false, reason: 'checkpoint-tree-busy' },
+      });
       mocks.readState.mockResolvedValue({ status: 'value', queue: settled });
       const result = body(
         await tool.handler(
