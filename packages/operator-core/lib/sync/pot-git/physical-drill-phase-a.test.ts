@@ -157,7 +157,7 @@ function fixture(): PhysicalPhaseAInput {
     quarantine,
     bootstrap: {
       tool: 'git-sync:run',
-      installSlug: 'hello-world',
+      installSlug: 'hello-world-3-pot',
       targetHost: 'vm',
       fired: true,
       startedAt: times[4],
@@ -247,7 +247,8 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
   it('rejects a non-canonical bootstrap or a causal timestamp inversion', () => {
     const input = fixture();
     input.bootstrap.tool = 'git-sync:run';
-    input.bootstrap.installSlug = 'hello-world-3-pot' as never;
+    // The retired joinHiveAsView member slug (WI-10003546) is not the VM's install.
+    input.bootstrap.installSlug = 'hello-world' as never;
     input.bootstrap.targetHost = 'vm';
     input.bootstrap.startedAt = times[2];
     input.bootstrap.finishedAt = times[2];
@@ -257,6 +258,7 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toEqual(
       expect.arrayContaining([
+        'VM bootstrap must be the fixed canonical git-sync:run invocation',
         'Phase A observations do not preserve absence-before-bootstrap causal order',
         'VM store absence must come from the scenario atomic-quarantine operation',
       ]),
