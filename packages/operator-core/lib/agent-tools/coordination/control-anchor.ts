@@ -687,23 +687,40 @@ export async function markControlTransitionPrepared(
 ): Promise<boolean> {
   const rev = JSON.stringify({ specificationRevision: revision.specificationRevision, stateRevision: revision.stateRevision });
   return await sql.begin(async (tx) => {
-    const rows = await tx<Array<{ control_generation: number | string }>>`
+    // WI-10003464: a generation that does not change the identity (a loop, scope
+    // or reconcile bump) re-delivers an activation that is ALREADY applied. Like
+    // the pure prepareActivation, that is a no-op: re-marking it 'prepared' made
+    // status read 'prepared' with desired == prepared == applied between turns.
+    // Only status 'applied' qualifies — a carry-respawn restart sets 'desired'
+    // with the same revision and MUST still prepare + acknowledge, so the
+    // successor native session records its own applied receipt.
+    const rows = await tx<Array<{ control_generation: number | string; already_applied: boolean }>>`
       UPDATE harness_shared.session_briefs
-         SET control_state = jsonb_set(
-           jsonb_set(
-             jsonb_set(control_state, '{activation,prepared}', ${rev}::text::jsonb, true),
-             '{activation,status}', '"prepared"'::jsonb, true
-           ),
-           '{activation,failure}', 'null'::jsonb, true
-         )
+         SET control_state = CASE
+           WHEN control_state->'activation'->>'status' = 'applied'
+            AND control_state->'activation'->'applied'->>'specificationRevision' = ${revision.specificationRevision}
+            AND control_state->'activation'->'applied'->>'stateRevision' = ${revision.stateRevision}
+           THEN control_state
+           ELSE jsonb_set(
+             jsonb_set(
+               jsonb_set(control_state, '{activation,prepared}', ${rev}::text::jsonb, true),
+               '{activation,status}', '"prepared"'::jsonb, true
+             ),
+             '{activation,failure}', 'null'::jsonb, true
+           )
+         END
        WHERE owner_id = ${ownerId}
          AND workspace_id = ${workspaceId}
          AND control_generation = ${generation}
          AND control_delivered_generation < ${generation}
          AND control_state->'activation'->'desired' = ${rev}::text::jsonb
-      RETURNING control_generation
+      RETURNING control_generation,
+                (control_state->'activation'->>'status' = 'applied') AS already_applied
     `;
     if (rows.length === 0) return false;
+    // Nothing transitioned, so there is no prepared receipt to record; the
+    // acknowledgement below still advances the delivery watermark.
+    if (rows[0]!.already_applied) return true;
     const recorded = await recordCurrentSessionIdentityActivation({
       ownerId, workspaceId, generation, phase: 'prepared', source: 'control', revision,
       sql: tx as unknown as Sql,
@@ -829,7 +846,17 @@ export async function acknowledgeControlTransition(
            AND control_generation >= ${generation}
            AND control_delivered_generation < ${generation}
            AND control_state->'activation'->'desired' = ${JSON.stringify(activationRevision)}::text::jsonb
-           AND control_state->'activation'->'prepared' = ${JSON.stringify(activationRevision)}::text::jsonb
+           AND (
+             control_state->'activation'->'prepared' = ${JSON.stringify(activationRevision)}::text::jsonb
+             -- WI-10003464: markControlTransitionPrepared leaves an already-applied
+             -- revision untouched (prepared stays null), so accept that state too or
+             -- a non-identity generation bump could never advance the watermark.
+             OR (
+               control_state->'activation'->>'status' = 'applied'
+               AND control_state->'activation'->'applied'->>'specificationRevision' = ${activationRevision.specificationRevision}
+               AND control_state->'activation'->'applied'->>'stateRevision' = ${activationRevision.stateRevision}
+             )
+           )
         RETURNING control_delivered_generation
       `;
       if (rows.length === 0) return false;

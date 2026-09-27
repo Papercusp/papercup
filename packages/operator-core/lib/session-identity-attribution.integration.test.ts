@@ -7,6 +7,7 @@ import {
   acknowledgeControlTransition,
   convergeActivationToLaunchRecord,
   failControlTransitionActivation,
+  markControlTransitionPrepared,
 } from './agent-tools/coordination/control-anchor';
 import { recordCurrentSessionIdentityActivation } from './session-identity-attribution';
 
@@ -384,6 +385,48 @@ describe('P-009 activation span views', () => {
         SELECT control_generation::text FROM harness_shared.session_identity_activation_events
          WHERE owner_id = ${seeded.owner} AND phase = 'applied'`;
       expect(receipt).toEqual({ control_generation: '84' });
+    });
+
+    // WI-10003464: measured on a live Claude su (2026-09-27) — every applied
+    // generation was followed ~250 ms later by a 'prepared' receipt for the NEXT
+    // generation at the SAME revision, so between turns status read 'prepared'
+    // with desired == prepared == applied.
+    async function markApplied(owner: string, revision: unknown, status: 'applied' | 'desired') {
+      await db.sql`UPDATE harness_shared.session_briefs
+         SET control_state = jsonb_set(
+               jsonb_set(control_state, '{activation,applied}', ${JSON.stringify(revision)}::text::jsonb, true),
+               '{activation,status}', ${JSON.stringify(status)}::text::jsonb, true)
+       WHERE owner_id = ${owner}`;
+    }
+    async function activationOf(owner: string) {
+      const [row] = await db.sql<Array<{ status: string; prepared: unknown }>>`
+        SELECT control_state #>> '{activation,status}' AS status, control_state->'activation'->'prepared' AS prepared
+          FROM harness_shared.session_briefs WHERE owner_id = ${owner}`;
+      const prepared = await db.sql`SELECT 1 FROM harness_shared.session_identity_activation_events
+        WHERE owner_id = ${owner} AND phase = 'prepared'`;
+      return { ...row, preparedReceipts: prepared.length };
+    }
+
+    it('does not re-mark an already-applied revision prepared on a non-identity bump, and still advances the watermark', async () => {
+      const seeded = await seedInjection('reapplied', 9305, 88, { prepared: null, status: 'desired' });
+      await markApplied(seeded.owner, seeded.revision, 'applied');
+
+      await expect(markControlTransitionPrepared(seeded.owner, WS, 88, seeded.revision, db.sql)).resolves.toBe(true);
+      expect(await activationOf(seeded.owner)).toEqual({ status: 'applied', prepared: null, preparedReceipts: 0 });
+
+      await expect(acknowledgeControlTransition(seeded.owner, WS, 88, db.sql, seeded.revision)).resolves.toBe(true);
+      const { brief } = await readBack(seeded.owner);
+      expect(brief).toEqual({ delivered: '88', applied: seeded.revision, status: 'applied' });
+    });
+
+    it('positive control: a same-revision restart (status desired) still prepares and receipts', async () => {
+      const seeded = await seedInjection('restart', 9306, 89, { prepared: null, status: 'desired' });
+      await markApplied(seeded.owner, seeded.revision, 'desired');
+
+      await expect(markControlTransitionPrepared(seeded.owner, WS, 89, seeded.revision, db.sql)).resolves.toBe(true);
+      expect(await activationOf(seeded.owner)).toEqual({
+        status: 'prepared', prepared: seeded.revision, preparedReceipts: 1,
+      });
     });
   });
 
