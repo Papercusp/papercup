@@ -87,6 +87,12 @@ import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
 } from '../capability/foreground-transport-cap';
+import {
+  TSC_SERVICE_ENV,
+  requestTscService,
+  tscServiceSocketPath,
+} from '../../../../../scripts/lib/tsc-service.mjs';
+import type { TscServiceResponse } from '../../../../../scripts/lib/tsc-service.mjs';
 
 /** A cold full-repo typecheck runs minutes, not seconds; a wedged one must still end. */
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -684,11 +690,15 @@ export function ambientDeclarationFiles(projectDir: string): string[] {
   return files.sort();
 }
 
-export function buildScopedTsconfig(
+/**
+ * Resolve the scoped `files` the way both engines judge them, so the shared service and the
+ * CLI fallback always answer about the same requested set.
+ */
+export function resolveScopedFiles(
   root: string,
   projectTsconfigAbs: string,
   requestedFiles: string[],
-): { configPath: string; cleanup: () => void; resolvedFiles: string[]; missing: string[] } {
+): { resolvedFiles: string[]; missing: string[] } {
   const resolvedFiles: string[] = [];
   const missing: string[] = [];
   for (const f of requestedFiles) {
@@ -710,6 +720,15 @@ export function buildScopedTsconfig(
     if (abs) resolvedFiles.push(abs);
     else missing.push(f);
   }
+  return { resolvedFiles, missing };
+}
+
+export function buildScopedTsconfig(
+  root: string,
+  projectTsconfigAbs: string,
+  requestedFiles: string[],
+): { configPath: string; cleanup: () => void; resolvedFiles: string[]; missing: string[] } {
+  const { resolvedFiles, missing } = resolveScopedFiles(root, projectTsconfigAbs, requestedFiles);
 
   const declarationFiles = ambientDeclarationFiles(dirname(projectTsconfigAbs));
   const scopedFiles = [...new Set([...resolvedFiles, ...declarationFiles])];
@@ -766,10 +785,83 @@ export function buildScopedTsconfig(
   };
 }
 
+/**
+ * WI-10003415 / plan host-memory-reduction-2026-09-27 P-011 — a scoped run asks the shared
+ * typecheck service first.
+ *
+ * 248 of this tool's 321 calls in the 7 days to 2026-09-27 were `scopeToFiles` runs on
+ * operator-core, and each paid its own compile of the requested files' import graph: a hub file
+ * pulls in most of the ~17.7k-file program (13 GB, 63 s, past the foreground cap). The service
+ * (scripts/tsc-service/server.mjs, shared with `lint:tsc --files`) keeps the program loaded and
+ * checks only what the verdict depends on. Measured on the live service: a hub file 1.4 s, a
+ * cold start 2.8 s, a file with 1,069 importers 14.5 s.
+ *
+ * The two engines check DIFFERENT neighbourhoods, so the result names which one answered:
+ *   - tsc-service: the requested files inside the FULL project program (the verdict the
+ *     project-wide run gives them), plus files that reference their exported types and their
+ *     direct importers. That is the reverse graph, where a change's breakage lands.
+ *   - tsc-cli: a throwaway program of the requested files and their import graph. That is the
+ *     forward graph, so otherErrors are in files they import.
+ *
+ * Whatever the service cannot answer faithfully falls back to the CLI: unreachable, declined
+ * (another checkout, a declaration-emitting project, a checked set too wide), or a requested
+ * file outside the project's program. The service never checked that file, so it must not
+ * report it clean.
+ */
+const SERVICE_CLI_RESERVE_MS = 15_000;
+
+/**
+ * The share of the foreground budget the service may use. The rest stays with the CLI fallback,
+ * so a wedged service degrades to the old path instead of turning every scoped call into a
+ * timeout.
+ */
+export function serviceBudgetMs(timeoutMs: number): number {
+  return Math.max(1000, timeoutMs - Math.min(SERVICE_CLI_RESERVE_MS, Math.floor(timeoutMs / 3)));
+}
+
+export type TypecheckServiceAttempt =
+  | { served: true; response: Extract<TscServiceResponse, { ok: true }> }
+  | { served: false; reason: string };
+
+export async function askTypecheckService(opts: {
+  root: string;
+  project: string;
+  files: string[];
+  timeoutMs: number;
+  env?: Record<string, string | undefined>;
+}): Promise<TypecheckServiceAttempt> {
+  const env = opts.env ?? process.env;
+  if (env[TSC_SERVICE_ENV] === '0') return { served: false, reason: `${TSC_SERVICE_ENV}=0` };
+  const socketPath = tscServiceSocketPath(env);
+  let response: TscServiceResponse;
+  try {
+    response = await requestTscService({
+      socketPath,
+      request: { v: 1, root: opts.root, project: opts.project, files: opts.files },
+      timeoutMs: opts.timeoutMs,
+    });
+  } catch (error) {
+    return {
+      served: false,
+      reason: `unreachable at ${socketPath}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (!response.ok) {
+    return { served: false, reason: `declined: ${response.reason}${response.detail ? ` (${response.detail})` : ''}` };
+  }
+  if (response.namedNotInProgram.length > 0) {
+    return {
+      served: false,
+      reason: `not in the project's program, so the service never checked them: ${response.namedNotInProgram.join(', ')}`,
+    };
+  }
+  return { served: true, response };
+}
+
 export default defineTool({
   name: 'build:typecheck',
   description:
-    'Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken, semanticCheckIncomplete } — instead of a compiler log you pipe through grep/tail. In scopeToFiles mode, ok/errorCount/exitCode describe the requested files, while otherErrorCount/otherErrors preserve import-graph diagnostics separately. Parser/global/partial-scope failures remain incomplete, never green. When syntaxBroken is non-empty, semanticCheckIncomplete is true and the diagnostic counts are LOWER BOUNDS, not complete totals. REFUSES a run that checked nothing (TS5057/TS5058/TS18003) rather than reporting a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.',
+    'Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken, semanticCheckIncomplete } — instead of a compiler log you pipe through grep/tail. In scopeToFiles mode, ok/errorCount/exitCode describe the requested files, while otherErrorCount/otherErrors preserve other-file diagnostics separately. Parser/global/partial-scope failures remain incomplete, never green. When syntaxBroken is non-empty, semanticCheckIncomplete is true and the diagnostic counts are LOWER BOUNDS, not complete totals. REFUSES a run that checked nothing (TS5057/TS5058/TS18003) rather than reporting a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.',
   guidance: {
     when: 'You edited TypeScript and want to know whether a project typechecks, and exactly which errors are where. Also the way to check a workspace OUTSIDE operator-core, which `npm run lint:tsc` does not cover.',
     notWhen:
@@ -846,7 +938,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'Compile ONLY `files` + their import graph instead of the whole project, so a run still fits the foreground cap under fleet load. Requires `files`; each path may be repository-relative, relative to the selected project directory, or absolute. COST IS YOUR IMPORT GRAPH, NOT THE PROJECT — measured in operator-core: a leaf file (lib/tsc-diagnostics.ts) 2.6s vs a hub file (agent-tools/build/typecheck.ts) 63s, because a hub transitively pulls in most of the project. Great for a leaf, no help for a hub — a hub can still exceed the cap and time out. The primary ok/errorCount/errors/exitCode verdict is attributable to the requested files; diagnostics elsewhere in the loaded graph remain separately visible under otherErrorCount/otherErrors and the raw compiler status under compilerExitCode. Parser/global/partial-scope failures make scopedVerdict incomplete rather than green. ⚠ NARROWER GUARANTEE: it cannot see errors your change caused in files that do NOT import yours (the classic case: adding a required field to a shared interface breaks distant fixtures). For the gate verdict use the project-wide run or `npm run lint:tsc -- --files=...`.',
+        'Check ONLY `files` instead of the whole project, so a run fits the foreground cap under fleet load. Requires `files`; each path may be repository-relative, relative to the selected project directory, or absolute. `engine` says who answered. engine:"tsc-service" — the shared typecheck service (when it serves this checkout and project): your files are checked inside the FULL program, and otherErrors cover files that reference their exported types or import them directly; measured 1.4s for a hub file. engine:"tsc-cli" (serviceFallback says why) — a throwaway program of `files` + their import graph, so otherErrors are in files they import; cost is YOUR import graph (leaf 2.6s, hub 63s), so a hub can time out. Either way ok/errorCount/errors/exitCode describe the requested files, otherErrorCount/otherErrors stay separate, and parser/global/partial-scope failures make scopedVerdict incomplete rather than green. ⚠ NARROWER GUARANTEE: neither sees every file your change can break (a transitive importer on the service, any non-importer on the CLI). For the gate verdict use the project-wide run or `npm run lint:tsc -- --files=...`.',
       ),
   }),
   async handler(args, ctx) {
@@ -898,7 +990,8 @@ export default defineTool({
     // `files` + their import graph. Refuse the two ways it could silently check NOTHING —
     // same ethos as the project_not_found and tsc_failed_to_run guards: this tool never
     // reports a zero it did not earn.
-    let scoped: ReturnType<typeof buildScopedTsconfig> | null = null;
+    let scoped: ReturnType<typeof resolveScopedFiles> | null = null;
+    let service: TypecheckServiceAttempt | null = null;
     if (args.scopeToFiles) {
       if (!args.files?.length) {
         return {
@@ -910,9 +1003,8 @@ export default defineTool({
           },
         };
       }
-      scoped = buildScopedTsconfig(typecheckCwd, resolved, args.files);
+      scoped = resolveScopedFiles(typecheckCwd, resolved, args.files);
       if (!scoped.resolvedFiles.length) {
-        scoped.cleanup();
         return {
           data: {
             ok: false,
@@ -925,36 +1017,65 @@ export default defineTool({
           },
         };
       }
+      // The service holds only its own checkout's programs, and an external project must run
+      // its own package-local compiler (resolveTypecheckCwd), so only an in-tree project asks.
+      service =
+        typecheckCwd === root
+          ? await askTypecheckService({
+              root,
+              project: resolved,
+              files: scoped.resolvedFiles,
+              timeoutMs: serviceBudgetMs(timeoutMs),
+            })
+          : { served: false, reason: 'external project runs its own package-local compiler' };
     }
-
-    const tscArgs = ['--noEmit', '--pretty', 'false', '-p', scoped ? scoped.configPath : resolved];
-    if (args.incremental !== true) tscArgs.push('--incremental', 'false');
-
-    const workspaceId =
-      (ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : undefined) ??
-      (ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*' ? ctx.principal.workspaceId : undefined) ??
-      activeWorkspaceId();
-    const execution = await beginGovernedExecution(
-      {
-        idempotencyKey: `build:typecheck:${ctx.principal?.slug ?? 'operator'}:${randomUUID()}`,
-        admissionClass: 'process',
-        demand: { cpuWeight: 1, memoryBytes: 512 * 1024 * 1024 },
-        payloadRef: `build:typecheck:${relative(root, resolved)}`,
-        metadata: { project: relative(root, resolved), scoped: args.scopeToFiles === true },
-      },
-      { owner: ctx.principal?.slug ?? 'build:typecheck' },
-      governedExecutionRuntime(workspaceId, 'build-typecheck'),
-    );
+    const engineFields = {
+      engine: service?.served ? ('tsc-service' as const) : ('tsc-cli' as const),
+      ...(service && !service.served ? { serviceFallback: service.reason } : {}),
+    };
 
     let outcome: TscOutcome;
-    try {
-      outcome = await runTsc(tscArgs, typecheckCwd, timeoutMs);
-      await execution.finish();
-    } catch (error) {
-      await execution.cancel(error instanceof Error ? error.message : String(error));
-      throw error;
-    } finally {
-      scoped?.cleanup();
+    if (service?.served) {
+      // tsgo 7.0.2 exits 1 for any error under --noEmit and 0 when clean (measured 2026-09-27),
+      // so the service's verdict carries the status the CLI would have given it.
+      outcome = {
+        code: service.response.errorCount > 0 ? 1 : 0,
+        timedOut: false,
+        output: service.response.output,
+      };
+    } else {
+      const scopedConfig = scoped ? buildScopedTsconfig(typecheckCwd, resolved, args.files ?? []) : null;
+      const tscArgs = ['--noEmit', '--pretty', 'false', '-p', scopedConfig ? scopedConfig.configPath : resolved];
+      if (args.incremental !== true) tscArgs.push('--incremental', 'false');
+
+      const workspaceId =
+        (ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : undefined) ??
+        (ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*' ? ctx.principal.workspaceId : undefined) ??
+        activeWorkspaceId();
+      const execution = await beginGovernedExecution(
+        {
+          idempotencyKey: `build:typecheck:${ctx.principal?.slug ?? 'operator'}:${randomUUID()}`,
+          admissionClass: 'process',
+          demand: { cpuWeight: 1, memoryBytes: 512 * 1024 * 1024 },
+          payloadRef: `build:typecheck:${relative(root, resolved)}`,
+          metadata: { project: relative(root, resolved), scoped: args.scopeToFiles === true },
+        },
+        { owner: ctx.principal?.slug ?? 'build:typecheck' },
+        governedExecutionRuntime(workspaceId, 'build-typecheck'),
+      );
+
+      // A declined or unreachable service already spent part of the foreground budget; the
+      // compile gets what is left, so the handler still returns before the transport cap.
+      const cliTimeoutMs = service ? Math.max(1000, timeoutMs - (Date.now() - started)) : timeoutMs;
+      try {
+        outcome = await runTsc(tscArgs, typecheckCwd, cliTimeoutMs);
+        await execution.finish();
+      } catch (error) {
+        await execution.cancel(error instanceof Error ? error.message : String(error));
+        throw error;
+      } finally {
+        scopedConfig?.cleanup();
+      }
     }
     const durationMs = Date.now() - started;
 
@@ -970,6 +1091,7 @@ export default defineTool({
           // dead end. A first project-wide timeout can try the cheap scoped path; once that
           // path itself timed out, lead with the reachable baseline gate instead of looping.
           hint: buildTimeoutHint(relative(root, resolved) || '.', timeoutMs, args.scopeToFiles === true),
+          ...engineFields,
           output: outcome.output.slice(-2000),
         },
       };
@@ -992,6 +1114,7 @@ export default defineTool({
           error: ranDecoy ? 'tsc_decoy_package_ran' : 'tsc_failed_to_run',
           project: relative(root, resolved),
           exitCode: outcome.code,
+          ...engineFields,
           durationMs,
           message: ranDecoy
             ? 'No TypeScript compiler ran: `npx tsc` found no local tsc binary and executed the unrelated registry package named `tsc`, which only prints a banner. ' +
@@ -1040,7 +1163,9 @@ export default defineTool({
     const maxErrors = args.maxErrors ?? DEFAULT_MAX_ERRORS;
     const byFile = summariseByFile(scopedPartition ? scopedPartition.requested : errors);
     const bounded = boundDiagnostics(shown, byFile, maxErrors);
-    const reported = parseFoundSummary(outcome.output);
+    // The service prints no "Found N errors" summary but counts its own errors; either tally
+    // cross-checks the parser below.
+    const reported = service?.served ? service.response.errorCount : parseFoundSummary(outcome.output);
     const syntaxBroken = syntaxBrokenFiles(errors);
     const scopedVerdictIncomplete = Boolean(
       scoped &&
@@ -1060,6 +1185,7 @@ export default defineTool({
       data: {
         ok: scoped ? scopedOk : errors.length === 0 && outcome.code === 0,
         project: relative(root, resolved),
+        ...engineFields,
         errorCount: shown.length,
         // A scoped PASS is a weaker claim than a project-wide one, so it must never be
         // reported in the same shape. These fields travel with the result so a reader
@@ -1085,8 +1211,22 @@ export default defineTool({
               otherFilesWithErrors: otherByFile.length,
               unattributedErrorCount: scopedPartition.unattributed.length,
               compilerExitCode: outcome.code,
-              scopeCaveat:
-                'SCOPED RUN — ok/errorCount/errors/exitCode describe the requested files. Other loaded import-graph diagnostics remain under otherErrorCount/otherErrors and do not fail that requested-file verdict; parser/global diagnostics or missing requested paths make scopedVerdict incomplete instead. Errors your change caused in files that do not import these are NOT covered (e.g. adding a required field to a shared interface breaks distant fixtures). This is not the gate verdict.',
+              ...(service?.served
+                ? {
+                    serviceScope: {
+                      checkedFiles: service.response.checked.length,
+                      ...service.response.counts,
+                      snapshotAgeMs: service.response.snapshotAgeMs,
+                      queuedMs: service.response.queuedMs,
+                      checkMs: service.response.checkMs,
+                    },
+                    scopeCaveat:
+                      'SCOPED RUN (shared typecheck service) — ok/errorCount/errors/exitCode describe the requested files, checked inside the FULL project program. otherErrorCount/otherErrors cover files that reference their exported types or import them directly, and do not fail that requested-file verdict; missing requested paths make scopedVerdict incomplete instead. A TRANSITIVE importer whose error names none of those types is NOT covered, nor are project-global diagnostics. This is not the gate verdict.',
+                  }
+                : {
+                    scopeCaveat:
+                      'SCOPED RUN — ok/errorCount/errors/exitCode describe the requested files. Other loaded import-graph diagnostics remain under otherErrorCount/otherErrors and do not fail that requested-file verdict; parser/global diagnostics or missing requested paths make scopedVerdict incomplete instead. Errors your change caused in files that do not import these are NOT covered (e.g. adding a required field to a shared interface breaks distant fixtures). This is not the gate verdict.',
+                  }),
             }
           : {}),
         ...(hasFilter
