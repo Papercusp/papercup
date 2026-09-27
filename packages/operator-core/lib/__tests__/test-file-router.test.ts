@@ -147,6 +147,41 @@ describe('test-files router', () => {
     expect(route.requested).toBe('src/strict-args.test.ts');
   });
 
+  // EI-24442044145393058: the recorded test layer is the ROUTED config's runtime label, so a
+  // `*.e2e.test.*` file must reach the package's e2e config or it records as 'unit'.
+  it('routes *.e2e.test.* files to the package e2e config, and everything else stays on unit', () => {
+    const root = mkdtempSync(join(tmpdir(), 'test-file-router-e2e-'));
+    try {
+      const withE2e = join(root, 'packages', 'with-e2e');
+      const withoutE2e = join(root, 'packages', 'without-e2e');
+      for (const pkg of [withE2e, withoutE2e]) {
+        mkdirSync(join(pkg, 'lib'), { recursive: true });
+        writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name: basename(pkg) }));
+        writeFileSync(join(pkg, 'vitest.config.ts'), 'export default {};\n');
+        writeFileSync(join(pkg, 'lib', 'live.e2e.test.ts'), '');
+        writeFileSync(join(pkg, 'lib', 'plain.test.ts'), '');
+      }
+      writeFileSync(join(withE2e, 'vitest.e2e.config.ts'), 'export default {};\n');
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
+
+      const e2e = discoverVitestRoute('packages/with-e2e/lib/live.e2e.test.ts', root);
+      expect(e2e.cwd).toBe(withE2e);
+      expect(e2e.config).toBe('vitest.e2e.config.ts');
+      expect(e2e.requested).toBe(join('lib', 'live.e2e.test.ts'));
+      expect(discoverVitestRoute('packages/with-e2e/lib/plain.test.ts', root).config).toBe('vitest.config.ts');
+      // No e2e config declared: the file keeps its existing unit route rather than failing.
+      expect(discoverVitestRoute('packages/without-e2e/lib/live.e2e.test.ts', root).config).toBe('vitest.config.ts');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('routes the real operator-core e2e suite to its e2e config', () => {
+    const route = discoverVitestRoute('packages/operator-core/lib/deployment-position.live.e2e.test.ts');
+    expect(route.cwd).toBe(resolve(REPO_ROOT, 'packages/operator-core'));
+    expect(route.config).toBe('vitest.e2e.config.ts');
+  });
+
   it('routes supported papercusp-desktop JavaScript tests to Node:test', () => {
     const route = discoverTestRoute('papercusp-desktop/test/build-windows-identity.test.js');
     expect(route.runner).toBe('node');

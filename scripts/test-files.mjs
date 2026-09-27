@@ -187,6 +187,9 @@ applyWorkerCapEnv({ cores: availableParallelism(), load1: loadavg()[0] });
 
 const UNIT_CONFIG_RE = /^vitest\.config\.(?:[cm]?[jt]s)$/;
 const INTEGRATION_CONFIG_RE = /^vitest\.integration\.config\.(?:[cm]?[jt]s)$/;
+// EI-24442044145393058: a package that declares an e2e config owns its `*.e2e.test.*` files,
+// so their recorded test layer is 'e2e'. Without one, the file stays on the unit route.
+const E2E_CONFIG_RE = /^vitest\.e2e\.config\.(?:[cm]?[jt]s)$/;
 
 // `release:trace` reports paths relative to the workspace that owns each test, while the
 // root-level `test:file` command is normally invoked with repo-relative paths. Keep the
@@ -297,7 +300,9 @@ function resolveRequestedTestFile(file, root) {
 
 function configsIn(dir) {
   try {
-    return readdirSync(dir).filter((name) => UNIT_CONFIG_RE.test(name) || INTEGRATION_CONFIG_RE.test(name));
+    return readdirSync(dir).filter(
+      (name) => UNIT_CONFIG_RE.test(name) || INTEGRATION_CONFIG_RE.test(name) || E2E_CONFIG_RE.test(name),
+    );
   } catch {
     return [];
   }
@@ -410,6 +415,7 @@ export function discoverVitestRoute(file, root = REPO_ROOT) {
   if (nonWorkspaceRoute) return nonWorkspaceRoute;
 
   const wantsIntegration = /\.integration\.(?:test|spec)\.[cm]?[jt]sx?$/.test(absolute);
+  const wantsE2e = /\.e2e\.test\.[cm]?[jt]sx?$/.test(absolute);
   let dir = dirname(absolute);
   let unitFallback = null;
   let packageFallback = null;
@@ -418,6 +424,8 @@ export function discoverVitestRoute(file, root = REPO_ROOT) {
     const integration = configs.find((name) => INTEGRATION_CONFIG_RE.test(name));
     const unit = configs.find((name) => UNIT_CONFIG_RE.test(name));
     if (wantsIntegration && integration) return { cwd: dir, config: integration, absolute, requested: relative(dir, absolute) };
+    const e2e = wantsE2e && !packageFallback ? configs.find((name) => E2E_CONFIG_RE.test(name)) : undefined;
+    if (e2e) return { cwd: dir, config: e2e, absolute, requested: relative(dir, absolute) };
     // Keep walking after an already-discovered config-less package so an ancestor's
     // fallback unit config cannot preempt that nearer package route.
     if (!wantsIntegration && unit && !packageFallback) {
