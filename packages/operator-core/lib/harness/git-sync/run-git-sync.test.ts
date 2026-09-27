@@ -532,6 +532,29 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('reports a sidecar admission refusal during merge without treating it as a Git conflict or aborting an unstarted merge', async () => {
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args, cwd) => {
+      calls.push(args);
+      if (args.includes('merge') && args.includes('--no-edit')) {
+        return {
+          code: -1, stdout: '',
+          stderr: 'spawner sidecar admission failed: resource_governor_admissions_time_chk',
+        };
+      }
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000 });
+      return { code: result.status ?? -1, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
+    };
+    const out = await runGitSync('test', { repoPath: repo, runGit, config: cfg });
+    expect(out.status).toBe('error');
+    if (out.status === 'error') {
+      expect(out.errors.map((error) => error.message).join('\n'))
+        .toContain('sidecar infrastructure refusal before Git dispatch');
+      expect(out.errors.map((error) => error.message).join('\n')).not.toContain('merge failed');
+    }
+    expect(calls.some((args) => args.includes('--abort'))).toBe(false);
+  });
+
   it('bridges a fully represented release main into staging ancestry without changing the staging tree', async () => {
     git(repo, 'checkout', '-b', 'staging');
     writeFileSync(join(repo, 'repair.txt'), 'fixed\n');
