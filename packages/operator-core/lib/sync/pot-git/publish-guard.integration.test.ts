@@ -471,4 +471,96 @@ describe('pot-git publish-guard (real bare repo)', () => {
       expect(res.secretFindings.some((f) => f.path === 'w/leak.env')).toBe(true);
     });
   });
+
+  // WI-10003528 — the already-exposed exclusion applies on EVERY publish, not only
+  // genesis. Measured on the P-203 Mac VM: a device draining from an old baseline
+  // hit a hard secrets refusal on a synthetic fixture commit that five OTHER device
+  // namespaces in the same store already reached, and on GitHub origin/main.
+  describe('already-exposed history (WI-10003528)', () => {
+    const SELF = 'a'.repeat(64);
+    const PEER = 'b'.repeat(64);
+    const updateRef = async (ref: string, sha: string): Promise<void> => {
+      const { execFileSync } = await import('node:child_process');
+      execFileSync('git', ['update-ref', ref, sha], { cwd: repo });
+    };
+
+    it('skips a secret another device already published, which the strict judgement still refuses', async () => {
+      const prior = await commit(repo, { 'x1/base.txt': 'x1 base' });
+      const key = ['AKIA', 'EXPOSEDONEXPOSED'].join('');
+      const fixture = await commit(repo, { 'x1/fixture.env': `AWS_ACCESS_KEY_ID=${key}\n` }, prior);
+      const local = await commit(repo, { 'x1/local.txt': 'only this device has this' }, fixture);
+      await updateRef(`refs/namespaces/${PEER}/refs/heads/staging`, fixture);
+
+      // Control: without the device's namespace the range is judged strictly,
+      // and the fixture really IS inside (prior, local].
+      const strict = await checkPublishGuard({ repoPath: repo, fromOid: prior, toOid: local });
+      expect(strict.refusalCode).toBe('secrets');
+
+      const res = await checkPublishGuard({ repoPath: repo, fromOid: prior, toOid: local, selfNamespaceHex: SELF });
+      expect(res.refusalCode).toBeNull();
+      expect(res.ok).toBe(true);
+      expect(res.secretFindings).toEqual([]);
+      // This device's own new content was still judged: commit + trees + its blob.
+      expect(res.newObjectCount).toBeGreaterThan(0);
+    });
+
+    it('still refuses a secret reachable only from this device\'s OWN namespace, a local branch, or ingress quarantine', async () => {
+      const prior = await commit(repo, { 'x2/base.txt': 'x2 base' });
+      const key = ['AKIA', 'SELFONLYSELFONLY'].join('');
+      const leak = await commit(repo, { 'x2/leak.env': `AWS_ACCESS_KEY_ID=${key}\n` }, prior);
+      // None of these is an EXPOSED_REF_GLOBS class. The self namespace is the
+      // content in question, so treating it as exposure would judge nothing.
+      await updateRef(`refs/namespaces/${SELF}/refs/heads/work`, leak);
+      await updateRef('refs/heads/x2-local-only', leak);
+      await updateRef(`refs/ingress-quarantine/${PEER}`, leak);
+
+      const res = await checkPublishGuard({ repoPath: repo, fromOid: prior, toOid: leak, selfNamespaceHex: SELF });
+      expect(res.refusalCode).toBe('secrets');
+      expect(res.secretFindings.some((f) => f.path === 'x2/leak.env')).toBe(true);
+    });
+
+    it('drains a whole backlog past a fixture a remote-tracking ref already exposed', async () => {
+      const prior = await commit(repo, { 'x3/base.txt': 'x3 base' });
+      const key = ['AKIA', 'REMOTEREMOTEREMO'].join('');
+      const fixture = await commit(repo, { 'x3/fixture.env': `AWS_ACCESS_KEY_ID=${key}\n` }, prior);
+      const mid = await commit(repo, { 'x3/a.txt': 'local a' }, fixture);
+      const tip = await commit(repo, { 'x3/b.txt': 'local b' }, mid);
+      await updateRef('refs/remotes/origin/x3-main', fixture);
+
+      // Control: the strict split stops AT the fixture, publishing nothing.
+      const strict = await resolveIncrementalPublishSha({ repoPath: repo, fromOid: prior, toOid: tip });
+      expect(strict.blocked?.commit).toBe(fixture);
+      expect(strict.safeSha).toBe(prior);
+      expect(strict.complete).toBe(false);
+
+      const res = await resolveIncrementalPublishSha({ repoPath: repo, fromOid: prior, toOid: tip, selfNamespaceHex: SELF });
+      expect(res.blocked).toBeNull();
+      expect(res.safeSha).toBe(tip);
+      expect(res.complete).toBe(true);
+    });
+
+    it('a secret a LOCAL commit adds after an exposed fixture is still caught, and the split stops at that commit', async () => {
+      const prior = await commit(repo, { 'x4/base.txt': 'x4 base' });
+      const exposedKey = ['AKIA', 'PUBLICPUBLICPUBL'].join('');
+      const fixture = await commit(repo, { 'x4/fixture.env': `AWS_ACCESS_KEY_ID=${exposedKey}\n` }, prior);
+      const clean = await commit(repo, { 'x4/clean.txt': 'clean local' }, fixture);
+      const newKey = ['AKIA', 'NEWLOCALNEWLOCAL'].join('');
+      const leak = await commit(repo, { 'x4/leak.env': `AWS_ACCESS_KEY_ID=${newKey}\n` }, clean);
+      await updateRef(`refs/namespaces/${PEER}/refs/heads/x4`, fixture);
+
+      const res = await resolveIncrementalPublishSha({ repoPath: repo, fromOid: prior, toOid: leak, selfNamespaceHex: SELF });
+      expect(res.safeSha).toBe(clean);
+      expect(res.blocked?.commit).toBe(leak);
+      expect(res.blocked?.result.refusalCode).toBe('secrets');
+      expect(res.complete).toBe(false);
+    });
+
+    it('fails closed on a malformed namespace key rather than splicing it into a ref glob', async () => {
+      const base = await commit(repo, { 'x5/base.txt': 'x5 base' });
+      const tip = await commit(repo, { 'x5/next.txt': 'x5 next' }, base);
+      const res = await checkPublishGuard({ repoPath: repo, fromOid: base, toOid: tip, selfNamespaceHex: 'refs/*' });
+      expect(res.ok).toBe(false);
+      expect(res.refusalCode).toBe('error');
+    });
+  });
 });

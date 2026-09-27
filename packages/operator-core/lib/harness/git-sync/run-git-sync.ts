@@ -2029,19 +2029,87 @@ export const STALE_INDEX_LOCK_MS = 90_000;
  */
 /**
  * Does any live process on this host still hold `lockPath` open? Scans
- * `/proc/<pid>/fd/*` (Linux) for a descriptor resolving to the lock. Fails
- * CLOSED on a non-/proc host or a scan error: `true` = "assume held", because
+ * `/proc/<pid>/fd/*` (Linux) for a descriptor resolving to the lock; on a host
+ * without /proc (macOS) asks `lsof` instead (WI-10003529). Fails CLOSED when
+ * neither instrument can answer: `true` = "assume held", because
  * a wrongly-kept orphan costs one more failed tick (the next tick re-checks)
  * while a wrongly-unlinked live lock truncates the index (EI-22703121889295786).
  */
-export async function lockHasLiveHolder(lockPath: string): Promise<boolean> {
+export async function lockHasLiveHolder(
+  lockPath: string,
+  deps: {
+    procHolder?: (p: string) => Promise<boolean | null>;
+    lsofHolder?: (p: string) => Promise<boolean | null>;
+  } = {},
+): Promise<boolean> {
+  const viaProc = await (deps.procHolder ?? procLockHolder)(lockPath);
+  if (viaProc !== null) return viaProc;
+  // WI-10003529: no /proc (macOS). Before this fallback the function returned
+  // `true` here unconditionally, so on a Mac a lock orphaned by a restart was
+  // never reclaimed and every later git-sync tick failed until a human deleted
+  // it (P-203 Mac VM, 2026-09-27: two locks aged 50-70 min, lsof proved no holder).
+  const viaLsof = await (deps.lsofHolder ?? lsofLockHolder)(lockPath);
+  return viaLsof ?? true; // neither instrument could prove absence → assume held
+}
+
+/** WI-10003529: ask `lsof` whether any process holds `lockPath` open.
+ *  true = held, false = PROVEN not held (rc 1, no output at all), null = the
+ *  instrument could not answer (binary missing, timeout, any stderr), which the
+ *  caller treats as held. `-w` silences lsof's unrelated stat() warnings, which
+ *  would otherwise turn every Mac answer into `null`. */
+export async function lsofLockHolder(
+  lockPath: string,
+  run: (bin: string, args: string[]) => Promise<{ code: number | null; stdout: string; stderr: string; missing?: boolean }> = runLsof,
+): Promise<boolean | null> {
+  for (const bin of ['lsof', '/usr/sbin/lsof', '/usr/bin/lsof']) {
+    const r = await run(bin, ['-t', '-w', '--', lockPath]);
+    if (r.missing) continue;
+    if (r.code === 0 && /^\d+$/m.test(r.stdout)) return true;
+    if (r.code === 1 && r.stdout.trim() === '' && r.stderr.trim() === '') return false;
+    return null;
+  }
+  return null;
+}
+
+function runLsof(
+  bin: string,
+  args: string[],
+): Promise<{ code: number | null; stdout: string; stderr: string; missing?: boolean }> {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const done = (v: { code: number | null; stdout: string; stderr: string; missing?: boolean }) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(v);
+      }
+    };
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      done({ code: null, stdout, stderr: stderr || 'lsof timed out' });
+    }, 10_000);
+    child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
+    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+    child.on('error', (e: NodeJS.ErrnoException) =>
+      done({ code: null, stdout, stderr: String(e.message), missing: e.code === 'ENOENT' }),
+    );
+    child.on('close', (code) => done({ code, stdout, stderr }));
+  });
+}
+
+/** Linux: scan `/proc/<pid>/fd/*` for a descriptor resolving to `lockPath`.
+ *  null = no usable /proc on this host (the caller falls back to lsof). */
+async function procLockHolder(lockPath: string): Promise<boolean | null> {
   let pids: string[];
   try {
     pids = (await readdir('/proc')).filter((n) => /^[0-9]+$/.test(n));
   } catch {
-    return true; // no /proc → cannot prove absence; never unlink on a guess
+    return null;
   }
-  if (pids.length === 0) return true;
+  if (pids.length === 0) return null;
   for (const pid of pids) {
     let fds: string[];
     try {

@@ -40,6 +40,7 @@ import {
   type RunGit,
   NETWORK_RUN_GIT_TIMEOUT_MS,
   defaultRunGit,
+  deviceNamespaceKey,
   ensurePotGitRepo,
   readNamespaceRef,
   writeNamespaceRef,
@@ -418,6 +419,10 @@ export async function runOwnHeadPublishTick(
       caps: input.publishGuardCaps,
       runGit,
       workspaceId: input.workspaceId,
+      // WI-10003528: skip content another device (or a remote) already exposed,
+      // on EVERY publish, not only genesis — otherwise a device draining from
+      // an old baseline re-judges months of already-public history.
+      selfNamespaceHex: deviceNamespaceKey(input.devicePubkeyBase64),
     });
   } catch (e) {
     errors.push(`publish guard threw (refusing, fail-closed): ${e instanceof Error ? e.message : e}`);

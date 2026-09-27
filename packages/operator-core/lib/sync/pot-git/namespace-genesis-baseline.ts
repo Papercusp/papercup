@@ -57,6 +57,33 @@ export const MAX_FRONTIER_CANDIDATES = 16;
 export const EXPOSED_REF_GLOBS = ['refs/namespaces', 'refs/bootstrap-quarantine', 'refs/remotes'] as const;
 
 /**
+ * WI-10003528: the rev-list NEGATIVES naming the already-exposed set for the
+ * device whose own namespace is `selfNamespaceHex`: `--not`, the self-exclude,
+ * then every EXPOSED_REF_GLOBS glob. Append them after a walk's positive (and any
+ * `^prior`) arguments.
+ *
+ * ONE definition, shared by the genesis frontier walk below AND the publish
+ * guard's range on EVERY later publish (publish-guard.ts). Before this, the
+ * exposed set applied only at genesis. Once a first publish landed, the guard
+ * judged the whole (prior, head] again, so a device draining from an old
+ * baseline re-scanned months of history other devices had already published.
+ * Every synthetic test fixture in it became a HARD secrets wall needing a manual
+ * per-path waiver (P-203 Mac VM, 2026-09-27: blocked at 3bc494237aac, a commit
+ * five other device namespaces in that store already reached).
+ *
+ * Throws on a non-hex key rather than splicing arbitrary text into a ref glob:
+ * callers run it inside their fail-closed paths.
+ */
+export function exposedRefNegatives(selfNamespaceHex: string): string[] {
+  if (!/^[0-9a-f]+$/.test(selfNamespaceHex)) {
+    throw new Error(`exposedRefNegatives: namespace key is not lowercase hex: ${JSON.stringify(selfNamespaceHex.slice(0, 80))}`);
+  }
+  // `--exclude=<glob>` filters only the refs the NEXT ref-glob contributes, hence
+  // its placement immediately before the namespaces glob (EXPOSED_REF_GLOBS[0]).
+  return ['--not', `--exclude=refs/namespaces/${selfNamespaceHex}/*`, ...EXPOSED_REF_GLOBS.map((g) => `--glob=${g}`)];
+}
+
+/**
  * The genesis baseline for ONE ref under this device's own namespace.
  *
  * The already-exposed set is named EXPLICITLY (see EXPOSED_REF_GLOBS), not as
@@ -90,18 +117,7 @@ export async function deriveNamespaceGenesisBaseline(
     const type = await runGit(['cat-file', '-t', namespaceRefFullName], repoPath);
     if (type.code !== 0 || type.stdout.trim() !== 'commit') return null;
 
-    // `--exclude=<glob>` filters only the refs the NEXT ref-glob contributes,
-    // hence its placement immediately before the namespaces glob.
-    return await frontierBaseline(
-      repoPath,
-      namespaceRefFullName,
-      [
-        '--not',
-        `--exclude=refs/namespaces/${selfNamespaceHex}/*`,
-        ...EXPOSED_REF_GLOBS.map((g) => `--glob=${g}`),
-      ],
-      runGit,
-    );
+    return await frontierBaseline(repoPath, namespaceRefFullName, exposedRefNegatives(selfNamespaceHex), runGit);
   } catch {
     return null; // strict fallback
   }

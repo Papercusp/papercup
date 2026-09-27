@@ -27,6 +27,7 @@
 import { type RunGit, defaultRunGit, defaultRunGitStdin } from './storage';
 import { type SecretFinding, describeSecretFindings } from './secrets-guard';
 import { loadSecretsGuardPathExemptions, partitionExemptFindings } from './secrets-guard-exemptions';
+import { exposedRefNegatives } from './namespace-genesis-baseline';
 import {
   type BlobEntry,
   DEFAULT_SCAN_CHUNK_BYTES,
@@ -117,6 +118,32 @@ export interface PublishGuardInput {
    * anyway (foreign-mirror-quarantine.ts).
    */
   volumeGates?: 'enforce' | 'warn';
+  /**
+   * WI-10003528: the publishing device's own namespace key (lowercase hex).
+   *
+   * When set, objects reachable from the ALREADY-EXPOSED ref set are not
+   * judged: another device's namespace, bootstrap-quarantine, or a
+   * remote-tracking ref (EXPOSED_REF_GLOBS, with this device's own namespace
+   * held out). That content has already left a machine, so refusing it here
+   * un-exposes nothing and only wedges this device's egress. It is the same
+   * exposure rule genesis already applies (deriveNamespaceGenesisBaseline),
+   * now carried to every later publish instead of only the first.
+   *
+   * The set is a closed allow-list, so this can only ever judge LESS of what
+   * is already public — never content that exists only under this device's
+   * namespace or in a local ref. Unset keeps the strict (fromOid, toOid]
+   * judgement.
+   */
+  selfNamespaceHex?: string | null;
+}
+
+/** The rev-list negatives for `input`'s judged range: `^fromOid`, then (WI-10003528)
+ *  the already-exposed ref set when the caller named its own namespace. */
+function rangeNegatives(input: Pick<PublishGuardInput, 'fromOid' | 'selfNamespaceHex'>): string[] {
+  return [
+    ...(input.fromOid ? [`^${input.fromOid}`] : []),
+    ...(input.selfNamespaceHex ? exposedRefNegatives(input.selfNamespaceHex) : []),
+  ];
 }
 
 export type PublishRefusalCode = 'blob-over-cap' | 'total-over-cap' | 'object-flood' | 'secrets' | 'error';
@@ -181,8 +208,9 @@ export async function checkPublishGuard(input: PublishGuardInput): Promise<Publi
   };
 
   try {
-    // 1. Enumerate NEW objects in (fromOid, toOid].
-    const negatives = input.fromOid ? [`^${input.fromOid}`] : [];
+    // 1. Enumerate NEW objects in (fromOid, toOid], minus anything already
+    //    exposed when the caller named its own namespace (WI-10003528).
+    const negatives = rangeNegatives(input);
     const list = await runGit(['rev-list', '--objects', input.toOid, ...negatives], input.repoPath);
     if (list.code !== 0) return refuse('error', `rev-list --objects failed: ${list.stderr.trim()}`);
     const entries = list.stdout
@@ -386,7 +414,10 @@ export async function resolveIncrementalPublishSha(input: PublishGuardInput): Pr
 
   // Enumerate the range oldest-first so a prefix is always a valid publish
   // point. Cheap — commits only, no object walk.
-  const range = input.fromOid ? [`${input.fromOid}..${input.toOid}`] : [input.toOid];
+  // Same negatives as the guard's object walk (WI-10003528): a prefix candidate
+  // is never an already-exposed commit, so a split can only land on content
+  // this device is the first to expose.
+  const range = [input.toOid, ...rangeNegatives(input)];
   const revs = await runGit(['rev-list', '--reverse', ...range], input.repoPath);
   if (revs.code !== 0) {
     res.errors.push(`rev-list --reverse failed, cannot split range: ${revs.stderr.trim()}`);

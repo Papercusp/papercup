@@ -232,6 +232,9 @@ export async function runRefAnnouncePublishTick(
         // because re-basing the namespace ref never touched sigrefs. Hard gates
         // (oversized blob / secrets) still refuse — those are safety, not rate.
         volumeGates: 'warn',
+        // WI-10003528: the same already-exposed exclusion the genesis baseline
+        // above uses, applied to every later range as well.
+        selfNamespaceHex: namespaceHex,
       });
     } catch (e) {
       errors.push(`publish guard threw judging ${r.ref} (refusing, fail-closed): ${e instanceof Error ? e.message : e}`);
