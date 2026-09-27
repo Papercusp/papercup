@@ -123,6 +123,8 @@ const {
   mcpDialogRowSelected,
   mcpConnectedVerdict,
   runMcpReconnectMacro,
+  headlessRoleKickoffRequiresMcp,
+  verifyHeadlessRoleMcp,
   shutdownRefusalReason,
 } = host;
 import * as nodeFs from 'node:fs';
@@ -3866,6 +3868,35 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       } finally {
         nodeFs.rmSync(root, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('headless role MCP kickoff guard', () => {
+    it('requires the signed role server before a fresh headless Claude task turn', () => {
+      expect(headlessRoleKickoffRequiresMcp({
+        agent: 'claude', role: 'judge', headless: true, hasKickoff: true, isResume: false,
+      })).toBe(true);
+      expect(headlessRoleKickoffRequiresMcp({
+        agent: 'claude', role: 'judge', headless: true, hasKickoff: true, isResume: true,
+      })).toBe(false);
+      expect(headlessRoleKickoffRequiresMcp({
+        agent: 'claude', role: '', headless: true, hasKickoff: true, isResume: false,
+      })).toBe(false);
+    });
+
+    it('waits for a successful reconnect and refuses a first turn if both checks fail', async () => {
+      let calls = 0;
+      const recovered = await verifyHeadlessRoleMcp(async () => {
+        calls++;
+        return calls === 1
+          ? { ok: false, step: 'await-connected', detail: 'still connecting' }
+          : { ok: true, step: 'already-connected', detail: 'connected' };
+      });
+      expect(recovered).toMatchObject({ ok: true, attempts: 2 });
+      const unavailable = await verifyHeadlessRoleMcp(async () => ({
+        ok: false, step: 'await-connected', detail: 'still unavailable',
+      }));
+      expect(unavailable).toMatchObject({ ok: false, attempts: 2 });
     });
   });
 
