@@ -1469,7 +1469,7 @@ describe('resume + fork (D-004/D-007)', () => {
     });
   });
 
-  it('inherits the recorded Codex model and provenance on an exact resume', async () => {
+  it('lets native Codex exact resume inherit the last turn model and effort, not stale launch argv', async () => {
     resolveResumeTargetMock.mockResolvedValue({
       ...dead,
       agent: 'codex',
@@ -1484,10 +1484,11 @@ describe('resume + fork (D-004/D-007)', () => {
 
     expect(isError(res)).toBe(false);
     expect(spawnedCommand()).toContain('--resume=sid-dead');
-    expect(spawnedCommand()).toContain('--model=gpt-5.6-sol:xhigh --model-source=inherited');
+    expect(spawnedCommand()).not.toContain('--model=');
+    expect(spawnedCommand()).not.toContain('--model-source=');
   });
 
-  it('selects the configured Codex default when an old resume has no recorded model', async () => {
+  it('lets native Codex resume choose its recorded fallback when a transcript has no model', async () => {
     resolveResumeTargetMock.mockResolvedValue({
       ...dead,
       agent: 'codex',
@@ -1501,7 +1502,25 @@ describe('resume + fork (D-004/D-007)', () => {
     );
 
     expect(isError(res)).toBe(false);
-    expect(spawnedCommand()).toContain('--model=gpt-5.6-sol:xhigh --model-source=configured-default');
+    expect(spawnedCommand()).not.toContain('--model=');
+    expect(spawnedCommand()).not.toContain('--model-source=');
+  });
+
+  it('preserves an explicit Codex resume override over the last turn selection', async () => {
+    resolveResumeTargetMock.mockResolvedValue({
+      ...dead,
+      agent: 'codex',
+      model: 'gpt-5.6-sol:xhigh',
+      modelSource: 'inherited',
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, brief: 'continue the Codex recovery', model: 'gpt-6-astra:xhigh' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    expect(spawnedCommand()).toContain('--model=gpt-6-astra:xhigh --model-source=explicit');
   });
 
   it('allows a successor to override the predecessor runtime and launch placement', async () => {
