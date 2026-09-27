@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
-import { startDedicatedTestPg } from '@papercusp/test-config/pg';
+import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { installDeterministicEmbedder, type InstalledDeterministicEmbedder } from '../../test/_deterministic-embedder';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
@@ -64,7 +64,7 @@ const SOURCE = {
 
 /** D-022(c): per-sample persistence counters. xact_commit is scoped to the
  * throwaway database; the WAL counters are CLUSTER-wide, so they attribute
- * cleanly only on the dedicated cluster (P013_DEDICATED_PG=1). PG18 moved WAL
+ * cleanly only on a dedicated cluster (P013_DEDICATED_PG=1|native). PG18 moved WAL
  * write/fsync counts from pg_stat_wal to pg_stat_io (object 'wal'). */
 interface PgCounters {
   xactCommit: number; walRecords: number; walBytes: number;
@@ -83,10 +83,17 @@ async function readPgCounters(sql: Sql): Promise<PgCounters> {
 }
 
 let db: OrgTestDb;
-let dedicatedPg: StartedPostgreSqlContainer | undefined;
+let dedicatedPg: StartedPostgreSqlContainer | DedicatedNativePg | undefined;
 let fixtureEmbedder: InstalledDeterministicEmbedder | undefined;
 const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
-const dedicatedPgRequested = process.env.P013_DEDICATED_PG === '1';
+// P013_DEDICATED_PG=1 → a dedicated Docker container; =native → a dedicated
+// cluster from the host's own PG binaries (no Docker), as workload D does.
+// `native` exists because Docker container create on this host hung 2–30 min in
+// overlay umount (WI-10003403), killing rig repetitions in beforeAll.
+const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
+  ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
+const dedicatedPgRequested = dedicatedPgMode !== null;
+const DEDICATED_PG_SETTINGS = { max_connections: '200', dynamic_shared_memory_type: 'mmap' };
 beforeAll(async () => {
   // Stamp each setup step so a hook timeout names the slow step (pilot 11
   // timed out at 120 s with no attribution between container start, the
@@ -94,18 +101,22 @@ beforeAll(async () => {
   const setupStartedAt = Date.now();
   const stamp = (step: string) => console.error(
     `P013_SETUP step=${step} elapsedMs=${Date.now() - setupStartedAt}`);
-  if (dedicatedPgRequested) {
-    // D-022(c): a cluster owned by THIS run, so cluster-wide WAL counters and
-    // fsync waits belong to the measured arms alone rather than to whatever
-    // else shares the reused test container. Durability stays at the server
-    // defaults (D-022(b): no fsync=off / synchronous_commit=off / tmpfs); the
-    // two flags mirror the shared container's non-durability settings. Routed
-    // through getTestPg's existing PAPERCUSP_TEST_PG_ADMIN_URL seam, set before
-    // this process's first createFreshTestDb call.
+  // D-022(c): a cluster owned by THIS run, so cluster-wide WAL counters and
+  // fsync waits belong to the measured arms alone rather than to whatever
+  // else shares the reused test container. Durability stays at the server
+  // defaults (D-022(b): no fsync=off / synchronous_commit=off / tmpfs); the
+  // two settings mirror the shared container's non-durability settings. Routed
+  // through getTestPg's existing PAPERCUSP_TEST_PG_ADMIN_URL seam, set before
+  // this process's first createFreshTestDb call.
+  if (dedicatedPgMode === 'native') {
+    dedicatedPg = await startDedicatedNativePg({ settings: DEDICATED_PG_SETTINGS });
+    process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
+    stamp('dedicated-native-pg-started');
+  } else if (dedicatedPgMode === 'container') {
     // startDedicatedTestPg: the stock pg_isready healthcheck crash-restarted
     // this cluster mid-run under load (2026-09-27 warm smoke, see the helper).
     dedicatedPg = await startDedicatedTestPg({
-      command: ['postgres', '-c', 'max_connections=200', '-c', 'dynamic_shared_memory_type=mmap'],
+      command: ['postgres', ...Object.entries(DEDICATED_PG_SETTINGS).flatMap(([k, v]) => ['-c', `${k}=${v}`])],
     });
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
     stamp('dedicated-pg-started');
@@ -141,15 +152,17 @@ afterAll(async () => {
     `P013_TEARDOWN step=${step} elapsedMs=${Date.now() - teardownStartedAt}`);
   await db?.cleanup();
   stamp('org-test-db-cleaned');
-  if (dedicatedPg) {
+  if (dedicatedPg && 'logs' in dedicatedPg) {
     // WI-10002948: the 12:26Z 5-repetition matrix lost its connection to this
     // cluster mid-run (CONNECTION_CLOSED), and stop() below removed the
     // container, taking with it the server log, the one record that separates
     // a backend crash / crash-restart from a terminated session. Keep the log
     // tail first. testcontainers' logs() follows the stream, so read it for a
-    // bounded window and then destroy it.
+    // bounded window and then destroy it. (A native cluster is a plain child
+    // process with no container healthcheck to crash-restart it.)
+    const container = dedicatedPg;
     try {
-      const stream = await dedicatedPg.logs({ tail: 2_000 });
+      const stream = await container.logs({ tail: 2_000 });
       const text = await new Promise<string>((resolve) => {
         let out = '';
         const finish = () => { stream.destroy(); resolve(out); };
@@ -321,14 +334,14 @@ describe('P-013 workload A fixture', () => {
           reconciler: counterRows.filter((row) => row.arm === arm && row.eventRecovery === 'reconciler').length,
         }))));
       console.info('P-013 workload A per-sample persistence counters', JSON.stringify({
-        cluster: dedicatedPg ? 'dedicated' : 'shared', fixtureEmbedder: Boolean(fixtureEmbedder),
+        cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', fixtureEmbedder: Boolean(fixtureEmbedder),
         rows: counterRows }));
       // The complete trial rows (every percentile, per repetition, wall time and
       // throughput) so separate per-repetition runs aggregate without re-running.
       // A cold-only run keeps the historical 'P-013 workload A cold trials' label.
       console.info(`P-013 workload A ${modes.join('+')} trials`, JSON.stringify({
         repetitions, repetitionOffset, coldSamples, warmSamples, warmups, modes, concurrencies,
-        cluster: dedicatedPg ? 'dedicated' : 'shared', fixtureEmbedder: Boolean(fixtureEmbedder), trials }));
+        cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', fixtureEmbedder: Boolean(fixtureEmbedder), trials }));
       // Per-phase split, not just the total: the cold cost must be attributed to a
       // D-016 phase (accept / dispatch / terminal / business event) before any
       // fixture decision is taken on it (WI-10002948).
