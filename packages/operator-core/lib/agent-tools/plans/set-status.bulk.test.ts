@@ -17,11 +17,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Keep the real `harnessArg` zod schema; only stub `harnessScopedCtx` so the test
 // ctx (which carries no harnessSlug) does not trip the harness-required gate.
-vi.mock('../_harness-scope', async (orig) => ({
-  ...(await orig<typeof import('../_harness-scope')>()),
-  harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
+vi.mock('../_harness-scope', async (orig) => {
+  const actual = await orig<typeof import('../_harness-scope')>();
+  return {
+    ...actual,
+    harnessScopedCtx: (h: string | undefined, ctx: { workspaceId?: string; harnessSlug?: string }) =>
+      ctx.workspaceId ? actual.harnessScopedCtx(h, ctx) : ctx,
+  };
+});
+vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: (ctx: { harnessSlug?: string }) => ctx.harnessSlug ?? null }));
+const slugScopeM = vi.hoisted(() => ({ recover: vi.fn() }));
+vi.mock('./slug-scope', async (orig) => ({
+  ...(await orig<typeof import('./slug-scope')>()),
+  recoverHarnessFromSlugs: slugScopeM.recover,
 }));
-vi.mock('./_ctx-opts', () => ({ resolveCtxHarnessSlug: () => null }));
 vi.mock('./revisions', () => ({
   planRevisionCapture: () => ({ afterWrite: undefined, recorded: { current: null } }),
 }));
@@ -63,8 +72,8 @@ const lockM = vi.mocked(withPlanLock);
 const tool = (await import('./set-status')).default;
 
 type Out = { data: any };
-const body = async (args: Record<string, unknown>) =>
-  (((await tool.handler(args as never, {} as never)) as Out).data);
+const body = async (args: Record<string, unknown>, ctx: Record<string, unknown> = {}) =>
+  (((await tool.handler(args as never, ctx as never)) as Out).data);
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -89,6 +98,40 @@ function lockReturnsMutatorValue(
 }
 
 describe('plans:set-status handler (bulk keyed-array)', () => {
+  it('recovers an unambiguous exact plan slug before a workspace-scoped status write', async () => {
+    lockReturnsMutatorValue(new Set(['P-001']));
+    slugScopeM.recover.mockResolvedValue({
+      status: 'resolved',
+      harnessSlug: 'papercusp',
+      bySlug: { 'plan-a': 'papercusp' },
+      ambiguous: {},
+    });
+    const metadata = vi.fn();
+    const result = await body(
+      { slug: 'plan-a', item: 'P-001', status: 'todo' },
+      { workspaceId: 'papercusp-workspace', harnessSlug: '*', metadata },
+    );
+    expect(result.results[0]).toMatchObject({ ok: true, slug: 'plan-a', itemId: 'P-001' });
+    expect(slugScopeM.recover).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'papercusp-workspace' }), ['plan-a']);
+    expect(lockM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'papercusp' }), expect.anything(), expect.anything());
+    expect(metadata).toHaveBeenCalledWith({ harnessAutoResolved: { 'plan-a': 'papercusp' } });
+  });
+
+  it('refuses an ambiguous exact slug before any status write', async () => {
+    slugScopeM.recover.mockResolvedValue({
+      status: 'resolved',
+      harnessSlug: 'papercusp',
+      bySlug: { 'plan-a': 'papercusp' },
+      ambiguous: { 'plan-a': ['papercusp', 'other-harness'] },
+    });
+    const result = await body(
+      { slug: 'plan-a', item: 'P-001', status: 'todo' },
+      { workspaceId: 'papercusp-workspace', harnessSlug: '*' },
+    );
+    expect(result.results[0]).toMatchObject({ ok: false, slug: 'plan-a', itemId: 'P-001' });
+    expect(lockM).not.toHaveBeenCalled();
+  });
+
   it('inline { slug, item, status } returns a single result', async () => {
     lockReturnsMutatorValue(new Set(['P-001']));
     const b = await body({ slug: 'plan-a', item: 'P-001', status: 'wip' });

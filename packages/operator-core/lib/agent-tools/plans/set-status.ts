@@ -21,7 +21,7 @@
  */
 
 import { z } from 'zod';
-import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES, HarnessRequiredError, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
@@ -32,6 +32,7 @@ import { isPlanDrained, emitFleetDrainedForPlan } from '../../fleet-drained-even
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { resolveAgentIdentity, isEphemeralMcpCallIdentity, type AgentIdentity } from '../coordination/identity';
 import { resolvePlanScope } from './source';
+import { recoverHarnessFromSlugs, requireUnambiguousSlugScope, slugScopeErrorResult } from './slug-scope';
 import { claimForWork, releaseOwnClaim } from '../../plan-items/claim-discipline';
 import { getClaim } from '../../plan-items/claims';
 import { autoConvertClaimIntent } from '../../plan-items/claim-holder';
@@ -985,7 +986,27 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
     lastPhaseAtMs = now;
   };
 
-  const sctx = harnessScopedCtx(it.harness, ctx);
+  let sctx: UnifiedToolContext & { harnessSlug: string };
+  try {
+    sctx = harnessScopedCtx(it.harness, ctx);
+  } catch (error) {
+    if (!(error instanceof HarnessRequiredError)) throw error;
+    // An exact plan slug is sufficient to recover a workspace-scoped write,
+    // provided the canonical index identifies one unambiguous owning harness.
+    // Explicit or session harness bindings still take the normal scoped path.
+    const recovered = await recoverHarnessFromSlugs(ctx, [it.slug]);
+    const decision = requireUnambiguousSlugScope(
+      recovered,
+      ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
+    );
+    if (decision.status !== 'resolved') {
+      return { ...slugScopeErrorResult('plans:set-status', decision), slug: it.slug, itemId: it.itemId };
+    }
+    sctx = { ...ctx, harnessSlug: decision.harnessSlug };
+    (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({
+      harnessAutoResolved: decision.bySlug,
+    });
+  }
   const harnessSlug = resolveCtxHarnessSlug(sctx);
 
   // Caller-DX (P-006): truncate an over-long inline note instead of rejecting.
