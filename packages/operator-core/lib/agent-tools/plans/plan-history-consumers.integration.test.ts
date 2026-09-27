@@ -305,9 +305,18 @@ describe('bounded plan history production consumers', () => {
       };
     };
     expect(planResult.history.status).toBe('available');
-    expect(JSON.stringify(planResult.history)).toContain(CHILD_LESSON);
-    expect(JSON.stringify(planResult.history)).not.toContain(DIRECT_GOAL_LESSON);
-    expect(JSON.stringify(planResult.history)).not.toContain(UNRELATED_LESSON);
+    const assertPlanScope = (output: string) => {
+      expect(output).toContain(CHILD_LESSON);
+      expect(output).not.toContain(DIRECT_GOAL_LESSON);
+      expect(output).not.toContain(UNRELATED_LESSON);
+    };
+    const planOutput = JSON.stringify(planResult.history);
+    assertPlanScope(planOutput);
+    // Use the same final-sink oracle against omitted-descendant and cross-scope
+    // faults. A green integration result must not accept either broken output.
+    expect(() => assertPlanScope(planOutput.replaceAll(CHILD_LESSON, ''))).toThrow();
+    expect(() => assertPlanScope(`${planOutput}\n${UNRELATED_LESSON}`)).toThrow();
+    expect(() => assertPlanScope(`${planOutput}\n${DIRECT_GOAL_LESSON}`)).toThrow();
     const rawRef = planResult.history.brief.attempts.find((attempt) => attempt.rawRef.startsWith(`${CHILD}#`))?.rawRef;
     expect(rawRef).toBe(`${CHILD}#checkpoint`);
 
@@ -355,11 +364,19 @@ describe('bounded plan history production consumers', () => {
     const history = await readGoalHistoryContext(GOAL);
     const serialized = JSON.stringify(history);
     expect(history.status).toBe('available');
-    expect(serialized).toContain(GOAL_LESSON);
-    expect(serialized).toContain('Preserve the current correction');
-    expect(serialized).toContain(CHILD_ROOT_CAUSE);
-    expect(serialized).toContain('direct goal attachment must survive without a plan');
-    expect(serialized).not.toContain(UNRELATED_LESSON);
+    const assertGoalScope = (output: string) => {
+      expect(output).toContain(GOAL_LESSON);
+      expect(output).toContain('Preserve the current correction');
+      expect(output).toContain(CHILD_ROOT_CAUSE);
+      expect(output).toContain('direct goal attachment must survive without a plan');
+      expect(output).not.toContain(UNRELATED_LESSON);
+    };
+    assertGoalScope(serialized);
+    for (const omitted of [GOAL_LESSON, 'Preserve the current correction', CHILD_ROOT_CAUSE,
+      'direct goal attachment must survive without a plan']) {
+      expect(() => assertGoalScope(serialized.replaceAll(omitted, ''))).toThrow();
+    }
+    expect(() => assertGoalScope(`${serialized}\n${UNRELATED_LESSON}`)).toThrow();
     expect(history.brief?.rawRefs.filter((ref) => ref === `${CHILD}#checkpoint`)).toHaveLength(1);
     expect(history.brief?.rawRefs.filter((ref) => ref === `${DIRECT_GOAL_ITEM}#checkpoint`)).toHaveLength(1);
     expect(history.brief?.fanOut).toMatchObject({ truncated: false });

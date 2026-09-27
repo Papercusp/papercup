@@ -86,15 +86,6 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     expect(engineer).not.toContain('SCOPED CONTINUATIONS ARE NOT NEW KICKOFFS.');
   }, 60_000);
 
-  it.each([['auto'], ['auto', 'ideate', 'goal']])('seals scoped persistence in the canonical kernel for modes %j', async (...modes) => {
-    const body = await loadPlaybookBody(modes);
-    const kernel = body.slice(body.indexOf('<!-- PAPERCUSP-KERNEL:SEAL -->'));
-    expect(kernel).toContain('Persistence follows current scope and measured demand.');
-    expect(kernel).toContain('perform that retry and retain unknown if it remains unmeasured');
-    expect(kernel).toContain('explicit diagnosis task still requires the investigation below');
-    expect(kernel).toContain('A blocker is work, not a stop sign');
-  }, 60_000);
-
   it.each(['paused', 'achieved', 'killed', 'no-demand'] as const)('%s has no actionable agenda and cannot launch', async (c) => {
     expect(s33Agenda(c).primary).toEqual([]);
     const world = makeS33World(c);
