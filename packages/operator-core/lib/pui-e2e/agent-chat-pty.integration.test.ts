@@ -4843,11 +4843,13 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
 
   test('P-013: a 40-turn session keeps key feedback in budget and memory bounded', { timeout: 600_000 }, async () => {
     const turns = 40;
+    let sendingTurn = 0;
     const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
     try {
       await openComposer(pane);
       let rssAfterFirstMiB = 0;
       for (let turn = 1; turn <= turns; turn += 1) {
+        sendingTurn = turn;
         const prompt = `P13 long ${turn} ${randomUUID().slice(0, 6)}`;
         pane.write(prompt);
         await pane.waitFor(prompt);
@@ -4865,6 +4867,15 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
         binary: bin, binarySha256, optimised: optimised(), turns, rssAfterFirstMiB, rssAfterLastMiB,
         keyFeedbackP95Ms: p95(keyMs),
       }));
+    } catch (error) {
+      // Keep the actual UI/HTTP/engine boundary when the request-count assertion
+      // fails. The suite teardown removes its isolated database and HOME, so a
+      // bare "expected N, got N-1" cannot distinguish a retained draft from a
+      // submitted command waiting for durable acceptance.
+      console.info('PUI_LONG_SESSION_FAILURE', JSON.stringify({
+        sendingTurn, observedRequests: scriptedEngine.requests.length, ...pane.failureEvidence(),
+      }));
+      throw error;
     } finally {
       await pane.stop().catch(() => {});
     }
