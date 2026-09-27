@@ -1214,6 +1214,7 @@ describe('dispatchPendingGradingAudits', () => {
           attempts: 2,
           codes: ['model_quota_exhausted'],
           fallback: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'auto' },
+          routedTo: 'codex',
         },
       }),
     ]);
@@ -1265,12 +1266,18 @@ describe('dispatchPendingGradingAudits', () => {
     const d = quotaTerminalFallbackDeps();
     const providerCanServe = vi.fn(async () => false);
 
-    await dispatchPendingGradingAudits(
+    const result = await dispatchPendingGradingAudits(
       { targetIds: ['EI-walled-fallback'], ctx, harness: 'papercusp' },
       { ...d, providerCanServe },
     );
 
     expect(providerCanServe).toHaveBeenCalledWith('codex');
+    // The receipt names the route TAKEN, not just the configured fallback —
+    // `fallback` still reads codex here, which is exactly what misled a reader
+    // of the live 2026-09-27 receipt (WI-10003463).
+    expect(result.receipts[0]).toMatchObject({
+      terminalRecovery: { fallback: expect.objectContaining({ agent: 'codex' }), routedTo: 'claude' },
+    });
     // The retry still happens — it is simply routed at the primary, whose
     // auto-routed gateway pool may still have headroom.
     expect(d.launch).toHaveBeenCalledTimes(2);
@@ -1285,11 +1292,12 @@ describe('dispatchPendingGradingAudits', () => {
     const d = quotaTerminalFallbackDeps();
     const providerCanServe = vi.fn(async () => true);
 
-    await dispatchPendingGradingAudits(
+    const result = await dispatchPendingGradingAudits(
       { targetIds: ['EI-walled-fallback'], ctx, harness: 'papercusp' },
       { ...d, providerCanServe },
     );
 
+    expect(result.receipts[0]).toMatchObject({ terminalRecovery: { routedTo: 'codex' } });
     expect(d.launch).toHaveBeenCalledTimes(2);
     expect(d.launch.mock.calls[1]?.[0]).toEqual(
       expect.objectContaining({

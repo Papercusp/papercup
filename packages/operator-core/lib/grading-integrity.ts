@@ -232,6 +232,8 @@ export interface PendingGradingAuditDispatchReceipt {
     attempts: number;
     codes: GradingAuditRecoveryCode[];
     fallback: typeof GRADING_AUDIT_FALLBACK;
+    /** Backend the bounded retry actually launched on (see recoveryFields). */
+    routedTo: 'claude' | 'codex';
   };
 }
 
@@ -1004,6 +1006,12 @@ export async function dispatchPendingGradingAudits(
               attempts,
               codes: terminalCodes,
               fallback: GRADING_AUDIT_FALLBACK,
+              // `fallback` is the CONFIGURED fallback, echoed whether or not the
+              // retry used it. `routedTo` is the backend the bounded retry actually
+              // launched on — it stays 'claude' when the fallback provider has no
+              // serviceable account (WI-10003463), so a reader never mistakes the
+              // configured fallback for the route taken.
+              routedTo: launchBackend,
             },
           }
         : {}),
