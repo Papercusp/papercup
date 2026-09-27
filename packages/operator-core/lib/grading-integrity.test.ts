@@ -150,6 +150,31 @@ function deps() {
 }
 
 describe('dispatchPendingGradingAudits', () => {
+  it('does not dispatch an audit for a stale or unbound rubric-subject attestation', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([
+      card('EI-stale-subject', {
+        subject: { kind: 'rubric', ref: 'acceptance-rubric' },
+        subjectRubricCurrentness: {
+          state: 'stale', reason: 'criteria-hash-mismatch',
+          recordedRevision: 4, currentRevision: 5,
+          recordedCriteriaHash: 'old', currentCriteriaHash: 'new',
+        },
+      }),
+      card('EI-unbound-subject', { subject: { kind: 'rubric', ref: 'acceptance-rubric' } }),
+    ]);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-stale-subject', 'EI-unbound-subject'], ctx }, d);
+
+    expect(result.receipts).toEqual([
+      expect.objectContaining({ issueId: 'EI-stale-subject', state: 'skipped' }),
+      expect.objectContaining({ issueId: 'EI-unbound-subject', state: 'skipped' }),
+    ]);
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+  });
+
   it('routes the exact source card before launch, retaining reservation and subject evidence', async () => {
     const d = deps();
     const source = card('EI-routed', {
