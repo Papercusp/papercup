@@ -86,6 +86,9 @@ import { publishHandoffToken } from '../../sync/pot-git/handoff-token';
 import {
   runRefAnnouncePublishTick,
   runRefAnnounceReceiveTick,
+  formatRefAnnounceReceiveCensus,
+  formatRefAnnounceReceiveFreshness,
+  REF_ANNOUNCE_RECEIVE_BATCH_LIMIT,
   decideRefAnnounceReceiveCursor,
   mergeParkedIntoReceiveBatch,
   REF_ANNOUNCE_RECEIVE_IDLE_MS,
@@ -172,7 +175,13 @@ import {
   noSuchRepoBackoffSecondsLeft,
 } from './no-such-repo-backoff';
 import { refAnnounceRepoEnvelope, refAnnounceTargetsRepo } from './ref-announce-repo-scope';
-import { runOwnHeadPublishTick, type OwnHeadPublishTickOutcome } from '../../sync/pot-git/own-head-publish';
+import {
+  boundedUnshallowTimeoutMs,
+  nextUnshallowBackoff,
+  runOwnHeadPublishTick,
+  type OwnHeadPublishTickOutcome,
+  type OwnHeadUnshallowBackoffState,
+} from '../../sync/pot-git/own-head-publish';
 import { describePublishRefusal } from '../../sync/pot-git/publish-guard';
 import { bootstrapFromPeer, hasPendingQuarantine } from '../../sync/pot-git/bootstrap';
 import { fetchCoalescerKey, withFetchCoalescing } from '../../sync/pot-git/fetch-coalescer';
@@ -4476,6 +4485,19 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
 
     const genesisBaselineSha = await deriveGenesisBaselineSha(entry, branch);
 
+    // WI-2142873: a shallow worktree's unshallow gets a budget strictly inside
+    // this leg's idle deadline, and a failed attempt backs off (persisted), so an
+    // unshallow that cannot finish no longer aborts the whole post-legs phase —
+    // which silently starved ref-announce/integrator/worktree-bridge every tick.
+    const { sql: unshallowSql } = getOrgPg();
+    const unshallowRows = await unshallowSql<{ state: OwnHeadUnshallowBackoffState | null }[]>`
+      SELECT metadata->'own_head_unshallow' AS state
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
+       LIMIT 1
+    `;
+    const priorUnshallow = unshallowRows[0]?.state ?? null;
+
     const outcome = await runOwnHeadPublishTick({
       potHomeSlug,
       repoKey,
@@ -4484,7 +4506,19 @@ async function runOwnHeadPublishLeg(slug: string, workspaceId: string, branch: s
       devicePubkeyBase64: actor.devicePubkey,
       genesisBaselineSha,
       workspaceId,
+      unshallowTimeoutMs: boundedUnshallowTimeoutMs(gitSyncActionIdleTimeoutMs()),
+      unshallowDeferredUntil: priorUnshallow?.nextAttemptAt ?? null,
     });
+    const nextUnshallow = nextUnshallowBackoff(priorUnshallow, outcome.unshallow, Date.now());
+    if (nextUnshallow !== priorUnshallow) {
+      await patchRoutineMetadata(slug, workspaceId, { own_head_unshallow: nextUnshallow });
+      if (nextUnshallow) {
+        console.warn(
+          `[git-sync] ${slug}: own-head unshallow failed (attempt ${nextUnshallow.failures}); ` +
+            `deferring until ${new Date(nextUnshallow.nextAttemptAt).toISOString()} so later legs keep running`,
+        );
+      }
+    }
     if (outcome.refused) {
       console.warn(
         `[git-sync] ${slug}: own-head publish REFUSED — ${describePublishRefusal(outcome.refused)}; ` +
@@ -5038,7 +5072,8 @@ async function runConvergenceProbe(input: {
         `[git-sync] ${slug}: pot-git NOT CONVERGED WITH THE POT — ${formatConvergenceVerdict(verdict)}. ` +
           `A completed fetch is NOT convergence: our mirror has not advanced while the pot announced newer ` +
           `snapshots on the (repoKey-independent) ref-announce plane. Treat any 'COLD JOIN COMPLETE' / ` +
-          `bootstrap ok:true for this pot as UNSOUND until this clears.`,
+          `bootstrap ok:true for this pot as UNSOUND until this clears. ` +
+          (await describeRefAnnounceReceiveFreshness(slug, workspaceId)),
       );
     }
     return verdict;
@@ -5621,6 +5656,27 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
  * only genuine cross-machine reachability (Phase 3's live rig) exercises the
  * happy path end-to-end.
  */
+/**
+ * WI-2142873: the NOT CONVERGED alarm's missing half. It names the receive
+ * leg's last persisted pass and cursor, so a leg that never runs (starved by an
+ * earlier leg's action timeout) reads differently from one that runs and rejects.
+ * Never throws: it is decoration on an alarm, not a new failure mode.
+ */
+async function describeRefAnnounceReceiveFreshness(slug: string, workspaceId: string): Promise<string> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ at: string | null; cursor: string | null }[]>`
+      SELECT metadata->'ref_announce'->>'at' AS at, metadata->'ref_announce'->>'lastEventId' AS cursor
+        FROM harness_shared.routines
+       WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
+       LIMIT 1
+    `;
+    return formatRefAnnounceReceiveFreshness(rows[0]?.at ?? null, rows[0]?.cursor ?? null, Date.now());
+  } catch (e) {
+    return `ref-announce receive freshness unreadable: ${e instanceof Error ? e.message : e}`;
+  }
+}
+
 async function resolveHiveGitProtocolScope(
   workspaceId: string,
   potHomeSlug: string,
@@ -5776,7 +5832,7 @@ async function runRefAnnounceLeg(
          AND id > ${lastEventId}
          AND body->'fed_event'->>'key' = ${REF_ANNOUNCE_EVENT_KEY}
        ORDER BY id ASC
-       LIMIT 200
+       LIMIT ${REF_ANNOUNCE_RECEIVE_BATCH_LIMIT}
     `;
     // Nothing new to receive. ⚠ NOT inherently a "fast no-op": the zero-row case is the
     // one where the scan runs to completion having found nothing, so it is the MOST
@@ -5921,6 +5977,20 @@ async function runRefAnnounceLeg(
         at: Date.now(),
       }),
     });
+    // WI-2142873 detector: one census line per receive pass. Rejections were
+    // never logged, so a 739-minute non-convergence showed ZERO receive lines
+    // and nothing distinguished "the leg rejected everything" from "the leg
+    // never ran". Now a live leg always leaves a line; silence means it did not run.
+    console.info(
+      formatRefAnnounceReceiveCensus(slug, receiveOutcome.results, {
+        batch: batch.length,
+        fromCursor: lastEventId,
+        toCursor: cursorDecision.cursor,
+        parked: Object.keys(cursorDecision.parked).length,
+        rowsRead: feRows.length,
+        limit: REF_ANNOUNCE_RECEIVE_BATCH_LIMIT,
+      }),
+    );
     for (const u of cursorDecision.unparked) {
       console.info(
         `[git-sync] ${slug}: parked ref-announce from ${u.device.slice(0, 12)} settled (${u.action}) at v${u.version} ` +

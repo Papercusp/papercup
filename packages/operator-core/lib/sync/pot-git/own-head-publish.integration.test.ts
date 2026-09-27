@@ -244,6 +244,86 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
       expect(await readNamespaceRef(bare, device, `refs/heads/${BRANCH}`)).toBeNull();
     });
 
+    // WI-2142873: the unshallow used to get NETWORK_RUN_GIT_TIMEOUT_MS (600s) —
+    // exactly the git-sync post-legs idle deadline — so on a worktree too large to
+    // unshallow the guard aborted the whole action every tick and the ref-announce
+    // receive leg after it never ran (VM mirror frozen 739m+).
+    it('passes the caller-bounded unshallow budget to the fetch and reports a structured failure', async () => {
+      const local = await mkdtemp(join(root, 'bounded-unshallow-'));
+      await git(['init', '-q', '-b', BRANCH, local], root);
+      await commitFile(local, 'head.txt', 'head', 'head');
+      const seenTimeouts: Array<number | undefined> = [];
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE, repoKey: 'bounded-unshallow', worktreePath: local,
+        branch: BRANCH, devicePubkeyBase64: devicePubkey(),
+        unshallowTimeoutMs: 123_000,
+        runGit: async (args, cwd, options) => {
+          if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') {
+            return { code: 0, stdout: 'true\n', stderr: '' };
+          }
+          if (args[0] === 'fetch' && args.includes('--unshallow')) {
+            seenTimeouts.push(options?.timeoutMs);
+            return { code: 124, stdout: '', stderr: 'git fetch --quiet --unshallow origin timed out' };
+          }
+          return defaultRunGit(args, cwd, options);
+        },
+      });
+      expect(seenTimeouts).toEqual([123_000]);
+      expect(out.changed).toBe(false);
+      expect(out.unshallow?.state).toBe('failed');
+      expect(out.unshallow?.error).toContain('timed out');
+    });
+
+    it('a deferred unshallow issues NO fetch and returns at once, so later legs keep their budget', async () => {
+      const local = await mkdtemp(join(root, 'deferred-unshallow-'));
+      await git(['init', '-q', '-b', BRANCH, local], root);
+      await commitFile(local, 'head.txt', 'head', 'head');
+      const calls: string[][] = [];
+      const now = 1_800_000_000_000;
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE, repoKey: 'deferred-unshallow', worktreePath: local,
+        branch: BRANCH, devicePubkeyBase64: devicePubkey(),
+        unshallowDeferredUntil: now + 60_000,
+        now: () => now,
+        runGit: async (args, cwd, options) => {
+          calls.push(args);
+          if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') {
+            return { code: 0, stdout: 'true\n', stderr: '' };
+          }
+          return defaultRunGit(args, cwd, options);
+        },
+      });
+      expect(calls.filter((a) => a[0] === 'fetch')).toHaveLength(0);
+      expect(out.unshallow).toEqual({ state: 'deferred', deferredUntil: now + 60_000 });
+      expect(out.errors.join('; ')).toContain('unshallow deferred until');
+    });
+
+    it('an EXPIRED deferral attempts the unshallow again', async () => {
+      const local = await mkdtemp(join(root, 'expired-unshallow-'));
+      await git(['init', '-q', '-b', BRANCH, local], root);
+      await commitFile(local, 'head.txt', 'head', 'head');
+      let unshallowAttempts = 0;
+      const now = 1_800_000_000_000;
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE, repoKey: 'expired-unshallow', worktreePath: local,
+        branch: BRANCH, devicePubkeyBase64: devicePubkey(),
+        unshallowDeferredUntil: now - 1,
+        now: () => now,
+        runGit: async (args, cwd, options) => {
+          if (args[0] === 'rev-parse' && args[1] === '--is-shallow-repository') {
+            return { code: 0, stdout: 'true\n', stderr: '' };
+          }
+          if (args[0] === 'fetch' && args.includes('--unshallow')) {
+            unshallowAttempts += 1;
+            return { code: 128, stdout: '', stderr: 'fatal: unable to access remote' };
+          }
+          return defaultRunGit(args, cwd, options);
+        },
+      });
+      expect(unshallowAttempts).toBe(1);
+      expect(out.unshallow?.state).toBe('failed');
+    });
+
     it('a shallow clone is unshallowed before transfer, so publish lands instead of fail-closing forever', async () => {
       // A real "origin" with enough history that a depth-1 clone is a
       // genuinely graft-truncated shallow repo (parent unreachable).
@@ -274,6 +354,8 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
       expect(out.changed).toBe(true);
       expect(out.refused).toBeNull();
       expect(out.headSha).toBe(originHead);
+      // WI-2142873: a success is reported, so the caller clears its backoff.
+      expect(out.unshallow).toEqual({ state: 'ok' });
       // The clone itself was unshallowed as a side effect of the fix.
       expect(await git(['rev-parse', '--is-shallow-repository'], shallowWorktree)).toBe('false');
 

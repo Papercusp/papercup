@@ -89,6 +89,63 @@ export interface OwnHeadPublishTickInput {
    *  consult (see publish-guard.ts's PublishGuardInput.workspaceId). Omitted
    *  ⇒ no runtime exemptions consulted (only static FIXTURE_FILES applies). */
   workspaceId?: string;
+  /**
+   * WI-2142873: budget for the shallow-worktree `git fetch --unshallow`.
+   * Omitted ⇒ NETWORK_RUN_GIT_TIMEOUT_MS. The git-sync caller MUST pass
+   * `boundedUnshallowTimeoutMs(idleDeadline)`, because the post-legs liveness
+   * guard gives each leg the same 600s idle budget as NETWORK_RUN_GIT_TIMEOUT_MS.
+   * An unshallow that could not finish first made the guard abort the WHOLE
+   * action every tick, so ref-announce, integrator and worktree-bridge never ran.
+   */
+  unshallowTimeoutMs?: number;
+  /**
+   * WI-2142873: epoch-ms until which the unshallow fetch is NOT attempted
+   * (a persisted backoff after a failed attempt — see nextUnshallowBackoff).
+   * While deferred the tick returns at once with `unshallow.state:'deferred'`,
+   * so a worktree too large to unshallow within budget costs later legs nothing.
+   */
+  unshallowDeferredUntil?: number | null;
+  /** Clock seam for tests. */
+  now?: () => number;
+}
+
+/**
+ * WI-2142873: the per-tick unshallow budget, derived from the git-sync
+ * post-legs idle deadline so the unshallow ALWAYS returns (as a failure) well
+ * before the guard aborts the action. Half the idle deadline, never above the
+ * generic network timeout, never below 1s.
+ */
+export function boundedUnshallowTimeoutMs(idleDeadlineMs: number): number {
+  const half = Math.floor(idleDeadlineMs / 2);
+  return Math.max(1_000, Math.min(NETWORK_RUN_GIT_TIMEOUT_MS, half));
+}
+
+/** Persisted per-install unshallow backoff (routine metadata `own_head_unshallow`). */
+export interface OwnHeadUnshallowBackoffState {
+  failures: number;
+  lastAttemptAt: number;
+  nextAttemptAt: number;
+  lastError: string;
+}
+
+export const UNSHALLOW_BACKOFF_BASE_MS = 15 * 60_000;
+export const UNSHALLOW_BACKOFF_CAP_MS = 6 * 60 * 60_000;
+
+/**
+ * WI-2142873: next backoff state after a tick. `failed` doubles the deferral
+ * (15m, 30m, 1h, … capped at 6h); `ok` clears it (null); `deferred` / no
+ * attempt leaves the prior state unchanged.
+ */
+export function nextUnshallowBackoff(
+  prior: OwnHeadUnshallowBackoffState | null,
+  unshallow: OwnHeadPublishTickOutcome['unshallow'],
+  now: number,
+): OwnHeadUnshallowBackoffState | null {
+  if (!unshallow || unshallow.state === 'deferred') return prior;
+  if (unshallow.state === 'ok') return null;
+  const failures = (prior?.failures ?? 0) + 1;
+  const delay = Math.min(UNSHALLOW_BACKOFF_CAP_MS, UNSHALLOW_BACKOFF_BASE_MS * 2 ** Math.min(failures - 1, 16));
+  return { failures, lastAttemptAt: now, nextAttemptAt: now + delay, lastError: unshallow.error ?? 'unknown' };
 }
 
 export interface OwnHeadPublishTickOutcome {
@@ -132,6 +189,10 @@ export interface OwnHeadPublishTickOutcome {
    *  — populated whether the publish ultimately admitted or was refused for a
    *  DIFFERENT reason, so an exemption's use is always visible for audit. */
   exemptedFindings: SecretFinding[];
+  /** WI-2142873: set only when the source worktree was shallow this tick —
+   *  `ok` unshallowed, `failed` attempted and failed (error names why),
+   *  `deferred` skipped because a prior failure's backoff is still active. */
+  unshallow?: { state: 'ok' | 'failed' | 'deferred'; error?: string; deferredUntil?: number };
   errors: string[];
 }
 
@@ -146,6 +207,11 @@ export async function runOwnHeadPublishTick(
 ): Promise<OwnHeadPublishTickOutcome> {
   const runGit = input.runGit ?? defaultRunGit;
   const errors: string[] = [];
+  // WI-2142873: set to 'ok' once a shallow worktree was unshallowed this tick,
+  // so every later outcome reports it and the caller clears its backoff.
+  let unshallowResult: OwnHeadPublishTickOutcome['unshallow'];
+  const unshallowTag = (): Pick<OwnHeadPublishTickOutcome, 'unshallow'> =>
+    unshallowResult ? { unshallow: unshallowResult } : {};
   const noop = (branch: string | null): OwnHeadPublishTickOutcome => ({
     ran: false,
     changed: false,
@@ -182,7 +248,7 @@ export async function runOwnHeadPublishTick(
     return { ...noop(branch), ran: true, headSha };
   }
   if (priorSha === headSha) {
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], errors };
+    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], ...unshallowTag(), errors };
   }
 
   // WI-5163: a SHALLOW source worktree (from-repo's `shallow:true` smoke
@@ -197,6 +263,17 @@ export async function runOwnHeadPublishTick(
   // history. Reuse the normal git-sync cleanup for this separate fetch path.
   const shallowCheck = await runGit(['rev-parse', '--is-shallow-repository'], input.worktreePath);
   if (shallowCheck.code === 0 && shallowCheck.stdout.trim() === 'true') {
+    const nowMs = (input.now ?? Date.now)();
+    const deferredUntil = input.unshallowDeferredUntil ?? null;
+    if (deferredUntil !== null && deferredUntil > nowMs) {
+      // WI-2142873: a prior attempt failed; do not spend this tick's budget on
+      // it again. Return immediately so every later git-sync leg still runs.
+      errors.push(
+        `source worktree is shallow; unshallow deferred until ${new Date(deferredUntil).toISOString()} ` +
+          `after a failed attempt (own head not published until it succeeds)`,
+      );
+      return { ...noop(branch), ran: true, headSha, priorSha, unshallow: { state: 'deferred', deferredUntil } };
+    }
     const remotesRes = await runGit(['remote'], input.worktreePath);
     const remoteName =
       (remotesRes.code === 0
@@ -212,7 +289,7 @@ export async function runOwnHeadPublishTick(
     let unshallow: Awaited<ReturnType<RunGit>> | undefined;
     try {
       unshallow = await runGit(['fetch', '--quiet', '--unshallow', remoteName], input.worktreePath, {
-        timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS,
+        timeoutMs: input.unshallowTimeoutMs ?? NETWORK_RUN_GIT_TIMEOUT_MS,
       });
     } finally {
       if (unshallow?.code !== 0) {
@@ -220,11 +297,11 @@ export async function runOwnHeadPublishTick(
       }
     }
     if (unshallow.code !== 0) {
-      errors.push(
-        `source worktree is shallow and could not be unshallowed (remote '${remoteName}'): ${unshallow.stderr.trim().slice(0, 500)}`,
-      );
-      return { ...noop(branch), ran: true, headSha, priorSha };
+      const detail = `source worktree is shallow and could not be unshallowed (remote '${remoteName}'): ${unshallow.stderr.trim().slice(0, 500)}`;
+      errors.push(detail);
+      return { ...noop(branch), ran: true, headSha, priorSha, unshallow: { state: 'failed', error: detail } };
     }
+    unshallowResult = { state: 'ok' };
   }
 
   // Ref-less object transfer: ODB + FETCH_HEAD only — no ref is created, so
@@ -240,7 +317,7 @@ export async function runOwnHeadPublishTick(
   }
   if (fetch.code !== 0) {
     errors.push(`object transfer from worktree failed: ${fetch.stderr.trim().slice(0, 500)}`);
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], errors };
+    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], ...unshallowTag(), errors };
   }
 
   // G-10: judge the (prior, head] range BEFORE the ref makes it servable. On a
@@ -271,7 +348,7 @@ export async function runOwnHeadPublishTick(
     });
   } catch (e) {
     errors.push(`publish guard threw (refusing, fail-closed): ${e instanceof Error ? e.message : e}`);
-    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], errors };
+    return { ran: true, changed: false, branch, headSha, priorSha, refused: null, exemptedFindings: [], ...unshallowTag(), errors };
   }
   errors.push(...resolution.errors);
   const guard = resolution.blocked?.result ?? null;
@@ -285,6 +362,7 @@ export async function runOwnHeadPublishTick(
     blockedAtCommit: resolution.blocked?.commit ?? null,
     oversizedCommit: resolution.oversizedCommit,
     exemptedFindings,
+    ...unshallowTag(),
     errors,
   };
   // No forward progress at all — a hard refusal, reported exactly as before.

@@ -435,6 +435,99 @@ export async function runRefAnnounceReceiveTick(
   return { ran: true, results, budgetStates, replayFloors, errors };
 }
 
+// ── Receive census (WI-2142873 detector) ──────────────────────────────────
+
+/**
+ * One line summarising a receive pass. Every action is counted, and rejections
+ * are broken out by reason, so a pot that is not converging shows WHY in the
+ * log. Before this, rejected announcements left no trace at all, and a leg that
+ * never ran looked identical to one that rejected every row.
+ */
+/**
+ * Fed-event rows the receive leg reads per git-sync tick.
+ *
+ * WI-2142873, measured on the Mac VM on 2026-09-27: after an 11h receive
+ * starvation, 8,576 papercusp announcements were queued behind the cursor. At
+ * the old 200 rows per 10-minute tick, the leg drained 20 rows/min against a
+ * steady production of about 6.7/min. That is about 14 ticks (2h20m) before
+ * the first acceptable row and about 10.7h to drain. Until the drain finished,
+ * the mirror stayed frozen at its first post-stall fetch: one fetch mirrors a
+ * device's whole namespace, so older queued rows reject as stale and the next
+ * fetch waits for rows emitted after it.
+ *
+ * A large batch is cheap. A superseded row costs one signature check and a
+ * watermark compare, and a device is dialed at most once per tick (after a
+ * success, the rest of its rows reject as already mirrored; after a failure,
+ * there is one dial per device per tick). So the batch size bounds only the
+ * per-tick bytes read. It does not bound fetches.
+ */
+export const REF_ANNOUNCE_RECEIVE_BATCH_LIMIT = 2000;
+
+export function formatRefAnnounceReceiveCensus(
+  slug: string,
+  results: readonly RefAnnounceReceiveResult[],
+  meta: {
+    batch: number;
+    fromCursor: number;
+    toCursor: number;
+    parked: number;
+    /** Fed-event rows the tick read, before the per-install filter. */
+    rowsRead?: number;
+    /** The read's LIMIT. When rowsRead reaches it, more rows are queued. */
+    limit?: number;
+  },
+): string {
+  const actions = new Map<string, number>();
+  const reasons = new Map<string, number>();
+  const devices = new Set<string>();
+  for (const r of results) {
+    devices.add(r.device);
+    actions.set(r.result.action, (actions.get(r.result.action) ?? 0) + 1);
+    if (r.result.action === 'rejected') {
+      reasons.set(r.result.reason, (reasons.get(r.result.reason) ?? 0) + 1);
+    }
+  }
+  const fmt = (m: Map<string, number>): string =>
+    [...m.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, n]) => `${k}=${n}`)
+      .join(' ');
+  return (
+    `[git-sync] ${slug}: ref-announce receive census — batch=${meta.batch} driven=${results.length} ` +
+    `devices=${devices.size} ${fmt(actions) || 'no-results'}` +
+    (reasons.size ? ` rejectedBy{${fmt(reasons)}}` : '') +
+    ` parked=${meta.parked} cursor ${meta.fromCursor}→${meta.toCursor}` +
+    (meta.limit !== undefined && meta.rowsRead !== undefined && meta.rowsRead >= meta.limit
+      ? ` BACKLOG: read a full ${meta.limit}-row batch, more rows are queued behind the cursor`
+      : '')
+  );
+}
+
+/** Receive-leg staleness past which the NOT CONVERGED alarm calls it out. */
+export const REF_ANNOUNCE_RECEIVE_STALE_MS = 60 * 60_000;
+
+/**
+ * WI-2142873: the NOT CONVERGED alarm's missing half. It renders the receive
+ * leg's last persisted pass (routine metadata `ref_announce.at` /
+ * `lastEventId`), so a leg STARVED by an earlier leg's action timeout reads
+ * differently from one that runs and rejects.
+ */
+export function formatRefAnnounceReceiveFreshness(at: string | null, cursor: string | null, now: number): string {
+  const atMs = at === null ? NaN : Number(at);
+  if (!Number.isFinite(atMs)) {
+    return 'ref-announce receive has NEVER persisted a pass for this install — check that the leg runs at all.';
+  }
+  const ageMs = Math.max(0, now - atMs);
+  const stale =
+    ageMs >= REF_ANNOUNCE_RECEIVE_STALE_MS
+      ? ' — STALE: the receive leg is not completing; look for an earlier git-sync leg timing out'
+      : '';
+  return (
+    `ref-announce receive last persisted ${Math.round(ageMs / 60_000)}m ago at ` +
+    `${new Date(atMs).toISOString()} (cursor ${cursor ?? '?'})${stale}.`
+  );
+}
+
 // ── Receive fed-event cursor decision ─────────────────────────────────────
 
 /**
