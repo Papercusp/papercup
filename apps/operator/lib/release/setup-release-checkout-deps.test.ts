@@ -35,6 +35,7 @@ import {
   readlinkSync,
   readdirSync,
   realpathSync,
+  renameSync,
   openSync,
   closeSync,
   utimesSync,
@@ -316,7 +317,7 @@ describe('setup-release-checkout.sh pinned_dependency_generation_reuse_safe() �
     const wrapper = [
       'set -uo pipefail',
       'source "$GENERATION_SCRIPT"',
-      'source <(sed -n "/^enumerate_node_modules()/,/^}/p; /^pinned_dependency_generation_reuse_safe()/,/^}/p" "$SETUP_SCRIPT")',
+      'source <(sed -n "/^enumerate_node_modules()/,/^}/p; /^pinned_generation_tree_current()/,/^}/p; /^pinned_dependency_generation_reuse_safe()/,/^}/p" "$SETUP_SCRIPT")',
       'if pinned_dependency_generation_reuse_safe; then',
       '  printf "safe trees=%s\\n" "$PINNED_DEPENDENCY_REUSE_TREE_COUNT"',
       '  exit 0',
@@ -636,6 +637,8 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
     generationId?: string;
     /** Replace the materializer with a no-op, so it "succeeds" leaving no tree. */
     stubMaterializeToNoop?: boolean;
+    /** Extra script globals, e.g. RELEASE_ROOT / DEPENDENCY_GENERATION_TREE. */
+    env?: Record<string, string>;
   }
 
   function runSyncOne(
@@ -648,7 +651,7 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
       'set -euo pipefail',
       'log() { :; }',
       'source "$GENERATION_SCRIPT"',
-      'source <(sed -n "/^node_modules_tree_fingerprint()/,/^}/p; /^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
+      'source <(sed -n "/^pinned_generation_tree_current()/,/^}/p; /^node_modules_tree_fingerprint()/,/^}/p; /^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
       ...(opts.stubMaterializeToNoop ? ['dependency_generation_materialize_tree() { return 0; }'] : []),
       'sync_one_node_modules "$SRC" "$DEST"',
     ].join('\n');
@@ -661,6 +664,7 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
         DEST: dest,
         NODE_MODULES_COPY_MODE: copyMode,
         ...(opts.generationId ? { PINNED_DEPENDENCY_GENERATION_ID: opts.generationId } : {}),
+        ...(opts.env ?? {}),
       },
       encoding: 'utf8',
     });
@@ -866,6 +870,105 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
     expect(r.stderr).toMatch(/FATAL: pinned dependency generation materialization produced no tree/);
     expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('PREVIOUS-CHECKPOINT');
     expect(readdirSync(work).filter((n) => n.includes('deploy-tmp') || n.includes('deploy-old'))).toEqual([]);
+  });
+
+  /**
+   * EI-24341465306631575. The whole-checkout reuse predicate is all-or-nothing, and the
+   * checkpoint's --source-only pass re-clones every submodule (deleting the node_modules
+   * inside it), so the predicate missed on every gate run and the loop re-copied all ~95
+   * trees (18.5 GiB) to restore the ~38 that were gone. The pinned branch now skips a tree
+   * this checkout already materialized from the same generation, using the same per-tree
+   * marker checks as the predicate.
+   */
+  describe('pinned per-tree reuse (EI-24341465306631575)', () => {
+    const generationId = `v1-${'c'.repeat(64)}`;
+    const rel = 'packages/kept/node_modules';
+    let generationTree: string;
+    let releaseRoot: string;
+    let roots: Record<string, string>;
+
+    beforeEach(() => {
+      generationTree = join(work, 'generation-tree');
+      releaseRoot = join(work, 'checkpoint');
+      mkdirSync(join(generationTree, rel, 'dep'), { recursive: true });
+      writeFileSync(join(generationTree, rel, 'dep/index.js'), 'GENERATION');
+      mkdirSync(releaseRoot, { recursive: true });
+      roots = { DEPENDENCY_GENERATION_TREE: generationTree, RELEASE_ROOT: releaseRoot };
+    });
+
+    function syncPinned(srcRel: string, destRel: string, env: Record<string, string> = roots): void {
+      syncOne(join(generationTree, srcRel), join(releaseRoot, destRel), 'copy', { generationId, env });
+    }
+
+    it('materializes a missing tree, then skips it while it is current (keeping copy-up edits)', () => {
+      const file = join(releaseRoot, rel, 'dep/index.js');
+      syncPinned(rel, rel);
+      expect(readFileSync(file, 'utf8')).toBe('GENERATION');
+      expect(readFileSync(join(releaseRoot, rel, '.papercusp-isolated-snapshot'), 'utf8')).toBe(
+        `generation=${generationId}\n`,
+      );
+
+      // A later setup phase copies up and patches a package inside the tree.
+      writeFileSync(file, 'PATCHED-BY-COPY-UP');
+      const inode = statSync(file).ino;
+      syncPinned(rel, rel);
+
+      expect(readFileSync(file, 'utf8')).toBe('PATCHED-BY-COPY-UP');
+      expect(statSync(file).ino).toBe(inode);
+      expect(readFileSync(join(generationTree, rel, 'dep/index.js'), 'utf8')).toBe('GENERATION');
+    });
+
+    it('re-materializes a tree whose marker names another generation or is duplicated', () => {
+      const dest = join(releaseRoot, rel);
+      const marker = join(dest, '.papercusp-isolated-snapshot');
+      for (const stale of [
+        `generation=v1-${'d'.repeat(64)}\n`,
+        `generation=${generationId}\ngeneration=${generationId}\n`,
+      ]) {
+        rmSync(dest, { recursive: true, force: true });
+        mkdirSync(join(dest, 'dep'), { recursive: true });
+        writeFileSync(join(dest, 'dep/index.js'), 'OLD');
+        writeFileSync(marker, stale);
+
+        syncPinned(rel, rel);
+
+        expect(readFileSync(join(dest, 'dep/index.js'), 'utf8')).toBe('GENERATION');
+        expect(readFileSync(marker, 'utf8')).toBe(`generation=${generationId}\n`);
+      }
+    });
+
+    it('does not reuse a current tree for a source that names a different tree', () => {
+      const otherRel = 'packages/other/node_modules';
+      mkdirSync(join(generationTree, otherRel, 'dep'), { recursive: true });
+      writeFileSync(join(generationTree, otherRel, 'dep/index.js'), 'OTHER');
+      syncPinned(rel, rel);
+
+      syncPinned(otherRel, rel);
+
+      expect(readFileSync(join(releaseRoot, rel, 'dep/index.js'), 'utf8')).toBe('OTHER');
+    });
+
+    it('fails closed to materialization without the release and generation roots', () => {
+      const file = join(releaseRoot, rel, 'dep/index.js');
+      syncPinned(rel, rel);
+      writeFileSync(file, 'PATCHED-BY-COPY-UP');
+
+      syncPinned(rel, rel, {});
+
+      expect(readFileSync(file, 'utf8')).toBe('GENERATION');
+    });
+
+    it('rejects a destination tree reached through a symlinked ancestor', () => {
+      const outside = join(work, 'outside');
+      syncPinned(rel, rel);
+      renameSync(join(releaseRoot, 'packages'), outside);
+      symlinkSync(outside, join(releaseRoot, 'packages'));
+      writeFileSync(join(outside, 'kept/node_modules/dep/index.js'), 'ESCAPED');
+
+      syncPinned(rel, rel);
+
+      expect(readFileSync(join(releaseRoot, rel, 'dep/index.js'), 'utf8')).toBe('GENERATION');
+    });
   });
 });
 

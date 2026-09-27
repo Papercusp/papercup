@@ -810,10 +810,38 @@ enumerate_node_modules() {
   dependency_generation_enumerate_node_modules "${1:-$INTEGRATION_ROOT}"
 }
 
+# ONE dependency tree is current for a pinned generation when it is a real
+# directory inside the release root whose own snapshot marker names exactly that
+# generation.  Shared by the whole-checkout predicate below and by the per-tree
+# skip in sync_one_node_modules, so both trust the same markers the same way.
+# Metadata-only and fail-closed, like its callers.
+pinned_generation_tree_current() {
+  local dest="$1" release_real="$2" expected_identity="$3"
+  local dest_real tree_marker tree_generation
+  [[ "$expected_identity" =~ ^v1-[0-9a-f]{64}$ ]] || return 1
+  [ -n "$release_real" ] || return 1
+  [ -d "$dest" ] && [ ! -L "$dest" ] || return 1
+  # Reject a real directory reached through a symlinked ancestor.  Checking
+  # only `-L "$dest"` would let `$release_root/packages` (or a workspace
+  # parent) redirect the supposedly isolated dependency tree elsewhere.
+  dest_real="$(realpath "$dest" 2>/dev/null || true)"
+  case "$dest_real" in
+    "$release_real"|"$release_real"/*) ;;
+    *) return 1 ;;
+  esac
+  tree_marker="$dest/.papercusp-isolated-snapshot"
+  [ -f "$tree_marker" ] && [ ! -L "$tree_marker" ] || return 1
+  tree_generation="$(awk -F= '
+    $1 == "generation" { count++; value=substr($0, index($0, "=") + 1) }
+    END { if (count == 1) print value }
+  ' "$tree_marker")" || return 1
+  [ "$tree_generation" = "$expected_identity" ]
+}
+
 # A pinned generation can be consumed directly when this checkout already
 # contains every required immutable dependency tree.  The normal setup path calls
 # `sync_one_node_modules` once per enumerated tree; on a cache-ready checkpoint
-# that is needlessly expensive because each destination is already a hardlink
+# that is needlessly expensive because each destination is already a
 # materialization of the selected generation.  Keep this predicate deliberately
 # metadata-only: it reads the small checkout marker and one small marker per
 # dependency tree, never the dependency payload itself.
@@ -829,7 +857,7 @@ pinned_dependency_generation_reuse_safe() {
   local expected_identity="${3:-${PINNED_DEPENDENCY_GENERATION_ID:-}}"
   local expected_source="${4:-${DEPENDENCY_GENERATION_SOURCE_FINGERPRINT:-}}"
   local checkout_root checkout_marker marker_identity marker_source
-  local release_real dest_real tree_list nm rel dest tree_marker tree_generation tree_count=0
+  local release_real tree_list nm rel dest tree_count=0
 
   PINNED_DEPENDENCY_REUSE_TREE_COUNT=0
 
@@ -886,22 +914,7 @@ pinned_dependency_generation_reuse_safe() {
       ''|.|..|/*|../*|*/../*|*/..|*//*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
     esac
     dest="$release_root/$rel"
-    [ -d "$dest" ] && [ ! -L "$dest" ] || return 1
-    # Reject a real directory reached through a symlinked ancestor.  Checking
-    # only `-L "$dest"` would let `$release_root/packages` (or a workspace
-    # parent) redirect the supposedly isolated dependency tree elsewhere.
-    dest_real="$(realpath "$dest" 2>/dev/null || true)"
-    case "$dest_real" in
-      "$release_real"|"$release_real"/*) ;;
-      *) return 1 ;;
-    esac
-    tree_marker="$dest/.papercusp-isolated-snapshot"
-    [ -f "$tree_marker" ] && [ ! -L "$tree_marker" ] || return 1
-    tree_generation="$(awk -F= '
-      $1 == "generation" { count++; value=substr($0, index($0, "=") + 1) }
-      END { if (count == 1) print value }
-    ' "$tree_marker")" || return 1
-    [ "$tree_generation" = "$expected_identity" ] || return 1
+    pinned_generation_tree_current "$dest" "$release_real" "$expected_identity" || return 1
     tree_count=$((tree_count + 1))
   done <<< "$tree_list"
 
@@ -964,9 +977,29 @@ sync_one_node_modules() {
     hardlink) cp -al "$src" "$tmp" ;;  # fast; source and destination share file data
     copy)
       if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
-        # Generation files are immutable and independently owned; a same-device
-        # hardlink materialization is therefore safe and fast. The helper falls
-        # back to a regular independent copy across filesystems.
+        # EI-24341465306631575: a tree this checkout ALREADY materialized from the
+        # same generation needs no second copy. The whole-checkout reuse predicate
+        # is all-or-nothing, and the checkpoint's --source-only pass re-clones
+        # every submodule (deleting the node_modules inside it), so it missed on
+        # every gate run and re-copied all ~95 trees (18.5 GiB onto a root disk
+        # with no reflink) to restore the ~38 that were actually gone. Skip each
+        # tree that is still current; only the missing ones are materialized.
+        # The source and destination must name the same tree relative to their
+        # roots. That already holds for the main loop, but the runtime-workspace
+        # toolchain restore resolves its two paths independently.
+        if [ -n "${DEPENDENCY_GENERATION_TREE:-}" ] && [ -n "${RELEASE_ROOT:-}" ] \
+          && [ "${src#"$DEPENDENCY_GENERATION_TREE"/}" != "$src" ] \
+          && [ "${src#"$DEPENDENCY_GENERATION_TREE"/}" = "${dest#"$RELEASE_ROOT"/}" ] \
+          && pinned_generation_tree_current "$dest" "$(realpath -m "$RELEASE_ROOT")" \
+            "$PINNED_DEPENDENCY_GENERATION_ID"; then
+          log "reusing pinned generation tree already current: $dest"
+          PINNED_DEPENDENCY_TREES_REUSED=$(( ${PINNED_DEPENDENCY_TREES_REUSED:-0} + 1 ))
+          return 0
+        fi
+        PINNED_DEPENDENCY_TREES_MATERIALIZED=$(( ${PINNED_DEPENDENCY_TREES_MATERIALIZED:-0} + 1 ))
+        # Generation files are immutable and frozen read-only. Materialization
+        # is an independent copy (a CoW clone where the filesystem supports
+        # one); hardlinks are only the DEPENDENCY_GENERATION_ALLOW_HARDLINK opt-in.
         #
         # WI-474827: this branch deliberately does NOT fingerprint either tree.
         # It used to run two full `node_modules_tree_fingerprint` walks per tree
@@ -976,7 +1009,7 @@ sync_one_node_modules() {
         # written into the marker below and read back only by the non-pinned
         # reuse test further down this function. A pinned tree's identity IS the
         # immutable generation id it was materialized from, which is strictly
-        # stronger than re-walking content that was just hardlinked out of that
+        # stronger than re-walking content that was just materialized from that
         # same generation.
         #
         # Fail-safe for a LATER non-pinned run that reads this marker: with no
@@ -997,8 +1030,8 @@ sync_one_node_modules() {
         fi
         # Compatibility with generations published before WI-212675's marker
         # boundary: they may contain an old checkout-provenance marker frozen
-        # read-only with the dependency payload. Materialization hardlinks files,
-        # so truncating that inode would either fail (0444) or mutate the
+        # read-only with the dependency payload. Truncating it in place fails on
+        # its preserved 0444 mode, and under the hardlink opt-in would mutate the
         # immutable generation. Unlink only the TEMP tree's directory entry and
         # create this checkout's marker afresh; the generation's link remains
         # byte-for-byte untouched.
@@ -1124,10 +1157,15 @@ if need_node_modules; then
     # Enumerate every package-local node_modules in the integration tree (prune so
     # we get the dir itself, not the ones nested inside it — those ride along in the
     # parent's selected cp mode). Each is refreshed via an atomic sibling-temp swap (above).
+    PINNED_DEPENDENCY_TREES_REUSED=0
+    PINNED_DEPENDENCY_TREES_MATERIALIZED=0
     while IFS= read -r nm; do
       rel="${nm#"$NODE_MODULES_SOURCE_ROOT"/}"
       sync_one_node_modules "$nm" "$RELEASE_ROOT/$rel"
     done < <(enumerate_node_modules "$NODE_MODULES_SOURCE_ROOT")
+    if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
+      log "DEPENDENCY_GENERATION_TREE_REUSE identity=$PINNED_DEPENDENCY_GENERATION_ID reused=$PINNED_DEPENDENCY_TREES_REUSED materialized=$PINNED_DEPENDENCY_TREES_MATERIALIZED"
+    fi
   fi
   # Record WHICH dep state was just copied without touching pinned tracked source.
   # The marker is inside gitignored node_modules and is consumed by
@@ -1145,10 +1183,11 @@ else
   log "node_modules up to date (mode=$NODE_MODULES_MODE) — skipping copy"
 fi
 
-# A generation is immutable, so same-filesystem checkpoint materialization uses
-# read-only hardlinks. Copy up only the dependency packages a later setup phase
-# must mutate (patch-package or a native-addon rebuild), preserving both the
-# generation and the fast path for the rest of the ~13 GiB tree.
+# A generation is immutable and frozen read-only, and materialization preserves
+# those modes (an independent copy by default; shared inodes under the hardlink
+# opt-in). Copy up only the dependency packages a later setup phase must mutate
+# (patch-package or a native-addon rebuild) into writable independent files,
+# leaving the generation and the rest of the ~13 GiB tree untouched.
 copy_up_generation_dependency_path() {
   local path="$1"
   [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ] || return 0
