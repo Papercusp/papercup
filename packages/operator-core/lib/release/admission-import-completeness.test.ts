@@ -20,7 +20,7 @@ import {
   renderMissingImports,
   resolveImportCandidates,
 } from './admission-import-completeness';
-import { admitPathsOntoRepairHead, frozenLineageRef, type AdmissionGitRunner } from './repair-head-admission';
+import { admitPathsOntoRepairHead, frozenLineageRef, realAdmissionGit, type AdmissionGitRunner } from './repair-head-admission';
 
 const TEMP: string[] = [];
 afterEach(() => {
@@ -355,6 +355,55 @@ describe('checkAdmissionImportCompleteness — real git', () => {
     const complete = admit(root, candidate, ['lib/a.ts', 'lib/a.test.ts', 'lib/c.ts'], pinned);
     expect(complete.ok).toBe(true);
     if (complete.ok) expect(refAt(root, frozenLineageRef(candidate))).toBe(complete.commit);
+  });
+
+  it('checks a wide pinned cohort with constant Git calls and byte-framed Unicode test blobs', () => {
+    const { root, candidate } = repo();
+    const edits: Record<string, string> = {
+      'lib/a.ts': 'export const a = 2;\n',
+      'lib/a.test.ts': "// café ☕\nimport { a } from './a';\nexport const result = a;\n",
+    };
+    for (let i = 0; i < 80; i++) edits[`unrelated/t${i}.test.ts`] = `// ${i} café ☕\nimport './missing';\n`;
+    const sourceCommit = sweep(root, edits, 'wide cohort');
+    // Current working bytes must not substitute for the immutable pinned source.
+    write(root, 'lib/a.test.ts', '// no imports in the working tree\n');
+    const calls: string[][] = [];
+    const runner: AdmissionGitRunner = (argv, opts) => {
+      calls.push([...argv]);
+      return realAdmissionGit(argv, opts);
+    };
+    const preflight = importCompletenessPreflight({ root, probeRef: sourceCommit, enforceSourceCohort: true, git: runner });
+    const missing = admit(root, candidate, ['lib/a.ts'], { source: { ref: sourceCommit }, preflight });
+    expect(missing).toMatchObject({ ok: false, code: 'admission-incomplete',
+      missing: [expect.objectContaining({ wanted: 'lib/a.test.ts', relation: 'reverse-importer' })] });
+    expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
+    // One admitted blob + diff + tree + content batch. No per-test processes or
+    // per-import path probes, regardless of the unrelated changed-test population.
+    expect(calls).toHaveLength(4);
+    expect(calls.filter((args) => args[1] === '--batch')).toHaveLength(1);
+    expect(calls.some((args) => args[1]?.startsWith('--batch-check'))).toBe(false);
+    const complete = admit(root, candidate, ['lib/a.ts', 'lib/a.test.ts'], { source: { ref: sourceCommit }, preflight });
+    expect(complete.ok).toBe(true);
+  });
+
+  it.each(['truncated', 'wrong-object', 'trailing', 'command-failure'])('fails closed on %s source-cohort blob data', (fault) => {
+    const { root, candidate } = repo();
+    const sourceCommit = sweep(root, {
+      'lib/a.ts': 'export const a = 2;\n',
+      'lib/a.test.ts': "import './a';\n",
+    }, 'cohort');
+    const runner: AdmissionGitRunner = (argv, opts) => {
+      const result = realAdmissionGit(argv, opts);
+      if (argv[1] !== '--batch') return result;
+      if (fault === 'command-failure') return { status: 128, stdout: '', stderr: 'batch failed' };
+      return { ...result, stdout: fault === 'truncated' ? result.stdout.slice(0, -2)
+        : fault === 'wrong-object' ? result.stdout.replace(/^[0-9a-f]+/, 'f'.repeat(40))
+        : result.stdout + 'unexpected' };
+    };
+    const preflight = importCompletenessPreflight({ root, probeRef: sourceCommit, enforceSourceCohort: true, git: runner });
+    expect(admit(root, candidate, ['lib/a.ts'], { source: { ref: sourceCommit }, preflight }))
+      .toMatchObject({ ok: false, code: 'git-failed', step: expect.stringContaining('source cohort blobs') });
+    expect(refAt(root, frozenLineageRef(candidate))).toBeNull();
   });
 });
 

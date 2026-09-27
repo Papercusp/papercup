@@ -478,39 +478,55 @@ function checkWholeBlobSourceCohort(input: {
   const tests = [...new Set([...differing, ...admitted].filter(testFile))];
   if (tests.length === 0) return { ok: true };
 
-  const atSource = (path: string) => `${input.sourceCommit}:${path}`;
-  const testKinds = batchKinds(git, input.root, tests.map(atSource));
-  if (!testKinds.ok) return { ok: false, code: 'git-failed', step: testKinds.step, detail: testKinds.detail };
+  // EI-24383095185523946: resolving every extension candidate through rev:path
+  // re-walked the same immutable tree thousands of times. Together with one
+  // process per test blob this blocked the host until its watchdog killed it.
+  // Read tree entries once, then fetch test contents by object id in one batch.
+  const tree = git(['ls-tree', '-r', '-z', '--full-tree', input.sourceCommit], { cwd: input.root });
+  const failed = (step: string, detail: string) => ({ ok: false as const, code: 'git-failed' as const, step, detail });
+  if (tree.status !== 0) return failed('source cohort tree', (tree.stderr || tree.stdout).slice(0, 400));
+  const blobs = new Map<string, string>();
+  for (const entry of tree.stdout.split('\0').filter(Boolean)) {
+    const parsed = /^(\d{6}) (blob|tree|commit) ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(entry);
+    if (!parsed) return failed('source cohort tree', 'malformed ls-tree entry');
+    if (parsed[2] === 'blob') blobs.set(parsed[4]!, parsed[3]!);
+  }
+  const objectIds = [...new Set(tests.flatMap((test) => blobs.has(test) ? [blobs.get(test)!] : []))];
+  const contents = new Map<string, string>();
+  if (objectIds.length > 0) {
+    const batch = git(['cat-file', '--batch'], { cwd: input.root, input: objectIds.join('\n') + '\n' });
+    if (batch.status !== 0) return failed('source cohort blobs', (batch.stderr || batch.stdout).slice(0, 400));
+    // Git frames contents by BYTES, including when source contains non-ASCII text.
+    const bytes = Buffer.from(batch.stdout, 'utf8');
+    let offset = 0;
+    for (const oid of objectIds) {
+      const end = bytes.indexOf(10, offset);
+      const header = end < 0 ? null : /^([0-9a-f]{40,64}) blob (\d+)$/.exec(bytes.subarray(offset, end).toString('utf8'));
+      if (!header || header[1] !== oid) return failed('source cohort blobs', 'missing or mismatched blob header');
+      const size = Number(header[2]);
+      const next = end + 1 + size;
+      if (!Number.isSafeInteger(size) || next >= bytes.length || bytes[next] !== 10)
+        return failed('source cohort blobs', 'truncated or malformed blob content');
+      contents.set(oid, bytes.subarray(end + 1, next).toString('utf8'));
+      offset = next + 1;
+    }
+    if (offset !== bytes.length) return failed('source cohort blobs', 'unexpected trailing blob data');
+  }
   type ImportAsk = { test: string; specifier: string; candidates: string[] };
   const asks: ImportAsk[] = [];
   for (const test of tests) {
     // A test deleted at the pinned source cannot be imported from that source.
-    if (testKinds.kinds.get(atSource(test)) !== 'blob') continue;
-    const read = git(['cat-file', 'blob', atSource(test)], { cwd: input.root });
-    if (read.status !== 0) return {
-      ok: false,
-      code: 'git-failed',
-      step: `source cohort read ${test}`,
-      detail: `exited ${read.status}: ${(read.stderr || read.stdout).trim().slice(0, 400)}`,
-    };
-    for (const specifier of extractRelativeImportSpecifiers(read.stdout)) {
+    const oid = blobs.get(test);
+    if (!oid) continue;
+    for (const specifier of extractRelativeImportSpecifiers(contents.get(oid)!)) {
       const candidates = resolveImportCandidates(test, specifier);
       if (candidates) asks.push({ test, specifier, candidates });
     }
   }
-  const importedKinds = batchKinds(git, input.root,
-    asks.flatMap((ask) => ask.candidates.map(atSource)));
-  if (!importedKinds.ok) return {
-    ok: false,
-    code: 'git-failed',
-    step: importedKinds.step,
-    detail: importedKinds.detail,
-  };
 
   const missing = new Map<string, AdmissionMissingImport>();
   for (const ask of asks) {
-    const imported = ask.candidates.find((candidate) =>
-      importedKinds.kinds.get(atSource(candidate)) === 'blob');
+    const imported = ask.candidates.find((candidate) => blobs.has(candidate));
     if (!imported) continue;
     if (!admitted.has(ask.test) && admitted.has(imported) && differing.has(ask.test)) {
       missing.set(ask.test, {
