@@ -36,9 +36,14 @@ describe('current-build execution route contract', () => {
     const wrapper = resolve(root, 'scripts/with-test-pg.mjs');
     const probe = `
       const fs = require('node:fs');
+      const postgres = require('postgres');
       const e = process.env;
       const root = e.PAPERCUSP_WORKSPACES_ROOT;
       const id = e.PAPERCUSP_WORKSPACE_ID;
+      (async () => {
+      const sql = postgres(e.HARNESS_ADMIN_DATABASE_URL, { max: 1 });
+      const applied = await sql.unsafe('SELECT count(*)::int AS n FROM harness_shared.schema_migrations');
+      await sql.end();
       console.log('RUNTIME_PROBE ' + JSON.stringify({
         privateHome: e.HOME !== process.env.TEST_LIVE_HOME,
         homeScoped: e.PAPERCUSP_HOME === e.HOME + '/.papercusp',
@@ -55,8 +60,10 @@ describe('current-build execution route contract', () => {
         apiScoped: e.PAPERCUSP_OPERATOR_URL === 'http://127.0.0.1:' + e.PAPERCUSP_HONO_PORT,
         routinesDisabled: e.PAPERCUSP_DBOS_ROUTINES === '0' && e.PAPERCUSP_DBOS_TIMERS === '0',
         vmScoped: e.DBOS__VMID !== process.env.TEST_LIVE_VM,
+        migrated: applied[0].n > 0,
         home: e.HOME
       }));
+      })().catch((error) => { console.error(error); process.exitCode = 1; });
     `;
     const result = spawnSync(process.execPath, [wrapper, '--isolated-runtime', '--', process.execPath, '-e', probe], {
       cwd: root,
@@ -93,7 +100,7 @@ describe('current-build execution route contract', () => {
     const probe = `
       import { generateKeyPairSync, createHash } from 'node:crypto';
       import { keychainLoad, keychainStore } from './packages/operator-core/lib/identity/keychain.ts';
-      const id = process.env.TEST_KEYCHAIN_ID!;
+      const id = process.env.TEST_KEYCHAIN_ID;
       const before = await keychainLoad(id);
       if (before.kind !== 'error' || before.error.kind !== 'not_found') throw new Error('device key escaped its isolated home');
       const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -110,7 +117,7 @@ describe('current-build execution route contract', () => {
     `;
     const keys = [];
     for (let i = 0; i < 2; i++) {
-      const result = spawnSync(process.execPath, [wrapper, '--isolated-runtime', '--', process.execPath, '--import', 'tsx', '-e', probe], {
+      const result = spawnSync(process.execPath, [wrapper, '--isolated-runtime', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
         cwd: root, encoding: 'utf8', timeout: 120_000,
         env: { ...process.env, TEST_KEYCHAIN_ID: keychainId, DBUS_SESSION_BUS_ADDRESS: 'unix:path=/live/keyring-bus' },
       });
@@ -168,12 +175,17 @@ describe('current-build execution route contract', () => {
           await wait(500);
         }
         if (!readiness) throw new Error('background DBOS did not become ready');
+        const federationResponse = await fetch(base + '/api/discovery/federation-status', {
+          signal: AbortSignal.timeout(10000),
+        });
+        const federation = await federationResponse.json();
         console.log('BACKGROUND_HOST_PROBE ' + JSON.stringify({
           privateHome: process.env.PAPERCUSP_HOME === process.env.HOME + '/.papercusp',
           privateVm: process.env.DBOS__VMID.startsWith('test-runtime-'),
           privatePort: process.env.PAPERCUSP_HONO_PORT !== '3271',
           noScheduledRoutines: process.env.PAPERCUSP_DBOS_ROUTINES === '0',
           ready: readiness.ready && readiness.dbosEnabled && readiness.dbos,
+          federationRead: federationResponse.status === 200 && federation.ok === true && Array.isArray(federation.hives) && !!federation.substrate,
           home: process.env.HOME,
         }));
       })().catch((error) => {
