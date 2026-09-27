@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { getOrgPg } from '@papercusp/db-org';
+import type { SubmitBlueprintOperationInput } from '../../blueprint/operation-service';
 
 // Copy-out mutation probes load the action from a scratch mirror so the tracked
 // source is never dirty while git-sync is active. Ordinary runs use the real module.
@@ -17,7 +19,10 @@ describe('system:blueprint-operation routine action', () => {
       specificationRevision: 'b'.repeat(64),
       target: { kind: 'work-item' as const, id: 'WI-71' },
     };
-    const submit = vi.fn(async () => handle);
+    const submit = vi.fn(async (
+      _sql: ReturnType<typeof getOrgPg>['sql'],
+      _input: SubmitBlueprintOperationInput,
+    ) => handle);
     const ctx = {
       workspaceId: 'ws-1',
       installSlug: 'schedule-owner',
