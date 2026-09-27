@@ -30,6 +30,8 @@ import {
   perGroupVitestArgs,
   runCapturedTestProcess,
   runVitestList,
+  stopTestScope,
+  testScopeRuntimeMaxSec,
   suppressInjectedJsonReportNotice,
   defaultTestFileRunTimeoutMs,
   resolveTestChildLauncher,
@@ -578,7 +580,9 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       child.kill = vi.fn();
       const spawnImpl = vi.fn((..._args: unknown[]) => child);
       const killProcessImpl = vi.fn(() => 'group');
+      const stopScopeImpl = vi.fn(() => ({ tasks: 2, stopStatus: 0 }));
       const onProgress = vi.fn();
+      const env = { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' };
 
       const resultPromise = runCapturedTestProcess(
         'npx',
@@ -594,20 +598,29 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
           killGraceMs: 20,
           maxBuffer: 1024,
           // A user bus is reachable from this env, so systemd-run is the launcher.
-          env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' },
+          env,
           systemdRunPath: '/usr/bin/systemd-run',
           setsidPath: '/usr/bin/setsid',
           spawnImpl,
           killProcessImpl,
+          stopScopeImpl,
           onProgress,
           governedProcessImpl: (_governedOptions: unknown, run: Function) =>
             run(undefined, undefined, { inherited: true }),
         },
       );
 
+      const spawnArgs = spawnImpl.mock.calls[0]?.[1] as string[];
+      const scopeUnit = spawnArgs.find((arg) => arg.startsWith('--unit='))?.slice('--unit='.length);
+      expect(scopeUnit).toMatch(/^papercusp-test-\d+-[0-9a-z]+-\d+\.scope$/);
       expect(spawnImpl).toHaveBeenCalledWith(
         '/usr/bin/systemd-run',
-        ['--user', '--scope', '--collect', 'npx', 'vitest', 'run', 'a.test.ts', 'b.test.ts'],
+        [
+          '--user', '--scope', '--collect', `--unit=${scopeUnit}`,
+          // watchdogMaxMs defaults to the 120-minute ceiling: 7,200s + 20ms grace + 1,800s slack.
+          '--property=RuntimeMaxSec=9001', '--property=TimeoutStopSec=10',
+          'npx', 'vitest', 'run', 'a.test.ts', 'b.test.ts',
+        ],
         expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
       );
       const spawnOptions = spawnImpl.mock.calls[0]?.[2] as Record<string, unknown> | undefined;
@@ -622,9 +635,17 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
 
       await vi.advanceTimersByTimeAsync(90);
       expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGTERM', true);
+      expect(stopScopeImpl).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(20);
       expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGKILL', true);
+      // A process-group SIGKILL cannot reach a fixture that detached into its own group, and such
+      // a straggler holding the stdio pipes would keep `close` from ever firing: the SIGKILL stage
+      // also stops the whole scope.
+      expect(stopScopeImpl).toHaveBeenCalledTimes(1);
+      expect(stopScopeImpl).toHaveBeenCalledWith(scopeUnit, env);
+      child.emit('exit', null, 'SIGKILL');
       child.emit('close', null, 'SIGKILL');
+      expect(stopScopeImpl).toHaveBeenCalledTimes(1);
 
       await expect(resultPromise).resolves.toMatchObject({
         status: null,
@@ -636,6 +657,10 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       expect(progress()).toContain('state=finished');
       expect(progress()).toContain('state=finished cwd="packages/operator-core"');
       expect(progress()).toContain('exitStatus=none signal=SIGKILL');
+      expect(progress()).toContain(
+        `TEST_FILE_LEAKED_PROCESSES scope=${scopeUnit} tasks=2 reason=timeout ` +
+          'cwd="packages/operator-core" files=["a.test.ts","b.test.ts"]',
+      );
     } finally {
       vi.useRealTimers();
     }
@@ -768,6 +793,102 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
     }
   });
 
+  it('stops its systemd scope once the Vitest main exits, and names a leak only when one is resident', async () => {
+    // host-memory-reduction-2026-09-27 P-008: `detached: true` fixtures from kopia-backup-guard and
+    // pc-heavy tests outlived their runs by 19 days inside anonymous run-u scopes, each forking a
+    // `sleep` ten times a second. Leftover scope residents are killed on exit, and named.
+    for (const [tasks, leakLine] of [[3, true], [0, false], [null, false]] as const) {
+      const child = new EventEmitter() as EventEmitter & {
+        pid: number;
+        stdout: PassThrough;
+        stderr: PassThrough;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      child.pid = 4545;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      const spawnImpl = vi.fn((..._args: unknown[]) => child);
+      const stopScopeImpl = vi.fn(() => ({ tasks, stopStatus: 0 }));
+      const onProgress = vi.fn();
+      const resultPromise = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+        cwd: '/repo',
+        files: ['a.test.ts'],
+        env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' },
+        systemdRunPath: '/usr/bin/systemd-run',
+        setsidPath: '/usr/bin/setsid',
+        spawnImpl,
+        stopScopeImpl,
+        onProgress,
+        governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+          run(undefined, undefined, { inherited: true }),
+      });
+      const spawnArgs = spawnImpl.mock.calls[0]?.[1] as string[];
+      const scopeUnit = spawnArgs.find((arg) => arg.startsWith('--unit='))?.slice('--unit='.length);
+
+      expect(stopScopeImpl).not.toHaveBeenCalled();
+      child.emit('exit', 0, null);
+      expect(stopScopeImpl).toHaveBeenCalledWith(scopeUnit, { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' });
+      child.emit('close', 0, null);
+      await expect(resultPromise).resolves.toMatchObject({ status: 0, signal: null, timedOut: false });
+      expect(stopScopeImpl).toHaveBeenCalledTimes(1);
+      const leaks = onProgress.mock.calls.map(([line]) => String(line)).filter((line) =>
+        line.startsWith('TEST_FILE_LEAKED_PROCESSES'));
+      expect(leaks).toEqual(leakLine
+        ? [`TEST_FILE_LEAKED_PROCESSES scope=${scopeUnit} tasks=3 reason=exit cwd="/repo" files=["a.test.ts"]`]
+        : []);
+    }
+  });
+
+  it('never stops a scope it did not create (setsid and direct launchers)', async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.pid = 4546;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.kill = vi.fn();
+    const stopScopeImpl = vi.fn(() => ({ tasks: 9, stopStatus: 0 }));
+    const resultPromise = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      cwd: '/repo',
+      files: ['a.test.ts'],
+      env: { PATH: '/usr/bin' },
+      systemdRunPath: '/usr/bin/systemd-run',
+      setsidPath: '/usr/bin/setsid',
+      spawnImpl: vi.fn(() => child),
+      stopScopeImpl,
+      onProgress: () => null,
+      governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+        run(undefined, undefined, { inherited: true }),
+    });
+    child.emit('exit', 0, null);
+    child.emit('close', 0, null);
+    await expect(resultPromise).resolves.toMatchObject({ status: 0 });
+    expect(stopScopeImpl).not.toHaveBeenCalled();
+  });
+
+  it('stopTestScope reads the resident task count, then queues a non-blocking stop', () => {
+    const calls: string[][] = [];
+    const spawnSyncImpl = (command: string, args: string[]) => {
+      calls.push([command, ...args]);
+      return args.includes('show') ? { stdout: '4\n', status: 0 } : { stdout: '', status: 0 };
+    };
+    expect(stopTestScope('papercusp-test-1-a-1.scope', { XDG_RUNTIME_DIR: '/run/user/1000' }, spawnSyncImpl))
+      .toEqual({ tasks: 4, stopStatus: 0 });
+    expect(calls).toEqual([
+      ['systemctl', '--user', 'show', '--property=TasksCurrent', '--value', 'papercusp-test-1-a-1.scope'],
+      ['systemctl', '--user', 'stop', '--no-block', 'papercusp-test-1-a-1.scope'],
+    ]);
+    // A scope that already emptied has been garbage-collected (`--collect`): systemctl prints
+    // `[not set]` and the stop exits 5. Neither is a leak, and neither may throw.
+    const gone = (_command: string, args: string[]) =>
+      (args.includes('show') ? { stdout: '[not set]\n', status: 0 } : { stdout: '', status: 5 });
+    expect(stopTestScope('papercusp-test-1-a-2.scope', {}, gone)).toEqual({ tasks: null, stopStatus: 5 });
+  });
+
   it('resolves the launcher against the env the child actually gets', () => {
     const base = { command: 'npx', args: ['vitest', 'run', 'a.test.ts'] };
     // systemd-run --user needs a user bus: XDG_RUNTIME_DIR or DBUS_SESSION_BUS_ADDRESS.
@@ -780,13 +901,32 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
         env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' },
         systemdRunPath: '/usr/bin/systemd-run',
         setsidPath: '/usr/bin/setsid',
+        scopeUnit: 'papercusp-test-1-a-1.scope',
+        runtimeMaxSec: 2400,
       }),
     ).toEqual({
       launcher: 'systemd-run',
       ownsProcessGroup: true,
       spawnCommand: '/usr/bin/systemd-run',
-      spawnArgs: ['--user', '--scope', '--collect', 'npx', 'vitest', 'run', 'a.test.ts'],
+      spawnArgs: [
+        '--user', '--scope', '--collect', '--unit=papercusp-test-1-a-1.scope',
+        '--property=RuntimeMaxSec=2400', '--property=TimeoutStopSec=10',
+        'npx', 'vitest', 'run', 'a.test.ts',
+      ],
+      scopeUnit: 'papercusp-test-1-a-1.scope',
     });
+    // host-memory-reduction-2026-09-27 P-008: the sibling scope escapes the caller's cgroup, so it
+    // must never be anonymous (the router could not stop it) nor unbounded (nothing would stop it
+    // once the router died). Omitting both still yields a named, bounded scope.
+    const defaulted = resolveTestChildLauncher({
+      ...base,
+      env: { PATH: '/usr/bin', XDG_RUNTIME_DIR: '/run/user/1000' },
+      systemdRunPath: '/usr/bin/systemd-run',
+      setsidPath: '/usr/bin/setsid',
+    });
+    expect(defaulted.scopeUnit).toMatch(/^papercusp-test-\d+-[0-9a-z]+-\d+\.scope$/);
+    expect(defaulted.spawnArgs).toContain(`--unit=${defaulted.scopeUnit}`);
+    expect(defaulted.spawnArgs).toContain(`--property=RuntimeMaxSec=${testScopeRuntimeMaxSec(MAX_TEST_FILE_RUN_TIMEOUT_MS)}`);
     // A stripped env (a fixture, a cron job) must not be handed to systemd-run: it would exit 1
     // before the command ran, with no output — a silent red. setsid keeps the process-group
     // boundary the watchdog relies on.
@@ -802,10 +942,11 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       ownsProcessGroup: true,
       spawnCommand: '/usr/bin/setsid',
       spawnArgs: ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
+      scopeUnit: null,
     });
     expect(
       resolveTestChildLauncher({ ...base, env: { PATH: '/usr/bin' }, systemdRunPath: null, setsidPath: null }),
-    ).toEqual({ launcher: 'direct', ownsProcessGroup: false, spawnCommand: 'npx', spawnArgs: base.args });
+    ).toEqual({ launcher: 'direct', ownsProcessGroup: false, spawnCommand: 'npx', spawnArgs: base.args, scopeUnit: null });
 
     // EI-23142789976346343: testing:run already owns a bounded systemd scope.
     // A nested `systemd-run --scope` escapes that cgroup, so the outer timeout
@@ -829,6 +970,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       ownsProcessGroup: true,
       spawnCommand: '/usr/bin/setsid',
       spawnArgs: ['--wait', 'npx', 'vitest', 'run', 'a.test.ts'],
+      scopeUnit: null,
     });
     for (const managedMarker of [
       { PAPERCUSP_TEST_RUN_GROUP: 'run-123' },

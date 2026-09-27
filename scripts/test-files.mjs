@@ -2590,6 +2590,7 @@ export function runVitestList(command, args, options = {}) {
     setsidPath = SETSID_PATH,
     spawnImpl,
     killProcessImpl,
+    stopScopeImpl,
     onProgress,
   } = options;
   return runCapturedTestProcess(command, args, {
@@ -2609,6 +2610,7 @@ export function runVitestList(command, args, options = {}) {
     watchdogMaxMs: timeoutMs,
     ...(spawnImpl ? { spawnImpl } : {}),
     ...(killProcessImpl ? { killProcessImpl } : {}),
+    ...(stopScopeImpl ? { stopScopeImpl } : {}),
     ...(onProgress
       ? { onProgress }
       : { onProgress: (line) => console.error(line.replace(/^TEST_FILE_PROGRESS\b/, 'TEST_FILE_LIST_PROGRESS')) }),
