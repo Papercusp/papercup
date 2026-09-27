@@ -34,6 +34,14 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
+// RouteLink needs a TanStack RouterProvider; the picker is rendered without
+// one here. The stub marks itself so a test can tell it from a raw <a>.
+vi.mock('../../_components/RouteLink', () => ({
+  default: ({ children, href, ...props }: { children: React.ReactNode; href: string }) => (
+    <a href={href} data-route-link="true" {...props}>{children}</a>
+  ),
+}));
+
 // The picker calls useViewer() on mount, which fires a module-cached
 // GET /api/viewer. In tests whose mockFetch doesn't return a Response for that
 // URL it resolves undefined, and useViewer's `fetch(...).then()` throws
@@ -159,11 +167,13 @@ describe('P-006 — domain-first hive-native picker layout (flag on)', () => {
     screen.getByText('Find any repo on GitHub and create or join a hive from it.');
   });
 
-  it('Browse the Comb is a link to /cupboard', () => {
+  it('Browse the Comb is a router link to /cupboard that closes the modal', () => {
     renderPicker();
     const link = screen.getByText('Browse the Comb').closest('a');
     expect(link).not.toBeNull();
-    expect(link?.getAttribute('href')).toBe('/cupboard');
+    // Rendered through RouteLink (stubbed above) so the portal can map it.
+    expect(link?.getAttribute('data-route-link')).toBe('true');
+    expect(link?.getAttribute('href')).toBe('/cupboard?create=false');
   });
 
   it('shows the add-a-harness heading', () => {

@@ -237,8 +237,9 @@ test.describe('/adv Harnesses tab — Hive from GitHub repo (P-018)', () => {
     // The old "GitHub URL" card label is gone (folded into search, P-006).
     await expect(dialog.getByRole('button', { name: 'GitHub URL' })).toHaveCount(0);
     // Join group — the cards (no more demoted underline affordances). "Browse
-    // the Comb" is a link to /cupboard; the other two are buttons.
-    await expect(dialog.getByRole('link', { name: /Browse the Comb/ })).toHaveAttribute('href', '/cupboard');
+    // the Comb" is a link to /cupboard (closing the modal in the same
+    // navigation, WI-10003268); the other two are buttons.
+    await expect(dialog.getByRole('link', { name: /Browse the Comb/ })).toHaveAttribute('href', '/cupboard?create=false');
     await expect(dialog.getByRole('button', { name: /Hive invite/ })).toBeVisible();
     // The legacy per-hive "Hive link" / "Harness link" join card is retired.
     await expect(dialog.getByRole('button', { name: /Harness link/ })).toHaveCount(0);

@@ -184,6 +184,9 @@ const create = defineTool({
   method: 'POST',
   path: '/harness/projects',
   auth: 'loopback',
+  // The GitHub-URL entry clones before it registers, which can far exceed the
+  // default route timeout (same budget as /harness/pots/from-repo).
+  timeoutSec: 600,
   async handler(req) {
     const body = (await req.json()) as Record<string, unknown>;
     const slug = String(body.slug ?? '').trim();
@@ -457,6 +460,10 @@ const createHive = defineTool({
   method: 'POST',
   path: '/harness/pots',
   auth: 'loopback',
+  // Provisioning (dir, git init, blueprint, knowledge pack, repo publish) takes
+  // 10–25s at normal load and minutes on a busy box; the 30s default answered
+  // 408 for pots that were then created (WI-10003268).
+  timeoutSec: 180,
   async handler(req) {
     let body: { slug?: string; path?: string; parentDir?: string; wakeInSeconds?: number; knowledgePack?: string | null; blueprintId?: string } = {};
     try { body = (await req.json()) as typeof body; } catch { /* empty body */ }

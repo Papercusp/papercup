@@ -30,6 +30,10 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/app/harness/EntryGithubSearchForm', () => ({ EntryGithubSearchForm: () => <div data-testid="gh-search" /> }));
 vi.mock('@/app/harness/PublishPotCard', () => ({ PublishPotCard: () => <div /> }));
 vi.mock('@/app/_components/HowSharingWorks', () => ({ HowSharingWorks: () => <div /> }));
+// RouteLink's progress bar needs the app's ProgressProvider; the link itself is real.
+vi.mock('@bprogress/react', () => ({
+  useProgress: () => ({ set: () => {}, start: () => {}, stop: () => {} }),
+}));
 
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 
@@ -57,7 +61,12 @@ function mountAt(url: string) {
     ),
   });
   const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: () => <div /> });
-  render(<RouterProvider router={createRouter({ routeTree: rootRoute.addChildren([indexRoute]) })} />);
+  const cupboardRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/cupboard',
+    component: () => <div data-testid="cupboard-page" />,
+  });
+  render(<RouterProvider router={createRouter({ routeTree: rootRoute.addChildren([indexRoute, cupboardRoute]) })} />);
 }
 
 describe('CreateHarnessPicker close × real adapter (stuck-modal regression)', () => {
@@ -96,6 +105,21 @@ describe('CreateHarnessPicker close × real adapter (stuck-modal regression)', (
     fireEvent.keyDown(document.body, { key: 'Escape', code: 'Escape' });
 
     await waitFor(() => expect(window.location.search).not.toContain('create=true'));
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Add a Hive' })).toBeNull());
+  });
+
+  // WI-10003268: "Browse the Comb" was a raw <a> (a 404 on the portal, which
+  // has no /cupboard page). As a router link it must land on the real
+  // /cupboard route with the modal closed.
+  it('Browse the Comb navigates to /cupboard through the router and closes the modal', async () => {
+    mountAt('/?create=true');
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Add a Hive' })).toBeTruthy());
+
+    fireEvent.click(screen.getByText('Browse the Comb'));
+
+    await waitFor(() => expect(screen.getByTestId('cupboard-page')).toBeTruthy());
+    expect(window.location.pathname).toBe('/cupboard');
+    expect(window.location.search).not.toContain('create=true');
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'Add a Hive' })).toBeNull());
   });
 

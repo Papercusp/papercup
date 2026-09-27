@@ -20,8 +20,8 @@
  * The "Search GitHub" entry is the P-009 search panel (EntryGithubSearchForm)
  * feeding the create-from-repo flow; the github-url step id is unchanged so the
  * `?picker=github-url` deep link and its e2e keep working. "Browse the Comb" is
- * a plain link to /cupboard (the hive directory browse, where Phase 1's join
- * lives).
+ * a router link to /cupboard (the hive directory browse, where Phase 1's join
+ * lives), so the portal can map it onto its own Cupboard surface.
  *
  * The SELECTED entry rides the `?picker=` nuqs param (user-meaningful state →
  * URL, the house rule); form drafts inside each entry stay useState.
@@ -43,6 +43,7 @@ import { EntryGithubSearchForm } from './EntryGithubSearchForm';
 import { CupboardBlueprintForm } from './CupboardBlueprintForm';
 import { PublishPotCard } from './PublishPotCard';
 import { HowSharingWorks } from '../_components/HowSharingWorks';
+import RouteLink from '../_components/RouteLink';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -829,7 +830,12 @@ function buildSections(opts: {
       entries: [
         {
           key: 'browse-comb',
-          href: '/cupboard',
+          // `create=false` closes this modal in the SAME navigation. The portal
+          // carries the current search into a mapped link, so a bare /cupboard
+          // left ?create=true behind and reopened the modal on return; a
+          // separate close write races the navigation (see the nuqs note on
+          // CreateHarnessPicker).
+          href: '/cupboard?create=false',
           label: `Browse the ${combLabel}`,
           description: `Browse published ${hivesLower} in the ${combLabel} and join one.`,
           icon: '🫖',
@@ -1019,14 +1025,16 @@ function PickerStep({
                   </span>
                 </>
               );
-              // "Browse the Comb" navigates to /cupboard (a real route) — an <a>
-              // so it behaves like a link (cmd-click, etc.), matching the
-              // success-card links elsewhere in the picker family.
+              // "Browse the Comb" navigates to /cupboard (a real route). A
+              // RouteLink, not a raw <a>: it still behaves like a link
+              // (cmd-click, etc.), and the portal's router shim maps it onto
+              // its Cupboard surface — a raw <a> sent the portal to a /cupboard
+              // page it does not have (404, WI-10003268).
               if (entry.href) {
                 return (
-                  <a key={entry.key} href={entry.href} className="pc-create-harness-entry" style={cardStyle}>
+                  <RouteLink key={entry.key} href={entry.href} className="pc-create-harness-entry" style={cardStyle}>
                     {inner}
-                  </a>
+                  </RouteLink>
                 );
               }
               return (
