@@ -411,12 +411,73 @@ it('leaves a later Codex model menu to the agent after a turn was submitted', as
     if (existsSync(eventPath)) {
       expect(readFileSync(eventPath, 'utf8')).not.toContain('"kind":"headless-codex-model-choice-kept-existing"');
     }
+    // WI-10002543: the successful submit row must carry a non-vacuous
+    // attempts count (initial submit + verifier resubmits).
+    const deadline = Date.now() + 2_000;
+    let delivered: Record<string, unknown> | undefined;
+    while (Date.now() < deadline && !delivered) {
+      const lines = existsSync(eventPath) ? readFileSync(eventPath, 'utf8').trim().split('\n') : [];
+      delivered = lines.filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
+        .find((event) => event.kind === 'turn-delivered');
+      if (!delivered) await sleep(25);
+    }
+    expect(delivered).toMatchObject({ kind: 'turn-delivered', resubmits: 0, attempts: 1 });
   } finally {
     await injectIntoHost(socketPathFor(ownerId), { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
     await done;
     rmSync(root, { recursive: true, force: true });
   }
 }, 10_000);
+
+it('records initial submit plus each resubmit as attempts on a verified turn', async () => {
+  const ownerId = uniqueOwner('TURN-ATTEMPTS');
+  const sock = socketPathFor(ownerId);
+  const eventPath = eventLogPathForOwner(ownerId);
+  const { captured, io } = fakeIo();
+  const done = hostThroughPty({
+    command: execPath,
+    args: ['-e', [
+      "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+      "process.stdout.write('READY\\n');let crs=0;",
+      "process.stdin.on('data',data=>{for(const c of data){",
+      "if(c==='\\u0004'){process.exit(0);return;}",
+      "if(c==='\\r'&&++crs===2){process.stdout.write('SECOND-CR\\n');",
+      "setInterval(()=>process.stdout.write('ACTIVE\\n'),10);}}});",
+      'setTimeout(()=>process.exit(0),8000);',
+    ].join('')],
+    cwd: '/tmp',
+    env: hermeticEnv({
+      PAPERCUSP_SID: ownerId,
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '30',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '4',
+      PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '5',
+    }),
+    ownerId,
+    io,
+    bridgeTty: false,
+    onExit: () => {},
+  });
+  try {
+    expect(await waitForOutput(captured, 'READY', 5000)).toBe(true);
+    expect(await injectIntoHost(sock, { mode: 'turn', data: 'needs-retry' })).toBe(true);
+    expect(await waitForOutput(captured, 'SECOND-CR', 5000)).toBe(true);
+    const deadline = Date.now() + 3000;
+    let delivered: Record<string, unknown> | undefined;
+    while (Date.now() < deadline && !delivered) {
+      const lines = existsSync(eventPath) ? readFileSync(eventPath, 'utf8').trim().split('\n') : [];
+      delivered = lines.filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>)
+        .find((event) => event.kind === 'turn-delivered');
+      if (!delivered) await sleep(25);
+    }
+    expect(delivered).toMatchObject({ kind: 'turn-delivered' });
+    expect(delivered!.resubmits).toBeGreaterThan(0);
+    expect(delivered!.attempts).toBe(Number(delivered!.resubmits) + 1);
+  } finally {
+    await injectIntoHost(sock, { mode: 'raw', data: '\x04', ownerId }).catch(() => false);
+    await done;
+  }
+}, 12_000);
 
 it('quota wall during launch kickoff preserves the host and publishes recovery through discovery', async () => {
   const ownerId = uniqueOwner('QUOTA-STARTUP');

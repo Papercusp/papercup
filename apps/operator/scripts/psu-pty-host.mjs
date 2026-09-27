@@ -7242,6 +7242,9 @@ export function hostThroughPty(o) {
         label,
         polls: result.polls,
         resubmits: result.resubmits,
+        // Count the initial submit as well as each verifier CR resubmit.
+        // R-1(c)'s attempts > 1 detector is otherwise vacuous for turn delivery.
+        attempts: 1 + result.resubmits,
         ...(result.confirmed ? { confirmed: result.confirmed } : {}),
       });
     }

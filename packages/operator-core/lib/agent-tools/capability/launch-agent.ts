@@ -37,6 +37,7 @@ import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { parseBindingRef } from '@papercusp/orchestrator/blueprint';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless, type SpawnChildExit } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -525,7 +526,7 @@ export default defineTool({
         .array(z.string().min(1))
         .max(40)
         .optional()
-        .describe('Repeatable psu --stack `slot:id` bindings for every fresh launch; members[i].stack overrides this list.'),
+        .describe('Repeatable psu --stack `<slot>:<id>` bindings (e.g. `domain:papercusp-engineer`) for every fresh launch; bare ids are invalid. members[i].stack overrides this list.'),
       fleet: z
         .string()
         .max(120)
@@ -1440,6 +1441,21 @@ export default defineTool({
       });
       return { ...folded, model: selection.model, modelSource: selection.source };
     });
+    // The psu bootstrap rejects malformed stack refs, but that is too late:
+    // admission and a child process have already been consumed by then. Check
+    // every effective member (including overrides) before claiming the launch.
+    if (!sourceAction || isSuccessor) {
+      for (const [i, config] of foldedConfigs.entries()) {
+        for (const ref of config.stack ?? []) {
+          if (!parseBindingRef(ref)) {
+            return err(
+              `Invalid stack binding for member ${i + 1}: ${JSON.stringify(ref)} ` +
+                '(expected "<slot>:<id>", e.g. "domain:papercusp-engineer").',
+            );
+          }
+        }
+      }
+    }
     // Pre-pin every ordinary fresh member before opening its process. The
     // bootstrap can then register the session under the same owner that the
     // launcher, admission metadata, and launch verifier already know. A

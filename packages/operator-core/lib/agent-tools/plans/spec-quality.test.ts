@@ -48,10 +48,10 @@ describe('evaluatePlanSpecQuality', () => {
     for (const [criterion, entry] of Object.entries(result.ratings)) {
       expect(entry.evidence).toContain('Source store: plans:get-specs { slug:"quality-plan", harness:"papercusp" }.');
       expect(entry.evidence).toContain(
-        'Re-run exactly: plans:evaluate-spec-quality { slug:"quality-plan", harness:"papercusp", classRef:"plan-class-feature-ship" }',
+        `Re-run exactly: plans:evaluate-spec-quality { slug:"quality-plan", harness:"papercusp", classRef:"plan-class-feature-ship", expectedSpecSetHash:"${result.specSetHash}" }`,
       );
       expect(entry.evidence).toContain(`confirm the returned specSetHash equals "${result.specSetHash}"`);
-      expect(entry.evidence).not.toContain('expectedSpecSetHash:');
+      expect(entry.evidence).toContain(`expectedSpecSetHash:"${result.specSetHash}"`);
       expect(entry.evidence).toContain(`inspect ratings["${criterion}"]`);
     }
   });
@@ -485,7 +485,7 @@ describe('spec-quality activation guidance', () => {
     ).toBe(false);
   });
 
-  it('publishes the complete scorecard → independent-audit → start sequence and reviewer recipe', () => {
+  it('publishes the scorecard → automatically routed audit → start sequence', () => {
     const evaluateGuidance = [
       evaluateSpecQualityTool.description,
       evaluateSpecQualityTool.guidance?.when,
@@ -505,9 +505,10 @@ describe('spec-quality activation guidance', () => {
       expect(guidance).toContain('grading-integrity');
       expect(guidance).toContain('plans:start');
     }
-    expect(evaluateGuidance).toContain('capability:launch-agent');
-    expect(evaluateGuidance).toContain('independent:true');
-    expect(evaluateGuidance).toContain('different author/lineage');
+    expect(evaluateGuidance).toContain('automatically route the independent non-author');
+    expect(evaluateGuidance).toContain('scorecards:repair');
+    expect(evaluateGuidance).not.toContain('capability:launch-agent');
+    expect(evaluateGuidance).toContain('Never recruit the auditor yourself');
     expect(evaluateChain.indexOf('plans:evaluate-spec-quality')).toBeLessThan(evaluateChain.indexOf('scorecards:emit'));
     expect(evaluateChain.indexOf('scorecards:emit')).toBeLessThan(evaluateChain.indexOf('grading-integrity'));
     expect(evaluateChain.indexOf('grading-integrity')).toBeLessThan(evaluateChain.indexOf('plans:start'));

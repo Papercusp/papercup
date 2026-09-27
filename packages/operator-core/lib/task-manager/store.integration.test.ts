@@ -538,6 +538,12 @@ describe('P-012 terminal provenance writer', () => {
   });
 
   it('distinguishes timeout, ordinary exit 1, manual kill, and uncapped host/ancestor OOM', async () => {
+    // Classification is the subject here; exercising the asynchronous await-event
+    // bridge would import an unrelated module graph after this test has settled.
+    // WI-10002569: inject the documented effect seam so late import warnings
+    // cannot turn a truthful ledger assertion into a console-warn flake.
+    const emitTerminal = vi.fn();
+    const effects = { emitTerminal };
     const timeout = await liveTask('timeouttask', { memoryMaxBytes: 64 * 1024 * 1024 });
     await store.closeTask('timeouttask', {
       state: 'killed',
@@ -548,13 +554,13 @@ describe('P-012 terminal provenance writer', () => {
         memoryMaxBytes: 64 * 1024 * 1024,
         peakMemoryBytes: 2 * 1024 * 1024,
       }),
-    });
+    }, undefined, effects);
 
     await liveTask('exit1task');
-    await store.closeTask('exit1task', { state: 'exited', exitCode: 1 });
+    await store.closeTask('exit1task', { state: 'exited', exitCode: 1 }, undefined, effects);
 
     await liveTask('manualtask');
-    await store.closeTask('manualtask', { state: 'killed', exitReason: 'scope kill SIGTERM' });
+    await store.closeTask('manualtask', { state: 'killed', exitReason: 'scope kill SIGTERM' }, undefined, effects);
 
     const host = await liveTask('hostoomtask');
     await store.closeTask('hostoomtask', {
@@ -563,7 +569,7 @@ describe('P-012 terminal provenance writer', () => {
         memoryMaxBytes: null,
         peakMemoryBytes: 8 * 1024 * 1024,
       }),
-    });
+    }, undefined, effects);
 
     const rows = await db.sql`
       SELECT task_id, state, exit_code, exit_reason
@@ -575,6 +581,7 @@ describe('P-012 terminal provenance writer', () => {
       manualtask: { state: 'killed', exit_code: null, exit_reason: 'scope kill SIGTERM' },
       hostoomtask: { state: 'killed', exit_code: 137, exit_reason: 'host-oom' },
     });
+    expect(emitTerminal).toHaveBeenCalledTimes(4);
   });
 
   it('refuses to attach terminal evidence from a different scope identity', async () => {
