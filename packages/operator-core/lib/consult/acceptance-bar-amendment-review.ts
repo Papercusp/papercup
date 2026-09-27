@@ -37,6 +37,8 @@ import { createHash } from 'node:crypto';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { AcceptanceBarAmendmentPreview, AcceptanceBarApproverEligibilityCheck } from '../rubrics';
 import type { RouteResult } from './relevance-router';
+import type { ConsultReviewerModel } from './get-feedback-core';
+import { resolveExpertModelAllowlist } from './expert-model-allowlist';
 import { ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY } from './selection-policies';
 
 /** One candidate's verdict from the check-approver screen. */
@@ -83,6 +85,18 @@ export interface AmendmentReviewRouteInput {
   identity: AgentIdentity;
   workspaceId: string;
   harness?: string;
+  reviewerModel?: ConsultReviewerModel;
+}
+
+/** A constrained review may only use a model admitted by the workspace's
+ * existing expert allowlist. Never silently use a different ranked model. */
+async function assertReviewerModelAllowed(workspaceId: string, choice: ConsultReviewerModel): Promise<void> {
+  const { readConsultExpertRoutingSettings, bindConsultExpertRoutingSettings } = await import('./expert-routing-settings');
+  const settings = bindConsultExpertRoutingSettings(await readConsultExpertRoutingSettings(workspaceId));
+  const ranks = await resolveExpertModelAllowlist(workspaceId, { loadRanks: settings.loadRanks });
+  if (!ranks.some((rank) => rank.agent === choice.agent && rank.model === choice.model)) {
+    throw new Error(`reviewer_model_not_allowed: ${choice.agent}/${choice.model} is absent from the workspace expert allowlist`);
+  }
 }
 
 export type AmendmentReviewRouteResult =
@@ -94,9 +108,11 @@ export async function routeAcceptanceBarAmendmentReview(
   deps: {
     resolveScreen?: (args: { rubricId: string; applierId: string }) => Promise<{ check: AmendmentReviewerScreen }>;
     feedback?: typeof import('./get-feedback-prod').getFeedbackProd;
+    assertAllowed?: typeof assertReviewerModelAllowed;
   } = {},
 ): Promise<AmendmentReviewRouteResult> {
   const rubricId = input.rubricRef.trim().replace(/^plan:/i, '').trim();
+  if (input.reviewerModel) await (deps.assertAllowed ?? assertReviewerModelAllowed)(input.workspaceId, input.reviewerModel);
   const applierId = input.identity.ownerId;
   const resolveScreen =
     deps.resolveScreen ?? (async (args) => (await import('../rubrics')).resolveAcceptanceBarApproverScreen(args));
@@ -117,6 +133,7 @@ export async function routeAcceptanceBarAmendmentReview(
       // An archived answer is not an approval of THIS diff: always route fresh.
       archiveFloor: 2,
       policy: ACCEPTANCE_BAR_AMENDMENT_REVIEW_POLICY,
+      ...(input.reviewerModel ? { reviewerModel: input.reviewerModel } : {}),
       latencyContract: 'hard-blocked',
       ...(input.harness ? { harnessSlug: input.harness } : {}),
     },
@@ -270,6 +287,7 @@ export interface FreshAmendmentReviewerInput extends AmendmentReviewBriefInput {
   workspaceId: string;
   /** The requesting tool call's context; overridden with the system principal. */
   launchCtx?: unknown;
+  reviewerModel?: ConsultReviewerModel;
 }
 
 /** The work-item whose thread carries the preview post, with its harness. */
@@ -330,6 +348,7 @@ export async function launchFreshAmendmentReviewer(
     resolveAnswerTarget?: typeof resolvePreviewPostWorkItem;
     resolveScreen?: (args: { rubricId: string; applierId: string }) => Promise<{ check: AmendmentReviewerScreen }>;
     launch?: LaunchHandler;
+    assertAllowed?: typeof assertReviewerModelAllowed;
   } = {},
 ): Promise<FreshAmendmentReviewerResult> {
   const previewPostRef = input.previewPostRef.trim();
@@ -344,6 +363,7 @@ export async function launchFreshAmendmentReviewer(
     };
   }
   const rubricId = input.rubricRef.trim().replace(/^plan:/i, '').trim();
+  if (input.reviewerModel) await (deps.assertAllowed ?? assertReviewerModelAllowed)(input.workspaceId, input.reviewerModel);
   const resolveScreen =
     deps.resolveScreen ?? (async (args) => (await import('../rubrics')).resolveAcceptanceBarApproverScreen(args));
   const screen = await resolveScreen({ rubricId, applierId: input.applierId });
@@ -355,7 +375,8 @@ export async function launchFreshAmendmentReviewer(
     };
   }
   const identity = createHash('sha256')
-    .update([input.workspaceId, rubricId, previewPostRef, JSON.stringify(input.preview.approval)].join('\0'))
+    .update([input.workspaceId, rubricId, previewPostRef, JSON.stringify(input.preview.approval),
+      ...(input.reviewerModel ? [JSON.stringify(input.reviewerModel)] : [])].join('\0'))
     .digest('hex');
   const idempotencyKey = `acceptance-bar-amendment-review:${identity.slice(0, 32)}`;
   const label = `bar-amendment-review:${identity.slice(0, 12)}`;
@@ -374,7 +395,10 @@ export async function launchFreshAmendmentReviewer(
       count: 1,
       // role:'judge' is harness-scoped; launch-agent refuses it without one
       // (EI-23414612968722239), so it rides only with a resolved harness.
-      ...(answerOn.harness ? { members: [{ role: 'judge' }] } : {}),
+      ...(answerOn.harness || input.reviewerModel ? { members: [{
+        ...(answerOn.harness ? { role: 'judge' } : {}),
+        ...(input.reviewerModel ?? {}),
+      }] } : {}),
       label,
       idempotencyKey,
     } as never,
@@ -429,6 +453,7 @@ export interface OpenAmendmentReviewInput extends AmendmentReviewBriefInput {
   harness?: string;
   /** The requesting tool call's context, reused (as the system principal) for a fresh-reviewer launch. */
   launchCtx?: unknown;
+  reviewerModel?: ConsultReviewerModel;
 }
 
 export type AmendmentReviewRequestResult =
@@ -479,6 +504,7 @@ export async function openAcceptanceBarAmendmentReview(
     identity: input.identity,
     workspaceId: input.workspaceId,
     ...(input.harness ? { harness: input.harness } : {}),
+    ...(input.reviewerModel ? { reviewerModel: input.reviewerModel } : {}),
   });
   if (routed.state === 'routed') {
     const next =
@@ -499,6 +525,7 @@ export async function openAcceptanceBarAmendmentReview(
       applierId: input.identity.ownerId,
       workspaceId: input.workspaceId,
       ...(input.launchCtx !== undefined ? { launchCtx: input.launchCtx } : {}),
+      ...(input.reviewerModel ? { reviewerModel: input.reviewerModel } : {}),
     });
   } catch (error) {
     freshReviewer = {

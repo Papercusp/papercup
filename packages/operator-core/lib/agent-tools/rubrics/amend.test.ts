@@ -391,6 +391,24 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(JSON.stringify(parsed.error?.issues)).toContain('requires dryRun:true');
   });
 
+  it('passes an explicit reviewer model to the routed review and requires a preview post', async () => {
+    const reviewerModel = { agent: 'codex', model: 'sol', effort: 'xhigh' };
+    expect(rubricsAmendArgs.safeParse({ ...patchArgs, reviewerModel }).success).toBe(false);
+    expect(rubricsAmendArgs.safeParse({
+      ...patchArgs, reviewPreviewPost: 'thread-post:42',
+      reviewerModel: { ...reviewerModel, model: 'sol; unexpected-flag' },
+    }).success).toBe(false);
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    reviewMocks.openAcceptanceBarAmendmentReview.mockResolvedValue({
+      state: 'routed', conversationId: 'conv-model', responderId: 'reviewer',
+      screenedOut: [], previewPostRef: 'thread-post:42', next: 'await reviewer',
+    });
+    await body({ ...patchArgs, reviewPreviewPost: 'thread-post:42', reviewerModel });
+    expect(reviewMocks.openAcceptanceBarAmendmentReview).toHaveBeenCalledWith(
+      expect.objectContaining({ reviewerModel }),
+    );
+  });
+
   it('no amend or check-approver guidance tells the implementer to message a reviewer directly (D-001)', async () => {
     const { default: checkApproverTool } = await import('./check-approver');
     const rendered = JSON.stringify([

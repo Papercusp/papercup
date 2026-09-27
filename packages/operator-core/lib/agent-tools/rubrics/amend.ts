@@ -66,6 +66,13 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .describe(
         "dryRun only: thread-post:<id> of your post carrying this preview's approval JSON. When approval is required, the relevance router opens a lineage-screened review for it; returns review { state, conversationId, screenedOut, next }.",
       ),
+    reviewerModel: z.object({
+      agent: z.enum(['claude', 'codex', 'omp']),
+      model: z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9._-]+$/),
+      effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+    }).strict().optional().describe(
+      'dryRun reviewPreviewPost only: require this allowed backend/model and optional reasoning effort for routed and fresh reviewers; an unavailable model refuses instead of changing the requested choice.',
+    ),
     criteria: z
       .array(amendmentCriterionSchema)
       .min(1)
@@ -221,6 +228,10 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
         message: 'reviewPreviewPost opens the review for a preview, so it requires dryRun:true',
       });
     }
+    if (args.reviewerModel && !args.reviewPreviewPost) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reviewerModel'],
+        message: 'reviewerModel requires dryRun:true and reviewPreviewPost' });
+    }
   },
 );
 
@@ -345,6 +356,7 @@ export default defineTool({
           // WI-10003299: a fresh-reviewer launch reuses this call's context,
           // re-attributed to the review's system principal.
           launchCtx: ctx,
+          ...(args.reviewerModel ? { reviewerModel: args.reviewerModel } : {}),
         });
         return { ok: true, dryRun: true, preview, review };
       });

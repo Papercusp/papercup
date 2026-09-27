@@ -169,6 +169,19 @@ describe('routeAcceptanceBarAmendmentReview', () => {
     ).rejects.toThrow('acceptance_bar_amendment_review_refused: invalid_args');
   });
 
+  it('sends a validated reviewer model to the saved routed consult', async () => {
+    const reviewerModel = { agent: 'codex', model: 'sol', effort: 'xhigh' } as const;
+    const feedback = vi.fn(async () => ({ verdict: 'routed', conversation_id: 'conv-model', responder: { ownerId: 'su-outsider' } }));
+    const assertAllowed = vi.fn(async () => {});
+    await routeAcceptanceBarAmendmentReview(
+      { rubricRef: 'acceptance-x', brief: 'review', identity, workspaceId: 'ws-1', reviewerModel },
+      { resolveScreen: async () => ({ check: lineageScreen('su-implementer') }),
+        feedback: feedback as never, assertAllowed },
+    );
+    expect(assertAllowed).toHaveBeenCalledWith('ws-1', reviewerModel);
+    expect(feedback).toHaveBeenCalledWith(expect.objectContaining({ reviewerModel }), identity, expect.any(Object));
+  });
+
   it('refuses before routing when the independence population cannot be resolved', async () => {
     const feedback = vi.fn();
     await expect(
@@ -371,6 +384,7 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
       // The implementer's lineage never includes the dedicated launcher.
       resolveScreen: vi.fn(async () => ({ check: lineageScreen('su-implementer') })),
       launch: vi.fn().mockResolvedValue(launched),
+      assertAllowed: vi.fn(async () => {}),
       ...overrides,
     };
   }
@@ -418,6 +432,22 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
     const keys = d.launch.mock.calls.map((call) => (call[0] as { idempotencyKey: string }).idempotencyKey);
     expect(keys[0]).toBe(keys[1]);
     expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it('uses the requested backend and effort and keys dedupe by the model choice', async () => {
+    const d = deps();
+    const reviewerModel = { agent: 'codex', model: 'sol', effort: 'xhigh' } as const;
+    const constrained = { ...input, reviewerModel };
+    await launchFreshAmendmentReviewer(constrained, d as never);
+    await launchFreshAmendmentReviewer(constrained, d as never);
+    await launchFreshAmendmentReviewer(input, d as never);
+    expect(d.launch.mock.calls[0]![0]).toMatchObject({
+      members: [{ role: 'judge', agent: 'codex', model: 'sol', effort: 'xhigh' }],
+    });
+    const keys = d.launch.mock.calls.map((call) => (call[0] as { idempotencyKey: string }).idempotencyKey);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
+    expect(d.assertAllowed).toHaveBeenCalledWith('ws', reviewerModel);
   });
 
   it('refuses to launch when the launcher itself fails the check-approver screen', async () => {
