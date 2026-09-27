@@ -73,13 +73,19 @@ import {
   formatExecutedMapLine,
   gitChangedBetween,
   loadExecutedSourceMap,
+  loadPassDurations,
   loadReuseProofs,
 } from "./lib/executed-source-map.mjs";
 import {
   TEST_REUSE_SKIP_LIST_ENV,
+  estimateReuseSavings,
+  formatReuseAlarmLine,
   formatTestReuseLine,
+  formatTestReuseTotalLine,
   reuseCandidates,
+  reuseSoundnessAlarms,
   selectReusablePasses,
+  testReuseAuditRate,
   testReuseEnabled,
   testReuseMaxAgeMs,
   writeReuseSkipList,
@@ -5424,8 +5430,11 @@ async function armTestPassReuse(taskList) {
   }
   const changedBetween = gitChangedBetween({ repoRoot: ROOT, relative: true });
   const maxAgeMs = testReuseMaxAgeMs();
+  const auditRate = testReuseAuditRate();
   const nowMs = Date.now();
   const loaded = new Map();
+  /** @type {{ tasks: number, summaries: Record<string, number>[], savedMs: number | null, unmeasured: number }} */
+  const reuseTotals = { tasks: 0, summaries: [], savedMs: 0, unmeasured: 0 };
   try {
     for (const t of unitTasks) {
       if (!loaded.has(t.ws.name)) {
@@ -5451,7 +5460,7 @@ async function armTestPassReuse(taskList) {
       }
       const wsRel = relative(ROOT, join(ROOT, t.ws.dir)).replaceAll("\\", "/");
       const prefix = wsRel === "" ? "" : `${wsRel}/`;
-      const { skip, summary } = selectReusablePasses({
+      const { skip, summary, watch } = selectReusablePasses({
         candidates: reuseCandidates({ wsRel, relatedFiles: t.relatedFiles, proofFiles: proofs.keys() }),
         proofs,
         judgedSha,
@@ -5460,7 +5469,11 @@ async function armTestPassReuse(taskList) {
         runnerIdentity,
         nowMs,
         maxAgeMs,
+        auditRate,
       });
+      // P-012: the files reuse WOULD have skipped but that run this time; a red among them is a
+      // TEST_PASS_REUSE_ALARM (phase C), judged on the first pass before any retry.
+      if (watch.size > 0) t.reuseWatch = { watch, prefix };
       if (skip.length > 0) {
         t.reuseSkipList = writeReuseSkipList(RUN_LOG_ROOT, {
           files: skip.map((f) => f.slice(prefix.length)),
@@ -5469,10 +5482,39 @@ async function armTestPassReuse(taskList) {
           judgedSha,
         });
       }
+      // P-013: what the skip saved, from the files' last CI pass durations (a lower bound). A
+      // failed read leaves the reuse decision untouched and only makes the estimate "unknown".
+      let savings = { savedMs: 0, measured: 0, unmeasured: 0 };
+      if (skip.length > 0) {
+        try {
+          const durations = await Promise.race([
+            loadPassDurations({ client, files: skip }),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error("pass-duration read timed out")), 10_000).unref(),
+            ),
+          ]);
+          savings = estimateReuseSavings(skip, durations);
+        } catch {
+          savings = null;
+        }
+      }
+      reuseTotals.tasks += 1;
+      reuseTotals.summaries.push(summary);
+      if (savings === null) reuseTotals.savedMs = null;
+      else {
+        if (reuseTotals.savedMs !== null) reuseTotals.savedMs += savings.savedMs;
+        reuseTotals.unmeasured += savings.unmeasured;
+      }
       outSync(
-        formatTestReuseLine(label, summary, ` rows=${rows} narrowed=${Array.isArray(t.relatedFiles)}`),
+        formatTestReuseLine(
+          label,
+          summary,
+          ` rows=${rows} narrowed=${Array.isArray(t.relatedFiles)} ` +
+            `minSavedTestMs=${savings === null ? "unknown" : savings.savedMs}`,
+        ),
       );
     }
+    if (reuseTotals.tasks > 0) outSync(formatTestReuseTotalLine(reuseTotals));
   } finally {
     try {
       await client.end();
@@ -7351,6 +7393,19 @@ for (const scheduled of initialPool.results) {
     );
   }
   emitCapturedTaskOutput(t, scheduled.value, scheduled.allocation);
+  // P-012 (gate-file-level-test-reuse-2026-09-27): a file the reuse rule WOULD have skipped (an
+  // audit sample, or a freshly-expired clean proof) that failed on this fresh run means reuse can
+  // hide a red. Judged on the FIRST pass (the output reuse would have replaced), before any retry;
+  // the retry verdict printed below separates a flake from a reproduced capture gap.
+  if (t.reuseWatch) {
+    for (const alarm of reuseSoundnessAlarms({
+      failedFiles: parseFailedFiles(initialTaskOutput),
+      watch: t.reuseWatch.watch,
+      prefix: t.reuseWatch.prefix,
+    })) {
+      errSync(formatReuseAlarmLine(`${t.ws.name}::${t.script}`, alarm));
+    }
+  }
   let r = scheduled.value;
   const prep = retryPrep.get(scheduled.index);
   const { watchdogTimedOut } = prep;

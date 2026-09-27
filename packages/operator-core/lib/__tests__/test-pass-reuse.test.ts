@@ -4,13 +4,20 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  auditDraw,
+  estimateReuseSavings,
+  formatReuseAlarmLine,
   formatTestReuseLine,
+  formatTestReuseTotalLine,
   isGlobalRunnerInput,
   REUSE_SKIP_LIST_SCHEMA,
   reuseCandidates,
+  reuseSoundnessAlarms,
   selectReusablePasses,
+  testReuseAuditRate,
   testReuseEnabled,
   testReuseMaxAgeMs,
+  TEST_REUSE_AUDIT_RATE_DEFAULT,
   TEST_REUSE_MAX_AGE_MS_DEFAULT,
   writeReuseSkipList,
 } from '../../../../scripts/lib/test-pass-reuse.mjs';
@@ -167,7 +174,169 @@ describe('env toggles and the report line', () => {
 
   it('prints every counter on one greppable line', () => {
     const r = run([T], new Map([[T, proof(T)]]), new Set());
-    expect(formatTestReuseLine('@papercusp/x', r.summary)).toMatch(/^TEST_PASS_REUSE ws=@papercusp\/x candidates=1 reused=1 /);
+    const line = formatTestReuseLine('@papercusp/x', r.summary);
+    expect(line).toMatch(/^TEST_PASS_REUSE ws=@papercusp\/x candidates=1 reused=1 /);
+    expect(line).toMatch(/ audited=0 expiredClean=0$/);
+  });
+
+  it('reads the P-012 audit rate: 5% by default, clamped to [0,1], garbage falls back', () => {
+    expect(TEST_REUSE_AUDIT_RATE_DEFAULT).toBe(0.05);
+    expect(testReuseAuditRate({})).toBe(0.05);
+    expect(testReuseAuditRate({ AFFECTED_TEST_REUSE_AUDIT_RATE: ' ' })).toBe(0.05);
+    expect(testReuseAuditRate({ AFFECTED_TEST_REUSE_AUDIT_RATE: '0' })).toBe(0);
+    expect(testReuseAuditRate({ AFFECTED_TEST_REUSE_AUDIT_RATE: '0.2' })).toBe(0.2);
+    expect(testReuseAuditRate({ AFFECTED_TEST_REUSE_AUDIT_RATE: '7' })).toBe(1);
+    expect(testReuseAuditRate({ AFFECTED_TEST_REUSE_AUDIT_RATE: '-1' })).toBe(0);
+    expect(testReuseAuditRate({ AFFECTED_TEST_REUSE_AUDIT_RATE: 'lots' })).toBe(0.05);
+  });
+});
+
+/**
+ * P-012 soundness backstop. Every proof expires after maxAgeMs (so every file re-runs at least
+ * that often), a deterministic sample of reusable files runs anyway, and a failure among the files
+ * reuse WOULD have skipped is an alarm.
+ */
+describe('P-012 audit sample and expired-clean watch', () => {
+  const runWith = (
+    files: string[],
+    proofs: Map<string, Proof>,
+    drift: Set<string> | null,
+    over: { auditRate?: number; changedBetween?: () => Set<string> | null } = {},
+  ) =>
+    selectReusablePasses({
+      candidates: files,
+      proofs,
+      judgedSha: 'new',
+      changedBetween: over.changedBetween ?? (() => drift),
+      runContext: CTX,
+      runnerIdentity: RUNNER,
+      nowMs: NOW,
+      maxAgeMs: TEST_REUSE_MAX_AGE_MS_DEFAULT,
+      auditRate: over.auditRate,
+    });
+
+  it('auditDraw is deterministic per (file, sha), in [0,1), and rotates with the sha', () => {
+    expect(auditDraw(T, 'sha1')).toBe(auditDraw(T, 'sha1'));
+    const draws = Array.from({ length: 50 }, (_, i) => auditDraw(T, `sha${i}`));
+    for (const d of draws) expect(d >= 0 && d < 1).toBe(true);
+    expect(new Set(draws).size).toBe(50);
+  });
+
+  it('samples roughly auditRate of the reusable files', () => {
+    const files = Array.from({ length: 2000 }, (_, i) => `pkg/src/f${i}.test.ts`);
+    const proofs = new Map(files.map((f) => [f, proof(f)]));
+    const r = runWith(files, proofs, new Set(), { auditRate: 0.05 });
+    expect(r.summary.audited + r.summary.reused).toBe(2000);
+    expect(r.summary.audited).toBeGreaterThan(60);
+    expect(r.summary.audited).toBeLessThan(140);
+    expect(r.watch.size).toBe(r.summary.audited);
+    for (const [f, why] of r.watch) {
+      expect(why).toBe('audit');
+      expect(r.skip).not.toContain(f);
+    }
+  });
+
+  it('an audited file RUNS (not skipped) and is watched', () => {
+    const r = runWith([T], new Map([[T, proof(T)]]), new Set(), { auditRate: 1 });
+    expect(r.skip).toEqual([]);
+    expect(r.summary).toMatchObject({ reused: 0, audited: 1 });
+    expect([...r.watch]).toEqual([[T, 'audit']]);
+  });
+
+  it('auditRate 0 (the pure-rule default) audits nothing', () => {
+    const r = runWith([T], new Map([[T, proof(T)]]), new Set());
+    expect(r.skip).toEqual([T]);
+    expect(r.watch.size).toBe(0);
+  });
+
+  it('a recently-expired proof that is otherwise clean RUNS and is watched as expired-clean', () => {
+    const r = runWith([T], new Map([[T, proof(T, { recordedAtMs: NOW - 25 * 3600_000 })]]), new Set(), {
+      auditRate: 1,
+    });
+    expect(r.skip).toEqual([]);
+    expect(r.summary).toMatchObject({ expired: 1, expiredClean: 1, audited: 0, reused: 0 });
+    expect([...r.watch]).toEqual([[T, 'expired-clean']]);
+  });
+
+  it('a recently-expired proof whose inputs drifted is counted ONLY as expired and not watched', () => {
+    const r = runWith([T], new Map([[T, proof(T, { recordedAtMs: NOW - 25 * 3600_000 })]]), new Set(['pkg/src/a.ts']));
+    expect(r.summary).toMatchObject({ expired: 1, expiredClean: 0, inputChanged: 0 });
+    expect(r.watch.size).toBe(0);
+    const nc = runWith([T], new Map([[T, proof(T, { recordedAtMs: NOW - 25 * 3600_000, inputsCaptured: false })]]), new Set());
+    expect(nc.summary).toMatchObject({ expired: 1, notCaptured: 0 });
+    expect(nc.watch.size).toBe(0);
+  });
+
+  it('a proof older than 2x maxAge stops at expiry without diffing its sha', () => {
+    let diffs = 0;
+    const r = runWith([T], new Map([[T, proof(T, { recordedAtMs: NOW - 49 * 3600_000 })]]), null, {
+      changedBetween: () => {
+        diffs += 1;
+        return new Set();
+      },
+    });
+    expect(diffs).toBe(0);
+    expect(r.summary).toMatchObject({ expired: 1, expiredClean: 0 });
+    expect(r.watch.size).toBe(0);
+  });
+});
+
+describe('reuseSoundnessAlarms', () => {
+  const watch = new Map<string, 'audit' | 'expired-clean'>([
+    ['packages/x/lib/a.test.ts', 'audit'],
+    ['packages/x/lib/b.test.ts', 'expired-clean'],
+  ]);
+
+  it('maps runner-printed (workspace-relative) failures onto the watched repo-relative files', () => {
+    expect(
+      reuseSoundnessAlarms({
+        failedFiles: ['lib/b.test.ts', './lib/a.test.ts', 'lib/c.test.ts', 'lib/a.test.ts'],
+        watch,
+        prefix: 'packages/x/',
+      }),
+    ).toEqual([
+      { file: 'packages/x/lib/a.test.ts', reason: 'audit' },
+      { file: 'packages/x/lib/b.test.ts', reason: 'expired-clean' },
+    ]);
+  });
+
+  it('accepts a failure already printed repo-relative', () => {
+    expect(reuseSoundnessAlarms({ failedFiles: ['packages/x/lib/a.test.ts'], watch, prefix: 'packages/x/' })).toEqual([
+      { file: 'packages/x/lib/a.test.ts', reason: 'audit' },
+    ]);
+  });
+
+  it('is empty when nothing watched failed, or there is nothing to watch', () => {
+    expect(reuseSoundnessAlarms({ failedFiles: ['lib/c.test.ts'], watch, prefix: 'packages/x/' })).toEqual([]);
+    expect(reuseSoundnessAlarms({ failedFiles: ['lib/a.test.ts'], watch: new Map(), prefix: 'packages/x/' })).toEqual([]);
+    expect(reuseSoundnessAlarms({ failedFiles: ['lib/a.test.ts'], watch: undefined, prefix: 'packages/x/' })).toEqual([]);
+    expect(reuseSoundnessAlarms({ failedFiles: null, watch, prefix: 'packages/x/' })).toEqual([]);
+  });
+
+  it('estimates the saved test time as a lower bound over measured files (P-013)', () => {
+    const durations = new Map([
+      ['a', 1000],
+      ['b', 250.4],
+    ]);
+    expect(estimateReuseSavings(['a', 'b', 'c'], durations)).toEqual({ savedMs: 1250, measured: 2, unmeasured: 1 });
+    expect(estimateReuseSavings([], durations)).toEqual({ savedMs: 0, measured: 0, unmeasured: 0 });
+  });
+
+  it('rolls every armed task into one TOTAL line, and says "unknown" when a duration read failed', () => {
+    const s1 = run([T], new Map([[T, proof(T)]]), new Set()).summary;
+    const s2 = { ...s1, candidates: 3, reused: 1, audited: 2 };
+    expect(formatTestReuseTotalLine({ tasks: 2, summaries: [s1, s2], savedMs: 4200, unmeasured: 1 })).toBe(
+      'TEST_PASS_REUSE_TOTAL tasks=2 candidates=4 reused=2 audited=2 expiredClean=0 minSavedTestMs=4200 unmeasured=1',
+    );
+    expect(formatTestReuseTotalLine({ tasks: 1, summaries: [s1], savedMs: null, unmeasured: 0 })).toMatch(
+      / minSavedTestMs=unknown /,
+    );
+  });
+
+  it('formats one greppable alarm line per file', () => {
+    expect(formatReuseAlarmLine('@papercusp/x::test', { file: 'packages/x/lib/a.test.ts', reason: 'audit' })).toMatch(
+      /^TEST_PASS_REUSE_ALARM ws=@papercusp\/x::test file=packages\/x\/lib\/a\.test\.ts proof=audit — /,
+    );
   });
 });
 

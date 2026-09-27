@@ -12,6 +12,7 @@ import {
   formatExecutedMapLine,
   gitChangedBetween,
   loadExecutedSourceMap,
+  loadPassDurations,
   loadReuseProofs,
   resolveExecutedMapPgUrl,
   rowsToExecutedMap,
@@ -292,6 +293,47 @@ describe('reuse proofs loader', () => {
     expect(calls[0]?.text).toMatch(/DISTINCT ON \(test_file\)/);
     expect(calls[0]?.text).toMatch(/run_context = \$2/);
     expect(calls[0]?.text).toMatch(/ORDER BY test_file, recorded_at DESC/);
+  });
+
+  it('loadPassDurations reads the newest CI PASS per file, and drops unusable durations (P-013)', async () => {
+    const calls: Array<{ text: string; values?: unknown[] }> = [];
+    const client = {
+      query: async (text: string, values?: unknown[]) => {
+        calls.push({ text, values });
+        return {
+          rows: [
+            { file_path: 'pkg/a.test.ts', duration_ms: 1200 },
+            { file_path: 'pkg/b.test.ts', duration_ms: '35' },
+            { file_path: 'pkg/c.test.ts', duration_ms: null },
+            { file_path: 'pkg/d.test.ts', duration_ms: -4 },
+            { file_path: 'pkg/e.test.ts', duration_ms: 'nope' },
+          ],
+        };
+      },
+    };
+    const out = await loadPassDurations({ client, files: ['pkg/a.test.ts', 'pkg/b.test.ts'] });
+    expect([...out]).toEqual([
+      ['pkg/a.test.ts', 1200],
+      ['pkg/b.test.ts', 35],
+    ]);
+    expect(calls[0]?.values).toEqual([['pkg/a.test.ts', 'pkg/b.test.ts']]);
+    // CI rows only: `test_runs` mixes local/admin-ui/mutation-probe rows, and statuses are
+    // 'pass'/'fail' (never 'passed'), so a wrong literal would silently match nothing.
+    expect(calls[0]?.text).toMatch(/source = 'ci' AND status = 'pass'/);
+    expect(calls[0]?.text).toMatch(/DISTINCT ON \(file_path\)/);
+    expect(calls[0]?.text).toMatch(/ORDER BY file_path, finished_at DESC/);
+  });
+
+  it('loadPassDurations does not query for an empty skip list', async () => {
+    let queried = false;
+    const client = {
+      query: async () => {
+        queried = true;
+        return { rows: [] };
+      },
+    };
+    expect((await loadPassDurations({ client, files: [] })).size).toBe(0);
+    expect(queried).toBe(false);
   });
 
   it('gitChangedBetween({ relative: true }) returns repo-relative drift', () => {
