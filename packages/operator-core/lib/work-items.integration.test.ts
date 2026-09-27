@@ -63,6 +63,18 @@ vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
+// setWorkItemState / the issue-family writer now read the ACTIVE operation-worker
+// claim binding for `opts.by` before any terminal transition. That read joins
+// adv_sessions, session_briefs and blueprint_operation_invocations, none of which
+// this hand-rolled fixture creates, so the unstubbed read returns
+// {status:'unavailable'} and every close is refused as "blueprint operation
+// effect refused" BEFORE the gates these suites exercise (WI-10003526). Stub ONLY
+// the read to "no active operation" and keep the real matcher, so an item that
+// carries a blueprintOperation pin is still refused exactly as in production.
+vi.mock('./blueprint/operation-worker-binding', async (orig) => ({
+  ...(await orig<typeof import('./blueprint/operation-worker-binding')>()),
+  readActiveOperationWorkerClaimBinding: async () => ({ status: 'none' as const }),
+}));
 vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
   return { ...actual, activeWorkspaceId: () => h.activeWorkspace };
