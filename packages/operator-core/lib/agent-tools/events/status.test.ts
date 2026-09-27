@@ -34,6 +34,12 @@ vi.mock('../../events/await/store', () => ({
   listActiveAwaits: vi.fn(),
   listRecentDeliveries: vi.fn(),
   wakeMeter: vi.fn(),
+  // declared-gate recovery evidence (events:status exact-key `recovery`).
+  findAnnouncementsForKey: vi.fn(async () => []),
+  probeKeyFireEvidence: vi.fn(async (key: string) => ({ prefix: key, exact: false, distinctKeys: 0, fires: 0, lastFiredAt: null })),
+}));
+vi.mock('../../events/await/installed-events', () => ({
+  readInstalledUnitEvents: vi.fn(async () => []),
 }));
 vi.mock('../../events/await/compose-store', () => ({
   listActiveComposedRoots: vi.fn(async () => []),
@@ -605,6 +611,16 @@ describe('events:status projection', () => {
       live_successor_ids: ['su-successor'],
     });
     expect(out.event_inspection.declarations[0]).not.toHaveProperty('stale_owner');
+    // declared-gate recovery: a live successor with no producer certificate is
+    // never escalated — progress is unprovable, so the waiter re-awaits the pin.
+    expect(out.event_inspection.recovery).toMatchObject({
+      event: 'gate:role-owner',
+      announcement_id: 9,
+      generation: 3,
+      classification: 'unknown',
+      escalation_target: null,
+      next_verb: { verb: 'events:await', args: { event: 'gate:role-owner', after_generation: 3, on_timeout: 'wake' } },
+    });
   });
 
   it('marks an active announcement stale only when its ended owner has no live successor', async () => {
@@ -637,6 +653,26 @@ describe('events:status projection', () => {
       live_successor_ids: [],
       stale_owner: true,
     });
+    // No live owner, no catalog family, no fire history → never-fireable, and the
+    // exact next verb retires THIS generation before a corrected re-await.
+    expect(out.event_inspection.recovery).toMatchObject({
+      announcement_id: 10,
+      generation: 4,
+      classification: 'never-fireable',
+      idempotence_key: 'declared-gate-recovery:10:4:never-fireable',
+      next_verb: {
+        verb: 'events:cancel',
+        args: { announcement_id: 10, expected_generation: 4 },
+        target: { kind: 'declarer', ref: 'su-ended' },
+      },
+      evidence: {
+        catalog: { status: 'measured', value: { member: false } },
+        fire_history: { status: 'measured', value: { exactFired: false, familyFires: 0, priorGenerationFired: false } },
+        owner_liveness: { status: 'measured', value: { declaredByLiveness: 'ended', liveSuccessorIds: [] } },
+      },
+    });
+    // Read-only surface: no action is ever reported from events:status.
+    expect(out.event_inspection.recovery).not.toHaveProperty('action');
   });
 });
 

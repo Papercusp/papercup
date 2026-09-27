@@ -1525,13 +1525,36 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
   if (timedOut.length > 0) {
     const wakes: AwaitRow[] = timedOut.filter((a) => a.policy === 'wake');
     if (wakes.length > 0) {
-      await insertDeliveries({
-        awaits: wakes,
-        // P-004: the non-event is a prompt to RECONCILE, not to give up — carry the
-        // re-orient/re-arm guidance so the woken agent reconciles instead of re-hanging.
-        payload: { timeout: true, guidance: TIMEOUT_WAKE_GUIDANCE },
-        summary: TIMEOUT_WAKE_SUMMARY,
-      });
+      // declared-gate-recovery-contract-2026-09-21: a timed-out wait on an
+      // ANNOUNCED key gets the gate's deterministic classification + exact next
+      // verb, and the idempotent escalation runs once per generation. Fail-open:
+      // any key the hook cannot classify keeps the generic timeout wake below.
+      let recovery = new Map<number, Record<string, unknown>>();
+      try {
+        const { annotateTimedOutAnnouncedAwaits } = await import('./declared-gate-recovery-runtime');
+        recovery = await annotateTimedOutAnnouncedAwaits(wakes);
+      } catch (e) {
+        log(`declared-gate recovery skipped: ${e instanceof Error ? e.message : e}`);
+      }
+      const generic = wakes.filter((a) => !recovery.has(a.id));
+      if (generic.length > 0) {
+        await insertDeliveries({
+          awaits: generic,
+          // P-004: the non-event is a prompt to RECONCILE, not to give up — carry the
+          // re-orient/re-arm guidance so the woken agent reconciles instead of re-hanging.
+          payload: { timeout: true, guidance: TIMEOUT_WAKE_GUIDANCE },
+          summary: TIMEOUT_WAKE_SUMMARY,
+        });
+      }
+      for (const awaited of wakes) {
+        const declaredGateRecovery = recovery.get(awaited.id);
+        if (!declaredGateRecovery) continue;
+        await insertDeliveries({
+          awaits: [awaited],
+          payload: { timeout: true, guidance: TIMEOUT_WAKE_GUIDANCE, declaredGateRecovery },
+          summary: `${TIMEOUT_WAKE_SUMMARY} Announced gate classified ${String(declaredGateRecovery.classification ?? declaredGateRecovery.inactive ?? 'unknown')}; follow declaredGateRecovery.next_verb.`,
+        });
+      }
     }
     // P-003 detector: group this sweep's timeout-fires by key family and accumulate
     // across sweeps — a family that keeps timing out (with ~no event ever) is a

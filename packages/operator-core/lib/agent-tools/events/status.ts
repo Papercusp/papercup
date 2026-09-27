@@ -29,6 +29,12 @@ import {
   firedPayloadSha as payloadSha,
 } from '../../events/await/announcement-verdict';
 import type { AwaitRow } from '../../events/await/types';
+import { evaluateDeclaredGateGeneration } from '../../events/await/declared-gate-recovery';
+import {
+  declaredGateRecoveryPayload,
+  gatherDeclaredGateEvidence,
+} from '../../events/await/declared-gate-recovery-runtime';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 const EVENTS_SCOPE_NOTE =
   'Workspace-global read surface: scope comes from request context and caller identity; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected).';
@@ -233,6 +239,33 @@ export default defineTool({
     const announcementOwnership = eventHistory
       ? await resolveAnnouncementOwnership(eventHistory.announcements, identity.workspaceId)
       : new Map<number, AnnouncementOwnership>();
+    // declared-gate-recovery-contract-2026-09-21 (R-001/R-003): the current
+    // declaration's deterministic classification + exact next verb, from the SAME
+    // evaluator the await sweeper uses on a timeout. Read-only here — the bridge's
+    // side effects run only on the sweeper path. Bounded; a failed read omits it.
+    const recovery = eventHistory && currentAnnouncement
+      ? (
+          await withBoundedTimeout(
+            async () => {
+              const owned = announcementOwnership.get(currentAnnouncement.id);
+              const evidence = await gatherDeclaredGateEvidence(currentAnnouncement, {
+                eventKey: args.event,
+                currentGeneration: authoritativeGeneration,
+                history: eventHistory.announcements,
+                ownership: owned
+                  ? {
+                      status: 'measured',
+                      value: { declaredByLiveness: owned.declaredByLiveness, liveSuccessorIds: owned.liveSuccessorIds },
+                    }
+                  : { status: 'unavailable', reason: 'ownership was not resolved for this declaration' },
+                workspaceId: identity.workspaceId,
+              });
+              return declaredGateRecoveryPayload(evaluateDeclaredGateGeneration(evidence), null);
+            },
+            { fallback: null, timeoutMs: 3_000, label: 'events-status:declared-gate-recovery' },
+          )
+        ).value
+      : null;
     const eventInspection = eventHistory
       ? {
           event: args.event,
@@ -322,6 +355,7 @@ export default defineTool({
             created_at: d.createdAt,
             delivered_at: d.deliveredAt,
           })),
+          ...(recovery ? { recovery } : {}),
           resync: {
             required: resyncRequired,
             reason: resyncReason,

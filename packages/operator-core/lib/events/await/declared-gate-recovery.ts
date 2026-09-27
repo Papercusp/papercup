@@ -125,7 +125,9 @@ export interface DeclaredGateEvidenceInput {
    * siblings, and whether an EARLIER declaration generation of this key fired.
    */
   fireHistory: RecoveryProbe<{
-    exactFires: number;
+    /** The exact key's unconditional fire latch exists (any earlier fire, declared or not). */
+    exactFired: boolean;
+    /** Total fires across the key's two-segment family (includes the exact key). */
     familyFires: number;
     priorGenerationFired: boolean;
     lastFiredAt: string | null;
@@ -471,13 +473,13 @@ export function evaluateDeclaredGateGeneration(input: DeclaredGateEvidenceInput)
   }
   const catalog = input.catalog.value;
   const history = input.fireHistory.value;
-  const fireable = catalog.member || history.exactFires > 0 || history.familyFires > 0 || history.priorGenerationFired;
+  const fireable = catalog.member || history.exactFired || history.familyFires > 0 || history.priorGenerationFired;
   const conditionKey = declaredGateRecoveryKey(a.id, a.generation, fireable ? 'missed-emitter' : 'never-fireable');
   if (fireable) {
     reasons.push(
       catalog.member
         ? 'the key is a catalogued family, so an emitter exists but its declared owner is gone'
-        : `the key (or its family) has fired before (exact ${history.exactFires}, family ${history.familyFires}, prior generation ${history.priorGenerationFired})`,
+        : `the key (or its family) has fired before (exact ${history.exactFired}, family fires ${history.familyFires}, prior generation ${history.priorGenerationFired})`,
     );
     const producerItem = input.producer?.status === 'measured' ? input.producer.value.certificate.owner.workItemId : null;
     if (producerItem) {
@@ -540,7 +542,7 @@ export interface DeclaredGateRecoveryDeps {
   upsertCondition(
     conditionKey: string,
     input: { title: string; summary: string; payload: Record<string, unknown> },
-  ): Promise<{ id: string; created: boolean }>;
+  ): Promise<{ id: string | null; created: boolean }>;
   /** One required wake to a live owner (stalled-producer only). */
   wakeOwner(ownerId: string, input: { summary: string; payload: Record<string, unknown> }): Promise<{ queued: number }>;
 }

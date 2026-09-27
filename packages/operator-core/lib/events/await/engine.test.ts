@@ -111,6 +111,10 @@ vi.mock('./checkpoint-verified-wait', () => ({
   observeCheckpointProducer: h.observeCheckpointProducer,
 }));
 vi.mock('./compose-store', () => h.compose);
+const recoveryHook = vi.hoisted(() => ({
+  annotateTimedOutAnnouncedAwaits: vi.fn(async (): Promise<Map<number, Record<string, unknown>>> => new Map()),
+}));
+vi.mock('./declared-gate-recovery-runtime', () => recoveryHook);
 
 const {
   emitAwaitedEvent,
@@ -188,6 +192,44 @@ beforeEach(() => {
   // the suite-wide fail-on-console guard must not count those.
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   delete process.env.PAPERCUSP_AWAIT_MAX_RESUMES_PER_TICK;
+});
+
+describe('sweepOnce — declared-gate recovery on timed-out announced waits', () => {
+  it('keeps the generic timeout wake for plain keys and hands announced-key waiters their exact next verb', async () => {
+    const plain = awaitRow({ id: 1, eventKey: 'plain:key', firedAt: null, firedReason: null });
+    const gated = awaitRow({ id: 2, eventKey: 'gate:announced', firedAt: null, firedReason: null });
+    h.store.fireTimedOutAwaits.mockResolvedValueOnce([plain, gated]);
+    const recovery = { classification: 'never-fireable', next_verb: { verb: 'events:cancel' } };
+    recoveryHook.annotateTimedOutAnnouncedAwaits.mockResolvedValueOnce(new Map([[2, recovery]]));
+
+    await sweepOnce('ws-test');
+
+    expect(recoveryHook.annotateTimedOutAnnouncedAwaits).toHaveBeenCalledWith([plain, gated]);
+    expect(h.store.insertDeliveries).toHaveBeenCalledTimes(2);
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith(
+      expect.objectContaining({ awaits: [plain], payload: expect.not.objectContaining({ declaredGateRecovery: expect.anything() }) }),
+    );
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith(
+      expect.objectContaining({
+        awaits: [gated],
+        payload: expect.objectContaining({ timeout: true, declaredGateRecovery: recovery }),
+        summary: expect.stringMatching(/never-fireable/),
+      }),
+    );
+  });
+
+  it('fail-open: a throwing recovery hook leaves every timed-out wake on the generic path', async () => {
+    const a = awaitRow({ id: 3, eventKey: 'gate:x', firedAt: null, firedReason: null });
+    h.store.fireTimedOutAwaits.mockResolvedValueOnce([a]);
+    recoveryHook.annotateTimedOutAnnouncedAwaits.mockRejectedValueOnce(new Error('import failed'));
+
+    await sweepOnce('ws-test');
+
+    expect(h.store.insertDeliveries).toHaveBeenCalledTimes(1);
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith(
+      expect.objectContaining({ awaits: [a], payload: expect.objectContaining({ timeout: true }) }),
+    );
+  });
 });
 
 describe('sweepOnce — verified-wait producer controls', () => {
