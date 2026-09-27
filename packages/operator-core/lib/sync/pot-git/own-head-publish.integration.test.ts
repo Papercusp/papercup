@@ -365,6 +365,66 @@ describe('own-head publish (G-2a: worktree head → own namespace, guarded)', ()
       await rm(originRoot, { recursive: true, force: true });
       await rm(shallowWorktree, { recursive: true, force: true });
     });
+
+    // WI-2142873: the P-203 Mac VM's July-10 depth-1 clone could never finish
+    // unshallowing from GitHub inside the tick budget, so its own head was never
+    // published — although the local store already held the history behind the
+    // shallow boundary. When the store covers the boundary, publish must land
+    // with NO unshallow (no network), even while a failed attempt's backoff is
+    // still pending, and the worktree stays shallow.
+    it('publishes a shallow clone WITHOUT unshallowing when the store already holds the hidden history', async () => {
+      const REPO_C = 'repo-ohp-shallow-covered';
+      const originRoot = await mkdtemp(join(tmpdir(), 'hgohp-origin-c-'));
+      await git(['init', '-q', '-b', BRANCH, originRoot], root);
+      await commitFile(originRoot, 'o1.txt', 'v1', 'o1');
+      await commitFile(originRoot, 'o2.txt', 'v2', 'o2');
+      await commitFile(originRoot, 'o3.txt', 'v3', 'o3');
+
+      const shallowWorktree = await mkdtemp(join(tmpdir(), 'hgohp-shallow-c-'));
+      await git(['clone', '-q', '--depth', '1', '--branch', BRANCH, `file://${originRoot}`, shallowWorktree], root);
+      expect(await git(['rev-parse', '--is-shallow-repository'], shallowWorktree)).toBe('true');
+      // The device's own new work on top of the shallow boundary.
+      const localHead = await commitFile(shallowWorktree, 'local.txt', 'mine', 'local');
+
+      // The store already holds origin's full history (on the VM: the hive
+      // mirror, filled by bootstrap / ref-announce from peers).
+      const repoPath = await ensurePotGitRepo(HIVE, REPO_C);
+      await git(['fetch', '-q', `file://${originRoot}`, `+refs/heads/${BRANCH}:refs/hive/staging`], repoPath);
+
+      const calls: string[][] = [];
+      const dev3 = devicePubkey();
+      const now = Date.now();
+      const out = await runOwnHeadPublishTick({
+        potHomeSlug: HIVE,
+        repoKey: REPO_C,
+        worktreePath: shallowWorktree,
+        branch: BRANCH,
+        devicePubkeyBase64: dev3,
+        now: () => now,
+        unshallowDeferredUntil: now + 60_000,
+        runGit: async (args, cwd, opts) => {
+          calls.push(args);
+          if (args[0] === 'fetch' && args.includes('--unshallow')) {
+            return { code: 1, stdout: '', stderr: 'unshallow must not run when the store covers the boundary' };
+          }
+          return defaultRunGit(args, cwd, opts);
+        },
+      });
+      expect(out.errors, out.errors.join('; ')).toEqual([]);
+      expect(out.unshallow).toEqual({ state: 'not-needed' });
+      expect(calls.some((a) => a.includes('--unshallow'))).toBe(false);
+      expect(out.changed).toBe(true);
+      expect(out.refused).toBeNull();
+      expect(out.headSha).toBe(localHead);
+      expect(await readNamespaceRef(repoPath, dev3, `refs/heads/${BRANCH}`)).toBe(localHead);
+      // No unshallow happened: the worktree is still shallow.
+      expect(await git(['rev-parse', '--is-shallow-repository'], shallowWorktree)).toBe('true');
+      // The published history is walkable in the store across the boundary.
+      expect(await git(['rev-list', '--count', localHead], repoPath)).toBe('4');
+
+      await rm(originRoot, { recursive: true, force: true });
+      await rm(shallowWorktree, { recursive: true, force: true });
+    });
   });
 
   describe('genesis-publish baseline (WI-5395 follow-on: onboarding a pre-existing repo)', () => {

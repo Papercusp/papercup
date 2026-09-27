@@ -53,6 +53,8 @@ import {
 } from './publish-guard';
 import type { SecretFinding } from './secrets-guard';
 import { listTempPackFiles, pruneFailedFetchTempPacks } from '../../harness/git-sync/run-git-sync';
+import { readFile } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
 
 export interface OwnHeadPublishTickInput {
   /** Hive home slug — the bare-store directory key (storage.ts G-1). */
@@ -142,10 +144,73 @@ export function nextUnshallowBackoff(
   now: number,
 ): OwnHeadUnshallowBackoffState | null {
   if (!unshallow || unshallow.state === 'deferred') return prior;
-  if (unshallow.state === 'ok') return null;
+  if (unshallow.state === 'ok' || unshallow.state === 'not-needed') return null;
   const failures = (prior?.failures ?? 0) + 1;
   const delay = Math.min(UNSHALLOW_BACKOFF_CAP_MS, UNSHALLOW_BACKOFF_BASE_MS * 2 ** Math.min(failures - 1, 16));
   return { failures, lastAttemptAt: now, nextAttemptAt: now + delay, lastError: unshallow.error ?? 'unknown' };
+}
+
+/** WI-2142873: most shallow-boundary lines checked before falling back to the
+ *  unshallow (a depth-N clone has one line per fetched tip). */
+const SHALLOW_COVERAGE_MAX_BOUNDARIES = 64;
+
+/**
+ * WI-2142873: does the bare store already hold the history a shallow worktree
+ * hides? When every parent behind the worktree's shallow boundary is a commit
+ * the store can walk to its root, the ref-less transfer ships only the
+ * worktree's own new commits and the store's history stays complete across the
+ * boundary. The `--unshallow` (a network fetch from `origin` that re-downloads
+ * the whole history into the worktree) then buys nothing.
+ *
+ * Measured on the P-203 Mac VM, 2026-09-27: a July-10 depth-1 clone failed to
+ * unshallow from GitHub inside the tick budget 3 times, so own-head publish
+ * stayed frozen and the worktree fell 28,008 commits behind staging. The
+ * local mirror already held the boundary's parent, and
+ * `git fetch <worktree> <branch>` into that mirror took 9s and left the
+ * history fully walkable.
+ *
+ * Conservative by construction: a shallow STORE, an unreadable shallow file,
+ * too many boundaries, or any parent the store cannot walk answers false, and
+ * the caller falls back to the unshallow. The G-10 guard's `rev-list` walk
+ * stays the fail-closed check either way.
+ */
+export async function shallowBoundaryCoveredByStore(
+  runGit: RunGit,
+  worktreePath: string,
+  storePath: string,
+): Promise<boolean> {
+  const storeShallow = await runGit(['rev-parse', '--is-shallow-repository'], storePath);
+  if (storeShallow.code !== 0 || storeShallow.stdout.trim() !== 'false') return false;
+  const shallowFile = await runGit(['rev-parse', '--git-path', 'shallow'], worktreePath);
+  const rel = shallowFile.code === 0 ? shallowFile.stdout.trim() : '';
+  if (!rel) return false;
+  let boundaries: string[];
+  try {
+    const text = await readFile(isAbsolute(rel) ? rel : join(worktreePath, rel), 'utf8');
+    boundaries = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+  } catch {
+    return false;
+  }
+  if (boundaries.length === 0 || boundaries.length > SHALLOW_COVERAGE_MAX_BOUNDARIES) return false;
+  const parents: string[] = [];
+  for (const boundary of boundaries) {
+    // `cat-file commit` prints the RAW object, so its parent lines survive the
+    // shallow graft that hides them from rev-parse / rev-list.
+    const raw = await runGit(['cat-file', 'commit', boundary], worktreePath);
+    if (raw.code !== 0) return false;
+    const header = raw.stdout.split('\n\n', 1)[0] ?? '';
+    for (const line of header.split('\n')) {
+      if (line.startsWith('parent ')) parents.push(line.slice('parent '.length).trim());
+    }
+  }
+  if (parents.length === 0) return true;
+  // One commit walk from every hidden parent to the root: a missing commit
+  // anywhere on the way fails it, which is what the guard's walk would hit.
+  const walk = await runGit(['rev-list', '--quiet', ...parents], storePath);
+  return walk.code === 0;
 }
 
 export interface OwnHeadPublishTickOutcome {
@@ -190,9 +255,11 @@ export interface OwnHeadPublishTickOutcome {
    *  DIFFERENT reason, so an exemption's use is always visible for audit. */
   exemptedFindings: SecretFinding[];
   /** WI-2142873: set only when the source worktree was shallow this tick —
-   *  `ok` unshallowed, `failed` attempted and failed (error names why),
+   *  `ok` unshallowed, `not-needed` skipped because the bare store already holds
+   *  every parent the shallow boundary hides (see shallowBoundaryCoveredByStore),
+   *  `failed` attempted and failed (error names why),
    *  `deferred` skipped because a prior failure's backoff is still active. */
-  unshallow?: { state: 'ok' | 'failed' | 'deferred'; error?: string; deferredUntil?: number };
+  unshallow?: { state: 'ok' | 'not-needed' | 'failed' | 'deferred'; error?: string; deferredUntil?: number };
   errors: string[];
 }
 
@@ -262,7 +329,13 @@ export async function runOwnHeadPublishTick(
   // reclaim this attempt's partial packs and stop before transferring incomplete
   // history. Reuse the normal git-sync cleanup for this separate fetch path.
   const shallowCheck = await runGit(['rev-parse', '--is-shallow-repository'], input.worktreePath);
-  if (shallowCheck.code === 0 && shallowCheck.stdout.trim() === 'true') {
+  const worktreeShallow = shallowCheck.code === 0 && shallowCheck.stdout.trim() === 'true';
+  // WI-2142873: checked BEFORE the deferral, because it needs no network: once
+  // the store covers the boundary, a pending backoff is irrelevant.
+  const storeCoversShallow =
+    worktreeShallow && (await shallowBoundaryCoveredByStore(runGit, input.worktreePath, repoPath));
+  if (storeCoversShallow) unshallowResult = { state: 'not-needed' };
+  if (worktreeShallow && !storeCoversShallow) {
     const nowMs = (input.now ?? Date.now)();
     const deferredUntil = input.unshallowDeferredUntil ?? null;
     if (deferredUntil !== null && deferredUntil > nowMs) {

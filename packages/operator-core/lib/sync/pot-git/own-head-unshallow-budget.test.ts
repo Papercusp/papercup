@@ -67,6 +67,11 @@ describe('nextUnshallowBackoff', () => {
     expect(nextUnshallowBackoff(prior, { state: 'ok' }, now + 1)).toBeNull();
   });
 
+  it('a store that already covers the shallow boundary clears the backoff too (no network needed)', () => {
+    const prior = nextUnshallowBackoff(null, { state: 'failed', error: 'x' }, now);
+    expect(nextUnshallowBackoff(prior, { state: 'not-needed' }, now + 1)).toBeNull();
+  });
+
   it('a deferred tick, or a tick that never reached the unshallow, leaves the state untouched (same reference, so no write)', () => {
     const prior = nextUnshallowBackoff(null, { state: 'failed', error: 'x' }, now);
     expect(nextUnshallowBackoff(prior, { state: 'deferred', deferredUntil: prior!.nextAttemptAt }, now + 1)).toBe(prior);
