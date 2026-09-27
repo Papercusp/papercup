@@ -125,7 +125,27 @@ export async function lintPlan(
   const { parsed, archived, row } = result;
   // v2 P-001: pass the structured promote-policy (parsed at write-time) so lint reads it instead of
   // re-parsing the markdown; lintParsed falls back to parsing for a not-yet-repopulated row.
-  return lintParsed(parsed, slug, archived, row.promotePolicy);
+  const report = await lintParsed(parsed, slug, archived, row.promotePolicy);
+  // The stored index may predate the current parser. A nonempty index that no
+  // longer agrees with the canonical markdown must be visible during lint;
+  // otherwise read surfaces can show items that no structured write can reach.
+  const divergence = itemIndexDivergence(row.items, parsed);
+  if (divergence) {
+    report.warnings.push({
+      level: 'warning',
+      code: 'plan_item_index_divergence',
+      message: `Stored item index differs from parsed plan body (${divergence}). Move misplaced item lines under ## Phase and rewrite the plan to refresh its index.`,
+    });
+  }
+  return report;
+}
+
+export function itemIndexDivergence(indexed: readonly { id: string }[], parsed: ParsedPlan): string | null {
+  if (indexed.length === 0) return null; // legacy/unmaterialized index
+  const indexIds = indexed.map((item) => item.id).sort();
+  const bodyIds = parsed.items.map((item) => item.id).sort();
+  if (indexIds.length === bodyIds.length && indexIds.every((id, i) => id === bodyIds[i])) return null;
+  return `${indexed.length} indexed item(s), ${parsed.items.length} parsed item(s)`;
 }
 
 /**
@@ -507,17 +527,32 @@ export async function lintParsed(
     parsed.raw,
     new Set(parsed.items.map((i) => i.rawLine)),
   ).filter((u) => !/^[ \t]*-\s*\[(?: |x|X)\]\s*\*{0,2}[A-Z]-\d{3,}\b/.test(u.text));
-  if (unparsedItemLines.length > 0) {
-    const sample = unparsedItemLines
+  // A fully formed item line outside the parser's item-bearing sections is
+  // lost from the execution graph. Treat that as an error so whole-body writes
+  // cannot persist a dangling blocked-by reference while merely warning about
+  // the missing item. Keep malformed attempted items advisory as before.
+  const misplacedCanonicalItems = unparsedItemLines.filter((line) =>
+    /^[ \t]*-\s+\*\*P-\d{3,}\*\*\s+`[^`]+`\s+\S/.test(line.text),
+  );
+  for (const line of misplacedCanonicalItems) {
+    report.errors.push({
+      level: 'error',
+      code: 'unparsed_canonical_item',
+      message: `Canonical item at line ${line.line} did not parse (${line.text}). Move it under a ## Phase heading.`,
+    });
+  }
+  const malformedItemLines = unparsedItemLines.filter((line) => !misplacedCanonicalItems.includes(line));
+  if (malformedItemLines.length > 0) {
+    const sample = malformedItemLines
       .slice(0, 5)
       .map((u) => `L${u.line}: ${u.text}`)
       .join('; ');
-    const suffix = unparsedItemLines.length > 5 ? `, … +${unparsedItemLines.length - 5} more` : '';
+    const suffix = malformedItemLines.length > 5 ? `, … +${malformedItemLines.length - 5} more` : '';
     report.warnings.push({
       level: 'warning',
       code: 'unparsed_item_line',
       message:
-        `${unparsedItemLines.length} line(s) look like plan items but did NOT parse (${sample}${suffix}) — ` +
+        `${malformedItemLines.length} line(s) look like plan items but did NOT parse (${sample}${suffix}) — ` +
         'most commonly a missing `status` backtick token. An item MUST be `- **P-NNN** `status` text`. ' +
         'Rewrite with plans:set-content, or append correctly with plans:add-item.',
     });

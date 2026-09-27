@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { lintParsed, summarizeLintReports, type PlanLintReport } from './lint';
+import { itemIndexDivergence, lintParsed, summarizeLintReports, type PlanLintReport } from './lint';
+import { evaluateSetContent } from './set-content';
 import { parsePlan } from './parser';
 import { stampTerminalNowBlock } from './terminal-now-stamp';
 
@@ -34,6 +35,41 @@ const lint = async (raw: string) => {
 };
 
 const codes = (findings: { code: string }[]) => findings.map((f) => f.code);
+
+describe('plans:lint — misplaced canonical item lines', () => {
+  const misplaced = (placement: 'before-title' | 'now' | 'decisions') => {
+    const item = '- **P-010** `todo` prerequisite';
+    const base = planWith('').replace('do a thing', 'do a thing blocked-by: P-010');
+    if (placement === 'before-title') return base.replace('# T\n', `${item}\n\n# T\n`);
+    if (placement === 'now') return base.replace('**Next:** y\n', `**Next:** y\n\n${item}\n`);
+    return base.replace('## Decisions\n', `## Decisions\n\n${item}\n`);
+  };
+
+  it.each(['before-title', 'now', 'decisions'] as const)('rejects a canonical item in %s', async (placement) => {
+    const raw = misplaced(placement);
+    expect(parsePlan(raw).items.map((item) => item.id)).toEqual(['P-001']);
+    const report = await lint(raw);
+    expect(codes(report.errors)).toContain('unparsed_canonical_item');
+    expect(report.errors.find((finding) => finding.code === 'unparsed_canonical_item')?.message).toContain('P-010');
+  });
+
+  it('rejects a raw plan rewrite that introduces a hidden item', async () => {
+    const current = planWith('');
+    const proposed = current.replace('## Decisions\n', '## Decisions\n\n- **P-010** `todo` hidden item\n');
+    const result = await evaluateSetContent(current, proposed, 'spawn-lint-test', undefined);
+    expect(result.newBody).toBeNull();
+    expect(result.value).toMatchObject({ ok: false, code: 'lint_failed' });
+    if (!result.value.ok && result.value.code === 'lint_failed') {
+      expect(codes(result.value.errors)).toContain('unparsed_canonical_item');
+    }
+  });
+
+  it('reports a stored index that contains items absent from the parsed body', () => {
+    const parsed = parsePlan(planWith(''));
+    expect(itemIndexDivergence([{ id: 'P-001' }, { id: 'P-010' }], parsed)).toBe('2 indexed item(s), 1 parsed item(s)');
+    expect(itemIndexDivergence([{ id: 'P-001' }], parsed)).toBeNull();
+  });
+});
 
 describe('plans:lint — spawn_child waves (P-002)', () => {
   it('warns (never errors) on a spawn_child wave, sharper warning when no repo/template', async () => {
