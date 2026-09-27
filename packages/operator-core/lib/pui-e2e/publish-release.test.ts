@@ -6,7 +6,9 @@ import { resolve, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(__dirname, '../../../..');
-const PUBLISH = join(REPO_ROOT, 'apps/tui/scripts/publish-release.sh');
+// Overridable so scripts/mutation-probe.sh can point the suite at a mutated COPY of the
+// publisher (copy-out tier) instead of mutating the shared tree.
+const PUBLISH = process.env.PUI_PUBLISH_SCRIPT || join(REPO_ROOT, 'apps/tui/scripts/publish-release.sh');
 const roots: string[] = [];
 
 afterEach(() => {

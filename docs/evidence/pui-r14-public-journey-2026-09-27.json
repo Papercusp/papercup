@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "subject": "pui-first-party-public-release-2026-09-07#P-015 (WI-10000438)",
+  "clauses": ["AUTO-BAR-R-15-P-015@9", "PUI-RELEASE-CONSENT@7"],
+  "recordedBy": "su-f08bc8c5-d836-4e9c-bea6-f7ddaac4d186",
+  "recordedAt": "2026-09-27T16:05:00Z",
+  "ownerPublicationDecision": {
+    "decision": "pui-first-party-public-release-2026-09-07#D-034",
+    "summary": "Avi approved the exact r14 candidate (source 8e14b49f815f057f7f64b82999d1d24049553fb5, archive SHA-256 5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6) for public publication, gated on independent review, in an interactive dialog answer to su-f08bc8c5 under owner directive #724 on 2026-09-27.",
+    "candidateDossierInspected": {
+      "sourceSha": "8e14b49f815f057f7f64b82999d1d24049553fb5",
+      "archiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+      "bundles": ["pui", "pui-audio", "psu wrapper (bin/psu)", "private pinned Node runtime"],
+      "knownOpenIssuesDisclosedToOwner": [
+        "real-Claude session resume sometimes times out at startup",
+        "one 40-turn run observed 37 of 40 turns"
+      ]
+    },
+    "independentReview": "su-d29b38b3 on WI-10003414 / WI-10003489 measured the public r14 archive: R-15 and R-11 healthy."
+  },
+  "publicDistribution": {
+    "manifestUrl": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/latest.json",
+    "archiveUrl": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz",
+    "sumsUrl": "https://pub-cb5359a346e94c0c88562bd41db9295a.r2.dev/HK70BNWvxXWRRRkMgl3PXqgdZyWYLsCG/pui/0.1.0/SHA256SUMS",
+    "manifestSourceSha": "8e14b49f815f057f7f64b82999d1d24049553fb5",
+    "manifestArchiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+    "recheck": {
+      "at": "2026-09-27T16:00Z",
+      "method": "curl the archiveUrl into an empty directory, sha256sum it, and compare with SHA256SUMS",
+      "httpStatus": 200,
+      "bytes": 69542264,
+      "downloadedSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+      "sumsLine": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6  pui-0.1.0-linux-x86_64.tar.gz",
+      "matches": true
+    }
+  },
+  "freshInstallJourney": {
+    "checkedAt": "2026-09-27T15:49:06.051Z",
+    "resultFile": "~/.papercusp/verification/pui-r14-public-journey-su-f08bc/public.acceptance.json",
+    "resultFileSha256": "6179f2eeddcf39a350cf639ec24859362ae9d52e7dbae6ab33b0579adabd724b",
+    "archiveFromPublicPath": "pui-0.1.0-linux-x86_64.tar.gz downloaded from archiveUrl; SHA-256 5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+    "installEnvironment": "fresh isolated HOME; install.sh from the archive; pui doctor reports local install OK at source 8e14b49f815f; plus a stock ubuntu:24.04 container install (status 0)",
+    "installedBinarySha256": "afc4760e9f23e02d4f23bf36858141bd9c5a47075a819e705932635f2f5ffc25",
+    "runnerHead": "a987959231314c4252639078184a1a4422bb19ce",
+    "legs": [
+      { "engine": "scripted", "status": 0, "rows": 43 },
+      { "engine": "claude", "status": 0, "rows": 4 }
+    ],
+    "capabilities": {
+      "total": 19,
+      "pass": 19,
+      "coversClauseBehaviors": {
+        "firstMessage": "First prompt and streamed response",
+        "tool": "Tool requests and command output",
+        "approval": "Approvals and permission scope",
+        "resume": "Legacy history continuation and fork; New/switch/rename/archive sessions"
+      }
+    },
+    "advertised": [{ "platform": "Linux x86_64", "backend": "Claude" }],
+    "notAdvertised": [
+      "Linux x86_64 Codex and OMP: no installed-product evidence for this candidate, so the release does not advertise them"
+    ],
+    "refusalsDisclosed": [
+      "packages/operator-core/lib/pui-e2e/release-acceptance-run.ts as run differs from the candidate's committed copy (runner-harness drift, tracked as EI-24429950332117274); every suite file the legs executed has candidateBlob == runBlob per suiteProvenance"
+    ]
+  },
+  "releaseToolingUnchangedSinceCandidate": {
+    "command": "git diff --quiet 8e14b49f HEAD -- apps/tui/release apps/tui/scripts/package-release.sh apps/tui/scripts/bundle-psu.mjs apps/tui/src/self_install.rs",
+    "result": "no difference"
+  }
+}
