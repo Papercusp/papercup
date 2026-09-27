@@ -228,7 +228,7 @@ export function dreamRunReuse(run: {
   const utility = new Set(current.map(a => a.usefulness));
   return {
     kind: review.reason === 'refinement' ? 'refinement' as const : 'rediscovery' as const,
-    priorRefs: [],
+    priorRefs: [...new Set(priorRefs)],
     familyIds: [...new Set(current.flatMap(a => a.familyId ? [a.familyId] : []))],
     usefulness: utility.size === 1 ? [...utility][0]! : 'unknown' as const,
     noveltyCredit: 'none' as const,
