@@ -696,6 +696,87 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(v.message).toContain(ACCEPTANCE_GRADING_NO_CLAIM_FACT);
     });
 
+    // WI-10003434: excluding ONLY the cohort-staled card let an OLDER independent card at
+    // the same rubric revision become authoritative. It predates the cohort move too, and
+    // its worse ratings returned the NON-recruiting `acceptance_bar_not_met` — measured on
+    // identities-v1-2026-08-30, where a 09-24 card's 'partial' ratings resurfaced after the
+    // 09-27 re-grade went cohort-stale. A plan graded twice at one revision could never be
+    // re-graded again.
+    const outcomeRubric = () =>
+      acceptanceRubric({
+        revision: 3,
+        criteria: [
+          {
+            key: 'k1',
+            title: 'Outcome holds',
+            model: 'The outcome holds.',
+            method: 'Run the bound check.',
+            driftMarkers: 'The check fails.',
+            role: 'outcome',
+            barKey: 'R-1',
+            mandatory: true,
+            passRatings: ['pass'],
+          },
+        ] as unknown as Rubric['criteria'],
+      });
+
+    it('an OLDER independent card never outlives the cohort-stale card: the re-grade still recruits', async () => {
+      mockRubric.mockResolvedValue(outcomeRubric());
+      mockScorecards.mockResolvedValue([
+        scorecard({
+          issueId: 'EI-cohort-staled',
+          createdAt: '2026-08-11T02:00:00Z',
+          createdBy: 'su-grader',
+          rubricRevision: 3,
+        }),
+        scorecard({
+          issueId: 'EI-older-round',
+          createdAt: '2026-08-11T01:00:00Z',
+          createdBy: 'su-earlier-grader',
+          rubricRevision: 3,
+          ratings: { k1: { rating: 'partial', evidence: 'failed before the first repair round' } },
+        }),
+      ]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) =>
+        verdict(phase, phase === 'ship' ? ['bar_snapshot_grading_stale'] : [], phase === 'ship' ? 'EI-cohort-staled' : null));
+
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true });
+
+      expect(v.code).not.toBe('acceptance_bar_not_met');
+      expect(v).toMatchObject({ satisfied: false, code: 'self_graded_only', rubricId: 'ar-some-plan' });
+      expect(v.message).toContain('EI-cohort-staled');
+      expect(v.message).toContain('FRESH independent grading');
+      expect(planAcceptanceRepairAction('some-plan-2026-08-11', v)).toMatchObject({ kind: 'independent-grading' });
+    });
+
+    // CONTROL: the exclusion is bounded by the stale card's grading time. A card graded
+    // AFTER it saw the moved cohort, so it must keep its authority — otherwise every fresh
+    // re-grade would itself be discarded and the plan would recruit forever.
+    it('CONTROL: an independent card graded AFTER the cohort-stale card keeps its authority', async () => {
+      mockRubric.mockResolvedValue(outcomeRubric());
+      mockScorecards.mockResolvedValue([
+        scorecard({
+          issueId: 'EI-fresh-regrade',
+          createdAt: '2026-08-11T03:00:00Z',
+          createdBy: 'su-fresh-grader',
+          rubricRevision: 3,
+          ratings: { k1: { rating: 'partial', evidence: 'still failing after the repair' } },
+        }),
+        scorecard({
+          issueId: 'EI-cohort-staled',
+          createdAt: '2026-08-11T02:00:00Z',
+          createdBy: 'su-grader',
+          rubricRevision: 3,
+        }),
+      ]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase) =>
+        verdict(phase, phase === 'ship' ? ['bar_snapshot_grading_stale'] : [], phase === 'ship' ? 'EI-cohort-staled' : null));
+
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { gradingRecruitment: true });
+
+      expect(v).toMatchObject({ satisfied: false, code: 'acceptance_bar_not_met', gradedBy: 'su-fresh-grader' });
+    });
+
     // CONTROL: the stock self-graded wording must survive for the case it IS true of,
     // or the branch above is just an unconditional message swap.
     it('CONTROL: a genuinely self-graded plan keeps the self-graded wording', async () => {

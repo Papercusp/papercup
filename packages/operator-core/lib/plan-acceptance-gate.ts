@@ -1376,7 +1376,24 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   const authority = rubricGradingAuthority(rubric);
   const isIndependentCard = (s: (typeof complete)[number]) =>
     !isPlanImplementerScorecard(s) && (!implementer || (s.createdBy != null && !holdsAuthorAuthority(s)));
+  // WI-10003434: `allComplete` drops exactly the card the BAR named cohort-stale, but an
+  // OLDER independent card at the same rubric revision predates the cohort move too — it
+  // was graded before the stale card was, so it is at least as stale. Left in, it is
+  // promoted to authoritative below, its (older, usually worse) ratings return the
+  // NON-recruiting `acceptance_bar_not_met`, and the WI-10002509 re-grade path is dead
+  // for every plan graded more than once at its current revision (measured on
+  // identities-v1-2026-08-30: a 09-24 card's R-3/R-4/R-7 'partial' resurfaced after the
+  // 09-27 card they had been re-rated past went cohort-stale). Author cards are NOT
+  // excluded here: they are never independent, and the stale-wording branch needs them.
+  const barStaleGradedAtMs = (() => {
+    if (barStaleGradingScorecardId == null) return Number.NaN;
+    const staleCard = scorecards.find((s) => s.issueId === barStaleGradingScorecardId);
+    return staleCard ? Date.parse(staleCard.createdAt) : Number.NaN;
+  })();
+  const predatesCohortStaleCard = (s: (typeof complete)[number]) =>
+    Number.isFinite(barStaleGradedAtMs) && Date.parse(s.createdAt) <= barStaleGradedAtMs;
   const independentCards = complete.filter((s) =>
+    !(isIndependentCard(s) && predatesCohortStaleCard(s)) &&
     gradingAuthorityAdmits({
       authority,
       isIndependent: isIndependentCard(s),
