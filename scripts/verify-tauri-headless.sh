@@ -64,7 +64,10 @@
 #   instance boots into the normal first-run onboarding flow (an empty, freshly-
 #   migrated DB — the same state every real fresh install boots into), not the
 #   owner's real pots/plans. A WebView localStorage sentinel is also required to
-#   start absent, round-trip, and clear inside that disposable profile.
+#   start absent, round-trip, and clear inside that disposable profile. The
+#   host's GitHub CLI login is hidden too (empty GH_CONFIG_DIR, GH_TOKEN/
+#   GITHUB_TOKEN stripped), because creating a new-folder pot publishes it with
+#   `gh repo create` whenever gh is logged in (WI-10003268).
 #
 #   Default (VERIFY_TAURI_ISOLATED_DB unset) is UNCHANGED: shared live DB, as
 #   warned above — because many verify runs legitimately want to read/exercise
@@ -2260,6 +2263,7 @@ write_freshness_check_script
 # apps/operator/bin/serve.ts's EI-13917 note).
 ISOLATED_DB="${VERIFY_TAURI_ISOLATED_DB:-0}"
 ISOLATED_ENV_LINE=""
+ISOLATED_UNSET_LINE=""
 ISOLATED_HOME=""
 ISOLATED_CODEX_HOMES_DIR=""
 ISOLATED_WORKSPACES_ROOT=""
@@ -2413,7 +2417,15 @@ PGBOOT
   fi
 
   log "isolated-db postgres ready on :$ISOLATED_PG_PORT (data=$ISOLATED_PG_DATA_DIR) after ${ISOLATED_PG_ELAPSED}s"
-  ISOLATED_ENV_LINE="PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_SU_CODEX_HOMES_DIR=\"$ISOLATED_CODEX_HOMES_DIR\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACE_ID=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACES_ROOT=\"$ISOLATED_WORKSPACES_ROOT\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1 PAPERCUSP_VERIFY_TAURI_ISOLATED=1 XDG_DATA_HOME=\"$ISOLATED_WEBVIEW_DATA\" XDG_CACHE_HOME=\"$ISOLATED_WEBVIEW_CACHE\" XDG_CONFIG_HOME=\"$ISOLATED_WEBVIEW_CONFIG\""
+  # WI-10003268: a new-folder pot create runs `gh repo create --private --push`
+  # whenever gh is logged in (hive-repo-init.ts publishHiveRepo), so a write-safe
+  # run must not see the host's GitHub login. The private XDG_CONFIG_HOME below
+  # already hides ~/.config/gh, but GH_CONFIG_DIR and the token variables beat it,
+  # so pin the first to an empty per-run dir and strip the rest at the env boundary.
+  ISOLATED_GH_CONFIG_DIR="$WORK/gh-config"
+  mkdir -p "$ISOLATED_GH_CONFIG_DIR"
+  ISOLATED_UNSET_LINE="-u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN -u GITHUB_ENTERPRISE_TOKEN"
+  ISOLATED_ENV_LINE="GH_CONFIG_DIR=\"$ISOLATED_GH_CONFIG_DIR\" PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_SU_CODEX_HOMES_DIR=\"$ISOLATED_CODEX_HOMES_DIR\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACE_ID=\"$ISOLATED_WORKSPACE\" PAPERCUSP_WORKSPACES_ROOT=\"$ISOLATED_WORKSPACES_ROOT\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1 PAPERCUSP_VERIFY_TAURI_ISOLATED=1 XDG_DATA_HOME=\"$ISOLATED_WEBVIEW_DATA\" XDG_CACHE_HOME=\"$ISOLATED_WEBVIEW_CACHE\" XDG_CONFIG_HOME=\"$ISOLATED_WEBVIEW_CONFIG\""
 fi
 
 # ── launch the isolated dev instance (agent-e2e.mdx §1.3 recipe, packaged) ──
@@ -2515,7 +2527,7 @@ write_and_launch_tauri() {
   cat > "$WORK/launch.sh" <<LAUNCH
 #!/usr/bin/env bash
 cd "$DESKTOP_DIR"
-exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET \\
+exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET $ISOLATED_UNSET_LINE \\
   XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
   OPERATOR_DEV_PORT="$DEV_PORT" OPERATOR_DEV_PTY_PORT="$PTY_PORT" \\
   PAPERCUSP_BIND_HOST=127.0.0.1 \\

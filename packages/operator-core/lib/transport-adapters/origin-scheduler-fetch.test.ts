@@ -11,6 +11,7 @@ import {
   classifyOriginSchedulerFetch,
   installOriginSchedulerFetch,
   isIdempotentReadMethod,
+  schedulerTimeoutForMethod,
 } from './origin-scheduler-fetch';
 
 const ORIGIN = 'http://127.0.0.1:3070';
@@ -220,6 +221,16 @@ describe('classifyOriginSchedulerFetch', () => {
     });
   });
 
+  it('gives writes no scheduler deadline and leaves reads on the default', () => {
+    expect(schedulerTimeoutForMethod('POST')).toBe(0);
+    expect(schedulerTimeoutForMethod('put')).toBe(0);
+    expect(schedulerTimeoutForMethod('PATCH')).toBe(0);
+    expect(schedulerTimeoutForMethod('DELETE')).toBe(0);
+    expect(schedulerTimeoutForMethod('GET')).toBeUndefined();
+    expect(schedulerTimeoutForMethod('HEAD')).toBeUndefined();
+    expect(schedulerTimeoutForMethod('OPTIONS')).toBeUndefined();
+  });
+
   it('keeps the retry boundary limited to GET and HEAD', () => {
     expect(isIdempotentReadMethod('GET')).toBe(true);
     expect(isIdempotentReadMethod('HEAD')).toBe(true);
@@ -329,6 +340,40 @@ describe('installOriginSchedulerFetch', () => {
       window.fetch('/api/lifecycle', { method: 'POST', body: '{}' }),
     ).rejects.toThrow('ambiguous transport failure');
     expect(inner).toHaveBeenCalledTimes(1);
+    handle?.uninstall();
+  });
+
+  // WI-10003268: pot create takes 10–25s, and the scheduler's 20s default
+  // reported "timed out" for pots the server went on to create.
+  it('does not abort a slow write at the scheduler deadline, but still aborts a slow read', async () => {
+    const hold = deferred<void>();
+    const inner = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      await Promise.race([
+        hold.promise,
+        new Promise((_, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        }),
+      ]);
+      return response();
+    });
+    stubWindow(inner as unknown as typeof fetch);
+    getOriginScheduler(ORIGIN, { limit: 2, reservedInteractive: 0, requestTimeoutMs: 20 });
+    const handle = installOriginSchedulerFetch();
+
+    let writeSettled = false;
+    const write = window.fetch('/api/harness/pots', { method: 'POST', body: '{}' });
+    void write.then(
+      () => { writeSettled = true; },
+      () => { writeSettled = true; },
+    );
+    const read = window.fetch('/api/slow-read');
+
+    await expect(read).rejects.toThrow(/timed out/);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(writeSettled).toBe(false);
+
+    hold.resolve();
+    await expect(write).resolves.toBeDefined();
     handle?.uninstall();
   });
 

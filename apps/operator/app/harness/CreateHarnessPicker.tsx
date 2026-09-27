@@ -39,6 +39,8 @@ import { parseHiveInviteLink } from '@papercusp/operator-core/lib/harness/hive-i
 import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@/lib/flag-hooks';
 import { useLexicon } from '@/lib/useLexicon';
+import { readHostedBrowserApiMarker } from '@/lib/hosted-browser-api';
+import { useOperatorWorkspaceLocation } from '@papercusp/operator-ui/seam';
 import { EntryGithubSearchForm } from './EntryGithubSearchForm';
 import { CupboardBlueprintForm } from './CupboardBlueprintForm';
 import { PublishPotCard } from './PublishPotCard';
@@ -189,6 +191,46 @@ function ErrorBanner({ message }: { message: string }) {
   );
 }
 
+// ── Where the paths live (WI-10003268) ─────────────────────────────────────
+//
+// Every path Entries 1/3 ask for is on the machine running the operator. On the
+// desktop that is the user's own computer; for a signed-in cloud-portal user
+// (the portal's context) or the operator's own hosted shell (the injected
+// marker) it is their cloud workspace machine, where "local" names the wrong
+// machine. The local strings are the desktop's, unchanged.
+function useWorkspaceInCloud(): boolean {
+  const location = useOperatorWorkspaceLocation();
+  return location === 'cloud' || readHostedBrowserApiMarker() !== null;
+}
+
+function pathCopy(inCloud: boolean, hiveLower: string) {
+  if (!inCloud) {
+    return {
+      newLabel: 'New local directory',
+      existingLabel: 'Existing local repo',
+      legacyHeading: 'Local',
+      legacyExistingDescription: `Register an existing local directory or git repo as a ${hiveLower}.`,
+      newDescription: `A fresh folder, git-initialised and registered as a coding ${hiveLower}.`,
+      existingDescription: 'Link a local repo in place — nothing is moved or copied.',
+      newFormHeading: `New ${hiveLower} from a local directory`,
+      parentDirHint: 'Absolute path to the directory that will contain the new folder.',
+      repoPathHint: 'Absolute path to an existing git repository or project directory. Stays where it is — linked, not moved.',
+    };
+  }
+  return {
+    newLabel: 'New folder on your cloud workspace',
+    existingLabel: 'Existing repo on your cloud workspace',
+    legacyHeading: 'Cloud workspace',
+    legacyExistingDescription: `Register a directory or git repo on your cloud workspace machine as a ${hiveLower}.`,
+    newDescription: `A fresh folder on your cloud workspace machine, git-initialised and registered as a coding ${hiveLower}.`,
+    existingDescription: 'Link a repo already on your cloud workspace machine in place — nothing is moved or copied.',
+    newFormHeading: `New ${hiveLower} from a folder on your cloud workspace`,
+    parentDirHint: 'Absolute path on your cloud workspace machine to the directory that will contain the new folder.',
+    repoPathHint:
+      'Absolute path to a git repository or project directory on your cloud workspace machine. Stays where it is — linked, not moved.',
+  };
+}
+
 // ── Entry 1 form — new local directory ────────────────────────────────────
 //
 // A new local directory IS a hive: when NOT adding into an existing hive the
@@ -199,6 +241,7 @@ function ErrorBanner({ message }: { message: string }) {
 function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', blueprintId }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string; hiveLabel: string; domain?: 'coding' | 'work'; blueprintId?: string }) {
   const t = useLexicon();
   const hiveLower = hiveLabel.toLowerCase();
+  const copy = pathCopy(useWorkspaceInCloud(), hiveLower);
   // P-006: a "work" hive is the same fresh-dir create, just a non-coding domain
   // (a different blueprint, judged-not-tested, repo-less). Only the new-hive
   // branch (`!hive`) reads `domain`/`blueprintId` — an into-hive member inherits
@@ -287,7 +330,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
     <form onSubmit={(e) => void handleSubmit(e)}>
       <BackBtn onBack={onBack} />
       <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>
-        {hive ? 'New local directory' : isWork ? `New work ${hiveLower}` : `New ${hiveLower} from a local directory`}
+        {hive ? copy.newLabel : isWork ? `New work ${hiveLower}` : copy.newFormHeading}
       </h2>
       {error && <ErrorBanner message={error} />}
       {hive ? (
@@ -344,7 +387,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
       <Label>
         <FieldLabel>Parent directory</FieldLabel>
         <input ref={parentDirRef} type="text" placeholder="/home/user/projects" style={inputStyle} />
-        <HintText>Absolute path to the directory that will contain the new folder.</HintText>
+        <HintText>{copy.parentDirHint}</HintText>
       </Label>
       {/* knowledge-packs P-006: the pack picker — a new hive starts with a
           default set of learnings; selectable away, editable afterward. Only
@@ -389,6 +432,7 @@ function NewLocalForm({ onBack, onSuccess, hive, hiveLabel, domain = 'coding', b
 function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () => void; onSuccess: (slug: string) => void; hive?: string; hiveLabel: string }) {
   const t = useLexicon();
   const hiveLower = hiveLabel.toLowerCase();
+  const copy = pathCopy(useWorkspaceInCloud(), hiveLower);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // knowledge-packs P-006: pack selection — default = the generic `coding` pack
@@ -469,7 +513,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
     <form onSubmit={(e) => void handleSubmit(e)}>
       <BackBtn onBack={onBack} />
       <h2 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 600 }}>
-        {hive ? 'Existing local repo' : `Existing repo as a new ${hiveLower}`}
+        {hive ? copy.existingLabel : `Existing repo as a new ${hiveLower}`}
       </h2>
       {error && <ErrorBanner message={error} />}
       {hive ? (
@@ -518,7 +562,7 @@ function ExistingLocalForm({ onBack, onSuccess, hive, hiveLabel }: { onBack: () 
       <Label>
         <FieldLabel>Path to repo</FieldLabel>
         <input ref={pathRef} type="text" placeholder="/home/user/projects/my-project" style={inputStyle} />
-        <HintText>Absolute path to an existing git repository or project directory. Stays where it is — linked, not moved.</HintText>
+        <HintText>{copy.repoPathHint}</HintText>
       </Label>
       {/* knowledge-packs P-006: the pack picker — a new hive starts with a
           default set of learnings; selectable away, editable afterward. Only
@@ -723,27 +767,29 @@ function buildSections(opts: {
   combLabel: string;
   brainLabel: string;
   githubUrlEnabled: boolean;
+  inCloud: boolean;
 }): PickerSection[] {
-  const { hiveLower, hivesLower, combLabel, brainLabel, githubUrlEnabled } = opts;
+  const { hiveLower, hivesLower, combLabel, brainLabel, githubUrlEnabled, inCloud } = opts;
+  const copy = pathCopy(inCloud, hiveLower);
 
   if (!githubUrlEnabled) {
-    // Legacy layout (flag off) — preserved byte-for-byte.
+    // Legacy layout (flag off) — preserved byte-for-byte on the desktop.
     return [
       {
-        heading: 'Local',
+        heading: copy.legacyHeading,
         entries: [
           {
             key: 'new-local',
             step: 'new-local',
-            label: 'New local directory',
+            label: copy.newLabel,
             description: `Create a new folder, run git init, and register it as a ${hiveLower}.`,
             icon: '📁',
           },
           {
             key: 'existing-local',
             step: 'existing-local',
-            label: 'Existing local repo',
-            description: `Register an existing local directory or git repo as a ${hiveLower}.`,
+            label: copy.existingLabel,
+            description: copy.legacyExistingDescription,
             icon: '📂',
           },
         ],
@@ -778,15 +824,15 @@ function buildSections(opts: {
         {
           key: 'new-local',
           step: 'new-local',
-          label: 'New local directory',
-          description: `A fresh folder, git-initialised and registered as a coding ${hiveLower}.`,
+          label: copy.newLabel,
+          description: copy.newDescription,
           icon: '📁',
         },
         {
           key: 'existing-local',
           step: 'existing-local',
-          label: 'Existing local repo',
-          description: 'Link a local repo in place — nothing is moved or copied.',
+          label: copy.existingLabel,
+          description: copy.existingDescription,
           icon: '📂',
         },
         {
@@ -933,12 +979,14 @@ function PickerStep({
   const t = useLexicon();
   const hiveLower = hiveLabel.toLowerCase();
   const intoHive = mode === 'into-hive' && hiveScope;
+  const inCloud = useWorkspaceInCloud();
   const sections = buildSections({
     hiveLower,
     hivesLower: `${hiveLower}s`,
     combLabel,
     brainLabel: t('brain'),
     githubUrlEnabled,
+    inCloud,
   });
   const fork = (
     <ForkToggle mode={mode} onMode={onMode} hiveScope={hiveScope} hiveLabel={hiveLabel} />

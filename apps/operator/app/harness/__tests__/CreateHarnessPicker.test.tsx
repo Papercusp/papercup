@@ -14,7 +14,26 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 import { FLAGS } from '@papercusp/flags';
+import {
+  OperatorWorkspaceLocationProvider,
+  type OperatorWorkspaceLocation,
+} from '@papercusp/operator-ui/seam';
 import { CreateHarnessPicker } from '../CreateHarnessPicker';
+
+/** Wrap `inner` in a host's workspace-location answer; absent = no host said anything. */
+function withWorkspaceLocation(
+  location: OperatorWorkspaceLocation | undefined,
+  Inner: React.ComponentType<{ children: React.ReactNode }>,
+) {
+  if (!location) return Inner;
+  return function LocationWrapper({ children }: { children: React.ReactNode }) {
+    return (
+      <OperatorWorkspaceLocationProvider location={location}>
+        <Inner>{children}</Inner>
+      </OperatorWorkspaceLocationProvider>
+    );
+  };
+}
 
 // ── Global mock setup ──────────────────────────────────────────────────────
 
@@ -75,6 +94,8 @@ function renderPicker(props?: {
   onCreated?: (slug: string, opts?: { hive?: string }) => void;
   hiveScope?: string | null;
   hiveLabel?: string;
+  /** What a host (the cloud portal) says about where the workspace's files live. */
+  workspaceLocation?: OperatorWorkspaceLocation;
 }) {
   const onOpenChange = vi.fn();
   // Capture URL writes: the picker now closes via a single atomic useQueryStates
@@ -90,10 +111,13 @@ function renderPicker(props?: {
     />,
     // The picker's selected entry rides the `?picker=` nuqs param now.
     {
-      wrapper: withNuqsTestingAdapter({
-        searchParams: '',
-        onUrlUpdate: (e) => urlUpdates.push(e.searchParams),
-      }),
+      wrapper: withWorkspaceLocation(
+        props?.workspaceLocation,
+        withNuqsTestingAdapter({
+          searchParams: '',
+          onUrlUpdate: (e) => urlUpdates.push(e.searchParams),
+        }),
+      ),
     },
   );
   return { ...result, onOpenChange, urlUpdates };
@@ -424,6 +448,57 @@ describe('Entry 3 — existing local repo navigation', () => {
     // No hive scope ⇒ an existing repo IS a new hive (linked in place, Queen blueprint).
     screen.getByRole('heading', { name: /Existing repo as a new hive/i });
     screen.getByPlaceholderText('/home/user/projects/my-project');
+  });
+});
+
+// ── WI-10003268 — paths on a cloud workspace ─────────────────────────────
+
+describe('WI-10003268 — a cloud workspace does not call its folders "local"', () => {
+  afterEach(() => {
+    delete window.__PAPERCUSP_HOSTED_BROWSER__;
+  });
+
+  it('the portal saying "cloud" relabels both path entries and their forms', async () => {
+    const user = userEvent.setup();
+    renderPicker({ workspaceLocation: 'cloud' });
+    expect(screen.queryByText('New local directory')).toBeNull();
+    expect(screen.queryByText('Existing local repo')).toBeNull();
+    screen.getByText('Existing repo on your cloud workspace');
+    await user.click(screen.getByText('New folder on your cloud workspace'));
+    screen.getByRole('heading', { name: 'New hive from a folder on your cloud workspace' });
+    screen.getByText(/^Absolute path on your cloud workspace machine/);
+  });
+
+  it('the legacy layout relabels its "Local" heading too', () => {
+    flagValues[FLAGS.POT_FROM_GITHUB_URL] = false;
+    renderPicker({ workspaceLocation: 'cloud' });
+    screen.getByRole('heading', { name: 'Cloud workspace' });
+    expect(screen.queryByRole('heading', { name: 'Local' })).toBeNull();
+    screen.getByText('New folder on your cloud workspace');
+  });
+
+  it("the operator's own hosted shell (the injected marker) relabels without a portal", async () => {
+    window.__PAPERCUSP_HOSTED_BROWSER__ = {
+      version: 1,
+      controlPlaneWorkspaceId: 'ws-test',
+      restEndpoint: '/api/hosted/browser',
+      sseEndpoint: '/api/hosted/browser/sse',
+      workspaceHostEndpoints: {
+        connection: '/api/hosted/browser/workspace-hosts/connection',
+        provision: '/api/hosted/browser/workspace-hosts/provision',
+        action: '/api/hosted/browser/workspace-hosts/action',
+      },
+    };
+    const user = userEvent.setup();
+    renderPicker();
+    await user.click(screen.getByText('Existing repo on your cloud workspace'));
+    screen.getByText(/on your cloud workspace machine\. Stays where it is/);
+  });
+
+  it('a host saying "local" keeps the desktop copy', () => {
+    renderPicker({ workspaceLocation: 'local' });
+    screen.getByText('New local directory');
+    screen.getByText('Existing local repo');
   });
 });
 
