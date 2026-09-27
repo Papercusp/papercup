@@ -30,6 +30,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
   runGitSync,
+  classifyProtectedPathExclusions,
   addFailureIgnoredPaths,
   addFailureStrayPaths,
   discoverSubmodulesRecursive,
@@ -871,6 +872,34 @@ describe('runGitSync (real git, no submodule)', () => {
     );
     expect(readFileSync(ignoredArtifact, 'utf8')).toBe('must remain local and untracked\n');
     expect(logs.join('\n')).toContain('pre-filtering ignored untracked protected path');
+  });
+
+  it('EI-24369292425690265: checks protected paths with bounded concurrency', async () => {
+    let active = 0;
+    let peak = 0;
+    const seen: string[] = [];
+    const paths = Array.from({ length: 24 }, (_, i) => `protected-${i}`);
+    const runGit: RunGit = async (args) => {
+      const path = args[2];
+      seen.push(path);
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active--;
+      if (path === 'protected-3') return { code: 0, stdout: `${path}\n`, stderr: '' };
+      if (path === 'protected-9') {
+        return { code: 128, stdout: '', stderr: `fatal: pathspec '${path}' is beyond a symbolic link` };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    };
+
+    const result = await classifyProtectedPathExclusions(runGit, repo, paths);
+
+    expect(new Set(seen)).toEqual(new Set(paths));
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(8);
+    expect(result.ignoredUntracked).toEqual(new Set(['protected-3']));
+    expect(result.beyondSymlink).toEqual(new Set(['protected-9']));
   });
 
   it('EI-21635845150755039: a protected symlink descendant does not strand stageable work', async () => {

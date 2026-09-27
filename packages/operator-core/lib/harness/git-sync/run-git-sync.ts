@@ -1921,13 +1921,24 @@ export async function classifyProtectedPathExclusions(
 ): Promise<ProtectedPathExclusionPreflight> {
   const ignoredUntracked = new Set<string>();
   const beyondSymlink = new Set<string>();
-  for (const path of paths) {
-    const result = await runGit(['check-ignore', '--', path], repoPath);
-    if (result.code === 0) ignoredUntracked.add(path);
-    else if (result.code === 1) continue;
-    else if (isPathspecBeyondSymbolicLinkFailure(`${result.stdout}\n${result.stderr}`)) beyondSymlink.add(path);
-    else return { ignoredUntracked: new Set<string>(), beyondSymlink: new Set<string>() };
-  }
+  // A protected path needs its own check: check-ignore's non-stdin output quotes
+  // unusual filenames, so a batched result cannot be mapped back losslessly.
+  // Bound concurrency instead of serializing one git process per live lock.
+  let next = 0;
+  let failed = false;
+  await Promise.all(
+    Array.from({ length: Math.min(8, paths.length) }, async () => {
+      while (!failed && next < paths.length) {
+        const path = paths[next++];
+        const result = await runGit(['check-ignore', '--', path], repoPath);
+        if (result.code === 0) ignoredUntracked.add(path);
+        else if (result.code === 1) continue;
+        else if (isPathspecBeyondSymbolicLinkFailure(`${result.stdout}\n${result.stderr}`)) beyondSymlink.add(path);
+        else failed = true;
+      }
+    }),
+  );
+  if (failed) return { ignoredUntracked: new Set<string>(), beyondSymlink: new Set<string>() };
   return { ignoredUntracked, beyondSymlink };
 }
 
@@ -3536,6 +3547,15 @@ async function untrackLegacyDependencyGenerationStore(
  */
 async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts): Promise<CommitRepoResult> {
   const { message } = o;
+  // A routine heartbeat says only that a git call settled. Name slow pre-stage
+  // phases so a live lease can be diagnosed without guessing from its age.
+  let phaseStartedAt = performance.now();
+  const noteSlowPhase = (phase: string): void => {
+    const now = performance.now();
+    const elapsedMs = Math.round(now - phaseStartedAt);
+    if (elapsedMs >= 10_000) o.log(`[git-sync] ${o.scope}: slow commit pre-stage ${phase} (${elapsedMs}ms)`);
+    phaseStartedAt = now;
+  };
   let committedLocal = false;
   let committedCount = 0;
   let oversized: OversizedFile[] = [];
@@ -3547,6 +3567,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   // root-level preflight (needed before submodule discovery) may have already
   // established a valid index.
   const indexPreflight = await preflightInvalidIndex(runGit, repoPath, o.log);
+  noteSlowPhase('index preflight');
   if (indexPreflight.status === 'refused' || indexPreflight.status === 'error') {
     return {
       committedLocal: false,
@@ -3559,6 +3580,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     };
   }
   const dependencyGenerationRepair = await untrackLegacyDependencyGenerationStore(runGit, repoPath, o.log);
+  noteSlowPhase('dependency generation repair');
   if (!dependencyGenerationRepair.ok) {
     return {
       committedLocal: false,
@@ -3571,9 +3593,11 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     };
   }
   const dirty = await dirtyFiles(runGit, repoPath);
+  noteSlowPhase('dirty census');
   const dirtyPathCount = dirty.length;
   const migrationCandidates = migrationPaths(dirty);
   const preStageMigrationError = await checkMigrationReservations(o, migrationCandidates);
+  noteSlowPhase('migration reservation');
   if (preStageMigrationError) {
     // A migration may have been staged by an earlier process before this tick's
     // reservation check. Remove only the refused migration paths; leave every
@@ -3595,8 +3619,11 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       skippedPaths,
     };
   }
-  if (await isDirty(runGit, repoPath)) {
+  const hasDirtyFiles = await isDirty(runGit, repoPath);
+  noteSlowPhase('dirty check');
+  if (hasDirtyFiles) {
     const attachment = await ensureBranchAttachedForCommit(runGit, repoPath, o.remote, o.defaultBranch, o.log);
+    noteSlowPhase('branch attachment');
     if ('error' in attachment) {
       return {
         committedLocal: false,
@@ -3612,6 +3639,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // files are excluded from the commit (`:(exclude,literal)` pathspecs) and
     // reported; everything else still syncs this tick.
     oversized = await findOversizedDirtyFiles(runGit, repoPath, o.maxBlobBytes);
+    noteSlowPhase('oversized file scan');
     // WI-5738: the CUMULATIVE gate. Individually-fine files can still add up to
     // an accident (2,261 MB of extracted AppImage in files all < 95 MB, on
     // 2026-07-20) that the downstream publish guard could then only refuse,
@@ -3622,6 +3650,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       o.maxCommitTotalBytes,
       new Set(oversized.map((f) => f.path)),
     );
+    noteSlowPhase('bulk size scan');
     if (bulk.length > 0) {
       o.log(
         `[git-sync] cumulative dirty set exceeds ${o.maxCommitTotalBytes} bytes — excluding ${bulk.length} large file(s) ` +
@@ -3645,6 +3674,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       detectors: o.contentDetectors,
       log: o.log,
     });
+    noteSlowPhase('content detectors');
     // EI-19932544083689229 quarantine-import guard (remedy #1 — ATOMICITY): a file
     // quarantined above (oversized, or excluded by a content detector — i.e. a file
     // that will have ZERO history in HEAD this tick) must not be committed WITHOUT
@@ -3674,6 +3704,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     if (o.deletionGuard) {
       const wipeErrors = await detectWholesaleDeletion({ runGit, repoPath, log: o.log });
       if (wipeErrors.length > 0) contentErrors = [...contentErrors, ...wipeErrors];
+      noteSlowPhase('wholesale deletion guard');
     }
     if (o.deletionGuard) {
       const deletionErrors = await detectUnsafeDeletions({
@@ -3683,6 +3714,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         log: o.log,
       });
       if (deletionErrors.length > 0) contentErrors = [...contentErrors, ...deletionErrors];
+      noteSlowPhase('unsafe deletion guard');
     }
     if (preDeletionQuarantined.length > 0) {
       const dirtyForScan = await dirtyFiles(runGit, repoPath);
@@ -3694,6 +3726,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         log: o.log,
       });
       if (importerErrors.length > 0) contentErrors = [...contentErrors, ...importerErrors];
+      noteSlowPhase('quarantined importer guard');
     }
     // The action's initial lock census protects the setup window, but the
     // submodule and guard phases above can take long enough for a peer to
@@ -3706,6 +3739,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       let refreshedHoldings: GitSyncLockHolding[];
       try {
         refreshedHoldings = await o.refreshLiveLockHoldings();
+        noteSlowPhase('live lock refresh');
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
         o.log(`[git-sync] ${o.scope}: live lock refresh failed (fail-closed) — ${detail}`);
@@ -3773,6 +3807,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         log: o.log,
       });
       if (liveLockImporterErrors.length > 0) contentErrors = [...contentErrors, ...liveLockImporterErrors];
+      noteSlowPhase('live lock importer guard');
     }
     // Exclude BOTH oversized + content offenders (incl. unsafe deletions + quarantined
     // importers) from the auto-commit (deduped — a file can be both). Everything else
@@ -3788,6 +3823,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       ]),
     ];
     const preStagedProtected = await unstagePreStagedProtectedPaths(runGit, repoPath, excludePaths, o.log);
+    noteSlowPhase('protected path unstage');
     if (!preStagedProtected.ok) {
       return {
         committedLocal: false,
@@ -3806,6 +3842,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // attribution path-specific adds or the catch-all stage; tracked ignored
     // paths remain protected by their exclusion pathspec.
     const protectedPathPreflight = await classifyProtectedPathExclusions(runGit, repoPath, excludePaths);
+    noteSlowPhase('protected path preflight');
     const ignoredUntrackedExcludes = protectedPathPreflight.ignoredUntracked;
     const beyondSymlinkExcludes = protectedPathPreflight.beyondSymlink;
     const omittedPreflightExcludes = new Set([...ignoredUntrackedExcludes, ...beyondSymlinkExcludes]);
