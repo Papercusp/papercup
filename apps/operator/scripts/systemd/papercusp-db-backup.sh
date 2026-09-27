@@ -481,9 +481,31 @@ fi
 # -Z1 writer made the first post-dump snapshot upload 6.3 GB while an unchanged
 # follow-up uploaded 0 B. Uncompressed directory members let Kopia deduplicate
 # stable COPY data while preserving the hourly recovery-point objective.
+# INVALID databases (WI-10003455). A DROP DATABASE interrupted mid-flight (PG ≥15)
+# leaves the catalog row behind with datconnlimit = -2 — and datallowconn still
+# TRUE, so the old `AND datallowconn` filter admitted them. pg_dump then fails
+# with "cannot connect to invalid database", and every such leftover turned the
+# whole unit red (measured 2026-09-27: 18 of them, exit 1 on EVERY hourly run
+# while the real papercusp tiers dumped fine). A red that never clears is noise
+# that masks the real failure it exists to report.
+#
+# An invalid database holds nothing restorable — Postgres refuses every
+# connection to it by definition, so there is nothing pg_dump COULD capture.
+# Skipping it loses no data. It is NOT silent: each one is logged and listed
+# in STATUS.json's "invalidSkipped" so the leak stays visible to whoever reaps it.
+DB_SELECT_SQL="SELECT datname FROM pg_database WHERE datistemplate=false AND datallowconn AND datconnlimit <> -2;"
+INVALID_DB_SQL="SELECT datname FROM pg_database WHERE datconnlimit = -2;"
 DBS=$(sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc \
-       "SELECT datname FROM pg_database WHERE datistemplate=false AND datallowconn;" 2>/dev/null \
+       "$DB_SELECT_SQL" 2>/dev/null \
        | grep -vE "$EXCLUDE_RE")
+INVALID_SKIPPED=()
+while IFS= read -r inv; do
+  [ -n "$inv" ] || continue
+  INVALID_SKIPPED+=("$inv")
+done < <(sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc "$INVALID_DB_SQL" 2>/dev/null)
+if [ ${#INVALID_SKIPPED[@]} -gt 0 ]; then
+  log "WARN skipping ${#INVALID_SKIPPED[@]} INVALID database(s) (datconnlimit=-2, interrupted DROP DATABASE — nothing dumpable; reap with DROP DATABASE): ${INVALID_SKIPPED[*]}"
+fi
 
 # Remove a "$db.tmp" that pg_dump created as postgres.
 #
@@ -932,6 +954,9 @@ SYSID=$($PSQL "SELECT system_identifier FROM pg_control_system()" 2>/dev/null | 
   printf '  "elapsedSec": %s,\n' "$ELAPSED"
   printf '  "dumped": [%s],\n' "$(json_arr ${DUMPED[@]+"${DUMPED[@]}"})"
   printf '  "failed": [%s],\n' "$(json_arr ${FAILED[@]+"${FAILED[@]}"})"
+  # WI-10003455: invalid (datconnlimit=-2) databases skipped — undumpable by
+  # definition, so NOT a failure, but listed so an interrupted-DROP leak stays visible.
+  printf '  "invalidSkipped": [%s],\n' "$(json_arr ${INVALID_SKIPPED[@]+"${INVALID_SKIPPED[@]}"})"
   printf '  "systemIdentifier": "%s",\n' "$SYSID"
   # WI-2146225 tiered dumps. These fields are now a NAMED VIEW of the split, not a
   # quarantine: since the 2026-09-05 cutover each tier ALSO appears in dumped[] /
