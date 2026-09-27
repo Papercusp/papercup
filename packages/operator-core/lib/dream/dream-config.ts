@@ -5,7 +5,7 @@ export const DREAM_FRAGMENT_KINDS = ['observation', 'work_item', 'memory', 'stat
 export type DreamFragmentKind = (typeof DREAM_FRAGMENT_KINDS)[number];
 
 /** Review truth is separate from the immutable execution status in old ledgers. */
-export const DREAM_REVIEW_OUTCOMES = ['not-reviewed', 'accepted', 'rejected', 'duplicate', 'unverified', 'unavailable'] as const;
+export const DREAM_REVIEW_OUTCOMES = ['not-reviewed', 'accepted', 'rejected', 'duplicate', 'refinement', 'unverified', 'unavailable'] as const;
 export type DreamReviewOutcome = (typeof DREAM_REVIEW_OUTCOMES)[number];
 type ReviewSummary = { verdict?: unknown; reason?: unknown } | null | undefined;
 const unavailableReviewReasons = new Set([
@@ -15,7 +15,7 @@ export function dreamReviewOutcome(review: ReviewSummary): DreamReviewOutcome {
   if (!review) return 'not-reviewed';
   if (review.verdict === 'accept') return 'accepted';
   if (unavailableReviewReasons.has(String(review.reason))) return 'unavailable';
-  if (review.verdict === 'reject') return review.reason === 'duplicate' ? 'duplicate' : 'rejected';
+  if (review.verdict === 'reject') return review.reason === 'duplicate' || review.reason === 'refinement' ? review.reason : 'rejected';
   return 'unverified';
 }
 export function dreamRunOutcome(status: string, review: ReviewSummary): string {
@@ -23,6 +23,7 @@ export function dreamRunOutcome(status: string, review: ReviewSummary): string {
   const outcome = dreamReviewOutcome(review);
   if (outcome === 'unavailable') return 'review unavailable';
   if (outcome === 'unverified') return 'insufficient evidence';
+  if (outcome === 'refinement') return 'refinement of existing work';
   return status;
 }
 

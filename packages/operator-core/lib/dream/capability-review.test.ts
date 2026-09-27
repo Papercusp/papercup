@@ -312,6 +312,24 @@ async function fixture() {
 }
 
 describe('independent capability source and skeptical review', () => {
+  it('refuses an invented problem fit before spending on independent review', async () => {
+    const f = await fixture();
+    f.options.candidate.problemFit = { refs: ['observation:absent'], beneficiary: 'Engineers', proposedImprovement: 'Restore state' };
+    expect(await runCapabilityDreamReview(f.options, f.deps)).toMatchObject({ verdict: 'unverified', reason: 'problem-evidence-unavailable' });
+    expect(f.calls).toHaveLength(0);
+  });
+  it('supplies problem reports to final adjudication while keeping held-out controls isolated', async () => {
+    const f = await fixture();
+    const text = 'Recorded failures cannot be reproduced after input state changes.';
+    f.options.problemContext = { mode: 'observed-problems', note: 'Reported symptom, not verified benefit', evidence: [{ ref: 'observation:1', kind: 'observation', workspaceId: scope.workspaceId, potSlug: scope.potSlug, attributedTo: 'reporter', capturedAt: '2026-09-27T00:00:00Z', text, contentHash: capabilityHash(text) }] };
+    f.options.candidate.problemFit = { refs: ['observation:1'], beneficiary: 'Failure investigators', proposedImprovement: 'Restore inputs for replay.' };
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result.verdict).toBe('accept');
+    expect(JSON.parse(f.calls[0]!.messages[0]!.content as string).problemContext).toBeUndefined();
+    const final = JSON.parse(f.calls[2]!.messages[0]!.content as string);
+    expect(final.problemContext.evidence).toEqual(f.options.problemContext.evidence);
+    expect(final.task).toContain('not code evidence or proof of benefit');
+  });
   it('DREAM-REVIEW-PREFLIGHT: scores real primary excerpts and validates independent current priors', async () => {
     const f = await fixture();
     expect(await preflightCapabilityReview(f.options, f.deps)).toMatchObject({ ready: true });
@@ -668,6 +686,25 @@ describe('independent capability source and skeptical review', () => {
       verdict: 'accept',
       reason: 'supported-delta',
     });
+  });
+  it('DREAM-REDISCOVERY: retains a grounded refinement against existing work without admitting a new discovery', async () => {
+    const f = await fixture();
+    const review = judgment(f.priors);
+    review.comparisons[0]!.disposition = 'refinement';
+    review.comparisons[0]!.note = 'An adjustment within the existing setup belongs with that prior work.';
+    f.setJudgment(review);
+    const result = await runCapabilityDreamReview(f.options, f.deps);
+    expect(result).toMatchObject({ verdict: 'reject', reason: 'refinement', priorMatches: f.priors });
+    expect(result.judgment?.comparisons[0]).toEqual(review.comparisons[0]);
+    expect(result.coverage.globalNovelty).toBe('not-established');
+  });
+  it('keeps an unsupported refinement unresolved instead of certifying reuse', async () => {
+    const f = await fixture();
+    const review = judgment(f.priors);
+    review.comparisons[0]!.disposition = 'refinement';
+    review.feasibility.status = 'unknown';
+    f.setJudgment(review);
+    expect(await runCapabilityDreamReview(f.options, f.deps)).toMatchObject({ verdict: 'unverified', reason: 'review-unknown' });
   });
   it('recognizes an exact recorded candidate without a paid review but rechecks its source first', async () => {
     const f = await fixture();

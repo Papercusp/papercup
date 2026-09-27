@@ -2,8 +2,8 @@
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { getDreamRun, type DreamRun } from './dream-run-store';
-import { dreamCapabilityRun, dreamRunAssessments } from './dream-run-provenance';
-import { CapabilityProposalSchema } from './capability-pass';
+import { dreamCapabilityRun, dreamRunAssessments, dreamRunReuse } from './dream-run-provenance';
+import { CapabilityProposalSchema, DreamProblemContextSchema, scopeDreamProblems } from './capability-pass';
 import { capabilityReviewNextCheck, type CapabilityReviewResult } from './capability-review';
 import type { DreamMetricsScope } from './dream-metrics';
 
@@ -76,13 +76,17 @@ export function projectDreamDetail(run: DreamRun) {
   const parsed = CapabilityProposalSchema.safeParse(insight?.capability);
   if (provenance && insight?.capability && !parsed.success)
     throw new Error('Stored Dream proposal is invalid');
+  const context = DreamProblemContextSchema.safeParse(run.outcome?.problemContext);
+  const reuse = dreamRunReuse(run);
   return {
     run,
     provenance,
     proposal: parsed.success ? parsed.data : null,
+    ...(context.success ? { problemContext: scopeDreamProblems(context.data.evidence, run, context.data.mode) } : {}),
     capabilityReview: run.review?.schemaVersion === 'dream-capability-review-v1'
       ? run.review as unknown as CapabilityReviewResult : null,
     assessments: dreamRunAssessments(run),
+    ...(reuse ? { reuse } : {}),
     ...(run.review?.verdict === 'unverified' ? {
       nextCheck: nextCheckSchema.safeParse(run.review.nextCheck).data ?? capabilityReviewNextCheck(
         typeof run.review.reason === 'string' ? run.review.reason : 'review-unavailable',

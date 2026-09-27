@@ -3,7 +3,8 @@ import { rm } from 'node:fs/promises';
 import { createDreamCapabilityFixture } from '../../test/dream-capability-fixture';
 import { computeDreamMetrics, type DreamMetricRow, type DreamMetricsScope } from './dream-metrics';
 import { DREAM_RUN_TERMINAL_STATUSES, type DreamRun } from './dream-run-store';
-import { dreamCapabilityRun, type DreamRunAssessment } from './dream-run-provenance';
+import { dreamCapabilityRun, dreamRunReuse, type DreamRunAssessment } from './dream-run-provenance';
+import { capabilityHash } from './capability-contracts';
 import { capabilityProposalHash } from './capability-review';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from './capability-sampler';
 
@@ -46,6 +47,20 @@ describe('Dream metrics reconcile evidence rather than wording, retries or missi
     expect(report.funnel.noPairRate).toEqual({ numerator: 1, denominator: 8, value: 0.125 });
     expect(report.cost.knownCallUsd).toBeCloseTo(0.49);
   });
+  it('keeps dependency preflight refusals in the funnel without counting an ungenerated proposal as reviewed', () => {
+    const r = row('preflight-refused', 'rejected');
+    const provenance = dreamCapabilityRun(r.run)!;
+    r.run.outcome = { verdict: 'unverified', generationSkipped: true, capabilityRun: { ...provenance, calls: [] } };
+    r.run.review = { schemaVersion: 'dream-capability-preflight-v1', verdict: 'unverified', reason: 'rerank-unavailable' };
+    r.run.costUsd = 0; r.run.inputTokens = 0; r.run.outputTokens = 0;
+    const report = computeDreamMetrics([r], scope);
+    expect(report.population.attempts).toBe(1);
+    expect(report.funnel).toMatchObject({ eligibleAttempts: 1, proposalAttempts: 0, reviewedAttempts: 0, reviewPassedAttempts: 0, reviewOutcomes: { unavailable: 1 } });
+    expect(report.funnel.reviewPassRate.denominator).toBe(0);
+    expect(report.cost.knownCallUsd).toBe(0);
+    expect(report.cost.unknownUsageCount).toBe(0);
+    expect(report.cost.phases.generation!.actualUsd).toBe(0);
+  });
 
   it('counts reworded accepted proposals in the same assessed family once', () => {
     const a = row('original'), b = row('reworded');
@@ -79,6 +94,37 @@ describe('Dream metrics reconcile evidence rather than wording, retries or missi
     expect(report.novelty.qualificationUnknown).toBe(2);
     expect(report.quality.usefulness.unknown).toBe(2);
     expect(report.leading.qualifiedFamiliesPerUsd).toBeNull();
+  });
+  it('DREAM-REDISCOVERY: useful rediscovery and refinement retain families and earn no discovery credit', () => {
+    const a = row('rediscovery', 'duplicate'), b = row('refinement', 'rejected');
+    a.run.review = { ...a.run.review, verdict: 'reject', reason: 'duplicate' };
+    b.run.review = { ...b.run.review, verdict: 'reject', reason: 'refinement' };
+    assess(a, 'existing-family', { novelty: 'disproven' });
+    const before = structuredClone(a.run);
+    const reuse = dreamRunReuse(a.run)!;
+    expect(reuse).toMatchObject({ kind: 'rediscovery', familyIds: ['existing-family'], usefulness: 'supported', noveltyCredit: 'none' });
+    const report = computeDreamMetrics([a, b], scope);
+    expect(report.reuse).toMatchObject({ rediscovery: 1, refinement: 1, usefulness: { supported: 1, unknown: 1 }, noveltyCredit: 'none' });
+    expect(report.funnel.qualifiedFamilies).toBe(0);
+    expect(report.funnel.reviewPassRate).toEqual({ numerator: 0, denominator: 2, value: 0 });
+    expect(a.run).toEqual(before);
+  });
+  it('retains only source-bound in-scope reuse links and latest assessor labels', () => {
+    const r = row('reuse', 'duplicate');
+    const text = 'Already implemented scoped restoration.';
+    const p = { ref: 'plan:existing', scope: { workspaceId: scope.workspaceId, potSlug: scope.potSlug }, text,
+      contentHash: capabilityHash(text), candidateHash: String(r.run.review!.candidateHash), evidenceHash: String(r.run.review!.evidenceHash) };
+    r.run.review = { ...r.run.review, verdict: 'reject', reason: 'duplicate', judgment: null,
+      priorMatches: [p, { ...p, ref: 'plan:foreign', scope: { ...p.scope, potSlug: 'elsewhere' } }, { ...p, ref: 'plan:corrupt', text: 'changed' }] };
+    assess(r, 'existing-family', { id: 'earlier', usefulness: 'supported', recordedAt: '2026-09-07T17:00:00.000Z' });
+    assess(r, 'existing-family', { id: 'latest', usefulness: 'unknown' });
+    assess(r, 'unbound-family', { assessor: 'other', candidateHash: 'f'.repeat(64) });
+    expect(dreamRunReuse(r.run)).toMatchObject({ priorRefs: ['plan:existing'], familyIds: ['existing-family'], usefulness: 'unknown' });
+    r.run.review.judgment = { comparisons: [{ ref: p.ref, disposition: 'duplicate', evidence: [{ ref: 'prior:' + p.ref, quote: text }] }] };
+    r.run.review.priorMatches = [{ ...p, candidateHash: null, evidenceHash: null }];
+    expect(dreamRunReuse(r.run)?.priorRefs).toEqual([p.ref]);
+    r.run.review.judgment = { comparisons: [{ ref: p.ref, disposition: 'duplicate', evidence: [{ ref: 'prior:' + p.ref, quote: 'invented' }] }] };
+    expect(dreamRunReuse(r.run)?.priorRefs).toEqual([]);
   });
 
   it('excludes unresolved reviews from substantive decisions without rewriting historical status counts', () => {

@@ -42,6 +42,28 @@ beforeEach(() => {
 });
 
 describe('Dreams in Analyze', () => {
+  it('DREAM-REDISCOVERY: shows useful existing work without novelty or duplicate-work credit', () => {
+    const detail = structuredClone(captured);
+    detail.reuse = { kind: 'refinement', priorRefs: ['plan:existing-restoration'], familyIds: ['restoration'], usefulness: 'supported', noveltyCredit: 'none' };
+    render(<DreamRunDetail detail={detail} />);
+    const reuse = screen.getByRole('region', { name: 'Existing work and reuse' });
+    expect(within(reuse).getByText(/assessed usefulness: supported/)).toBeTruthy();
+    expect(within(reuse).getByText(/plan:existing-restoration/)).toBeTruthy();
+    expect(within(reuse).getByText(/No new-discovery credit/)).toBeTruthy();
+  });
+  it('DREAM-CATALOGUE-LIMITS: identifies unmapped behavior as unknown', () => {
+    render(<DreamRunDetail detail={structuredClone(captured)} />);
+    expect(screen.getByText(/Catalogue coverage: partial/).textContent).toContain('Unmapped repository behaviors remain unknown');
+  });
+  it('shows attributable problem context and labels its benefit as proposed', () => {
+    const d = structuredClone(captured);
+    d.problemContext = { mode: 'observed-problems', note: 'A report is not verified benefit.', evidence: [{ ref: 'observation:EI-1', kind: 'observation', workspaceId: d.run.workspaceId, potSlug: d.run.potSlug, attributedTo: 'engineer-1', capturedAt: '2026-09-27T00:00:00Z', text: 'Replay lost state.', contentHash: 'a'.repeat(64) }] };
+    d.proposal!.problemFit = { refs: ['observation:EI-1'], beneficiary: 'Debugging engineers', proposedImprovement: 'Restore the reported state for replay.' };
+    render(<DreamRunDetail detail={d} />);
+    expect(screen.getByRole('region', { name: 'Problem context' }).textContent).toContain('reported by engineer-1');
+    expect(screen.getByText(/Addresses observation:EI-1/).textContent).toContain('(proposed benefit)');
+    expect(h.queries).not.toHaveBeenCalled();
+  });
   it.each(['dependency', 'source', 'counterfactual'] as const)('DREAM-REVIEW-NEXT-CHECK: shows the bounded %s check without dispatching work', (kind) => {
     const d = structuredClone(captured);
     d.run.status = 'rejected'; d.run.review = { verdict: 'unverified', reason: 'review-unavailable' };

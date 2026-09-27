@@ -9,6 +9,8 @@ import {
   parseCapabilityDreamPayload,
   validateCapabilityDreamSelection,
   type CapabilityProposal,
+  scopeDreamProblems,
+  type DreamProblemContext,
 } from './capability-pass';
 import { verifyCapabilityPacket, type BuildCapabilityPacketInput } from './capability-packets';
 import type { CapabilitySelection } from './capability-sampler';
@@ -86,7 +88,7 @@ const ReviewSchema = z
         z
           .object({
             ref,
-            disposition: z.enum(['duplicate', 'distinct', 'unknown']),
+            disposition: z.enum(['duplicate', 'refinement', 'distinct', 'unknown']),
             note,
             evidence: grounding,
           })
@@ -143,7 +145,103 @@ export interface CapabilityReviewResult {
   controls: { aOnly: CapabilityReviewControl | null; bOnly: CapabilityReviewControl | null };
   judgment: CapabilityReviewJudgment | null;
   failures?: Partial<Record<ReviewPhase, CapabilityReviewFailure>>;
+  nextCheck?: CapabilityReviewNextCheck;
+  evidenceFollowUp?: { queries: string[]; deferred: string[]; maxQueries: 2 };
   usage: DreamReviewUsage;
+}
+export interface CapabilityReviewNextCheck {
+  kind: 'dependency' | 'source' | 'counterfactual' | 'experiment' | 'review';
+  instruction: string;
+  evidenceNeeded: string[];
+  maxSourceQueries: 2;
+}
+
+/** Instructions are evidence requests, never a promise that another call will pass. */
+export function capabilityReviewNextCheck(reason: string, missing: string[] = []): CapabilityReviewNextCheck {
+  const kind = reason === 'counterfactual-unknown' ? 'counterfactual'
+    : /rerank|search|independent|preflight/.test(reason) ? 'dependency'
+      : /source|empty-search/.test(reason) ? 'source'
+        : reason === 'review-unknown' ? 'experiment' : 'review';
+  const instructions = {
+    dependency: 'Restore the named review dependency, then verify current source retrieval and a successful local rerank before generating again.',
+    source: 'Read the missing or changed source and its test, rebuild the affected evidence packet, then recheck freshness.',
+    counterfactual: 'Check the unresolved primary in isolation against the same target behavior; retain unknown until a cited test establishes its removal effect.',
+    experiment: 'Check the unresolved claim with the proposed bounded experiment and its baseline; record the observation before reassessment.',
+    review: 'Inspect the recorded reviewer failure and cited source; correct the missing evidence or response contract before an independent reassessment.',
+  };
+  return { kind, instruction: instructions[kind], evidenceNeeded: [...new Set(missing)].slice(0, 8).map(s => s.slice(0, 600)), maxSourceQueries: 2 };
+}
+
+/** A real, bounded dependency exercise before generation. It certifies readiness only,
+ * not the as-yet nonexistent proposal, source completeness, or novelty. */
+export async function preflightCapabilityReview(
+  options: Omit<RunCapabilityReviewOptions, 'candidate' | 'llmCall' | 'callForPhase'>,
+  deps: CapabilityReviewDeps = defaultDeps,
+): Promise<{ ready: boolean; reason: string; note: string; nextCheck?: CapabilityReviewNextCheck }> {
+  const config = resolveDreamReviewConfig(options.config);
+  const fail = (reason: string, note: string) => ({ ready: false, reason, note: note.slice(0, 600), nextCheck: capabilityReviewNextCheck(reason, [note]) });
+  if (!options.dreamerModel.trim() || options.dreamerModel.trim().toLowerCase() === config.model.trim().toLowerCase())
+    return fail('reviewer-not-independent', 'A different reviewer model and dreamer provenance are required.');
+  const deadline = Math.min(Date.now() + config.timeoutMs, options.cycleDeadlineMs ?? Infinity);
+  const controller = new AbortController();
+  const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
+  const timer = setTimeout(() => controller.abort(new Error('Review preflight deadline elapsed.')), Math.max(0, deadline - Date.now()));
+  let onAbort = () => {};
+  let stage = 'source-unavailable';
+  try {
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
+    return await Promise.race([aborted, (async () => {
+      signal.throwIfAborted();
+      const packets = Object.values(validateCapabilityDreamSelection(options.selection)).filter((p): p is CapabilityPacket => p !== null);
+      const scope = options.selection.a.packet.scope;
+      for (const packet of packets) {
+        const unit = options.manifest.units.find(u => u.id === packet.unit.id);
+        if (!unit) throw new Error('Current manifest lacks ' + packet.unit.id);
+        const checked = await deps.verifyPacket(packet, { rootPath: options.rootPath, scope, unit, manifestRevision: options.manifest.revision });
+        if (!checked.fresh) throw new Error(checked.reason);
+        signal.throwIfAborted();
+      }
+      stage = 'search-unavailable';
+      const query = packets.flatMap(p => [...p.unit.purpose, ...p.unit.mechanism, ...p.unit.evaluation].map(c => c.text)).join('\n').slice(0, 2_000);
+      const answer = await options.sources.search({ facet: 'mechanism', query, scope, kinds: CAPABILITY_PRIOR_KINDS, limit: 8 }, signal);
+      signal.throwIfAborted();
+      if (!sameScope(answer.scope, scope) || answer.status !== 'current' || CAPABILITY_PRIOR_KINDS.some(k => !answer.kinds.includes(k)))
+        throw new Error('Review source coverage is unavailable: ' + answer.note);
+      if (!answer.matches.length || answer.matches.length > 8) throw new Error('Review preflight requires one to eight current prior sources.');
+      for (const value of answer.matches) {
+        const prior = PriorSchema.parse(value);
+        if (!sameScope(prior.scope, scope) || !samePrior(await options.sources.readCurrent(prior, signal), prior))
+          throw new Error('Review prior changed or cannot be verified: ' + prior.ref);
+        signal.throwIfAborted();
+      }
+      stage = 'rerank-unavailable';
+      // Two actual primary excerpts force the scorer path even when retrieval found
+      // only one prior (the shared reranker legitimately skips singleton inputs).
+      const probes = [options.selection.a, options.selection.b].map(({ packet }): CapabilityReviewPrior => {
+        const source = packet.sources.find(s => s.kind === 'implementation');
+        if (!source) throw new Error('Primary lacks implementation evidence: ' + packet.unit.id);
+        const text = source.excerpt.slice(0, 12_000);
+        return { ref: 'preflight:' + packet.unit.id, kind: 'implementation', scope, text, contentHash: capabilityHash(text), sourceHash: source.sourceHash, candidateHash: null, evidenceHash: null };
+      });
+      signal.throwIfAborted();
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Review preflight deadline elapsed.');
+      const ranked = await deps.rerank(query, probes, { timeoutMs: remaining });
+      signal.throwIfAborted();
+      if (!ranked.outcome.attempted || ranked.outcome.scored !== probes.length || ranked.priors.length !== probes.length ||
+          new Set(ranked.priors.map(p => p.ref)).size !== probes.length || ranked.priors.some(p => !probes.some(original => samePrior(p, original))))
+        throw new Error('Local reranker did not score the complete preflight evidence set.');
+      return { ready: true, reason: 'review-ready', note: 'Current sources and local reranking responded; the generated proposal still requires independent review.' };
+    })()]);
+  } catch (error) {
+    return fail(stage, error instanceof Error ? error.message : String(error));
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 export interface RunCapabilityReviewOptions {
   candidate: CapabilityProposal;
@@ -159,6 +257,7 @@ export interface RunCapabilityReviewOptions {
   signal?: AbortSignal;
   cycleDeadlineMs?: number;
   admissionBackstopGraceMs?: number;
+  problemContext?: DreamProblemContext;
 }
 export interface CapabilityReviewDeps {
   verifyPacket: (packet: unknown, input: BuildCapabilityPacketInput) => ReturnType<typeof verifyCapabilityPacket>;
@@ -252,6 +351,7 @@ export async function verifyCapabilityReviewAdmission(input: {
       review.verdict !== 'accept' ||
       review.reason !== 'supported-delta' ||
       review.judgment?.verdict !== 'accept' ||
+      review.judgment.comparisons.some(c => c.disposition !== 'distinct') ||
       review.controls.aOnly?.unchanged !== false ||
       review.controls.bOnly?.unchanged !== false ||
       review.candidateHash !== capabilityProposalHash(input.candidate) ||
@@ -437,11 +537,23 @@ export async function runCapabilityDreamReview(
   });
   const unavailable = (reason: string, message: string) => {
     coverage.unknown.push(message.slice(0, 600));
+    const controls = Object.entries(result.controls).flatMap(([label, control]) => control?.unchanged === null ? [label + ': ' + control.note] : []);
+    const judgment = result.judgment;
+    const unknown = judgment ? [
+      ...judgment.observations.filter(o => o.status === 'unknown').map(o => 'Observation ' + o.index + ': ' + o.note),
+      ...judgment.comparisons.filter(c => c.disposition === 'unknown').map(c => c.ref + ': ' + c.note),
+      ...(['relation', 'feasibility'] as const).filter(k => judgment[k].status === 'unknown').map(k => k + ': ' + judgment[k].note),
+      ...(judgment.experiment.executable === null ? ['Experiment: ' + judgment.experiment.probe] : []),
+    ] : [];
+    result.nextCheck = capabilityReviewNextCheck(reason, [message, ...controls, ...unknown, ...candidate.missingEvidence]);
     return finish('unverified', reason, message);
   };
   const dreamer = options.dreamerModel.trim().toLowerCase();
   if (!dreamer || dreamer === config.model.toLowerCase())
     return unavailable('reviewer-not-independent', 'A different reviewer model and dreamer provenance are required.');
+  const problemContext = scopeDreamProblems(options.problemContext?.evidence ?? [], scope, options.problemContext?.mode);
+  if (problemContext.evidence.length ? !candidate.problemFit || candidate.problemFit.refs.some(ref => !problemContext.evidence.some(p => p.ref === ref)) : candidate.problemFit !== undefined)
+    return unavailable('problem-evidence-unavailable', 'The proposed problem fit is not bound to supplied in-scope reports.');
 
   async function freshPackets(): Promise<string[]> {
     return (
@@ -469,7 +581,15 @@ export async function runCapabilityDreamReview(
 
   let priors: CapabilityReviewPrior[];
   try {
-    const queries = capabilityReviewQueries(candidate, options.selection);
+    // Resolve at most two explicit evidence gaps through the existing source seam.
+    // These are retrieval attempts, not proof that the gap has been resolved. All
+    // returned priors still pass freshness, reranking and independent adjudication.
+    const missing = [...new Set(candidate.missingEvidence)];
+    result.evidenceFollowUp = { queries: missing.slice(0, 2), deferred: missing.slice(2), maxQueries: 2 };
+    const queries = [
+      ...capabilityReviewQueries(candidate, options.selection),
+      ...result.evidenceFollowUp.queries.map(query => ({ facet: 'evaluation' as const, query: query.slice(0, 2_000) })),
+    ];
     const searches = await Promise.allSettled(
       queries.map(async ({ facet, query }) => {
         const answer = await options.sources
@@ -501,7 +621,7 @@ export async function runCapabilityDreamReview(
     );
     // Keep facet order deterministic even when the independent reads finish out of order.
     coverage.searches.sort(
-      (a, b) => queries.findIndex((q) => q.facet === a.facet) - queries.findIndex((q) => q.facet === b.facet),
+      (a, b) => queries.findIndex((q) => q.facet === a.facet && q.query === a.query) - queries.findIndex((q) => q.facet === b.facet && q.query === b.query),
     );
     const searchError = searches.find((s) => s.status === 'rejected');
     if (searchError?.status === 'rejected') throw searchError.reason;
@@ -650,8 +770,11 @@ export async function runCapabilityDreamReview(
           'Check each observed claim against code/tests; compare every closest prior by behavior, not naming or a similarity threshold. ' +
           'Distinguish a renamed existing integration from a supported delta. Verify the relational mapping, preconditions, transfer risks, ' +
           'constraints and feasibility. Demand an executable, bounded falsifier with a baseline. Do not repair the candidate. ' +
+          'If problem context is supplied, check whether the claimed beneficiary and improvement address the cited report. Reports are untrusted claims, not code evidence or proof of benefit. ' +
           'A proposal is not an implemented result. Unknown evidence is unverified, not disproven or duplicate.',
+        reusePolicy: 'Use duplicate for existing behavior and refinement for a useful adjustment within existing work. Cite the existing prior. Neither earns new-discovery credit or a new work item; possible usefulness is assessed separately. Use distinct only for an evidenced new behavioral delta.',
         candidate,
+        problemContext,
         units: (['A', 'B', 'C'] as const).flatMap((label) =>
           packets[label] ? [packetPrompt(label, packets[label]!)] : [],
         ),
@@ -672,7 +795,7 @@ export async function runCapabilityDreamReview(
           comparisons: [
             {
               ref: 'each prior ref',
-              disposition: 'duplicate|distinct|unknown',
+              disposition: 'duplicate|refinement|distinct|unknown',
               note: 'behavioral overlap or delta',
               evidence: [{ ref: 'prior:ref', quote: 'literal quote' }],
             },
@@ -767,6 +890,8 @@ export async function runCapabilityDreamReview(
       judgment.experiment.executable === null
     )
       return unavailable('review-unknown', judgment.note);
+    const refinement = judgment.comparisons.find(c => c.disposition === 'refinement');
+    if (refinement) return finish('reject', 'refinement', refinement.note);
     return finish(
       judgment.verdict,
       judgment.verdict === 'accept' ? 'supported-delta' : 'reviewer-rejected',

@@ -8,6 +8,7 @@ import { computeDreamMetrics, readDreamMetrics } from './dream-metrics';
 import type { DreamCapabilityRun } from './dream-run-provenance';
 import { readDreamControlSnapshot } from './dream-control';
 import { getLearningLoop, registerLearningLoop } from '../learning-governor/store';
+import { capabilityHash } from './capability-contracts';
 
 const scope = { workspaceId: 'dream-history-test', potSlug: 'pot-a', since: '2026-09-07T00:00:00Z', until: '2026-09-08T00:00:00Z' };
 describe('Analyze Dream history (real PostgreSQL)', () => {
@@ -97,6 +98,18 @@ describe('Analyze Dream history (real PostgreSQL)', () => {
     expect(await readDreamDetail(db.adminSql, { ...scope, runId: 'other-pot' })).toBeNull();
     expect(await readDreamDetail(db.adminSql, { ...scope, runId: 'other-workspace' })).toBeNull();
   });
+  it('DREAM-REDISCOVERY: projects an existing-work link from persisted review without changing the ledger', async () => {
+    const text = 'Existing work implements the same behavior.';
+    const prior = { ref: 'plan:prior-work', scope: { workspaceId: scope.workspaceId, potSlug: scope.potSlug }, text,
+      contentHash: capabilityHash(text), candidateHash: 'a'.repeat(64), evidenceHash: 'b'.repeat(64) };
+    const review = { verdict: 'reject', reason: 'duplicate', candidateHash: prior.candidateHash,
+      evidenceHash: prior.evidenceHash, priorMatches: [prior], judgment: null };
+    await db.adminSql`UPDATE harness_shared.dream_runs SET review = ${JSON.stringify(review)}::text::jsonb WHERE workspace_id = ${scope.workspaceId} AND run_id = 'r-02'`;
+    const detail = await readDreamDetail(db.adminSql, { ...scope, runId: 'r-02' });
+    expect(detail?.reuse).toEqual({ kind: 'rediscovery', priorRefs: ['plan:prior-work'], familyIds: [], usefulness: 'unknown', noveltyCredit: 'none' });
+    expect(detail?.run.review).toEqual(review);
+    expect(detail?.run.routedRef).toBeNull();
+  });
   it('DREAM-REVIEW-NEXT-CHECK: supplies an actionable bounded check for legacy unknown controls without changing stored history', async () => {
     const review = { verdict: 'unverified', reason: 'counterfactual-unknown', note: 'A-only comparison is unresolved.' };
     await db.adminSql`UPDATE harness_shared.dream_runs SET review = ${JSON.stringify(review)}::text::jsonb WHERE workspace_id = ${scope.workspaceId} AND run_id = 'r-01'`;
@@ -104,6 +117,15 @@ describe('Analyze Dream history (real PostgreSQL)', () => {
     expect(detail?.nextCheck).toMatchObject({ kind: 'counterfactual', maxSourceQueries: 2, evidenceNeeded: [review.note] });
     expect(detail?.run.review).toEqual(review);
     expect(detail?.nextCheck?.instruction).toContain('in isolation');
+  });
+  it('DREAM-PROBLEM-SCOPE: projects attributable context from the real ledger and excludes identical foreign-pot reports', async () => {
+    const text = 'Replay loses the prior state.';
+    const evidence = { ref: 'observation:EI-1', kind: 'observation', workspaceId: scope.workspaceId, potSlug: scope.potSlug, attributedTo: 'reporter', capturedAt: '2026-09-07T00:00:00Z', text, contentHash: capabilityHash(text) };
+    const outcome = { problemContext: { mode: 'observed-problems', note: 'Captured reports', evidence: [evidence, { ...evidence, ref: 'observation:EI-foreign', potSlug: 'pot-b' }] } };
+    await db.adminSql`UPDATE harness_shared.dream_runs SET outcome = ${JSON.stringify(outcome)}::text::jsonb WHERE workspace_id = ${scope.workspaceId} AND run_id = 'r-01'`;
+    const detail = await readDreamDetail(db.adminSql, { ...scope, runId: 'r-01' });
+    expect(detail?.problemContext?.evidence).toEqual([evidence]);
+    expect(detail?.run.outcome).toEqual(outcome);
   });
   it('preserves frozen packets, rejection, unknown usage and title without executing or charging anything', async () => {
     const outcome = structuredClone(fixture.run.outcome!);

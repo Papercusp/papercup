@@ -1281,6 +1281,7 @@
         "accepted": 1,
         "rejected": 0,
         "duplicate": 0,
+        "refinement": 0,
         "unverified": 0,
         "unavailable": 0
       },
@@ -1333,6 +1334,13 @@
         "denominator": 0,
         "value": null
       }
+    },
+    "reuse": {
+      "rediscovery": 0,
+      "refinement": 0,
+      "linkedToPrior": 0,
+      "usefulness": { "supported": 0, "disproven": 0, "unknown": 0 },
+      "noveltyCredit": "none"
     },
     "discoveryCurve": {
       "points": [
@@ -1545,6 +1553,7 @@
         "accepted": 0,
         "rejected": 0,
         "duplicate": 0,
+        "refinement": 0,
         "unverified": 0,
         "unavailable": 0
       },
@@ -1597,6 +1606,13 @@
         "denominator": 0,
         "value": null
       }
+    },
+    "reuse": {
+      "rediscovery": 0,
+      "refinement": 0,
+      "linkedToPrior": 0,
+      "usefulness": { "supported": 0, "disproven": 0, "unknown": 0 },
+      "noveltyCredit": "none"
     },
     "discoveryCurve": {
       "points": [],

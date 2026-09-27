@@ -4,7 +4,7 @@ import type { CapabilityReviewResult } from './capability-review';
 import { DREAM_REVIEW_OUTCOMES, dreamReviewOutcome } from './dream-config';
 import { DREAM_RUN_TERMINAL_STATUSES, mapDreamRun, type DreamRun } from './dream-run-store';
 import {
-  DREAM_CALL_PHASES, dreamCapabilityRun, dreamRunAssessments,
+  DREAM_CALL_PHASES, dreamCapabilityRun, dreamRunAssessments, dreamRunReuse,
   type DreamRunAssessment,
 } from './dream-run-provenance';
 import type { ExperimentRunSummary } from '../experiment/ledger';
@@ -81,6 +81,7 @@ class DreamMetricsFold {
   private readonly grades: Record<string, number> = {};
   private readonly outcomes: Record<string, number> = {};
   private readonly quality = { novelty: tally(), usefulness: tally(), feasibility: tally(), maintainability: tally() };
+  private readonly reuse = { rediscovery: 0, refinement: 0, linkedToPrior: 0, usefulness: tally() };
   private readonly errors: string[] = [];
   private attempts = 0;
   private eligible = 0;
@@ -115,13 +116,19 @@ class DreamMetricsFold {
     this.attempts++;
     increment(this.statuses, run.status);
     increment(this.reviewOutcomes, dreamReviewOutcome(run.review));
+    const reuse = dreamRunReuse(run);
+    if (reuse) {
+      this.reuse[reuse.kind]++;
+      if (reuse.priorRefs.length) this.reuse.linkedToPrior++;
+      this.reuse.usefulness[reuse.usefulness]++;
+    }
     const provenance = dreamCapabilityRun(run);
     increment(this.versions, provenance?.schemaVersion ?? 'legacy');
     const selected = provenance?.sampling?.status === 'selected' ? provenance.sampling.selection : null;
     if (selected || (!provenance && run.fragmentRefs.length >= 2)) this.eligible++;
     const proposal = run.outcome?.verdict === 'insight';
     if (proposal) this.proposals++;
-    if (run.review) this.reviewed++;
+    if (run.review && run.review.schemaVersion !== 'dream-capability-preflight-v1') this.reviewed++;
     if (run.review?.verdict === 'accept') this.reviewPassed++;
 
     if (provenance) {
@@ -144,7 +151,8 @@ class DreamMetricsFold {
       }
       if (Math.abs(accounted - run.costUsd) > 1e-8) this.errors.push(`${run.runId}: phase charges do not reconcile`);
       // An insight/error after selection without a generation receipt is not a free attempt.
-      if (selected && run.status !== 'running' && !provenance.calls.some(c => c.phase === 'generation')) {
+      const generationSkipped = run.review?.schemaVersion === 'dream-capability-preflight-v1' && run.outcome?.generationSkipped === true;
+      if (selected && run.status !== 'running' && !generationSkipped && !provenance.calls.some(c => c.phase === 'generation')) {
         this.missingUsage++;
         this.phases.generation!.unknownCalls++;
       }
@@ -282,7 +290,7 @@ class DreamMetricsFold {
         reviewPassedAttempts: this.reviewPassed,
         reviewOutcomes: this.reviewOutcomes,
         reviewPassRate: ratio(this.reviewPassed,
-          this.reviewOutcomes.accepted! + this.reviewOutcomes.rejected! + this.reviewOutcomes.duplicate!),
+          this.reviewOutcomes.accepted! + this.reviewOutcomes.rejected! + this.reviewOutcomes.duplicate! + this.reviewOutcomes.refinement!),
         dedupeSurvival: ratio(this.statuses.accepted!, this.reviewPassed),
         routedAttempts: this.routed, uniqueRoutedArtifacts: this.routedRefs.size, qualifiedFamilies: this.qualified.size,
         proposalsPerEligibleAttempt: ratio(this.proposals, this.eligible),
@@ -296,6 +304,7 @@ class DreamMetricsFold {
         repeatedFamilyRate: ratio(identified - this.families.size, identified),
         largestFamilyShare: ratio(familyCounts.reduce((n, v) => Math.max(n, v), 0), identified),
       },
+      reuse: { ...this.reuse, noveltyCredit: 'none' as const },
       discoveryCurve: { points: this.curve, omittedEarlierPoints: Math.max(0, this.attempts - this.curve.length) },
       quality: this.quality, reviewerDisagreement: ratio(this.disagreement, this.compared),
       coverage: {

@@ -255,3 +255,84 @@ export function getPilotCapabilityManifest() {
     adminRegistry.map((domain) => domain.id),
   );
 }
+
+/** Target the observed review/recovery failure classes while retaining the frozen
+ * study population above. These are source-backed units, not a repository census. */
+export function getCurrentCapabilityManifest() {
+  const pilot = getPilotCapabilityManifest();
+  const additions: CapabilityUnit[] = [
+    {
+      id: 'mechanism:scout.phase-deadline', granularity: 'mechanism',
+      name: 'Bound downstream model phases without inventing queue telemetry',
+      homeDomain: 'scout', relatedDomains: ['dream'], parentId: null, branch: 'phase-deadline',
+      relatedUnitIds: ['mechanism:dream.cost-admission'], overlapsUnitIds: [],
+      purpose: [observed('Cancel a phase at its deadline even when a buffered transport supplies no response-start hook.', 'deadline-tests')],
+      mechanism: [observed('Compose a child abort signal with admission and generation budgets and race it against the transport.', 'deadline-code', 'deadline-cancel')],
+      evaluation: [observed('A never-resolving transport is aborted; missing response telemetry remains explicitly ambiguous.', 'deadline-tests')],
+      contracts: {
+        ...emptyContracts(),
+        inputs: [observed('Injected model transport, parent signal, generation cap and absolute cycle deadline.', 'deadline-code')],
+        outputs: [observed('Model response or deadline/abort error; the child signal carries cancellation.', 'deadline-cancel', 'deadline-tests')],
+        guarantees: [observed('Absent response hooks do not establish lack of capacity or generation.', 'deadline-tests')],
+        prerequisites: [unknown('Provider transport must honor abort for cancellation to stop its remote work.')],
+        failureModes: [unknown('A rejected local promise does not prove that the provider incurred no cost.')],
+        resourceConstraints: [observed('Admission budget reserves the configured generation cap within the cycle deadline.', 'deadline-code')],
+      },
+      evidence: [
+        { id: 'deadline-code', kind: 'implementation', path: root + 'scout/llm-deadline.ts', anchor: 'export async function callScoutPhaseLlm(', proves: 'Phase inputs and admission budget derivation.' },
+        { id: 'deadline-cancel', kind: 'implementation', path: root + 'scout/llm-deadline.ts', anchor: 'return await Promise.race([', proves: 'Transport receives the child abort signal and races deadline rejection.' },
+        { id: 'deadline-tests', kind: 'test', path: root + 'scout/critics.test.ts', anchor: "'does not infer capacity or generation from missing response telemetry", proves: 'Buffered transport cancellation and honest ambiguous diagnostics.' },
+      ],
+    },
+    {
+      id: 'capability:dream.source-freshness', granularity: 'capability',
+      name: 'Revalidate captured capability evidence against current source',
+      homeDomain: 'dream', relatedDomains: ['packaged'], parentId: null, branch: 'source-freshness',
+      relatedUnitIds: ['capability:code.secret-scanned-pack'], overlapsUnitIds: [],
+      purpose: [observed('Refuse stale, missing or changed source evidence before it can support a review.', 'freshness-tests')],
+      mechanism: [observed('Check packet scope/version, then hash current source bytes and compare cited excerpt lines.', 'freshness-code', 'freshness-bytes')],
+      evaluation: [observed('Implementation/test edits, renames and deletions invalidate captured packets.', 'freshness-tests')],
+      contracts: {
+        ...emptyContracts(),
+        inputs: [observed('Captured packet, current root/scope/unit, manifest revision and extraction bounds.', 'freshness-code')],
+        outputs: [observed('A fresh verdict or a reason identifying invalid scope or changed evidence.', 'freshness-code', 'freshness-bytes')],
+        guarantees: [observed('Working-tree source changes invalidate evidence even without a changed commit label.', 'freshness-tests')],
+        prerequisites: [unknown('The chosen anchors and contract claims still require semantic review; byte freshness does not prove correctness.')],
+        failureModes: [observed('Missing implementation or test evidence makes a rebuilt packet unavailable.', 'freshness-tests')],
+        resourceConstraints: [observed('Current packet and excerpt budgets are checked before admitting cached evidence.', 'freshness-bytes')],
+      },
+      evidence: [
+        { id: 'freshness-code', kind: 'implementation', path: root + 'dream/capability-packets.ts', anchor: 'export async function verifyCapabilityPacket(', proves: 'Scope, unit, manifest and extraction identity checks.' },
+        { id: 'freshness-bytes', kind: 'implementation', path: root + 'dream/capability-packets.ts', anchor: 'JSON.stringify(packet).length > maxPacketChars ||', proves: 'Bounded packet/excerpts and current source hash checks.' },
+        { id: 'freshness-tests', kind: 'test', path: root + 'dream/capability-packets.test.ts', anchor: "'invalidates $change of cited $kind evidence'", proves: 'Edits, renames and deletes of both source kinds invalidate prior evidence.' },
+      ],
+    },
+    {
+      id: 'mechanism:coord.event-fire-receipt', granularity: 'mechanism',
+      name: 'Retain durable evidence that an event key fired',
+      homeDomain: 'papercusp-su', relatedDomains: [], parentId: null, branch: 'event-fire-receipt',
+      relatedUnitIds: [], overlapsUnitIds: [],
+      purpose: [observed('Keep one durable event receipt even as repeated fires update its latest payload.', 'fire-tests')],
+      mechanism: [observed('Upsert a workspace/key row, preserving first fire time while advancing count and last payload.', 'fire-code')],
+      evaluation: [observed('Real PostgreSQL tests check one-row replay, preserved first time, incremented count and latest payload.', 'fire-tests')],
+      contracts: {
+        ...emptyContracts(),
+        inputs: [observed('Event key plus optional firing identity and payload in the ambient event workspace.', 'fire-code')],
+        outputs: [observed('A key lookup returns its stored fire receipt or null.', 'fire-read')],
+        state: [observed('First-fired time is retained while last-fired metadata advances.', 'fire-tests')],
+        guarantees: [observed('Repeated writes keep one row per workspace/key.', 'fire-code', 'fire-tests')],
+        prerequisites: [unknown('Correct workspace context and a functioning PostgreSQL store are required.')],
+        failureModes: [unknown('A fire receipt does not prove that a waiter woke or completed work; caller-side best-effort writes may fail.')],
+      },
+      evidence: [
+        { id: 'fire-code', kind: 'implementation', path: root + 'events/await/store.ts', anchor: 'export async function recordKeyFire(', proves: 'Workspace-scoped event receipt upsert.' },
+        { id: 'fire-read', kind: 'implementation', path: root + 'events/await/store.ts', anchor: 'export async function getKeyFireLatch(', proves: 'Workspace/key lookup, independent of waiter state.' },
+        { id: 'fire-tests', kind: 'test', path: root + 'events/await/store.integration.test.ts', anchor: "it('a second recordKeyFire on the SAME key upserts in place", proves: 'One-row repeated-fire storage and immutable first-fired timestamp.' },
+      ],
+    },
+  ];
+  return parseCapabilityManifest({
+    ...pilot, revision: 'problem-focused-2026-09-27-v1', units: [...pilot.units, ...additions],
+    coverage: { ...pilot.coverage, note: pilot.coverage.note + ' This targeted extension covers review deadlines, stale evidence and durable event receipts; all other behavior remains unknown.' },
+  }, adminRegistry.map(domain => domain.id));
+}

@@ -147,6 +147,7 @@ export function DreamFunnel({ metrics: m }: { metrics: DreamMetrics }) {
     <LearningDisclosure label="Sources, outcomes and phase costs">
       <p>Selected units: {m.coverage.selectedUnits} · domain pairs: {m.coverage.domainPairs} · population coverage: {rate(m.coverage.sourcePopulationCoverage)}.</p>
       <p>Qualified families: {f.qualifiedFamilies} · repeated-family rate: {rate(m.novelty.repeatedFamilyRate)} · legacy attempts: {m.population.legacy}.</p>
+      {m.reuse ? <p>Rediscoveries: {m.reuse.rediscovery} · refinements: {m.reuse.refinement} · linked to prior work: {m.reuse.linkedToPrior}. Assessed usefulness: {Object.entries(m.reuse.usefulness).map(([key, n]) => `${key}: ${n}`).join(' · ')}. These earn no new-discovery credit.</p> : null}
       <p>Downstream outcomes: {Object.entries(m.downstream.outcomes).map(([key, n]) => `${key}: ${n}`).join(' · ') || 'Not recorded'}.</p>
       <p>Human grades: {Object.entries(m.downstream.grades).map(([key, n]) => `${key}: ${n}`).join(' · ') || 'Not recorded'}.</p>
       <p>Experiments: {m.experiments.executed} executed / {m.experiments.declaredLinks} linked · {m.experiments.missingResults} results missing · engineer time: unknown.</p>
@@ -190,6 +191,7 @@ export function DreamRunDetail({ detail: d }: { detail: DreamDetail }) {
       : <>
         <p>Source freshness now: not rechecked. Versions and index health below describe the captured attempt.</p>
         <p>Manifest {p.manifestRevision} · generation {p.dreamPromptVersion} · review {p.reviewPromptVersion}</p>
+        <p>Catalogue coverage: partial. Unmapped repository behaviors remain unknown; these units are not a repository census.</p>
         {p.sampling ? <p>Sampling: {p.sampling.log.strategy} · {p.sampling.log.mode} · seed {p.sampling.log.seed} · snapshot {p.sampling.log.snapshotFingerprint}</p> : <p>Source selection was not recorded.</p>}
         {p.sampling?.status === 'no-pair' ? <p>No eligible composition: {p.sampling.reason}</p> : null}
         {p.sampling?.log.exclusions.length ? <ul>{p.sampling.log.exclusions.map((e, i) => <li key={i}>{e.unitId}: {e.reason}</li>)}</ul> : null}
@@ -205,8 +207,14 @@ export function DreamRunDetail({ detail: d }: { detail: DreamDetail }) {
         <p className="pc-dreams__quiet">{packet.coverage.note}</p>
       </section>)}
     </div>
+    {d.problemContext ? <section aria-label="Problem context">
+      <h4>{d.problemContext.mode === 'observed-problems' ? 'Observed problem context' : 'Open exploration'}</h4>
+      <p>{d.problemContext.note}</p>
+      {d.problemContext.evidence.map(problem => <p key={problem.ref}>{problem.ref} · reported by {problem.attributedTo} · {when(problem.capturedAt)}: {problem.text}</p>)}
+    </section> : null}
     {c ? <>
       <h4>{c.behavior}</h4><p>For: {c.beneficiary}</p><p>Hypothesis: {c.hypothesis}</p>
+      {c.problemFit ? <p>Addresses {c.problemFit.refs.join(', ')} for {c.problemFit.beneficiary}: {c.problemFit.proposedImprovement} (proposed benefit).</p> : null}
       <h4>What each unit contributes</h4>
       {Object.entries(c.primaryContributions).map(([label, part]) => <p key={label}><strong>{label}: </strong>{part.uniqueContribution} Removing it: {part.removalEffect} {citations(part.sources)}</p>)}
       {c.thirdContribution ? <p><strong>C ({c.thirdContribution.role}): </strong>{c.thirdContribution.uniqueContribution} Removing it: {c.thirdContribution.removalEffect} {citations(c.thirdContribution.sources)}</p> : null}
@@ -220,6 +228,11 @@ export function DreamRunDetail({ detail: d }: { detail: DreamDetail }) {
       <p>Measure: {c.experiment.measurement}</p><p>Success: {c.experiment.successCriterion}</p><p>Falsifier: {c.experiment.falsifier}</p>
     </> : <p>Proposal: {text((run.outcome?.insight as Record<string, unknown> | undefined)?.text)} · {text(run.outcome?.verdict)}</p>}
     <h4>Independent review</h4>
+    {d.reuse ? <section aria-label="Existing work and reuse">
+      <p>{d.reuse.kind === 'refinement' ? 'Refinement of existing work' : 'Rediscovery of existing work'} · assessed usefulness: {d.reuse.usefulness}. No new-discovery credit; no duplicate work is created.</p>
+      <p>Existing work: {d.reuse.priorRefs.join(', ') || 'No verified prior reference recorded'}.</p>
+      <p>Assessed families: {d.reuse.familyIds.join(', ') || 'unknown'}.</p>
+    </section> : null}
     <p>Dreamer: {run.dreamerModel ?? 'unknown'} · reviewer: {run.reviewerModel ?? 'unknown'}</p>
     {run.review ? <p>{text(run.review.verdict)} · {text(run.review.reason)} · {text(run.review.note ?? run.review.rejectionReason)}</p> : <p>No review recorded.</p>}
     {d.nextCheck ? <section aria-label="Next evidence check">
