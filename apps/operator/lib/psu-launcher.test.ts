@@ -20,6 +20,7 @@ import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { PSU_REQUEST_TIMEOUT_MS } from "./mcp-proxy/budgets.mjs";
+import { resolvePtoolOperatorBase } from "../scripts/ptool.mjs";
 import {
   codexContextConfigArgs,
   codexContextConfigToml,
@@ -6002,6 +6003,22 @@ describe("psu-launcher arg parsing", () => {
     }
   });
 
+  it("accountPickerChoices disables a measured used-up account and labels unknown usage", () => {
+    const choices = accountPickerChoices({
+      gatewayOn: true,
+      provider: "codex",
+      pool: ["used", "uncertain", "fresh"],
+      accountStates: { used: "unavailable", uncertain: "unknown", fresh: "available" },
+    });
+    expect(choices.find((choice) => choice.value === "used")).toMatchObject({
+      disabled: "(usage limit reached)",
+    });
+    expect(choices.find((choice) => choice.value === "used")?.name).toContain("used up");
+    expect(choices.find((choice) => choice.value === "uncertain")?.name).toContain("unverified");
+    expect(choices.find((choice) => choice.value === "uncertain")?.disabled).toBe(false);
+    expect(choices.find((choice) => choice.value === "fresh")?.disabled).toBe(false);
+  });
+
   it("accountPickerChoices omits auto without a usable supported-provider pool", () => {
     expect(
       accountPickerChoices({ pool: [], provider: "codex" }).map(
@@ -7444,6 +7461,24 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       operation: "native",
       modelSpec: "gpt-5.6-sol",
       modelSource: "inherited",
+    });
+  });
+
+  it.each(
+    ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]
+      .flatMap((model) => ["low", "medium", "high", "xhigh", "max"]
+        .map((effort) => ({ model, effort }))),
+  )("scripted Codex resume keeps the complete $model:$effort turn selection", ({ model, effort }) => {
+    const recorded = {
+      ...source,
+      agent: "codex",
+      launchArgv: ["psu", "--agent=codex", "--model=gpt-5.6-sol:medium"],
+    };
+    const selected = resumeTargetSelectionFromLastActive(
+      recorded, { picker: false }, `${model}:${effort}`,
+    );
+    expect(resolveResumeTarget(recorded, { picker: false }, selected)).toMatchObject({
+      operation: "native", modelSpec: `${model}:${effort}`, modelSource: "inherited",
     });
   });
 
@@ -9312,6 +9347,51 @@ describe("respawn model carry (WI-2141859 — an in-session /model switch must s
         readLastActiveModel: () => "gpt-6-sol",
       });
       expect(selected).toBe("gpt-6-sol:xhigh");
+    });
+
+    it("Codex carry keeps both the last selected Astra model and xhigh effort", () => {
+      const previous = ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="medium"'];
+      const selected = detectRespawnModelSpec(previous, {
+        agent: "codex",
+        codexHome: join(tmpdir(), "codex-model-carry-test"),
+        readLatestCodexRollout: () => ({ id: UUID }),
+        readLastActiveModel: () => "gpt-6-astra:xhigh",
+      });
+      expect(selected).toBe("gpt-6-astra:xhigh");
+      expect(mintRecycleArgs(previous, { agent: "codex", model: selected }).args).toEqual([
+        "-m", "gpt-6-astra", "-c", 'model_reasoning_effort="xhigh"',
+      ]);
+    });
+
+    it("Codex carry keeps a reasoning change when the model name is unchanged", () => {
+      const selected = detectRespawnModelSpec(
+        ["-m", "gpt-6-astra", "-c", 'model_reasoning_effort="medium"'],
+        {
+          agent: "codex",
+          codexHome: join(tmpdir(), "codex-model-carry-test"),
+          readLatestCodexRollout: () => ({ id: UUID }),
+          readLastActiveModel: () => "gpt-6-astra:xhigh",
+        },
+      );
+      expect(selected).toBe("gpt-6-astra:xhigh");
+    });
+
+    it.each(
+      ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra"]
+        .flatMap((model) => ["low", "medium", "high", "xhigh", "max"]
+          .map((effort) => ({ model, effort }))),
+    )("Codex carry preserves $model:$effort through argv minting", ({ model, effort }) => {
+      const previous = ["-m", "gpt-5.6-sol", "-c", 'model_reasoning_effort="medium"'];
+      const selected = detectRespawnModelSpec(previous, {
+        agent: "codex",
+        codexHome: join(tmpdir(), "codex-model-carry-test"),
+        readLatestCodexRollout: () => ({ id: UUID }),
+        readLastActiveModel: () => `${model}:${effort}`,
+      });
+      const expected = model === "gpt-5.6-sol" && effort === "medium" ? null : `${model}:${effort}`;
+      expect(selected).toBe(expected);
+      const minted = mintRecycleArgs(previous, { agent: "codex", model: selected });
+      expect(modelSpecFromRecycleArgv(minted.args)).toBe(expected ?? "gpt-5.6-sol:medium");
     });
 
     it("reads the session's own transcript and reports the switched-to model", () => {
@@ -11345,6 +11425,24 @@ describe("WI-3758 — psu --resume model select + last-active model", () => {
           { home },
         ),
       ).toBe("gpt-5.6-lux");
+    });
+
+    it("codex: the newest turn_context carries model and effort together", () => {
+      const f = join(
+        home, ".papercusp", "su-codex-homes", "session-43", "sessions",
+        "2026", "09", "27", `rollout-2026-09-27T03-00-00-${UUID}.jsonl`,
+      );
+      writeJsonl(f, [
+        { type: "turn_context", payload: { model: "gpt-5.6-sol", effort: "medium" } },
+        { type: "turn_context", payload: { model: "gpt-6-astra", effort: "xhigh" } },
+      ]);
+      expect(lastActiveModelFor({ agent: "codex", id: 43, sessionId: UUID }, { home }))
+        .toBe("gpt-6-astra:xhigh");
+      expect(resumeTargetSelectionFromLastActive(
+        { agent: "codex", launchArgv: ["--model=gpt-5.6-sol:medium"] },
+        { picker: false },
+        lastActiveModelFor({ agent: "codex", id: 43, sessionId: UUID }, { home }),
+      )).toMatchObject({ modelSpec: "gpt-6-astra:xhigh", modelSource: "inherited" });
     });
 
     it("codex: an UNTRACKED session (no adv row id) falls back to the shared ~/.codex store", () => {
@@ -14083,6 +14181,27 @@ describe("resolveFallbackOperatorTargets (stale-shell heal candidate ladder)", (
 });
 
 describe("applyLauncherOperatorUrlEnv (wake-respawn URL provenance)", () => {
+  it.each([
+    { PAPERCUSP_HONO_PORT: "3880" },
+    { PAPERCUSP_OPERATOR_BASE: "http://127.0.0.1:3880" },
+    {
+      PAPERCUSP_HONO_PORT: "3880",
+      PAPERCUSP_OPERATOR_BASE: "http://127.0.0.1:3880",
+    },
+  ])("removes inherited host routing hints before agent ptool calls: %j", (hints) => {
+    const env = { ...hints } as Record<string, string>;
+    expect(resolvePtoolOperatorBase({
+      ...env,
+      PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:9071",
+    })).toBe("http://127.0.0.1:3880");
+    applyLauncherOperatorUrlEnv(env, {
+      url: "http://127.0.0.1:9071", source: "proxy", startedAt: null,
+    });
+    expect(env.PAPERCUSP_HONO_PORT).toBeUndefined();
+    expect(env.PAPERCUSP_OPERATOR_BASE).toBeUndefined();
+    expect(resolvePtoolOperatorBase(env)).toBe("http://127.0.0.1:9071");
+  });
+
   it("preserves managed provenance through child launch and target resolution", () => {
     const env: Record<string, string> = {};
     applyLauncherOperatorUrlEnv(env, {
