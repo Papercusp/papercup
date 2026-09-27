@@ -25,7 +25,10 @@ export interface PackageExternalResource {
   id: string;
   /** Backend snapshot fingerprint checked atomically by removeIfUnchanged. */
   fingerprint: string;
-  disposition?: 'removed' | 'absent' | 'changed';
+  /** False means the exact row predated this package. It participates in the
+   * dependency/pin set but automatic compensation must never delete it. */
+  owned?: boolean;
+  disposition?: 'removed' | 'absent' | 'changed' | 'unowned';
   error?: string;
 }
 
@@ -211,11 +214,12 @@ export async function readPackageResourceReceipt(sql: Db, workspaceId: string, k
 
 function validateRefs(refs: PackageExternalResource[]): PackageExternalResource[] {
   if (!Array.isArray(refs) || refs.length === 0 || refs.some((ref) =>
-    !ref.id?.trim() || !ref.fingerprint?.trim() || ref.disposition || ref.error) ||
+    !ref.id?.trim() || !ref.fingerprint?.trim() || ref.disposition || ref.error ||
+    (ref.owned !== undefined && typeof ref.owned !== 'boolean')) ||
     new Set(refs.map((ref) => ref.id)).size !== refs.length) {
     throw new Error('package resource write did not return unique exact resource receipts');
   }
-  return refs.map(({ id, fingerprint }) => ({ id, fingerprint }));
+  return refs.map(({ id, fingerprint, owned }) => ({ id, fingerprint, ...(owned === false ? { owned } : {}) }));
 }
 
 /** Shared same-version resources have one write and a separate ref for each install. */
@@ -389,6 +393,10 @@ export async function releasePackageResource(
     const settled: PackageExternalResource[] = [];
     for (const ref of refs) {
       if (ref.disposition) { settled.push(ref); continue; }
+      if (ref.owned === false) {
+        settled.push({ id: ref.id, fingerprint: ref.fingerprint, owned: false, disposition: 'unowned' });
+        continue;
+      }
       try {
         settled.push({ id: ref.id, fingerprint: ref.fingerprint, disposition: await driver.removeIfUnchanged(ref) });
       } catch (error) {
@@ -396,7 +404,8 @@ export async function releasePackageResource(
       }
     }
     const errors = settled.filter((ref) => ref.error).map((ref) => `${ref.id}: ${ref.error}`);
-    const phase = errors.length ? 'cleanup_failed' : settled.some((ref) => ref.disposition === 'changed') ? 'detached' : 'deleted';
+    const phase = errors.length ? 'cleanup_failed'
+      : settled.some((ref) => ref.disposition === 'changed' || ref.disposition === 'unowned') ? 'detached' : 'deleted';
     const error = errors.length ? errors.join('; ') : null;
     await tx`UPDATE harness_shared.blueprint_package_resources
       SET phase = ${phase}, external_refs = ${tx.json(settled.map((ref) => ({ ...ref })))}, error = ${error}, updated_at = now()

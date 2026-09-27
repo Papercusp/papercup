@@ -246,6 +246,24 @@ describe('blueprint package resource journal (real Postgres)', () => {
     await expect(releasePackageResource(db.adminSql, v2, 'stranger', store.driver)).rejects.toThrow(/does not own/);
   });
 
+  it('records an exact pre-existing row without taking deletion ownership', async () => {
+    const fingerprint = hash('organic exact row');
+    const driver: PackageResourceDriver = {
+      recover: vi.fn(async () => [{ id: 'organic-row', fingerprint, owned: false }]),
+      create: vi.fn(async () => [{ id: 'organic-row', fingerprint, owned: false }]),
+      cancel: vi.fn(async () => {}),
+      removeIfUnchanged: vi.fn(async () => 'removed' as const),
+    };
+    const input = address('pre-existing');
+    const receipt = await preparePackageResource(db.adminSql, input, 'organic-dependent', driver);
+    expect(receipt).toMatchObject({ phase: 'ready',
+      external_refs: [{ id: 'organic-row', fingerprint, owned: false }] });
+    const released = await releasePackageResource(db.adminSql, input, 'organic-dependent', driver);
+    expect(released).toMatchObject({ phase: 'detached', error: null,
+      external_refs: [{ id: 'organic-row', fingerprint, owned: false, disposition: 'unowned' }] });
+    expect(driver.removeIfUnchanged).not.toHaveBeenCalled();
+  });
+
   it('recovers an ambiguous external commit with the persisted write key after a fresh import', async () => {
     const store = externalStore();
     const input = address('interrupted');
