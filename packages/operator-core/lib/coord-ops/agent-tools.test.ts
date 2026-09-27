@@ -55,6 +55,8 @@ describe('coord:ask-owner tool args (askOwnerArgs)', () => {
       workspaceId: 'papercusp-workspace',
       role: 'operator',
       runId: 'owner-ask-contract',
+      isSuperuser: true,
+      uiClientId: 'su-owner-ask-fixture',
     } as unknown as Parameters<typeof dispatchProjectedTool>[3];
     const dispatch = (args: Record<string, unknown>) =>
       dispatchProjectedTool(tool!, 'coord:ask-owner', args, context, {});
