@@ -20,6 +20,10 @@ async function callHandler(args: unknown) {
 }
 
 describe('testing:run selector arbitration', () => {
+  it('is classified as a write so a timed-out MCP call can replay its result', () => {
+    expect(runTool.effect).toBe('write');
+  });
+
   const emptyRun = {
     passed: 0,
     failed: 0,

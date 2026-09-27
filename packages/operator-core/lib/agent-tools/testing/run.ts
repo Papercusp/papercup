@@ -3052,6 +3052,10 @@ export default defineTool({
       'testing:run → use `byFile[path].runId` to bind a file to its exact row. The legacy `testRunIds[]` is ordered by ID, not by `files[]`; never zip them. A red here is real (the router refuses false-greens); testing:flakiness { } tells you whether a failing file is a known flake.',
   },
   capability: 'testing:run',
+  // Running tests starts a governed process and writes evidence rows. The
+  // capability suffix `run` otherwise infers `read`, which makes the MCP
+  // transport skip idempotency replay and re-execute a timed-out call.
+  effect: 'write',
   requirePrincipal: false,
   // EI-18803497769946984: the handler shells out to Vitest and blocks for the whole
   // run without ever reading `ctx.tx`. Holding the ambient workspace transaction
