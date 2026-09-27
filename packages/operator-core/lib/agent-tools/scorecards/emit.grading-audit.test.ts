@@ -678,7 +678,12 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect((res as { error?: string }).error).toContain('reproduced every applicable rating');
     expect(dispatchTool).toHaveBeenCalledWith(
       'plans:evaluate-spec-test-adequacy',
-      expect.objectContaining({ slug: 'reconnect-plan', payloadTier: 'full' }),
+      expect.objectContaining({
+        slug: 'reconnect-plan',
+        detail: 'summary',
+        includeDraft: false,
+        payloadTier: 'full',
+      }),
     );
     expect(captureImprovement).not.toHaveBeenCalled();
     expect(recordGradingAudit).not.toHaveBeenCalled();
@@ -723,6 +728,8 @@ describe('scorecards:emit grading audit path (P-013)', () => {
       expect.objectContaining({
         slug: 'reconnect-plan',
         evaluatorBuild: RERUN_RECIPE.evaluatorBuild,
+        detail: 'summary',
+        includeDraft: false,
         payloadTier: 'full',
       }),
     );

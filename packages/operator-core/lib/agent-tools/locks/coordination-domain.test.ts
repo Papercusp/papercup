@@ -194,6 +194,12 @@ describe('HOST_GLOBAL_RESOURCES', () => {
     expect(HOST_GLOBAL_RESOURCES.has('dev-server')).toBe(true);
   });
 
+  it('includes the physical Git rig shared by staging and release operators', () => {
+    expect(HOST_GLOBAL_RESOURCES.has('hive-git-physical-rig')).toBe(true);
+    expect(resourceLockDomain('hive-git-physical-rig')).toBe(hostGlobalLockDomain());
+    expect(resourceLockDomain('hive-git-physical-rig')).not.toBe(lockCoordinationDomain());
+  });
+
   it('does not include an unrelated per-target resource (e.g. staging-server)', () => {
     expect(HOST_GLOBAL_RESOURCES.has('staging-server')).toBe(false);
   });

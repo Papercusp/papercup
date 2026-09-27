@@ -545,8 +545,7 @@ export function eventLogPathForOwner(ownerId: any, dir?: string): string;
 export function appendHostEvent(ownerId: any, kind: any, extra?: {}, dir?: string): boolean;
 /** EI-24353430528930250: process-scoped startup evidence for Codex's isolated
  * SQLite homes. Host-wide paging samples could not distinguish the failed
- * launch wave from a later successful one. These Linux counters belong to the
- * actual PTY child and retain their sampling time in the existing host log. */
+ * launch wave from a later successful one. */
 export function readLinuxStartupCounters(pid: any, readFile?: typeof readFileSync): {
     pid: any;
     comm: string;
@@ -555,11 +554,22 @@ export function readLinuxStartupCounters(pid: any, readFile?: typeof readFileSyn
     readBytes: number | null;
     writeBytes: number | null;
 } | null;
+/** Resolve the Rust Codex runtime behind the npm/node launcher that owns the
+ * PTY. The launcher stays alive for the whole session, so sampling its PID
+ * produces a confident but irrelevant zero-IO trace. Linux exposes a cheap,
+ * race-tolerant descendant index at /proc/PID/task/PID/children; walk only a
+ * few generations and accept a process whose kernel comm identifies Codex. */
+export function resolveLinuxCodexStartupPid(rootPid: any, { readFile, readCounters, maxDepth, }?: {
+    readFile?: typeof readFileSync | undefined;
+    readCounters?: typeof readLinuxStartupCounters | undefined;
+    maxDepth?: number | undefined;
+}): any;
 /** Bound the trace to startup, stop it on child replacement, and never let a
  * diagnostic timer keep a finished agent alive. One row every 500 ms for at
  * most 30 s is small enough for the existing capped per-owner event log. */
-export function startCodexStartupProcessTrace({ agent, ownerId, pid, readCounters, emit, now, interval, clear, platform, }?: {
+export function startCodexStartupProcessTrace({ agent, ownerId, pid, readCounters, resolveTargetPid, emit, now, interval, clear, platform, }?: {
     readCounters?: typeof readLinuxStartupCounters | undefined;
+    resolveTargetPid?: typeof resolveLinuxCodexStartupPid | undefined;
     emit?: typeof appendHostEvent | undefined;
     now?: (() => number) | undefined;
     interval?: typeof setInterval | undefined;

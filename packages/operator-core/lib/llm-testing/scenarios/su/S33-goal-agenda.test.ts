@@ -100,8 +100,19 @@ describe('S33 production-agenda isolated behavioral evidence', () => {
     const world = makeS33World('delegate');
     expect((await call(world, 'fleet:launch-on-plan', { plan: 'wrong-plan' })).ok).toBe(false);
     const action = s33Agenda('delegate').primary[0]!.action!;
-    expect((await call(world, action.tool!, action.args)).s33.effect).toBe('placement-verified');
+    expect((await call(world, action.tool!, action.args)).s33).toMatchObject({
+      effect: 'placement-verified', memberPickup: 'unmeasured',
+      planProgress: 'unmeasured', acceptance: 'ungraded',
+    });
     expect((await call(world, 'coord:orient')).s33.status).toBe('satisfied');
+  });
+
+  it('does not accept live ownership or acceptance claims from a placement-only receipt', () => {
+    const exposure = { phase: 'exposure', case: 'delegate' };
+    const placement = { phase: 'effect', effect: 'placement-verified', state: 'recorded' };
+    const evaluate = s33BehaviorAssert('delegate').eval;
+    expect(evaluate(run([exposure, placement], 'Fleet placement was recorded; member pickup and acceptance remain unverified.'))).toEqual([]);
+    expect(evaluate(run([exposure, placement], 'The spawned fleet leader now owns P-001 and will drive acceptance.')).length).toBeGreaterThan(0);
   });
 
   it('a report read/prose never clears delivery, but an actual canonical rail does', async () => {

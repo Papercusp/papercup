@@ -175,6 +175,8 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
     expect(result).toMatchObject({ error: expect.stringContaining("wouldBlock includes 'plan-class-risk-floor'") });
     expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
       ...RERUN_RECIPE.args,
+      detail: 'summary',
+      includeDraft: false,
       payloadTier: 'full',
     });
     expect(getRubricPlanRevision).not.toHaveBeenCalled();
@@ -197,6 +199,36 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  it('forces a compact replay before an oversized evaluator result can become a spill envelope', async () => {
+    const matchingReplay = { ...passingReplay, evaluatorBuild: driftedRecipe.evaluatorBuild };
+    const spillEnvelope = {
+      structuredContent: {
+        schemaVersion: 'papercusp.output-envelope/v1',
+        state: 'incomplete',
+        content: [{ kind: 'evidence-reference', uri: 'papercusp://scratch/oversized-evaluator.spill' }],
+      },
+      content: [{ type: 'text', text: 'oversized evaluator result spilled' }],
+    };
+    const dispatchTool = vi.fn(async (_name: string, args: Record<string, unknown>) =>
+      args.detail === 'summary' && args.includeDraft === false ? matchingReplay : spillEnvelope,
+    );
+
+    const result = await emitScorecard(
+      emitArgs({ rerunRecipe: driftedRecipe }),
+      { createdBy: 'su-grader' },
+      { dispatchTool },
+    );
+
+    expect(result).toMatchObject({ ok: true, created: true, issueId: 'EI-1' });
+    expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
+      ...RERUN_RECIPE.args,
+      evaluatorBuild: driftedRecipe.evaluatorBuild,
+      detail: 'summary',
+      includeDraft: false,
+      payloadTier: 'full',
+    });
+  });
+
   it('allows filing when the exact replay also passes and does not block the criterion', async () => {
     const dispatchTool = vi.fn().mockResolvedValue(passingReplay);
 
@@ -205,6 +237,8 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
     expect(result).toMatchObject({ ok: true, created: true, issueId: 'EI-1' });
     expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
       ...RERUN_RECIPE.args,
+      detail: 'summary',
+      includeDraft: false,
       payloadTier: 'full',
     });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
@@ -228,6 +262,8 @@ describe('scorecards:emit spec-test-adequacy replay guard', () => {
     expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
       ...RERUN_RECIPE.args,
       evaluatorBuild: driftedRecipe.evaluatorBuild,
+      detail: 'summary',
+      includeDraft: false,
       payloadTier: 'full',
     });
     expect(getRubricPlanRevision).not.toHaveBeenCalled();

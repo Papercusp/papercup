@@ -254,6 +254,9 @@ export function hostGlobalLockDomain(): string {
 export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set([
   'release-deploy',
   'dev-server',
+  // EI-24374781045212391: one physical rig is shared by callers on :3170 and
+  // :3070, whose staging and release checkouts must see the same lease.
+  'hive-git-physical-rig',
   // EI-21270032782365521: all SO_REUSEPORT operator workers spend from one
   // optional mid-turn memory budget. A caller-tree domain would recreate the
   // exact split-brain this set exists to prevent and make locks:list lie.

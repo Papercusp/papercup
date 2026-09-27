@@ -21,6 +21,7 @@ import {
   HybridBackend,
   LexicalLegBackend,
   Mem0Backend,
+  type ExtractionLlm,
   type MemoryBackend,
   type SearchLegStats,
 } from '@papercusp/memory';
@@ -36,6 +37,14 @@ import { getMemoryBlockBoundedResult, MEMORY_BLOCK_COLD_DEADLINE_MS } from '../i
 let db: OrgTestDb;
 let backend: MemoryBackend;
 const writes = new Set<Promise<unknown>>();
+const verbatimOnlyExtractionLlm: ExtractionLlm = {
+  async generateResponse() {
+    throw new Error('P-006 verbatim seed unexpectedly invoked fact extraction');
+  },
+  async generateChat() {
+    throw new Error('P-006 verbatim seed unexpectedly invoked extraction chat');
+  },
+};
 
 // Fail closed before setup; never fall back to the live org's hygiene tables.
 vi.mock('@papercusp/db-org', async (original) => ({
@@ -214,6 +223,10 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
       configureMemory({
         ...base,
         getAdminUrl: () => db.adminDsn,
+        // Client construction requires an extraction provider even though this
+        // benchmark seeds exclusively through infer:false. Keep the fixture
+        // credential-independent and fail loudly if that invariant regresses.
+        getExtractionLlm: async () => verbatimOnlyExtractionLlm,
         resolveEmbedder: async () => {
           const resolved = await base.resolveEmbedder();
           if (resolved.mode === 'disabled') return resolved;

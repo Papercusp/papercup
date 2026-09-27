@@ -337,6 +337,8 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(dispatchTool).toHaveBeenCalledTimes(1);
     expect(dispatchTool).toHaveBeenCalledWith('plans:evaluate-spec-test-adequacy', {
       ...row!.scorecardDraft.rerunRecipe.args,
+      detail: 'summary',
+      includeDraft: false,
       payloadTier: 'full',
     });
     expect(captureImprovement).toHaveBeenCalledTimes(1);
