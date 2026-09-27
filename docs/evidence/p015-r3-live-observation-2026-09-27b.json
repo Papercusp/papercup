@@ -1,0 +1,204 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-015 R-3 live-plane observation (2026-09-27b): a Claude su carry-respawn reaches applied in its FIRST turn, so its first tool call and first Anthropic inference sample join the relaunched specification (WI-10003459 fix live on :3170)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "identities-v1-2026-08-30",
+  "workItem": "WI-10003459",
+  "rubricCriterion": "launch-activation-attribution-hold (R-3)",
+  "observer": "su-fcbb3fed-83b5-4c34-9dab-72e191d76491",
+  "startedAt": "2026-09-27T14:55:30.202Z",
+  "finishedAt": "2026-09-27T15:00:00.000Z",
+  "capturedAt": "2026-09-27T15:02:20.490Z",
+  "command": [
+    "sudo -n -u postgres psql -d papercusp -X -v ON_ERROR_STOP=1 -F' | ' -A < .papercusp/scratch/r3-live-0927/q2.sql   # read-only; SQL + output in replication[]"
+  ],
+  "exitCode": 0,
+  "timeBasis": "All E-section timestamps are rendered AT TIME ZONE UTC. Tool-row and inference readings are bounded to [14:54:00Z, 15:00:00Z) so a re-run returns the same counts; the 15:00Z interactive-usage ingest (cron 0 */10 * * * *) had already landed every sample in that window.",
+  "summary": "The subject is this observer's own Claude su session su-fcbb3fed (adv_sessions 31144). Before the respawn the baseline max activation event id was 23754 (applied 99f849c86034). The carry-respawn wrote desired 23756 (source restart, spec b3e6df443c23) at 14:56:00.962Z from the predecessor native session 19ae63bd, then the SUCCESSOR native session e3c4b9ff wrote applied 23757 at 14:56:02.663Z, 1.70 s later, with no prepared phase and no failure. That is before the successor's first inference sample (14:56:10.755Z) and first tool call (14:56:11.327Z). All 62 successor tool rows and all 27 successor Anthropic samples in the window join 23757/b3e6df443c23; the predecessor's 21 tool rows and 12 samples all end before 14:56:02.663Z and join 23754/99f849c86034. The launch receipt adv_sessions 31144 carries session_id e3c4b9ff and specificationRevision b3e6df443c23. The writing host :3170 served build ecb97b7ae5, which contains the fix (applyRelaunchedActivation in control-anchor.ts called from turn-start-memory.ts). The before-fix reading shows the defect this replaces: after the 13:58Z respawn the pre-fix build left applied on the old revision until the next turn, so tool and Anthropic inference rows to 14:11:40Z joined activation 23646 while the process ran b4a393278a74.",
+  "subject": {
+    "ownerIds": [
+      "su-fcbb3fed-83b5-4c34-9dab-72e191d76491"
+    ],
+    "advSessionId": 31144,
+    "predecessorNativeSession": "19ae63bd-3437-4d2c-abb7-2740e74c9e22",
+    "successorNativeSession": "e3c4b9ff-98cd-4013-a6ba-cb20dfc16a3f",
+    "servingBuild": "ecb97b7ae5",
+    "treeHead": "eec73509cb39a72e5015b07af4e0c6ea44da6005"
+  },
+  "sourcePaths": [
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.ts",
+    "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+    "packages/operator-core/lib/session-identity-attribution.ts"
+  ],
+  "testPaths": [
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts",
+    "packages/operator-core/lib/session-identity-attribution.integration.test.ts"
+  ],
+  "sourceBlobs": [
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.ts",
+      "blobAtServingBuild": "ce8514b0006d1b67cab080573371c497da81ced5",
+      "blobAtHead": "ce8514b0006d1b67cab080573371c497da81ced5",
+      "sameAsHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/coordination/control-anchor.ts",
+      "blobAtServingBuild": "77a612a416b2f2677ea826b042a96871562a4e1b",
+      "blobAtHead": "77a612a416b2f2677ea826b042a96871562a4e1b",
+      "sameAsHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/session-identity-attribution.ts",
+      "blobAtServingBuild": "02c61429c80db744e1f6465e9fad21fa6c4d2f09",
+      "blobAtHead": "02c61429c80db744e1f6465e9fad21fa6c4d2f09",
+      "sameAsHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.test.ts",
+      "blobAtServingBuild": "075ff4808646da70931b254bfa594262356597cc",
+      "blobAtHead": "075ff4808646da70931b254bfa594262356597cc",
+      "sameAsHead": true
+    },
+    {
+      "path": "packages/operator-core/lib/session-identity-attribution.integration.test.ts",
+      "blobAtServingBuild": "f3cb37b065cba4df049852104f59d8af79d2a1ac",
+      "blobAtHead": "f3cb37b065cba4df049852104f59d8af79d2a1ac",
+      "sameAsHead": true
+    }
+  ],
+  "assertions": [
+    {
+      "id": "applied-in-first-turn",
+      "passed": true,
+      "evidence": "E1: desired 23756 (restart, b3e6df443c23, native 19ae63bd, 14:56:00.962Z) is followed by applied 23757 (control, b3e6df443c23, native e3c4b9ff, 14:56:02.663Z). The applier is the successor session, 1.70 s after desired, with no prepared phase and no failure."
+    },
+    {
+      "id": "applied-precedes-first-consumption",
+      "passed": true,
+      "evidence": "Applied 14:56:02.663Z precedes the successor's first inference sample 714503 (14:56:10.755Z, E4/E5) and its first tool row (14:56:11.327Z, E3)."
+    },
+    {
+      "id": "launch-receipt-equality",
+      "passed": true,
+      "evidence": "E7: adv_sessions 31144 session_id e3c4b9ff, launch specificationRevision b3e6df443c23 and stateRevision 18cf633bd759 equal applied 23757 (E1) and the revision stamped on every successor tool and inference row (E3/E4)."
+    },
+    {
+      "id": "span-handoff-exact",
+      "passed": true,
+      "evidence": "E2: span 23754 (99f849c86034) ends at exactly 14:56:02.662619Z, where span 23757 (b3e6df443c23) begins; 23757 is open."
+    },
+    {
+      "id": "tool-rows-join-new-spec",
+      "passed": true,
+      "evidence": "E3: 62 successor tool rows (14:56:11.327Z-14:59:58.072Z, 61 ok) join 23757/b3e6df443c23; the 21 predecessor rows end at 14:56:02.495Z, before applied, and join 23754/99f849c86034."
+    },
+    {
+      "id": "anthropic-inference-joins-new-spec",
+      "passed": true,
+      "evidence": "E4/E5: all 27 successor Anthropic opus interactive samples 714503-714529 (14,267 output tokens) join 23757/b3e6df443c23; the predecessor's 12 samples 714491-714502 end at 14:55:58.740Z and join 23754. Per-session raw counts (E5) equal the attributed counts (E4), so no sample is unattributed or misattributed."
+    },
+    {
+      "id": "fix-served",
+      "passed": true,
+      "evidence": "E6: every su-fcbb3fed tool row from 14:55:08Z on was served by :3170 build ecb97b7ae5; that build contains applyRelaunchedActivation in control-anchor.ts and its call in turn-start-memory.ts (checked by this builder)."
+    },
+    {
+      "id": "stable-actor-principal",
+      "passed": true,
+      "evidence": "E1/E2: actor_id = owner_id and principal system:superuser on every event and span across the relaunch."
+    }
+  ],
+  "notProven": [
+    "A Codex or OMP relaunch through the same path: this reading is a Claude su carry-respawn. The fix is client-agnostic (turn-start route), and earlier Codex attribution is carried by the 2026-09-27 observation.",
+    "The pending-specification fail-closed denial: carried by docs/evidence/p015-r3-live-observation-2026-09-27.json; this respawn applied before any denial could occur.",
+    "Final release deployment: :3170 staging build, not :3070."
+  ],
+  "complements": [
+    "docs/evidence/p015-r3-live-observation-2026-09-27.json",
+    "docs/evidence/p015-r3-live-observation-2026-09-26b.json"
+  ],
+  "replication": [
+    {
+      "tool": "psql (read-only)",
+      "role": "after-fix live reading (this respawn)",
+      "file": ".papercusp/scratch/r3-live-0927/q2.sql",
+      "sha256": "0081b7e8fb0350043be8bdf06a87a3b80779b4e8ac5aa18bad753c6a446f66bf",
+      "sql": "\\pset footer off\nset statement_timeout='100s';\n-- R-3 live proof for the WI-10003459 fix: the 14:56Z carry-respawn of su-fcbb3fed.\n-- Window is FIXED to [2026-09-27 14:54:00Z, 15:00:00Z) so the readings are reproducible.\n\\echo === observed_at\nSELECT clock_timestamp() AS observed_at;\n\\echo === E1 activation events for su-fcbb3fed, id >= 23754 (baseline max id before the respawn = 23754)\nSELECT e.id, e.control_generation AS gen, e.phase, e.source, e.stack_refs, left(e.specification_revision,12) AS spec, left(e.state_revision,12) AS state, e.adv_session_id AS adv, e.native_session_id, e.actor_id = e.owner_id AS actor_is_owner, e.principal_id, e.failure, e.recorded_at AT TIME ZONE 'UTC' AS recorded_at_utc\n  FROM harness_shared.session_identity_activation_events e\n WHERE e.workspace_id='papercusp-workspace' AND e.owner_id='su-fcbb3fed-83b5-4c34-9dab-72e191d76491' AND e.id >= 23754 AND e.recorded_at < '2026-09-27 15:00:00Z'\n ORDER BY e.id;\n\\echo === E2 per-layer spans for those activations\nSELECT activation_event_id, control_generation, layer_slot, layer_ref, left(specification_revision,12) AS spec, actor_id = owner_id AS actor_is_owner, principal_id, active_from AT TIME ZONE 'UTC' AS active_from_utc, active_until AT TIME ZONE 'UTC' AS active_until_utc\n  FROM harness_shared.session_identity_layer_spans\n WHERE owner_id='su-fcbb3fed-83b5-4c34-9dab-72e191d76491' AND activation_event_id IN (23754, 23757)\n ORDER BY activation_event_id, layer_slot;\n\\echo === E3 tool rows by activation in the window\nSELECT identity_activation_event_id AS act, left(identity_specification_revision,12) AS spec, identity_stack_refs, serving_host, count(*) AS n, count(*) FILTER (WHERE status='ok') AS ok, min(invoked_at) AT TIME ZONE 'UTC' AS first_utc, max(invoked_at) AT TIME ZONE 'UTC' AS last_utc\n  FROM harness_shared.tool_invocations_identity_attribution\n WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-fcbb3fed-83b5-4c34-9dab-72e191d76491' AND invoked_at >= '2026-09-27 14:54:00Z' AND invoked_at < '2026-09-27 15:00:00Z'\n GROUP BY 1,2,3,4 ORDER BY 1,4;\n\\echo === E4 inference samples by activation in the window\nSELECT identity_activation_event_id AS act, left(identity_specification_revision,12) AS spec, identity_stack_refs, count(*) AS n, sum(output_tokens) AS output_tokens, min(id) AS min_id, max(id) AS max_id, min(to_timestamp(ts/1000.0)) AT TIME ZONE 'UTC' AS first_utc, max(to_timestamp(ts/1000.0)) AT TIME ZONE 'UTC' AS last_utc, array_agg(DISTINCT model_class) AS model_classes, array_agg(DISTINCT source) AS sources, array_agg(DISTINCT provider) AS providers\n  FROM harness_shared.agent_usage_samples_identity_attribution\n WHERE workspace_id='papercusp-workspace' AND identity_owner_id='su-fcbb3fed-83b5-4c34-9dab-72e191d76491'\n   AND ts >= (extract(epoch FROM timestamptz '2026-09-27 14:54:00Z')*1000)::bigint\n   AND ts <  (extract(epoch FROM timestamptz '2026-09-27 15:00:00Z')*1000)::bigint\n GROUP BY 1,2,3 ORDER BY 1;\n\\echo === E5 inference samples by native session in the window (raw table, no attribution view)\nSELECT session_id, count(*) AS n, min(id) AS min_id, max(id) AS max_id, min(to_timestamp(ts/1000.0)) AT TIME ZONE 'UTC' AS first_utc, max(to_timestamp(ts/1000.0)) AT TIME ZONE 'UTC' AS last_utc\n  FROM harness_shared.agent_usage_samples\n WHERE session_id IN ('19ae63bd-3437-4d2c-abb7-2740e74c9e22','e3c4b9ff-98cd-4013-a6ba-cb20dfc16a3f')\n   AND ts >= (extract(epoch FROM timestamptz '2026-09-27 14:54:00Z')*1000)::bigint\n   AND ts <  (extract(epoch FROM timestamptz '2026-09-27 15:00:00Z')*1000)::bigint\n GROUP BY 1 ORDER BY 3;\n\\echo === E6 serving builds for su-fcbb3fed tool rows in the window\nSELECT serving_host, serving_build_sha, count(*) AS n, min(invoked_at) AT TIME ZONE 'UTC' AS first_utc, max(invoked_at) AT TIME ZONE 'UTC' AS last_utc\n  FROM harness_shared.tool_invocations\n WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-fcbb3fed-83b5-4c34-9dab-72e191d76491' AND invoked_at >= '2026-09-27 14:54:00Z' AND invoked_at < '2026-09-27 15:00:00Z'\n GROUP BY 1,2 ORDER BY 4;\n\\echo === E7 launch receipt adv_sessions 31144\nSELECT id, coord_owner_id, session_id, launch_spec->>'agent' AS agent, launch_spec->>'principalId' AS principal, left(launch_spec->>'specificationRevision',12) AS launch_spec_rev, left(launch_spec->>'stateRevision',12) AS launch_state_rev\n  FROM harness_shared.adv_sessions WHERE id = 31144;\n",
+      "output": [
+        "=== observed_at",
+        "observed_at",
+        "2026-09-27 11:02:20.4901-04",
+        "=== E1 activation events for su-fcbb3fed, id >= 23754 (baseline max id before the respawn = 23754)",
+        "id | gen | phase | source | stack_refs | spec | state | adv | native_session_id | actor_is_owner | principal_id | failure | recorded_at_utc",
+        "23754 | 72 | applied | control | [\"autonomy:su.mode-auto\"] | 99f849c86034 | 18cf633bd759 | 31144 | 19ae63bd-3437-4d2c-abb7-2740e74c9e22 | t | system:superuser |  | 2026-09-27 14:54:33.895803",
+        "23756 | 73 | desired | restart | [\"autonomy:su.mode-auto\"] | b3e6df443c23 | 18cf633bd759 | 31144 | 19ae63bd-3437-4d2c-abb7-2740e74c9e22 | t | system:superuser |  | 2026-09-27 14:56:00.96181",
+        "23757 | 73 | applied | control | [\"autonomy:su.mode-auto\"] | b3e6df443c23 | 18cf633bd759 | 31144 | e3c4b9ff-98cd-4013-a6ba-cb20dfc16a3f | t | system:superuser |  | 2026-09-27 14:56:02.662619",
+        "=== E2 per-layer spans for those activations",
+        "activation_event_id | control_generation | layer_slot | layer_ref | spec | actor_is_owner | principal_id | active_from_utc | active_until_utc",
+        "23754 | 72 | autonomy | autonomy:su.mode-auto | 99f849c86034 | t | system:superuser | 2026-09-27 14:54:33.895803 | 2026-09-27 14:56:02.662619",
+        "23757 | 73 | autonomy | autonomy:su.mode-auto | b3e6df443c23 | t | system:superuser | 2026-09-27 14:56:02.662619 | ",
+        "=== E3 tool rows by activation in the window",
+        "act | spec | identity_stack_refs | serving_host | n | ok | first_utc | last_utc",
+        "23754 | 99f849c86034 | [\"autonomy:su.mode-auto\"] | port-3170 | 21 | 20 | 2026-09-27 14:54:38.451 | 2026-09-27 14:56:02.495",
+        "23757 | b3e6df443c23 | [\"autonomy:su.mode-auto\"] | port-3170 | 62 | 61 | 2026-09-27 14:56:11.327 | 2026-09-27 14:59:58.072",
+        "=== E4 inference samples by activation in the window",
+        "act | spec | identity_stack_refs | n | output_tokens | min_id | max_id | first_utc | last_utc | model_classes | sources | providers",
+        "23754 | 99f849c86034 | [\"autonomy:su.mode-auto\"] | 12 | 7281 | 714491 | 714502 | 2026-09-27 14:54:38.234 | 2026-09-27 14:55:58.74 | {opus} | {interactive} | {anthropic}",
+        "23757 | b3e6df443c23 | [\"autonomy:su.mode-auto\"] | 27 | 14267 | 714503 | 714529 | 2026-09-27 14:56:10.755 | 2026-09-27 14:59:57.744 | {opus} | {interactive} | {anthropic}",
+        "=== E5 inference samples by native session in the window (raw table, no attribution view)",
+        "session_id | n | min_id | max_id | first_utc | last_utc",
+        "19ae63bd-3437-4d2c-abb7-2740e74c9e22 | 12 | 714491 | 714502 | 2026-09-27 14:54:38.234 | 2026-09-27 14:55:58.74",
+        "e3c4b9ff-98cd-4013-a6ba-cb20dfc16a3f | 27 | 714503 | 714529 | 2026-09-27 14:56:10.755 | 2026-09-27 14:59:57.744",
+        "=== E6 serving builds for su-fcbb3fed tool rows in the window",
+        "serving_host | serving_build_sha | n | first_utc | last_utc",
+        "port-3170 | 0ba0fce2ad | 6 | 2026-09-27 14:54:38.451 | 2026-09-27 14:54:50.472",
+        "port-3170 | ecb97b7ae5 | 77 | 2026-09-27 14:55:08.231 | 2026-09-27 14:59:58.072",
+        "=== E7 launch receipt adv_sessions 31144",
+        "id | coord_owner_id | session_id | agent | principal | launch_spec_rev | launch_state_rev",
+        "31144 | su-fcbb3fed-83b5-4c34-9dab-72e191d76491 | e3c4b9ff-98cd-4013-a6ba-cb20dfc16a3f | claude | system:superuser | b3e6df443c23 | 18cf633bd759"
+      ]
+    },
+    {
+      "tool": "psql (read-only)",
+      "role": "before-fix reading (respawns 12:58Z/13:58Z on the pre-fix build, captured 14:23Z)",
+      "file": ".papercusp/scratch/r3-natural-0927b/q1.sql",
+      "sha256": "60c60c905a6d0066b92ccb364ffbc6a712992719d569c5a823e36b58e4c637c8",
+      "sql": "\\pset footer off\nset statement_timeout='200s';\n\\echo === observed_at\nSELECT clock_timestamp() AS observed_at;\n\\echo === D1 activation events for su-fcbb3fed from applied 23646 onward\nSELECT e.id, e.control_generation AS gen, e.phase, e.source, e.stack_refs, left(e.specification_revision,12) AS spec, left(e.state_revision,12) AS state, e.adv_session_id AS adv, e.native_session_id, e.actor_id = e.owner_id AS actor_is_owner, e.principal_id, e.failure, e.recorded_at\n  FROM harness_shared.session_identity_activation_events e\n WHERE e.workspace_id='papercusp-workspace' AND e.owner_id='su-fcbb3fed-83b5-4c34-9dab-72e191d76491' AND e.id >= 23646\n ORDER BY e.id;\n\\echo === D2 per-layer spans from activation 23646 onward\nSELECT activation_event_id, control_generation, layer_slot, layer_ref, left(specification_revision,12) AS spec, actor_id = owner_id AS actor_is_owner, principal_id, active_from, active_until\n  FROM harness_shared.session_identity_layer_spans\n WHERE owner_id='su-fcbb3fed-83b5-4c34-9dab-72e191d76491' AND activation_event_id >= 23646\n ORDER BY activation_event_id, layer_slot;\n\\echo === D3 tool rows by activation since 13:01:22Z\nSELECT identity_activation_event_id AS act, left(identity_specification_revision,12) AS spec, identity_stack_refs, serving_host, count(*) AS n, count(*) FILTER (WHERE status='ok') AS ok, min(invoked_at) AS first, max(invoked_at) AS last\n  FROM harness_shared.tool_invocations_identity_attribution\n WHERE workspace_id='papercusp-workspace' AND coord_owner_id='su-fcbb3fed-83b5-4c34-9dab-72e191d76491' AND invoked_at >= '2026-09-27 13:01:22Z'\n GROUP BY 1,2,3,4 ORDER BY 1,4;\n\\echo === D4 inference samples by activation since 13:01:22Z\nSELECT identity_activation_event_id AS act, left(identity_specification_revision,12) AS spec, identity_stack_refs, count(*) AS n, sum(output_tokens) AS output_tokens, min(id) AS min_id, max(id) AS max_id, min(to_timestamp(ts/1000.0)) AS first, max(to_timestamp(ts/1000.0)) AS last, array_agg(DISTINCT model_class) AS model_classes, array_agg(DISTINCT source) AS sources, array_agg(DISTINCT provider) AS providers\n  FROM harness_shared.agent_usage_samples_identity_attribution\n WHERE workspace_id='papercusp-workspace' AND identity_owner_id='su-fcbb3fed-83b5-4c34-9dab-72e191d76491'\n   AND ts >= (extract(epoch FROM timestamptz '2026-09-27 13:01:22Z')*1000)::bigint\n GROUP BY 1,2,3 ORDER BY 1;\n\\echo === D5 launch receipt adv_sessions 31144\nSELECT id, coord_owner_id, session_id, launch_spec->>'agent' AS agent, launch_spec->'stack' AS stack, launch_spec->>'principalId' AS principal, left(launch_spec->>'specificationRevision',12) AS launch_spec_rev, left(launch_spec->>'stateRevision',12) AS launch_state_rev\n  FROM harness_shared.adv_sessions WHERE id = 31144;\n\\echo === D6 current control_state for su-fcbb3fed\nSELECT control_generation, control_delivered_generation, control_state->'activation'->>'status' AS status, left(control_state->'activation'->'desired'->>'specificationRevision',12) AS desired_spec, left(control_state->'activation'->'prepared'->>'specificationRevision',12) AS prepared_spec, left(control_state->'activation'->'applied'->>'specificationRevision',12) AS applied_spec\n  FROM harness_shared.session_briefs WHERE owner_id='su-fcbb3fed-83b5-4c34-9dab-72e191d76491' AND workspace_id='papercusp-workspace';\n",
+      "output": [
+        "=== observed_at",
+        "observed_at",
+        "2026-09-27 10:23:47.096024-04",
+        "=== D1 activation events for su-fcbb3fed from applied 23646 onward",
+        "id | gen | phase | source | stack_refs | spec | state | adv | native_session_id | actor_is_owner | principal_id | failure | recorded_at",
+        "23646 | 65 | applied | control | [\"autonomy:su.mode-auto\"] | 4eeb034a3321 | 18cf633bd759 | 31144 | ce550a92-9c9e-4b4f-9d35-1345035793b0 | t | system:superuser |  | 2026-09-27 09:01:22.637894-04",
+        "23668 | 67 | desired | restart | [\"autonomy:su.mode-auto\"] | b4a393278a74 | 18cf633bd759 | 31144 | ce550a92-9c9e-4b4f-9d35-1345035793b0 | t | system:superuser |  | 2026-09-27 09:58:33.631029-04",
+        "23669 | 67 | prepared | control | [\"autonomy:su.mode-auto\"] | b4a393278a74 | 18cf633bd759 | 31144 | 08125cf1-25f8-4433-ab23-d90424ceebdf | t | system:superuser |  | 2026-09-27 09:58:38.443114-04",
+        "23672 | 67 | applied | control | [\"autonomy:su.mode-auto\"] | b4a393278a74 | 18cf633bd759 | 31144 | 08125cf1-25f8-4433-ab23-d90424ceebdf | t | system:superuser |  | 2026-09-27 10:16:29.166007-04",
+        "23673 | 69 | desired | restart | [\"autonomy:su.mode-auto\"] | e5995edd00f9 | 18cf633bd759 | 31144 | 08125cf1-25f8-4433-ab23-d90424ceebdf | t | system:superuser |  | 2026-09-27 10:19:37.758726-04",
+        "23674 | 69 | prepared | control | [\"autonomy:su.mode-auto\"] | e5995edd00f9 | 18cf633bd759 | 31144 | 94727028-b778-49b2-803b-b6ce895a0da5 | t | system:superuser |  | 2026-09-27 10:19:39.521474-04",
+        "=== D2 per-layer spans from activation 23646 onward",
+        "activation_event_id | control_generation | layer_slot | layer_ref | spec | actor_is_owner | principal_id | active_from | active_until",
+        "23646 | 65 | autonomy | autonomy:su.mode-auto | 4eeb034a3321 | t | system:superuser | 2026-09-27 09:01:22.637894-04 | 2026-09-27 10:16:29.166007-04",
+        "23672 | 67 | autonomy | autonomy:su.mode-auto | b4a393278a74 | t | system:superuser | 2026-09-27 10:16:29.166007-04 | ",
+        "=== D3 tool rows by activation since 13:01:22Z",
+        "act | spec | identity_stack_refs | serving_host | n | ok | first | last",
+        "23642 | 4eeb034a3321 | [\"autonomy:su.mode-auto\"] | port-3170 | 1 | 1 | 2026-09-27 09:01:22.294-04 | 2026-09-27 09:01:22.294-04",
+        "23646 | 4eeb034a3321 | [\"autonomy:su.mode-auto\"] | port-3170 | 258 | 251 | 2026-09-27 09:01:30.311-04 | 2026-09-27 10:11:40.142-04",
+        "23672 | b4a393278a74 | [\"autonomy:su.mode-auto\"] | port-3170 | 95 | 92 | 2026-09-27 10:17:32.363-04 | 2026-09-27 10:23:46.966-04",
+        "=== D4 inference samples by activation since 13:01:22Z",
+        "act | spec | identity_stack_refs | n | output_tokens | min_id | max_id | first | last | model_classes | sources | providers",
+        "23646 | 4eeb034a3321 | [\"autonomy:su.mode-auto\"] | 97 | 88219 | 712884 | 713190 | 2026-09-27 09:01:29.23-04 | 2026-09-27 10:11:39.947-04 | {opus} | {interactive} | {anthropic}",
+        "23672 | b4a393278a74 | [\"autonomy:su.mode-auto\"] | 10 | 12227 | 713191 | 713200 | 2026-09-27 10:17:32.126-04 | 2026-09-27 10:19:45.651-04 | {opus} | {interactive} | {anthropic}",
+        "=== D5 launch receipt adv_sessions 31144",
+        "id | coord_owner_id | session_id | agent | stack | principal | launch_spec_rev | launch_state_rev",
+        "31144 | su-fcbb3fed-83b5-4c34-9dab-72e191d76491 | 94727028-b778-49b2-803b-b6ce895a0da5 | claude | [] | system:superuser | e5995edd00f9 | 18cf633bd759",
+        "=== D6 current control_state for su-fcbb3fed",
+        "control_generation | control_delivered_generation | status | desired_spec | prepared_spec | applied_spec",
+        "70 | 67 | prepared | e5995edd00f9 | e5995edd00f9 | b4a393278a74"
+      ]
+    }
+  ]
+}
