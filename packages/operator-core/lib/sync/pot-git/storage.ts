@@ -27,6 +27,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { processGroupLifetime } from '../../fleet/process-group-lifetime';
+import { withGitFetchHeadroom } from '../../harness/git-sync/git-fetch-headroom';
 import { collectChildOutput, createTextCollector } from '../../child-output.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -59,6 +61,8 @@ export interface RunGitOptions {
    * process is still caught quickly.
    */
   timeoutMs?: number;
+  /** Retain the process lifetime until cancellation has actually drained Git and its helpers. */
+  signal?: AbortSignal;
 }
 
 /** The run-git seam (matches harness/git-sync/run-git-sync.ts): spawn `git
@@ -121,34 +125,52 @@ function localSpawnRefusal(admission: PotGitLocalSpawnAdmission): string {
  */
 export const runGitLocal: RunGit = (args, cwd, opts) =>
   new Promise((resolve) => {
+    if (opts?.signal?.aborted) {
+      resolve({ code: -1, stdout: '', stderr: 'git aborted before spawn' });
+      return;
+    }
     const admission = potGitLocalSpawnAdmission(process.memoryUsage().rss);
     if (!admission.allowed) {
       resolve({ code: -1, stdout: '', stderr: localSpawnRefusal(admission) });
       return;
     }
-    const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
+    const child = spawn('git', args, {
+      cwd, detached: process.platform !== 'win32',
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C', GIT_TERMINAL_PROMPT: '0' },
+    });
     const out = collectChildOutput(child);
+    const lifetime = processGroupLifetime(child, (message) => out.stderr.append(`\n${message}`));
     let settled = false;
+    let terminating = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
-      resolve({ code, stdout: out.stdout.text(), stderr: out.stderr.text() });
+      clearTimeout(t);
+      clearTimeout(killTimer);
+      opts?.signal?.removeEventListener('abort', abort);
+      resolve({ code: terminating ? -1 : code, stdout: out.stdout.text(), stderr: out.stderr.text() });
     };
+    const terminate = (reason: string): void => {
+      if (settled || terminating) return;
+      terminating = true;
+      out.stderr.append(`\ngit ${reason}`);
+      lifetime.signal('SIGTERM');
+      killTimer = setTimeout(() => lifetime.signal('SIGKILL'), 5_000);
+      killTimer.unref?.();
+    };
+    const abort = (): void => terminate('aborted');
     const timeoutMs = opts?.timeoutMs ?? 60_000;
-    const t = setTimeout(() => {
-      out.stderr.append(`\ngit ${args.join(' ')} timed out`);
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 5_000).unref?.();
-      setTimeout(() => finish(-1), 10_000).unref?.();
-    }, timeoutMs);
+    const t = setTimeout(() => terminate(`${args.join(' ')} timed out`), timeoutMs);
     t.unref?.();
+    opts?.signal?.addEventListener('abort', abort, { once: true });
+    if (opts?.signal?.aborted) abort();
     child.on('error', (e) => {
-      clearTimeout(t);
       out.stderr.append(String(e));
-      finish(-1);
+      if (child.pid === undefined) finish(-1);
     });
-    child.on('close', (code) => {
-      clearTimeout(t);
+    child.on('close', async (code) => {
+      await lifetime.waitForExit();
       finish(code ?? -1);
     });
   });
@@ -184,6 +206,11 @@ export const runGitLocal: RunGit = (args, cwd, opts) =>
  * to force the local path for this subsystem alone.
  */
 export const defaultRunGit: RunGit = async (args, cwd, opts) => {
+  return withGitFetchHeadroom(args,
+    (guardedArgs, signal) => runGitUnchecked(guardedArgs, cwd, { ...opts, signal }), opts?.signal);
+};
+
+const runGitUnchecked: RunGit = async (args, cwd, opts) => {
   const timeoutMs = opts?.timeoutMs ?? 60_000;
   if (gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR')) {
     try {
@@ -191,7 +218,7 @@ export const defaultRunGit: RunGit = async (args, cwd, opts) => {
         ...process.env,
         LC_ALL: 'C',
         LANG: 'C',
-      });
+      }, { signal: opts?.signal });
     } catch (e) {
       // Fall through to the local spawn, but COUNT it: falling back means every
       // git call here is paying the full ~165 ms fork stall again, which is the

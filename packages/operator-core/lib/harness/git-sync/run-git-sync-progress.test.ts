@@ -12,6 +12,11 @@ vi.mock('node:child_process', async (importOriginal) => {
     ...actual,
     // Exercise the real local runner and OS pipes without contacting a remote.
     spawn: (_command: string, _args: string[], options: SpawnOptions) => {
+      // The fetch guard resolves its write filesystem before running the timed
+      // fixture. That read is independent of the fake transfer's output stream.
+      if (_args.includes('--git-path')) {
+        return actual.spawn(process.execPath, ['-e', "process.stdout.write(require('node:os').tmpdir())"], options);
+      }
       const child = actual.spawn(process.execPath, ['-e', fixture.script], options);
       fixture.child = child;
       const output = createTextCollector(child.stderr);

@@ -436,6 +436,47 @@ describe('Codex resume reconciles project MCP servers', () => {
   });
 });
 
+describe('Codex managed carry keeps the selected account route', () => {
+  it.each([
+    ['auto', null],
+    ['pin', 'test-account'],
+  ])('restores %s after the canonical home writer replaces config.toml', async (mode, id) => {
+    const owner = 'su-carry-route';
+    const advSessionId = Date.now() * 1_000 + (process.pid % 1_000);
+    const home = join(homedir(), '.papercusp', 'su-codex-homes', `session-${advSessionId}`);
+    mkdirSync(home, { recursive: true });
+    const directConfig = 'model = "gpt-6-sol"\n[features]\n';
+    try {
+      writeFileSync(join(home, 'config.toml'), directConfig);
+      const routeEnv = launcher.buildResumeEnv(
+        { agent: 'codex' },
+        { accountEnv: { mode, id, env: {} } },
+      );
+      expect(routeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe(mode);
+      if (id) expect(routeEnv.PAPERCUSP_ACCOUNT_ID).toBe(id);
+
+      await launcher.ensureCodexHomeViaOperator(owner, home, advSessionId, {
+        operatorUrl: 'http://operator',
+        token: 'test-token',
+        routeMode: routeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE,
+        accountId: routeEnv.PAPERCUSP_ACCOUNT_ID,
+        priority: 'su',
+        fetchImpl: async () => {
+          writeFileSync(join(home, 'config.toml'), directConfig);
+          return { json: async () => ({ ok: true, repaired: false }) };
+        },
+      });
+      const config = readFileSync(join(home, 'config.toml'), 'utf8');
+      expect(config).toContain('model_provider = "papercusp-codex-gateway"');
+      expect(config).toContain('"x-papercusp-owner" = "su-carry-route"');
+      if (id) expect(config).toContain('"x-papercusp-account" = "test-account"');
+      else expect(config).not.toContain('"x-papercusp-account"');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('codexGatewayConfigPatch — a default-mode RESUME must not strip a bound provider', () => {
   // An empty patch (no account pin, gateway off) means "this LAUNCH has no gateway
   // route". It does NOT mean "this HOME has no gateway thread".

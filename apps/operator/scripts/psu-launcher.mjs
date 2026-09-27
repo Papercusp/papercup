@@ -5922,7 +5922,7 @@ export function resumeAccountPlan(args) {
  * for tests. With no `accountEnv`, the account routing stays byte-identical to
  * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
  * @param {*} session
- * @param {{fork?: boolean, brain?: boolean, accountEnv?: {env?: Record<string, string>} | null, ownerId?: string | null}} [options]
+ * @param {{fork?: boolean, brain?: boolean, accountEnv?: {mode?: string, id?: string | null, env?: Record<string, string>} | null, ownerId?: string | null}} [options]
  */
 export function buildResumeEnv(
   session,
@@ -5946,6 +5946,17 @@ export function buildResumeEnv(
     // PAPERCUSP_TOOLS / PAPERCUSP_CONTEXT_TIER boots with the whole catalog inline.
     ...contextTrimmingEnv(session?.agent),
     ...(accountEnv?.env ?? {}),
+    // Codex keeps the route in config.toml, so its account env is otherwise
+    // empty. The managed host needs this choice when it rebuilds that config
+    // during a carry; it cannot infer the choice after the rebuild erased it.
+    ...(session?.agent === "codex" && accountEnv?.mode
+      ? {
+          [ACCOUNT_ROUTING_MODE_ENV]: accountEnv.mode,
+          ...(accountEnv.mode === "pin" && accountEnv.id
+            ? { PAPERCUSP_ACCOUNT_ID: accountEnv.id }
+            : {}),
+        }
+      : {}),
   };
 }
 
@@ -11540,6 +11551,9 @@ export function runWrapper(options) {
                 advSessionId: env.PAPERCUSP_ADV_SESSION_ID || advSessionId || null,
                 modelSource: env.PAPERCUSP_MODEL_SOURCE || null,
               }),
+              routeMode: env[ACCOUNT_ROUTING_MODE_ENV] || null,
+              accountId: env.PAPERCUSP_ACCOUNT_ID || null,
+              priority: env.PAPERCUSP_AGENT_ROLE || "su",
             },
           ),
         // stale-prompt-render-in-live-sessions-2026-08-02 P-002: a respawn must
@@ -14241,6 +14255,10 @@ export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
  * The server-side writer is idempotent and also reconciles project HTTP MCP
  * servers. A structurally ready home can still predate a newly inherited
  * connector, so every resume must reach that writer.
+ * @param {string | null} owner
+ * @param {string | null} codexHome
+ * @param {string | number | null} advSessionId
+ * @param {{requireGatewayProvider?: boolean, model?: string | null, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, token?: string | null, timeoutMs?: number}} options
  */
 export async function ensureCodexHomeViaOperator(
   owner,
@@ -14249,6 +14267,9 @@ export async function ensureCodexHomeViaOperator(
   {
     requireGatewayProvider = false,
     model = null,
+    routeMode = null,
+    accountId = null,
+    priority = null,
     fetchImpl = fetch,
     // A resume can inherit a stale PAPERCUSP_HONO_PORT from the judge/runtime.
     // Resolve the runtime route only when repair is actually needed; explicit
@@ -14299,6 +14320,19 @@ export async function ensureCodexHomeViaOperator(
     );
     const r = await res.json().catch(() => null);
     if (!r?.ok) return null;
+    // The canonical writer refreshes config.toml and may remove the launch's
+    // gateway selector. Reapply the explicit route after every carry refresh.
+    // Default/unspecified launches keep their existing provider semantics.
+    if (routeMode === "auto" || routeMode === "pin") {
+      if (routeMode === "pin" && !accountId)
+        throw new Error("Codex carry cannot restore a pin without an account id");
+      applyCodexGatewayRoute(codexHome, {
+        mode: routeMode,
+        id: accountId,
+        ownerId: owner,
+        priority,
+      });
+    }
     if (r.repaired) {
       console.error(
         "psu: repaired this session's codex home config/hooks/instructions in place (existing rollouts were preserved).",

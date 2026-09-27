@@ -5412,6 +5412,10 @@ export async function runMcpReconnectMacro({
   resetTap();
   write('/mcp');
   await sleep(crDelayMs);
+  // Typing the slash command paints autocomplete entries such as
+  // `/papercusp:tool:*` before Enter. They contain the server name but are not
+  // the /mcp result; judge only output produced after submitting the command.
+  resetTap();
   write(CR);
 
   // (2) painted?

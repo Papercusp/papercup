@@ -9,14 +9,21 @@
  * correctness argument lives.
  */
 
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:net';
+import type { Server } from 'node:net';
 import * as childProcess from 'node:child_process';
 import type { TscDiagnostic, TscFileCount } from '../../tsc-diagnostics';
+
+// WI-10003415: a scoped run asks the shared typecheck service first. Every test points at a
+// socket that does not exist, so none reaches the real service on this box; the service tests
+// below stand up a fake one.
+process.env.PAPERCUSP_TSC_SERVICE_SOCKET = join(tmpdir(), `no-tsc-service-${process.pid}.sock`);
 
 const governedExecution = vi.hoisted(() => ({
   begin: vi.fn(),
@@ -58,6 +65,7 @@ import buildTypecheck, {
   selectTypecheckRoot,
   resolveTypecheckCwd,
   partitionScopedDiagnostics,
+  serviceBudgetMs,
 } from './typecheck';
 // The EI-18776865728050036 class guard moved to capability/foreground-transport-cap.test.ts
 // (EI-20645849301780712) — it now lives beside the module it guards, and its tool list is
@@ -251,6 +259,209 @@ describe('scopeToFiles requested-file verdict (EI-19367920569086881)', () => {
       exitCode: 2,
       compilerExitCode: 2,
     });
+  });
+});
+
+describe('scoped runs ask the shared typecheck service first (WI-10003415)', () => {
+  let root: string;
+  let socketPath: string;
+  let server: Server;
+  let requests: Record<string, unknown>[];
+  let reply: (request: Record<string, unknown>) => Record<string, unknown>;
+
+  const served = (output: string, errorCount: number, extra: Record<string, unknown> = {}) => ({
+    ok: true,
+    output,
+    errorCount,
+    checked: ['src/importer.ts', 'src/target.ts'],
+    counts: { named: 1, typeReferencing: 0, importers: 1 },
+    namedNotInProgram: [],
+    snapshotAgeMs: 5,
+    queuedMs: 7,
+    checkMs: 11,
+    ...extra,
+  });
+
+  beforeAll(async () => {
+    root = mkdtempSync(join(tmpdir(), 'build-typecheck-service-'));
+    mkdirSync(join(root, 'src'), { recursive: true });
+    writeFileSync(join(root, 'tsconfig.json'), '{}');
+    writeFileSync(join(root, 'src', 'target.ts'), 'export interface Target { a: number }');
+    writeFileSync(join(root, 'src', 'importer.ts'), "import type { Target } from './target';");
+    socketPath = join(root, 'svc.sock');
+    // The real protocol: one JSON line in, one JSON line back (scripts/lib/tsc-service.mjs).
+    server = createServer((socket) => {
+      let buffer = '';
+      socket.setEncoding('utf8');
+      socket.on('data', (chunk) => {
+        buffer += chunk;
+        const newline = buffer.indexOf('\n');
+        if (newline < 0) return;
+        const request = JSON.parse(buffer.slice(0, newline)) as Record<string, unknown>;
+        requests.push(request);
+        socket.end(`${JSON.stringify(reply(request))}\n`);
+      });
+    });
+    await new Promise<void>((resolveListen) => server.listen(socketPath, resolveListen));
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  beforeEach(() => {
+    requests = [];
+    reply = () => served('', 0);
+    vi.stubEnv('PAPERCUSP_TSC_SERVICE_SOCKET', socketPath);
+    vi.stubEnv('PAPERCUSP_TSC_SERVICE', '1');
+    governedExecution.begin.mockClear();
+    vi.mocked(childProcess.spawn).mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.mocked(childProcess.spawn).mockReset();
+  });
+
+  const handle = (args: Record<string, unknown>) =>
+    (
+      buildTypecheck as unknown as {
+        handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
+      }
+    ).handler(args, { projectDir: root });
+
+  const scopedArgs = { project: '.', files: ['src/target.ts'], scopeToFiles: true };
+
+  /** The CLI fallback: one fake compiler that prints `lines` and exits `code`. */
+  const cliPrints = (lines: string[], code: number) => {
+    const { child } = fakeChild();
+    vi.mocked(childProcess.spawn).mockImplementationOnce(() => {
+      queueMicrotask(() => {
+        if (lines.length) child.stdout?.emit('data', Buffer.from(`${lines.join('\n')}\n`));
+        child.emit('close', code);
+      });
+      return child;
+    });
+  };
+
+  it('answers from the service without spawning a compiler or taking a process admission', async () => {
+    reply = () =>
+      served("src/importer.ts(1,15): error TS2305: Module './target' has no exported member 'Target'.\n", 1);
+
+    const raw = await handle(scopedArgs);
+
+    expect(requests).toEqual([
+      { v: 1, root, project: join(root, 'tsconfig.json'), files: [join(root, 'src', 'target.ts')] },
+    ]);
+    expect(childProcess.spawn).not.toHaveBeenCalled();
+    expect(governedExecution.begin).not.toHaveBeenCalled();
+    expect(raw.data).toMatchObject({
+      ok: true,
+      engine: 'tsc-service',
+      scopedVerdict: 'requested-files-clean',
+      errorCount: 0,
+      totalErrorCount: 1,
+      otherErrorCount: 1,
+      exitCode: 0,
+      compilerExitCode: 1,
+      serviceScope: { checkedFiles: 2, named: 1, typeReferencing: 0, importers: 1, queuedMs: 7, checkMs: 11 },
+    });
+    expect(raw.data).not.toHaveProperty('serviceFallback');
+    expect(raw.data).not.toHaveProperty('parseWarning');
+    // The service's otherErrors are the REVERSE graph (an importer), and the caveat says so.
+    expect((raw.data.otherErrors as TscDiagnostic[]).map((error) => error.file)).toEqual(['src/importer.ts']);
+    expect(raw.data.scopeCaveat).toMatch(/shared typecheck service/);
+    expect(raw.data.scopeCaveat).toMatch(/TRANSITIVE importer/);
+  });
+
+  it('reports an error in a requested file as that file failing', async () => {
+    reply = () => served("src/target.ts(1,30): error TS2322: Type 'string' is not assignable to type 'number'.\n", 1);
+
+    const raw = await handle(scopedArgs);
+
+    expect(raw.data).toMatchObject({
+      ok: false,
+      engine: 'tsc-service',
+      scopedVerdict: 'requested-files-error',
+      errorCount: 1,
+      errorsInRequestedFiles: 1,
+      exitCode: 1,
+    });
+  });
+
+  it("cross-checks the parser against the service's own error tally", async () => {
+    reply = () => served("src/target.ts(1,30): error TS2322: Type 'string' is not assignable to type 'number'.\n", 2);
+
+    const raw = await handle(scopedArgs);
+
+    expect(raw.data.parseWarning).toMatch(/reported 2 errors but 1 were parsed/);
+  });
+
+  it('falls back to the CLI when the service declines, and says why', async () => {
+    reply = () => ({ ok: false, reason: 'scope-too-wide', detail: '1600 files (limit 1500)' });
+    cliPrints([], 0);
+
+    const raw = await handle(scopedArgs);
+
+    expect(requests).toHaveLength(1);
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(governedExecution.begin).toHaveBeenCalledTimes(1);
+    expect(raw.data).toMatchObject({
+      ok: true,
+      engine: 'tsc-cli',
+      serviceFallback: 'declined: scope-too-wide (1600 files (limit 1500))',
+      scopedVerdict: 'requested-files-clean',
+    });
+    expect(raw.data).not.toHaveProperty('serviceScope');
+  });
+
+  it('falls back rather than report clean a requested file the service never checked', async () => {
+    // A file outside the project's program has no diagnostics on the service because it was
+    // never checked. Taking the empty output would be a green the tool did not earn.
+    reply = () => served('', 0, { namedNotInProgram: ['src/target.ts'] });
+    cliPrints(["src/target.ts(1,30): error TS2322: Type 'string' is not assignable to type 'number'."], 1);
+
+    const raw = await handle(scopedArgs);
+
+    expect(raw.data).toMatchObject({ ok: false, engine: 'tsc-cli', scopedVerdict: 'requested-files-error' });
+    expect(raw.data.serviceFallback).toMatch(/never checked them: src\/target\.ts/);
+  });
+
+  it('falls back when the service is unreachable', async () => {
+    vi.stubEnv('PAPERCUSP_TSC_SERVICE_SOCKET', join(root, 'absent.sock'));
+    cliPrints([], 0);
+
+    const raw = await handle(scopedArgs);
+
+    expect(raw.data).toMatchObject({ ok: true, engine: 'tsc-cli' });
+    expect(raw.data.serviceFallback).toMatch(/^unreachable at .*absent\.sock/);
+  });
+
+  it('never contacts the service when PAPERCUSP_TSC_SERVICE=0', async () => {
+    vi.stubEnv('PAPERCUSP_TSC_SERVICE', '0');
+    cliPrints([], 0);
+
+    const raw = await handle(scopedArgs);
+
+    expect(requests).toEqual([]);
+    expect(raw.data).toMatchObject({ engine: 'tsc-cli', serviceFallback: 'PAPERCUSP_TSC_SERVICE=0' });
+  });
+
+  it('keeps a project-wide run on the compiler: only it can give a project-wide total', async () => {
+    cliPrints([], 0);
+
+    const raw = await handle({ project: '.', files: ['src/target.ts'] });
+
+    expect(requests).toEqual([]);
+    expect(raw.data).toMatchObject({ ok: true, engine: 'tsc-cli' });
+    expect(raw.data).not.toHaveProperty('serviceFallback');
+  });
+
+  it('leaves the CLI fallback a real share of the foreground budget', () => {
+    expect(serviceBudgetMs(50_000)).toBe(35_000);
+    expect(serviceBudgetMs(30_000)).toBe(20_000);
+    expect(serviceBudgetMs(1_000)).toBe(1_000);
   });
 });
 

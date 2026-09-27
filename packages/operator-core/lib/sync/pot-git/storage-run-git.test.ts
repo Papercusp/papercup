@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -154,11 +154,28 @@ describe('pot-git defaultRunGit', () => {
     let seenTimeout: number | undefined;
     sidecarRunMock = (...a: unknown[]) => {
       seenTimeout = a[2] as number;
-      return Promise.resolve({ code: 0, stdout: '', stderr: '' });
+      return Promise.resolve({ code: 0, stdout: (a[0] as string[])[0] === 'rev-parse' ? join(repo, '.git/objects') : '', stderr: '' });
     };
     await defaultRunGit(['fetch'], repo, { timeoutMs: 240_000 });
     expect(seenTimeout).toBe(240_000);
   });
+
+  it.skipIf(process.platform === 'win32')('cancels local Git and waits for its helper to exit', async () => {
+    const controller = new AbortController();
+    const receipt = join(repo, 'helper.pid');
+    const result = runGitLocal(['-c', `alias.wait=!echo $$ > '${receipt}'; exec sleep 30`, 'wait'], repo,
+      { timeoutMs: 30_000, signal: controller.signal });
+    let pid = 0;
+    try {
+      await vi.waitFor(async () => { pid = Number(await readFile(receipt, 'utf8')); expect(pid).toBeGreaterThan(0); });
+      controller.abort();
+      expect((await result).code).toBe(-1);
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      controller.abort();
+      await result;
+    }
+  }, 15_000);
 });
 
 describe('pot-git local-spawn RSS admission (EI-20282995952031769)', () => {

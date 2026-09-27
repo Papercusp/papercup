@@ -1480,18 +1480,20 @@ export function resumeAccountPlan(args: any): {
  * for tests. With no `accountEnv`, the account routing stays byte-identical to
  * the pre-account resume; `accountEnv.env` layers the gateway pin on top.
  * @param {*} session
- * @param {{fork?: boolean, brain?: boolean, accountEnv?: {env?: Record<string, string>} | null, ownerId?: string | null}} [options]
+ * @param {{fork?: boolean, brain?: boolean, accountEnv?: {mode?: string, id?: string | null, env?: Record<string, string>} | null, ownerId?: string | null}} [options]
  */
 export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId }?: {
     fork?: boolean;
     brain?: boolean;
     accountEnv?: {
+        mode?: string;
+        id?: string | null;
         env?: Record<string, string>;
     } | null;
     ownerId?: string | null;
 }): {
-    PAPERCUSP_ACCOUNT_ID?: any;
-    PAPERCUSP_ACCOUNT_ROUTING_MODE?: any;
+    PAPERCUSP_ACCOUNT_ID?: string | undefined;
+    PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -1506,8 +1508,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
 } | {
-    PAPERCUSP_ACCOUNT_ID?: any;
-    PAPERCUSP_ACCOUNT_ROUTING_MODE?: any;
+    PAPERCUSP_ACCOUNT_ID?: string | undefined;
+    PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -1522,8 +1524,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
 } | {
-    PAPERCUSP_ACCOUNT_ID?: any;
-    PAPERCUSP_ACCOUNT_ROUTING_MODE?: any;
+    PAPERCUSP_ACCOUNT_ID?: string | undefined;
+    PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -1538,8 +1540,8 @@ export function buildResumeEnv(session: any, { fork, brain, accountEnv, ownerId 
     PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
 } | {
-    PAPERCUSP_ACCOUNT_ID?: any;
-    PAPERCUSP_ACCOUNT_ROUTING_MODE?: any;
+    PAPERCUSP_ACCOUNT_ID?: string | undefined;
+    PAPERCUSP_ACCOUNT_ROUTING_MODE?: string | undefined;
     PAPERCUSP_TOOLS?: string | undefined;
     PAPERCUSP_TOOLS_COMPACT?: string | undefined;
     ENABLE_TOOL_SEARCH?: string | undefined;
@@ -3731,7 +3733,7 @@ export function isCodexHomeLaunchReady(codexHome: string | null | undefined, exp
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{requireGatewayProvider?: boolean, model?: string | null, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: typeof fetch, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, token?: string | null, timeoutMs?: number}} options
+ * @param {{requireGatewayProvider?: boolean, model?: string | null, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, token?: string | null, timeoutMs?: number}} options
  */
 export function ensureCodexHomeViaOperator(owner: string | null, codexHome: string | null, advSessionId: string | number | null, { requireGatewayProvider, model, routeMode, accountId, priority, fetchImpl, operatorUrl, env, probe, onRecovery, token, timeoutMs, }?: {
     requireGatewayProvider?: boolean;
@@ -3739,7 +3741,7 @@ export function ensureCodexHomeViaOperator(owner: string | null, codexHome: stri
     routeMode?: string | null;
     accountId?: string | null;
     priority?: string | null;
-    fetchImpl?: typeof fetch;
+    fetchImpl?: (...args: any[]) => Promise<any>;
     operatorUrl?: string;
     env?: NodeJS.ProcessEnv;
     probe?: typeof probeOmpOperatorMcp;
