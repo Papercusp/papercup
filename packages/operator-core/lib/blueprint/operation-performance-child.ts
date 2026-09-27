@@ -23,6 +23,13 @@ restoreRawDateSerializers(sql);
 restoreRawJsonbSerializer(sql);
 
 try {
+  // D-022(a): the claim-time memory recall's embedder is a D-016 provider, so a
+  // fixture arm swaps in the deterministic in-process embedder BEFORE the tool
+  // graph loads (the helper wires the operator memory host first, so a later
+  // lazy import cannot restore the real embedder).
+  const fixtureEmbedder = process.env.P013_FIXTURE_EMBEDDER === '1'
+    ? await (await import('../../test/_deterministic-embedder')).installDeterministicEmbedder()
+    : undefined;
   process.send?.({ kind: 'p013-stage', stage: 'loading-tools' });
   const [create, claim, complete, get, submit, events, result] = await Promise.all([
     import('../agent-tools/work_items/create'),
@@ -66,6 +73,9 @@ try {
     profiler.disconnect();
   }
   if (!process.send) throw new Error('P-013 cold child requires an IPC channel');
+  // Sent BEFORE the sample: the parent resolves on the sample, so the call
+  // count must already be recorded by then.
+  if (fixtureEmbedder) process.send({ kind: 'p013-embedder', calls: fixtureEmbedder.calls() });
   await new Promise<void>((resolve, reject) => process.send!({ kind: 'p013-sample', sample }, (error) =>
     error ? reject(error) : resolve()));
   process.send?.({ kind: 'p013-stage', stage: 'sample-sent' });
