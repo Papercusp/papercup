@@ -85,18 +85,18 @@ if (apply && process.env.PAPERCUSP_PG_AUTOTUNE_BACKUP_LOCK_HELD !== '1') {
   mkdirSync(dirname(backupLock), { recursive: true });
   const guarded = spawnSync(
     'flock',
-    ['-n', '-E', '75', backupLock, 'npx', 'tsx', process.argv[1], ...args],
+    ['-n', '-E', '200', backupLock, 'npx', 'tsx', process.argv[1], ...args],
     {
       stdio: 'inherit',
       env: { ...process.env, PAPERCUSP_PG_AUTOTUNE_BACKUP_LOCK_HELD: '1' },
     },
   );
-  if (guarded.status === 75) {
+  if (guarded.status === 200) {
     console.error(`PostgreSQL apply deferred: host backup holds ${backupLock}; retry after the dump finishes.`);
   } else if (guarded.error) {
     console.error(`PostgreSQL apply could not establish the backup lock: ${guarded.error.message}`);
   }
-  process.exit(guarded.status ?? 1);
+  process.exit(guarded.status === 200 ? 75 : (guarded.status ?? 1));
 }
 
 const confDir = opt('--confd', '/etc/postgresql/18/main/conf.d');
