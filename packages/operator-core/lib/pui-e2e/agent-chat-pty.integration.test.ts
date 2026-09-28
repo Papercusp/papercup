@@ -632,7 +632,12 @@ class PuiPane {
   ) {
     this.cols = options.cols ?? 150;
     this.rows = options.rows ?? 44;
-    this.pty = ptySpawn(bin, options.args ?? [], {
+    // Bare `pui` is chat-first (pui-chat-first-ux P-001): one full-screen
+    // conversation with no tab strip or footer. The clauses in this file drive
+    // the full HUD surface (tabs, boards, `o`), which `pui hud` still is — the
+    // workbench's own HUD pane runs exactly that. Tests of the bare default pass
+    // `args: []` explicitly.
+    this.pty = ptySpawn(bin, options.args ?? ['hud'], {
       name: 'xterm-256color',
       cols: this.cols,
       rows: this.rows,
@@ -3306,7 +3311,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   test('P-001: bare `pui` opens one full-screen chat in its launch directory, ready to type', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p001-launch-')));
     const prompt = `P1 chat-first ${randomUUID().slice(0, 8)}`;
-    const pane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
+    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
     onTestFailed(() => console.info('PUI_P001_FAILURE', JSON.stringify({
       launchDir, sdkCwds: scriptedEngine.sdkCwds, requests: scriptedEngine.requests, ...pane.failureEvidence(),
     })));
@@ -3353,13 +3358,15 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     const launchCount = () => sessionTraffic
       .filter((entry) => entry.method === 'POST' && entry.path === '/api/adv/sessions/launch-su' && entry.status === 200)
       .reduce((total, entry) => total + Number(entry.count ?? 1), 0);
-    const pane = new PuiPane(bin, operatorPort, home);
+    // Bare `pui`: the plan's guard is the default launch, chat-first (P-001).
+    const pane = new PuiPane(bin, operatorPort, home, { args: [] });
     onTestFailed(() => console.info('PUI_P002_FAILURE', JSON.stringify({
       stage, nativePid, recoveredAfterMs, requests: scriptedEngine.requests, sdkSessions: scriptedEngine.sdkSessions,
       commandPosts: commandPosts.length, traffic: sessionTraffic, ...pane.failureEvidence(),
     })));
     try {
-      await openComposer(pane);
+      // Chat-first opens with the composer focused: no `o`, no `i`.
+      await pane.waitFor(`pot ${HARNESS} · role operator · session new`, { timeoutMs: 40_000 });
       pane.write(prompt);
       pane.enter();
       await pane.waitFor('· starting ·', { timeoutMs: 60_000 });
