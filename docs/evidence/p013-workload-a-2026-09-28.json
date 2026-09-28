@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-013 workload A (direct work-item): control work_items:create vs candidate blueprint-operation submit (operationId direct), each claimed to terminal; D-016 paired matrix, 5 reps",
+  "framework": "operational",
+  "testLayer": "integration",
+  "evidencePlane": "isolated",
+  "plan": "blueprint-backed-work-item-execution-2026-09-23",
+  "planItem": "P-013",
+  "workItem": "WI-10002948",
+  "governingDecisions": ["D-016","D-022","D-024"],
+  "observer": "su-fcbb3fed-83b5-4c34-9dab-72e191d76491",
+  "testFile": "packages/operator-core/lib/blueprint/operation-performance.integration.test.ts",
+  "command": ["for k in 0..4: .papercusp/scratch/p013-a/run-matrix.sh <k> <k>, i.e. P013_MATRIX=1 P013_MODES=warm,cold P013_CONCURRENCIES=1,8 P013_WARMUPS=20 P013_WARM_SAMPLES=200 P013_COLD_SAMPLES=50 P013_REPETITIONS=1 P013_REPETITION_OFFSET=<k> P013_DEDICATED_PG=native P013_FIXTURE_EMBEDDER=1 npm run test:file -- packages/operator-core/lib/blueprint/operation-performance.integration.test.ts","node .papercusp/scratch/p013-a/grade-a.mjs --json --reps 0,1,2,3,4"],
+  "exitCode": 0,
+  "startedAt": "2026-09-28T05:03:32Z",
+  "finishedAt": "2026-09-28T06:55:50Z",
+  "summary": "Workload A graded PASS 9/9 D-016 bars on the median of five clean repetitions (200 warm and 50 cold samples per arm per concurrency per rep). Candidate warm p50 is at or below control at c1 (468.4 vs 479.2 ms) and c8 (2185.4 vs 2345.6 ms), and c8 throughput is 3.196/s vs 3.215/s. Both arms show ~430 ms warm acceptedToDispatch, a paired rig cost that cancels. Cold acceptedToDispatch p50 is ~1.4 s for candidate vs ~0.4 s for control, but cold ingressToAccepted is ~0.1 s vs ~1.1 s the other way: ingress+dispatch sums are 1540 vs 1508 ms at c1 and 1687 vs 1714 ms at c8, so one ~1.1 s cold first-use cost lands in a different phase per arm and is not candidate overhead [inferred: paid at work_items:create by control and between submit and claim by candidate; no DBOS queue is on this path].",
+  "assertions": [
+    {"id":"d016-warm-p50-c1","passed":true,"evidence":"median of 5 reps: candidate 468.4 vs control 479.2; limit 566.1 (<= 1.15x+15); verdict PASS"},
+    {"id":"d016-warm-p95-c1","passed":true,"evidence":"median of 5 reps: candidate 553.4 vs control 561.5; limit 726.8 (<= 1.25x+25); verdict PASS"},
+    {"id":"d016-warm-p99-c1","passed":true,"evidence":"median of 5 reps: candidate 679.4 vs control 1364.8; limit 2097.3 (<= 1.5x+50); verdict PASS"},
+    {"id":"d016-warm-p50-c8","passed":true,"evidence":"median of 5 reps: candidate 2185.4 vs control 2345.6; limit 2712.4 (<= 1.15x+15); verdict PASS"},
+    {"id":"d016-warm-p95-c8","passed":true,"evidence":"median of 5 reps: candidate 3156.1 vs control 3105.8; limit 3907.2 (<= 1.25x+25); verdict PASS"},
+    {"id":"d016-warm-p99-c8","passed":true,"evidence":"median of 5 reps: candidate 3574.7 vs control 3722.9; limit 5634.3 (<= 1.5x+50); verdict PASS"},
+    {"id":"d016-throughput-c8-warm","passed":true,"evidence":"median of 5 reps: candidate 3.196 vs control 3.215; limit 2.572 (>= 0.80x); verdict PASS"},
+    {"id":"d016-cold-p95-c1","passed":true,"evidence":"median of 5 reps: candidate 3190.1 vs control 3087.6; limit 5903.4 (<= 1.75x+500); verdict PASS"},
+    {"id":"d016-cold-p95-c8","passed":true,"evidence":"median of 5 reps: candidate 2879.5 vs control 2834.1; limit 5459.7 (<= 1.75x+500); verdict PASS"},
+    {"id":"all-five-reps-completed-rc0","passed":true,"evidence":"rep0 rc=0 2026-09-28T06:32:33Z..2026-09-28T06:55:50Z; rep1 rc=0 2026-09-28T05:03:32Z..2026-09-28T05:27:29Z; rep2 rc=0 2026-09-28T05:27:29Z..2026-09-28T05:49:25Z; rep3 rc=0 2026-09-28T05:49:25Z..2026-09-28T06:10:56Z; rep4 rc=0 2026-09-28T06:10:56Z..2026-09-28T06:32:18Z"},
+    {"id":"rep0-contamination-replaced","passed":true,"evidence":"Original rep0 (ended 05:03:32Z) overlapped workload C smoke 0mukrihr3n4kg8b12mz (~04:43:36Z-04:46Z); it was preserved as matrix-rep0-contaminated.log and excluded. rep0 was rerun alone (run-matrix.sh 0 0) 06:32:33Z-06:55:50Z with the rig lease held."},
+    {"id":"measured-source-stable-across-reps","passed":true,"evidence":"2 blob-fingerprint sets across reps. The only difference is operation-performance.integration.test.ts (cb3d45e9a8 in rep1, 98ee77d6e9 from rep2 on), a change confined to the afterAll teardown that collects the dedicated-PG log; driver, child, admission and fixture blobs are identical in every rep."}
+  ],
+  "rig": "Dedicated native PostgreSQL per repetition (dedicated-native-pg.ts), deterministic fixture claim-recall embedder (D-022), getOrgPg stand-in pool sized like production pgPoolMax=52 (D-024), WI-10003586 admission headroom fix present, exclusive p013-benchmark-rig lease held for every rep.",
+  "load": "A manual green-checkpoint run (fired 04:24:22Z, ~8.5 cores at 05:24Z, inactive by 05:55:43Z with an unrecoverable end time) overlapped rep1 and rep2 and possibly the first minutes of rep3. Three P-012 integration files ran serially from ~05:27Z (during rep2). The rep0 rerun and rep4 ran clear. Medians across reps are the graded statistic, so a loaded rep cannot carry a bar alone.",
+  "cells": {
+    "control|warm|c1": {"samplesPerRep":[200,200,200,200,200],"p50":479.2,"p95":561.5,"p99":1364.8,"p50Spread":[450.7,488.4],"p95Spread":[480.1,955.9],"throughputPerSec":1.914,"phasesP50":{"ingressToAccepted":19,"acceptedToDispatch":427,"dispatchToTerminal":14.8,"terminalToBusinessEvent":13}},
+    "control|warm|c8": {"samplesPerRep":[200,200,200,200,200],"p50":2345.6,"p95":3105.8,"p99":3722.9,"p50Spread":[2282.8,2512.6],"p95Spread":[2785.2,3345],"throughputPerSec":3.215,"phasesP50":{"ingressToAccepted":325.6,"acceptedToDispatch":1233.2,"dispatchToTerminal":321.3,"terminalToBusinessEvent":333}},
+    "control|cold|c1": {"samplesPerRep":[50,50,50,50,50],"p50":2324.4,"p95":3087.6,"p99":4520.3,"p50Spread":[2278.3,2818.6],"p95Spread":[2488.5,4083.8],"throughputPerSec":0.123,"phasesP50":{"ingressToAccepted":1142.8,"acceptedToDispatch":365.3,"dispatchToTerminal":260.4,"terminalToBusinessEvent":561}},
+    "control|cold|c8": {"samplesPerRep":[50,50,50,50,50],"p50":2658.5,"p95":2834.1,"p99":3051.9,"p50Spread":[2517.4,2884],"p95Spread":[2668.9,3834],"throughputPerSec":0.8,"phasesP50":{"ingressToAccepted":1296.4,"acceptedToDispatch":417.8,"dispatchToTerminal":298.4,"terminalToBusinessEvent":674}},
+    "candidate|warm|c1": {"samplesPerRep":[200,200,200,200,200],"p50":468.4,"p95":553.4,"p99":679.4,"p50Spread":[453.2,515.7],"p95Spread":[484.5,741.9],"throughputPerSec":2.016,"phasesP50":{"ingressToAccepted":11.4,"acceptedToDispatch":422.7,"dispatchToTerminal":17.1,"terminalToBusinessEvent":15}},
+    "candidate|warm|c8": {"samplesPerRep":[200,200,200,200,200],"p50":2185.4,"p95":3156.1,"p99":3574.7,"p50Spread":[2025.1,2488],"p95Spread":[2783.2,3360.3],"throughputPerSec":3.196,"phasesP50":{"ingressToAccepted":292.4,"acceptedToDispatch":1482.1,"dispatchToTerminal":321.4,"terminalToBusinessEvent":320}},
+    "candidate|cold|c1": {"samplesPerRep":[50,50,50,50,50],"p50":2382.5,"p95":3190.1,"p99":3663.3,"p50Spread":[2311.2,2589.5],"p95Spread":[2678.4,3382.9],"throughputPerSec":0.124,"phasesP50":{"ingressToAccepted":117.5,"acceptedToDispatch":1422.6,"dispatchToTerminal":279,"terminalToBusinessEvent":567}},
+    "candidate|cold|c8": {"samplesPerRep":[50,50,50,50,50],"p50":2664.7,"p95":2879.5,"p99":2919,"p50Spread":[2394.3,2881.7],"p95Spread":[2761.5,3102.7],"throughputPerSec":0.811,"phasesP50":{"ingressToAccepted":138.7,"acceptedToDispatch":1547.8,"dispatchToTerminal":300.5,"terminalToBusinessEvent":670}}
+  },
+  "ungradedColdTails": {
+    "control|cold|c1": {"p50":2324.4,"p99":4520.3},
+    "candidate|cold|c1": {"p50":2382.5,"p99":3663.3},
+    "control|cold|c8": {"p50":2658.5,"p99":3051.9},
+    "candidate|cold|c8": {"p50":2664.7,"p99":2919}
+  },
+  "reps": [
+    {"rep":0,"log":".papercusp/scratch/p013-a/matrix-rep0.log","sha256":"5e8d99287045b5370ccb32b7bfd0210930b887b771ff065464d3a532167f60e5","bytes":95349,"startedAt":"2026-09-28T06:32:33Z","finishedAt":"2026-09-28T06:55:50Z","head":"413964c743b3d1adcc542500e4e7873eadd9281c","rc":0},
+    {"rep":1,"log":".papercusp/scratch/p013-a/matrix-rep1.log","sha256":"32aa5a43ce8ed1db9b24b2fee7dcd677eaede015d262f68ad0ad6156fc31aeb6","bytes":99593,"startedAt":"2026-09-28T05:03:32Z","finishedAt":"2026-09-28T05:27:29Z","head":"536cb96f317eaab3789b565fe161b1b4c23a7323","rc":0},
+    {"rep":2,"log":".papercusp/scratch/p013-a/matrix-rep2.log","sha256":"2716a04a4c197866aaf83c5499c5a60366fad549812f61b4a3998a511fd4ae0b","bytes":89715,"startedAt":"2026-09-28T05:27:29Z","finishedAt":"2026-09-28T05:49:25Z","head":"ccbcf8f667c3040eac7f2d7f459075005d77774f","rc":0},
+    {"rep":3,"log":".papercusp/scratch/p013-a/matrix-rep3.log","sha256":"45472cbeb38c55f2cbc7ea19b64fb57b4e1fadce3ba8cfac075083399a583443","bytes":89494,"startedAt":"2026-09-28T05:49:25Z","finishedAt":"2026-09-28T06:10:56Z","head":"b306a9cc00768c455a6d3af43badebfe4f3cb6e1","rc":0},
+    {"rep":4,"log":".papercusp/scratch/p013-a/matrix-rep4.log","sha256":"97e81b3ffbda4bac906b330b5f05fe15bf2d3d9c308da733e1790ad0619436fa","bytes":91161,"startedAt":"2026-09-28T06:10:56Z","finishedAt":"2026-09-28T06:32:18Z","head":"98d916c67d3d7477f7ed9f0f608aa30fc4dcc903","rc":0}
+  ],
+  "measuredSourceBlobSets": [
+    {"reps":[0,2,3,4],"blobs":["98ee77d6e919d48f71fdbd89a91e49c2b3cdd066 packages/operator-core/lib/blueprint/operation-performance.integration.test.ts","1b03dd7525cb0adb4dbf85ba71ccf743ee541e52 packages/operator-core/lib/blueprint/operation-performance-driver.ts","3fca4f85c7981b939829df8eb3a01da5f37e7475 packages/operator-core/lib/blueprint/operation-performance-child.ts","11240c1a506f8c8f8fdbe571af202aaa703fe1c1 packages/operator-core/lib/blueprint/operation-admission.ts","1d3dc6d44c9f8f46cd9685f3d39e5e181f8c7872 packages/operator-core/test/_org-test-db.ts"]},
+    {"reps":[1],"blobs":["cb3d45e9a8e1a6f3e341f525da084515f8bc51be packages/operator-core/lib/blueprint/operation-performance.integration.test.ts","1b03dd7525cb0adb4dbf85ba71ccf743ee541e52 packages/operator-core/lib/blueprint/operation-performance-driver.ts","3fca4f85c7981b939829df8eb3a01da5f37e7475 packages/operator-core/lib/blueprint/operation-performance-child.ts","11240c1a506f8c8f8fdbe571af202aaa703fe1c1 packages/operator-core/lib/blueprint/operation-admission.ts","1d3dc6d44c9f8f46cd9685f3d39e5e181f8c7872 packages/operator-core/test/_org-test-db.ts"]}
+  ],
+  "notProven": ["Actual-model latency: this matrix uses deterministic provider fixtures only; the bounded actual-model smoke is separate.","Which call pays the ~1.1 s cold first-use cost in each arm is inferred from phase sums, not probed per call."]
+}
