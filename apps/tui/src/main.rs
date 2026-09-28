@@ -29,6 +29,7 @@ mod event;
 mod file_picker;
 mod fleet;
 mod framing;
+mod fresh_exec;
 mod glyph;
 mod hives;
 mod http;
@@ -84,13 +85,14 @@ use companion::Companion;
 use event::{spawn_input_listener, Event};
 use mux::{Multiplexer, MuxAction, Zellij};
 
-const CLI_HELP: &str = "pui — Papercusp terminal workbench
+const CLI_HELP: &str = "pui — Papercusp terminal agent
 
 Usage:
+  pui [OPTIONS]              Chat with an agent in the current directory
   pui [OPTIONS] [SUBCOMMAND]
 
 Subcommands:
-  workbench                  Open the full zellij workbench
+  workbench                  Open the full zellij workbench (boards, fleet, panes)
   doctor                     Verify local artifacts, stale panes, and selected operator identity
   self <COMMAND>             Install, update, roll back or uninstall this PUI (`pui self --help`)
   hud                      Open the HUD pane
@@ -260,19 +262,20 @@ fn print_cli_version(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> 
 /// `pui workbench` materializes its primary full TUI as `pui hud`, so `hud` is a
 /// launch-capable mode even though it is spelled as a subcommand. The pinned data
 /// boards remain non-reactive; otherwise every board races to open the same pane.
+/// Bare `pui` is chat-first (P-001): one conversation with no multiplexer, so
+/// it has nowhere to open a pane and must never claim a pending launch.
 fn reactive_launch_mode(subcommand: Option<&str>) -> bool {
-    matches!(subcommand, None | Some("hud") | Some("dock-driver"))
+    matches!(subcommand, Some("hud") | Some("dock-driver"))
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Subcommand dispatch — bare `pui` opens the full workbench (the UX a human
-    // wants from typing `pui`):
-    //   pui workbench → force the zellij workbench (D-001)
-    //   pui hud       → force just the HUD (what the workbench's own HUD pane runs)
-    //   pui           → the workbench from a plain terminal, but just the HUD when
-    //                   already inside zellij (so the HUD pane can't recursively
-    //                   nest another workbench — `$ZELLIJ` is set by zellij).
+    // Subcommand dispatch — bare `pui` is ONE full-screen chat in the current
+    // directory, the way `claude` and `codex` start (pui-chat-first-ux P-001):
+    //   pui           → chat-first: no zellij, tab strip, fleet rail or boards
+    //   pui workbench → the zellij workbench with every board (D-001)
+    //   pui hud       → just the full HUD (what the workbench's own HUD pane runs;
+    //                   the workbench never launches bare `pui`, so it cannot nest).
     // `pui --connect…` runs pui on a remote host through psu's saved
     // connections (P-017 / D-025). Checked before any other parsing: psu owns
     // every `--connect*` cell, which PUI's own parser would misread as a
@@ -352,7 +355,6 @@ async fn main() -> Result<()> {
         Some("dock-driver") | Some("wake-pane") | Some("prompt-pane") | Some("mail-pane")
         | Some("work-pane") | Some("network-pane") | Some("hive-pane") | Some("context-pane")
         | Some("plans-pane") => {}
-        None if std::env::var_os("ZELLIJ").is_none() => return run_workbench().await,
         _ => {}
     }
     // Pinned single-tab dock pane: render JUST that tab's body (no tab strip /
@@ -466,6 +468,12 @@ async fn main() -> Result<()> {
     // The dock-driver is the only mode with the driver-only surfaces (frame
     // tabs, the regroup repair, the Fleet roster's glyph/badge columns).
     let hive_agent_tabs = subcommand.as_deref() == Some("dock-driver");
+    let chat_first = subcommand.is_none();
+    if chat_first {
+        // Like `claude`, the chat inherits the terminal's own background
+        // rather than painting the workbench's opaque dashboard panels.
+        crate::theme::Theme::set_transparent_surfaces(true);
+    }
 
     enable_raw_mode()?;
     let mut out = stdout();
@@ -527,6 +535,7 @@ async fn main() -> Result<()> {
         dock_agent_panes,
         hive_agent_tabs,
         reactive_launch_panes,
+        chat_first,
         kbd_enhanced,
     )
     .await;
@@ -1186,6 +1195,7 @@ async fn run<B: Backend>(
     dock_agent_panes: bool,
     hive_agent_tabs: bool,
     reactive_launch_panes: bool,
+    chat_first: bool,
     kbd_enhanced: bool,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
@@ -1214,6 +1224,13 @@ async fn run<B: Backend>(
     app.pinned = pinned;
     if let Some(p) = pinned {
         app.tab = p;
+    }
+    // Chat-first (P-001): open on the conversation with the composer already
+    // focused, so the first keystroke is the first word of the message.
+    app.chat_first = chat_first;
+    if chat_first {
+        app.tab = app::Tab::Operator;
+        app.chat_composing = true;
     }
     // hive-pane (B-09/B-10 drill-in): pin the dossier to one C-3 row key.
     app.network_focus = network_focus;
@@ -1249,7 +1266,7 @@ async fn run<B: Backend>(
         std::env::remove_var(session_config::SETUP_DRAFT_ENV);
         app.restore_setup_draft(draft);
     }
-    if let Some(note) = std::env::var(session_config::SETUP_NOTE_ENV).ok() {
+    if let Ok(note) = std::env::var(session_config::SETUP_NOTE_ENV) {
         std::env::remove_var(session_config::SETUP_NOTE_ENV);
         app.set_setup_note(note);
     }
@@ -1283,7 +1300,10 @@ async fn run<B: Backend>(
     let chat_load_token = app.next_agent_chat_load_token();
     if !restoring_setup {
         tokio::spawn(agent_chat_load(
-            app.harness.clone(), None, chat_load_token, tx.clone(),
+            app.harness.clone(),
+            None,
+            chat_load_token,
+            tx.clone(),
         ));
     }
     if let Some(target) = app.context_projection_target.clone() {
@@ -1371,7 +1391,10 @@ async fn run<B: Backend>(
             app.su_session_inventory.clear();
             if app.session_setup.is_none() {
                 tokio::spawn(agent_chat_load(
-                    app.harness.clone(), None, app.chat_load_token, tx.clone(),
+                    app.harness.clone(),
+                    None,
+                    app.chat_load_token,
+                    tx.clone(),
                 ));
             }
         }
@@ -1389,6 +1412,7 @@ async fn run<B: Backend>(
                 app.tab = p;
             }
         }
+        app.keep_chat_first_surface();
         if let Ok(mut selected) = sync_pane.selected.lock() {
             *selected = app.tab;
         }
@@ -2069,7 +2093,9 @@ async fn run<B: Backend>(
                     // tasks cannot keep publishing from the previous operator.
                     if let Err(error) = reconnect_setup_process(&reconnect, kbd_enhanced) {
                         if let Some(setup) = app.session_setup.as_mut() {
-                            setup.note = Some(format!("Could not reconnect: {error}. Your draft is retained."));
+                            setup.note = Some(format!(
+                                "Could not reconnect: {error}. Your draft is retained."
+                            ));
                         }
                         terminal.clear()?;
                         terminal.draw(|f| ui::draw(f, &app))?;
@@ -2078,10 +2104,16 @@ async fn run<B: Backend>(
                 Action::ConnectSessionSetup { sign_in } => {
                     // Like reconnect: a fresh process replaces this one, so no
                     // reader of this TUI competes with psu for the terminal.
-                    let draft = app.session_setup.as_ref().map(|setup| setup.message.clone()).unwrap_or_default();
+                    let draft = app
+                        .session_setup
+                        .as_ref()
+                        .map(|setup| setup.message.clone())
+                        .unwrap_or_default();
                     if let Err(error) = connect_setup_process(sign_in, &draft, kbd_enhanced) {
                         if let Some(setup) = app.session_setup.as_mut() {
-                            setup.note = Some(format!("Could not start psu: {error:#}. Your draft is retained."));
+                            setup.note = Some(format!(
+                                "Could not start psu: {error:#}. Your draft is retained."
+                            ));
                         }
                         terminal.clear()?;
                         terminal.draw(|f| ui::draw(f, &app))?;
@@ -2640,7 +2672,9 @@ async fn session_setup_fetch(tx: UnboundedSender<Event>) {
         }
         Err(error) => {
             let _ = tx.send(Event::BackendIdentity(Err(operator_failure_status_line(
-                &client::selected_endpoint_label(), &error))));
+                &client::selected_endpoint_label(),
+                &error,
+            ))));
             return;
         }
     };
@@ -2648,14 +2682,22 @@ async fn session_setup_fetch(tx: UnboundedSender<Event>) {
     tokio::join!(
         async {
             match client.harnesses().await {
-                Ok(projects) => { let _ = tx.send(Event::Harnesses(projects)); }
-                Err(error) => { let _ = tx.send(Event::Error(format!("Setup projects: {error}"))); }
+                Ok(projects) => {
+                    let _ = tx.send(Event::Harnesses(projects));
+                }
+                Err(error) => {
+                    let _ = tx.send(Event::Error(format!("Setup projects: {error}")));
+                }
             }
         },
         async {
             match client.operator_config().await {
-                Ok(config) => { let _ = tx.send(Event::OperatorConfig(config)); }
-                Err(error) => { let _ = tx.send(Event::Error(format!("Setup runtime: {error}"))); }
+                Ok(config) => {
+                    let _ = tx.send(Event::OperatorConfig(config));
+                }
+                Err(error) => {
+                    let _ = tx.send(Event::Error(format!("Setup runtime: {error}")));
+                }
             }
         },
         async {
@@ -2664,7 +2706,9 @@ async fn session_setup_fetch(tx: UnboundedSender<Event>) {
                     let _ = tx.send(Event::AccountRows(status.accounts));
                     let _ = tx.send(Event::AccountPoolVerdicts(status.pool_verdict));
                 }
-                Err(error) => { let _ = tx.send(Event::Error(format!("Setup accounts: {error}"))); }
+                Err(error) => {
+                    let _ = tx.send(Event::Error(format!("Setup accounts: {error}")));
+                }
             }
         },
     );
@@ -2695,7 +2739,8 @@ fn setup_reconnect_command(
     reconnect: &session_config::SetupReconnect,
 ) -> std::process::Command {
     let mut command = std::process::Command::new(executable);
-    command.arg("hud")
+    command
+        .arg("hud")
         .env("PUI_OPERATOR", &reconnect.endpoint)
         .env("PAPERCUSP_OPERATOR_URL", &reconnect.endpoint)
         .env(session_config::SETUP_DRAFT_ENV, &reconnect.message);
@@ -2709,7 +2754,10 @@ fn setup_reconnect_command(
     command
 }
 
-fn reconnect_setup_process(reconnect: &session_config::SetupReconnect, enhanced: bool) -> Result<()> {
+fn reconnect_setup_process(
+    reconnect: &session_config::SetupReconnect,
+    enhanced: bool,
+) -> Result<()> {
     use std::os::unix::process::CommandExt;
     let executable = std::env::current_exe()?;
     let mut command = setup_reconnect_command(&executable, reconnect);
@@ -2725,7 +2773,11 @@ fn connect_setup_process(sign_in: bool, draft: &str, enhanced: bool) -> Result<(
     exec_restoring_terminal(enhanced, || command.exec().into())
 }
 
-fn setup_connect_command(executable: &std::path::Path, sign_in: bool, draft: &str) -> std::process::Command {
+fn setup_connect_command(
+    executable: &std::path::Path,
+    sign_in: bool,
+    draft: &str,
+) -> std::process::Command {
     let mut command = std::process::Command::new(executable);
     command
         .args(remote_connect::setup_connect_supervisor_args(sign_in))
@@ -2741,18 +2793,32 @@ fn exec_restoring_terminal(enhanced: bool, exec: impl FnOnce() -> anyhow::Error)
     // Restore termios before exec: crossterm's saved original state is in
     // process memory, and would otherwise be lost across replacement.
     let mut out = stdout();
-    if enhanced { let _ = execute!(out, crossterm::event::PopKeyboardEnhancementFlags); }
+    if enhanced {
+        let _ = execute!(out, crossterm::event::PopKeyboardEnhancementFlags);
+    }
     disable_raw_mode()?;
-    let _ = execute!(out, crossterm::event::DisableFocusChange,
-        crossterm::event::DisableBracketedPaste, LeaveAlternateScreen);
+    let _ = execute!(
+        out,
+        crossterm::event::DisableFocusChange,
+        crossterm::event::DisableBracketedPaste,
+        LeaveAlternateScreen
+    );
     let error = exec();
     // exec only returns on failure. Restore this same UI and retained draft.
     enable_raw_mode()?;
-    execute!(out, EnterAlternateScreen, crossterm::event::EnableBracketedPaste,
-        crossterm::event::EnableFocusChange)?;
+    execute!(
+        out,
+        EnterAlternateScreen,
+        crossterm::event::EnableBracketedPaste,
+        crossterm::event::EnableFocusChange
+    )?;
     if enhanced {
-        let _ = execute!(out, crossterm::event::PushKeyboardEnhancementFlags(
-            crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES));
+        let _ = execute!(
+            out,
+            crossterm::event::PushKeyboardEnhancementFlags(
+                crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
+        );
     }
     Err(error)
 }
@@ -2764,18 +2830,30 @@ mod setup_reconnect_tests {
     #[test]
     fn session_setup_reconnect_scopes_token_and_keeps_draft_out_of_argv() {
         let mut request = session_config::SetupReconnect {
-            endpoint: "https://other.example".into(), message: "private draft λ".into(),
-            token: Default::default(), keep_existing_token: false,
+            endpoint: "https://other.example".into(),
+            message: "private draft λ".into(),
+            token: Default::default(),
+            keep_existing_token: false,
         };
         let command = setup_reconnect_command(std::path::Path::new("/test/pui"), &request);
         assert_eq!(command.get_args().collect::<Vec<_>>(), vec!["hud"]);
-        let env = command.get_envs().collect::<std::collections::BTreeMap<_, _>>();
+        let env = command
+            .get_envs()
+            .collect::<std::collections::BTreeMap<_, _>>();
         assert_eq!(env[std::ffi::OsStr::new(http::OPERATOR_TOKEN_ENV)], None);
-        assert_eq!(env[std::ffi::OsStr::new(session_config::SETUP_DRAFT_ENV)].unwrap(), "private draft λ");
+        assert_eq!(
+            env[std::ffi::OsStr::new(session_config::SETUP_DRAFT_ENV)].unwrap(),
+            "private draft λ"
+        );
         request.token.0 = "new-operator-token".into();
         let command = setup_reconnect_command(std::path::Path::new("/test/pui"), &request);
-        let env = command.get_envs().collect::<std::collections::BTreeMap<_, _>>();
-        assert_eq!(env[std::ffi::OsStr::new(http::OPERATOR_TOKEN_ENV)].unwrap(), "new-operator-token");
+        let env = command
+            .get_envs()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            env[std::ffi::OsStr::new(http::OPERATOR_TOKEN_ENV)].unwrap(),
+            "new-operator-token"
+        );
         assert!(!format!("{request:?}").contains("new-operator-token"));
     }
 }
@@ -5449,6 +5527,7 @@ async fn open_su_session_task(
             carry,
             attached_engine: true,
             agent_chat_id: chat_id.clone(),
+            cwd: crate::su_session::launch_cwd(),
         },
     );
     let binding = match client.open_su_session(&request).await {
@@ -5541,7 +5620,7 @@ async fn stream_su_session_events(
 ) {
     // Readiness is an executor/stream property, not the mere existence of a
     // descriptor. Bound retries also cover a reconnect during host startup.
-    let (stream, mut startup_snapshot, last_error) =
+    let (stream, startup_snapshot, last_error) =
         open_su_event_stream(&client, &harness, &chat_id, &tx).await;
     let Some(mut stream) = stream else {
         let message = last_error.unwrap_or_else(|| {
@@ -5610,8 +5689,14 @@ async fn stream_su_session_events(
     let mut stream_reopens = 0u32;
     if initial_turn.is_some() {
         if let Some(detached) = startup_snapshot.as_ref().and_then(detached_runtime) {
-            match recover_detached_runtime(&client, &harness, &binding, detached, &mut resume_requested)
-                .await
+            match recover_detached_runtime(
+                &client,
+                &harness,
+                &binding,
+                detached,
+                &mut resume_requested,
+            )
+            .await
             {
                 Some(message) => {
                     let pending = initial_turn.take().expect("checked pending first turn");
@@ -5625,10 +5710,8 @@ async fn stream_su_session_events(
             }
         }
     }
-    let mut detach_poll = tokio::time::interval_at(
-        tokio::time::Instant::now() + SU_DETACH_POLL,
-        SU_DETACH_POLL,
-    );
+    let mut detach_poll =
+        tokio::time::interval_at(tokio::time::Instant::now() + SU_DETACH_POLL, SU_DETACH_POLL);
     loop {
         let next = if initial_turn.is_some() {
             tokio::select! {
@@ -5895,9 +5978,9 @@ fn detached_runtime(snapshot: &crate::su_session::SuSessionSnapshot) -> Option<D
         {
             Some(DetachedRuntime::Resumable)
         }
-        crate::su_session::SuSessionRuntimeAction::Relaunch => {
-            Some(DetachedRuntime::Unrecoverable(reconciliation.reason.clone()))
-        }
+        crate::su_session::SuSessionRuntimeAction::Relaunch => Some(
+            DetachedRuntime::Unrecoverable(reconciliation.reason.clone()),
+        ),
         _ => None,
     }
 }
@@ -7645,19 +7728,34 @@ mod tests {
                 "runtimeReconciliation": {"action": "reattach", "reason": "live_pid", "stalePid": false}
             }))
             .unwrap();
-        assert_eq!(detached_runtime(&snapshot), Some(DetachedRuntime::Resumable));
+        assert_eq!(
+            detached_runtime(&snapshot),
+            Some(DetachedRuntime::Resumable)
+        );
 
         snapshot.executor_attached = true;
-        assert_eq!(detached_runtime(&snapshot), None, "an attached executor is live");
+        assert_eq!(
+            detached_runtime(&snapshot),
+            None,
+            "an attached executor is live"
+        );
         snapshot.executor_attached = false;
 
         snapshot.terminal = true;
-        assert_eq!(detached_runtime(&snapshot), None, "a terminal session is not resumed");
+        assert_eq!(
+            detached_runtime(&snapshot),
+            None,
+            "a terminal session is not resumed"
+        );
         snapshot.terminal = false;
 
         let reconciliation = snapshot.runtime_reconciliation.as_mut().unwrap();
         reconciliation.reason = "runtime_replacement".into();
-        assert_eq!(detached_runtime(&snapshot), None, "a host mid-resume is not resumed again");
+        assert_eq!(
+            detached_runtime(&snapshot),
+            None,
+            "a host mid-resume is not resumed again"
+        );
 
         // The same reason with a DEAD recorded engine is the restored-after-
         // crash case (classifySuSessionRuntime): the native identity survives,
@@ -7682,10 +7780,18 @@ mod tests {
 
         snapshot.runtime_reconciliation.as_mut().unwrap().action =
             crate::su_session::SuSessionRuntimeAction::Wait;
-        assert_eq!(detached_runtime(&snapshot), None, "unknown liveness keeps waiting");
+        assert_eq!(
+            detached_runtime(&snapshot),
+            None,
+            "unknown liveness keeps waiting"
+        );
 
         snapshot.runtime_reconciliation = None;
-        assert_eq!(detached_runtime(&snapshot), None, "a freshly launched host is not restored");
+        assert_eq!(
+            detached_runtime(&snapshot),
+            None,
+            "a freshly launched host is not restored"
+        );
     }
 
     #[test]
@@ -7897,7 +8003,11 @@ mod tests {
 
     #[test]
     fn workbench_hud_is_a_reactive_launch_owner_but_board_panes_are_not() {
-        for mode in [None, Some("hud"), Some("dock-driver")] {
+        assert!(
+            !reactive_launch_mode(None),
+            "bare pui is chat-first: no multiplexer to open a launch pane in"
+        );
+        for mode in [Some("hud"), Some("dock-driver")] {
             assert!(
                 reactive_launch_mode(mode),
                 "{mode:?} must consume pending workbench launches"
