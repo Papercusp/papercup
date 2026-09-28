@@ -102,7 +102,10 @@ fn draw_frame(f: &mut Frame, app: &App) {
     // tab strip, no HUD, no work area. The tab's state + data wiring are
     // unchanged; only the rendering is reduced to that body full-screen (the
     // tab is re-pinned in main.rs). Help + the latest toast still overlay.
-    if let Some(pinned) = app.pinned {
+    // Chat-first (P-001) takes the same full-screen branch for whichever of its
+    // two surfaces is current: the conversation or its Ctrl-T Context view.
+    let full_screen = app.pinned.or(app.chat_first.then_some(app.tab));
+    if let Some(pinned) = full_screen {
         draw_tab_body(f, app, pinned, f.area());
         // The chat dock's operator pane is exactly where a change card is
         // opened, so the pinned branch needs the paint as much as the full
