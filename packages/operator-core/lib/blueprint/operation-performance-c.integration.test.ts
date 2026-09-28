@@ -13,7 +13,7 @@ import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestra
 import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getResourceProfile } from '../resource-profile';
-import { runPairedBenchmark, gradePairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
+import { runPairedBenchmark, gradePairedBenchmark, P013_PROTOCOL, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import { projectBlueprintToPg } from './project-to-pg';
 import {
   P013C_HARNESS, P013C_PROGRAM_STEPS, P013C_SOURCE, P013C_WORKSPACE, programStepNames, runP013WorkloadC,
@@ -185,7 +185,10 @@ describe('P-013 workload C fixture', () => {
       const trials = await runPairedBenchmark({ control: benchmarkArm('control'),
         candidate: benchmarkArm('candidate') }, matrix);
       expect(trials).toHaveLength(2 * matrix.repetitions * matrix.modes.length * matrix.concurrencies.length);
-      const complete = matrix.modes.length === 2 && matrix.concurrencies.length === 2;
+      // Grade in-test only for a full-protocol run; a split run (one repetition per
+      // process, via P013_REPETITION_OFFSET) is graded after its reps are aggregated.
+      const complete = matrix.modes.length === 2 && matrix.concurrencies.length === 2 &&
+        matrix.repetitions === P013_PROTOCOL.repetitions && (matrix.repetitionOffset ?? 0) === 0;
       console.info('P-013 workload C per-sample persistence counters', JSON.stringify({
         cluster: dedicatedPg ? 'dedicated' : 'shared', rows: counterRows }));
       console.info(`P-013 workload C ${matrix.modes.join('+')} trials`, JSON.stringify({
