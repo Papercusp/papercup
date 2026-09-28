@@ -838,58 +838,27 @@ The tool call is also cheaper: a structured result, no subprocess, nothing to
 re-parse. When a row's caveat applies (a `tail -f` follow, a non-operator database,
 a `\du`), the bash form is the right answer — the gate will not fight you on those.
 
-⚠ **No papercusp tools AT ALL? READ THE REFUSAL — two classes, two different doors,
-and the wrong door looks identical to no door.**
+⚠ **No papercusp tools AT ALL? READ THE REFUSAL — two classes, two different doors.**
 
-- **TRANSPORT** — no tools listed at all; the handshake never completed (`:9071`
-  starves new handshakes under load). The one door left, and pass your OWN
-  `--client` or writes land under an anonymous `mcp-call-*` (EI-8509):
+- **TRANSPORT** — no tools listed; the handshake never completed (`:9071` starves
+  new handshakes under load). Pass your OWN `--client`, or writes land under an
+  anonymous `mcp-call-*` (EI-8509):
   `node scripts/mcp-call.mjs <server:verb> --json-file <args.json> --client <your-su-id> --port 3170`
 - **IDENTITY** — tools ARE listed, but every call refuses `Identity capability
-  (unresolved): stale-artifact`. ⛔ **`mcp-call.mjs` CANNOT open this one.** It is a
-  server-side kernel preflight evaluated AFTER the request is accepted, so a
-  different client, port or transport reaches the byte-identical denial — the
-  documented transport fallback is not an escape hatch for this class (WI-10002028).
-
-  ⛔ **`coord:orient` is NOT reliably the door — READ `activation.status` FIRST and
-  branch on it.** This text used to say `coord:orient { afterCompaction: true }` is
-  "exempt from that preflight by design" and to treat the SQL converge as a rare
-  fallback. Measured otherwise, twice in one 30-minute session (2026-09-22,
-  su-14342fa6; class EI-23703586803892464, repeatCount 7+): `coord:orient` was
-  refused with the byte-identical `Kernel preflight denied tool "coord:orient":
-  Identity capability (unresolved): stale-artifact`. Believing the old wording costs
-  you a wasted call and — worse — reads as "I am locked out with no door left",
-  which is exactly when an agent escalates a self-fixable blocker to the owner.
-
-  **The discriminator is `control_state->'activation'->>'status'`:**
-
-  ```
-  sudo -n -u postgres psql -d papercusp -At -c "SELECT jsonb_pretty(control_state->'activation')
-    FROM harness_shared.session_briefs WHERE owner_id = '<your-su-id>';"
-  ```
-
-  - `status:'failed'` (with a `failure` string such as `stack transition render
-    failed`) — the activation never rendered, so there is nothing for
-    `coord:orient` to acknowledge. **Go straight to the SQL converge; do not call
-    `coord:orient` first.**
-  - `status:'desired'`/`'prepared'` with `applied` merely lagging — `coord:orient`
-    does NOT apply it: it acknowledges without the activation revision, so it leaves
-    a pending activation for the next turn-start boundary (WI-10002717; before that
-    fix it advanced the watermark and stranded the activation at `desired`). Send
-    one more prompt; if `status` still reads `desired`, fall through to the converge.
-
-  **The converge (works for both, and is the only move for `failed`):** compare
-  `adv_sessions.launch_spec->>'specificationRevision'` (what you are provably
-  running) against `session_briefs.control_state->'activation'`; when they differ set
-  `applied` AND `prepared` := `desired`, `status` := `'applied'`, guarded by a
-  `WHERE` on that exact desired revision, via `sudo -n -u postgres psql -d papercusp`.
-  The tool surface returns immediately; no relaunch is needed. ⚠ Converge only when
-  `launch_spec` shows you are ALREADY running the desired revision — that is what
-  makes `applied := desired` a true statement rather than a forged one.
-
-  ⚠ This repair is a MITIGATION, not a fix: a recurrence inside one session means
-  the writer that leaves activation `failed` is still armed. Add your occurrence to
-  EI-23703586803892464 rather than filing a fresh row.
+  (unresolved): stale-artifact`. ⛔ **`mcp-call.mjs` CANNOT open this one** — it is a
+  server-side kernel preflight, so every client, port and transport gets the same
+  denial (WI-10002028). `coord:orient` can be refused by it too, so read
+  `activation.status` FIRST:
+  `sudo -n -u postgres psql -d papercusp -At -c "SELECT jsonb_pretty(control_state->'activation') FROM harness_shared.session_briefs WHERE owner_id = '<your-su-id>';"`
+  - `'desired'`/`'prepared'`, `applied` merely lagging → `coord:orient { afterCompaction: true }`
+    acknowledges but does not apply it (WI-10002717). Send one more prompt; if it
+    still reads `desired`, converge.
+  - `'failed'` → converge directly; there is nothing for orient to acknowledge.
+  - **Converge** only when `adv_sessions.launch_spec->>'specificationRevision'` shows
+    you ALREADY run the desired revision (that is what makes it true, not forged):
+    set `applied` and `prepared` := `desired`, `status` := `'applied'`, with a `WHERE`
+    on that exact desired revision. It is a MITIGATION — add your occurrence to
+    EI-23703586803892464 rather than filing a fresh row.
 
 
 
@@ -916,48 +885,22 @@ lasting damage — but the near-miss is the point).
 **The defensive pattern, every time a script leaves the repo tree:**
 ```bash
 mkdir -p /tmp/my-scratch-dir && cd /tmp/my-scratch-dir || exit 1
-# ...rest of the script — now guaranteed to abort instead of silently
-# continuing in the wrong (repo-root) directory...
 ```
-`cd ... || exit 1` (or `set -e` at the top of the script) is the whole fix — a
-failed `cd` then kills the script instead of falling through. And when in
-doubt whether a PRIOR call's `cd` actually landed you where you think, `pwd` as
-the first line of the next call is free insurance — never assume.
+`cd ... || exit 1` (or `set -e`) is the whole fix: a failed `cd` then kills the script
+instead of falling through. Unsure where a PRIOR call left you? `pwd` first.
 
-**The dual, for a `cd` that STAYS in the tree: don't leave one behind.** Scope it to a
-subshell so your own cwd never moves — `( cd packages/<pkg> && <cmd> )` — or, when a
-later call must run a ROOT script, re-anchor first:
+**For a `cd` that STAYS in the tree, don't leave one behind:** use a subshell,
+`( cd packages/<pkg> && <cmd> )`, or re-anchor before a ROOT script:
 ```bash
 root="$(git rev-parse --show-superproject-working-tree 2>/dev/null)"
 [ -n "$root" ] || root="$(git rev-parse --show-toplevel)"
 cd "$root" || exit 1
 ```
-`--show-superproject-working-tree` prints the superproject path from inside a submodule
-but prints an EMPTY STRING with EXIT STATUS 0 from the superproject itself — so the
-fallback must be driven by the emptiness of the VALUE, never by an exit status and never
-by a failed `cd`.
-
-⛔ **Do NOT collapse this into the `cd A || cd B` one-liner — it is a silent no-op in
-exactly the case it looks like it handles** (WI-10002083, measured 2026-09-20; it is also
-what the older `cd "$(git rev-parse --show-toplevel)"` form was replaced with after
-EI-22406679198158577, so this is the second bug in this same two-line recipe):
-
-```bash
-cd "$(git rev-parse --show-superproject-working-tree 2>/dev/null)" 2>/dev/null ||
-  cd "$(git rev-parse --show-toplevel)" || exit 1        # ⛔ BROKEN
-```
-
-From the superproject root the substitution is empty, so the first command is `cd ""` —
-and **bash treats `cd ""` as a SUCCESSFUL no-op**, not an error. The `||` never fires,
-`--show-toplevel` is never consulted, and the shell stays wherever it already was while
-reporting nothing. The same trap applies to the value form `git rev-parse A || git
-rev-parse B`, which can return an empty path without invoking its fallback.
-
-That silence is the damage. This re-anchor exists to remove the `Missing script`
-misdirection above at its source; a re-anchor that fails silently converts that
-loud-but-misread failure into NO signal, so you proceed believing you are at the root.
-If you use the one-liner anyway, `pwd` immediately after is the only thing that will
-tell you it did nothing.
+Test the VALUE's emptiness, never an exit status: from the superproject root
+`--show-superproject-working-tree` prints an EMPTY string with exit 0. ⛔ So the
+one-liner `cd "$(…superproject…)" || cd "$(…toplevel…)"` is a silent no-op there —
+bash treats `cd ""` as success, the fallback never runs, and you stay where you were
+with no signal (WI-10002083).
 
 
 ## Scratch probes: name the file `.mts`, not `.ts`
@@ -1229,7 +1172,7 @@ A mutation probe that mutates the shared tree can be committed by the sweep even
 |---|---|
 | a subject (or `--test` cmd) containing DESTRUCTIVE primitives (rm/rmdir/unlink/shred/truncate/mkfs/`dd of=`/`find -delete`) | **TIER-0: `--fake-destructive`** — PATH shims log each destructive call's argv and delete NOTHING; assert on what the code WOULD delete. The probe REFUSES such a subject without it; REAL execution needs `--i-know-this-deletes --sandbox-root <dir>` (bwrap, `/` read-only). Limit: PATH interception only — an absolute-path `/bin/rm` call needs the sandbox. |
 | a MODULE / logic you `import` | Keep a deliberately-wrong implementation **permanently in the test file** as a control (plus a calibration case the REAL subject must pass, or the controls also pass when the property itself is broken). Never mutate production code. |
-| a guard whose subject is the SOURCE TREE itself (it greps/walks files and asserts over their text) | ⚠ The control fixture lives INSIDE the subject, so a plainly-spelled fixture **SELF-MATCHES** and the guard reports a violation that does not exist — the `pgrep -f` trap in static form (third documented venue, after process patterns and `pg_stat_activity` predicates). It fails toward a FALSE POSITIVE, so it is loud rather than silent — but a guard that is red forever gets deleted or weakened by whoever next touches it, so it is not benign. **Strip before matching** — `stripCommentsAndStrings` from `scripts/lib/strip-comments-and-strings.mjs` (TS-parser-based, blanks to spaces so offsets/line numbers stay exact) — so only real top-level code can satisfy the detector; or exclude the fixture's own path. Obfuscating the literal (`'export ' + 'function '`) also works but silently obliges every later author to remember the trick. **Either way, assert the fixture is STILL detector-shaped**, or a later "simplification" feeds the detector an unmatchable string and the control passes VACUOUSLY. ⚠ Not every guard may strip strings: one whose real tokens legitimately live inside literals (`DROP DATABASE`, which in TS source appears only inside a SQL template literal) would flip a true positive into a silent false NEGATIVE — the split is per call site, not per guard. |
+| a guard whose subject is the SOURCE TREE itself (it greps/walks files and asserts over their text) | ⚠ The control fixture lives INSIDE the subject, so a plainly-spelled fixture **SELF-MATCHES** — the `pgrep -f` trap in static form. It fails loud (a false positive), but a guard red forever gets deleted or weakened. **Strip before matching** with `stripCommentsAndStrings` (`scripts/lib/strip-comments-and-strings.mjs`, offset-preserving), or exclude the fixture's path, and **assert the fixture is STILL detector-shaped** so the control can never pass VACUOUSLY. ⚠ Don't strip where real tokens live inside literals (`DROP DATABASE` in a SQL template): that flips a true positive into a silent false NEGATIVE — decide per call site. |
 | a FILE artifact the test reads by path (shell scripts, config, generated output) | Mutate a **COPY** outside the tree and point the test at it — zero window, no lock, no trap. Make the test's subject path overridable (an env var defaulting to the real path); that one line is what makes tier 2 available at all. |
 | a guard whose pre-fix source is already in Git history | **HISTORICAL MODE:** use `--against-commit <sha> --must-be-absent <literal>` or `--against-last-without <literal>`. The probe freezes current and historical snapshots before either run, requires `--positive-control <literal>` for every token the assertions index, and requires a `--calibration` command that passes on both snapshots. |
 | genuinely unavoidable in-tree mutation | Last resort. Hold the sweep for the probe's duration AND restore from a trap (see below). |
