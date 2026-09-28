@@ -62,7 +62,8 @@ import { PROMPT_ROLES } from '../../prompt-assembly';
 import { UI_CONTEXT_MAX_CHARS } from '../../chat-context-sections';
 import { capabilityToolNames, OWNED_LOOP_TOOL_SELECTION } from '../../agent-loop/capability-toolset';
 import { assertSelectedInputSchemaBudget } from '../tool-guidance-budget';
-import { resolvePapercupChatModel } from '../../papercup/papercup-chat-model';
+import { papercupChatFailover, resolvePapercupChatModel } from '../../papercup/papercup-chat-model';
+import { classifyChatModelFailure } from '../../chat-model-failure';
 import type { AgentBackend } from '../../agent-config-constants';
 import {
   buildConverseMcpMount,

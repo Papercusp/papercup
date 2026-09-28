@@ -21,9 +21,11 @@
  */
 import {
   AGENT_BACKENDS,
+  PAPERCUP_CHAT_FAILOVER,
   PAPERCUP_CHAT_MODEL_PIN,
   type AgentBackend,
 } from '../agent-config-constants';
+import type { ChatModelFailure } from '../chat-model-failure';
 
 export type PapercupChatModelSource = 'env' | 'agent-config' | 'pin';
 export type PapercupChatBackendSource = 'env' | 'agent-config' | 'pin' | 'surface' | 'inherit';
@@ -88,4 +90,42 @@ export function resolvePapercupChatModel(input: PapercupChatModelInput = {}): Pa
   }
 
   return { model, backend, modelSource, backendSource };
+}
+
+/** The account failures that will not clear inside one turn's retry window. */
+export type PapercupChatFailoverCause = Extract<
+  ChatModelFailure['code'],
+  'model_usage_limited' | 'model_auth_required'
+>;
+
+export interface PapercupChatFailover {
+  model: string;
+  backend: AgentBackend;
+  cause: PapercupChatFailoverCause;
+}
+
+function isFailoverCause(code: ChatModelFailure['code']): code is PapercupChatFailoverCause {
+  return code === 'model_usage_limited' || code === 'model_auth_required';
+}
+
+/**
+ * The model + backend the papercup role's RETRY runs on after an attempt that produced
+ * nothing, or null to retry where it was (WI-10003608).
+ *
+ * Only a usage cap or a dead credential moves the retry: re-running the same backend
+ * cannot succeed against either (a cap lifts in hours or days; a revoked login needs a
+ * human). A transient rate limit or an unclassified failure keeps the existing
+ * same-backend retry. `engine` is the backend that actually RAN (resolveBackend), not
+ * the configured one, so an inherited backend fails over correctly too.
+ */
+export function papercupChatFailover(input: {
+  engine: string | undefined;
+  failure: ChatModelFailure | null;
+}): PapercupChatFailover | null {
+  const code = input.failure?.code;
+  if (!code || !isFailoverCause(code)) return null;
+  if (!isAgentBackend(input.engine)) return null;
+  const alternate = PAPERCUP_CHAT_FAILOVER[input.engine];
+  if (!alternate || alternate.backend === input.engine) return null;
+  return { model: alternate.model, backend: alternate.backend, cause: code };
 }

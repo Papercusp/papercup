@@ -96,6 +96,26 @@ export const PAPERCUP_CHAT_MODEL_PIN = {
   backend: 'codex',
 } as const satisfies { model: string; backend: AgentBackend };
 
+/**
+ * Where the chat `papercup` role goes for its retry when the backend it ran on
+ * reports that its ACCOUNT is dead for this turn — a usage cap or a revoked /
+ * expired credential (WI-10003608). Measured on hosted workspace avi-test
+ * 2026-09-26..28: the codex account capped until Oct 3 and the Claude copy 401'd,
+ * and because the retry re-ran the SAME backend, every portal turn died twice.
+ *
+ * Keyed by the backend that failed; each alternate is a full model+backend pair
+ * for the same reason the pin is (a bare model id on the wrong CLI hard-downs the
+ * role — WI-4623). `omp` has no entry: it routes to codex or anthropic
+ * internally, so there is no alternate that is known to use a different account.
+ * `sonnet:low` is the quick Claude tier the avi-test hand mitigation ran on.
+ */
+export const PAPERCUP_CHAT_FAILOVER: Readonly<
+  Partial<Record<AgentBackend, Readonly<{ model: string; backend: AgentBackend }>>>
+> = {
+  codex: { model: 'sonnet:low', backend: 'claude-code' },
+  'claude-code': { model: PAPERCUP_CHAT_MODEL_PIN.model, backend: PAPERCUP_CHAT_MODEL_PIN.backend },
+};
+
 // ── Model tiers (queen-model-tier-selection-2026-06-11) ──────────────────────
 
 /** Reasoning-effort levels a model spec's `:<effort>` suffix may carry —
