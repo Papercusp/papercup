@@ -29,6 +29,13 @@ try {
     ? await (await import('../../test/_deterministic-embedder')).installDeterministicEmbedder()
     : undefined;
   process.send?.({ kind: 'p013-stage', stage: 'loading-tools' });
+  // Completion's finish legs dispatch these two as reaction tools by MCP name;
+  // register them here exactly as the in-process test file does, or the cold
+  // arm fails with `unknown reaction tool "plans:set-status"`.
+  await Promise.all([
+    import('../agent-tools/plans/set-status'),
+    import('../agent-tools/plan-items/release'),
+  ]);
   const [runNow, submit, result, claim, complete, publish, reconcile, runs] = await Promise.all([
     import('../agent-tools/plans/run-now'),
     import('../agent-tools/blueprint/submit-operation'),
