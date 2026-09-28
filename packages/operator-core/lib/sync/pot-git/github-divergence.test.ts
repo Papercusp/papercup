@@ -297,7 +297,8 @@ describe('WI-10003620 — an unchanged verdict does not rewrite (and git-commit)
     } as unknown as Sql;
     return { calls, sql };
   };
-  const inserts = (calls: Array<{ q: string }>) => calls.filter((c) => /INSERT INTO harness_shared.harness_escalations/.test(c.q));
+  const inserts = (calls: Array<{ q: string; params: unknown[] }>) =>
+    calls.filter((c) => /INSERT INTO harness_shared.harness_escalations/.test(c.q));
 
   /** A self-healing (not owner-actionable) residue: the latch stays empty, so
    *  two sweeps of the same verdict build the same body bar emitted_at. */
