@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FLEET_ADMISSION_BLOCK_ROW_CAP,
   admissionBlockResolvedByLeaderClaim,
+  admissionBlockTargetIsResolved,
   dedupeAdmissionBlocks,
   filterCurrentFleetAdmissionBlocks,
   filterCurrentAdmissionBlocks,
@@ -229,6 +230,67 @@ describe('filterCurrentAdmissionBlocks', () => {
       throw new Error('ledger unavailable');
     };
     await expect(filterCurrentAdmissionBlocks([historical], { isTargetTerminal })).resolves.toEqual([historical]);
+  });
+});
+
+describe('admissionBlockTargetIsResolved — superseded by a direct assignment (EI-24439258189705130)', () => {
+  const reads: Array<[string, string | undefined]> = [];
+  const reader =
+    (item: { state: string; assignee?: string | null } | null) =>
+    async (itemId: string, harness: string | undefined) => {
+      reads.push([itemId, harness]);
+      return item;
+    };
+
+  it('resolves a refusal once the refused member itself holds the item, and stops the transition edge', async () => {
+    // The field incident: fleet p013-bcd, no claim spec (so no fleet harness), two
+    // refusals whose items the refused members claimed a minute later.
+    const stale = block({ itemId: 'WI-10003491', member: 'su-f86897ca', harness: 'papercusp', code: 'fleet_scope_missing' });
+    reads.length = 0;
+    await expect(
+      admissionBlockTargetIsResolved(stale, null, reader({ state: 'open', assignee: 'su-f86897ca' })),
+    ).resolves.toBe(true);
+    // The stamped harness resolves the bare WI id even though the fleet has none.
+    expect(reads).toEqual([['WI-10003491', 'papercusp']]);
+
+    const current = await filterCurrentAdmissionBlocks([stale], {
+      isTargetTerminal: (b, h) => admissionBlockTargetIsResolved(b, h, reader({ state: 'open', assignee: 'su-f86897ca' })),
+    });
+    expect(current).toEqual([]);
+    // A restarted sweep (baseline 0) must not re-announce it as a 0→1 block.
+    expect(
+      detectFleetAdmissionTransitions(new Map(), [{ fleetSlug: 'p013-bcd', blockedCount: current.length }]),
+    ).toEqual([]);
+  });
+
+  it('keeps the refusal while the item is unheld or held by someone other than the refused member', async () => {
+    const live = block({ itemId: 'WI-open', member: 'su-b0971', harness: 'papercusp' });
+    await expect(admissionBlockTargetIsResolved(live, null, reader({ state: 'open', assignee: null }))).resolves.toBe(false);
+    await expect(
+      admissionBlockTargetIsResolved(live, null, reader({ state: 'open', assignee: 'su-someone-else' })),
+    ).resolves.toBe(false);
+  });
+
+  it('still resolves a terminal target, and prefers the stamped harness over the fleet harness', async () => {
+    reads.length = 0;
+    const done = block({ itemId: 'WI-done', member: 'su-b0971', harness: 'item-harness' });
+    await expect(admissionBlockTargetIsResolved(done, 'fleet-harness', reader({ state: 'done' }))).resolves.toBe(true);
+    expect(reads).toEqual([['WI-done', 'item-harness']]);
+  });
+
+  it('fails open without any harness for a bare WI id (never reads an ambiguous id) and on a missing item', async () => {
+    reads.length = 0;
+    const legacy = block({ itemId: 'WI-legacy', member: 'su-b0971' }); // pre-field stamp, no harness
+    await expect(
+      admissionBlockTargetIsResolved(legacy, null, reader({ state: 'open', assignee: 'su-b0971' })),
+    ).resolves.toBe(false);
+    expect(reads).toEqual([]);
+    await expect(admissionBlockTargetIsResolved(legacy, 'papercusp', reader(null))).resolves.toBe(false);
+  });
+
+  it('carries the stamped harness through parseAdmissionBlockStamp', () => {
+    expect(parseAdmissionBlockStamp(stamp({ harness: 'papercusp' }), META)?.harness).toBe('papercusp');
+    expect(parseAdmissionBlockStamp(stamp(), META)?.harness).toBeNull();
   });
 });
 

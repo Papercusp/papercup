@@ -1340,6 +1340,9 @@ export async function notifyFleetScopeRefusal(
           action,
           reason: admission.reason,
           ...(dependencyEscape ? { dependencyEscape } : {}),
+          // EI-24439258189705130: the subject's harness, so the reader can revalidate
+          // a bare WI-/F- id for a fleet with no claim spec (hence no harness of its own).
+          ...(opts?.harness?.trim() ? { harness: opts.harness.trim() } : {}),
         },
       }
     : undefined;

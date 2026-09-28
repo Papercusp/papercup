@@ -68,6 +68,12 @@ export interface FleetAdmissionBlock {
   occurrences: number;
   /** Typed critical-path escape, present only when this refusal blocks held work. */
   dependencyEscape: FleetDependencyEscape | null;
+  /**
+   * The refused subject's own harness, stamped by the refusal site (EI-24439258189705130).
+   * Lets revalidation resolve a bare WI-/F- id when the fleet has no claim spec to
+   * name a harness. Absent on stamps written before the field existed.
+   */
+  harness?: string | null;
 }
 
 /** The row shape the SQL below selects — one envelope carrying a stamp. */
@@ -249,6 +255,7 @@ export function parseAdmissionBlockStamp(
     atMs: meta.atMs,
     occurrences: 1,
     dependencyEscape: asDependencyEscape(rec.dependencyEscape),
+    harness: asId(rec.harness),
   };
 }
 
@@ -287,30 +294,57 @@ export function dedupeAdmissionBlocks(
 
 const PLAN_ITEM_ADDRESS = /^(.+)#(P-\d+)$/;
 
+/** The two work-item facts refusal revalidation reads: lifecycle state and holder. */
+export type FleetAdmissionTargetItemReader = (
+  itemId: string,
+  harness: string | undefined,
+) => Promise<{ state: string; assignee?: string | null } | null>;
+
+async function readTargetItem(
+  itemId: string,
+  harness: string | undefined,
+): Promise<{ state: string; assignee?: string | null } | null> {
+  const { getWorkItem } = await import('../../work-items');
+  return getWorkItem(itemId, harness);
+}
+
 /**
- * Revalidate a historical refusal against the target's CURRENT lifecycle.
+ * Revalidate a historical refusal against the target's CURRENT state.
  *
  * A refusal envelope is append-only evidence that a block once happened; it is
- * not evidence that the target is still actionable. Return true only on a
- * positively resolved terminal state. Missing targets, missing harness scope,
- * and read failures all fail open (the caller keeps the block), because hiding a
- * genuine live refusal is more expensive than retaining an uncertain advisory.
+ * not evidence that the target is still actionable. Return true only when the
+ * refusal is positively resolved:
+ *   - the target is terminal, or
+ *   - the target is now HELD by the very member it was refused to
+ *     (EI-24439258189705130). A direct assignment superseded the refusal, so the
+ *     member is not starved for it and there is nothing for the leader to widen
+ *     or route. Measured: two p013-bcd refusals from 15:51Z sat in the brief for
+ *     a day and re-fired `fleet:admission-blocked` after every sweep-process
+ *     restart, while both items had been held by their refused members since 15:52Z.
+ *
+ * The refusal's own stamped harness is preferred over the fleet's, because a
+ * fleet without a claim spec has no harness at all, and a bare WI/F id is only
+ * unique inside one. Missing targets, missing harness scope, and read failures
+ * all fail open (the caller keeps the block), because hiding a genuine live
+ * refusal is more expensive than retaining an uncertain advisory.
  */
-export async function admissionBlockTargetIsTerminal(
+export async function admissionBlockTargetIsResolved(
   block: FleetAdmissionBlock,
   harness: string | null,
+  readItem: FleetAdmissionTargetItemReader = readTargetItem,
 ): Promise<boolean> {
   const itemId = block.itemId?.trim();
   if (!itemId) return false;
+  const scopeHarness = block.harness?.trim() || harness?.trim() || null;
 
   const planItem = PLAN_ITEM_ADDRESS.exec(itemId);
   if (planItem) {
-    if (!harness) return false;
+    if (!scopeHarness) return false;
     const [{ planItemEffectiveStatus }, { isTerminalStatus }] = await Promise.all([
       import('../../plan-items/assignments'),
       import('../plans/set-status'),
     ]);
-    const state = await planItemEffectiveStatus(harness, planItem[1]!, planItem[2]!);
+    const state = await planItemEffectiveStatus(scopeHarness, planItem[1]!, planItem[2]!);
     return state != null && isTerminalStatus(state);
   }
 
@@ -318,10 +352,12 @@ export async function admissionBlockTargetIsTerminal(
   // unique, so they remain safely resolvable when a legacy fleet has no authored
   // harness. Unknown id families retain the historical block.
   if (!/^(?:WI|EI|F)-/.test(itemId)) return false;
-  if (!harness && !itemId.startsWith('EI-')) return false;
-  const { getWorkItem } = await import('../../work-items');
-  const item = await getWorkItem(itemId, harness ?? undefined);
-  return item != null && ANY_FAMILY_TERMINAL_STATES.includes(item.state);
+  if (!scopeHarness && !itemId.startsWith('EI-')) return false;
+  const item = await readItem(itemId, scopeHarness ?? undefined);
+  if (item == null) return false;
+  if (ANY_FAMILY_TERMINAL_STATES.includes(item.state as (typeof ANY_FAMILY_TERMINAL_STATES)[number])) return true;
+  const member = block.member?.trim();
+  return !!member && item.assignee?.trim() === member;
 }
 
 async function currentFleetLeaderOwnerId(fleetSlug: string, workspaceId: string): Promise<string | null> {
@@ -343,7 +379,7 @@ async function currentDependencyAssignee(dependencyId: string, harness: string |
  * `block.itemId`; see `notifyFleetScopeRefusal`) without releasing the refused
  * member's own held work (`ownershipPreserved: true`).
  *
- * EI-22066839645010639: `admissionBlockTargetIsTerminal` only clears a block once
+ * EI-22066839645010639: `admissionBlockTargetIsResolved` only clears a block once
  * the dependency reaches a TERMINAL state, but a leader who claims a dependency
  * to become "the sole live gate fixer" is actively WORKING it, not done with it —
  * so the block sat on the leader's own dashboard as a still-actionable "you must
@@ -392,7 +428,7 @@ export async function filterCurrentAdmissionBlocks(
     workspaceId?: string | null;
   } = {},
 ): Promise<FleetAdmissionBlock[]> {
-  const isTargetTerminal = opts.isTargetTerminal ?? admissionBlockTargetIsTerminal;
+  const isTargetTerminal = opts.isTargetTerminal ?? admissionBlockTargetIsResolved;
   const harness = opts.harness?.trim() || null;
   const fleetSlug = opts.fleetSlug?.trim() || null;
   const workspaceId = opts.workspaceId?.trim() || null;
