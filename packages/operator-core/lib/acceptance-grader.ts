@@ -1205,6 +1205,11 @@ export async function resolveAcceptanceGraderDiscoveryExtraExclusions(
  */
 export interface AcceptanceShipperCarrier {
   acceptanceShipperOwnerId?: string | null;
+  /** The scorecard the ship gate's BAR judged cohort-stale when it refused
+   * `self_graded_only` (WI-10003286). The settlement read must not count it as a
+   * settled independent grading, or the recruiter never re-dispatches the fresh
+   * grading the gate asked for. An exclusion input only; it grants nothing. */
+  acceptanceStaleGradingScorecardId?: string | null;
 }
 
 /** The caller of the ship gate — the shipper D-009 excludes. Null when unattributable;
@@ -1946,7 +1951,12 @@ export async function resolveAcceptanceGrader(
       // NULL` dedup) cannot cover this: it asks whether a cascade is OPEN, and a
       // grading that already COMPLETED has no open row — its evidence lives in
       // scorecards. Two different questions; both guards are needed.
-      settlement = await (deps.readSettlement ?? readAcceptanceGradingSettlement)(rubricId).catch(
+      const staleCardId = (ctx as AcceptanceShipperCarrier).acceptanceStaleGradingScorecardId;
+      settlement = await (deps.readSettlement ?? readAcceptanceGradingSettlement)(
+        rubricId,
+        {},
+        typeof staleCardId === 'string' && staleCardId.trim() ? { staleCardIds: [staleCardId.trim()] } : {},
+      ).catch(
         // Fail OPEN: a settlement read that throws must not suppress a grading.
         // But RECORD the fault rather than returning undefined — a dispatch that
         // happened because the guard could not run must not be indistinguishable
