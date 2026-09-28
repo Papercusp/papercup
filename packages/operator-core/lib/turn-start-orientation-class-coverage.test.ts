@@ -1767,12 +1767,33 @@ interface MatrixCell {
   probe: CellProbe | null;
 }
 
-/** The classes a sink CLAIMS, read from the live registry (never hand-listed). */
+/**
+ * OrientationState fields that are NOT classes of their own: each is a variant read by
+ * another registered class's segments, so it reaches exactly the sinks that class claims.
+ * Keyed field → owning class id. Kept honest by the "folded fields" guard below: the field
+ * must be declared, must not be a registry id itself, and its owner must be one.
+ */
+const FIELDS_RENDERED_BY_CLASS: Record<string, string> = {
+  // The `held` class's order-150 segment renders "held work-items: unavailable" from it, and
+  // the `held` watermark token encodes it ('!unavailable'), so it travels with `held`.
+  heldReadFailed: 'held',
+};
+
+/**
+ * The classes a sink CLAIMS, read from the live registry (never hand-listed), plus any
+ * field folded into a claimed class via FIELDS_RENDERED_BY_CLASS.
+ */
 function classesClaimedBy(
   sink: string,
   registry: readonly RegisteredOrientationClass[] = ORIENTATION_CLASS_REGISTRY,
 ): string[] {
-  return registry.filter((entry) => entry.applicableSinks.includes(sink as never)).map((entry) => String(entry.id));
+  const claimed = registry
+    .filter((entry) => entry.applicableSinks.includes(sink as never))
+    .map((entry) => String(entry.id));
+  const folded = Object.entries(FIELDS_RENDERED_BY_CLASS)
+    .filter(([, owner]) => claimed.includes(owner))
+    .map(([field]) => field);
+  return [...claimed, ...folded];
 }
 
 /**
@@ -1914,6 +1935,21 @@ describe('P-024 — orientation class × sink coverage matrix', () => {
     expect(unowned, 'a second-derivation omission must name collapsedBy; a shared-mechanism one must name it').toEqual(
       [],
     );
+  });
+
+  it('keeps every folded field honest (declared, not a class itself, owned by a registered class)', () => {
+    // FIELDS_RENDERED_BY_CLASS widens what a sink claims, so a rotten entry would silently
+    // mark a cell as covered. Each entry must still describe the live registry.
+    const registryIds = new Set(ORIENTATION_CLASS_REGISTRY.map((entry) => String(entry.id)));
+    const declaredSet = new Set(declared);
+    const rotten = Object.entries(FIELDS_RENDERED_BY_CLASS).flatMap(([field, owner]) => [
+      ...(declaredSet.has(field) ? [] : [`${field}: not declared by OrientationState`]),
+      ...(registryIds.has(field) ? [`${field}: is itself a registered class — delete the fold`] : []),
+      ...(registryIds.has(owner) ? [] : [`${field}: owner '${owner}' is not a registered class`]),
+    ]);
+    expect(rotten).toEqual([]);
+    // Calibration: the fold must actually reach through the claim helper.
+    expect(classesClaimedBy('turn-start')).toContain('heldReadFailed');
   });
 
   it('keeps a PENDING sink claimed by exactly zero classes', () => {

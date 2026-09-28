@@ -756,13 +756,11 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // readFileSync/.test pair; a JS comment stripper applied to Markdown would corrupt the
     // frontmatter it validates, so the exposure is recorded here instead.
     'check-insight-normative.mjs',
-    // check-format.mjs is a RANGE PARSER, not a source-token guard. Its only regex
-    // parses @@ hunk metadata from `git diff`; the source file itself is read solely
-    // to translate those line ranges into character offsets for Prettier. Masking
-    // comments or strings would change those offsets and format the wrong bytes.
-    // The filename/classifier shape is nevertheless guard-like, so record the
-    // exposure here instead of weakening the property-based census.
-    'check-format.mjs',
+    // check-format.mjs was REMOVED here on 2026-09-28 (WI-10003582): PARSES_AST now matches
+    // `.createSourceFile(` under any receiver, and check-format.mjs parses each file with
+    // `typescript.createSourceFile(...)`, so the census classifies it as AST-parsing rather
+    // than unmasked. The shrink-only baseline must not carry an entry the census no longer
+    // measures.
     // check-env-feature-gates.mjs was REMOVED here on 2026-08-10 (WI-37717). BOTH passes now
     // detect over stripCommentsOnly() text (the `git grep` is a fast FILE FINDER, not the
     // detector). Two latent harms, both measured reachable: (1) a comment naming an
