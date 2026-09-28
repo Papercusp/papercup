@@ -747,6 +747,12 @@ describe('evaluatePlanAcceptanceGate', () => {
       expect(v.message).toContain('EI-cohort-staled');
       expect(v.message).toContain('FRESH independent grading');
       expect(planAcceptanceRepairAction('some-plan-2026-08-11', v)).toMatchObject({ kind: 'independent-grading' });
+      // WI-10003286: the recruiter must exclude EVERY card this gate excluded, not only the
+      // named one — handed just 'EI-cohort-staled', its settlement read fell back to
+      // 'EI-older-round' and reported "settled", so no fresh grader was ever dispatched
+      // (measured on managed-agent-capability-contract-and-native-cutover-2026-09-13).
+      expect(v.staleGradingScorecardId).toBe('EI-cohort-staled');
+      expect([...(v.staleGradingScorecardIds ?? [])].sort()).toEqual(['EI-cohort-staled', 'EI-older-round']);
     });
 
     // CONTROL: the exclusion is bounded by the stale card's grading time. A card graded
