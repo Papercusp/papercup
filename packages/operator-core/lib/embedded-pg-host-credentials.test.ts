@@ -134,7 +134,7 @@ function fakeConnect(outcome: (user: string, probe: string) => 'accept' | 'refus
       const error = new Error(verdict) as Error & { code?: string };
       error.code = verdict === 'refuse' ? '28P01' : 'ECONNREFUSED';
       throw error;
-    }) as FakeClient;
+    }) as unknown as FakeClient;
     client.end = async () => {};
     return client;
   };
