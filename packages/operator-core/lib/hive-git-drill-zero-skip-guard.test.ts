@@ -1335,6 +1335,14 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(phaseAScenario).toContain(
       'phase A canonical bootstrap did not reach strict two-host convergence within 20 minutes',
     );
+    // WI-10003632: quarantine + absence must be ONE VM process. A separate
+    // `phase-a-observe vm absent` ssh launch loses the race to the VM's
+    // scheduled git-sync bootstrap tick (P-505 run 12).
+    expect(phaseAScenario).toContain('phase-a-quarantine-observe');
+    expect(phaseAScenario).not.toContain('phase-a-observe vm absent');
+    expect(phaseAScenario.indexOf('phase-a-quarantine-observe')).toBeLessThan(
+      phaseAScenario.indexOf('run_vm_git_sync >'),
+    );
     expect(physicalScenario).toContain('dev:dogfood_substrate_status');
     expect(physicalScenario).toContain('"substrateActive"');
     expect(physicalScenario).toContain('"reachedSubstrateOwner"');

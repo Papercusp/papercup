@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -11,6 +11,7 @@ import {
   PHASE_A_POT_HOME,
   PHASE_A_REPO_KEY,
   capturePhysicalPhaseARepo,
+  quarantineAndObservePhysicalPhaseAAbsence,
   quarantinePhysicalPhaseARepo,
   validatePhysicalPhaseA,
   type PhysicalPhaseAInput,
@@ -227,6 +228,35 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
         runId: 'run-physical-a-3',
       }),
     ).toThrow(/must target/);
+  });
+
+  it('quarantines and observes absence in one step, before anything can recreate the store (WI-10003632)', () => {
+    const root = newRoot('quarantine-observe');
+    const repo = createRepo(root, []);
+    const { quarantine, vmAbsent } = quarantineAndObservePhysicalPhaseAAbsence({
+      repoPath: repo,
+      runId: 'run-physical-a-4',
+      ownDeviceKey: vmKey,
+      peerDeviceKey: towerKey,
+    });
+    expect(quarantine).toMatchObject({ method: 'atomic-rename', sourcePath: repo });
+    expect(existsSync(quarantine.quarantinePath)).toBe(true);
+    expect(vmAbsent).toMatchObject({
+      hostId: 'vm',
+      state: 'absent',
+      repoPath: repo,
+      pathExists: false,
+      refs: [],
+      ownNamespace: deviceNamespaceKey(vmKey),
+      peerNamespace: deviceNamespaceKey(towerKey),
+    });
+    // The verifier demands quarantineAt <= vmAbsentAt; one process keeps it.
+    expect(Date.parse(vmAbsent.observedAt)).toBeGreaterThanOrEqual(Date.parse(quarantine.observedAt));
+    // A production tick recreating the store AFTER the step cannot retroactively
+    // turn the recorded absence into a failure.
+    createRepo(root, []);
+    expect(existsSync(repo)).toBe(true);
+    expect(vmAbsent.pathExists).toBe(false);
   });
 
   it('rejects ref divergence, missing objects, alternates, and a single-store witness', () => {

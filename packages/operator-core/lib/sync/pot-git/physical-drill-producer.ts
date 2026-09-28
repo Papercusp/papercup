@@ -12,6 +12,7 @@ import {
 import { validatePhysicalDrillEvidence } from './physical-drill-evidence';
 import {
   capturePhysicalPhaseARepo,
+  quarantineAndObservePhysicalPhaseAAbsence,
   quarantinePhysicalPhaseARepo,
   validatePhysicalPhaseA,
   type PhysicalPhaseAInput,
@@ -261,6 +262,15 @@ async function cli(argv: string[]): Promise<unknown> {
       throw new Error('usage: physical-drill-producer phase-a-quarantine <canonical-vm-repo-path> <run-id>');
     }
     return quarantinePhysicalPhaseARepo({ repoPath, runId });
+  }
+  if (mode === 'phase-a-quarantine-observe') {
+    const [repoPath, runId, ownDeviceKey, peerDeviceKey] = args;
+    if (!repoPath || !runId || !ownDeviceKey || !peerDeviceKey) {
+      throw new Error(
+        'usage: physical-drill-producer phase-a-quarantine-observe <canonical-vm-repo-path> <run-id> <own-device-key> <peer-device-key>',
+      );
+    }
+    return quarantineAndObservePhysicalPhaseAAbsence({ repoPath, runId, ownDeviceKey, peerDeviceKey });
   }
   if (mode === 'phase-a-verify') {
     const [inputPath] = args;
@@ -597,7 +607,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-quarantine-observe, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
   );
 }
 

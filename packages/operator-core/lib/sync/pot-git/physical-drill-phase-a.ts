@@ -286,6 +286,36 @@ export function quarantinePhysicalPhaseARepo(input: {
   };
 }
 
+/**
+ * Quarantine the VM store AND observe its absence in ONE process, microseconds
+ * apart. The VM's own scheduled git-sync bootstrap tick is production code that
+ * legitimately recreates a missing store from the tower, so any gap between
+ * the rename and the absence observation is a race the drill loses whenever
+ * the tick lands inside it. Measured on P-505 run 12 (WI-10003632): the two
+ * steps were separate ssh + node + tsx launches, the rename landed at
+ * 08:12:41Z, the scheduled tick rebuilt the store at 08:13:06Z, and the
+ * separate absence observation then found it present.
+ */
+export function quarantineAndObservePhysicalPhaseAAbsence(input: {
+  repoPath: string;
+  runId: string;
+  ownDeviceKey: string;
+  peerDeviceKey: string;
+}): {
+  quarantine: PhysicalPhaseAInput['quarantine'];
+  vmAbsent: PhysicalPhaseARepoObservation;
+} {
+  const quarantine = quarantinePhysicalPhaseARepo({ repoPath: input.repoPath, runId: input.runId });
+  const vmAbsent = capturePhysicalPhaseARepo({
+    hostId: 'vm',
+    state: 'absent',
+    repoPath: input.repoPath,
+    ownDeviceKey: input.ownDeviceKey,
+    peerDeviceKey: input.peerDeviceKey,
+  });
+  return { quarantine, vmAbsent };
+}
+
 function time(value: string, label: string, errors: string[]): number {
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) errors.push(`${label} must be ISO-8601`);
