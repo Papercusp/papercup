@@ -853,7 +853,9 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
   ])('refuses malformed stack bindings before claiming admission: %j', async (bad) => {
     const result = await launchAgent.handler({ brief: 'should not launch', ...bad } as never, ctx);
 
-    expect(result.content[0]).toMatchObject({
+    // handler() is typed ToolResponse | ToolResult; this refusal path returns the
+    // MCP content envelope, so narrow to that shape (same cast as textOf above).
+    expect((result as { content: unknown[] }).content[0]).toMatchObject({
       type: 'text',
       text: expect.stringContaining('expected "<slot>:<id>"'),
     });

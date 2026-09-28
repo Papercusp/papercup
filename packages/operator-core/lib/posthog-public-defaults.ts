@@ -22,8 +22,9 @@
 // was discarded for months. Maintainer boxes never noticed, because
 // ~/.papercusp/posthog.json overrides this before it is ever read.
 // Verify with: the token of the target project at <host>/api/organizations/<org>/projects/.
-// Keep in sync with papercusp-desktop/bin/audit-bundle.sh PUBLIC_PROJECT_KEY (the
-// bundle audit masks this exact literal; a mismatch REDs the release audit).
+// Keep in sync with BENIGN_ERE in papercusp-desktop/bin/audit-release-bundle.py (the
+// release gate accepts this exact literal; a mismatch REDs the release audit). That is
+// the ONLY other copy: bin/audit-bundle.sh is now a pure delegate to it (WI-10003577).
 export const POSTHOG_PUBLIC_DEFAULTS = {
   host: 'https://flags.papercuspai.com',
   projectKey: 'phc_nm3LSXkJKynGzsGTZfwqUywbrfsryNNNVWrxHy7Kriug',

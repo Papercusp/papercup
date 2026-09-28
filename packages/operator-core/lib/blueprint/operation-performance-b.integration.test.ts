@@ -108,9 +108,12 @@ const DEDICATED_PG_SETTINGS: Record<string, string> = {
     ? {
         logging_collector: 'on',
         log_directory: process.env.P013_PG_LOG_DIR,
-        log_statement: 'mod',
+        // 'all', not 'mod': tx boundaries (BEGIN/COMMIT) and the plan advisory-lock SELECTs
+        // are not data-modifying, and %x is assigned lazily (0 on nearly every execute line),
+        // so only %v (virtual xid, set at BEGIN) attributes a statement to its transaction.
+        log_statement: 'all',
         log_min_error_statement: 'error',
-        log_line_prefix: '%m [%p] x%x ',
+        log_line_prefix: '%m [%p] v%v x%x ',
       }
     : {}),
 };
