@@ -319,6 +319,49 @@ function sha256(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
+/**
+ * Refuse a Phase D mutation whose base cannot merge cleanly with canonical
+ * staging. The integrator parks such a head as a conflict, so no signed
+ * staging event can ever name it and the phase fails 20 minutes later with an
+ * unexplained "expected exactly one signed production staging event".
+ * Measured: P-505 run 22 parked the VM head on p505-phase-d-overlap.txt
+ * because run 21's leaked dirt commit sat under it (WI-10003741). A base that
+ * merely lags staging still merges cleanly and is accepted, so this checks
+ * mergeability, not ancestry. With no canonical staging yet there is nothing
+ * to conflict with.
+ */
+async function assertBaseMergesWithCanonicalStaging(
+  repoPath: string,
+  worktreePath: string,
+  baseOid: string,
+): Promise<void> {
+  const canonical = await defaultRunGit(
+    ['rev-parse', '--verify', '-q', `${WORKTREE_STAGING_REF}^{commit}`],
+    repoPath,
+  );
+  if (canonical.code !== 0) return;
+  const stagingOid = canonical.stdout.trim();
+  const present = await defaultRunGit(['cat-file', '-e', `${stagingOid}^{commit}`], worktreePath);
+  if (present.code !== 0) {
+    // Writes objects and FETCH_HEAD only; no ref or worktree file changes.
+    await git(worktreePath, ['fetch', '-q', '--no-tags', repoPath, WORKTREE_STAGING_REF]);
+  }
+  const merged = await defaultRunGit(
+    ['merge-tree', '--write-tree', '--name-only', '--no-messages', stagingOid, baseOid],
+    worktreePath,
+  );
+  if (merged.code === 0) return;
+  if (merged.code === 1) {
+    const conflicted = [...new Set(merged.stdout.split('\n').slice(1).map((l) => l.trim()).filter(Boolean))];
+    throw new Error(
+      `physical Phase D refuses to mutate: worktree HEAD ${baseOid.slice(0, 12)} conflicts with canonical ` +
+        `staging ${stagingOid.slice(0, 12)} on ${conflicted.join(', ') || 'unreported paths'}, so the integrator ` +
+        'would park this head. Residue from an earlier run: merge canonical staging into the fixed worktree first.',
+    );
+  }
+  throw new Error(`physical Phase D merge-tree check failed for ${worktreePath}: ${merged.stderr.trim()}`);
+}
+
 /** Create one fixed canary worktree commit. No caller-selected path or command. */
 export async function createPhysicalPhaseDMutation(
   input: {
@@ -331,10 +374,11 @@ export async function createPhysicalPhaseDMutation(
 ): Promise<PhysicalPhaseDMutation> {
   assertRunId(input.runId);
   assertDeviceKey(input.sourceDeviceKey);
-  const { worktreePath } = await fixedPaths(deps);
+  const { repoPath, worktreePath } = await fixedPaths(deps);
   const status = await git(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
   if (status) throw new Error('physical Phase D refuses to create a mutation in a dirty fixed worktree');
   const baseOid = await git(worktreePath, ['rev-parse', 'HEAD^{commit}']);
+  await assertBaseMergesWithCanonicalStaging(repoPath, worktreePath, baseOid);
   const payload = `p505-phase-d/${input.runId}/${input.kind}\n`;
   const protectedPath = join(worktreePath, PHASE_D_SENTINEL);
   // A prior run's integrated commit leaves the sentinel TRACKED in the shared

@@ -489,6 +489,44 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
     ).rejects.toThrow('refuses to reuse a runId');
   });
 
+  it('refuses a base that conflicts with canonical staging but accepts one that only lags it', async () => {
+    // P-505 run 22: run 21's leaked dirt commit sat under the VM head and edited the overlap
+    // file differently from canonical staging, so the integrator parked every later VM head.
+    const { repoPath, worktreePath, run } = await fixedWorktree();
+    const device = generateEd25519KeypairDer().pubkeyBase64;
+    const commit = async (file: string, body: string, msg: string): Promise<string> => {
+      await writeFile(join(worktreePath, file), body);
+      await run(['add', file], worktreePath);
+      await run(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', msg], worktreePath);
+      return run(['rev-parse', 'HEAD'], worktreePath);
+    };
+    const base = await run(['rev-parse', 'HEAD'], worktreePath);
+    const staging = await commit(PHASE_D_SENTINEL, 'tower overlap\n', 'staging edits overlap');
+    await run(['push', '-q', repoPath, `${staging}:refs/hive/staging`], worktreePath);
+
+    // Lagging: HEAD is behind staging on an unrelated path, so the merge is clean.
+    await run(['reset', '-q', '--hard', base], worktreePath);
+    await commit('unrelated.txt', 'x\n', 'unrelated');
+    const lagging = await createPhysicalPhaseDMutation(
+      { runId: 'p505-phase-d-lag-1', kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
+      { repoPath, worktreePath },
+    );
+    expect(lagging.headOid).toBe(await run(['rev-parse', 'HEAD'], worktreePath));
+
+    // Residue: HEAD carries a commit that edits the overlap file differently.
+    await commit(PHASE_D_SENTINEL, 'leaked vm dirt\n', 'sync(root): leaked dirt');
+    const before = await run(['rev-parse', 'HEAD'], worktreePath);
+    await expect(
+      createPhysicalPhaseDMutation(
+        { runId: 'p505-phase-d-conflict-1', kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
+        { repoPath, worktreePath },
+      ),
+    ).rejects.toThrow(new RegExp(`conflicts with canonical staging ${staging.slice(0, 12)} on ${PHASE_D_SENTINEL}`));
+    // Refusal happens before any write: no new commit, and the tree stays clean.
+    expect(await run(['rev-parse', 'HEAD'], worktreePath)).toBe(before);
+    expect(await run(['status', '--porcelain'], worktreePath)).toBe('');
+  });
+
   it('discards only its own planted dirt and refuses anything else', async () => {
     const { repoPath, worktreePath, run } = await fixedWorktree();
     const device = generateEd25519KeypairDer().pubkeyBase64;
