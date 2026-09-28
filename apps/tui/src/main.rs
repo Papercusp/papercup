@@ -5583,12 +5583,41 @@ async fn stream_su_session_events(
     let mut startup_error: Option<String> = None;
     // The host may spend 45 seconds initializing its engine and SU MCP. Keep
     // the draft pending across its starting descriptor and await a ready event.
-    let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut startup_deadline = tokio::time::Instant::now() + SU_STARTUP_BUDGET;
+    // P-002 (WI-10003622): a RESTORED host with no executor never emits ready
+    // by itself — its engine died with the host process that spawned it (a
+    // recycle/restart), or lives in another process of a clustered operator.
+    // Waiting for ready there was the 60s "Session did not become ready"
+    // failure. Resume it through the exact-resume attach path at most once,
+    // and re-poll the snapshot while waiting so a host that dies mid-startup
+    // is noticed within seconds instead of at the deadline.
+    let mut resume_requested = false;
+    if initial_turn.is_some() {
+        if let Some(detached) = startup_snapshot.as_ref().and_then(detached_runtime) {
+            match recover_detached_runtime(&client, &harness, &binding, detached, &mut resume_requested)
+                .await
+            {
+                Some(message) => {
+                    let pending = initial_turn.take().expect("checked pending first turn");
+                    let _ = tx.send(Event::SuTurnFailed {
+                        command_id: pending.command_id,
+                        message,
+                        uncertain: false,
+                    });
+                }
+                None => startup_deadline = tokio::time::Instant::now() + SU_STARTUP_BUDGET,
+            }
+        }
+    }
+    let mut detach_poll = tokio::time::interval_at(
+        tokio::time::Instant::now() + SU_DETACH_POLL,
+        SU_DETACH_POLL,
+    );
     loop {
         let next = if initial_turn.is_some() {
-            match tokio::time::timeout_at(startup_deadline, stream.recv()).await {
-                Ok(next) => next,
-                Err(_) => {
+            tokio::select! {
+                next = stream.recv() => next,
+                _ = tokio::time::sleep_until(startup_deadline) => {
                     let _ = tx.send(Event::SuSessionStreamError {
                         chat_id: chat_id.clone(),
                         message:
@@ -5596,6 +5625,34 @@ async fn stream_su_session_events(
                                 .into(),
                     });
                     return;
+                }
+                _ = detach_poll.tick(), if !resume_requested => {
+                    let detached = client
+                        .su_session_snapshot(&harness, &chat_id)
+                        .await
+                        .ok()
+                        .and_then(|snapshot| detached_runtime(&snapshot));
+                    if let Some(detached) = detached {
+                        match recover_detached_runtime(
+                            &client, &harness, &binding, detached, &mut resume_requested,
+                        )
+                        .await
+                        {
+                            Some(message) => {
+                                let pending =
+                                    initial_turn.take().expect("checked pending first turn");
+                                let _ = tx.send(Event::SuTurnFailed {
+                                    command_id: pending.command_id,
+                                    message,
+                                    uncertain: false,
+                                });
+                            }
+                            None => {
+                                startup_deadline = tokio::time::Instant::now() + SU_STARTUP_BUDGET
+                            }
+                        }
+                    }
+                    continue;
                 }
             }
         } else {
@@ -5745,6 +5802,77 @@ fn startup_snapshot_can_send_initial_turn(
         && snapshot.stream_ready
         && !snapshot.terminal
         && su_turn_target_matches(binding, &snapshot.descriptor.identity, harness, chat_id)
+}
+
+/// How long a pending first turn waits for a ready event, restarted when an
+/// automatic resume is requested (exact resume re-initializes the engine).
+const SU_STARTUP_BUDGET: Duration = Duration::from_secs(60);
+/// How often a pending first turn re-reads the snapshot for a lost runtime.
+const SU_DETACH_POLL: Duration = Duration::from_secs(3);
+
+/// A restored host whose engine is not attached to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DetachedRuntime {
+    /// The native identity survives: exact resume can re-attach an engine.
+    Resumable,
+    /// Nothing resumable remains (the reason is the host's reconciliation).
+    Unrecoverable(String),
+}
+
+/// Classify a snapshot as a detached runtime. Only a RESTORED host carries a
+/// `runtimeReconciliation`; a freshly launched one does not, and the
+/// `runtime_replacement` verdict marks a host already mid-resume, so neither
+/// triggers a second resume. `wait` (liveness unknown) keeps waiting.
+fn detached_runtime(snapshot: &crate::su_session::SuSessionSnapshot) -> Option<DetachedRuntime> {
+    if snapshot.terminal || snapshot.executor_attached {
+        return None;
+    }
+    let reconciliation = snapshot.runtime_reconciliation.as_ref()?;
+    match reconciliation.action {
+        crate::su_session::SuSessionRuntimeAction::Reattach
+            if reconciliation.reason != "runtime_replacement" =>
+        {
+            Some(DetachedRuntime::Resumable)
+        }
+        crate::su_session::SuSessionRuntimeAction::Relaunch => {
+            Some(DetachedRuntime::Unrecoverable(reconciliation.reason.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// Act on a detached runtime for a pending first turn. Returns the message
+/// the pending turn must fail with, or `None` when an exact resume was
+/// requested and the caller should keep waiting for its ready event.
+async fn recover_detached_runtime(
+    client: &OperatorClient,
+    harness: &str,
+    binding: &crate::su_session::SuSessionBinding,
+    detached: DetachedRuntime,
+    resume_requested: &mut bool,
+) -> Option<String> {
+    match detached {
+        DetachedRuntime::Unrecoverable(reason) => Some(format!(
+            "This session's agent runtime is gone and cannot be resumed ({reason}). Draft retained; start a new session to send it."
+        )),
+        DetachedRuntime::Resumable => {
+            *resume_requested = true;
+            let request = crate::su_session::SuSessionOpenRequest::Attach(
+                crate::su_session::SuSessionAttachRequest {
+                    agent: binding.backend,
+                    attach_adv_session_id: binding.adv_session_id,
+                    harness_slug: Some(harness.to_string()),
+                    plan_slug: binding.plan_slug.clone(),
+                },
+            );
+            match client.open_su_session(&request).await {
+                Ok(_) => None,
+                Err(error) => Some(format!(
+                    "Resuming this session's agent runtime failed: {error:#}. Draft retained; reconnect to retry."
+                )),
+            }
+        }
+    }
 }
 
 /// One acceptance POST's budget, and how many times the SAME command is
@@ -7422,6 +7550,70 @@ mod tests {
         assert!(!su_turn_target_matches(
             &binding, &identity, "papercup", "chat-1"
         ));
+    }
+
+    /// P-002 (WI-10003622): session 31362's restored host answered
+    /// executorAttached:false + reattach/live_pid for good, so the first turn
+    /// waited 60s for a ready event no process could emit. That exact
+    /// snapshot must classify as resumable; a fresh host, an attached one, a
+    /// host already mid-resume and a terminal one must not.
+    #[test]
+    fn restored_host_without_executor_is_a_detached_runtime() {
+        let mut snapshot: crate::su_session::SuSessionSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "ok": true,
+                "descriptor": {
+                    "identity": {
+                        "agentChatId":"chat-1", "advSessionId":7, "backend":"claude",
+                        "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1",
+                        "harnessSlug":"papercup"
+                    },
+                    "lifecycle": "running",
+                    "runtimeGeneration": 0,
+                    "role": "su",
+                    "carry": "warm",
+                    "modes": [],
+                    "capabilities": {"commands": {}, "features": {}},
+                    "backendExtension": {"backend": "claude", "configDir": null, "configDirSource": null}
+                },
+                "floorSequence": 1,
+                "lastSequence": 1,
+                "terminal": false,
+                "executorAttached": false,
+                "streamReady": true,
+                "runtimeReconciliation": {"action": "reattach", "reason": "live_pid", "stalePid": false}
+            }))
+            .unwrap();
+        assert_eq!(detached_runtime(&snapshot), Some(DetachedRuntime::Resumable));
+
+        snapshot.executor_attached = true;
+        assert_eq!(detached_runtime(&snapshot), None, "an attached executor is live");
+        snapshot.executor_attached = false;
+
+        snapshot.terminal = true;
+        assert_eq!(detached_runtime(&snapshot), None, "a terminal session is not resumed");
+        snapshot.terminal = false;
+
+        let reconciliation = snapshot.runtime_reconciliation.as_mut().unwrap();
+        reconciliation.reason = "runtime_replacement".into();
+        assert_eq!(detached_runtime(&snapshot), None, "a host mid-resume is not resumed again");
+
+        let reconciliation = snapshot.runtime_reconciliation.as_mut().unwrap();
+        reconciliation.action = crate::su_session::SuSessionRuntimeAction::Relaunch;
+        reconciliation.reason = "stale_pid_without_native_identity".into();
+        assert_eq!(
+            detached_runtime(&snapshot),
+            Some(DetachedRuntime::Unrecoverable(
+                "stale_pid_without_native_identity".into()
+            ))
+        );
+
+        snapshot.runtime_reconciliation.as_mut().unwrap().action =
+            crate::su_session::SuSessionRuntimeAction::Wait;
+        assert_eq!(detached_runtime(&snapshot), None, "unknown liveness keeps waiting");
+
+        snapshot.runtime_reconciliation = None;
+        assert_eq!(detached_runtime(&snapshot), None, "a freshly launched host is not restored");
     }
 
     #[test]
