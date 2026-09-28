@@ -214,6 +214,11 @@ export type AcceptanceGradingSettlementReason =
   | 'revision_unreadable'
   | 'scorecards_unreadable'
   | 'no_independent_card'
+  /** Every complete independent card on the live revision is one the ship gate's BAR
+   * judged cohort-stale (WI-10003286). The gate refuses `self_graded_only` and asks
+   * for a FRESH grading, so treating that card as settled would make every retry a
+   * no-op: the gate says re-grade while the recruiter says done. */
+  | 'stale_independent_card'
   | 'no_author_acceptance'
   /** The settlement read itself threw past its own handlers — recorded rather than
    * swallowed, so a dispatch that happened because the guard could not run is
@@ -268,6 +273,13 @@ export async function readAcceptanceGradingSettlement(
     listScorecards?: (filter: { rubricRef: string; limit: number }) => Promise<readonly SettlementCard[]>;
     readRubricPlanRevision?: (rubricId: string) => Promise<{ ok: boolean; revision: number | null }>;
   } = {},
+  opts: {
+    /** Scorecard ids the ship gate's acceptance BAR judged cohort-stale (its
+     * `staleGradingScorecardId`). Revision scoping cannot see an evidence-cohort move,
+     * so without this a stale grading reads as settled and suppresses the very
+     * re-grade the gate is asking for (WI-10003286). */
+    staleCardIds?: readonly string[];
+  } = {},
 ): Promise<AcceptanceGradingSettlement> {
   const readRevision =
     deps.readRubricPlanRevision ?? (async (id: string) => (await import('./rubrics')).readRubricPlanRevision(id));
@@ -305,9 +317,17 @@ export async function readAcceptanceGradingSettlement(
       !c.supersededBy &&
       c.rubricRevision === revision,
   );
-  const independent = complete.find((c) => c.acceptance == null);
+  const stale = new Set((opts.staleCardIds ?? []).filter((id) => typeof id === 'string' && id.trim()));
+  const independents = complete.filter((c) => c.acceptance == null);
+  const independent = independents.find((c) => !stale.has(c.issueId));
   const authorCall = complete.find((c) => c.acceptance != null);
-  if (!independent) return { settled: false, reason: 'no_independent_card', rubricRevision: revision };
+  if (!independent) {
+    return {
+      settled: false,
+      reason: independents.length > 0 ? 'stale_independent_card' : 'no_independent_card',
+      rubricRevision: revision,
+    };
+  }
   if (!authorCall) return { settled: false, reason: 'no_author_acceptance', rubricRevision: revision };
   return {
     settled: true,
