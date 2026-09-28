@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,6 +29,8 @@ import {
   cupboardBaseOverride,
   packDeterministically,
   parseWorkspaceHostReleaseCutArgs,
+  pruneWorkspaceHostCutIntermediates,
+  removeReleaseSourceWorktree,
   runWorkspaceHostReleaseCut,
   sha256OfFile,
   workspaceHostCutStageContext,
@@ -85,7 +87,13 @@ function harness(overrides: Partial<WorkspaceHostReleaseCutDeps> = {}) {
       return inner.appendTaskReleaseReceipt(taskId, cursor, input);
     },
   };
-  const calls = { builds: 0, manifests: 0, publishes: [] as Array<{ taskId: string; operationId: string; args: readonly string[] }> };
+  const calls = {
+    builds: 0,
+    manifests: 0,
+    verifies: 0,
+    publishes: [] as Array<{ taskId: string; operationId: string; args: readonly string[] }>,
+    prunes: [] as Array<{ repoRoot: string; workDir: string }>,
+  };
   let stored: WorkspaceHostBuildResult | null = null;
   const deps: WorkspaceHostReleaseCutDeps = {
     ledger,
@@ -103,7 +111,9 @@ function harness(overrides: Partial<WorkspaceHostReleaseCutDeps> = {}) {
       stored = buildResult(plan.requestIdentity);
       return stored;
     },
-    verifyBuild: async () => {},
+    verifyBuild: async () => {
+      calls.verifies += 1;
+    },
     readBuildResult: async () => stored,
     emitManifest: async ({ workDir: dir }) => {
       calls.manifests += 1;
@@ -113,6 +123,10 @@ function harness(overrides: Partial<WorkspaceHostReleaseCutDeps> = {}) {
     },
     publish: async ({ taskId, operationId, args }) => {
       calls.publishes.push({ taskId, operationId, args });
+    },
+    pruneIntermediates: async (input) => {
+      calls.prunes.push(input);
+      return [join(input.workDir, 'source'), join(input.workDir, 'sidecar')];
     },
     log: () => {},
     ...overrides,
@@ -267,6 +281,138 @@ describe('managed workspace-host cut journal (D-394)', () => {
     const h = harness({ emitManifest: async () => ({ trusted: false }) });
     await expect(runWorkspaceHostReleaseCut(options(), h.deps)).rejects.toThrow(/not trusted/);
     expect(h.calls.publishes).toEqual([]);
+  });
+});
+
+// WI-10003700: every cut kept ~18 GB of rebuildable intermediates forever; nine cuts in three days
+// kept ~150 GB on the root disk.
+describe('post-publish intermediate prune (WI-10003700)', () => {
+  const realPublish = () => ({ ...options(), publisherArgs: [] as string[] });
+
+  it('prunes after a real publish, re-measuring the kept bytes first', async () => {
+    const h = harness();
+    const result = await runWorkspaceHostReleaseCut(realPublish(), h.deps);
+
+    expect(h.calls.publishes).toHaveLength(1);
+    expect(h.calls.verifies).toBe(1);
+    expect(h.calls.prunes).toEqual([{ repoRoot: '/repo', workDir }]);
+    expect(result.pruned).toEqual([join(workDir, 'source'), join(workDir, 'sidecar')]);
+  });
+
+  it('keeps everything for a plan-only publish, an unpublished cut and --keep-intermediates', async () => {
+    for (const opts of [
+      options(),
+      { ...realPublish(), publish: false },
+      { ...realPublish(), keepIntermediates: true },
+    ]) {
+      const h = harness();
+      const result = await runWorkspaceHostReleaseCut(opts, h.deps);
+      expect(h.calls.prunes).toEqual([]);
+      expect(result.pruned).toEqual([]);
+    }
+  });
+
+  it('deletes nothing when the publication directory no longer matches the committed build', async () => {
+    const h = harness({
+      verifyBuild: async () => {
+        throw new Error('recorded build does not match the publication directory: server.tgz: missing');
+      },
+    });
+    await expect(runWorkspaceHostReleaseCut(realPublish(), h.deps)).rejects.toThrow(/does not match/);
+    expect(h.calls.prunes).toEqual([]);
+  });
+
+  it('a resumed, already-published cut publishes and prunes again idempotently', async () => {
+    const h = harness();
+    await runWorkspaceHostReleaseCut(realPublish(), h.deps);
+    const again = await runWorkspaceHostReleaseCut(realPublish(), h.deps);
+    expect(again.build).toBe('reused');
+    expect(h.calls.prunes).toHaveLength(2);
+  });
+});
+
+describe('pruneWorkspaceHostCutIntermediates on a real worktree (WI-10003700)', () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-C', cwd, ...args], {
+      encoding: 'utf8',
+      env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' },
+    });
+  const worktrees = (repo: string) =>
+    git(repo, 'worktree', 'list', '--porcelain')
+      .split('\n')
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => line.slice('worktree '.length));
+
+  let repo: string;
+  beforeEach(() => {
+    repo = join(workDir, 'repo');
+    mkdirSync(repo);
+    git(repo, 'init', '-q');
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'seed');
+  });
+
+  function cutDir(): string {
+    const dir = join(workDir, 'cut');
+    git(repo, 'worktree', 'add', '-q', '--detach', join(dir, 'source'), 'HEAD');
+    for (const sub of ['sidecar/node', 'extracted/app', 'publication/evidence', 'logs', 'sidecar-trust']) {
+      mkdirSync(join(dir, sub), { recursive: true });
+    }
+    for (const file of [
+      'source.ready.json', 'sidecar.ready.json', 'vite-build.lock', 'release-cut.json', 'build-result.json',
+      'publication-input.json', 'server.tgz.tauri.sig', 'publication/server.tgz', 'publication/evidence/summary.json',
+      'logs/sign.log', 'sidecar-trust/sbom.json', 'sidecar/node/bin', 'extracted/app/bin',
+    ]) {
+      writeFileSync(join(dir, file), 'x');
+    }
+    return dir;
+  }
+
+  it('removes source through git (no dangling registration) plus sidecar/extracted/markers, and keeps the audit trail', async () => {
+    const dir = cutDir();
+    expect(worktrees(repo)).toHaveLength(2);
+
+    const removed = await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir });
+
+    expect(removed.sort()).toEqual(
+      ['source.ready.json', 'sidecar.ready.json', 'source', 'sidecar', 'extracted', 'vite-build.lock'].map((n) => join(dir, n)).sort(),
+    );
+    for (const gone of ['source', 'sidecar', 'extracted', 'source.ready.json', 'sidecar.ready.json', 'vite-build.lock']) {
+      expect(existsSync(join(dir, gone)), gone).toBe(false);
+    }
+    for (const kept of [
+      'release-cut.json', 'build-result.json', 'publication-input.json', 'server.tgz.tauri.sig',
+      'publication/server.tgz', 'publication/evidence/summary.json', 'logs/sign.log', 'sidecar-trust/sbom.json',
+    ]) {
+      expect(existsSync(join(dir, kept)), kept).toBe(true);
+    }
+    expect(worktrees(repo)).toEqual([realpathSync(repo)]);
+    // Idempotent: a second pass finds nothing left.
+    expect(await pruneWorkspaceHostCutIntermediates({ repoRoot: repo, workDir: dir })).toEqual([]);
+  });
+
+  it('falls back when git does not recognise the path, dropping only THIS registration', async () => {
+    const dir = cutDir();
+    const other = join(workDir, 'other');
+    mkdirSync(other);
+    git(other, 'init', '-q');
+    // Asking the WRONG repository makes `git worktree remove` refuse, which forces the fallback.
+    removeReleaseSourceWorktree(other, join(dir, 'source'));
+    expect(existsSync(join(dir, 'source'))).toBe(false);
+    expect(worktrees(repo)).toEqual([realpathSync(repo)]);
+  });
+
+  it('never deletes a registration that points at a different checkout', async () => {
+    const dir = cutDir();
+    const admin = git(join(dir, 'source'), 'rev-parse', '--absolute-git-dir').trim();
+    const impostor = join(workDir, 'impostor');
+    mkdirSync(impostor);
+    writeFileSync(join(impostor, '.git'), `gitdir: ${admin}\n`);
+
+    removeReleaseSourceWorktree(join(workDir, 'repo-missing'), impostor);
+
+    expect(existsSync(impostor)).toBe(false);
+    expect(existsSync(admin)).toBe(true);
+    expect(worktrees(repo)).toHaveLength(2);
   });
 });
 

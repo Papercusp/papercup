@@ -22,6 +22,11 @@
  *   manifest  `runPublicationManifestCli`, exactly once per operation: a regenerated manifest
  *             carries a new timestamp, which the publisher reads as a changed stage input.
  *   publish   The journaled publisher, handed the SAME task + operation.
+ *   prune     After a real (not --plan-only) publish, the rebuildable intermediates — the pinned
+ *             source worktree, the sidecar tree and the extracted audit copy, ~89% of a ~18 GB work
+ *             dir — are removed (WI-10003700). Everything resume, R-4 and audit read stays:
+ *             publication/, build-result.json, release-cut.json, logs/, sidecar-trust/, the tauri
+ *             sig. `--keep-intermediates` opts out.
  *
  * RESUME is re-running the same command. The operation's ids are persisted in the work directory
  * and every stage reads the journal before acting. A build interrupted mid-way is reconciled from
@@ -35,10 +40,10 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
@@ -657,6 +662,75 @@ export async function verifyWorkspaceHostBuild(result: WorkspaceHostBuildResult,
   if (mismatches.length > 0) throw new Error(`recorded build does not match the publication directory: ${mismatches.join('; ')}`);
 }
 
+/**
+ * Remove the cut's pinned source checkout, a registered worktree of `repoRoot` (setup-release-checkout
+ * uses `git worktree add`). Deleting only the directory would leave a dangling `.git/worktrees/<n>`
+ * registration behind, the way r40-r49 did. `--force --force` also takes a worktree that holds
+ * initialized submodules, which every cut source does.
+ *
+ * Fallback, for a source git no longer recognises at this path (an offloaded dir reached through a
+ * symlink): delete the files, then drop THIS worktree's registration only, after checking it points
+ * back at this checkout. `git worktree prune` is avoided on purpose: it sweeps every stale
+ * registration in the repository, including ones other operations still account for.
+ */
+export function removeReleaseSourceWorktree(repoRoot: string, source: string): void {
+  const dotGit = join(source, '.git');
+  let adminDir: string | null = null;
+  let dotGitReal: string | null = null;
+  try {
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGit, 'utf8'));
+    if (match) adminDir = resolve(source, match[1]!);
+    dotGitReal = realpathSync(dotGit);
+  } catch {
+    // No `.git` file: not a worktree checkout, so there is no registration to drop.
+  }
+  try {
+    execFileSync('git', ['-C', repoRoot, 'worktree', 'remove', '--force', '--force', source], { stdio: 'pipe' });
+    return;
+  } catch {
+    // Fall through: remove the files and this worktree's own registration by hand.
+  }
+  rmSync(source, { recursive: true, force: true });
+  if (!adminDir || basename(dirname(adminDir)) !== 'worktrees' || !existsSync(adminDir)) return;
+  let registered: string;
+  try {
+    registered = readFileSync(join(adminDir, 'gitdir'), 'utf8').trim();
+  } catch {
+    return;
+  }
+  const pointsHere = registered === dotGit || (dotGitReal !== null && registered === dotGitReal);
+  if (pointsHere) rmSync(adminDir, { recursive: true, force: true });
+}
+
+/**
+ * Remove a published cut's rebuildable intermediates and return what was removed (WI-10003700).
+ * Every one of them is re-derivable from `--source-sha`; together they are ~89% of a work dir.
+ * Ready markers go FIRST: a marker that outlived its directory would let a later build skip a leg
+ * whose bytes are gone, whereas a directory without its marker is refused with a clear message.
+ */
+export async function pruneWorkspaceHostCutIntermediates(
+  input: { repoRoot: string; workDir: string },
+  removeSource: (repoRoot: string, source: string) => void = removeReleaseSourceWorktree,
+): Promise<string[]> {
+  const paths = workspaceHostCutPaths(input.workDir);
+  const removed: string[] = [];
+  for (const marker of [paths.sourceReady, paths.sidecarReady]) {
+    if (!existsSync(marker)) continue;
+    await rm(marker, { force: true });
+    removed.push(marker);
+  }
+  if (existsSync(paths.source)) {
+    removeSource(input.repoRoot, paths.source);
+    removed.push(paths.source);
+  }
+  for (const target of [paths.sidecar, paths.extracted, join(input.workDir, 'vite-build.lock')]) {
+    if (!existsSync(target)) continue;
+    await rm(target, { recursive: true, force: true });
+    removed.push(target);
+  }
+  return removed;
+}
+
 // ─── Orchestration ──────────────────────────────────────────────────────────────
 
 export interface WorkspaceHostReleaseCutOptions {
@@ -669,6 +743,8 @@ export interface WorkspaceHostReleaseCutOptions {
   publish: boolean;
   /** Passed through to the publisher (`--base`, `--token`, `--plan-only`). */
   publisherArgs: readonly string[];
+  /** Keep source/, sidecar/ and extracted/ after a real publish (default: prune them). */
+  keepIntermediates?: boolean;
 }
 
 export interface WorkspaceHostCutState {
@@ -691,6 +767,8 @@ export interface WorkspaceHostReleaseCutDeps {
   readBuildResult(workDir: string): Promise<WorkspaceHostBuildResult | null>;
   emitManifest(input: { workDir: string; identity: WorkspaceHostReleaseIdentity; desktopVersion: string }): Promise<{ trusted: boolean }>;
   publish(input: { repoRoot: string; workDir: string; taskId: string; operationId: string; args: readonly string[] }): Promise<void>;
+  /** Remove the rebuildable intermediates of a published cut; returns the removed paths. */
+  pruneIntermediates(input: { repoRoot: string; workDir: string }): Promise<string[]>;
   sourceEpochSeconds(repoRoot: string, sourceSha: string): number;
   log(line: string): void;
 }
@@ -701,6 +779,8 @@ export interface WorkspaceHostReleaseCutResult {
   bundleSha256: string;
   build: 'built' | 'reconciled' | 'reused';
   published: boolean;
+  /** Intermediates removed after a real publish; empty when kept, plan-only or unpublished. */
+  pruned: string[];
 }
 
 /** Open the operation, or resume the one this work directory already belongs to. */
@@ -887,6 +967,7 @@ export async function runWorkspaceHostReleaseCut(
     deps.log(`manifest already written: ${manifestPath}`);
   }
 
+  let pruned: string[] = [];
   if (options.publish) {
     await deps.publish({
       repoRoot: options.repoRoot,
@@ -895,6 +976,14 @@ export async function runWorkspaceHostReleaseCut(
       operationId: state.operationId,
       args: options.publisherArgs,
     });
+    // Only a REAL publish frees the intermediates: a --plan-only run uploaded nothing, so the cut
+    // may still need them. Re-measure the kept bytes first, so nothing is deleted beside a
+    // publication directory that no longer matches the committed build.
+    if (!options.keepIntermediates && !options.publisherArgs.includes('--plan-only')) {
+      await deps.verifyBuild(result, options.workDir);
+      pruned = await deps.pruneIntermediates({ repoRoot: options.repoRoot, workDir: options.workDir });
+      deps.log(pruned.length > 0 ? `pruned intermediates: ${pruned.join(', ')}` : 'no intermediates left to prune');
+    }
   }
   return {
     taskId: state.taskId,
@@ -902,6 +991,7 @@ export async function runWorkspaceHostReleaseCut(
     bundleSha256: result.bundle.sha256,
     build: outcome,
     published: options.publish,
+    pruned,
   };
 }
 
@@ -918,6 +1008,7 @@ export interface WorkspaceHostReleaseCutCliArgs {
   operationId?: string;
   publish: boolean;
   publisherArgs: string[];
+  keepIntermediates: boolean;
 }
 
 /**
@@ -946,9 +1037,11 @@ export function parseWorkspaceHostReleaseCutArgs(
   const valueFlags = new Set(['source-sha', 'version', 'work-dir', 'task-id', 'operation-id', 'base', 'token']);
   let publish = true;
   let planOnly = false;
+  let keepIntermediates = false;
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index] ?? '';
     if (flag === '--no-publish') { publish = false; continue; }
+    if (flag === '--keep-intermediates') { keepIntermediates = true; continue; }
     if (flag === '--plan-only') { planOnly = true; continue; }
     if (!flag.startsWith('--')) throw new Error(`unexpected argument '${flag}'`);
     const key = flag.slice(2);
@@ -975,6 +1068,7 @@ export function parseWorkspaceHostReleaseCutArgs(
     ...(values['operation-id'] ? { operationId: values['operation-id'] } : {}),
     publish,
     publisherArgs,
+    keepIntermediates,
   };
 }
 
@@ -1075,6 +1169,7 @@ async function main(): Promise<void> {
             ],
             { cwd: root },
           ),
+        pruneIntermediates: (input) => pruneWorkspaceHostCutIntermediates(input),
         log,
       },
     );
