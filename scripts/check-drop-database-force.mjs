@@ -55,6 +55,13 @@ export const ALLOWLIST = new Set([
   // (the calibration controls that prove the predicate can FAIL). Without this the
   // guard would flag the very test that proves it works.
   'packages/operator-core/lib/drop-database-force-guard.test.ts',
+  // Test FAKES that intercept DROP statements rather than issue them: a stub psql
+  // that records what bin/reap-invalid-test-databases.sh drops (that script only
+  // drops INVALID databases, which cannot hold connections, so it deliberately
+  // omits FORCE), and a fake admin client that classifies pg-migrate's drop query.
+  // Their job is to recognise the statement text, so they must contain it.
+  'apps/operator/scripts/__tests__/invalid-db-reaper.test.ts',
+  'libs/test-config/src/baseline-schema-reuse-generation.test.ts',
 ]);
 
 /**

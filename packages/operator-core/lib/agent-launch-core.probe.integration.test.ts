@@ -56,7 +56,7 @@ afterAll(async () => {
   if (adminUri && dbName) {
     const admin = postgres(adminUri, { max: 1 });
     try {
-      await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}"`);
+      await admin.unsafe(`DROP DATABASE IF EXISTS "${dbName}" WITH (FORCE)`);
     } finally {
       await admin.end({ timeout: 5 });
     }
