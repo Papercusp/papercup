@@ -210,6 +210,12 @@ export interface PlanAcceptanceGateVerdict {
    * cohort-stale. The grader recruiter excludes it from its settlement read, so the
    * fresh grading this refusal asks for is actually dispatched (WI-10003286). */
   staleGradingScorecardId?: string;
+  /** On `self_graded_only`: EVERY independent scorecard this gate excluded as
+   * cohort-stale — the named card above plus each older independent card that
+   * predates it. The recruiter must exclude the whole set: handing it only the named
+   * id lets its settlement read fall back to an older, equally excluded card and
+   * report "settled", so the fresh grading is never dispatched (WI-10003286). */
+  staleGradingScorecardIds?: string[];
   repairAction?: PlanAcceptanceRepairAction;
   /** Teaching message for the refusal — the authoring/grading nudge (P-004). */
   message?: string;
@@ -1396,8 +1402,12 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
   })();
   const predatesCohortStaleCard = (s: (typeof complete)[number]) =>
     Number.isFinite(barStaleGradedAtMs) && Date.parse(s.createdAt) <= barStaleGradedAtMs;
+  const isCohortStaleIndependent = (s: (typeof complete)[number]) =>
+    isIndependentCard(s) && predatesCohortStaleCard(s);
+  // WI-10003286: the exact set excluded here is what the recruiter must exclude too.
+  const cohortStaleIndependentIds = complete.filter(isCohortStaleIndependent).map((s) => s.issueId);
   const independentCards = complete.filter((s) =>
-    !(isIndependentCard(s) && predatesCohortStaleCard(s)) &&
+    !isCohortStaleIndependent(s) &&
     gradingAuthorityAdmits({
       authority,
       isIndependent: isIndependentCard(s),
@@ -1434,11 +1444,15 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               !isPlanImplementerScorecard(s) &&
               !holdsAuthorAuthority(s),
           );
+    const staleGradingScorecardIds = [
+      ...new Set([...(staleIndependent ? [staleIndependent.issueId] : []), ...cohortStaleIndependentIds]),
+    ];
     return {
       satisfied: false,
       code: 'self_graded_only',
       rubricId: rubric.rubricId,
       ...(staleIndependent ? { staleGradingScorecardId: staleIndependent.issueId } : {}),
+      ...(staleGradingScorecardIds.length > 0 ? { staleGradingScorecardIds } : {}),
       message: staleIndependent
         ? `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' HAS an independent ` +
           `grading (scorecard ${staleIndependent.issueId}, by '${staleIndependent.createdBy}'), but the acceptance BAR ` +

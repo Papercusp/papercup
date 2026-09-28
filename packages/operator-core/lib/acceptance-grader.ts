@@ -1210,6 +1210,21 @@ export interface AcceptanceShipperCarrier {
    * settled independent grading, or the recruiter never re-dispatches the fresh
    * grading the gate asked for. An exclusion input only; it grants nothing. */
   acceptanceStaleGradingScorecardId?: string | null;
+  /** Every independent scorecard the gate excluded as cohort-stale — the named one
+   * plus each older independent card predating it. Excluding only the named id lets
+   * the settlement read fall back to an older excluded card and report settled. */
+  acceptanceStaleGradingScorecardIds?: readonly string[] | null;
+}
+
+/** The union of the carried cohort-stale ids, trimmed and de-duplicated (WI-10003286). */
+export function carriedStaleGradingCardIds(ctx: unknown): string[] {
+  const carrier = (ctx ?? {}) as AcceptanceShipperCarrier;
+  const raw = [carrier.acceptanceStaleGradingScorecardId, ...(carrier.acceptanceStaleGradingScorecardIds ?? [])];
+  return [
+    ...new Set(
+      raw.filter((id): id is string => typeof id === 'string' && id.trim().length > 0).map((id) => id.trim()),
+    ),
+  ];
 }
 
 /** The caller of the ship gate — the shipper D-009 excludes. Null when unattributable;
@@ -1951,11 +1966,11 @@ export async function resolveAcceptanceGrader(
       // NULL` dedup) cannot cover this: it asks whether a cascade is OPEN, and a
       // grading that already COMPLETED has no open row — its evidence lives in
       // scorecards. Two different questions; both guards are needed.
-      const staleCardId = (ctx as AcceptanceShipperCarrier).acceptanceStaleGradingScorecardId;
+      const staleCardIds = carriedStaleGradingCardIds(ctx);
       settlement = await (deps.readSettlement ?? readAcceptanceGradingSettlement)(
         rubricId,
         {},
-        typeof staleCardId === 'string' && staleCardId.trim() ? { staleCardIds: [staleCardId.trim()] } : {},
+        staleCardIds.length > 0 ? { staleCardIds } : {},
       ).catch(
         // Fail OPEN: a settlement read that throws must not suppress a grading.
         // But RECORD the fault rather than returning undefined — a dispatch that

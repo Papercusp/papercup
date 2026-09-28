@@ -318,7 +318,7 @@ export const ACCEPTANCE_GRADER_GATE_CODES = new Set(['acceptance_ungraded', 'sel
  * all dead / degraded) does it fall through to the original fresh-judge launch. */
 export async function launchAcceptanceGraderForGate(
   slug: string,
-  gate: { satisfied: boolean; code?: string; staleGradingScorecardId?: string },
+  gate: { satisfied: boolean; code?: string; staleGradingScorecardId?: string; staleGradingScorecardIds?: readonly string[] },
   ctx: Parameters<typeof launchAcceptanceGrader>[1],
   harness: string | undefined,
   launch: typeof launchAcceptanceGrader = resolveAcceptanceGrader,
@@ -352,12 +352,21 @@ export async function launchAcceptanceGraderForGate(
   // implementer as its "independent" grader. Carry the caller's identity through
   // as an exclusion input; it grants nothing.
   const acceptanceShipperOwnerId = resolveRatifierOwnerId(scopedCtx);
+  // WI-10003286: every independent card the gate excluded as cohort-stale (the named one
+  // AND each older one that predates it) must not read as settled, or the recruiter
+  // answers the gate's "re-grade" with "already done" on every retry.
+  const staleIds = [
+    ...new Set(
+      [gate.staleGradingScorecardId, ...(gate.staleGradingScorecardIds ?? [])].filter(
+        (id): id is string => typeof id === 'string' && id.trim().length > 0,
+      ),
+    ),
+  ];
   return launch(slug, {
     ...scopedCtx,
     acceptanceShipperOwnerId,
-    // WI-10003286: a cohort-stale independent card must not read as settled, or the
-    // recruiter answers the gate's "re-grade" with "already done" on every retry.
     ...(gate.staleGradingScorecardId ? { acceptanceStaleGradingScorecardId: gate.staleGradingScorecardId } : {}),
+    ...(staleIds.length > 0 ? { acceptanceStaleGradingScorecardIds: staleIds } : {}),
     uiClientId: null,
     isSuperuser: false,
     isPowerUser: false,
