@@ -56,15 +56,15 @@ interface TestRunRow {
  */
 export function playwrightExecutionDetails(
   row: TestRunRow,
-  ctx: { root: string; runGroupId: string | null; workspaceId: string | null; harnessSlug: string | null; commitSha: string | null },
+  run: { root: string; runGroupId: string | null; workspaceId: string | null; harnessSlug: string | null; commitSha: string | null },
 ): TestRunExecutionDetails {
   return {
     schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
-    root: ctx.root,
+    root: run.root,
     filePath: row.filePath,
-    runGroupId: ctx.runGroupId,
-    workspaceId: ctx.workspaceId,
-    harnessSlug: ctx.harnessSlug,
+    runGroupId: run.runGroupId,
+    workspaceId: run.workspaceId,
+    harnessSlug: run.harnessSlug,
     testNamePattern: null,
     testLayer: 'e2e',
     passed: row.passed,
@@ -72,7 +72,7 @@ export function playwrightExecutionDetails(
     skipped: row.skipped,
     collectionFailed: false,
     mutationPhase: null,
-    commitSha: ctx.commitSha,
+    commitSha: run.commitSha,
     worktreeDirty: row.worktreeDirty,
   };
 }
