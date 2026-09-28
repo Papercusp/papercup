@@ -46,7 +46,9 @@ const RUBRIC_REF = 'goal-mode-e2e';
  * (D-020 rule 2); until then it is null and the live census refuses to run rather than
  * counting pre-fix cards.
  */
-const CUTOFF: string | null = null;
+// :3170 (papercup-staging-api) ActiveEnterTimestamp for build 03a7577eb6, which blob-contains the
+// fix (agent-run-evidence-record.ts e4c8e4ff). Measured 2026-09-28 by su-25eb2e26.
+const CUTOFF: string | null = '2026-09-27T23:18:39Z';
 
 export interface CensusCard {
   card: string;
