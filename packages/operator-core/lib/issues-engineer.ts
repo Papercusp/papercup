@@ -2565,8 +2565,28 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
   return result;
 }
 
+/**
+ * One round trip (WI-10003631). This used to be `resolveIssueWorkspace` followed by
+ * `getIssueInWorkspace`, two statements on EVERY `getWorkItem` — including the
+ * feature-family path, where both miss. A single ordered read returns the identical
+ * row: resolve picked the ambient workspace when it holds the id, else the workspace
+ * of the freshest row; the re-read then took the freshest twin in that workspace.
+ * `(workspace_id = ambient) DESC, updated_at DESC` is exactly that composition, and a
+ * miss is null either way (the ambient fallback re-read also missed).
+ */
 export async function getIssue(id: string, opts: WorkItemReadOptions = {}): Promise<EngineerIssue | null> {
-  return getIssueInWorkspace(await resolveIssueWorkspace(id), id, opts);
+  const ambient = issuesScopeWorkspace();
+  const { sql } = getOrgPg();
+  const columns = projectWorkItemColumns(
+    opts.includeBody === false ? ISSUE_COLS_BODYLESS : ISSUE_COLS,
+    opts.payloadProjection,
+  );
+  const rows = await sql<IssueRowDb[]>`
+    SELECT ${sql.unsafe(columns)} FROM harness_shared.engineer_issues
+     WHERE issue_id = ${id}
+     ORDER BY (workspace_id = ${ambient}) DESC, updated_at DESC NULLS LAST
+     LIMIT 1`;
+  return rows[0] ? toIssue(rows[0]) : null;
 }
 
 /**
