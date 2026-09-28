@@ -203,7 +203,7 @@ describe('hosted psu CLI routes', () => {
 
     const sandboxed = await (await t.call('POST', '/hosted/cli/device/code', { method: 'POST', body: '{}' })).json();
     for (const headers of [
-      { origin: 'null' },
+      { origin: 'null' } as Record<string, string>,
       { origin: 'null', 'sec-fetch-site': 'cross-site' },
       { origin: 'null', 'sec-fetch-site': 'same-site' },
     ]) {
