@@ -299,17 +299,21 @@ describe('post-publish intermediate prune (WI-10003700)', () => {
     expect(result.pruned).toEqual([join(workDir, 'source'), join(workDir, 'sidecar')]);
   });
 
-  it('keeps everything for a plan-only publish, an unpublished cut and --keep-intermediates', async () => {
-    for (const opts of [
-      options(),
-      { ...realPublish(), publish: false },
-      { ...realPublish(), keepIntermediates: true },
-    ]) {
-      const h = harness();
-      const result = await runWorkspaceHostReleaseCut(opts, h.deps);
-      expect(h.calls.prunes).toEqual([]);
-      expect(result.pruned).toEqual([]);
-    }
+  it.each([
+    ['a plan-only publish', () => options()],
+    ['an unpublished cut', () => ({ ...realPublish(), publish: false })],
+    ['--keep-intermediates', () => ({ ...realPublish(), keepIntermediates: true })],
+  ])('keeps everything for %s', async (_label, opts) => {
+    const h = harness();
+    const result = await runWorkspaceHostReleaseCut(opts(), h.deps);
+    expect(h.calls.prunes).toEqual([]);
+    expect(result.pruned).toEqual([]);
+  });
+
+  it('parses --keep-intermediates, defaulting to prune', () => {
+    const base = ['--source-sha', SHA, '--version', VERSION, '--work-dir', '/tmp/x'];
+    expect(parseWorkspaceHostReleaseCutArgs(base, {}).keepIntermediates).toBe(false);
+    expect(parseWorkspaceHostReleaseCutArgs([...base, '--keep-intermediates'], {}).keepIntermediates).toBe(true);
   });
 
   it('deletes nothing when the publication directory no longer matches the committed build', async () => {
