@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-326 NEW-SESSION-TURN-P326 live: four hosted claude New Sessions launched on avi-test r60 through the portal relay each complete an authenticated customer turn with a retained transcript and reply, including one after the launch-readiness flags were stripped (no hand repair)",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "byoc-cloud-workspaces-gcp-aws-azure-2026-08-22",
+  "planItem": "P-326",
+  "specId": "NEW-SESSION-TURN-P326",
+  "specRevision": 1,
+  "workItem": "WI-10003274",
+  "governingDecisions": ["D-421", "D-423", "D-424", "D-431"],
+  "observer": "su-be77f2f5-0643-4d29-8405-cfaf4eba68c5",
+  "subject": {
+    "host": "avi-test (host-3daf37098c8096b5d9e0ac72, VM pc-host-3daf37098c8096b5d9e0ac72-877db740-vm)",
+    "release": "0.0.21-p318r60",
+    "releaseSourceSha": "6af5769c65b74b32852d199d66cb8b2db5db7abd",
+    "papercuspSharedPin": "f6622fd6df1e01ed020e7be5bc6cf902410bbac1"
+  },
+  "command": [
+    "PROBE_MODE=launch PROBE_AGENT=claude PROBE_TEXT='<per-session prompt>' npx tsx .papercusp/scratch/wi10003163-chat-probe.mts e91577da-655b-4b24-b122-ab57b4f9d211 ws-3daf37098c8096b5d9e0ac72 host-3daf37098c8096b5d9e0ac72  (POST /api/adv/sessions/launch-su over the portal operator-http relay with a control-plane-issued connector ticket)",
+    "bash .papercusp/scratch/avi-test-p326-strip-flags.sh  (before advSession 18 only)",
+    "bash .papercusp/scratch/avi-test-p326-r60-check.sh 20  (reads the customer's ~/.claude/projects transcripts: roles + short excerpts)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-28T14:11:25Z",
+  "finishedAt": "2026-09-28T14:29:10Z",
+  "summary": "Each launch returned HTTP 200 with a new advSession (17, 18, 19, 20) and each session completed a turn as the customer workspace account (uid 1001), leaving a transcript under /home/papercusp-workspace/.claude/projects: 17 (d0e09d6a, 14:13Z) replied 'READY'; 18 (253ceb2b, 14:16Z) launched after ~/.claude.json and ~/.claude/settings.json launch-readiness flags were stripped, the r60 stage hop re-asserted hasCompletedOnboarding / project trust / skipDangerousModePermissionPrompt and the session replied (it questioned the kickoff envelope rather than echoing the word, which is still a completed authenticated turn); 19 (7611b424, 14:25Z) and 20 (9488ff03, 14:28Z) read and ran a shell script with their Bash tool and replied with its VERDICT line. Authentication used the customer's own ~/.claude/.credentials.json (the launcher blanks every override credential variable). Distinguishing prediction for 18: with the fix absent the TUI wedges before the first turn and the flags stay absent; observed flags restored and a reply.",
+  "assertions": [
+    { "id": "launch-accepted", "passed": true, "evidence": "LAUNCH 200 status ok agent claude for advSessionId 17, 18, 19, 20 (r60-launch-probe-1.log, r60-launch-probe-2-stripped.log, r60-p326-boundary-launch.log, r60-p326-boundary-launch-2.log)." },
+    { "id": "turn-completed-as-customer", "passed": true, "evidence": "Transcripts under /home/papercusp-workspace/.claude/projects/-home-papercusp-workspace/: d0e09d6a (user 1, assistant 'READY'), 253ceb2b (assistant reply), 7611b424 (assistant 'VERDICT uid_customer=yes denied=12/12'), 9488ff03 (assistant 'VERDICT uid_customer=yes denied=12/12 env_cred_nonempty=1')." },
+    { "id": "authenticated-with-customer-credentials", "passed": true, "evidence": "No API/401 error in any transcript; HOME_CRED ~/.claude/.credentials.json owned papercusp-workspace 600; all ANTHROPIC_* override variables len=0 in the agent env." },
+    { "id": "no-hand-repair-distinguishing-run", "passed": true, "evidence": "r60-p326-strip-1.log shows hasCompletedOnboarding/trust/skipDangerous = None before launch; r60-p326-stripped-check.log shows them True after advSession 18 and its transcript holds the reply." }
+  ],
+  "runnerLogs": [
+    { "path": ".papercusp/scratch/r60-launch-probe-1.log", "sha256": "9feb4bf9697cb33e17f92dd5f74c40122799f3ae0a24b812fe7c933d7b551f4e", "bytes": 2742 },
+    { "path": ".papercusp/scratch/r60-launch-probe-2-stripped.log", "sha256": "aa649976b832dfb14f259f0a8a5bbd85c25c616d665a08c9167dce3b04e447ba", "bytes": 2742 },
+    { "path": ".papercusp/scratch/r60-p326-strip-1.log", "sha256": "daa9821a6cae1b58f831fc98c0d4e27c6693c1ad044c8bed0bdbffeefb444f28", "bytes": 308 },
+    { "path": ".papercusp/scratch/r60-p326-stripped-check.log", "sha256": "a8809af15dc72a5cdf8d0a9bb0199e780fcaaa724e12bf9810a70d21a868932d", "bytes": 2502 },
+    { "path": ".papercusp/scratch/r60-p326-boundary-launch.log", "sha256": "af45823ce6017145ae60ea48c89c1581d7e540964f072faffe33a943969ff70d", "bytes": 2742 },
+    { "path": ".papercusp/scratch/r60-p326-boundary-launch-2.log", "sha256": "5c5bbdb919e6d5e0d2dc95d46580083a9c90c3da5666d98e0283856bb2949e18", "bytes": 2742 },
+    { "path": ".papercusp/scratch/r60-p326-boundary-transcripts.log", "sha256": "0964f3af3d78c347a5b7789adfbe959cbcc5cc8b3df9c8459b582c4c1412315b", "bytes": 3083 }
+  ],
+  "measuredBlobs": [
+    { "path": "libs/papercusp-shared/src/agent/loopback-identity-tty.mjs", "blob": "7df1d87988f7550d2eccbbeb340d7764520465a1", "repo": "libs/papercusp-shared@f6622fd6" },
+    { "path": "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts", "blob": "528e99f22d0e35c35fb618d2f19fff5cbd119b90" },
+    { "path": "apps/operator/scripts/psu-pty-host.mjs", "blob": "7eb75de5049a59be4c9308efbd1033103bf762ed" }
+  ]
+}

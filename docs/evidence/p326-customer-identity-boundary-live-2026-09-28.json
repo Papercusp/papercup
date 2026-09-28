@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-326 CUSTOMER-IDENTITY-P326 live boundary check: a hosted claude New Session on avi-test r60 runs a metadata-only check script through its own shell tool, reporting its OS identity, process ancestry, supervisor identity, HOME credential resolution, workspace access and denied protected reads",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "byoc-cloud-workspaces-gcp-aws-azure-2026-08-22",
+  "planItem": "P-326",
+  "specId": "CUSTOMER-IDENTITY-P326",
+  "specRevision": 1,
+  "workItem": "WI-10003274",
+  "governingDecisions": ["D-421", "D-423", "D-424"],
+  "observer": "su-be77f2f5-0643-4d29-8405-cfaf4eba68c5",
+  "subject": {
+    "host": "avi-test (host-3daf37098c8096b5d9e0ac72, VM pc-host-3daf37098c8096b5d9e0ac72-877db740-vm, GCP papercusp-hosted-workspaces/us-central1-c)",
+    "release": "0.0.21-p318r60",
+    "releaseSourceSha": "6af5769c65b74b32852d199d66cb8b2db5db7abd",
+    "papercuspSharedPin": "f6622fd6df1e01ed020e7be5bc6cf902410bbac1",
+    "advSessionIds": [19, 20],
+    "transcripts": ["~/.claude/projects/-home-papercusp-workspace/7611b424-a03f-49f4-83c7-84668904037c.jsonl", "~/.claude/projects/-home-papercusp-workspace/9488ff03-45c1-4b0f-8f85-99de7654a4fd.jsonl"]
+  },
+  "command": [
+    "bash .papercusp/scratch/avi-test-cust-ssh.sh 'umask 077; cat > ~/p326-boundary-check.sh; chmod 700 ~/p326-boundary-check.sh' < .papercusp/scratch/p326-boundary-check.sh",
+    "PROBE_MODE=launch PROBE_AGENT=claude PROBE_SETTLE_MS=100000 PROBE_TEXT='Please run this command in your shell: bash ~/p326-boundary-check.sh  -- then reply with the single VERDICT line it prints.' npx tsx .papercusp/scratch/wi10003163-chat-probe.mts e91577da-655b-4b24-b122-ab57b4f9d211 ws-3daf37098c8096b5d9e0ac72 host-3daf37098c8096b5d9e0ac72",
+    "bash .papercusp/scratch/avi-test-cust-ssh.sh 'stat -c \"RESULT_FILE %U %a %y\" ~/p326-boundary-result.txt; cat ~/p326-boundary-result.txt'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-28T14:26:20Z",
+  "finishedAt": "2026-09-28T14:28:40Z",
+  "summary": "A claude New Session launched on avi-test r60 through the portal operator-http relay (connector ticket issued by the control plane, broker :3880) executed ~/p326-boundary-check.sh with its own Bash tool and replied 'VERDICT uid_customer=yes denied=12/12 env_cred_nonempty=1' (advSession 20; advSession 19 at 14:24Z gave the same identity and 12/12 denials). The agent runs as papercusp-workspace uid 1001 with HOME /home/papercusp-workspace; its ancestry is bash(1001) <- claude(1001) <- sshd(1001) <- sshd(root); the supervising psu.mjs and its 'ssh -tt' hop run as the service user papercusp uid 999 under serve.mjs r60. Customer-home credential files (.claude/.credentials.json, .claude.json, .codex/auth.json) are owned by papercusp-workspace mode 600. The agent can create/read/remove files in its workspace (HOME). All 12 protected targets are denied: /var/lib/papercusp (service runtime + embedded PG data), /var/lib/papercusp/.papercusp, /opt/papercusp (release bytes), /home/papercusp-agent and its .claude/.credentials.json and .codex/auth.json (service agent credentials), /var/lib/papercusp-desktop, /home/ubuntu, /etc/shadow, /var/lib/papercusp/.papercusp/superuser-token; two Google OS Login homes do not exist on disk. Credential-shaped env names present in the agent are all empty (len=0), blanked by the launcher's --settings overlay (psu-launcher.mjs CLAUDE_DEFAULT_AUTH_ENV_KEYS -> ''); the single non-empty one, CLAUDE_CODE_MESSAGING_TOKEN (32 chars), is Claude Code's own per-session local message-socket token (present in the claude binary beside CLAUDE_CODE_MESSAGING_SOCKET; not set by any Papercusp source), not a service credential. The check prints metadata only, never file contents or values. Single-tenant host: no second customer workspace exists, so the foreign-workspace read is exercised against the other accounts' homes on the box.",
+  "assertions": [
+    { "id": "agent-os-identity-is-customer", "passed": true, "evidence": "SELF_ID uid=1001(papercusp-workspace) gid=1002(papercusp-workspace) groups=1002(papercusp-workspace); SELF_HOME /home/papercusp-workspace; result file owned by papercusp-workspace (written by the agent process)." },
+    { "id": "agent-ancestry-customer-over-ssh", "passed": true, "evidence": "ANCESTRY bash 1001 <- bash 1001 <- claude 1001 <- MainThread 1001 <- sshd 1001 <- sshd root <- sshd root (pid 1695 <- 1)." },
+    { "id": "supervisor-is-service-user", "passed": true, "evidence": "SUPERVISOR_PS: serve.mjs r60 (uid 999 papercusp) -> bash -lc -> scripts/psu.mjs --no-picker --agent=claude (uid 999) -> /usr/bin/ssh -F /dev/null -tt -i /var/lib/papercusp/hosted-pty-ssh/id_ed25519 (uid 999) -> claude (uid 1001)." },
+    { "id": "home-credential-resolution-customer", "passed": true, "evidence": "HOME_CRED papercusp-workspace 600 for ~/.claude/.credentials.json, ~/.claude.json, ~/.codex/auth.json; the session authenticated and replied using them." },
+    { "id": "workspace-access-permitted", "passed": true, "evidence": "WORKSPACE_RW allowed papercusp-workspace (create, read back, remove in HOME)." },
+    { "id": "protected-reads-denied", "passed": true, "evidence": "VERDICT denied=12/12: Permission denied for /var/lib/papercusp, /var/lib/papercusp/.papercusp, /opt/papercusp, /home/papercusp-agent, /var/lib/papercusp-desktop, /home/ubuntu, /home/papercusp-agent/.claude/.credentials.json, /home/papercusp-agent/.codex/auth.json, /var/lib/papercusp/.papercusp/superuser-token, /etc/shadow; two Google OS Login account homes (listed in passwd, never created on disk) returned No such file." },
+    { "id": "no-service-credential-values-in-agent-env", "passed": true, "evidence": "ENV_CRED_NAME len=0 for ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_IDENTITY_TOKEN(_FILE), ANTHROPIC_FOUNDRY_API_KEY, ANTHROPIC_FOUNDRY_AUTH_TOKEN, ANTHROPIC_AWS_API_KEY, CLAUDE_CODE_OAUTH_REFRESH_TOKEN; only CLAUDE_CODE_MESSAGING_TOKEN len=32 (Claude Code's own session-local socket token)." }
+  ],
+  "runnerLogs": [
+    { "path": ".papercusp/scratch/r60-p326-boundary-result-2.log", "sha256": "63276945510a832dbf2def65aa7bf7952c29d780708f7cb466bc0c0d8f32768e", "bytes": 3610 },
+    { "path": ".papercusp/scratch/r60-p326-boundary-result.log", "sha256": "a896a056514ccf6c1a3a050c69412080779cf736cde0c55e712b1460e3d7eb2e", "bytes": 3509 },
+    { "path": ".papercusp/scratch/r60-p326-boundary-launch-2.log", "sha256": "5c5bbdb919e6d5e0d2dc95d46580083a9c90c3da5666d98e0283856bb2949e18", "bytes": 2742 },
+    { "path": ".papercusp/scratch/r60-p326-boundary-transcripts.log", "sha256": "0964f3af3d78c347a5b7789adfbe959cbcc5cc8b3df9c8459b582c4c1412315b", "bytes": 3083 },
+    { "path": ".papercusp/scratch/p326-boundary-check.sh", "sha256": "ece0e836ac10ef64bed63e6a25071f70de4216468e611dcd1d1732220a6835f7", "bytes": 3322 }
+  ],
+  "measuredBlobs": [
+    { "path": "libs/papercusp-shared/src/agent/loopback-identity-tty.mjs", "blob": "7df1d87988f7550d2eccbbeb340d7764520465a1", "repo": "libs/papercusp-shared@f6622fd6" },
+    { "path": "packages/operator-core/lib/workspace-host/hosted-agent-identity.ts", "blob": "64d8d4124d72aa72738ddf26e8be04d40eeb1135" },
+    { "path": "packages/operator-core/lib/workspace-host/hosted-agent-identity-psu-env.ts", "blob": "0e3324d6af14e52a90956d817bc7753b4511d181" },
+    { "path": "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts", "blob": "528e99f22d0e35c35fb618d2f19fff5cbd119b90" },
+    { "path": "apps/operator/scripts/psu-pty-host.mjs", "blob": "7eb75de5049a59be4c9308efbd1033103bf762ed" },
+    { "path": "apps/operator/scripts/psu-launcher.mjs", "blob": "b10674a56abbbcfb77c157be1c5a974dac888cf6" }
+  ]
+}

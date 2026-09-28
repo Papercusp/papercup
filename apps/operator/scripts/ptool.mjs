@@ -1344,7 +1344,11 @@ export const PTOOL_DEV_RESTART_TIMEOUT_MS = 345_000;
 // and after that fire. Keep the normal ptool liveness ceiling for ordinary
 // calls, but give this mutation enough time to return its durable `in_progress`
 // continuation instead of cutting the MCP request off at 30s.
-export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS = 60_000;
+// WI-10003638: 60s was exactly that budget (45s + 5s + 5s + 5s MCP settlement),
+// so any main-thread lag on the background-worker host made the client give up
+// first with MCP -32001 outcome=unknown (P-505 run 13 lost Phase B that way).
+// Keep a full server budget of headroom so a late reply is still observed.
+export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS = 120_000;
 
 // `backup:snapshot_create` has the same continuation contract: its handler
 // races the heavyweight kopia snapshot against 45s, then returns the durable
