@@ -94,17 +94,22 @@ export async function loadAcceptedCoordProgramBlueprint(
  * validates the receipt with. WI-10003631: the program start used to validate
  * with a status read and then immediately repeat the same canonical read for its
  * crash-replay check; both run `readValidatedCanonicalOperation`, so one read
- * serves both and the start costs one canonical read instead of two. */
+ * serves both and the start costs one canonical read instead of two.
+ * Then: the receipt proof and root liveness come from ONE guard statement, and
+ * the full canonical result read (~10 statements) runs only when the root has
+ * already settled — the only case the crash-replay check acts on. `prior` is
+ * null for a live root. */
 async function loadAcceptedCoordProgram(
   sql: Sql,
   handle: BlueprintOperationHandle,
   callerId: string,
-): Promise<{ blueprint: Blueprint; prior: Awaited<ReturnType<typeof getBlueprintOperationResult>> }> {
+): Promise<{ blueprint: Blueprint; prior: Awaited<ReturnType<typeof getBlueprintOperationResult>> | null }> {
   if (handle.target.kind !== 'work-item') {
     throw new Error('accepted coord program requires a canonical root work item');
   }
   return runWithWorkspace(handle.workspaceId, async () => {
-    const prior = await getBlueprintOperationResult(sql, handle, callerId);
+    const guard = await readAcceptedProgramRootGuard(sql, handle, callerId);
+    const prior = guard.terminal ? await getBlueprintOperationResult(sql, handle, callerId) : null;
     const specification = await readBlueprintSpecificationSnapshot(
       sql, handle.workspaceId, handle.harnessSlug, handle.specificationRevision,
     );
@@ -552,7 +557,7 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
     // return must replay the canonical result, never re-enter the program steps.
     // The loader's validating read IS that canonical result read (WI-10003631).
     const prior = loaded.prior;
-    if (prior.state === 'ready') {
+    if (prior?.state === 'ready') {
       const output = prior.output;
       if (!output || typeof output !== 'object' || Array.isArray(output) ||
           typeof (output as Record<string, unknown>).outcome !== 'string' ||
@@ -561,7 +566,7 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
       }
       return output as ProgramOutcome;
     }
-    if (prior.status.phase === 'terminal') {
+    if (prior && prior.status.phase === 'terminal') {
       if (prior.status.outcome === 'cancelled') {
         await cancelAcceptedCoordProgramChildren(getOrgPg().sql, input);
       }

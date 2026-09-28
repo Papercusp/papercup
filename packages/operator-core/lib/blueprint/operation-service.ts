@@ -348,15 +348,33 @@ export interface AcceptedProgramRootGuard {
  * it started (`loadAcceptedCoordProgramBlueprint`); the handle is immutable
  * workflow input. This answers the same two predicates the step guard reads
  * from `projectBlueprintOperationStatus`: phase terminal (root settled) and
- * cancellation (cancel event, or the root's `blueprintCancellation` mark). */
+ * cancellation (cancel event, or the root's `blueprintCancellation` mark).
+ *
+ * With `receiptCallerId`, the same round trip also proves the durable receipt
+ * matches the handle and caller — the exact predicate `readCanonicalOperation`
+ * refuses `handle_mismatch` on — so a program start can validate its receipt
+ * and read root liveness in one statement, and take the full canonical result
+ * read only when the root has already settled (crash replay). */
 export async function readAcceptedProgramRootGuard(
-  sql: Sql, handle: BlueprintOperationHandle,
+  sql: Sql, handle: BlueprintOperationHandle, receiptCallerId?: string,
 ): Promise<AcceptedProgramRootGuard> {
   if (handle.target.kind !== 'work-item') {
     throw new Error('accepted program root guard requires a work-item target');
   }
-  const rows = await sql<Array<{ status: string; item_kind: string | null; marked: boolean; cancel_requested: boolean }>>`
+  const ref = receiptCallerId === undefined ? null : OperationHandleSchema.parse(handle);
+  const rows = await sql<Array<{
+    status: string | null; item_kind: string | null; marked: boolean | null; cancel_requested: boolean;
+    receipt_ok: boolean | null;
+  }>>`
     SELECT wi.status, wi.item_kind,
+           ${ref ? sql`EXISTS(
+             SELECT 1 FROM harness_shared.blueprint_operation_invocations AS r
+              WHERE r.id = ${ref.receiptId} AND r.workspace_id = ${ref.workspaceId}
+                AND r.harness_slug = ${ref.harnessSlug} AND r.caller_id = ${receiptCallerId!.trim()}
+                AND r.operation_id = ${ref.operationId}
+                AND r.specification_revision = ${ref.specificationRevision}
+                AND r.target_kind = 'work-item' AND r.target_ref = ${handle.target.id}
+           )` : sql`NULL::boolean`} AS receipt_ok,
            (wi.payload ? 'blueprintCancellation'
              AND COALESCE(wi.payload->'blueprintCancellation', 'null'::jsonb) NOT IN ('null'::jsonb, 'false'::jsonb)) AS marked,
            EXISTS(
@@ -364,16 +382,23 @@ export async function readAcceptedProgramRootGuard(
               WHERE workspace_id = ${handle.workspaceId} AND surface = 'blueprint-operation'
                 AND msg_id = ${eventIdentity('cancel', handle, 'once')}
            ) AS cancel_requested
-      FROM harness_shared.work_items AS wi
-     WHERE wi.workspace_id = ${handle.workspaceId} AND wi.harness_slug = ${handle.harnessSlug}
+      FROM (SELECT 1) AS one
+      LEFT JOIN harness_shared.work_items AS wi
+        ON wi.workspace_id = ${handle.workspaceId} AND wi.harness_slug = ${handle.harnessSlug}
        AND wi.feature_id = ${handle.target.id}
   `;
+  // The LEFT JOIN always yields one row, so the receipt verdict is independent
+  // of the root row and the error order matches the canonical read: receipt
+  // mismatch first, then a missing root.
   const row = rows[0];
-  if (!row) throw new Error('blueprint operation work item is missing or outside its harness');
+  if (ref && row?.receipt_ok !== true) {
+    throw new BlueprintOperationRefusal('handle_mismatch', 'blueprint operation handle does not match its durable receipt');
+  }
+  if (!row || row.status === null) throw new Error('blueprint operation work item is missing or outside its harness');
   const family = ISSUE_FAMILY_KINDS.has(row.item_kind ?? '') ? 'issue' : 'feature';
   return {
     terminal: isSettledWorkItem({ family, state: row.status } as Pick<WorkItem, 'family' | 'state'>),
-    cancellationRequested: row.cancel_requested || row.marked,
+    cancellationRequested: row.cancel_requested || row.marked === true,
   };
 }
 

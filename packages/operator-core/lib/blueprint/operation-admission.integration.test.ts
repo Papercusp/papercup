@@ -453,6 +453,21 @@ describe('program child admission pins the root specification', () => {
       return guard;
     };
     expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: false });
+    // WI-10003631: with a caller, the same statement proves the receipt — the
+    // program start relies on it instead of a full canonical read.
+    expect(await readAcceptedProgramRootGuard(sql, accepted, 'program-caller'))
+      .toEqual({ terminal: false, cancellationRequested: false });
+    for (const [label, handle, caller] of [
+      ['wrong caller', accepted, 'someone-else'],
+      ['wrong operation', { ...accepted, operationId: 'other-op' }, 'program-caller'],
+      ['wrong revision', { ...accepted, specificationRevision: 'f'.repeat(64) }, 'program-caller'],
+      ['wrong target', { ...accepted, target: { kind: 'work-item' as const, id: 'WI-0' } }, 'program-caller'],
+    ] as const) {
+      await expect(readAcceptedProgramRootGuard(sql, handle, caller), label)
+        .rejects.toMatchObject({ code: 'handle_mismatch' });
+      await expect(getBlueprintOperationStatus(sql, handle, caller), `${label} (canonical agrees)`)
+        .rejects.toMatchObject({ code: 'handle_mismatch' });
+    }
     await sql`UPDATE harness_shared.work_items
       SET payload = jsonb_set(payload, '{blueprintCancellation}', '{"eventId":"test"}'::jsonb, true)
       WHERE workspace_id = ${workspaceId} AND feature_id = ${rootId}`;

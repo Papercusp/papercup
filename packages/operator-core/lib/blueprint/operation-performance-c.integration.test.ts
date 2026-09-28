@@ -301,9 +301,10 @@ describe('P-013 workload C fixture', () => {
 const callsites = new Map<string, number>();
 function callsiteOf(): string {
   const frames = (new Error().stack ?? '').split('\n').slice(2);
-  const hit = frames.find((f) => f.includes('/lib/') && !f.includes('node_modules')
-    && !f.includes('operation-performance-c') && !f.includes('/test/'));
-  return hit ? hit.trim().replace(/^at\s+/, '').replace(/^.*\/lib\//, '').replace(/:\d+\)?$/, '') : '(unattributed)';
+  const hits = frames.filter((f) => f.includes('/lib/') && !f.includes('node_modules')
+    && !f.includes('operation-performance-c') && !f.includes('/test/')).slice(0, Number(process.env.P013_CALLSITES) > 1 ? Number(process.env.P013_CALLSITES) : 3)
+    .map((f) => f.trim().replace(/^.*\/lib\//, '').replace(/:\d+\)?$/, ''));
+  return hits.length ? hits.join(' < ') : '(unattributed)';
 }
 function tagCallsites(sql: Sql): Sql {
   const bump = (key: string) => callsites.set(key, (callsites.get(key) ?? 0) + 1);
