@@ -15,6 +15,7 @@ import type { Sql } from 'postgres';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { getResourceProfile } from '../resource-profile';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import {
   P013D_WORKSPACE, assertWriteExactlyOnce, runP013WorkloadD, type P013DArm, type P013DSample,
@@ -43,6 +44,12 @@ const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
   ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
 const dedicatedPgRequested = dedicatedPgMode !== null;
 const DEDICATED_PG_SETTINGS = { max_connections: '200', dynamic_shared_memory_type: 'mmap' };
+// D-024: size the getOrgPg() stand-in pool like production (resource-profile
+// pgPoolMax), not the fixture default of 2; P013_ORG_POOL_MAX=<n> pins it.
+const P013_ORG_POOL_MAX = (() => {
+  const pinned = Number(process.env.P013_ORG_POOL_MAX);
+  return Number.isInteger(pinned) && pinned > 0 ? pinned : getResourceProfile().pgPoolMax;
+})();
 
 beforeAll(async () => {
   if (dedicatedPgMode === 'native') {
@@ -56,7 +63,7 @@ beforeAll(async () => {
     });
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
   }
-  db = await createOrgTestDb();
+  db = await createOrgTestDb({ adminPoolMax: P013_ORG_POOL_MAX });
   fixture.sql = db.adminSql;
   rt = await bootP013DRuntime({
     sql: db.adminSql, systemDsn: db.adminDsn, executorId: `p013d-parent-${process.pid}`, durable: true,
@@ -139,7 +146,7 @@ describe('P-013 workload D fixture', () => {
       expect(trials).toHaveLength(2 * matrix.repetitions * matrix.modes.length * matrix.concurrencies.length);
       const candidates = samples.filter((sample) => sample.arm === 'candidate');
       console.info(`P-013 workload D ${matrix.modes.join('+')} trials`, JSON.stringify({
-        ...matrix, cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container',
+        ...matrix, cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', orgPoolMax: P013_ORG_POOL_MAX,
         dispatchBeforeReceipt: candidates.filter((sample) => sample.dispatchBeforeReceipt).length,
         candidateSamples: candidates.length, trials }));
     } else {

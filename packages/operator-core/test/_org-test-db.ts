@@ -159,7 +159,19 @@ export async function provisionOrgTemplate(url: string): Promise<{ migrationCoun
   }
 }
 
-export async function createOrgTestDb(): Promise<OrgTestDb> {
+export interface CreateOrgTestDbOptions {
+  /** Size of the `adminSql` pool (default {@link clientOpts}.max = 2). A rig that
+   *  stands `adminSql` in for getOrgPg() and MEASURES concurrency must size it like
+   *  the production admin pool, or the pool, not the code under test, sets the
+   *  concurrent throughput (P-013 D-024). */
+  adminPoolMax?: number;
+}
+
+export async function createOrgTestDb(opts: CreateOrgTestDbOptions = {}): Promise<OrgTestDb> {
+  const adminPoolMax = opts.adminPoolMax ?? clientOpts.max;
+  if (!Number.isInteger(adminPoolMax) || adminPoolMax < 1) {
+    throw new Error(`createOrgTestDb: adminPoolMax must be a positive integer, got ${String(opts.adminPoolMax)}`);
+  }
   // Clone the fully-migrated schema from a per-container TEMPLATE built ONCE
   // (FRAMEWORK_PREREQS_DDL + ~280 migrations) instead of replaying it for EVERY
   // integration file — a near-instant Postgres `CREATE DATABASE … TEMPLATE` file
@@ -179,7 +191,7 @@ export async function createOrgTestDb(): Promise<OrgTestDb> {
   const appDsn = `postgresql://harness_app:harness_app_pwd@${host}:${port}/${dbName}`;
   const adminDsn = `postgresql://harness_admin:harness_admin_pwd@${host}:${port}/${dbName}`;
   const appSql = applyRawSerializerFixes(postgres(appDsn, clientOpts));
-  const adminSql = applyRawSerializerFixes(postgres(adminDsn, clientOpts));
+  const adminSql = applyRawSerializerFixes(postgres(adminDsn, { ...clientOpts, max: adminPoolMax }));
 
   const cleanup = async () => {
     // The two clients are independent. Waiting for their five-second shutdown

@@ -10,6 +10,7 @@ import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { getResourceProfile } from '../resource-profile';
 import { installDeterministicEmbedder, type InstalledDeterministicEmbedder } from '../../test/_deterministic-embedder';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import { projectBlueprintToPg } from './project-to-pg';
@@ -94,6 +95,15 @@ const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
   ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
 const dedicatedPgRequested = dedicatedPgMode !== null;
 const DEDICATED_PG_SETTINGS = { max_connections: '200', dynamic_shared_memory_type: 'mmap' };
+// D-024: both arms reach getOrgPg() through fixture.sql, so its pool must be sized
+// like the production admin pool (resource-profile pgPoolMax; 52 on the server
+// host class) — at the fixture default of 2 the WI-10003586 headroom cap admits
+// ONE keyed submission at a time and the rig, not the code, sets c8 throughput.
+// P013_ORG_POOL_MAX=<n> pins a size for a deliberate pool-sensitivity A/B.
+const P013_ORG_POOL_MAX = (() => {
+  const pinned = Number(process.env.P013_ORG_POOL_MAX);
+  return Number.isInteger(pinned) && pinned > 0 ? pinned : getResourceProfile().pgPoolMax;
+})();
 beforeAll(async () => {
   // Stamp each setup step so a hook timeout names the slow step (pilot 11
   // timed out at 120 s with no attribution between container start, the
@@ -126,7 +136,7 @@ beforeAll(async () => {
     fixtureEmbedder = await installDeterministicEmbedder();
     stamp('fixture-embedder-installed');
   }
-  db = await createOrgTestDb();
+  db = await createOrgTestDb({ adminPoolMax: P013_ORG_POOL_MAX });
   stamp('org-test-db-ready');
   fixture.sql = db.adminSql;
   await db.adminSql`
@@ -334,14 +344,14 @@ describe('P-013 workload A fixture', () => {
           reconciler: counterRows.filter((row) => row.arm === arm && row.eventRecovery === 'reconciler').length,
         }))));
       console.info('P-013 workload A per-sample persistence counters', JSON.stringify({
-        cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', fixtureEmbedder: Boolean(fixtureEmbedder),
+        cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', fixtureEmbedder: Boolean(fixtureEmbedder), orgPoolMax: P013_ORG_POOL_MAX,
         rows: counterRows }));
       // The complete trial rows (every percentile, per repetition, wall time and
       // throughput) so separate per-repetition runs aggregate without re-running.
       // A cold-only run keeps the historical 'P-013 workload A cold trials' label.
       console.info(`P-013 workload A ${modes.join('+')} trials`, JSON.stringify({
         repetitions, repetitionOffset, coldSamples, warmSamples, warmups, modes, concurrencies,
-        cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', fixtureEmbedder: Boolean(fixtureEmbedder), trials }));
+        cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', fixtureEmbedder: Boolean(fixtureEmbedder), orgPoolMax: P013_ORG_POOL_MAX, trials }));
       // Per-phase split, not just the total: the cold cost must be attributed to a
       // D-016 phase (accept / dispatch / terminal / business event) before any
       // fixture decision is taken on it (WI-10002948).

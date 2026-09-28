@@ -102,6 +102,42 @@ function withInvocationSingleflight<T>(
   return promise;
 }
 
+/**
+ * WI-10003586: the keyed direct and scheduled admission transactions hold one
+ * pool connection while createWorkItem() takes a SECOND one from getOrgPg(). When
+ * the in-flight transactions on one pool reach its max, every holder waits for a
+ * connection none of them will release: a deadlock with no lock wait (backends
+ * sit idle in transaction on ClientRead). Bounding the holders to poolMax - 1
+ * leaves one connection free for the nested writer, so the wait always ends.
+ */
+const DEFAULT_POOL_MAX_WHEN_UNKNOWN = 10;
+const nestedAcquireGates = new WeakMap<object, { active: number; waiters: Array<() => void> }>();
+
+export function nestedAcquireCapacity(sql: Sql): number {
+  const max = Number((sql as unknown as { options?: { max?: unknown } }).options?.max);
+  const poolMax = Number.isInteger(max) && max > 0 ? max : DEFAULT_POOL_MAX_WHEN_UNKNOWN;
+  return Math.max(1, poolMax - 1);
+}
+
+export async function withNestedAcquireHeadroom<T>(sql: Sql, run: () => Promise<T>): Promise<T> {
+  let gate = nestedAcquireGates.get(sql);
+  if (!gate) {
+    gate = { active: 0, waiters: [] };
+    nestedAcquireGates.set(sql, gate);
+  }
+  const capacity = nestedAcquireCapacity(sql);
+  while (gate.active >= capacity) {
+    await new Promise<void>((resolve) => gate.waiters.push(resolve));
+  }
+  gate.active += 1;
+  try {
+    return await run();
+  } finally {
+    gate.active -= 1;
+    gate.waiters.shift()?.();
+  }
+}
+
 function requestFingerprint(request: AcceptBlueprintDirectItemInput, input: Record<string, unknown>): string {
   return createHash('sha256')
     .update(
@@ -215,7 +251,7 @@ async function acceptBlueprintDirectWorkItemScoped(
         key,
       },
       fingerprint,
-      () =>
+      () => withNestedAcquireHeadroom(sql, () =>
         sql.begin(async (tx) => {
           const lockKey =
             'blueprint-operation:' +
@@ -330,7 +366,7 @@ async function acceptBlueprintDirectWorkItemScoped(
            AND operation_id = ${request.operationId} AND request_key = ${key}
       `;
           return item;
-        }),
+        })),
     );
   }
   const revision = selectOperationSpecificationRevision(
