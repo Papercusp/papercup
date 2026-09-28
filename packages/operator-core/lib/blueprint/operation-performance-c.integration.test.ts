@@ -12,6 +12,7 @@ import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { startDedicatedNativePg, startDedicatedTestPg, type DedicatedNativePg } from '@papercusp/test-config/pg';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { getResourceProfile } from '../resource-profile';
 import { runPairedBenchmark, gradePairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import { projectBlueprintToPg } from './project-to-pg';
 import {
@@ -61,6 +62,12 @@ const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
   ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
 const dedicatedPgRequested = dedicatedPgMode !== null;
 const DEDICATED_PG_SETTINGS = { max_connections: '200', dynamic_shared_memory_type: 'mmap' };
+// D-024: size the getOrgPg() stand-in pool like production (the resource profile's
+// pgPoolMax), not the fixture default of 2; P013_ORG_POOL_MAX=<n> pins it.
+const P013_ORG_POOL_MAX = (() => {
+  const pinned = Number(process.env.P013_ORG_POOL_MAX);
+  return Number.isInteger(pinned) && pinned > 0 ? pinned : getResourceProfile().pgPoolMax;
+})();
 
 beforeAll(async () => {
   const startedAt = Date.now();
@@ -79,7 +86,7 @@ beforeAll(async () => {
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
     stamp('dedicated-pg-started');
   }
-  db = await createOrgTestDb();
+  db = await createOrgTestDb({ adminPoolMax: P013_ORG_POOL_MAX });
   fixture.sql = db.adminSql;
   stamp('org-test-db-ready');
   await db.adminSql`
@@ -182,7 +189,7 @@ describe('P-013 workload C fixture', () => {
       console.info('P-013 workload C per-sample persistence counters', JSON.stringify({
         cluster: dedicatedPg ? 'dedicated' : 'shared', rows: counterRows }));
       console.info(`P-013 workload C ${matrix.modes.join('+')} trials`, JSON.stringify({
-        ...matrix, cluster: dedicatedPg ? 'dedicated' : 'shared', trials,
+        ...matrix, cluster: dedicatedPg ? 'dedicated' : 'shared', orgPoolMax: P013_ORG_POOL_MAX, trials,
         grade: complete ? gradePairedBenchmark('C', trials) : null }));
     } else {
       for (const arm of ['control', 'candidate', 'candidate', 'control'] as const) {
