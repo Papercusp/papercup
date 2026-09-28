@@ -80,6 +80,14 @@ describe('accepted program on real DBOS persistence', () => {
       .toMatchObject({ state: 'ready', output: { outcome: 'done', resolved: true } });
     expect((await workflow.findUnstartedAcceptedCoordPrograms(sql))
       .some((candidate) => candidate.acceptedOperation?.receiptId === handle.receiptId)).toBe(false);
+    // WI-10003631: the scan stamps a launched receipt out of its partial index,
+    // so launch passes cost O(unstarted), not O(every receipt ever accepted).
+    const [stamp] = await sql<Array<{ started: boolean }>>`
+      SELECT program_started_at IS NOT NULL AS started
+        FROM harness_shared.blueprint_operation_invocations WHERE id = ${handle.receiptId}`;
+    expect(stamp?.started).toBe(true);
+    expect(await sql`SELECT 1 FROM pg_indexes
+       WHERE indexname = 'blueprint_operation_invocations_unstarted_idx'`).toHaveLength(1);
 
     await DBOS.shutdown();
     await DBOS.launch();

@@ -385,6 +385,20 @@ describe('program child admission pins the root specification', () => {
     await sql`DELETE FROM dbos.workflow_status WHERE workflow_uuid = ${coordProgramWorkflowId(run)}`;
     expect((await findUnstartedAcceptedCoordPrograms(sql))
       .filter((input) => input.acceptedOperation?.receiptId === accepted.receiptId)).toHaveLength(1);
+    // WI-10003631: the launch scan stamps a direct (non-program) work-item
+    // receipt out of its partial index immediately, while an in-flight program
+    // root whose workflow row is gone stays unstamped and launchable.
+    const direct = await submitBlueprintOperation(sql, {
+      workspaceId, harnessSlug, callerId: 'program-caller', operationId: 'leaf',
+      requestKey: 'direct-leaf', input: { value: 'direct' }, title: 'Direct leaf',
+    }, { expectedSpecificationRevision: second.specificationRevision });
+    await findUnstartedAcceptedCoordPrograms(sql);
+    const stamps = await sql<Array<{ id: string; started: boolean }>>`
+      SELECT id::text AS id, program_started_at IS NOT NULL AS started
+        FROM harness_shared.blueprint_operation_invocations
+       WHERE id IN (${direct.receiptId}, ${accepted.receiptId})`;
+    expect(Object.fromEntries(stamps.map((row) => [Number(row.id), row.started])))
+      .toEqual({ [direct.receiptId]: true, [accepted.receiptId]: false });
     await expect(loadAcceptedCoordProgramBlueprint(sql, accepted, 'different-caller'))
       .rejects.toThrow('handle does not match its durable receipt');
     await expect(loadAcceptedCoordProgramBlueprint(sql,

@@ -336,6 +336,38 @@ async function cancelAcceptedCoordProgramChildren(sql: Sql, input: CoordProgramI
  * wired. A DBOS workflow row removes the accepted root from future scans. */
 export async function findUnstartedAcceptedCoordPrograms(sql: Sql, limit = 32): Promise<CoordProgramInput[]> {
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('program launch scan limit must be 1..100');
+  // WI-10003631: retire FINISHED receipts from the launch scan first. A receipt
+  // is stamped only when its workflow exists AND its target work item is
+  // terminal, which is a state the SELECT below already excludes. An in-flight
+  // receipt is never stamped, so a non-terminal target whose workflow row
+  // disappears stays launchable, exactly as before. Both statements ride the
+  // partial index blueprint_operation_invocations_unstarted_idx (migration
+  // 1237), so each pass costs O(unfinished receipts), not O(all receipts ever
+  // accepted).
+  await sql`
+    UPDATE harness_shared.blueprint_operation_invocations i
+       SET program_started_at = now()
+     WHERE i.target_kind = 'work-item'
+       AND i.program_started_at IS NULL
+       AND ((EXISTS (
+               SELECT 1 FROM dbos.workflow_status wf
+                WHERE wf.workflow_uuid = 'coord-program:operation:' || i.workspace_id || ':' || i.id::text)
+             AND EXISTS (
+               SELECT 1 FROM harness_shared.work_items wi
+                WHERE wi.workspace_id = i.workspace_id
+                  AND wi.harness_slug IN (i.harness_slug, 'harness:' || i.harness_slug)
+                  AND wi.feature_id = i.target_ref
+                  AND wi.status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])))
+            -- Direct work-item operations (not programs) can never be launched
+            -- by this scan, whatever their state, so they leave it at once.
+            OR NOT EXISTS (
+               SELECT 1 FROM harness_shared.blueprint_specifications s
+                CROSS JOIN LATERAL jsonb_array_elements(s.artifact->'configuration'->'operations') op
+                WHERE s.workspace_id = i.workspace_id AND s.harness_slug = i.harness_slug
+                  AND s.specification_revision = i.specification_revision
+                  AND op->>'id' = i.operation_id
+                  AND op->'execution'->>'kind' = 'program'))
+  `;
   const rows = await sql<Array<{
     receipt_id: string; workspace_id: string; harness_slug: string;
     caller_id: string; operation_id: string; specification_revision: string;
@@ -360,6 +392,7 @@ export async function findUnstartedAcceptedCoordPrograms(sql: Sql, limit = 32): 
       LEFT JOIN dbos.workflow_status wf
         ON wf.workflow_uuid = 'coord-program:operation:' || i.workspace_id || ':' || i.id::text
      WHERE i.target_kind = 'work-item'
+       AND i.program_started_at IS NULL
        AND wi.status <> ALL(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[])
        AND wf.workflow_uuid IS NULL
        AND wi.payload->'blueprintOperation'->>'operationId' = i.operation_id
