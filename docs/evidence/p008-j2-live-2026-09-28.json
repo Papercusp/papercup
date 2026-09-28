@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-008 J2 (2026-09-28): generic (non-SU) installed identity live journey: launch without SU/work-item fields, no SU-state change, turn-start refresh, bundled model default and recipe reach their consumers, ReAct without a workflow graph",
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-008",
+  "workItem": "WI-10003585",
+  "parentWorkItem": "WI-10002965",
+  "evidencePlane": "live",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "rubricCriteria": ["AUTO-BAR-R-5-P-008@3", "AUTO-BAR-R-10-P-008@3"],
+  "operatorPlane": "staging :3170 (papercusp-staging checkout), /api/health sha db3cc32d28 at 2026-09-28T06:07:27Z; that checkout's packages/operator-core/lib/role-launch-spec.ts blob is 8278b8d3ec55b35f06625e41a4792e7addcc2844 (the WI-10003611 fix, first pushed in 7aa7c286c2, an ancestor of db3cc32d28). Both subjects used mcpTarget spawn-host, so their MCP calls ran on :3170.",
+  "fixture": {
+    "identity": "p008-j2-generic-domain, installed (attested) under the workspace's .papercusp/blueprints root outside the repo; slot 'domain' (exclusive, replaces the pot-inherited papercusp-engineer domain layer); knobs.aiBackend.default.model = claude-opus-4-8; bundles = [{ kind: recipe, ref: p008-j2-generic-recipe, version: 1.0.0 }]; no workflow graph declared",
+    "recipe": "p008-j2-generic-recipe, script: return \"from p008 j2 generic identity\"",
+    "installer": ".papercusp/scratch/p008-j2/install-and-preflight.mts"
+  },
+  "subject": [
+    {
+      "label": "p008-j2-subject (fleet-inherited launch)",
+      "ownerId": "su-0e27cada-9bf8-4dd2-b1f7-5aa4b7b80ece",
+      "advSessionId": 31353,
+      "role": "curator",
+      "stack": ["domain:p008-j2-generic-domain"],
+      "specificationRevision": "75ba08e12d77e89f45a2588cc206c7c62e16c9cfefcdef8aae1cb2b1b8b78671",
+      "stateRevision": "30b40912b7b8a08fa408342c708e554a86e0a70017a8457b7f7e7927eaa84ff8",
+      "launchedAt": "2026-09-28T06:09:37Z",
+      "command": "psu --launched-by=su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --fleet=r7-journey-0927 --no-picker --account=default --agent=claude --owner-id=su-0e27cada-9bf8-4dd2-b1f7-5aa4b7b80ece --harness=papercusp --headless --role=curator --stack=domain:p008-j2-generic-domain",
+      "transcript": "~/.papercusp/session-claude/su-0e27cada-9bf8-4dd2-b1f7-5aa4b7b80ece/projects/-home-<user>-papercupai-workspace-papercusp/1e46cee3-e336-411e-965e-4045d1fe114c.jsonl"
+    },
+    {
+      "label": "p008-j2-subject-indep (independent launch)",
+      "ownerId": "su-33556642-1c10-4a53-aa5a-2424c1ac1d39",
+      "advSessionId": 31354,
+      "role": "curator",
+      "stack": ["domain:p008-j2-generic-domain"],
+      "specificationRevision": "f8e01af3e5b05b34874dbf5c12427a168337c9ef6636b97039be351849c9c287",
+      "stateRevision": "30b40912b7b8a08fa408342c708e554a86e0a70017a8457b7f7e7927eaa84ff8",
+      "launchedAt": "2026-09-28T06:12:23Z",
+      "command": "capability:launch-agent { agent: claude, headless: true, independent: true, harness: papercusp, role: curator, stack: [domain:p008-j2-generic-domain], mcpTarget: spawn-host } (.papercusp/scratch/p008-j2/launch-args-indep.json)",
+      "transcript": "~/.papercusp/session-claude/su-33556642-1c10-4a53-aa5a-2424c1ac1d39/projects/-home-<user>-papercupai-workspace-papercusp/7c0cb44a-d439-490a-9b31-c88079b4202d.jsonl"
+    }
+  ],
+  "links": [
+    {
+      "id": "J2-L1-generic-launch-without-su-assignment-fields",
+      "criteria": ["AUTO-BAR-R-10-P-008@3"],
+      "passed": true,
+      "evidence": "Both subjects launched as role 'curator' (consumes feature:none, plan:none) wearing only the generic identity. Each persisted adv_sessions.launch_spec has exactly the keys v, role, stack, harnessSlug, workspaceId, stateRevision, specificationArtifact, specificationRevision: no workItem, feature, fleet, launch-slot or assignment key. The compiled configuration's workItem and fleet entries are the pot blueprint's schema sections ({kind: feature, idPrefix: WI} and the worker-role roster), not per-session assignments. The independent subject's coord_presence row has an empty fleet_slug. Its tool refusals name principal system:curator, not a superuser principal.",
+      "observed": { "launchSpecKeys": ["v", "role", "stack", "harnessSlug", "workspaceId", "stateRevision", "specificationArtifact", "specificationRevision"], "independentPresenceFleet": "", "fleetInheritedPresenceFleet": "r7-journey-0927" },
+      "artifact": ".papercusp/scratch/p008-j2/launch-result.json, .papercusp/scratch/p008-j2/launch-indep-started-at.txt"
+    },
+    {
+      "id": "J2-L2-composing-generic-identity-changes-no-su-state",
+      "criteria": ["AUTO-BAR-R-10-P-008@3"],
+      "passed": true,
+      "evidence": "The snapshot script captures the launcher SU's control_state (modes, route, scope, stack), its agent_modes, its coord_presence role/fleet/fleetRole, the fleet r7-journey-0927 member list, the workspace operator_quota_overrides and the recipe row count. For the independent launch the pre (06:12:23.457Z) and post (06:14:09.109Z) snapshots are identical: zero changed keys. For the fleet-inherited launch (pre 06:08:14.097Z, post 06:11:47.111Z), exactly two keys changed. recipeRows went 0 to 1: the launch provisioned the bundled recipe. fleetMembers gained su-0e27cada. That membership comes from the --fleet=r7-journey-0927 flag capability:launch-agent passes because the launcher leads that fleet; it does not come from the identity, whose launch_spec carries no fleet key. The independent control shows this. The launcher SU's modes, route, scope, stack, presence role and quota rows were unchanged in both runs.",
+      "observed": { "independentDiff": [], "fleetInheritedDiff": ["fleetMembers (+su-0e27cada, from launcher --fleet)", "recipeRows 0 -> 1"] },
+      "artifact": ".papercusp/scratch/p008-j2/snap-pre.json, snap-post.json, snap-pre-indep.json, snap-post-indep.json, snapshot.sh"
+    },
+    {
+      "id": "J2-L3-generic-identity-refreshes-declared-context",
+      "criteria": ["AUTO-BAR-R-10-P-008@3"],
+      "passed": true,
+      "evidence": "A second turn was delivered to the independent subject at 2026-09-28T06:17:11Z. The event_wake_deliveries row is 382814 with channel psu-socket-inject; an earlier expects:'none' send was suppressed as redundant, see WI-10003578. On that turn the subject's turn-start hooks injected a fresh CTRL block, an Orientation block and a Relevant-memory delta, all without SU assignment fields. It reported CTRL generation 1, wakeSource none, loop inactive, carry warm and no modes. The domain slot still rendered domain:p008-j2-generic-domain under its curator kernel. The recipe was still retrievable, and the subject reported no work-item, loop or file activity.",
+      "observed": { "deliveryId": 382814, "deliveryChannel": "psu-socket-inject", "subjectReport": ".papercusp/scratch/p008-j2/indep-subject-reports.txt" },
+      "artifact": ".papercusp/scratch/p008-j2/indep-subject-reports.txt"
+    },
+    {
+      "id": "J2-L4-bundled-model-default-reaches-runtime",
+      "criteria": ["AUTO-BAR-R-5-P-008@3"],
+      "passed": true,
+      "evidence": "Neither launch command passes --model. The compiled configuration carries knobs.aiBackend.default.model = claude-opus-4-8 from the identity. Every assistant message in both subject transcripts records message.model = claude-opus-4-8: 8 messages for su-0e27cada and 7 for su-33556642. The independent subject independently reported its runtime model as claude-opus-4-8.",
+      "observed": { "configModel": "claude-opus-4-8", "transcriptModels": { "su-0e27cada": { "claude-opus-4-8": 8 }, "su-33556642": { "claude-opus-4-8": 7 } } },
+      "artifact": "subject transcripts (see subject[].transcript)"
+    },
+    {
+      "id": "J2-L5-bundled-recipe-reaches-its-consumer",
+      "criteria": ["AUTO-BAR-R-5-P-008@3"],
+      "passed": true,
+      "evidence": "The recipe row count for p008-j2-generic-recipe was 0 before the first launch and 1 after it. Launch provisioning wrote the bundled recipe into harness_shared.code_recipes (authorRole blueprint-bundle). It did not only render the recipe's name into the prompt. Both subjects called recipes:get and got ok with the script text. The independent subject then called recipes:run: ok, summary 'from p008 j2 generic identity', dispatchCount 0, no authority widening.",
+      "observed": { "recipeRowsBefore": 0, "recipeRowsAfter": 1, "recipesGet": "ok (both subjects)", "recipesRun": "ok, 'from p008 j2 generic identity' (su-33556642)" },
+      "artifact": ".papercusp/scratch/p008-j2/indep-subject-reports.txt, fleet-subject-tool-results.txt"
+    },
+    {
+      "id": "J2-L6-react-launch-without-workflow-graph",
+      "criteria": ["AUTO-BAR-R-5-P-008@3"],
+      "passed": true,
+      "evidence": "The generic identity declares no workflow graph. Both subjects launched, and their transcripts show the model choosing its own tool calls turn by turn: coord:whoami, recipes:get and coord:send for su-0e27cada; recipes:get and recipes:run for su-33556642. No workflow step or planner drove them.",
+      "observed": { "su-0e27cada": ["coord:whoami (denied)", "recipes:get", "coord:send (denied)"], "su-33556642": ["recipes:get", "recipes:run", "recipes:get (turn 2)"] },
+      "artifact": "subject transcripts"
+    },
+    {
+      "id": "J2-L7-composition-grants-no-su-capabilities",
+      "criteria": ["AUTO-BAR-R-10-P-008@3"],
+      "passed": true,
+      "evidence": "The fleet-inherited subject's coord:whoami and coord:send were refused server-side with 'missing_capability: Principal \"system:curator\" lacks capability \"coord:read\"' and '... \"coord:write\"'. The composed identity carried no SU grant: the session kept the curator role's own capability ceiling.",
+      "observed": { "principal": "system:curator", "denied": ["coord:read (coord:whoami)", "coord:write (coord:send)"] },
+      "artifact": ".papercusp/scratch/p008-j2/fleet-subject-tool-results.txt, fleet-subject-reports.txt"
+    }
+  ],
+  "notProven": [
+    "R-5 coverage is limited to the resource kinds this identity bundles: a callable recipe and a model default. Tool/provider requirements, rubrics, knowledge, and plan/goal/datatype/event/rule resources were not bundled, so they were not driven live here. Their tree-plane coverage is the tests bound on AUTO-BAR-R-5-P-008@3.",
+    "'History' and 'addressing' preservation from R-10 were not snapshotted directly. The snapshot covers the launcher's control state, modes, presence, fleet roster, quota overrides and recipe rows.",
+    "The subject role was curator, not worker: worker consumes feature:required, and psu refuses to launch it without a feature. A feature-bound role would contradict the no-work-item-state requirement."
+  ],
+  "testRunIds": [19834822, 19834824, 19834826],
+  "sourcePaths": ["packages/operator-core/lib/role-launch-spec.ts", "apps/operator/scripts/psu-launcher.mjs"],
+  "command": [
+    "bash .papercusp/scratch/p008-j2/snapshot.sh pre ; node scripts/mcp-call.mjs capability:launch-agent --json-file .papercusp/scratch/p008-j2/launch-args.json --client su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --port 3170 ; bash .papercusp/scratch/p008-j2/snapshot.sh post",
+    "bash .papercusp/scratch/p008-j2/snapshot.sh pre-indep ; node scripts/mcp-call.mjs capability:launch-agent --json-file .papercusp/scratch/p008-j2/launch-args-indep.json --client su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --port 3170 ; bash .papercusp/scratch/p008-j2/snapshot.sh post-indep",
+    "coord:send { to:[su-33556642], wake:'required', expects:'action', summary:'P008_J2_S2' }"
+  ],
+  "commandBasis": "Launch request bodies are the launch-args JSON files, and launch responses are launch-result.json. Subject observations come from each subject's native transcript. The curator principal cannot use coord, so subjects reported in their final turn text.",
+  "exitCode": 0,
+  "startedAt": "2026-09-28T06:08:14.097Z",
+  "finishedAt": "2026-09-28T06:17:28Z",
+  "capturedAt": "2026-09-28T06:25:00Z",
+  "timeBasis": "UTC throughout; snapshot 'at' fields come from Postgres now(); launch times come from launch-started-at files; delivery times come from event_wake_deliveries.",
+  "observer": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+  "recordedBy": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+  "summary": "Two headless Claude subjects launched on :3170 as role curator wearing only the installed generic identity p008-j2-generic-domain. Their persisted launch specs carry no work-item, fleet or launch-slot fields. An independent launch changed nothing in the launcher SU's state, quotas or fleet. The fleet-inherited launch changed only the fleet roster (from the launcher's own --fleet flag) and provisioned the bundled recipe. Without a --model flag, the identity's bundled model default (claude-opus-4-8) was the model actually used. The bundled recipe reached harness_shared.code_recipes and was callable via recipes:get and recipes:run from the agent's own ReAct loop; no workflow graph was declared. A second turn refreshed the generic identity's context with no SU assignment fields. The curator principal was refused coord:read and coord:write, so composing the identity granted no SU capability."
+}
