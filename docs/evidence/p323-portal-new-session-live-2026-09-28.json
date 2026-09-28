@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-323 PORTAL-NEW-SESSION-P323 live: portal New Session relayed to avi-test r60 opens an agent session on the customer's workspace machine, correlated from connector ticket to the VM's session record and transcript",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "byoc-cloud-workspaces-gcp-aws-azure-2026-08-22",
+  "planItem": "P-323",
+  "specId": "PORTAL-NEW-SESSION-P323",
+  "specRevision": 1,
+  "workItem": "WI-10003194",
+  "observer": "su-be77f2f5-0643-4d29-8405-cfaf4eba68c5",
+  "subject": {
+    "host": "avi-test (host-3daf37098c8096b5d9e0ac72, customer workspace ws-3daf37098c8096b5d9e0ac72)",
+    "release": "0.0.21-p318r60",
+    "releaseSourceSha": "6af5769c65b74b32852d199d66cb8b2db5db7abd",
+    "advSessionIds": [17, 18, 19, 20]
+  },
+  "command": [
+    "PROBE_MODE=launch PROBE_AGENT=claude npx tsx .papercusp/scratch/wi10003163-chat-probe.mts e91577da-655b-4b24-b122-ab57b4f9d211 ws-3daf37098c8096b5d9e0ac72 host-3daf37098c8096b5d9e0ac72  (control plane issues a workspace-operator connector ticket with a hostedSessionId; POST /api/adv/sessions/launch-su over the relay, then POST /api/admin/coordination/sessions/list and GET /api/adv/sessions/ended)",
+    "bash .papercusp/scratch/avi-test-p326-r60-check.sh 20  (customer transcripts on the VM)"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-28T14:11:25Z",
+  "finishedAt": "2026-09-28T14:29:10Z",
+  "summary": "Four New Session launches through the relay each returned 200 with a host advSessionId (17, 18, 19, 20). The avi-test operator's own ended-sessions list returns those rows with workspaceId ws-3daf37098c8096b5d9e0ac72, agent claude, a host pid (e.g. 17: pid 11074, sessionId d0e09d6a-3d3e-40d1-ad9d-7adf590fbb5c, started 14:11:25Z) and the host fleet-log path under /var/lib/papercusp/.papercusp/fleet-logs. Each session's transcript is on the VM in the customer home (/home/papercusp-workspace/.claude/projects/-home-papercusp-workspace/<sessionId>.jsonl) with a completed assistant turn, and sessions 19/20 reported their own process ancestry on the VM (claude uid 1001 under sshd, supervised by psu.mjs as the service user). Chain: control-plane connector ticket (hostedSessionId wi10003163-chat-<ts>) -> relay -> host launch-su -> host adv session row -> VM process + transcript. None of this exists on the control plane.",
+  "assertions": [
+    { "id": "launch-accepted", "passed": true, "evidence": "LAUNCH 200 status ok agent claude advSessionId 17/18/19/20 (r60-launch-probe-1.log, r60-launch-probe-2-stripped.log, r60-p326-boundary-launch.log, r60-p326-boundary-launch-2.log)." },
+    { "id": "host-session-record", "passed": true, "evidence": "ENDED 200 from the avi-test operator: id 17 workspaceId ws-3daf37098c8096b5d9e0ac72 agent claude pid 11074 sessionId d0e09d6a-3d3e-40d1-ad9d-7adf590fbb5c startedAt 14:11:25Z endedAt 14:13:01Z (r60-launch-probe-2-stripped.log)." },
+    { "id": "session-on-workspace-machine", "passed": true, "evidence": "Transcripts d0e09d6a, 253ceb2b, 7611b424, 9488ff03 in the VM customer home each hold an assistant turn (r60-p326-boundary-transcripts.log); sessions 19/20 ANCESTRY shows claude uid 1001 under sshd on the VM (r60-p326-boundary-result{,-2}.log)." }
+  ],
+  "runnerLogs": [
+    { "path": ".papercusp/scratch/r60-launch-probe-1.log", "sha256": "9feb4bf9697cb33e17f92dd5f74c40122799f3ae0a24b812fe7c933d7b551f4e", "bytes": 2742 },
+    { "path": ".papercusp/scratch/r60-launch-probe-2-stripped.log", "sha256": "aa649976b832dfb14f259f0a8a5bbd85c25c616d665a08c9167dce3b04e447ba", "bytes": 2742 },
+    { "path": ".papercusp/scratch/r60-p326-boundary-transcripts.log", "sha256": "0964f3af3d78c347a5b7789adfbe959cbcc5cc8b3df9c8459b582c4c1412315b", "bytes": 3083 },
+    { "path": ".papercusp/scratch/r60-p326-boundary-result-2.log", "sha256": "63276945510a832dbf2def65aa7bf7952c29d780708f7cb466bc0c0d8f32768e", "bytes": 3610 }
+  ],
+  "measuredBlobs": [
+    { "path": "packages/operator-core/lib/workspace-host/hosted-operator-http.ts", "blob": "b2cbd23d69a1e95a4cb7a6833ccb557231656e59" },
+    { "path": "packages/operator-core/lib/endpoint-route/routes/adv/launch-su.ts", "blob": "528e99f22d0e35c35fb618d2f19fff5cbd119b90" }
+  ]
+}
