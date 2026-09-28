@@ -10,6 +10,7 @@ import { existsSync, readFileSync, realpathSync, renameSync, statSync } from 'no
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { deviceNamespaceKey } from './storage';
+import { githubOriginNamespaceKey } from './github-ingress';
 import { SIGREFS_REF, verifySigrefs, type SignedSigrefs } from './sigrefs';
 
 export const PHASE_A_REPO_SCHEMA = 'hive-git-physical-phase-a-repo/v1' as const;
@@ -291,8 +292,28 @@ function time(value: string, label: string, errors: string[]): number {
   return parsed;
 }
 
+/**
+ * The fixed pot's GitHub remote, and the synthetic github-origin namespace the
+ * bridge ingresses it into (github-ingress.ts). That namespace is NOT replicated
+ * device state: it has no sigrefs (GitHub cannot sign) and each host writes it
+ * from its OWN GitHub ingress, per its own branch set and cadence — measured on
+ * P-505 run 8 (WI-10003595): tower `refs/heads/staging`, VM `refs/heads/main`.
+ * Exact parity there asserts "both hosts ingressed the same GitHub branches at
+ * the same instant", which is not the cold-join property Phase A proves, so it
+ * is excluded by its exact derivation (never by a "no sigrefs" heuristic, which
+ * would also hide a real device namespace that lost its sigrefs).
+ */
+export const PHASE_A_GITHUB_REMOTE = 'https://github.com/papercupai/hello-world-3-pot' as const;
+export const PHASE_A_GITHUB_ORIGIN_NAMESPACE = githubOriginNamespaceKey(PHASE_A_GITHUB_REMOTE);
+
+/** The replicated refs whose OIDs must agree across hosts: every namespaced ref
+ *  except the per-host synthetic github-origin namespace. */
 function refMap(observation: PhysicalPhaseARepoObservation): string[] {
-  return observation.refs.map((ref) => `${ref.name}\t${ref.oid}`).sort();
+  const githubOriginPrefix = `refs/namespaces/${PHASE_A_GITHUB_ORIGIN_NAMESPACE}/`;
+  return observation.refs
+    .filter((ref) => !ref.name.startsWith(githubOriginPrefix))
+    .map((ref) => `${ref.name}\t${ref.oid}`)
+    .sort();
 }
 
 function validatePresent(

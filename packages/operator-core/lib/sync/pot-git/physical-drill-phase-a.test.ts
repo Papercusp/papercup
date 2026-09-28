@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { githubOriginNamespaceKey } from './github-ingress';
 import {
+  PHASE_A_GITHUB_ORIGIN_NAMESPACE,
+  PHASE_A_GITHUB_REMOTE,
   PHASE_A_INPUT_SCHEMA,
   PHASE_A_POT_HOME,
   PHASE_A_REPO_KEY,
@@ -241,6 +244,42 @@ describe('P-505 fixed physical Phase A cold-join executor core', () => {
         'tower and vm namespaced ref OIDs must match exactly after bootstrap',
         'tower and vm observations must come from distinct physical repo directories',
       ]),
+    );
+  });
+
+  it('excludes ONLY the per-host synthetic github-origin namespace from ref parity (P-505 run 8, WI-10003595)', () => {
+    // The pot's github-origin namespace is derived from its remote, not a device key.
+    expect(PHASE_A_GITHUB_ORIGIN_NAMESPACE).toBe(githubOriginNamespaceKey(PHASE_A_GITHUB_REMOTE));
+    expect(PHASE_A_GITHUB_ORIGIN_NAMESPACE.startsWith('759ec12f598691d3')).toBe(true);
+
+    // Each host ingresses GitHub on its own: different branch AND different OID.
+    const input = fixture();
+    const [towerRef, vmRef] = input.observations.towerAfter.refs;
+    input.observations.towerAfter.refs.push({
+      ...towerRef!,
+      name: `refs/namespaces/${PHASE_A_GITHUB_ORIGIN_NAMESPACE}/refs/heads/staging`,
+    });
+    input.observations.vmAfter.refs.push({
+      ...vmRef!,
+      name: `refs/namespaces/${PHASE_A_GITHUB_ORIGIN_NAMESPACE}/refs/heads/main`,
+    });
+    const verdict = validatePhysicalPhaseA(input);
+    expect(verdict.errors).toEqual([]);
+    expect(verdict.ok).toBe(true);
+
+    // Control: the SAME divergence under any other namespace still fails parity.
+    const other = fixture();
+    const otherNamespace = 'f'.repeat(64);
+    other.observations.towerAfter.refs.push({
+      ...other.observations.towerAfter.refs[0]!,
+      name: `refs/namespaces/${otherNamespace}/refs/heads/staging`,
+    });
+    other.observations.vmAfter.refs.push({
+      ...other.observations.vmAfter.refs[1]!,
+      name: `refs/namespaces/${otherNamespace}/refs/heads/main`,
+    });
+    expect(validatePhysicalPhaseA(other).errors).toContain(
+      'tower and vm namespaced ref OIDs must match exactly after bootstrap',
     );
   });
 
