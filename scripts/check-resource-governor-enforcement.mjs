@@ -379,6 +379,20 @@ export const RESOURCE_GOVERNOR_SCANNER_PATH =
   "scripts/check-resource-governor-enforcement.mjs";
 export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
   {
+    path: "scripts/share-source.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/share-source.mjs: this is an operator-invoked CLI that lists, adds, or removes collaborators on the private source-preview GitHub repo, not a runtime lane. Its only start is the `gh(args, env)` helper — one synchronous `spawnSync('gh', args, { encoding })` per GitHub API call, awaited to completion before the next and resolving to one captured stdout/stderr pair with nothing retained between calls. It never detaches a child, never runs inside the operator, bg-host, or a routine, and holds no queue; every call is a single short HTTPS request on behalf of a human at a terminal, so it adds no residency the governor could meter (WI-10003724).",
+  },
+  {
+    path: "scripts/source-preview.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/source-preview.mjs: this is an operator-invoked export CLI (`npm run preview:*`) that materializes one pinned commit with git archive, gates it with audit-release-bundle, gitleaks and trufflehog, and publishes it as a single commit. It is not a runtime lane. Every start goes through the synchronous `run(cmd, args)` helper, or a direct `spawnSync('git', ...)` probe: awaited to completion before the next, bounded by an explicit maxBuffer, fail-closed (a non-zero exit throws PreviewError), and never detached. It never runs inside the operator, bg-host, or a routine, and it holds no resident queue; the work is one human-initiated export at a terminal (WI-10003724).",
+  },
+  {
     path: "scripts/check-tracked-src-entry-dist.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
