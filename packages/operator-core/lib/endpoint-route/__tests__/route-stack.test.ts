@@ -40,6 +40,7 @@ import { requirePrincipal, PrincipalCheckError } from '../../auth/require-princi
 import { principalFromCookie } from '../../auth/principal/from-cookie';
 import { getFlag } from '@papercusp/flags/server';
 import { recordRouteInvocation } from '../telemetry';
+import { LOOPBACK_PEER_UID_POLICY_ENV, runWithLoopbackPeerVerdict } from '../../auth/loopback-peer-trust';
 
 function freshApp(): Hono {
   return new Hono();
@@ -580,6 +581,81 @@ describe('auth step — loopback tier (auth-tier rollout Wave 1)', () => {
     registerRoute(app, lbRoute());
     const res = await app.request('http://evil.example.com/lb', { method: 'POST' });
     expect(res.status).toBe(200);
+  });
+});
+
+// WI-10003619: on a hosted workspace VM the customer account (a different uid)
+// shares loopback with the operator. A loopback ADDRESS is not an identity, so the
+// loopback tier must refuse a peer whose socket is not owned by the service uid —
+// independently of the ENDPOINT_AUTH_TIERS flag and of PAPERCUSP_ALLOW_REMOTE_ADMIN.
+describe('auth step — loopback tier, foreign local peer (WI-10003619)', () => {
+  const SERVICE_UID = 999;
+  const socket = { remoteAddress: '127.0.0.1', remotePort: 41234, localAddress: '127.0.0.1', localPort: 3070 };
+  const procTcp = (clientUid: number) => [
+    '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
+    `   0: 0100007F:0BFE 0100007F:A112 01 00000000:00000000 00:00000000 00000000   ${SERVICE_UID}        0 22222 1 0000000000000000 20 4 30 10 -1`,
+    `   1: 0100007F:A112 0100007F:0BFE 01 00000000:00000000 00:00000000 00000000  ${clientUid}        0 33333 1 0000000000000000 20 4 30 10 -1`,
+  ].join('\n');
+  const asPeer = <T>(reader: (path: string) => string, fn: () => T): T =>
+    runWithLoopbackPeerVerdict(socket, fn, {
+      env: { [LOOPBACK_PEER_UID_POLICY_ENV]: 'service-only' },
+      serviceUid: SERVICE_UID,
+      readProcFile: reader,
+    });
+  const tcpOnly = (clientUid: number) => (path: string) => {
+    if (path.endsWith('/tcp')) return procTcp(clientUid);
+    throw new Error('ENOENT');
+  };
+
+  let handlerRan = false;
+  const lbApp = () => {
+    handlerRan = false;
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'POST', path: '/lb', auth: 'loopback',
+      handler: () => { handlerRan = true; return Response.json({ ok: true }); },
+    }));
+    return app;
+  };
+
+  afterEach(() => {
+    delete process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
+  });
+
+  it('403s a loopback peer owned by another uid even with ENDPOINT_AUTH_TIERS OFF', async () => {
+    vi.mocked(getFlag).mockResolvedValue(false);
+    const app = lbApp();
+    const res = await asPeer(tcpOnly(1001), () => app.request('http://127.0.0.1:3070/lb', { method: 'POST' }));
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { error: string }).error).toBe('loopback_peer_uid_denied');
+    expect(handlerRan).toBe(false);
+  });
+
+  it('PAPERCUSP_ALLOW_REMOTE_ADMIN does not open the route to a foreign local uid', async () => {
+    vi.mocked(getFlag).mockResolvedValue(true);
+    process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN = '1';
+    const app = lbApp();
+    const res = await asPeer(tcpOnly(1001), () => app.request('http://127.0.0.1:3070/lb', { method: 'POST' }));
+    expect(res.status).toBe(403);
+    expect(handlerRan).toBe(false);
+  });
+
+  it('fails closed when the socket owner cannot be resolved', async () => {
+    vi.mocked(getFlag).mockResolvedValue(false);
+    const app = lbApp();
+    const unreadable = () => { throw new Error('EACCES'); };
+    const res = await asPeer(unreadable, () => app.request('http://127.0.0.1:3070/lb', { method: 'POST' }));
+    expect(res.status).toBe(403);
+    expect(((await res.json()) as { reason: string }).reason).toBe('unresolved');
+    expect(handlerRan).toBe(false);
+  });
+
+  it('admits the service uid itself (the positive control)', async () => {
+    vi.mocked(getFlag).mockResolvedValue(true);
+    const app = lbApp();
+    const res = await asPeer(tcpOnly(SERVICE_UID), () => app.request('http://127.0.0.1:3070/lb', { method: 'POST' }));
+    expect(res.status).toBe(200);
+    expect(handlerRan).toBe(true);
   });
 });
 

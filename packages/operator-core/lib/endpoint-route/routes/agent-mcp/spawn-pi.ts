@@ -1,14 +1,20 @@
 /**
  * POST /api/agent-mcp/spawn-pi — provision a pi:<session-id> principal.
  * Ported from app/api/agent-mcp/spawn-pi/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
+ *
+ * WI-10003619: the returned MCP server config carries ONLY the pi session's own
+ * scoped bearer. It used to read `~/.papercusp/superuser-token` and embed it as
+ * an `Authorization:Bearer` arg, which (a) handed a '*'-capability credential to
+ * a principal that had asked for a scoped capability set, and (b) on a hosted
+ * workspace VM leaked the operator's superuser token to any account that could
+ * reach loopback (measured on avi-test: customer uid 1001 received it). The
+ * loopback peer-uid gate now refuses such callers too; this is the second layer.
  */
 import { randomBytes } from 'node:crypto';
 import { startPiSession } from '@papercusp/agent-mcp/provisioning';
 import { papercuspRoot } from '../../../papercusp-root';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { operatorApiBase } from '../../../operator-api-base';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -29,35 +35,15 @@ export default defineTool({
       capabilities: body.capabilities ?? [],
     });
 
-    const root = papercuspRoot();
-
-    let superuserToken: string | null = null;
-    try {
-      superuserToken = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
-      if (!superuserToken || superuserToken.length < 16) superuserToken = null;
-    } catch { /* missing token → stdio fallback */ }
-
-    const mcpServer = superuserToken
-      ? {
-          command: 'npx',
-          args: [
-            '-y',
-            'mcp-remote@latest',
-            `${operatorApiBase()}/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}`,
-            '--header',
-            `Authorization:Bearer ${superuserToken}`,
-          ],
-          env: { PAPERCUSP_HOME: root } as Record<string, string>,
-        }
-      : {
-          command: './node_modules/.bin/tsx',
-          args: [join(process.cwd(), 'packages/agent-mcp/src/server-entry.ts')],
-          env: {
-            AGENT_MCP_BEARER: result.bearer,
-            OPERATOR_BASE_URL: operatorApiBase(),
-            PAPERCUSP_HOME: root,
-          } as Record<string, string>,
-        };
+    const mcpServer = {
+      command: './node_modules/.bin/tsx',
+      args: [join(process.cwd(), 'packages/agent-mcp/src/server-entry.ts')],
+      env: {
+        AGENT_MCP_BEARER: result.bearer,
+        OPERATOR_BASE_URL: operatorApiBase(),
+        PAPERCUSP_HOME: papercuspRoot(),
+      } as Record<string, string>,
+    };
 
     return Response.json({
       sessionId: result.sessionId,
