@@ -785,9 +785,11 @@ export function nextRepair(
     bar_snapshot_projection_stale: 'Regenerate the clause projection from the current BAR revision.',
     bar_snapshot_clause_not_accepted:
       'Accept the mapped clause: plans:get-specs, then plans:set-specs with lifecycleStatus:"active", '
-      + 'expectedRevision set to its current revision, and every other field unchanged (keep the sourceBar pin). '
-      + 'That lifecycle-only promotion carries the bound proof and work-item contracts forward. Do NOT re-prove or '
-      + 'amend the rubric on this code: the proof is not stale, the clause was never accepted.',
+      + 'expectedRevision set to its current revision, and every other field unchanged (keep the sourceBar pin '
+      + 'and acceptanceRef; omitting either rides the prior value forward). That provenance-only promotion carries '
+      + 'the bound proof and work-item contracts forward: confirm the result reports evidenceCarriedForward > 0 on '
+      + 'a clause that had proof. If it is absent, another field changed and the proof must be re-bound at the new '
+      + 'revision. Do NOT re-prove or amend the rubric on this code: the proof is not stale, the clause was never accepted.',
     bar_snapshot_method_missing: 'Fill the BAR METHOD/check contract before vetting or grading.',
     bar_snapshot_work_contract_missing: 'Promote the BAR/spec revision into the relevant work-item contract.',
     bar_snapshot_work_contract_stale: 'Rebind the open work-item contract to the current spec revision.',

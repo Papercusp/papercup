@@ -2062,15 +2062,62 @@ describe('a lifecycle-only revision carries proof forward (WI-10002889)', () => 
     expect(await liveRefsAt(2)).toEqual([]);
   });
 
-  it('differsOnlyInLifecycle answers false for any other change', () => {
+  // WI-10003763: plans:set-specs promotions that OMITTED acceptanceRef landed it as NULL. That
+  // stripped the ref spec-quality requires on every active clause, and it hashed the promotion as
+  // a real edit, so this carry never fired and all 57 promoted clauses of a live plan went stale.
+  it('rides an omitted acceptanceRef forward, so an omitting promotion still carries proof', async () => {
+    await specs.setSpecClause(clause({ lifecycleStatus: 'draft', acceptanceRef: 'acceptance-reconnect@1:R-1' }));
+    const external = await seedExternalEvidence();
+    await bindAtCurrent('surface:GET /events', external.testRunId, external.coverageEvidenceRef);
+
+    const promoted = await specs.setSpecClause(
+      clause({ expectedRevision: 1, lifecycleStatus: 'active', acceptanceRef: undefined }),
+    );
+    expect(promoted).toMatchObject({ status: 'revised', revision: 2, evidenceCarriedForward: 1 });
+    expect(await liveRefsAt(2)).toEqual(['surface:GET /events']);
+    const [row] = await db.sql<{ acceptance_ref: string | null }[]>`
+      SELECT acceptance_ref FROM harness_shared.plan_spec_clause_revisions
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01' AND revision = 2`;
+    expect(row?.acceptance_ref).toBe('acceptance-reconnect@1:R-1');
+
+    // The stored hash describes the stored row: re-sending the same omitting write is a no-op.
+    expect(
+      await specs.setSpecClause(clause({ expectedRevision: 2, lifecycleStatus: 'active', acceptanceRef: undefined })),
+    ).toMatchObject({ status: 'unchanged', revision: 2 });
+  });
+
+  it('carries proof across an acceptanceRef-only revision (clearing it, then restoring it)', async () => {
+    await specs.setSpecClause(clause({ lifecycleStatus: 'active', acceptanceRef: 'D-003' }));
+    const external = await seedExternalEvidence();
+    await bindAtCurrent('surface:GET /events', external.testRunId, external.coverageEvidenceRef);
+
+    // An EXPLICIT null still clears the ref (only omission rides forward) ...
+    const cleared = await specs.setSpecClause(clause({ expectedRevision: 1, acceptanceRef: null }));
+    expect(cleared).toMatchObject({ status: 'revised', revision: 2, evidenceCarriedForward: 1 });
+    // ... and restoring it is the repair for a clause that lost it, without re-proving anything.
+    const restored = await specs.setSpecClause(clause({ expectedRevision: 2, acceptanceRef: 'D-003' }));
+    expect(restored).toMatchObject({ status: 'revised', revision: 3, evidenceCarriedForward: 1 });
+    expect(await liveRefsAt(3)).toEqual(['surface:GET /events']);
+  });
+
+  it('differsOnlyInAcceptanceProvenance answers false for any other change', () => {
     const draft = clause({ lifecycleStatus: 'draft' });
     const draftHash = specs.specClauseContentHash(draft);
-    expect(specs.differsOnlyInLifecycle(clause({ lifecycleStatus: 'active' }), 'draft', null, draftHash)).toBe(true);
+    const prior = { lifecycleStatus: 'draft' as const, acceptanceRef: 'D-003' };
+    expect(specs.differsOnlyInAcceptanceProvenance(clause({ lifecycleStatus: 'active' }), prior, null, draftHash)).toBe(true);
     expect(
-      specs.differsOnlyInLifecycle(clause({ lifecycleStatus: 'active', requiredTestLayers: ['unit'] }), 'draft', null, draftHash),
+      specs.differsOnlyInAcceptanceProvenance(
+        clause({ lifecycleStatus: 'active', acceptanceRef: 'D-999' }), prior, null, draftHash,
+      ),
+    ).toBe(true);
+    expect(
+      specs.differsOnlyInAcceptanceProvenance(
+        clause({ lifecycleStatus: 'active', requiredTestLayers: ['unit'] }), prior, null, draftHash,
+      ),
     ).toBe(false);
     expect(
-      specs.differsOnlyInLifecycle(clause({ lifecycleStatus: 'active', mutationRequired: false }), 'draft', null, draftHash),
+      specs.differsOnlyInAcceptanceProvenance(clause({ lifecycleStatus: 'active', mutationRequired: false }), prior, null, draftHash),
     ).toBe(false);
   });
 });
