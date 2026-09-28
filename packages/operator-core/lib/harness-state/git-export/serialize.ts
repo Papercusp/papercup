@@ -108,6 +108,83 @@ export function serializeRow(table: string, row: Row): string {
   return `---\n${fmLines.join('\n')}\n---\n\n${body}\n`;
 }
 
+/**
+ * WI-10003624: per-table fields that are REFRESH STAMPS, not content. Many
+ * `harness_escalations` writers (git-sync, green-stall and origin-freshness
+ * watchdogs, gate canary, …) re-UPSERT an unchanged verdict every tick with a
+ * fresh `mtime_ms` and a fresh `escalation.emitted_at`. Rewriting the committed
+ * `.md` for that turns a persisting escalation into one commit + own-namespace
+ * publish + ref-announce per tick, so a member's pot-git namespace never goes
+ * quiescent (measured on the P-505 physical drill, WI-10003620). Fixing it here
+ * covers every writer, present and future, at the one place rows become files.
+ */
+const REFRESH_STAMPS: Record<string, { row: readonly string[]; nested: Record<string, readonly string[]> }> = {
+  harness_escalations: { row: ['mtime_ms'], nested: { escalation: ['emitted_at', 'emittedAt'] } },
+};
+
+/** True when `table` has refresh stamps the drainer should ignore. */
+export function hasRefreshStamps(table: string): boolean {
+  return bareTable(table) in REFRESH_STAMPS;
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Row)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function withoutRefreshStamps(table: string, row: Row): Row {
+  const spec = REFRESH_STAMPS[bareTable(table)]!;
+  const out: Row = {};
+  for (const [k, v] of contentEntries(row)) {
+    if (spec.row.includes(k)) continue;
+    const nestedKeys = spec.nested[k];
+    if (!nestedKeys || v == null) {
+      out[k] = v;
+      continue;
+    }
+    // The column may arrive as a JSON string (text) or a parsed object (jsonb);
+    // normalise both to an object so the two forms compare equal.
+    let obj: unknown = v;
+    if (typeof v === 'string') {
+      try {
+        obj = JSON.parse(v);
+      } catch {
+        obj = v;
+      }
+    }
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      const copy: Row = { ...(obj as Row) };
+      for (const nk of nestedKeys) delete copy[nk];
+      out[k] = copy;
+    } else {
+      out[k] = obj;
+    }
+  }
+  return out;
+}
+
+/**
+ * True when `nextRow` differs from the committed file content only in refresh
+ * stamps, so the drainer should leave the file alone. False for any table
+ * without refresh stamps, a missing or unparseable file, or a real change.
+ */
+export function isRefreshOnlyChange(table: string, existingContent: string | null, nextRow: Row): boolean {
+  if (existingContent == null || !hasRefreshStamps(table)) return false;
+  let previous: Row;
+  try {
+    previous = parseFile(table, existingContent);
+  } catch {
+    return false;
+  }
+  return canonicalJson(withoutRefreshStamps(table, previous)) === canonicalJson(withoutRefreshStamps(table, nextRow));
+}
+
 /** File content → row (inverse of serializeRow). */
 export function parseFile(table: string, content: string): Row {
   if (formatFor(table) === 'json') {

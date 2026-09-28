@@ -6,6 +6,8 @@ import {
   sanitizeKey,
   serializeRow,
   parseFile,
+  hasRefreshStamps,
+  isRefreshOnlyChange,
 } from './serialize';
 
 describe('git-export serialize (P-003b foundation)', () => {
@@ -77,5 +79,42 @@ describe('git-export serialize (P-003b foundation)', () => {
       }),
     );
     expect(back).toEqual({ feature_id: 'F-1', chunk: 2 }); // context cols gone from the file
+  });
+});
+
+describe('isRefreshOnlyChange (WI-10003624)', () => {
+  const T = 'harness_escalations';
+  const verdict = { kind: 'git-sync-conflict', scope: 'papercusp', detail: 'conflicted', emitted_at: 1000 };
+  const row = (escalation: unknown, mtime: number) => ({
+    harness_slug: 'hello-world-3-pot',
+    workspace_id: 'ws',
+    phase: 'git-sync',
+    escalation,
+    mtime_ms: mtime,
+  });
+  const committed = serializeRow(T, row(JSON.stringify(verdict), 1000));
+
+  it('ignores a re-stamp of an unchanged verdict (mtime_ms + emitted_at only)', () => {
+    expect(hasRefreshStamps(T)).toBe(true);
+    expect(isRefreshOnlyChange(T, committed, row(JSON.stringify({ ...verdict, emitted_at: 9999 }), 9999))).toBe(true);
+    // jsonb object vs text JSON of the same verdict compare equal.
+    expect(isRefreshOnlyChange(T, committed, row({ ...verdict, emitted_at: 5 }, 5))).toBe(true);
+    // camelCase stamp variant.
+    const camel = serializeRow(T, row({ kind: 'k', emittedAt: 1 }, 1));
+    expect(isRefreshOnlyChange(T, camel, row({ kind: 'k', emittedAt: 2 }, 2))).toBe(true);
+  });
+
+  it('still writes a real change, a clear, a new file, or an unparseable one', () => {
+    expect(isRefreshOnlyChange(T, committed, row(JSON.stringify({ ...verdict, detail: 'new' }), 2000))).toBe(false);
+    expect(isRefreshOnlyChange(T, committed, row(null, 2000))).toBe(false);
+    expect(isRefreshOnlyChange(T, null, row(JSON.stringify(verdict), 2000))).toBe(false);
+    expect(isRefreshOnlyChange(T, 'not frontmatter', row(JSON.stringify(verdict), 2000))).toBe(false);
+  });
+
+  it('never applies to tables without refresh stamps', () => {
+    const D = 'harness_decisions';
+    const r = { id: 'D-1', title: 't', content: 'c', mtime_ms: 1 };
+    expect(hasRefreshStamps(D)).toBe(false);
+    expect(isRefreshOnlyChange(D, serializeRow(D, r), { ...r, mtime_ms: 2 })).toBe(false);
   });
 });

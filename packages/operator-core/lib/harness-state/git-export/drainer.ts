@@ -12,9 +12,9 @@
  */
 import type postgres from 'postgres';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { gitFilePath, serializeRow } from './serialize';
+import { gitFilePath, hasRefreshStamps, isRefreshOnlyChange, serializeRow } from './serialize';
 import { loadDerivedColumns, stripDerivedCols } from './derived-cols';
 
 export interface DrainGitExportOpts {
@@ -34,6 +34,8 @@ export interface DrainGitExportOpts {
 export interface GitExportResult {
   exported: number;
   deleted: number;
+  /** Rows whose only change was a refresh stamp; marked exported, file left alone (WI-10003624). */
+  unchanged: number;
   changedPaths: string[];
 }
 
@@ -53,6 +55,7 @@ export async function drainGitExportOnce(opts: DrainGitExportOpts): Promise<GitE
 
   let exported = 0;
   let deleted = 0;
+  let unchanged = 0;
   const changedPaths: string[] = [];
   // EI-19900345996596896: never write a derived (vector) column into a git file — its
   // width tracks the embedding model, so a committed one breaks hydrate on every peer
@@ -74,8 +77,18 @@ export async function drainGitExportOnce(opts: DrainGitExportOpts): Promise<GitE
       await rm(abs, { force: true });
       deleted += 1;
     } else {
-      await mkdir(dirname(abs), { recursive: true });
       const row = stripDerivedCols(r.row ?? {}, await derivedFor(r.table_name));
+      // WI-10003624: a re-UPSERT of an unchanged verdict that only moved its
+      // refresh stamps must not rewrite (and so re-commit + re-announce) the file.
+      if (hasRefreshStamps(r.table_name)) {
+        const existing = await readFile(abs, 'utf8').catch(() => null);
+        if (isRefreshOnlyChange(r.table_name, existing, row)) {
+          unchanged += 1;
+          await sql`UPDATE harness_shared.git_export_outbox SET exported_at = ${opts.now ?? Date.now()} WHERE id = ${r.id}`;
+          continue;
+        }
+      }
+      await mkdir(dirname(abs), { recursive: true });
       await writeFile(abs, serializeRow(r.table_name, row), 'utf8');
       exported += 1;
     }
@@ -86,7 +99,7 @@ export async function drainGitExportOnce(opts: DrainGitExportOpts): Promise<GitE
   }
 
   if (changedPaths.length > 0 && opts.onChanged) await opts.onChanged(changedPaths);
-  return { exported, deleted, changedPaths };
+  return { exported, deleted, unchanged, changedPaths };
 }
 
 const GIT_EXPORT_NOTIFY = 'git_export_outbox';
