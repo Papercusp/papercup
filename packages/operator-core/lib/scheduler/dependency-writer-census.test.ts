@@ -202,7 +202,10 @@ const SOURCE_FILES = collectSourceFiles(LIB_ROOT);
  * CALLS an edge writer" while it still wrote every promotion edge (WI-10003724).
  */
 function callsWriter(code: string): boolean {
-  const stripped = code.replace(/\bfunction\s+(\w+)\s*\(/g, 'function $1_DECL(');
+  const stripped = code
+    .replace(/\bfunction\s+(\w+)\s*\(/g, 'function $1_DECL(')
+    // Import/export specifier lists are not arguments: `{ a, syncFeatureBlockEdges, b }`.
+    .replace(/\b(?:import|export)\s+(?:type\s+)?\{[^}]*\}/g, '');
   return WRITER_FNS.some(
     (fn) => new RegExp(`\\b${fn}\\s*\\(`).test(stripped) || new RegExp(`[(,]\\s*${fn}\\s*[,)]`).test(stripped),
   );
@@ -327,6 +330,8 @@ describe('the census DETECTS a writer (so its empty results mean something)', ()
     // A mere mention that is neither a call nor an argument stays out.
     expect(callsWriter("const label = 'syncFeatureBlockEdges';")).toBe(false);
     expect(callsWriter('import { syncFeatureBlockEdges } from "./dbos/feature-blockers-edges";')).toBe(false);
+    expect(callsWriter('import {\n  getFeatureBlockers,\n  syncFeatureBlockEdges,\n  x,\n} from "./dbos/feature-blockers-edges";')).toBe(false);
+    expect(callsWriter('export { a, syncWorkItemDepEdges, b } from "./dbos/work-item-deps-store";')).toBe(false);
   });
 
   it('an UNENUMERATED caller would fail the census (the assertion is reachable)', () => {
