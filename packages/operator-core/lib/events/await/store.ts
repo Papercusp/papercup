@@ -1789,19 +1789,46 @@ export async function fireAwaitsForKey(input: {
     RETURNING *
   `;
 
+  // WI-10003631: the three candidate reads below (one-shot filtered exact-key,
+  // standing exact-key, active patterns) used to be three round trips per fire —
+  // ~8 statements per blueprint operation. They are now ONE statement: a UNION ALL
+  // whose branches are the three original predicates verbatim, each tagged with a
+  // branch label. UNION ALL (not one OR'd WHERE) is deliberate: an OR across the
+  // three forced a parallel seq scan on the live table, while each branch alone
+  // keeps its own index plan (idx_event_awaits_active_key / (workspace_id,
+  // event_key) / event_awaits_pattern_active). A row matching two branches (an
+  // emitted key that itself contains `*`) appears once per branch, exactly as it
+  // did across the three separate reads, so every partition below is unchanged.
+  const candidateRows = await sql`
+    SELECT 'once_filter'::text AS m_branch, a.* FROM harness_shared.event_awaits a
+     WHERE a.workspace_id = ${ws} AND a.event_key = ${input.eventKey}
+       AND a.once = true AND a.fired_at IS NULL AND a.cancelled_at IS NULL
+       AND a.payload_filter IS NOT NULL
+       AND a.policy <> 'announce'
+       AND ${!suppressRescueInboxOneShot}
+    UNION ALL
+    SELECT 'standing'::text AS m_branch, a.* FROM harness_shared.event_awaits a
+     WHERE a.workspace_id = ${ws} AND a.event_key = ${input.eventKey}
+       AND a.once = false AND a.cancelled_at IS NULL
+       AND (a.expires_ts IS NULL OR a.expires_ts > now())
+       AND a.policy <> 'announce'
+    UNION ALL
+    SELECT 'pattern'::text AS m_branch, a.* FROM harness_shared.event_awaits a
+     WHERE a.workspace_id = ${ws}
+       AND a.event_key LIKE '%*%'
+       AND a.fired_at IS NULL AND a.cancelled_at IS NULL
+       AND (a.once = true OR a.expires_ts IS NULL OR a.expires_ts > now())
+       AND a.policy <> 'announce'
+  `;
+  const onceFilterCandidates = candidateRows.filter((r: any) => r.m_branch === 'once_filter');
+  const standingCandidates = candidateRows.filter((r: any) => r.m_branch === 'standing');
+  const patternCandidates = candidateRows.filter((r: any) => r.m_branch === 'pattern');
+
   // One-shot, EXACT KEY, WITH a payload_filter: can't be tested in SQL (it's an
   // arbitrary mingo DataCondition evaluated in JS), so this can't be one atomic
-  // UPDATE — select the (tiny) candidate set, filter in JS, then atomic-claim by id
+  // UPDATE — filter the (tiny) candidate set in JS, then atomic-claim by id
   // (mirrors the pattern-claim two-step below; a concurrent emit racing the SAME row
   // still can't double-fire it — the final UPDATE's `fired_at IS NULL` guard holds).
-  const onceFilterCandidates = await sql`
-    SELECT * FROM harness_shared.event_awaits
-     WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
-       AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
-       AND payload_filter IS NOT NULL
-       AND policy <> 'announce'
-       AND ${!suppressRescueInboxOneShot}
-  `;
   const onceFilterMatchedIds = onceFilterCandidates
     .filter((r: any) => payloadMatchesFilter(parseJsonb(r.payload_filter), input.payload))
     .map((r: any) => Number(r.id));
@@ -1820,13 +1847,6 @@ export async function fireAwaitsForKey(input: {
 
   // Standing watches (exact key): match without consuming (still active after this
   // fire), then apply any payload_filter in JS before including in the result.
-  const standingCandidates = await sql`
-    SELECT * FROM harness_shared.event_awaits
-     WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
-       AND once = false AND cancelled_at IS NULL
-       AND (expires_ts IS NULL OR expires_ts > now())
-       AND policy <> 'announce'
-  `;
   const standingRows = standingCandidates.filter((r: any) =>
     payloadMatchesFilter(parseJsonb(r.payload_filter), input.payload),
   );
@@ -1838,15 +1858,7 @@ export async function fireAwaitsForKey(input: {
   // matcher (keyMatchesPattern), THEN (EI-8998) any payload_filter on the same row.
   // One-shots keep the atomic exactly-once claim; standing pattern watches match
   // without consuming. `*` is a literal in SQL LIKE (% and _ are the wildcards), so
-  // `LIKE '%*%'` = "event_key contains an asterisk".
-  const patternCandidates = await sql`
-    SELECT * FROM harness_shared.event_awaits
-     WHERE workspace_id = ${ws}
-       AND event_key LIKE '%*%'
-       AND fired_at IS NULL AND cancelled_at IS NULL
-       AND (once = true OR expires_ts IS NULL OR expires_ts > now())
-       AND policy <> 'announce'
-  `;
+  // `LIKE '%*%'` = "event_key contains an asterisk". (Read above, in candidateRows.)
   // WI-3309/EI-8413: `event_key` is schema NOT NULL in real Postgres (a NULL/undefined
   // value can never satisfy the `LIKE '%*%'` filter above either), so this guard only
   // ever trips on a malformed candidate row from a non-conforming caller (a test double
