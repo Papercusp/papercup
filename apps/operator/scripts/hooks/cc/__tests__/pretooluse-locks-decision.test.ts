@@ -45,7 +45,15 @@ let recoveryReleaseInner: unknown | null = null;
 let lastRequest: { url: string; body: Record<string, any> } | null = null;
 let requests: Array<{ url: string; body: Record<string, any> }> = [];
 
+// Every hook spawn below passes `...process.env`. The worktree guard reads
+// PAPERCUSP_CANONICAL_TREE before its <ws>/papercusp default, and a psu session
+// exports it (pointing at the real staging tree). If it is inherited, the guard
+// refuses every edit in this test's temp workspace (WI-10003698). Scrub it for
+// the whole file so the guard falls back to the default this suite asserts.
+const inheritedCanonicalTree = process.env.PAPERCUSP_CANONICAL_TREE;
+
 beforeAll(async () => {
+  delete process.env.PAPERCUSP_CANONICAL_TREE;
   home = fs.mkdtempSync(join(os.tmpdir(), "cchook-dec-home-"));
   fs.mkdirSync(join(home, ".papercusp"), { recursive: true });
   fs.writeFileSync(join(home, ".papercusp", "superuser-token"), "test-token\n");
@@ -151,6 +159,8 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   for (const d of [home, cache, ws])
     fs.rmSync(d, { recursive: true, force: true });
+  if (inheritedCanonicalTree !== undefined)
+    process.env.PAPERCUSP_CANONICAL_TREE = inheritedCanonicalTree;
 });
 
 afterEach(() => {
