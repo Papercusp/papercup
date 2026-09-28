@@ -102,6 +102,18 @@ const DROP_RE = /\bDROP\s+DATABASE\b/i;
 const FORCE_RE = /\bWITH\s*\(\s*FORCE\s*\)/i;
 
 /**
+ * A leading test TITLE (`describe('…')` / `it(…)` / `test.each(…)(…)`) names the rule it
+ * guards — it is prose, not a statement, so a test called "a cancelled DROP DATABASE
+ * never leaks…" would otherwise trip this guard (WI-10003582). Only the title string is
+ * blanked; anything else on the line is still scanned, so an unforced statement that
+ * shares a line with a title is still reported.
+ */
+const TEST_TITLE_RE = /^(\s*(?:describe|it|test)(?:\.\w+)*\(\s*)(['"`])((?:\\.|(?!\2)[^\\])*)\2/;
+export function withoutTestTitle(line) {
+  return line.replace(TEST_TITLE_RE, (_match, head, quote) => `${head}${quote}${quote}`);
+}
+
+/**
  * Find unforced `DROP DATABASE` statements. Returns [{ line, text }].
  *
  * Scans the statement's own line and the FOLLOWING line, because prettier wraps long
@@ -116,8 +128,9 @@ export function findUnforcedDrops(text) {
   const lines = stripComments(text).split('\n');
   const findings = [];
   for (let i = 0; i < lines.length; i++) {
-    if (!DROP_RE.test(lines[i])) continue;
-    const window = lines[i] + '\n' + (lines[i + 1] ?? '');
+    const line = withoutTestTitle(lines[i]);
+    if (!DROP_RE.test(line)) continue;
+    const window = line + '\n' + (lines[i + 1] ?? '');
     if (FORCE_RE.test(window)) continue;
     findings.push({ line: i + 1, text: lines[i].trim() });
   }
