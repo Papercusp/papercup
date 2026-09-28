@@ -3,7 +3,63 @@
  * The real-git behaviour is in integrator.integration.test.ts.
  */
 import { describe, expect, it } from 'vitest';
-import { HOST_LOCAL_STATE_DIRS, formatParkedConflicts, isHostLocalStatePath } from './integrator';
+import {
+  HOST_LOCAL_STATE_DIRS,
+  formatIntegratorTickStatus,
+  formatParkedConflicts,
+  isHostLocalStatePath,
+} from './integrator';
+
+describe('formatIntegratorTickStatus', () => {
+  const dev = 'ab'.repeat(32);
+  const gated = { integrated: 2, queued: 0, errors: 0 };
+
+  it('reports an ADVANCING tick with skipped:null so a stale no-advance note is overwritten', () => {
+    const s = formatIntegratorTickStatus({
+      advanced: true,
+      staging: '69c6ccc0123456789abcdef',
+      gated,
+      parked: [],
+      hostLocalResolved: 1,
+      errorCount: 0,
+    });
+    expect(s.skipped).toBeNull();
+    expect(s.detail).toBe(
+      'integrator ran; advanced staging to 69c6ccc01234 (gate: integrated=2 queued=0 errors=0; conflicts=0; host-local-resolved=1; errors=0)',
+    );
+    expect(s.detail).not.toMatch(/no advance/);
+  });
+
+  it('keeps the exact no-advance wording (with parked paths) when staging did not move', () => {
+    const s = formatIntegratorTickStatus({
+      advanced: false,
+      staging: 'dd578ec5',
+      gated,
+      parked: [{ deviceHex: dev, sha: 'ba9ce0fb'.padEnd(40, '0'), paths: ['app.txt'] }],
+      hostLocalResolved: 0,
+      errorCount: 0,
+    });
+    expect(s.skipped).toBe('ran_no_advance');
+    expect(s.detail).toBe(
+      `integrator ran; no advance (gate: integrated=2 queued=0 errors=0; conflicts=1; errors=0) parked: ${dev.slice(0, 12)}@ba9ce0fb: app.txt`,
+    );
+  });
+
+  it('still names parked heads on an advance that integrated only some members', () => {
+    const s = formatIntegratorTickStatus({
+      advanced: true,
+      staging: null,
+      gated: null,
+      parked: [{ deviceHex: dev, sha: 'c'.repeat(40), paths: ['x.ts'] }],
+      hostLocalResolved: 0,
+      errorCount: 1,
+    });
+    expect(s.skipped).toBeNull();
+    expect(s.detail).toBe(
+      `integrator ran; advanced staging to unknown (gate: none; conflicts=1; errors=1) parked: ${dev.slice(0, 12)}@cccccccc: x.ts`,
+    );
+  });
+});
 
 describe('isHostLocalStatePath', () => {
   it('derives its directories from the retired git tables via stateDirFor', () => {
