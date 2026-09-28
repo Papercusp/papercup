@@ -483,10 +483,15 @@ export async function runWorkspaceHostCanary(
     if (!credentialRef || !delivery) {
       throw new WorkspaceHostCanaryRunError([`${label} credential generation is missing channel(s): agent`]);
     }
+    // WI-10003661: authenticate under the SAME agent scope the initialization runner admits the
+    // initial generation with. Omitting it here resolved to all three agents, so a D-338 run that
+    // deliberately skips Codex was refused at this boundary whenever the stored Codex login no
+    // longer authenticated — the narrowed scope reached initialization but never these generations.
     const admissionInput = {
       credentialRef,
       delivery,
       materialSource: input.credentialMaterialSource,
+      ...(input.requestedAgents !== undefined ? { requestedAgents: input.requestedAgents } : {}),
     };
     const evidence = await dependencies.verifyAgentCredentialAdmission(admissionInput);
     assertWorkspaceHostAgentCredentialAdmissionEvidence(evidence, admissionInput);

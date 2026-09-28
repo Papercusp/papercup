@@ -120,7 +120,25 @@ function admissionEvidence(
       referenceDigest: workspaceHostCredentialReferenceDigest(input.credentialRef.ref),
     },
     observedAt: verification.observedAt,
-    verification: { ...verification, agents, credentialFreeAgents: [], unfundedAgents: [], admissible: true },
+    verification: {
+      ...verification,
+      // Mirror verifyWorkspaceHostAgentCredentialAdmission: a narrowed request probes only its own
+      // agents, records the scope, and cannot claim allReady because the skipped agent was never
+      // authenticated. An unscoped request keeps the full three-agent receipt.
+      ...(input.requestedAgents !== undefined
+        ? {
+            requestedAgents: [...input.requestedAgents],
+            allReady: input.requestedAgents.length === Object.keys(agents).length,
+          }
+        : {}),
+      agents:
+        input.requestedAgents !== undefined
+          ? Object.fromEntries(input.requestedAgents.map((agent) => [agent, agents[agent]]))
+          : agents,
+      credentialFreeAgents: [],
+      unfundedAgents: [],
+      admissible: true,
+    },
   };
 }
 
@@ -719,6 +737,48 @@ describe('runWorkspaceHostCanary', () => {
       }),
     ).rejects.toThrow(/restored credential generation is missing channel/);
     expect(runInitialization).not.toHaveBeenCalled();
+  });
+
+  it('pre-authenticates every later generation under the requested agent scope (WI-10003661, D-338)', async () => {
+    // A stored Codex login that no longer authenticates: exactly what the real verifier reports
+    // when the scope it receives still includes codex (an omitted scope resolves to all three).
+    const deadCodexVerifier = vi.fn(async (request: WorkspaceHostAgentCredentialAdmissionInput) => {
+      if (request.requestedAgents === undefined || request.requestedAgents.includes('codex')) {
+        throw new Error(
+          `Workspace-host agent credential generation ${request.delivery.generation} failed authentication admission (codex:credential-unauthorized)`,
+        );
+      }
+      return admissionEvidence(request);
+    });
+
+    const runInitialization = vi.fn(fakeInitialization);
+    await runWorkspaceHostCanary(input({ requestedAgents: ['claude', 'omp'] }), {
+      runInitialization,
+      runLifecycle: vi.fn(fakeLifecycle),
+      verifyAgentCredentialAdmission: deadCodexVerifier,
+      now: () => new Date(OBSERVED_AT),
+    }).catch(() => undefined);
+
+    // The rotated, reconnected and restored generations were all admitted under the narrowed
+    // scope, so the run reached initialization instead of being refused at preflight.
+    expect(deadCodexVerifier).toHaveBeenCalledTimes(3);
+    for (const [request] of deadCodexVerifier.mock.calls) {
+      expect(request.requestedAgents).toEqual(['claude', 'omp']);
+    }
+    expect(runInitialization).toHaveBeenCalledWith(expect.objectContaining({ requestedAgents: ['claude', 'omp'] }));
+
+    // FALSIFIER: same dead Codex, scope omitted — the run must still be refused before any
+    // initialization, so this test fails if the scope stops reaching the pre-admission loop.
+    const unscopedInitialization = vi.fn(fakeInitialization);
+    await expect(
+      runWorkspaceHostCanary(input(), {
+        runInitialization: unscopedInitialization,
+        runLifecycle: vi.fn(fakeLifecycle),
+        verifyAgentCredentialAdmission: vi.fn(deadCodexVerifier.getMockImplementation()!),
+        now: () => new Date(OBSERVED_AT),
+      }),
+    ).rejects.toThrow(/codex:credential-unauthorized/);
+    expect(unscopedInitialization).not.toHaveBeenCalled();
   });
 
   it('rejects a revoked future generation before starting initialization', async () => {
