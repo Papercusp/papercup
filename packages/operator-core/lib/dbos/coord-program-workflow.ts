@@ -87,11 +87,24 @@ export async function loadAcceptedCoordProgramBlueprint(
   handle: BlueprintOperationHandle,
   callerId: string,
 ): Promise<Blueprint> {
+  return (await loadAcceptedCoordProgram(sql, handle, callerId)).blueprint;
+}
+
+/** {@link loadAcceptedCoordProgramBlueprint} plus the canonical result read it
+ * validates the receipt with. WI-10003631: the program start used to validate
+ * with a status read and then immediately repeat the same canonical read for its
+ * crash-replay check; both run `readValidatedCanonicalOperation`, so one read
+ * serves both and the start costs one canonical read instead of two. */
+async function loadAcceptedCoordProgram(
+  sql: Sql,
+  handle: BlueprintOperationHandle,
+  callerId: string,
+): Promise<{ blueprint: Blueprint; prior: Awaited<ReturnType<typeof getBlueprintOperationResult>> }> {
   if (handle.target.kind !== 'work-item') {
     throw new Error('accepted coord program requires a canonical root work item');
   }
   return runWithWorkspace(handle.workspaceId, async () => {
-    await getBlueprintOperationStatus(sql, handle, callerId);
+    const prior = await getBlueprintOperationResult(sql, handle, callerId);
     const specification = await readBlueprintSpecificationSnapshot(
       sql, handle.workspaceId, handle.harnessSlug, handle.specificationRevision,
     );
@@ -103,7 +116,7 @@ export async function loadAcceptedCoordProgramBlueprint(
     const blueprint = pinnedOperationProgramBlueprint(operation, specification.inputs) ??
       BlueprintSchema.parse(specification.configuration);
     if (!blueprint.spine.steps) throw new Error('accepted coord program has no program spine');
-    return blueprint;
+    return { blueprint, prior };
   });
 }
 
@@ -512,8 +525,9 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
       input.harnessSlug !== accepted.harnessSlug || input.workItemId !== accepted.target.id)) {
     throw new Error('accepted coord program scope differs from its canonical operation handle');
   }
-  const blueprint: Blueprint = accepted
-    ? await loadAcceptedCoordProgramBlueprint(getOrgPg().sql, accepted, input.callerId)
+  const loaded = accepted ? await loadAcceptedCoordProgram(getOrgPg().sql, accepted, input.callerId) : null;
+  const blueprint: Blueprint = loaded
+    ? loaded.blueprint
     : await _resolver(input.blueprintId, {
         workspaceId: input.workspaceId,
         harnessSlug: input.harnessSlug,
@@ -521,10 +535,11 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
   if (accepted && blueprint.id !== input.blueprintId) {
     throw new Error('accepted coord program blueprint id differs from its retained definition');
   }
-  if (accepted) {
+  if (accepted && loaded) {
     // A crash after canonical completion but before DBOS records the workflow
     // return must replay the canonical result, never re-enter the program steps.
-    const prior = await getBlueprintOperationResult(getOrgPg().sql, accepted, input.callerId);
+    // The loader's validating read IS that canonical result read (WI-10003631).
+    const prior = loaded.prior;
     if (prior.state === 'ready') {
       const output = prior.output;
       if (!output || typeof output !== 'object' || Array.isArray(output) ||

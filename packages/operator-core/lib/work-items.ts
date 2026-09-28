@@ -4317,6 +4317,13 @@ export async function setWorkItemState(
     // blocker settles. Keep cleanup on the lifecycle write path so it does not
     // depend on a subscriber's next turn or on the event fan-out succeeding.
     void removeDerivedBlockerSubscriptionsForSettledTarget(workItemObjectRef(settled)).catch(() => {});
+    // WI-10003631: both watches below gate on the settled item's topics only. Each
+    // used to call getWorkItemDetail (issue probe + row + tags + thread + posts +
+    // links, ~6 round trips) just to read `topics`; one shared tag read is
+    // equivalent (getWorkItemDetail/getIssueDetail read topics via the same
+    // tags.listTags(workItemObjectRef)) and costs one round trip per settle.
+    let settledTopics: Promise<string[]> | undefined;
+    const readSettledTopics = () => (settledTopics ??= tags.listTags(workItemObjectRef(settled)));
     // sentinel-herald P-016: when a SETTLED item is a Sentinel handoff (carries
     // the `user-requested` topic), report its landing back to the operator via
     // the hindsight "[While you were away]" channel. Same fire-and-forget +
@@ -4326,10 +4333,7 @@ export async function setWorkItemState(
       .then((m) =>
         m.reportHandoffLandingIfTracked(
           { id: settled.id, title: settled.title, state: settled.state, harness: settled.harness },
-          async (wid, harness) => {
-            const detail = await getWorkItemDetail(wid, harness ?? undefined);
-            return detail?.topics ?? [];
-          },
+          readSettledTopics,
         ),
       )
       .catch(() => {});
@@ -4348,10 +4352,7 @@ export async function setWorkItemState(
             harness: settled.harness,
             terminalCompletionRef: (settled as { terminalCompletionRef?: string | null }).terminalCompletionRef ?? null,
           },
-          async (wid, harness) => {
-            const detail = await getWorkItemDetail(wid, harness ?? undefined);
-            return detail?.topics ?? [];
-          },
+          readSettledTopics,
         ),
       )
       .catch(() => {});
