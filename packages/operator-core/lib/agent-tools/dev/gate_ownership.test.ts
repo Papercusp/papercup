@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 import '../../index';
 import tool from './gate_ownership';
-import { readGateOwnership } from '../../coord/gate-ownership';
+import { readGateOwnership, unmeasuredCell, unownedCell, type CellOwnership } from '../../coord/gate-ownership';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import { gitPipelinePosition } from '../../git-pipeline-position';
 import { GATE_OWNERSHIP_CELL } from '../../cell-registrations';
 
@@ -19,8 +20,15 @@ describe('dev:gate_ownership', () => {
 
   it('resolves the ownership cell without entering an unrelated slow pipeline leg', async () => {
     vi.mocked(gitPipelinePosition).mockImplementation(() => new Promise(() => {}));
-    const ownership = { assessment: 'held-live', claimState: 'held', takenBy: 'su-live' };
-    vi.mocked(readGateOwnership).mockResolvedValue(ownership as never);
+    // Built from the module's own cell constructor so the fixture is typed against
+    // the real CellOwnership shape (no `as never` escape; check-mock-cast-escape).
+    const ownership: CellOwnership = {
+      ...unownedCell('green-stall:papercusp'),
+      assessment: 'held-live',
+      claimState: 'held',
+      takenBy: 'su-live',
+    };
+    mockResolvedTyped(vi.mocked(readGateOwnership), ownership);
 
     const result = await tool.handler({}, { harnessSlug: 'papercusp' } as never);
 
@@ -36,11 +44,13 @@ describe('dev:gate_ownership', () => {
 
   it('emits the ownership unknown through the cell declared verdict channel', async () => {
     const unknown = { code: 'resolver-failed', detail: 'ownership store unreachable' };
-    vi.mocked(readGateOwnership).mockResolvedValue({ assessment: null, claimState: null, unknown } as never);
+    mockResolvedTyped(vi.mocked(readGateOwnership), unmeasuredCell('green-stall:papercusp', unknown.detail));
 
     const result = await tool.handler({}, { harnessSlug: '*' } as never);
 
-    expect(readGateOwnership).toHaveBeenCalledWith({ harness: '*' });
+    // The superuser '*' sentinel names no harness, so the tool resolves it away and
+    // readGateOwnership applies its own operator-home default.
+    expect(readGateOwnership).toHaveBeenCalledWith({ harness: undefined });
     expect(result).toMatchObject({
       data: { verdictUnknown: [{ leg: 'gate.ownership.claimState', unknown }] },
     });

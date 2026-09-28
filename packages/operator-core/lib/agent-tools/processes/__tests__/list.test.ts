@@ -7,8 +7,9 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { mockResolvedTyped } from '../../../testing/typed-mock';
+import { mockResolvedOnceTyped, mockResolvedTyped } from '../../../testing/typed-mock';
 import type { ReconcileTickResult } from '../../../task-manager/reconcile-tick';
+import { summarizeReconcile, type ReconcileResult } from '../../../task-manager/reconcile';
 import type { TaskRow } from '../../../task-manager/types';
 
 const { LOCAL_SUPERUSER_BEARER } = vi.hoisted(() => ({
@@ -35,6 +36,42 @@ vi.mock('../../../superuser-token', () => ({
 await import('../list');
 const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 const projected = lookupByMcpName('processes:list')!;
+
+/**
+ * A COMPLETE, typed reconcileTick result for the typed-mock helpers — no `as never`
+ * (check-mock-cast-escape). `summary` is computed by the real summarizeReconcile, so
+ * it can never disagree with the `result` a fixture supplies.
+ */
+function tickResult(
+  over: {
+    result?: Partial<ReconcileResult>;
+    scan?: Partial<ReconcileTickResult['scan']>;
+  } & Partial<Omit<ReconcileTickResult, 'result' | 'scan' | 'summary'>> = {},
+): ReconcileTickResult {
+  const { result: resultOver, scan: scanOver, ...rest } = over;
+  const result: ReconcileResult = {
+    alive: [], stranded: [], endedUnobserved: [], unaccounted: [], abandonedWindow: [],
+    consoleWindow: [], verifierScope: [], foreign: [], overdue: [], tooYoung: [],
+    ...resultOver,
+  };
+  return {
+    summary: summarizeReconcile(result),
+    result,
+    scan: {
+      ownedRootExists: true, ownedTruncated: false, foreignTruncated: false,
+      processes: 0, userManagerRoot: null, ...scanOver,
+    },
+    scannedProcesses: [],
+    degraded: false,
+    touched: 0,
+    strandedCount: 0,
+    endedUnobservedCount: 0,
+    unaccountedPersisted: 0,
+    residueCleared: 0,
+    confirmedUnaccounted: [],
+    ...rest,
+  };
+}
 
 function makeTx() {
   return vi.fn(async () => []);
@@ -681,11 +718,10 @@ describe('processes:list structured output', () => {
       .toMatchObject({ state: 'unaccounted', pids: 2, livePids: [11, 12] });
 
     vi.mocked(listTasks).mockResolvedValueOnce([orphan]);
-    vi.mocked(reconcileTick).mockResolvedValueOnce({
-      summary: { unaccounted: 0 }, result: { unaccounted: [] },
+    mockResolvedOnceTyped(vi.mocked(reconcileTick), tickResult({
       degraded: true, degradedReason: 'incomplete kernel scan',
       scan: { processes: 0, foreignTruncated: true },
-    } as never);
+    }));
     const unknown = await dispatchProjectedTool(projected, 'processes:list',
       { taskId: 'orphan123', live: true }, context, {});
     expect(unknown.ok).toBe(true);
@@ -725,8 +761,7 @@ describe('processes:list structured output', () => {
         detail: {},
       },
     ]);
-    vi.mocked(reconcileTick).mockResolvedValueOnce({
-      summary: { unaccounted: 1 },
+    mockResolvedOnceTyped(vi.mocked(reconcileTick), tickResult({
       result: {
         unaccounted: [
           {
@@ -737,17 +772,10 @@ describe('processes:list structured output', () => {
               `python3 - http://127.0.0.1:9071 ${LOCAL_SUPERUSER_BEARER} ` + 'AWS_ACCESS_KEY_ID=opaque-aws-access-key',
           },
         ],
-        verifierScope: [],
-        foreign: [],
       },
       scan: { processes: 1, foreignTruncated: false },
-      degraded: false,
-      touched: 0,
-      strandedCount: 0,
-      endedUnobservedCount: 0,
       unaccountedPersisted: 1,
-      residueCleared: 0,
-    } as never);
+    }));
 
     const dispatched = await dispatchProjectedTool(
       projected,
