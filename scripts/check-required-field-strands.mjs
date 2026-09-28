@@ -1227,10 +1227,15 @@ function main() {
   // inferred mode, ONLY the finding files: the inferred candidate set is every agent's
   // uncommitted edits (see the warning printed above), and forwarding all of it would
   // re-import the very peer-misattribution this fix removes.
+  //
+  // Only paths that EXIST in the tree: a declared set is a changed-path list, so it carries
+  // DELETIONS too, and lint:tsc refuses a whole selection that names a missing file
+  // (status=preflight-failed, exit 2 here) — one deleted file then blinds this guard to every
+  // real strand in the rest of the change (WI-10003758). A deleted file adds no required field.
   const ocFiles = [
     ...new Set(
-      (declaredFiles ?? findings.map((f) => f.file)).filter((f) =>
-        f.startsWith('packages/operator-core'),
+      (declaredFiles ?? findings.map((f) => f.file)).filter(
+        (f) => f.startsWith('packages/operator-core') && existsSync(resolve(ROOT, f)),
       ),
     ),
   ];
