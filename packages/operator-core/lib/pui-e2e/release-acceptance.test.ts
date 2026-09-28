@@ -8,28 +8,53 @@ import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMa
 import { probeDockerCreateStart, runCloudDeviceStartSmoke, runReleaseAcceptance, runStockMachineSmoke } from './release-acceptance-run';
 
 describe('Docker create/start release preflight', () => {
-  it('runs a bounded offline stock-container launch three times', () => {
+  it('passes on the first bounded offline stock-container launch that succeeds', () => {
     const calls: Array<{ args: string[]; timeout: number }> = [];
     const problem = probeDockerCreateStart((args, timeout) => {
       calls.push({ args, timeout });
       return { status: 0 };
     });
     expect(problem).toBeNull();
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(2);
     expect(calls[0]).toEqual({ args: ['image', 'inspect', 'ubuntu:24.04'], timeout: 5_000 });
-    expect(calls.slice(1).every(({ args, timeout }) => timeout === 20_000
-      && args.includes('--pull=never') && args.includes('--network=none')
-      && args.includes('ubuntu:24.04'))).toBe(true);
+    const [launch] = calls.slice(1);
+    expect(launch.timeout).toBe(20_000);
+    expect(launch.args).toEqual(expect.arrayContaining(['--pull=never', '--network=none', 'ubuntu:24.04', '--name']));
   });
 
-  it('fails immediately when Docker times out even if its daemon is responsive', () => {
-    let calls = 0;
-    const problem = probeDockerCreateStart(() => {
-      calls++;
-      return calls === 3 ? { status: null, error: { message: 'ETIMEDOUT' } } : { status: 0 };
+  // EI-24453068584648808: one ~20s stall on a loaded host refused a whole
+  // candidate before any leg ran, though the next launch took ~2s.
+  it('retries a stalled launch, removes the abandoned container, and passes when a later attempt succeeds', () => {
+    const calls: string[][] = [];
+    let launches = 0;
+    const problem = probeDockerCreateStart((args) => {
+      calls.push(args);
+      if (args[0] !== 'run') return { status: 0 };
+      launches++;
+      return launches === 1 ? { status: null, error: { message: 'spawnSync docker ETIMEDOUT' } } : { status: 0 };
     });
-    expect(calls).toBe(3);
-    expect(problem).toContain('attempt 2/3');
+    expect(problem).toBeNull();
+    expect(launches).toBe(2);
+    const stalledName = calls[1][calls[1].indexOf('--name') + 1];
+    expect(stalledName).toMatch(/^pui-release-preflight-/);
+    expect(calls[2]).toEqual(['rm', '--force', stalledName]);
+    expect(calls[3][0]).toBe('run');
+  });
+
+  it('refuses only when every attempt fails, naming each failure and removing each attempt', () => {
+    const calls: string[][] = [];
+    const problem = probeDockerCreateStart((args) => {
+      calls.push(args);
+      return args[0] === 'run' ? { status: null, error: { message: 'spawnSync docker ETIMEDOUT' } } : { status: 0 };
+    });
+    const launches = calls.filter((args) => args[0] === 'run');
+    const removals = calls.filter((args) => args[0] === 'rm');
+    expect(launches).toHaveLength(3);
+    expect(removals.map((args) => args[2])).toEqual(launches.map((args) => args[args.indexOf('--name') + 1]));
+    expect(new Set(removals.map((args) => args[2])).size).toBe(3);
+    expect(problem).toContain('failed on all 3 attempts');
+    expect(problem).toContain('attempt 1/3');
+    expect(problem).toContain('attempt 3/3');
     expect(problem).toContain('ETIMEDOUT');
   });
 

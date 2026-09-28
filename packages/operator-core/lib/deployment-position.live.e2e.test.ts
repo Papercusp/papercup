@@ -65,8 +65,14 @@ const LIVE_REQUESTED = process.env.PAPERCUSP_DEPLOY_CONTAINMENT_LIVE === '1';
 const SERVING = LIVE_REQUESTED ? await servingSha() : null;
 allowRealPgForLiveSuite(Boolean(SERVING));
 
-describe.skipIf(!SERVING)('LIVE: shipment citation deployment containment (AUTO-BAR-R-8-P-004)', () => {
-  const serving = SERVING as string;
+/**
+ * Pick the positive control (a lib file unchanged since the serving build) and, when one
+ * exists, a file committed after it. Called ONLY when a serving sha was measured: Vitest
+ * still runs a skipped suite's body to collect its tests, so doing this work in the
+ * describe body unconditionally ran `git diff null HEAD` and failed the file whenever the
+ * live gate was off.
+ */
+function pickCandidates(serving: string): { deployedCandidate?: string; undeployedCandidate?: string } {
   const libPrefix = 'packages/operator-core/lib/';
   const changedSinceServing = git(['diff', '--name-only', serving, 'HEAD', '--', libPrefix])
     .split('\n')
@@ -85,6 +91,12 @@ describe.skipIf(!SERVING)('LIVE: shipment citation deployment containment (AUTO-
       return false;
     }
   });
+  return { deployedCandidate, undeployedCandidate };
+}
+
+describe.skipIf(!SERVING)('LIVE: shipment citation deployment containment (AUTO-BAR-R-8-P-004)', () => {
+  const serving = SERVING as string;
+  const { deployedCandidate, undeployedCandidate } = SERVING ? pickCandidates(SERVING) : {};
 
   it('the underlying probe measures directly (the fail-soft wrapper cannot hide a throw)', async () => {
     // citationDeploymentForPaths swallows a per-path throw into "unknown"; call the probe

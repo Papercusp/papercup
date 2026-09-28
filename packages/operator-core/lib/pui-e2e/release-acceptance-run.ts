@@ -126,23 +126,34 @@ const DOCKER_START_PROBE_ATTEMPTS = 3;
 type DockerRun = (args: string[], timeout: number) => { status: number | null; error?: { message: string } };
 const defaultDockerRun: DockerRun = (args, timeout) => spawnSync('docker', args, { encoding: 'utf8', timeout });
 
-/** Detect a responsive daemon whose overlay create/start path is stalled. */
+/**
+ * Detect a responsive daemon whose overlay create/start path is stalled.
+ *
+ * A wedged create path (WI-10003403) fails every attempt, so only an
+ * all-attempts failure refuses. One slow launch on a loaded host is not a
+ * wedge: the next attempt usually returns in seconds, and refusing on it threw
+ * away whole acceptance runs (EI-24453068584648808). Each attempt is named so a
+ * launch the client abandoned on timeout is removed rather than left behind in
+ * the Created state, where `--rm` never reaches it.
+ */
 export function probeDockerCreateStart(run: DockerRun = defaultDockerRun): string | null {
   // A fresh release host may not have the image yet. The stock smoke below
   // pulls it; the offline create/start probe applies only to an existing image.
   const image = STOCK_LINUX_IMAGES[0];
   const cached = run(['image', 'inspect', image], 5_000);
   if (cached.status !== 0 || cached.error) return null;
+  const failures: string[] = [];
   for (let attempt = 1; attempt <= DOCKER_START_PROBE_ATTEMPTS; attempt++) {
-    const result = run(['run', '--rm', '--pull=never', '--network=none',
+    const name = `pui-release-preflight-${process.pid}-${Date.now()}-${attempt}`;
+    const result = run(['run', '--rm', '--name', name, '--pull=never', '--network=none',
       '--entrypoint', '/bin/sh', image, '-c', 'true'], DOCKER_START_PROBE_TIMEOUT_MS);
-    if (result.status !== 0 || result.error) {
-      return `Docker create/start preflight failed on attempt ${attempt}/${DOCKER_START_PROBE_ATTEMPTS} `
-        + `(status ${result.status ?? 'none'}${result.error ? `; ${result.error.message}` : ''}). `
-        + 'The daemon may answer docker info while container creation is stalled.';
-    }
+    if (result.status === 0 && !result.error) return null;
+    failures.push(`attempt ${attempt}/${DOCKER_START_PROBE_ATTEMPTS}: status ${result.status ?? 'none'}`
+      + `${result.error ? `; ${result.error.message}` : ''}`);
+    run(['rm', '--force', name], DOCKER_START_PROBE_TIMEOUT_MS);
   }
-  return null;
+  return `Docker create/start preflight failed on all ${DOCKER_START_PROBE_ATTEMPTS} attempts `
+    + `(${failures.join('; ')}). The daemon may answer docker info while container creation is stalled.`;
 }
 const STOCK_MACHINE_SCRIPT = `set -eu
 mkdir -p "$HOME"
