@@ -20,7 +20,7 @@
 //
 // WHAT IT ADDS: a CLEAN export of one pinned commit (git archive of the superproject
 // and every submodule at its gitlink — no working-tree debris), MANIFEST.json,
-// NOTICE, START-HERE.md, and a drift-checked, gated, single-commit publish.
+// NOTICE, README.md, and a drift-checked, gated, single-commit publish.
 //
 // Usage:
 //   node scripts/source-preview.mjs export [--ref main] [--out <dir>]
@@ -33,14 +33,20 @@
 // written anywhere — exactly as for a release cut: the scrub and the gate refuse
 // without them.
 //
+// PAPERCUSP_UPDATE_BASE_URL names the release host whose index.html is the releases
+// page README.md links to. It is deployment state, never committed here: the CLI fills
+// it from ~/.papercusp/release-host.env (the file the release scripts load) when unset,
+// and the export refuses without it rather than publish a README with no download link.
+//
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, existsSync, realpathSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -53,7 +59,11 @@ export const SELECT_SCRIPT = join(DESKTOP_BIN, 'source-tree-select.sh');
 export const SELECTION_LIB = join(DESKTOP_BIN, 'lib', 'source-tree-selection.sh');
 export const AUDIT_SCRIPT = join(DESKTOP_BIN, 'audit-release-bundle.py');
 /** Files this script adds at the export root, outside the shared selection. */
-export const ADDED_FILES = ['NOTICE', 'START-HERE.md', 'MANIFEST.json'];
+export const ADDED_FILES = ['NOTICE', 'README.md', 'MANIFEST.json'];
+/** The env var holding the release host base URL; `${base}/index.html` is the releases page. */
+export const RELEASE_BASE_ENV = 'PAPERCUSP_UPDATE_BASE_URL';
+/** Where the release scripts keep that value (papercusp-desktop/bin/lib/release-host.sh). */
+export const RELEASE_HOST_ENV_PATH = join(homedir(), '.papercusp', 'release-host.env');
 
 /** @typedef {{ name: string, ok: boolean, status: string, detail: string }} GateResult */
 /** @typedef {{ detector: string, rule: string, path: string, line: number, sha256: string, allowlisted?: boolean }} GateFinding */
@@ -207,14 +217,40 @@ async function describeWorkspaces(dir) {
   return rows;
 }
 
-export async function startHereText(dir, manifest) {
+/**
+ * The releases page README.md links to: `${PAPERCUSP_UPDATE_BASE_URL}/index.html`.
+ * Reads `env` only — never a file — so a test's verdict cannot depend on the home
+ * directory it runs in; the CLI fills `env` first (loadReleaseHost).
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function releasesPageUrl(env) {
+  const base = (env[RELEASE_BASE_ENV] ?? '').trim().replace(/\/+$/, '');
+  if (!/^https:\/\/\S+$/.test(base)) {
+    throw new PreviewError(`${RELEASE_BASE_ENV} is ${base ? `not an https URL (${base})` : 'unset'} — README.md must link the releases page; export it or provide ${RELEASE_HOST_ENV_PATH}`, 2);
+  }
+  return `${base}/index.html`;
+}
+
+/**
+ * Fill PAPERCUSP_UPDATE_BASE_URL from the release scripts' own config file when the
+ * environment is silent. An exported value always wins, as in release-host.sh.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {string} [path]
+ */
+export function loadReleaseHost(env = process.env, path = RELEASE_HOST_ENV_PATH) {
+  if (env[RELEASE_BASE_ENV] || !existsSync(path)) return;
+  const value = parseEnv(readFileSync(path, 'utf8'))[RELEASE_BASE_ENV];
+  if (value) env[RELEASE_BASE_ENV] = value;
+}
+
+export async function readmeText(dir, manifest, releasesUrl) {
   const tops = (await fs.readdir(dir, { withFileTypes: true }))
     .filter((e) => !ADDED_FILES.includes(e.name))
     .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
     .sort();
   const ws = await describeWorkspaces(dir);
   const lines = [
-    '# Papercusp — start here',
+    '# Papercusp — source preview',
     '',
     'Papercusp is a desktop workspace where coding agents work alongside you, coordinated',
     'through shared plans, work items, locks and memory. This repository is a private,',
@@ -222,10 +258,53 @@ export async function startHereText(dir, manifest) {
     '',
     `- Snapshot of \`${manifest.source.repo}\` at \`${manifest.source.commit}\`, with`,
     `  ${manifest.submodules.length} submodule(s) flattened in at their pinned commits (MANIFEST.json).`,
-    '- It is the same public-safe source cut every desktop installer carries, without',
+    '- It is the same public-safe source cut the Papercusp Server installer carries, without',
     '  `node_modules` (run `npm ci` to install dependencies from `package-lock.json`)',
     '  and without the Tauri desktop shell or git history.',
     '- It is replaced wholesale on each update: re-clone or `git fetch && git reset --hard origin/main`.',
+    '',
+    '## Download Papercusp',
+    '',
+    `Installers for every published version, with release notes and install instructions, are on`,
+    `the **[Papercusp releases page](${releasesUrl})**. Install both apps: **Papercusp Server**`,
+    'runs the operator, its embedded database and your agents on your machine, and **Papercusp GUI**',
+    'is the desktop window onto it.',
+    '',
+    '## How this source ships inside every release',
+    '',
+    'The Papercusp Server installer carries this same source tree as one compressed resource,',
+    '`sidecar/source.tar.zst`:',
+    '',
+    '- **What is in it.** The code you are reading plus its already-installed `node_modules`. The',
+    '  release build selects it with the same allowlist, and checks it with the same audit, that',
+    '  produced this snapshot. Both refuse git history, internal plans, agent transcripts and',
+    '  state, and credentials, and both redact personal identity. The only difference here is that',
+    '  `node_modules` is left out.',
+    '- **Where it goes.** On first launch the app extracts the archive into a writable folder in',
+    '  its own data directory (on Windows, inside the `papercup-runtime` WSL distro). Later',
+    '  launches skip the extract.',
+    '- **What runs from it.** Two of the environments in the app\'s environment switcher run',
+    '  Papercusp from that extracted source instead of from the prebuilt server: **dev**',
+    '  (port 3270) runs the API host straight from TypeScript (`tsx apps/operator/bin/hono-host.ts`),',
+    '  and **local** (port 3055) runs the Vite dev server over the UI in `apps/operator-vite`.',
+    '  Both run on the Node.js bundled in the app with the tree\'s own `tsx` and `vite`, because',
+    '  an installed machine has no npm.',
+    '',
+    '## Why the release carries its own source',
+    '',
+    'So that the Papercusp you installed can run a Papercusp you changed. Papercusp is developed',
+    'with Papercusp, and shipping the runnable source means any install can do what the',
+    'development machine does: open the tree, edit it (by hand or with agents), and run the edited',
+    'build side by side with the installed one, without cloning a repository or installing a',
+    'toolchain. Two design choices follow from that:',
+    '',
+    '- **Extracted to a writable folder, not run in place.** The install directory is read-only,',
+    '  and a source tree you cannot edit defeats the purpose.',
+    '- **One archive, not loose files.** The tree with its `node_modules` runs to several',
+    '  gigabytes of small files. Copying them one by one through the app bundler\'s resource',
+    '  pipeline is slow, and the `node_modules/.bin` symlinks survive `tar` but not that copy.',
+    '',
+    'This repository is the same source without `node_modules`, so you can read it before you install.',
     '',
     '## Where to read first',
     '',
@@ -276,6 +355,7 @@ export async function exportSnapshot({
 }) {
   if (!out) throw new PreviewError('exportSnapshot: out is required', 2);
   if (existsSync(out)) throw new PreviewError(`refusing to overwrite existing ${out}`, 2);
+  const releasesUrl = releasesPageUrl(env);
   const commit = resolveCommit(repoRoot, ref);
   const allow = allowlistTops(selectionLib);
   const work = await mkdtemp(join(tmpdir(), 'source-preview-'));
@@ -310,7 +390,7 @@ export async function exportSnapshot({
       generatedBy: 'scripts/source-preview.mjs',
     };
     await fs.writeFile(join(partial, 'NOTICE'), noticeText(manifest));
-    await fs.writeFile(join(partial, 'START-HERE.md'), await startHereText(partial, manifest));
+    await fs.writeFile(join(partial, 'README.md'), await readmeText(partial, manifest, releasesUrl));
     await fs.writeFile(join(partial, 'MANIFEST.json'), `${JSON.stringify(manifest, null, 2)}\n`);
     await fs.rename(partial, out);
     return { out, manifest };
@@ -449,9 +529,9 @@ export function isAllowlisted(entries, f) {
 /**
  * The tree a drift check compares, written into `gitDir` from `tree`: the snapshot with
  * its identity neutralized — MANIFEST.json dropped, and the source commit that NOTICE
- * and START-HERE.md name replaced by a placeholder. So a superproject commit that
+ * and README.md name replaced by a placeholder. So a superproject commit that
  * changes nothing the preview ships is not drift (git-sync commits every few minutes),
- * while a changed shipped file, NOTICE or START-HERE text, or a hand edit on the
+ * while a changed shipped file, NOTICE or README text, or a hand edit on the
  * preview still is. A tree without a readable MANIFEST.json compares as-is. All three
  * files sit at the root, so only the root tree is rewritten.
  * @returns {{ comparable: string, sourceCommit: string | null }}
@@ -468,7 +548,7 @@ function comparableTree(gitDir, tree) {
   try { sourceCommit = manifest ? JSON.parse(g(['cat-file', 'blob', manifest.sha]))?.source?.commit ?? null : null; } catch { sourceCommit = null; }
   if (typeof sourceCommit !== 'string' || !/^[0-9a-f]{40}$/.test(sourceCommit)) return { comparable: tree, sourceCommit: null };
   const kept = entries.filter((e) => e !== manifest).map((e) => {
-    if (e.type !== 'blob' || !['NOTICE', 'START-HERE.md'].includes(e.name)) return e;
+    if (e.type !== 'blob' || !['NOTICE', 'README.md'].includes(e.name)) return e;
     const text = g(['cat-file', 'blob', e.sha]);
     return { ...e, sha: g(['hash-object', '-w', '--stdin'], { input: text.split(sourceCommit).join('<source-commit>') }).trim() };
   });
@@ -582,6 +662,7 @@ function printGate(verdict) {
 async function main(argv) {
   const { cmd, opts } = parseArgs(argv);
   const log = (m) => console.error(`==> ${m}`);
+  loadReleaseHost();
   if (cmd === 'export') {
     const out = opts.out ?? join(ROOT, '.papercusp', 'scratch', 'source-preview', `export-${Date.now()}`);
     const { manifest } = await exportSnapshot({ ref: opts.ref ?? DEFAULT_REF, out, log });

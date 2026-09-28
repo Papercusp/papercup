@@ -29,7 +29,21 @@ export function materializeCommit({ repo, sha, dest, allow, prefix }: {
     sha: string;
 }[];
 export function noticeText(manifest: any): string;
-export function startHereText(dir: any, manifest: any): Promise<string>;
+/**
+ * The releases page README.md links to: `${PAPERCUSP_UPDATE_BASE_URL}/index.html`.
+ * Reads `env` only — never a file — so a test's verdict cannot depend on the home
+ * directory it runs in; the CLI fills `env` first (loadReleaseHost).
+ * @param {NodeJS.ProcessEnv} env
+ */
+export function releasesPageUrl(env: NodeJS.ProcessEnv): string;
+/**
+ * Fill PAPERCUSP_UPDATE_BASE_URL from the release scripts' own config file when the
+ * environment is silent. An exported value always wins, as in release-host.sh.
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {string} [path]
+ */
+export function loadReleaseHost(env?: NodeJS.ProcessEnv, path?: string): void;
+export function readmeText(dir: any, manifest: any, releasesUrl: any): Promise<string>;
 /**
  * The copyright year of `commit`: the newest commit date in its recent first-parent history.
  * The commit's own date is unusable — repair-queue admission commits carry a fixed 2000-01-01.
@@ -185,6 +199,10 @@ export const SELECTION_LIB: string;
 export const AUDIT_SCRIPT: string;
 /** Files this script adds at the export root, outside the shared selection. */
 export const ADDED_FILES: string[];
+/** The env var holding the release host base URL; `${base}/index.html` is the releases page. */
+export const RELEASE_BASE_ENV: "PAPERCUSP_UPDATE_BASE_URL";
+/** Where the release scripts keep that value (papercusp-desktop/bin/lib/release-host.sh). */
+export const RELEASE_HOST_ENV_PATH: string;
 /** @typedef {{ name: string, ok: boolean, status: string, detail: string }} GateResult */
 /** @typedef {{ detector: string, rule: string, path: string, line: number, sha256: string, allowlisted?: boolean }} GateFinding */
 /** @typedef {{ ok: boolean, exitCode: number, results: GateResult[], findings?: GateFinding[] }} GateVerdict */
