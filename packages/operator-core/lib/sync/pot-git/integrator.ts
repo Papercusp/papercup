@@ -125,6 +125,37 @@ export function formatParkedConflicts(parked: readonly SkippedConflict[]): strin
   return ` parked: ${head.join('; ')}${moreHeads}`;
 }
 
+/**
+ * The git-sync integrator leg's `metadata.integrator_status` for ONE tick that
+ * reached the integrator. It must be written on EVERY such tick, an advancing
+ * one included: the routine metadata is a jsonb merge, so a leg that recorded
+ * only its declines left the previous "no advance" note standing after staging
+ * moved (WI-10003731, 2026-09-28: the 18:40Z tick advanced hello-world-3-pot to
+ * 69c6ccc while the status still read the 18:30Z `conflicts=1` note, which is
+ * exactly the signal an operator reads to decide whether a fix worked).
+ * `skipped` is null on an advance, matching "nothing was skipped".
+ */
+export function formatIntegratorTickStatus(tick: {
+  advanced: boolean;
+  staging: string | null | undefined;
+  gated: { integrated: number; queued: number; errors: number } | null;
+  parked: readonly SkippedConflict[];
+  hostLocalResolved: number;
+  errorCount: number;
+}): { skipped: 'ran_no_advance' | null; detail: string } {
+  const gate = tick.gated
+    ? `integrated=${tick.gated.integrated} queued=${tick.gated.queued} errors=${tick.gated.errors}`
+    : 'none';
+  const hostLocal = tick.hostLocalResolved > 0 ? `; host-local-resolved=${tick.hostLocalResolved}` : '';
+  const counts = `(gate: ${gate}; conflicts=${tick.parked.length}${hostLocal}; errors=${tick.errorCount})`;
+  const parked = formatParkedConflicts(tick.parked);
+  if (tick.advanced) {
+    const to = tick.staging ? tick.staging.slice(0, 12) : 'unknown';
+    return { skipped: null, detail: `integrator ran; advanced staging to ${to} ${counts}${parked}` };
+  }
+  return { skipped: 'ran_no_advance', detail: `integrator ran; no advance ${counts}${parked}` };
+}
+
 async function isAncestor(repoPath: string, ancestor: string, descendant: string, runGit: RunGit): Promise<boolean> {
   const r = await runGit(['merge-base', '--is-ancestor', ancestor, descendant], repoPath);
   return r.code === 0;
