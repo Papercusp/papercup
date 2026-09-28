@@ -3336,10 +3336,15 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(lost?.sessionId).toBeTruthy();
 
       stage = 'runtime-loss';
-      const { _dropSuSessionHostForTest } = await import('../su-session-host');
+      const { _simulateLaunchingProcessLossForTest } = await import('../su-session-attached-launch');
+      const identity = launching.adapter.host.descriptor().identity;
       scriptedEngine.initialization = Promise.resolve(); // the replacement engine starts normally
       const lostAt = Date.now();
-      _dropSuSessionHostForTest(launching.adapter.host);
+      const forgotten = _simulateLaunchingProcessLossForTest({
+        harnessSlug: identity.harnessSlug!, agentChatId: identity.agentChatId,
+      });
+      // Positive control: the process-local state really held this engine.
+      expect(forgotten).toBe(launching);
       process.kill(nativePid!, 'SIGKILL');
 
       stage = 'auto-resume';

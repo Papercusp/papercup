@@ -6,7 +6,7 @@ import { getAdvSession, markAdvSessionEnded, setAdvSessionPid } from './adv-sess
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
 import type { PuiSuSessionBinding } from './launch-agent';
 import { nativeSessionHandleForAdvSession } from './native-session-handles';
-import { getRegisteredSuSessionHost, rehydrateRegisteredSuSessionHost, type SuSessionHost } from './su-session-host';
+import { _dropSuSessionHostForTest, getRegisteredSuSessionHost, rehydrateRegisteredSuSessionHost, type SuSessionHost } from './su-session-host';
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor, readDurableSuSession } from './su-session-persistence';
 import { startClaudeSuEngine, type ClaudeSuEngine } from './su-session-claude-engine';
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
@@ -28,6 +28,28 @@ const state = pinModuleState('@papercusp/operator-core.su-attached-launch', () =
 function trackExit(key: string, exit: Promise<void>): void {
   state.exits.set(key, exit);
   void exit.finally(() => { if (state.exits.get(key) === exit) state.exits.delete(key); });
+}
+
+/**
+ * Test-only: simulate the death of the operator process that launched one
+ * attached PUI session (pui-chat-first-ux-2026-09-28 P-002, session 31362).
+ * Everything this process holds for the chat is forgotten, exactly as a fresh
+ * process would find it: the in-flight launch, the engine, that engine's exit
+ * bookkeeping and the live host. The durable row stays as the dead process last
+ * wrote it. The forgotten engine is returned so the caller can take its native
+ * process down with it and prove the state really held that engine.
+ */
+export function _simulateLaunchingProcessLossForTest(input: {
+  harnessSlug: string;
+  agentChatId: string;
+}): ClaudeSuEngine | SuRpcEngine | undefined {
+  const key = `${activeWorkspaceId()}:${input.harnessSlug}:${input.agentChatId}`;
+  const engine = state.engines.get(key);
+  state.starting.delete(key);
+  state.engines.delete(key);
+  state.exits.delete(key);
+  if (engine) _dropSuSessionHostForTest(engine.adapter.host);
+  return engine;
 }
 
 /** Exact-resume attempts per reconnect: the original plus one automatic retry
