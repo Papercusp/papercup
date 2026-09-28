@@ -658,8 +658,25 @@ export async function withWorkItemDependencyAdmissionTransaction<T>(
   fn: (tx: Sql) => Promise<T>,
   retry?: SerializableRetryOptions,
 ): Promise<T> {
-  return withSerializableRetry(sql, fn, retry);
+  return withSerializableRetry(sql, fn, { ...DEPENDENCY_ADMISSION_RETRY_DEFAULTS, ...retry });
 }
+
+/**
+ * WI-10003675: the retry budget for the dependency-graph contention class.
+ *
+ * A dependency admission txn reads the WHOLE workspace edge set plus its node rows, so
+ * under SERIALIZABLE it conflicts with ordinary concurrent work_items writes, not just
+ * with other dependency writers. The generic default (6 tries, ~310ms worst-case total
+ * backoff) exhausted under 8 concurrent plan promotions (P-013 workload B), and plan
+ * promotion then minted a join item with no blocker edges. 12 tries with each sleep
+ * capped at 500ms gives ~4s worst-case total backoff. Callers can still override
+ * any field.
+ */
+export const DEPENDENCY_ADMISSION_RETRY_DEFAULTS: Readonly<SerializableRetryOptions> = Object.freeze({
+  maxRetries: 11,
+  baseDelayMs: 20,
+  maxDelayMs: 500,
+});
 
 interface RepointDependencyRow {
   id: string | number;

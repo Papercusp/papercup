@@ -877,9 +877,66 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     cyclicPlanItemIds,
     knownPlanItemIds: new Set(rawItems.map((i) => i.id)),
     preserveExistingEdges: Boolean(opts.planRun),
+    failOnTransientEdgeFailure: true,
   });
 
   return { promoted, skipped: openItems.length - promoted, ...edgeCounts, workItems, specQuality, reservationsRebound };
+}
+
+/**
+ * WI-10003675: a promotion whose dependency edges could not be written because of
+ * serialization contention, even after the bounded re-attempts. Thrown AFTER the whole edge
+ * pass, so every other item's edges are still written. Before this, the error was swallowed
+ * into `edgeFailures`, which no caller reads, and a join item was left with zero blockers.
+ */
+export class PromotionDependencyEdgeError extends Error {
+  readonly failedItems: readonly string[];
+  constructor(harnessSlug: string, planSlug: string, failedItems: string[]) {
+    super(
+      `plan promotion could not write blocker edges for ${failedItems.length} item(s) in ` +
+        `${harnessSlug}/${planSlug} after exhausting serialization-contention retries: ` +
+        `${failedItems.join('; ')}. The items are minted but not dependency-gated; re-run the ` +
+        `promotion (a plan run replays the full graph), or run backfillPromotedDependencyEdges.`,
+    );
+    this.name = 'PromotionDependencyEdgeError';
+    this.failedItems = failedItems;
+  }
+}
+
+/** Serialization contention (SSI abort / deadlock), directly or after in-txn retry exhaustion. */
+export function isTransientDependencyWriteError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { name?: unknown; code?: unknown };
+  return e.name === 'SerializableRetryExhaustedError' || e.code === '40001' || e.code === '40P01';
+}
+
+/**
+ * WI-10003675: call the canonical edge writer, re-attempting the WHOLE writer when it fails
+ * with serialization contention. The writer already retries inside its own SERIALIZABLE
+ * boundary; this is the outer, slower tier that spaces attempts past a burst of concurrent
+ * promotions. Non-contention errors (a live-graph cycle, I/O) propagate on the first try.
+ */
+export async function syncBlockEdgesWithContentionRetry(
+  sync: (harnessSlug: string, workItemId: string, blockers: string[]) => Promise<unknown>,
+  harnessSlug: string,
+  workItemId: string,
+  blockers: string[],
+  opts: { extraAttempts?: number; baseDelayMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<void> {
+  const extraAttempts = opts.extraAttempts ?? 3;
+  const baseDelayMs = opts.baseDelayMs ?? 250;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await sync(harnessSlug, workItemId, blockers);
+      return;
+    } catch (err) {
+      if (attempt >= extraAttempts || !isTransientDependencyWriteError(err)) throw err;
+      // Half fixed + half jitter, so contending promoters de-synchronise.
+      const ceil = baseDelayMs * 2 ** attempt;
+      await sleep(Math.floor(ceil / 2 + Math.random() * (ceil / 2)));
+    }
+  }
 }
 
 /**
@@ -959,6 +1016,14 @@ async function writePromotedDependencyEdges(args: {
    * different function than the real run and be worse than no rehearsal at all.
    */
   dryRun?: boolean;
+  /**
+   * WI-10003675: throw {@link PromotionDependencyEdgeError} after the pass when any edge write
+   * exhausted its serialization-contention retries. Promotion sets this so the caller sees the
+   * failure (a plan-run replay then heals the full graph). The backfill leaves it off: it
+   * sweeps many plans and must not abort the rest on one contended item. It counts the
+   * failure instead and re-covers the item on its next run.
+   */
+  failOnTransientEdgeFailure?: boolean;
 }): Promise<{
   edgesWritten: number;
   edgeFailures: number;
@@ -969,6 +1034,7 @@ async function writePromotedDependencyEdges(args: {
 }> {
   let edgesWritten = 0;
   let edgeFailures = 0;
+  const transientEdgeFailures: string[] = [];
   let edgesRejectedCyclic = 0;
   let blockersDangling = 0;
   let blockersUnresolved = 0;
@@ -1056,10 +1122,24 @@ async function writePromotedDependencyEdges(args: {
     }
 
     try {
-      await syncFeatureBlockEdges(args.harnessSlug, workItemId, toWrite);
+      await syncBlockEdgesWithContentionRetry(syncFeatureBlockEdges, args.harnessSlug, workItemId, toWrite);
       edgesWritten += blockerWorkItemIds.length;
       edgesPreserved += carried.length;
     } catch (err) {
+      if (isTransientDependencyWriteError(err)) {
+        // WI-10003675: serialization contention is NOT the cycle/I-O backstop below. Swallowing
+        // it minted a join with zero blocker edges under concurrent promotion. After the bounded
+        // re-attempts are exhausted, record it and fail the promotion LOUD once the pass is done.
+        edgeFailures++;
+        transientEdgeFailures.push(`${workItemId} (plan item ${planItemId})`);
+        console.error(
+          `[plan-workitem-promotion] blocks-edge write EXHAUSTED contention retries for ` +
+            `${args.harnessSlug}#${workItemId} (plan ${args.planSlug} item ${planItemId}, ` +
+            `blockers [${blockerWorkItemIds.join(', ')}]):`,
+          err,
+        );
+        continue;
+      }
       // BACKSTOP (P-008/D-012), no longer the expected path: the plan-level pre-flight above
       // has already refused every edge the plan's OWN graph makes cyclic, so reaching here means
       // a cycle only the LIVE graph shows — an existing edge from an earlier-promoted item back
@@ -1074,6 +1154,10 @@ async function writePromotedDependencyEdges(args: {
         err,
       );
     }
+  }
+
+  if (args.failOnTransientEdgeFailure && transientEdgeFailures.length > 0) {
+    throw new PromotionDependencyEdgeError(args.harnessSlug, args.planSlug, transientEdgeFailures);
   }
 
   return {
