@@ -206,6 +206,10 @@ export interface PlanAcceptanceGateVerdict {
   blockingPhaseLifecycle?: Omit<AcceptanceBarLifecycleVerdict, 'nonCodeItemProofs'>;
   /** Exact authoritative grading to read before recording an author verdict. */
   gradingRef?: string;
+  /** On `self_graded_only`: the independent scorecard the acceptance BAR judged
+   * cohort-stale. The grader recruiter excludes it from its settlement read, so the
+   * fresh grading this refusal asks for is actually dispatched (WI-10003286). */
+  staleGradingScorecardId?: string;
   repairAction?: PlanAcceptanceRepairAction;
   /** Teaching message for the refusal — the authoring/grading nudge (P-004). */
   message?: string;
@@ -1434,6 +1438,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
       satisfied: false,
       code: 'self_graded_only',
       rubricId: rubric.rubricId,
+      ...(staleIndependent ? { staleGradingScorecardId: staleIndependent.issueId } : {}),
       message: staleIndependent
         ? `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' HAS an independent ` +
           `grading (scorecard ${staleIndependent.issueId}, by '${staleIndependent.createdBy}'), but the acceptance BAR ` +
