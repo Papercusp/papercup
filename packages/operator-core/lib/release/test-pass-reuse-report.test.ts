@@ -9,10 +9,18 @@ import {
   formatTestReuseTotalLine,
 } from '../../../../scripts/lib/test-pass-reuse.mjs';
 import {
+  formatExecutedMapAlarmLines,
+  formatExecutedMapResultLines,
+  formatExecutedMapTotalLine,
+  readExecutedMapResults,
+  summarizeExecutedMapResults,
+} from '../../../../scripts/lib/executed-source-map.mjs';
+import {
   buildTestPassReuseHealth,
   formatDurationMs,
   parseTestPassReuse,
   parseTestPassReuseHealth,
+  summarizeExecutedSourceMapRecorder,
   summarizeTestPassReuse,
   TEST_PASS_REUSE_HEALTH_MAX_ALARMS,
 } from './test-pass-reuse-report';
@@ -226,5 +234,103 @@ describe('formatDurationMs', () => {
     expect(formatDurationMs(4_400)).toBe('4s');
     expect(formatDurationMs(61_000)).toBe('1m 01s');
     expect(formatDurationMs(3_720_000)).toBe('1h 02m');
+  });
+});
+
+// WI-10003603: a recorder that failed every write (WI-10003597) left reuse at zero for ~8h because
+// its outcome only reached discarded task stderr. The runner now prints it; these fixtures are
+// produced by the RUNNER's own reader + formatters from the reporter's result-file lines, so the
+// whole chain (reporter line → runner read → printed line → gate parse) is exercised end to end.
+describe('pass-proof recorder outcome (WI-10003603)', () => {
+  type Line = { outcome: string; rows: number; retired?: number; skipped?: number; dirty?: boolean; error?: string | null };
+  const resultFile = (lines: Line[]) =>
+    lines
+      .map((l) =>
+        JSON.stringify({
+          workspaceName: 'w',
+          retired: 0,
+          skipped: 0,
+          dirty: false,
+          sha: 'c0ffee000000',
+          error: null,
+          ...l,
+        }),
+      )
+      .join('\n');
+  /** One affected-tests invocation's recorder output, as the runner prints it. */
+  const printed = (tasks: Record<string, Line[] | null>) => {
+    const reads = Object.entries(tasks).map(([task, lines]) => ({
+      task,
+      read: readExecutedMapResults('/unused', {
+        readFile: () => {
+          if (lines === null) throw new Error('ENOENT');
+          return resultFile(lines);
+        },
+      }),
+    }));
+    return [
+      ...reads.flatMap(({ task, read }) => [
+        ...formatExecutedMapResultLines(task, read),
+        ...formatExecutedMapAlarmLines(task, read),
+      ]),
+      formatExecutedMapTotalLine(summarizeExecutedMapResults(reads.map((r) => r.read))),
+    ].join('\n');
+  };
+
+  it('is NOT REPORTED (null) when the round printed no recorder total — never "recorded nothing"', () => {
+    expect(summarizeExecutedSourceMapRecorder('TEST_PASS_REUSE applied=false reason=off')).toBeNull();
+  });
+
+  it('reads a healthy round as recorded, with rows summed over invocations', () => {
+    const out = [
+      printed({ 'a::test': [{ outcome: 'written', rows: 40 }], 'b::test:lane-pure': [{ outcome: 'nothing-to-record', rows: 0 }] }),
+      printed({ 'c::test': [{ outcome: 'written', rows: 2, retired: 1 }] }),
+    ].join('\n');
+    const r = summarizeExecutedSourceMapRecorder(out)!;
+    expect(r).toMatchObject({ invocations: 2, tasks: 3, written: 2, rows: 42, retired: 1, nothingToRecord: 1 });
+    expect(r.verdict).toBe('recorded');
+    expect(r.alarm).toBe(false);
+  });
+
+  it('ALARMS on a failing writer and carries its error — the WI-10003597 round', () => {
+    const out = printed({
+      '@papercusp/operator-core::test': [{ outcome: 'failed', rows: 900, error: 'cannot cast type boolean to\nboolean[]' }],
+      'x::test': [{ outcome: 'timed-out', rows: 3 }],
+    });
+    const r = summarizeExecutedSourceMapRecorder(out)!;
+    expect(r).toMatchObject({ verdict: 'write-failing', alarm: true, failed: 1, timedOut: 1, written: 0 });
+    expect(r.alarms[0]).toEqual({
+      task: '@papercusp/operator-core::test',
+      outcome: 'failed',
+      error: 'cannot cast type boolean to boolean[]',
+    });
+    const health = buildTestPassReuseHealth(out, 'abcdef1234567', 1)!;
+    expect(health.headline).toContain('PASS-PROOF RECORDER FAILING: 1 write(s) failed, 1 timed out');
+    expect(health.headline).toContain('cannot cast type boolean to boolean[]');
+  });
+
+  it('ALARMS when the clean round persisted nothing, or no task reported at all', () => {
+    const dirty = summarizeExecutedSourceMapRecorder(printed({ 'a::test': [{ outcome: 'not-persisted', rows: 5, dirty: true }] }))!;
+    expect(dirty).toMatchObject({ verdict: 'not-persisted', alarm: true });
+    const silent = summarizeExecutedSourceMapRecorder(printed({ 'a::test': null, 'b::test': null }))!;
+    expect(silent).toMatchObject({ verdict: 'unreported', alarm: true, noReport: 2 });
+    const quiet = summarizeExecutedSourceMapRecorder(printed({ 'a::test:lane-pure': [{ outcome: 'nothing-to-record', rows: 0 }] }))!;
+    expect(quiet).toMatchObject({ verdict: 'nothing-to-record', alarm: false });
+  });
+
+  it('builds a health record from recorder lines alone, and round-trips it through the parser', () => {
+    const out = printed({ 'a::test': [{ outcome: 'failed', rows: 1, error: 'db down' }] });
+    const built = buildTestPassReuseHealth(out, 'abcdef1234567', 7)!;
+    expect(built.recorder?.verdict).toBe('write-failing');
+    expect(built.headline).toMatch(/^per-file reuse: not reported by this round; PASS-PROOF RECORDER FAILING/);
+    expect(parseTestPassReuseHealth(JSON.parse(JSON.stringify(built)))).toEqual(built);
+  });
+
+  it('keeps the reuse record when a persisted recorder is malformed, reading only the recorder as unreported', () => {
+    const built = buildTestPassReuseHealth(printed({ 'a::test': [{ outcome: 'written', rows: 1 }] }), 'abcdef1234567', 7)!;
+    const parsed = parseTestPassReuseHealth({ ...built, recorder: { verdict: 'recorded' } });
+    expect(parsed).not.toBeNull();
+    expect(parsed!.recorder).toBeNull();
+    expect(parseTestPassReuseHealth({ ...built, recorder: undefined })!.recorder).toBeNull();
   });
 });

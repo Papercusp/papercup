@@ -1955,3 +1955,18 @@ describe('vitest cache artifacts stay out of the dependency closure', () => {
     expect(tracked('*.vitest-tmp/*')).toEqual([]);
   });
 });
+
+// WI-10003603: affected-tests stamps a per-run result-file path for the executed-source-map
+// reporter. It is an output channel; hashing it would make a frozen-repair verifier's per-run
+// identity miss against the original gate run's proof on the path alone.
+describe('per-run identity ignores the executed-source-map result channel', () => {
+  it('two runs differing only in PC_EXECUTED_SOURCE_MAP_RESULT share one identity environment', () => {
+    const base = { PAPERCUSP_TEST_RUN_GROUP: 'g', NODE_ENV: 'test' };
+    const a = passingTaskVerdictIdentityEnvironment({ ...base, PC_EXECUTED_SOURCE_MAP_RESULT: '/tmp/x/run-1.jsonl' });
+    const b = passingTaskVerdictIdentityEnvironment({ ...base, PC_EXECUTED_SOURCE_MAP_RESULT: '/tmp/x/run-2.jsonl' });
+    expect(a.environment).toEqual(b.environment);
+    expect(a.environment).not.toHaveProperty('PC_EXECUTED_SOURCE_MAP_RESULT');
+    // The task's real inputs are still hashed.
+    expect(a.environment).toMatchObject(base);
+  });
+});

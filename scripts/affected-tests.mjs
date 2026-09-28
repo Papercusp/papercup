@@ -66,7 +66,15 @@ import {
   writeRelatedFilterList,
 } from "./lib/related-tests.mjs";
 import {
+  EXECUTED_MAP_RESULT_ENV,
   EXECUTED_MAP_WORKSPACE_ENV,
+  clearExecutedMapResult,
+  executedMapResultPath,
+  formatExecutedMapAlarmLines,
+  formatExecutedMapResultLines,
+  formatExecutedMapTotalLine,
+  readExecutedMapResults,
+  summarizeExecutedMapResults,
   connectExecutedMapPg,
   executedMapEnabled,
   executedMapRecordingEnabled,
@@ -276,6 +284,8 @@ import {
 // lines; a token that is also in the `Full run log:` path is what lets a reader tie a
 // break set to THIS run instead of to a fixture that hard-codes a different one.
 const RUN_TOKEN = `${process.pid}-${randomBytes(4).toString("hex")}`;
+/** WI-10003603: taskKey → the executed-source-map result file its initial invocation was given. */
+const executedMapResultFiles = new Map();
 // WI-41782: keep one attributable entry in the SHARED TMPDIR instead of one
 // top-level file per invocation. The log deliberately outlives this process so a
 // background-job notifier or later triager can read the complete verdict; deleting
@@ -6167,7 +6177,21 @@ function runCapturedTask(
     extraArgs.length === 0 && scriptOverride == null && spawnTask.reuseSkipList
       ? spawnTask.reuseSkipList
       : null;
-  const { [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList, ...parentEnv } = process.env;
+  // WI-10003603: where this task's executed-source-map reporter reports what its flush DID. Same
+  // scoping as the skip list (the initial, complete invocation of a recording task only), so the
+  // phase-C report reads exactly one invocation per task. An inherited value is stripped.
+  const recordsExecutedMap =
+    executedMapRecordingEnabled() &&
+    (spawnTask.script === "test" || LANE_SCRIPTS.includes(spawnTask.script));
+  const executedMapResultFile =
+    recordsExecutedMap && extraArgs.length === 0 && scriptOverride == null
+      ? executedMapResultPath(RUN_LOG_ROOT, RUN_TOKEN, `${context.t.ws.name}::${context.t.script}`)
+      : null;
+  const {
+    [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList,
+    [EXECUTED_MAP_RESULT_ENV]: _inheritedExecutedMapResult,
+    ...parentEnv
+  } = process.env;
   const childEnv = {
     ...parentEnv,
     ...(specEnv ?? {}),
@@ -6179,10 +6203,8 @@ function runCapturedTask(
     // isolated, passing run — so on the shared dirty checkout this stamps and records nothing,
     // and only the gate's checkpoint checkout actually writes rows. Integration/el-suite/guard
     // tasks are not narrowable and get no stamp.
-    ...(executedMapRecordingEnabled() &&
-    (spawnTask.script === "test" || LANE_SCRIPTS.includes(spawnTask.script))
-      ? { [EXECUTED_MAP_WORKSPACE_ENV]: spawnTask.ws.name }
-      : {}),
+    ...(recordsExecutedMap ? { [EXECUTED_MAP_WORKSPACE_ENV]: spawnTask.ws.name } : {}),
+    ...(executedMapResultFile ? { [EXECUTED_MAP_RESULT_ENV]: executedMapResultFile } : {}),
     // P-006 (design-to-code-coverage-seam-2026-09-02): arm coverage attribution for every task
     // this runner spawns, so a `test:affected` run contributes surface→test evidence the way
     // `testing:run` and the admin-UI runner already do. Inert unless a seam is exercised — the
@@ -6419,6 +6441,12 @@ function runCapturedTask(
   // Retain the declared task key as the per-entry identity while also recording
   // the command shape that actually ran.
   const processIdentity = `${taskKey(context.t)}=>${taskKey(spawnTask)}:${journalLabel}`;
+  // WI-10003603: registered only once the task really spawns (a cache hit returned above), so the
+  // phase-C report never reads a result for a run that did not happen.
+  if (executedMapResultFile) {
+    clearExecutedMapResult(executedMapResultFile);
+    executedMapResultFiles.set(taskKey(context.t), executedMapResultFile);
+  }
   const governedOptions = {
     workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
     namespace: "affected-tests-process",
@@ -7381,6 +7409,7 @@ if (retryPoolTasks.length > 0) {
 }
 
 // ── Reporting (phase C): declaration order ──────────────────────────────────────────────────
+const executedMapReads = [];
 for (const scheduled of initialPool.results) {
   const { t, isQuarantined, guardArgs } = scheduled.task;
   const initialTaskOutput = `${scheduled.value.stdout ?? ""}${scheduled.value.stderr ?? ""}`;
@@ -7405,6 +7434,16 @@ for (const scheduled of initialPool.results) {
     })) {
       errSync(formatReuseAlarmLine(`${t.ws.name}::${t.script}`, alarm));
     }
+  }
+  // WI-10003603: what this task's pass-proof recorder did, read from its result file. The
+  // reporter's own line went to the task's stderr, which the gate discards.
+  const executedMapResultFile = executedMapResultFiles.get(taskKey(t));
+  if (executedMapResultFile) {
+    const read = readExecutedMapResults(executedMapResultFile);
+    executedMapReads.push(read);
+    const label = `${t.ws.name}::${t.script}`;
+    for (const line of formatExecutedMapResultLines(label, read)) outSync(line);
+    for (const line of formatExecutedMapAlarmLines(label, read)) errSync(line);
   }
   let r = scheduled.value;
   const prep = retryPrep.get(scheduled.index);
@@ -7712,6 +7751,11 @@ for (const scheduled of initialPool.results) {
       }
     }
   }
+}
+// WI-10003603: one total per invocation, beside TEST_PASS_REUSE_TOTAL, so the gate's P-013 health
+// record can say whether this round's clean run actually persisted any pass proofs.
+if (executedMapReads.length > 0) {
+  outSync(formatExecutedMapTotalLine(summarizeExecutedMapResults(executedMapReads)));
 }
 
 // ── D-021/P-002: serial-equivalent task work under the budgeted scheduler ────
