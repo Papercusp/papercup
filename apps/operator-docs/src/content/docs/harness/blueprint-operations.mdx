@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Blueprint operations — typed durable work through blueprint:*"
-description: "How to declare, submit, observe, signal, resume, cancel and collect blueprint operations through the seven blueprint:* tools over HTTP and MCP; direct (agent/program) vs plan targets; vocabulary, typed client, durability and refusals. Runnable examples are executed verbatim by operation-docs-examples.integration.test.ts."
+description: "How to declare, submit, observe, signal, resume, cancel and collect blueprint operations through the seven blueprint:* tools over HTTP and MCP; direct (agent/program) vs plan targets; trigger and schedule automation and legacy binding migration; vocabulary, typed client, durability and refusals. Runnable examples are executed verbatim by operation-docs-examples.integration.test.ts."
 type: Convention
 discovered: 2026-09-27
 tags: ["blueprint", "operations", "api"]
@@ -209,22 +209,156 @@ target carries `{ kind: "plan", runId, instanceSlug }`. The result becomes `read
 the run settles successfully and its published outputs validate against the result
 schema.
 
-```json conceptual
+The template is pinned by slug, revision and the content hash of the template body, so
+a later edit to the template cannot silently change what an admitted operation runs.
+The declaration below is the one the P-013 fork/join benchmark submits end to end in
+`packages/operator-core/lib/blueprint/operation-performance-b.integration.test.ts`:
+submit, promotion of the template's items, claim and complete of each item,
+`plans:publish-outputs`, settlement, and a `ready` result. Its `contentHash` is the hash
+of that suite's `p013-fork-join` template, and the docs suite fails if the two drift.
+
+```json runnable=plan-target
 {
   "id": "fork-join",
   "version": "1",
-  "target": { "kind": "plan", "template": { "kind": "plan-template", "ref": "<template slug>", "revision": "0", "contentHash": "<content hash of the template>" } },
-  "inputSchema": { "type": "object", "required": ["value"], "properties": { "value": { "type": "string" } }, "additionalProperties": false },
-  "acceptance": { "resultSchema": { "type": "object", "required": ["value"], "properties": { "value": { "type": "string" } }, "additionalProperties": false } }
+  "target": {
+    "kind": "plan",
+    "template": {
+      "kind": "plan-template",
+      "ref": "p013-fork-join",
+      "revision": "0",
+      "contentHash": "767fa209f0f9c989272aa73f58d4338ddb576a9cdd8500ac870ae68ca97f347c"
+    }
+  },
+  "inputSchema": {
+    "type": "object", "required": ["value"],
+    "properties": { "value": { "type": "string" } }, "additionalProperties": false
+  },
+  "acceptance": {
+    "resultSchema": {
+      "type": "object", "required": ["value"],
+      "properties": { "value": { "type": "string" } }, "additionalProperties": false
+    }
+  }
 }
 ```
 
-This fence is **conceptual** (the template reference is a placeholder). The full
-plan-target path — submit, promotion, claim/complete of each item, `plans:publish-outputs`,
-settlement and a `ready` result — is executed by
-`packages/operator-core/lib/blueprint/operation-performance-b.integration.test.ts`.
 Use a plan target only when the work genuinely is a multi-item plan; most callers want
 a direct target.
+
+## Automation: triggers and schedules
+
+External-event triggers and plan schedules start operations through the same admission
+path as a direct `blueprint:submit-operation`. The operation's input schema,
+authorization and target apply unchanged. There is no second scheduler, workflow
+namespace or receipt store: each automated start reuses a receipt that already exists as
+its `requestKey`, so a replayed occurrence returns the original handle instead of
+starting a second run.
+
+| start | `callerId` | `requestKey` | input the operation receives |
+|---|---|---|---|
+| external-event trigger | `trigger-binding:<bindingId>` | `trigger-run:<triggerRunId>` | `{ trigger: <routing envelope>, ...input }` |
+| plan schedule | `routine:<routineId>` | the routine fire's DBOS workflow id | `input` exactly as configured |
+
+### External-event triggers
+
+A trigger-started operation receives the event's **routing envelope** under `trigger`
+(`key`, `source`, `event`, `sourceId`, `externalId`, `occurredAt`, `datatypeId`,
+`dedupeKey`) merged with the literal `input` configured on the binding. The provider
+payload itself is never forwarded. So the operation's input schema must admit a
+`trigger` object. Add an operation like this to the declaration above:
+
+```json runnable=trigger-operation
+{
+  "id": "triage",
+  "version": "1",
+  "target": { "kind": "work-item", "itemKind": "feature" },
+  "execution": { "kind": "agent", "role": "worker" },
+  "inputSchema": {
+    "type": "object", "required": ["trigger", "queue"],
+    "properties": { "trigger": { "type": "object" }, "queue": { "type": "string" } },
+    "additionalProperties": false
+  },
+  "acceptance": {
+    "resultSchema": {
+      "type": "object", "required": ["answer"],
+      "properties": { "answer": { "type": "string" } }, "additionalProperties": false
+    }
+  }
+}
+```
+
+Then bind an event pattern to it with `triggers:bind`. An optional `filter` (the shared
+rules vocabulary) narrows which events fire, and `stormPolicy` caps runs per window:
+
+```json runnable=trigger-bind
+{
+  "sourceId": "0b6b6f7e-3c1a-4d2e-9f00-5a1f2c3d4e5f",
+  "eventPattern": "ext:github:issues.opened",
+  "stormPolicy": { "maxRuns": 20, "windowSeconds": 3600 },
+  "operationHarnessSlug": "docs-example",
+  "operationId": "triage",
+  "input": { "queue": "inbox" }
+}
+```
+
+The binding is installed **disarmed**. Review it, then activate it with
+`triggers:arm { bindingId, confirm: true }`. `triggers:status` shows each run's
+`blueprintOperation` outcome: the receipt id, operation id, specification revision, and
+the actual target (`{ kind: "work-item", id, status }` or
+`{ kind: "plan", runId, instanceSlug, status, outcome }`).
+
+### Migrating a legacy plan binding
+
+A binding that launches a plan directly can be moved onto an operation without
+re-authoring its source, event pattern, filter or storm policy. Pass the legacy binding
+id and the operation target only; everything else is copied, and passing any of it is
+refused:
+
+```json runnable=trigger-migrate
+{
+  "migrateFromBindingId": "5d0c9a3e-1b2f-4c7d-8e6a-0f1e2d3c4b5a",
+  "operationHarnessSlug": "docs-example",
+  "operationId": "triage",
+  "input": { "queue": "inbox" }
+}
+```
+
+The replacement is created **disarmed** and the legacy binding is left unchanged.
+Repeating the same migration returns the same replacement; repeating it with a different
+target is refused (`external_trigger_binding_migration_target_conflict`). Prove the
+replacement with `triggers:run-with-last-event`, then switch over with the explicit
+controls: `triggers:arm` the replacement and `triggers:disarm` the legacy binding.
+
+### Schedules
+
+A plan schedule fires an operation when its `schedule.operation` names one. Without it,
+the schedule keeps the legacy `system:plan-run` path. Author the recurrence with
+`plans:set-schedule`:
+
+```json runnable=schedule-operation
+{
+  "harness": "docs-example",
+  "slug": "weekly-digest",
+  "schedule": {
+    "kind": "rrule",
+    "rrule": "FREQ=WEEKLY;BYDAY=MO",
+    "dtstart": "2026-10-05T09:00:00.000Z",
+    "tzid": "America/New_York",
+    "concurrency": "skip",
+    "operation": {
+      "harnessSlug": "docs-example",
+      "operationId": "extract-program",
+      "input": { "value": "weekly digest" }
+    }
+  }
+}
+```
+
+Authoring does not arm it. Arming is the separate, autonomy-gated
+`plans:arm-schedule` step, and an unarmed schedule never fires. Each fire runs the
+`system:blueprint-operation` routine action, which submits the operation with the
+configured `input` unchanged.
 
 ## Durability, replay and recovery
 
