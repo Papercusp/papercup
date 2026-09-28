@@ -52,23 +52,117 @@ export function noSuchRepoBackoffKey(repoKey: string, peerDevicePubkeyBase64: st
   return `${repoKey}:${peerDevicePubkeyBase64}`;
 }
 
-const backoffUntil = new Map<string, number>();
+/**
+ * WI-10003594: how far a peer's announcement clock may trail ours and still
+ * count as "announced after we armed". The announcement `ts` is the PEER's wall
+ * clock, so an NTP-synced pair can still disagree by a few seconds; a peer that
+ * recreated its store moments after our refusal must not be missed because its
+ * clock runs slightly behind. The cost of the allowance is bounded: an
+ * announcement can lift a window at most ONCE (`liftedThroughTs` below), so a
+ * stale announcement inside the allowance costs a single extra dial, never a
+ * storm.
+ */
+export const NO_SUCH_REPO_LIFT_CLOCK_SKEW_MS = 60 * 1000;
+
+interface NoSuchRepoBackoffState {
+  /** Local time the refusal armed (or last re-armed) the window. */
+  armedAtMs: number;
+  /** Local time the window expires. */
+  untilMs: number;
+  /**
+   * Newest announcement `ts` that has already lifted a window for this pair.
+   * Survives re-arming on purpose: it is what stops one announcement from
+   * lifting, re-dialing, being refused and lifting again on every tick.
+   */
+  liftedThroughTs: number;
+}
+
+const backoffState = new Map<string, NoSuchRepoBackoffState>();
 
 /** Is this exact (repoKey, peer) pair inside its backoff window right now? */
 export function isNoSuchRepoBackoffActive(key: string, nowMs: number = Date.now()): boolean {
-  const until = backoffUntil.get(key);
-  return until !== undefined && until > nowMs;
+  const state = backoffState.get(key);
+  return state !== undefined && state.untilMs > nowMs;
 }
 
 /** Seconds left in the window — for the operator line that explains the skip. */
 export function noSuchRepoBackoffSecondsLeft(key: string, nowMs: number = Date.now()): number {
-  const until = backoffUntil.get(key);
-  return until === undefined ? 0 : Math.max(0, Math.ceil((until - nowMs) / 1000));
+  const state = backoffState.get(key);
+  return state === undefined ? 0 : Math.max(0, Math.ceil((state.untilMs - nowMs) / 1000));
 }
 
 /** Arm (or re-arm) the window for a pair that just refused. */
 export function armNoSuchRepoBackoff(key: string, nowMs: number = Date.now()): void {
-  backoffUntil.set(key, nowMs + NO_SUCH_REPO_BACKOFF_MS);
+  const prior = backoffState.get(key);
+  backoffState.set(key, {
+    armedAtMs: nowMs,
+    untilMs: nowMs + NO_SUCH_REPO_BACKOFF_MS,
+    liftedThroughTs: prior?.liftedThroughTs ?? Number.NEGATIVE_INFINITY,
+  });
+}
+
+/** What a lift decision saw — returned so the operator line can explain it. */
+export interface NoSuchRepoBackoffLift {
+  armedAtMs: number;
+  announcedTsMs: number;
+}
+
+/**
+ * WI-10003594: lift an active window because the peer has SINCE announced this
+ * exact store.
+ *
+ * The 30-minute window was sized for a peer that will not gain the store on its
+ * own. It is wrong for a peer that just did: the P-505 Phase A drill quarantines
+ * the VM's store, the tower learns `no-such-repo` within about a second, and the
+ * VM re-bootstraps within about three minutes. With the window in force the tower
+ * did not dial again for 30 minutes, longer than the drill's 20-minute verdict
+ * deadline, so Phase A could never converge.
+ *
+ * A signed announcement carrying our `repoKey` is direct evidence the peer now
+ * holds the store: a device only announces after building sigrefs IN that store.
+ * Callers must pass only announcements whose `repo_key` equals the backoff's
+ * repoKey; legacy announcements without a `repo_key` never lift, which is exactly
+ * the population EI-15333's storm came from.
+ *
+ * Lifts only when the announcement is newer than the arm (less the clock-skew
+ * allowance) AND newer than any announcement that already lifted this pair.
+ * The second test keeps the EI-15333 guarantee: a peer that keeps refusing is
+ * re-dialed at most once per NEW announcement, never once per tick.
+ *
+ * Returns the lift details when it cleared an active window, otherwise null.
+ */
+export function liftNoSuchRepoBackoffOnFreshAnnouncement(
+  key: string,
+  announcedTsMs: number,
+  nowMs: number = Date.now(),
+): NoSuchRepoBackoffLift | null {
+  if (!Number.isFinite(announcedTsMs)) return null;
+  const state = backoffState.get(key);
+  if (!state || state.untilMs <= nowMs) return null;
+  if (announcedTsMs <= state.liftedThroughTs) return null;
+  if (announcedTsMs <= state.armedAtMs - NO_SUCH_REPO_LIFT_CLOCK_SKEW_MS) return null;
+  backoffState.set(key, { ...state, untilMs: nowMs, liftedThroughTs: announcedTsMs });
+  return { armedAtMs: state.armedAtMs, announcedTsMs };
+}
+
+/**
+ * Newest announcement `ts` per announcing device, counting only announcements
+ * that name `repoKey`. Pure; the ref-announce leg feeds it the receive batch
+ * before it dials. Legacy announcements (no `repo_key`) are skipped on purpose,
+ * see `liftNoSuchRepoBackoffOnFreshAnnouncement`.
+ */
+export function newestAnnouncementTsByDevice(
+  announcements: readonly { device_pubkey: string; ts: number; repo_key?: string }[],
+  repoKey: string,
+): Map<string, number> {
+  const newest = new Map<string, number>();
+  for (const a of announcements) {
+    if (a.repo_key !== repoKey) continue;
+    if (!Number.isFinite(a.ts)) continue;
+    const prior = newest.get(a.device_pubkey);
+    if (prior === undefined || a.ts > prior) newest.set(a.device_pubkey, a.ts);
+  }
+  return newest;
 }
 
 /** A fetch failure as the arming decision needs to see it. */
@@ -107,5 +201,5 @@ export function devicesToArmForNoSuchRepo(
 
 /** Test-only: clear all backoff state so cases don't leak into each other. */
 export function __resetNoSuchRepoBackoffForTest(): void {
-  backoffUntil.clear();
+  backoffState.clear();
 }
