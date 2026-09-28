@@ -1,6 +1,7 @@
 /** Host adapter for identity templates: canonical cell visibility + normal tool authority. */
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import { readCell } from '../cell-read';
+import { resolveConcreteHarnessSlug } from '../agent-tools/_harness-scope';
 import type { IdentityTemplateCellReader } from './state-template';
 
 export interface IdentityTemplateWearer {
@@ -36,13 +37,16 @@ export function createIdentityTemplateCellReader(input: {
       ...ctx, gateBypass: undefined, isSuperuser: false, signal: combinedSignal,
       principal: { ...ctx.principal, capabilities },
     };
+    // A superuser context carries the '*' sentinel, which is truthy but names no
+    // harness; resolve it to a concrete slug (or null) before it becomes identity.
+    const harnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     return readCell(reference.cell, {
       ownerId: wearer.ownerId,
       roles: [ctx.role],
-      ...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),
+      ...(harnessSlug ? { harnessSlug } : {}),
       ...(wearer.workItems ? { workItems: wearer.workItems } : {}),
     }, {
-      workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug ?? null,
+      workspaceId: ctx.workspaceId, harnessSlug,
       role: ctx.role, callerContext, signal: combinedSignal,
     }, reference.subject);
   };

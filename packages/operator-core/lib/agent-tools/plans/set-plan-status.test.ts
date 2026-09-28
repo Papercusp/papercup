@@ -221,6 +221,35 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
     );
   });
 
+  // WI-10003286 (second half): the gate excludes the named card AND every older
+  // independent card predating it. Carrying only the named id let the recruiter's
+  // settlement read fall back to the older excluded card and report "settled".
+  it('carries EVERY cohort-stale independent card the gate excluded, not just the named one', async () => {
+    const launch = vi.fn(async () => ({
+      state: 'launched' as const,
+      idempotencyKey: 'acceptance-grader:key',
+      label: 'acceptance-grader:rubric:key',
+    }));
+    await launchAcceptanceGraderForGate(
+      'plan-a',
+      {
+        satisfied: false,
+        code: 'self_graded_only',
+        staleGradingScorecardId: 'EI-stale-independent',
+        staleGradingScorecardIds: ['EI-stale-independent', 'EI-older-independent'],
+      },
+      { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as never,
+      'papercusp',
+      launch as never,
+    );
+    const ctx = (launch.mock.calls[0] as unknown as [string, Record<string, unknown>])[1];
+    expect(ctx.acceptanceStaleGradingScorecardId).toBe('EI-stale-independent');
+    expect([...(ctx.acceptanceStaleGradingScorecardIds as string[])].sort()).toEqual([
+      'EI-older-independent',
+      'EI-stale-independent',
+    ]);
+  });
+
   it('does not recruit a judge for unrelated acceptance failures', async () => {
     const launch = vi.fn();
     const result = await launchAcceptanceGraderForGate(
