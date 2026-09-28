@@ -35,7 +35,8 @@
 //
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import { spawnSync } from 'node:child_process';
-import { promises as fs, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { promises as fs, existsSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
@@ -118,9 +119,12 @@ export function materializeCommit({ repo, sha, dest, allow, prefix = '' }) {
     const full = prefix ? `${prefix}/${link.path}` : link.path;
     if (!allow.has(full.split('/')[0])) continue;
     const subRepo = join(repo, link.path);
+    // The submodule must be its OWN checkout: an uninitialised submodule is an
+    // empty dir inside the parent, where `git -C` would silently answer for the
+    // parent repository instead.
     const known = existsSync(subRepo)
-      && spawnSync('git', ['-C', subRepo, 'cat-file', '-e', `${link.sha}^{commit}`]).status === 0
-      && spawnSync('git', ['-C', subRepo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim() === subRepo;
+      && spawnSync('git', ['-C', subRepo, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout.trim() === realpathSync(subRepo)
+      && spawnSync('git', ['-C', subRepo, 'cat-file', '-e', `${link.sha}^{commit}`]).status === 0;
     if (!known) {
       throw new PreviewError(`unresolvable gitlink ${full} @ ${link.sha} — its commit is not present in ${subRepo}; run \`git submodule update --init\` or fetch it, then retry`);
     }
@@ -310,8 +314,10 @@ function which(bin, env) {
  * refuses (exit 1) and a detector that cannot run refuses too (exit 2).
  * @returns {{ ok: boolean, exitCode: number, results: { name: string, ok: boolean, status: string, detail: string }[] }}
  */
-export async function runGate(dir, { env = process.env, auditScript = AUDIT_SCRIPT } = {}) {
+export async function runGate(dir, { env = process.env, auditScript = AUDIT_SCRIPT, allowlistPath = ALLOWLIST_PATH } = {}) {
   const results = [];
+  const allFindings = [];
+  const allowlist = await loadAllowlist(allowlistPath);
   const record = (name, status, detail) => results.push({ name, ok: status === 'clean', status, detail: detail.trim().slice(-3000) });
   if (!existsSync(dir)) throw new PreviewError(`gate: ${dir} does not exist`, 2);
   const tools = { python3: which('python3', env), tar: which('tar', env), zstd: which('zstd', env), gitleaks: which('gitleaks', env), trufflehog: which('trufflehog', env) };
@@ -330,36 +336,93 @@ export async function runGate(dir, { env = process.env, auditScript = AUDIT_SCRI
     // 2. Its directory backstop (honors no path-exclude).
     const s = spawnSync(tools.python3, [auditScript, '--scan-dir', dir], { encoding: 'utf8', env, maxBuffer: 64 * 1024 * 1024 });
     record('audit-release-bundle --scan-dir', s.status === 0 ? 'clean' : s.status === 1 ? 'finding' : 'cannot-check', `${s.stdout}\n${s.stderr}`);
-    // 3. gitleaks, default rules, redacted report.
+    // 3. gitleaks, default rules. The report holds raw secrets, so it stays in the
+    //    temp dir (removed below) and only SHA-256 fingerprints leave this function.
     const report = join(work, 'gitleaks.json');
-    const g = spawnSync(tools.gitleaks, ['dir', dir, '--no-banner', '--redact', '--exit-code', '1', '--report-format', 'json', '--report-path', report], { encoding: 'utf8', env, maxBuffer: 64 * 1024 * 1024 });
-    let gDetail = `${g.stdout}\n${g.stderr}`;
-    if (g.status === 1 && existsSync(report)) {
-      try {
-        const found = JSON.parse(await fs.readFile(report, 'utf8'));
-        gDetail = found.slice(0, 50).map((f) => `${f.RuleID}  ${f.File}:${f.StartLine}`).join('\n') + (found.length > 50 ? `\n… ${found.length - 50} more` : '');
-      } catch { /* keep raw output */ }
+    const g = spawnSync(tools.gitleaks, ['dir', dir, '--no-banner', '--exit-code', '1', '--report-format', 'json', '--report-path', report], { encoding: 'utf8', env, maxBuffer: 64 * 1024 * 1024 });
+    if (g.status === 0 || g.status === 1) {
+      let raw = [];
+      if (g.status === 1) {
+        try { raw = JSON.parse(await fs.readFile(report, 'utf8')); } catch (e) { record('gitleaks', 'cannot-check', `unreadable report: ${e.message}`); raw = null; }
+      }
+      if (raw) {
+        const found = raw.map((f) => fingerprint('gitleaks', f.RuleID, relPath(dir, f.File), f.StartLine, f.Secret ?? f.Match ?? ''));
+        if (g.status === 1 && found.length === 0) record('gitleaks', 'cannot-check', 'gitleaks exited 1 but its report lists no findings');
+        else recordFindings('gitleaks', found);
+      }
+    } else {
+      record('gitleaks', 'cannot-check', `${g.stdout}\n${g.stderr}`);
     }
-    record('gitleaks', g.status === 0 ? 'clean' : g.status === 1 ? 'finding' : 'cannot-check', gDetail);
     // 4. trufflehog, detection only: --no-verification, because verifying would send
     //    each candidate secret to its provider's API.
     const t = spawnSync(tools.trufflehog, ['filesystem', dir, '--no-update', '--no-verification', '--json', '--fail'], { encoding: 'utf8', env, maxBuffer: 256 * 1024 * 1024 });
-    let tDetail = t.stderr;
-    if (t.status === 183) {
-      tDetail = t.stdout.split('\n').filter(Boolean).slice(0, 50).map((l) => {
+    if (t.status === 0 || t.status === 183) {
+      const found = [];
+      let unparsable = 0;
+      for (const l of t.stdout.split('\n').filter(Boolean)) {
         try {
           const j = JSON.parse(l);
-          return `${j.DetectorName}  ${j.SourceMetadata?.Data?.Filesystem?.file ?? '?'}:${j.SourceMetadata?.Data?.Filesystem?.line ?? '?'}`;
-        } catch { return l.slice(0, 200); }
-      }).join('\n');
+          const fsMeta = j.SourceMetadata?.Data?.Filesystem ?? {};
+          found.push(fingerprint('trufflehog', j.DetectorName, relPath(dir, fsMeta.file ?? '?'), fsMeta.line ?? 0, j.Raw ?? j.RawV2 ?? ''));
+        } catch { unparsable += 1; }
+      }
+      if (unparsable || (t.status === 183 && found.length === 0)) record('trufflehog', 'cannot-check', `${unparsable} unparsable output line(s); exit ${t.status}`);
+      else recordFindings('trufflehog', found);
+    } else {
+      record('trufflehog', 'cannot-check', `exit ${t.status}: ${t.stderr}`);
     }
-    record('trufflehog', t.status === 0 ? 'clean' : t.status === 183 ? 'finding' : 'cannot-check', tDetail);
   } finally {
     await rm(work, { recursive: true, force: true });
   }
   const ok = results.every((r) => r.ok);
   const exitCode = ok ? 0 : results.some((r) => r.status === 'finding') ? 1 : 2;
-  return { ok, exitCode, results };
+  return { ok, exitCode, results, findings: allFindings };
+
+  function recordFindings(name, found) {
+    const open = found.filter((f) => !isAllowlisted(allowlist, f));
+    allFindings.push(...found.map((f) => ({ ...f, allowlisted: !open.includes(f) })));
+    const accepted = found.length - open.length;
+    const detail = open.slice(0, 60).map((f) => `${f.rule}  ${f.path}:${f.line}  sha256:${f.sha256.slice(0, 12)}`).join('\n')
+      + (open.length > 60 ? `\n… ${open.length - 60} more` : '')
+      + (accepted ? `\n(${accepted} reviewed false positive(s) accepted by ${relative(ROOT, allowlistPath)})` : '');
+    record(name, open.length ? 'finding' : 'clean', detail);
+  }
+}
+
+function relPath(dir, file) {
+  const rel = relative(dir, file);
+  return (rel.startsWith('..') ? file : rel).split(sep).join('/');
+}
+
+/** A finding without its secret: rule, path, line, and the SHA-256 of the matched value. */
+function fingerprint(detector, rule, path, line, secret) {
+  return { detector, rule: String(rule), path, line: Number(line) || 0, sha256: createHash('sha256').update(String(secret)).digest('hex') };
+}
+
+export const ALLOWLIST_PATH = join(ROOT, 'scripts', 'source-preview-allowlist.json');
+
+/**
+ * Reviewed false positives of the ADDITIONAL detectors (gitleaks, trufflehog) —
+ * never of the release audit, whose BENIGN_ERE stays the one vendor-key rule.
+ * An entry matches one exact (detector, rule, path, secret-hash): a changed or new
+ * value in the same file is a new finding. Every entry must carry a reason.
+ */
+export async function loadAllowlist(path = ALLOWLIST_PATH) {
+  if (!existsSync(path)) return [];
+  const parsed = JSON.parse(await fs.readFile(path, 'utf8'));
+  const entries = Array.isArray(parsed) ? parsed : parsed.entries;
+  if (!Array.isArray(entries)) throw new PreviewError(`${path}: expected { entries: [...] }`, 2);
+  for (const e of entries) {
+    for (const k of ['detector', 'rule', 'path', 'sha256', 'reason']) {
+      if (typeof e[k] !== 'string' || !e[k].trim()) throw new PreviewError(`${path}: every entry needs a non-empty ${k} (${JSON.stringify(e).slice(0, 200)})`, 2);
+    }
+    if (!/^[0-9a-f]{64}$/.test(e.sha256)) throw new PreviewError(`${path}: sha256 must be 64 hex chars (${e.path})`, 2);
+  }
+  return entries;
+}
+
+export function isAllowlisted(entries, f) {
+  return entries.some((e) => e.detector === f.detector && e.rule === f.rule && e.path === f.path && e.sha256 === f.sha256);
 }
 
 /** The git tree SHA a directory would commit as (every file, ignore rules overridden). */
@@ -442,7 +505,7 @@ function parseArgs(argv) {
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
     if (a === '--confirm') opts.confirm = true;
-    else if (a === '--ref' || a === '--out' || a === '--remote') opts[a.slice(2)] = rest[++i];
+    else if (a === '--ref' || a === '--out' || a === '--remote' || a === '--json') opts[a.slice(2)] = rest[++i];
     else if (a.startsWith('--')) throw new PreviewError(`unknown flag ${a}`, 2);
     else opts._.push(a);
   }
@@ -470,6 +533,9 @@ async function main(argv) {
     if (!dir) throw new PreviewError('usage: gate <dir>', 2);
     const verdict = await runGate(dir);
     printGate(verdict);
+    // --json writes every finding (rule, path, line, sha256 — never the secret) for
+    // reviewing new false positives into scripts/source-preview-allowlist.json.
+    if (opts.json) await fs.writeFile(opts.json, `${JSON.stringify(verdict.findings ?? [], null, 2)}\n`);
     console.log(verdict.ok ? 'GATE: clean' : `GATE: refused (exit ${verdict.exitCode})`);
     return verdict.exitCode;
   }
