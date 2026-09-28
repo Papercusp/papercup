@@ -717,9 +717,16 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     expect(html).toContain('<ol>');
     expect(html).toContain('<strong>Install both apps</strong>');
     expect(html).toContain('EmbeddingGemma + Harrier');
-    // The two sections the owner kept [2026-09-28 #811] survive the render...
-    expect(html).toContain('Improve Papercusp itself');
+    // The two sections the owner kept [2026-09-28 #811] survive the render,
+    // the self-improvement one under the heading the owner chose [#823]...
+    expect(INSTRUCTIONS_MD).toContain("### Don't like something about Papercusp?");
+    expect(INSTRUCTIONS_MD).not.toContain('Improve Papercusp itself');
     expect(html).toContain('Use several AI accounts (inference gateway)');
+    // ...the modes section the owner brought back [#823] renders as a real list...
+    expect(html).toContain('Agent modes');
+    for (const mode of ['AUTO', 'COLD AUTO', 'IDEATE', 'DRAIN', 'GRADE', 'TEST', 'AUDIT', 'GOAL']) {
+      expect(html).toContain(`<strong>${mode}</strong>`);
+    }
     // ...and the "Not ready" list the owner removed [#812] stays gone.
     expect(INSTRUCTIONS_MD).not.toContain('Not ready');
   });

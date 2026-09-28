@@ -7,8 +7,11 @@
  * #812/#813] had it rewritten because it was long out of date: "Make it clear &
  * brief. The GUI IS READY". So it is now GUI-first (install both apps, open the
  * GUI, follow setup), keeps the self-improvement and inference-gateway sections
- * (updated), and drops the old "GUI not ready / use psu" callout, the mode and
- * auto-loop essays, and the "Not ready" list.
+ * (updated), and drops the old "GUI not ready / use psu" callout, the auto-loop
+ * essay, and the "Not ready" list. [owner 2026-09-28, #823] then renamed the
+ * self-improvement heading to "Don't like something about Papercusp?" and
+ * brought the modes section back, rewritten brief and matched to the live mode
+ * registry (AUTO, COLD AUTO, IDEATE, DRAIN, GRADE, TEST, AUDIT, GOAL).
  *
  * ── Why this lives in its own module ────────────────────────────────────────
  * It is CONTENT, not layout. release-history-page.ts renders the release
@@ -66,9 +69,24 @@ export const INSTRUCTIONS_MD = `
 
 Prefer the terminal? Run \`psu\` to work with the same agents from the command line.
 
-### Improve Papercusp itself
+### Agent modes
 
-Don't like something? Ask an agent to change it. Papercusp has its own source code, so it can build your change and switch you to it live. The version switcher at the top picks which build you're running. If something breaks, click **Release** to go back to the installed version (or press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>1</kbd>–<kbd>5</kbd>).
+Tell an agent to go into a mode, and what to focus on while it's there: *"Go into AUTO mode and finish the onboarding plan."* Modes combine, so AUTO + IDEATE works. Tell it to leave the mode when you want it back.
+
+- **AUTO**: works on its own and stops asking you questions; it tells you what it decided instead. It keeps going through long jobs, starting a fresh session by itself when its context fills up.
+- **COLD AUTO**: like AUTO, but every turn starts a fresh session from its saved notes. Cheaper for very long unattended runs, but less tested than AUTO.
+- **IDEATE**: comes up with new features and improvements and writes them up as proposals. With AUTO on, it builds the best ones.
+- **DRAIN**: works through a queue until it's empty: *"Drain the bug backlog with a fleet of 10 agents."* Turns on AUTO.
+- **GRADE**: scores something against a rubric (a saved testing procedure), reusing an existing one or writing a new one. Every grading is saved as a scorecard, so you can track quality over time. Then it fixes what it found and grades again. Turns on AUTO.
+- **TEST**: tests someone else's work independently. It reports the problems it finds instead of quietly fixing them, and leaves real tests behind.
+- **AUDIT**: steps back and reviews a whole project end to end, then gives you an evidence-backed verdict on what works and what doesn't.
+- **GOAL**: give it a goal and it runs the whole effort: it sets up the projects, plans, and agent fleets, hands out the building, and cuts what isn't working. Turns on AUTO and IDEATE.
+
+You can also ask an agent to raise or lower how much context it holds before it starts fresh.
+
+### Don't like something about Papercusp?
+
+Ask an agent to change it. Papercusp has its own source code, so it can build your change and switch you to it live. The version switcher at the top picks which build you're running. If something breaks, click **Release** to go back to the installed version (or press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>1</kbd>–<kbd>5</kbd>).
 
 - **Dev**: your working copy, including uncommitted edits.
 - **Staging**: everyone's merged work, committed automatically in the background.
