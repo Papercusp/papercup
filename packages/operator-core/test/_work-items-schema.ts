@@ -680,6 +680,30 @@ export const WATCHDOG_TICKS_DDL = `
   )`;
 
 /**
+ * Minimal `adv_sessions` DDL for claim-path fixtures. Every claim door (feature
+ * `claimNextWorkItem`, issue `claimNextIssueWorkItem`, `setWorkItemState`) now asks
+ * `readActiveOperationWorkerClaimBinding` (blueprint/operation-worker-binding.ts)
+ * whether the claimant is an active blueprint operation worker. That read selects
+ * from this table; a fixture that omits it turns the read into status 'unavailable',
+ * and the door then fails CLOSED with "operation claim authority unavailable" before
+ * the behaviour under test runs (WI-10003526, WI-10003684). With the table present
+ * and no row for the claimant, the REAL read returns 'none', which is what an
+ * ordinary test claimant is. `launch_spec` is included so a fixture that does seed an
+ * operation-worker session reaches the second query instead of erroring on it.
+ */
+export const ADV_SESSIONS_CLAIM_MIN_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL,
+    coord_owner_id text,
+    role text,
+    launch_spec jsonb,
+    started_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+    ended_at timestamptz,
+    ended_by text
+  )`;
+
+/**
  * `user_trust_list` DDL — the owner's trusted github user ids (migration 276,
  * shared-hive-trust-admission). The work-items claim path's `autoPickableWhereSql`
  * (work-items-admission.ts, P-010) LEFT-JOINs this table to let un-screened remote

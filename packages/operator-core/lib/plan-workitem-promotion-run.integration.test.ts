@@ -20,6 +20,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, expectTypeOf, it, vi
 import type postgres from 'postgres';
 import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
+  ADV_SESSIONS_CLAIM_MIN_DDL,
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
   WATCHDOG_TICKS_DDL,
@@ -231,6 +232,10 @@ beforeAll(async () => {
   // serves a row. This fresh-DB fixture must therefore carry the same canonical table
   // dependency as every other claim-path integration fixture.
   await db.sql.unsafe(WATCHDOG_TICKS_DDL);
+  // WI-10003684: every claim door asks readActiveOperationWorkerClaimBinding whether the
+  // claimant is an operation worker; without adv_sessions that read is 'unavailable' and
+  // the door fails closed before the gate under test runs. With it, the real read is 'none'.
+  await db.sql.unsafe(ADV_SESSIONS_CLAIM_MIN_DDL);
   // P-006: promotion writes canonical blocks edges to work_item_deps. coord_links still exists
   // for plan coverage and every non-work relation.
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
