@@ -2023,6 +2023,13 @@ pub struct App {
     /// pane pins Operator (`pui chat-pane`); the voice pane pins Voice
     /// (`pui voice-pane`). All data wiring is unchanged.
     pub pinned: Option<Tab>,
+    /// Chat-first mode (pui-chat-first-ux P-001): bare `pui` is ONE full-screen
+    /// conversation, like `claude` or `codex` — no tab strip, status bar,
+    /// presence rail or operator boards, and no zellij. Only Agent Chat and
+    /// its own Context view (Ctrl-T) render; the boards live in
+    /// `pui workbench`. Unlike `pinned` this is not a dock pane: Context
+    /// still follows the bound chat rather than the Sentinel roster.
+    pub chat_first: bool,
     pub plans: Vec<PlanSummary>,
     pub plan_sel: usize,
     /// Goals for the Plans-tab spine (P-032) + the goals-column cursor.
@@ -2725,6 +2732,7 @@ impl App {
             tab: Tab::Operator,
             view_state_restore_pending: true,
             pinned: None,
+            chat_first: false,
             plans: Vec::new(),
             plan_sel: 0,
             goals: Vec::new(),
@@ -4720,9 +4728,33 @@ impl App {
     /// Whether the blocking too-small view is showing (PUBLIC_RELEASE_UX.md):
     /// the standalone app below `ui::MIN_COLS`×`ui::MIN_ROWS`. The draw and the
     /// input hold both read this, so they cannot disagree. A pinned dock pane
-    /// is sized by its layout, never by the owner, so it never blocks.
+    /// is sized by its layout, never by the owner, so it never blocks. Nor does
+    /// chat-first: one wrapped transcript and a composer have no side rails to
+    /// clip, so it stays usable in any terminal `claude` would run in.
     pub fn too_small(&self) -> bool {
-        self.pinned.is_none() && crate::ui::too_small(self.viewport.0, self.viewport.1)
+        self.pinned.is_none()
+            && !self.chat_first
+            && crate::ui::too_small(self.viewport.0, self.viewport.1)
+    }
+
+    /// Chat-first (P-001) owns exactly two surfaces: the conversation and its
+    /// Context view. Any key that navigated elsewhere is undone here — the run
+    /// loop calls this after every event, like the pinned re-pin — with one
+    /// line saying where the boards went, instead of an unrendered tab
+    /// silently swallowing the keyboard. Returns whether it redirected.
+    pub fn keep_chat_first_surface(&mut self) -> bool {
+        if !self.chat_first || matches!(self.tab, Tab::Operator | Tab::PlansBoard) {
+            return false;
+        }
+        self.tab = Tab::Operator;
+        self.toast = Some(Notif {
+            level: "info".to_string(),
+            message: "This is a single chat. Boards (plans, fleet, inbox) open with `pui workbench`."
+                .to_string(),
+            harness: None,
+            ts: None,
+        });
+        true
     }
 
     /// True when a `v` PTT keypress should be accepted — on the Operator tab or in
