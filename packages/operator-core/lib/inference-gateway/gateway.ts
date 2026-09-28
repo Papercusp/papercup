@@ -190,6 +190,8 @@ import {
 } from './admission-context';
 import { PayloadSpoolPersistenceError, PayloadTooLargeError, type GatewayPayloadSpool } from './payload-spool';
 import { assertKnownFlagKey, buildProcessFlagAttestation, GATEWAY_FLAG_ATTEST_PATH } from '../flag-attestation';
+import { foreignLoopbackPeerForSocket } from '../auth/loopback-peer-trust';
+import type { Socket as NetSocket } from 'node:net';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
  *  lib `RequestInit` type omits it, but Node's global `fetch` honors it. */
@@ -1287,6 +1289,12 @@ export interface GatewayDeps {
    *  transition-only so it doesn't re-open every request) + a fleet broadcast. The streak resets on the
    *  next successful auth (a 2xx) for that account, which re-arms a fresh alert for a later episode. */
   onCredentialDead?(info: { accountId: string; consecutive401s: number }): void;
+  /** Peer-uid gate for every connection (WI-10003621). The gateway binds 127.0.0.1 and has no
+   *  caller auth, so on a hosted workspace host — where the customer account shares loopback —
+   *  a non-service uid must be refused before any route (inference or `/admin/*`) runs. Returns
+   *  the foreign verdict to refuse, null to proceed. Default `foreignLoopbackPeerForSocket`, a
+   *  no-op unless the loopback peer-uid policy is active; tests inject a fake. */
+  loopbackPeerGate?(socket: NetSocket): { uid: number | null; reason: string } | null;
   /** Consecutive-401 streak that marks a credential DEAD (vs stale-cached) → fires `onCredentialDead`.
    *  Default `DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD` (3); tests inject a small value. ≤0 disables the alert. */
   credential401DeadThreshold?: number;
@@ -10698,7 +10706,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
     });
   };
 
+  const loopbackPeerGate = deps.loopbackPeerGate ?? ((socket: NetSocket) => foreignLoopbackPeerForSocket(socket));
   const server = http.createServer((req, res) => {
+    // WI-10003621: loopback is shared with the customer account on a hosted workspace host, so
+    // the bind address is not a boundary there. Refuse a non-service uid before any route runs.
+    const foreignPeer = loopbackPeerGate(req.socket);
+    if (foreignPeer) {
+      sendJson(res, 403, {
+        type: 'error',
+        error: {
+          type: 'permission_error',
+          message: 'inference-gateway: loopback callers other than the operator service account are refused on this host',
+        },
+        reason: foreignPeer.reason,
+        gateway: true,
+      });
+      return;
+    }
     const bypassKey = gatewayAdmissionBypassKeyForRequest(req.method, req.url);
     const requestPath = (req.url ?? '/').split('?', 1)[0] || '/';
     const isMaintenanceSummarize = req.method === 'POST' && requestPath === MAINTENANCE_SUMMARIZE_PATH;

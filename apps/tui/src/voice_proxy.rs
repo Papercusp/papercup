@@ -119,14 +119,35 @@ fn helper_failure(path: &Path, code: Option<i32>, stderr: &str) -> String {
     )
 }
 
+/// Spawn `path`, retrying ETXTBSY. A freshly written executable can be briefly
+/// "busy" when any other thread forks while the writer's fd is still open: the
+/// forked child inherits that write fd until it execs. That is a kernel-level
+/// race, not a broken install (Go's os/exec retries it the same way), so a
+/// short bounded retry is the fix rather than surfacing "reinstall PUI".
+fn spawn_retrying_text_busy(command: &mut Command) -> std::io::Result<std::process::Child> {
+    const ETXTBSY: i32 = 26;
+    let mut delay = Duration::from_millis(5);
+    for _ in 0..8 {
+        match command.spawn() {
+            Err(error) if error.raw_os_error() == Some(ETXTBSY) => {
+                std::thread::sleep(delay);
+                delay = (delay * 2).min(Duration::from_millis(200));
+            }
+            other => return other,
+        }
+    }
+    command.spawn()
+}
+
 fn spawn_helper_at(path: &Path, command: &str, signals: Signals) -> Result<HelperPipe> {
-    let mut child = Command::new(path)
-        .arg(command)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| {
+    let mut child = spawn_retrying_text_busy(
+        Command::new(path)
+            .arg(command)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .with_context(|| {
             format!(
                 "voice is unavailable: pui-audio could not start at {}; reinstall PUI",
                 path.display()

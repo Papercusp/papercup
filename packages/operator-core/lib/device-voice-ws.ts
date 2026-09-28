@@ -32,6 +32,7 @@ import type { IncomingMessage } from 'node:http';
 import { verifyDeviceToken } from './device-jwt';
 import { dispatchTranscript, type OutgoingFrame } from './device-voice-dispatch';
 import { RESERVED_SERVICE_PORTS } from './reserved-service-ports';
+import { loopbackPeerUidPolicyActive } from './auth/loopback-peer-trust';
 
 // Read at start time (not module init) so launch wrappers/tests that set the
 // env after import still take effect.
@@ -114,6 +115,9 @@ async function tryListen(port: number, attempt: number): Promise<void> {
   }
   const wss = new WebSocketServer({
     port,
+    // WI-10003621: a hosted workspace host has no LAN phone to serve, so the
+    // all-interfaces bind is pure exposure there; keep it loopback-only.
+    ...(loopbackPeerUidPolicyActive() ? { host: '127.0.0.1' } : {}),
     path: '/api/device/voice',
     // Accept any `papercusp.bearer.*` subprotocol the client offers
     // (header-auth path). Clients on the legacy `?token=` path send no

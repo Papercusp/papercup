@@ -160,8 +160,18 @@ export function verifyDeviceToken(token: string): DeviceClaims | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   const [header, payload, sig] = parts;
+  // Fail CLOSED when no signing secret is available (production without
+  // MOBILE_JWT_SECRET): getSecret() throws there, and a throw from a verifier
+  // turns an attacker-supplied token into an uncaught error in the caller (the
+  // mobile voice WS `connection` handler) instead of a refusal (WI-10003621).
+  let secret: string;
+  try {
+    secret = getSecret();
+  } catch {
+    return null;
+  }
   const expected = b64(
-    createHmac('sha256', getSecret()).update(`${header}.${payload}`).digest(),
+    createHmac('sha256', secret).update(`${header}.${payload}`).digest(),
   );
   const a = Buffer.from(sig);
   const b = Buffer.from(expected);

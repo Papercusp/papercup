@@ -27,6 +27,7 @@ import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { startLocalVoiceSocket } from './local-audio-socket';
 import { isReservedServicePort } from '../reserved-service-ports';
+import { foreignLoopbackPeerForSocket } from '../auth/loopback-peer-trust';
 
 // Read at start time (not module init) so launch wrappers/tests that set the
 // env after import still take effect.
@@ -145,6 +146,12 @@ function isLoopback(req: IncomingMessage): boolean {
 export function handleConnection(ws: WebSocket, req: IncomingMessage): void {
   if (!isLoopback(req)) {
     ws.close(1008, 'loopback only');
+    return;
+  }
+  // WI-10003621: on a hosted workspace host the customer account shares loopback, so the
+  // address alone would pipe a customer process into the operator's voice socket.
+  if (foreignLoopbackPeerForSocket(req.socket)) {
+    ws.close(1008, 'loopback peer uid denied');
     return;
   }
   let socketPath: string;
