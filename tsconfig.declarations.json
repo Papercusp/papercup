@@ -125,6 +125,11 @@
     // 0, one missing declaration surfacing as two errors, exactly the absorption this
     // list exists to prevent.
     "scripts/pc-heavy-jobs.mjs",
+    // dhh-source-preview-2026-09-28 — the private source preview's export/gate/sync
+    // and its read-only share tool. The source-preview-*.test.ts and
+    // share-source-cli.test.ts suites import both directly.
+    "scripts/source-preview.mjs",
+    "scripts/share-source.mjs",
     "scripts/lib/tsc-baseline-gate.mjs",
     "scripts/lib/tsc-service.mjs",
     "scripts/lib/identity-leak-patterns.mjs",
