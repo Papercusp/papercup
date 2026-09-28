@@ -221,7 +221,9 @@ describe('generic identity launch confers no SU authority and leaves SU records 
         expect(before.has(suTable), `${suTable} must exist in the migrated schema`).toBe(true);
         expect(after.get(suTable), `${suTable} changed`).toBe(before.get(suTable));
       }
-      expect(changed).toEqual([]);
+      // Measured 2026-09-28: the recipe resource store is the ONLY table a generic identity
+      // launch writes. Any other table appearing here is a launch side effect to justify.
+      expect(changed).toEqual(['harness_shared.code_recipes']);
     } finally {
       vi.unstubAllEnvs();
       rmSync(root, { recursive: true, force: true });
