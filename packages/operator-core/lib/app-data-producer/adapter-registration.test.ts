@@ -79,7 +79,9 @@ function gmailFetch(): typeof fetch {
   return (async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.includes('/history')) {
-      return json({ history: [{ messagesAdded: [{ message: { id: 'm-1' } }] }], historyId: '99' });
+      // Every real Gmail history record carries an `id`; the incremental sync keys its
+      // idempotent resume on it and refuses a record without one.
+      return json({ history: [{ id: 'h-1', messagesAdded: [{ message: { id: 'm-1' } }] }], historyId: '99' });
     }
     if (url.includes('/messages/m-1')) {
       return json({

@@ -43,6 +43,7 @@ import {
 } from '../../../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { createWorkItem } from '../../work-items';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
@@ -76,6 +77,10 @@ const FLEET_MEMBERSHIP_EVENTS_DDL = `
     at timestamptz NOT NULL DEFAULT now()
   )`;
 
+// D-068: the terminal set is DERIVED, never spelled by hand. A view body cannot
+// take a bind parameter, so render the canonical list as quoted SQL literals.
+const ANY_FAMILY_TERMINAL_STATES_SQL = ANY_FAMILY_TERMINAL_STATES.map((s) => `'${s.replace(/'/g, "''")}'`).join(', ');
+
 // This suite verifies work-item tool envelopes, not the independently tested
 // fleet-assignment projection. Give claim admission a faithful view of claimed
 // work items; no live presence or plan-item claims exist in this fixture.
@@ -97,7 +102,7 @@ const FLEET_ASSIGNMENT_DDL = `
     false AS stalled, NULL::text AS fleet_slug, NULL::text AS fleet_role
   FROM harness_shared.work_items w
   WHERE w.taken_by IS NOT NULL AND w.taken_by <> ''
-    AND w.status NOT IN ('done', 'passed', 'deprecated', 'resolved', 'closed', 'dropped')`;
+    AND NOT (w.status = ANY(ARRAY[${ANY_FAMILY_TERMINAL_STATES_SQL}]::text[]))`;
 
 // Canonical complete consolidated-features schema (single source of truth) — see
 // test/_work-items-schema.ts (D-014 fixture-completeness debt).
