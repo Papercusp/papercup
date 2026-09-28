@@ -30,6 +30,16 @@ function trackExit(key: string, exit: Promise<void>): void {
   void exit.finally(() => { if (state.exits.get(key) === exit) state.exits.delete(key); });
 }
 
+/** Exact-resume attempts per reconnect: the original plus one automatic retry
+ * after a startup-deadline timeout (P-028). A second timeout is reported. */
+export const RESUME_STARTUP_ATTEMPTS = 2;
+
+/** Classified by the typed error's code rather than `instanceof`, so a
+ * duplicated module record or a mocked host module cannot hide the class. */
+function isStartupTimeout(error: unknown): boolean {
+  return error instanceof Error && (error as { code?: unknown }).code === 'su_session_startup_timeout';
+}
+
 /** True once `key`'s previous engine has finished exiting, waiting at most `ms`. */
 async function previousEngineExited(key: string, ms: number): Promise<boolean> {
   const exit = state.exits.get(key);
@@ -95,33 +105,66 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
         const restored = host ?? await rehydrateRegisteredSuSessionHost({ workspaceId,
           harnessSlug: input.harness_slug, agentChatId: input.agent_chat_id });
         if (!restored) throw new Error('Reconnect requires the saved session descriptor');
-        const resume = await prepareStructuredSuResume(previous);
-        let active: ClaudeSuEngine | SuRpcEngine | undefined;
-        try {
-          const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady,
-            onExit: resume.onExit, toolApproval: 'prompt' as const };
-          active = previous.backend === 'claude'
-            ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
-              { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
-              { ...options, host: restored as SuSessionHost<'claude'>, resume: resume.exact })
-            : startSuRpcEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
-              { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }> });
-          state.engines.set(key, active);
-          await persistSuSessionDescriptor(previous.advSessionId, active.adapter.host.descriptor());
-        } catch (error) { await active?.close(); await resume.release(); throw error; }
-        const resumed = active;
-        trackExit(key, (async () => {
-          try { await resumed.ready; await resumed.done; }
-          catch (error) {
-            if (!resumed.adapter.host.snapshot().terminal) resumed.adapter.reconcileRuntimeExit({ expected: false, reason: String(error) });
-            await resumed.close();
+        const startResumedEngine = async (record: typeof previous) => {
+          const resume = await prepareStructuredSuResume(record);
+          let active: ClaudeSuEngine | SuRpcEngine | undefined;
+          try {
+            const options = { ...resume.options, host: restored, beforeReady: resume.beforeReady,
+              onExit: resume.onExit, toolApproval: 'prompt' as const };
+            active = record.backend === 'claude'
+              ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
+                { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
+                { ...options, host: restored as SuSessionHost<'claude'>, resume: resume.exact })
+              : startSuRpcEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
+                { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }> });
+            state.engines.set(key, active);
+            await persistSuSessionDescriptor(record.advSessionId, active.adapter.host.descriptor());
+          } catch (error) { await active?.close(); await resume.release(); throw error; }
+          return { engine: active, resume };
+        };
+        // P-028: a resume whose startup deadline fires is RECOVERABLE — a fresh
+        // attempt runs the exact path an owner's manual reconnect would, under
+        // the same exclusivity lease. Bounded, visible on the session's own
+        // event stream, and never applied to a refusal (auth, identity, a
+        // missing transcript), which a repeat cannot fix.
+        const supervise = async (current: Awaited<ReturnType<typeof startResumedEngine>>, attempt: number): Promise<void> => {
+          const { engine, resume } = current;
+          let retryable: unknown = null;
+          try {
+            try { await engine.ready; } catch (error) { if (isStartupTimeout(error)) retryable = error; throw error; }
+            await engine.done;
+          } catch (error) {
+            if (!engine.adapter.host.snapshot().terminal) engine.adapter.reconcileRuntimeExit({ expected: false, reason: String(error) });
+            await engine.close();
             await resume.release();
-          } finally { if (state.engines.get(key) === resumed) state.engines.delete(key); }
-        })().catch((error: unknown) => console.warn('[su-session] resume bookkeeping failed', error)));
+          } finally {
+            // Keep the slot reserved across a retry so a concurrent reconnect
+            // waits on it instead of racing a second resume for the lease.
+            if (state.engines.get(key) === engine && !(retryable && attempt < RESUME_STARTUP_ATTEMPTS)) state.engines.delete(key);
+          }
+          if (!retryable || attempt >= RESUME_STARTUP_ATTEMPTS) return;
+          const stage = (retryable as { stage?: unknown }).stage;
+          engine.adapter.host.emit({ type: 'error', scope: 'transport', code: 'resume_startup_retry', recoverable: true,
+            message: `Resume attempt ${attempt} of ${RESUME_STARTUP_ATTEMPTS} did not reach readiness`
+              + `${typeof stage === 'string' ? ` (stalled in ${stage})` : ''}; retrying the saved conversation automatically` } as never);
+          let next: Awaited<ReturnType<typeof startResumedEngine>>;
+          try {
+            // The failed attempt advanced the runtime generation on this host;
+            // the replacement must advance it again, so resume from the host's
+            // own descriptor rather than the pre-attempt durable copy.
+            next = await startResumedEngine({ ...previous, descriptor: restored.snapshot().descriptor } as typeof previous);
+          } catch (error) {
+            if (state.engines.get(key) === engine) state.engines.delete(key);
+            throw error;
+          }
+          return supervise(next, attempt + 1);
+        };
+        const first = await startResumedEngine(previous);
+        trackExit(key, supervise(first, 1).catch((error: unknown) => console.warn('[su-session] resume bookkeeping failed', error)));
         return { status: 'ok', attached: true, resumed: true, transport: 'structured', ready: false,
           advSessionId: previous.advSessionId, ownerId: previous.ownerId, workspaceId,
-          harnessSlug: previous.harnessSlug, planSlug: resume.binding.planSlug, agent: previous.backend,
-          nativeSession: resume.nativeSession };
+          harnessSlug: previous.harnessSlug, planSlug: first.resume.binding.planSlug, agent: previous.backend,
+          nativeSession: first.resume.nativeSession };
       }
       const row = await getAdvSession(previous.advSessionId);
       const existingEngine = state.engines.get(key);

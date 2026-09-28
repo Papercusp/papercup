@@ -20,7 +20,7 @@ import { createCodexSuSessionAdapter, type CodexSuSessionAdapter } from './su-se
 import { createOmpSuSessionAdapter, type OmpSuSessionAdapter } from './su-session-omp-adapter';
 import { persistSuSessionDescriptor } from './su-session-persistence';
 import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
-import type { SuSessionEventInput, SuSessionHost, SuSessionServedAccountReader } from './su-session-host';
+import { SuSessionStartupTimeoutError, type SuSessionEventInput, type SuSessionHost, type SuSessionServedAccountReader } from './su-session-host';
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
 import { SuNativeCards } from './su-session-native-cards';
 
@@ -474,7 +474,9 @@ export function startSuRpcEngine(
   })();
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([starting, new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(ompReadinessFailure ?? `${backend} initialization timed out`)), options.startupTimeoutMs ?? 45_000);
+    timer = setTimeout(() => reject(ompReadinessFailure
+      ? new Error(ompReadinessFailure)
+      : new SuSessionStartupTimeoutError(`${backend} initialization timed out`)), options.startupTimeoutMs ?? 45_000);
   })]).catch(async (error) => {
     reportRuntimeFailure(error);
     await close(); throw error;

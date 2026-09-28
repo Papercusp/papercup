@@ -5366,6 +5366,85 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     expect(second.shutdownStages).toContain('os-hard-exit-ready');
   }, 600_000);
 
+  // P-028 guard: exact resume must reach readiness on EVERY repetition. The
+  // product retries a startup timeout once (su-session-attached-launch.ts), so
+  // this test fails on any timeout — including one the retry recovered — by
+  // requiring each resume's FIRST engine to be ready and the generation to
+  // advance by exactly one. PUI_RESUME_REPEAT sets N (default 3).
+  test('exact resume reaches readiness on every repetition without a startup timeout', async () => {
+    const repeats = Math.max(1, Number(process.env.PUI_RESUME_REPEAT ?? '3'));
+    const nonce = randomUUID();
+    const greetingReply = `PUI-REPEAT-${nonce}`;
+    const greeting = `Reply with exactly ${greetingReply} and no other text.`;
+    const eventsBefore = scriptedEngine.events.length;
+    const pane = new PuiPane(bin, operatorPort, home);
+    let chatId: string;
+    try {
+      await openComposer(pane);
+      pane.write(greeting);
+      pane.enter();
+      chatId = (await waitForCorrelatedReply(greeting, greetingReply)).id;
+      await pane.waitForReply(greetingReply);
+    } finally {
+      await pane.stop();
+    }
+    let engine = scriptedEngine.engines.at(-1)!;
+    const outcomes: Array<{ repetition: number; readyMs: number; runtimeGeneration: number }> = [];
+    for (let repetition = 1; repetition <= repeats; repetition++) {
+      const generation = engine.adapter.host.descriptor().runtimeGeneration;
+      await engine.close();
+      await engine.done;
+      engine.adapter.dispose();
+      await putViewState('Plans');
+      const launched = scriptedEngine.engines.length;
+      const resumedPane = new PuiPane(bin, operatorPort, home);
+      try {
+        await resumedPane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+        resumedPane.write('o');
+        await resumedPane.waitFor(`pot ${HARNESS} · role operator · session new`);
+        resumedPane.escape();
+        await resumedPane.waitFor('i type · v speak');
+        resumedPane.write('l');
+        await resumedPane.waitFor('Conversation — Enter select');
+        const selectedHint = () => {
+          const rows = resumedPane.screen().split('\n');
+          const title = rows.findIndex((row) => row.includes('Conversation — Enter select'));
+          const index = rows.findIndex((row, i) => i > title && row.includes('│> '));
+          return index >= 0 ? (rows[index + 1] ?? '') : '';
+        };
+        for (let row = 0; row < 100 && !selectedHint().includes(chatId!); row++) {
+          const previous = selectedHint();
+          resumedPane.write('j');
+          await vi.waitFor(() => expect(selectedHint()).not.toBe(previous), { timeout: 2_000, interval: 50 });
+        }
+        expect(selectedHint()).toContain(chatId!);
+        const started = Date.now();
+        resumedPane.enter();
+        await vi.waitFor(() => expect(scriptedEngine.engines.length).toBeGreaterThan(launched),
+          { timeout: 120_000, interval: 100 });
+        const resumed = scriptedEngine.engines[launched]!;
+        // A startup timeout rejects here even when the product retry recovers.
+        await resumed.ready;
+        outcomes.push({ repetition, readyMs: Date.now() - started,
+          runtimeGeneration: resumed.adapter.host.descriptor().runtimeGeneration });
+        expect(resumed.adapter.host.descriptor().runtimeGeneration).toBe(generation + 1);
+        engine = resumed;
+      } catch (cause) {
+        console.info('PUI_RESUME_REPEAT_FAILURE', JSON.stringify({ repetition, outcomes,
+          events: scriptedEngine.events.slice(eventsBefore).slice(-30), ...resumedPane.failureEvidence() }));
+        throw cause;
+      } finally {
+        await resumedPane.stop();
+      }
+    }
+    const retries = scriptedEngine.events.slice(eventsBefore)
+      .filter((event) => event.type === 'error' && event.code === 'resume_startup_retry');
+    expect(retries).toEqual([]);
+    console.info('PUI_RESUME_REPEAT_ACCEPTANCE', JSON.stringify({ repeats, outcomes }));
+    await engine.close();
+    await engine.done;
+  }, 900_000);
+
   test('greeting, real file tool, interrupt and continued reply stay in one first-party session', async () => {
     const manifest = installedManifest();
     const nonce = randomUUID();

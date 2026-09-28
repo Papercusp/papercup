@@ -142,6 +142,87 @@ describe('attached launch authority', () => {
       ...(agent === 'claude' ? { resume: true } : { nativeSession: native }) });
   });
 
+  describe('P-028 exact-resume startup timeout is recoverable and bounded', () => {
+    const timeout = (stage: string) => Object.assign(new Error(`Claude startup timed out during ${stage}`), {
+      code: 'su_session_startup_timeout', stage });
+    const restoredHost = () => {
+      const emitted: Array<Record<string, unknown>> = [];
+      let generation = 5;
+      return { emitted, host: {
+        emit: (event: Record<string, unknown>) => { emitted.push(event); return event; },
+        snapshot: () => ({ executorAttached: false, streamReady: false, terminal: true,
+          descriptor: { lifecycle: 'failed', runtimeGeneration: generation, identity: { advSessionId: 18 } } }),
+        advance: () => { generation += 1; },
+      } };
+    };
+    const engineWith = (ready: Promise<void>, host: ReturnType<typeof restoredHost>['host']) => {
+      const engineClose = vi.fn(async () => undefined);
+      return { engine: { ready, done: new Promise<void>(() => {}), close: engineClose, pid: () => 4321,
+        adapter: { reconcileRuntimeExit: mocks.reconcile, host: { ...host, descriptor: () => host.snapshot().descriptor } } },
+      close: engineClose };
+    };
+    const prepareResume = () => {
+      const release = vi.fn(async () => undefined);
+      mocks.resume.mockImplementation(async (record: { descriptor?: { runtimeGeneration?: number } }) => ({
+        boot, binding: { backend: 'claude', advSessionId: 18, planSlug: null }, nativeSession: { backend: 'claude', sessionId: 'saved-native' },
+        options: { runtimeGeneration: (record.descriptor?.runtimeGeneration ?? 4) + 1 },
+        beforeReady: vi.fn(), onExit: vi.fn(), release, exact: true }));
+      return release;
+    };
+    const resumeInput = (chatId: string) => ({ ...input, agent_chat_id: chatId });
+    const savedRecord = { backend: 'claude', harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine',
+      descriptor: { runtimeGeneration: 4 } };
+
+    it('retries once after a startup timeout and attaches a replacement at the next generation', async () => {
+      const { host, emitted } = restoredHost();
+      mocks.read.mockResolvedValue(savedRecord);
+      mocks.rehydrate.mockResolvedValue(host);
+      const release = prepareResume();
+      const failed = engineWith(Promise.reject(timeout('transcript restore')), host);
+      const recovered = engineWith(Promise.resolve(), host);
+      mocks.engine.mockReset().mockReturnValueOnce(failed.engine).mockReturnValueOnce(recovered.engine);
+      const response = await launchAttachedSuSession(request(), resumeInput('resume-timeout-once'));
+      expect(await response.json()).toMatchObject({ resumed: true, ready: false });
+      await vi.waitFor(() => expect(mocks.engine).toHaveBeenCalledTimes(2));
+      expect(failed.close).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(recovered.close).not.toHaveBeenCalled();
+      // The retry resumes from the host's current generation, not the stale durable copy.
+      expect(mocks.resume.mock.calls[1][0]).toMatchObject({ descriptor: { runtimeGeneration: 5 } });
+      expect(emitted).toEqual([expect.objectContaining({ type: 'error', code: 'resume_startup_retry', recoverable: true,
+        message: expect.stringContaining('stalled in transcript restore') })]);
+    });
+
+    it('reports a second startup timeout instead of retrying without bound', async () => {
+      const { host, emitted } = restoredHost();
+      mocks.read.mockResolvedValue(savedRecord);
+      mocks.rehydrate.mockResolvedValue(host);
+      const release = prepareResume();
+      const first = engineWith(Promise.reject(timeout('resume finalization')), host);
+      const second = engineWith(Promise.reject(timeout('resume finalization')), host);
+      mocks.engine.mockReset().mockReturnValueOnce(first.engine).mockReturnValueOnce(second.engine);
+      await launchAttachedSuSession(request(), resumeInput('resume-timeout-twice'));
+      await vi.waitFor(() => expect(second.close).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(release).toHaveBeenCalledTimes(2));
+      expect(mocks.engine).toHaveBeenCalledTimes(2);
+      expect(emitted.filter((event) => event.code === 'resume_startup_retry')).toHaveLength(1);
+    });
+
+    it('does not retry a startup refusal that is not a timeout', async () => {
+      const { host, emitted } = restoredHost();
+      mocks.read.mockResolvedValue(savedRecord);
+      mocks.rehydrate.mockResolvedValue(host);
+      const release = prepareResume();
+      const refused = engineWith(Promise.reject(new Error('Claude SU tool connection is failed')), host);
+      mocks.engine.mockReset().mockReturnValueOnce(refused.engine);
+      await launchAttachedSuSession(request(), resumeInput('resume-refused'));
+      await vi.waitFor(() => expect(refused.close).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+      expect(mocks.engine).toHaveBeenCalledOnce();
+      expect(emitted).toEqual([]);
+    });
+  });
+
   it('closes the allocated runtime and row on readiness failure', async () => {
     const runtime = mocks.engine();
     mocks.engine.mockImplementation(() => ({ ...runtime, ready: Promise.reject(new Error('startup failure')) }));
