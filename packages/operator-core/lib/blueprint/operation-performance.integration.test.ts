@@ -276,7 +276,10 @@ describe('P-013 workload A fixture', () => {
               `P-013 cold child ${stage}: ${error.message}; stderr: ${stderr}`)));
             // The child SIGKILLs itself after flushing to skip native env
             // teardown (EI-10702); that exit is clean only once a sample arrived.
-            child.once('exit', (code, signal) => code === 0 || (signal === 'SIGKILL' && sample)
+            // 'close', not 'exit': under load 'exit' can fire before the already-sent
+            // p013-sample IPC message is dispatched, so a successful sample read as a
+            // failed child. 'close' waits for the IPC channel to drain.
+            child.once('close', (code, signal) => code === 0 || (signal === 'SIGKILL' && sample)
               ? resolve()
               : reject(new Error(`P-013 cold child ${stage} exited ${code}/${signal} ` +
                 `(${sample ? 'sample received' : 'no sample'}): ${stderr}`)));
