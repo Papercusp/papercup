@@ -10,11 +10,25 @@
  * worktree path.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { projectDirForSlug } from '../../operator-notes';
 import {
+  commsTierAtLeast,
+  effectiveCommsTier,
+  isCommsTier,
+  listCommsTrust,
+  removeCommsTrust,
+  setCommsTrust,
+  type CommsTier,
+  type CommsTrustEntry,
+  type EffectiveCommsTier,
+  type EffectiveCommsTierDeps,
+} from '../../trust/comms-trust';
+import { resolveAuthorCommsTier } from '../hyperbee/comms-tier-gate';
+import {
+  AUTO_INTEGRATE_TIER,
   listIntegrationRequests,
   ratifyIntegrationRequest,
   type IntegrationRequest,
@@ -256,7 +270,19 @@ export async function createPhysicalPhaseDMutation(
   const baseOid = await git(worktreePath, ['rev-parse', 'HEAD^{commit}']);
   const payload = `p505-phase-d/${input.runId}/${input.kind}\n`;
   const protectedPath = join(worktreePath, PHASE_D_SENTINEL);
-  writeFileSync(protectedPath, payload, { flag: input.kind === 'below-steer' ? 'wx' : 'w', mode: 0o600 });
+  // A prior run's integrated commit leaves the sentinel TRACKED in the shared
+  // worktree (measured: P-505 run 15 left it at 1e6ffc4 on the VM), so an
+  // exclusive create can never succeed twice on the same rig. The freshness
+  // this phase needs is the run-bound payload, not a new path: the tree is
+  // already required clean above, a pre-existing sentinel must be tracked, and
+  // the content must differ so the commit below is a new head.
+  if (existsSync(protectedPath)) {
+    await git(worktreePath, ['ls-files', '--error-unmatch', '--', PHASE_D_SENTINEL]);
+    if (readFileSync(protectedPath, 'utf8') === payload) {
+      throw new Error('physical Phase D refuses to reuse a runId whose sentinel payload is already committed');
+    }
+  }
+  writeFileSync(protectedPath, payload, { flag: 'w', mode: 0o600 });
   await git(worktreePath, ['add', '--', PHASE_D_SENTINEL]);
   await git(worktreePath, [
     '-c',
@@ -359,6 +385,231 @@ export async function ratifyPhysicalPhaseDRequest(
     observedAt: new Date().toISOString(),
     pending,
     ratified,
+  };
+}
+
+export const PHASE_D_TIER_HOLD_SCHEMA = 'hive-git-physical-phase-d-tier-hold/v1' as const;
+export const PHASE_D_TIER_RESTORE_SCHEMA = 'hive-git-physical-phase-d-tier-restore/v1' as const;
+export const PHASE_D_TIER_HOLD_FILE = 'phase-d-tier-hold.json' as const;
+/** Below AUTO_INTEGRATE_TIER, so the integrator must queue instead of integrating. */
+export const PHASE_D_TIER_HOLD_TIER: CommsTier = 'message';
+/** Bounds a hold whose restore never ran: it lapses to the policy default, never to a grant. */
+export const PHASE_D_TIER_HOLD_TTL_MS = 45 * 60_000;
+export const PHASE_D_TIER_ACTOR = 'p505-physical-drill' as const;
+
+/** The on-disk restore record, written BEFORE the tier is mutated. */
+export type PhysicalPhaseDTierHoldRecord = {
+  schemaVersion: typeof PHASE_D_TIER_HOLD_SCHEMA;
+  runId: string;
+  workspaceId: typeof PHASE_D_WORKSPACE;
+  potHomeSlug: typeof PHASE_A_POT_HOME;
+  devicePubkey: string;
+  githubUserId: number;
+  /** The exact prior comms-trust row, or null when none existed. */
+  prior: CommsTrustEntry | null;
+  heldAt: string;
+};
+
+export type PhysicalPhaseDTierHold = PhysicalPhaseDTierHoldRecord & {
+  holdPath: string;
+  held: { tier: CommsTier; expiresAtMs: number; effective: EffectiveCommsTier };
+};
+
+export type PhysicalPhaseDTierRestore =
+  | { schemaVersion: typeof PHASE_D_TIER_RESTORE_SCHEMA; restored: false; reason: 'no-hold'; observedAt: string }
+  | {
+      schemaVersion: typeof PHASE_D_TIER_RESTORE_SCHEMA;
+      restored: true;
+      runId: string;
+      githubUserId: number;
+      prior: CommsTrustEntry | null;
+      current: CommsTrustEntry | null;
+      observedAt: string;
+    };
+
+type PhysicalPhaseDTierDeps = {
+  sql?: OrgSql;
+  /** The VM device's attested github user; production resolves the hive_members chain. */
+  resolveGithubUserId?: (devicePubkey: string) => Promise<number | null>;
+  loadPolicyDefaultTier?: EffectiveCommsTierDeps['loadPolicyDefaultTier'];
+  nowMs?: () => number;
+};
+
+function assertHoldPath(holdPath: string): void {
+  if (!isAbsolute(holdPath) || basename(holdPath) !== PHASE_D_TIER_HOLD_FILE) {
+    throw new Error(`physical Phase D tier hold path must be an absolute ${PHASE_D_TIER_HOLD_FILE}`);
+  }
+  if (!existsSync(dirname(holdPath)) || !statSync(dirname(holdPath)).isDirectory()) {
+    throw new Error(`physical Phase D tier hold directory is missing: ${dirname(holdPath)}`);
+  }
+}
+
+function sameTrustRow(a: CommsTrustEntry | null, b: CommsTrustEntry | null): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.githubUserId === b.githubUserId &&
+    a.tier === b.tier &&
+    a.gate === b.gate &&
+    a.note === b.note &&
+    a.expiresAtMs === b.expiresAtMs
+  );
+}
+
+function parseTierHoldRecord(raw: string): PhysicalPhaseDTierHoldRecord {
+  const record = JSON.parse(raw) as Partial<PhysicalPhaseDTierHoldRecord>;
+  const prior = record.prior;
+  if (
+    record.schemaVersion !== PHASE_D_TIER_HOLD_SCHEMA ||
+    record.workspaceId !== PHASE_D_WORKSPACE ||
+    record.potHomeSlug !== PHASE_A_POT_HOME ||
+    typeof record.runId !== 'string' ||
+    !RUN_ID.test(record.runId) ||
+    !Number.isInteger(record.githubUserId) ||
+    (record.githubUserId as number) <= 0 ||
+    (prior !== null &&
+      (typeof prior !== 'object' ||
+        prior.githubUserId !== record.githubUserId ||
+        !isCommsTier(prior.tier) ||
+        typeof prior.gate !== 'boolean'))
+  ) {
+    throw new Error('physical Phase D tier hold record is malformed; refusing to guess a restore');
+  }
+  return record as PhysicalPhaseDTierHoldRecord;
+}
+
+/**
+ * Hold the VM device's author below AUTO_INTEGRATE_TIER for the below-steer
+ * window, through the production comms-trust surface (WI-10003723).
+ *
+ * The tower's `comms_trust_list` can pin the VM user at 'steer' (an owner
+ * canary unblock did exactly that), and then the integrator auto-integrates
+ * the VM head and never writes the pending request Phase D has to observe.
+ * The exact prior row is persisted to `holdPath` before anything changes, so
+ * `restorePhysicalPhaseDTier` can put it back byte-for-byte; the hold itself
+ * expires on its own, so an unrestored hold lapses toward LESS trust, never
+ * more.
+ */
+export async function holdPhysicalPhaseDBelowSteer(
+  input: { vmDevicePubkey: string; runId: string; holdPath: string },
+  deps: PhysicalPhaseDTierDeps = {},
+): Promise<PhysicalPhaseDTierHold> {
+  assertRunId(input.runId);
+  assertDeviceKey(input.vmDevicePubkey);
+  assertHoldPath(input.holdPath);
+  if (existsSync(input.holdPath)) {
+    throw new Error('physical Phase D tier hold already exists; run phase-d-tier-restore before holding again');
+  }
+  const now = (deps.nowMs ?? Date.now)();
+  const githubUserId = deps.resolveGithubUserId
+    ? await deps.resolveGithubUserId(input.vmDevicePubkey)
+    : (
+        await resolveAuthorCommsTier({
+          workspaceId: PHASE_D_WORKSPACE,
+          potHomeSlug: PHASE_A_POT_HOME,
+          devicePubkey: input.vmDevicePubkey,
+          nowMs: now,
+        })
+      ).githubUserId;
+  if (githubUserId == null) {
+    throw new Error('physical Phase D cannot resolve the VM device to an attested hive member');
+  }
+  const prior = (await listCommsTrust(PHASE_D_WORKSPACE, deps.sql)).find((e) => e.githubUserId === githubUserId) ?? null;
+  if (prior && prior.tier === null) {
+    // setCommsTrust cannot write a NULL tier back, so an exact restore is impossible.
+    throw new Error('physical Phase D refuses to hold a gate-only comms-trust row it cannot restore exactly');
+  }
+  const record: PhysicalPhaseDTierHoldRecord = {
+    schemaVersion: PHASE_D_TIER_HOLD_SCHEMA,
+    runId: input.runId,
+    workspaceId: PHASE_D_WORKSPACE,
+    potHomeSlug: PHASE_A_POT_HOME,
+    devicePubkey: input.vmDevicePubkey,
+    githubUserId,
+    prior,
+    heldAt: new Date(now).toISOString(),
+  };
+  writeFileSync(input.holdPath, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+  const expiresAtMs = now + PHASE_D_TIER_HOLD_TTL_MS;
+  await setCommsTrust(
+    PHASE_D_WORKSPACE,
+    {
+      githubUserId,
+      tier: PHASE_D_TIER_HOLD_TIER,
+      note: `P-505 Phase D below-steer hold ${input.runId}; restore the prior row via phase-d-tier-restore`,
+      expiresAtMs,
+      nowMs: now,
+      actor: PHASE_D_TIER_ACTOR,
+    },
+    deps.sql,
+  );
+  const effective = await effectiveCommsTier(
+    { workspaceId: PHASE_D_WORKSPACE, potHomeSlug: PHASE_A_POT_HOME, githubUserId, nowMs: now },
+    deps.loadPolicyDefaultTier ? { loadPolicyDefaultTier: deps.loadPolicyDefaultTier } : undefined,
+    deps.sql,
+  );
+  if (commsTierAtLeast(effective.tier, AUTO_INTEGRATE_TIER)) {
+    await restorePhysicalPhaseDTier({ holdPath: input.holdPath }, deps);
+    throw new Error(
+      `physical Phase D tier hold did not take effect: effective tier ${effective.tier} (${effective.source})`,
+    );
+  }
+  return {
+    ...record,
+    holdPath: input.holdPath,
+    held: { tier: PHASE_D_TIER_HOLD_TIER, expiresAtMs, effective },
+  };
+}
+
+/**
+ * Put back exactly the comms-trust row a hold replaced (or remove the row the
+ * hold created). Idempotent: a missing hold file is a no-op, and the file is
+ * deleted only after the restored row reads back identical to the prior.
+ */
+export async function restorePhysicalPhaseDTier(
+  input: { holdPath: string },
+  deps: PhysicalPhaseDTierDeps = {},
+): Promise<PhysicalPhaseDTierRestore> {
+  assertHoldPath(input.holdPath);
+  if (!existsSync(input.holdPath)) {
+    return {
+      schemaVersion: PHASE_D_TIER_RESTORE_SCHEMA,
+      restored: false,
+      reason: 'no-hold',
+      observedAt: new Date().toISOString(),
+    };
+  }
+  const record = parseTierHoldRecord(readFileSync(input.holdPath, 'utf8'));
+  const now = (deps.nowMs ?? Date.now)();
+  if (record.prior === null) {
+    await removeCommsTrust(PHASE_D_WORKSPACE, record.githubUserId, PHASE_D_TIER_ACTOR, deps.sql);
+  } else {
+    await setCommsTrust(
+      PHASE_D_WORKSPACE,
+      {
+        githubUserId: record.githubUserId,
+        tier: record.prior.tier as CommsTier,
+        note: record.prior.note,
+        expiresAtMs: record.prior.expiresAtMs,
+        nowMs: now,
+        actor: PHASE_D_TIER_ACTOR,
+      },
+      deps.sql,
+    );
+  }
+  const current =
+    (await listCommsTrust(PHASE_D_WORKSPACE, deps.sql)).find((e) => e.githubUserId === record.githubUserId) ?? null;
+  if (!sameTrustRow(record.prior, current)) {
+    throw new Error('physical Phase D tier restore did not read back the exact prior row; hold file kept for retry');
+  }
+  unlinkSync(input.holdPath);
+  return {
+    schemaVersion: PHASE_D_TIER_RESTORE_SCHEMA,
+    restored: true,
+    runId: record.runId,
+    githubUserId: record.githubUserId,
+    prior: record.prior,
+    current,
+    observedAt: new Date(now).toISOString(),
   };
 }
 
