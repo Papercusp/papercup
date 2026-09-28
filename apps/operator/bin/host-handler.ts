@@ -37,6 +37,7 @@ import {
 } from './host-fault-injection';
 import { backpressureMiddleware } from './host-backpressure';
 import { requestDeadlineMiddleware } from './host-request-deadline';
+import { runWithLoopbackPeerVerdict } from '@papercusp/operator-core/lib/auth/loopback-peer-trust';
 
 const host = new Hono();
 
@@ -127,5 +128,11 @@ export async function handler(
   req: Request,
   env?: HttpBindings | Http2Bindings,
 ): Promise<Response> {
-  return host.fetch(req, env);
+  // WI-10003619: bind loopback trust to the connecting socket's uid on hosts whose
+  // loopback interface is shared with another account (a hosted workspace VM). Every
+  // loopback trust decision below (the auth:'loopback' tier, the loopback principal,
+  // ad-hoc isLoopbackRequest callers) reads the verdict this establishes. A no-op on
+  // single-user hosts — see loopbackPeerUidPolicyActive().
+  const socket = env?.incoming?.socket ?? null;
+  return runWithLoopbackPeerVerdict(socket, () => host.fetch(req, env));
 }

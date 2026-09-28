@@ -23,6 +23,7 @@ import { principalFromCookie } from '../auth/principal/from-cookie';
 import type { RouteDefinition } from './define-route';
 import { defaultCorsOrigin } from './cors';
 import { requireLoopbackOr403 } from './loopback-guard';
+import { foreignLoopbackPeerResponse } from '../auth/loopback-peer-trust';
 import { recordRouteInvocation } from './telemetry';
 import { recordHttpTraffic } from '../coverage-census/attribution/sink';
 import {
@@ -436,6 +437,14 @@ const authStep: RouteStep = {
     }
     if (exec.def.auth === 'loopback') {
       exec.principal = null;
+      // WI-10003619: independent of the auth-tier rollout flag. With the flag OFF a
+      // loopback route degrades to 'public' for a single-user host; on a hosted host
+      // that would hand the customer account every loopback route again.
+      const foreignPeer = foreignLoopbackPeerResponse();
+      if (foreignPeer) {
+        exec.status = 'forbidden';
+        return foreignPeer;
+      }
       if (await endpointAuthTiersEnabled()) {
         const gate = requireLoopbackOr403(exec.req);
         if (gate) {

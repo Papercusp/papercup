@@ -22,6 +22,8 @@
  * imports it here rather than keeping its own copy, so the two gates can't drift.
  */
 
+import { foreignLoopbackPeerResponse } from '../auth/loopback-peer-trust';
+
 /** Host names that resolve to the local machine (incl. the QEMU + Tauri aliases). */
 export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
   'localhost',
@@ -58,6 +60,11 @@ export function isLoopbackHost(host: string | null): boolean {
  * Opt into remote access with `PAPERCUSP_ALLOW_REMOTE_ADMIN=1` (off by default).
  */
 export function requireLoopbackOr403(req: Request): Response | null {
+  // WI-10003619: a loopback peer not owned by the service uid (a hosted host's
+  // customer account) is refused before any opt-out — the remote-admin lever is for
+  // off-box access, never for a co-resident account on a shared loopback interface.
+  const foreignPeer = foreignLoopbackPeerResponse();
+  if (foreignPeer) return foreignPeer;
   if (process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN === '1') return null;
   // Prefer the host from req.url (set by @hono/node-server from the Host header,
   // and always present on app.request() Requests in tests — unlike the raw
