@@ -21,6 +21,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { timingSafeEqual } from 'node:crypto';
+import { currentLoopbackPeerIsForeign } from './auth/loopback-peer-trust';
 
 function tokenPath(): string {
   return join(process.env.PAPERCUSP_HOME || join(homedir(), '.papercusp'), 'superuser-token');
@@ -85,6 +86,11 @@ function hostnameOf(rawHost: string): string {
 
 /** Loopback check — refuses superuser unless origin is 127.0.0.1 / ::1 / localhost. */
 export function isLoopbackRequest(headers: Headers): boolean {
+  // WI-10003619: on a hosted workspace host the loopback interface is shared with
+  // the customer account, so an address is not proof of locality. A loopback peer
+  // whose socket is not owned by the service uid gets NO loopback trust here — this
+  // withdraws the `'*'` principalFromLoopback fallback and every ad-hoc caller at once.
+  if (currentLoopbackPeerIsForeign()) return false;
   const host = hostnameOf(headers.get('host') ?? '');
   if (LOOPBACK_HOSTS.has(host)) {
     return true;
