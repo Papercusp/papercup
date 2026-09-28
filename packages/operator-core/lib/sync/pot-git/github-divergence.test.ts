@@ -22,6 +22,7 @@ import {
   githubBridgeNeedsOwnerConditionKey,
   needsOwnerCause,
   decideNeedsOwnerAlarm,
+  isSameBridgeEscalation,
   importWithRetry,
   EMPTY_NEEDS_OWNER_LATCH,
   isWorkflowScopeRefusal,
@@ -284,6 +285,63 @@ describe('recordDivergenceVerdict — escalation writer (injected sql)', () => {
   });
 });
 
+describe('WI-10003620 — an unchanged verdict does not rewrite (and git-commit) its escalation', () => {
+  /** A fake sql whose SELECT returns `stored` (the prior row) and records every call. */
+  const withStoredRow = (stored: Record<string, unknown> | null) => {
+    const calls: Array<{ q: string; params: unknown[] }> = [];
+    const sql = {
+      unsafe: async (q: string, params: unknown[]) => {
+        calls.push({ q, params });
+        return /^\s*SELECT/.test(q) && stored ? [{ escalation: JSON.stringify(stored) }] : [];
+      },
+    } as unknown as Sql;
+    return { calls, sql };
+  };
+  const inserts = (calls: Array<{ q: string }>) => calls.filter((c) => /INSERT INTO harness_shared.harness_escalations/.test(c.q));
+
+  /** A self-healing (not owner-actionable) residue: the latch stays empty, so
+   *  two sweeps of the same verdict build the same body bar emitted_at. */
+  const selfHealingVerdict = () => {
+    const v = classifyDivergence(collectDivergenceSignals({ ingress: { nonFF: [ingressNonFF] } }));
+    return { ...v, needsOwner: false };
+  };
+
+  /** Run one sweep against an empty store and return the body it wrote. */
+  const firstWrite = async (verdict: ReturnType<typeof selfHealingVerdict>) => {
+    const { calls, sql } = withStoredRow(null);
+    await recordDivergenceVerdict('shop-hive', 'ws', verdict, sql);
+    const [write] = inserts(calls);
+    expect(write).toBeDefined();
+    return JSON.parse((write.params as [string, string, string])[2]) as Record<string, unknown>;
+  };
+
+  it('a sweep that restates the stored verdict issues NO write (only emitted_at would have changed)', async () => {
+    const verdict = selfHealingVerdict();
+    const stored = { ...(await firstWrite(verdict)), emitted_at: 1 };
+    const { calls, sql } = withStoredRow(stored);
+    await recordDivergenceVerdict('shop-hive', 'ws', verdict, sql);
+    expect(calls.length).toBeGreaterThan(0); // it did read the prior row
+    expect(inserts(calls)).toHaveLength(0);
+  });
+
+  it('control: a changed detail DOES rewrite the row', async () => {
+    const verdict = selfHealingVerdict();
+    const stored = { ...(await firstWrite(verdict)), detail: 'an older, different finding' };
+    const { calls, sql } = withStoredRow(stored);
+    await recordDivergenceVerdict('shop-hive', 'ws', verdict, sql);
+    expect(inserts(calls)).toHaveLength(1);
+  });
+
+  it('isSameBridgeEscalation ignores emitted_at and key order, and nothing else', () => {
+    const base = { kind: GITHUB_BRIDGE_ESCALATION_KIND, needs_owner: false, signals: [{ kind: 'x', ref: 'a' }], emitted_at: 1 };
+    const reordered = { emitted_at: 2, signals: [{ ref: 'a', kind: 'x' }], needs_owner: false, kind: GITHUB_BRIDGE_ESCALATION_KIND };
+    expect(isSameBridgeEscalation(base, reordered)).toBe(true);
+    expect(isSameBridgeEscalation(base, { ...reordered, needs_owner: true })).toBe(false);
+    expect(isSameBridgeEscalation(base, { ...reordered, signals: [{ kind: 'x', ref: 'b' }] })).toBe(false);
+    expect(isSameBridgeEscalation(null, base)).toBe(false);
+  });
+});
+
 describe('WI-38327 — the needs-owner alarm latch (pure policy, no database)', () => {
   const ownerActionable = () => classifyDivergence(collectDivergenceSignals({ ingress: { nonFF: [ingressNonFF] } }));
   const differentCause = () => classifyDivergence(collectDivergenceSignals({ admissions: [blockedAdmission] }));
@@ -332,7 +390,10 @@ describe('WI-38327 — the needs-owner alarm latch (pure policy, no database)', 
     const third = decideNeedsOwnerAlarm(second.next, ownerActionable());
     expect(third.alarm).toBe(false);
     expect(third.next.alerted).toBe(true);
-    expect(third.next.sweeps).toBe(3);
+    // WI-10003620: the counter saturates at the debounce threshold, so a
+    // standing owner-actionable verdict stops rewriting its escalation row.
+    expect(third.next.sweeps).toBe(GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS);
+    expect(decideNeedsOwnerAlarm(third.next, ownerActionable()).next).toEqual(third.next);
   });
 
   it('a CHANGE of cause re-pages once — the WI-6643 masking bug, guarded', () => {

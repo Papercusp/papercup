@@ -411,7 +411,10 @@ export function decideNeedsOwnerAlarm(prev: NeedsOwnerLatch, verdict: Divergence
     return { next: { ...EMPTY_NEEDS_OWNER_LATCH }, alarm: false, recovered: prev.alerted, cause: null };
   }
 
-  const sweeps = prev.sweeps + 1;
+  // WI-10003620: saturate at the debounce threshold. Past it the count decides
+  // nothing, and an ever-growing counter would rewrite (and git-commit) the
+  // escalation on every sweep of a standing owner-actionable verdict.
+  const sweeps = Math.min(prev.sweeps + 1, GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS);
   const alarm = sweeps >= GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS && (!prev.alerted || prev.cause !== cause);
   return {
     next: { alerted: alarm || prev.alerted, cause: alarm ? cause : (prev.alerted ? prev.cause : null), sweeps },
@@ -421,10 +424,18 @@ export function decideNeedsOwnerAlarm(prev: NeedsOwnerLatch, verdict: Divergence
   };
 }
 
-/** Read the latch off the stored row. A missing/!JSON/other-kind row reads as
- *  "never alarmed" — the safe direction: we may alarm once more than needed,
- *  never one fewer. */
-async function readNeedsOwnerLatch(s: Sql, potHomeSlug: string): Promise<NeedsOwnerLatch> {
+/** The stored bridge escalation: its alarm latch plus the parsed body (null when
+ *  absent, unparseable, or another kind's row). */
+interface StoredBridgeEscalation {
+  latch: NeedsOwnerLatch;
+  body: Record<string, unknown> | null;
+}
+
+/** Read the stored row. A missing/!JSON/other-kind row reads as "never alarmed"
+ *  with no body — the safe direction: we may alarm (and write) once more than
+ *  needed, never one fewer. */
+async function readStoredBridgeEscalation(s: Sql, potHomeSlug: string): Promise<StoredBridgeEscalation> {
+  const none = (): StoredBridgeEscalation => ({ latch: { ...EMPTY_NEEDS_OWNER_LATCH }, body: null });
   try {
     const rows = (await s.unsafe(
       `SELECT escalation FROM harness_shared.harness_escalations
@@ -432,17 +443,64 @@ async function readNeedsOwnerLatch(s: Sql, potHomeSlug: string): Promise<NeedsOw
       [potHomeSlug, GITHUB_BRIDGE_ESCALATION_PHASE],
     )) as unknown as Array<{ escalation: string | null }>;
     const raw = rows?.[0]?.escalation;
-    if (!raw) return { ...EMPTY_NEEDS_OWNER_LATCH };
+    if (!raw) return none();
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (parsed.kind !== GITHUB_BRIDGE_ESCALATION_KIND) return { ...EMPTY_NEEDS_OWNER_LATCH };
+    if (!parsed || typeof parsed !== 'object' || parsed.kind !== GITHUB_BRIDGE_ESCALATION_KIND) return none();
     return {
-      alerted: parsed.needs_owner_alerted === true,
-      cause: typeof parsed.needs_owner_cause === 'string' ? parsed.needs_owner_cause : null,
-      sweeps: typeof parsed.needs_owner_sweeps === 'number' ? parsed.needs_owner_sweeps : 0,
+      latch: {
+        alerted: parsed.needs_owner_alerted === true,
+        cause: typeof parsed.needs_owner_cause === 'string' ? parsed.needs_owner_cause : null,
+        sweeps: typeof parsed.needs_owner_sweeps === 'number' ? parsed.needs_owner_sweeps : 0,
+      },
+      body: parsed,
     };
   } catch {
-    return { ...EMPTY_NEEDS_OWNER_LATCH };
+    return none();
   }
+}
+
+/**
+ * WI-10003620: fields that change on every re-emit without changing what the
+ * escalation SAYS. Only these may differ for a sweep to count as a no-op.
+ */
+const VOLATILE_BRIDGE_ESCALATION_FIELDS: readonly string[] = ['emitted_at'];
+
+/** Key-order-independent JSON, so a stored body round-tripped through PG text
+ *  compares equal to a freshly built one with the same content. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * WI-10003620: true when `next` restates the stored escalation — identical in
+ * everything but its emit timestamp. The writer then leaves the row alone.
+ *
+ * Why it matters beyond one wasted UPDATE: git-export projects every
+ * `harness_escalations` row to `.papercusp/state/escalations/<phase>.md`, and
+ * git-sync commits that file and publishes it into the member's own pot-git
+ * namespace. Re-stamping an unchanged verdict every sweep therefore made every
+ * bridged hive with an open divergence commit + announce a meaningless change
+ * each tick, forever, and its namespace never stood still long enough for a
+ * peer to hold the same OIDs (measured: P-505 Phase A run 9, 2026-09-28).
+ */
+export function isSameBridgeEscalation(
+  stored: Record<string, unknown> | null,
+  next: Record<string, unknown>,
+): boolean {
+  if (!stored) return false;
+  const strip = (o: Record<string, unknown>) => {
+    const copy: Record<string, unknown> = { ...o };
+    for (const k of VOLATILE_BRIDGE_ESCALATION_FIELDS) delete copy[k];
+    return copy;
+  };
+  return canonicalJson(strip(stored)) === canonicalJson(strip(next));
 }
 
 /**
@@ -610,7 +668,8 @@ export async function recordDivergenceVerdict(
   let decision: NeedsOwnerAlarmDecision | null = null;
   try {
     const s = sql ?? getOrgPg().sql;
-    decision = decideNeedsOwnerAlarm(await readNeedsOwnerLatch(s, potHomeSlug), verdict);
+    const stored = await readStoredBridgeEscalation(s, potHomeSlug);
+    decision = decideNeedsOwnerAlarm(stored.latch, verdict);
     if (verdict.action === 'clear') {
       await s.unsafe(
         `UPDATE harness_shared.harness_escalations
@@ -621,7 +680,7 @@ export async function recordDivergenceVerdict(
         [potHomeSlug, Date.now(), GITHUB_BRIDGE_ESCALATION_PHASE, GITHUB_BRIDGE_ESCALATION_KIND],
       );
     } else {
-      const body = JSON.stringify({
+      const next: Record<string, unknown> = {
         kind: GITHUB_BRIDGE_ESCALATION_KIND,
         harness_slug: potHomeSlug,
         needs_owner: verdict.needsOwner,
@@ -633,14 +692,19 @@ export async function recordDivergenceVerdict(
         needs_owner_alerted: decision.next.alerted,
         needs_owner_cause: decision.next.cause,
         needs_owner_sweeps: decision.next.sweeps,
-      });
-      await s.unsafe(
-        `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (harness_slug, phase)
-         DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
-        [potHomeSlug, GITHUB_BRIDGE_ESCALATION_PHASE, body, Date.now(), workspaceId],
-      );
+      };
+      // WI-10003620: an unchanged verdict keeps its first-seen emitted_at and
+      // mtime_ms. Re-stamping it churned a committed file every sweep (see
+      // isSameBridgeEscalation).
+      if (!isSameBridgeEscalation(stored.body, next)) {
+        await s.unsafe(
+          `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (harness_slug, phase)
+           DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
+          [potHomeSlug, GITHUB_BRIDGE_ESCALATION_PHASE, JSON.stringify(next), Date.now(), workspaceId],
+        );
+      }
     }
   } catch (e) {
     console.warn(
