@@ -2094,6 +2094,52 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     expect([...(opts.staleCardIds ?? [])].sort()).toEqual(['EI-named-stale', 'EI-older-stale']);
   });
 
+  // WI-10003286 (measured 05:40Z on managed-agent-capability-contract-and-native-cutover):
+  // with every cohort-stale id carried, the identity-free settlement read STILL answered
+  // "settled" off a 09-22 'role-…' card the gate never counted as independent. A gate
+  // refusal is the authority on admissibility, so on that path the read is not consulted.
+  it('a ship-gate refusal (no admissible grading) is never overridden by the settlement read', async () => {
+    const launch = freshLaunch();
+    const readSettlement = vi.fn(async () => ({
+      settled: true,
+      reason: 'settled' as const,
+      rubricRevision: 15,
+      independentCardId: 'EI-role-card-the-gate-excluded',
+      acceptanceCardId: 'EI-author-verdict',
+    }));
+    const result = await resolveAcceptanceGrader(
+      'ship-the-thing',
+      { ...baseCtx, acceptanceGateFoundNoAdmissibleGrading: true } as never,
+      {
+        ...deps(launch),
+        readSettlement: readSettlement as never,
+        discover: vi.fn(async () => ({ verdict: 'fresh' as const, graders: [], excluded: [] })) as never,
+      },
+    );
+    expect(readSettlement).not.toHaveBeenCalled();
+    expect(result.state).not.toBe('settled');
+    expect(result.settlement).toEqual({ settled: false, reason: 'gate_found_no_admissible_grading' });
+    expect(launch).toHaveBeenCalledTimes(1);
+  });
+
+  // CONTROL: without the gate's verdict (the periodic sweep path), a settled reading still
+  // suppresses the dispatch — WI-1699998's pool-burning re-route stays closed.
+  it('CONTROL: without the gate flag a settled reading still suppresses dispatch', async () => {
+    const launch = freshLaunch();
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      readSettlement: vi.fn(async () => ({
+        settled: true,
+        reason: 'settled' as const,
+        rubricRevision: 15,
+        independentCardId: 'EI-independent',
+        acceptanceCardId: 'EI-author-verdict',
+      })) as never,
+    });
+    expect(result.state).toBe('settled');
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   it('carriedStaleGradingCardIds: named id alone, array alone, union, and nothing', () => {
     expect(carriedStaleGradingCardIds({ acceptanceStaleGradingScorecardId: 'EI-a' })).toEqual(['EI-a']);
     expect(carriedStaleGradingCardIds({ acceptanceStaleGradingScorecardIds: ['EI-b'] })).toEqual(['EI-b']);

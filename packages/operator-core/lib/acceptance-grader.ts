@@ -1214,6 +1214,13 @@ export interface AcceptanceShipperCarrier {
    * plus each older independent card predating it. Excluding only the named id lets
    * the settlement read fall back to an older excluded card and report settled. */
   acceptanceStaleGradingScorecardIds?: readonly string[] | null;
+  /** Set by the ship gate's recruit seam (`launchAcceptanceGraderForGate`) — it only
+   * recruits on `self_graded_only` / `acceptance_ungraded`, i.e. when the gate has
+   * ALREADY resolved identities and found no admissible independent grading. The
+   * settlement read skips identity resolution by design, so on this path it must not be
+   * allowed to override the gate (WI-10003286: it counted a 'role-…' card the gate
+   * excluded and answered "settled" to every ship retry). An exclusion input only. */
+  acceptanceGateFoundNoAdmissibleGrading?: boolean | null;
 }
 
 /** The union of the carried cohort-stale ids, trimmed and de-duplicated (WI-10003286). */
@@ -1967,7 +1974,9 @@ export async function resolveAcceptanceGrader(
       // grading that already COMPLETED has no open row — its evidence lives in
       // scorecards. Two different questions; both guards are needed.
       const staleCardIds = carriedStaleGradingCardIds(ctx);
-      settlement = await (deps.readSettlement ?? readAcceptanceGradingSettlement)(
+      settlement = (ctx as AcceptanceShipperCarrier).acceptanceGateFoundNoAdmissibleGrading === true
+        ? { settled: false, reason: 'gate_found_no_admissible_grading' }
+        : await (deps.readSettlement ?? readAcceptanceGradingSettlement)(
         rubricId,
         {},
         staleCardIds.length > 0 ? { staleCardIds } : {},

@@ -219,6 +219,13 @@ export type AcceptanceGradingSettlementReason =
    * for a FRESH grading, so treating that card as settled would make every retry a
    * no-op: the gate says re-grade while the recruiter says done. */
   | 'stale_independent_card'
+  /** The recruiter was invoked by a ship-gate refusal (`self_graded_only` /
+   * `acceptance_ungraded`). The gate already ran the identity resolution this read
+   * deliberately skips and found NO admissible independent grading, so the read is not
+   * consulted: its weaker "no author verdict ⇒ independent" predicate would count a card
+   * the gate excluded (an implementer/author card, or an older cohort-stale one) and
+   * report settled, suppressing the very grading the gate asked for (WI-10003286). */
+  | 'gate_found_no_admissible_grading'
   | 'no_author_acceptance'
   /** The settlement read itself threw past its own handlers — recorded rather than
    * swallowed, so a dispatch that happened because the guard could not run is

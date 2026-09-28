@@ -156,6 +156,8 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
       harnessSlug: 'sidestage',
       // No attributable caller in this ctx → nothing to carry (EI-24402913315950329).
       acceptanceShipperOwnerId: null,
+      // WI-10003286: both recruiting codes mean the gate found no admissible grading.
+      acceptanceGateFoundNoAdmissibleGrading: true,
       uiClientId: null,
       isSuperuser: false,
       isPowerUser: false,
@@ -248,6 +250,9 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
       'EI-older-independent',
       'EI-stale-independent',
     ]);
+    // The gate's verdict (no admissible independent grading) must reach the recruiter so
+    // its identity-free settlement read cannot answer "settled" over it.
+    expect(ctx.acceptanceGateFoundNoAdmissibleGrading).toBe(true);
   });
 
   it('does not recruit a judge for unrelated acceptance failures', async () => {

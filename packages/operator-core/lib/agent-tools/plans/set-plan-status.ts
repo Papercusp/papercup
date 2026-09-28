@@ -367,6 +367,10 @@ export async function launchAcceptanceGraderForGate(
     acceptanceShipperOwnerId,
     ...(gate.staleGradingScorecardId ? { acceptanceStaleGradingScorecardId: gate.staleGradingScorecardId } : {}),
     ...(staleIds.length > 0 ? { acceptanceStaleGradingScorecardIds: staleIds } : {}),
+    // WI-10003286: this seam only runs for ACCEPTANCE_GRADER_GATE_CODES, where the gate
+    // has already resolved identities and found no admissible independent grading. The
+    // recruiter's identity-free settlement read must not override that verdict.
+    acceptanceGateFoundNoAdmissibleGrading: true,
     uiClientId: null,
     isSuperuser: false,
     isPowerUser: false,
