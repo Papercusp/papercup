@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-013 workload B (explicit plan target): control plans:run-now vs candidate blueprint plan-target operation submit, each running a 3-item fork/join plan run to terminal; D-016 paired matrix, 5 reps",
+  "framework": "operational",
+  "testLayer": "integration",
+  "evidencePlane": "isolated",
+  "plan": "blueprint-backed-work-item-execution-2026-09-23",
+  "planItem": "P-013",
+  "workItem": "WI-10003490",
+  "parentWorkItem": "WI-10002948",
+  "governingDecisions": ["D-016","D-017","D-018","D-021","D-022","D-024"],
+  "observer": "su-5283c1ba-7842-42f4-9922-e33056c7e635",
+  "testFile": "packages/operator-core/lib/blueprint/operation-performance-b.integration.test.ts",
+  "command": ["for k in 0..4: .papercusp/scratch/p013-b/run-matrix.sh <k> <k>, i.e. P013_MATRIX=1 P013_MODES=warm,cold P013_CONCURRENCIES=1,8 P013_WARMUPS=20 P013_WARM_SAMPLES=200 P013_COLD_SAMPLES=50 P013_REPETITIONS=1 P013_REPETITION_OFFSET=<k> P013_DEDICATED_PG=native npm run test:file -- <testFile>","node .papercusp/scratch/p013-b/grade-b.mjs --json --reps 0,1,2,3,4"],
+  "exitCode": 0,
+  "startedAt": "2026-09-28T14:15:40Z",
+  "finishedAt": "2026-09-28T19:34:32Z",
+  "summary": "Workload B graded PASS 9/9 D-016 bars on the median of five clean repetitions (200 warm and 50 cold samples per arm per concurrency per rep). Warm p50 c1: candidate 2005.8 ms vs control 2000.8 ms; warm p50 c8: candidate 11381.2 vs control 12549.4; c8 warm throughput candidate 0.683/s vs control 0.634/s. The blueprint plan-target operation adds no measurable overhead over plans:run-now for a fork/join plan run.",
+  "assertions": [
+    {"id":"d016-warm-p50-c1","passed":true,"evidence":"median of 5 reps: candidate 2005.8 vs control 2000.8; limit 2315.9 (<= 1.15x+15); verdict PASS"},
+    {"id":"d016-warm-p95-c1","passed":true,"evidence":"median of 5 reps: candidate 2458.8 vs control 2649.8; limit 3337.2 (<= 1.25x+25); verdict PASS"},
+    {"id":"d016-warm-p99-c1","passed":true,"evidence":"median of 5 reps: candidate 3547.4 vs control 4862; limit 7343 (<= 1.5x+50); verdict PASS"},
+    {"id":"d016-warm-p50-c8","passed":true,"evidence":"median of 5 reps: candidate 11381.2 vs control 12549.4; limit 14446.8 (<= 1.15x+15); verdict PASS"},
+    {"id":"d016-warm-p95-c8","passed":true,"evidence":"median of 5 reps: candidate 13357.2 vs control 14814; limit 18542.5 (<= 1.25x+25); verdict PASS"},
+    {"id":"d016-warm-p99-c8","passed":true,"evidence":"median of 5 reps: candidate 14863 vs control 15683.9; limit 23575.9 (<= 1.5x+50); verdict PASS"},
+    {"id":"d016-throughput-c8-warm","passed":true,"evidence":"median of 5 reps: candidate 0.683 vs control 0.634; limit 0.507 (>= 0.80x); verdict PASS"},
+    {"id":"d016-cold-p95-c1","passed":true,"evidence":"median of 5 reps: candidate 7566.1 vs control 6525.7; limit 11920 (<= 1.75x+500); verdict PASS"},
+    {"id":"d016-cold-p95-c8","passed":true,"evidence":"median of 5 reps: candidate 11387.5 vs control 15887.8; limit 28303.6 (<= 1.75x+500); verdict PASS"},
+    {"id":"all-five-reps-completed-rc0","passed":true,"evidence":"rep0 rc=0 2026-09-28T14:15:40Z..2026-09-28T15:09:44Z; rep1 rc=0 2026-09-28T15:09:44Z..2026-09-28T16:02:11Z; rep2 rc=0 2026-09-28T16:02:11Z..2026-09-28T16:54:20Z; rep3 rc=0 2026-09-28T16:54:20Z..2026-09-28T17:45:21Z; rep4 rc=0 2026-09-28T18:45:37Z..2026-09-28T19:34:32Z"},
+    {"id":"one-plan-run-per-sample-no-duplicate-item-effects","passed":true,"evidence":"Each rep asserts (operation-performance-b.integration.test.ts ~L271-273) that per arm the count of plan_runs == template instances == samples, work items == 3 x samples and all done, and that every sample carries a distinct runId; all 5 reps exited rc=0 so the assertions held on both arms."},
+    {"id":"rep4-first-attempt-excluded-rig-ipc-race","passed":true,"evidence":"The first rep4 attempt (ended 18:32:11Z rc=1, preserved as .papercusp/scratch/p013-b/matrix-rep4.failed-ipc-race.log) failed because a cold child process exited (SIGKILL, self-inflicted after its IPC send) before the parent consumed the p013-sample message: the parent listened on child \"exit\", which can fire before the queued IPC message is delivered. Rig-only fix: the parent now waits on \"close\". rep4 was rerun alone (run-matrix.sh 4 4) 18:45:37Z-19:34:32Z rc=0. The failed attempt produced no graded sample and is excluded."},
+    {"id":"measured-source-stable-across-reps","passed":true,"evidence":"2 blob-fingerprint sets across reps. The only difference is operation-performance-b.integration.test.ts (bebf7d879d in rep0-3, b27622de4f in rep4), the rig-only exit->close IPC listener change above; driver, child, operation-admission.ts and operation-service.ts blobs are identical in all 5 reps."}
+  ],
+  "rig": "Dedicated native PostgreSQL per repetition, deterministic fixture worker (claim + complete with 1 KiB result), process-isolated cold child per cold sample, getOrgPg stand-in pool sized like production pgPoolMax=52 (D-024). Blocker-edge promotion race fixed first (WI-10003675).",
+  "load": "Box load average ~53 at matrix start (14:15Z, other fleet work running) and ~22 at the rep4 rerun (18:45Z). Both arms run inside the same rep process on the same dedicated cluster, so each bar compares arms measured under similar load; absolute latencies are load-inflated.",
+  "cells": {
+    "control|warm|c1": {"samplesPerRep":[200,200,200,200,200],"p50":2000.8,"p95":2649.8,"p99":4862,"p50Spread":[1804.3,2181.9],"p95Spread":[1963.5,3856.4],"throughputPerSec":0.454,"phasesP50":{"ingressToAccepted":131,"acceptedToDispatch":889,"dispatchToTerminal":992.5,"terminalToBusinessEvent":7.9}},
+    "control|warm|c8": {"samplesPerRep":[200,200,200,200,200],"p50":12549.4,"p95":14814,"p99":15683.9,"p50Spread":[9003.7,15049.5],"p95Spread":[9654.5,19768.1],"throughputPerSec":0.634,"phasesP50":{"ingressToAccepted":2817.9,"acceptedToDispatch":1894.5,"dispatchToTerminal":7395.8,"terminalToBusinessEvent":46.3}},
+    "control|cold|c1": {"samplesPerRep":[50,50,50,50,50],"p50":4743.5,"p95":6525.7,"p99":9436.3,"p50Spread":[4676.3,5249.6],"p95Spread":[5651.8,6778.8],"throughputPerSec":0.091,"phasesP50":{"ingressToAccepted":361.1,"acceptedToDispatch":2700.7,"dispatchToTerminal":1710,"terminalToBusinessEvent":17.4}},
+    "control|cold|c8": {"samplesPerRep":[50,50,50,50,50],"p50":9767.8,"p95":15887.8,"p99":16284.3,"p50Spread":[9743.3,12418.1],"p95Spread":[11606.3,20224.3],"throughputPerSec":0.41,"phasesP50":{"ingressToAccepted":535.2,"acceptedToDispatch":5495.6,"dispatchToTerminal":3701.1,"terminalToBusinessEvent":25.3}},
+    "candidate|warm|c1": {"samplesPerRep":[200,200,200,200,200],"p50":2005.8,"p95":2458.8,"p99":3547.4,"p50Spread":[1941.1,2311.6],"p95Spread":[2252.1,3428],"throughputPerSec":0.485,"phasesP50":{"ingressToAccepted":135.3,"acceptedToDispatch":846,"dispatchToTerminal":955.3,"terminalToBusinessEvent":11.1}},
+    "candidate|warm|c8": {"samplesPerRep":[200,200,200,200,200],"p50":11381.2,"p95":13357.2,"p99":14863,"p50Spread":[9809,14602.6],"p95Spread":[10918.8,18225.9],"throughputPerSec":0.683,"phasesP50":{"ingressToAccepted":2574.4,"acceptedToDispatch":1624.3,"dispatchToTerminal":6881.3,"terminalToBusinessEvent":66.5}},
+    "candidate|cold|c1": {"samplesPerRep":[50,50,50,50,50],"p50":5157.9,"p95":7566.1,"p99":9793.8,"p50Spread":[4660.8,6090.6],"p95Spread":[5483,10489],"throughputPerSec":0.082,"phasesP50":{"ingressToAccepted":432.2,"acceptedToDispatch":2788.6,"dispatchToTerminal":1874.2,"terminalToBusinessEvent":18.8}},
+    "candidate|cold|c8": {"samplesPerRep":[50,50,50,50,50],"p50":9878.4,"p95":11387.5,"p99":11530,"p50Spread":[9844.7,10955],"p95Spread":[10705.4,14780.1],"throughputPerSec":0.422,"phasesP50":{"ingressToAccepted":590.6,"acceptedToDispatch":5590.8,"dispatchToTerminal":3620.6,"terminalToBusinessEvent":22.4}}
+  },
+  "ungradedColdTails": {
+    "control|cold|c1": {"p50":4743.5,"p99":9436.3},
+    "candidate|cold|c1": {"p50":5157.9,"p99":9793.8},
+    "control|cold|c8": {"p50":9767.8,"p99":16284.3},
+    "candidate|cold|c8": {"p50":9878.4,"p99":11530}
+  },
+  "reps": [
+    {"rep":0,"log":".papercusp/scratch/p013-b/matrix-rep0.log","sha256":"ec76d87b568c7055de401d4b7dfe645912379999067a2d1750dabf4efef81f17","bytes":597801,"startedAt":"2026-09-28T14:15:40Z","finishedAt":"2026-09-28T15:09:44Z","head":"7568a620b2f2eff364cc3dfd8979ae0ca07731a4","rc":0},
+    {"rep":1,"log":".papercusp/scratch/p013-b/matrix-rep1.log","sha256":"e9c14279d5675a466fd75162262a918c1785c696c08c0158a6a4bec560f78267","bytes":493356,"startedAt":"2026-09-28T15:09:44Z","finishedAt":"2026-09-28T16:02:11Z","head":"a9bd5795a1f522be9f04b6dabc57c0d94be5a32b","rc":0},
+    {"rep":2,"log":".papercusp/scratch/p013-b/matrix-rep2.log","sha256":"8ea3f89d5f66147f15b454afa40c19872692fd42c628e03ccd727f4f5e5fcef5","bytes":458424,"startedAt":"2026-09-28T16:02:11Z","finishedAt":"2026-09-28T16:54:20Z","head":"3e8d7e92a4c4b3ea686cb54ecec899750020301b","rc":0},
+    {"rep":3,"log":".papercusp/scratch/p013-b/matrix-rep3.log","sha256":"236fb7ee56c9a13d9aa8294dc5500b1c539298635d72d318529831a048acd6bb","bytes":552269,"startedAt":"2026-09-28T16:54:20Z","finishedAt":"2026-09-28T17:45:21Z","head":"a2b798c71feb3292e44b5dff89ed7c000856befc","rc":0},
+    {"rep":4,"log":".papercusp/scratch/p013-b/matrix-rep4.log","sha256":"6da9b9a40a654021f0a37ed16fba4fdae5e5bd110298ddabdd0742b514b5c1aa","bytes":539695,"startedAt":"2026-09-28T18:45:37Z","finishedAt":"2026-09-28T19:34:32Z","head":"0e8fb082f12d788d12d09f953be003386cb01c21","rc":0}
+  ],
+  "measuredSourceBlobSets": [
+    {"reps":[0,1,2,3],"blobs":["bebf7d879df288b893f87f96f7081eb44a7aacae packages/operator-core/lib/blueprint/operation-performance-b.integration.test.ts","18b611cf17eeed696850fef752e46717c86e00da packages/operator-core/lib/blueprint/operation-performance-b-driver.ts","5561705445879bd4a317c2e9efba2065a5227069 packages/operator-core/lib/blueprint/operation-performance-b-child.ts","11240c1a506f8c8f8fdbe571af202aaa703fe1c1 packages/operator-core/lib/blueprint/operation-admission.ts","2119afd44e997e37f8b736886d5a5e4d3ead01cd packages/operator-core/lib/blueprint/operation-service.ts","1d3dc6d44c9f8f46cd9685f3d39e5e181f8c7872 packages/operator-core/test/_org-test-db.ts"]},
+    {"reps":[4],"blobs":["b27622de4f82349973484ed5cd20c7027b7c3b6f packages/operator-core/lib/blueprint/operation-performance-b.integration.test.ts","18b611cf17eeed696850fef752e46717c86e00da packages/operator-core/lib/blueprint/operation-performance-b-driver.ts","5561705445879bd4a317c2e9efba2065a5227069 packages/operator-core/lib/blueprint/operation-performance-b-child.ts","11240c1a506f8c8f8fdbe571af202aaa703fe1c1 packages/operator-core/lib/blueprint/operation-admission.ts","2119afd44e997e37f8b736886d5a5e4d3ead01cd packages/operator-core/lib/blueprint/operation-service.ts","1d3dc6d44c9f8f46cd9685f3d39e5e181f8c7872 packages/operator-core/test/_org-test-db.ts"]}
+  ],
+  "notProven": ["Actual-model latency: this matrix uses a deterministic fixture worker only.","Absolute latency on an idle box: the box was shared with fleet work throughout; only the paired candidate/control ratio is graded."]
+}
