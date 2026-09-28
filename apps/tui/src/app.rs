@@ -4749,8 +4749,9 @@ impl App {
         self.tab = Tab::Operator;
         self.toast = Some(Notif {
             level: "info".to_string(),
-            message: "This is a single chat. Boards (plans, fleet, inbox) open with `pui workbench`."
-                .to_string(),
+            message:
+                "This is a single chat. Boards (plans, fleet, inbox) open with `pui workbench`."
+                    .to_string(),
             harness: None,
             ts: None,
         });
