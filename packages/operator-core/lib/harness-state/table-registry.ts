@@ -60,7 +60,9 @@ const GIT_DOCS = [
   // legacy path: nothing wrote the file and nothing read the table (the live
   // summary UI is served from harness_text_artifacts, migration 035). The table
   // is dropped; detachStaleGitCaptureTriggers cleans up its capture trigger on boot.
-  'harness_decisions', 'harness_escalations',
+  // NB: `harness_escalations` was here but is REMOVED (WI-10003731) — see
+  // RETIRED_HOST_LOCAL_GIT_TABLES below for why and what cleans up after it.
+  'harness_decisions',
   'harness_design_artifacts', 'harness_text_artifacts', 'harness_chunk_plans',
   'harness_feature_notes', 'harness_feature_debug_notes', 'feature_audit_consolidated',
   'harness_tests',
@@ -405,6 +407,31 @@ const LEGACY_SET = new Set(LEGACY_DEAD);
  *  slug-shared live tables and the workspace-owned plans table. */
 export const PEER_LOG_TABLES: readonly string[] = [...PEER_LOG_LIVE, ...PEER_LOG_WORKSPACE_OWNED];
 export const GIT_TABLES: readonly string[] = GIT_DOCS;
+
+/**
+ * WI-10003731: tables that WERE sync:'git' and were reclassified as per-HOST
+ * machine state (rule (b) above). They now resolve to DEFAULT (sync:'none').
+ *
+ *   • `harness_escalations` — every writer is a machine-local watchdog
+ *     (git-sync stall, origin freshness, green stall, github-bridge divergence,
+ *     mcp-dark, codex rollout, fixer liveness, …) re-UPSERTing ITS OWN host's
+ *     verdict under the same (harness_slug, phase) key. Git-exporting that made
+ *     every device of a multi-device pot commit a different body for the same
+ *     `.papercusp/state/escalations/<phase>.md`, so every member head
+ *     content-conflicted with staging and the pot-git integrator skipped it
+ *     forever (measured on the P-505 physical drill 2026-09-28: tower staging
+ *     dd578ec5 vs VM head ba9ce0fb conflicted on exactly github-bridge.md +
+ *     origin-freshness-watchdog.md). WI-10003624's refresh-stamp stripping only
+ *     stopped ONE host re-committing an unchanged verdict; it cannot reconcile
+ *     two hosts' different verdicts, which is the actual conflict.
+ *
+ * Repos written under the old classification still carry these files. Nothing
+ * hydrates from them any more (hydrate only reads GIT_TABLES), and the pot-git
+ * integrator resolves a merge conflict confined to their directories in favour
+ * of the integrated staging side (`integrator.ts`), so existing diverged member
+ * heads converge instead of being parked.
+ */
+export const RETIRED_HOST_LOCAL_GIT_TABLES: readonly string[] = ['harness_escalations'];
 
 /**
  * Remaining genuine judgment calls — EMPTY as of P-002 close. New entries here
