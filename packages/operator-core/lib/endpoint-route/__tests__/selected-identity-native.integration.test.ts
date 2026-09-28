@@ -110,7 +110,7 @@ describe.runIf(enabled)('isolated selected identity native launch', () => {
       requestedModel: boot.model, activationStatus: control.control_state.activation.status,
     }));
 
-    let nativeOutput = '';
+    const nativeCollector = createTextCollector();
     const selectedModel = parseBridgeModel(boot.model ?? undefined);
     const result = await runCodexCliCompletion({
       home: boot.codexHome!, model: selectedModel.id, effort: selectedModel.effort, timeoutMs: 180_000,
@@ -125,10 +125,11 @@ describe.runIf(enabled)('isolated selected identity native launch', () => {
             PAPERCUSP_HOME: home, PAPERCUSP_OPERATOR_URL: origin, CODEX_HOME: boot.codexHome!,
           },
         });
-        child.stdout?.on('data', (chunk) => { nativeOutput += String(chunk); });
+        nativeCollector.attach(child.stdout);
         return child;
       } }),
     });
+    const nativeOutput = nativeCollector.text();
     expect(result.text).toContain(marker);
     expect(result.text).toContain(boot.envelopeEnv.PAPERCUSP_SID);
     const events = nativeOutput.trim().split('\n').map((line) => JSON.parse(line));

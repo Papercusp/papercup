@@ -249,6 +249,11 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
     patch: { held: [{ id: 'WI-10002196', status: 'wip', checkpoint: 'coverage guard in progress' }] },
     marker: /holding: WI-10002196/,
   },
+  // A failed held-item read must render as UNAVAILABLE, never as "holds nothing".
+  heldReadFailed: {
+    patch: { heldReadFailed: true },
+    marker: /held work-items: unavailable/,
+  },
   ownerDirectives: {
     // recordedBy + capturedByHook are REQUIRED on OrientationOwnerDirective since
     // P-007 (directive-visibility-and-ownership-2026-09-22). This probe predated
@@ -1267,6 +1272,11 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
         'The popup renders these from `carry.heldItems` with checkpoint ages and staleness verdicts the ' +
           'turn-start line deliberately compresses away; that richer read is the dossier\'s job.',
       ),
+      heldReadFailed: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'The held-item read failed (the unavailable variant of `held`).',
+        'A read-health signal about the reader\'s own state, not an instruction it received. Same reasoning ' +
+          'as `held`: the dossier reads held items itself and reports its own read failure.',
+      ),
       executableFrontier: AGENT_ORDERS_NOT_AN_OBLIGATION(
         'What the reader could work on NEXT.',
         'A suggestion, not an obligation — nobody told the agent to take it.',
@@ -1334,6 +1344,12 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'of whether ONE assembler can serve both subjects — note leader-brief.ts already documents using ' +
           '"the same canonical held-item checkpoint reader as carry" — but that is an assembler question, ' +
           'not an `applicableSinks` change, and this entry deliberately does not pre-decide it.',
+      },
+      heldReadFailed: {
+        kind: 'not-applicable',
+        reason:
+          'The failure variant of `held`, so the same DIFFERENT-SUBJECT reasoning applies: it reports that the ' +
+          'READER\'s own held-item read failed. A leader learns that through their own turn-start block.',
       },
       obligations: {
         kind: 'other-shared-mechanism',
@@ -1519,6 +1535,13 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           '`readHeldWorkItems` from carry-brief.ts rather than assembling its own. So the class reaches this ' +
           'sink from the single canonical read, not a copy, and no collapse is owed. P-028 measured this ' +
           'directly and found the item text\'s "three independent assemblers" premise already false.',
+      },
+      heldReadFailed: {
+        kind: 'not-applicable',
+        reason:
+          'LIVE SESSION STATE about one read at one moment: whether the turn-start held-item read failed. A ' +
+          'build-time copy would be a stale assertion competing with the successor\'s own turn-start read, ' +
+          'which re-derives it at wake. The carry document reports its own held-item read directly.',
       },
       ownerDirectives: {
         kind: 'other-shared-mechanism',

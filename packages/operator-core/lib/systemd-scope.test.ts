@@ -247,15 +247,13 @@ describe('transient service payload escaping', () => {
       [SYSTEMD_ENV_RUNNER_PATH, '--env-fd-path', transport.sourcePath, '--', process.execPath, '-e', script],
       { stdio: ['ignore', 'pipe', 'pipe'] },
     );
-    let mirrored = '';
-    child.stdout?.on('data', (chunk: Buffer) => {
-      mirrored += chunk.toString('utf8');
-    });
+    const mirroredCollector = createTextCollector(child.stdout);
 
     try {
       const [code, signal] = (await once(child, 'close')) as [number | null, NodeJS.Signals | null];
 
       expect({ code, signal }).toEqual({ code: 0, signal: null });
+      const mirrored = mirroredCollector.text();
       const output = readFileSync(logPath, 'utf8');
       expect(output).toContain('tok=[redacted] end');
       expect(mirrored).toContain('tok=[redacted] end');
