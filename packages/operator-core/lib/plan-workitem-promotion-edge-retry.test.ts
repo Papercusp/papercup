@@ -12,7 +12,7 @@
  * The concurrent end-to-end reproduction lives in the integration suite.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { SerializableRetryExhaustedError, type Sql } from '@papercusp/db-org';
+import { SerializableRetryExhaustedError } from '@papercusp/db-org';
 import {
   PromotionDependencyEdgeError,
   isTransientDependencyWriteError,
@@ -22,6 +22,8 @@ import {
   DEPENDENCY_ADMISSION_RETRY_DEFAULTS,
   withWorkItemDependencyAdmissionTransaction,
 } from './dbos/work-item-deps-store';
+
+type Sql = Parameters<typeof withWorkItemDependencyAdmissionTransaction>[0];
 
 const exhausted = () => new SerializableRetryExhaustedError(6, '40001', new Error('could not serialize'));
 const noSleep = async () => {};
