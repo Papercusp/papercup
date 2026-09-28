@@ -1011,7 +1011,7 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
       fs.mkdirSync(path.join(home, '.papercusp'), { recursive: true });
       fs.mkdirSync(bin, { recursive: true });
 
-      const index = '<html><body><h2>1.2.3</h2><a href="work-items/WI-1.html">item</a><a href="changes/desktop-v1.2.3-alpha.html">Changes</a></body></html>\n';
+      const index = '<html><body><section class="rel" data-newest-release="1.2.3"><h2>1.2.3</h2><a href="work-items/WI-1.html">item</a><a href="changes/desktop-v1.2.3-alpha.html">Changes</a></section></body></html>\n';
       const history = '{"releases":[{"version":"1.2.3"}]}\n';
       const detail = '<html>detail</html>\n';
       fs.writeFileSync(path.join(site, 'index.html'), index);
