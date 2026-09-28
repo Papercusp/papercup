@@ -15,13 +15,14 @@
 import { readFileSync } from 'node:fs';
 
 import { describe, it, expect } from 'vitest';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
 import {
   findUnforcedDrops,
   findOffenders,
   stripComments,
   withoutTestTitle,
+  // TS7016 is reported on the module SPECIFIER line, so the suppression sits directly above it.
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
 } from '../../../scripts/check-drop-database-force.mjs';
 
 const REPO_ROOT = new URL('../../../', import.meta.url);

@@ -108,7 +108,8 @@ const FORCE_RE = /\bWITH\s*\(\s*FORCE\s*\)/i;
  * blanked; anything else on the line is still scanned, so an unforced statement that
  * shares a line with a title is still reported.
  */
-const TEST_TITLE_RE = /^(\s*(?:describe|it|test)(?:\.\w+)*\(\s*)(['"`])((?:\\.|(?!\2)[^\\])*)\2/;
+// `(?:\([^()'"`]*\))?` admits one curried table argument (`test.each(cases)("title", …)`).
+const TEST_TITLE_RE = /^(\s*(?:describe|it|test)(?:\.\w+)*(?:\([^()'"`]*\))?\(\s*)(['"`])((?:\\.|(?!\2)[^\\])*)\2/;
 export function withoutTestTitle(line) {
   return line.replace(TEST_TITLE_RE, (_match, head, quote) => `${head}${quote}${quote}`);
 }
