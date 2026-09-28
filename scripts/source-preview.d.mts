@@ -36,16 +36,23 @@ export function startHereText(dir: any, manifest: any): Promise<string>;
  * content, not clock.
  * @param {{ repoRoot?: string, ref?: string, out: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
  */
+/**
+ * The copyright year of `commit`: the newest commit date in its recent first-parent history.
+ * The commit's own date is unusable — repair-queue admission commits carry a fixed 2000-01-01.
+ * @param {string} repo
+ * @param {string} commit
+ */
+export function sourceYear(repo: string, commit: string): number;
 export function exportSnapshot({ repoRoot, ref, out, selectScript, selectionLib, env, log, }: {
-    repoRoot?: string;
-    ref?: string;
-    out: string;
-    selectScript?: string;
-    selectionLib?: string;
-    env?: NodeJS.ProcessEnv;
-    log?: Log;
+    repoRoot?: string | undefined;
+    ref?: string | undefined;
+    out: any;
+    selectScript?: string | undefined;
+    selectionLib?: string | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+    log?: (() => void) | undefined;
 }): Promise<{
-    out: string;
+    out: any;
     manifest: {
         schema: number;
         purpose: string;

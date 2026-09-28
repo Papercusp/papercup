@@ -254,6 +254,17 @@ export async function startHereText(dir, manifest) {
  * content, not clock.
  * @param {{ repoRoot?: string, ref?: string, out: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
  */
+/**
+ * The copyright year of `commit`: the newest commit date in its recent first-parent history.
+ * The commit's own date is unusable — repair-queue admission commits carry a fixed 2000-01-01.
+ * @param {string} repo
+ * @param {string} commit
+ */
+export function sourceYear(repo, commit) {
+  const stamps = git(repo, ['log', '-n', '200', '--first-parent', '--format=%ct', commit]).trim().split('\n').map(Number);
+  return new Date(Math.max(...stamps) * 1000).getUTCFullYear();
+}
+
 export async function exportSnapshot({
   repoRoot = ROOT,
   ref = DEFAULT_REF,
@@ -291,7 +302,7 @@ export async function exportSnapshot({
     const manifest = {
       schema: 1,
       purpose: 'private source preview — public-safe cut (plan dhh-source-preview-2026-09-28)',
-      year: Number(git(repoRoot, ['show', '-s', '--format=%cd', '--date=format:%Y', commit]).trim()),
+      year: sourceYear(repoRoot, commit),
       source: { repo: SOURCE_REPO, ref, commit },
       submodules: shipped,
       notShipped: submodules.filter((s) => !shipped.includes(s)).map((s) => s.path),
