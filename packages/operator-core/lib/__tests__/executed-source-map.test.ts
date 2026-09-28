@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   EXECUTED_MAP_ENV,
   EXECUTED_MAP_RECORD_ENV,
+  EXECUTED_MAP_RESULT_ENV,
   EXECUTED_MAP_WORKSPACE_ENV,
   executedMapEnabled,
   executedMapRecordingEnabled,
@@ -218,8 +219,18 @@ describe('scripts/affected-tests.mjs wiring (source pins)', () => {
 
   it('stamps the reporter arming env on unit vitest tasks only, and prints one line per workspace', () => {
     expect(source).toMatch(
-      /\(spawnTask\.script === "test" \|\| LANE_SCRIPTS\.includes\(spawnTask\.script\)\)\s*\?\s*\{ \[EXECUTED_MAP_WORKSPACE_ENV\]: spawnTask\.ws\.name \}/,
+      /const recordsExecutedMap =\s*executedMapRecordingEnabled\(\) &&\s*\(spawnTask\.script === "test" \|\| LANE_SCRIPTS\.includes\(spawnTask\.script\)\);/,
     );
+    expect(source).toMatch(/\.\.\.\(recordsExecutedMap \? \{ \[EXECUTED_MAP_WORKSPACE_ENV\]: spawnTask\.ws\.name \} : \{\}\)/);
+    // WI-10003603: the result channel — same env name on both sides, and the runner reads it back,
+    // prints each task's outcome and a per-invocation total the gate parses.
+    expect(EXECUTED_MAP_RESULT_ENV).toBe('PC_EXECUTED_SOURCE_MAP_RESULT');
+    expect(readFileSync(join(REPO_ROOT, 'libs/test-config/src/vitest-config.ts'), 'utf8')).toContain(
+      `PC_EXECUTED_SOURCE_MAP_RESULT_ENV = '${EXECUTED_MAP_RESULT_ENV}'`,
+    );
+    expect(source).toMatch(/\.\.\.\(executedMapResultFile \? \{ \[EXECUTED_MAP_RESULT_ENV\]: executedMapResultFile \} : \{\}\)/);
+    expect(source).toContain('formatExecutedMapResultLines(label, read)');
+    expect(source).toContain('outSync(formatExecutedMapTotalLine(summarizeExecutedMapResults(executedMapReads)))');
     // The constant the runner stamps IS the env the reporter arms on (vitest-config.ts).
     expect(EXECUTED_MAP_WORKSPACE_ENV).toBe('PC_EXECUTED_SOURCE_MAP_WORKSPACE');
     expect(readFileSync(join(REPO_ROOT, 'libs/test-config/src/vitest-config.ts'), 'utf8')).toContain(
