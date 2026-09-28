@@ -251,7 +251,12 @@ impl RendezvousError {
     /// The one-line form the status bar and setup receive: the failure kind and
     /// endpoint first, so a clipped line still says where to look.
     pub fn status_line(&self) -> String {
-        format!("operator {} · {} — {}", self.kind.label(), self.endpoint, self.repair())
+        format!(
+            "operator {} · {} — {}",
+            self.kind.label(),
+            self.endpoint,
+            self.repair()
+        )
     }
 
     /// Classify a failed rendezvous against `endpoint`.
@@ -1121,7 +1126,11 @@ mod tests {
         .await;
         let client = HttpClient::new(addr, None);
         let bytes = client
-            .sys_http("PUT", "/api/harness/papercusp/agent-chats/chat-1", Some(r#"{"title":"P8 renamed"}"#.into()))
+            .sys_http(
+                "PUT",
+                "/api/harness/papercusp/agent-chats/chat-1",
+                Some(r#"{"title":"P8 renamed"}"#.into()),
+            )
             .await
             .unwrap();
         let v: Value = serde_json::from_slice(&bytes).unwrap();

@@ -389,7 +389,10 @@ pub enum Event {
     /// Canonical endpoint/workspace/store/build/chat identity. Unlike ordinary
     /// polling errors, a failed identity probe remains visible until fixed.
     BackendIdentity(Result<crate::client::BackendIdentity, String>),
-    SetupProjectCreated { slug: String, result: Result<Vec<HarnessRef>, String> },
+    SetupProjectCreated {
+        slug: String,
+        result: Result<Vec<HarnessRef>, String>,
+    },
     /// The persisted workbench view-state loaded on startup (P12 / D-002) —
     /// restore the active tab/selections/scroll where the user left off.
     ViewStateLoaded(ViewState),

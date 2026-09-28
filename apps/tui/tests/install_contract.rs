@@ -19,7 +19,10 @@ fn canonical_installer_owns_both_artifacts_and_never_kills_sessions() {
     let canonical_path = root.join("apps/tui/scripts/install-update.sh");
     let canonical = std::fs::read_to_string(&canonical_path).unwrap();
     assert!(canonical.contains("cargo install --path \"$ROOT/apps/tui\""));
-    assert!(canonical.contains("cargo install"), "cargo installs both pui and pui-audio bins");
+    assert!(
+        canonical.contains("cargo install"),
+        "cargo installs both pui and pui-audio bins"
+    );
     assert!(canonical.contains("apps/pui-zellij-plugin/Cargo.toml"));
     assert!(canonical.contains("pui-install.json"));
     assert!(canonical.contains("write-install-manifest.py"));
@@ -47,10 +50,8 @@ fn canonical_installer_owns_both_artifacts_and_never_kills_sessions() {
 
 #[test]
 fn public_packager_stages_audio_as_a_sibling_and_rejects_alsa_on_pui() {
-    let script = std::fs::read_to_string(
-        repo_root().join("apps/tui/scripts/package-release.sh"),
-    )
-    .unwrap();
+    let script =
+        std::fs::read_to_string(repo_root().join("apps/tui/scripts/package-release.sh")).unwrap();
     assert!(script.contains("$UNIT/bin/pui-audio"));
     assert!(script.contains("audio must stay isolated in bin/pui-audio"));
     assert!(script.contains("readelf -d \"$UNIT/bin/pui\""));

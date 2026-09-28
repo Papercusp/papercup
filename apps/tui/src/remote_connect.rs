@@ -99,7 +99,10 @@ pub const SETUP_CONNECT_SUBCOMMAND: &str = "__setup-connect";
 
 /// The argv setup execs PUI with for `l` (sign in) or `h` (saved hosts).
 pub fn setup_connect_supervisor_args(sign_in: bool) -> [&'static str; 2] {
-    [SETUP_CONNECT_SUBCOMMAND, if sign_in { "sign-in" } else { "hosts" }]
+    [
+        SETUP_CONNECT_SUBCOMMAND,
+        if sign_in { "sign-in" } else { "hosts" },
+    ]
 }
 
 /// `Some(sign_in)` when this command line is exactly the hidden subcommand.
@@ -120,7 +123,11 @@ pub fn setup_connect_note(
     sign_in: bool,
     outcome: &std::io::Result<std::process::ExitStatus>,
 ) -> Option<String> {
-    let what = if sign_in { "Cloud sign-in" } else { "Connecting to a remote host" };
+    let what = if sign_in {
+        "Cloud sign-in"
+    } else {
+        "Connecting to a remote host"
+    };
     match outcome {
         Ok(status) if status.success() => None,
         // 130 is psu's own "cancelled"; no code at all means a signal ended it.
@@ -155,7 +162,9 @@ pub async fn supervise_setup_connect(sign_in: bool) -> Result<()> {
             setup_connect_note(sign_in, &outcome)
         }
     };
-    let Some(note) = note else { std::process::exit(0) };
+    let Some(note) = note else {
+        std::process::exit(0)
+    };
     use std::os::unix::process::CommandExt;
     let error = return_to_setup_command(std::env::current_exe()?, &note).exec();
     eprintln!("pui: {note}");
@@ -166,7 +175,9 @@ pub async fn supervise_setup_connect(sign_in: bool) -> Result<()> {
 /// draft still reopens setup).
 pub fn return_to_setup_command(executable: std::path::PathBuf, note: &str) -> Command {
     let mut command = Command::new(executable);
-    command.arg("hud").env(crate::session_config::SETUP_NOTE_ENV, note);
+    command
+        .arg("hud")
+        .env(crate::session_config::SETUP_NOTE_ENV, note);
     if std::env::var_os(crate::session_config::SETUP_DRAFT_ENV).is_none() {
         command.env(crate::session_config::SETUP_DRAFT_ENV, "");
     }
@@ -316,12 +327,20 @@ mod tests {
         let pui = bin.join("pui");
         std::fs::write(&pui, b"").unwrap();
 
-        assert_eq!(sibling_psu(&pui), None, "no psu beside pui: fall back to PATH");
+        assert_eq!(
+            sibling_psu(&pui),
+            None,
+            "no psu beside pui: fall back to PATH"
+        );
 
         let psu = bin.join("psu");
         std::fs::write(&psu, b"#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&psu, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert_eq!(sibling_psu(&pui), None, "a non-executable file is not a psu");
+        assert_eq!(
+            sibling_psu(&pui),
+            None,
+            "a non-executable file is not a psu"
+        );
 
         std::fs::set_permissions(&psu, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(sibling_psu(&pui), Some(psu));
@@ -359,11 +378,22 @@ mod setup_supervisor_tests {
     #[test]
     fn setup_choices_round_trip_through_the_hidden_subcommand() {
         for sign_in in [true, false] {
-            let argv: Vec<String> = setup_connect_supervisor_args(sign_in).iter().map(|s| s.to_string()).collect();
+            let argv: Vec<String> = setup_connect_supervisor_args(sign_in)
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
             assert_eq!(parse_setup_connect(&argv), Some(sign_in));
-            assert!(!requests_connection(&argv), "the supervisor must not be read as a --connect command line");
+            assert!(
+                !requests_connection(&argv),
+                "the supervisor must not be read as a --connect command line"
+            );
         }
-        for other in [&["hud"][..], &[SETUP_CONNECT_SUBCOMMAND], &[SETUP_CONNECT_SUBCOMMAND, "cloud"], &[SETUP_CONNECT_SUBCOMMAND, "hosts", "x"]] {
+        for other in [
+            &["hud"][..],
+            &[SETUP_CONNECT_SUBCOMMAND],
+            &[SETUP_CONNECT_SUBCOMMAND, "cloud"],
+            &[SETUP_CONNECT_SUBCOMMAND, "hosts", "x"],
+        ] {
             let argv: Vec<String> = other.iter().map(|s| s.to_string()).collect();
             assert_eq!(parse_setup_connect(&argv), None, "{argv:?}");
         }
@@ -373,12 +403,25 @@ mod setup_supervisor_tests {
     fn only_a_finished_hand_off_ends_pui_and_every_other_outcome_names_the_way_back() {
         assert_eq!(setup_connect_note(true, &exited(0)), None);
         let cancelled = setup_connect_note(true, &exited(130)).unwrap();
-        assert!(cancelled.starts_with("Cloud sign-in was cancelled.") && cancelled.contains("Press l"), "{cancelled}");
+        assert!(
+            cancelled.starts_with("Cloud sign-in was cancelled.") && cancelled.contains("Press l"),
+            "{cancelled}"
+        );
         let signalled = setup_connect_note(false, &Ok(ExitStatus::from_raw(2))).unwrap();
-        assert!(signalled.starts_with("Connecting to a remote host was cancelled."), "{signalled}");
+        assert!(
+            signalled.starts_with("Connecting to a remote host was cancelled."),
+            "{signalled}"
+        );
         let failed = setup_connect_note(true, &exited(3)).unwrap();
-        assert!(failed.contains("psu exited with status 3") && failed.contains("try again"), "{failed}");
-        let missing = setup_connect_note(true, &Err(std::io::Error::from(std::io::ErrorKind::NotFound))).unwrap();
+        assert!(
+            failed.contains("psu exited with status 3") && failed.contains("try again"),
+            "{failed}"
+        );
+        let missing = setup_connect_note(
+            true,
+            &Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        )
+        .unwrap();
         assert!(missing.contains("no bundled psu"), "{missing}");
     }
 
@@ -386,7 +429,12 @@ mod setup_supervisor_tests {
     fn a_returning_hand_off_reopens_setup_with_its_note() {
         let command = return_to_setup_command("/test/pui".into(), "Cloud sign-in was cancelled.");
         assert_eq!(command.get_args().collect::<Vec<_>>(), vec!["hud"]);
-        let env = command.get_envs().collect::<std::collections::BTreeMap<_, _>>();
-        assert_eq!(env[std::ffi::OsStr::new(crate::session_config::SETUP_NOTE_ENV)].unwrap(), "Cloud sign-in was cancelled.");
+        let env = command
+            .get_envs()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            env[std::ffi::OsStr::new(crate::session_config::SETUP_NOTE_ENV)].unwrap(),
+            "Cloud sign-in was cancelled."
+        );
     }
 }

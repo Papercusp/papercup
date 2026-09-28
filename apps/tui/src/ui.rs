@@ -181,10 +181,7 @@ fn draw_frame(f: &mut Frame, app: &App) {
         if app.tab != Tab::Operator && app.tab != Tab::Overview && surface_b {
             let (work, dock) = side_column();
             (work, Some(dock), None)
-        } else if app.tab == Tab::Operator
-            && surface_b
-            && f.area().height >= SURFACE_B_MIN_HEIGHT
-        {
+        } else if app.tab == Tab::Operator && surface_b && f.area().height >= SURFACE_B_MIN_HEIGHT {
             // PUBLIC_RELEASE_UX.md § Wide terminal: on Agent Chat the same
             // column is the selected conversation's Context rail, so the
             // conversation and its work stay visible together.
@@ -877,7 +874,9 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
     } else if browser.mutation_key.is_some() {
         "Applying session action… draft and selection are safe".to_string()
     } else {
-        format!("Enter attach/resume · n New · N Advanced PSU · {controls} · ^t transcript · / search")
+        format!(
+            "Enter attach/resume · n New · N Advanced PSU · {controls} · ^t transcript · / search"
+        )
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -2815,7 +2814,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         .as_ref()
         .filter(|_| !app.chat_streaming)
         .and_then(|turn| turn.error.as_ref())
-        .or_else(|| app.su_connection_error.as_ref())
+        .or(app.su_connection_error.as_ref())
         .map(|error| {
             wrap_text(error, area.width.saturating_sub(2).max(1) as usize)
                 .into_iter()
@@ -4768,40 +4767,78 @@ fn draw_pot_picker(f: &mut Frame, app: &App) {
 /// and the reason is usually the thing the operator actually needs to learn
 /// (e.g. that a `--account=default` session must be respawned, not re-pinned).
 fn draw_session_setup(f: &mut Frame, app: &App) {
-    let Some(setup) = &app.session_setup else { return; };
-    let area = f.area().inner(Margin { horizontal: 1, vertical: 1 });
+    let Some(setup) = &app.session_setup else {
+        return;
+    };
+    let area = f.area().inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
     let title = ["1 Context", "2 Runtime", "3 Review"][setup.step as usize];
     if let Some(field) = setup.project_entry {
         let lines = vec![
             Line::from(format!("Operator: {}", setup.endpoint)),
-            Line::from(format!("Project name: {}{}", setup.project_name, if field == 0 { "▏" } else { "" })),
-            Line::from(format!("Existing directory: {}{}", setup.project_path, if field == 1 { "▏" } else { "" })),
+            Line::from(format!(
+                "Project name: {}{}",
+                setup.project_name,
+                if field == 0 { "▏" } else { "" }
+            )),
+            Line::from(format!(
+                "Existing directory: {}{}",
+                setup.project_path,
+                if field == 1 { "▏" } else { "" }
+            )),
             Line::from("The directory is on the operator host, not necessarily this device."),
             Line::from("Registration adds project configuration and prepares its data store."),
-            Line::from(if field == 2 { "Enter REGISTER PROJECT · Tab edit · Esc cancel" }
-                else { "Enter next · Tab switch field · Ctrl-U clear · Esc cancel" }),
+            Line::from(if field == 2 {
+                "Enter REGISTER PROJECT · Tab edit · Esc cancel"
+            } else {
+                "Enter next · Tab switch field · Ctrl-U clear · Esc cancel"
+            }),
             Line::from(setup.note.clone().unwrap_or_default()),
         ];
         f.render_widget(Clear, area);
-        f.render_widget(Paragraph::new(lines).style(Theme::popup())
-            .block(Theme::popup_block(" Register project ".into())).wrap(Wrap { trim: false }), area);
+        f.render_widget(
+            Paragraph::new(lines)
+                .style(Theme::popup())
+                .block(Theme::popup_block(" Register project ".into()))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
         return;
     }
     if setup.show_help {
         let text = "Setup and recovery\n\nNo operator on this computer? For a local setup, install and start the separate Papercusp Server package from your Papercusp release download page; the desktop app is optional. l signs in to Papercusp cloud in your browser, then opens PUI on one of your cloud workspaces. h connects to a remote host you saved with psu (a cloud sign-in or an SSH host). Both hand this terminal to the psu bundled with PUI; when the remote PUI exits, this one exits too. Cancel (Ctrl-C) or a failed sign-in returns you here.\n\nContext: e edits the operator address; Tab enters its token (masked). Enter reconnects this PUI; Esc cancels. A different address never receives the old operator token.\n\nRuntime: b engine, a account, m model, e effort, u mode. Default uses the operator host's credential; auto routes its configured account pool. No account? Configure one on that operator, then r refresh.\n\nAuthentication failure: enter a token issued by the selected operator. Provider login belongs on the operator host: use your engine's login or its existing account setup. PUI does not store provider keys.\n\nUnreachable: check the address and start Papercusp Server. TLS: check scheme and certificate. Missing engine: install it on the operator host. Missing capability: update that operator.\n\nManual mode is the initial setting. Review is required before any session starts.\n\nAny key returns to setup (draft retained).";
         let text = format!("{text}\n\nAccount setup: {}/settings/deploy-accounts\nOperator tokens entered here last for this PUI process only.", setup.endpoint);
         f.render_widget(Clear, area);
-        f.render_widget(Paragraph::new(text).style(Theme::popup())
-            .block(Theme::popup_block(" Setup help · ↑/↓ scroll · Esc back ".into()))
-            .scroll((setup.help_scroll, 0))
-            .wrap(Wrap { trim: false }), area);
+        f.render_widget(
+            Paragraph::new(text)
+                .style(Theme::popup())
+                .block(Theme::popup_block(
+                    " Setup help · ↑/↓ scroll · Esc back ".into(),
+                ))
+                .scroll((setup.help_scroll, 0))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
         return;
     }
     if let Some(endpoint) = &setup.endpoint_input {
         let lines = vec![
             Line::from("Reconnect this PUI"),
-            Line::from(format!("Operator: {endpoint}{}", if setup.editing_token { "" } else { "▏" })),
-            Line::from(format!("Operator token: {}{}", if setup.token.0.is_empty() { "(not entered)" } else { "••••••••" }, if setup.editing_token { "▏" } else { "" })),
+            Line::from(format!(
+                "Operator: {endpoint}{}",
+                if setup.editing_token { "" } else { "▏" }
+            )),
+            Line::from(format!(
+                "Operator token: {}{}",
+                if setup.token.0.is_empty() {
+                    "(not entered)"
+                } else {
+                    "••••••••"
+                },
+                if setup.editing_token { "▏" } else { "" }
+            )),
             Line::from("A full http(s) URL, such as https://host:9443"),
             Line::from("Tab switches address/token · Ctrl-U clears the field"),
             Line::from("Enter reconnects · Esc cancels · first message retained"),
@@ -4809,67 +4846,144 @@ fn draw_session_setup(f: &mut Frame, app: &App) {
             Line::from(setup.note.clone().unwrap_or_default()),
         ];
         f.render_widget(Clear, area);
-        f.render_widget(Paragraph::new(lines).style(Theme::popup())
-            .block(Theme::popup_block(" Operator connection ".into()))
-            .wrap(Wrap { trim: false }), area);
+        f.render_widget(
+            Paragraph::new(lines)
+                .style(Theme::popup())
+                .block(Theme::popup_block(" Operator connection ".into()))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
         return;
     }
     let mut lines = vec![
-        Line::from(format!("Operator: {}", if setup.endpoint.is_empty() { "(checking)" } else { &setup.endpoint })),
-        Line::from(if app.backend_identity_error.is_some() { "Connection: Unavailable" }
-            else if app.backend_identity.is_some() { "Connection: Connected" } else { "Connection: Checking" }),
+        Line::from(format!(
+            "Operator: {}",
+            if setup.endpoint.is_empty() {
+                "(checking)"
+            } else {
+                &setup.endpoint
+            }
+        )),
+        Line::from(if app.backend_identity_error.is_some() {
+            "Connection: Unavailable"
+        } else if app.backend_identity.is_some() {
+            "Connection: Connected"
+        } else {
+            "Connection: Checking"
+        }),
     ];
     if setup.step == 0 {
         if app.backend_identity_error.is_some() {
-            lines.push(Line::from("No operator here? Run PUI on a remote host instead:"));
+            lines.push(Line::from(
+                "No operator here? Run PUI on a remote host instead:",
+            ));
         }
-        lines.push(Line::from("l Sign in to Papercusp cloud · h Connect to a remote host"));
-        lines.push(Line::from("e endpoint / token · c register project · r retry · ? help"));
+        lines.push(Line::from(
+            "l Sign in to Papercusp cloud · h Connect to a remote host",
+        ));
+        lines.push(Line::from(
+            "e endpoint / token · c register project · r retry · ? help",
+        ));
         if app.backend_identity_error.is_some() {
             // Projects come from the operator; with none answering, a search
             // box and "wait for connection" point at nothing (P-021).
-            lines.push(Line::from("Projects appear here once PUI reaches an operator."));
+            lines.push(Line::from(
+                "Projects appear here once PUI reaches an operator.",
+            ));
         } else {
-            lines.push(Line::from(format!("Project search: {}{}", setup.project_query, if setup.project_searching { "▏" } else { "" })));
+            lines.push(Line::from(format!(
+                "Project search: {}{}",
+                setup.project_query,
+                if setup.project_searching { "▏" } else { "" }
+            )));
             let projects = app.setup_projects();
-            if projects.is_empty() { lines.push(Line::from("No matching projects. Wait for connection or change the search.")); }
+            if projects.is_empty() {
+                lines.push(Line::from(
+                    "No matching projects. Wait for connection or change the search.",
+                ));
+            }
             // Two more fixed rows than before: the remote-choice line(s) above.
             let available = area.height.saturating_sub(12).max(1) as usize;
-            let start = setup.project_cursor.saturating_sub(available.saturating_sub(1));
+            let start = setup
+                .project_cursor
+                .saturating_sub(available.saturating_sub(1));
             for (index, project) in projects.iter().enumerate().skip(start).take(available) {
-                lines.push(Line::from(format!("{} {project}", if index == setup.project_cursor { ">" } else { " " })));
+                lines.push(Line::from(format!(
+                    "{} {project}",
+                    if index == setup.project_cursor {
+                        ">"
+                    } else {
+                        " "
+                    }
+                )));
             }
-            lines.push(Line::from("/ search · ↑/↓ choose · Enter select and continue"));
+            lines.push(Line::from(
+                "/ search · ↑/↓ choose · Enter select and continue",
+            ));
         }
     } else {
         lines.extend([
             Line::from(format!("Project: {}", setup.project)),
             Line::from(format!("b Engine: {}", setup.backend.label())),
-            Line::from(format!("a Account: {}", setup.account.as_deref().unwrap_or("default"))),
-            Line::from(format!("m Model: {}", setup.model.as_deref().unwrap_or("Server default model"))),
-            Line::from(format!("e Effort: {}", setup.effort.as_deref().unwrap_or("Default effort"))),
-            Line::from(format!("u Mode: {}", setup.mode.as_deref().unwrap_or("Manual"))),
+            Line::from(format!(
+                "a Account: {}",
+                setup.account.as_deref().unwrap_or("default")
+            )),
+            Line::from(format!(
+                "m Model: {}",
+                setup.model.as_deref().unwrap_or("Server default model")
+            )),
+            Line::from(format!(
+                "e Effort: {}",
+                setup.effort.as_deref().unwrap_or("Default effort")
+            )),
+            Line::from(format!(
+                "u Mode: {}",
+                setup.mode.as_deref().unwrap_or("Manual")
+            )),
             Line::from("Permissions: native approval prompts"),
         ]);
         if setup.step == 2 {
-            lines.push(Line::from(format!("First message: {}", if setup.message.is_empty() { "(none)" } else { &setup.message })));
-            lines.push(Line::from(if setup.editing_message { "Editing first message — Esc returns to review; Enter adds a line" }
-                else { "i edit first message · Enter START SESSION" }));
+            lines.push(Line::from(format!(
+                "First message: {}",
+                if setup.message.is_empty() {
+                    "(none)"
+                } else {
+                    &setup.message
+                }
+            )));
+            lines.push(Line::from(if setup.editing_message {
+                "Editing first message — Esc returns to review; Enter adds a line"
+            } else {
+                "i edit first message · Enter START SESSION"
+            }));
         } else {
-            lines.push(Line::from(if app.operator_config.agent.is_none() { "Runtime: Checking" }
-                else if app.setup_blocker().is_some() { "Runtime: Unavailable — see reason below" }
-                else { "Runtime: Ready" }));
+            lines.push(Line::from(if app.operator_config.agent.is_none() {
+                "Runtime: Checking"
+            } else if app.setup_blocker().is_some() {
+                "Runtime: Unavailable — see reason below"
+            } else {
+                "Runtime: Ready"
+            }));
             lines.push(Line::from("b/a/m/e/u edit runtime · Enter review"));
         }
     }
     if let Some(note) = setup.note.as_ref().cloned().or_else(|| app.setup_blocker()) {
         lines.push(Line::from(note));
     }
-    lines.push(Line::from("← / Shift-Tab back · Esc close (message retained) · r retry · ? help"));
+    lines.push(Line::from(
+        "← / Shift-Tab back · Esc close (message retained) · r retry · ? help",
+    ));
     f.render_widget(Clear, area);
-    f.render_widget(Paragraph::new(lines).style(Theme::popup())
-        .block(Theme::popup_block(format!(" New session — {title} ").into()))
-        .wrap(Wrap { trim: false }), area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(Theme::popup())
+            .block(Theme::popup_block(
+                format!(" New session — {title} ").into(),
+            ))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn draw_session_picker(f: &mut Frame, picker: &crate::session_config::SessionPicker) {
@@ -6822,7 +6936,10 @@ mod tests {
         app.show_presence = true;
         app.set_roster(vec![presence_entry("claude", "porting tui")]);
         for width in [80, 120, 159] {
-            assert!(!render(&app, width, 24).contains("Presence 1/1"), "{width} cols");
+            assert!(
+                !render(&app, width, 24).contains("Presence 1/1"),
+                "{width} cols"
+            );
         }
     }
 
@@ -7175,7 +7292,10 @@ mod tests {
         );
         let text = render(&app, 100, 30);
         assert!(text.contains("401"), "{text}");
-        assert!(text.contains("/login"), "the recovery hint was cut off: {text}");
+        assert!(
+            text.contains("/login"),
+            "the recovery hint was cut off: {text}"
+        );
     }
 
     #[test]
@@ -7668,14 +7788,26 @@ mod tests {
     fn session_setup_review_shows_effective_values_and_action_at_minimum_size() {
         let mut app = App::new();
         let mut setup = crate::session_config::SessionSetup::new(
-            "http://127.0.0.1:3170".into(), "exact draft λ".into());
+            "http://127.0.0.1:3170".into(),
+            "exact draft λ".into(),
+        );
         setup.step = 2;
         setup.project = "project-a".into();
         setup.backend = crate::su_session::SuSessionBackend::Codex;
         app.session_setup = Some(setup);
         let text = render(&app, 80, 20);
-        for expected in ["3 Review", "project-a", "Codex", "default", "Server default model",
-            "Default effort", "Manual", "exact draft λ", "START SESSION", "message retained"] {
+        for expected in [
+            "3 Review",
+            "project-a",
+            "Codex",
+            "default",
+            "Server default model",
+            "Default effort",
+            "Manual",
+            "exact draft λ",
+            "START SESSION",
+            "message retained",
+        ] {
             assert!(text.contains(expected), "missing {expected}:\n{text}");
         }
     }
@@ -7683,7 +7815,10 @@ mod tests {
     #[test]
     fn session_setup_masks_operator_token_in_connection_form() {
         let mut app = App::new();
-        let mut setup = crate::session_config::SessionSetup::new("https://operator.example".into(), "draft".into());
+        let mut setup = crate::session_config::SessionSetup::new(
+            "https://operator.example".into(),
+            "draft".into(),
+        );
         setup.endpoint_input = Some(setup.endpoint.clone());
         setup.editing_token = true;
         setup.token.0 = "fixture-secret-value".into();

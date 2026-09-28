@@ -301,7 +301,11 @@ pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
             Span::styled(format!(" · {tier}"), Theme::dim()),
             // The workbench reaches this surface with Ctrl-T; name the way back.
             Span::styled(
-                if app.pinned.is_none() { " · Esc/o Agent Chat" } else { "" },
+                if app.pinned.is_none() {
+                    " · Esc/o Agent Chat"
+                } else {
+                    ""
+                },
                 Theme::dim(),
             ),
         ])),

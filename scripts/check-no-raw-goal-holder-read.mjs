@@ -119,6 +119,14 @@ export const ALLOWLIST = new Set([
   // backwards for an audit trail.
   'packages/operator-core/lib/system-health/goal-edit-claim-watchdog.ts',
 
+  // Evidence record for a PAST agent-run window (scorecards `agent-run` subjects):
+  // findGoal asks "which goal was THIS holder pursuing during the graded window"
+  // (owner-keyed reverse lookup, newest goal-mode row for that owner). The run is
+  // over, so its holder is usually gone by design; folding present-tense liveness
+  // would erase the goal link from exactly the records it exists to label.
+  // Not a board/supervisor answer to "who holds goal X now" (WI-10003582).
+  'packages/operator-core/lib/agent-tools/scorecards/agent-run-evidence-record.ts',
+
   // goals:create asks "is the CALLER in goal mode" (owner-keyed, self-scoped)
   // and stamps `subject` on its own row. Both are writes/self-reads about the
   // caller's own session, which is trivially live — it is executing the call.
