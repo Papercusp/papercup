@@ -38,7 +38,7 @@ import type { ProgramOutcome } from '../coord-ops/types.js';
 import {
   BLUEPRINT_PROGRAM_COMPLETION_OWNER, blueprintProgramCompletionRef,
   cancelBlueprintOperation, getBlueprintOperationResult, getBlueprintOperationStatus,
-  submitBlueprintOperation,
+  readAcceptedProgramRootGuard, submitBlueprintOperation,
   type BlueprintOperationHandle, type BlueprintOperationStatus,
 } from '../blueprint/operation-service.js';
 import { readBlueprintSpecificationSnapshot } from '../blueprint/project-to-pg.js';
@@ -411,10 +411,13 @@ export async function settleAcceptedCoordProgram(
   }
   const rootId = handle.target.id;
   return runWithWorkspace(handle.workspaceId, async () => {
-    const current = await getBlueprintOperationStatus(sql, handle, input.callerId);
-    if (current.phase === 'terminal') {
-      if (current.outcome === 'cancelled') await cancelAcceptedCoordProgramChildren(sql, input);
-      return current;
+    // WI-10003631: one-round-trip guard first; the full validated status read is
+    // needed only to RETURN an already-terminal root.
+    const current = await readAcceptedProgramRootGuard(sql, handle);
+    if (current.terminal) {
+      const settled = await getBlueprintOperationStatus(sql, handle, input.callerId);
+      if (settled.outcome === 'cancelled') await cancelAcceptedCoordProgramChildren(sql, input);
+      return settled;
     }
     const attempt = {
       workspaceId: handle.workspaceId, harnessSlug: handle.harnessSlug,
@@ -539,9 +542,11 @@ async function coordProgramImpl(input: CoordProgramInput): Promise<ProgramOutcom
       async () => {
         // A live cancellation check must be inside the checkpointed step:
         // replay must first consume its recorded step name and output.
+        // One-round-trip root guard (WI-10003631): the full status read cost
+        // four round trips per step; the handle was validated at workflow start.
         if (accepted) {
-          const status = await getBlueprintOperationStatus(getOrgPg().sql, accepted, input.callerId);
-          if (status.phase === 'terminal' || status.cancellationRequested) {
+          const guard = await readAcceptedProgramRootGuard(getOrgPg().sql, accepted);
+          if (guard.terminal || guard.cancellationRequested) {
             throw new Error('accepted coord program is terminal or cancellation was requested');
           }
         }

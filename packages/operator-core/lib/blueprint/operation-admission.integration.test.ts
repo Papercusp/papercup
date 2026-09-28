@@ -6,7 +6,7 @@ import { projectBlueprintToPg } from './project-to-pg';
 import {
   BLUEPRINT_PROGRAM_COMPLETION_OWNER, blueprintProgramCompletionRef,
   blueprintOperationAcceptanceSubjectRef, cancelBlueprintOperation,
-  getBlueprintOperationResult, getBlueprintOperationStatus,
+  getBlueprintOperationResult, getBlueprintOperationStatus, readAcceptedProgramRootGuard,
   submitBlueprintOperation,
 } from './operation-service';
 import { seedContentHash } from '../cupboard/rubric-store';
@@ -427,9 +427,22 @@ describe('program child admission pins the root specification', () => {
       receiptId: accepted.receiptId, operationId: accepted.operationId,
       specificationRevision: accepted.specificationRevision,
       updatedTs: Number(root.updated_ts), requireUncancelled: true };
+    // WI-10003631: the one-round-trip step guard must agree with the full status
+    // read at every lifecycle point it is consulted on.
+    const guardAgrees = async () => {
+      const [guard, status] = await Promise.all([
+        readAcceptedProgramRootGuard(sql, accepted),
+        getBlueprintOperationStatus(sql, accepted, 'program-caller'),
+      ]);
+      expect(guard).toEqual({ terminal: status.phase === 'terminal',
+        cancellationRequested: status.cancellationRequested });
+      return guard;
+    };
+    expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: false });
     await sql`UPDATE harness_shared.work_items
       SET payload = jsonb_set(payload, '{blueprintCancellation}', '{"eventId":"test"}'::jsonb, true)
       WHERE workspace_id = ${workspaceId} AND feature_id = ${rootId}`;
+    expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: true });
     const raced = await runWithWorkspace(workspaceId, () => setWorkItemState(rootId, 'done', {
       harness: harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
       completionRef: blueprintProgramCompletionRef(accepted, 'succeeded'),
@@ -446,6 +459,7 @@ describe('program child admission pins the root specification', () => {
     expect(cancelled?.state).toBe('dropped');
     expect(await getBlueprintOperationStatus(sql, accepted, 'program-caller'))
       .toMatchObject({ phase: 'terminal', outcome: 'cancelled' });
+    expect(await guardAgrees()).toEqual({ terminal: true, cancellationRequested: true });
   }, 90_000);
 
   it('passes root cancellation to an accepted child before reporting the root cancelled', async () => {
