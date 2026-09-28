@@ -226,6 +226,25 @@ export interface FleetAdmissionObservation {
   fleetSlug: string;
   /** null means the detector could not measure this fleet on this sweep. */
   blockedCount: number | null;
+  /**
+   * Epoch ms of the NEWEST listed block, when measured. Lets a first sighting
+   * (no baseline for this fleet, e.g. the first sweep after a process restart)
+   * tell a block raised since the baseline began from one the previous sweep
+   * process already announced (WI-10003609). null/absent = unknown.
+   */
+  newestBlockAtMs?: number | null;
+}
+
+/** Options for {@link detectFleetAdmissionTransitions}. */
+export interface FleetAdmissionTransitionOptions {
+  /**
+   * When set, a fleet with NO baseline entry fires only if its newest block was
+   * raised at or after this instant. Older blocks were visible to the sweep
+   * process that ran before this baseline existed, so re-announcing them is a
+   * duplicate wake, not a new crossing. An unknown newest time fails open (fires):
+   * a missed admission block starves a lane silently, a duplicate costs one turn.
+   */
+  firstSightingSinceMs?: number;
 }
 
 /** Snapshot identity for a member — a member is only ever compared against
@@ -461,11 +480,14 @@ export function detectFleetTransitions(
 
 /** PURE: fire when a fleet gains a new distinct admission block. A persistent
  * block must not wake the leader every sweep, but a rising count is actionable
- * even when an older block is still present. */
+ * even when an older block is still present. A fleet with no baseline entry is
+ * gated by `opts.firstSightingSinceMs` (see {@link FleetAdmissionTransitionOptions}). */
 export function detectFleetAdmissionTransitions(
   prev: ReadonlyMap<string, number>,
   next: readonly FleetAdmissionObservation[],
+  opts: FleetAdmissionTransitionOptions = {},
 ): FleetAdmissionTransitionEdge[] {
+  const since = opts.firstSightingSinceMs;
   return next
     .filter(
       (observation): observation is FleetAdmissionObservation & { blockedCount: number } =>
@@ -474,6 +496,10 @@ export function detectFleetAdmissionTransitions(
         observation.blockedCount > 0,
     )
     .map((observation) => {
+      if (!prev.has(observation.fleetSlug) && typeof since === 'number' && Number.isFinite(since)) {
+        const newest = observation.newestBlockAtMs;
+        if (typeof newest === 'number' && Number.isFinite(newest) && newest < since) return null;
+      }
       const before = prev.get(observation.fleetSlug) ?? 0;
       return before < observation.blockedCount
         ? {

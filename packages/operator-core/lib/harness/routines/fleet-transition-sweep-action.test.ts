@@ -47,7 +47,7 @@ import {
   gatherFleetAdmissionObservations,
   runFleetTransitionSweep,
 } from './fleet-transition-sweep-action';
-import type { FleetMemberObservation } from '../../fleet-transition-events';
+import { detectFleetAdmissionTransitions, type FleetMemberObservation } from '../../fleet-transition-events';
 
 const member = (over: Partial<FleetMemberObservation> = {}): FleetMemberObservation => ({
   agentId: 'su-a',
@@ -293,9 +293,108 @@ describe('runFleetTransitionSweep', () => {
     );
     productionMocks.readFleetAdmissionBlocks.mockResolvedValue({ available: true, blocks: [{}] });
 
-    await expect(gatherFleetAdmissionObservations()).resolves.toEqual([{ fleetSlug: 'fleet-a', blockedCount: 1 }]);
+    await expect(gatherFleetAdmissionObservations()).resolves.toEqual([
+      { fleetSlug: 'fleet-a', blockedCount: 1, newestBlockAtMs: null },
+    ]);
     expect(productionMocks.readFleetAdmissionBlocks).toHaveBeenCalledWith('fleet-a', {
       liveMemberIds: ['su-live'],
+    });
+  });
+
+  it('reports the newest listed block time with the count', async () => {
+    productionMocks.listFleetAssignments.mockResolvedValue([presenceRow('live')]);
+    productionMocks.reconcileWakeability.mockImplementation(async (agents: unknown[]) => agents);
+    productionMocks.readFleetAdmissionBlocks.mockResolvedValue({
+      available: true,
+      blocks: [{ atMs: 1_000 }, { atMs: 3_000 }, { atMs: 2_000 }],
+    });
+
+    await expect(gatherFleetAdmissionObservations()).resolves.toEqual([
+      { fleetSlug: 'fleet-a', blockedCount: 3, newestBlockAtMs: 3_000 },
+    ]);
+  });
+
+  // WI-10003609: the admission baseline is module state, so every sweep-process
+  // restart used to re-announce each still-listed block as a 0-to-N rise.
+  describe('admission first sighting after a restart', () => {
+    const baselineSinceMs = 1_790_000_000_000;
+    const gather = async () => [];
+
+    it('does not re-announce an unchanged block list raised before the baseline began', async () => {
+      const emit = vi.fn().mockResolvedValue(undefined);
+      const stale = [{ fleetSlug: 'p013-bcd', blockedCount: 2, newestBlockAtMs: baselineSinceMs - 15 * 3_600_000 }];
+      // First process: the blocks were new to it and it announced them.
+      __resetFleetTransitionSnapshotForTests({ admissionBaselineSinceMs: baselineSinceMs - 20 * 3_600_000 });
+      await runFleetTransitionSweep({ gather, gatherAdmissions: async () => stale, emit });
+      await settle();
+      expect(emit).toHaveBeenCalledTimes(1);
+
+      // Restart: fresh module state, same block list. No second wake.
+      __resetFleetTransitionSnapshotForTests({ admissionBaselineSinceMs: baselineSinceMs });
+      await runFleetTransitionSweep({ gather, gatherAdmissions: async () => stale, emit });
+      await runFleetTransitionSweep({ gather, gatherAdmissions: async () => stale, emit });
+      await settle();
+      expect(emit).toHaveBeenCalledTimes(1);
+    });
+
+    it('control: without the first-sighting gate the same stale list manufactures a 0-to-N edge', () => {
+      const stale = [{ fleetSlug: 'p013-bcd', blockedCount: 2, newestBlockAtMs: baselineSinceMs - 15 * 3_600_000 }];
+      // The pre-fix call shape. If this stops firing, the restart test above
+      // passes vacuously and no longer proves the gate does anything.
+      expect(detectFleetAdmissionTransitions(new Map(), stale)).toEqual([
+        { kind: 'admission-blocked', fleetSlug: 'p013-bcd', from: 0, to: 2 },
+      ]);
+      expect(detectFleetAdmissionTransitions(new Map(), stale, { firstSightingSinceMs: baselineSinceMs })).toEqual([]);
+    });
+
+    it('still announces a block raised after the baseline began', async () => {
+      const emit = vi.fn().mockResolvedValue(undefined);
+      __resetFleetTransitionSnapshotForTests({ admissionBaselineSinceMs: baselineSinceMs });
+      await runFleetTransitionSweep({
+        gather,
+        gatherAdmissions: async () => [{ fleetSlug: 'p013-bcd', blockedCount: 1, newestBlockAtMs: baselineSinceMs + 1 }],
+        emit,
+      });
+      await settle();
+      expect(emit).toHaveBeenCalledTimes(1);
+      expect(emit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'fleet:admission-blocked:p013-bcd',
+          payload: expect.objectContaining({ from: 0, to: 1 }),
+        }),
+      );
+    });
+
+    it('seeds silently from old blocks, then fires when a new block raises the count', async () => {
+      const emit = vi.fn().mockResolvedValue(undefined);
+      __resetFleetTransitionSnapshotForTests({ admissionBaselineSinceMs: baselineSinceMs });
+      await runFleetTransitionSweep({
+        gather,
+        gatherAdmissions: async () => [{ fleetSlug: 'p013-bcd', blockedCount: 2, newestBlockAtMs: baselineSinceMs - 60_000 * 60 }],
+        emit,
+      });
+      await runFleetTransitionSweep({
+        gather,
+        gatherAdmissions: async () => [{ fleetSlug: 'p013-bcd', blockedCount: 3, newestBlockAtMs: baselineSinceMs + 5_000 }],
+        emit,
+      });
+      await settle();
+      expect(emit).toHaveBeenCalledTimes(1);
+      expect(emit).toHaveBeenCalledWith(
+        expect.objectContaining({ payload: expect.objectContaining({ from: 2, to: 3 }) }),
+      );
+    });
+
+    it('fails open when the newest block time is unknown', async () => {
+      const emit = vi.fn().mockResolvedValue(undefined);
+      __resetFleetTransitionSnapshotForTests({ admissionBaselineSinceMs: baselineSinceMs });
+      await runFleetTransitionSweep({
+        gather,
+        gatherAdmissions: async () => [{ fleetSlug: 'p013-bcd', blockedCount: 2, newestBlockAtMs: null }],
+        emit,
+      });
+      await settle();
+      expect(emit).toHaveBeenCalledTimes(1);
     });
   });
 

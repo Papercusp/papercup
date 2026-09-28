@@ -80,6 +80,25 @@ let previousObservations = new Map<string, FleetMemberObservation>();
 let previousAdmissionObservations = new Map<string, number>();
 
 /**
+ * How far before this baseline began a block may have been raised and still be
+ * announced on a fleet's first sighting. It covers the restart gap: a block raised
+ * while the old sweep process was dying or before this one's first tick was never
+ * announced by either. Blocks older than this were visible to the previous process,
+ * which already announced them.
+ */
+export const ADMISSION_FIRST_SIGHTING_GRACE_MS = 10 * 60 * 1000;
+
+/**
+ * Where this process's admission baseline begins (WI-10003609). Unlike the member
+ * snapshot above, losing the admission snapshot does not MISS an edge; it
+ * DUPLICATES one. The admission detector treats a missing baseline as zero, so the
+ * first sweep after every restart re-announced each still-listed block as a 0-to-N
+ * rise and woke the leader for nothing (measured twice on fleet p013-bcd). Blocks
+ * carry their own timestamp, so gating the first sighting on it costs no storage.
+ */
+let admissionBaselineSinceMs = Date.now() - ADMISSION_FIRST_SIGHTING_GRACE_MS;
+
+/**
  * The member-dead latch (detector rule 3) — which members have already had a
  * member-dead edge fired, and how long they have read non-dead since.
  *
@@ -92,9 +111,10 @@ let memberDeadLatch = new Map<string, FleetDeadLatchEntry>();
 let memberLeftLatch = new Map<string, FleetLeftLatchEntry>();
 
 /** Test-only: forget the previous snapshot so cases don't cross-contaminate. */
-export function __resetFleetTransitionSnapshotForTests(): void {
+export function __resetFleetTransitionSnapshotForTests(opts: { admissionBaselineSinceMs?: number } = {}): void {
   previousObservations = new Map();
   previousAdmissionObservations = new Map();
+  admissionBaselineSinceMs = opts.admissionBaselineSinceMs ?? Date.now() - ADMISSION_FIRST_SIGHTING_GRACE_MS;
   memberDeadLatch = new Map();
   memberLeftLatch = new Map();
 }
@@ -269,7 +289,13 @@ export async function gatherFleetAdmissionObservations(): Promise<FleetAdmission
           .map((agent) => agent.agentId)
           .sort();
         const read = await readFleetAdmissionBlocks(fleetSlug, { liveMemberIds });
-        return { fleetSlug, blockedCount: read.available ? read.blocks.length : null };
+        if (!read.available) return { fleetSlug, blockedCount: null };
+        const times = read.blocks.map((block) => block.atMs).filter((atMs) => Number.isFinite(atMs));
+        return {
+          fleetSlug,
+          blockedCount: read.blocks.length,
+          newestBlockAtMs: times.length > 0 ? Math.max(...times) : null,
+        };
       } catch {
         // `readFleetAdmissionBlocks` is already fail-soft in production, but
         // preserve the boundary if a test seam or future implementation throws.
@@ -306,7 +332,9 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
     leftLatch: memberLeftLatch,
     nowMs: Date.now(),
   });
-  const admissionEdges = detectFleetAdmissionTransitions(previousAdmissionObservations, admissionObservations);
+  const admissionEdges = detectFleetAdmissionTransitions(previousAdmissionObservations, admissionObservations, {
+    firstSightingSinceMs: admissionBaselineSinceMs,
+  });
   previousObservations = indexObservations(observations);
   // Merge measured values into the prior snapshot rather than replacing it.
   // An empty observation set can mean the outer roster read was unavailable,
