@@ -10,6 +10,7 @@ import {
   currentLoopbackPeerIsForeign,
   decodeProcNetAddress,
   findClientSocketUid,
+  foreignLoopbackPeerForSocket,
   loopbackPeerUidPolicyActive,
   resolveLoopbackPeerVerdict,
   runWithLoopbackPeerVerdict,
@@ -138,6 +139,44 @@ describe('loopback trust gates under a foreign peer (the WI-10003619 hole)', () 
       expect(currentLoopbackPeerIsForeign()).toBe(false);
       expect(isLoopbackRequest(loopbackHeaders())).toBe(true);
     }, { env: {} as NodeJS.ProcessEnv, serviceUid: SERVICE_UID, readProcFile: readerFor(CUSTOMER_UID) });
+  });
+});
+
+describe('foreignLoopbackPeerForSocket (listeners outside host-handler, WI-10003621)', () => {
+  it('returns the foreign verdict for the customer uid when the policy is active', () => {
+    expect(
+      foreignLoopbackPeerForSocket({ ...SOCKET }, { env: ACTIVE, serviceUid: SERVICE_UID, readProcFile: readerFor(CUSTOMER_UID) }),
+    ).toEqual({ kind: 'foreign', uid: CUSTOMER_UID, reason: 'uid-mismatch' });
+  });
+
+  it('proceeds (null) for the service uid, and fails CLOSED when the owner is unresolvable', () => {
+    expect(
+      foreignLoopbackPeerForSocket({ ...SOCKET }, { env: ACTIVE, serviceUid: SERVICE_UID, readProcFile: readerFor(SERVICE_UID) }),
+    ).toBeNull();
+    expect(
+      foreignLoopbackPeerForSocket({ ...SOCKET }, { env: ACTIVE, serviceUid: SERVICE_UID, readProcFile: () => { throw new Error('EACCES'); } }),
+    ).toEqual({ kind: 'foreign', uid: null, reason: 'unresolved' });
+  });
+
+  it('is a no-op when the policy is inactive, even for a foreign uid', () => {
+    expect(
+      foreignLoopbackPeerForSocket({ ...SOCKET }, { env: {} as NodeJS.ProcessEnv, serviceUid: SERVICE_UID, readProcFile: readerFor(CUSTOMER_UID) }),
+    ).toBeNull();
+  });
+
+  it('caches only the service verdict per socket, so a foreign socket is re-judged and never upgraded', () => {
+    const socket = { ...SOCKET };
+    let reads = 0;
+    const counting = (uid: number) => (path: string) => { reads += 1; return readerFor(uid)(path); };
+    expect(foreignLoopbackPeerForSocket(socket, { env: ACTIVE, serviceUid: SERVICE_UID, readProcFile: counting(SERVICE_UID) })).toBeNull();
+    expect(foreignLoopbackPeerForSocket(socket, { env: ACTIVE, serviceUid: SERVICE_UID, readProcFile: counting(CUSTOMER_UID) })).toBeNull();
+    expect(reads).toBe(1);
+    const foreignSocket = { ...SOCKET };
+    foreignLoopbackPeerForSocket(foreignSocket, { env: ACTIVE, serviceUid: SERVICE_UID, readProcFile: counting(CUSTOMER_UID) });
+    expect(
+      foreignLoopbackPeerForSocket(foreignSocket, { env: ACTIVE, serviceUid: SERVICE_UID, readProcFile: counting(SERVICE_UID) }),
+    ).toBeNull();
+    expect(reads).toBe(3);
   });
 });
 

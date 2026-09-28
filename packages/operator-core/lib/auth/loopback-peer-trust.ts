@@ -266,6 +266,30 @@ export function runWithLoopbackPeerVerdict<T>(
   return state.als.run(verdict, fn);
 }
 
+/**
+ * The same verdict for a listener that does NOT run inside host-handler's wrapper —
+ * a server with its own `http.createServer` / `WebSocketServer` (the inference
+ * gateway, the desktop voice bridge). Those listeners bind 127.0.0.1 and used the
+ * address as their only boundary, which a hosted workspace host does not honour
+ * (WI-10003621: from the customer uid, the gateway's `/admin/*` answered 200 and the
+ * voice bridge piped the caller into the operator's voice socket).
+ *
+ * Returns the foreign verdict to refuse, or null to proceed: the policy is inactive
+ * (single-user hosts pay nothing), the peer is not on loopback, or it is the service
+ * uid. Positive answers are cached per socket exactly as the host-handler wrapper does.
+ */
+export function foreignLoopbackPeerForSocket(
+  socket: (LoopbackPeerSocket & object) | null | undefined,
+  options: ResolveLoopbackPeerOptions & { env?: NodeJS.ProcessEnv } = {},
+): Extract<LoopbackPeerVerdict, { kind: 'foreign' }> | null {
+  if (!loopbackPeerUidPolicyActive(options.env)) return null;
+  const cached = socket ? state.bySocket.get(socket) : undefined;
+  if (cached) return null;
+  const verdict = resolveLoopbackPeerVerdict(socket, options);
+  if (verdict.kind === 'service' && socket) state.bySocket.set(socket, verdict);
+  return verdict.kind === 'foreign' ? verdict : null;
+}
+
 /** The verdict for the request currently executing, or null outside the wrapper. */
 export function currentLoopbackPeerVerdict(): LoopbackPeerVerdict | null {
   return state.als.getStore() ?? null;
