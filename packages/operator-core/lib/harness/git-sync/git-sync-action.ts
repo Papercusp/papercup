@@ -75,7 +75,7 @@ import {
   runGithubBridgeTick,
 } from '../../sync/pot-git/github-bridge-tick';
 import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
-import { formatParkedConflicts } from '../../sync/pot-git/integrator';
+import { formatIntegratorTickStatus } from '../../sync/pot-git/integrator';
 import { runWorktreeBridgeTick, WORKTREE_BRIDGE_RETRY_TTL_MS } from '../../sync/pot-git/worktree-bridge-tick';
 import {
   HiveEffectAuthorityError,
@@ -6222,7 +6222,8 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
   // while the only capable machine (the tower) correctly declined as
   // non-authority, so NOBODY integrated and origin silently froze. Recording
   // the reason makes "why is canonical stuck" a one-query answer.
-  const decline = async (skipped: string, detail?: string): Promise<void> => {
+  // `skipped: null` is the advancing tick's status (formatIntegratorTickStatus).
+  const decline = async (skipped: string | null, detail?: string): Promise<void> => {
     try {
       await patchRoutineMetadata(slug, workspaceId, {
         integrator_status: { at: Date.now(), skipped, detail: detail ?? null },
@@ -6352,16 +6353,20 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     // AUTO_INTEGRATE_TIER) reads as "no advance" and cost a live diagnosis
     // (canary hello-world-3-pot: every device tier 'message' < 'steer', so
     // the integrator queued its own head forever with no visible reason).
-    if (!outcome.announcement) {
-      await decline(
-        'ran_no_advance',
-        `integrator ran; no advance (gate: ${outcome.gated ? `integrated=${outcome.gated.integrated} queued=${outcome.gated.queued} errors=${outcome.gated.errors}` : 'none'};` +
-          ` conflicts=${outcome.integration?.skippedConflicts?.length ?? 0}; errors=${outcome.errors.length})` +
-          // WI-10003731: name WHAT conflicted — without it a parked head needed an
-          // offline `git merge-tree` replay in the pot-git store to diagnose.
-          formatParkedConflicts(outcome.integration?.skippedConflicts ?? []),
-      );
-    }
+    // WI-10003731: record EVERY tick that reached the integrator, an advance
+    // included. The status is a jsonb merge, so writing only on "no advance"
+    // left a stale no-advance note standing after staging moved. The detail
+    // also names WHAT conflicted — without it a parked head needed an offline
+    // `git merge-tree` replay in the pot-git store to diagnose.
+    const tickStatus = formatIntegratorTickStatus({
+      advanced: Boolean(outcome.announcement),
+      staging: outcome.integration?.staging,
+      gated: outcome.gated,
+      parked: outcome.integration?.skippedConflicts ?? [],
+      hostLocalResolved: outcome.integration?.resolvedHostLocalState?.length ?? 0,
+      errorCount: outcome.errors.length,
+    });
+    await decline(tickStatus.skipped, tickStatus.detail);
 
     if (outcome.announcement) {
       await actor.assertServing();
