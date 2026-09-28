@@ -1118,7 +1118,12 @@ function renderRelease(
     ? `<div class="changelog">${renderMarkdown(row.changelogMd)}</div>`
     : `<p class="empty">No changelog was written for this release.</p>`;
 
-  return `<section class="rel">
+  // The newest release the card carries — a folded hotfix's version, not the
+  // heading's. publish-release-history.sh binds the page to the release being
+  // shipped through this attribute (WI-10003687).
+  const newestVersion = hasHotfixes ? card.hotfixes[card.hotfixes.length - 1]!.row.version : row.version;
+
+  return `<section class="rel" data-newest-release="${escapeHtml(newestVersion)}">
   <div class="rel-head">
     <h2>${escapeHtml(row.version)}</h2>
     <span class="tag">${escapeHtml(row.channel)}</span>

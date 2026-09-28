@@ -1177,7 +1177,9 @@ describe('a platform-only hotfix shares the card of the release it patches (WI-1
     const html = renderIndexHtml([windowsHotfix, base], opts);
     expect(html).toContain('<h2>0.0.22</h2>');
     expect(html).not.toContain('<h2>0.0.23</h2>');
-    expect(html.match(/<section class="rel">/g)).toHaveLength(1);
+    expect(html.match(/<section class="rel"/g)).toHaveLength(1);
+    // The card declares the newest release it carries, which the publish guard binds to.
+    expect(html).toContain('<section class="rel" data-newest-release="0.0.23">');
     // Windows downloads are the 0.0.23 builds; the replaced 0.0.22 Windows builds are gone.
     expect(html).toContain('Papercusp GUI_0.0.23_x64-setup.exe');
     expect(html).toContain('Papercusp Server_0.0.23_x64-setup.exe');
