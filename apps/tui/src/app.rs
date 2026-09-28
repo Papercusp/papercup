@@ -67,7 +67,8 @@ pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
 /// status bar keep the full operator repair.
 /// The composer's session line and the empty chat's hint while no operator
 /// answers (P-021): sending a message opens setup, which offers the cloud path.
-pub const SETUP_DISCONNECTED_LABEL: &str = "not connected to an operator · send a message to open setup";
+pub const SETUP_DISCONNECTED_LABEL: &str =
+    "not connected to an operator · send a message to open setup";
 pub const CHAT_DISCONNECTED_HINT: &str = "Not connected — press i and send a message to open setup, where l signs in to Papercusp cloud.";
 pub const SETUP_UNREACHABLE_NOTE: &str = "Nothing answered at that address. For a local setup, install and start the separate Papercusp Server package from your Papercusp release download page, then press r. The desktop app is optional; l signs in to cloud and h uses a remote host.";
 
@@ -261,8 +262,13 @@ pub enum Action {
     /// Setup's remote choices (D-031): hand the terminal to the bundled psu,
     /// which runs PUI on a remote host. `sign_in` = sign in to Papercusp
     /// cloud first (`l`); otherwise pick a saved host or sign-in (`h`).
-    ConnectSessionSetup { sign_in: bool },
-    RegisterSetupProject { slug: String, path: String },
+    ConnectSessionSetup {
+        sign_in: bool,
+    },
+    RegisterSetupProject {
+        slug: String,
+        path: String,
+    },
     /// Open the fresh agent-chat identity already created by the Sessions
     /// Continue/Fork route. Unlike `OpenSuSession`, this must never create a
     /// second chat row when there is no initial owner turn.
@@ -1242,10 +1248,12 @@ pub fn parse_palette_command(input: &str) -> Option<PaletteCommand> {
         })),
         "rollback" | "roll-back" => Some(PaletteCommand::Lifecycle(LifecycleOp::Rollback)),
         "uninstall" => match arg.as_str() {
-            "" => Some(PaletteCommand::Lifecycle(LifecycleOp::Uninstall { purge: false })),
-            "purge" | "--purge" => {
-                Some(PaletteCommand::Lifecycle(LifecycleOp::Uninstall { purge: true }))
-            }
+            "" => Some(PaletteCommand::Lifecycle(LifecycleOp::Uninstall {
+                purge: false,
+            })),
+            "purge" | "--purge" => Some(PaletteCommand::Lifecycle(LifecycleOp::Uninstall {
+                purge: true,
+            })),
             _ => None,
         },
         "diagnostics" | "diag" => Some(PaletteCommand::Lifecycle(LifecycleOp::Diagnostics)),
@@ -4480,8 +4488,10 @@ impl App {
     /// reads the conversation's persisted class (P-013) and is not reproducible
     /// by eye at a second call site.
     fn dispatch_chat_turn(&mut self, draft: String) -> Option<Action> {
-        if self.require_session_setup && !self.session_setup_accepted
-            && self.agent_chat_id.is_none() && self.su_session.is_none()
+        if self.require_session_setup
+            && !self.session_setup_accepted
+            && self.agent_chat_id.is_none()
+            && self.su_session.is_none()
         {
             self.open_session_setup();
             if let Some(setup) = self.session_setup.as_mut() {
@@ -4909,7 +4919,10 @@ impl App {
         if self.pinned.is_some() {
             return resolve_context_projection_target(&self.roster);
         }
-        let chat_id = self.agent_chat_id.as_deref().filter(|id| !id.trim().is_empty())?;
+        let chat_id = self
+            .agent_chat_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())?;
         // The chat was loaded under the active harness; an attached SU session
         // reports the harness its canonical identity was minted in.
         let harness = self
@@ -4919,7 +4932,11 @@ impl App {
             .and_then(|identity| identity.harness_slug.clone())
             .or_else(|| Some(self.harness.clone()))
             .filter(|harness| !harness.trim().is_empty());
-        Some(ConversationContextProjectionTarget::new("agent_chat", chat_id, harness))
+        Some(ConversationContextProjectionTarget::new(
+            "agent_chat",
+            chat_id,
+            harness,
+        ))
     }
 
     /// Re-derive the Context target and drop every piece of state that belongs
@@ -5676,8 +5693,11 @@ impl App {
                             && setup.backend == crate::su_session::SuSessionBackend::Claude)
                 }) {
                     option.disabled = true;
-                    option.hint = Some(format!("This tier uses {}; choose a {} tier.",
-                        tier.backend.as_deref().unwrap_or("another backend"), setup.backend.label()));
+                    option.hint = Some(format!(
+                        "This tier uses {}; choose a {} tier.",
+                        tier.backend.as_deref().unwrap_or("another backend"),
+                        setup.backend.label()
+                    ));
                 }
             }
         }
@@ -5824,7 +5844,9 @@ impl App {
                         }
                         PickerAxis::Model => setup.model = session_config::model_pick(&id),
                         PickerAxis::Effort => setup.effort = session_config::effort_pick(&id),
-                        PickerAxis::Account => setup.account = session_config::chat_account_pick(&id),
+                        PickerAxis::Account => {
+                            setup.account = session_config::chat_account_pick(&id)
+                        }
                         PickerAxis::Mode => setup.mode = session_config::mode_pick(&id),
                         PickerAxis::Conversation => return Action::Render,
                     }
@@ -6893,12 +6915,17 @@ impl App {
     }
 
     pub fn open_session_setup(&mut self) {
-        if self.session_setup.is_some() { return; }
-        if self.chat_streaming || self.su_pending_turn.is_some() {
-            self.session_note = Some("Finish or reconcile the current turn before opening a new session.".into());
+        if self.session_setup.is_some() {
             return;
         }
-        let endpoint = self.backend_identity.as_ref()
+        if self.chat_streaming || self.su_pending_turn.is_some() {
+            self.session_note =
+                Some("Finish or reconcile the current turn before opening a new session.".into());
+            return;
+        }
+        let endpoint = self
+            .backend_identity
+            .as_ref()
             .map(|identity| identity.endpoint.clone())
             .unwrap_or_else(crate::client::selected_endpoint_label);
         let mut setup = crate::session_config::SessionSetup::new(endpoint, self.chat_input.clone());
@@ -6938,22 +6965,33 @@ impl App {
     }
 
     pub fn setup_projects(&self) -> Vec<String> {
-        let query = self.session_setup.as_ref()
-            .map(|setup| setup.project_query.to_lowercase()).unwrap_or_default();
-        self.harnesses.iter().filter(|project| project.slug.to_lowercase().contains(&query))
-            .map(|project| project.slug.clone()).collect()
+        let query = self
+            .session_setup
+            .as_ref()
+            .map(|setup| setup.project_query.to_lowercase())
+            .unwrap_or_default();
+        self.harnesses
+            .iter()
+            .filter(|project| project.slug.to_lowercase().contains(&query))
+            .map(|project| project.slug.clone())
+            .collect()
     }
 
     fn setup_backend_available(&self, backend: crate::su_session::SuSessionBackend) -> bool {
-        self.operator_config.agent.as_ref()
+        self.operator_config
+            .agent
+            .as_ref()
             .and_then(|config| config.binaries.get(backend.as_str()))
-            .and_then(|path| path.as_deref()).is_some_and(|path| !path.is_empty())
+            .and_then(|path| path.as_deref())
+            .is_some_and(|path| !path.is_empty())
     }
 
     pub fn setup_blocker(&self) -> Option<String> {
         let setup = self.session_setup.as_ref()?;
         if self.chat_streaming || self.su_pending_turn.is_some() {
-            return Some("Finish or reconcile the current turn before starting a new session.".into());
+            return Some(
+                "Finish or reconcile the current turn before starting a new session.".into(),
+            );
         }
         if let Some(error) = &self.backend_identity_error {
             // Nothing answering is the ordinary first run: setup already names
@@ -6966,18 +7004,31 @@ impl App {
             }
             return Some(format!("Operator unavailable: {error}"));
         }
-        let Some(identity) = &self.backend_identity else { return Some("Checking operator connection…".into()); };
+        let Some(identity) = &self.backend_identity else {
+            return Some("Checking operator connection…".into());
+        };
         if !identity.capabilities.attached_su_session {
-            return Some("This operator cannot run sessions inside PUI; update it before starting.".into());
+            return Some(
+                "This operator cannot run sessions inside PUI; update it before starting.".into(),
+            );
         }
         if !identity.capabilities.attached_su_session_approvals {
             return Some("Operator does not advertise safe native approvals. Update it before starting a new session.".into());
         }
         if setup.endpoint != identity.endpoint {
-            return Some("Operator selection changed. Close and reopen setup to review the new endpoint.".into());
+            return Some(
+                "Operator selection changed. Close and reopen setup to review the new endpoint."
+                    .into(),
+            );
         }
-        if !self.harnesses.iter().any(|project| project.slug == setup.project) {
-            return Some("Select a current project; a previous list cursor is not a selection.".into());
+        if !self
+            .harnesses
+            .iter()
+            .any(|project| project.slug == setup.project)
+        {
+            return Some(
+                "Select a current project; a previous list cursor is not a selection.".into(),
+            );
         }
         if setup.project != self.harness && !self.attachments.references().is_empty() {
             return Some("Attached files belong to the previous project. Keep that project or close setup and remove the attachments.".into());
@@ -6986,27 +7037,49 @@ impl App {
             return Some("Checking runtime configuration…".into());
         }
         if setup.step > 0 && !self.setup_backend_available(setup.backend) {
-            return Some(format!("{} is not available on this operator.", setup.backend.label()));
+            return Some(format!(
+                "{} is not available on this operator.",
+                setup.backend.label()
+            ));
         }
         if setup.step > 0 {
             let Some(config) = self.operator_config.agent.as_ref() else {
                 return Some("Waiting for current runtime configuration.".into());
             };
-            if setup.model.as_ref().is_some_and(|model| !self.operator_config.tiers.iter()
-                .any(|tier| &tier.spec == model
-                    && tier.loop_capability.as_ref().is_none_or(|cap| cap.executable)
-                    && tier.backend.as_deref().is_none_or(|backend| backend == setup.backend.as_str()
-                        || (backend == "claude-code" && setup.backend == crate::su_session::SuSessionBackend::Claude)))) {
+            if setup.model.as_ref().is_some_and(|model| {
+                !self.operator_config.tiers.iter().any(|tier| {
+                    &tier.spec == model
+                        && tier
+                            .loop_capability
+                            .as_ref()
+                            .is_none_or(|cap| cap.executable)
+                        && tier.backend.as_deref().is_none_or(|backend| {
+                            backend == setup.backend.as_str()
+                                || (backend == "claude-code"
+                                    && setup.backend == crate::su_session::SuSessionBackend::Claude)
+                        })
+                })
+            }) {
                 return Some("Selected model is no longer available for this backend.".into());
             }
-            if setup.effort.as_ref().is_some_and(|effort| !config.effort_levels.contains(effort)) {
+            if setup
+                .effort
+                .as_ref()
+                .is_some_and(|effort| !config.effort_levels.contains(effort))
+            {
                 return Some("Selected effort is no longer offered by the operator.".into());
             }
-            if setup.mode.as_ref().is_some_and(|mode| !config.launchable_modes.iter().any(|row| &row.id == mode)) {
+            if setup
+                .mode
+                .as_ref()
+                .is_some_and(|mode| !config.launchable_modes.iter().any(|row| &row.id == mode))
+            {
                 return Some("Selected mode is no longer offered by the operator.".into());
             }
-            if setup.account.as_ref().is_some_and(|account| !["auto", "default"].contains(&account.as_str())
-                && !self.account_rows.iter().any(|row| &row.id == account)) {
+            if setup.account.as_ref().is_some_and(|account| {
+                !["auto", "default"].contains(&account.as_str())
+                    && !self.account_rows.iter().any(|row| &row.id == account)
+            }) {
                 return Some("Selected account is no longer in the operator account list.".into());
             }
         }
@@ -7015,7 +7088,10 @@ impl App {
 
     fn session_setup_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
         let projects = self.setup_projects();
-        let setup = self.session_setup.as_mut().expect("setup key requires setup");
+        let setup = self
+            .session_setup
+            .as_mut()
+            .expect("setup key requires setup");
         if let Some(field) = setup.project_entry {
             if setup.project_pending {
                 if code == KeyCode::Esc {
@@ -7025,35 +7101,62 @@ impl App {
                 return Action::Render;
             }
             match code {
-                KeyCode::Esc => { setup.project_entry = None; setup.note = None; }
+                KeyCode::Esc => {
+                    setup.project_entry = None;
+                    setup.note = None;
+                }
                 KeyCode::BackTab | KeyCode::Tab => {
                     setup.project_entry = Some(if field == 0 { 1 } else { 0 });
                 }
-                KeyCode::Enter if field < 2 => { setup.project_entry = Some(field + 1); }
+                KeyCode::Enter if field < 2 => {
+                    setup.project_entry = Some(field + 1);
+                }
                 KeyCode::Enter => {
                     let slug = setup.project_name.trim();
-                    if slug.is_empty() || !slug.bytes().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == b'-')
-                        || !slug.as_bytes()[0].is_ascii_alphanumeric() {
+                    if slug.is_empty()
+                        || !slug
+                            .bytes()
+                            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == b'-')
+                        || !slug.as_bytes()[0].is_ascii_alphanumeric()
+                    {
                         setup.note = Some("Use a project name starting with a letter or number, then lowercase letters, numbers or hyphens.".into());
                         setup.project_entry = Some(0);
                     } else if !std::path::Path::new(setup.project_path.trim()).is_absolute() {
                         setup.note = Some("Enter the absolute path of an existing directory on the selected operator host.".into());
                         setup.project_entry = Some(1);
-                    } else if self.backend_identity.is_none() || self.backend_identity_error.is_some() {
-                        setup.note = Some("Connect to the selected operator before registering a project.".into());
+                    } else if self.backend_identity.is_none()
+                        || self.backend_identity_error.is_some()
+                    {
+                        setup.note = Some(
+                            "Connect to the selected operator before registering a project.".into(),
+                        );
                     } else {
                         setup.project_pending = true;
                         setup.note = Some("Registering project…".into());
-                        return Action::RegisterSetupProject { slug: slug.into(), path: setup.project_path.trim().into() };
+                        return Action::RegisterSetupProject {
+                            slug: slug.into(),
+                            path: setup.project_path.trim().into(),
+                        };
                     }
                 }
                 _ if field < 2 => {
-                    let input = if field == 0 { &mut setup.project_name } else { &mut setup.project_path };
+                    let input = if field == 0 {
+                        &mut setup.project_name
+                    } else {
+                        &mut setup.project_path
+                    };
                     match code {
-                        KeyCode::Backspace => { input.pop(); }
+                        KeyCode::Backspace => {
+                            input.pop();
+                        }
                         KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => input.clear(),
-                        KeyCode::Char(ch) if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                            && !ch.is_control() && input.len() < 4096 => input.push(ch),
+                        KeyCode::Char(ch)
+                            if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                                && !ch.is_control()
+                                && input.len() < 4096 =>
+                        {
+                            input.push(ch)
+                        }
                         _ => {}
                     }
                 }
@@ -7065,7 +7168,9 @@ impl App {
             match code {
                 KeyCode::Down => setup.help_scroll = setup.help_scroll.saturating_add(1).min(30),
                 KeyCode::Up => setup.help_scroll = setup.help_scroll.saturating_sub(1),
-                KeyCode::PageDown => setup.help_scroll = setup.help_scroll.saturating_add(8).min(30),
+                KeyCode::PageDown => {
+                    setup.help_scroll = setup.help_scroll.saturating_add(8).min(30)
+                }
                 KeyCode::PageUp => setup.help_scroll = setup.help_scroll.saturating_sub(8),
                 _ => setup.show_help = false,
             }
@@ -7084,16 +7189,23 @@ impl App {
                     setup.note = Some("Credential entered. Enter reconnects using this operator and token; Esc cancels.".into());
                     return Action::Render;
                 }
-                if self.agent_chat_id.is_some() || self.su_session.is_some()
-                    || self.chat_streaming || self.su_pending_turn.is_some()
-                    || !self.attachments.references().is_empty() || !self.chat_queued.is_empty() {
+                if self.agent_chat_id.is_some()
+                    || self.su_session.is_some()
+                    || self.chat_streaming
+                    || self.su_pending_turn.is_some()
+                    || !self.attachments.references().is_empty()
+                    || !self.chat_queued.is_empty()
+                {
                     setup.note = Some("Reconnect requires an unbound PUI with no queued turns or attachments. Open a fresh PUI for another operator; this draft is retained.".into());
                     return Action::Render;
                 }
                 let input = setup.endpoint_input.as_deref().unwrap_or(&setup.endpoint);
                 let endpoint = match crate::http::base_for_selection(input) {
                     Ok(endpoint) => endpoint,
-                    Err(error) => { setup.note = Some(error.to_string()); return Action::Render; }
+                    Err(error) => {
+                        setup.note = Some(error.to_string());
+                        return Action::Render;
+                    }
                 };
                 if setup.message.len() > 64 * 1024 || setup.message.contains('\0') {
                     setup.note = Some("This draft is too large to reconnect safely. Keep this window and open a fresh PUI for the other operator.".into());
@@ -7110,13 +7222,23 @@ impl App {
                 setup.editing_token = !setup.editing_token;
                 return Action::Render;
             }
-            let input = if setup.editing_token { &mut setup.token.0 }
-                else { setup.endpoint_input.as_mut().unwrap() };
+            let input = if setup.editing_token {
+                &mut setup.token.0
+            } else {
+                setup.endpoint_input.as_mut().unwrap()
+            };
             match code {
-                KeyCode::Backspace => { input.pop(); }
+                KeyCode::Backspace => {
+                    input.pop();
+                }
                 KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => input.clear(),
-                KeyCode::Char(ch) if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                    && !ch.is_control() && input.len() < 4096 => input.push(ch),
+                KeyCode::Char(ch)
+                    if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && !ch.is_control()
+                        && input.len() < 4096 =>
+                {
+                    input.push(ch)
+                }
                 _ => {}
             }
             return Action::Render;
@@ -7124,9 +7246,15 @@ impl App {
         if setup.editing_message {
             match code {
                 KeyCode::Esc => setup.editing_message = false,
-                KeyCode::Backspace => { setup.message.pop(); }
+                KeyCode::Backspace => {
+                    setup.message.pop();
+                }
                 KeyCode::Enter => setup.message.push('\n'),
-                KeyCode::Char(ch) if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => setup.message.push(ch),
+                KeyCode::Char(ch)
+                    if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    setup.message.push(ch)
+                }
                 _ => {}
             }
             return Action::Render;
@@ -7134,9 +7262,15 @@ impl App {
         if setup.project_searching {
             match code {
                 KeyCode::Esc | KeyCode::Enter => setup.project_searching = false,
-                KeyCode::Backspace => { setup.project_query.pop(); setup.project_cursor = 0; }
-                KeyCode::Char(ch) if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
-                    setup.project_query.push(ch); setup.project_cursor = 0;
+                KeyCode::Backspace => {
+                    setup.project_query.pop();
+                    setup.project_cursor = 0;
+                }
+                KeyCode::Char(ch)
+                    if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    setup.project_query.push(ch);
+                    setup.project_cursor = 0;
                 }
                 _ => {}
             }
@@ -7149,10 +7283,13 @@ impl App {
                 Action::Render
             }
             KeyCode::BackTab | KeyCode::Left if setup.step > 0 => {
-                setup.step -= 1; setup.note = None; Action::Render
+                setup.step -= 1;
+                setup.note = None;
+                Action::Render
             }
             KeyCode::Char('/') if setup.step == 0 => {
-                setup.project_searching = true; Action::Render
+                setup.project_searching = true;
+                Action::Render
             }
             KeyCode::Char('e') if setup.step == 0 => {
                 setup.endpoint_input = Some(setup.endpoint.clone());
@@ -7160,30 +7297,56 @@ impl App {
                 Action::Render
             }
             KeyCode::Char('c') if setup.step == 0 => {
-                setup.project_entry = Some(0); setup.note = None; Action::Render
+                setup.project_entry = Some(0);
+                setup.note = None;
+                Action::Render
             }
             KeyCode::Char('l') if setup.step == 0 => Action::ConnectSessionSetup { sign_in: true },
             KeyCode::Char('h') if setup.step == 0 => Action::ConnectSessionSetup { sign_in: false },
-            KeyCode::Char('?') => { setup.show_help = true; Action::Render }
+            KeyCode::Char('?') => {
+                setup.show_help = true;
+                Action::Render
+            }
             KeyCode::Down | KeyCode::Char('j') if setup.step == 0 => {
-                setup.project_cursor = (setup.project_cursor + 1).min(projects.len().saturating_sub(1));
+                setup.project_cursor =
+                    (setup.project_cursor + 1).min(projects.len().saturating_sub(1));
                 Action::Render
             }
             KeyCode::Up | KeyCode::Char('k') if setup.step == 0 => {
-                setup.project_cursor = setup.project_cursor.saturating_sub(1); Action::Render
+                setup.project_cursor = setup.project_cursor.saturating_sub(1);
+                Action::Render
             }
             KeyCode::Char('i') if setup.step == 2 => {
-                setup.editing_message = true; Action::Render
+                setup.editing_message = true;
+                Action::Render
             }
-            KeyCode::Char('b') if setup.step == 1 => { self.open_backend_picker(); Action::Render }
-            KeyCode::Char('m') if setup.step == 1 => { self.open_model_picker(); Action::Render }
-            KeyCode::Char('e') if setup.step == 1 => { self.open_effort_picker(); Action::Render }
-            KeyCode::Char('a') if setup.step == 1 => { self.open_account_picker(); Action::Render }
-            KeyCode::Char('u') if setup.step == 1 => { self.open_mode_picker(); Action::Render }
+            KeyCode::Char('b') if setup.step == 1 => {
+                self.open_backend_picker();
+                Action::Render
+            }
+            KeyCode::Char('m') if setup.step == 1 => {
+                self.open_model_picker();
+                Action::Render
+            }
+            KeyCode::Char('e') if setup.step == 1 => {
+                self.open_effort_picker();
+                Action::Render
+            }
+            KeyCode::Char('a') if setup.step == 1 => {
+                self.open_account_picker();
+                Action::Render
+            }
+            KeyCode::Char('u') if setup.step == 1 => {
+                self.open_mode_picker();
+                Action::Render
+            }
             KeyCode::Char('r') => Action::CheckSessionSetup,
             KeyCode::Enter => {
                 if setup.step == 0 {
-                    setup.project = projects.get(setup.project_cursor).cloned().unwrap_or_default();
+                    setup.project = projects
+                        .get(setup.project_cursor)
+                        .cloned()
+                        .unwrap_or_default();
                 }
                 if self.setup_blocker().is_some() {
                     // Clear the action note so the LIVE blocker renders; a stored
@@ -7196,7 +7359,11 @@ impl App {
                     return Action::Render;
                 }
                 let setup = self.session_setup.take().unwrap();
-                let project_index = self.harnesses.iter().position(|project| project.slug == setup.project).unwrap();
+                let project_index = self
+                    .harnesses
+                    .iter()
+                    .position(|project| project.slug == setup.project)
+                    .unwrap();
                 if self.harness != setup.project {
                     // The blocker above preserves any cross-project
                     // attachments rather than silently discarding them.
@@ -7219,13 +7386,19 @@ impl App {
                 self.chat_composing = true;
                 self.session_setup_accepted = true;
                 if !setup.message.trim().is_empty() {
-                    return self.dispatch_chat_turn(setup.message).unwrap_or(Action::Render);
+                    return self
+                        .dispatch_chat_turn(setup.message)
+                        .unwrap_or(Action::Render);
                 }
                 self.chat_streaming = true;
                 self.su_open_in_flight = true;
                 Action::OpenSuSession {
-                    harness: self.harness.clone(), role: "operator".into(), backend: setup.backend,
-                    carry: "warm".into(), launch: self.su_session_launch_options(), initial_turn: None,
+                    harness: self.harness.clone(),
+                    role: "operator".into(),
+                    backend: setup.backend,
+                    carry: "warm".into(),
+                    launch: self.su_session_launch_options(),
+                    initial_turn: None,
                 }
             }
             _ => Action::Render,
@@ -9318,16 +9491,35 @@ impl App {
                 if let Some(setup) = self.session_setup.as_mut() {
                     if let Some(field) = setup.project_entry {
                         if !setup.project_pending && field < 2 {
-                            let input = if field == 0 { &mut setup.project_name } else { &mut setup.project_path };
-                            input.extend(text.chars().filter(|ch| !ch.is_control()).take(4096usize.saturating_sub(input.len())));
+                            let input = if field == 0 {
+                                &mut setup.project_name
+                            } else {
+                                &mut setup.project_path
+                            };
+                            input.extend(
+                                text.chars()
+                                    .filter(|ch| !ch.is_control())
+                                    .take(4096usize.saturating_sub(input.len())),
+                            );
                         }
                     } else if setup.editing_token {
-                        setup.token.0.extend(text.chars().filter(|ch| !ch.is_control()).take(4096usize.saturating_sub(setup.token.0.len())));
+                        setup.token.0.extend(
+                            text.chars()
+                                .filter(|ch| !ch.is_control())
+                                .take(4096usize.saturating_sub(setup.token.0.len())),
+                        );
                     } else if let Some(input) = setup.endpoint_input.as_mut() {
-                        input.extend(text.chars().filter(|ch| !ch.is_control()).take(4096usize.saturating_sub(input.len())));
-                    } else if setup.editing_message { setup.message.push_str(&text); }
-                    else if setup.project_searching {
-                        setup.project_query.push_str(&text.replace(['\r', '\n'], " "));
+                        input.extend(
+                            text.chars()
+                                .filter(|ch| !ch.is_control())
+                                .take(4096usize.saturating_sub(input.len())),
+                        );
+                    } else if setup.editing_message {
+                        setup.message.push_str(&text);
+                    } else if setup.project_searching {
+                        setup
+                            .project_query
+                            .push_str(&text.replace(['\r', '\n'], " "));
                         setup.project_cursor = 0;
                     }
                     Action::Render
@@ -10473,7 +10665,11 @@ impl App {
             Event::BackendIdentity(result) => {
                 match result {
                     Ok(identity) => {
-                        if let Some(setup) = self.session_setup.as_mut().filter(|setup| setup.endpoint.is_empty()) {
+                        if let Some(setup) = self
+                            .session_setup
+                            .as_mut()
+                            .filter(|setup| setup.endpoint.is_empty())
+                        {
                             setup.endpoint = identity.endpoint.clone();
                         }
                         self.backend_identity = Some(identity);
@@ -11280,13 +11476,18 @@ impl App {
         if self.session_setup.is_some() {
             if self.session_picker.is_some() {
                 return match code {
-                    KeyCode::Esc => { self.session_picker = None; Action::Render }
+                    KeyCode::Esc => {
+                        self.session_picker = None;
+                        Action::Render
+                    }
                     KeyCode::Enter => self.commit_session_picker(),
                     KeyCode::Down | KeyCode::Char('j') => {
-                        self.session_picker.as_mut().unwrap().move_sel(1); Action::Render
+                        self.session_picker.as_mut().unwrap().move_sel(1);
+                        Action::Render
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        self.session_picker.as_mut().unwrap().move_sel(-1); Action::Render
+                        self.session_picker.as_mut().unwrap().move_sel(-1);
+                        Action::Render
                     }
                     _ => Action::Render,
                 };
@@ -13988,7 +14189,8 @@ mod tests {
             backend: crate::su_session::SuSessionBackend::Codex,
             ..su_binding()
         });
-        app.su_session.as_mut().unwrap().lifecycle = crate::su_session::SuSessionLifecycleState::Running;
+        app.su_session.as_mut().unwrap().lifecycle =
+            crate::su_session::SuSessionLifecycleState::Running;
         assert_eq!(
             app.su_dispatch_decision().target,
             crate::su_session::SuDispatchTarget::AttachedSuSession
@@ -14003,10 +14205,15 @@ mod tests {
             let decision = app.su_dispatch_decision();
             assert_eq!(
                 decision.target,
-                crate::su_session::SuDispatchTarget::OpenSuSession(crate::su_session::SuSessionBackend::Codex),
+                crate::su_session::SuDispatchTarget::OpenSuSession(
+                    crate::su_session::SuSessionBackend::Codex
+                ),
                 "{dead:?}"
             );
-            assert_eq!(decision.reason, crate::su_session::SuDispatchReason::HomedSuSession);
+            assert_eq!(
+                decision.reason,
+                crate::su_session::SuDispatchReason::HomedSuSession
+            );
         }
     }
 
@@ -14380,7 +14587,10 @@ mod tests {
                 .map(|target| target.session_id.as_str()),
             Some("chat-b")
         );
-        assert!(app.context_projection.is_none(), "chat-a's projection must not render as chat-b's");
+        assert!(
+            app.context_projection.is_none(),
+            "chat-a's projection must not render as chat-b's"
+        );
         assert_eq!(app.context_task_sel, 0);
         assert!(!app.context_task_pending);
 
@@ -14398,7 +14608,10 @@ mod tests {
             Action::FetchContextProjection
         );
         assert_eq!(app.tab, Tab::PlansBoard);
-        assert!(!app.chat_composing, "Context's task keys must not type into the draft");
+        assert!(
+            !app.chat_composing,
+            "Context's task keys must not type into the draft"
+        );
 
         // A task verb with nothing to act on stays a Context no-op — never the
         // destination the same letter means elsewhere (`s` is Sessions).
@@ -15092,10 +15305,20 @@ mod tests {
         a.open_model_picker();
         a.session_picker.as_mut().unwrap().move_sel(1);
         a.commit_session_picker();
-        let setup = a.session_setup.as_ref().expect("routes to the New SU session form");
+        let setup = a
+            .session_setup
+            .as_ref()
+            .expect("routes to the New SU session form");
         assert_eq!(setup.model.as_deref(), Some("opus:high"));
-        assert!(setup.note.as_deref().unwrap().starts_with("Applies to a new session"));
-        assert_eq!(a.chat_model, None, "the running conversation is not claimed to change");
+        assert!(setup
+            .note
+            .as_deref()
+            .unwrap()
+            .starts_with("Applies to a new session"));
+        assert_eq!(
+            a.chat_model, None,
+            "the running conversation is not claimed to change"
+        );
         assert!(a.session_picker.is_none());
     }
 
@@ -15110,7 +15333,10 @@ mod tests {
         a.commit_session_picker();
         a.set_operator_config(a.operator_config.clone());
         let note = a.session_setup.as_ref().unwrap().note.as_deref();
-        assert!(note.unwrap().starts_with("Applies to a new session"), "note survived the refresh: {note:?}");
+        assert!(
+            note.unwrap().starts_with("Applies to a new session"),
+            "note survived the refresh: {note:?}"
+        );
     }
 
     #[test]
@@ -15120,11 +15346,17 @@ mod tests {
         a.open_model_picker();
         a.session_picker.as_mut().unwrap().move_sel(1);
         a.commit_session_picker();
-        assert!(a.setup_blocker().is_some(), "fixture has no operator identity, so setup is blocked");
+        assert!(
+            a.setup_blocker().is_some(),
+            "fixture has no operator identity, so setup is blocked"
+        );
         a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         let setup = a.session_setup.as_ref().unwrap();
         assert_eq!(setup.step, 0, "a blocked Enter does not advance");
-        assert_eq!(setup.note, None, "the render falls back to setup_blocker(), which is always current");
+        assert_eq!(
+            setup.note, None,
+            "the render falls back to setup_blocker(), which is always current"
+        );
     }
 
     #[test]
@@ -15136,7 +15368,11 @@ mod tests {
         a.session_picker.as_mut().unwrap().move_sel(1);
         a.commit_session_picker();
         assert!(a.session_setup.is_none());
-        assert!(a.session_note.as_deref().unwrap().contains("Finish or reconcile"));
+        assert!(a
+            .session_note
+            .as_deref()
+            .unwrap()
+            .contains("Finish or reconcile"));
         assert_eq!(a.chat_model, None);
     }
 
@@ -15518,19 +15754,28 @@ mod tests {
     fn setup_app() -> App {
         let mut a = App::new();
         a.require_session_setup = true;
-        a.backend_identity = Some(serde_json::from_value(json!({
-            "schemaVersion":1,"endpoint":"http://127.0.0.1:3170","selectionSource":"test",
-            "transport":"http","workspaceId":"ws-test",
-            "store":{"id":"store-test","target":"test","source":"test"},
-            "build":{"version":"test","sha":null},
-            "agentChat":{"scope":"workspace:ws-test","route":"/api/agent-chats"},
-            "capabilities":{"attachedSuSession":true,"attachedSuSessionApprovals":true}
-        })).unwrap());
-        a.set_harnesses(vec![HarnessRef { slug: "chosen-project".into(), path: None }]);
-        a.operator_config.agent = Some(serde_json::from_value(json!({
-            "effectiveBackend":"claude-code",
-            "binaries":{"claude":"/test/claude","codex":"/test/codex","omp":null}
-        })).unwrap());
+        a.backend_identity = Some(
+            serde_json::from_value(json!({
+                "schemaVersion":1,"endpoint":"http://127.0.0.1:3170","selectionSource":"test",
+                "transport":"http","workspaceId":"ws-test",
+                "store":{"id":"store-test","target":"test","source":"test"},
+                "build":{"version":"test","sha":null},
+                "agentChat":{"scope":"workspace:ws-test","route":"/api/agent-chats"},
+                "capabilities":{"attachedSuSession":true,"attachedSuSessionApprovals":true}
+            }))
+            .unwrap(),
+        );
+        a.set_harnesses(vec![HarnessRef {
+            slug: "chosen-project".into(),
+            path: None,
+        }]);
+        a.operator_config.agent = Some(
+            serde_json::from_value(json!({
+                "effectiveBackend":"claude-code",
+                "binaries":{"claude":"/test/claude","codex":"/test/codex","omp":null}
+            }))
+            .unwrap(),
+        );
         a
     }
 
@@ -15540,7 +15785,10 @@ mod tests {
         a.tab = Tab::Operator;
         a.chat_composing = true;
         a.chat_input = "  first λ 雪  ".into();
-        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::CheckSessionSetup);
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::CheckSessionSetup
+        );
         assert!(a.su_pending_turn.is_none());
         assert!(!a.chat_streaming);
         for step in [1, 2] {
@@ -15549,8 +15797,13 @@ mod tests {
             assert!(a.su_pending_turn.is_none());
         }
         let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(action, Action::OpenSuSession { initial_turn: Some(ref text), .. } if text == "  first λ 雪  "));
-        assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "  first λ 雪  ");
+        assert!(
+            matches!(action, Action::OpenSuSession { initial_turn: Some(ref text), .. } if text == "  first λ 雪  ")
+        );
+        assert_eq!(
+            a.su_pending_turn.as_ref().unwrap().content,
+            "  first λ 雪  "
+        );
         assert!(a.session_setup.is_none());
         assert!(a.session_setup_accepted);
         assert!(a.launched.is_empty());
@@ -15564,11 +15817,18 @@ mod tests {
         a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         a.harnesses.clear();
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
-        assert_eq!(a.session_setup.as_ref().unwrap().step, 2, "a blocked start does not launch");
+        assert_eq!(
+            a.session_setup.as_ref().unwrap().step,
+            2,
+            "a blocked start does not launch"
+        );
         // The form renders `note` or, when none, the live blocker.
         assert_eq!(a.session_setup.as_ref().unwrap().note, None);
         assert!(a.setup_blocker().unwrap().contains("current project"));
-        a.harnesses.push(HarnessRef { slug: "chosen-project".into(), path: None });
+        a.harnesses.push(HarnessRef {
+            slug: "chosen-project".into(),
+            path: None,
+        });
         a.session_setup.as_mut().unwrap().backend = crate::su_session::SuSessionBackend::Omp;
         assert!(a.setup_blocker().unwrap().contains("OMP"));
         a.session_setup.as_mut().unwrap().backend = crate::su_session::SuSessionBackend::Codex;
@@ -15584,15 +15844,22 @@ mod tests {
         a.backend_identity = None;
         a.backend_identity_error = Some("connection refused".into());
         a.open_session_setup();
-        assert_eq!(a.on_key(KeyCode::Char('l'), KeyModifiers::NONE),
-            Action::ConnectSessionSetup { sign_in: true });
-        assert_eq!(a.on_key(KeyCode::Char('h'), KeyModifiers::NONE),
-            Action::ConnectSessionSetup { sign_in: false });
+        assert_eq!(
+            a.on_key(KeyCode::Char('l'), KeyModifiers::NONE),
+            Action::ConnectSessionSetup { sign_in: true }
+        );
+        assert_eq!(
+            a.on_key(KeyCode::Char('h'), KeyModifiers::NONE),
+            Action::ConnectSessionSetup { sign_in: false }
+        );
         // Choosing leaves the form (and its draft) intact for a failed hand-off.
         assert!(a.session_setup.is_some());
         // While searching projects, the letters are search text, not choices.
         a.on_key(KeyCode::Char('/'), KeyModifiers::NONE);
-        assert_eq!(a.on_key(KeyCode::Char('l'), KeyModifiers::NONE), Action::Render);
+        assert_eq!(
+            a.on_key(KeyCode::Char('l'), KeyModifiers::NONE),
+            Action::Render
+        );
         assert_eq!(a.session_setup.as_ref().unwrap().project_query, "l");
         assert!(a.launched.is_empty());
     }
@@ -15600,7 +15867,11 @@ mod tests {
     #[test]
     fn session_setup_refuses_an_operator_without_native_approval_guarantee() {
         let mut a = setup_app();
-        a.backend_identity.as_mut().unwrap().capabilities.attached_su_session_approvals = false;
+        a.backend_identity
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .attached_su_session_approvals = false;
         a.open_session_setup();
         assert!(a.setup_blocker().unwrap().contains("safe native approvals"));
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
@@ -15617,15 +15888,26 @@ mod tests {
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
         a.update(Event::Paste("/operator/projects/new".into()));
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
-        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::RegisterSetupProject {
-            slug: "new-project".into(), path: "/operator/projects/new".into(),
-        });
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::RegisterSetupProject {
+                slug: "new-project".into(),
+                path: "/operator/projects/new".into(),
+            }
+        );
         // Repeated Enter cannot duplicate the pending write.
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
-        a.update(Event::SetupProjectCreated { slug: "new-project".into(), result: Ok(vec![
-            HarnessRef { slug: "new-project".into(), path: Some("/operator/projects/new".into()) }
-        ]) });
-        assert_eq!(a.session_setup.as_ref().unwrap().message, "keep first draft");
+        a.update(Event::SetupProjectCreated {
+            slug: "new-project".into(),
+            result: Ok(vec![HarnessRef {
+                slug: "new-project".into(),
+                path: Some("/operator/projects/new".into()),
+            }]),
+        });
+        assert_eq!(
+            a.session_setup.as_ref().unwrap().message,
+            "keep first draft"
+        );
         assert!(a.session_setup.as_ref().unwrap().project.is_empty());
         assert!(a.su_pending_turn.is_none());
         a.on_key(KeyCode::Enter, KeyModifiers::NONE);
@@ -15656,9 +15938,13 @@ mod tests {
         let mut a = setup_app();
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("context.md"), "original context").unwrap();
-        a.attachments.add(crate::file_picker::attach(
-            tmp.path(), std::path::Path::new("context.md")).unwrap());
-        a.harnesses.push(HarnessRef { slug: "another-project".into(), path: None });
+        a.attachments.add(
+            crate::file_picker::attach(tmp.path(), std::path::Path::new("context.md")).unwrap(),
+        );
+        a.harnesses.push(HarnessRef {
+            slug: "another-project".into(),
+            path: None,
+        });
         a.open_session_setup();
         a.session_setup.as_mut().unwrap().project_cursor = 1;
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
@@ -15681,7 +15967,9 @@ mod tests {
         assert!(!format!("{:?}", a.session_setup).contains("fixture-secret"));
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
         let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
-        let Action::ReconnectSessionSetup(request) = action else { panic!("expected reconnect"); };
+        let Action::ReconnectSessionSetup(request) = action else {
+            panic!("expected reconnect");
+        };
         assert_eq!(request.endpoint, "https://operator.example:9443");
         assert_eq!(request.message, "  retained λ\nsecond line  ");
         assert_eq!(request.token.0, "fixture-secret");
@@ -15698,7 +15986,14 @@ mod tests {
         a.open_session_setup();
         a.on_key(KeyCode::Char('e'), KeyModifiers::NONE);
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
-        assert!(a.session_setup.as_ref().unwrap().note.as_deref().unwrap().contains("unbound"));
+        assert!(a
+            .session_setup
+            .as_ref()
+            .unwrap()
+            .note
+            .as_deref()
+            .unwrap()
+            .contains("unbound"));
         a.on_key(KeyCode::Esc, KeyModifiers::NONE);
         assert!(a.session_setup.as_ref().unwrap().endpoint_input.is_none());
         a.on_key(KeyCode::Esc, KeyModifiers::NONE);
@@ -15719,8 +16014,14 @@ mod tests {
         assert!(picker.options[2].disabled);
         a.session_picker.as_mut().unwrap().sel = 1;
         a.commit_session_picker();
-        assert_eq!(a.session_setup.as_ref().unwrap().backend, crate::su_session::SuSessionBackend::Codex);
-        assert_eq!(a.su_backend, Some(crate::su_session::SuSessionBackend::Claude));
+        assert_eq!(
+            a.session_setup.as_ref().unwrap().backend,
+            crate::su_session::SuSessionBackend::Codex
+        );
+        assert_eq!(
+            a.su_backend,
+            Some(crate::su_session::SuSessionBackend::Claude)
+        );
         a.session_setup.as_mut().unwrap().step = 2;
         a.on_key(KeyCode::Char('i'), KeyModifiers::NONE);
         a.update(Event::Paste("  multiline\nexact λ  ".into()));
@@ -15850,7 +16151,9 @@ mod tests {
         // Past the snapshot head the error is live, and it fails the turn.
         app.apply_su_session_event(error_at(4, "recovered engine failed"));
         assert_eq!(
-            app.su_pending_turn.as_ref().and_then(|p| p.error.as_deref()),
+            app.su_pending_turn
+                .as_ref()
+                .and_then(|p| p.error.as_deref()),
             Some("SU-session: recovered engine failed")
         );
     }
@@ -16459,33 +16762,59 @@ mod tests {
             a.tab = Tab::Operator;
             a.chat_composing = true;
             a.chat_input = "hello".into();
-            assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::CheckSessionSetup);
+            assert_eq!(
+                a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+                Action::CheckSessionSetup
+            );
             for _ in [1, 2] {
                 a.on_key(KeyCode::Enter, KeyModifiers::NONE);
             }
-            assert!(matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::OpenSuSession { .. }));
+            assert!(matches!(
+                a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+                Action::OpenSuSession { .. }
+            ));
             a.update(Event::AgentChatBound("chat-new".into()));
         };
         let frame = |a: &App| Event::SuSessionInventory {
             harness: a.harness.clone(),
             selected_chat_id: Some("chat-new".into()),
-            entries: vec![backend_row("chat-new", 7, B::Claude, L::Starting, R::Attached)],
+            entries: vec![backend_row(
+                "chat-new",
+                7,
+                B::Claude,
+                L::Starting,
+                R::Attached,
+            )],
         };
 
         let mut a = setup_app();
         opening(&mut a);
         let inventory = frame(&a);
-        assert_eq!(a.update(inventory), Action::Render, "the open in flight owns this session");
+        assert_eq!(
+            a.update(inventory),
+            Action::Render,
+            "the open in flight owns this session"
+        );
         a.update(Event::SuSessionOpened(su_binding()));
         let inventory = frame(&a);
-        assert_eq!(a.update(inventory), Action::Render, "a bound pane is never re-attached");
+        assert_eq!(
+            a.update(inventory),
+            Action::Render,
+            "a bound pane is never re-attached"
+        );
 
         // A failed open leaves nothing bound, so a live row is adoptable again.
         let mut a = setup_app();
         opening(&mut a);
         a.update(Event::SuSessionError("launch-su refused".into()));
         let inventory = frame(&a);
-        assert!(matches!(a.update(inventory), Action::AttachSuSession { adv_session_id: 7, .. }));
+        assert!(matches!(
+            a.update(inventory),
+            Action::AttachSuSession {
+                adv_session_id: 7,
+                ..
+            }
+        ));
     }
 
     /// The inventory row must honour the host's non-attachable verdicts, or a
@@ -19973,11 +20302,17 @@ mod tests {
     fn too_small_holds_input_and_a_resize_back_resumes_the_draft() {
         let mut a = composing("kept draft");
         a.update(Event::Resize(79, 40));
-        assert_eq!(a.on_key(KeyCode::Char('x'), KeyModifiers::NONE), Action::None);
+        assert_eq!(
+            a.on_key(KeyCode::Char('x'), KeyModifiers::NONE),
+            Action::None
+        );
         assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::None);
         assert_eq!(a.update(Event::Paste("pasted".into())), Action::None);
         a.update(Event::Resize(120, 19));
-        assert_eq!(a.on_key(KeyCode::Backspace, KeyModifiers::NONE), Action::None);
+        assert_eq!(
+            a.on_key(KeyCode::Backspace, KeyModifiers::NONE),
+            Action::None
+        );
         assert_eq!(a.chat_input, "kept draft", "nothing hidden changed");
         assert!(a.chat_composing && !a.should_quit);
 
@@ -21103,7 +21438,10 @@ mod tests {
             None,
             "an unknown uninstall argument is refused, never guessed"
         );
-        assert_eq!(parse_palette_command(":diagnostics"), lifecycle(L::Diagnostics));
+        assert_eq!(
+            parse_palette_command(":diagnostics"),
+            lifecycle(L::Diagnostics)
+        );
     }
 
     #[test]
@@ -21131,7 +21469,10 @@ mod tests {
             lines: vec!["rollback: 0.2.0-b → 0.1.0-a".into()],
             armed: Some(L::Rollback),
         }));
-        assert_eq!(app.on_key(KeyCode::Char('n'), KeyModifiers::NONE), Action::None);
+        assert_eq!(
+            app.on_key(KeyCode::Char('n'), KeyModifiers::NONE),
+            Action::None
+        );
         assert_eq!(
             app.on_key(KeyCode::Char('y'), KeyModifiers::NONE),
             Action::Lifecycle {
@@ -21168,7 +21509,11 @@ mod tests {
                 lines: vec!["remove releases: …".into()],
                 armed: Some(L::Uninstall { purge: true }),
             }));
-            assert_eq!(app.on_key(close, KeyModifiers::NONE), Action::Render, "{close:?}");
+            assert_eq!(
+                app.on_key(close, KeyModifiers::NONE),
+                Action::Render,
+                "{close:?}"
+            );
             assert!(app.lifecycle.is_none(), "{close:?}");
         }
     }
@@ -25296,16 +25641,28 @@ mod first_run_copy_tests {
     use crate::http::{RendezvousError, RendezvousFailure};
 
     fn unreachable_line() -> String {
-        RendezvousError::new(RendezvousFailure::Unreachable, "http://127.0.0.1:9", "refused").status_line()
+        RendezvousError::new(
+            RendezvousFailure::Unreachable,
+            "http://127.0.0.1:9",
+            "refused",
+        )
+        .status_line()
     }
 
     #[test]
     fn every_failure_kind_survives_the_status_line() {
         for kind in RendezvousFailure::ALL {
             let line = RendezvousError::new(kind, "https://op.example:9443", "d").status_line();
-            assert_eq!(RendezvousFailure::of_status_line(&line), Some(kind), "{line}");
+            assert_eq!(
+                RendezvousFailure::of_status_line(&line),
+                Some(kind),
+                "{line}"
+            );
         }
-        assert_eq!(RendezvousFailure::of_status_line("sse subscribe: GET /api/x"), None);
+        assert_eq!(
+            RendezvousFailure::of_status_line("sse subscribe: GET /api/x"),
+            None
+        );
     }
 
     #[test]
@@ -25317,14 +25674,23 @@ mod first_run_copy_tests {
         assert_eq!(note, SETUP_UNREACHABLE_NOTE);
         assert!(note.contains("Papercusp Server"));
         assert!(note.contains("release download page"));
-        for internal in ["curl", "PUI_OPERATOR", "silently fall back", "--connect-login"] {
+        for internal in [
+            "curl",
+            "PUI_OPERATOR",
+            "silently fall back",
+            "--connect-login",
+        ] {
             assert!(!note.contains(internal), "{internal} in {note}");
         }
         // Other failures keep their specific repair: the user must act on it.
         app.backend_identity_error = Some(
-            RendezvousError::new(RendezvousFailure::Auth, "https://op.example", "401").status_line(),
+            RendezvousError::new(RendezvousFailure::Auth, "https://op.example", "401")
+                .status_line(),
         );
-        assert!(app.setup_blocker().unwrap().starts_with("Operator unavailable: operator auth"));
+        assert!(app
+            .setup_blocker()
+            .unwrap()
+            .starts_with("Operator unavailable: operator auth"));
     }
 
     #[test]
