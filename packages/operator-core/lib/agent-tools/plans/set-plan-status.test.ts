@@ -199,6 +199,28 @@ describe('launchAcceptanceGraderForGate (D-006)', () => {
     );
   });
 
+  // WI-10003286: a self_graded_only refusal that names the independent card its BAR
+  // judged cohort-stale must hand that id to the recruiter, whose settlement read would
+  // otherwise count the stale card as "settled" and never dispatch the fresh grading.
+  it('carries the cohort-stale independent card from a self_graded_only refusal to the recruiter', async () => {
+    const launch = vi.fn(async () => ({
+      state: 'launched' as const,
+      idempotencyKey: 'acceptance-grader:key',
+      label: 'acceptance-grader:rubric:key',
+    }));
+    await launchAcceptanceGraderForGate(
+      'plan-a',
+      { satisfied: false, code: 'self_graded_only', staleGradingScorecardId: 'EI-stale-independent' },
+      { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as never,
+      'papercusp',
+      launch as never,
+    );
+    expect(launch).toHaveBeenCalledWith(
+      'plan-a',
+      expect.objectContaining({ acceptanceStaleGradingScorecardId: 'EI-stale-independent' }),
+    );
+  });
+
   it('does not recruit a judge for unrelated acceptance failures', async () => {
     const launch = vi.fn();
     const result = await launchAcceptanceGraderForGate(

@@ -318,7 +318,7 @@ export const ACCEPTANCE_GRADER_GATE_CODES = new Set(['acceptance_ungraded', 'sel
  * all dead / degraded) does it fall through to the original fresh-judge launch. */
 export async function launchAcceptanceGraderForGate(
   slug: string,
-  gate: { satisfied: boolean; code?: string },
+  gate: { satisfied: boolean; code?: string; staleGradingScorecardId?: string },
   ctx: Parameters<typeof launchAcceptanceGrader>[1],
   harness: string | undefined,
   launch: typeof launchAcceptanceGrader = resolveAcceptanceGrader,
@@ -355,6 +355,9 @@ export async function launchAcceptanceGraderForGate(
   return launch(slug, {
     ...scopedCtx,
     acceptanceShipperOwnerId,
+    // WI-10003286: a cohort-stale independent card must not read as settled, or the
+    // recruiter answers the gate's "re-grade" with "already done" on every retry.
+    ...(gate.staleGradingScorecardId ? { acceptanceStaleGradingScorecardId: gate.staleGradingScorecardId } : {}),
     uiClientId: null,
     isSuperuser: false,
     isPowerUser: false,
