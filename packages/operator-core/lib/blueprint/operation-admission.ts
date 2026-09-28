@@ -341,15 +341,12 @@ async function acceptBlueprintDirectWorkItemScoped(
             requestKey: key,
             requestFingerprint: fingerprint,
           };
-          if (!receipt) {
-            await tx`
-          INSERT INTO harness_shared.blueprint_operation_invocations
-            (workspace_id, harness_slug, caller_id, operation_id, request_key, request_fingerprint,
-             specification_revision, target_kind)
-          VALUES (${request.workspaceId}, ${request.harnessSlug}, ${callerId}, ${request.operationId}, ${key},
-                  ${fingerprint}, ${revision}, 'work-item')
-        `;
-          }
+          // WI-10003631 (P-013 C): the receipt is written ONCE, after the item
+          // exists, with target_ref set. The advisory xact lock above already
+          // serializes same-key callers, and the old INSERT-then-UPDATE pair
+          // committed together in this same tx, so a crash between
+          // createWorkItem and commit leaves no receipt in either shape; the
+          // findDirectItemByRequest payload scan recovers it on retry.
           const item = await createWorkItem({
             kind: operation.target.itemKind as WorkItemKind,
             title: request.title.trim(),
@@ -359,12 +356,22 @@ async function acceptBlueprintDirectWorkItemScoped(
             createdBy: request.createdBy,
             payload: { blueprintOperation: pin },
           });
-          await tx`
-        UPDATE harness_shared.blueprint_operation_invocations SET target_ref = ${item.id}, updated_at = now()
-         WHERE workspace_id = ${request.workspaceId} AND harness_slug = ${request.harnessSlug}
-           AND caller_id = ${callerId}
-           AND operation_id = ${request.operationId} AND request_key = ${key}
-      `;
+          if (receipt) {
+            await tx`
+          UPDATE harness_shared.blueprint_operation_invocations SET target_ref = ${item.id}, updated_at = now()
+           WHERE workspace_id = ${request.workspaceId} AND harness_slug = ${request.harnessSlug}
+             AND caller_id = ${callerId}
+             AND operation_id = ${request.operationId} AND request_key = ${key}
+        `;
+          } else {
+            await tx`
+          INSERT INTO harness_shared.blueprint_operation_invocations
+            (workspace_id, harness_slug, caller_id, operation_id, request_key, request_fingerprint,
+             specification_revision, target_kind, target_ref)
+          VALUES (${request.workspaceId}, ${request.harnessSlug}, ${callerId}, ${request.operationId}, ${key},
+                  ${fingerprint}, ${revision}, 'work-item', ${item.id})
+        `;
+          }
           return item;
         })),
     );
