@@ -1159,6 +1159,117 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     }
   });
 
+  it('routes a request-only-host tower git-sync refusal to the named background-worker host, and fails closed on a refused publish', () => {
+    // WI-2039874, P-505 run 11 (2026-09-28): the tower's request-serving
+    // operator (:3070, PAPERCUSP_BACKGROUND_WORKERS=0) refused the Phase B
+    // source publish as request-only-host. The scenario wrote the refusal to
+    // source-publish-raw.json and moved on, so the tower never re-signed its
+    // namespace and the VM receive loop waited out a publish that never ran.
+    const retryStart = physicalScenario.indexOf('git_sync_refusal_retry_url() {');
+    const runStart = physicalScenario.indexOf('run_tower_git_sync() {');
+    const requireStart = physicalScenario.indexOf('require_git_sync_fired() {');
+    expect(retryStart).toBeGreaterThan(-1);
+    expect(runStart).toBeGreaterThan(retryStart);
+    expect(requireStart).toBeGreaterThan(runStart);
+    const functions = physicalScenario.slice(retryStart, physicalScenario.indexOf('\n}\n', requireStart) + 3);
+
+    // Every mutating fire whose effect a later step depends on is checked; the
+    // tolerant receive/bridge polling loops are not.
+    for (const site of [
+      'run_tower_git_sync >"$forward_dir/source-publish-raw.json"',
+      'run_vm_git_sync >"$reverse_dir/source-publish-raw.json"',
+      'run_vm_git_sync >"$first_dir/publish-raw.json"',
+      'run_tower_git_sync >"$first_dir/integrate-raw.json"',
+      'run_tower_git_sync >"$dirty_dir/integrate-raw.json"',
+      'run_tower_git_sync >"$phase_dir/tower-member-raw.json"',
+      'run_vm_git_sync >"$phase_dir/vm-member-raw.json"',
+      'run_tower_git_sync >"$phase_dir/healthy-ingress-raw.json"',
+      'run_tower_git_sync >"$phase_dir/healthy-integrate-raw.json"',
+      'run_tower_git_sync >"$phase_dir/healthy-egress-raw.json"',
+      'run_tower_git_sync >"$phase_dir/divergence-egress-raw.json"',
+      'run_tower_git_sync >"$phase_dir/rollback-tower-raw.json"',
+      'run_vm_git_sync >"$phase_dir/rollback-vm-raw.json"',
+    ]) {
+      const at = physicalScenario.indexOf(site);
+      expect(at, site).toBeGreaterThan(-1);
+      const next = physicalScenario.slice(at + site.length, physicalScenario.indexOf('\n', physicalScenario.indexOf('\n', at) + 1) + 1);
+      expect(next, site).toContain('require_git_sync_fired ');
+    }
+
+    const refusal = JSON.stringify({
+      ok: false, fired: false, status: 'refused', success: false, committed: false, reason: 'request-only-host',
+      retry: { tool: 'git-sync:run', host_role: 'background-workers', dev_box_url: 'http://127.0.0.1:3271' },
+    });
+    const fired = JSON.stringify({ ok: true, fired: true, status: 'committed', success: true, committed: true });
+    const root = mkdtempSync(join(tmpdir(), 'hive-git-tower-sync-'));
+    try {
+      const log = join(root, 'ptool.log');
+      const out = join(root, 'publish-raw.json');
+      const ptool = join(root, 'ptool');
+      writeFileSync(ptool, [
+        '#!/usr/bin/env bash',
+        `printf '%s\\n' "$*" >> '${log}'`,
+        'cat >/dev/null',
+        'case "$STUB_MODE:$*" in',
+        `  direct:*) printf '%s\\n' '${fired}' ;;`,
+        `  route:*--url=http://127.0.0.1:3271*) printf '%s\\n' '${fired}' ;;`,
+        `  *) printf '%s\\n' '${refusal}' ;;`,
+        'esac',
+        '',
+      ].join('\n'));
+      chmodSync(ptool, 0o755);
+
+      const run = (mode: 'direct' | 'route' | 'refuse') => {
+        rmSync(log, { force: true });
+        const script = [
+          'set -euo pipefail',
+          `TOWER_CALL='${ptool}'`,
+          'TOWER_GIT_SYNC_SLUG=hello-world-3-pot',
+          'PHASE_A_POT_HOME=hello-world-3-pot',
+          "fail() { printf 'FAIL: %s\\n' \"$*\" >&2; exit 9; }",
+          functions,
+          `run_tower_git_sync >'${out}'`,
+          `require_git_sync_fired '${out}' 'tower source-publish'`,
+          'echo PUBLISH_OK',
+        ].join('\n');
+        const result = spawnSync('bash', ['-c', script], {
+          encoding: 'utf8',
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
+          env: { ...process.env, STUB_MODE: mode },
+        });
+        const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
+        return { ...result, calls, output: existsSync(out) ? readFileSync(out, 'utf8') : '' };
+      };
+
+      // A host that can fire does so on the first call; no second call.
+      const direct = run('direct');
+      expect(direct.status, direct.stderr).toBe(0);
+      expect(direct.stdout).toContain('PUBLISH_OK');
+      expect(direct.calls).toHaveLength(1);
+      expect(direct.calls[0]).not.toContain('--url=');
+
+      // The observed incident: refused on the request-only host, then fired on
+      // the host the refusal names, and the recorded result is the fired one.
+      const routed = run('route');
+      expect(routed.status, routed.stderr).toBe(0);
+      expect(routed.stdout).toContain('PUBLISH_OK');
+      expect(routed.calls).toHaveLength(2);
+      expect(routed.calls[0]).not.toContain('--url=');
+      expect(routed.calls[1]).toContain('--url=http://127.0.0.1:3271');
+      expect(JSON.parse(routed.output).fired).toBe(true);
+
+      // Still refused after routing: fail closed at the publish, not 20
+      // minutes later in the receive loop.
+      const refused = run('refuse');
+      expect(refused.status).toBe(9);
+      expect(refused.stdout).not.toContain('PUBLISH_OK');
+      expect(refused.stderr).toContain('tower source-publish git-sync:run did not fire (refused: request-only-host)');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('pins a falsifiable Phase A cold-join adapter contract with no command override', () => {
     const phaseAScenario = physicalScenario.slice(
       physicalScenario.indexOf('phase_a_storage_join()'),
