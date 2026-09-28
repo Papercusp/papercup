@@ -222,6 +222,8 @@ const restartModule = await import('./restart');
 const tool = restartModule.default;
 const { RESTART_TARGETS } = restartModule;
 const {
+  bgHostIntegrationRootFromUnitProperties,
+  configureBgHostIntegrationRootResolverForTests,
   configureBgHostRestartFreshnessReaderForTests,
   configureStagingRestartReadinessReaderForTests,
   configureSystemdDaemonReloaderForTests,
@@ -249,6 +251,9 @@ const freshnessM = vi.fn(
     newestSourcePath: null,
   }),
 );
+/** WI-10003606: the root bg-host's own unit names — deliberately NOT the serving operator's. */
+const BG_HOST_UNIT_ROOT = '/fixture/canonical-tree';
+const bgHostRootM = vi.fn(async (): Promise<string | null> => BG_HOST_UNIT_ROOT);
 const systemdDaemonReloadM = vi.fn(async (): Promise<void> => undefined);
 const stagingReadinessM = vi.fn(
   async (before: { mainPid?: number }): Promise<StagingRestartReadiness> => ({
@@ -308,6 +313,8 @@ beforeEach(() => {
     newestSourcePath: null,
   });
   configureBgHostRestartFreshnessReaderForTests(freshnessM);
+  bgHostRootM.mockResolvedValue(BG_HOST_UNIT_ROOT);
+  configureBgHostIntegrationRootResolverForTests(bgHostRootM);
   configureStagingRestartReadinessReaderForTests(stagingReadinessM);
   configureSystemdDaemonReloaderForTests(systemdDaemonReloadM);
   releaseM.mockResolvedValue({
@@ -351,6 +358,7 @@ beforeEach(() => {
 
 afterAll(() => {
   configureBgHostRestartFreshnessReaderForTests();
+  configureBgHostIntegrationRootResolverForTests();
   configureStagingRestartReadinessReaderForTests();
   configureSystemdDaemonReloaderForTests();
   if (ORIGINAL_ENV === undefined) delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
@@ -392,6 +400,37 @@ describe('evaluateBgHostRestartFreshness (WI-207443)', () => {
         newestSourcePath: 'x.ts',
       }),
     ).toMatchObject({ treeChangedSinceRestart: null, checked: false });
+  });
+});
+
+describe('bgHostIntegrationRootFromUnitProperties (WI-10003606)', () => {
+  it("prefers the unit's own PAPERCUSP_INTEGRATION_ROOT among other environment entries", () => {
+    expect(
+      bgHostIntegrationRootFromUnitProperties(
+        [
+          'Environment=FOO=1 PAPERCUSP_INTEGRATION_ROOT=/home/u/papercusp MALLOC_ARENA_MAX=2',
+          'WorkingDirectory=/elsewhere/apps/operator',
+        ].join('\n'),
+      ),
+    ).toBe('/home/u/papercusp');
+  });
+
+  it('reads a quoted environment token', () => {
+    expect(
+      bgHostIntegrationRootFromUnitProperties('Environment="A=b c" "PAPERCUSP_INTEGRATION_ROOT=/srv/tree"\n'),
+    ).toBe('/srv/tree');
+  });
+
+  it('falls back to the <root>/apps/operator working directory when the unit sets no root', () => {
+    expect(
+      bgHostIntegrationRootFromUnitProperties('Environment=FOO=1\nWorkingDirectory=/home/u/papercusp/apps/operator/\n'),
+    ).toBe('/home/u/papercusp');
+  });
+
+  it('returns UNKNOWN for an unrecognised layout instead of guessing', () => {
+    expect(bgHostIntegrationRootFromUnitProperties('Environment=\nWorkingDirectory=/opt/bg\n')).toBeNull();
+    expect(bgHostIntegrationRootFromUnitProperties('Environment=PAPERCUSP_INTEGRATION_ROOT=relative/root\n')).toBeNull();
+    expect(bgHostIntegrationRootFromUnitProperties('')).toBeNull();
   });
 });
 
@@ -1665,6 +1704,76 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(b.note).not.toMatch(/NOT loaded/i);
     expect(guardM).not.toHaveBeenCalled();
     expect(spawnM).not.toHaveBeenCalled();
+  });
+
+  it("WI-10003606: scans bg-host's own tree, never the serving operator's PAPERCUSP_INTEGRATION_ROOT", async () => {
+    const originalRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = '/fixture/serving-staging-checkout';
+    try {
+      acquireM.mockResolvedValue({
+        ok: false,
+        reason: 'held_exclusive',
+        holders: [
+          {
+            resource: 'bg-host-cooldown',
+            lock_id: 'lock-peer-bg-6062',
+            owner: 'peer-bg',
+            owner_label: 'peer-bg-host',
+            mode: 'exclusive',
+            status: 'held',
+            reason: '',
+            acquired_ts: new Date(),
+            expires_ts: new Date(),
+            fence_seq: 1,
+          },
+        ],
+      });
+      probeM.mockResolvedValue({ ok: true, mainPid: 6062, secondsSinceStart: 30 });
+      freshnessM.mockImplementation(async (root: string) =>
+        root === BG_HOST_UNIT_ROOT
+          ? { bundleMtimeMs: 10_000, newestSourceMtimeMs: 10_001, newestSourcePath: 'packages/operator-core/lib/x.ts' }
+          : { bundleMtimeMs: 10_001, newestSourceMtimeMs: 10_000, newestSourcePath: 'packages/operator-core/lib/x.ts' },
+      );
+
+      const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+      expect(freshnessM).toHaveBeenCalledTimes(1);
+      expect(freshnessM).toHaveBeenCalledWith(BG_HOST_UNIT_ROOT);
+      expect(b).toMatchObject({ coalesced: true, treeChangedSinceRestart: true, freshnessVerified: true });
+      expect(b.note).toMatch(/requested edit is NOT loaded/i);
+    } finally {
+      if (originalRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = originalRoot;
+    }
+  });
+
+  it('WI-10003606: an unresolvable bg-host root reports UNKNOWN freshness instead of a clean verdict', async () => {
+    acquireM.mockResolvedValue({
+      ok: false,
+      reason: 'held_exclusive',
+      holders: [
+        {
+          resource: 'bg-host-cooldown',
+          lock_id: 'lock-peer-bg-6063',
+          owner: 'peer-bg',
+          owner_label: 'peer-bg-host',
+          mode: 'exclusive',
+          status: 'held',
+          reason: '',
+          acquired_ts: new Date(),
+          expires_ts: new Date(),
+          fence_seq: 1,
+        },
+      ],
+    });
+    probeM.mockResolvedValue({ ok: true, mainPid: 6063, secondsSinceStart: 30 });
+    bgHostRootM.mockResolvedValue(null);
+
+    const b = body(await call({ confirm: true, target: 'bg-host' }));
+
+    expect(freshnessM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ coalesced: true, treeChangedSinceRestart: null, freshnessVerified: false });
+    expect(b.note).toMatch(/could NOT be verified/i);
   });
 
   it('EI-11137: PHANTOM coalesce — marker held but systemd shows NO recent restart ⇒ refuses to coalesce and fires a real restart', async () => {

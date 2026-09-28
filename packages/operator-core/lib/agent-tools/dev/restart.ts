@@ -68,7 +68,7 @@
 import { z } from 'zod';
 import { execFile, spawn } from 'node:child_process';
 import { statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { readProcessCgroupPath } from '../../task-manager/cgroup-read';
 import { promisify } from 'node:util';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -297,18 +297,80 @@ export function configureBgHostRestartFreshnessReaderForTests(
   bgHostRestartFreshnessReader = reader;
 }
 
+/**
+ * WI-10003606: bg-host bundles from ITS OWN integration root, which is not the
+ * root of the operator serving this tool. dev:restart runs inside the :3070 /
+ * :3170 operator, whose PAPERCUSP_INTEGRATION_ROOT names papercup-release /
+ * papercusp-staging, while papercusp-bg-host.service runs from the canonical
+ * tree. Scanning the caller's root compared the wrong bundle with the wrong
+ * sources, and reported a confident `treeChangedSinceRestart:false` for an
+ * edit the running bg-host had never loaded (measured 2026-09-28 05:44Z).
+ *
+ * PURE — parse `systemctl --user show <unit> -p Environment -p WorkingDirectory`.
+ * The unit's own PAPERCUSP_INTEGRATION_ROOT wins; otherwise the unit's
+ * `<root>/apps/operator` WorkingDirectory implies the root. Any other layout
+ * is UNKNOWN (null), never a guess.
+ */
+export function bgHostIntegrationRootFromUnitProperties(stdout: string): string | null {
+  let envRoot: string | null = null;
+  let workingDirectory: string | null = null;
+  for (const line of stdout.split('\n')) {
+    if (line.startsWith('Environment=')) {
+      const match = /(?:^|\s)"?PAPERCUSP_INTEGRATION_ROOT=([^"\s]+)/.exec(line.slice('Environment='.length));
+      if (match) envRoot = match[1]!;
+    } else if (line.startsWith('WorkingDirectory=')) {
+      workingDirectory = line.slice('WorkingDirectory='.length).trim() || null;
+    }
+  }
+  if (envRoot && isAbsolute(envRoot)) return envRoot;
+  const normalizedWorkingDirectory = workingDirectory?.replace(/\/+$/, '') ?? null;
+  if (
+    normalizedWorkingDirectory &&
+    isAbsolute(normalizedWorkingDirectory) &&
+    normalizedWorkingDirectory.endsWith('/apps/operator')
+  ) {
+    return resolve(normalizedWorkingDirectory, '..', '..');
+  }
+  return null;
+}
+
+export type BgHostIntegrationRootResolver = () => Promise<string | null>;
+
+const defaultBgHostIntegrationRootResolver: BgHostIntegrationRootResolver = async () => {
+  const { stdout } = await runExecFile(
+    'systemctl',
+    ['--user', 'show', RESTART_TARGET_UNITS['bg-host'], '-p', 'Environment', '-p', 'WorkingDirectory'],
+    { cwd: process.cwd(), timeout: 5000, maxBuffer: 1024 * 1024 },
+  );
+  return bgHostIntegrationRootFromUnitProperties(stdout);
+};
+
+let bgHostIntegrationRootResolver = defaultBgHostIntegrationRootResolver;
+
+/** Test seam — tests pin the bg-host root so they never shell out to systemctl. */
+export function configureBgHostIntegrationRootResolverForTests(
+  resolver: BgHostIntegrationRootResolver = defaultBgHostIntegrationRootResolver,
+): void {
+  bgHostIntegrationRootResolver = resolver;
+}
+
+const UNKNOWN_BG_HOST_FRESHNESS: BgHostRestartFreshness = {
+  bundleMtimeMs: null,
+  newestSourceMtimeMs: null,
+  newestSourcePath: null,
+  treeChangedSinceRestart: null,
+  checked: false,
+};
+
 async function readBgHostRestartFreshness(): Promise<BgHostRestartFreshness> {
-  const integrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim() || resolve(process.cwd(), '..', '..');
   try {
+    const integrationRoot = await bgHostIntegrationRootResolver();
+    // Never fall back to the serving operator's root: that is the WI-10003606
+    // false-fresh verdict. An unresolvable bg-host root is UNKNOWN.
+    if (!integrationRoot) return { ...UNKNOWN_BG_HOST_FRESHNESS };
     return evaluateBgHostRestartFreshness(await bgHostRestartFreshnessReader(integrationRoot));
   } catch {
-    return {
-      bundleMtimeMs: null,
-      newestSourceMtimeMs: null,
-      newestSourcePath: null,
-      treeChangedSinceRestart: null,
-      checked: false,
-    };
+    return { ...UNKNOWN_BG_HOST_FRESHNESS };
   }
 }
 
