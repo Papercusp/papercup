@@ -31,28 +31,28 @@ export function materializeCommit({ repo, sha, dest, allow, prefix }: {
 export function noticeText(manifest: any): string;
 export function startHereText(dir: any, manifest: any): Promise<string>;
 /**
- * Export one pinned commit as the public-safe cut into `out` (must not exist).
- * Deterministic for a given commit — no timestamps — so a drift check compares
- * content, not clock.
- * @param {{ repoRoot?: string, ref?: string, out: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
- */
-/**
  * The copyright year of `commit`: the newest commit date in its recent first-parent history.
  * The commit's own date is unusable — repair-queue admission commits carry a fixed 2000-01-01.
  * @param {string} repo
  * @param {string} commit
  */
 export function sourceYear(repo: string, commit: string): number;
+/**
+ * Export one pinned commit as the public-safe cut into `out` (must not exist).
+ * Deterministic for a given commit — no timestamps — so a drift check compares
+ * content, not clock.
+ * @param {{ repoRoot?: string, ref?: string, out: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
+ */
 export function exportSnapshot({ repoRoot, ref, out, selectScript, selectionLib, env, log, }: {
-    repoRoot?: string | undefined;
-    ref?: string | undefined;
-    out: any;
-    selectScript?: string | undefined;
-    selectionLib?: string | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
-    log?: (() => void) | undefined;
+    repoRoot?: string;
+    ref?: string;
+    out: string;
+    selectScript?: string;
+    selectionLib?: string;
+    env?: NodeJS.ProcessEnv;
+    log?: Log;
 }): Promise<{
-    out: any;
+    out: string;
     manifest: {
         schema: number;
         purpose: string;

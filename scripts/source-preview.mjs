@@ -249,12 +249,6 @@ export async function startHereText(dir, manifest) {
 }
 
 /**
- * Export one pinned commit as the public-safe cut into `out` (must not exist).
- * Deterministic for a given commit — no timestamps — so a drift check compares
- * content, not clock.
- * @param {{ repoRoot?: string, ref?: string, out: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
- */
-/**
  * The copyright year of `commit`: the newest commit date in its recent first-parent history.
  * The commit's own date is unusable — repair-queue admission commits carry a fixed 2000-01-01.
  * @param {string} repo
@@ -265,6 +259,12 @@ export function sourceYear(repo, commit) {
   return new Date(Math.max(...stamps) * 1000).getUTCFullYear();
 }
 
+/**
+ * Export one pinned commit as the public-safe cut into `out` (must not exist).
+ * Deterministic for a given commit — no timestamps — so a drift check compares
+ * content, not clock.
+ * @param {{ repoRoot?: string, ref?: string, out: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
+ */
 export async function exportSnapshot({
   repoRoot = ROOT,
   ref = DEFAULT_REF,
