@@ -161,7 +161,17 @@ async function findDirectItemByRequest(
   key: string,
   fingerprint: string,
 ): Promise<WorkItem | null> {
-  const rows = await sql<Array<{ feature_id: string }>>`
+  return resolveDirectItemRows(await findDirectItemRows(sql, request, callerId, key), request, key, fingerprint);
+}
+
+/** The recovery scan alone, so admission can pipeline it (WI-10003631). */
+function findDirectItemRows(
+  sql: Sql | TransactionSql,
+  request: AcceptBlueprintDirectItemInput,
+  callerId: string,
+  key: string,
+) {
+  return sql<Array<{ feature_id: string }>>`
     SELECT feature_id FROM harness_shared.work_items
      WHERE workspace_id = ${request.workspaceId}
        AND harness_slug = ${request.harnessSlug}
@@ -170,6 +180,14 @@ async function findDirectItemByRequest(
        AND payload->'blueprintOperation'->>'requestKey' = ${key}
      LIMIT 2
   `;
+}
+
+async function resolveDirectItemRows(
+  rows: ReadonlyArray<{ feature_id: string }>,
+  request: AcceptBlueprintDirectItemInput,
+  key: string,
+  fingerprint: string,
+): Promise<WorkItem | null> {
   if (rows.length > 1) throw new Error('blueprint operation request has multiple canonical work items');
   if (!rows[0]) return null;
   const item = await getWorkItem(rows[0].feature_id, request.harnessSlug);
@@ -256,15 +274,28 @@ async function acceptBlueprintDirectWorkItemScoped(
           const lockKey =
             'blueprint-operation:' +
             [request.workspaceId, request.harnessSlug, callerId, request.operationId, key].join(':');
-          await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
-          const receipts = await tx<InvocationReceiptRow[]>`
+          // WI-10003631 D-030(4): pipeline the lock and every read the
+          // admission may need into ONE flush on this transaction's
+          // connection. Postgres executes them in send order, so the advisory
+          // lock is held before the receipt FOR UPDATE and the recovery scan,
+          // exactly as with sequential awaits; the recovery rows and current
+          // hash are read speculatively and used only on the paths that
+          // previously read them.
+          const [, receipts, recoveredRows, currentHash] = await Promise.all([
+            tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`,
+            tx<InvocationReceiptRow[]>`
         SELECT request_fingerprint, target_kind, target_ref, specification_revision
           FROM harness_shared.blueprint_operation_invocations
          WHERE workspace_id = ${request.workspaceId} AND harness_slug = ${request.harnessSlug}
            AND caller_id = ${callerId}
            AND operation_id = ${request.operationId} AND request_key = ${key}
          FOR UPDATE
-      `;
+      `,
+            findDirectItemRows(tx, request, callerId, key),
+            request.expectedSpecificationRevision
+              ? Promise.resolve(null)
+              : readBlueprintHashFromPg(tx, request.workspaceId, request.harnessSlug),
+          ]);
           const receipt = receipts[0];
           if (receipt && (receipt.request_fingerprint !== fingerprint || receipt.target_kind !== 'work-item')) {
             throw new BlueprintOperationRefusal('input_conflict', 'blueprint operation request key was reused with different input or target');
@@ -286,7 +317,7 @@ async function acceptBlueprintDirectWorkItemScoped(
             }
             return item;
           }
-          const recovered = await findDirectItemByRequest(tx, request, callerId, key, fingerprint);
+          const recovered = await resolveDirectItemRows(recoveredRows, request, key, fingerprint);
           if (recovered) {
             const pin = AcceptedOperationPinSchema.parse(
               (recovered.payload as Record<string, unknown>)?.blueprintOperation,
@@ -316,7 +347,7 @@ async function acceptBlueprintDirectWorkItemScoped(
             request.expectedSpecificationRevision,
             receipt?.specification_revision,
             receipt?.specification_revision || request.expectedSpecificationRevision
-              ? null : await readBlueprintHashFromPg(tx, request.workspaceId, request.harnessSlug),
+              ? null : currentHash,
           );
           const specification = await readBlueprintSpecificationSnapshot(
             tx,
