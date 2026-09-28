@@ -356,8 +356,9 @@ export async function boundedOrgTxn<T>(fn: (tx: OrgSql) => Promise<T>, opts: Bou
               cancellation.assertNotAborted();
               // set_config(name, value, is_local=true) == SET LOCAL, but binds the value
               // as a parameter (a bare `SET` cannot). Mirrors locks/inWorkspaceTxn.
-              await cancellation.tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true)`;
-              await cancellation.tx`SELECT set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
+              // WI-10003631: one round trip for both transaction-local settings.
+              await cancellation.tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true),
+                                           set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
               if (expired()) {
                 throw new DbCallDeadlineError(acquireLabel, acquireMs, acquireMs, acquirePool);
               }
