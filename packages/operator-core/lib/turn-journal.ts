@@ -401,10 +401,22 @@ export async function readVerbatimTail(
       if (!line) continue;
       const link = tailLineLink(line, sourceKind);
       const turn = adapter.parseLine(line);
+      // WI-10003691: the byte window above routinely opens MID-TURN, so the
+      // first in-window rows point at a parent this read never saw.  Resolving
+      // that to null used to poison the whole chain: every later row inherited
+      // null, a null-keyed owner message can never be settled, and a delivered
+      // answer carrying null settles nothing — so an owner message queued
+      // mid-turn (a `queued_command`, which has no node id of its own) was
+      // re-delivered to a carry successor as "unanswered" although the same
+      // turn had answered it.  Key such a chain by its out-of-window parent
+      // instead: every row descending from it shares one synthetic request, the
+      // same grouping a complete read gives them under the real prompt id.
       let requestId =
         turn?.requestId ??
         link.requestId ??
-        (link.parentMessageId ? requestByMessage.get(link.parentMessageId) ?? null : null);
+        (link.parentMessageId
+          ? requestByMessage.get(link.parentMessageId) ?? `window-orphan:${link.parentMessageId}`
+          : null);
 
       // A real text-user node starts a logical request for the linked-list
       // clients.  Synthetic tool-result nodes have no ParsedTurn, so they take

@@ -38,6 +38,21 @@ const assistant = (
   message: { role: 'assistant', stop_reason: stopReason, content: [{ type: 'text', text }] },
 });
 
+const toolResult = (uuid: string, parentUuid: string): Line => ({
+  type: 'user', uuid, parentUuid, promptId: 'prompt-1',
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `toolu_${uuid}`, content: 'ok' }] },
+});
+// The exact shape Claude Code records for an owner message typed while a turn is
+// still running: an attachment row, NOT a user row, and with no node id of its own
+// in the parsed turn — it joins the running turn's request through its parent.
+const queuedOwner = (uuid: string, parentUuid: string, text: string): Line => ({
+  type: 'attachment', uuid, parentUuid,
+  attachment: {
+    type: 'queued_command', prompt: text, commandMode: 'prompt',
+    origin: { kind: 'human' }, timestamp: '2026-09-28T14:43:07.116Z', humanTurn: true,
+  },
+});
+
 function transcript(name: string, lines: Line[]): string {
   const path = join(sandbox, `${name}.jsonl`);
   writeFileSync(path, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
@@ -117,5 +132,58 @@ describe('P-005-request-settlement: transcript → carry continuation', () => {
     const doc = await buildCarryDoc(OWNER, opts(path));
     expect(doc.continuation.lastOwnerMessage?.text).toContain('Summarize the open walls');
     expect(doc.continuation.answered).toBe(true);
+  });
+
+  // WI-10003691: an owner message queued MID-TURN is answered by that turn's
+  // delivered reply, together with the prompt that opened the turn.
+  it('a queued mid-turn owner message is settled by the turn’s delivered answer', async () => {
+    const path = transcript('queued-complete', [
+      owner('o1', null, 'Can you explain more about his PhD?'),
+      assistant('a1', 'o1', 'Looking it up.', 'tool_use'),
+      toolResult('t1', 'a1'),
+      queuedOwner('q1', 't1', 'Regarding Tesla, any advancements in this direction?'),
+      assistant('a2', 'q1', 'His PhD … and, on Tesla in 2026: …', 'end_turn'),
+    ]);
+    const doc = await buildCarryDoc(OWNER, opts(path));
+    expect(doc.continuation.lastOwnerMessage?.text).toContain('Regarding Tesla');
+    expect(doc.continuation.answered).toBe(true);
+    expect(doc.continuation.pendingOwnerMessages).toBeUndefined();
+  });
+
+  // WI-10003691 (the incident): the tail reader's byte window opened MID-TURN, so
+  // the chain's parent was outside the read. The queued owner message and the
+  // reply that answered it both resolved to a null request, nothing could settle
+  // it, and the carry successor was handed an already-answered question as the
+  // owner's "open final message". A parent outside the window is simulated by a
+  // parentUuid that no row in the file carries — the same resolution path.
+  it('a window that opens mid-turn still settles the queued owner message', async () => {
+    const path = transcript('queued-orphan-window', [
+      toolResult('t1', 'assistant-before-the-window'),
+      queuedOwner('q1', 't1', 'Regarding Tesla, any advancements in this direction?'),
+      assistant('a1', 'q1', 'Checking the latest.', 'tool_use'),
+      toolResult('t2', 'a1'),
+      assistant('a2', 't2', 'Tesla in 2026: FSD v14, v15, the neural world simulator …', 'end_turn'),
+      owner('o2', 'a2', 'Can you go into more depth into how the system works?'),
+      assistant('a3', 'o2', 'The pipeline has six stages …', 'end_turn'),
+    ]);
+    const doc = await buildCarryDoc(OWNER, opts(path));
+    expect(doc.continuation.pendingOwnerMessages).toBeUndefined();
+    expect(doc.continuation.answered).toBe(true);
+  });
+
+  // Calibration for the case above: the synthetic window key must not settle a
+  // queued owner message that was never actually answered.
+  it('a window that opens mid-turn keeps an UNANSWERED queued owner message open', async () => {
+    const path = transcript('queued-orphan-window-open', [
+      toolResult('t1', 'assistant-before-the-window'),
+      assistant('a1', 't1', 'Earlier answer to the prompt that opened this turn.', 'end_turn'),
+      queuedOwner('q1', 'a1', 'Regarding Tesla, any advancements in this direction?'),
+      assistant('a2', 'q1', 'Checking the latest.', 'tool_use'),
+    ]);
+    const doc = await buildCarryDoc(OWNER, opts(path));
+    expect(doc.continuation.answered).toBe(false);
+    expect(doc.continuation.pendingOwnerMessages?.map((r) => r.text)).toEqual([
+      'Regarding Tesla, any advancements in this direction?',
+    ]);
   });
 });
