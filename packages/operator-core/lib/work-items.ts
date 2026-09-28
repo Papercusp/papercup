@@ -8865,9 +8865,8 @@ async function retireLifecycleBindingsForWorkItem(
   wi: Pick<WorkItem, 'id' | 'sourcePlanSlug' | 'sourcePlanItemIds'>,
 ): Promise<void> {
   const { retireLifecycleBoundWatches } = await import('./events/await/store');
-  for (const binding of lifecycleBindingsForWorkItem(wi)) {
-    await retireLifecycleBoundWatches(binding);
-  }
+  // One statement for every binding (WI-10003631) — not one txn per binding.
+  await retireLifecycleBoundWatches(lifecycleBindingsForWorkItem(wi));
 }
 
 /**
