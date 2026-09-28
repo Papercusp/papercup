@@ -1,0 +1,189 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "P-013 bounded actual-model smoke: workload D recipe + one real provider call, foreground orchestrate:run (control) vs durable DBOS orchestrate:run (candidate)",
+ "framework": "operational",
+ "testLayer": "integration",
+ "evidencePlane": "isolated",
+ "plan": "blueprint-backed-work-item-execution-2026-09-23",
+ "planItem": "P-013",
+ "workItem": "WI-10002948",
+ "governingDecisions": [
+  "D-016",
+  "D-023"
+ ],
+ "graded": false,
+ "observer": "su-fcbb3fed-83b5-4c34-9dab-72e191d76491",
+ "testFile": "packages/operator-core/lib/blueprint/operation-performance-model-smoke.integration.test.ts",
+ "command": "bash .papercusp/scratch/p013-model-smoke/run.sh (P013_ACTUAL_MODEL=1 P013_ACTUAL_MODEL_SAMPLES=5 npm run test:file -- <testFile>)",
+ "exitCode": 0,
+ "startedAt": "2026-09-28T13:45:20Z",
+ "finishedAt": "2026-09-28T13:46:27Z",
+ "head": "c389320839265500f2b75833485268b1963080a6",
+ "hostLoadAtStart": "36.92 39.65 40.81 18/33276 4025229",
+ "testFileResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=c389320839 uncommittedPaths=0/1 provenance=stamped startedAt=2026-09-28T13:45:21.611Z skippedTests=0",
+ "runnerLog": {
+  "path": ".papercusp/scratch/p013-model-smoke/smoke.log",
+  "sha256": "4becf6a78c8f1ac0b58928a9c34b6233e7292d2ddf05daa1086a05cccf081614",
+  "bytes": 9385
+ },
+ "measuredBlobs": [
+  {
+   "path": "packages/operator-core/lib/blueprint/operation-performance-model-smoke.integration.test.ts",
+   "blob": "7d1b2d8aacb11ab741335ff9fbaac6da66aed515"
+  },
+  {
+   "path": "packages/operator-core/lib/blueprint/operation-performance-d-driver.ts",
+   "blob": "cd00b1ddb24b98077d8c52c2176502f63519acd0"
+  },
+  {
+   "path": "packages/operator-core/lib/blueprint/operation-performance-d-runtime.ts",
+   "blob": "86291309b75654389d4d3024950cc9799f2b18fd"
+  },
+  {
+   "path": "packages/operator-core/lib/llm-testing/llm-client.ts",
+   "blob": "229ac7548935911e45b60b83647bef7cc1595124"
+  }
+ ],
+ "summary": "Ungraded per D-016. Model claude-haiku-4-5, 5 samples per arm after 1 warmup. Control (foreground): total p50 552.3 ms, model p50 449.4 ms, platform overhead p50 102.9 ms (19.5% of total). Candidate (durable DBOS): total p50 565.3 ms, model p50 426.4 ms, platform overhead p50 135.8 ms (24.5% of total). Every sample made exactly one real provider call with non-empty output; one business write per run (exactly-once asserted).",
+ "result": {
+  "model": "claude-haiku-4-5",
+  "samplesPerArm": 5,
+  "warmupsPerArm": 1,
+  "graded": false,
+  "decision": "D-016",
+  "writes": {
+   "runs": 10,
+   "writes": 10,
+   "attempts": 10
+  },
+  "arms": {
+   "control": {
+    "n": 5,
+    "totalMs": {
+     "p50": 552.3,
+     "max": 586.3
+    },
+    "modelMs": {
+     "p50": 449.4,
+     "max": 488.2
+    },
+    "overheadMs": {
+     "p50": 102.9,
+     "max": 108.6
+    },
+    "overheadShareP50": 19.5,
+    "tokens": {
+     "input": 145,
+     "output": 25
+    },
+    "costUsd": 0.000216,
+    "servedAccounts": [
+     "unexposed"
+    ]
+   },
+   "candidate": {
+    "n": 5,
+    "totalMs": {
+     "p50": 565.3,
+     "max": 650.6
+    },
+    "modelMs": {
+     "p50": 426.4,
+     "max": 444
+    },
+    "overheadMs": {
+     "p50": 135.8,
+     "max": 236.8
+    },
+    "overheadShareP50": 24.5,
+    "tokens": {
+     "input": 145,
+     "output": 25
+    },
+    "costUsd": 0.000216,
+    "servedAccounts": [
+     "unexposed"
+    ]
+   }
+  },
+  "samples": [
+   {
+    "arm": "control",
+    "totalMs": 552.3,
+    "modelMs": 452.8,
+    "overheadMs": 99.5,
+    "reply": "pong"
+   },
+   {
+    "arm": "candidate",
+    "totalMs": 650.6,
+    "modelMs": 413.9,
+    "overheadMs": 236.8,
+    "reply": "pong"
+   },
+   {
+    "arm": "candidate",
+    "totalMs": 565.3,
+    "modelMs": 426.4,
+    "overheadMs": 138.9,
+    "reply": "pong"
+   },
+   {
+    "arm": "control",
+    "totalMs": 558,
+    "modelMs": 449.4,
+    "overheadMs": 108.6,
+    "reply": "pong"
+   },
+   {
+    "arm": "control",
+    "totalMs": 517.5,
+    "modelMs": 410.1,
+    "overheadMs": 107.5,
+    "reply": "pong"
+   },
+   {
+    "arm": "candidate",
+    "totalMs": 553.7,
+    "modelMs": 417.9,
+    "overheadMs": 135.8,
+    "reply": "pong"
+   },
+   {
+    "arm": "candidate",
+    "totalMs": 568.9,
+    "modelMs": 444,
+    "overheadMs": 124.8,
+    "reply": "pong"
+   },
+   {
+    "arm": "control",
+    "totalMs": 520.9,
+    "modelMs": 418.1,
+    "overheadMs": 102.9,
+    "reply": "pong"
+   },
+   {
+    "arm": "control",
+    "totalMs": 586.3,
+    "modelMs": 488.2,
+    "overheadMs": 98.1,
+    "reply": "pong"
+   },
+   {
+    "arm": "candidate",
+    "totalMs": 559.6,
+    "modelMs": 436.1,
+    "overheadMs": 123.5,
+    "reply": "pong"
+   }
+  ]
+ },
+ "notProven": [
+  "Not a latency grade: 5 samples per arm with provider-side variance; D-016 grades only the deterministic-fixture matrices.",
+  "Provider latency depends on the network, the gateway account and provider load at run time; it is recorded, not controlled.",
+  "Overhead = end-to-end minus the in-tool model duration; it includes the declared 5 ms wait/sleep and, on the candidate, DBOS queue dispatch (50 ms floor, D-023) and step persistence.",
+  "Host load was not held constant (shared box); the start load is recorded."
+ ]
+}
