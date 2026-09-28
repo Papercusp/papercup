@@ -2005,7 +2005,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
   });
 
   it("a restart request >13min (900s) after a peer's real bg-host restart is OUTSIDE even the widened window — fires a genuine restart", async () => {
-    acquireM.mockResolvedValue({
+    mockResolvedTyped(acquireM, {
       ok: false,
       reason: 'held_exclusive',
       holders: [
@@ -2018,7 +2018,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
           expires_ts: new Date(),
         },
       ],
-    } as never);
+    });
     mockResolvedTyped(probeM, { ok: true, mainPid: 4321, secondsSinceStart: 900 });
     mockImplementationTyped(guardM, runGuard(fenceOk(12)));
 
