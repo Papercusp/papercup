@@ -137,7 +137,12 @@ describe('PgGatewayPayloadStore.sweep — real Postgres', () => {
     return key;
   };
 
-  const exists = async (key: string) => (await new PgGatewayPayloadStore({ sql: db.sql, workspaceId: WS }).head(key)) !== null;
+  // A pure read, deliberately NOT head(): head() is the dedupe path and renews the row's
+  // expiry (WI-10003469), so probing through it between two sweeps would re-protect the
+  // very rows the second sweep is meant to collect.
+  const exists = async (key: string) =>
+    (await db.sql`
+      SELECT 1 FROM harness_shared.gateway_payload_blobs WHERE workspace_id = ${WS} AND blob_key = ${key}`).length > 0;
 
   it('THE INCIDENT: reclaims a pre-policy row (expires_at NULL) old enough to backfill into the past', async () => {
     const store = new PgGatewayPayloadStore({ sql: db.sql, workspaceId: WS, ttlMs: DEFAULT_PAYLOAD_SPOOL_TTL_MS });
@@ -154,8 +159,8 @@ describe('PgGatewayPayloadStore.sweep — real Postgres', () => {
 
   it('does not reclaim a recent expires_at-NULL row until its backfilled expiry actually passes', async () => {
     const store = new PgGatewayPayloadStore({ sql: db.sql, workspaceId: WS, ttlMs: DEFAULT_PAYLOAD_SPOOL_TTL_MS });
-    // created_at + ttlMs (2h) is still well in the future.
-    const key = await insertRow({ refCount: 0, expiresAt: null, createdAt: new Date(Date.now() - 10 * 60_000) });
+    // created_at + ttlMs (2 min) is still ~90s in the future.
+    const key = await insertRow({ refCount: 0, expiresAt: null, createdAt: new Date(Date.now() - 30_000) });
 
     const removed = await store.sweep(100);
 
@@ -200,6 +205,19 @@ describe('PgGatewayPayloadStore.sweep — real Postgres', () => {
 
     expect(removed).toBe(1);
     expect(await exists(key)).toBe(false);
+  });
+
+  it('WI-10003469: a dedupe HEAD hit renews an expired unreferenced row, so the sweep spares it for the caller’s retain()', async () => {
+    // The race the two-minute TTL makes common: a retry dedupes onto a row that has already
+    // expired, and the sweep would delete it before the retry's retain() lands.
+    const store = new PgGatewayPayloadStore({ sql: db.sql, workspaceId: WS });
+    const key = await insertRow({ refCount: 0, expiresAt: new Date(Date.now() - 1_000) });
+
+    await expect(store.head(key)).resolves.toEqual({ size: 1 });
+    const removed = await store.sweep(100);
+
+    expect(removed).toBe(0);
+    expect(await exists(key)).toBe(true);
   });
 
   it('does NOT reclaim an unreferenced row before its explicit expiry', async () => {

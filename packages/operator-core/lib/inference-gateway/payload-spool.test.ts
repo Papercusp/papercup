@@ -336,11 +336,28 @@ describe('PgGatewayPayloadStore — finite retention and bounded GC', () => {
 
     // The default must stay within the measured seconds-to-minutes retry/lease
     // window; a day-scale default can fill the host before expiry despite a
-    // healthy bounded sweep.
-    expect(DEFAULT_PAYLOAD_SPOOL_TTL_MS).toBe(2 * 60 * 60 * 1000);
+    // healthy bounded sweep. WI-10003469: two minutes, not two hours, so most rows
+    // are written and deleted inside one checkpoint cycle (see the constant's doc).
+    expect(DEFAULT_PAYLOAD_SPOOL_TTL_MS).toBe(2 * 60 * 1000);
     expect(sqlCalls).toHaveLength(1);
     expect(sqlCalls[0]!.text).toContain('expires_at');
     expect(sqlCalls[0]!.values.at(-1)).toEqual(new Date(now + DEFAULT_PAYLOAD_SPOOL_TTL_MS));
+  });
+
+  it('renews the expiry on a dedupe HEAD hit, so the sweep cannot race the caller’s retain()', async () => {
+    const now = Date.parse('2026-09-28T00:00:00.000Z');
+    const store = new PgGatewayPayloadStore({
+      sql: fakeSql([[{ byte_length: 7 }]]),
+      workspaceId: 'ws-payload-test',
+      now: () => now,
+    });
+
+    await expect(store.head('a'.repeat(64))).resolves.toEqual({ size: 7 });
+
+    expect(sqlCalls).toHaveLength(1);
+    expect(sqlCalls[0]!.text).toContain('UPDATE harness_shared.gateway_payload_blobs');
+    expect(sqlCalls[0]!.text).toContain('GREATEST(expires_at');
+    expect(sqlCalls[0]!.values).toContainEqual(new Date(now + DEFAULT_PAYLOAD_SPOOL_TTL_MS));
   });
 
   it('backfills bounded legacy rows from created_at and rechecks ref_count in the outer DELETE', async () => {

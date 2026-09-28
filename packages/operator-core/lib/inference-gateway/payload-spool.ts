@@ -55,15 +55,23 @@ export const GATEWAY_PAYLOAD_ADDRESSING: ContentAddressing = {
 /** 32 MiB. An inference request body above this is a client error, not a spool candidate. */
 export const DEFAULT_MAX_SPOOL_BYTES = 32 * 1024 * 1024;
 /**
- * Accepted-but-never-executed receipts retain their body for two hours by default.
+ * How long an UNREFERENCED payload outlives its write: two minutes.
  *
  * The synchronous compatibility path pins a payload only for the request/lease
- * lifetime (seconds-to-minutes, with a bounded 30-minute durable lease). Two
- * hours leaves a generous retry-resurrection margin without allowing the
- * unreferenced spool to grow past the host's available disk at observed
- * ingestion rates.
+ * lifetime (seconds-to-minutes, with a bounded 30-minute durable lease), and
+ * `ref_count` — not this expiry — is what protects a payload a receipt still
+ * names. So this window only governs how long bytes nobody holds linger, and
+ * nothing reads them back: a retry carries its own body, so "resurrection" only
+ * saves one INSERT.
+ *
+ * WI-10003469 measured what the old two-hour window cost. Over one 9-minute window
+ * (2026-09-28), this table's TOAST produced 48% of all WAL, and 91% of that was
+ * full-page images, not body bytes: the GC DELETE and VACUUM's visibility pass each
+ * touched a page for the first time since the last checkpoint (15 min). A row that
+ * lives two minutes is written and deleted within one checkpoint cycle most of the
+ * time, so its pages never need that second and third image.
  */
-export const DEFAULT_PAYLOAD_SPOOL_TTL_MS = 2 * 60 * 60 * 1000;
+export const DEFAULT_PAYLOAD_SPOOL_TTL_MS = 2 * 60 * 1000;
 /** Keep each lifecycle GC pass row-bounded so it cannot scan an unbounded candidate set. */
 export const DEFAULT_PAYLOAD_SPOOL_SWEEP_LIMIT = 2_000;
 /**
@@ -287,13 +295,24 @@ export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size
     this.#contentionSleep = options.contentionSleep;
   }
 
+  /**
+   * A HEAD hit IS the dedupe path: putContentAddressed returns the existing row instead of
+   * writing one, so this must renew it exactly as a fresh put() would. With a two-minute
+   * TTL the row a retry dedupes onto is often already expired, and the sweep could delete
+   * it between this call and the caller's retain(). Refreshing expires_at here makes the
+   * outer DELETE's READ COMMITTED re-check reject the row, the same self-guard retain()/get()
+   * give the abandoned-pin branch. GREATEST ignores a NULL argument, so ttlMs = 0 leaves the
+   * expiry untouched.
+   */
   async head(key: string): Promise<{ size: number } | null> {
+    const expiresAt = this.#ttlMs > 0 ? new Date(this.#now() + this.#ttlMs) : null;
     const rows = await this.#sql<{ byte_length: string | number }[]>`
-      SELECT byte_length
-        FROM harness_shared.gateway_payload_blobs
+      UPDATE harness_shared.gateway_payload_blobs
+         SET last_accessed_at = now(),
+             expires_at = GREATEST(expires_at, ${expiresAt}::timestamptz)
        WHERE workspace_id = ${this.#workspaceId}
          AND blob_key = ${key}
-       LIMIT 1`;
+      RETURNING byte_length`;
     const row = rows[0];
     return row ? { size: Number(row.byte_length) } : null;
   }
