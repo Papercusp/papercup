@@ -100,8 +100,14 @@ describe('pot-git handoff token + park tokens (G-0/G-0b, real bare repo)', () =>
       { deviceHex: deviceNamespaceKey(memberA.pubkeyBase64), sha: aHead },
       { deviceHex: deviceNamespaceKey(conflicter.pubkeyBase64), sha: conflictHead },
     ]);
+    // Rootless head → merge-tree refuses unrelated histories: a merge ERROR, so
+    // the parked entry carries no conflict paths (WI-10003731 added paths/error).
     expect(r2.skippedConflicts).toEqual([
-      { deviceHex: deviceNamespaceKey(conflicter.pubkeyBase64), sha: conflictHead },
+      expect.objectContaining({
+        deviceHex: deviceNamespaceKey(conflicter.pubkeyBase64),
+        sha: conflictHead,
+        paths: [],
+      }),
     ]);
     oldStaging = (r2.staging ?? r1.staging)!;
     expect(oldStaging).toBe(r1.staging);

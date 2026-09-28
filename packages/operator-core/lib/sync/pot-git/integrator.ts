@@ -48,12 +48,32 @@ export const STAGING_REF = 'refs/heads/staging';
 
 import { requireHiveEffectAuthority, type HiveEffectAuthority } from './hive-effect-authority';
 import type { SignedProtocolScope } from './signed-context';
+import { RETIRED_HOST_LOCAL_GIT_TABLES } from '../../harness-state/table-registry';
+import { stateDirFor } from '../../harness-state/git-export/serialize';
 
 export interface MemberHead {
   /** The member device's namespace key (hex). */
   deviceHex: string;
   /** That device's work head sha (already verified via sigrefs by the caller). */
   sha: string;
+}
+
+/** A member head the integrator could not take this pass. */
+export interface SkippedConflict {
+  deviceHex: string;
+  sha: string;
+  /** Conflicted paths as reported by merge-tree (empty on a merge ERROR). */
+  paths: string[];
+  /** Set when merge-tree failed outright rather than reporting a conflict. */
+  error?: string;
+}
+
+/** A member head integrated by resolving host-local state paths to staging. */
+export interface HostLocalStateResolution {
+  deviceHex: string;
+  sha: string;
+  /** The conflicted paths that took staging's side. */
+  paths: string[];
 }
 
 export interface IntegrationResult {
@@ -64,7 +84,27 @@ export interface IntegrationResult {
   /** Device hexes whose work is now contained in staging (ff or merge). */
   integrated: string[];
   /** Heads left out because a 3-way merge conflicted — the member rebases. */
-  skippedConflicts: { deviceHex: string; sha: string }[];
+  skippedConflicts: SkippedConflict[];
+  /** Heads integrated after their ONLY conflicts were host-local state paths
+   *  (resolved to staging's side — see {@link isHostLocalStatePath}). */
+  resolvedHostLocalState: HostLocalStateResolution[];
+}
+
+/**
+ * WI-10003731: repo directories that hold PER-HOST machine state some installs
+ * committed into shared repos before the table was reclassified sync:'none'
+ * (`RETIRED_HOST_LOCAL_GIT_TABLES`). Derived from the one place rows become
+ * files, so a rename there cannot silently stop matching here.
+ */
+export const HOST_LOCAL_STATE_DIRS: readonly string[] = RETIRED_HOST_LOCAL_GIT_TABLES.map(
+  (t) => `${stateDirFor(t)}/`,
+);
+
+/** True when `path` (repo-relative) is retired per-host state — each device
+ *  writes its own verdict there, so no member's copy is shared truth and the
+ *  integrated staging side may win a conflict on it. */
+export function isHostLocalStatePath(path: string): boolean {
+  return HOST_LOCAL_STATE_DIRS.some((d) => path.startsWith(d));
 }
 
 async function isAncestor(repoPath: string, ancestor: string, descendant: string, runGit: RunGit): Promise<boolean> {
@@ -72,21 +112,28 @@ async function isAncestor(repoPath: string, ancestor: string, descendant: string
   return r.code === 0;
 }
 
-/** Bare-repo 3-way merge of two commits → {tree} on success, {conflict:true} on
- *  a content conflict. Uses merge-tree --write-tree (git ≥2.38): exit 0 = clean
- *  (stdout line 1 = merged tree oid), exit 1 = conflicts, else error. */
+/** Bare-repo 3-way merge of two commits → {tree} on success, {conflict, paths}
+ *  on a content conflict. Uses merge-tree --write-tree (git ≥2.38; `-X` needs
+ *  ≥2.40): exit 0 = clean, exit 1 = conflicts, else error. `-z --name-only
+ *  --no-messages` makes stdout `<tree>\0<path>\0…` so the conflicted paths are
+ *  parseable whatever characters they contain. */
 async function mergeTree(
   repoPath: string,
   a: string,
   b: string,
   runGit: RunGit,
-): Promise<{ tree: string } | { conflict: true } | { error: string }> {
-  const r = await runGit(['merge-tree', '--write-tree', a, b], repoPath);
+  strategyArgs: string[] = [],
+): Promise<{ tree: string } | { conflict: true; paths: string[] } | { error: string }> {
+  const r = await runGit(
+    ['merge-tree', '--write-tree', '-z', '--name-only', '--no-messages', ...strategyArgs, a, b],
+    repoPath,
+  );
+  const [first, ...rest] = r.stdout.split('\0');
   if (r.code === 0) {
-    const tree = r.stdout.split('\n')[0]?.trim();
+    const tree = first?.trim();
     return tree ? { tree } : { error: 'merge-tree produced no tree' };
   }
-  if (r.code === 1) return { conflict: true };
+  if (r.code === 1) return { conflict: true, paths: [...new Set(rest.filter((p) => p.length > 0))] };
   return { error: r.stderr.trim() || `merge-tree exited ${r.code}` };
 }
 
@@ -125,7 +172,8 @@ export async function integrateMemberHeads(
   const base = await readNamespaceRef(repoPath, integratorDevicePubkeyBase64, STAGING_REF, runGit);
   let staging = base;
   const integrated: string[] = [];
-  const skippedConflicts: { deviceHex: string; sha: string }[] = [];
+  const skippedConflicts: SkippedConflict[] = [];
+  const resolvedHostLocalState: HostLocalStateResolution[] = [];
 
   // Deterministic order so every observer of the same head-set gets the same
   // staging lineage (device-hex is peer-stable).
@@ -158,10 +206,42 @@ export async function integrateMemberHeads(
         runGit,
       );
       integrated.push(mh.deviceHex);
-    } else {
-      // conflict OR merge error → leave for the member to rebase.
-      skippedConflicts.push({ deviceHex: mh.deviceHex, sha: mh.sha });
+      continue;
     }
+    if ('error' in merged) {
+      skippedConflicts.push({ deviceHex: mh.deviceHex, sha: mh.sha, paths: [], error: merged.error });
+      continue;
+    }
+    // WI-10003731: when EVERY conflict is retired per-host state, no side is
+    // shared truth — re-merge preferring staging ("ours" = the first commit) so
+    // the member's real work integrates instead of being parked forever. Any
+    // other conflicted path keeps the old contract: skip, the member rebases.
+    if (merged.paths.length > 0 && merged.paths.every(isHostLocalStatePath)) {
+      const preferStaging = await mergeTree(repoPath, staging, mh.sha, runGit, ['-X', 'ours']);
+      if ('tree' in preferStaging) {
+        staging = await commitMerge(
+          repoPath,
+          preferStaging.tree,
+          [staging, mh.sha],
+          `integrate ${mh.deviceHex.slice(0, 12)} @ ${mh.sha.slice(0, 8)}` +
+            ` (host-local state kept from staging: ${merged.paths.join(', ')})`,
+          runGit,
+        );
+        integrated.push(mh.deviceHex);
+        resolvedHostLocalState.push({ deviceHex: mh.deviceHex, sha: mh.sha, paths: merged.paths });
+        continue;
+      }
+      // e.g. a modify/delete, which `-X ours` does not resolve → park as before.
+      skippedConflicts.push({
+        deviceHex: mh.deviceHex,
+        sha: mh.sha,
+        paths: 'conflict' in preferStaging ? preferStaging.paths : merged.paths,
+        ...('error' in preferStaging ? { error: preferStaging.error } : {}),
+      });
+      continue;
+    }
+    // A real content conflict → leave for the member to rebase.
+    skippedConflicts.push({ deviceHex: mh.deviceHex, sha: mh.sha, paths: merged.paths });
   }
 
   const advanced = staging !== base && staging !== null;
@@ -177,7 +257,7 @@ export async function integrateMemberHeads(
       base ?? '0'.repeat(40),
     );
   }
-  return { staging, advanced, integrated, skippedConflicts };
+  return { staging, advanced, integrated, skippedConflicts, resolvedHostLocalState };
 }
 
 /** Read the integrator's currently-published staging sha (null if none). */

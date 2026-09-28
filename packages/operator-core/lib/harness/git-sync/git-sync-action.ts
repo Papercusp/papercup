@@ -6355,7 +6355,10 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       await decline(
         'ran_no_advance',
         `integrator ran; no advance (gate: ${outcome.gated ? `integrated=${outcome.gated.integrated} queued=${outcome.gated.queued} errors=${outcome.gated.errors}` : 'none'};` +
-          ` conflicts=${outcome.integration?.skippedConflicts?.length ?? 0}; errors=${outcome.errors.length})`,
+          ` conflicts=${outcome.integration?.skippedConflicts?.length ?? 0}; errors=${outcome.errors.length})` +
+          // WI-10003731: name WHAT conflicted — without it a parked head needed an
+          // offline `git merge-tree` replay in the pot-git store to diagnose.
+          formatParkedConflicts(outcome.integration?.skippedConflicts ?? []),
       );
     }
 
