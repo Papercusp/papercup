@@ -1438,7 +1438,11 @@ function arg(argv: string[], flag: string): string | null {
  * window against a NEW `now`, quietly rewriting which items a past release shipped.
  * A rendering fix must never be able to change history.
  */
-export async function regenerateOnly(scope: Scope, outDir: string): Promise<number> {
+export async function regenerateOnly(
+  scope: Scope,
+  outDir: string,
+  siteScope: SiteScope = FULL_SITE_SCOPE,
+): Promise<number> {
   /**
    * FAIL CLOSED BEFORE RENDERING — the generator must refuse on the same input its
    * gate refuses on (EI-20594446930640654).
@@ -1480,8 +1484,20 @@ export async function regenerateOnly(scope: Scope, outDir: string): Promise<numb
 
   const sql = postgres(getHarnessAdminUrl(), { max: 1 });
   try {
-    const { pages } = await generateSite(sql, scope, outDir);
-    console.log(`[record-release] regenerated ${pages} page(s) → ${outDir}  (registry untouched)`);
+    if (siteScope.forced) {
+      const surfaces = [...siteScope.surfaces].join(', ');
+      console.error(
+        `[record-release] ⚡ SCOPED REGENERATE (force) — rendering only: ${surfaces}.\n` +
+          `                 reason: ${siteScope.reason}\n` +
+          '                 Every other surface keeps its last-rendered bytes. Recorded in the audit log.',
+      );
+      await auditScopedRegenerate(sql, scope, siteScope);
+    }
+    const { pages, written, unchanged } = await generateSite(sql, scope, outDir, siteScope);
+    console.log(
+      `[record-release] regenerated ${pages} page(s) → ${outDir}  (registry untouched; ` +
+        `${written} file(s) changed, ${unchanged} unchanged)`,
+    );
     // Fire the completeness alert on regenerate too (WI-5515): re-rendering the
     // page after an incremental upload must still SURFACE what remains absent per
     // version, so a partial release is never silently normalized. NON-BLOCKING.
@@ -1507,6 +1523,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     return 2;
   }
   const regenerate = argv.includes('--regenerate') || holdPage || restorePage;
+  const siteScope = parseSiteScope(argv);
+  if ('error' in siteScope) {
+    console.error(`record-release-cli: ${siteScope.error}`);
+    return 2;
+  }
+  if (siteScope.forced && !regenerate) {
+    console.error('record-release-cli: --only applies to --regenerate/--hold-page/--restore-page; recording a release renders the full site.');
+    return 2;
+  }
   if (!version && !regenerate) {
     console.error('usage: record-release-cli --version <x.y.z> [--channel alpha] [--git-sha <sha>]');
     console.error('       [--changelog-file <path>] [--no-changelog] [--cut-at <iso>] [--since <iso>]');
@@ -1515,6 +1540,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
     console.error('   changelog: record-release-cli --version <x.y.z> --generate-changelog [--force-changelog]');
     console.error('              # writes a reviewable draft from the window and STOPS (records nothing)');
     console.error('   or: record-release-cli --regenerate [--out <dir>]   # re-render pages only');
+    console.error('       [--only index,changes,assets,plans,work-items --reason "<why>"]  # force: render just these (audited)');
     console.error('   or: record-release-cli --hold-page                  # swap index.html for "NEXT UPDATE COMING SOON"');
     console.error('   or: record-release-cli --restore-page               # put the real releases page back');
     console.error('       (both re-render; publish with papercusp-desktop/bin/publish-release-history.sh)');
@@ -1546,7 +1572,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
         : '[record-release] hold LIFTED — regenerating the real releases page.',
     );
   }
-  if (regenerate) return regenerateOnly(opts.scope, opts.outDir);
+  if (regenerate) return regenerateOnly(opts.scope, opts.outDir, siteScope);
   return run(opts);
 }
 

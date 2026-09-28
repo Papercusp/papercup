@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MANIFEST_SCHEMA,
   SiteWriteTally,
@@ -208,6 +208,16 @@ describe('stageFiles', () => {
 describe('CLI plan → commit round trip', () => {
   const lits: IdentityLiteral[] = [{ kind: 'git-name', value: 'Jane' }];
   const env = { PAPERCUSP_PUBLISH_KEY_PREFIX: 'secret-prefix' } as NodeJS.ProcessEnv;
+  let errors: ReturnType<typeof vi.spyOn>;
+  let logs: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    logs = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    errors.mockRestore();
+    logs.mockRestore();
+  });
 
   async function plan(dir: string, manifest: string, extra: string[] = []): Promise<PublishPlan> {
     const out = path.join(tmp, `plan-${Math.random().toString(36).slice(2)}.json`);

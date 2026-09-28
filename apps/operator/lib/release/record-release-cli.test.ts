@@ -1034,7 +1034,24 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
       // The publisher's identity gate and authenticated upload are stubbed so this
       // test isolates the public-read proof. The curl stub serves current index/detail
       // bytes but can deliberately return stale history bytes.
-      fs.writeFileSync(path.join(bin, 'npx'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      // WI-10003694: the publisher now asks release-site-delta for a plan first. The stub
+      // answers with a FULL plan (no prior manifest), so this test keeps exercising the
+      // full-publish public-read proof it was written for.
+      fs.writeFileSync(
+        path.join(bin, 'npx'),
+        `#!/usr/bin/env node
+const fs = require('node:fs');
+const a = process.argv.slice(2);
+if (a.some((x) => x.endsWith('release-site-delta.ts')) && a.includes('plan')) {
+  const at = (flag) => a[a.indexOf(flag) + 1];
+  fs.writeFileSync(at('--out'), JSON.stringify({ schema: 'release-site-publish-plan-v1', mode: 'full', reason: 'fixture', upload: [], remove: [], gate: [], unchangedCount: 0, next: null }));
+  fs.writeFileSync(at('--gate-list'), '');
+  fs.writeFileSync(at('--remove-list'), '');
+}
+process.exit(0);
+`,
+        { mode: 0o755 },
+      );
       fs.writeFileSync(path.join(bin, 'aws'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
       fs.writeFileSync(
         path.join(bin, 'curl'),
