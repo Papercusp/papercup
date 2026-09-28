@@ -9,9 +9,22 @@ import {
   isTestFilePath,
   precheckPopulation,
   resolveCanonicalIntegrationRoot,
+  ROUTER_EXIT_NOT_MEASURED,
+  ROUTER_EXIT_TEMPFAIL,
   type ExecResult,
   type FixPrecheckRunResult,
 } from './admission-fix-precheck';
+import {
+  TEST_FILE_EXIT_FAILED,
+  TEST_FILE_EXIT_NOT_MEASURED,
+  TEST_FILE_EXIT_PASSED,
+  TEST_FILE_EXIT_TEMPFAIL,
+  testFileRunWasMeasured,
+  // The .mjs contract module has no declaration file; the diagnostic lands on
+  // the `from` line, so the suppression must be the LAST comment line directly
+  // above it.
+  // @ts-expect-error
+} from '../../../../scripts/lib/test-file-exit-codes.mjs';
 
 const C = 'e'.repeat(40);
 const sig = (id: string, kind: 'test-file' | 'lint-leg' | 'workspace-task' | 'post-suite-leg' | 'seed' = 'test-file') => ({ kind, id });
@@ -130,6 +143,36 @@ describe('classifyTestFileRun', () => {
     expect(classifyTestFileRun(r({ exitCode: 0, output: 'router matched=0 files' })).status).toBe('unmeasured');
     expect(classifyTestFileRun(r({ exitCode: 1, timedOut: true })).status).toBe('unmeasured');
     expect(classifyTestFileRun(r({ exitCode: null, signal: 'SIGKILL' })).status).toBe('unmeasured');
+  });
+
+  it('pins the local not-measured literals to the router exit-code contract', () => {
+    expect(ROUTER_EXIT_NOT_MEASURED).toBe(TEST_FILE_EXIT_NOT_MEASURED);
+    expect(ROUTER_EXIT_TEMPFAIL).toBe(TEST_FILE_EXIT_TEMPFAIL);
+  });
+
+  it('classifies every contract exit code by whether the router MEASURED it (WI-10003617)', () => {
+    // Only a measured run may be pass or fail; everything else is unmeasured — never a red.
+    for (const code of [TEST_FILE_EXIT_PASSED, TEST_FILE_EXIT_FAILED, TEST_FILE_EXIT_NOT_MEASURED, TEST_FILE_EXIT_TEMPFAIL] as number[]) {
+      const status = classifyTestFileRun(r({ exitCode: code })).status;
+      if (testFileRunWasMeasured(code)) expect(status, `exit ${code}`).not.toBe('unmeasured');
+      else expect(status, `exit ${code}`).toBe('unmeasured');
+    }
+  });
+
+  it('an all-skipped file (router exit 2) is unmeasured, so it cannot refuse an admission as imports-red', () => {
+    const allSkipped = r({
+      exitCode: TEST_FILE_EXIT_NOT_MEASURED,
+      output:
+        'TEST_FILE_ALL_SKIPPED requested=1 executed=1 matched=1 testsExecuted=0 status=not-measured reason=every-collected-test-was-skipped',
+    });
+    const c = classifyTestFileRun(allSkipped);
+    expect(c.status).toBe('unmeasured');
+    expect(c.detail).toContain('reason=every-collected-test-was-skipped');
+
+    const pop = precheckPopulation({ signature: [sig('lint', 'lint-leg')], admittedPaths: ['pkg/skipped.test.ts'] });
+    const v = evaluateFixPrecheck(pop, ran([['pkg/skipped.test.ts', c.status]]));
+    expect(v.ok).toBe(true);
+    expect(v.ran && v.unmeasured).toEqual(['pkg/skipped.test.ts']);
   });
 });
 

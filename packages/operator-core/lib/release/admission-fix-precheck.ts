@@ -340,7 +340,23 @@ export const defaultExec: NonNullable<CheckpointTreeRunnerOptions['exec']> = (ar
     });
   });
 
-/** Classify one `scripts/test-files.mjs <file>` run. Route errors / zero matches are UNMEASURED, never a pass. */
+/**
+ * Router exit codes that MEASURED NOTHING. The contract lives in
+ * `scripts/lib/test-file-exit-codes.mjs` (only 0 = passed and 1 = failed are measured);
+ * 2 = NOT MEASURED (route/launch/admission error, watchdog reap, every collected test
+ * skipped) and 75 = EX_TEMPFAIL. The literals stay local so operator-core does not import
+ * `scripts/`; `admission-fix-precheck.test.ts` pins them to the contract module.
+ * WI-10003617: treating 2 as a failure refused an admission as `admission-imports-red`
+ * for two admitted files whose every test was skipped in the precheck checkout.
+ */
+export const ROUTER_EXIT_NOT_MEASURED = 2;
+export const ROUTER_EXIT_TEMPFAIL = 75;
+
+/**
+ * Classify one `scripts/test-files.mjs <file>` run. Route errors, zero matches and the router's
+ * not-measured exits are UNMEASURED — never a pass, and never a failure: a run that measured
+ * nothing cannot import a red.
+ */
 export function classifyTestFileRun(r: ExecResult): { status: FixPrecheckFileStatus; detail?: string } {
   if (r.timedOut) return { status: 'unmeasured', detail: `timed out after ${r.durationMs}ms` };
   if (/TEST_FILE_ROUTE_ERROR|matched=0\b|No test files found/.test(r.output)) {
@@ -348,6 +364,13 @@ export function classifyTestFileRun(r: ExecResult): { status: FixPrecheckFileSta
   }
   if (r.exitCode === 0) return { status: 'pass' };
   if (r.exitCode === null) return { status: 'unmeasured', detail: `runner exited by signal ${r.signal ?? 'unknown'}` };
+  if (r.exitCode === ROUTER_EXIT_NOT_MEASURED || r.exitCode === ROUTER_EXIT_TEMPFAIL) {
+    const reason = /reason=([\w-]+)/.exec(r.output)?.[1];
+    return {
+      status: 'unmeasured',
+      detail: `the router measured nothing (exit ${r.exitCode}${reason ? `, reason=${reason}` : ''})`,
+    };
+  }
   return { status: 'fail', detail: `exit ${r.exitCode}` };
 }
 
