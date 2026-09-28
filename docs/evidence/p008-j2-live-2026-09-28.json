@@ -42,7 +42,7 @@
       "transcript": "~/.papercusp/session-claude/su-33556642-1c10-4a53-aa5a-2424c1ac1d39/projects/-home-<user>-papercupai-workspace-papercusp/7c0cb44a-d439-490a-9b31-c88079b4202d.jsonl"
     }
   ],
-  "links": [
+  "assertions": [
     {
       "id": "J2-L1-generic-launch-without-su-assignment-fields",
       "criteria": ["AUTO-BAR-R-10-P-008@3"],
