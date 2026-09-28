@@ -132,9 +132,16 @@ describe('P-013 workload C fixture', () => {
       const matrix = matrixShape();
       let childrenInFlight = 0;
       const counterRows: Array<{ arm: P013CArm; sequence: number; overlappingChildren: number } & PgCounters> = [];
+      // WI-10003631 D-026: P013_WAIT_SAMPLE=1 polls pg_stat_activity from a separate
+      // connection during measured warm runs and tallies wait events + blocker pairs per arm.
+      const waits = process.env.P013_WAIT_SAMPLE === '1' ? await startWaitSampler(db.adminDsn) : undefined;
       const benchmarkArm = (arm: P013CArm): BenchmarkArm => ({
         warmup: async () => { samples.push(await runArm(arm, sequence++)); },
-        run: async () => { const sample = await runArm(arm, sequence++); samples.push(sample); return sample.marks; },
+        run: async () => {
+          waits?.enter(arm);
+          try { const sample = await runArm(arm, sequence++); samples.push(sample); return sample.marks; }
+          finally { waits?.leave(arm); }
+        },
         coldStart: async () => {
           const childSequence = sequence++;
           const before = await readPgCounters(db.adminSql);
@@ -187,6 +194,7 @@ describe('P-013 workload C fixture', () => {
       });
       const trials = await runPairedBenchmark({ control: benchmarkArm('control'),
         candidate: benchmarkArm('candidate') }, matrix);
+      if (waits) console.info('P-013 workload C waits', JSON.stringify(await waits.stop()));
       expect(trials).toHaveLength(2 * matrix.repetitions * matrix.modes.length * matrix.concurrencies.length);
       // Grade in-test only for a full-protocol run; a split run (one repetition per
       // process, via P013_REPETITION_OFFSET) is graded after its reps are aggregated.
@@ -257,6 +265,62 @@ describe('P-013 workload C fixture', () => {
     expect({ items, plans, runs }).toEqual({ items: candidates, plans: 0, runs: 0 });
   }, budgetMs());
 });
+
+/** Polls every 20ms; a poll is attributed to an arm only while exactly that arm has
+ * measured runs in flight (arms run sequentially per trial, so overlap is rare). */
+async function startWaitSampler(dsn: string) {
+  const { default: postgres } = await import('postgres');
+  const probe = postgres(dsn, { max: 1, idle_timeout: 0, connection: { application_name: 'p013-wait-sampler' } });
+  const inFlight: Record<P013CArm, number> = { control: 0, candidate: 0 };
+  type Tally = { polls: number; backendSamples: number; waits: Record<string, number>; blockers: Record<string, number> };
+  const tally: Record<string, Tally> = {};
+  const bump = (m: Record<string, number>, k: string) => { m[k] = (m[k] ?? 0) + 1; };
+  let stopped = false;
+  const loop = (async () => {
+    while (!stopped) {
+      const arm = inFlight.control > 0 && inFlight.candidate > 0 ? 'mixed'
+        : inFlight.control > 0 ? 'control' : inFlight.candidate > 0 ? 'candidate' : null;
+      if (arm) {
+        const rows = await probe<Array<{ wait: string; query: string; blocker: string | null }>>`
+          SELECT COALESCE(a.wait_event_type || ':' || a.wait_event, 'CPU:' || a.state) AS wait,
+                 left(regexp_replace(a.query, '\\s+', ' ', 'g'), 70) AS query,
+                 (SELECT left(regexp_replace(b.query, '\\s+', ' ', 'g'), 70) || ' [' || COALESCE(b.wait_event_type || ':' || b.wait_event, b.state) || ']'
+                    FROM pg_stat_activity b WHERE b.pid = (pg_blocking_pids(a.pid))[1]) AS blocker
+            FROM pg_stat_activity a
+           WHERE a.datname = current_database() AND a.pid <> pg_backend_pid()
+             AND a.backend_type = 'client backend' AND a.state <> 'idle'`;
+        const t = (tally[arm] ??= { polls: 0, backendSamples: 0, waits: {}, blockers: {} });
+        t.polls++;
+        for (const row of rows) {
+          t.backendSamples++;
+          bump(t.waits, `${row.wait} | ${row.query}`);
+          if (row.blocker) bump(t.blockers, `${row.query} <= ${row.blocker}`);
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  })();
+  const top = (m: Record<string, number>, polls: number) => Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 25)
+    .map(([key, n]) => ({ key, n, perPoll: +(n / polls).toFixed(3) }));
+  return {
+    enter: (arm: P013CArm) => { inFlight[arm]++; },
+    leave: (arm: P013CArm) => { inFlight[arm]--; },
+    stop: async () => {
+      stopped = true;
+      await loop;
+      await probe.end({ timeout: 5 });
+      const byWaitEvent = (t: Tally) => {
+        const m: Record<string, number> = {};
+        for (const [k, n] of Object.entries(t.waits)) m[k.split(' | ')[0]!] = (m[k.split(' | ')[0]!] ?? 0) + n;
+        return top(m, t.polls);
+      };
+      return Object.fromEntries(Object.entries(tally).map(([arm, t]) => [arm, {
+        polls: t.polls, activeBackendsPerPoll: +(t.backendSamples / Math.max(1, t.polls)).toFixed(3),
+        byWaitEvent: byWaitEvent(t), byWaitAndQuery: top(t.waits, t.polls), blockerPairs: top(t.blockers, t.polls),
+      }]));
+    },
+  };
+}
 
 function matrixShape() {
   const count = (name: string, fallback: number, min: number) => {
