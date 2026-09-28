@@ -704,9 +704,14 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     expect(instructions).toBeLessThan(firstRelease);
   });
 
-  it('is GUI-first [owner 2026-09-28 #807: "The GUI IS READY"], with psu as the terminal option', () => {
-    expect(html).toContain('Open Papercusp GUI');
-    expect(html).toContain('<code>psu</code>');
+  it('makes psu in a terminal the main way, with the GUI HUD tab as the alternative [owner 2026-09-28 #839]', () => {
+    // Setup still happens once in the GUI (psu has no backend/embeddings picker)...
+    expect(html).toContain('Open Papercusp GUI once');
+    // ...then psu is THE way to work, and the GUI is the named alternative.
+    expect(html).toContain('<strong>Open a terminal and run <code>psu</code>.</strong> This is the main way');
+    expect(html).toContain('Prefer the GUI? Open the <strong>HUD</strong> tab');
+    // The previous GUI-first framing, where psu was only the fallback, must not come back.
+    expect(html).not.toContain('Prefer the terminal?');
     // The retired "GUI not ready, use psu" callout must not come back.
     expect(html).not.toContain('The GUI is not ready yet');
     expect(html).not.toContain('THE GUI NOT READY YET');

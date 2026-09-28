@@ -5,8 +5,11 @@
  * [owner 2026-07-27] asked for a section headed "Instructions" on the releases
  * page, placed ABOVE the download tables. [owner 2026-09-28, #807/#808/#811/
  * #812/#813] had it rewritten because it was long out of date: "Make it clear &
- * brief. The GUI IS READY". So it is now GUI-first (install both apps, open the
- * GUI, follow setup), keeps the self-improvement and inference-gateway sections
+ * brief. The GUI IS READY". Then [owner 2026-09-28, #839]: "make launch PSU from
+ * the terminal the main way ... add prefer the gui? ... direct to the HUD tab".
+ * So: install both apps, set up once in the GUI (psu has no backend/embeddings
+ * picker), then `psu` in a terminal is the main way, with the GUI's HUD tab as
+ * the named alternative. It keeps the self-improvement and inference-gateway sections
  * (updated), and drops the old "GUI not ready / use psu" callout, the auto-loop
  * essay, and the "Not ready" list. [owner 2026-09-28, #823] then renamed the
  * self-improvement heading to "Don't like something about Papercusp?" and
@@ -62,12 +65,13 @@ export const INSTRUCTIONS_MD = `
 <p>Questions? I'm on <a href="${DISCORD_URL}">Discord</a>.</p>
 
 1. **Install both apps** for your platform from the downloads below: **Papercusp Server** and **Papercusp GUI**. On macOS, run the one Terminal command shown in the macOS section before first launch.
-2. **Open Papercusp GUI** and follow the setup. You'll pick:
+2. **Open Papercusp GUI once** and follow the setup. You'll pick:
    - an **agent backend**: Claude, Codex, or OMP (Oh My Pie)
    - an **embeddings provider** for agent memory: OpenAI (under $20/month with active use) or free local models (EmbeddingGemma + Harrier)
-3. **Ask an agent to build something for you.** When it offers to launch a fleet, say yes.
+3. **Open a terminal and run \`psu\`.** This is the main way to work with Papercusp.
+4. **Ask an agent to build something for you.** When it offers to launch a fleet, say yes.
 
-Prefer the terminal? Run \`psu\` to work with the same agents from the command line.
+Prefer the GUI? Open the **HUD** tab in Papercusp GUI to work with the same agents.
 
 ### Agent modes
 
