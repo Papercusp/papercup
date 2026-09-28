@@ -529,6 +529,7 @@ impl CardState {
     /// Optimistically hide a card the user just answered (the SSE-disconnected
     /// bridge). The next snapshot that drops it from `openCards` is the
     /// authoritative removal; until then we hide it locally.
+    #[cfg(test)]
     pub fn dismiss(&mut self, correlation_id: &str) {
         self.dismissed.insert(correlation_id.to_string());
         self.rebuild();
