@@ -2010,12 +2010,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
       reason: 'held_exclusive',
       holders: [
         {
+          resource: 'restart:bg-host',
           owner: 'peer-3',
           owner_label: 'peer-three',
           mode: 'exclusive',
           status: 'held',
+          lock_id: 'lock-peer-3',
           reason: '',
+          acquired_ts: new Date(),
           expires_ts: new Date(),
+          fence_seq: 3,
         },
       ],
     });
