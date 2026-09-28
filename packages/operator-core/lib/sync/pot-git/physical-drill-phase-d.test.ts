@@ -22,10 +22,43 @@ import {
   resetPhysicalPhaseDDirt,
   restorePhysicalPhaseDTier,
   validatePhysicalPhaseD,
+  PHASE_D_DIRT_LOCK_TTL_SEC,
+  phaseDDirtLockOwner,
+  type PhysicalPhaseDDirtLock,
   type PhysicalPhaseDInput,
   type PhysicalPhaseDObservation,
   type PhysicalPhaseDTrigger,
 } from './physical-drill-phase-d';
+
+/** In-memory stand-in for the lock plane; records each call and the sentinel's state at that moment. */
+function recordingDirtLock(sentinelPath?: () => string): PhysicalPhaseDDirtLock & {
+  calls: Array<{ op: 'acquire' | 'release'; input: Record<string, unknown>; sentinelContent?: string | null }>;
+} {
+  const calls: Array<{ op: 'acquire' | 'release'; input: Record<string, unknown>; sentinelContent?: string | null }> =
+    [];
+  let held = 0;
+  return {
+    calls,
+    async acquire(input) {
+      const path = sentinelPath?.();
+      calls.push({
+        op: 'acquire',
+        input,
+        ...(path ? { sentinelContent: await readFile(path, 'utf8').catch(() => null) } : {}),
+      });
+      held += 1;
+      return { lockId: `lock-${calls.length}`, expiresAt: new Date(0).toISOString() };
+    },
+    async release(input) {
+      calls.push({ op: 'release', input });
+      const released = held;
+      held = 0;
+      return { released };
+    },
+  };
+}
+
+const testDirtLock = recordingDirtLock();
 
 const roots: string[] = [];
 
@@ -400,7 +433,7 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
     );
     expect(await run(['status', '--porcelain=v1'], worktreePath)).toBe('');
 
-    const dirty = await dirtyPhysicalPhaseDWorktree({ runId: 'p505-phase-d-real-1' }, { repoPath, worktreePath });
+    const dirty = await dirtyPhysicalPhaseDWorktree({ runId: 'p505-phase-d-real-1' }, { repoPath, worktreePath, dirtLock: testDirtLock });
     expect(dirty.protectedPath).toBe(PHASE_D_SENTINEL);
     expect(await run(['status', '--porcelain=v1'], worktreePath)).toContain(PHASE_D_SENTINEL);
     expect(await run(['rev-parse', 'HEAD'], worktreePath)).toBe(mutation.headOid);
@@ -464,16 +497,16 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
       { runId, kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
       { repoPath, worktreePath },
     );
-    expect(await resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath })).toMatchObject({
+    expect(await resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath, dirtLock: testDirtLock })).toMatchObject({
       reset: false,
       reason: 'already-clean',
     });
 
-    await dirtyPhysicalPhaseDWorktree({ runId }, { repoPath, worktreePath });
+    await dirtyPhysicalPhaseDWorktree({ runId }, { repoPath, worktreePath, dirtLock: testDirtLock });
     await expect(
-      resetPhysicalPhaseDDirt({ runId: 'p505-phase-d-other-run' }, { repoPath, worktreePath }),
+      resetPhysicalPhaseDDirt({ runId: 'p505-phase-d-other-run' }, { repoPath, worktreePath, dirtLock: testDirtLock }),
     ).rejects.toThrow('did not plant in this run');
-    expect(await resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath })).toMatchObject({
+    expect(await resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath, dirtLock: testDirtLock })).toMatchObject({
       reset: true,
       reason: 'discarded-run-dirt',
     });
@@ -481,9 +514,9 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
     expect(await run(['rev-parse', 'HEAD'], worktreePath)).toBe(mutation.headOid);
 
     // Someone else's edit beside the probe file is real work: never discarded.
-    await dirtyPhysicalPhaseDWorktree({ runId }, { repoPath, worktreePath });
+    await dirtyPhysicalPhaseDWorktree({ runId }, { repoPath, worktreePath, dirtLock: testDirtLock });
     await writeFile(join(worktreePath, 'base.txt'), 'a peer edit\n');
-    await expect(resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath })).rejects.toThrow(
+    await expect(resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath, dirtLock: testDirtLock })).rejects.toThrow(
       'did not plant in this run',
     );
     expect(await readFile(join(worktreePath, 'base.txt'), 'utf8')).toBe('a peer edit\n');
