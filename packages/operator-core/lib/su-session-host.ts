@@ -920,7 +920,16 @@ export function createSuSessionEventResponse(
       }
       while (!sink.closed) {
         const next = await iterator.next();
-        if (next.done) return;
+        if (next.done) {
+          // The host's channel closed without a terminal event: the host was
+          // disposed (unregistered, or its process is going away), not the
+          // session. Returning alone would leave this response open on
+          // heartbeats forever, so a client would wait on a host that can never
+          // emit again (pui-chat-first-ux-2026-09-28 P-002). Close it so the
+          // client re-subscribes to whatever host now serves the chat.
+          sink.close();
+          return;
+        }
         if (next.value.id <= replayCeiling) continue;
         sink.event('session_event', next.value.event, { id: next.value.id });
         if (next.value.event.type === 'lifecycle' && TERMINAL_STATES.has(next.value.event.state)) {

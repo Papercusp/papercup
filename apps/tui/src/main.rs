@@ -5496,6 +5496,41 @@ async fn attach_su_session_task(
     stream_su_session_events(client, harness, chat_id, binding, None, tx).await;
 }
 
+/// Read a fresh snapshot (published to the UI), then subscribe to the chat's
+/// SU-session event stream, retrying briefly while its host starts or is
+/// re-created. The snapshot is read BEFORE subscribing so events above its head
+/// are new. Returns the stream, the last snapshot read and the last error.
+async fn open_su_event_stream(
+    client: &OperatorClient,
+    harness: &str,
+    chat_id: &str,
+    tx: &SuSessionEventSender,
+) -> (
+    Option<crate::su_session::SuSessionEventStream>,
+    Option<crate::su_session::SuSessionSnapshot>,
+    Option<String>,
+) {
+    let mut last_error = None;
+    let mut snapshot = None;
+    for _ in 0..15 {
+        match client.su_session_snapshot(harness, chat_id).await {
+            Ok(next) => {
+                snapshot = Some(next.clone());
+                let _ = tx.send(Event::SuSessionSnapshot(next));
+            }
+            Err(error) => last_error = Some(error.to_string()),
+        }
+        match client.subscribe_su_session(harness, chat_id).await {
+            Ok(stream) => return (Some(stream), snapshot, last_error),
+            Err(error) => {
+                last_error = Some(error.to_string());
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+    (None, snapshot, last_error)
+}
+
 async fn stream_su_session_events(
     client: OperatorClient,
     harness: String,
@@ -5506,28 +5541,8 @@ async fn stream_su_session_events(
 ) {
     // Readiness is an executor/stream property, not the mere existence of a
     // descriptor. Bound retries also cover a reconnect during host startup.
-    let mut stream = None;
-    let mut last_error = None;
-    let mut startup_snapshot = None;
-    for _ in 0..15 {
-        match client.su_session_snapshot(&harness, &chat_id).await {
-            Ok(snapshot) => {
-                startup_snapshot = Some(snapshot.clone());
-                let _ = tx.send(Event::SuSessionSnapshot(snapshot));
-            }
-            Err(error) => last_error = Some(error.to_string()),
-        }
-        match client.subscribe_su_session(&harness, &chat_id).await {
-            Ok(next) => {
-                stream = Some(next);
-                break;
-            }
-            Err(error) => {
-                last_error = Some(error.to_string());
-                tokio::time::sleep(Duration::from_millis(500)).await;
-            }
-        }
-    }
+    let (stream, mut startup_snapshot, last_error) =
+        open_su_event_stream(&client, &harness, &chat_id, &tx).await;
     let Some(mut stream) = stream else {
         let message = last_error.unwrap_or_else(|| {
             format!(
@@ -5577,7 +5592,7 @@ async fn stream_su_session_events(
     // send, and a replayed failure cannot fail: a reconnect after an engine
     // death replays that death while the recovered runtime is starting. History
     // may only supply the reason for a snapshot that is itself terminal.
-    let replay_head = startup_snapshot
+    let mut replay_head = startup_snapshot
         .as_ref()
         .map_or(0, |snapshot| snapshot.last_sequence);
     let mut startup_error: Option<String> = None;
@@ -5592,6 +5607,7 @@ async fn stream_su_session_events(
     // and re-poll the snapshot while waiting so a host that dies mid-startup
     // is noticed within seconds instead of at the deadline.
     let mut resume_requested = false;
+    let mut stream_reopens = 0u32;
     if initial_turn.is_some() {
         if let Some(detached) = startup_snapshot.as_ref().and_then(detached_runtime) {
             match recover_detached_runtime(&client, &harness, &binding, detached, &mut resume_requested)
@@ -5626,12 +5642,28 @@ async fn stream_su_session_events(
                     });
                     return;
                 }
-                _ = detach_poll.tick(), if !resume_requested => {
-                    let detached = client
-                        .su_session_snapshot(&harness, &chat_id)
-                        .await
-                        .ok()
-                        .and_then(|snapshot| detached_runtime(&snapshot));
+                _ = detach_poll.tick() => {
+                    let Ok(snapshot) = client.su_session_snapshot(&harness, &chat_id).await else {
+                        continue;
+                    };
+                    if startup_snapshot_can_send_initial_turn(&binding, &snapshot, &harness, &chat_id) {
+                        // The host is ready but this stream never said so, so
+                        // it is attached to a host that no longer serves the
+                        // chat (a resumed engine lives on a re-created host).
+                        // Re-open it first so the reply is observed, then send;
+                        // the send path re-reads readiness before dispatching.
+                        let (reopened, fresh, _) =
+                            open_su_event_stream(&client, &harness, &chat_id, &tx).await;
+                        if let Some(reopened) = reopened {
+                            stream = reopened;
+                            replay_head = fresh.map_or(snapshot.last_sequence, |fresh| fresh.last_sequence);
+                        }
+                        let pending = initial_turn.take().expect("checked pending first turn");
+                        send_su_turn_with_client(&client, &harness, &chat_id, &binding, pending, &tx)
+                            .await;
+                        continue;
+                    }
+                    let detached = if resume_requested { None } else { detached_runtime(&snapshot) };
                     if let Some(detached) = detached {
                         match recover_detached_runtime(
                             &client, &harness, &binding, detached, &mut resume_requested,
@@ -5662,6 +5694,27 @@ async fn stream_su_session_events(
         let event = match next {
             Ok(event) => event,
             Err(error) => {
+                // A stream that closes under a pending first turn with no
+                // terminal event lost its HOST (the process serving it died or
+                // the host was re-created), not its session. Re-open it against
+                // whatever host now serves the chat and keep the draft pending;
+                // the snapshot poll above then resumes or sends as needed.
+                if initial_turn.is_some()
+                    && !terminal_seen
+                    && stream_reopens < SU_STREAM_REOPENS
+                    && tokio::time::Instant::now() < startup_deadline
+                {
+                    stream_reopens += 1;
+                    let (reopened, fresh, _) =
+                        open_su_event_stream(&client, &harness, &chat_id, &tx).await;
+                    if let Some(reopened) = reopened {
+                        stream = reopened;
+                        if let Some(fresh) = fresh {
+                            replay_head = fresh.last_sequence;
+                        }
+                        continue;
+                    }
+                }
                 if !terminal_seen || initial_turn.is_some() {
                     let _ = tx.send(Event::SuSessionStreamError {
                         chat_id: chat_id.clone(),
@@ -5809,6 +5862,8 @@ fn startup_snapshot_can_send_initial_turn(
 const SU_STARTUP_BUDGET: Duration = Duration::from_secs(60);
 /// How often a pending first turn re-reads the snapshot for a lost runtime.
 const SU_DETACH_POLL: Duration = Duration::from_secs(3);
+/// How many times a pending first turn re-opens a closed event stream.
+const SU_STREAM_REOPENS: u32 = 5;
 
 /// A restored host whose engine is not attached to it.
 #[derive(Debug, Clone, PartialEq, Eq)]

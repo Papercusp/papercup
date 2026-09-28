@@ -635,6 +635,26 @@ describe('SuSessionHost', () => {
     await vi.waitFor(() => expect(host.subscriberCount).toBe(0), { timeout: 250 });
     await response.body?.cancel();
   });
+
+  // pui-chat-first-ux-2026-09-28 P-002: a disposed host can never emit again.
+  // Its open responses must END (without a terminal `done`, since the session
+  // did not end) so a client re-subscribes to whichever host now serves the
+  // chat, instead of idling on heartbeats until its startup budget runs out.
+  it('ends an open response without a terminal done when its host is disposed', async () => {
+    const host = new SuSessionHost({ descriptor: descriptor() });
+    const response = createSuSessionEventResponse(
+      new Request('http://localhost/su-session/events'),
+      host as SuSessionHost,
+      { heartbeatMs: 0 },
+    );
+    await vi.waitFor(() => expect(host.subscriberCount).toBe(1), { timeout: 1_000 });
+    host.dispose('owning process lost');
+    const text = await Promise.race([
+      response.text(),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('response stayed open')), 2_000)),
+    ]);
+    expect(text).not.toContain('event: done');
+  });
 });
 
 describe('restart reconciliation on the host snapshot', () => {
