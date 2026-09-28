@@ -333,6 +333,50 @@ export function getBlueprintOperationStatus(sql: Sql, handle: BlueprintOperation
   return runWithWorkspace(handle.workspaceId, async () => (await readValidatedCanonicalOperation(sql, handle, callerId)).status);
 }
 
+/** Issue-family kinds, exactly the `engineer_issues` view predicate. */
+const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task']);
+
+export interface AcceptedProgramRootGuard {
+  terminal: boolean;
+  cancellationRequested: boolean;
+}
+
+/** One-round-trip liveness guard for an accepted program's root work item
+ * (WI-10003631). A running coord program checks this before each op step.
+ * The full status read costs four round trips (receipt, controls, issue view,
+ * feature row) and its receipt check re-proves what the workflow proved when
+ * it started (`loadAcceptedCoordProgramBlueprint`); the handle is immutable
+ * workflow input. This answers the same two predicates the step guard reads
+ * from `projectBlueprintOperationStatus`: phase terminal (root settled) and
+ * cancellation (cancel event, or the root's `blueprintCancellation` mark). */
+export async function readAcceptedProgramRootGuard(
+  sql: Sql, handle: BlueprintOperationHandle,
+): Promise<AcceptedProgramRootGuard> {
+  if (handle.target.kind !== 'work-item') {
+    throw new Error('accepted program root guard requires a work-item target');
+  }
+  const rows = await sql<Array<{ status: string; item_kind: string | null; marked: boolean; cancel_requested: boolean }>>`
+    SELECT wi.status, wi.item_kind,
+           (wi.payload ? 'blueprintCancellation'
+             AND COALESCE(wi.payload->'blueprintCancellation', 'null'::jsonb) NOT IN ('null'::jsonb, 'false'::jsonb)) AS marked,
+           EXISTS(
+             SELECT 1 FROM harness_shared.coord_event_log
+              WHERE workspace_id = ${handle.workspaceId} AND surface = 'blueprint-operation'
+                AND msg_id = ${eventIdentity('cancel', handle, 'once')}
+           ) AS cancel_requested
+      FROM harness_shared.work_items AS wi
+     WHERE wi.workspace_id = ${handle.workspaceId} AND wi.harness_slug = ${handle.harnessSlug}
+       AND wi.feature_id = ${handle.target.id}
+  `;
+  const row = rows[0];
+  if (!row) throw new Error('blueprint operation work item is missing or outside its harness');
+  const family = ISSUE_FAMILY_KINDS.has(row.item_kind ?? '') ? 'issue' : 'feature';
+  return {
+    terminal: isSettledWorkItem({ family, state: row.status } as Pick<WorkItem, 'family' | 'state'>),
+    cancellationRequested: row.cancel_requested || row.marked,
+  };
+}
+
 /** Exported for the shared public contract (operation-contract.ts). */
 export const OperationEventBodySchema = z.discriminatedUnion('kind', [
   z.object({
