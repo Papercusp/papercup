@@ -399,6 +399,57 @@ describe('buildRoleLaunchSpec', () => {
     }
   });
 
+  // WI-10003611: installed identities carry a per-layer attestation (identity-lint requires it).
+  // Replacing an inherited exclusive slot peer-assembles the surviving layers; copying a layer's
+  // attestation onto the synthesized effective-launch root failed attestation-hash-mismatch, so
+  // no attested identity could replace an inherited domain (the papercusp pot's own shape).
+  it('replaces an inherited attested domain with an attested installed identity', async () => {
+    const { layerContentHash } = await import('@papercusp/orchestrator/blueprint');
+    const dir = mkdtempSync(join(tmpdir(), 'role-launch-attested-replacement-'));
+    const blueprintDir = join(dir, '.papercusp', 'blueprints');
+    const writeAttested = (id: string, model: string) => {
+      const layer = {
+        id, extends: 'base', version: '1.0.0', slots: [{ slot: 'domain' }],
+        knobs: { aiBackend: { default: { model } } },
+      };
+      mkdirSync(join(blueprintDir, id, 'prompts'), { recursive: true });
+      writeFileSync(join(blueprintDir, id, 'blueprint.yaml'), JSON.stringify({
+        ...layer, attestation: { contentHash: layerContentHash(layer), signedBy: 'approved-publisher' },
+      }));
+      writeFileSync(join(blueprintDir, id, 'prompts', 'domain.md'), `${id.toUpperCase()} RULES\n`);
+      return layerContentHash(layer);
+    };
+    try {
+      writeAttested('first-attested-domain', 'original-model');
+      const selectedHash = writeAttested('second-attested-domain', 'selected-model');
+      writeFileSync(join(dir, '.papercusp', 'blueprint.yaml'), [
+        'id: fixture-pot', 'extends: first-attested-domain', 'kind: pot', 'version: 1.0.0',
+        'workItem:', '  kind: feature', '  idPrefix: WI',
+        'spine:', '  decider: su', '  claimModel: self-claim-priority',
+        '  default: { to: idle }',
+        'roles:', '  - id: su', '    description: Fixture su.', '',
+      ].join('\n'));
+      const input = { cwd: dir, harnessSlug: 'fixture', role: 'worker', stack: ['domain:second-attested-domain'] };
+
+      await expect(resolveLaunchIdentityModelDefault(input)).resolves.toBe('selected-model');
+      const selected = await compileLaunchSpecificationArtifact({
+        ...input, promptText: 'ROLE KERNEL', workspaceId: 'fixture-workspace',
+        state: { schemaVersion: 1 }, renderStack: true,
+      });
+      const configuration = selected.specificationArtifact.configuration as Record<string, unknown>;
+      expect(configuration).not.toHaveProperty('attestation');
+      expect(selected.specificationArtifact.configuration.knobs?.aiBackend?.default?.model).toBe('selected-model');
+      expect(selected.promptText).toContain('SECOND-ATTESTED-DOMAIN RULES');
+      expect(selected.promptText).not.toContain('FIRST-ATTESTED-DOMAIN RULES');
+      // The selected layer's own authored hash stays pinned in the compiler closure.
+      expect(selected.specificationArtifact.inputs).toContainEqual(expect.objectContaining({
+        kind: 'blueprint-layer', ref: 'second-attested-domain', contentHash: selectedHash,
+      }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('keeps an existing SU mode producer binding out of the resource artifact', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'su-mode-launch-artifact-'));
     try {
