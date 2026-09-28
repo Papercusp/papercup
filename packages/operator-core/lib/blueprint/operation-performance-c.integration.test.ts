@@ -201,6 +201,34 @@ describe('P-013 workload C fixture', () => {
       for (const arm of ['control', 'candidate', 'candidate', 'control'] as const) {
         samples.push(await runArm(arm, sequence++));
       }
+      // WI-10003631 H3: P013_WAL_BY_REL=<n> attributes each arm's WAL volume per
+      // relation over n sequential warm samples (pg_walinspect; superuser DSN).
+      // The matrix counters showed candidate WAL bytes at 2.65x control with only
+      // +10% commits, so this names which relation's row images carry the gap.
+      const walSamples = Number(process.env.P013_WAL_BY_REL ?? 0);
+      if (Number.isSafeInteger(walSamples) && walSamples > 0) {
+        await db.adminSql`CREATE EXTENSION IF NOT EXISTS pg_walinspect`;
+        const attribution: Record<string, unknown> = {};
+        for (const arm of ['control', 'candidate'] as const) {
+          const [{ start }] = await db.adminSql<Array<{ start: string }>>`SELECT pg_current_wal_insert_lsn()::text AS start`;
+          for (let i = 0; i < walSamples; i++) samples.push(await runArm(arm, sequence++));
+          const [{ end }] = await db.adminSql<Array<{ end: string }>>`SELECT pg_current_wal_insert_lsn()::text AS end`;
+          const rows = await db.adminSql<Array<{ rel: string; blocks: number; fpiBytes: number; dataBytes: number }>>`
+            SELECT COALESCE(pg_filenode_relation(b.reltablespace, b.relfilenode)::text,
+                            'db' || b.reldatabase || ':' || b.relfilenode) AS rel,
+                   count(*)::int AS blocks,
+                   COALESCE(sum(b.fpi_length), 0)::float8 AS "fpiBytes",
+                   COALESCE(sum(b.block_data_length), 0)::float8 AS "dataBytes"
+              FROM pg_get_wal_block_info(${start}::pg_lsn, ${end}::pg_lsn) b
+             GROUP BY 1 ORDER BY sum(b.fpi_length) + sum(b.block_data_length) DESC LIMIT 25`;
+          const [{ total }] = await db.adminSql<Array<{ total: number }>>`
+            SELECT (${end}::pg_lsn - ${start}::pg_lsn)::float8 AS total`;
+          attribution[arm] = { samples: walSamples, walBytesPerSample: total / walSamples,
+            byRelation: rows.map((r) => ({ ...r, fpiBytes: r.fpiBytes / walSamples, dataBytes: r.dataBytes / walSamples,
+              blocks: r.blocks / walSamples })) };
+        }
+        console.info('P-013 workload C WAL by relation', JSON.stringify(attribution));
+      }
       console.info('P-013 workload C smoke; no grade', JSON.stringify(samples.map(({ arm, marks, stepProfile }) => ({
         arm, totalMs: marks.businessEvent - marks.ingress, dispatchMs: marks.dispatched - marks.accepted,
         acceptMs: marks.accepted - marks.ingress, terminalMs: marks.terminal - marks.dispatched,
