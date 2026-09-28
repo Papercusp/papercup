@@ -118,7 +118,15 @@ export function hostedCustomerAgentIdentitySpec(options: HostedCustomerAgentIden
     shipFileRoots: stateRoots,
     envAllowPrefixes: ['CLAUDE_CODE_', 'DISABLE_'],
     homeLinks: HOSTED_HOME_LINKS,
-    forbiddenSecretFiles: [join(localHome, '.papercusp', 'superuser-token')],
+    // The operator's embedded-PG credentials (WI-10003627) never cross to the customer:
+    // embedded-pg.json carries the admin DSN, embedded-pg-credentials.json every role's password.
+    forbiddenSecretFiles: [
+      join(localHome, '.papercusp', 'superuser-token'),
+      ...stateRoots.flatMap((root) => [
+        join(root, 'embedded-pg.json'),
+        join(root, 'embedded-pg-credentials.json'),
+      ]),
+    ],
   };
 }
 

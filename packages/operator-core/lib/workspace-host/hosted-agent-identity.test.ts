@@ -199,9 +199,14 @@ describe('hosted New Session agent identity spec (D-424)', () => {
     expect(spec.nodePath).toBe(`${WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN}/node`);
     expect(spec.remoteHome).toBe(HOSTED_WORKSPACE_ACCOUNT_HOME);
     expect(spec.remotePath[0]).toBe(WORKSPACE_HOST_CUSTOMER_AGENT_TOOLCHAIN_BIN);
-    // Only the operator's own state dir ships (psu's rendered prompt); its superuser token never crosses.
+    // Only the operator's own state dir ships (psu's rendered prompt); its superuser token and
+    // embedded-PG credentials (WI-10003627) never cross.
     expect(spec.shipFileRoots).toEqual(['/var/lib/papercusp/.papercusp']);
-    expect(spec.forbiddenSecretFiles).toEqual(['/var/lib/papercusp/.papercusp/superuser-token']);
+    expect(spec.forbiddenSecretFiles).toEqual([
+      '/var/lib/papercusp/.papercusp/superuser-token',
+      '/var/lib/papercusp/.papercusp/embedded-pg.json',
+      '/var/lib/papercusp/.papercusp/embedded-pg-credentials.json',
+    ]);
   });
 
   it('psu launches carry the spec only once the hosted runtime installed it', () => {
