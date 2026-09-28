@@ -64,7 +64,7 @@ const LEGACY_CAPACITY_FIELDS: Readonly<Record<string, string>> = {
 /** Top-level `/admin/config` fields that are CANONICAL and stay where they are.
  *  `codexModelRefusals` (WI-10003306) is current routing state — the (account, model) pairs the
  *  gateway is routing around right now — not a pre-admissionState capacity read, so it is canonical. */
-const CANONICAL_CONFIG_FIELDS = [
+export const CANONICAL_CONFIG_FIELDS = [
   'version',
   'accounts',
   'codexAccounts',
