@@ -44,6 +44,17 @@ vi.mock('../git-sync/hive-git-mode', () => ({
   getPotGitMode: getHiveGitModeMock,
 }));
 
+// WI-10003689: the registry read and the disk-touching reclaim are stubbed; the
+// PURE key mapping (liveGcRepoKey) stays real so the rekey case below is honest.
+const { loadEntriesMock, reclaimMock } = vi.hoisted(() => ({
+  loadEntriesMock: vi.fn(async (_ws: string, _pot: string): Promise<Array<Record<string, unknown>>> => []),
+  reclaimMock: vi.fn(async (..._args: unknown[]): Promise<Array<Record<string, unknown>>> => []),
+}));
+vi.mock('../../sync/pot-git/superseded-store-reclaim', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, loadPotRepoEntries: loadEntriesMock, reclaimSupersededStores: reclaimMock };
+});
+
 // Import AFTER the mocks so the module's registerSystemAction side-effect binds them.
 import { getSystemAction } from './system-actions';
 import './hive-git-gc-action';
@@ -135,6 +146,51 @@ describe('system:hive-git-gc', () => {
       payloadTemplate: null,
     });
     expect(hiveGitRepoPathMock).toHaveBeenCalledWith('legacy-home', 'repo-1');
+  });
+
+  /**
+   * WI-10003689: the row's repo_key is written once at the mode flip. After a re-key
+   * it names the ABANDONED store; gc'ing that store forever keeps its mtimes fresh and
+   * the live store unmaintained, and the dead copy is never reclaimed.
+   */
+  it('gc\'s the LIVE store when the configured repo_key was superseded by a re-key, then runs the reclaim', async () => {
+    getHiveGitModeMock.mockResolvedValue('bridged');
+    const entries = [{ slug: 'papercusp', pot_repo_key: 'gh-1223568103', pot_repo_key_source: 'peer' }];
+    loadEntriesMock.mockResolvedValueOnce(entries);
+    reclaimMock.mockResolvedValueOnce([
+      { repoKey: 'papercusp', canonicalKey: 'gh-1223568103', action: 'reclaimed', reason: 'reclaimed', bytes: 5 * 1024 ** 3 },
+    ]);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const action = getSystemAction('pot-git-gc')!;
+      await action(ctx({ pot_home_slug: 'papercusp', repo_key: 'papercusp' }));
+      expect(loadEntriesMock).toHaveBeenCalledWith('ws-1', 'papercusp');
+      expect(hiveGitRepoPathMock).toHaveBeenCalledWith('papercusp', 'gh-1223568103');
+      expect(gcMock.mock.calls[0][0]).toBe('/repos/papercusp/gh-1223568103');
+      expect(reclaimMock).toHaveBeenCalledWith('papercusp', entries);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('was superseded by a re-key'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('superseded store papercusp.git (5120 MiB, live key gh-1223568103) reclaimed'));
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it('fails open when the registry is unreadable: gc the configured store, reclaim nothing', async () => {
+    getHiveGitModeMock.mockResolvedValue('bridged');
+    loadEntriesMock.mockRejectedValueOnce(new Error('registry down'));
+    reclaimMock.mockClear();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const action = getSystemAction('pot-git-gc')!;
+      await action(ctx({ pot_home_slug: 'shop-hive', repo_key: 'repo-1' }));
+      expect(gcMock.mock.calls[0][0]).toBe('/repos/shop-hive/repo-1');
+      expect(reclaimMock).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('registry unreadable'));
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('skips the tick (no throw, no gc call) when repo_key is missing', async () => {

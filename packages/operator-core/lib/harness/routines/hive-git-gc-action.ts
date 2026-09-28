@@ -26,6 +26,12 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { gcHiveGitRepo } from '../../sync/pot-git/gc';
 import { hiveGitRepoPath } from '../../sync/pot-git/storage';
 import { getPotGitMode } from '../git-sync/hive-git-mode';
+import type { RepoIdentityEntry } from '../../sync/pot-git/repo-identity';
+import {
+  liveGcRepoKey,
+  loadPotRepoEntries,
+  reclaimSupersededStores,
+} from '../../sync/pot-git/superseded-store-reclaim';
 
 const potGitGcTick = async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
@@ -47,15 +53,39 @@ const potGitGcTick = async (ctx: SystemActionCtx) => {
     return;
   }
 
+  // WI-10003689: the pot's registry entries. They tell us whether the configured key
+  // was abandoned by a later re-key, and which stores are superseded aliases. Fails
+  // open: an unreadable registry means gc the configured store and reclaim nothing.
+  let entries: RepoIdentityEntry[] | null = null;
+  try {
+    entries = await loadPotRepoEntries(ctx.workspaceId, potHomeSlug);
+  } catch (e) {
+    console.warn(`[pot-git-gc] ${potHomeSlug}: registry unreadable (${(e as Error)?.message ?? e}); superseded-store reclaim skipped`);
+  }
+  const gcKey = entries ? liveGcRepoKey(repoKey, entries) : repoKey;
+  if (gcKey !== repoKey) {
+    console.warn(
+      `[pot-git-gc] ${potHomeSlug}: trigger_config.repo_key=${repoKey} was superseded by a re-key; gc'ing the live store ${gcKey}`,
+    );
+  }
+
   const keepPublishedRefsPerNamespace = Number(cfg.keep_published_refs_per_namespace);
-  const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
+  const repoPath = hiveGitRepoPath(potHomeSlug, gcKey);
   const result = await gcHiveGitRepo(repoPath, {
     ...(Number.isFinite(keepPublishedRefsPerNamespace) && keepPublishedRefsPerNamespace > 0
       ? { keepPublishedRefsPerNamespace }
       : {}),
   });
+  if (entries) {
+    for (const o of await reclaimSupersededStores(potHomeSlug, entries)) {
+      const size = o.bytes == null ? 'unknown size' : `${(o.bytes / 1024 / 1024).toFixed(0)} MiB`;
+      const line = `[pot-git-gc] ${potHomeSlug}: superseded store ${o.repoKey}.git (${size}, live key ${o.canonicalKey}) ${o.action}: ${o.reason}`;
+      if (o.action === 'reclaimed') console.log(line);
+      else console.warn(line);
+    }
+  }
   console.log(
-    `[pot-git-gc] ${potHomeSlug}/${repoKey} (mode=${mode}): ` +
+    `[pot-git-gc] ${potHomeSlug}/${gcKey} (mode=${mode}): ` +
       `deleted ${result.deletedRefs.length} ref(s), archived ${result.archivedNamespaces.length} namespace(s), ` +
       `kept ${result.keptRefs.length}` +
       (result.errors.length ? `, ${result.errors.length} error(s)` : ''),
