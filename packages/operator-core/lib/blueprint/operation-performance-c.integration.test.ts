@@ -89,7 +89,9 @@ beforeAll(async () => {
     stamp('dedicated-pg-started');
   }
   db = await createOrgTestDb({ adminPoolMax: P013_ORG_POOL_MAX });
-  fixture.sql = db.adminSql;
+  // WI-10003631: P013_CALLSITES tags every product-routed (getOrgPg) statement + begin with
+  // its first product call-site frame so per-op txns/reads can be attributed to code.
+  fixture.sql = process.env.P013_CALLSITES ? tagCallsites(db.adminSql) : db.adminSql;
   stamp('org-test-db-ready');
   await db.adminSql`
     INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
@@ -247,7 +249,12 @@ describe('P-013 workload C fixture', () => {
         const stmts: Record<string, unknown> = {};
         for (const arm of ['control', 'candidate'] as const) {
           await db.adminSql`SELECT pg_stat_statements_reset()`;
+          callsites.clear();
           for (let i = 0; i < stmtSamples; i++) samples.push(await runArm(arm, sequence++));
+          if (process.env.P013_CALLSITES) {
+            console.info(`P-013 workload C callsites ${arm}`, JSON.stringify([...callsites.entries()]
+              .sort((a, b) => b[1] - a[1]).slice(0, 60).map(([site, n]) => [site, +(n / stmtSamples).toFixed(2)])));
+          }
           const rows = await db.adminSql<Array<{ query: string; calls: number; ms: number }>>`
             SELECT left(regexp_replace(query, '\\s+', ' ', 'g'), 90) AS query, calls::float8 AS calls,
                    total_exec_time::float8 AS ms
@@ -289,6 +296,44 @@ describe('P-013 workload C fixture', () => {
     expect({ items, plans, runs }).toEqual({ items: candidates, plans: 0, runs: 0 });
   }, budgetMs());
 });
+
+/** WI-10003631 probe: `<kind> <file:line>` → count, for statements routed through getOrgPg. */
+const callsites = new Map<string, number>();
+function callsiteOf(): string {
+  const frames = (new Error().stack ?? '').split('\n').slice(2);
+  const hit = frames.find((f) => f.includes('/lib/') && !f.includes('node_modules')
+    && !f.includes('operation-performance-c') && !f.includes('/test/'));
+  return hit ? hit.trim().replace(/^at\s+/, '').replace(/^.*\/lib\//, '').replace(/:\d+\)?$/, '') : '(unattributed)';
+}
+function tagCallsites(sql: Sql): Sql {
+  const bump = (key: string) => callsites.set(key, (callsites.get(key) ?? 0) + 1);
+  const wrap = (inner: Sql): Sql => new Proxy(inner, {
+    apply(target, thisArg, args: unknown[]) {
+      // A tagged-template call (first arg is a TemplateStringsArray) is a statement or a fragment.
+      if (Array.isArray(args[0]) && 'raw' in (args[0] as object)) bump(`sql ${callsiteOf()}`);
+      return Reflect.apply(target as never, thisArg, args);
+    },
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === 'begin' && typeof value === 'function') {
+        return (...args: unknown[]) => {
+          bump(`begin ${callsiteOf()}`);
+          const fnIndex = args.findIndex((a) => typeof a === 'function');
+          if (fnIndex >= 0) {
+            const fn = args[fnIndex] as (tx: Sql) => unknown;
+            args[fnIndex] = (tx: Sql) => fn(wrap(tx));
+          }
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      }
+      if (prop === 'unsafe' && typeof value === 'function') {
+        return (...args: unknown[]) => { bump(`unsafe ${callsiteOf()}`); return (value as (...a: unknown[]) => unknown).apply(target, args); };
+      }
+      return value;
+    },
+  }) as Sql;
+  return wrap(sql);
+}
 
 /** Polls every 20ms; a poll is attributed to an arm only while exactly that arm has
  * measured runs in flight (arms run sequentially per trial, so overlap is rare). */
