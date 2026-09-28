@@ -77,6 +77,7 @@ import {
 import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
 import { formatIntegratorTickStatus } from '../../sync/pot-git/integrator';
 import { runWorktreeBridgeTick, WORKTREE_BRIDGE_RETRY_TTL_MS } from '../../sync/pot-git/worktree-bridge-tick';
+import { catchUpWorktreeToWatermark } from '../../sync/pot-git/worktree-bridge';
 import {
   HiveEffectAuthorityError,
   loadHiveEffectAuthority,
@@ -6572,7 +6573,18 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     // discard non-matching rows in-index (measured 1,992 buffers -> 40) without
     // disturbing the id-ordering the ref-announce readers depend on.
     // See EI-21893070865750886.
-    if (feRows.length === 0) return;
+    const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
+    const { projectDirForSlug } = await import('../../operator-notes');
+    if (feRows.length === 0) {
+      // WI-10003772: no new announcement, but the worktree may still trail the
+      // ACCEPTED watermark (a deferred-dirty advance whose dirt has since
+      // drained). Nothing re-announces that staging, so retry it here.
+      const idleWorktreePath = priorWatermark.stagingSha ? await projectDirForSlug(slug, workspaceId) : null;
+      if (idleWorktreePath && priorWatermark.stagingSha) {
+        await runWorktreeCatchUp(slug, repoPath, idleWorktreePath, priorWatermark.stagingSha);
+      }
+      return;
+    }
 
     const pending: SignedStagingAdvance[] = [];
     /** Row id + age per PENDING entry, index-aligned with `pending` — the
@@ -6611,8 +6623,6 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
       return;
     }
 
-    const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
-    const { projectDirForSlug } = await import('../../operator-notes');
     const worktreePath = await projectDirForSlug(slug, workspaceId);
     if (!worktreePath) return; // no checked-out tree for this slug — next tick retries
 
@@ -6731,8 +6741,43 @@ async function runWorktreeBridgeLeg(slug: string, workspaceId: string): Promise<
     if (outcome.errors.length) {
       console.warn(`[git-sync] ${slug}: worktree-bridge-tick reported errors: ${outcome.errors.join('; ')}`);
     }
+
+    // WI-10003772: a tick that consumed announcements but accepted none
+    // (stale / replayed / held) re-bridged nothing, so it is also the moment to
+    // retry a worktree still trailing the accepted watermark.
+    if (outcome.acceptedCount === 0 && outcome.watermark.stagingSha) {
+      await runWorktreeCatchUp(slug, repoPath, worktreePath, outcome.watermark.stagingSha);
+    }
   } catch (e) {
     console.warn(`[git-sync] ${slug}: worktree-bridge-tick failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/**
+ * WI-10003772 — the deferred-advance retry sweep for the worktree bridge. The
+ * bridge persists the accepted watermark even when the worktree could not
+ * follow (dirty overlap / diverged), and the event that carried it is already
+ * consumed, so without this a member that cleans up its dirt stays on stale
+ * staging until some OTHER advance happens to arrive. `catchUpWorktreeToWatermark`
+ * is fetch-free and cheap when the worktree already contains the watermark, and
+ * ff-only / dirty-safe otherwise, so it is safe to run on every idle tick.
+ * Only a real advance or an error is logged: deferred-dirty and diverged-manual
+ * are expected, self-describing waiting states and would flood the log.
+ */
+async function runWorktreeCatchUp(
+  slug: string,
+  repoPath: string,
+  worktreePath: string,
+  stagingSha: string,
+): Promise<void> {
+  const r = await catchUpWorktreeToWatermark(repoPath, worktreePath, stagingSha);
+  if (r.outcome === 'advanced') {
+    console.log(
+      `[git-sync] ${slug}: worktree-bridge catch-up advanced the worktree ${r.from?.slice(0, 12) ?? '(unborn)'} -> ` +
+        `${stagingSha.slice(0, 12)} (accepted watermark it had been trailing)`,
+    );
+  } else if (r.outcome === 'error') {
+    console.warn(`[git-sync] ${slug}: worktree-bridge catch-up to ${stagingSha.slice(0, 12)} failed: ${r.detail}`);
   }
 }
 

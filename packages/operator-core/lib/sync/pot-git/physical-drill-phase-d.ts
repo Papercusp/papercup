@@ -356,6 +356,14 @@ function sha256(value: Buffer | string): string {
  * merely lags staging still merges cleanly and is accepted, so this checks
  * mergeability, not ancestry. With no canonical staging yet there is nothing
  * to conflict with.
+ *
+ * The base merging cleanly is necessary but NOT sufficient: the mutation then
+ * rewrites the sentinel, so a lagging base whose canonical side ALSO rewrote
+ * the sentinel after it yields a head that conflicts at the integrator anyway.
+ * Measured: P-505 run 25 committed below-steer f852d80 on 489e075, the parent
+ * of canonical daee50f, which had rewritten the sentinel; integrate returned
+ * 'nothing' and the phase failed on the missing event. The VM had been left
+ * trailing canonical by a deferred-dirty advance nothing retried (WI-10003772).
  */
 async function assertBaseMergesWithCanonicalStaging(
   repoPath: string,
@@ -377,7 +385,26 @@ async function assertBaseMergesWithCanonicalStaging(
     ['merge-tree', '--write-tree', '--name-only', '--no-messages', stagingOid, baseOid],
     worktreePath,
   );
-  if (merged.code === 0) return;
+  if (merged.code === 0) {
+    const mergeBase = await git(worktreePath, ['merge-base', stagingOid, baseOid]);
+    const canonicalRewroteSentinel = await git(worktreePath, [
+      'diff',
+      '--name-only',
+      mergeBase,
+      stagingOid,
+      '--',
+      PHASE_D_SENTINEL,
+    ]);
+    if (canonicalRewroteSentinel) {
+      throw new Error(
+        `physical Phase D refuses to mutate: worktree HEAD ${baseOid.slice(0, 12)} trails canonical staging ` +
+          `${stagingOid.slice(0, 12)}, which rewrote ${PHASE_D_SENTINEL} after it, so the mutated head would ` +
+          'conflict at the integrator. The worktree never caught up to an accepted staging advance ' +
+          '(WI-10003772): advance the fixed worktree to canonical staging first.',
+      );
+    }
+    return;
+  }
   if (merged.code === 1) {
     const conflicted = [...new Set(merged.stdout.split('\n').slice(1).map((l) => l.trim()).filter(Boolean))];
     throw new Error(

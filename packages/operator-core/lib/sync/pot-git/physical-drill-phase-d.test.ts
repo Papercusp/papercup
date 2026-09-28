@@ -537,10 +537,10 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
       return run(['rev-parse', 'HEAD'], worktreePath);
     };
     const base = await run(['rev-parse', 'HEAD'], worktreePath);
-    const staging = await commit(PHASE_D_SENTINEL, 'tower overlap\n', 'staging edits overlap');
-    await run(['push', '-q', repoPath, `${staging}:refs/hive/staging`], worktreePath);
-
-    // Lagging: HEAD is behind staging on an unrelated path, so the merge is clean.
+    // Lagging: canonical moved on a path the mutation does not touch, and HEAD
+    // diverged on another unrelated path, so both merges stay clean.
+    const towerOnly = await commit('tower.txt', 't\n', 'staging edits an unrelated path');
+    await run(['push', '-q', repoPath, `${towerOnly}:refs/hive/staging`], worktreePath);
     await run(['reset', '-q', '--hard', base], worktreePath);
     await commit('unrelated.txt', 'x\n', 'unrelated');
     const lagging = await createPhysicalPhaseDMutation(
@@ -549,7 +549,11 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
     );
     expect(lagging.headOid).toBe(await run(['rev-parse', 'HEAD'], worktreePath));
 
-    // Residue: HEAD carries a commit that edits the overlap file differently.
+    // Residue: HEAD carries a commit that edits the overlap file differently from canonical.
+    await run(['reset', '-q', '--hard', base], worktreePath);
+    const staging = await commit(PHASE_D_SENTINEL, 'tower overlap\n', 'staging edits overlap');
+    await run(['push', '-q', '-f', repoPath, `${staging}:refs/hive/staging`], worktreePath);
+    await run(['reset', '-q', '--hard', base], worktreePath);
     await commit(PHASE_D_SENTINEL, 'leaked vm dirt\n', 'sync(root): leaked dirt');
     const before = await run(['rev-parse', 'HEAD'], worktreePath);
     await expect(
@@ -561,6 +565,40 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
     // Refusal happens before any write: no new commit, and the tree stays clean.
     expect(await run(['rev-parse', 'HEAD'], worktreePath)).toBe(before);
     expect(await run(['status', '--porcelain'], worktreePath)).toBe('');
+  });
+
+  it('refuses a base that trails a canonical staging which rewrote the sentinel (P-505 run 25, WI-10003772)', async () => {
+    // Run 25: the VM worktree sat at 489e075, the PARENT of canonical daee50f, which had
+    // rewritten the sentinel. The base alone merges cleanly (it is an ancestor), but the
+    // mutation rewrites the sentinel too, so the integrator hit a content conflict.
+    const { repoPath, worktreePath, run } = await fixedWorktree();
+    const device = generateEd25519KeypairDer().pubkeyBase64;
+    const base = await run(['rev-parse', 'HEAD'], worktreePath);
+    await writeFile(join(worktreePath, PHASE_D_SENTINEL), 'p505-phase-d/run-24/dirty-overlap\n');
+    await run(['add', PHASE_D_SENTINEL], worktreePath);
+    await run(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'tower advance'], worktreePath);
+    const staging = await run(['rev-parse', 'HEAD'], worktreePath);
+    await run(['push', '-q', repoPath, `${staging}:refs/hive/staging`], worktreePath);
+    await run(['reset', '-q', '--hard', base], worktreePath);
+
+    await expect(
+      createPhysicalPhaseDMutation(
+        { runId: 'p505-phase-d-run-25', kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
+        { repoPath, worktreePath },
+      ),
+    ).rejects.toThrow(
+      new RegExp(`trails canonical staging ${staging.slice(0, 12)}, which rewrote ${PHASE_D_SENTINEL.replace('.', '\\.')}`),
+    );
+    expect(await run(['rev-parse', 'HEAD'], worktreePath)).toBe(base);
+    expect(await run(['status', '--porcelain'], worktreePath)).toBe('');
+
+    // Once the worktree catches up to canonical, the same mutation is accepted on top of it.
+    await run(['merge', '-q', '--ff-only', staging], worktreePath);
+    const caughtUp = await createPhysicalPhaseDMutation(
+      { runId: 'p505-phase-d-run-25', kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
+      { repoPath, worktreePath },
+    );
+    expect(caughtUp.baseOid).toBe(staging);
   });
 
   it('discards only its own planted dirt and refuses anything else', async () => {
