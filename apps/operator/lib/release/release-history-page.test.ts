@@ -3,8 +3,10 @@ import {
   assertReleaseHistoryIndexSizeBudget,
   escapeHtml,
   formatBytes,
+  groupReleaseCards,
   MAX_RELEASE_HISTORY_INDEX_BYTES,
   planPagePath,
+  renderHistoryJson,
   renderHoldingHtml,
   renderIndexHtml,
   renderPlanPageHtml,
@@ -18,6 +20,7 @@ import { groupItemsByPlan, isUserFacing, type ReleaseRow, type ShippedItem, type
 import { DISCORD_URL, INSTRUCTIONS_MD } from './release-instructions';
 import { HOLDING_PAGE_MARKER, PUBLISHED_CONTACT_EMAIL } from './release-content-scrub';
 import { DEMO_VIDEO_SRC } from './release-video';
+import { releaseHistoryStem } from './release-project-history';
 
 const ANALYTICS: Analytics = { host: 'https://flags.example.com', projectKey: 'phc_test' };
 const GENERATED_AT = new Date('2026-07-13T00:00:00Z');
@@ -1110,5 +1113,136 @@ describe('renderHoldingHtml — what it keeps, and what it must not leak', () =>
 
   it('is still a no-index unlisted page', () => {
     expect(renderHoldingHtml(opts)).toContain('noindex, nofollow, noarchive');
+  });
+});
+
+describe('a platform-only hotfix shares the card of the release it patches (WI-10003687, owner #800)', () => {
+  function art(
+    version: string,
+    platform: string,
+    product: 'gui' | 'server',
+    name: string,
+  ): ReleaseRow['artifacts'][number] {
+    return {
+      product,
+      platform,
+      name,
+      url: `desktop-v${version}-alpha/${name}`,
+      size: 1000,
+      sha256: `${version}-${platform}-${product}`,
+    };
+  }
+  function fullRelease(version: string, over: Partial<ReleaseRow> = {}): HydratedRelease {
+    return hydrated({
+      row: row({
+        version,
+        changelogMd: `## ${version}\n\nFull release notes.`,
+        artifacts: [
+          art(version, 'linux-x86_64', 'gui', `Papercusp GUI_${version}_amd64.deb`),
+          art(version, 'linux-x86_64', 'server', `Papercusp Server_${version}_amd64.deb`),
+          art(version, 'darwin-universal', 'gui', `Papercusp GUI_${version}_universal.dmg`),
+          art(version, 'windows-x86_64', 'gui', `Papercusp GUI_${version}_x64-setup.exe`),
+          art(version, 'windows-x86_64', 'server', `Papercusp Server_${version}_x64-setup.exe`),
+        ],
+        ...over,
+      }),
+    });
+  }
+  const windowsHotfix = hydrated({
+    row: row({
+      version: '0.0.23',
+      cutAt: new Date('2026-09-28T14:29:00Z'),
+      publishedAt: new Date('2026-09-28T17:00:00Z'),
+      changelogMd: 'Windows Server upgrades over a running operator no longer fail.',
+      artifacts: [
+        art('0.0.23', 'windows-x86_64', 'gui', 'Papercusp GUI_0.0.23_x64-setup.exe'),
+        art('0.0.23', 'windows-x86_64', 'server', 'Papercusp Server_0.0.23_x64-setup.exe'),
+        art('0.0.23', 'windows-x86_64', 'server', 'Papercusp Server_0.0.23_x64-setup.exe.sig'),
+      ],
+    }),
+  });
+  const base = fullRelease('0.0.22');
+  const opts = { generatedAt: GENERATED_AT, analytics: null, redact: [] };
+
+  it('renders ONE card headed by the full release, with the hotfix builds in their platform section', () => {
+    const html = renderIndexHtml([windowsHotfix, base], opts);
+    expect(html).toContain('<h2>0.0.22</h2>');
+    expect(html).not.toContain('<h2>0.0.23</h2>');
+    expect(html.match(/<section class="rel">/g)).toHaveLength(1);
+    // Windows downloads are the 0.0.23 builds; the replaced 0.0.22 Windows builds are gone.
+    expect(html).toContain('Papercusp GUI_0.0.23_x64-setup.exe');
+    expect(html).toContain('Papercusp Server_0.0.23_x64-setup.exe');
+    expect(html).not.toContain('Papercusp GUI_0.0.22_x64-setup.exe');
+    expect(html).not.toContain('Papercusp Server_0.0.22_x64-setup.exe');
+    // Linux and macOS keep their 0.0.22 builds.
+    expect(html).toContain('Papercusp GUI_0.0.22_amd64.deb');
+    expect(html).toContain('Papercusp GUI_0.0.22_universal.dmg');
+    // The combined card is the latest one.
+    expect(html).toContain('<span class="tag current">latest</span>');
+  });
+
+  it('labels only the hotfixed platform with its real version and links its own changes page', () => {
+    const html = renderIndexHtml([windowsHotfix, base], opts);
+    const windows = html.slice(html.indexOf('<h3 class="platform-h">Windows</h3>'));
+    const windowsSection = windows.slice(0, windows.indexOf('</section>'));
+    expect(windowsSection).toContain('Updated to <strong>0.0.23</strong>');
+    expect(windowsSection).toContain(`href="changes/${releaseHistoryStem('0.0.23', 'alpha')}.html"`);
+    const linux = html.slice(html.indexOf('<h3 class="platform-h">Linux</h3>'));
+    expect(linux.slice(0, linux.indexOf('</section>'))).not.toContain('hotfix-note');
+    // The hotfix's own notes appear in the card, under its platform + version.
+    expect(html).toContain('<h3>Windows 0.0.23</h3>');
+    expect(html).toContain('Windows Server upgrades over a running operator no longer fail.');
+  });
+
+  it('leaves history.json (the in-app update feed) listing each release on its own', () => {
+    const json = JSON.parse(renderHistoryJson([windowsHotfix, base], opts)) as {
+      releases: Array<{ version: string; artifacts: Array<{ name: string }> }>;
+    };
+    expect(json.releases.map((r) => r.version)).toEqual(['0.0.23', '0.0.22']);
+    expect(json.releases[0]!.artifacts.map((a) => a.name)).toEqual([
+      'Papercusp GUI_0.0.23_x64-setup.exe',
+      'Papercusp Server_0.0.23_x64-setup.exe',
+    ]);
+    expect(json.releases[1]!.artifacts.map((a) => a.name)).toContain('Papercusp GUI_0.0.22_x64-setup.exe');
+  });
+
+  it('gives a newer FULL release its own card', () => {
+    const html = renderIndexHtml([fullRelease('0.0.23'), base], opts);
+    expect(html).toContain('<h2>0.0.23</h2>');
+    expect(html).toContain('<h2>0.0.22</h2>');
+    expect(html).not.toContain('hotfix-note');
+  });
+
+  it('never folds across channels', () => {
+    const betaHotfix = hydrated({ row: { ...windowsHotfix.row, channel: 'beta' } });
+    const cards = groupReleaseCards([betaHotfix, base]);
+    expect(cards.map((c) => [c.base.row.version, c.hotfixes.length])).toEqual([
+      ['0.0.23', 0],
+      ['0.0.22', 0],
+    ]);
+  });
+
+  it('chains successive hotfixes onto the same card, newest build winning', () => {
+    const second = hydrated({
+      row: row({
+        version: '0.0.24',
+        artifacts: [art('0.0.24', 'windows-x86_64', 'gui', 'Papercusp GUI_0.0.24_x64-setup.exe')],
+      }),
+    });
+    const cards = groupReleaseCards([second, windowsHotfix, base]);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.base.row.version).toBe('0.0.22');
+    expect(cards[0]!.hotfixes.map((h) => h.row.version)).toEqual(['0.0.23', '0.0.24']);
+    const html = renderIndexHtml([second, windowsHotfix, base], opts);
+    expect(html).toContain('Papercusp GUI_0.0.24_x64-setup.exe');
+    expect(html).not.toContain('Papercusp GUI_0.0.23_x64-setup.exe');
+    // The Server was only replaced by 0.0.23, so it stays at 0.0.23.
+    expect(html).toContain('Papercusp Server_0.0.23_x64-setup.exe');
+  });
+
+  it('keeps an older release with no downloads as its own card', () => {
+    const empty = hydrated({ row: row({ version: '0.0.21', artifacts: [] }) });
+    const cards = groupReleaseCards([base, empty]);
+    expect(cards.map((c) => c.base.row.version)).toEqual(['0.0.22', '0.0.21']);
   });
 });

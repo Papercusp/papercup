@@ -758,13 +758,19 @@ function macFirstLaunchNote(hasGui: boolean, hasServer: boolean): string {
 
 /** One platform's section: a heading, then the app downloads and (when present)
  *  the Server downloads, each as its own labelled table of the SAME shape. */
-function renderPlatformSection(label: string, desktop: boolean, list: ReleaseArtifact[]): string {
+function renderPlatformSection(
+  label: string,
+  desktop: boolean,
+  list: ReleaseArtifact[],
+  noteHtml?: string,
+): string {
   const app = list.filter((a) => a.product === 'gui' || a.product === 'mobile');
   const server = list.filter((a) => a.product === 'server');
   // Only label the App/Server sub-sections when BOTH are present — a platform with
   // just one component doesn't need the distinction.
   const labelComponents = app.length > 0 && server.length > 0;
   const parts: string[] = [`<h3 class="platform-h">${escapeHtml(label)}</h3>`];
+  if (noteHtml) parts.push(noteHtml);
   if (app.length > 0) {
     if (labelComponents) parts.push(`<h4 class="component-h">App</h4>`);
     parts.push(renderDownloadTable(app));
@@ -791,7 +797,10 @@ function renderPlatformSection(label: string, desktop: boolean, list: ReleaseArt
  * Mobile is its own section. An unrecognized platform is never dropped — it falls
  * into an "Other" section so the page's account of the release stays complete.
  */
-function renderArtifacts(artifacts: ReleaseArtifact[]): string {
+function renderArtifacts(
+  artifacts: ReleaseArtifact[],
+  platformNotes: ReadonlyMap<string, string> = new Map(),
+): string {
   const real = artifacts.filter((a) => !a.name.endsWith('.sig'));
   if (real.length === 0) {
     return `<p class="empty">No downloadable artifacts recorded for this release.</p>`;
@@ -801,12 +810,115 @@ function renderArtifacts(artifacts: ReleaseArtifact[]): string {
   const sections: string[] = [];
   for (const sec of PLATFORM_SECTIONS) {
     const list = real.filter((a) => sec.platforms.includes(a.platform));
-    if (list.length > 0) sections.push(renderPlatformSection(sec.label, sec.desktop, list));
+    const note = sec.platforms.map((p) => platformNotes.get(p)).find(Boolean);
+    if (list.length > 0) sections.push(renderPlatformSection(sec.label, sec.desktop, list, note));
   }
   const other = real.filter((a) => !known.has(a.platform));
   if (other.length > 0) sections.push(renderPlatformSection('Other', true, other));
 
   return sections.join('\n');
+}
+
+/**
+ * One card on the index: a full release plus any PLATFORM-ONLY hotfixes cut on
+ * top of it (WI-10003687, owner #800: "put the windows build along with the mac
+ * and linux 0.0.22 build … id rather they all look like the same release even
+ * though windows is 0.0.23").
+ *
+ * This is a VIEW-only grouping. The registry keeps one row per version and
+ * `history.json` (the in-app Update Center feed) still lists every release on its
+ * own, so a Windows 0.0.22 install is still offered 0.0.23 while Linux and macOS
+ * see no update. Recording the hotfix files under the older row instead would
+ * hide the update from exactly the users it is for.
+ */
+export interface ReleaseCard {
+  /** The full release that owns the card, its heading and its changelog. */
+  base: HydratedRelease;
+  /** Platform-only releases folded into it, OLDEST first. */
+  hotfixes: HydratedRelease[];
+  /** Index (newest-first) of the newest release in the card. */
+  newestIndex: number;
+}
+
+function downloadPlatforms(rel: HydratedRelease): Set<string> {
+  return new Set(rel.row.artifacts.filter((a) => !a.name.endsWith('.sig')).map((a) => a.platform));
+}
+
+/** True when `rel` ships a strict, non-empty SUBSET of `base`'s platforms. */
+function isPlatformHotfix(rel: HydratedRelease, base: HydratedRelease): boolean {
+  const mine = downloadPlatforms(rel);
+  const theirs = downloadPlatforms(base);
+  if (mine.size === 0 || mine.size >= theirs.size) return false;
+  for (const p of mine) if (!theirs.has(p)) return false;
+  return true;
+}
+
+/**
+ * Group releases (newest first, as the registry returns them) into index cards.
+ * A release folds into the most recent older card of the SAME channel when it
+ * ships only some of that card's platforms; anything else starts its own card.
+ * Cards come back newest-first, positioned by their newest member.
+ */
+export function groupReleaseCards(releases: HydratedRelease[]): ReleaseCard[] {
+  const cards: ReleaseCard[] = [];
+  const openByChannel = new Map<string, ReleaseCard>();
+  for (let i = releases.length - 1; i >= 0; i -= 1) {
+    const rel = releases[i]!;
+    const open = openByChannel.get(rel.row.channel);
+    if (open && isPlatformHotfix(rel, open.base)) {
+      open.hotfixes.push(rel);
+      open.newestIndex = i;
+      continue;
+    }
+    const card: ReleaseCard = { base: rel, hotfixes: [], newestIndex: i };
+    cards.push(card);
+    openByChannel.set(rel.row.channel, card);
+  }
+  return cards.sort((a, b) => a.newestIndex - b.newestIndex);
+}
+
+/** The card's downloads: the base's artifacts, with each hotfix's
+ *  (platform, product) builds replacing the base's for that pair. */
+function cardArtifacts(card: ReleaseCard): ReleaseArtifact[] {
+  let merged = card.base.row.artifacts.slice();
+  for (const hotfix of card.hotfixes) {
+    const replaced = new Set(hotfix.row.artifacts.map((a) => `${a.platform}\u0000${a.product}`));
+    merged = merged
+      .filter((a) => !replaced.has(`${a.platform}\u0000${a.product}`))
+      .concat(hotfix.row.artifacts);
+  }
+  return merged;
+}
+
+function platformLabel(platform: string): string {
+  return PLATFORM_SECTIONS.find((s) => s.platforms.includes(platform))?.label ?? platform;
+}
+
+/** Per-platform notes naming the hotfix version a section now carries. */
+function hotfixPlatformNotes(card: ReleaseCard): Map<string, string> {
+  const notes = new Map<string, string>();
+  for (const hotfix of card.hotfixes) {
+    const { row } = hotfix;
+    const when = formatDate(row.publishedAt ?? row.cutAt);
+    const html =
+      `<p class="n hotfix-note">Updated to <strong>${escapeHtml(row.version)}</strong> on ${escapeHtml(when)} ` +
+      `&mdash; a fix for this platform only, on top of ${escapeHtml(card.base.row.version)}. ` +
+      `<a href="changes/${releaseHistoryStem(row.version, row.channel)}.html">What changed →</a></p>`;
+    for (const p of downloadPlatforms(hotfix)) notes.set(p, html);
+  }
+  return notes;
+}
+
+function renderHotfixChangelogs(card: ReleaseCard): string {
+  return card.hotfixes
+    .slice()
+    .reverse()
+    .filter((h) => h.row.changelogMd?.trim())
+    .map((h) => {
+      const platforms = [...downloadPlatforms(h)].map(platformLabel).join(', ');
+      return `<div class="changelog hotfix-changelog"><h3>${escapeHtml(platforms)} ${escapeHtml(h.row.version)}</h3>${renderMarkdown(h.row.changelogMd ?? '')}</div>`;
+    })
+    .join('\n');
 }
 
 function renderItemList(items: ShippedItem[]): string {
@@ -975,8 +1087,16 @@ function renderInstructions(): string {
  * It also keeps the prose honest — 0.0.8's changelog says "download the installer
  * above", which was a lie when the table rendered underneath it.
  */
-function renderRelease(rel: HydratedRelease, isCurrent: boolean, maxWorkItems?: number): string {
+function renderRelease(
+  rel: HydratedRelease,
+  isCurrent: boolean,
+  maxWorkItems?: number,
+  card?: ReleaseCard,
+): string {
   const { row } = rel;
+  const hasHotfixes = card !== undefined && card.hotfixes.length > 0;
+  const artifacts = hasHotfixes ? cardArtifacts(card) : row.artifacts;
+  const platformNotes = hasHotfixes ? hotfixPlatformNotes(card) : new Map<string, string>();
   const meta: string[] = [`Cut ${formatDate(row.cutAt)}`];
   if (row.publishedAt) meta.push(`published ${formatDate(row.publishedAt)}`);
   if (row.gitSha) meta.push(`<code>${escapeHtml(row.gitSha.slice(0, 12))}</code>`);
@@ -992,8 +1112,9 @@ function renderRelease(rel: HydratedRelease, isCurrent: boolean, maxWorkItems?: 
     ${isCurrent ? '<span class="tag current">latest</span>' : ''}
   </div>
   <p class="meta">${meta.join(' · ')}</p>
-  ${renderArtifacts(row.artifacts)}
+  ${renderArtifacts(artifacts, platformNotes)}
   ${changelog}
+  ${hasHotfixes ? renderHotfixChangelogs(card) : ''}
   <p><a class="detail-link" href="changes/${releaseHistoryStem(row.version, row.channel)}.html">Explore plans, completed work and verification →</a></p>
 ${renderWork(rel, maxWorkItems)}
 </section>`;
@@ -1073,10 +1194,13 @@ export function renderIndexHtml(releases: HydratedRelease[], opts: PageOptions):
   // — gating it on the registry having rows would mean the one page where a
   // reader has the least context is the page that explains the least.
   let inlineWorkItemsRemaining = MAX_INDEX_WORK_ITEM_PREVIEW;
-  const releaseSections = releases.map((release, index) => {
+  // A platform-only hotfix (e.g. Windows 0.0.23 on top of 0.0.22) shares the
+  // card of the release it patches — see groupReleaseCards.
+  const releaseSections = groupReleaseCards(releases).map((card) => {
+    const release = card.base;
     const previewLimit = Math.min(inlineWorkItemsRemaining, release.items.length);
     inlineWorkItemsRemaining -= previewLimit;
-    return renderRelease(release, index === 0, previewLimit);
+    return renderRelease(release, card.newestIndex === 0, previewLimit, card);
   });
   const body =
     releases.length === 0
