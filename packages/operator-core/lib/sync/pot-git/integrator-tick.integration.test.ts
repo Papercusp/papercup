@@ -15,7 +15,7 @@ import { buildSigrefs, SIGREFS_REF } from './sigrefs';
 import { makeSignedProtocolContext, type SignedSnapshotFloor } from './signed-context';
 import { WORK_REF, readStaging } from './integrator';
 import { verifyStagingAdvance } from './staging-advance';
-import { runIntegratorTick as runIntegratorTickUnderTest } from './integrator-tick';
+import { resolveAnnouncementWatermark, runIntegratorTick as runIntegratorTickUnderTest } from './integrator-tick';
 import { hiveEffectFixture } from './hive-effect-authority.fixture';
 const testDeviceSigners = new Map<string, (bytes: Buffer) => Promise<Buffer>>();
 
@@ -307,6 +307,47 @@ describe('pot-git integrator-tick (real bare repo, faked trust + swarm seams)', 
       });
       expect(out.integration?.advanced).toBe(false);
       expect(out.announcement).toBeNull();
+    });
+
+    // WI-10003781 (P-505 run 26): the bridge leg runs AFTER the integrator leg and
+    // is the only writer of worktree_bridge.stagingSha, so a second integrator
+    // pass inside that window saw the PREVIOUS staging and signed the same sha
+    // again under seq+1 (2d936ad7f978 announced as seq 54 AND seq 55).
+    it('a second pass while the bridge watermark still lags does NOT re-announce the same staging', async () => {
+      const repo3 = await ensurePotGitRepo('hive-i', 'repo-3');
+      const head = await commit(repo3, { 's.txt': 'v1' });
+      await writeNamespaceRef(repo3, solo.pubBase64, WORK_REF, head);
+      await writeNamespaceRef(repo3, solo.pubBase64, 'refs/heads/staging', head);
+      const term = { epoch: 1, authorityDevice: solo.pubBase64, storeGeneration: 'sg-test' };
+      const staleBridgeWatermark: string | null = null; // the bridge has not accepted anything yet
+      const tick = (priorSeq: number, lastAnnouncedStagingSha: string | null) =>
+        runIntegratorTick({
+          potHomeSlug: 'hive-i',
+          workspaceId: 'ws-1',
+          repoKey: 'repo-3',
+          memberDevicePubkeysBase64: [solo.pubBase64],
+          integratorDevicePubkeyBase64: solo.pubBase64,
+          epoch: term.epoch,
+          priorSeq,
+          lastAnnouncedStagingSha,
+          sign: solo.sign,
+          resolveTier: () => 'steer',
+          deps: { isIntegrator: async () => true, sql: fakeSql() },
+        });
+
+      const first = await tick(0, resolveAnnouncementWatermark(null, term, staleBridgeWatermark));
+      expect(first.announcement?.staging_sha).toBe(head);
+      // What runIntegratorLeg persists into metadata.integrator after emitting.
+      const persisted = { ...term, seq: first.announcement!.seq, stagingSha: first.announcement!.staging_sha };
+
+      const second = await tick(persisted.seq, resolveAnnouncementWatermark(persisted, term, staleBridgeWatermark));
+      expect(second.integration?.staging).toBe(head);
+      expect(second.announcement).toBeNull();
+
+      // Control: the bridge watermark alone (the pre-fix input) re-announces.
+      const legacy = await tick(persisted.seq, staleBridgeWatermark);
+      expect(legacy.announcement?.staging_sha).toBe(head);
+      expect(legacy.announcement?.seq).toBe(persisted.seq + 1);
     });
   });
 });

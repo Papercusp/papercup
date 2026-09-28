@@ -68,9 +68,10 @@ export interface IntegratorTickInput {
    *  publish in this epoch). This tick signs `priorSeq + 1` on advance. */
   priorSeq: number;
   /**
-   * The staging sha of the last EMITTED/ACCEPTED announcement (prod: the
-   * caller's persisted `worktree_bridge.stagingSha` watermark), or null when
-   * nothing was ever announced. Announcement firing is judged against THIS,
+   * The staging sha of the last EMITTED announcement, or null when nothing was
+   * ever announced (prod: `resolveAnnouncementWatermark` — the integrator's own
+   * persisted announcement record, falling back to the local
+   * `worktree_bridge.stagingSha` acceptance watermark). Announcement firing is judged against THIS,
    * not merely against whether the merge moved the integrator's namespace ref
    * this pass — because own-head-publish (G-2a) writes the very same
    * `ns/<integrator>/refs/heads/staging` ref whenever the integrator machine's
@@ -155,6 +156,44 @@ async function collectGateableHeads(
     if (sha) out.push({ devicePubkeyBase64: dev, sha });
   }
   return out;
+}
+
+/**
+ * WI-10003781 — the staging this integrator last ANNOUNCED, for
+ * `IntegratorTickInput.lastAnnouncedStagingSha`.
+ *
+ * The local worktree bridge's accepted watermark cannot serve alone: the
+ * bridge leg runs AFTER the integrator leg and is the only writer of that
+ * watermark, so any integrator pass that runs before the announcing tick's
+ * bridge leg persists reads the PREVIOUS staging and signs the same sha again
+ * under seq+1. Measured on P-505 run 26: two overlapping hello-world-3-pot
+ * ticks announced 2d936ad7f978 as seq 54 and seq 55, 23s apart. A local
+ * terminal rejection or a timed-out bridge leg would repeat that every tick.
+ *
+ * The integrator's own record is authoritative only for the publication term
+ * it was written under (same epoch, authority device and store generation):
+ * a new term, or a record written before this field existed, falls back to the
+ * bridge watermark (the prior behavior).
+ */
+export function resolveAnnouncementWatermark(
+  prior: {
+    epoch: number;
+    authorityDevice?: string;
+    storeGeneration?: string;
+    stagingSha?: string | null;
+  } | null,
+  term: { epoch: number; authorityDevice: string; storeGeneration: string },
+  bridgeAcceptedStagingSha: string | null,
+): string | null {
+  if (
+    prior?.stagingSha &&
+    prior.epoch === term.epoch &&
+    prior.authorityDevice === term.authorityDevice &&
+    prior.storeGeneration === term.storeGeneration
+  ) {
+    return prior.stagingSha;
+  }
+  return bridgeAcceptedStagingSha;
 }
 
 export async function runIntegratorTick(input: IntegratorTickInput): Promise<IntegratorTickOutcome> {
