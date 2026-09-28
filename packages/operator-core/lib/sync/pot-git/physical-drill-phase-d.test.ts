@@ -13,8 +13,14 @@ import {
   PHASE_D_OBSERVATION_SCHEMA,
   PHASE_D_RATIFICATION_SCHEMA,
   PHASE_D_SENTINEL,
+  PHASE_D_TIER_HOLD_FILE,
+  PHASE_D_TIER_HOLD_SCHEMA,
+  PHASE_D_WORKSPACE,
   createPhysicalPhaseDMutation,
   dirtyPhysicalPhaseDWorktree,
+  holdPhysicalPhaseDBelowSteer,
+  resetPhysicalPhaseDDirt,
+  restorePhysicalPhaseDTier,
   validatePhysicalPhaseD,
   type PhysicalPhaseDInput,
   type PhysicalPhaseDObservation,
@@ -398,5 +404,266 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
     expect(dirty.protectedPath).toBe(PHASE_D_SENTINEL);
     expect(await run(['status', '--porcelain=v1'], worktreePath)).toContain(PHASE_D_SENTINEL);
     expect(await run(['rev-parse', 'HEAD'], worktreePath)).toBe(mutation.headOid);
+  });
+
+  async function fixedWorktree(): Promise<{
+    repoPath: string;
+    worktreePath: string;
+    run: (args: string[], cwd: string) => Promise<string>;
+  }> {
+    const root = await mkdtemp(join(tmpdir(), 'p505-phase-d-'));
+    roots.push(root);
+    const repoPath = join(root, 'store.git');
+    const worktreePath = join(root, 'worktree');
+    await mkdir(worktreePath);
+    const run = async (args: string[], cwd: string): Promise<string> => {
+      const result = await defaultRunGit(args, cwd);
+      expect(result.code, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    await run(['init', '--bare', '-q', repoPath], root);
+    await run(['init', '-q', '-b', 'main'], worktreePath);
+    await writeFile(join(worktreePath, 'base.txt'), 'base\n');
+    await run(['add', 'base.txt'], worktreePath);
+    await run(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'base'], worktreePath);
+    return { repoPath, worktreePath, run };
+  }
+
+  it('re-creates the below-steer head on a rig where a prior run already committed the sentinel', async () => {
+    const { repoPath, worktreePath, run } = await fixedWorktree();
+    const device = generateEd25519KeypairDer().pubkeyBase64;
+    const first = await createPhysicalPhaseDMutation(
+      { runId: 'p505-phase-d-run-15', kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
+      { repoPath, worktreePath },
+    );
+    // P-505 run 15 left exactly this state on the VM: the sentinel tracked and clean.
+    const second = await createPhysicalPhaseDMutation(
+      { runId: 'p505-phase-d-run-16', kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
+      { repoPath, worktreePath },
+    );
+    expect(second.baseOid).toBe(first.headOid);
+    expect(second.headOid).toBe(await run(['rev-parse', 'HEAD'], worktreePath));
+    expect(await readFile(join(worktreePath, PHASE_D_SENTINEL), 'utf8')).toBe(
+      'p505-phase-d/p505-phase-d-run-16/below-steer\n',
+    );
+    // Reusing a runId would commit nothing new, so it is refused rather than faked.
+    await run(['reset', '-q', '--hard', first.headOid], worktreePath);
+    await expect(
+      createPhysicalPhaseDMutation(
+        { runId: 'p505-phase-d-run-15', kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
+        { repoPath, worktreePath },
+      ),
+    ).rejects.toThrow('refuses to reuse a runId');
+  });
+
+  it('discards only its own planted dirt and refuses anything else', async () => {
+    const { repoPath, worktreePath, run } = await fixedWorktree();
+    const device = generateEd25519KeypairDer().pubkeyBase64;
+    const runId = 'p505-phase-d-reset-1';
+    const mutation = await createPhysicalPhaseDMutation(
+      { runId, kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
+      { repoPath, worktreePath },
+    );
+    expect(await resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath })).toMatchObject({
+      reset: false,
+      reason: 'already-clean',
+    });
+
+    await dirtyPhysicalPhaseDWorktree({ runId }, { repoPath, worktreePath });
+    await expect(
+      resetPhysicalPhaseDDirt({ runId: 'p505-phase-d-other-run' }, { repoPath, worktreePath }),
+    ).rejects.toThrow('did not plant in this run');
+    expect(await resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath })).toMatchObject({
+      reset: true,
+      reason: 'discarded-run-dirt',
+    });
+    expect(await run(['status', '--porcelain=v1'], worktreePath)).toBe('');
+    expect(await run(['rev-parse', 'HEAD'], worktreePath)).toBe(mutation.headOid);
+
+    // Someone else's edit beside the probe file is real work: never discarded.
+    await dirtyPhysicalPhaseDWorktree({ runId }, { repoPath, worktreePath });
+    await writeFile(join(worktreePath, 'base.txt'), 'a peer edit\n');
+    await expect(resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath })).rejects.toThrow(
+      'did not plant in this run',
+    );
+    expect(await readFile(join(worktreePath, 'base.txt'), 'utf8')).toBe('a peer edit\n');
+  });
+});
+
+type TrustRow = {
+  trusted_github_user_id: number;
+  tier: string | null;
+  gate: boolean;
+  note: string | null;
+  expires_at: Date | null;
+  created_ts: number;
+  updated_ts: number;
+};
+
+/**
+ * An in-memory stand-in for the four comms_trust_list statements the hold and
+ * restore drive (list, point-read, upsert, delete) plus the audit append. It
+ * matches on statement text so a changed query fails loudly instead of passing.
+ */
+function fakeTrustSql(initial: TrustRow[] = []) {
+  const rows = new Map<number, TrustRow>(initial.map((r) => [r.trusted_github_user_id, { ...r }]));
+  const audit: string[] = [];
+  const sql = (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> => {
+    const text = strings.join('?');
+    if (text.includes('INSERT INTO harness_shared.audit_log')) {
+      audit.push(String(values[3]));
+      return Promise.resolve([]);
+    }
+    if (text.includes('INSERT INTO harness_shared.comms_trust_list')) {
+      const [, id, tier, note, expires, created, updated] = values as [
+        string,
+        number,
+        string,
+        string | null,
+        Date | null,
+        number,
+        number,
+      ];
+      const existing = rows.get(id);
+      const row: TrustRow = {
+        trusted_github_user_id: id,
+        tier,
+        gate: existing?.gate ?? false,
+        note,
+        expires_at: expires,
+        created_ts: existing?.created_ts ?? created,
+        updated_ts: updated,
+      };
+      rows.set(id, row);
+      return Promise.resolve([row]);
+    }
+    if (text.includes('DELETE FROM harness_shared.comms_trust_list')) {
+      const id = values[1] as number;
+      return Promise.resolve(rows.delete(id) ? [{ trusted_github_user_id: id }] : []);
+    }
+    if (text.includes('FROM harness_shared.comms_trust_list') && text.includes('LIMIT 1')) {
+      const row = rows.get(values[1] as number);
+      return Promise.resolve(row ? [row] : []);
+    }
+    if (text.includes('FROM harness_shared.comms_trust_list')) return Promise.resolve([...rows.values()]);
+    throw new Error(`unexpected statement: ${text}`);
+  };
+  return { sql: sql as unknown as NonNullable<Parameters<typeof holdPhysicalPhaseDBelowSteer>[1]>['sql'], rows, audit };
+}
+
+describe('P-505 Phase D below-steer tier hold (WI-10003723)', () => {
+  const vmDevicePubkey = generateEd25519KeypairDer().pubkeyBase64;
+  const vmUser = 1567022;
+  const ownerSteerRow: TrustRow = {
+    trusted_github_user_id: vmUser,
+    tier: 'steer',
+    gate: false,
+    note: "Owner's mac device identity - same canary auto-integrate unblock.",
+    expires_at: null,
+    created_ts: 1_790_000_000_000,
+    updated_ts: 1_790_000_000_000,
+  };
+
+  async function holdDir(): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), 'p505-phase-d-tier-'));
+    roots.push(root);
+    return join(root, PHASE_D_TIER_HOLD_FILE);
+  }
+
+  function deps(fake: ReturnType<typeof fakeTrustSql>) {
+    return {
+      sql: fake.sql,
+      resolveGithubUserId: async (device: string) => (device === vmDevicePubkey ? vmUser : null),
+      loadPolicyDefaultTier: async () => undefined,
+      nowMs: () => 1_790_500_000_000,
+    };
+  }
+
+  it('holds a steer-pinned VM user below steer, then restores the exact prior row', async () => {
+    const fake = fakeTrustSql([ownerSteerRow]);
+    const holdPath = await holdDir();
+    const hold = await holdPhysicalPhaseDBelowSteer(
+      { vmDevicePubkey, runId: 'p505-physical-run-16', holdPath },
+      deps(fake),
+    );
+    expect(hold.held.effective).toEqual({ tier: 'message', source: 'override' });
+    expect(fake.rows.get(vmUser)?.tier).toBe('message');
+    const record = JSON.parse(await readFile(holdPath, 'utf8'));
+    expect(record).toMatchObject({
+      schemaVersion: PHASE_D_TIER_HOLD_SCHEMA,
+      workspaceId: PHASE_D_WORKSPACE,
+      githubUserId: vmUser,
+      prior: { tier: 'steer', note: ownerSteerRow.note, expiresAtMs: null, gate: false },
+    });
+    await expect(
+      holdPhysicalPhaseDBelowSteer({ vmDevicePubkey, runId: 'p505-physical-run-17', holdPath }, deps(fake)),
+    ).rejects.toThrow('tier hold already exists');
+
+    const restored = await restorePhysicalPhaseDTier({ holdPath }, deps(fake));
+    expect(restored).toMatchObject({ restored: true, githubUserId: vmUser });
+    const row = fake.rows.get(vmUser)!;
+    expect([row.tier, row.note, row.expires_at, row.gate, row.created_ts]).toEqual([
+      'steer',
+      ownerSteerRow.note,
+      null,
+      false,
+      ownerSteerRow.created_ts,
+    ]);
+    expect(fake.audit).toEqual(['trust:comms-set', 'trust:comms-set']);
+    // Idempotent: the EXIT-trap restore after a normal restore is a no-op.
+    expect(await restorePhysicalPhaseDTier({ holdPath }, deps(fake))).toMatchObject({
+      restored: false,
+      reason: 'no-hold',
+    });
+  });
+
+  it('removes the row it created when the VM user had no prior override', async () => {
+    const fake = fakeTrustSql();
+    const holdPath = await holdDir();
+    await holdPhysicalPhaseDBelowSteer({ vmDevicePubkey, runId: 'p505-physical-run-16', holdPath }, deps(fake));
+    expect(fake.rows.get(vmUser)?.tier).toBe('message');
+    await restorePhysicalPhaseDTier({ holdPath }, deps(fake));
+    expect(fake.rows.has(vmUser)).toBe(false);
+    expect(fake.audit).toEqual(['trust:comms-set', 'trust:comms-remove']);
+  });
+
+  it('refuses holds it could not restore exactly or cannot attribute', async () => {
+    const gateOnly = fakeTrustSql([{ ...ownerSteerRow, tier: null, gate: true }]);
+    await expect(
+      holdPhysicalPhaseDBelowSteer(
+        { vmDevicePubkey, runId: 'p505-physical-run-16', holdPath: await holdDir() },
+        deps(gateOnly),
+      ),
+    ).rejects.toThrow('gate-only');
+    expect(gateOnly.rows.get(vmUser)?.tier).toBeNull();
+
+    const unmapped = fakeTrustSql([ownerSteerRow]);
+    await expect(
+      holdPhysicalPhaseDBelowSteer(
+        {
+          vmDevicePubkey: generateEd25519KeypairDer().pubkeyBase64,
+          runId: 'p505-physical-run-16',
+          holdPath: await holdDir(),
+        },
+        deps(unmapped),
+      ),
+    ).rejects.toThrow('attested hive member');
+    expect(unmapped.rows.get(vmUser)?.tier).toBe('steer');
+
+    await expect(
+      holdPhysicalPhaseDBelowSteer(
+        { vmDevicePubkey, runId: 'p505-physical-run-16', holdPath: join(tmpdir(), 'elsewhere.json') },
+        deps(unmapped),
+      ),
+    ).rejects.toThrow(PHASE_D_TIER_HOLD_FILE);
+  });
+
+  it('keeps a malformed hold record instead of guessing a restore', async () => {
+    const fake = fakeTrustSql([ownerSteerRow]);
+    const holdPath = await holdDir();
+    await writeFile(holdPath, JSON.stringify({ schemaVersion: PHASE_D_TIER_HOLD_SCHEMA, githubUserId: -1 }));
+    await expect(restorePhysicalPhaseDTier({ holdPath }, deps(fake))).rejects.toThrow('malformed');
+    expect(await readFile(holdPath, 'utf8')).toContain(PHASE_D_TIER_HOLD_SCHEMA);
+    expect(fake.rows.get(vmUser)?.tier).toBe('steer');
   });
 });

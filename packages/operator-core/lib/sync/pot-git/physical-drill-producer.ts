@@ -37,7 +37,10 @@ import {
   capturePhysicalPhaseDRequest,
   createPhysicalPhaseDMutation,
   dirtyPhysicalPhaseDWorktree,
+  holdPhysicalPhaseDBelowSteer,
   ratifyPhysicalPhaseDRequest,
+  resetPhysicalPhaseDDirt,
+  restorePhysicalPhaseDTier,
   validatePhysicalPhaseD,
   type PhysicalPhaseDHost,
   type PhysicalPhaseDInput,
@@ -390,6 +393,23 @@ async function cli(argv: string[]): Promise<unknown> {
     if (!runId) throw new Error('usage: physical-drill-producer phase-d-dirty <run-id>');
     return dirtyPhysicalPhaseDWorktree({ runId });
   }
+  if (mode === 'phase-d-reset') {
+    const [runId] = args;
+    if (!runId) throw new Error('usage: physical-drill-producer phase-d-reset <run-id>');
+    return resetPhysicalPhaseDDirt({ runId });
+  }
+  if (mode === 'phase-d-tier-hold') {
+    const [vmDevicePubkey, runId, holdPath] = args;
+    if (!vmDevicePubkey || !runId || !holdPath) {
+      throw new Error('usage: physical-drill-producer phase-d-tier-hold <vm-device-pubkey> <run-id> <hold-path>');
+    }
+    return holdPhysicalPhaseDBelowSteer({ vmDevicePubkey, runId, holdPath });
+  }
+  if (mode === 'phase-d-tier-restore') {
+    const [holdPath] = args;
+    if (!holdPath) throw new Error('usage: physical-drill-producer phase-d-tier-restore <hold-path>');
+    return restorePhysicalPhaseDTier({ holdPath });
+  }
   if (mode === 'phase-d-request') {
     const [state, devicePubkey, headSha] = args;
     if ((state !== 'pending' && state !== 'ratified') || !devicePubkey || !headSha) {
@@ -607,7 +627,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-quarantine-observe, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-quarantine-observe, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-reset, phase-d-tier-hold, phase-d-tier-restore, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
   );
 }
 

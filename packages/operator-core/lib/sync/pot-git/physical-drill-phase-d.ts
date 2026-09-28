@@ -337,6 +337,40 @@ export async function dirtyPhysicalPhaseDWorktree(
   };
 }
 
+/**
+ * Discard ONLY this run's own planted dirt once Phase D has observed it, so the
+ * shared worktree is clean for the next phase and the next run. Anything else —
+ * a different payload, or any other dirty path — is someone's real work and is
+ * refused, never discarded.
+ */
+export async function resetPhysicalPhaseDDirt(
+  input: { runId: string },
+  deps: PhysicalPhaseDDeps = {},
+): Promise<{ runId: string; reset: boolean; reason: 'discarded-run-dirt' | 'already-clean'; observedAt: string }> {
+  assertRunId(input.runId);
+  const { worktreePath } = await fixedPaths(deps);
+  const status = await git(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
+  if (!status) {
+    return { runId: input.runId, reset: false, reason: 'already-clean', observedAt: new Date().toISOString() };
+  }
+  const expected = `p505-phase-d/${input.runId}/local-dirty-must-survive\n`;
+  // Name-only listings, not porcelain: the git() helper trims stdout, which
+  // would eat the leading status column of the first porcelain line.
+  const changed = [
+    ...(await git(worktreePath, ['diff', '--name-only', 'HEAD', '--'])).split('\n'),
+    ...(await git(worktreePath, ['ls-files', '--others', '--exclude-standard'])).split('\n'),
+  ].filter(Boolean);
+  const onlySentinel = changed.length > 0 && changed.every((path) => path === PHASE_D_SENTINEL);
+  const protectedPath = join(worktreePath, PHASE_D_SENTINEL);
+  if (!onlySentinel || !existsSync(protectedPath) || readFileSync(protectedPath, 'utf8') !== expected) {
+    throw new Error('physical Phase D refuses to discard worktree changes it did not plant in this run');
+  }
+  await git(worktreePath, ['checkout', '--', PHASE_D_SENTINEL]);
+  const after = await git(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
+  if (after) throw new Error('physical Phase D reset left the fixed worktree dirty');
+  return { runId: input.runId, reset: true, reason: 'discarded-run-dirt', observedAt: new Date().toISOString() };
+}
+
 /** Read the exact production request row for the run-bound head. */
 export async function capturePhysicalPhaseDRequest(
   input: { devicePubkey: string; headSha: string; state: 'pending' | 'ratified' },
