@@ -82,6 +82,7 @@ import { installStdioPeerGuard } from "@papercusp/operator-core/lib/process-supe
 import {
   assertVmReleaseRuntimePolicy,
   assertVmReleaseRuntimePort,
+  isVmReleaseDistribution,
 } from "@papercusp/operator-core/lib/vm-release-runtime-policy";
 import { portAvailable } from "@papercusp/operator-core/lib/port-availability";
 
@@ -201,6 +202,26 @@ process.on('uncaughtException', (err) => {
 const PAPERCUSP_DIR = process.env.PAPERCUSP_HOME || join(homedir(), ".papercusp");
 const OPERATOR_JSON = join(PAPERCUSP_DIR, "operator.json");
 const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, "embedded-pg.json");
+
+/**
+ * WI-10003627: a vm-release host is MULTI-ACCOUNT — the customer workspace account
+ * shares loopback with this service user, and loopback TCP is not a uid boundary —
+ * so its embedded Postgres roles must not carry the repo-public DEV passwords. This
+ * 0600 file (in the 0700 state dir) holds the host's generated role passwords; the
+ * embedded server keys every role to it and refuses to boot while a default still
+ * authenticates. PAPERCUSP_PG_HOST_CREDENTIALS=1 opts any other host in.
+ */
+export const EMBEDDED_PG_CREDENTIALS_FILE = join(PAPERCUSP_DIR, "embedded-pg-credentials.json");
+
+/** The per-host credentials file this process must key its embedded PG to, if any. */
+export function embeddedPgCredentialsFile(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (isVmReleaseDistribution(env) || env.PAPERCUSP_PG_HOST_CREDENTIALS === "1") {
+    return EMBEDDED_PG_CREDENTIALS_FILE;
+  }
+  return undefined;
+}
 const SUPERUSER_TOKEN = join(PAPERCUSP_DIR, "superuser-token");
 
 /**
@@ -1137,8 +1158,8 @@ function readPostmasterRecordedPort(dataDir: string): number {
 export async function detectRunningSharedPg(
   dataDir: string,
   logFn: (m: string) => void = log,
-): Promise<{ port: number; ownerPid: number; adminUrl: string } | null> {
-  let rec: { pid?: unknown; port?: unknown; url?: unknown } | null = null;
+): Promise<{ port: number; ownerPid: number; adminUrl: string; appUrl?: string } | null> {
+  let rec: { pid?: unknown; port?: unknown; url?: unknown; appUrl?: unknown } | null = null;
   try {
     rec = JSON.parse(readFileSync(EMBEDDED_PG_JSON, "utf8"));
   } catch {
@@ -1161,7 +1182,8 @@ export async function detectRunningSharedPg(
     `detectRunningSharedPg: live shared Postgres on :${pgPort} owned by still-alive ` +
       `operator pid ${ownerPid} holds ${dataDir} — will attach, not take over (EI-14941)`,
   );
-  return { port: pgPort, ownerPid, adminUrl };
+  const appUrl = typeof rec?.appUrl === "string" && rec.appUrl ? rec.appUrl : undefined;
+  return { port: pgPort, ownerPid, adminUrl, ...(appUrl ? { appUrl } : {}) };
 }
 
 /** Start (or attach to) Postgres and ensure HARNESS_ADMIN_DATABASE_URL is set. */
@@ -1209,13 +1231,19 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   if (shared) {
     process.env.HARNESS_ADMIN_DATABASE_URL = shared.adminUrl;
     if (!process.env.HARNESS_DATABASE_URL) {
-      try {
-        const u = new URL(shared.adminUrl);
-        u.username = "harness_app";
-        u.password = "harness_app_pwd";
-        process.env.HARNESS_DATABASE_URL = u.toString();
-      } catch {
-        /* keep admin-only if the stored URL won't parse */
+      if (shared.appUrl) {
+        // A multi-account host keys harness_app to a per-host secret and
+        // advertises its URL (WI-10003627); the DEV default would be refused.
+        process.env.HARNESS_DATABASE_URL = shared.appUrl;
+      } else {
+        try {
+          const u = new URL(shared.adminUrl);
+          u.username = "harness_app";
+          u.password = "harness_app_pwd";
+          process.env.HARNESS_DATABASE_URL = u.toString();
+        } catch {
+          /* keep admin-only if the stored URL won't parse */
+        }
       }
     }
     process.env.PAPERCUSP_USE_EMBEDDED_PG = "1";
@@ -1270,9 +1298,17 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   // rejection can be re-thrown WITH it attached, instead of forcing whoever
   // reads the crash to scroll back through the log to find it.
   let lastPgFatalLine: string | undefined;
+  const credentialsFile = embeddedPgCredentialsFile();
+  if (credentialsFile) {
+    log(
+      `embedded PG roles keyed to per-host generated passwords (${credentialsFile}); ` +
+        `boot refuses while any repo-public default still authenticates (WI-10003627)`,
+    );
+  }
   const pg = (await startEmbeddedPostgresServer({
     port,
     dataDir,
+    credentialsFile,
     dbSqlDir: existsSync(dbSqlDir) ? dbSqlDir : undefined,
     seedPath: seedPath && existsSync(seedPath) ? seedPath : undefined,
     extraPostgresSettings,
@@ -1337,6 +1373,9 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   });
   const record = {
     url: pg.urls.admin,
+    // harness_app's URL: on a multi-account host its password is a per-host
+    // secret, so readers cannot derive it from the admin URL (WI-10003627).
+    appUrl: pg.urls.app,
     port: pg.port,
     pid: process.pid,
     startedAt: Date.now(),
