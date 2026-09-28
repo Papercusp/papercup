@@ -7,9 +7,9 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import postgres from 'postgres';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 export function assertAppliedActivation(snapshot, events, afterId, ideate) {
   const activation = snapshot?.activation;
@@ -143,6 +143,6 @@ export async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isCliEntry(import.meta.url)) {
   main().catch((error) => { console.error(error); process.exitCode = 1; });
 }
