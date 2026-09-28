@@ -19,6 +19,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { installDeterministicEmbedder, type InstalledDeterministicEmbedder } from '../../test/_deterministic-embedder';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import { projectBlueprintToPg } from './project-to-pg';
+import { getResourceProfile } from '../resource-profile';
 import { materializePlanSchedule } from '../harness/routines/materialize-plan-schedule';
 import {
   P013B_HARNESS, P013B_ITEMS, P013B_OPERATION, P013B_OUTPUT_SCHEMA, P013B_TEMPLATE, P013B_TEMPLATE_CONTENT, P013B_WORKSPACE,
@@ -100,6 +101,15 @@ const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
 // P013_DEDICATED_PG=1 → a dedicated Docker container; =native → a dedicated cluster from the
 // host's own PG binaries (no Docker; Docker create hangs 2–30 min here, WI-10003403). Both are
 // D-022(c) run-owned clusters with server-default durability (D-022(b)).
+// D-024: fixture.sql stands in for getOrgPg() AND withWorkspace, so size it like the
+// production admin pool (resource-profile pgPoolMax). At the fixture default of 2,
+// concurrent completions each hold a transaction connection and then wait for a second
+// one that never frees — a rig-only pool starvation (b-smoke6 hung 192s, WI-10003498).
+// P013_ORG_POOL_MAX=<n> pins a size for a deliberate pool-sensitivity A/B.
+const P013_ORG_POOL_MAX = (() => {
+  const pinned = Number(process.env.P013_ORG_POOL_MAX);
+  return Number.isInteger(pinned) && pinned > 0 ? pinned : getResourceProfile().pgPoolMax;
+})();
 const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
   ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
 const dedicatedPgRequested = dedicatedPgMode !== null;
@@ -134,7 +144,7 @@ beforeAll(async () => {
     process.env.PAPERCUSP_TEST_PG_ADMIN_URL = dedicatedPg.getConnectionUri();
   }
   if (process.env.P013_FIXTURE_EMBEDDER === '1') fixtureEmbedder = await installDeterministicEmbedder();
-  db = await createOrgTestDb();
+  db = await createOrgTestDb({ adminPoolMax: P013_ORG_POOL_MAX });
   fixture.sql = db.adminSql;
   const sql = db.adminSql;
   await sql`
@@ -234,7 +244,7 @@ describe('P-013 workload B fixture', () => {
         ? 2 * matrix.repetitions * matrix.coldSamples * matrix.concurrencies.length : 0);
       expect(trials).toHaveLength(2 * matrix.repetitions * matrix.modes.length * matrix.concurrencies.length);
       console.info(`P-013 workload B ${matrix.modes.join('+')} trials`, JSON.stringify({
-        ...matrix, cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', fixtureEmbedder: Boolean(fixtureEmbedder), trials }));
+        ...matrix, cluster: dedicatedPg ? 'dedicated' : 'shared', clusterSubstrate: dedicatedPgMode ?? 'shared-container', fixtureEmbedder: Boolean(fixtureEmbedder), orgPoolMax: P013_ORG_POOL_MAX, trials }));
     } else {
       for (const arm of ['control', 'candidate'] as const) samples.push(await runArm(arm, sequence++));
       console.info('P-013 workload B admission/invariant smoke; no grade', JSON.stringify(
