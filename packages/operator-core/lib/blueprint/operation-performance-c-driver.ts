@@ -82,6 +82,9 @@ export type P013CTools = {
 export type P013CSample = {
   arm: P013CArm; sequence: number; workflowId: string; workItemId: string | null;
   marks: PhaseMarks; stepNames: string[];
+  /** Per durable step (incl. candidate-only settlement): DBOS-recorded duration
+   * and the gap since the previous step completed, for phase attribution. */
+  stepProfile: Array<{ name: string; durationMs: number | null; gapBeforeMs: number | null }>;
 };
 
 const caller = {
@@ -218,5 +221,13 @@ export async function runP013WorkloadC(
   };
   assert.ok(marks.accepted >= marks.ingress && marks.terminal >= marks.dispatched &&
     marks.businessEvent >= marks.terminal, `P-013 C ${arm} marks out of order ${JSON.stringify(marks)}`);
-  return { arm, sequence, workflowId, workItemId, marks, stepNames };
+  const stepProfile = steps.map((step, index) => {
+    const previous = index > 0 ? steps[index - 1]!.completedAt : null;
+    return {
+      name: step.name,
+      durationMs: step.startedAt !== null && step.completedAt !== null ? step.completedAt - step.startedAt : null,
+      gapBeforeMs: previous !== null && step.startedAt !== null ? step.startedAt - previous : null,
+    };
+  });
+  return { arm, sequence, workflowId, workItemId, marks, stepNames, stepProfile };
 }

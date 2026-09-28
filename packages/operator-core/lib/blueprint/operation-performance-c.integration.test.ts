@@ -198,8 +198,10 @@ describe('P-013 workload C fixture', () => {
       for (const arm of ['control', 'candidate', 'candidate', 'control'] as const) {
         samples.push(await runArm(arm, sequence++));
       }
-      console.info('P-013 workload C smoke; no grade', JSON.stringify(samples.map(({ arm, marks }) => ({
-        arm, totalMs: marks.businessEvent - marks.ingress, dispatchMs: marks.dispatched - marks.accepted }))));
+      console.info('P-013 workload C smoke; no grade', JSON.stringify(samples.map(({ arm, marks, stepProfile }) => ({
+        arm, totalMs: marks.businessEvent - marks.ingress, dispatchMs: marks.dispatched - marks.accepted,
+        acceptMs: marks.accepted - marks.ingress, terminalMs: marks.terminal - marks.dispatched,
+        eventMs: marks.businessEvent - marks.terminal, stepProfile }))));
     }
     // Stable step ids on both arms, across every sample (and so across replays).
     for (const sample of samples) expect(sample.stepNames).toEqual([...P013C_PROGRAM_STEPS]);
