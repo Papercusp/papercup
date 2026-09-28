@@ -375,6 +375,11 @@
     "db:next-migration": "node scripts/next-migration.mjs",
     "mirror:check": "node scripts/templates-mirror-sync.mjs",
     "mirror:push": "node scripts/templates-mirror-sync.mjs --push",
+    "preview:export": "node scripts/source-preview.mjs export",
+    "preview:gate": "node scripts/source-preview.mjs gate",
+    "preview:check": "node scripts/source-preview.mjs check",
+    "preview:push": "node scripts/source-preview.mjs push",
+    "share-source": "node scripts/share-source.mjs",
     "test:el-suite": "npm --workspace @papercusp/web run test:el-suite",
     "patch:regen": "patch-package --exclude '(^package\\.json$|(^|/)\\.verdict-data/)'",
     "postinstall": "node scripts/patch-noble-ciphers-exports.mjs && node scripts/install-onnxruntime-node.mjs && patch-package && node scripts/check-installed-patch-postimages.mjs"
