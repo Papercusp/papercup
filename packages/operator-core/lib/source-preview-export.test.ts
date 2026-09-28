@@ -22,6 +22,7 @@ import {
   allowlistTops,
   exportSnapshot,
   materializeCommit,
+  sourceYear,
 } from '../../../scripts/source-preview.mjs';
 import { DROPPED, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 
@@ -144,6 +145,27 @@ describe('source-preview export — R-4 evaluation notice', () => {
     expect(notice).toMatch(/may not redistribute/);
     expect(notice).toContain(fx.commit);
   });
+
+  it('dates the copyright from real history, not a fixed-date repair-queue admission commit', () => {
+    const root = mkdtempSync(join(tmpdir(), 'source-preview-year-'));
+    try {
+      const repo = makeSuperproject(root).repo;
+      const real = Number(git(repo, ['show', '-s', '--format=%cd', '--date=format:%Y', 'HEAD']));
+      const fixed = '2000-01-01T00:00:00Z';
+      const r = spawnSync('git', ['-C', repo, 'commit', '-q', '--allow-empty', '-m', 'admit 1 path(s) onto frozen lineage'], {
+        encoding: 'utf8',
+        env: childEnv({
+          GIT_AUTHOR_NAME: 'gate', GIT_AUTHOR_EMAIL: 'gate@example.invalid', GIT_AUTHOR_DATE: fixed,
+          GIT_COMMITTER_NAME: 'gate', GIT_COMMITTER_EMAIL: 'gate@example.invalid', GIT_COMMITTER_DATE: fixed,
+        }),
+      });
+      expect(r.status, r.stderr).toBe(0);
+      expect(git(repo, ['show', '-s', '--format=%cd', '--date=format:%Y', 'HEAD'])).toBe('2000');
+      expect(sourceYear(repo, git(repo, ['rev-parse', 'HEAD']))).toBe(real);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it('writes START-HERE.md naming the snapshot and the workspaces it contains', () => {
     const start = readFileSync(join(out, 'START-HERE.md'), 'utf8');
