@@ -602,6 +602,26 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
     expect(d.created[0].payload).not.toHaveProperty('toolFailureProbation.report.reproduced');
   });
 
+  // WI-10003605: a workspace-spanning invocation records harness '*'. Scoping it
+  // `harness:*` hit the work-item scope guard, so every such capture threw and the
+  // in-process operator console.warned per invocation (failing fail-on-console tests).
+  it.each(['*', ' * ', ''])('files a wildcard/blank-harness invocation (%j) operator-scoped instead of throwing', async (harnessSlug) => {
+    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [], findIssuesByWatchdogKeys: async () => [] };
+    await expect(captureToolInvocationFriction({ workspaceId: 'ws', harnessSlug, ownerId: 'su-a',
+      invokedAt: '2026-09-28T05:35:00Z', failure: { toolName: 'coord:send', status: 'error',
+        message: 'internal error' } }, d)).resolves.toBeTruthy();
+    expect(d.created).toHaveLength(1);
+    expect(d.created[0].scope).toBe('operator');
+  });
+
+  it('CONTROL: a concrete harness keeps its harness scope', async () => {
+    const d = { ...deps(), findIssuesByToolFailureClassKeys: async () => [], findIssuesByWatchdogKeys: async () => [] };
+    await captureToolInvocationFriction({ workspaceId: 'ws', harnessSlug: 'papercusp', ownerId: 'su-a',
+      invokedAt: '2026-09-28T05:35:00Z', failure: { toolName: 'coord:send', status: 'error',
+        message: 'internal error' } }, d);
+    expect(d.created[0].scope).toBe('harness:papercusp');
+  });
+
   it('R-7 a second measured reporter promotes the same issue while readiness stays unknown', async () => {
     const normalized = normalizeSuspectedToolFailure(metadataToolFailure);
     const prior = existing({ id: 'EI-R7', title: 'first report', scope: 'harness:papercusp',

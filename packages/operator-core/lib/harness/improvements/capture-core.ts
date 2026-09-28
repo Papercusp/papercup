@@ -1606,7 +1606,13 @@ export async function captureToolInvocationFriction(
   // probation classKey and is tallied per class below, so a report on another
   // build counts onto the row but can neither corroborate nor rewrite it.
   const signatureKey = toolFailureSignatureKey(report, normalized.class);
-  const scope = harnessSlug ? `harness:${harnessSlug}` : 'operator';
+  // WI-10003605: a workspace-spanning invocation records its harness as the wildcard
+  // '*'. The work-item scope guard (work-item-scope.ts) refuses `harness:*`, so every
+  // such friction report threw and console.warned once per invocation (failing every
+  // fail-on-console real-engine PUI test). A wildcard names no harness: file operator-scoped.
+  const concreteHarness = typeof harnessSlug === 'string' && harnessSlug.trim() && harnessSlug.trim() !== '*'
+    ? harnessSlug.trim() : null;
+  const scope = concreteHarness ? `harness:${concreteHarness}` : 'operator';
   const toolInvocation = { workspaceId, harnessSlug, ownerId, invokedAt };
   const incomingProbation = {
     ...normalized, watchdogKey: signatureKey, signatureKey, state: 'probation' as const, intendedKind: kind,

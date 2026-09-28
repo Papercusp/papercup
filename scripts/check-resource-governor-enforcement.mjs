@@ -393,6 +393,34 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/verify-identities-r4.mjs: this is P-015 R-4's acceptance VERIFICATION driver (an isolated, pointer-driven identity review journey against a disposable coord_presence/adv_sessions fixture), not a runtime lane. Its only start is the `checkedCommand` helper — one synchronous `execFileSync(command, args, { encoding, timeout: 45_000 })` per call, awaited to completion before the next and resolving to a single captured stdout string with nothing retained between calls, so it adds no residency and no independent resident queue. Every call site is explicitly bounded: a `git rev-parse HEAD` tree-head read, plus two `bash` settle/liveness probes under 45s and 15s timeouts. The driver cannot run outside `verify-tauri-headless.sh` at all — it throws on the missing VERIFY_TAURI_* env contract — so it only ever executes inside that script's own isolated Xvfb/devUrl/sidecar tree. Routing it through Governor.admit would be a category error for the same reason as the scripts/check-tracked-src-entry-dist.mjs bypass: the governor admits contended RUNTIME capacity, whereas this is an evidence-producing verification driver invoked by a developer or the acceptance gate, and gating it would make the verification unrunnable in exactly the pressured conditions where its evidence matters most.",
   },
   {
+    path: "scripts/verify-identities-r3.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/verify-identities-r3.mjs: this is P-015 R-3's live self-drill VERIFICATION driver, the sibling of the reviewed verify-identities-r4.mjs row, run by hand in an observing session. Its starts are three synchronous execFileSync calls, each awaited to completion before the next and retaining only one captured stdout string: `node scripts/mcp-call.mjs` (one tool call, timeout 180s, 8 MiB maxBuffer), the production user-prompt-submit hook (timeout 30s, 8 MiB maxBuffer), and one `git rev-parse HEAD`. It holds no resident queue and adds no residency after it exits. Routing it through Governor.admit would gate an evidence-producing acceptance drill behind the runtime capacity it is meant to observe.",
+  },
+  {
+    path: "scripts/fixmic.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/fixmic.mjs: an owner-invoked host audio RECOVERY command (EI-24190247768567149), not a runtime lane. Its starts are synchronous spawnSync calls through one `command()` helper to host audio tooling — `pactl` source reads, a bounded source-level measurement (timeout = durationMs, default 4s), and one `systemctl --user restart` of the pipewire/wireplumber units. Each is awaited to completion, nothing is retained between calls, and the process exits when recovery ends, so it adds no residency and no queue. Gating a repair of the owner's microphone behind contended agent capacity would make it unavailable exactly when the host is busy.",
+  },
+  {
+    path: "scripts/run-carry-cohort.mts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/run-carry-cohort.mts: the P-005 carry-cohort runner's only detected start is the `git` helper — a synchronous `execFileSync('git', args, { cwd: REPO })` used for a handful of read-only repository reads (rev-parse and blob/path lookups that stamp instrument provenance on the cohort ledger). Each call is awaited to completion and returns one trimmed string; nothing is retained between calls and no child outlives its call. `node:child_process` is imported in this file for that helper alone; starts made by the modules it imports (carry-cohort-driver, psu-launcher) are judged at their own paths, not covered by this row. A read-only git probe adds no residency, so admission would only add a failure mode to the provenance stamp.",
+  },
+  {
+    path: "scripts/tsc-service/server.mjs",
+    code: "unbounded-resident-queue",
+    disposition: "upstream",
+    reason:
+      "P-016 reviewed upstream disposition for scripts/tsc-service/server.mjs: the flagged `queue` is the shared typecheck service's list of pending requests, and its bound is observed upstream rather than duplicated. Each entry is created once per accepted client socket (later data on that socket is ignored), is marked cancelled when the socket closes, and is flushed in whole batches by drain(); a request body is capped at 1 MiB and MAX_REQUEST_FILES paths. So the queue length can never exceed the number of live client connections, and those clients are the gate's `lint:tsc --files` runs, which are themselves admitted by pc-heavy. The service is socket-activated and exits after PAPERCUSP_TSC_SERVICE_IDLE_SEC idle, releasing its memory. A second local cap would duplicate the client admission it already sits behind.",
+  },
+  {
     path: "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
