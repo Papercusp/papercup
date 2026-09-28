@@ -25,6 +25,7 @@ import {
   type WorktreeBridgeConfig,
   WORKTREE_STAGING_REF,
   bridgeStagingShaToWorktree,
+  catchUpWorktreeToWatermark,
   handleStagingAdvance,
 } from './worktree-bridge';
 
@@ -340,5 +341,87 @@ describe('worktree-bridge (G-7: announcement → fetch → accept → ff worktre
     const retried = await bridgeStagingShaToWorktree(localMirror, wt3, integrator.pubkeyBase64, s3);
     expect(retried.outcome, retried.detail).toBe('advanced');
     expect(await readFile(join(wt3, 'f.txt'), 'utf8')).toBe('v3\n');
+  });
+
+  // WI-10003772 (P-505 run 25): the retry above was only ever reachable from a
+  // NEW announcement, because the git-sync leg returned early on an idle tick.
+  // A member that cleaned its dirt stayed on the old staging, and its next
+  // commit landed on a stale base. The idle-tick sweep is catchUpWorktreeToWatermark.
+  describe('catchUpWorktreeToWatermark (WI-10003772 idle-tick retry sweep)', () => {
+    it('a deferred-dirty advance catches up once the dirt drains, with NO new announcement', async () => {
+      const wt4 = join(root, 'wt4');
+      await initWorktree(wt4);
+      const accept = { allowLegacy: true, expectedDevice: integrator.pubkeyBase64 };
+      const first = await handleStagingAdvance(
+        { bareRepoPath: localMirror, worktreePath: wt4, prior: { epochSeq: null, stagingSha: null }, accept },
+        await announce(1, 2, s2),
+      );
+      expect(first.outcome).toBe('accepted');
+      if (first.outcome !== 'accepted') return;
+      expect(first.advance.outcome, first.advance.detail).toBe('advanced');
+
+      // Tracked dirt on the very file the next staging edits (the run-24 plant).
+      await writeFile(join(wt4, 'f.txt'), 'local edit in progress\n');
+      const second = await handleStagingAdvance(
+        { bareRepoPath: localMirror, worktreePath: wt4, prior: first.watermark, accept },
+        await announce(1, 3, s3),
+      );
+      expect(second.outcome).toBe('accepted');
+      if (second.outcome !== 'accepted') return;
+      expect(second.advance.outcome).toBe('deferred-dirty');
+
+      // While still dirty, the sweep stays deferred and touches nothing.
+      const whileDirty = await catchUpWorktreeToWatermark(localMirror, wt4, second.watermark.stagingSha);
+      expect(whileDirty.outcome).toBe('deferred-dirty');
+      expect(await git(['rev-parse', 'HEAD'], wt4)).toBe(s2);
+      expect(await readFile(join(wt4, 'f.txt'), 'utf8')).toBe('local edit in progress\n');
+
+      // The dirt is discarded (the drill's exit trap): the next idle tick advances.
+      await git(['checkout', '--', 'f.txt'], wt4);
+      const caught = await catchUpWorktreeToWatermark(localMirror, wt4, second.watermark.stagingSha);
+      expect(caught.outcome, 'detail' in caught ? caught.detail : undefined).toBe('advanced');
+      expect(await git(['rev-parse', 'HEAD'], wt4)).toBe(s3);
+      expect(await readFile(join(wt4, 'f.txt'), 'utf8')).toBe('v3\n');
+
+      // Steady state: the worktree contains the watermark, so the sweep is a
+      // fetch-free `current`, not a repeated advance attempt.
+      expect((await catchUpWorktreeToWatermark(localMirror, wt4, s3)).outcome).toBe('current');
+      expect((await catchUpWorktreeToWatermark(localMirror, wt4, s2)).outcome).toBe('current');
+    });
+
+    it('fetches the canonical pin from the bare mirror when the worktree lacks the object (no device needed)', async () => {
+      // refs/hive/staging in the BARE mirror is set by handleStagingAdvance step
+      // 3.5 on every acceptance — s3 by now. A worktree that never saw s3 still
+      // catches up with no announcing-device pubkey at all.
+      expect(await git(['rev-parse', '--verify', WORKTREE_STAGING_REF], localMirror)).toBe(s3);
+      const wt5 = join(root, 'wt5');
+      await initWorktree(wt5);
+      expect((await defaultRunGit(['cat-file', '-e', `${s3}^{commit}`], wt5)).code).not.toBe(0);
+      const caught = await catchUpWorktreeToWatermark(localMirror, wt5, s3);
+      expect(caught.outcome, 'detail' in caught ? caught.detail : undefined).toBe('advanced');
+      expect(await readFile(join(wt5, 'f.txt'), 'utf8')).toBe('v3\n');
+    });
+
+    it('a diverged worktree is never rewound: the sweep reports diverged-manual and leaves HEAD alone', async () => {
+      const wt6 = join(root, 'wt6');
+      await initWorktree(wt6);
+      await writeFile(join(wt6, 'own.txt'), 'mine\n');
+      await git(['add', '.'], wt6);
+      await git(['commit', '-q', '-m', 'unrelated local root'], wt6);
+      const localHead = await git(['rev-parse', 'HEAD'], wt6);
+      const r = await catchUpWorktreeToWatermark(localMirror, wt6, s3);
+      expect(r.outcome).toBe('diverged-manual');
+      expect(await git(['rev-parse', 'HEAD'], wt6)).toBe(localHead);
+    });
+
+    it('a mirror without the canonical pin is a typed error, never a throw', async () => {
+      const bare = join(root, 'empty-mirror.git');
+      await mkdir(bare, { recursive: true });
+      await git(['init', '-q', '--bare'], bare);
+      const wt7 = join(root, 'wt7');
+      await initWorktree(wt7);
+      const r = await catchUpWorktreeToWatermark(bare, wt7, s3);
+      expect(r.outcome).toBe('error');
+    });
   });
 });

@@ -168,6 +168,32 @@ export async function bridgeStagingShaToWorktree(
   } = {},
 ): Promise<WorktreeAdvanceResult> {
   const runGit = opts.runGit ?? defaultRunGit;
+  try {
+    const nsStaging = `refs/namespaces/${deviceNamespaceKey(integratorDevicePubkeyBase64)}/${STAGING_REF}`;
+    const fetchError = await fetchMirrorRefIntoWorktree(bareRepoPath, worktreePath, nsStaging, { ...opts, runGit });
+    if (fetchError !== null) return { outcome: 'error', from: null, to: sha, detail: fetchError };
+    return advanceWorktree(worktreePath, sha, { runGit });
+  } catch (e) {
+    return { outcome: 'error', from: null, to: sha, detail: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Object-bridge `sourceRef` from the bare mirror into the worktree's
+ * `refs/hive/staging`. Returns null on success, or the failure detail (after
+ * reclaiming any partial temp pack the failed fetch stranded).
+ */
+async function fetchMirrorRefIntoWorktree(
+  bareRepoPath: string,
+  worktreePath: string,
+  sourceRef: string,
+  opts: {
+    runGit: RunGit;
+    fetchTimeoutMs?: number;
+    reclaimTempPacks?: (worktreePath: string) => Promise<{ removed: string[]; bytesReclaimed: number }>;
+  },
+): Promise<string | null> {
+  const { runGit } = opts;
   const reclaimTempPacks =
     opts.reclaimTempPacks ??
     ((repo: string) =>
@@ -176,36 +202,84 @@ export async function bridgeStagingShaToWorktree(
       // same worktree is writing it), referenced, or changing — so this never
       // races a live index-pack, and it also clears older crash-left leaks.
       scavengeStaleTempPacks(runGit, repo, (m) => console.warn(m), { staleMs: 0 }));
+  const fetched = await runGit(
+    ['fetch', '-q', bareRepoPath, `+${sourceRef}:${WORKTREE_STAGING_REF}`],
+    worktreePath,
+    { timeoutMs: opts.fetchTimeoutMs ?? WORKTREE_OBJECT_BRIDGE_FETCH_TIMEOUT_MS },
+  );
+  if (fetched.code === 0) return null;
+  // WI-2142873: a timed-out/killed fetch strands index-pack's partial
+  // `tmp_pack_*` (SIGKILL skips git's own cleanup). Reclaim it now; waiting
+  // for age-based GC let 8.4 GB accumulate on the P-203 VM in 16h.
+  let reclaimed = '';
   try {
-    const nsStaging = `refs/namespaces/${deviceNamespaceKey(integratorDevicePubkeyBase64)}/${STAGING_REF}`;
-    const fetched = await runGit(
-      ['fetch', '-q', bareRepoPath, `+${nsStaging}:${WORKTREE_STAGING_REF}`],
-      worktreePath,
-      { timeoutMs: opts.fetchTimeoutMs ?? WORKTREE_OBJECT_BRIDGE_FETCH_TIMEOUT_MS },
-    );
-    if (fetched.code !== 0) {
-      // WI-2142873: a timed-out/killed fetch strands index-pack's partial
-      // `tmp_pack_*` (SIGKILL skips git's own cleanup). Reclaim it now; waiting
-      // for age-based GC let 8.4 GB accumulate on the P-203 VM in 16h.
-      let reclaimed = '';
-      try {
-        const r = await reclaimTempPacks(worktreePath);
-        if (r.removed.length > 0) {
-          reclaimed = `; reclaimed ${r.removed.length} partial temp pack(s), ${r.bytesReclaimed} bytes`;
-        }
-      } catch {
-        // best-effort: a reclaim failure must never mask the fetch error
-      }
-      return {
-        outcome: 'error',
-        from: null,
-        to: sha,
-        detail: `object-bridge fetch from the mirror failed: ${fetched.stderr.trim()}${reclaimed}`,
-      };
+    const r = await reclaimTempPacks(worktreePath);
+    if (r.removed.length > 0) {
+      reclaimed = `; reclaimed ${r.removed.length} partial temp pack(s), ${r.bytesReclaimed} bytes`;
     }
-    return advanceWorktree(worktreePath, sha, { runGit });
+  } catch {
+    // best-effort: a reclaim failure must never mask the fetch error
+  }
+  return `object-bridge fetch from the mirror failed: ${fetched.stderr.trim()}${reclaimed}`;
+}
+
+/** Result of {@link catchUpWorktreeToWatermark}: `current` is the cheap
+ *  steady-state answer (the worktree already contains the watermark), so the
+ *  caller can tell "nothing to retry" from a real advance attempt. */
+export type WorktreeCatchUpResult = { outcome: 'current'; to: string } | WorktreeAdvanceResult;
+
+/**
+ * WI-10003772 — the deferred-advance retry sweep. `handleStagingAdvance`
+ * persists the watermark even when the worktree could not follow
+ * (deferred-dirty / diverged-manual / a transient error), and nothing
+ * re-announces that same staging. Before this sweep existed the caller only
+ * re-tried on the NEXT accepted announcement, so a member that cleaned up its
+ * overlapping dirt sat on stale staging indefinitely, and its next commit
+ * landed on a stale base (P-505 run 25: a guaranteed content conflict at the
+ * integrator, staging frozen).
+ *
+ * Call it every bridge tick that accepted nothing. The steady state is cheap
+ * and fetch-free: when the worktree already contains `stagingSha` it returns
+ * `current` after one rev-parse + one ancestry check. Otherwise it fetches the
+ * BARE mirror's canonical pin (`refs/hive/staging`, which step 3.5 of
+ * `handleStagingAdvance` sets on every acceptance — device-agnostic, so the
+ * persisted watermark needs no announcing-device field) only when the object
+ * is missing locally, then applies the same ff-only, dirty-safe, never-rewind
+ * `advanceWorktree`. A still-dirty or diverged worktree simply stays deferred
+ * and is retried next tick. Never throws.
+ */
+export async function catchUpWorktreeToWatermark(
+  bareRepoPath: string,
+  worktreePath: string,
+  stagingSha: string,
+  opts: {
+    runGit?: RunGit;
+    fetchTimeoutMs?: number;
+    reclaimTempPacks?: (worktreePath: string) => Promise<{ removed: string[]; bytesReclaimed: number }>;
+  } = {},
+): Promise<WorktreeCatchUpResult> {
+  const runGit = opts.runGit ?? defaultRunGit;
+  try {
+    const haveTarget = (await runGit(['cat-file', '-e', `${stagingSha}^{commit}`], worktreePath)).code === 0;
+    if (haveTarget) {
+      const headR = await runGit(['rev-parse', '--verify', '-q', 'HEAD^{commit}'], worktreePath);
+      const head = headR.code === 0 ? headR.stdout.trim() : '';
+      if (
+        head === stagingSha ||
+        (head !== '' && (await runGit(['merge-base', '--is-ancestor', stagingSha, head], worktreePath)).code === 0)
+      ) {
+        return { outcome: 'current', to: stagingSha };
+      }
+    } else {
+      const fetchError = await fetchMirrorRefIntoWorktree(bareRepoPath, worktreePath, WORKTREE_STAGING_REF, {
+        ...opts,
+        runGit,
+      });
+      if (fetchError !== null) return { outcome: 'error', from: null, to: stagingSha, detail: fetchError };
+    }
+    return advanceWorktree(worktreePath, stagingSha, { runGit });
   } catch (e) {
-    return { outcome: 'error', from: null, to: sha, detail: e instanceof Error ? e.message : String(e) };
+    return { outcome: 'error', from: null, to: stagingSha, detail: e instanceof Error ? e.message : String(e) };
   }
 }
 
