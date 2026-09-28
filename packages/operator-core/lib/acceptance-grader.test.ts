@@ -3,6 +3,7 @@ import {
   advanceUndispatchableGradingCascade,
   acceptanceGraderLabelPrefix,
   buildAssignedAcceptanceGraderBrief,
+  carriedStaleGradingCardIds,
   classifyAcceptanceGraderStartupStall,
   classifyAcceptanceGraderTerminalFailure,
   detectAcceptanceGraderTerminalFailure,
@@ -2064,6 +2065,46 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     // because the guard could not run must be distinguishable from one that
     // happened because nothing was graded yet.
     expect(result.settlement).toEqual({ settled: false, reason: 'read_threw' });
+  });
+
+  // WI-10003286: the settlement read must exclude EVERY cohort-stale independent card the
+  // ship gate carried — the named one AND the older ones it also excluded. Passing only
+  // the named id let the read fall back to an older excluded card and report "settled".
+  it('hands the settlement read the WHOLE carried cohort-stale set, de-duplicated', async () => {
+    const launch = freshLaunch();
+    const readSettlement = vi.fn(async () => ({
+      settled: false,
+      reason: 'stale_independent_card' as const,
+      rubricRevision: 7,
+    }));
+    await resolveAcceptanceGrader(
+      'ship-the-thing',
+      {
+        ...baseCtx,
+        acceptanceStaleGradingScorecardId: 'EI-named-stale',
+        acceptanceStaleGradingScorecardIds: ['EI-named-stale', ' EI-older-stale ', ''],
+      } as never,
+      {
+        ...deps(launch),
+        readSettlement: readSettlement as never,
+        discover: vi.fn(async () => ({ verdict: 'fresh' as const, graders: [], excluded: [] })) as never,
+      },
+    );
+    const opts = (readSettlement.mock.calls[0] as unknown as [string, unknown, { staleCardIds?: string[] }])[2];
+    expect([...(opts.staleCardIds ?? [])].sort()).toEqual(['EI-named-stale', 'EI-older-stale']);
+  });
+
+  it('carriedStaleGradingCardIds: named id alone, array alone, union, and nothing', () => {
+    expect(carriedStaleGradingCardIds({ acceptanceStaleGradingScorecardId: 'EI-a' })).toEqual(['EI-a']);
+    expect(carriedStaleGradingCardIds({ acceptanceStaleGradingScorecardIds: ['EI-b'] })).toEqual(['EI-b']);
+    expect(
+      carriedStaleGradingCardIds({
+        acceptanceStaleGradingScorecardId: 'EI-a',
+        acceptanceStaleGradingScorecardIds: ['EI-a', 'EI-b'],
+      }),
+    ).toEqual(['EI-a', 'EI-b']);
+    expect(carriedStaleGradingCardIds({})).toEqual([]);
+    expect(carriedStaleGradingCardIds(undefined)).toEqual([]);
   });
 
   it('discovery says fresh → falls through to the frozen judge launch, carrying the reason', async () => {
