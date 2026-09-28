@@ -589,7 +589,11 @@ pub fn operator_generation_in_ancestry(listing: &str, operator_sha: &str) -> Opt
     // The packager byte-sorts the listing, so the first entry >= `prefix` is the
     // only candidate that can start with it.
     let index = entries.partition_point(|entry| *entry < prefix);
-    Some(entries.get(index).is_some_and(|entry| entry.starts_with(prefix)))
+    Some(
+        entries
+            .get(index)
+            .is_some_and(|entry| entry.starts_with(prefix)),
+    )
 }
 
 /// Git-free ancestry for a binary running from an installed release unit: reads
@@ -912,11 +916,19 @@ mod tests {
     #[test]
     fn release_install_repair_names_self_update_not_the_checkout_script() {
         let stale = operator_install_freshness("build-a", Some("build-b"), "http://op", None);
-        let checkout = stale.clone().for_origin(InstallOrigin::Checkout, Some("build-b"));
-        assert!(checkout.repair.as_deref().unwrap().contains(INSTALL_COMMAND));
+        let checkout = stale
+            .clone()
+            .for_origin(InstallOrigin::Checkout, Some("build-b"));
+        assert!(checkout
+            .repair
+            .as_deref()
+            .unwrap()
+            .contains(INSTALL_COMMAND));
 
         let release = stale.for_origin(InstallOrigin::Release, Some("build-b"));
-        let repair = release.repair.expect("a stale release install still has a repair");
+        let repair = release
+            .repair
+            .expect("a stale release install still has a repair");
         assert!(repair.contains("pui self update"), "{repair}");
         assert!(repair.contains("build-b"), "{repair}");
         assert!(!repair.contains(INSTALL_COMMAND), "{repair}");
@@ -1098,15 +1110,39 @@ mod tests {
             Some(true)
         );
         // `git rev-parse --short` form, and case-insensitive.
-        assert_eq!(operator_generation_in_ancestry(listing, "B5E2B1F"), Some(true));
-        assert_eq!(operator_generation_in_ancestry(listing, " 8e14b49f0c \n"), Some(true));
+        assert_eq!(
+            operator_generation_in_ancestry(listing, "B5E2B1F"),
+            Some(true)
+        );
+        assert_eq!(
+            operator_generation_in_ancestry(listing, " 8e14b49f0c \n"),
+            Some(true)
+        );
         // Not in the release's history: the operator is newer or diverged.
-        assert_eq!(operator_generation_in_ancestry(listing, "ffffffffffff"), Some(false));
-        assert_eq!(operator_generation_in_ancestry(listing, "5f720eb"), Some(false));
+        assert_eq!(
+            operator_generation_in_ancestry(listing, "ffffffffffff"),
+            Some(false)
+        );
+        assert_eq!(
+            operator_generation_in_ancestry(listing, "5f720eb"),
+            Some(false)
+        );
         // Unanswerable, never read as "no".
-        assert_eq!(operator_generation_in_ancestry(listing, "b5e2b1"), None, "too short");
-        assert_eq!(operator_generation_in_ancestry(listing, "build-b"), None, "not hex");
-        assert_eq!(operator_generation_in_ancestry("\n \n", "b5e2b1fbccf0"), None, "empty listing");
+        assert_eq!(
+            operator_generation_in_ancestry(listing, "b5e2b1"),
+            None,
+            "too short"
+        );
+        assert_eq!(
+            operator_generation_in_ancestry(listing, "build-b"),
+            None,
+            "not hex"
+        );
+        assert_eq!(
+            operator_generation_in_ancestry("\n \n", "b5e2b1fbccf0"),
+            None,
+            "empty listing"
+        );
     }
 
     /// The case the independent acceptance card rated degraded: an installed
@@ -1129,8 +1165,9 @@ mod tests {
         let ancestor_operator = "b5e2b1fbccf0";
         let caught_up = release_generation_contained(&exe, ancestor_operator);
         assert_eq!(caught_up, Some(true));
-        let verdict = operator_install_freshness(installed, Some(ancestor_operator), "http://op", caught_up)
-            .for_origin(InstallOrigin::Release, Some(ancestor_operator));
+        let verdict =
+            operator_install_freshness(installed, Some(ancestor_operator), "http://op", caught_up)
+                .for_origin(InstallOrigin::Release, Some(ancestor_operator));
         assert_eq!(verdict.status.label(), "OK", "{}", verdict.detail);
         assert!(verdict.repair.is_none());
 
@@ -1139,11 +1176,15 @@ mod tests {
         let newer_operator = "c0ffee000000";
         let behind = release_generation_contained(&exe, newer_operator);
         assert_eq!(behind, Some(false));
-        let stale = operator_install_freshness(installed, Some(newer_operator), "http://op", behind)
-            .for_origin(InstallOrigin::Release, Some(newer_operator));
+        let stale =
+            operator_install_freshness(installed, Some(newer_operator), "http://op", behind)
+                .for_origin(InstallOrigin::Release, Some(newer_operator));
         assert_eq!(stale.status.label(), "STALE");
         let repair = stale.repair.expect("a stale release install has a repair");
-        assert!(repair.contains("includes the operator's generation c0ffee000000"), "{repair}");
+        assert!(
+            repair.contains("includes the operator's generation c0ffee000000"),
+            "{repair}"
+        );
         assert!(repair.contains("pui self update"), "{repair}");
 
         // A unit that predates the listing cannot answer: None keeps STALE.
@@ -1151,6 +1192,9 @@ mod tests {
         assert_eq!(release_generation_contained(&exe, ancestor_operator), None);
         // A binary outside any release unit cannot answer either.
         let loose = tempdir().unwrap();
-        assert_eq!(release_generation_contained(&loose.path().join("bin/pui"), ancestor_operator), None);
+        assert_eq!(
+            release_generation_contained(&loose.path().join("bin/pui"), ancestor_operator),
+            None
+        );
     }
 }
