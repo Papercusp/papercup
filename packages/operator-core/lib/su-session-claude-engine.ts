@@ -19,7 +19,7 @@ import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from '
 import { probeScopeSupport } from './task-manager/managed-spawn';
 import { killTask } from './task-manager/control';
 import type { TaskSpec } from './task-manager/types';
-import type { SuSessionHost, SuSessionEventInput } from './su-session-host';
+import { SuSessionStartupTimeoutError, type SuSessionHost, type SuSessionEventInput } from './su-session-host';
 import { SuNativeCards } from './su-session-native-cards';
 
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>;
@@ -559,8 +559,9 @@ export function startClaudeSuEngine(
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([
     startup,
-    new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(
+    new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new SuSessionStartupTimeoutError(
       `Claude startup timed out during ${startupStage} (${Date.now() - stageStartedAt}ms in this step); reconnect or choose another engine${childStderrSuffix(childStderr.read())}`,
+      startupStage,
     )), options.startupTimeoutMs ?? 45_000); }),
   ]).catch(async (error: unknown) => {
     if (!adapter.host.snapshot().terminal) adapter.reconcileRuntimeExit({ expected: false, reason: String(error) });

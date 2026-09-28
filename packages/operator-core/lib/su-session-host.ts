@@ -139,6 +139,18 @@ export class SuSessionHostError extends Error {
   }
 }
 
+/** A structured engine did not reach readiness within its startup deadline.
+ * Typed so a resume supervisor can tell this recoverable class (a stalled step
+ * that a fresh attempt may clear) from a refusal it must not repeat. `stage`
+ * names the step that was still running when the deadline fired. */
+export class SuSessionStartupTimeoutError extends Error {
+  readonly code = 'su_session_startup_timeout';
+  constructor(message: string, readonly stage: string | null = null) {
+    super(message);
+    this.name = 'SuSessionStartupTimeoutError';
+  }
+}
+
 const TERMINAL_STATES = new Set<SuSessionLifecycleState>(['ended', 'failed']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
