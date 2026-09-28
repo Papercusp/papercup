@@ -97,7 +97,10 @@ vi.mock('./store', () => h.store);
 vi.mock('./wake-executor', () => ({ executeWake: h.executeWake, degradeToInboxOrDrop: h.degradeToInboxOrDrop }));
 vi.mock('../../agent-tools/coordination/messages', () => ({ sendMessage: h.sendMessage, repliedMsgIdsBatch: h.repliedMsgIdsBatch }));
 vi.mock('../../agent-tools/coordination/presence-fleet', () => ({ fetchPresenceFleet: h.fetchPresenceFleet }));
-vi.mock('../../agent-tools/coordination/event-subscriptions', () => ({ listEventKeySubscribers: h.listEventKeySubscribers }));
+vi.mock('../../agent-tools/coordination/event-subscriptions', () => ({
+  listEventKeySubscribers: h.listEventKeySubscribers,
+  eventKeySubscriberScope: () => ({ workspaceId: 'default', targetKind: 'event' }),
+}));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../fleet/governor', () => ({ admitSpawn: h.admitSpawn }));
@@ -545,7 +548,25 @@ describe('emitAwaitedEvent — EI-13705: unconditional per-key fire latch', () =
       eventKey: 'p2p-git:phase3-open',
       firedBy: 'su-63834d42',
       payload: { sha: 'abc' },
+      // WI-10003631: the standing-subscriber read rides the latch statement.
+      subscribersFrom: { workspaceId: 'default', targetKind: 'event' },
     });
+  });
+
+  it('uses the latch-folded subscriber list instead of a separate read (WI-10003631)', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([]);
+    h.store.recordKeyFire.mockResolvedValueOnce({
+      announcementPending: false,
+      eventSubscribers: [
+        { subscriber_id: 'su-sub', delivery_mode: 'full' },
+        { subscriber_id: 'su-muted', delivery_mode: 'muted' },
+      ],
+    });
+    h.listEventKeySubscribers.mockClear();
+    const r = await emitAwaitedEvent({ key: 'k-folded' });
+    expect(h.listEventKeySubscribers).not.toHaveBeenCalled();
+    expect(r.eventSubscribers).toBe(1);
+    expect(r.notified).toEqual(['su-sub']);
   });
 
   it('records the fire latch on an ordinary emit that DOES wake waiters (not just the zero-waiter case)', async () => {

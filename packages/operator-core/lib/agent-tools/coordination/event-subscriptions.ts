@@ -25,6 +25,8 @@
 import type { DeliveryMode, SubscriptionRow } from '@papercusp/coordination/capabilities';
 import type { AgentIdentity } from './identity';
 import { getCoordSubscriptionStore } from './subscription-store';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { coordScopeWorkspace } from './log';
 
 export const EVENT_SUBSCRIPTION_KIND = 'event' as const;
 
@@ -66,4 +68,11 @@ export async function listMyEventKeySubscriptions(identity: AgentIdentity): Prom
  *  fan-out's hot path — @see emitAwaitedEvent in events/await/engine.ts). */
 export async function listEventKeySubscribers(eventKey: string): Promise<SubscriptionRow[]> {
   return getCoordSubscriptionStore().listTargetSubscribers(EVENT_SUBSCRIPTION_KIND, eventKey);
+}
+
+/** WI-10003631: the (workspace, kind) scope `listEventKeySubscribers` reads, so
+ *  the emit can fold that read into its fire-latch statement (one round trip). */
+export function eventKeySubscriberScope(): { workspaceId: string; targetKind: string } {
+  // Same resolution as the store's `ws` getter (getWorkspaceId: coordScopeWorkspace).
+  return { workspaceId: coordScopeWorkspace().trim() || DEFAULT_COORD_WORKSPACE, targetKind: EVENT_SUBSCRIPTION_KIND };
 }
