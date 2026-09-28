@@ -658,7 +658,10 @@ async function selectedLaunchCompositionSource(
       for (const layer of layers) {
         const document = layerSourceDocument(layer);
         if (!document) throw new Error(`launch source ${JSON.stringify(layer.id)} has no pinned document`);
-        const { extends: _consumed, ...own } = document;
+        // An attestation signs ITS layer's own document. It stays verified and pinned on
+        // `layers` (the compiler closure); copied onto the synthesized effective root it
+        // would claim a hash that root never had (WI-10003611).
+        const { extends: _consumed, attestation: _layerAttestation, ...own } = document;
         effective = mergeByRules(effective, own, {
           mode: 'peer-assembly', childSources: [layer.id],
         });
