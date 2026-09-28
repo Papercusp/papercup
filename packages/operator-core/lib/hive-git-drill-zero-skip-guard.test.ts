@@ -733,8 +733,21 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         join(phaseA, 'verdict.err'),
         'Authorization: Bearer super-secret-token\nstrict convergence failed\n',
       );
-      writeFileSync(join(phaseA, 'not-allowlisted.json'), JSON.stringify({ secret: 'must-not-copy' }));
+      writeFileSync(join(phaseA, 'raw.bin'), 'not a diagnostic extension');
+      writeFileSync(join(failedRunRoot, 'not-allowlisted.json'), JSON.stringify({ secret: 'must-not-copy' }));
       writeFileSync(join(failedRunRoot, 'tower-identity.json'), JSON.stringify({ privateKey: 'must-not-copy' }));
+      // WI-10003767: a Phase D failure must bank the failing phase's NESTED files.
+      // A hand-listed allow-list named Phase A only, so P-505 run 24 kept nothing
+      // of Phase D.
+      const dirtyAdvance = join(failedRunRoot, 'phase-d', 'dirty-advance');
+      mkdirSync(dirtyAdvance, { recursive: true, mode: 0o700 });
+      writeFileSync(
+        join(dirtyAdvance, 'before-observation.json'),
+        JSON.stringify({ dirtyPaths: ['505-phase-d-overlap.txt'], token: 'phase-d-secret' }),
+      );
+      writeFileSync(join(dirtyAdvance, 'destination-bridge-1.json'), JSON.stringify({ attempt: 1 }));
+      writeFileSync(join(dirtyAdvance, 'destination-bridge-2.json'), JSON.stringify({ attempt: 2 }));
+      writeFileSync(join(failedRunRoot, 'phase-d', 'verdict.err'), 'Phase D rejected\n');
 
       const failed = runCleanup(failedRunRoot, failedDiagnostics, 37);
       expect(failed.status).toBe(37);
@@ -750,11 +763,23 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         sanitized: true,
         caps: { perFileBytes: 256 * 1024, totalBytes: 1024 * 1024 },
       });
+      // Priority order under the byte cap: the latest (failing) phase first, its
+      // named observations before numbered poll attempts, newest attempt first.
       expect(manifest.included.map((entry: { path: string }) => entry.path)).toEqual([
+        'phase-d/dirty-advance/before-observation.json',
+        'phase-d/verdict.err',
+        'phase-d/dirty-advance/destination-bridge-2.json',
+        'phase-d/dirty-advance/destination-bridge-1.json',
         'phase-a/bootstrap-raw.json',
         'phase-a/tower-after.json',
         'phase-a/verdict.err',
       ]);
+      const phaseDObservation = readFileSync(
+        join(failedDiagnostics, 'phase-d', 'dirty-advance', 'before-observation.json'),
+        'utf8',
+      );
+      expect(phaseDObservation).toContain('505-phase-d-overlap.txt');
+      expect(phaseDObservation).not.toContain('phase-d-secret');
       const banked = [
         readFileSync(join(failedDiagnostics, 'phase-a', 'bootstrap-raw.json'), 'utf8'),
         readFileSync(join(failedDiagnostics, 'phase-a', 'tower-after.json'), 'utf8'),
@@ -764,7 +789,8 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       expect(banked).toContain('[REDACTED]');
       expect(banked).not.toContain('super-secret-token');
       expect(banked).not.toContain('github_pat_');
-      expect(existsSync(join(failedDiagnostics, 'phase-a', 'not-allowlisted.json'))).toBe(false);
+      expect(existsSync(join(failedDiagnostics, 'phase-a', 'raw.bin'))).toBe(false);
+      expect(existsSync(join(failedDiagnostics, 'not-allowlisted.json'))).toBe(false);
       expect(existsSync(join(failedDiagnostics, 'tower-identity.json'))).toBe(false);
 
       mkdirSync(join(successfulRunRoot, 'phase-a'), { recursive: true, mode: 0o700 });

@@ -452,8 +452,12 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
     );
     await dirtyPhysicalPhaseDWorktree({ runId: 'p505-phase-d-run-24' }, { repoPath, worktreePath, dirtLock: testDirtLock });
 
+    // Calibration: the fixture must produce the leading-space line a trim eats, or
+    // the assertions below would pass against the old trimmed parse too.
+    expect((await defaultRunGit(['status', '--porcelain=v1'], worktreePath)).stdout).toBe(` M ${PHASE_D_SENTINEL}\n`);
     // Exact membership, never substring: `toContain` on the raw porcelain text is what
-    // let a trimmed parse that reported `505-phase-d-overlap.txt` pass for 9 runs.
+    // let a trimmed parse that reported `505-phase-d-overlap.txt` pass here while
+    // the physical rig rejected it.
     expect(await porcelainDirtyPaths(worktreePath)).toEqual([PHASE_D_SENTINEL]);
     const noCursorRows = (async () => []) as unknown as NonNullable<Parameters<typeof capturePhysicalPhaseDObservation>[1]>['sql'];
     const observation = await capturePhysicalPhaseDObservation(
