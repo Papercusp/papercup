@@ -38,7 +38,7 @@ import type { ProgramOutcome } from '../coord-ops/types.js';
 import {
   BLUEPRINT_PROGRAM_COMPLETION_OWNER, blueprintProgramCompletionRef,
   cancelBlueprintOperation, getBlueprintOperationResult, getBlueprintOperationStatus,
-  readAcceptedProgramRootGuard, submitBlueprintOperation,
+  projectBlueprintOperationStatus, readAcceptedProgramRootGuard, submitBlueprintOperation,
   type BlueprintOperationHandle, type BlueprintOperationStatus,
 } from '../blueprint/operation-service.js';
 import { readBlueprintSpecificationSnapshot } from '../blueprint/project-to-pg.js';
@@ -471,12 +471,16 @@ export async function settleAcceptedCoordProgram(
       operationId: handle.operationId, specificationRevision: handle.specificationRevision,
       updatedTs, requireUncancelled: true,
     };
-    const cancel = async () => setWorkItemState(rootId, 'dropped', {
-      harness: handle.harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
-      completionRef: `blueprint-program:cancelled:receipt:${handle.receiptId}`,
-      completionAuthority: 'validated',
-      acceptedProgramAttempt: { ...attempt, requireUncancelled: false },
-    });
+    let closedByCancel = false;
+    const cancel = async () => {
+      closedByCancel = true;
+      return setWorkItemState(rootId, 'dropped', {
+        harness: handle.harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
+        completionRef: `blueprint-program:cancelled:receipt:${handle.receiptId}`,
+        completionAuthority: 'validated',
+        acceptedProgramAttempt: { ...attempt, requireUncancelled: false },
+      });
+    };
     let closed = current.cancellationRequested ? await cancel() : null;
     let rejectedResult: string | null = null;
     if (!current.cancellationRequested) {
@@ -512,7 +516,15 @@ export async function settleAcceptedCoordProgram(
       }
     }
     if (!closed) throw new Error('accepted coord program root attempt changed before terminal settlement');
-    const terminal = await getBlueprintOperationStatus(sql, handle, input.callerId);
+    // WI-10003631: the guarded writer returned the settled root row, and the
+    // receipt/program pin were validated before the write, so project the
+    // terminal status from it instead of a four-round-trip canonical re-read.
+    // `wait` is null for every terminal projection; cancellation is what this
+    // settlement observed (a cancel after a `done` write cannot change it).
+    const projected = projectBlueprintOperationStatus(handle, [closed], null,
+      { cancellationRequested: closedByCancel, wait: null });
+    const terminal = projected.phase === 'terminal'
+      ? projected : await getBlueprintOperationStatus(sql, handle, input.callerId);
     if (terminal.outcome === 'cancelled') await cancelAcceptedCoordProgramChildren(sql, input);
     return terminal;
   });
