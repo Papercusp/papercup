@@ -1558,6 +1558,57 @@ esac
     expect(physicalScenario).not.toMatch(/['"]git (?:fetch|bundle)/);
   });
 
+  // WI-10003717 (P-505 run 14): the verifier orders destinationReceive.finishedAt
+  // BEFORE destinationAfter.observedAt. A finish stamp taken after the receive
+  // loop's `break` always lands after the successful observation, so Phase B
+  // rejected every physically-converged run. Pin the stamp inside the loop,
+  // between the receive fire and the observation, in both directions.
+  it('stamps each Phase B receive finish between the receive fire and the destination observation', () => {
+    const start = physicalScenario.indexOf('phase_b_ref_announce()');
+    const end = physicalScenario.indexOf('phase_c_trust_negative_controls()');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const phaseB = physicalScenario.slice(start, end);
+    const legs = [
+      {
+        fire: 'run_vm_git_sync >"$forward_dir/destination-receive-$attempt.json"',
+        stamp: 'forward_receive_finished="$(now_iso)"',
+        observe: "phase-b-observe vm tower-to-vm present",
+      },
+      {
+        fire: 'run_tower_git_sync >"$reverse_dir/destination-receive-$attempt.json"',
+        stamp: 'reverse_receive_finished="$(now_iso)"',
+        observe: 'phase-b-observe tower vm-to-tower present',
+      },
+    ];
+    for (const leg of legs) {
+      const fire = phaseB.indexOf(leg.fire);
+      expect(fire, leg.fire).toBeGreaterThan(-1);
+      const stamp = phaseB.indexOf(leg.stamp, fire);
+      const observe = phaseB.indexOf(leg.observe, fire);
+      expect(stamp, `${leg.stamp} must follow the receive fire`).toBeGreaterThan(fire);
+      expect(observe, `${leg.observe} must follow the receive fire`).toBeGreaterThan(fire);
+      expect(stamp, `${leg.stamp} must precede ${leg.observe}`).toBeLessThan(observe);
+      // Exactly one stamp: a second one after the loop would re-break the order.
+      expect(phaseB.split(leg.stamp).length - 1).toBe(1);
+    }
+  });
+
+  // WI-10003711: Phase A's strict parity must not depend on the 10-min scheduled
+  // tick. Its poll loop drives both hosts' production receive, rate-limited, the
+  // same way Phase B drives each attempt.
+  it('drives both hosts receive inside the Phase A parity poll instead of waiting on the scheduled tick', () => {
+    const start = physicalScenario.indexOf('local receive_drive=0 next_receive_drive=');
+    const end = physicalScenario.indexOf('phase_b_ref_announce()');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const loop = physicalScenario.slice(start, end);
+    expect(loop).toContain('run_vm_git_sync >"$phase_dir/drive-vm-receive-$receive_drive.log"');
+    expect(loop).toContain('run_tower_git_sync >"$phase_dir/drive-tower-receive-$receive_drive.log"');
+    expect(loop).toContain('next_receive_drive=$((SECONDS + 120))');
+    expect(loop.indexOf('phase-a-verify')).toBeLessThan(loop.indexOf('drive-vm-receive'));
+  });
+
   it('signs integrator-authored namespace refs before the worktree bridge in the same git-sync tick', () => {
     const publish = gitSyncAction.indexOf("runCheckpointedStep('git-sync:ref-announce'");
     const integrate = gitSyncAction.indexOf("runCheckpointedStep('git-sync:integrator'");
