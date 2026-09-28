@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { OwnerDirectiveRow } from '@papercusp/operator-core/lib/owner-directives';
 import type { MissingArtifactSlot } from './release-completeness';
-import {
-  incompleteDesktopScopeRefusal,
-  partialScopeApprovalDirectiveId,
-} from './release-owner-approval';
+import { incompleteDesktopScopeRefusal } from './release-owner-approval';
+import { partialScopeApprovalDirectiveId, partialScopeApprovalNote } from './release-partial-scope';
 
 // Typed as the canonical slot rather than inferred: `platform` would otherwise
 // widen to `string` and stop satisfying RequiredDesktopPlatform at every call
@@ -106,5 +104,9 @@ describe('partialScopeApprovalDirectiveId', () => {
     expect(partialScopeApprovalDirectiveId('owner-approved partial desktop scope by directive #0')).toBeNull();
     expect(partialScopeApprovalDirectiveId('owner-approved partial desktop scope: 123')).toBeNull();
     expect(partialScopeApprovalDirectiveId(null)).toBeNull();
+  });
+
+  it('round-trips the note record-release writes', () => {
+    expect(partialScopeApprovalDirectiveId(partialScopeApprovalNote(832))).toBe(832);
   });
 });

@@ -10,13 +10,6 @@ const PLATFORM_NAME: Record<string, RegExp> = {
   'windows-x86_64': /\bwindows?\b/u,
 };
 
-export function partialScopeApprovalDirectiveId(notes: string | null): number | null {
-  const match = notes?.match(/\bowner-approved partial desktop scope by directive #(\d+)\b/u);
-  if (!match) return null;
-  const id = Number(match[1]);
-  return Number.isSafeInteger(id) && id > 0 ? id : null;
-}
-
 export function incompleteDesktopScopeRefusal(
   version: string,
   channel: string,

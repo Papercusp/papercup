@@ -18,6 +18,7 @@ import {
 } from './release-history-page';
 import { groupItemsByPlan, isUserFacing, type ReleaseRow, type ShippedItem, type ShippedPlan } from './release-registry';
 import { DISCORD_URL, INSTRUCTIONS_MD } from './release-instructions';
+import { partialScopeApprovalNote } from './release-partial-scope';
 import { HOLDING_PAGE_MARKER, PUBLISHED_CONTACT_EMAIL } from './release-content-scrub';
 import { DEMO_VIDEO_SRC } from './release-video';
 import { releaseHistoryStem } from './release-project-history';
@@ -1158,6 +1159,7 @@ describe('a platform-only hotfix shares the card of the release it patches (WI-1
   const windowsHotfix = hydrated({
     row: row({
       version: '0.0.23',
+      notes: partialScopeApprovalNote(832),
       cutAt: new Date('2026-09-28T14:29:00Z'),
       publishedAt: new Date('2026-09-28T17:00:00Z'),
       changelogMd: 'Windows Server upgrades over a running operator no longer fail.',
@@ -1233,6 +1235,7 @@ describe('a platform-only hotfix shares the card of the release it patches (WI-1
     const second = hydrated({
       row: row({
         version: '0.0.24',
+        notes: partialScopeApprovalNote(900),
         artifacts: [art('0.0.24', 'windows-x86_64', 'gui', 'Papercusp GUI_0.0.24_x64-setup.exe')],
       }),
     });
@@ -1251,5 +1254,43 @@ describe('a platform-only hotfix shares the card of the release it patches (WI-1
     const empty = hydrated({ row: row({ version: '0.0.21', artifacts: [] }) });
     const cards = groupReleaseCards([base, empty]);
     expect(cards.map((c) => c.base.row.version)).toEqual(['0.0.22', '0.0.21']);
+  });
+
+  // The live registry shape that first broke this: 0.0.14 was the last cut with
+  // Android/iOS, so every later desktop-only release ships a strict SUBSET of its
+  // platforms. They are full releases, not hotfixes, and each keeps its own card.
+  it('gives a desktop-only full release its own card after a cut that also shipped mobile', () => {
+    const withMobile = fullRelease('0.0.14');
+    withMobile.row.artifacts.push(
+      art('0.0.14', 'android-universal', 'gui', 'Papercusp_0.0.14_android.apk'),
+      art('0.0.14', 'ios-arm64', 'gui', 'Papercusp_0.0.14_ios.ipa'),
+    );
+    const releases = [windowsHotfix, base, fullRelease('0.0.21'), fullRelease('0.0.15'), withMobile];
+    const cards = groupReleaseCards(releases);
+    expect(cards.map((c) => [c.base.row.version, c.hotfixes.map((h) => h.row.version)])).toEqual([
+      ['0.0.22', ['0.0.23']],
+      ['0.0.21', []],
+      ['0.0.15', []],
+      ['0.0.14', []],
+    ]);
+    const html = renderIndexHtml(releases, opts);
+    expect(html.match(/hotfix-note/g)).toHaveLength(1);
+    expect(html).not.toContain('on top of 0.0.14');
+  });
+
+  // 0.0.10 shipped Linux only after 0.0.9 shipped Linux + macOS: a full release
+  // whose other legs did not build, with no owner-approved partial scope recorded.
+  it('does not fold a fewer-platform release that recorded no owner-approved partial scope', () => {
+    const linuxOnly = hydrated({
+      row: row({
+        version: '0.0.23',
+        artifacts: [art('0.0.23', 'linux-x86_64', 'gui', 'Papercusp GUI_0.0.23_amd64.deb')],
+      }),
+    });
+    const cards = groupReleaseCards([linuxOnly, base]);
+    expect(cards.map((c) => [c.base.row.version, c.hotfixes.length])).toEqual([
+      ['0.0.23', 0],
+      ['0.0.22', 0],
+    ]);
   });
 });

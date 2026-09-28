@@ -67,6 +67,7 @@ import { ROBOT_BG_DATA_URI } from './release-bg';
 import { DISCORD_URL, INSTRUCTIONS_HEADING, INSTRUCTIONS_MD } from './release-instructions';
 import { DEMO_VIDEO_LABEL, DEMO_VIDEO_POSTER_DATA_URI, DEMO_VIDEO_SRC } from './release-video';
 import { releaseHistoryStem } from './release-project-history';
+import { partialScopeApprovalDirectiveId } from './release-partial-scope';
 
 /** A release row with the display data for its FROZEN id lists looked up. */
 export interface HydratedRelease {
@@ -844,8 +845,19 @@ function downloadPlatforms(rel: HydratedRelease): Set<string> {
   return new Set(rel.row.artifacts.filter((a) => !a.name.endsWith('.sig')).map((a) => a.platform));
 }
 
-/** True when `rel` ships a strict, non-empty SUBSET of `base`'s platforms. */
+/**
+ * True when `rel` is a RECORDED platform-only hotfix of `base`: the registry row
+ * carries the owner-approved partial-desktop-scope note record-release writes,
+ * and it ships a strict, non-empty subset of `base`'s platforms.
+ *
+ * Platform arithmetic alone is NOT the signal. The registry holds full releases
+ * that shipped fewer platforms than the one before them — every desktop-only
+ * release after 0.0.14 (the last cut with Android/iOS), and 0.0.10 (Linux only,
+ * after 0.0.9). A subset test on its own folded that whole history into one
+ * 0.0.14 card.
+ */
 function isPlatformHotfix(rel: HydratedRelease, base: HydratedRelease): boolean {
+  if (partialScopeApprovalDirectiveId(rel.row.notes) === null) return false;
   const mine = downloadPlatforms(rel);
   const theirs = downloadPlatforms(base);
   if (mine.size === 0 || mine.size >= theirs.size) return false;
@@ -855,9 +867,10 @@ function isPlatformHotfix(rel: HydratedRelease, base: HydratedRelease): boolean 
 
 /**
  * Group releases (newest first, as the registry returns them) into index cards.
- * A release folds into the most recent older card of the SAME channel when it
- * ships only some of that card's platforms; anything else starts its own card.
- * Cards come back newest-first, positioned by their newest member.
+ * A release folds into the most recent older card of the SAME channel when it is
+ * a recorded platform-only hotfix of that card (see isPlatformHotfix); anything
+ * else starts its own card. Cards come back newest-first, positioned by their
+ * newest member.
  */
 export function groupReleaseCards(releases: HydratedRelease[]): ReleaseCard[] {
   const cards: ReleaseCard[] = [];

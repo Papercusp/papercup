@@ -18,10 +18,8 @@ import {
   type ReleaseRow,
 } from './release-registry';
 import { computeReleaseCompleteness } from './release-completeness';
-import {
-  incompleteDesktopScopeRefusal,
-  partialScopeApprovalDirectiveId,
-} from './release-owner-approval';
+import { incompleteDesktopScopeRefusal } from './release-owner-approval';
+import { partialScopeApprovalDirectiveId } from './release-partial-scope';
 
 export interface HeadProbeResult {
   status: number;

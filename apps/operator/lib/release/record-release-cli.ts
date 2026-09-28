@@ -76,6 +76,7 @@ import { OWNER_NAME_ENV, hasOwnerNameLiteral, identityLiterals } from './release
 import { describeOwnerIdentityLoad, loadOwnerIdentityEnv } from './owner-identity-env';
 import { incompleteDesktopScopeRefusal } from './release-owner-approval';
 export { incompleteDesktopScopeRefusal } from './release-owner-approval';
+import { partialScopeApprovalNote } from './release-partial-scope';
 import {
   assertReleaseHistoryIndexSizeBudget,
   planPagePath,
@@ -1381,9 +1382,7 @@ export async function run(opts: RecordOpts): Promise<number> {
       artifacts,
       gitSha: opts.gitSha,
       cutBy: opts.cutBy,
-      notes: partialScopeApproval
-        ? `owner-approved partial desktop scope by directive #${partialScopeApproval.id}`
-        : null,
+      notes: partialScopeApproval ? partialScopeApprovalNote(partialScopeApproval.id) : null,
     };
 
     console.log(`[record-release] ${opts.version} (${opts.channel})`);
