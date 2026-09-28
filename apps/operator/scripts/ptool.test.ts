@@ -737,6 +737,10 @@ describe('ptool call deadlines', () => {
     })).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(PTOOL_EVENTS_AWAIT_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    // WI-10003638: the git-sync:run server budget is a 45s fire + two 5s HEAD
+    // reads + 5s MCP settlement = 60s. A client deadline equal to it has zero
+    // margin for main-thread lag on the background-worker host.
+    expect(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * (45_000 + 5_000 + 5_000 + 5_000));
     expect(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_BACKUP_RESTORE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     // scorecards:emit declares 900s; the MCP transport adds a 5s buffer.

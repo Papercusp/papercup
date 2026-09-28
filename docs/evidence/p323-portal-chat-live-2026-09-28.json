@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-323 PORTAL-CHAT-P323 live: a portal Papercup chat turn relayed to avi-test r60 executes on the customer's workspace machine and returns the reply",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "byoc-cloud-workspaces-gcp-aws-azure-2026-08-22",
+  "planItem": "P-323",
+  "specId": "PORTAL-CHAT-P323",
+  "specRevision": 1,
+  "workItem": "WI-10003194",
+  "observer": "su-be77f2f5-0643-4d29-8405-cfaf4eba68c5",
+  "subject": {
+    "host": "avi-test (host-3daf37098c8096b5d9e0ac72, customer workspace ws-3daf37098c8096b5d9e0ac72, org e91577da-655b-4b24-b122-ab57b4f9d211)",
+    "release": "0.0.21-p318r60",
+    "releaseSourceSha": "6af5769c65b74b32852d199d66cb8b2db5db7abd",
+    "conversationIds": ["32704915-0041-49ce-acac-dd2dfd1b1637", "c8b6aab0-fc1a-4dda-bec9-037acf73f98f", "b165f5cd-41ed-4722-89ac-2485eb017e15"]
+  },
+  "command": [
+    "npx tsx .papercusp/scratch/wi10003163-chat-probe.mts e91577da-655b-4b24-b122-ab57b4f9d211 ws-3daf37098c8096b5d9e0ac72 host-3daf37098c8096b5d9e0ac72  (control plane issues a workspace-operator connector ticket; the probe replays the portal's papercup-chat.ts sequence over the operator-http relay broker :3880: POST /api/operator/conversations, POST .../turns, POST /api/agent-mcp/operator-converse SSE)",
+    "bash .papercusp/scratch/avi-test-cust-ssh.sh '<1s ps sampler for claude|codex processes>'  (concurrent with the third turn)",
+    "PROBE_MODE=get PROBE_PATHS=/api/operator/conversations/<id>/turns npx tsx .papercusp/scratch/wi10003163-chat-probe.mts <org> <ws> <host>"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-28T14:11:16Z",
+  "finishedAt": "2026-09-28T14:33:49Z",
+  "summary": "Three portal-style chat turns against avi-test r60 each returned CREATE 200, APPEND 200 and a streamed operator-converse reply (7.9s, 3.9s, 3.9s) with provenance engine claude-code model sonnet:low, the avi-test host's own papercup-role setting. Host execution is observed directly: during the third turn a 1s process sampler on the VM (as the customer account) saw `/usr/local/lib/papercusp-agent-toolchain/bin/claude -p --output-format stream-json ... --model sonnet --effort low` running as papercusp-workspace uid 1001 (pid 13096, started 14:33:45Z) for the duration of the call, and the reply arrived at 14:33:49Z. The host operator holds the conversations: reading /api/operator/conversations/<id>/turns back over the relay returns the probe's user turns from avi-test's own store. The assistant text is streamed, not persisted by this probe (the portal UI persists it client-side), so the readback shows the user turns only. The reply cannot come from the control plane: the converse route is only reachable over the host-bound connector ticket and the answering process ran on the VM.",
+  "assertions": [
+    { "id": "relay-accepted-turn", "passed": true, "evidence": "CREATE 200 + APPEND 200 for conversations 32704915, c8b6aab0, b165f5cd (r60-chat-probe-1/2/3.log)." },
+    { "id": "reply-returned", "passed": true, "evidence": "CONVERSE 200 with SSE run-meta, provenance, delta and done frames; REPLY_TEXT non-empty on all three (e.g. 'Probe received — all good on my end.')." },
+    { "id": "executed-on-workspace-machine", "passed": true, "evidence": "r60-p323-chat-ps.log: claude -p --model sonnet --effort low as uid 1001 on pc-host-3daf37098c8096b5d9e0ac72-877db740-vm, pid 13096 started 14:33:45Z, during the 14:33:45-49Z converse call; provenance frame engine claude-code model sonnet:low." },
+    { "id": "host-records-turn", "passed": true, "evidence": "GET /api/operator/conversations/{32704915,c8b6aab0}/turns over the relay -> 200 with seq 0 user text_typed turns (r60-p323-chat-readback.log)." }
+  ],
+  "runnerLogs": [
+    { "path": ".papercusp/scratch/r60-chat-probe-1.log", "sha256": "62cfcef61739e421547fb598b41289e640dc732eaf0a2dc853ff9f38fa663953", "bytes": 965 },
+    { "path": ".papercusp/scratch/r60-chat-probe-2.log", "sha256": "085fe43a710d1ebd8918c3cc02334c97d78997798df5c4feb06e6d3e0358957e", "bytes": 1207 },
+    { "path": ".papercusp/scratch/r60-chat-probe-3.log", "sha256": "44182c393f554dba345dfe517dbe74803e876e34b067b830662ea25e0a2cc495", "bytes": 1194 },
+    { "path": ".papercusp/scratch/r60-p323-chat-ps.log", "sha256": "b6f4dee36dfeed76d6ae231ca6021ec8dc6eeb1df794607c6646570d32e0468f", "bytes": 482 },
+    { "path": ".papercusp/scratch/r60-p323-chat-readback.log", "sha256": "106b9bc29ee0358d8efc6e7624484530ee48a0c11fb9c96dc2e4d8ffd0ed8833", "bytes": 898 }
+  ],
+  "measuredBlobs": [
+    { "path": "packages/operator-core/lib/workspace-host/hosted-operator-http.ts", "blob": "b2cbd23d69a1e95a4cb7a6833ccb557231656e59" },
+    { "path": "packages/operator-core/lib/endpoint-route/hosted-workspace-connector.ts", "blob": "7faf1a968645a3668e9caccc02cf0d1181d89b51" }
+  ]
+}
