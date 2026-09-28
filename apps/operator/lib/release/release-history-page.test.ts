@@ -690,9 +690,9 @@ describe('the Instructions section [owner 2026-07-27]', () => {
   });
 
   it('sits ABOVE the downloads — the placement is the point, not a layout preference', () => {
-    // The section opens by saying the GUI is NOT the ready part, `psu` is. Read
-    // after the download tables that is an apology; read before them it is an
-    // instruction. If someone moves it below the releases, this fails.
+    // The section is the setup steps a tester needs BEFORE choosing a download.
+    // Read after the download tables it is too late. If someone moves it below
+    // the releases, this fails.
     const instructions = html.indexOf('<h2>Instructions</h2>');
     const firstRelease = html.indexOf('<h2>0.0.9</h2>');
     expect(instructions).toBeGreaterThan(-1);
@@ -700,12 +700,11 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     expect(instructions).toBeLessThan(firstRelease);
   });
 
-  it('leads with the psu-not-the-GUI warning, as a callout rather than in caps', () => {
-    expect(html).toContain('class="warn"');
-    expect(html).toContain('The GUI is not ready yet');
-    expect(html).toContain('run <code>psu</code> from the command line');
-    // The owner's source line was all-caps; the callout carries the same words
-    // without shouting them. If it regresses to caps, this catches it.
+  it('is GUI-first [owner 2026-09-28 #807: "The GUI IS READY"], with psu as the terminal option', () => {
+    expect(html).toContain('Open Papercusp GUI');
+    expect(html).toContain('<code>psu</code>');
+    // The retired "GUI not ready, use psu" callout must not come back.
+    expect(html).not.toContain('The GUI is not ready yet');
     expect(html).not.toContain('THE GUI NOT READY YET');
   });
 
@@ -713,13 +712,13 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     // Same rule as the rest of the page: nothing load-bearing may depend on a
     // script. The markdown is rendered at GENERATION time, so the steps are here.
     expect(html).toContain('<ol>');
-    expect(html).toContain('papercusp tutorial');
-    expect(html).toContain('Get floored');
-    expect(html).toContain('Harrier-OSS-0.6b');
-    // ...and every mode the owner documented survives the render.
-    for (const mode of ['AUTO', 'COLD AUTO', 'IDEATE', 'DRAIN', 'GRADE']) {
-      expect(html).toContain(`<strong>${mode}</strong>`);
-    }
+    expect(html).toContain('<strong>Install both apps</strong>');
+    expect(html).toContain('EmbeddingGemma + Harrier');
+    // The two sections the owner kept [2026-09-28 #811] survive the render...
+    expect(html).toContain('Improve Papercusp itself');
+    expect(html).toContain('Use several AI accounts (inference gateway)');
+    // ...and the "Not ready" list the owner removed [#812] stays gone.
+    expect(INSTRUCTIONS_MD).not.toContain('Not ready');
   });
 
   it('opens external links in a new tab — losing this page means losing the secret URL', () => {
@@ -728,8 +727,7 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     expect(html).toContain(
       '<a target="_blank" rel="noopener noreferrer" href="https://discord.gg/HjRQ8g4Nju"',
     );
-    expect(html).toContain('href="https://platform.openai.com/api-keys"');
-    // (That EVERY absolute link gets the treatment, not just these two, is
+    // (That EVERY absolute link gets the treatment, not just this one, is
     // asserted in "links never carry the secret" above.)
   });
 
@@ -755,10 +753,6 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     expect(INSTRUCTIONS_MD).not.toMatch(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/);
   });
 
-  it('states the current role-shaped soft-limit defaults', () => {
-    expect(INSTRUCTIONS_MD).toContain("fleet leaders it's 400k, 250k for fleet members");
-    expect(INSTRUCTIONS_MD).not.toContain("fleet leaders it's 400k, 200k for fleet members");
-  });
 });
 
 describe('plan page', () => {
