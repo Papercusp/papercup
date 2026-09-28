@@ -171,6 +171,8 @@ import {
   armNoSuchRepoBackoff,
   devicesToArmForNoSuchRepo,
   isNoSuchRepoBackoffActive,
+  liftNoSuchRepoBackoffOnFreshAnnouncement,
+  newestAnnouncementTsByDevice,
   noSuchRepoBackoffKey,
   noSuchRepoBackoffSecondsLeft,
 } from './no-such-repo-backoff';
@@ -5916,6 +5918,26 @@ async function runRefAnnounceLeg(
     // the arming gate below reads it. See that comment for why a bare stderr
     // test is not sufficient.
     const dialedThisTick = new Set<string>();
+
+    // WI-10003594: a peer that ANNOUNCES this exact repo_key after refusing it
+    // has since built the store, so the 30-min window no longer describes it.
+    // Without this, a peer that recreated its store (the P-505 Phase A drill
+    // does exactly that within ~3 min) was not dialed again for 30 min, longer
+    // than the drill's 20-min verdict deadline. One lift per NEW announcement
+    // keeps EI-15333's storm closed; see `liftNoSuchRepoBackoffOnFreshAnnouncement`.
+    for (const [device, announcedTsMs] of newestAnnouncementTsByDevice(
+      batch.map((p) => p.announcement),
+      repoKey,
+    )) {
+      const lift = liftNoSuchRepoBackoffOnFreshAnnouncement(noSuchRepoBackoffKey(repoKey, device), announcedTsMs);
+      if (lift) {
+        console.info(
+          `[git-sync] ${slug}: no-such-repo backoff for ${device.slice(0, 12)} on ${repoKey} lifted: ` +
+            `peer announced this repo_key at ${new Date(lift.announcedTsMs).toISOString()}, after the refusal ` +
+            `armed at ${new Date(lift.armedAtMs).toISOString()}; dialing this tick`,
+        );
+      }
+    }
 
     const receiveOutcome = await runRefAnnounceReceiveTick({
       repoPath,
