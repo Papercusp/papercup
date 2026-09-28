@@ -61,7 +61,9 @@ const priorAdminUrl = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
 const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
   ? 'native' : process.env.P013_DEDICATED_PG === '1' ? 'container' : null;
 const dedicatedPgRequested = dedicatedPgMode !== null;
-const DEDICATED_PG_SETTINGS = { max_connections: '200', dynamic_shared_memory_type: 'mmap' };
+const DEDICATED_PG_SETTINGS: Record<string, string> = { max_connections: '200', dynamic_shared_memory_type: 'mmap',
+  // WI-10003631: P013_STMTS_BY_ARM needs pg_stat_statements preloaded in the dedicated cluster.
+  ...(process.env.P013_STMTS_BY_ARM ? { shared_preload_libraries: 'pg_stat_statements' } : {}) };
 // D-024: size the getOrgPg() stand-in pool like production (the resource profile's
 // pgPoolMax), not the fixture default of 2; P013_ORG_POOL_MAX=<n> pins it.
 const P013_ORG_POOL_MAX = (() => {
@@ -237,6 +239,28 @@ describe('P-013 workload C fixture', () => {
         }
         console.info('P-013 workload C WAL by relation', JSON.stringify(attribution));
       }
+      // WI-10003631 D-026 follow-up: P013_STMTS_BY_ARM=<n> counts SQL statements per op per
+      // arm over n sequential warm samples (pg_stat_statements; dedicated cluster preloads it).
+      const stmtSamples = Number(process.env.P013_STMTS_BY_ARM ?? 0);
+      if (Number.isSafeInteger(stmtSamples) && stmtSamples > 0) {
+        await db.adminSql`CREATE EXTENSION IF NOT EXISTS pg_stat_statements`;
+        const stmts: Record<string, unknown> = {};
+        for (const arm of ['control', 'candidate'] as const) {
+          await db.adminSql`SELECT pg_stat_statements_reset()`;
+          for (let i = 0; i < stmtSamples; i++) samples.push(await runArm(arm, sequence++));
+          const rows = await db.adminSql<Array<{ query: string; calls: number; ms: number }>>`
+            SELECT left(regexp_replace(query, '\\s+', ' ', 'g'), 90) AS query, calls::float8 AS calls,
+                   total_exec_time::float8 AS ms
+              FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+               AND query NOT ILIKE '%pg_stat_statements%'`;
+          const calls = rows.reduce((sum, r) => sum + r.calls, 0);
+          const ms = rows.reduce((sum, r) => sum + r.ms, 0);
+          stmts[arm] = { samples: stmtSamples, statementsPerOp: calls / stmtSamples, serverExecMsPerOp: ms / stmtSamples,
+            top: rows.sort((a, b) => b.calls - a.calls).slice(0, 30)
+              .map((r) => ({ query: r.query, perOp: r.calls / stmtSamples, msPerOp: +(r.ms / stmtSamples).toFixed(3) })) };
+        }
+        console.info('P-013 workload C statements by arm', JSON.stringify(stmts));
+      }
       console.info('P-013 workload C smoke; no grade', JSON.stringify(samples.map(({ arm, marks, stepProfile }) => ({
         arm, totalMs: marks.businessEvent - marks.ingress, dispatchMs: marks.dispatched - marks.accepted,
         acceptMs: marks.accepted - marks.ingress, terminalMs: marks.terminal - marks.dispatched,
@@ -272,6 +296,12 @@ async function startWaitSampler(dsn: string) {
   const { default: postgres } = await import('postgres');
   const probe = postgres(dsn, { max: 1, idle_timeout: 0, connection: { application_name: 'p013-wait-sampler' } });
   const inFlight: Record<P013CArm, number> = { control: 0, candidate: 0 };
+  // Event-loop utilization over each arm's in-flight windows (is the Node client the limit?).
+  const { performance } = await import('node:perf_hooks');
+  type Elu = ReturnType<typeof performance.eventLoopUtilization>;
+  const eluStart: Partial<Record<P013CArm, Elu>> = {};
+  const eluTotal: Record<P013CArm, { idle: number; active: number }> = {
+    control: { idle: 0, active: 0 }, candidate: { idle: 0, active: 0 } };
   type Tally = { polls: number; backendSamples: number; waits: Record<string, number>; blockers: Record<string, number> };
   const tally: Record<string, Tally> = {};
   const bump = (m: Record<string, number>, k: string) => { m[k] = (m[k] ?? 0) + 1; };
@@ -303,8 +333,13 @@ async function startWaitSampler(dsn: string) {
   const top = (m: Record<string, number>, polls: number) => Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 25)
     .map(([key, n]) => ({ key, n, perPoll: +(n / polls).toFixed(3) }));
   return {
-    enter: (arm: P013CArm) => { inFlight[arm]++; },
-    leave: (arm: P013CArm) => { inFlight[arm]--; },
+    enter: (arm: P013CArm) => { if (inFlight[arm]++ === 0) eluStart[arm] = performance.eventLoopUtilization(); },
+    leave: (arm: P013CArm) => {
+      if (--inFlight[arm] === 0 && eluStart[arm]) {
+        const d = performance.eventLoopUtilization(eluStart[arm]);
+        eluTotal[arm].idle += d.idle; eluTotal[arm].active += d.active;
+      }
+    },
     stop: async () => {
       stopped = true;
       await loop;
@@ -314,8 +349,12 @@ async function startWaitSampler(dsn: string) {
         for (const [k, n] of Object.entries(t.waits)) m[k.split(' | ')[0]!] = (m[k.split(' | ')[0]!] ?? 0) + n;
         return top(m, t.polls);
       };
+      const elu = (arm: string) => {
+        const e = eluTotal[arm as P013CArm];
+        return e ? +(e.active / Math.max(1e-9, e.active + e.idle)).toFixed(3) : null;
+      };
       return Object.fromEntries(Object.entries(tally).map(([arm, t]) => [arm, {
-        polls: t.polls, activeBackendsPerPoll: +(t.backendSamples / Math.max(1, t.polls)).toFixed(3),
+        eventLoopUtilization: elu(arm), polls: t.polls, activeBackendsPerPoll: +(t.backendSamples / Math.max(1, t.polls)).toFixed(3),
         byWaitEvent: byWaitEvent(t), byWaitAndQuery: top(t.waits, t.polls), blockerPairs: top(t.blockers, t.polls),
       }]));
     },

@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { Sql, TransactionSql } from 'postgres';
+import { pinModuleState } from '@papercusp/module-singleton';
 import {
   BlueprintSchema,
   blueprintHash,
@@ -100,8 +101,46 @@ export async function retainBlueprintSpecificationSnapshot(
   return specification.specificationRevision;
 }
 
-/** Read the accepted revision, never the mutable current blueprint cache. */
+// A specification revision is immutable (the upsert above refuses different content
+// under an existing revision), so a positive read can be reused for the process
+// lifetime. WI-10003631: the blueprint execution program re-read + re-replayed the
+// artifact ~7x per operation, the largest server cost on that path and a major share
+// of client CPU. Only hits are cached; a miss always goes back to PG.
+const snapshotCache = pinModuleState('@papercusp/operator-core.blueprint-specification-snapshots',
+  () => new Map<string, CompiledAgentSpecification>());
+const SNAPSHOT_CACHE_MAX = 256;
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  }
+  return value;
+}
+
+/** Test seam: drop cached snapshots. */
+export function clearBlueprintSpecificationSnapshotCache(): void { snapshotCache.clear(); }
+
+/** Read the accepted revision, never the mutable current blueprint cache. The result is
+ * deep-frozen and shared across callers (immutable revision content). */
 export async function readBlueprintSpecificationSnapshot(
+  sql: Sql | TransactionSql,
+  workspaceId: string,
+  harnessSlug: string,
+  specificationRevision: string,
+): Promise<CompiledAgentSpecification | null> {
+  const key = `${workspaceId}\u0000${harnessSlug}\u0000${specificationRevision}`;
+  const cached = snapshotCache.get(key);
+  if (cached) return cached;
+  const specification = await readBlueprintSpecificationSnapshotUncached(sql, workspaceId, harnessSlug, specificationRevision);
+  if (specification) {
+    if (snapshotCache.size >= SNAPSHOT_CACHE_MAX) snapshotCache.delete(snapshotCache.keys().next().value!);
+    snapshotCache.set(key, deepFreeze(specification));
+  }
+  return specification;
+}
+
+async function readBlueprintSpecificationSnapshotUncached(
   sql: Sql | TransactionSql,
   workspaceId: string,
   harnessSlug: string,
