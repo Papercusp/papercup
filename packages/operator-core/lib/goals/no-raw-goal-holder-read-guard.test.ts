@@ -194,11 +194,18 @@ describe('no-raw-goal-holder-read guard predicate (P-001 / D-003)', () => {
      * can never produce the "1 holder, therefore staffed" claim over a dark
      * session. Succession here is governed by goal_lease_epoch and handoff
      * expiry, which is why liveness is irrelevant to its question.
+     *
+     * `agent-run-evidence-record.ts` labels a PAST agent-run window with the goal
+     * its holder was pursuing then (owner-keyed reverse lookup). The run is over,
+     * so its holder is usually gone by design; folding present-tense liveness in
+     * would erase the goal link from exactly the records it exists to label. It
+     * never answers "who holds goal X now" (WI-10003582).
      */
-    it('ALLOWLIST holds only the seven files with a written reason', () => {
+    it('ALLOWLIST holds only the eight files with a written reason', () => {
       expect([...ALLOWLIST].sort()).toEqual(
         [
           'packages/agent-mcp/src/tools/goals/create.ts',
+          'packages/operator-core/lib/agent-tools/scorecards/agent-run-evidence-record.ts',
           'packages/operator-core/lib/goals/holder-authority.ts',
           'packages/operator-core/lib/goals/holder.ts',
           'packages/operator-core/lib/goals/spend-rollup.ts',
