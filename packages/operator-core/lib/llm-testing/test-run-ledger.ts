@@ -54,7 +54,7 @@ export interface LlmScenarioLedgerContext {
 }
 
 /** Pure projection of a live scenario report onto one `test_runs` row. */
-export function llmScenarioLedgerRow(report: RunReport, ctx: LlmScenarioLedgerContext): LlmScenarioLedgerRow {
+export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedgerContext): LlmScenarioLedgerRow {
   const passed = report.runs.filter((r) => r.status === 'passed').length;
   const failed = report.runs.filter((r) => r.status === 'failed').length;
   const errored = report.runs.filter((r) => r.status === 'errored').length;
@@ -65,7 +65,7 @@ export function llmScenarioLedgerRow(report: RunReport, ctx: LlmScenarioLedgerCo
         : errored > 0 ? 'error'
           : 'pass';
 
-  const now = ctx.now ?? new Date();
+  const now = ledger.now ?? new Date();
   const starts = report.runs.map((r) => new Date(r.summary.startedAt).getTime()).filter(Number.isFinite);
   const ends = report.runs.map((r) => new Date(r.summary.finishedAt).getTime()).filter(Number.isFinite);
   const startedAt = starts.length ? new Date(Math.min(...starts)) : now;
@@ -75,7 +75,7 @@ export function llmScenarioLedgerRow(report: RunReport, ctx: LlmScenarioLedgerCo
     : `llm-test ${report.scenarioId} verdict=${report.verdict} runs=${report.runs.length} passed=${passed} failed=${failed} errored=${errored}`;
 
   return {
-    filePath: ctx.filePath,
+    filePath: ledger.filePath,
     status,
     durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
     startedAt,
@@ -83,11 +83,11 @@ export function llmScenarioLedgerRow(report: RunReport, ctx: LlmScenarioLedgerCo
     outputTail,
     executionDetails: {
       schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
-      root: ctx.root,
-      filePath: ctx.filePath,
-      runGroupId: ctx.runGroupId,
-      workspaceId: ctx.workspaceId,
-      harnessSlug: ctx.harnessSlug,
+      root: ledger.root,
+      filePath: ledger.filePath,
+      runGroupId: ledger.runGroupId,
+      workspaceId: ledger.workspaceId,
+      harnessSlug: ledger.harnessSlug,
       testNamePattern: null,
       testLayer: 'llm',
       // An errored run measured nothing it could pass; count it against the file.
@@ -96,8 +96,8 @@ export function llmScenarioLedgerRow(report: RunReport, ctx: LlmScenarioLedgerCo
       skipped: 0,
       collectionFailed: false,
       mutationPhase: null,
-      commitSha: ctx.commitSha,
-      worktreeDirty: ctx.worktreeDirty,
+      commitSha: ledger.commitSha,
+      worktreeDirty: ledger.worktreeDirty,
     },
   };
 }
