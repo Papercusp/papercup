@@ -30,8 +30,8 @@ function procNetTcp(clientUid: number): string {
   return [
     '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode',
     `   0: 0100007F:0BFE 00000000:0000 0A 00000000:00000000 00:00000000 00000000   ${SERVICE_UID}        0 11111 1 0000000000000000 100 0 0 10 0`,
-    `   1: 0100007F:0BFE 0100007F:A0D2 01 00000000:00000000 00:00000000 00000000   ${SERVICE_UID}        0 22222 1 0000000000000000 20 4 30 10 -1`,
-    `   2: 0100007F:A0D2 0100007F:0BFE 01 00000000:00000000 00:00000000 00000000  ${clientUid}        0 33333 1 0000000000000000 20 4 30 10 -1`,
+    `   1: 0100007F:0BFE 0100007F:A112 01 00000000:00000000 00:00000000 00000000   ${SERVICE_UID}        0 22222 1 0000000000000000 20 4 30 10 -1`,
+    `   2: 0100007F:A112 0100007F:0BFE 01 00000000:00000000 00:00000000 00000000  ${clientUid}        0 33333 1 0000000000000000 20 4 30 10 -1`,
   ].join('\n');
 }
 
@@ -48,7 +48,7 @@ describe('decodeProcNetAddress', () => {
   });
   it('decodes ::1 and IPv4-mapped IPv6 from tcp6', () => {
     expect(decodeProcNetAddress('00000000000000000000000001000000:0BFE')).toEqual({ ip: '::1', port: 3070 });
-    expect(decodeProcNetAddress('0000000000000000FFFF00000100007F:A0D2')).toEqual({ ip: '127.0.0.1', port: 41234 });
+    expect(decodeProcNetAddress('0000000000000000FFFF00000100007F:A112')).toEqual({ ip: '127.0.0.1', port: 41234 });
   });
   it('rejects malformed columns instead of guessing', () => {
     expect(decodeProcNetAddress('zz:0BFE')).toBeNull();
