@@ -13,6 +13,7 @@
 // on its own.
 
 import { execFileSync } from "node:child_process";
+import { readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 
 /** Set to `0`/`false`/`off` to leave the static selection un-pruned (default: pruning ON). */
@@ -23,6 +24,12 @@ export const EXECUTED_MAP_RECORD_ENV = "AFFECTED_RECORD_EXECUTED_SOURCES";
 export const EXECUTED_MAP_WORKSPACE_ENV = "PC_EXECUTED_SOURCE_MAP_WORKSPACE";
 /** Optional: also write the recorded rows as JSON to this path (replay/inspection; no DB needed). */
 export const EXECUTED_MAP_OUT_ENV = "PC_EXECUTED_SOURCE_MAP_OUT";
+/**
+ * WI-10003603: the reporter APPENDS one JSON line per flush here saying what the flush did, so the
+ * runner can print the recorder's outcome into the run log the gate keeps. Must equal
+ * `PC_EXECUTED_SOURCE_MAP_RESULT_ENV` in libs/test-config/src/vitest-config.ts.
+ */
+export const EXECUTED_MAP_RESULT_ENV = "PC_EXECUTED_SOURCE_MAP_RESULT";
 
 const OFF = new Set(["0", "false", "off", "no"]);
 
@@ -315,5 +322,196 @@ export function formatExecutedMapLine(wsName, summary, rows) {
     `wouldEmpty=${summary.wouldEmpty} keptChangedTest=${k.changedTest} keptUnresolved=${k.unresolved} ` +
     `keptNoEntry=${k.noEntry} keptUntrusted=${k.untrusted} keptUnknownDrift=${k.unknownDrift} ` +
     `keptStale=${k.stale} keptIntersects=${k.intersects}`
+  );
+}
+
+// ── Recorder outcome (WI-10003603) ────────────────────────────────────────────────────────────
+// The reporter's own outcome line goes to vitest stderr, which the gate discards, so a writer that
+// failed on every row (WI-10003597) recorded zero pass proofs for ~8h with nothing noticing. The
+// runner names a per-task result file, reads it back after the task, and prints
+//   EXECUTED_SOURCE_MAP_RESULT task=<ws::script> outcome=<o> rows=N retired=N skipped=N dirty=<b> sha=<s>
+//   EXECUTED_SOURCE_MAP_ALARM task=<ws::script> outcome=<failed|timed-out> error=<message>
+//   EXECUTED_SOURCE_MAP_TOTAL tasks=N written=N rows=N retired=N notPersisted=N nothingToRecord=N failed=N timedOut=N noReport=N malformed=N
+// into the run log; packages/operator-core/lib/release/test-pass-reuse-report.ts parses them into
+// the gate's per-round reuse health record.
+
+/** Every outcome the reporter writes (`ExecutedSourceMapOutcome` in the reporter). */
+export const EXECUTED_MAP_RESULT_OUTCOMES = Object.freeze([
+  "written",
+  "failed",
+  "timed-out",
+  "not-persisted",
+  "nothing-to-record",
+]);
+const RESULT_OUTCOME_SET = new Set(EXECUTED_MAP_RESULT_OUTCOMES);
+
+/**
+ * The per-task result file: under the run-log root, unique per affected-tests run and task, so
+ * concurrent runs on the shared box never read each other's outcomes.
+ *
+ * @param {string} root
+ * @param {string} runToken
+ * @param {string} taskLabel
+ * @returns {string}
+ */
+export function executedMapResultPath(root, runToken, taskLabel) {
+  const safe = String(taskLabel).replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 160);
+  return path.join(root, `executed-map-result-${runToken}-${safe}.jsonl`);
+}
+
+/**
+ * Remove a stale result file before the task runs, so a leftover never reads as this run's report.
+ *
+ * @param {string} filePath
+ */
+export function clearExecutedMapResult(filePath) {
+  try {
+    rmSync(filePath, { force: true });
+  } catch {
+    /* an unremovable leftover is at worst an extra line; never fail the run over it */
+  }
+}
+
+/**
+ * @typedef {{ outcome: string, rows: number, retired: number, skipped: number, dirty: boolean, sha: string | null, error: string | null }} ExecutedMapResult
+ * @typedef {{ status: 'reported' | 'no-report', results: ExecutedMapResult[], malformed: number }} ExecutedMapResultRead
+ */
+
+const count = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
+
+/**
+ * Read one task's result file. A missing or empty file is `no-report` (the reporter never flushed:
+ * the task crashed or was killed, or its vitest config does not wire the reporter). A line that is
+ * not a well-formed result is counted as `malformed`, never guessed at.
+ *
+ * @param {string} filePath
+ * @param {{ readFile?: (p: string) => string }} [o]
+ * @returns {ExecutedMapResultRead}
+ */
+export function readExecutedMapResults(filePath, { readFile = (p) => readFileSync(p, "utf8") } = {}) {
+  let text;
+  try {
+    text = readFile(filePath);
+  } catch {
+    return { status: "no-report", results: [], malformed: 0 };
+  }
+  /** @type {ExecutedMapResult[]} */
+  const results = [];
+  let malformed = 0;
+  for (const line of String(text).split("\n")) {
+    if (!line.trim()) continue;
+    let o;
+    try {
+      o = JSON.parse(line);
+    } catch {
+      malformed += 1;
+      continue;
+    }
+    const rows = count(o?.rows);
+    const retired = count(o?.retired);
+    const skipped = count(o?.skipped);
+    if (!o || !RESULT_OUTCOME_SET.has(o.outcome) || rows === null || retired === null || skipped === null) {
+      malformed += 1;
+      continue;
+    }
+    results.push({
+      outcome: o.outcome,
+      rows,
+      retired,
+      skipped,
+      dirty: o.dirty === true,
+      sha: typeof o.sha === "string" && o.sha ? o.sha : null,
+      error: typeof o.error === "string" && o.error ? o.error : null,
+    });
+  }
+  return { status: results.length > 0 ? "reported" : "no-report", results, malformed };
+}
+
+/** One-line, whitespace-collapsed error text, so an alarm line stays one line. */
+function oneLine(s) {
+  return String(s ?? "").replace(/\s+/g, " ").trim().slice(0, 300) || "unknown";
+}
+
+/**
+ * The per-task RESULT lines (one per flush, or one `outcome=no-report` line).
+ *
+ * @param {string} taskLabel
+ * @param {ExecutedMapResultRead} read
+ * @returns {string[]}
+ */
+export function formatExecutedMapResultLines(taskLabel, read) {
+  if (read.status === "no-report") {
+    return [`EXECUTED_SOURCE_MAP_RESULT task=${taskLabel} outcome=no-report malformed=${read.malformed}`];
+  }
+  return read.results.map(
+    (r) =>
+      `EXECUTED_SOURCE_MAP_RESULT task=${taskLabel} outcome=${r.outcome} rows=${r.rows} retired=${r.retired} ` +
+      `skipped=${r.skipped} dirty=${r.dirty} sha=${r.sha ? r.sha.slice(0, 12) : "unknown"}`,
+  );
+}
+
+/**
+ * ALARM lines for flushes whose write did not land. `not-persisted` is NOT an alarm here: on an
+ * agent's shared dirty checkout it is the designed outcome; the gate decides whether its own clean
+ * round persisted nothing.
+ *
+ * @param {string} taskLabel
+ * @param {ExecutedMapResultRead} read
+ * @returns {string[]}
+ */
+export function formatExecutedMapAlarmLines(taskLabel, read) {
+  return read.results
+    .filter((r) => r.outcome === "failed" || r.outcome === "timed-out")
+    .map(
+      (r) =>
+        `EXECUTED_SOURCE_MAP_ALARM task=${taskLabel} outcome=${r.outcome} rows=${r.rows} error=${oneLine(r.error ?? r.outcome)}`,
+    );
+}
+
+/**
+ * @param {ExecutedMapResultRead[]} reads one per armed task
+ */
+export function summarizeExecutedMapResults(reads) {
+  const s = {
+    tasks: reads.length,
+    written: 0,
+    rows: 0,
+    retired: 0,
+    notPersisted: 0,
+    nothingToRecord: 0,
+    failed: 0,
+    timedOut: 0,
+    noReport: 0,
+    malformed: 0,
+  };
+  for (const read of reads) {
+    s.malformed += read.malformed;
+    if (read.status === "no-report") {
+      s.noReport += 1;
+      continue;
+    }
+    for (const r of read.results) {
+      if (r.outcome === "written") {
+        s.written += 1;
+        s.rows += r.rows;
+        s.retired += r.retired;
+      } else if (r.outcome === "failed") s.failed += 1;
+      else if (r.outcome === "timed-out") s.timedOut += 1;
+      else if (r.outcome === "not-persisted") s.notPersisted += 1;
+      else if (r.outcome === "nothing-to-record") s.nothingToRecord += 1;
+    }
+  }
+  return s;
+}
+
+/**
+ * @param {ReturnType<typeof summarizeExecutedMapResults>} s
+ * @returns {string}
+ */
+export function formatExecutedMapTotalLine(s) {
+  return (
+    `EXECUTED_SOURCE_MAP_TOTAL tasks=${s.tasks} written=${s.written} rows=${s.rows} retired=${s.retired} ` +
+    `notPersisted=${s.notPersisted} nothingToRecord=${s.nothingToRecord} failed=${s.failed} ` +
+    `timedOut=${s.timedOut} noReport=${s.noReport} malformed=${s.malformed}`
   );
 }
