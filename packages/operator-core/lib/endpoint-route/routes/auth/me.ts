@@ -20,6 +20,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { isRemoteRequest, requestNeedsSecureCookie } from '../../../remote-auth-policy';
+import { currentLoopbackPeerIsForeign } from '../../../auth/loopback-peer-trust';
 
 const get = defineTool({
   method: 'GET',
@@ -49,7 +50,11 @@ const get = defineTool({
     // Never expose the passwordless local default-user fallback or account
     // enumeration to an unauthenticated off-loopback browser. The login form
     // remains usable with an empty username field.
-    if (isRemoteRequest(req)) {
+    // WI-10003621: a foreign loopback peer on a hosted workspace host (the customer
+    // uid) is treated exactly like a remote caller — no default-user fallback, no
+    // account list, no auto-established session. login() refuses it regardless; this
+    // keeps the response honest instead of reporting a failed auto-login.
+    if (isRemoteRequest(req) || currentLoopbackPeerIsForeign()) {
       return Response.json({ user: null, autoLogin: false, available: [] });
     }
 

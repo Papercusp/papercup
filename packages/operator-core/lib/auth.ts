@@ -21,6 +21,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { TtlMap } from './ttl-map';
 import { activeWorkspaceId } from './workspace-registry';
 import { REMOTE_OPERATOR_CAPABILITY } from './remote-auth-policy';
+import { currentLoopbackPeerIsForeign } from './auth/loopback-peer-trust';
 
 export const SESSION_COOKIE = 'papercusp_session';
 export const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -223,6 +224,18 @@ export async function login(
     remote?: boolean;
   },
 ): Promise<{ token: string; user: SessionUser; expires_at: Date }> {
+  // WI-10003621: on a hosted workspace host the loopback interface is shared with the
+  // customer account, whose uid runs arbitrary code (PTY, customer-driven agents). A
+  // loopback peer whose socket is not owned by the service uid proves nothing about who
+  // is calling, so it may not mint an operator session at all: a passwordless login here
+  // handed uid 1001 a '*' session (measured on avi-test r57 through GET /api/auth/me) and
+  // with it every principal-tier route, which is the D-417 exposure through a cookie.
+  // Refused BEFORE the user lookup so a foreign peer cannot enumerate accounts either.
+  // The customer's legitimate entry points (the portal via the controller, the direct
+  // remote surface) never arrive as a foreign loopback socket, so nothing else changes.
+  if (currentLoopbackPeerIsForeign()) {
+    throw Object.assign(new Error('foreign loopback peer'), { code: 'foreign_loopback_peer' });
+  }
   const { sql } = getOrgPg();
   const rows = await sql<{ id: string; display_name: string; password_hash: string | null; is_active: boolean }[]>`
     SELECT id, display_name, password_hash, is_active

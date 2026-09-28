@@ -172,7 +172,10 @@ export default defineTool({
       );
     } catch (e: unknown) {
       const code = (e as { code?: string }).code ?? 'login_failed';
-      const status = code === 'unknown_user' || code === 'bad_password' ? 401 : 400;
+      const status = code === 'unknown_user' || code === 'bad_password'
+        ? 401
+        // WI-10003621: a foreign loopback peer on a hosted host may not log in at all.
+        : code === 'foreign_loopback_peer' ? 403 : 400;
       if (status >= 500) console.error('[auth/login]', code, (e as Error).stack);
       // Failure burns both hard counters. (Soft buckets are already burned
       // by checkSoftGlobal/checkSoftPerIp.)

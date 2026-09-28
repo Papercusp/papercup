@@ -18,6 +18,7 @@
  */
 import { getSessionUser, getSessionUserOrDefault, type User } from '../auth';
 import { isLoopbackHost } from './loopback-guard';
+import { currentLoopbackPeerIsForeign } from '../auth/loopback-peer-trust';
 
 /** The request's effective host: the Host header when present, else the URL's
  *  host — under @hono/node-server the URL host IS derived from the client's
@@ -43,6 +44,10 @@ export async function getSessionUserOrLocalDefault(req: Request): Promise<User |
   }
   if (user) return user;
   if (!isLoopbackHost(requestHost(req))) return null;
+  // WI-10003621: on a hosted workspace host a loopback Host header is not locality —
+  // the customer account shares the interface. A foreign loopback peer gets no
+  // default-user fallback, exactly like an off-loopback caller.
+  if (currentLoopbackPeerIsForeign()) return null;
   try {
     return await getSessionUserOrDefault(req.headers);
   } catch {

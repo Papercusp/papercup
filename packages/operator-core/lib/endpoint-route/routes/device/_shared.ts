@@ -15,6 +15,7 @@
 import type { Principal } from '@papercusp/agent-mcp';
 import type { PrincipalRequirements } from '../../../auth/require-principal';
 import type { RouteContext } from '../../define-route';
+import { currentLoopbackPeerIsForeign } from '../../../auth/loopback-peer-trust';
 
 /**
  * Auth gate for a device-JWT route. The route-stack's auth step rejects
@@ -39,8 +40,16 @@ export function devicePrincipal(ctx: RouteContext<unknown>): Principal {
 /** Loopback host names — for the desktop-only mint-pair-token gate. */
 export const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
-/** True when the request's Host header resolves to a loopback name. */
+/**
+ * True when the request's Host header resolves to a loopback name AND the loopback
+ * peer is trusted. WI-10003621: on a hosted workspace host the customer account shares
+ * the loopback interface and controls its own Host header, so a foreign loopback peer
+ * (socket not owned by the service uid) must not mint desktop pair tokens or list and
+ * revoke devices. Off a hosted host the peer verdict is never foreign, so this is the
+ * plain Host check it always was.
+ */
 export function isLoopbackHost(req: Request): boolean {
+  if (currentLoopbackPeerIsForeign()) return false;
   const host = (req.headers.get('host') ?? '').split(':')[0].toLowerCase();
   return LOOPBACK_HOSTS.has(host);
 }
