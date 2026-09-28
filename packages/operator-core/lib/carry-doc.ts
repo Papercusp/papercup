@@ -157,6 +157,58 @@ export interface CarryDocOwnerRequest {
   ts: string | null;
 }
 
+/** An owner directive this agent lineage already CLOSED (done/declined), with
+ *  the time the hook captured it (WI-10003691). */
+export interface CarryDocClosedDirective {
+  text: string;
+  createdAtMs: number;
+}
+
+/** How close a directive's capture must be to a tail turn's timestamp for the two
+ *  to be the SAME owner message (the hook captures at submit time — measured
+ *  offset for #806: 0.18s). Tight on purpose: an identical text typed again later
+ *  is a new message and must stay open. */
+export const CLOSED_DIRECTIVE_MATCH_WINDOW_MS = 120_000;
+
+const normalizeRequestText = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+/**
+ * WI-10003691: the directive ledger is the authoritative record of whether an
+ * owner message was resolved — every captured message ends in exactly one
+ * `orders:disposition`. The tail-based settlement in {@link deriveContinuation}
+ * is a heuristic over transcript linkage, and when it misreads an answered
+ * message as open the carry-respawn re-delivers it to the successor as a fresh
+ * prompt (the owner sees a question they asked half an hour earlier). A pending
+ * request whose exact capture (same text, captured within the match window of
+ * the turn's timestamp) is already CLOSED is resolved, not pending. Pure.
+ */
+export function settleByClosedDirectives(
+  cont: CarryDocContinuation,
+  closed: ReadonlyArray<CarryDocClosedDirective>,
+): CarryDocContinuation {
+  const pending = cont.pendingOwnerMessages;
+  if (!pending?.length || closed.length === 0) return cont;
+  const isClosed = (request: { text: string; ts: string | null }): boolean => {
+    const tsMs = request.ts ? Date.parse(request.ts) : Number.NaN;
+    if (!Number.isFinite(tsMs)) return false;
+    const text = normalizeRequestText(request.text);
+    return closed.some(
+      (directive) =>
+        Math.abs(directive.createdAtMs - tsMs) <= CLOSED_DIRECTIVE_MATCH_WINDOW_MS &&
+        normalizeRequestText(directive.text) === text,
+    );
+  };
+  const remaining = pending.filter((request) => !isClosed(request));
+  if (remaining.length === pending.length) return cont;
+  const latestClosed = cont.lastOwnerMessage != null && isClosed(cont.lastOwnerMessage);
+  const { pendingOwnerMessages: _resolved, ...rest } = cont;
+  return {
+    ...rest,
+    answered: cont.answered || latestClosed,
+    ...(remaining.length > 0 ? { pendingOwnerMessages: remaining } : {}),
+  };
+}
+
 /**
  * The last-turn / continuation handling (P-010). At a boundary the single most
  * load-bearing turn is the owner's FINAL message — because a successor's job is
@@ -350,6 +402,9 @@ export interface BuildCarryDocOpts extends BuildCarryBriefOpts {
   getModesFn?: (workspaceId: string, ownerId: string) => Promise<CarryDocMode[]>;
   getPlanItemsFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocPlanItem[]>;
   getAsksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocAsk[]>;
+  /** WI-10003691: directives this lineage already CLOSED. Consulted only when the
+   *  tail leaves an owner request pending (see {@link settleByClosedDirectives}). */
+  getClosedDirectivesFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocClosedDirective[]>;
   getTailFn?: (ownerId: string) => Promise<CarryDocTailTurn[]>;
   getBackgroundTasksFn?: (ownerId: string, workspaceId: string) => Promise<CarryDocBackgroundTask[]>;
   /** Test seam for the live projected-tool catalog used by role-feasibility checks. */
@@ -471,6 +526,14 @@ async function defaultGetPlanItems(ownerId: string, workspaceId: string): Promis
  *  owner-directed refinement is a later leg. The conversation store scopes reads
  *  by the ambient request workspace, so pin the caller's workspace for the read.
  *  Best-effort: a throwing read yields no asks, never a failed document. */
+async function defaultGetClosedDirectives(
+  ownerId: string,
+  workspaceId: string,
+): Promise<CarryDocClosedDirective[]> {
+  const { listRecentlyClosedDirectives } = await import('./owner-directives');
+  return listRecentlyClosedDirectives({ workspaceId, recordedBy: ownerId });
+}
+
 async function defaultGetAsks(ownerId: string, workspaceId: string): Promise<CarryDocAsk[]> {
   try {
     const [{ listConversations }, { runWithWorkspaceIfConcrete }] = await Promise.all([
@@ -654,6 +717,22 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     ? await (opts.ownerSpeechCensusFn ?? censusOwnerSpeech)(ownerId).catch(() => 'unknown' as const)
     : undefined;
   const retractedContinuationRefs = detectRetractedContinuationRefs(tail);
+  let continuation = deriveContinuation(
+    tail,
+    opts.boundaryDeliberate ?? false,
+    opts.boundarySelfRequested,
+    { finalTurnInFlight: opts.finalTurnInFlight, ownerSpeechCensus },
+  );
+  // WI-10003691: consult the directive ledger ONLY when the tail leaves an owner
+  // request pending — a settled tail needs no query. Fail-soft to "no closed
+  // directives", which is exactly the tail-only behaviour.
+  if (continuation.pendingOwnerMessages?.length) {
+    const getClosedDirectives = opts.getClosedDirectivesFn ?? defaultGetClosedDirectives;
+    const closedDirectives = await getClosedDirectives(ownerId, ws).catch(
+      () => [] as CarryDocClosedDirective[],
+    );
+    continuation = settleByClosedDirectives(continuation, closedDirectives);
+  }
   const roleSafety = inspectCarryRoleSafety(
     opts.role,
     brief,
@@ -682,12 +761,7 @@ export async function buildCarryDoc(ownerId: string, opts: BuildCarryDocOpts = {
     asks: asks.slice(0, CARRY_DOC_MAX_ASKS),
     backgroundTasks,
     tail,
-    continuation: deriveContinuation(
-      tail,
-      opts.boundaryDeliberate ?? false,
-      opts.boundarySelfRequested,
-      { finalTurnInFlight: opts.finalTurnInFlight, ownerSpeechCensus },
-    ),
+    continuation,
     ...(retractedContinuationRefs.length > 0 ? { retractedContinuationRefs } : {}),
     roleSafety,
   };

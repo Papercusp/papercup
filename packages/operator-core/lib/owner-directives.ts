@@ -244,6 +244,36 @@ function isExplicitSystemWideResume(text: string): boolean {
   );
 }
 
+/** How far back a hook capture looks for the OPEN twin a carry-respawn re-delivery would duplicate. */
+export const OWNER_DIRECTIVE_CARRY_TWIN_WINDOW_HOURS = 24;
+
+/**
+ * WI-10003691: owner directives this agent lineage has already CLOSED
+ * (done/declined), with their capture time. A carry document uses these to
+ * stop re-delivering a message the ledger says was resolved, when a transcript
+ * tail misreads the answer as missing. Bounded to recent captures.
+ */
+export async function listRecentlyClosedDirectives(
+  input: { workspaceId: string; recordedBy: string; sinceHours?: number },
+  sql?: Sql,
+): Promise<Array<{ id: number; text: string; createdAtMs: number }>> {
+  const ws = resolveConcreteWorkspaceId(input.workspaceId);
+  const rows = await db(sql)<Array<{ id: string | number; verbatim_text: string; created_at: Date | string }>>`
+    SELECT id, verbatim_text, created_at FROM harness_shared.owner_directives
+     WHERE workspace_id = ${ws}
+       AND recorded_by = ${input.recordedBy}
+       AND dispositioned_at IS NOT NULL
+       AND created_at > now() - make_interval(hours => ${input.sinceHours ?? OWNER_DIRECTIVE_CARRY_TWIN_WINDOW_HOURS})
+     ORDER BY id DESC
+     LIMIT 200
+  `;
+  return rows.map((r) => ({
+    id: Number(r.id),
+    text: r.verbatim_text,
+    createdAtMs: new Date(r.created_at).getTime(),
+  }));
+}
+
 /**
  * Insert a directive, OPEN. Idempotent on (workspace, owner, source_turn_ref):
  * a retried capture of the same turn returns the row that already exists,
@@ -261,6 +291,33 @@ export async function recordOwnerDirective(
   // Insertion and supersession share a transaction: once a verified owner
   // resume is visible to agents, its lifted pause must already read as closed.
   return await s.begin(async (tx) => {
+    // WI-10003691: a carry-respawn re-delivers an OPEN owner message to the
+    // successor as its first prompt, and that successor runs under a NEW native
+    // session id — so the capture below keys it on a new source_turn_ref and
+    // mints a second directive for one owner message (#806 → #816). Closing
+    // either twin then leaves the other rendering as an open order. When the
+    // SAME agent lineage (recorded_by survives a respawn) already holds an
+    // OPEN hook-captured directive with the identical text from another
+    // session, this capture is that message arriving again: return it. Open
+    // rows only — an identical text after the earlier one was closed is a new
+    // order and still mints (merging into an open twin is harmless either way).
+    if (input.capturedByHook === true && input.sessionRef && input.recordedBy) {
+      const carried = await tx<RawRow[]>`
+        SELECT * FROM harness_shared.owner_directives
+         WHERE workspace_id = ${ws}
+           AND owner_id = ${ownerId}
+           AND recorded_by = ${input.recordedBy}
+           AND captured_by_hook = true
+           AND dispositioned_at IS NULL
+           AND session_ref IS DISTINCT FROM ${input.sessionRef}
+           AND verbatim_text = ${text}
+           AND created_at > now() - make_interval(hours => ${OWNER_DIRECTIVE_CARRY_TWIN_WINDOW_HOURS})
+         ORDER BY id DESC
+         LIMIT 1
+      `;
+      if (carried[0]) return rowOf(carried[0]);
+    }
+
     const rows = await tx<RawRow[]>`
       INSERT INTO harness_shared.owner_directives
         (workspace_id, owner_id, session_ref, source_turn_ref, verbatim_text, recorded_by, captured_by_hook)

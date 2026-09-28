@@ -76,6 +76,7 @@ function opts(transcriptPath: string): BuildCarryDocOpts {
     getPlanItemsFn: async () => [],
     getAsksFn: async () => [],
     getBackgroundTasksFn: async () => [],
+    getClosedDirectivesFn: async () => [],
     ownerSpeechCensusFn: async () => 'unknown',
     projectedToolsFn: () => [],
   } as BuildCarryDocOpts;
@@ -169,6 +170,43 @@ describe('P-005-request-settlement: transcript → carry continuation', () => {
     const doc = await buildCarryDoc(OWNER, opts(path));
     expect(doc.continuation.pendingOwnerMessages).toBeUndefined();
     expect(doc.continuation.answered).toBe(true);
+  });
+
+  // WI-10003691 second safeguard: whatever the tail heuristics conclude, a request
+  // whose own capture is already CLOSED in the directive ledger is not re-delivered.
+  it('a pending request whose exact directive capture is already closed is not re-delivered', async () => {
+    const asked = '2026-09-28T14:43:07.116Z';
+    const path = transcript('ledger-closed', [
+      { ...owner('o1', null, 'Regarding Tesla, any advancements in this direction?'), timestamp: asked },
+      assistant('a1', 'o1', 'Looking into it.', 'tool_use'),
+    ]);
+    const closedAt = Date.parse(asked) + 180;
+    const doc = await buildCarryDoc(OWNER, {
+      ...opts(path),
+      getClosedDirectivesFn: async () => [
+        { text: 'Regarding  Tesla, any advancements in this direction?\n', createdAtMs: closedAt },
+      ],
+    });
+    expect(doc.continuation.pendingOwnerMessages).toBeUndefined();
+    expect(doc.continuation.answered).toBe(true);
+  });
+
+  // Calibration: the SAME text typed again later is a NEW message — a closed
+  // directive captured far from this turn's timestamp must not settle it.
+  it('an identical text captured at a different time stays open', async () => {
+    const asked = '2026-09-28T16:00:00.000Z';
+    const path = transcript('ledger-closed-other-time', [
+      { ...owner('o1', null, 'publish it now'), timestamp: asked },
+      assistant('a1', 'o1', 'Publishing.', 'tool_use'),
+    ]);
+    const doc = await buildCarryDoc(OWNER, {
+      ...opts(path),
+      getClosedDirectivesFn: async () => [
+        { text: 'publish it now', createdAtMs: Date.parse(asked) - 60 * 60_000 },
+      ],
+    });
+    expect(doc.continuation.pendingOwnerMessages?.map((r) => r.text)).toEqual(['publish it now']);
+    expect(doc.continuation.answered).toBe(false);
   });
 
   // Calibration for the case above: the synthetic window key must not settle a
