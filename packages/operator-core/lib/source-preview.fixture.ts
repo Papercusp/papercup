@@ -15,10 +15,14 @@ import { dirname, join } from 'node:path';
 
 const GIT_ID = ['-c', 'user.name=Fixture Author', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false'];
 
-/** The owner-name literal the audit requires; set on every child env. */
+/**
+ * The owner-name literal the audit requires, and the release host README.md links;
+ * set on every child env, so neither is ever read from the real box.
+ */
 export const FIXTURE_ENV = {
   PAPERCUSP_RELEASE_OWNER_NAME: 'Zelda Quuxington',
   PAPERCUSP_RELEASE_OWNER_EMAIL: 'zelda.quuxington@example.invalid',
+  PAPERCUSP_UPDATE_BASE_URL: 'https://releases.example.invalid/fixture/',
 };
 
 export function childEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {

@@ -12,7 +12,7 @@
  * shared checkout.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -21,7 +21,9 @@ import {
   SELECTION_LIB,
   allowlistTops,
   exportSnapshot,
+  loadReleaseHost,
   materializeCommit,
+  releasesPageUrl,
   sourceYear,
 } from '../../../scripts/source-preview.mjs';
 import { DROPPED, SHIPPED, childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
@@ -167,10 +169,46 @@ describe('source-preview export — R-4 evaluation notice', () => {
     }
   }, 120_000);
 
-  it('writes START-HERE.md naming the snapshot and the workspaces it contains', () => {
-    const start = readFileSync(join(out, 'START-HERE.md'), 'utf8');
-    expect(start).toContain(fx.commit);
-    expect(start).toContain('`apps/operator`');
-    expect(start).toContain('the operator host');
+  it('writes README.md naming the snapshot and the workspaces it contains', () => {
+    const readme = readFileSync(join(out, 'README.md'), 'utf8');
+    expect(readme).toContain(fx.commit);
+    expect(readme).toContain('`apps/operator`');
+    expect(readme).toContain('the operator host');
+  });
+
+  it('links the releases page and explains how and why the release carries this source', () => {
+    const readme = readFileSync(join(out, 'README.md'), 'utf8');
+    expect(readme).toContain('[Papercusp releases page](https://releases.example.invalid/fixture/index.html)');
+    expect(readme).toMatch(/## How this source ships inside every release[\s\S]*`sidecar\/source\.tar\.zst`/);
+    expect(readme).toMatch(/## Why the release carries its own source/);
+  });
+
+  it('refuses to export without a release host rather than publish a README with no download link', async () => {
+    const target = join(tmp, 'export-no-release-host');
+    await expect(exportSnapshot({ repoRoot: fx.repo, ref: 'main', out: target, env: childEnv({ PAPERCUSP_UPDATE_BASE_URL: '' }) }))
+      .rejects.toThrow(/PAPERCUSP_UPDATE_BASE_URL is unset/);
+    expect(existsSync(target)).toBe(false);
+  });
+});
+
+describe('source-preview export — release host resolution', () => {
+  it('fills the base URL from the release-host file only when the environment is silent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'source-preview-release-host-'));
+    try {
+      const file = join(dir, 'release-host.env');
+      writeFileSync(file, '# comment\nPAPERCUSP_RELEASE_HOST=https://file.example.invalid/x\nPAPERCUSP_UPDATE_BASE_URL=https://file.example.invalid/x\n');
+      const silent: NodeJS.ProcessEnv = {};
+      loadReleaseHost(silent, file);
+      expect(silent).toEqual({ PAPERCUSP_UPDATE_BASE_URL: 'https://file.example.invalid/x' });
+      const exported: NodeJS.ProcessEnv = { PAPERCUSP_UPDATE_BASE_URL: 'https://env.example.invalid/y' };
+      loadReleaseHost(exported, file);
+      expect(releasesPageUrl(exported)).toBe('https://env.example.invalid/y/index.html');
+      const none: NodeJS.ProcessEnv = {};
+      loadReleaseHost(none, join(dir, 'missing.env'));
+      expect(() => releasesPageUrl(none)).toThrow(/unset/);
+      expect(() => releasesPageUrl({ PAPERCUSP_UPDATE_BASE_URL: 'http://plain.example.invalid' })).toThrow(/not an https URL/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
