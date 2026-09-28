@@ -1259,7 +1259,10 @@ async fn run<B: Backend>(
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok());
     // Show the first-run tutorial until this device has dismissed it once (P9).
-    app.show_tutorial = !tutorial::seen();
+    // A pinned dock pane is one of several panes a single launch opens; the
+    // tutorial belongs to the main surface, not repeated (or, before the
+    // full-screen overlay fix, drawn nowhere while swallowing keys) in each.
+    app.show_tutorial = pinned.is_none() && !tutorial::seen();
     let setup_draft = std::env::var(session_config::SETUP_DRAFT_ENV).ok();
     let restoring_setup = setup_draft.is_some();
     if let Some(draft) = setup_draft {

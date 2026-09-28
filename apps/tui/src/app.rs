@@ -2125,6 +2125,12 @@ pub struct App {
     /// an already-configured App without simulating onboarding.
     pub require_session_setup: bool,
     pub session_setup_accepted: bool,
+    /// Chat-first (P-001) quick start is waiting on a live condition (operator
+    /// identity, project list or runtime config) before it can launch the
+    /// first message. Set when the first Enter could not start at once;
+    /// cleared when the session starts or the owner takes over the setup
+    /// form (any key into it, or Esc).
+    pub chat_first_autostart: bool,
     /// Model override for THIS chat's turns. `None` ⇒ send no `model` at all and
     /// let the server apply the surface default.
     pub chat_model: Option<String>,
@@ -2773,6 +2779,7 @@ impl App {
             session_picker: None,
             session_setup: None,
             require_session_setup: false,
+            chat_first_autostart: false,
             session_setup_accepted: false,
             chat_model: None,
             chat_effort: None,
@@ -4501,6 +4508,9 @@ impl App {
             && self.agent_chat_id.is_none()
             && self.su_session.is_none()
         {
+            if self.chat_first_quick_start_applies() {
+                return Some(self.chat_first_quick_start(draft));
+            }
             self.open_session_setup();
             if let Some(setup) = self.session_setup.as_mut() {
                 setup.message = draft;
@@ -7120,6 +7130,9 @@ impl App {
     }
 
     fn session_setup_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        // The owner is driving the form now; a pending chat-first quick start
+        // must not fire underneath a choice they are in the middle of making.
+        self.chat_first_autostart = false;
         let projects = self.setup_projects();
         let setup = self
             .session_setup
@@ -7391,51 +7404,122 @@ impl App {
                     self.session_setup.as_mut().unwrap().step += 1;
                     return Action::Render;
                 }
-                let setup = self.session_setup.take().unwrap();
-                let project_index = self
-                    .harnesses
-                    .iter()
-                    .position(|project| project.slug == setup.project)
-                    .unwrap();
-                if self.harness != setup.project {
-                    // The blocker above preserves any cross-project
-                    // attachments rather than silently discarding them.
-                    self.plan_filter.clear();
-                }
-                self.reset_agent_chat_binding();
-                self.select_harness(project_index);
-                self.harness = setup.project;
-                self.publish_active();
-                self.all_pots = false;
-                self.su_backend = Some(setup.backend);
-                self.agent_chat_role = "operator".into();
-                self.chat_model = setup.model;
-                self.chat_effort = setup.effort;
-                self.chat_account = setup.account;
-                self.chat_mode = setup.mode;
-                self.chat_input = setup.message.clone();
-                self.tab = Tab::Operator;
-                self.operator_dock_focused = false;
-                self.chat_composing = true;
-                self.session_setup_accepted = true;
-                if !setup.message.trim().is_empty() {
-                    return self
-                        .dispatch_chat_turn(setup.message)
-                        .unwrap_or(Action::Render);
-                }
-                self.chat_streaming = true;
-                self.su_open_in_flight = true;
-                Action::OpenSuSession {
-                    harness: self.harness.clone(),
-                    role: "operator".into(),
-                    backend: setup.backend,
-                    carry: "warm".into(),
-                    launch: self.su_session_launch_options(),
-                    initial_turn: None,
-                }
+                self.accept_session_setup()
             }
             _ => Action::Render,
         }
+    }
+
+    /// Start the reviewed session. The caller has already checked
+    /// `setup_blocker()` is `None` with the form on its review step, which is
+    /// what makes the project lookup below infallible.
+    fn accept_session_setup(&mut self) -> Action {
+        let setup = self.session_setup.take().unwrap();
+        let project_index = self
+            .harnesses
+            .iter()
+            .position(|project| project.slug == setup.project)
+            .unwrap();
+        if self.harness != setup.project {
+            // The blocker preserves any cross-project attachments rather
+            // than silently discarding them.
+            self.plan_filter.clear();
+        }
+        self.chat_first_autostart = false;
+        self.reset_agent_chat_binding();
+        self.select_harness(project_index);
+        self.harness = setup.project;
+        self.publish_active();
+        self.all_pots = false;
+        self.su_backend = Some(setup.backend);
+        self.agent_chat_role = "operator".into();
+        self.chat_model = setup.model;
+        self.chat_effort = setup.effort;
+        self.chat_account = setup.account;
+        self.chat_mode = setup.mode;
+        self.chat_input = setup.message.clone();
+        self.tab = Tab::Operator;
+        self.operator_dock_focused = false;
+        self.chat_composing = true;
+        self.session_setup_accepted = true;
+        if !setup.message.trim().is_empty() {
+            return self
+                .dispatch_chat_turn(setup.message)
+                .unwrap_or(Action::Render);
+        }
+        self.chat_streaming = true;
+        self.su_open_in_flight = true;
+        Action::OpenSuSession {
+            harness: self.harness.clone(),
+            role: "operator".into(),
+            backend: setup.backend,
+            carry: "warm".into(),
+            launch: self.su_session_launch_options(),
+            initial_turn: None,
+        }
+    }
+
+    /// Chat-first (P-001, owner #783: Claude Code / Codex parity) sends the
+    /// first message straight into a new session on the defaults — the
+    /// current project, the operator's backend, account `default` — instead
+    /// of routing it through the three-step New-session form. Pinned dock
+    /// panes and the workbench keep the form.
+    fn chat_first_quick_start_applies(&self) -> bool {
+        self.chat_first && self.pinned.is_none()
+    }
+
+    /// Build the default setup around `draft` and start it now if nothing
+    /// blocks it. Otherwise the form opens on the live reason and the start
+    /// is remembered, so it proceeds by itself once the reason clears (the
+    /// usual case is a first message typed before the operator answered).
+    fn chat_first_quick_start(&mut self, draft: String) -> Action {
+        self.open_session_setup();
+        let Some(setup) = self.session_setup.as_mut() else {
+            // `open_session_setup` refused (a turn is still in flight) and
+            // left its reason in `session_note`; the draft stays composed.
+            return Action::Render;
+        };
+        setup.message = draft;
+        self.chat_first_autostart = true;
+        self.try_chat_first_autostart()
+            .unwrap_or(Action::CheckSessionSetup)
+    }
+
+    /// Advance a pending chat-first quick start. Returns the launch action
+    /// once the default project is known and `setup_blocker()` is clear;
+    /// `None` while it must keep waiting (the form shows why).
+    fn try_chat_first_autostart(&mut self) -> Option<Action> {
+        if !self.chat_first_autostart {
+            return None;
+        }
+        if self.session_setup.is_none() {
+            // The form was closed; there is nothing left to start.
+            self.chat_first_autostart = false;
+            return None;
+        }
+        // Nobody has reviewed this form, so there is no earlier endpoint
+        // choice to protect: it follows the operator this client is actually
+        // connected to. (A form opened before the identity answered carries
+        // the configured label, and would otherwise block as "selection
+        // changed" for an owner who changed nothing.)
+        let connected = self.backend_identity.as_ref().map(|i| i.endpoint.clone());
+        let setup = self.session_setup.as_mut().unwrap();
+        if let Some(endpoint) = connected {
+            setup.endpoint = endpoint;
+        }
+        if setup.step == 0 {
+            let project = self.harness.clone();
+            if !self.harnesses.iter().any(|p| p.slug == project) {
+                return None;
+            }
+            let setup = self.session_setup.as_mut().unwrap();
+            setup.project = project;
+            setup.step = 2;
+        }
+        if self.setup_blocker().is_some() {
+            return None;
+        }
+        Some(self.accept_session_setup())
     }
 
     /// 250ms Tick: drive the post-launch Sessions refresh burst, if armed. Each
@@ -10008,7 +10092,7 @@ impl App {
             Event::Harnesses(hs) => {
                 self.set_harnesses(hs);
                 self.last_error = None;
-                Action::Render
+                self.try_chat_first_autostart().unwrap_or(Action::Render)
             }
             Event::Docs { harness, docs } => {
                 if harness == self.harness {
@@ -10182,7 +10266,7 @@ impl App {
             Event::OperatorConfig(c) => {
                 self.set_operator_config(c);
                 self.last_error = None;
-                Action::Render
+                self.try_chat_first_autostart().unwrap_or(Action::Render)
             }
             Event::AccountRows(rows) => {
                 self.set_account_rows(rows);
@@ -10713,7 +10797,7 @@ impl App {
                         self.backend_identity_error = Some(error);
                     }
                 }
-                Action::Render
+                self.try_chat_first_autostart().unwrap_or(Action::Render)
             }
             Event::ViewStateLoaded(vs) => {
                 if !std::mem::replace(&mut self.view_state_restore_pending, false) {
@@ -11499,7 +11583,13 @@ impl App {
                     self.show_tutorial = false;
                 }
             }
-            if !self.show_tutorial && self.require_session_setup && self.agent_chat_id.is_none() {
+            // Chat-first returns to the focused composer: its first message
+            // starts the session, so there is no form to open here.
+            if !self.show_tutorial
+                && self.require_session_setup
+                && self.agent_chat_id.is_none()
+                && !self.chat_first_quick_start_applies()
+            {
                 self.open_session_setup();
                 return Action::CheckSessionSetup;
             }
@@ -15840,6 +15930,101 @@ mod tests {
         assert!(a.session_setup.is_none());
         assert!(a.session_setup_accepted);
         assert!(a.launched.is_empty());
+    }
+
+    fn chat_first_app() -> App {
+        let mut a = setup_app();
+        a.chat_first = true;
+        a.harness = "chosen-project".into();
+        a.tab = Tab::Operator;
+        a.chat_composing = true;
+        a
+    }
+
+    /// Owner #783 (Claude Code / Codex parity): the first Enter in chat-first
+    /// sends the message into a new session on the defaults — no three-step
+    /// form in between.
+    #[test]
+    fn chat_first_first_enter_starts_the_default_session_with_the_exact_message() {
+        let mut a = chat_first_app();
+        a.chat_input = "  first λ 雪  ".into();
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            matches!(
+                action,
+                Action::OpenSuSession { ref harness, initial_turn: Some(ref text), .. }
+                    if harness == "chosen-project" && text == "  first λ 雪  "
+            ),
+            "first Enter must launch, got {action:?}"
+        );
+        assert!(a.session_setup.is_none(), "no form stays open");
+        assert!(a.session_setup_accepted);
+        assert!(!a.chat_first_autostart);
+        assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "  first λ 雪  ");
+        assert_eq!(a.chat_account.as_deref(), Some("default"));
+    }
+
+    /// A message typed before the operator answered waits on the form (which
+    /// now draws in chat-first) and then starts by itself — the owner does not
+    /// press Enter a second time.
+    #[test]
+    fn chat_first_first_enter_waits_for_the_operator_then_starts_by_itself() {
+        let mut a = chat_first_app();
+        let identity = a.backend_identity.take().unwrap();
+        a.chat_input = "hello".into();
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::CheckSessionSetup
+        );
+        assert!(a.chat_first_autostart);
+        assert!(a.su_pending_turn.is_none(), "nothing is sent yet");
+        assert!(a.setup_blocker().unwrap().contains("Checking operator"));
+        let action = a.update(Event::BackendIdentity(Ok(identity)));
+        assert!(
+            matches!(action, Action::OpenSuSession { initial_turn: Some(ref text), .. } if text == "hello"),
+            "identity arrival must start the waiting session, got {action:?}"
+        );
+        assert!(a.session_setup.is_none());
+        assert!(!a.chat_first_autostart);
+    }
+
+    /// Esc on the waiting form is the owner declining: nothing starts later,
+    /// and the draft goes back to the composer.
+    #[test]
+    fn chat_first_esc_cancels_a_waiting_quick_start_and_keeps_the_draft() {
+        let mut a = chat_first_app();
+        let identity = a.backend_identity.take().unwrap();
+        a.chat_input = "keep me".into();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(a.session_setup.is_none());
+        assert!(!a.chat_first_autostart);
+        assert_eq!(a.chat_input, "keep me");
+        assert_eq!(
+            a.update(Event::BackendIdentity(Ok(identity))),
+            Action::Render,
+            "a cancelled quick start must not launch later"
+        );
+        assert!(a.su_pending_turn.is_none());
+    }
+
+    /// Closing the first-run tutorial in chat-first returns to the focused
+    /// composer; the workbench still opens the form.
+    #[test]
+    fn chat_first_tutorial_close_returns_to_the_composer_not_the_form() {
+        let mut a = chat_first_app();
+        a.show_tutorial = true;
+        assert_eq!(a.on_key(KeyCode::Esc, KeyModifiers::NONE), Action::Render);
+        assert!(a.session_setup.is_none());
+        assert!(a.chat_composing);
+
+        let mut w = setup_app();
+        w.show_tutorial = true;
+        assert_eq!(
+            w.on_key(KeyCode::Esc, KeyModifiers::NONE),
+            Action::CheckSessionSetup
+        );
+        assert!(w.session_setup.is_some());
     }
 
     #[test]

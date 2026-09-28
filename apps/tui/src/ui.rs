@@ -107,41 +107,12 @@ fn draw_frame(f: &mut Frame, app: &App) {
     let full_screen = app.pinned.or(app.chat_first.then_some(app.tab));
     if let Some(pinned) = full_screen {
         draw_tab_body(f, app, pinned, f.area());
-        // The chat dock's operator pane is exactly where a change card is
-        // opened, so the pinned branch needs the paint as much as the full
-        // layout does — the same omission that once left 'N' opening a
-        // notifications overlay that never drew.
-        draw_change_card(f, app);
-        draw_file_picker(f, app);
-        if app.show_notifs {
-            // The history overlay must render in pinned dock panes too — the
-            // toast flashes here, and without this branch 'N' opened an
-            // overlay that never drew (owner report 2026-06-11).
-            draw_notifs(f, app);
-        } else if app.show_help {
-            draw_help(f, app);
-        } else if app.notify_enabled {
-            if let Some(t) = &app.toast {
-                draw_toast(f, t);
-            }
-        }
-        // The detail popup is modal — render it on top of everything else in the
-        // pinned dock pane (mail/conversation/plan detail, depending on focus).
-        if app.fleet_detail_open {
-            draw_fleet_detail(f, app);
-        }
-        if app.critical_path_open {
-            draw_critical_path(f, app);
-        }
-        if app.fleet_launcher.is_some() {
-            draw_fleet_launcher(f, app);
-        }
-        if app.session_switcher.is_some() {
-            draw_session_switcher(f, app);
-        }
-        if app.inbox_answer.is_some() {
-            draw_inbox_answer(f, app);
-        }
+        // Every overlay the full layout draws, drawn here too. This branch
+        // used to carry its own shorter list, and each state it left out was a
+        // modal that captured keys while drawing nothing: 'N' notifications
+        // (owner report 2026-06-11), then chat-first's New-session form and
+        // first-run tutorial (owner #783 — the first message went nowhere).
+        draw_overlays(f, app);
         return;
     }
 
@@ -238,7 +209,14 @@ fn draw_frame(f: &mut Frame, app: &App) {
         crate::plans_board::draw_context_rail(f, app, area);
     }
     draw_status(f, app, root[2]);
+    draw_overlays(f, app);
+}
 
+/// Everything drawn over the body, in stacking order. Shared by the full
+/// layout and the full-screen branch (pinned dock panes, chat-first) so the
+/// two cannot drift: a state whose keys `on_key` captures must have a paint in
+/// BOTH, and one list is the only way that stays true.
+fn draw_overlays(f: &mut Frame, app: &App) {
     // An open change card sits above the body and BELOW the toast: `y` on the
     // card acknowledges through that same toast, and a copy the reader cannot
     // see confirmed is the one thing this surface must not do. It is likewise
@@ -7812,6 +7790,50 @@ mod tests {
             "message retained",
         ] {
             assert!(text.contains(expected), "missing {expected}:\n{text}");
+        }
+    }
+
+    /// Owner #783: in chat-first the first Enter opened a New-session form the
+    /// full-screen branch never drew, so the message went nowhere. Every modal
+    /// that captures keys must paint in the full-screen branch too — chat-first
+    /// and a pinned dock pane alike.
+    #[test]
+    fn full_screen_surfaces_draw_the_modal_overlays_that_capture_keys() {
+        for (label, chat_first, pinned) in [
+            ("chat-first", true, None),
+            ("pinned dock pane", false, Some(crate::app::Tab::Operator)),
+        ] {
+            let mut app = App::new();
+            app.chat_first = chat_first;
+            app.pinned = pinned;
+            app.tab = crate::app::Tab::Operator;
+            let mut setup = crate::session_config::SessionSetup::new(
+                "http://127.0.0.1:3170".into(),
+                "first words".into(),
+            );
+            setup.step = 2;
+            setup.project = "project-a".into();
+            app.session_setup = Some(setup);
+            let text = render(&app, 100, 30);
+            assert!(
+                text.contains("New session") && text.contains("START SESSION"),
+                "{label}: the setup form must draw:\n{text}"
+            );
+
+            app.session_setup = None;
+            app.show_tutorial = true;
+            let text = render(&app, 100, 30);
+            assert_ne!(
+                text,
+                {
+                    let mut plain = App::new();
+                    plain.chat_first = chat_first;
+                    plain.pinned = pinned;
+                    plain.tab = crate::app::Tab::Operator;
+                    render(&plain, 100, 30)
+                },
+                "{label}: the first-run tutorial must draw over the body"
+            );
         }
     }
 
