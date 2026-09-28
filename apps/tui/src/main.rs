@@ -5820,9 +5820,15 @@ enum DetachedRuntime {
 }
 
 /// Classify a snapshot as a detached runtime. Only a RESTORED host carries a
-/// `runtimeReconciliation`; a freshly launched one does not, and the
-/// `runtime_replacement` verdict marks a host already mid-resume, so neither
-/// triggers a second resume. `wait` (liveness unknown) keeps waiting.
+/// `runtimeReconciliation`; a freshly launched one does not. `wait` (liveness
+/// unknown) keeps waiting.
+///
+/// `runtime_replacement` carries two meanings, told apart by `stalePid`
+/// (su-session-persistence.ts `classifySuSessionRuntime` vs su-session-host.ts
+/// `attachRuntime`): with `stalePid: true` the recorded engine is DEAD but its
+/// native identity survives, which is exactly the case that needs an exact
+/// resume; with `stalePid: false` a replacement engine is already being
+/// attached, so a second resume would race it.
 fn detached_runtime(snapshot: &crate::su_session::SuSessionSnapshot) -> Option<DetachedRuntime> {
     if snapshot.terminal || snapshot.executor_attached {
         return None;
@@ -5830,7 +5836,7 @@ fn detached_runtime(snapshot: &crate::su_session::SuSessionSnapshot) -> Option<D
     let reconciliation = snapshot.runtime_reconciliation.as_ref()?;
     match reconciliation.action {
         crate::su_session::SuSessionRuntimeAction::Reattach
-            if reconciliation.reason != "runtime_replacement" =>
+            if reconciliation.reason != "runtime_replacement" || reconciliation.stale_pid =>
         {
             Some(DetachedRuntime::Resumable)
         }
@@ -7597,6 +7603,17 @@ mod tests {
         let reconciliation = snapshot.runtime_reconciliation.as_mut().unwrap();
         reconciliation.reason = "runtime_replacement".into();
         assert_eq!(detached_runtime(&snapshot), None, "a host mid-resume is not resumed again");
+
+        // The same reason with a DEAD recorded engine is the restored-after-
+        // crash case (classifySuSessionRuntime): the native identity survives,
+        // so the pending first turn must trigger the exact resume.
+        snapshot.runtime_reconciliation.as_mut().unwrap().stale_pid = true;
+        assert_eq!(
+            detached_runtime(&snapshot),
+            Some(DetachedRuntime::Resumable),
+            "a dead engine with a native identity is resumed"
+        );
+        snapshot.runtime_reconciliation.as_mut().unwrap().stale_pid = false;
 
         let reconciliation = snapshot.runtime_reconciliation.as_mut().unwrap();
         reconciliation.action = crate::su_session::SuSessionRuntimeAction::Relaunch;
