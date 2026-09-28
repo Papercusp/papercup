@@ -20,6 +20,7 @@ import { layerContentHash } from '@papercusp/orchestrator/blueprint';
 import { getOrgPg } from '@papercusp/db-org';
 import { parseBridgeModel, runCodexCliCompletion } from '../../inference-gateway/codex-cli-bridge';
 import type { BootstrapSuResult } from '../routes/agent-mcp/bootstrap-su';
+import { createTextCollector } from '../../child-output';
 
 const enabled = process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED === '1';
 const fixtureId = 'p008-native-selected-domain';

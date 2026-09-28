@@ -17,6 +17,7 @@ import { applySessionPackageResources, carrySessionPackageResources, provisionSe
 import { readPackageInstallation } from './package-resource-receipts';
 import { provisionLaunchIdentityResources } from '../role-launch-spec';
 import { preparePackageResource, releasePackageResource, type PackageResourceAddress } from './package-resource-receipts';
+import { createTextCollector } from '../child-output';
 
 let db: OrgTestDb;
 let pool: Pool;
@@ -403,10 +404,9 @@ describe('real canonical backend package resources', () => {
         const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code],
           { env: { ...process.env, MANAGED_TEST_DSN: db.adminDsn }, stdio: ['ignore', 'ignore', 'pipe'],
             signal: AbortSignal.timeout(20_000) });
-        let stderr = '';
-        child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+        const stderr = createTextCollector(child.stderr);
         child.on('error', reject);
-        child.on('exit', (code, signal) => signal === 'SIGKILL' ? resolve() : reject(new Error(`child ${code}/${signal}: ${stderr}`)));
+        child.on('exit', (code, signal) => signal === 'SIGKILL' ? resolve() : reject(new Error(`child ${code}/${signal}: ${stderr.text()}`)));
       });
       throw new Error('process died before receipt commit');
     } };

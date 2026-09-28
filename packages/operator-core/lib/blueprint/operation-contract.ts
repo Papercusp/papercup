@@ -7,6 +7,7 @@
  * client port. The service owns behaviour; this module only names its wire
  * shapes, so the transports cannot drift into separate contracts. */
 import { z } from 'zod';
+import { entityRef } from '@papercusp/tooldef';
 import { OperationEventBodySchema, OperationHandleSchema } from './operation-service';
 
 export const BLUEPRINT_OPERATION_TOOLS = {
@@ -29,8 +30,12 @@ const handle = BlueprintOperationHandleSchema
   .describe('The durable operation handle returned by blueprint:submit. It is bound to the submitting caller and scope.');
 
 export const SubmitArgsSchema = z.object({
-  harness: z.string().trim().min(1).max(120)
-    .describe('Harness (in your workspace) whose projected blueprint declares the operation.'),
+  // entityRef (not a bare string): the dispatch entity-check rejects an invented harness
+  // before the operation service runs, and the conformance ratchet counts it converted.
+  harness: entityRef('harness', {
+    max: 120,
+    describe: 'Harness (in your workspace) whose projected blueprint declares the operation.',
+  }),
   operationId: z.string().trim().min(1).max(200).describe('Operation id declared by the harness blueprint.'),
   requestKey,
   input: z.record(z.string(), z.unknown()).describe('Operation input; validated against the declared inputSchema.'),

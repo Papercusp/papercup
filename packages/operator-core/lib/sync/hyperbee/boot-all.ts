@@ -52,6 +52,7 @@ import { wirePresenceAnnounceForHarness } from './wire-presence';
 import { mapWithConcurrency } from '../../gym/concurrency';
 import { pinRepoKeysForWorkspace } from '../pot-git/pin-repo-keys';
 import { adoptAnnouncedRepoKeysForWorkspace } from '../pot-git/adopt-announced-repo-keys';
+import { rekeyLinkJoinedRepoKeysForWorkspace } from '../pot-git/rekey-link-joined-repo-keys';
 import type { BootedHarnessFacts } from './substrate-eviction-policy';
 // P-012 slice B — the swarm-presence keepalive that lets a federating harness be
 // left dark. This import is one-way: substrate-wake-wiring reaches BACK into
@@ -1304,6 +1305,13 @@ export async function bootAllHarnessesForActiveWorkspace(opts: BootAllOpts = {})
     // key already in use, so this changes no behaviour now and makes that drift
     // impossible later. Must run ahead of the boots — git-sync and publish both
     // read the key. Idempotent and fail-soft: it never throws.
+    //
+    // WI-10003590: FIRST repair invite-link-joined entries an older build left
+    // without upstream coords — backfill them from the clone's shared.json and
+    // move a stale bare-slug 'local' pin to the entry's own best rung. Ahead of
+    // the pin pass so a never-pinned entry is pinned correctly on the first try;
+    // pot homes are never touched (only `joined_via_link` members). Fail-soft.
+    await rekeyLinkJoinedRepoKeysForWorkspace(wsId);
     await pinRepoKeysForWorkspace(wsId);
     // A3: then CORRECT that guess against the pot owner. Pinning alone only makes
     // a key stable, not shared — two devices still have to arrive at the same

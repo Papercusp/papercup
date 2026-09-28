@@ -61,8 +61,19 @@ const LEGACY_CAPACITY_FIELDS: Readonly<Record<string, string>> = {
     'WRITER MEANING: the number of codex accounts that CAN SERVE RIGHT NOW — pool membership plus auth/credential health. It is NOT quota, headroom, or a capacity budget: an account that is usage-walled but authenticated still counts here, and a 0 means the pool or its credentials are broken, NOT that quota is exhausted. For the quota question read accounts:status → poolVerdict.',
 };
 
-/** Top-level `/admin/config` fields that are CANONICAL and stay where they are. */
-const CANONICAL_CONFIG_FIELDS = ['version', 'accounts', 'codexAccounts', 'providers', 'admissionState', 'upstreamBase', 'hotReload'] as const;
+/** Top-level `/admin/config` fields that are CANONICAL and stay where they are.
+ *  `codexModelRefusals` (WI-10003306) is current routing state — the (account, model) pairs the
+ *  gateway is routing around right now — not a pre-admissionState capacity read, so it is canonical. */
+const CANONICAL_CONFIG_FIELDS = [
+  'version',
+  'accounts',
+  'codexAccounts',
+  'providers',
+  'admissionState',
+  'upstreamBase',
+  'hotReload',
+  'codexModelRefusals',
+] as const;
 
 /**
  * Move the legacy per-provider capacity reads out of the top level and under `legacy:{}`, with a

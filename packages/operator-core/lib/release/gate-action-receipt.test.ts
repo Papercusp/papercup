@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const unsafe = vi.hoisted(() => vi.fn());
 const begin = vi.hoisted(() => vi.fn(async (fn: (tx: { unsafe: typeof unsafe }) => Promise<unknown>) => fn({ unsafe })));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { unsafe, begin } }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: { unsafe, begin } }),
+}));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 
 import { executeWithGateActionReceipt } from './gate-action-receipt';

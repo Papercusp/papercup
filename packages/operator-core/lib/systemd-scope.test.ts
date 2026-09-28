@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { SELF_IDENTIFYING_SECRET_PATTERN } from './sensitive-text';
+import { createTextCollector } from './child-output';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';

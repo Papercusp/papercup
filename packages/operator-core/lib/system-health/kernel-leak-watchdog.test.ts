@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => { throw new Error('no PG in unit tests'); } }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => { throw new Error('no PG in unit tests'); },
+}));
 vi.mock('../agent-tools/coordination/escalations', () => ({ openEscalation: vi.fn() }));
 
 import {
