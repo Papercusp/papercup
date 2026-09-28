@@ -218,7 +218,10 @@ describe('P-013 workload B fixture', () => {
           child.stderr?.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-4_000); });
           const exit = new Promise<void>((resolve, reject) => {
             child.once('error', (error) => reject(new Error(`P-013 B cold child ${stage}: ${error.message}; ${stderr}`)));
-            child.once('exit', (code, signal) => code === 0 || (signal === 'SIGKILL' && sample)
+            // 'close', not 'exit': under load 'exit' can fire before the already-sent p013-sample
+            // IPC message is dispatched (the child self-SIGKILLs right after send's callback), so
+            // a successful sample read as a failed child. 'close' waits for the IPC channel to drain.
+            child.once('close', (code, signal) => code === 0 || (signal === 'SIGKILL' && sample)
               ? resolve()
               : reject(new Error(`P-013 B cold child ${stage} exited ${code}/${signal}: ${stderr}`)));
           });
