@@ -88,6 +88,10 @@ export interface AttachedSuLaunchInput {
   fleet?: string | null;
   seat?: string | null;
   launch_context?: string | null;
+  /** The directory the PUI was launched from. When this host can see it, the
+   *  session runs there (Claude Code parity, pui-chat-first-ux P-001);
+   *  otherwise bootstrap keeps the project checkout. */
+  cwd?: string | null;
 }
 
 export async function launchAttachedSuSession(request: Request, input: AttachedSuLaunchInput): Promise<Response> {
@@ -220,6 +224,7 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       body: JSON.stringify({ ...input, workspace: workspaceId, owner_id: `su-${randomUUID()}`,
         model: selectedModel, ...(codexSelection ? { model_source: codexSelection.source } : {}),
         bootstrap_idempotency_key: `pui:${workspaceId}:${input.agent_chat_id}`,
+        ...(input.cwd?.trim() ? { cwd: input.cwd.trim(), cwd_policy: 'caller' } : { cwd: null }),
         headless: true, auto: input.mode === 'auto', mode: input.mode === 'auto' ? null : input.mode,
       }),
     }), undefined as never);

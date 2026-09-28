@@ -53,6 +53,8 @@ const scriptedEngine = vi.hoisted(() => ({
   // One entry per native launch: an exact resume names the dead native id in
   // `resume`; a fresh start names it in `sessionId`. The P-009 oracles read it.
   sdkSessions: [] as Array<{ resume: string | null; sessionId: string | null }>,
+  // The working directory of each native launch (the SDK's `cwd`), in order.
+  sdkCwds: [] as string[],
   // Approval fixture (mode:'approval'). TWO isolated requests, raised at once,
   // because both approval clauses are about ISOLATION: answering one must not
   // decide the other. A single-request probe cannot detect "hits an unrelated
@@ -151,6 +153,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
         scriptedEngine.sdkPermissions.push({ mode: sdkOptions.permissionMode,
           bypass: sdkOptions.allowDangerouslySkipPermissions });
         scriptedEngine.sdkSessions.push({ resume: sdkOptions.resume ?? null, sessionId: sdkOptions.sessionId ?? null });
+        scriptedEngine.sdkCwds.push(String(sdkOptions.cwd ?? ''));
         // The real SDK launches the native CLI through this hook, and it is the
         // ONLY place the engine learns its pid (su-session-claude-engine.ts
         // `spawnClaudeCodeProcess`). Resume readiness refuses a null pid
@@ -623,6 +626,8 @@ class PuiPane {
       args?: string[]; cols?: number; rows?: number; operatorToken?: string; env?: Record<string, string>;
       /** Never answer terminal queries, like a bare pipe (P-013 startup progress). */
       silentTerminal?: boolean;
+      /** The directory `pui` starts in (default: the repository root). */
+      cwd?: string;
     } = {},
   ) {
     this.cols = options.cols ?? 150;
@@ -631,7 +636,7 @@ class PuiPane {
       name: 'xterm-256color',
       cols: this.cols,
       rows: this.rows,
-      cwd: REPO_ROOT,
+      cwd: options.cwd ?? REPO_ROOT,
       env: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: home,
@@ -1684,6 +1689,7 @@ beforeEach(async () => {
   scriptedEngine.requests = [];
   scriptedEngine.sdkPermissions = [];
   scriptedEngine.sdkSessions = [];
+  scriptedEngine.sdkCwds = [];
   scriptedEngine.events = [];
   scriptedEngine.initialization = Promise.resolve();
   initializeWarnings = [];
@@ -3292,6 +3298,39 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       await pane.stop();
     }
   });
+
+  // pui-chat-first-ux-2026-09-28 P-001 acceptance. Owner #783: `pui` must start
+  // the way `claude` / `codex` do — one conversation, full screen, in the
+  // directory it was started from, ready to type. No zellij, no workbench tab
+  // strip, no key press before the first word.
+  test('P-001: bare `pui` opens one full-screen chat in its launch directory, ready to type', async ({ onTestFailed }) => {
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p001-launch-')));
+    const prompt = `P1 chat-first ${randomUUID().slice(0, 8)}`;
+    const pane = new PuiPane(bin, operatorPort, home, { cwd: launchDir });
+    onTestFailed(() => console.info('PUI_P001_FAILURE', JSON.stringify({
+      launchDir, sdkCwds: scriptedEngine.sdkCwds, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`pot ${HARNESS} · role operator · session new`, { timeoutMs: 40_000 });
+      const opening = pane.screen();
+      // No workbench chrome: the tab strip and the Overview tab are absent.
+      expect(opening).not.toContain('h:Overview');
+      expect(opening).not.toContain('1:Agent Chat');
+      // The composer already has focus: no `i` first, the first keystroke is text.
+      pane.write(prompt);
+      await pane.waitFor(prompt);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(scriptedEngine.requests).toEqual([prompt]);
+      // The session runs where `pui` was started, not in the project checkout.
+      expect(scriptedEngine.sdkCwds.at(-1)).toBe(launchDir);
+      expect(pane.screen()).not.toContain('h:Overview');
+      console.info('PUI_P001_CHAT_FIRST_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frame: pane.screen() }));
+    } finally {
+      await pane.stop();
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   // pui-chat-first-ux-2026-09-28 P-002 / D-001 recurrence guard. Session 31362:
   // the operator process that launched the chat died while its engine was still

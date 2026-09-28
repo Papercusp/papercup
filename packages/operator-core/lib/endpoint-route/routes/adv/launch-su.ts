@@ -152,6 +152,9 @@ async function handleLaunchSu(req: Request): Promise<Response> {
     mode?: string | null;
     /** PUI's existing chat id; bind it to the deferred adv row. */
     agent_chat_id?: string | null;
+    /** attached_engine only: the directory PUI was launched from. The session
+     *  runs there when this host can see it (pui-chat-first-ux P-001). */
+    cwd?: string | null;
   } = {};
   try {
     const text = await req.text();
@@ -436,6 +439,7 @@ async function handleLaunchSu(req: Request): Promise<Response> {
       fleet: fleetSlug,
       seat,
       launch_context: launchContext,
+      cwd: typeof body.cwd === 'string' ? body.cwd : null,
     });
   }
 

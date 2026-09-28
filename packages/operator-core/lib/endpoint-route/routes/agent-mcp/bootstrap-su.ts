@@ -92,7 +92,7 @@ import { writeSuCodexHome } from '../../../role-codex-home';
 // previously owned the CODEX_HOME directory we're about to rebuild?
 import { findLiveHost } from '../../../events/await/psu-pty-discovery';
 import { writeInteractiveClaudeConfig } from '../../../interactive-claude-config';
-import { resolveSuLaunchCwd } from '../../../su-launch-cwd';
+import { resolveSuLaunchCwd, type SuLaunchCwdPolicy } from '../../../su-launch-cwd';
 import {
   materializeCodexPrompts,
   materializeWorkspacePrompts,
@@ -1600,6 +1600,10 @@ export const bootstrapSu = defineTool({
       /** The launcher's own cwd — used for no-harness launches so the
        *  agent's cwd-scoped session resume works from the user's terminal. */
       cwd?: string | null;
+      /** `caller` runs a HARNESS launch in `cwd` too (PUI's chat-first
+       *  default, pui-chat-first-ux P-001); omitted keeps the harness repo.
+       *  See resolveSuLaunchCwd for the $HOME / missing-directory fallbacks. */
+      cwd_policy?: SuLaunchCwdPolicy | null;
       /** Deprecated tombstone input. When true, this route returns 410. */
       brain?: boolean;
       /** psu-account-chooser P-002: pin this interactive session to a specific pool
@@ -1875,7 +1879,10 @@ export const bootstrapSu = defineTool({
     // instructions P-002 skip-links out of the per-session CLAUDE_CONFIG_DIR
     // (config-dir isolation governs GLOBAL memory only, not cwd project memory).
     // resolveSuLaunchCwd relocates a $HOME cwd to envelope.cwd (never $HOME).
-    const cwd = resolveSuLaunchCwd({ harnessSlug, callerCwd, envelopeCwd: envelope.cwd });
+    // `cwd_policy:'caller'` (PUI chat-first) runs a harness launch where the
+    // user launched it, when this host can see that directory.
+    const cwd = resolveSuLaunchCwd({ harnessSlug, callerCwd, envelopeCwd: envelope.cwd,
+      policy: body.cwd_policy === 'caller' ? 'caller' : 'harness' });
 
     // Selected identity defaults must reach native configuration, account routing
     // and the model-tier prompt budget. Explicit launch choices still win.

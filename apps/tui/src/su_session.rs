@@ -498,6 +498,18 @@ pub struct SuSessionCreateRequest {
     pub carry: String,
     pub attached_engine: bool,
     pub agent_chat_id: String,
+    /// The directory `pui` was started in. The operator runs the session there
+    /// when it can see that directory (Claude Code / Codex parity), and keeps
+    /// the project checkout otherwise — e.g. a remote operator.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+}
+
+/// The launch directory to send with a new session, if it can be named.
+pub fn launch_cwd() -> Option<String> {
+    std::env::current_dir()
+        .ok()
+        .and_then(|dir| dir.to_str().map(str::to_owned))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1117,8 +1129,10 @@ mod tests {
             carry: "warm".into(),
             attached_engine: true,
             agent_chat_id: "chat-1".into(),
+            cwd: Some("/work/app".into()),
         })
         .unwrap();
+        assert_eq!(create["cwd"], "/work/app");
         assert_eq!(create["agent"], "omp");
         assert_eq!(create["harness_slug"], "papercup");
         assert_eq!(create["plan_slug"], "plan-a");
