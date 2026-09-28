@@ -31,7 +31,11 @@ vi.mock('@papercusp/db-org', async (original) => ({
   getOrgPg: () => ({ sql: fixture.sql }),
   // Plan reads/writes run inside withWorkspace; pin it to the fixture DB too, as
   // the plan-run-action fixture does, or run-now resolves against the real DB.
-  withWorkspace: async <T>(_workspaceId: string, fn: (tx: Sql) => Promise<T>) => fn(fixture.sql),
+  // MUST be a real transaction: callers take pg_advisory_xact_lock (the plan lock) inside it.
+  // A bare fn(fixture.sql) ran every statement in autocommit, so the lock released at once and
+  // concurrent completions raced on plan_items (WI-10003498 — a rig artifact, not a product bug).
+  withWorkspace: async <T>(_workspaceId: string, fn: (tx: Sql) => Promise<T>) =>
+    fixture.sql.begin((tx) => fn(tx as unknown as Sql)) as Promise<T>,
 }));
 vi.mock('@papercusp/flags/server', async () => ({
   ...(await vi.importActual<typeof import('@papercusp/flags/server')>('@papercusp/flags/server')),
