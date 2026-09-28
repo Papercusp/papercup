@@ -23,7 +23,7 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { withPgRetry } from '../../pg-transient-retry';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import { fetchPresenceFleet } from '../../agent-tools/coordination/presence-fleet';
-import { listEventKeySubscribers } from '../../agent-tools/coordination/event-subscriptions';
+import { eventKeySubscriberScope, listEventKeySubscribers } from '../../agent-tools/coordination/event-subscriptions';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { admitSpawn } from '../../fleet/governor';
 import { activeWorkspaceId, backgroundWorkspaceIds } from '../../workspace-registry';
@@ -310,8 +310,18 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // probe and registerAwait; recording first makes the post-registration probe see
   // the fire and atomically retire a still-pending row instead of leaving it to time
   // out. Fail-soft — never break the emit when the diagnostic latch is unavailable.
+  // Unknown (latch failed, or a stub returned nothing) ⇒ take the locked stamp path.
+  let announcementPending = true;
+  // WI-10003631: the latch statement also returns the standing event-key
+  // subscribers; undefined (latch failed / stub) ⇒ the separate read below.
+  let latchedSubscribers: Array<{ subscriber_id: string; delivery_mode: string }> | undefined;
   try {
-    await recordKeyFire({ eventKey: opts.key, firedBy: opts.source ?? null, payload: opts.payload });
+    const latch = await recordKeyFire({
+      eventKey: opts.key, firedBy: opts.source ?? null, payload: opts.payload,
+      subscribersFrom: eventKeySubscriberScope(),
+    });
+    if (latch && latch.announcementPending === false) announcementPending = false;
+    latchedSubscribers = latch?.eventSubscribers;
   } catch (e) {
     log(`key-fire latch record failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
   }
@@ -348,10 +358,13 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
 
   // EI-9270: latch any ANNOUNCED gate on this key (fired_at stamped, row kept) so a
   // late registrant is told the gate already opened. Fail-soft — never break the emit.
-  try {
-    await stampAnnouncementsFired(opts.key, { firedBy: opts.source ?? null, payload: opts.payload });
-  } catch (e) {
-    log(`announce latch stamp failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
+  // WI-10003631: skipped when the latch statement proved no unfired announcement existed.
+  if (announcementPending) {
+    try {
+      await stampAnnouncementsFired(opts.key, { firedBy: opts.source ?? null, payload: opts.payload });
+    } catch (e) {
+      log(`announce latch stamp failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
+    }
   }
 
   // 2. Queue durable wake deliveries + kick the pump off the hot path.
@@ -440,7 +453,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // a lookup error must never break the emit (the wake half above already fired).
   let eventSubscriberIds: string[] = [];
   try {
-    const subs = await listEventKeySubscribers(opts.key);
+    const subs = latchedSubscribers ?? await listEventKeySubscribers(opts.key);
     eventSubscriberIds = subs.filter((s) => s.delivery_mode !== 'muted').map((s) => s.subscriber_id);
   } catch (e) {
     log(`event-key subscriber lookup failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);

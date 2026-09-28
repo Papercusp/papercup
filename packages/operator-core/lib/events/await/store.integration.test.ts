@@ -153,6 +153,16 @@ beforeAll(async () => {
       last_fired_by text, last_payload jsonb, fire_count bigint NOT NULL DEFAULT 1,
       PRIMARY KEY (workspace_id, event_key)
     )`);
+  // WI-10003631: recordKeyFire's folded standing-subscriber read — the live
+  // column shape of coord_entity_subscriptions (bigint id, timestamptz TTLs).
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.coord_entity_subscriptions (
+      id bigint PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default',
+      subscriber_id text NOT NULL, target_kind text NOT NULL, target_ref text NOT NULL,
+      delivery_mode text NOT NULL DEFAULT 'full', expires_ts timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(), cancelled_at timestamptz,
+      follow_blockers boolean NOT NULL DEFAULT false, derived_from_kind text, derived_from_ref text
+    )`);
   // EI-20540454577146535: a minimal stand-in for the harness_shared.work_items base —
   // terminalWorkItemIds() only needs feature_id/status, while the event-settlement
   // regression below also exercises payload/item_kind/updated_ts reconciliation.
@@ -688,6 +698,50 @@ describe('await-event store (PG)', () => {
     expect((await findAnnouncementsForKey(eventKey, { includeCancelled: true })).map((row) => row.id)).toEqual([
       announcement.id,
     ]);
+  });
+
+  it('recordKeyFire reports announcementPending only while an unfired current announcement exists (WI-10003631)', async () => {
+    const eventKey = 'gate:announce-probe';
+    // No announcement → the emit may skip the locked stamp.
+    expect(await recordKeyFire({ eventKey })).toEqual({ announcementPending: false });
+    await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    // Unfired announcement → the emit must take the locked stamp path.
+    expect(await recordKeyFire({ eventKey })).toEqual({ announcementPending: true });
+    expect(await stampAnnouncementsFired(eventKey, { firedBy: 'emit' })).toBe(1);
+    // Latched → no pending gate; the latch still counts every fire.
+    expect(await recordKeyFire({ eventKey })).toEqual({ announcementPending: false });
+    const [latch] = await rootSql`
+      SELECT fire_count FROM harness_shared.event_key_fires WHERE event_key = ${eventKey}
+    `;
+    expect(Number(latch.fire_count)).toBe(3);
+  });
+
+  it('recordKeyFire folds the active event-key subscriber read into the latch statement (WI-10003631)', async () => {
+    const eventKey = 'gate:subscriber-fold-probe';
+    const from = { workspaceId: 'ws-sub-fold', targetKind: 'event' };
+    // Omitted scope → no subscriber field (the emit falls back to its own read).
+    expect(await recordKeyFire({ eventKey })).toEqual({ announcementPending: false });
+    expect(await recordKeyFire({ eventKey, subscribersFrom: from }))
+      .toEqual({ announcementPending: false, eventSubscribers: [] });
+    await rootSql`
+      INSERT INTO harness_shared.coord_entity_subscriptions
+        (id, workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, cancelled_at, expires_ts)
+      VALUES
+        (1, ${from.workspaceId}, 'late', 'event', ${eventKey}, 'full', now(), NULL, NULL),
+        (2, ${from.workspaceId}, 'early', 'event', ${eventKey}, 'muted', now() - interval '1 minute', NULL, NULL),
+        (3, ${from.workspaceId}, 'cancelled', 'event', ${eventKey}, 'full', now(), now(), NULL),
+        (4, ${from.workspaceId}, 'expired', 'event', ${eventKey}, 'full', now(), NULL, now() - interval '1 second'),
+        (5, 'other-ws', 'foreign', 'event', ${eventKey}, 'full', now(), NULL, NULL),
+        (6, ${from.workspaceId}, 'topic-sub', 'topic', ${eventKey}, 'full', now(), NULL, NULL)
+    `;
+    // Active rows only, in created order; muted rows are returned (the emit filters them).
+    expect(await recordKeyFire({ eventKey, subscribersFrom: from })).toEqual({
+      announcementPending: false,
+      eventSubscribers: [
+        { subscriber_id: 'early', delivery_mode: 'muted' },
+        { subscriber_id: 'late', delivery_mode: 'full' },
+      ],
+    });
   });
 
   it('discovers fired announcement history after cancellation and ignores unannounced fire latches', async () => {

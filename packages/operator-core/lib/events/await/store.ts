@@ -469,57 +469,45 @@ export interface LifecycleRetirementResult {
  * displaced owner's rows may be cancelled.
  */
 export async function retireLifecycleBoundWatches(
-  binding: LifecycleBinding,
+  binding: LifecycleBinding | readonly LifecycleBinding[],
   opts: { ownerIds?: readonly string[] } = {},
 ): Promise<LifecycleRetirementResult> {
-  const normalized = assertLifecycleBinding(binding);
+  // WI-10003631 (P-013 C): a work-item settle retires several bindings at
+  // once (claim + each plan lane). Each used to be its own bounded txn — two
+  // UPDATEs plus BEGIN/set_config/COMMIT per binding. All bindings now go in
+  // ONE statement: both UPDATEs as data-modifying CTEs over `bound_to = ANY`.
+  const list = (Array.isArray(binding) ? binding : [binding]) as readonly LifecycleBinding[];
+  if (list.length === 0) return { awaits: 0, predicateWatches: 0 };
+  const bindingJsons = [...new Set(list.map((b) => JSON.stringify(assertLifecycleBinding(b))))];
   const owners = [...new Set((opts.ownerIds ?? []).map((id) => id.trim()).filter(Boolean))];
+  const ownerFilter = owners.length > 0;
   return boundedOrgTxn(async (tx) => {
-    const bindingJson = JSON.stringify(normalized);
-    const awaits =
-      owners.length > 0
-        ? await tx`
-          UPDATE harness_shared.event_awaits
-             SET cancelled_at = now()
-           WHERE bound_to = ${bindingJson}::text::jsonb
-             AND subscriber_id = ANY(${owners}::text[])
-             -- Announcements are declaration/latch rows, not lifecycle
-             -- watches.  They intentionally survive declarer death so a
-             -- successor can inherit the exact generation-guarded gate;
-             -- only retireAnnouncement may settle one.
-             AND policy <> 'announce'
-             AND cancelled_at IS NULL
-             AND (once = false OR fired_at IS NULL)
-          RETURNING id`
-        : await tx`
-          UPDATE harness_shared.event_awaits
-             SET cancelled_at = now()
-           WHERE bound_to = ${bindingJson}::text::jsonb
-             -- Keep announced gates alive across owner/session lifecycle
-             -- changes.  Their explicit generation-guarded retirement path
-             -- is separate from ordinary lifecycle-watch cleanup.
-             AND policy <> 'announce'
-             AND cancelled_at IS NULL
-             AND (once = false OR fired_at IS NULL)
-          RETURNING id`;
-    const predicateWatches =
-      owners.length > 0
-        ? await tx`
-          UPDATE harness_shared.predicate_watches
-             SET active = false,
-                 last_error = coalesce(last_error, 'gc: lifecycle binding retired')
-           WHERE bound_to = ${bindingJson}::text::jsonb
-             AND owner_id = ANY(${owners}::text[])
-             AND active
-          RETURNING id`
-        : await tx`
-          UPDATE harness_shared.predicate_watches
-             SET active = false,
-                 last_error = coalesce(last_error, 'gc: lifecycle binding retired')
-           WHERE bound_to = ${bindingJson}::text::jsonb
-             AND active
-          RETURNING id`;
-    return { awaits: awaits.length, predicateWatches: predicateWatches.length };
+    const rows = await tx<{ awaits: number; predicate_watches: number }[]>`
+      WITH retired_awaits AS (
+        UPDATE harness_shared.event_awaits
+           SET cancelled_at = now()
+         WHERE bound_to = ANY(${bindingJsons}::text[]::jsonb[])
+           AND (NOT ${ownerFilter}::boolean OR subscriber_id = ANY(${owners}::text[]))
+           -- Announcements are declaration/latch rows, not lifecycle
+           -- watches.  They intentionally survive declarer death so a
+           -- successor can inherit the exact generation-guarded gate;
+           -- only retireAnnouncement may settle one.
+           AND policy <> 'announce'
+           AND cancelled_at IS NULL
+           AND (once = false OR fired_at IS NULL)
+        RETURNING id
+      ), retired_predicates AS (
+        UPDATE harness_shared.predicate_watches
+           SET active = false,
+               last_error = coalesce(last_error, 'gc: lifecycle binding retired')
+         WHERE bound_to = ANY(${bindingJsons}::text[]::jsonb[])
+           AND (NOT ${ownerFilter}::boolean OR owner_id = ANY(${owners}::text[]))
+           AND active
+        RETURNING id
+      )
+      SELECT (SELECT count(*) FROM retired_awaits)::int AS awaits,
+             (SELECT count(*) FROM retired_predicates)::int AS predicate_watches`;
+    return { awaits: rows[0]?.awaits ?? 0, predicateWatches: rows[0]?.predicate_watches ?? 0 };
   });
 }
 
@@ -1776,18 +1764,6 @@ export async function fireAwaitsForKey(input: {
 
   // One-shot, EXACT KEY, NO payload_filter: today's single-atomic-UPDATE fast path,
   // unchanged (D-002) — the overwhelmingly common case pays zero extra cost for EI-8998.
-  const onceRows = await sql`
-    UPDATE harness_shared.event_awaits
-       SET fired_at = now(), fired_reason = ${input.reason ?? 'event'},
-           fired_delivery_intent_at = CASE WHEN policy = 'wake' AND node_id IS NULL AND root_id IS NULL THEN now() ELSE NULL END,
-           fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
-     WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
-       AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
-       AND payload_filter IS NULL
-       AND policy <> 'announce'
-       AND ${!suppressRescueInboxOneShot}
-    RETURNING *
-  `;
 
   // WI-10003631: the three candidate reads below (one-shot filtered exact-key,
   // standing exact-key, active patterns) used to be three round trips per fire —
@@ -1799,7 +1775,27 @@ export async function fireAwaitsForKey(input: {
   // event_key) / event_awaits_pattern_active). A row matching two branches (an
   // emitted key that itself contains `*`) appears once per branch, exactly as it
   // did across the three separate reads, so every partition below is unchanged.
+  // WI-10003631 (fold 2): the unfiltered one-shot claim rides in the SAME
+  // statement as a data-modifying CTE (branch 'once') — one round trip per emit,
+  // not two. The read branches see the pre-UPDATE snapshot: once_filter/standing
+  // are disjoint from the claim by predicate (payload_filter NOT NULL / once =
+  // false); the pattern branch excludes claimed ids explicitly, matching the old
+  // claim-then-read ordering.
   const candidateRows = await sql`
+    WITH claimed_once AS (
+      UPDATE harness_shared.event_awaits
+         SET fired_at = now(), fired_reason = ${input.reason ?? 'event'},
+             fired_delivery_intent_at = CASE WHEN policy = 'wake' AND node_id IS NULL AND root_id IS NULL THEN now() ELSE NULL END,
+             fired_by = ${input.source ?? null}, fired_payload = ${firePayloadJson}::text::jsonb
+       WHERE workspace_id = ${ws} AND event_key = ${input.eventKey}
+         AND once = true AND fired_at IS NULL AND cancelled_at IS NULL
+         AND payload_filter IS NULL
+         AND policy <> 'announce'
+         AND ${!suppressRescueInboxOneShot}
+      RETURNING *
+    )
+    SELECT 'once'::text AS m_branch, c.* FROM claimed_once c
+    UNION ALL
     SELECT 'once_filter'::text AS m_branch, a.* FROM harness_shared.event_awaits a
      WHERE a.workspace_id = ${ws} AND a.event_key = ${input.eventKey}
        AND a.once = true AND a.fired_at IS NULL AND a.cancelled_at IS NULL
@@ -1819,7 +1815,9 @@ export async function fireAwaitsForKey(input: {
        AND a.fired_at IS NULL AND a.cancelled_at IS NULL
        AND (a.once = true OR a.expires_ts IS NULL OR a.expires_ts > now())
        AND a.policy <> 'announce'
+       AND a.id NOT IN (SELECT id FROM claimed_once)
   `;
+  const onceRows = candidateRows.filter((r: any) => r.m_branch === 'once');
   const onceFilterCandidates = candidateRows.filter((r: any) => r.m_branch === 'once_filter');
   const standingCandidates = candidateRows.filter((r: any) => r.m_branch === 'standing');
   const patternCandidates = candidateRows.filter((r: any) => r.m_branch === 'pattern');
@@ -2993,26 +2991,68 @@ function mapKeyFire(row: any): KeyFireRow {
 
 /** Record a real fire on `eventKey` — called unconditionally from
  *  `emitAwaitedEvent`'s non-announce path, regardless of waiters/`fired.length`.
- *  Best-effort at the call site (fail-soft): never blocks or breaks an emit. */
+ *  Best-effort at the call site (fail-soft): never blocks or breaks an emit.
+ *
+ *  P-013 C / WI-10003631 (D-028): the same statement also probes whether the key
+ *  has an unfired announcement, so the emit can skip `stampAnnouncementsFired`'s
+ *  BEGIN + advisory lock + UPDATE + COMMIT (4 round trips) on the overwhelmingly
+ *  common no-announcement path. The probe is lock-free on purpose: an announcement
+ *  committed after this snapshot linearizes AFTER this fire (it is a pending gate
+ *  for the next fire), exactly as one registered after the locked stamp would.
+ *  `announcementPending: true` is conservative — the locked stamp re-checks. */
 export async function recordKeyFire(input: {
   eventKey: string;
   firedBy?: string | null;
   payload?: unknown;
-}): Promise<void> {
+  /** WI-10003631: when set, the same statement also returns the key's active
+   *  standing event-key subscribers (the emit fan-out's read) from this
+   *  subscription workspace — saving the emit a separate round trip. */
+  subscribersFrom?: { workspaceId: string; targetKind: string };
+}): Promise<{
+  announcementPending: boolean;
+  eventSubscribers?: Array<{ subscriber_id: string; delivery_mode: string }>;
+}> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  await sql`
-    INSERT INTO harness_shared.event_key_fires
-      (workspace_id, event_key, first_fired_at, last_fired_at, last_fired_by, last_payload, fire_count)
-    VALUES
-      (${ws}, ${input.eventKey}, now(), now(), ${input.firedBy ?? null},
-       ${input.payload !== undefined ? JSON.stringify(input.payload) : null}::text::jsonb, 1)
-    ON CONFLICT (workspace_id, event_key) DO UPDATE
-       SET last_fired_at = now(),
-           last_fired_by = ${input.firedBy ?? null},
-           last_payload = ${input.payload !== undefined ? JSON.stringify(input.payload) : null}::text::jsonb,
-           fire_count = harness_shared.event_key_fires.fire_count + 1
+  const subs = input.subscribersFrom;
+  const subscribersSql = subs
+    ? sql`, (
+        SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                 'subscriber_id', sub.subscriber_id, 'delivery_mode', sub.delivery_mode)
+               ORDER BY sub.created_at ASC, sub.id ASC), '[]'::jsonb)
+          FROM harness_shared.coord_entity_subscriptions AS sub
+         WHERE sub.workspace_id = ${subs.workspaceId} AND sub.target_kind = ${subs.targetKind}
+           AND sub.target_ref = ${input.eventKey}
+           AND sub.cancelled_at IS NULL AND (sub.expires_ts IS NULL OR sub.expires_ts > now())
+      ) AS event_subscribers`
+    : sql``;
+  const rows = await sql`
+    WITH latch AS (
+      INSERT INTO harness_shared.event_key_fires
+        (workspace_id, event_key, first_fired_at, last_fired_at, last_fired_by, last_payload, fire_count)
+      VALUES
+        (${ws}, ${input.eventKey}, now(), now(), ${input.firedBy ?? null},
+         ${input.payload !== undefined ? JSON.stringify(input.payload) : null}::text::jsonb, 1)
+      ON CONFLICT (workspace_id, event_key) DO UPDATE
+         SET last_fired_at = now(),
+             last_fired_by = ${input.firedBy ?? null},
+             last_payload = ${input.payload !== undefined ? JSON.stringify(input.payload) : null}::text::jsonb,
+             fire_count = harness_shared.event_key_fires.fire_count + 1
+      RETURNING 1
+    )
+    SELECT EXISTS (
+      SELECT 1 FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
+         AND fired_at IS NULL AND cancelled_at IS NULL AND superseded_at IS NULL
+    ) AS announcement_pending${subscribersSql}
   `;
+  // A data-modifying CTE runs to completion whether or not the main query reads it.
+  const raw = subs ? rows[0]?.event_subscribers : undefined;
+  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  return {
+    announcementPending: rows[0]?.announcement_pending !== false,
+    ...(Array.isArray(parsed) ? { eventSubscribers: parsed } : {}),
+  };
 }
 
 /** The latch row for one key, or null if it has never genuinely fired. */
