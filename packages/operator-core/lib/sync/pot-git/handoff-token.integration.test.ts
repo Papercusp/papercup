@@ -19,7 +19,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { defaultRunGit, deviceNamespaceKey, ensurePotGitRepo, writeNamespaceRef } from './storage';
-import { WORK_REF, integrateMemberHeads, readStaging } from './integrator';
+import { WORK_REF, integrateMemberHeads as integrateMemberHeadsUnderTest, readStaging } from './integrator';
+import { hiveEffectFixture } from './hive-effect-authority.fixture';
 import { acceptStagingAdvanceFF, signStagingAdvance } from './staging-advance';
 import {
   adoptHandoffToken,
@@ -30,7 +31,16 @@ import {
   resolveMaxObservedStaging,
   verifyHandoffToken,
 } from './handoff-token';
-import { deriveIntegratorGrant, deriveMaxGrantedEpoch } from './authority-epoch';
+
+/**
+ * Every ADVANCING integration is an exclusive hive effect (D-022: only the
+ * owning hive key authorizes canonical integration; no automatic failover), so
+ * run it as the test-only owning hive — the integrator.integration.test.ts idiom.
+ */
+function integrateMemberHeads(...args: Parameters<typeof integrateMemberHeadsUnderTest>) {
+  const [repo, device, heads, opts] = args;
+  return integrateMemberHeadsUnderTest(repo, device, heads, { ...hiveEffectFixture(), ...opts });
+}
 
 function device() {
   const { privateKeyDer, pubkeyBase64 } = generateEd25519KeypairDer();
@@ -279,283 +289,5 @@ describe('pot-git handoff token + park tokens (G-0/G-0b, real bare repo)', () =>
       ok: false,
       reason: 'stale-epoch-seq',
     });
-  });
-});
-
-describe('P-505 authority epoch grant policy (real bare repo)', () => {
-  let root: string;
-  let repoSeq = 0;
-
-  beforeAll(async () => {
-    root = await mkdtemp(join(tmpdir(), 'authority-epoch-it-'));
-    process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
-  });
-
-  afterAll(async () => {
-    delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
-    await rm(root, { recursive: true, force: true });
-  });
-
-  async function freshRepo(): Promise<string> {
-    repoSeq += 1;
-    return ensurePotGitRepo('authority-h', `case-${repoSeq}`);
-  }
-
-  it('keeps a standing authority in its current epoch and continues its sequence', async () => {
-    const repo = await freshRepo();
-    const self = device();
-    const grant = await deriveIntegratorGrant({
-      repoPath: repo,
-      selfDevicePubkeyBase64: self.pubkeyBase64,
-      memberDevicePubkeysBase64: [self.pubkeyBase64],
-      priorIntegrator: { epoch: 4, seq: 12 },
-      bridgeWatermark: { epoch: 4, seq: 11 },
-    });
-
-    expect(grant).toMatchObject({
-      ready: true,
-      basis: 'standing',
-      epoch: 4,
-      priorSeq: 12,
-    });
-  });
-
-  it('adopts the best verified handoff token and exposes its next epoch as receiver grant evidence', async () => {
-    const repo = await freshRepo();
-    const oldAuthority = device();
-    const successor = device();
-    const base = await commit(repo, { 'base.txt': 'base' });
-    const oldStaging = await commit(repo, { 'base.txt': 'base', 'old.txt': 'old' }, base);
-    await writeNamespaceRef(repo, oldAuthority.pubkeyBase64, 'refs/heads/staging', oldStaging);
-    await publishHandoffToken(
-      repo,
-      oldAuthority.pubkeyBase64,
-      { epoch: 7, seq: 3, stagingSha: oldStaging, nowMs: 10_000 },
-      oldAuthority.sign,
-    );
-
-    const grant = await deriveIntegratorGrant({
-      repoPath: repo,
-      selfDevicePubkeyBase64: successor.pubkeyBase64,
-      memberDevicePubkeysBase64: [oldAuthority.pubkeyBase64, successor.pubkeyBase64],
-      priorIntegrator: { epoch: 2, seq: 9 },
-      bridgeWatermark: null,
-    });
-    expect(grant).toMatchObject({
-      ready: true,
-      basis: 'token-adoption',
-      epoch: 8,
-      priorSeq: 0,
-      adoption: { ok: true, staging: oldStaging },
-    });
-    expect(await readStaging(repo, successor.pubkeyBase64)).toBe(oldStaging);
-    expect(
-      await deriveMaxGrantedEpoch({
-        repoPath: repo,
-        memberDevicePubkeysBase64: [oldAuthority.pubkeyBase64, successor.pubkeyBase64],
-        ownIntegratorEpoch: 2,
-      }),
-    ).toBe(8);
-  });
-
-  it('reconciles a cleanly-diverged successor staging with the token base before granting the higher epoch', async () => {
-    const repo = await freshRepo();
-    const oldAuthority = device();
-    const successor = device();
-    const base = await commit(repo, { 'base.txt': 'base' });
-    const oldStaging = await commit(repo, { 'base.txt': 'base', 'old.txt': 'old' }, base);
-    const successorStaging = await commit(repo, { 'base.txt': 'base', 'new.txt': 'new' }, base);
-    await writeNamespaceRef(repo, oldAuthority.pubkeyBase64, 'refs/heads/staging', oldStaging);
-    await writeNamespaceRef(repo, successor.pubkeyBase64, 'refs/heads/staging', successorStaging);
-    await publishHandoffToken(
-      repo,
-      oldAuthority.pubkeyBase64,
-      { epoch: 3, seq: 1, stagingSha: oldStaging, nowMs: 11_000 },
-      oldAuthority.sign,
-    );
-
-    const grant = await deriveIntegratorGrant({
-      repoPath: repo,
-      selfDevicePubkeyBase64: successor.pubkeyBase64,
-      memberDevicePubkeysBase64: [oldAuthority.pubkeyBase64, successor.pubkeyBase64],
-      priorIntegrator: { epoch: 1, seq: 2 },
-      bridgeWatermark: null,
-    });
-    const reconciled = await readStaging(repo, successor.pubkeyBase64);
-    expect(grant).toMatchObject({
-      ready: true,
-      basis: 'token-adoption',
-      epoch: 4,
-      priorSeq: 0,
-      adoption: { ok: true },
-    });
-    expect(reconciled).not.toBeNull();
-    expect(await isAncestor(repo, oldStaging, reconciled!)).toBe(true);
-    expect(await isAncestor(repo, successorStaging, reconciled!)).toBe(true);
-  });
-
-  it('blocks a higher-epoch publish when the winning token base is not present locally', async () => {
-    const repo = await freshRepo();
-    const oldAuthority = device();
-    const successor = device();
-    await publishHandoffToken(
-      repo,
-      oldAuthority.pubkeyBase64,
-      { epoch: 9, seq: 4, stagingSha: 'e'.repeat(40), nowMs: 12_000 },
-      oldAuthority.sign,
-    );
-
-    const grant = await deriveIntegratorGrant({
-      repoPath: repo,
-      selfDevicePubkeyBase64: successor.pubkeyBase64,
-      memberDevicePubkeysBase64: [oldAuthority.pubkeyBase64, successor.pubkeyBase64],
-      priorIntegrator: { epoch: 2, seq: 5 },
-      bridgeWatermark: null,
-    });
-    expect(grant).toMatchObject({
-      ready: false,
-      basis: 'blocked-token-adoption',
-      adoption: { ok: false, reason: 'missing-objects' },
-    });
-    expect(await readStaging(repo, successor.pubkeyBase64)).toBeNull();
-  });
-
-  it('blocks a higher-epoch publish when the token base conflicts with successor staging', async () => {
-    const repo = await freshRepo();
-    const oldAuthority = device();
-    const successor = device();
-    const base = await commit(repo, { 'shared.txt': 'base' });
-    const oldStaging = await commit(repo, { 'shared.txt': 'old authority' }, base);
-    const successorStaging = await commit(repo, { 'shared.txt': 'successor' }, base);
-    await writeNamespaceRef(repo, oldAuthority.pubkeyBase64, 'refs/heads/staging', oldStaging);
-    await writeNamespaceRef(repo, successor.pubkeyBase64, 'refs/heads/staging', successorStaging);
-    await publishHandoffToken(
-      repo,
-      oldAuthority.pubkeyBase64,
-      { epoch: 6, seq: 2, stagingSha: oldStaging, nowMs: 13_000 },
-      oldAuthority.sign,
-    );
-
-    const grant = await deriveIntegratorGrant({
-      repoPath: repo,
-      selfDevicePubkeyBase64: successor.pubkeyBase64,
-      memberDevicePubkeysBase64: [oldAuthority.pubkeyBase64, successor.pubkeyBase64],
-      priorIntegrator: { epoch: 2, seq: 5 },
-      bridgeWatermark: null,
-    });
-    expect(grant).toMatchObject({
-      ready: false,
-      basis: 'blocked-token-adoption',
-      adoption: { ok: false, reason: 'diverged' },
-    });
-    expect(await readStaging(repo, successor.pubkeyBase64)).toBe(successorStaging);
-  });
-
-  it('uses the accepted bridge watermark for a tokenless crash takeover and seeds the maximal observed staging', async () => {
-    const repo = await freshRepo();
-    const deadAuthority = device();
-    const successor = device();
-    const base = await commit(repo, { 'base.txt': 'base' });
-    const lastStaging = await commit(repo, { 'base.txt': 'base', 'last.txt': 'last' }, base);
-    await writeNamespaceRef(repo, deadAuthority.pubkeyBase64, 'refs/heads/staging', lastStaging);
-
-    const grant = await deriveIntegratorGrant({
-      repoPath: repo,
-      selfDevicePubkeyBase64: successor.pubkeyBase64,
-      memberDevicePubkeysBase64: [deadAuthority.pubkeyBase64, successor.pubkeyBase64],
-      priorIntegrator: { epoch: 2, seq: 6 },
-      bridgeWatermark: { epoch: 5, seq: 8 },
-    });
-    expect(grant).toMatchObject({
-      ready: true,
-      basis: 'crash-takeover',
-      epoch: 6,
-      priorSeq: 0,
-    });
-    expect(await readStaging(repo, successor.pubkeyBase64)).toBe(lastStaging);
-  });
-
-  it('blocks a tokenless crash grant when no observed member staging can prove its publish base', async () => {
-    const repo = await freshRepo();
-    const deadAuthority = device();
-    const successor = device();
-
-    const grant = await deriveIntegratorGrant({
-      repoPath: repo,
-      selfDevicePubkeyBase64: successor.pubkeyBase64,
-      memberDevicePubkeysBase64: [deadAuthority.pubkeyBase64, successor.pubkeyBase64],
-      priorIntegrator: { epoch: 2, seq: 6 },
-      bridgeWatermark: { epoch: 5, seq: 8 },
-    });
-    expect(grant).toMatchObject({
-      ready: false,
-      basis: 'blocked-crash-reconciliation',
-      grantedFrom: 'epoch:5',
-    });
-    expect(grant.detail).toContain('no observed member staging');
-    expect(await readStaging(repo, successor.pubkeyBase64)).toBeNull();
-  });
-
-  it('uses the accepted bridge staging as a floor and ignores an unrelated namespace history', async () => {
-    const repo = await freshRepo();
-    const oldAuthority = device();
-    const unrelated = device();
-    const successor = device();
-    const base = await commit(repo, { 'base.txt': 'base' });
-    const validHead = await commit(repo, { 'base.txt': 'base', 'valid.txt': 'valid' }, base);
-    // This head has no common ancestor with the accepted bridge staging. It is
-    // stale mirror debris, not a safe crash-takeover base.
-    const unrelatedHead = await commit(repo, { 'unrelated.txt': 'unrelated' });
-    await writeNamespaceRef(repo, oldAuthority.pubkeyBase64, 'refs/heads/staging', validHead);
-    await writeNamespaceRef(repo, unrelated.pubkeyBase64, 'refs/heads/staging', unrelatedHead);
-
-    const grant = await deriveIntegratorGrant({
-      repoPath: repo,
-      selfDevicePubkeyBase64: successor.pubkeyBase64,
-      memberDevicePubkeysBase64: [oldAuthority.pubkeyBase64, unrelated.pubkeyBase64, successor.pubkeyBase64],
-      priorIntegrator: { epoch: 2, seq: 6 },
-      bridgeWatermark: { epoch: 5, seq: 8 },
-      bridgeStagingSha: base,
-    });
-    expect(grant).toMatchObject({
-      ready: true,
-      basis: 'crash-takeover',
-      epoch: 6,
-      priorSeq: 0,
-    });
-    const reconciled = await readStaging(repo, successor.pubkeyBase64);
-    expect(reconciled).toBe(validHead);
-    expect(await isAncestor(repo, base, reconciled!)).toBe(true);
-    expect(grant.detail).not.toContain('blocked-crash-reconciliation');
-  });
-
-  it('reconciles every clean ancestry-maximal staging before a tokenless crash grant', async () => {
-    const repo = await freshRepo();
-    const deadA = device();
-    const deadB = device();
-    const successor = device();
-    const base = await commit(repo, { 'base.txt': 'base' });
-    const stagingA = await commit(repo, { 'base.txt': 'base', 'a.txt': 'a' }, base);
-    const stagingB = await commit(repo, { 'base.txt': 'base', 'b.txt': 'b' }, base);
-    await writeNamespaceRef(repo, deadA.pubkeyBase64, 'refs/heads/staging', stagingA);
-    await writeNamespaceRef(repo, deadB.pubkeyBase64, 'refs/heads/staging', stagingB);
-
-    const grant = await deriveIntegratorGrant({
-      repoPath: repo,
-      selfDevicePubkeyBase64: successor.pubkeyBase64,
-      memberDevicePubkeysBase64: [deadA.pubkeyBase64, deadB.pubkeyBase64, successor.pubkeyBase64],
-      priorIntegrator: { epoch: 2, seq: 6 },
-      bridgeWatermark: { epoch: 5, seq: 8 },
-    });
-    const reconciled = await readStaging(repo, successor.pubkeyBase64);
-    expect(grant).toMatchObject({
-      ready: true,
-      basis: 'crash-takeover',
-      epoch: 6,
-      priorSeq: 0,
-    });
-    expect(reconciled).not.toBeNull();
-    expect(await isAncestor(repo, stagingA, reconciled!)).toBe(true);
-    expect(await isAncestor(repo, stagingB, reconciled!)).toBe(true);
   });
 });
