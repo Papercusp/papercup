@@ -151,6 +151,28 @@ describe('EI-6480 — issue-claim re-read is workspace-exact, not scope-re-deriv
     expect(exact?.assignee).toBe('w1');
   });
 
+  it('WI-10003631: getIssue is ONE statement and, with no ambient twin, returns the freshest row across workspaces; a miss is one statement too', async () => {
+    // The old two-step (resolveIssueWorkspace → getIssueInWorkspace) picked the freshest
+    // row's workspace, then the freshest twin inside it — the same row the single ordered
+    // read returns. Two non-ambient workspaces, freshest in ws-b.
+    await seedIssueInWorkspace('EI-one', 'ws-a', { takenBy: 'older', updatedTs: 10, harnessSlug: '' });
+    await seedIssueInWorkspace('EI-one', 'ws-b', { takenBy: 'newer', updatedTs: 1_000 });
+    const real = h.sql;
+    let statements = 0;
+    h.sql = new Proxy(real, {
+      apply(target, thisArg, args) { statements += 1; return Reflect.apply(target, thisArg, args); },
+    }) as typeof real;
+    try {
+      expect((await ie.getIssue('EI-one'))?.assignee).toBe('newer');
+      expect(statements).toBe(1);
+      statements = 0;
+      expect(await ie.getIssue('EI-missing')).toBeNull();
+      expect(statements).toBe(1);
+    } finally {
+      h.sql = real;
+    }
+  });
+
   it('remote-origin issue rows surface provenance and refuse local set_state with a truthful error', async () => {
     await seedIssueInWorkspace('WI-remote', 'default', { status: 'open' });
     await db.sql`
