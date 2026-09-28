@@ -289,6 +289,33 @@ async function git(cwd: string, args: string[]): Promise<string> {
   return result.stdout.trim();
 }
 
+/**
+ * Worktree paths reported by `git status`, parsed from NUL-delimited porcelain.
+ *
+ * Never parse porcelain through git(): it trims stdout, and a porcelain line for
+ * a tracked file modified only in the worktree starts with a SPACE (` M path`).
+ * Trimming eats that column, so a fixed `slice(3)` then drops the path's first
+ * character. The Phase D sentinel is tracked on every rig since run 15, so its
+ * planted dirt read as `505-phase-d-overlap.txt` and both dirty-advance clauses
+ * rejected a correct run (P-505 run 24, WI-10003767). `-z` also disables path
+ * quoting and emits a rename's source as its own record, which is skipped.
+ */
+export async function porcelainDirtyPaths(worktreePath: string): Promise<string[]> {
+  const result = await defaultRunGit(['status', '--porcelain=v1', '-z', '--untracked-files=all'], worktreePath);
+  if (result.code !== 0) {
+    throw new Error(`physical Phase D git status failed for ${worktreePath}: ${result.stderr.trim()}`);
+  }
+  const records = result.stdout.split('\0');
+  const paths: string[] = [];
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i];
+    if (record.length < 4) continue;
+    paths.push(record.slice(3));
+    if (record[0] === 'R' || record[0] === 'C') i += 1;
+  }
+  return paths.sort();
+}
+
 async function fixedPaths(deps: PhysicalPhaseDDeps = {}): Promise<{ repoPath: string; worktreePath: string }> {
   const repoPath = deps.repoPath ?? hiveGitRepoPath(PHASE_A_POT_HOME, PHASE_A_REPO_KEY);
   const worktreePath = deps.worktreePath ?? (await projectDirForSlug(PHASE_A_POT_HOME));
@@ -902,14 +929,7 @@ export async function capturePhysicalPhaseDObservation(
     const result = await defaultRunGit(['rev-parse', '--verify', '-q', `${ref}^{commit}`], cwd);
     return result.code === 0 ? result.stdout.trim() || null : null;
   };
-  const status = await git(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
-  const dirtyPaths = status
-    ? status
-        .split('\n')
-        .filter(Boolean)
-        .map((line) => line.slice(3).split(' -> ').at(-1)!)
-        .sort()
-    : [];
+  const dirtyPaths = await porcelainDirtyPaths(worktreePath);
   const protectedFile = join(worktreePath, PHASE_D_SENTINEL);
   return {
     schemaVersion: PHASE_D_OBSERVATION_SCHEMA,

@@ -16,7 +16,9 @@ import {
   PHASE_D_TIER_HOLD_FILE,
   PHASE_D_TIER_HOLD_SCHEMA,
   PHASE_D_WORKSPACE,
+  capturePhysicalPhaseDObservation,
   createPhysicalPhaseDMutation,
+  porcelainDirtyPaths,
   dirtyPhysicalPhaseDWorktree,
   holdPhysicalPhaseDBelowSteer,
   resetPhysicalPhaseDDirt,
@@ -437,6 +439,36 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
     expect(dirty.protectedPath).toBe(PHASE_D_SENTINEL);
     expect(await run(['status', '--porcelain=v1'], worktreePath)).toContain(PHASE_D_SENTINEL);
     expect(await run(['rev-parse', 'HEAD'], worktreePath)).toBe(mutation.headOid);
+  });
+
+  it('observes the planted dirt on a TRACKED sentinel by its exact path (P-505 run 24, WI-10003767)', async () => {
+    const { repoPath, worktreePath } = await fixedWorktree();
+    const device = generateEd25519KeypairDer().pubkeyBase64;
+    // Since P-505 run 15 the sentinel is tracked on every rig, so the planted dirt
+    // is a worktree-only modification: porcelain ` M <path>`, first column a SPACE.
+    await createPhysicalPhaseDMutation(
+      { runId: 'p505-phase-d-run-24', kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
+      { repoPath, worktreePath },
+    );
+    await dirtyPhysicalPhaseDWorktree({ runId: 'p505-phase-d-run-24' }, { repoPath, worktreePath, dirtLock: testDirtLock });
+
+    // Exact membership, never substring: `toContain` on the raw porcelain text is what
+    // let a trimmed parse that reported `505-phase-d-overlap.txt` pass for 9 runs.
+    expect(await porcelainDirtyPaths(worktreePath)).toEqual([PHASE_D_SENTINEL]);
+    const noCursorRows = (async () => []) as unknown as NonNullable<Parameters<typeof capturePhysicalPhaseDObservation>[1]>['sql'];
+    const observation = await capturePhysicalPhaseDObservation(
+      { hostId: 'vm', runId: 'p505-phase-d-run-24', stage: 'dirty-before', integratorDeviceKey: device },
+      { repoPath, worktreePath, sql: noCursorRows },
+    );
+    expect(observation.dirtyPaths).toEqual([PHASE_D_SENTINEL]);
+    expect(observation.protectedFileSha256).toMatch(/^[0-9a-f]{64}$/);
+
+    // A rename, an untracked file and a path needing quotes all keep their exact names.
+    await writeFile(join(worktreePath, 'with space "q".txt'), 'x\n');
+    await defaultRunGit(['mv', 'base.txt', 'renamed.txt'], worktreePath);
+    expect(await porcelainDirtyPaths(worktreePath)).toEqual(
+      [PHASE_D_SENTINEL, 'renamed.txt', 'with space "q".txt'].sort(),
+    );
   });
 
   async function fixedWorktree(): Promise<{
