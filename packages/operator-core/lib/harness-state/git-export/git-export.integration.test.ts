@@ -182,6 +182,41 @@ describe('git-export integration (P-003b): trigger → outbox → drainer → fi
     expect(after[0].body_embedding).toBeNull();
   });
 
+  it('WI-10003624: an escalation re-stamped with only mtime_ms/emitted_at does not rewrite its file', async () => {
+    await db.sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.harness_escalations (
+        workspace_id TEXT, harness_slug TEXT, origin TEXT,
+        phase TEXT, escalation TEXT, mtime_ms BIGINT,
+        PRIMARY KEY (harness_slug, phase)
+      )`);
+    await attachGitCaptureTrigger(db.sql, 'harness_escalations', ['phase']);
+    const upsert = (verdict: Record<string, unknown>, mtime: number) => db.sql`
+      INSERT INTO harness_shared.harness_escalations (workspace_id, harness_slug, origin, phase, escalation, mtime_ms)
+      VALUES (${WS}, ${SLUG}, 'local', 'git-sync', ${JSON.stringify(verdict)}, ${mtime})
+      ON CONFLICT (harness_slug, phase)
+      DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+    const verdict = { kind: 'git-sync-conflict', detail: 'conflicted' };
+    const abs = join(root, gitFilePath('harness_escalations', 'git-sync'));
+
+    await upsert({ ...verdict, emitted_at: 1000 }, 1000);
+    const first = await drainGitExportOnce({ sql: db.sql, workspaceId: WS, harnessSlug: SLUG, harnessRoot: root });
+    expect(first.exported).toBe(1);
+    const committed = await readFile(abs, 'utf8');
+
+    // Every tick re-UPSERTs the same verdict with fresh stamps: the row changes,
+    // the trigger captures, but the committed file must stay byte-identical.
+    await upsert({ ...verdict, emitted_at: 2000 }, 2000);
+    const tick = await drainGitExportOnce({ sql: db.sql, workspaceId: WS, harnessSlug: SLUG, harnessRoot: root });
+    expect(tick).toMatchObject({ exported: 0, unchanged: 1, changedPaths: [] });
+    expect(await readFile(abs, 'utf8')).toBe(committed);
+
+    // A real change to the verdict is still exported.
+    await upsert({ ...verdict, detail: 'resolved differently', emitted_at: 3000 }, 3000);
+    const real = await drainGitExportOnce({ sql: db.sql, workspaceId: WS, harnessSlug: SLUG, harnessRoot: root });
+    expect(real).toMatchObject({ exported: 1, unchanged: 0 });
+    expect(await readFile(abs, 'utf8')).not.toBe(committed);
+  });
+
   it('no-op guard: an UPDATE that changes nothing produces no new outbox row (re-upsert amplification)', async () => {
     await db.sql`
       INSERT INTO harness_shared.harness_decisions (id, workspace_id, harness_slug, origin, title, content, ts)
