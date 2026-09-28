@@ -1206,6 +1206,11 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       const log = join(root, 'ptool.log');
       const out = join(root, 'publish-raw.json');
       const ptool = join(root, 'ptool');
+      const timedOut = join(root, 'timed-out-once');
+      // The exact failure ptool prints when its client deadline beats the
+      // server's reply (P-505 run 13, WI-10003638).
+      const unknownOutcome =
+        'ptool: tools/call git-sync:run failed: MCP error -32001: Request timed out; the tool call may have executed. outcome=unknown; idempotencyKey=from-ptool';
       writeFileSync(ptool, [
         '#!/usr/bin/env bash',
         `printf '%s\\n' "$*" >> '${log}'`,
@@ -1213,14 +1218,19 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         'case "$STUB_MODE:$*" in',
         `  direct:*) printf '%s\\n' '${fired}' ;;`,
         `  route:*--url=http://127.0.0.1:3271*) printf '%s\\n' '${fired}' ;;`,
+        `  unknown-once:*--url=http://127.0.0.1:3271*)`,
+        `    if [ -e '${timedOut}' ]; then printf '%s\\n' '${fired}'; else : > '${timedOut}'; echo '${unknownOutcome}' >&2; exit 1; fi ;;`,
+        `  unknown-always:*--url=http://127.0.0.1:3271*) echo '${unknownOutcome}' >&2; exit 1 ;;`,
         `  *) printf '%s\\n' '${refusal}' ;;`,
         'esac',
         '',
       ].join('\n'));
       chmodSync(ptool, 0o755);
+      const keyOf = (call: string) => /--idempotency-key=(\S+)/.exec(call)?.[1];
 
-      const run = (mode: 'direct' | 'route' | 'refuse') => {
+      const run = (mode: 'direct' | 'route' | 'refuse' | 'unknown-once' | 'unknown-always') => {
         rmSync(log, { force: true });
+        rmSync(timedOut, { force: true });
         const script = [
           'set -euo pipefail',
           `TOWER_CALL='${ptool}'`,
@@ -1236,7 +1246,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
           encoding: 'utf8',
           timeout: 30_000,
           killSignal: 'SIGKILL',
-          env: { ...process.env, STUB_MODE: mode },
+          env: { ...process.env, STUB_MODE: mode, TOWER_GIT_SYNC_REPLAY_WAIT_SEC: '0' },
         });
         const calls = existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [];
         return { ...result, calls, output: existsSync(out) ? readFileSync(out, 'utf8') : '' };
@@ -1265,6 +1275,32 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       expect(refused.status).toBe(9);
       expect(refused.stdout).not.toContain('PUBLISH_OK');
       expect(refused.stderr).toContain('tower source-publish git-sync:run did not fire (refused: request-only-host)');
+
+      // WI-10003638 (P-505 run 13): the re-fire's ptool deadline beat a lagging
+      // bg-host, so the outcome was unknown. The scenario replays the SAME key,
+      // which the transport answers from its stored result, and records the
+      // fired result. The request-only attempt used a DIFFERENT key, so the
+      // shared replay store cannot hand the refusal back to the re-fire.
+      const replayed = run('unknown-once');
+      expect(replayed.status, replayed.stderr).toBe(0);
+      expect(replayed.stdout).toContain('PUBLISH_OK');
+      expect(replayed.calls).toHaveLength(3);
+      expect(replayed.calls[1]).toContain('--url=http://127.0.0.1:3271');
+      expect(replayed.calls[2]).toContain('--url=http://127.0.0.1:3271');
+      const keys = replayed.calls.map(keyOf);
+      expect(keys.every(Boolean)).toBe(true);
+      expect(keys[2]).toBe(keys[1]);
+      expect(keys[1]).not.toBe(keys[0]);
+      expect(replayed.stderr).toContain(`replaying idempotency key ${keys[1]}`);
+      expect(JSON.parse(replayed.output).fired).toBe(true);
+
+      // A host that never answers is bounded: two replays, then the publish
+      // fails with ptool's status instead of looping.
+      const lost = run('unknown-always');
+      expect(lost.status).not.toBe(0);
+      expect(lost.stdout).not.toContain('PUBLISH_OK');
+      expect(lost.calls).toHaveLength(4);
+      expect(new Set(lost.calls.slice(1).map(keyOf)).size).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
