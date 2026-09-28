@@ -89,6 +89,7 @@ import {
   type HydratedRelease,
 } from './release-history-page';
 import { buildReleaseHistoryAssets, releaseHistoryStem, releaseProjectHistory } from './release-project-history';
+import { SiteWriteTally } from './release-site-delta';
 
 /** Default maximum gap included in a newly recorded release snapshot. `--since`
  * explicitly overrides this bound for a deliberate historical backfill. */
@@ -974,12 +975,76 @@ export function setPageHeld(held: boolean): boolean {
   return held;
 }
 
-/** Regenerate the whole static site from the registry (every release, newest first). */
+/**
+ * The independently renderable parts of the releases site (WI-10003694).
+ *   index      → index.html + history.json (the page testers open, and the app's feed)
+ *   changes    → changes/<release>.{html,json} (per-release Project History)
+ *   assets     → assets/ (the shared Project History renderer bundle)
+ *   plans      → plans/<slug>.html
+ *   work-items → work-items/<id>.html (~28k pages — the expensive surface)
+ */
+export const SITE_SURFACES = ['index', 'changes', 'assets', 'plans', 'work-items'] as const;
+export type SiteSurface = (typeof SITE_SURFACES)[number];
+
+export interface SiteScope {
+  surfaces: ReadonlySet<SiteSurface>;
+  /** True when the caller narrowed the render with --only: a judged, audited FORCE. */
+  forced: boolean;
+  reason: string | null;
+}
+
+export const FULL_SITE_SCOPE: SiteScope = {
+  surfaces: new Set(SITE_SURFACES),
+  forced: false,
+  reason: null,
+};
+
+/**
+ * `--only <surface,…> --reason "<why>"` — the generic force (owner #821, 2026-09-28: "there
+ * should be a generic force feature that agents can use when they judge appropriate").
+ *
+ * The default regenerate renders everything, and that stays the safe default: a caller that
+ * guesses the blast radius wrong leaves stale pages live. But an agent that KNOWS what changed
+ * (an Instructions edit touches index.html only) may skip the ~28k-page render. It must say why,
+ * and every such run is written to the audit log — so the judgement is the agent's, and it is
+ * visible afterwards. The publish side needs no force: it already uploads only changed files.
+ */
+export function parseSiteScope(argv: string[]): SiteScope | { error: string } {
+  const onlyAt = argv.indexOf('--only');
+  if (onlyAt < 0) return FULL_SITE_SCOPE;
+  const raw = argv[onlyAt + 1];
+  if (!raw || raw.startsWith('--')) {
+    return { error: `--only needs a comma-separated list of: ${SITE_SURFACES.join(', ')}` };
+  }
+  const requested = raw.split(',').map((part) => part.trim()).filter(Boolean);
+  const unknown = requested.filter((part) => !(SITE_SURFACES as readonly string[]).includes(part));
+  if (unknown.length > 0 || requested.length === 0) {
+    return {
+      error: `--only: unknown surface(s) ${unknown.join(', ') || '<none>'} — choose from ${SITE_SURFACES.join(', ')}`,
+    };
+  }
+  const reason = arg(argv, '--reason')?.trim() ?? '';
+  if (reason.length < 8 || reason.startsWith('--')) {
+    return {
+      error:
+        '--only is a FORCE: it skips re-rendering the rest of the site, so it needs --reason "<why only ' +
+        'these surfaces changed>" (it is written to the audit log).',
+    };
+  }
+  return { surfaces: new Set(requested as SiteSurface[]), forced: true, reason };
+}
+
+/** Regenerate the static site from the registry (every release, newest first). */
 export async function generateSite(
   sql: postgres.Sql,
   scope: Scope,
   outDir: string,
-): Promise<{ pages: number }> {
+  siteScope: SiteScope = FULL_SITE_SCOPE,
+): Promise<{ pages: number; written: number; unchanged: number }> {
+  const want = (surface: SiteSurface) => siteScope.surfaces.has(surface);
+  // WI-10003694: write a page only when its bytes changed, so an unchanged page keeps its
+  // mtime and the publisher (and `aws s3 sync`) skips it.
+  const tally = new SiteWriteTally();
   // All pages in this publication use one identity snapshot. Resolving it per
   // work-item page spawns thousands of redundant git-config subprocesses.
   const redact = identityLiterals();

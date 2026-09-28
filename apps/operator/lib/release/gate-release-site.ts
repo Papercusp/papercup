@@ -81,10 +81,40 @@ export function allowedEmailsFor(file: string, text: string): readonly string[] 
   return isHoldingIndex ? [PUBLISHED_CONTACT_EMAIL] : [];
 }
 
+/**
+ * Resolve a `--files-from` subset (site-relative paths) to the published files to scan.
+ *
+ * WI-10003694: an incremental publish uploads only the files that changed, so it gates exactly
+ * those — the rest were gated when they were published (release-site-delta re-gates everything
+ * when the rules change). A listed path that does not exist, or escapes the site root, is a
+ * "could not check" (thrown), never a silent skip: a subset gate that quietly scans less than
+ * it was told to is the blind-gate defect again, one layer down.
+ */
+export function resolveSubset(dir: string, rels: readonly string[]): string[] {
+  const root = path.resolve(dir);
+  const files: string[] = [];
+  for (const rel of rels) {
+    const full = path.resolve(root, rel);
+    if (full !== root && !full.startsWith(`${root}${path.sep}`)) {
+      throw new Error(`listed path escapes the site root: ${rel}`);
+    }
+    if (!fs.existsSync(full) || !fs.statSync(full).isFile()) {
+      throw new Error(`listed path is not a file in the site: ${rel}`);
+    }
+    if (PUBLISHED.some((ext) => full.endsWith(ext))) files.push(full);
+  }
+  return files;
+}
+
 /** Pure — so the gate's own behaviour is testable without a directory of real pages. */
-export function gateSite(dir: string, literals = identityLiterals()): SiteLeak[] {
+export function gateSite(
+  dir: string,
+  literals = identityLiterals(),
+  subset?: readonly string[],
+): SiteLeak[] {
   const leaks: SiteLeak[] = [];
-  for (const file of walk(dir)) {
+  const files = subset ? resolveSubset(dir, subset) : walk(dir);
+  for (const file of files) {
     const text = fs.readFileSync(file, 'utf8');
     // Emscripten creates this VIRTUAL filesystem home in Graphviz's WASM
     // runtime. It is executable behavior, not the build machine's identity.
@@ -130,13 +160,27 @@ export function main(
   literals: IdentityLiteral[] = identityLiterals(),
 ): number {
   const dir = argv[0];
-  if (!dir) {
-    console.error('usage: gate-release-site <dir>');
+  if (!dir || dir.startsWith('--')) {
+    console.error('usage: gate-release-site <dir> [--files-from <list>]');
     return 2;
   }
   if (!fs.existsSync(dir)) {
     console.error(`gate-release-site: ${dir} does not exist`);
     return 2;
+  }
+  const filesFromAt = argv.indexOf('--files-from');
+  let subset: string[] | undefined;
+  if (filesFromAt >= 0) {
+    const listFile = argv[filesFromAt + 1];
+    if (!listFile || !fs.existsSync(listFile)) {
+      console.error(`gate-release-site: --files-from list ${listFile ?? '<missing>'} does not exist`);
+      return 2;
+    }
+    subset = fs
+      .readFileSync(listFile, 'utf8')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
   }
 
   /**
@@ -169,17 +213,29 @@ export function main(
     return 2;
   }
 
-  const leaks = gateSite(dir, literals);
-  const pages = walk(dir).length;
+  let leaks: SiteLeak[];
+  let pages: number;
+  try {
+    leaks = gateSite(dir, literals, subset);
+    pages = subset ? resolveSubset(dir, subset).length : walk(dir).length;
+  } catch (error) {
+    console.error(
+      `[gate] 🔴 COULD NOT CHECK — ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return 2;
+  }
 
   if (leaks.length === 0) {
     // Name what it actually checked. A gate that says only "clean" is indistinguishable
     // from a gate that checked nothing — and a gate with nothing to assert is the exact
     // failure mode that let the dead update-host ship (WI-4389).
     const kinds = [...new Set(literals.map((l) => l.kind))].join(', ');
+    const scope = subset
+      ? ` (the ${subset.length} changed file(s) listed for upload; every other file was gated when it was published)`
+      : '';
     console.log(
       `[gate] CLEAN — ${pages} page(s) scanned for this box's identity ` +
-        `(${kinds || 'no machine literals resolved'}) plus any email address or home path.`,
+        `(${kinds || 'no machine literals resolved'}) plus any email address or home path${scope}.`,
     );
     return 0;
   }
