@@ -198,10 +198,75 @@ export type PhysicalPhaseDVerdict = {
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
+/**
+ * Live file-lock seam for Phase D's planted dirt (WI-10003741).
+ *
+ * The planted overlap file stands for an in-flight local edit. The product
+ * protects such an edit from git-sync's commit sweep only through a live file
+ * lock: git-sync reads every live holding and excludes that path from
+ * `git add`. Without one, the VM's next git-sync (the scheduled tick or the
+ * scenario's own bridge run) commits the planted file, so the dirty-bridge
+ * contract can never hold. Measured in P-505 run 21: VM commit 17c13c5
+ * 'sync(root): p505-phase-d-overlap.txt'.
+ */
+export type PhysicalPhaseDDirtLock = {
+  acquire(input: {
+    coordinationDomain: string;
+    owner: string;
+    path: string;
+    intent: string;
+    ttlSec: number;
+  }): Promise<{ lockId: string; expiresAt: string }>;
+  release(input: { coordinationDomain: string; owner: string }): Promise<{ released: number }>;
+};
+
+/** Covers the scenario's 20-minute dirty-bridge deadline plus observation margin. */
+export const PHASE_D_DIRT_LOCK_TTL_SEC = 1800;
+
+/** Opaque, non-session owner: the ended-session reaper keeps an unknown owner's lock. */
+export function phaseDDirtLockOwner(runId: string): string {
+  assertRunId(runId);
+  return `p505-phase-d:${runId}`;
+}
+
+async function defaultPhaseDDirtLock(): Promise<PhysicalPhaseDDirtLock> {
+  // Side-effect import: wires @papercusp/locks to the same embedded-pg admin URL
+  // the operator (and this producer's getOrgPg) resolves on this host.
+  await import('../../agent-tools/locks/configure');
+  const { inWorkspaceTxn, tryAcquire, tryRelease } = await import('@papercusp/locks');
+  return {
+    async acquire(input) {
+      const result = await inWorkspaceTxn(input.coordinationDomain, input.owner, (tx) =>
+        tryAcquire(tx, {
+          coordinationDomain: input.coordinationDomain,
+          owner: input.owner,
+          ownerLabel: input.owner,
+          paths: [input.path],
+          intent: input.intent,
+          ttlSec: input.ttlSec,
+        }),
+      );
+      if (!result.ok) {
+        throw new Error(
+          `physical Phase D could not lock ${input.path}: held by ${result.busy.map((b) => b.owner).join(', ') || 'unknown'}`,
+        );
+      }
+      return { lockId: result.lock_id, expiresAt: result.expires_ts.toISOString() };
+    },
+    async release(input) {
+      const result = await inWorkspaceTxn(input.coordinationDomain, input.owner, (tx) =>
+        tryRelease(tx, { coordinationDomain: input.coordinationDomain, owner: input.owner, allMine: true }),
+      );
+      return { released: result.released.length };
+    },
+  };
+}
+
 type PhysicalPhaseDDeps = {
   repoPath?: string;
   worktreePath?: string;
   sql?: OrgSql;
+  dirtLock?: PhysicalPhaseDDirtLock;
 };
 
 function assertRunId(runId: string): void {
@@ -320,21 +385,44 @@ export async function createPhysicalPhaseDMutation(
 export async function dirtyPhysicalPhaseDWorktree(
   input: { runId: string },
   deps: PhysicalPhaseDDeps = {},
-): Promise<{ runId: string; protectedPath: typeof PHASE_D_SENTINEL; sha256: string; observedAt: string }> {
+): Promise<{
+  runId: string;
+  protectedPath: typeof PHASE_D_SENTINEL;
+  sha256: string;
+  lock: { lockId: string; owner: string; coordinationDomain: string; expiresAt: string };
+  observedAt: string;
+}> {
   assertRunId(input.runId);
   const { worktreePath } = await fixedPaths(deps);
   const before = await git(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
   if (before) throw new Error('physical Phase D refuses to dirty an already-dirty fixed worktree');
-  const payload = `p505-phase-d/${input.runId}/local-dirty-must-survive\n`;
-  writeFileSync(join(worktreePath, PHASE_D_SENTINEL), payload, { flag: 'w', mode: 0o600 });
-  const after = await git(worktreePath, ['status', '--porcelain=v1', '--', PHASE_D_SENTINEL]);
-  if (!after) throw new Error('physical Phase D failed to make the fixed overlap file dirty');
-  return {
-    runId: input.runId,
-    protectedPath: PHASE_D_SENTINEL,
-    sha256: sha256(payload),
-    observedAt: new Date().toISOString(),
-  };
+  // Lock BEFORE writing, as a real editor does, so no git-sync sweep can land
+  // between the write and the lock (WI-10003741).
+  const dirtLock = deps.dirtLock ?? (await defaultPhaseDDirtLock());
+  const owner = phaseDDirtLockOwner(input.runId);
+  const held = await dirtLock.acquire({
+    coordinationDomain: worktreePath,
+    owner,
+    path: PHASE_D_SENTINEL,
+    intent: `P-505 Phase D ${input.runId}: planted dirty overlap must survive the bridge`,
+    ttlSec: PHASE_D_DIRT_LOCK_TTL_SEC,
+  });
+  try {
+    const payload = `p505-phase-d/${input.runId}/local-dirty-must-survive\n`;
+    writeFileSync(join(worktreePath, PHASE_D_SENTINEL), payload, { flag: 'w', mode: 0o600 });
+    const after = await git(worktreePath, ['status', '--porcelain=v1', '--', PHASE_D_SENTINEL]);
+    if (!after) throw new Error('physical Phase D failed to make the fixed overlap file dirty');
+    return {
+      runId: input.runId,
+      protectedPath: PHASE_D_SENTINEL,
+      sha256: sha256(payload),
+      lock: { lockId: held.lockId, owner, coordinationDomain: worktreePath, expiresAt: held.expiresAt },
+      observedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    await dirtLock.release({ coordinationDomain: worktreePath, owner }).catch(() => undefined);
+    throw error;
+  }
 }
 
 /**
@@ -346,12 +434,37 @@ export async function dirtyPhysicalPhaseDWorktree(
 export async function resetPhysicalPhaseDDirt(
   input: { runId: string },
   deps: PhysicalPhaseDDeps = {},
-): Promise<{ runId: string; reset: boolean; reason: 'discarded-run-dirt' | 'already-clean'; observedAt: string }> {
+): Promise<{
+  runId: string;
+  reset: boolean;
+  reason: 'discarded-run-dirt' | 'already-clean';
+  locksReleased: number;
+  observedAt: string;
+}> {
   assertRunId(input.runId);
   const { worktreePath } = await fixedPaths(deps);
+  const dirtLock = deps.dirtLock ?? (await defaultPhaseDDirtLock());
+  const owner = phaseDDirtLockOwner(input.runId);
+  // Release the run's lock on every exit, including a refusal: its TTL would
+  // otherwise keep git-sync from committing the path for up to 30 minutes.
+  try {
+    const outcome = await discardPhysicalPhaseDDirt(input.runId, worktreePath);
+    const { released } = await dirtLock.release({ coordinationDomain: worktreePath, owner });
+    return { runId: input.runId, ...outcome, locksReleased: released, observedAt: new Date().toISOString() };
+  } catch (error) {
+    await dirtLock.release({ coordinationDomain: worktreePath, owner }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function discardPhysicalPhaseDDirt(
+  runId: string,
+  worktreePath: string,
+): Promise<{ reset: boolean; reason: 'discarded-run-dirt' | 'already-clean' }> {
+  const input = { runId };
   const status = await git(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
   if (!status) {
-    return { runId: input.runId, reset: false, reason: 'already-clean', observedAt: new Date().toISOString() };
+    return { reset: false, reason: 'already-clean' };
   }
   const expected = `p505-phase-d/${input.runId}/local-dirty-must-survive\n`;
   // Name-only listings, not porcelain: the git() helper trims stdout, which
@@ -368,7 +481,7 @@ export async function resetPhysicalPhaseDDirt(
   await git(worktreePath, ['checkout', '--', PHASE_D_SENTINEL]);
   const after = await git(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']);
   if (after) throw new Error('physical Phase D reset left the fixed worktree dirty');
-  return { runId: input.runId, reset: true, reason: 'discarded-run-dirt', observedAt: new Date().toISOString() };
+  return { reset: true, reason: 'discarded-run-dirt' };
 }
 
 /** Read the exact production request row for the run-bound head. */
