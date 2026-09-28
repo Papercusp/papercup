@@ -2,7 +2,7 @@
  "schemaVersion": 1,
  "kind": "operational-test-evidence",
  "name": "P-013 workload D RERUN after D-023 (50 ms durable-orchestration queue floor + 5 ms rig result poll) and D-024 (production-sized getOrgPg stand-in pool): foreground orchestrate:run (control) vs durable DBOS orchestrate:run (candidate), D-016 matrix, 5 process-isolated repetitions",
- "framework": "vitest",
+ "framework": "operational",
  "testLayer": "integration",
  "evidencePlane": "isolated",
  "plan": "blueprint-backed-work-item-execution-2026-09-23",
@@ -19,7 +19,72 @@
  ],
  "observer": "su-fcbb3fed-83b5-4c34-9dab-72e191d76491",
  "testFile": "packages/operator-core/lib/blueprint/operation-performance-d.integration.test.ts",
- "command": "bash .papercusp/scratch/p013-d/run-matrix.sh 0 4 — per rep k: P013_MATRIX=1 P013_MODES=warm,cold P013_CONCURRENCIES=1,8 P013_WARMUPS=20 P013_WARM_SAMPLES=200 P013_COLD_SAMPLES=50 P013_REPETITIONS=1 P013_REPETITION_OFFSET=$k P013_DEDICATED_PG=native PAPERCUSP_TEST_FILE_TIMEOUT_MS=3600000 npm run test:file -- <testFile> (capability:bash task 0mukz47jsjie88j1wqi); identical knobs to the original D run",
+ "command": [
+  "bash .papercusp/scratch/p013-d/run-matrix.sh 0 4 (capability:bash task 0mukz47jsjie88j1wqi)",
+  "per rep k in 0..4: P013_MATRIX=1 P013_MODES=warm,cold P013_CONCURRENCIES=1,8 P013_WARMUPS=20 P013_WARM_SAMPLES=200 P013_COLD_SAMPLES=50 P013_REPETITIONS=1 P013_REPETITION_OFFSET=$k P013_DEDICATED_PG=native PAPERCUSP_TEST_FILE_TIMEOUT_MS=3600000 npm run test:file -- packages/operator-core/lib/blueprint/operation-performance-d.integration.test.ts",
+  "identical knobs to the original D run (docs/evidence/p013-workload-d-2026-09-27.json)"
+ ],
+ "exitCode": 0,
+ "startedAt": "2026-09-28T08:16:26Z",
+ "finishedAt": "2026-09-28T09:53:50Z",
+ "summary": "Workload D rerun after D-023 + D-024 graded PASS 9/9 D-016 bars on the median of five process-isolated repetitions (original run 0/9). warmP50@c1: candidate 109.6 vs control 77.5, limit 166.3 (before: candidate 1009.7); warmP95@c1: candidate 131.1 vs control 88.7, limit 255.2 (before: candidate 2008.1); warmP99@c1: candidate 151.5 vs control 102.6, limit 430.9 (before: candidate 2014.5); coldP95@c1: candidate 318.1 vs control 235.8, limit 1589.4 (before: candidate 2085.3); warmP50@c8: candidate 175.8 vs control 197.1, limit 345.7 (before: candidate 1012.0); warmP95@c8: candidate 252.9 vs control 244.0, limit 527.1 (before: candidate 1037.7); warmP99@c8: candidate 335.3 vs control 317.5, limit 914.4 (before: candidate 2007.6); coldP95@c8: candidate 296.8 vs control 277.6, limit 1693.9 (before: candidate 2079.4); throughput8@c8: candidate 42.7 vs control 39.5, limit 25.7 (before: candidate 7.6). The measured source blobs are identical across all 5 reps. Hypothesis confirmed: the ~1000 ms quantization came from the two DBOS 1 s poll floors (D-023), not from per-step persistence.",
+ "assertions": [
+  {
+   "id": "d016-warmP50-c1",
+   "passed": true,
+   "evidence": "median of 5 reps: candidate 109.60 vs control 77.51; limit 166.27; verdict PASS"
+  },
+  {
+   "id": "d016-warmP95-c1",
+   "passed": true,
+   "evidence": "median of 5 reps: candidate 131.13 vs control 88.70; limit 255.22; verdict PASS"
+  },
+  {
+   "id": "d016-warmP99-c1",
+   "passed": true,
+   "evidence": "median of 5 reps: candidate 151.46 vs control 102.61; limit 430.87; verdict PASS"
+  },
+  {
+   "id": "d016-coldP95-c1",
+   "passed": true,
+   "evidence": "median of 5 reps: candidate 318.08 vs control 235.77; limit 1589.41; verdict PASS"
+  },
+  {
+   "id": "d016-warmP50-c8",
+   "passed": true,
+   "evidence": "median of 5 reps: candidate 175.84 vs control 197.14; limit 345.71; verdict PASS"
+  },
+  {
+   "id": "d016-warmP95-c8",
+   "passed": true,
+   "evidence": "median of 5 reps: candidate 252.88 vs control 244.04; limit 527.07; verdict PASS"
+  },
+  {
+   "id": "d016-warmP99-c8",
+   "passed": true,
+   "evidence": "median of 5 reps: candidate 335.30 vs control 317.50; limit 914.38; verdict PASS"
+  },
+  {
+   "id": "d016-coldP95-c8",
+   "passed": true,
+   "evidence": "median of 5 reps: candidate 296.81 vs control 277.57; limit 1693.93; verdict PASS"
+  },
+  {
+   "id": "d016-throughput8-c8",
+   "passed": true,
+   "evidence": "median of 5 reps: candidate 42.71 vs control 39.49; limit 25.67; verdict PASS"
+  },
+  {
+   "id": "all-reps-exit-0",
+   "passed": true,
+   "evidence": "REP_END offset=0 rc=0 2026-09-28T08:35:05Z | REP_END offset=1 rc=0 2026-09-28T08:55:32Z | REP_END offset=2 rc=0 2026-09-28T09:15:20Z | REP_END offset=3 rc=0 2026-09-28T09:36:02Z | REP_END offset=4 rc=0 2026-09-28T09:53:50Z"
+  },
+  {
+   "id": "measured-blobs-identical-across-reps",
+   "passed": true,
+   "evidence": "567c405b66f7245685230c62058e8f753c533249 packages/operator-core/lib/blueprint/operation-performance-d.integration.test.ts; cd00b1ddb24b98077d8c52c2176502f63519acd0 packages/operator-core/lib/blueprint/operation-performance-d-driver.ts; 580ac0560a9a444771fedda0c7eb8c565ffa94fe packages/operator-core/lib/blueprint/operation-performance-d-child.ts; 86291309b75654389d4d3024950cc9799f2b18fd packages/operator-core/lib/blueprint/operation-performance-d-runtime.ts; 7fb7a35f1d5c7a6d1250935fcbd34b139b67b453 packages/operator-core/lib/dbos/durable-orchestration-workflow.ts; 11240c1a506f8c8f8fdbe571af202aaa703fe1c1 packages/operator-core/lib/blueprint/operation-admission.ts; 1d3dc6d44c9f8f46cd9685f3d39e5e181f8c7872 packages/operator-core/test/_org-test-db.ts"
+  }
+ ],
  "runnerLogs": [
   {
    "file": ".papercusp/scratch/p013-d/matrix-rep0.log",
