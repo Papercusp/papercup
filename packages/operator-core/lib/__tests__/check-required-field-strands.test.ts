@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 // @ts-expect-error — .mjs guard script, no type declarations by design
@@ -676,6 +676,52 @@ describe('check-required-field-strands --typecheck — diagnostic-only type attr
       expect(out).toContain(dependent);
       expect(out).toContain('typecheck reported errors ATTRIBUTED TO YOUR CHANGE');
       expect(out).toContain('source or compiler diagnostic references their exported type names');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
+describe('check-required-field-strands --typecheck — a declared DELETION is never forwarded to lint:tsc (WI-10003758)', () => {
+  // The gate declares its changed-path set, which carries deletions. lint:tsc refuses a whole
+  // selection naming a missing file (status=preflight-failed), so one deleted file used to blind
+  // the guard to every real strand in the rest of the change and red the gate with exit 2.
+  it('typechecks the surviving files and drops the deleted one from --files', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'required-field-strands-deleted-file-'));
+    const changed = 'packages/operator-core/lib/digest-shape.ts';
+    const deleted = 'packages/operator-core/lib/retired-epoch.ts';
+    try {
+      cpSync(resolve(ROOT, 'scripts'), join(tmp, 'scripts'), { recursive: true });
+      symlinkSync(resolve(ROOT, 'node_modules'), join(tmp, 'node_modules'));
+      mkdirSync(join(tmp, 'packages/operator-core/lib'), { recursive: true });
+      writeFileSync(join(tmp, changed), 'export interface DigestShape { id: string; }\n');
+      writeFileSync(join(tmp, deleted), 'export const epoch = 1;\n');
+
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: tmp, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      git('init', '-q', '.');
+      git('config', 'user.email', 'required-field-strands@test.invalid');
+      git('config', 'user.name', 'required-field-strands');
+      git('add', '-A');
+      git('commit', '-qm', 'base');
+
+      writeFileSync(join(tmp, changed), 'export interface DigestShape { id: string; runId: string; }\n');
+      rmSync(join(tmp, deleted));
+      // Records the selection it was handed; a real lint:tsc would refuse the missing path.
+      writeFileSync(
+        join(tmp, 'scripts/lint-tsc.mjs'),
+        "import { writeFileSync } from 'node:fs';\nwriteFileSync('lint-tsc-argv.json', JSON.stringify(process.argv.slice(2)));\n",
+      );
+
+      const result = spawnSync(
+        'node',
+        ['scripts/check-required-field-strands.mjs', '--typecheck', '--base', 'HEAD', `--files=${changed},${deleted}`],
+        { cwd: tmp, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+      );
+      expect(result.error, `guard failed to spawn: ${result.error?.message}`).toBeUndefined();
+      const argv = JSON.parse(readFileSync(join(tmp, 'lint-tsc-argv.json'), 'utf8')) as string[];
+      const filesArg = argv.find((a) => a.startsWith('--files=')) ?? '';
+      expect(filesArg.slice('--files='.length).split(',')).toEqual([changed]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
