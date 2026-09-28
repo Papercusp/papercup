@@ -215,12 +215,12 @@ describe('P-013 workload C fixture', () => {
           const [{ end }] = await db.adminSql<Array<{ end: string }>>`SELECT pg_current_wal_insert_lsn()::text AS end`;
           const rows = await db.adminSql<Array<{ rel: string; blocks: number; fpiBytes: number; dataBytes: number }>>`
             SELECT COALESCE(pg_filenode_relation(b.reltablespace, b.relfilenode)::text,
-                            'db' || b.reldatabase || ':' || b.relfilenode) AS rel,
+                            'db' || b.reldatabase || ':' || b.relfilenode) || ' ' || b.record_type AS rel,
                    count(*)::int AS blocks,
-                   COALESCE(sum(b.fpi_length), 0)::float8 AS "fpiBytes",
+                   COALESCE(sum(b.block_fpi_length), 0)::float8 AS "fpiBytes",
                    COALESCE(sum(b.block_data_length), 0)::float8 AS "dataBytes"
               FROM pg_get_wal_block_info(${start}::pg_lsn, ${end}::pg_lsn) b
-             GROUP BY 1 ORDER BY sum(b.fpi_length) + sum(b.block_data_length) DESC LIMIT 25`;
+             GROUP BY 1 ORDER BY sum(b.block_fpi_length) + sum(b.block_data_length) DESC LIMIT 25`;
           const [{ total }] = await db.adminSql<Array<{ total: number }>>`
             SELECT (${end}::pg_lsn - ${start}::pg_lsn)::float8 AS total`;
           attribution[arm] = { samples: walSamples, walBytesPerSample: total / walSamples,
