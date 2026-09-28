@@ -6,10 +6,19 @@
  */
 import { describe, expect, it } from 'vitest';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as blueprint from '@papercusp/orchestrator/blueprint';
-import { SU_MODE_REFS, SU_POSTURE_REFS, renderStackTransitionContext, renderStackTransitionContextResult, stackRefsForModes, stackRefsForRoute, stackRefsForSession } from './stack-binding-channel';
+import * as currentStackBindingChannel from './stack-binding-channel';
 import { normalizeControlAnchorState, type ControlAnchorState } from './agent-tools/coordination/control-anchor';
+
+// Reuse the standard copy-out probe (scripts/mutation-probe.sh) without mutating the shared subject.
+const channel: typeof currentStackBindingChannel = process.env.PAPERCUSP_MUTATION_PROBE_SOURCE
+  ? await import(pathToFileURL(process.env.PAPERCUSP_MUTATION_PROBE_SOURCE).href)
+  : currentStackBindingChannel;
+const {
+  SU_MODE_REFS, SU_POSTURE_REFS, renderStackTransitionContext, renderStackTransitionContextResult,
+  stackRefsForModes, stackRefsForRoute, stackRefsForSession,
+} = channel;
 
 const here = dirname(fileURLToPath(import.meta.url));
 // packages/operator-core/lib → <root>/libs/papercusp/packages/harness
