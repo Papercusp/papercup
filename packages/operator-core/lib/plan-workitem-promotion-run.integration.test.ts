@@ -62,7 +62,31 @@ const h = vi.hoisted(() => ({
     release: Promise<void>;
     open: () => void;
   },
+  /**
+   * WI-10003675: number of upcoming syncFeatureBlockEdges calls that fail with the
+   * serialization-contention class (SerializableRetryExhaustedError) BEFORE reaching PG.
+   * Null = pass-through. Real PG still performs every non-faulted write.
+   */
+  edgeContentionFaults: null as null | { remaining: number; injected: number },
 }));
+
+vi.mock('./dbos/feature-blockers-edges', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./dbos/feature-blockers-edges')>();
+  return {
+    ...actual,
+    syncFeatureBlockEdges: async (...args: Parameters<typeof actual.syncFeatureBlockEdges>) => {
+      const faults = h.edgeContentionFaults;
+      if (faults && faults.remaining > 0) {
+        faults.remaining--;
+        faults.injected++;
+        const err = new Error('injected: serializable retry budget exhausted (40001)');
+        err.name = 'SerializableRetryExhaustedError';
+        throw err;
+      }
+      return actual.syncFeatureBlockEdges(...args);
+    },
+  };
+});
 
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -253,6 +277,7 @@ beforeEach(async () => {
     wouldBlock: ['no-first-class-spec-clauses'],
   };
   h.coverageBarrier = null;
+  h.edgeContentionFaults = null;
   h.plans.clear();
 });
 
@@ -1005,6 +1030,46 @@ created: 2026-08-21
     expect(edges.map((e) => e.blocker).sort()).toEqual(
       [rows.find((r) => r.title === 'Prereq A')!.feature_id, rows.find((r) => r.title === 'Prereq B')!.feature_id].sort(),
     );
+  });
+
+  // WI-10003675 — the P-013 B abort: under concurrent promotions the join's edge write
+  // exhausted the dependency txn's serializable retries, and promotion swallowed that into
+  // an `edgeFailures` count no caller reads, minting the join UNGATED.
+  const forkJoin = () =>
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Fork A' },
+        { id: 'P-002', status: 'todo', text: 'Fork B' },
+        { id: 'P-003', status: 'todo', text: 'Join', blockedBy: ['P-001', 'P-002'] },
+      ],
+    });
+
+  it('WI-10003675: transient edge-write contention is retried and the join still lands GATED', async () => {
+    forkJoin();
+    h.edgeContentionFaults = { remaining: 2, injected: 0 };
+    const res = await run.promotePlanItems(base);
+    expect(h.edgeContentionFaults.injected).toBe(2);
+    expect(res).toMatchObject({ promoted: 3, edgesWritten: 2, edgeFailures: 0 });
+    const rows = await features();
+    const join = rows.find((r) => r.title === 'Join')!.feature_id;
+    const edges = await depEdges();
+    expect(edges.filter((e) => e.blocked === join)).toHaveLength(2);
+  });
+
+  it('WI-10003675: contention that outlasts the retry budget FAILS LOUD naming the join — never a silent ungated mint', async () => {
+    forkJoin();
+    h.edgeContentionFaults = { remaining: 1_000, injected: 0 };
+    const err = await run.promotePlanItems(base).then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(run.PromotionDependencyEdgeError);
+    const rows = await features();
+    const join = rows.find((r) => r.title === 'Join')!.feature_id;
+    expect((err as InstanceType<typeof run.PromotionDependencyEdgeError>).failedItems.join(' ')).toContain(join);
+    // 1 in-promotion attempt + 3 outer contention retries, then give up.
+    expect(h.edgeContentionFaults.injected).toBe(4);
+    expect((await depEdges()).filter((e) => e.blocked === join)).toHaveLength(0);
   });
 
   /** Legacy work-item blocker rows in coord_links; canonical writers must leave this empty. */
