@@ -17,7 +17,12 @@ import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-import { findUnforcedDrops, findOffenders, stripComments } from '../../../scripts/check-drop-database-force.mjs';
+import {
+  findUnforcedDrops,
+  findOffenders,
+  stripComments,
+  withoutTestTitle,
+} from '../../../scripts/check-drop-database-force.mjs';
 
 const REPO_ROOT = new URL('../../../', import.meta.url);
 
@@ -74,6 +79,24 @@ describe('drop-database-force guard predicate (WI-4311)', () => {
   it('does NOT flag prose mentions in line or block comments', () => {
     expect(findUnforcedDrops('// a plain DROP DATABASE can block on a live backend')).toHaveLength(0);
     expect(findUnforcedDrops('/**\n * pg_stat_statements has no DROP DATABASE hook.\n */')).toHaveLength(0);
+  });
+
+  it('does NOT flag a test TITLE that names the statement (prose, not a statement)', () => {
+    // The real shape: libs/test-config/src/invalid-db-drop-reap.test.ts at gitlink e1cb05ed.
+    expect(findUnforcedDrops("describe('cancelled DROP DATABASE never leaks an INVALID database', () => {")).toHaveLength(0);
+    expect(findUnforcedDrops('it(`a plain DROP DATABASE blocks on a live backend`, async () => {')).toHaveLength(0);
+    expect(findUnforcedDrops('  test.each(cases)("DROP DATABASE %s", (c) => {')).toHaveLength(0);
+  });
+
+  it('STILL flags an unforced statement that shares a line with a test title', () => {
+    // Only the title string is blanked; the rest of the line is scanned.
+    const line = "it('drops', async () => { await admin.unsafe('DROP DATABASE IF EXISTS x'); });";
+    expect(findUnforcedDrops(line)).toHaveLength(1);
+    expect(withoutTestTitle(line)).toContain('DROP DATABASE IF EXISTS x');
+    // Calibration: a non-title line passes through untouched.
+    const plain = 'await admin.unsafe(`DROP DATABASE IF EXISTS "${n}"`);';
+    expect(withoutTestTitle(plain)).toBe(plain);
+    expect(findUnforcedDrops(plain)).toHaveLength(1);
   });
 
   it('tolerates WITH(FORCE) spacing variants', () => {

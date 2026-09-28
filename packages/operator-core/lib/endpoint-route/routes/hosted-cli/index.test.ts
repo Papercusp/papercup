@@ -159,6 +159,10 @@ describe('hosted psu CLI routes', () => {
     });
     expect(approve.status).toBe(200);
     expect(approve.headers.get('x-frame-options')).toBe('DENY');
+    // WI-10003612: under 'no-referrer' a browser serializes the approve form's POST Origin as
+    // "null", which the decision route refused — every real sign-in failed cross_origin_blocked.
+    expect(page.headers.get('referrer-policy')).toBe('same-origin');
+    expect(approve.headers.get('referrer-policy')).toBe('same-origin');
 
     t.advance(5_000);
     const issued = await (await poll()).json();
@@ -185,6 +189,33 @@ describe('hosted psu CLI routes', () => {
     });
     const polled = await t.call('POST', '/hosted/cli/device/token', { method: 'POST', body: JSON.stringify({ deviceCode: code.deviceCode }) });
     expect(await polled.json()).toMatchObject({ error: 'access_denied' });
+  });
+
+  it('accepts an opaque Origin only when Fetch Metadata proves a same-origin form post (WI-10003612)', async () => {
+    const t = setup();
+    const decide = async (userCode: string, headers: Record<string, string>) =>
+      t.call('POST', '/hosted/cli/device/decision', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers },
+        body: `user_code=${userCode}&decision=approve`,
+        principal: principal('org-a', ['workspace:view']),
+      });
+
+    const sandboxed = await (await t.call('POST', '/hosted/cli/device/code', { method: 'POST', body: '{}' })).json();
+    for (const headers of [
+      { origin: 'null' },
+      { origin: 'null', 'sec-fetch-site': 'cross-site' },
+      { origin: 'null', 'sec-fetch-site': 'same-site' },
+    ]) {
+      const refused = await decide(sandboxed.userCode, headers);
+      expect(refused.status).toBe(403);
+      // The exact body the owner saw from `psu cloud login`.
+      expect(await refused.text()).toBe('{"ok":false,"error":{"code":"cross_origin_blocked"}}');
+    }
+
+    const privacyBrowser = await (await t.call('POST', '/hosted/cli/device/code', { method: 'POST', body: '{}' })).json();
+    const approved = await decide(privacyBrowser.userCode, { origin: 'null', 'sec-fetch-site': 'same-origin' });
+    expect(approved.status).toBe(200);
   });
 
   it('sends a signed-out visitor to sign-in and back to the same code', async () => {

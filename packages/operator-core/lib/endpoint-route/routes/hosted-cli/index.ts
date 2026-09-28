@@ -132,9 +132,25 @@ input{text-transform:uppercase;letter-spacing:.15em}
       'cache-control': 'no-store',
       'x-frame-options': 'DENY',
       'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-      'referrer-policy': 'no-referrer',
+      // NOT 'no-referrer' (WI-10003612): the Fetch spec serializes the Origin of a non-GET
+      // navigation as the literal "null" under a no-referrer policy, so the approve form's POST
+      // reached the decision route with `Origin: null` and every browser approval was refused as
+      // cross_origin_blocked. 'same-origin' still withholds the user_code URL from other origins.
+      'referrer-policy': 'same-origin',
     },
   });
+}
+
+/**
+ * CSRF guard for the browser form post. The exact portal Origin is the normal case. A browser
+ * whose own privacy setting forces a no-referrer policy still sends `Origin: null`; Fetch Metadata
+ * (`Sec-Fetch-Site`, browser-set and not forgeable by a page) then proves the post came from a
+ * same-origin document. A cross-site or sandboxed-opaque initiator reports `cross-site`.
+ */
+function isSameOriginFormPost(headers: Headers, origin: string): boolean {
+  const requestOrigin = headers.get('origin');
+  if (requestOrigin === origin) return true;
+  return requestOrigin === 'null' && headers.get('sec-fetch-site') === 'same-origin';
 }
 
 function randomString(random: (size: number) => Uint8Array, size: number): string {
@@ -276,8 +292,8 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
     path: '/hosted/cli/device/decision',
     auth: HOSTED_VIEW_AUTH,
     async handler(request, ctx) {
-      // A form post always carries Origin; demanding the exact portal origin is the CSRF guard.
-      if (request.headers.get('origin') !== origin) return jsonError('cross_origin_blocked', 403);
+      // A form post always carries Origin; demanding the portal origin is the CSRF guard.
+      if (!isSameOriginFormPost(request.headers, origin)) return jsonError('cross_origin_blocked', 403);
       if (!ctx.principal || !isHostedPrincipal(ctx.principal)) return jsonError('hosted_principal_required', 401);
       const principal = ctx.principal;
       const isForm = (request.headers.get('content-type') ?? '').includes('application/x-www-form-urlencoded');
