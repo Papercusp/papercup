@@ -521,6 +521,56 @@ describe('P-505 fixed physical Phase D production-spine adapter', () => {
     );
     expect(await readFile(join(worktreePath, 'base.txt'), 'utf8')).toBe('a peer edit\n');
   });
+
+  // WI-10003741 (P-505 run 21): without a live file lock the VM's git-sync committed the
+  // planted file (17c13c5 'sync(root): p505-phase-d-overlap.txt'), so the dirty-bridge
+  // contract could never hold. The lock is what git-sync's live-lock exclusion honours.
+  it('holds a live file lock on the planted dirt from before the write until reset', async () => {
+    const { repoPath, worktreePath } = await fixedWorktree();
+    const device = generateEd25519KeypairDer().pubkeyBase64;
+    const runId = 'p505-phase-d-lock-1';
+    await createPhysicalPhaseDMutation(
+      { runId, kind: 'below-steer', sourceHost: 'vm', sourceDeviceKey: device },
+      { repoPath, worktreePath, dirtLock: testDirtLock },
+    );
+    const lock = recordingDirtLock(() => join(worktreePath, PHASE_D_SENTINEL));
+
+    const dirty = await dirtyPhysicalPhaseDWorktree({ runId }, { repoPath, worktreePath, dirtLock: lock });
+    expect(lock.calls).toHaveLength(1);
+    expect(lock.calls[0]).toMatchObject({
+      op: 'acquire',
+      input: {
+        coordinationDomain: worktreePath,
+        owner: phaseDDirtLockOwner(runId),
+        path: PHASE_D_SENTINEL,
+        ttlSec: PHASE_D_DIRT_LOCK_TTL_SEC,
+      },
+      // Acquired while the sentinel still held its committed content: lock first, then write.
+      sentinelContent: `p505-phase-d/${runId}/below-steer\n`,
+    });
+    expect(dirty.lock).toMatchObject({ lockId: 'lock-1', owner: phaseDDirtLockOwner(runId) });
+    expect(PHASE_D_DIRT_LOCK_TTL_SEC).toBeGreaterThanOrEqual(1200);
+
+    expect(await resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath, dirtLock: lock })).toMatchObject({
+      reset: true,
+      locksReleased: 1,
+    });
+    expect(lock.calls.at(-1)).toMatchObject({
+      op: 'release',
+      input: { coordinationDomain: worktreePath, owner: phaseDDirtLockOwner(runId) },
+    });
+
+    // A refused reset (someone else's edit present) still releases the run's lock.
+    await dirtyPhysicalPhaseDWorktree({ runId }, { repoPath, worktreePath, dirtLock: lock });
+    await writeFile(join(worktreePath, 'base.txt'), 'a peer edit\n');
+    const before = lock.calls.length;
+    await expect(resetPhysicalPhaseDDirt({ runId }, { repoPath, worktreePath, dirtLock: lock })).rejects.toThrow(
+      'did not plant in this run',
+    );
+    expect(lock.calls.slice(before)).toEqual([
+      { op: 'release', input: { coordinationDomain: worktreePath, owner: phaseDDirtLockOwner(runId) } },
+    ]);
+  });
 });
 
 type TrustRow = {

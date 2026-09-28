@@ -13,6 +13,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { inWorkspaceTxn, tryAcquire, tryRelease } from '@papercusp/locks';
+// Side-effect import: wires @papercusp/locks to the same embedded-pg admin URL
+// the operator (and this producer's getOrgPg) resolves on this host.
+import '../../agent-tools/locks/configure';
 import { projectDirForSlug } from '../../operator-notes';
 import {
   commsTierAtLeast,
@@ -229,11 +233,9 @@ export function phaseDDirtLockOwner(runId: string): string {
   return `p505-phase-d:${runId}`;
 }
 
-async function defaultPhaseDDirtLock(): Promise<PhysicalPhaseDDirtLock> {
-  // Side-effect import: wires @papercusp/locks to the same embedded-pg admin URL
-  // the operator (and this producer's getOrgPg) resolves on this host.
-  await import('../../agent-tools/locks/configure');
-  const { inWorkspaceTxn, tryAcquire, tryRelease } = await import('@papercusp/locks');
+// Static on purpose: the VM source preflight loads this module graph, so an
+// unresolvable lock dependency fails there instead of mid-Phase D.
+function defaultPhaseDDirtLock(): PhysicalPhaseDDirtLock {
   return {
     async acquire(input) {
       const result = await inWorkspaceTxn(input.coordinationDomain, input.owner, (tx) =>
@@ -398,7 +400,7 @@ export async function dirtyPhysicalPhaseDWorktree(
   if (before) throw new Error('physical Phase D refuses to dirty an already-dirty fixed worktree');
   // Lock BEFORE writing, as a real editor does, so no git-sync sweep can land
   // between the write and the lock (WI-10003741).
-  const dirtLock = deps.dirtLock ?? (await defaultPhaseDDirtLock());
+  const dirtLock = deps.dirtLock ?? defaultPhaseDDirtLock();
   const owner = phaseDDirtLockOwner(input.runId);
   const held = await dirtLock.acquire({
     coordinationDomain: worktreePath,
@@ -443,7 +445,7 @@ export async function resetPhysicalPhaseDDirt(
 }> {
   assertRunId(input.runId);
   const { worktreePath } = await fixedPaths(deps);
-  const dirtLock = deps.dirtLock ?? (await defaultPhaseDDirtLock());
+  const dirtLock = deps.dirtLock ?? defaultPhaseDDirtLock();
   const owner = phaseDDirtLockOwner(input.runId);
   // Release the run's lock on every exit, including a refusal: its TTL would
   // otherwise keep git-sync from committing the path for up to 30 minutes.
