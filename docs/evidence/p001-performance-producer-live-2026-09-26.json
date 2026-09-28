@@ -26,7 +26,7 @@
   "summary": "The active background-worker host is persisting the backend performance series on its 15-minute cadence. Four consecutive rows span 21:55:51Z through 22:41:59Z, the current Health projection reports status ok with lastCapturedAt 22:41:59Z, and the producer's exact source blobs match current HEAD. The live read is named and bounded; nullable metrics remain null rather than being fabricated.",
   "subject": {
     "workspaceId": "papercusp-workspace",
-    "host": "main-server-Precision-7865-Tower",
+    "host": "<build-host>",
     "bgHostUnit": "papercusp-bg-host.service",
     "bgHostRuntimeUnit": "hono-host:3271",
     "bgHostPid": 1357826,
@@ -133,7 +133,7 @@
     {
       "id": "named-host-and-build",
       "passed": true,
-      "evidence": "papercusp-bg-host.service was active with MainPID 1357826. The runtime-vintage row joins that PID to main-server-Precision-7865-Tower and loaded commit e45de4f8f8e0a0bc49dfec4360645755e7ac92b6; the staging API read plane reports cda1e87492."
+      "evidence": "papercusp-bg-host.service was active with MainPID 1357826. The runtime-vintage row joins that PID to <build-host> and loaded commit e45de4f8f8e0a0bc49dfec4360645755e7ac92b6; the staging API read plane reports cda1e87492."
     },
     {
       "id": "producer-code-present-in-loaded-build",
