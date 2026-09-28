@@ -1749,6 +1749,7 @@ esac
       ],
       productionSurfaces: [
         'git-sync:run',
+        'setCommsTrust',
         'listIntegrationRequests',
         'ratifyIntegrationRequest',
         'pot-git:staging-advance',
@@ -1763,6 +1764,46 @@ esac
     expect(physicalScenario).toContain('phase-d-event vm');
     expect(physicalScenario).toContain('phase-d-verify');
     expect(physicalScenario).not.toMatch(/['"]git (?:fetch|update-ref)/);
+  });
+
+  it('holds the VM author below steer only across the below-steer window and always undoes it (WI-10003723)', () => {
+    // P-505 run 15: the tower pinned the VM user at 'steer', so the integrator
+    // auto-integrated the VM head and the pending request never appeared.
+    const at = (needle: string, from = 0) => {
+      const i = physicalScenario.indexOf(needle, from);
+      expect(i, needle).toBeGreaterThan(-1);
+      return i;
+    };
+    const phaseD = at('phase_d_worktree_materialization() {\n');
+    const trapAt = at('trap phase_d_restore_on_exit EXIT', phaseD);
+    const holdAt = at('"$TSX" "$PRODUCER" phase-d-tier-hold "$vm_device" "$run_id" "$PHASE_D_TIER_HOLD"', phaseD);
+    const cacheWaitAt = at('sleep 35', holdAt);
+    const commitAt = at('phase-d-commit vm below-steer', phaseD);
+    const ratifyAt = at('"$TSX" "$PRODUCER" phase-d-ratify', phaseD);
+    const restoreAt = at('phase_d_tier_restore >"$phase_dir/tier-restore.json"', phaseD);
+    const dirtyAt = at("phase-d-dirty '$run_id'", phaseD);
+    const dirtyArmedAt = at('PHASE_D_VM_DIRTY_RUN="$run_id"', phaseD);
+    const verifyAt = at('"$TSX" "$PRODUCER" phase-d-verify', phaseD);
+    const resetAt = at('phase_d_vm_reset >"$dirty_dir/reset.json"', phaseD);
+    const untrapAt = at('trap - EXIT', phaseD);
+    expect(trapAt).toBeLessThan(holdAt);
+    expect(holdAt).toBeLessThan(cacheWaitAt);
+    expect(cacheWaitAt).toBeLessThan(commitAt);
+    expect(ratifyAt).toBeLessThan(restoreAt);
+    expect(restoreAt).toBeLessThan(verifyAt);
+    expect(dirtyAt).toBeLessThan(dirtyArmedAt);
+    expect(verifyAt).toBeLessThan(resetAt);
+    expect(resetAt).toBeLessThan(untrapAt);
+    expect(untrapAt).toBeLessThan(at('phase_e_github_bridge() {'));
+
+    const exitHandler = physicalScenario.slice(
+      at('phase_d_restore_on_exit() {'),
+      physicalScenario.indexOf('\n}\n', at('phase_d_restore_on_exit() {')),
+    );
+    expect(exitHandler).toContain('phase_d_tier_restore');
+    expect(exitHandler).toContain('phase_d_vm_reset');
+    // The handler must not replace the scenario's own exit status.
+    expect(exitHandler).not.toMatch(/(?:^|[;&|]\s*)exit\b/m);
   });
 
   it('pins Phase E to commit-only members, the sole bridge writer, watchdog sweeps, and fail-closed recovery', () => {
