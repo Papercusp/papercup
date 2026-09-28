@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseEnv } from 'node:util';
 import { withPortalHandoffLock } from './portal-reconcile-lock.mts';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -191,7 +192,7 @@ export async function settleReconcileProcess(task) {
   process.exit(code);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   const portalRoot = resolve(process.env.PAPERCUSP_CLOUD_PORTAL_ROOT
     ?? join(homedir(), '.papercusp-workspaces/papercusp-workspace/.papercusp/apps/portal'));
   const runtimeRoot = resolve(process.env.PAPERCUSP_CLOUD_PORTAL_RUNTIME_ROOT

@@ -122,14 +122,16 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     const work = mkdtempSync(join(tmpdir(), 'dream-workspace-isolation-'));
     try {
       const helper = src.match(/prepare_isolated_workspace\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
-      const envLine = src.split('\n').find((line) => line.trim().startsWith('ISOLATED_ENV_LINE="PAPERCUSP_HOME='));
+      // Match by content, not by which variable happens to come first: the line
+      // grew a leading GH_CONFIG_DIR= (isolated gh auth) and may grow more.
+      const envLine = src.split('\n').find((line) => line.trim().startsWith('ISOLATED_ENV_LINE="') && line.includes('PAPERCUSP_HOME='));
       expect(helper).toBeTruthy();
       expect(envLine).toBeTruthy();
       const probe = join(work, 'probe.cjs');
-      writeFileSync(probe, `console.log(JSON.stringify({id:process.env.PAPERCUSP_WORKSPACE_ID,legacy:process.env.PAPERCUSP_WORKSPACE,root:process.env.PAPERCUSP_WORKSPACES_ROOT,codexHomes:process.env.PAPERCUSP_SU_CODEX_HOMES_DIR}));`);
+      writeFileSync(probe, `console.log(JSON.stringify({id:process.env.PAPERCUSP_WORKSPACE_ID,legacy:process.env.PAPERCUSP_WORKSPACE,root:process.env.PAPERCUSP_WORKSPACES_ROOT,codexHomes:process.env.PAPERCUSP_SU_CODEX_HOMES_DIR,ghConfig:process.env.GH_CONFIG_DIR}));`);
       const script = [
         'set -eu', helper,
-        'WORK="$1"; ISOLATED_WORKSPACE=verify-tauri-isolated-test; ISOLATED_HOME="$WORK/home"; ISOLATED_CODEX_HOMES_DIR="$WORK/su-codex-homes"',
+        'WORK="$1"; ISOLATED_WORKSPACE=verify-tauri-isolated-test; ISOLATED_HOME="$WORK/home"; ISOLATED_CODEX_HOMES_DIR="$WORK/su-codex-homes"; ISOLATED_GH_CONFIG_DIR="$WORK/gh-config"',
         'ISOLATED_ADMIN_URL=test-admin; ISOLATED_APP_URL=test-app; ISOLATED_PG_PORT=1234',
         'ISOLATED_WEBVIEW_DATA="$WORK/data"; ISOLATED_WEBVIEW_CACHE="$WORK/cache"; ISOLATED_WEBVIEW_CONFIG="$WORK/config"',
         'prepare_isolated_workspace', envLine,
@@ -139,7 +141,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
         encoding: 'utf8', env: { ...process.env, PAPERCUSP_WORKSPACE_ID: 'live-owner', PAPERCUSP_WORKSPACE: 'live-owner', PAPERCUSP_WORKSPACES_ROOT: '/do-not-touch-live-registry' },
       });
       expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({ id: 'verify-tauri-isolated-test', legacy: 'verify-tauri-isolated-test', root: join(work, 'workspaces'), codexHomes: join(work, 'su-codex-homes') });
+      expect(JSON.parse(result.stdout)).toEqual({ id: 'verify-tauri-isolated-test', legacy: 'verify-tauri-isolated-test', root: join(work, 'workspaces'), codexHomes: join(work, 'su-codex-homes'), ghConfig: join(work, 'gh-config') });
       const registry = JSON.parse(readFileSync(join(work, 'workspaces/registry.json'), 'utf8'));
       expect(registry.current).toBe('verify-tauri-isolated-test');
       expect(registry.workspaces.map((row: { id: string }) => row.id)).toEqual(['verify-tauri-isolated-test']);

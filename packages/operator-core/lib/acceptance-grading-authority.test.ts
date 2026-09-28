@@ -270,6 +270,28 @@ describe('readAcceptanceGradingSettlement (WI-1699998)', () => {
     });
   });
 
+  // WI-10003286: the ship gate refused self_graded_only because its BAR judged the only
+  // independent card cohort-stale. Revision scoping cannot see a cohort move, so without
+  // the stale set this read answered "settled" and every retry was a no-op.
+  it('NOT settled when the only independent card is one the gate judged cohort-stale', async () => {
+    await expect(
+      readAcceptanceGradingSettlement('ar-plan', settlementDeps([independent, authorAccept]), {
+        staleCardIds: [independent.issueId],
+      }),
+    ).resolves.toEqual({ settled: false, reason: 'stale_independent_card', rubricRevision: 7 });
+  });
+
+  it('still SETTLED when a different, non-stale independent card stands beside the stale one', async () => {
+    const fresh = card({ issueId: 'EI-fresh-independent' });
+    const verdict = await readAcceptanceGradingSettlement(
+      'ar-plan',
+      settlementDeps([independent, fresh, authorAccept]),
+      { staleCardIds: [independent.issueId] },
+    );
+    expect(verdict.settled).toBe(true);
+    expect(verdict.independentCardId).toBe('EI-fresh-independent');
+  });
+
   it('NOT settled when the only standing cards are pinned to a SUPERSEDED revision', async () => {
     const stale = [
       card({ issueId: 'EI-old', rubricRevision: 6 }),
