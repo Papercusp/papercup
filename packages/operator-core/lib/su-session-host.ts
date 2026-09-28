@@ -932,6 +932,20 @@ export function createSuSessionEventResponse(
   });
 }
 
+/**
+ * Test-only: simulate the death of the process that owned ONE host. The host
+ * leaves this process's registry and its SSE channel closes, while the durable
+ * row stays exactly as that process last wrote it, so the next request meets a
+ * rehydrated descriptor-only host. That is the pui-chat-first-ux-2026-09-28
+ * P-002 seam (session 31362: the launching operator worker died mid-startup).
+ */
+export function _dropSuSessionHostForTest(host: { channelKey: string }): void {
+  const registered = registry().get(host.channelKey);
+  if (!registered) return;
+  registry().delete(host.channelKey);
+  registered.dispose('owning process lost (test)');
+}
+
 /** Test-only: dispose all registered hosts and clear their channels. */
 export function _resetSuSessionHostsForTest(): void {
   for (const host of registry().values()) host.dispose('test reset');

@@ -3293,6 +3293,81 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     }
   });
 
+  // pui-chat-first-ux-2026-09-28 P-002 / D-001 recurrence guard. Session 31362:
+  // the operator process that launched the chat died while its engine was still
+  // starting. Every later request met a REHYDRATED descriptor-only host
+  // (executorAttached:false, runtimeReconciliation reattach) and PUI waited its
+  // whole 60s budget for a ready event nothing could emit, then showed
+  // "Session did not become ready". Dropping the live host from the registry and
+  // killing its native process mid-startup is that seam: the durable row
+  // survives, the host and its engine do not. The pending first message must
+  // resume the SAME session on its own and get its reply, well inside the budget.
+  test('P-002: a first message survives the loss of its launching runtime and still gets a reply', async ({ onTestFailed }) => {
+    const P002_RECOVERY_BUDGET_MS = 30_000;
+    let releaseInitialization!: () => void;
+    scriptedEngine.initialization = new Promise<void>((resolve) => { releaseInitialization = resolve; });
+    const prompt = `P2 first message ${randomUUID().slice(0, 8)}`;
+    const enginesBefore = scriptedEngine.engines.length;
+    let stage = 'compose';
+    let nativePid: number | null = null;
+    let recoveredAfterMs: number | undefined;
+    const launchCount = () => sessionTraffic
+      .filter((entry) => entry.method === 'POST' && entry.path === '/api/adv/sessions/launch-su' && entry.status === 200)
+      .reduce((total, entry) => total + Number(entry.count ?? 1), 0);
+    const pane = new PuiPane(bin, operatorPort, home);
+    onTestFailed(() => console.info('PUI_P002_FAILURE', JSON.stringify({
+      stage, nativePid, recoveredAfterMs, requests: scriptedEngine.requests, sdkSessions: scriptedEngine.sdkSessions,
+      commandPosts: commandPosts.length, traffic: sessionTraffic, ...pane.failureEvidence(),
+    })));
+    try {
+      await openComposer(pane);
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor('· starting ·', { timeoutMs: 60_000 });
+      await vi.waitFor(() => expect(scriptedEngine.engines.length).toBeGreaterThan(enginesBefore), { timeout: 30_000 });
+      const launching = scriptedEngine.engines.at(-1)!;
+      await vi.waitFor(() => expect(launching.pid()).toBeGreaterThan(0), { timeout: 30_000 });
+      nativePid = launching.pid();
+      // Positive controls: the loss lands mid-startup, before anything was sent.
+      expect(launchCount()).toBe(1);
+      expect(commandPosts).toHaveLength(0);
+      expect(scriptedEngine.requests).toHaveLength(0);
+      const [lost] = scriptedEngine.sdkSessions.slice(-1);
+      expect(lost?.sessionId).toBeTruthy();
+
+      stage = 'runtime-loss';
+      const { _dropSuSessionHostForTest } = await import('../su-session-host');
+      scriptedEngine.initialization = Promise.resolve(); // the replacement engine starts normally
+      const lostAt = Date.now();
+      _dropSuSessionHostForTest(launching.adapter.host);
+      process.kill(nativePid!, 'SIGKILL');
+
+      stage = 'auto-resume';
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: P002_RECOVERY_BUDGET_MS });
+      recoveredAfterMs = Date.now() - lostAt;
+      expect(recoveredAfterMs).toBeLessThanOrEqual(P002_RECOVERY_BUDGET_MS);
+      const frame = pane.screen();
+      expect(frame).not.toContain('did not become ready');
+      expect(frame).not.toContain('Message not accepted');
+      // One automatic resume (a second launch-su, the Attach), the same native
+      // identity started again (nothing native existed to restore), and the
+      // first message delivered exactly once.
+      expect(launchCount()).toBe(2);
+      expect(scriptedEngine.sdkSessions.at(-1)).toEqual({ resume: null, sessionId: lost.sessionId });
+      expect(scriptedEngine.requests).toEqual([prompt]);
+      expect(commandPosts).toHaveLength(1);
+      expect(commandPosts[0]).toMatchObject({ type: 'owner_turn', content: prompt });
+      const saved = await waitForSavedTurn(prompt);
+      expect(saved.transcript.filter((turn) => turn.role === 'user')).toHaveLength(1);
+      console.info('PUI_P002_RECOVERY_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, recoveredAfterMs, budgetMs: P002_RECOVERY_BUDGET_MS, chatId: saved.id, frame,
+      }));
+    } finally {
+      releaseInitialization();
+      await pane.stop();
+    }
+  }, 180_000);
+
   test('delivery receipt and assistant segment keep input locked until interruption completes', async () => {
     scriptedEngine.mode = 'stall';
     const prompt = 'PUI pending tool turn';
