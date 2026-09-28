@@ -353,6 +353,11 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     ...(opts.agentChatId ? { agent_chat_id: opts.agentChatId } : {}),
   });
   let lastError = 'no spawn path available';
+  // An operator's own JSON answer outranks a LATER transport failure. In a hosted browser the
+  // same-origin endpoint answers (e.g. 403 route_not_relayed) and the localhost fallbacks then
+  // throw "Failed to fetch" from the user's own machine; reporting the last error hid the real
+  // reason behind "Launch failed: Failed to fetch" (owner #773, 2026-09-28).
+  let answeredError: string | null = null;
   for (const url of launchSuEndpoints()) {
     try {
       const r = await fetch(url, {
@@ -404,11 +409,12 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
         };
       }
       lastError = data.error ?? `launch-su HTTP ${r.status}`;
+      answeredError = lastError;
     } catch (e: unknown) {
       lastError = e instanceof Error ? e.message : String(e);
     }
   }
-  return { ok: false, error: lastError };
+  return { ok: false, error: answeredError ?? lastError };
 }
 
 /**

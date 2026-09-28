@@ -156,7 +156,7 @@ describe('launchAgent — last-error aggregation', () => {
     expect(r.error).toBe('launch-su HTTP 503 (no body)');
   });
 
-  it('keeps probing past a non-ok body and reports the connection error from the final endpoint', async () => {
+  it('keeps probing past a non-ok body but reports the operator answer, not a later connection error', async () => {
     fetchMock
       .mockResolvedValueOnce(res({ ok: false, status: 500, body: { error: 'first failed' } }))
       .mockRejectedValueOnce(new Error('second unreachable'));
@@ -164,8 +164,36 @@ describe('launchAgent — last-error aggregation', () => {
     const r = await launchAgent({ agent: 'claude', slug: 'papercup' });
 
     expect(r.ok).toBe(false);
-    expect(r.error).toBe('second unreachable');
+    expect(r.error).toBe('first failed');
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Owner #773 (2026-09-28): the hosted HUD's "New session" showed only
+  // "Launch failed: Failed to fetch" — the localhost fallbacks, unreachable from
+  // the owner's own browser, overwrote the portal's real refusal.
+  it('a hosted browser sees the same-origin refusal, not the localhost "Failed to fetch"', async () => {
+    (globalThis as { window?: unknown }).window = { location: { protocol: 'https:', host: 'app.example' } };
+    fetchMock
+      .mockResolvedValueOnce(res({ ok: false, status: 403, body: { ok: false, error: 'route_not_relayed' } }))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+    const r = await launchAgent({ agent: 'claude', slug: 'papercup' });
+
+    expect(r).toEqual({ ok: false, error: 'route_not_relayed' });
+    expect(urlsCalled()).toEqual([EP_SAME, EP_3070, EP_3055]);
+  });
+
+  it('CALIBRATION: with no operator answer at all, the last transport error is still reported', async () => {
+    (globalThis as { window?: unknown }).window = { location: { protocol: 'https:', host: 'app.example' } };
+    fetchMock
+      .mockRejectedValueOnce(new TypeError('portal down'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch :3055'));
+
+    const r = await launchAgent({ agent: 'claude', slug: 'papercup' });
+
+    expect(r).toEqual({ ok: false, error: 'Failed to fetch :3055' });
   });
 });
 
