@@ -1059,10 +1059,13 @@ created: 2026-08-21
   it('WI-10003675: contention that outlasts the retry budget FAILS LOUD naming the join — never a silent ungated mint', async () => {
     forkJoin();
     h.edgeContentionFaults = { remaining: 1_000, injected: 0 };
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
     const err = await run.promotePlanItems(base).then(
       () => null,
       (e: unknown) => e,
     );
+    expect(errorLog.mock.calls.map((c) => String(c[0])).join('\n')).toContain('EXHAUSTED contention retries');
+    errorLog.mockRestore();
     expect(err).toBeInstanceOf(run.PromotionDependencyEdgeError);
     const rows = await features();
     const join = rows.find((r) => r.title === 'Join')!.feature_id;
