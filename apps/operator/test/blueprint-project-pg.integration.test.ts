@@ -17,6 +17,7 @@ import {
   readBlueprintFromPg,
   readBlueprintHashFromPg,
   readBlueprintSpecificationSnapshot,
+  clearBlueprintSpecificationSnapshotCache,
 } from '@papercusp/operator-core/lib/blueprint/project-to-pg';
 
 let adminUri: string;
@@ -147,4 +148,21 @@ it('keeps accepted operation revision A after the mutable blueprint cache moves 
   expect(await readBlueprintSpecificationSnapshot(sql, 'other-workspace', 'snapshot-demo', acceptedRevision)).toBeNull();
   expect(await readBlueprintSpecificationSnapshot(sql, WS, 'other-harness', acceptedRevision)).toBeNull();
   expect((await sql`SELECT count(*)::int AS n FROM harness_shared.blueprint_specifications WHERE workspace_id=${WS} AND harness_slug='snapshot-demo'`)[0].n).toBe(2);
+
+  // WI-10003631: an accepted revision is immutable, so repeat reads are served from the
+  // process cache (no PG round trip) as one shared, deep-frozen snapshot; misses are not cached.
+  clearBlueprintSpecificationSnapshotCache();
+  let queries = 0;
+  const counting = ((...args: Parameters<typeof sql>) => { queries++; return sql(...args); }) as unknown as typeof sql;
+  const first = await readBlueprintSpecificationSnapshot(counting, WS, 'snapshot-demo', acceptedRevision);
+  expect(queries).toBe(1);
+  const second = await readBlueprintSpecificationSnapshot(counting, WS, 'snapshot-demo', acceptedRevision);
+  expect(queries).toBe(1);
+  expect(second).toBe(first);
+  expect(Object.isFrozen(second)).toBe(true);
+  expect(Object.isFrozen(operationFromSpecification(second!, 'extract').operation)).toBe(true);
+  // A miss is never cached: each one goes back to PG.
+  expect(await readBlueprintSpecificationSnapshot(counting, WS, 'other-harness', acceptedRevision)).toBeNull();
+  expect(await readBlueprintSpecificationSnapshot(counting, WS, 'other-harness', acceptedRevision)).toBeNull();
+  expect(queries).toBe(3);
 });
