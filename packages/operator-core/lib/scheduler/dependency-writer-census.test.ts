@@ -193,10 +193,19 @@ const relLib = (file: string) => relative(LIB_ROOT, file).split(sep).join('/');
 
 const SOURCE_FILES = collectSourceFiles(LIB_ROOT);
 
-/** Call sites only: a `function <name>(` declaration is the definition, not a call. */
+/**
+ * Call sites only: a `function <name>(` declaration is the definition, not a call.
+ *
+ * A writer handed BY REFERENCE as an argument (`retry(syncFeatureBlockEdges, h, id, b)`) is an
+ * indirect call and counts too. WI-10003675 routed promotion's edge write through a contention
+ * retry helper that way, and a direct-call-only regex then reported the module as "no longer
+ * CALLS an edge writer" while it still wrote every promotion edge (WI-10003724).
+ */
 function callsWriter(code: string): boolean {
   const stripped = code.replace(/\bfunction\s+(\w+)\s*\(/g, 'function $1_DECL(');
-  return WRITER_FNS.some((fn) => new RegExp(`\\b${fn}\\s*\\(`).test(stripped));
+  return WRITER_FNS.some(
+    (fn) => new RegExp(`\\b${fn}\\s*\\(`).test(stripped) || new RegExp(`[(,]\\s*${fn}\\s*[,)]`).test(stripped),
+  );
 }
 
 /** The mirror of `callsWriter`: this module is where one of the primitives is DECLARED. */
@@ -309,6 +318,15 @@ describe('the census DETECTS a writer (so its empty results mean something)', ()
     expect(callsWriter('export async function mirrorWorkItemBlockingEdge(blocker, blocked) {')).toBe(false);
     expect(definesWriter('export async function mirrorWorkItemBlockingEdge(blocker, blocked) {')).toBe(true);
     expect(definesWriter('await mirrorWorkItemBlockingEdge(src, dst);')).toBe(false);
+  });
+
+  it('a writer passed BY REFERENCE to a wrapper counts as a call (WI-10003724)', () => {
+    // The retry-wrapper shape plan-workitem-promotion-run.ts uses since WI-10003675.
+    expect(callsWriter('await syncBlockEdgesWithContentionRetry(syncFeatureBlockEdges, h, id, b);')).toBe(true);
+    expect(callsWriter('await withRetry(h, mirrorWorkItemBlockingEdge);')).toBe(true);
+    // A mere mention that is neither a call nor an argument stays out.
+    expect(callsWriter("const label = 'syncFeatureBlockEdges';")).toBe(false);
+    expect(callsWriter('import { syncFeatureBlockEdges } from "./dbos/feature-blockers-edges";')).toBe(false);
   });
 
   it('an UNENUMERATED caller would fail the census (the assertion is reachable)', () => {
