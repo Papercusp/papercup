@@ -586,8 +586,17 @@ export const coordProgramWorkflow = idempotentRegisterWorkflow('coordProgram', (
 
 // WI-4015: idempotentWorkflowQueue guards the module-top-level-DBOS-singleton class
 // (see idempotent-register-workflow.ts's doc comment).
+/** P-013 D-025 (same mechanism as D-023): DBOS polls each queue every
+ *  minPollingIntervalMs (default 1000 ms) and no enqueue wakes the runner, so
+ *  every coord program waited U(0,1 s) before its first step. 50 ms costs about
+ *  20 idle dequeue reads/s per executor. Pinned by coord-program-queue.test.ts. */
+export const COORD_PROGRAM_QUEUE_MIN_POLL_MS = 50;
+
 export const coordProgramQueue = idempotentWorkflowQueue('coord-program', () =>
-  new WorkflowQueue('coord-program', { concurrency: queueConcurrency(4) }),
+  new WorkflowQueue('coord-program', {
+    concurrency: queueConcurrency(4),
+    minPollingIntervalMs: COORD_PROGRAM_QUEUE_MIN_POLL_MS,
+  }),
 );
 
 /**
