@@ -633,6 +633,39 @@ describe('GET /api/updates/manifest — static release host is authoritative (LO
     errSpy.mockRestore();
   });
 
+  it('WI-10003699: a manifest with no build for this platform (platform-only release) reads as up to date', async () => {
+    // A fresh Response per call: a body can be read only once.
+    mockFetch.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify(
+            latestJson({
+              version: '0.0.23',
+              platforms: {
+                'windows-x86_64': {
+                  signature: 'MINISIGN_INLINE',
+                  url: `${HOST}/desktop-v0.0.23-alpha/Papercusp_GUI_0.0.23_x64-setup.exe`,
+                },
+              },
+            }),
+          ),
+          { status: 200 },
+        ),
+    );
+    const linux = await manifestResponse(
+      '?target=linux&arch=x86_64&current_version=0.0.22&product=gui&channel=alpha',
+    );
+    expect(linux.status).toBe(204);
+    expect(linux.headers.get('X-Update-Check')).toBe('up_to_date');
+    expect(linux.headers.get('X-Update-Reason')).toBeNull();
+    // The platform the release DOES carry is still offered the update.
+    const windows = await manifestResponse(
+      '?target=windows&arch=x86_64&current_version=0.0.22&product=gui&channel=alpha',
+    );
+    expect(windows.status).toBe(200);
+    expect(((await windows.json()) as { version: string }).version).toBe('0.0.23');
+  });
+
   it('honours the channel gate — a stable client is not offered an alpha build', async () => {
     const res = await manifestResponse(
       '?target=linux&arch=x86_64&current_version=0.0.8&product=gui&channel=stable',

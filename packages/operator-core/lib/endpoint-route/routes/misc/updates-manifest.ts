@@ -391,6 +391,13 @@ function staticManifestResponse(
   }
 
   const entry = latest.platforms[platformKey];
+  // The host answered with a usable manifest that carries NO build for this
+  // platform: a platform-only release (e.g. Windows 0.0.23 on top of 0.0.22,
+  // WI-10003699) or a platform whose build is not published yet. Either way no
+  // newer build exists for THIS install, so it is up to date. Reporting
+  // `no_candidate` here told Linux/macOS users "No releases are published for
+  // the alpha channel yet", which was false.
+  if (entry === undefined) return upToDateResponse();
   if (!entry?.url || !entry.signature) return cannotCheckResponse('no_candidate');
 
   // WI-4404/WI-3696 defense in depth: `fetchStaticLatest` already selected the
