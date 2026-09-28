@@ -527,11 +527,19 @@ export default defineTool({
     // Announce what will ACTUALLY run before the first model event — the same
     // chat-protocol `provenance` frame the agent-chats route emits, so the
     // shared PapercupChat shows one provenance line on both hosts (D-008).
-    const brainEngine = resolveBackend({ promptText: '', backend: operatorBackend });
+    //
+    // WI-10003608: these are the model/backend the CURRENT attempt runs on. They start
+    // as the resolved role brain; a papercup turn whose backend reports a usage cap or a
+    // dead credential moves its retry to the paired alternate (papercupChatFailover),
+    // because re-running the same account cannot succeed against either.
+    let brainModel = operatorModel;
+    let brainBackend = operatorBackend;
+    let brainEngine = resolveBackend({ promptText: '', backend: brainBackend });
+    let failedOver = false;
     emitChatEvent(ctx, {
       type: 'provenance',
       engine: brainEngine,
-      model: operatorModel,
+      model: brainModel,
     });
     // WI-10003188: the backend's own reason for a failed attempt, so a turn that ends
     // with no output can say WHY instead of a fixed "agent backend failure".
@@ -554,6 +562,9 @@ export default defineTool({
       }
       const resumedTurn = !!brainSession?.resumed;
       turnSessionMode = brainSession ? (resumedTurn ? 'resumed' : 'fresh-session') : 'cold';
+      // This attempt's own backend error only — the failover decision must never act
+      // on a previous attempt's reason.
+      let attemptBackendError: string | null = null;
       try {
         for await (const ev of runAgentChat({
           // Resumed session ⇒ delta prompt (the session carries the history
@@ -572,8 +583,8 @@ export default defineTool({
               }
             : {}),
           systemPromptText,
-          model: operatorModel,
-          backend: operatorBackend,
+          model: brainModel,
+          backend: brainBackend,
           // Gateway admission tier: this brain IS the owner-interactive chat/voice
           // reply (loopback-only route; operator:converse + the papercup:converse
           // voice alias share this handler). Tag it `interactive` so its LLM calls
@@ -634,6 +645,7 @@ export default defineTool({
             // empty-output retry check below rather than throwing, so a
             // transient backend error still gets a second attempt.
             lastBackendError = ev.message;
+            attemptBackendError = ev.message;
             const detail = ev.stderr
               ? `${ev.message}\n--- stderr ---\n${ev.stderr}`
               : ev.message;
@@ -652,9 +664,26 @@ export default defineTool({
       // Stop once this attempt committed any output, or on abort.
       if (assembled.trim() || emittedToolCall || ctx.signal.aborted) break;
       if (attempt < MAX_BRAIN_ATTEMPTS) {
-        console.error(
-          `[operator:converse] brain produced no output on attempt ${attempt} — retrying.`,
-        );
+        const failover =
+          role === 'papercup' && !failedOver
+            ? papercupChatFailover({ engine: brainEngine, failure: classifyChatModelFailure(attemptBackendError) })
+            : null;
+        if (failover) {
+          console.error(
+            `[operator:converse] ${brainEngine} (${brainModel}) failed with ${failover.cause} on attempt ` +
+              `${attempt} — failing over to ${failover.backend} (${failover.model}).`,
+          );
+          failedOver = true;
+          brainModel = failover.model;
+          brainBackend = failover.backend;
+          brainEngine = resolveBackend({ promptText: '', backend: brainBackend });
+          // Re-announce what actually runs now; the chat reducer keeps the latest frame.
+          emitChatEvent(ctx, { type: 'provenance', engine: brainEngine, model: brainModel });
+        } else {
+          console.error(
+            `[operator:converse] brain produced no output on attempt ${attempt} — retrying.`,
+          );
+        }
       }
     }
 
@@ -665,7 +694,7 @@ export default defineTool({
       console.error(
         `[operator:converse] agent backend produced no output after ${MAX_BRAIN_ATTEMPTS} attempts.`,
       );
-      throw new Error(brainNoOutputMessage({ engine: brainEngine, model: operatorModel, lastBackendError }));
+      throw new Error(brainNoOutputMessage({ engine: brainEngine, model: brainModel, lastBackendError }));
     }
 
     // WI-5071: output committed on a session-backed turn — bump the marker so
@@ -681,7 +710,7 @@ export default defineTool({
     console.log(
       `[operator:converse] turn-timings buildPromptMs=${buildPromptMs} ` +
         `firstEventMs=${firstEventAt !== null ? firstEventAt - tTurnStart : -1} ` +
-        `totalMs=${Date.now() - tTurnStart} model=${operatorModel} ` +
+        `totalMs=${Date.now() - tTurnStart} model=${brainModel} failedOver=${failedOver} ` +
         `modality=${turnModality} emittedToolCall=${emittedToolCall} ` +
         `assembledChars=${assembled.length} session=${turnSessionMode} ` +
         `role=${role} trust=${hostTrust} tools=${allowedTools.length}`,

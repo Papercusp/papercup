@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { PAPERCUP_CHAT_MODEL_PIN } from '../agent-config-constants';
-import { resolvePapercupChatModel } from './papercup-chat-model';
+import { classifyChatModelFailure } from '../chat-model-failure';
+import { papercupChatFailover, resolvePapercupChatModel } from './papercup-chat-model';
 
 describe('resolvePapercupChatModel', () => {
   it('pins gpt-5.6-luna:low ON codex when nothing overrides (backend travels with the pin)', () => {
@@ -55,5 +56,49 @@ describe('resolvePapercupChatModel', () => {
     const bogus = resolvePapercupChatModel({ env: { PAPERCUP_CHAT_BACKEND: 'gemini' }, config: { models: {}, roleBackends: {} } });
     expect(bogus.backend).toBe('codex');
     expect(bogus.backendSource).toBe('pin');
+  });
+});
+
+// WI-10003608: the failures measured on hosted workspace avi-test, verbatim in shape.
+const NOW = Date.UTC(2026, 8, 28, 6, 0, 0);
+const CODEX_CAP =
+  'codex exited 1: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase ' +
+  'more credits or try again at Oct 3rd, 2026 5:30 PM.';
+const CLAUDE_REVOKED =
+  'claude-code exited 1: API Error: 401 {"type":"error","error":{"type":"authentication_error",' +
+  '"message":"OAuth access token has been revoked."}}';
+const CODEX_RATE = 'codex exited 1: 429 Too Many Requests — retry after 30s';
+
+describe('papercupChatFailover (WI-10003608)', () => {
+  it('fixtures classify as the classes they stand for (calibration)', () => {
+    expect(classifyChatModelFailure(CODEX_CAP, NOW)?.code).toBe('model_usage_limited');
+    expect(classifyChatModelFailure(CLAUDE_REVOKED, NOW)?.code).toBe('model_auth_required');
+    expect(classifyChatModelFailure(CODEX_RATE, NOW)?.code).toBe('model_rate_limited');
+  });
+
+  it('a capped codex account moves the retry to claude-code', () => {
+    expect(papercupChatFailover({ engine: 'codex', failure: classifyChatModelFailure(CODEX_CAP, NOW) })).toEqual({
+      model: 'sonnet:low',
+      backend: 'claude-code',
+      cause: 'model_usage_limited',
+    });
+  });
+
+  it('a revoked claude credential moves the retry to the codex pin', () => {
+    expect(
+      papercupChatFailover({ engine: 'claude-code', failure: classifyChatModelFailure(CLAUDE_REVOKED, NOW) }),
+    ).toEqual({ ...PAPERCUP_CHAT_MODEL_PIN, cause: 'model_auth_required' });
+  });
+
+  it('a transient rate limit or an unclassified failure keeps the same-backend retry', () => {
+    expect(papercupChatFailover({ engine: 'codex', failure: classifyChatModelFailure(CODEX_RATE, NOW) })).toBeNull();
+    expect(papercupChatFailover({ engine: 'codex', failure: null })).toBeNull();
+  });
+
+  it('a backend with no known alternate account (omp) or an unknown engine does not fail over', () => {
+    const cap = classifyChatModelFailure(CODEX_CAP, NOW);
+    expect(papercupChatFailover({ engine: 'omp', failure: cap })).toBeNull();
+    expect(papercupChatFailover({ engine: 'anthropic-direct', failure: cap })).toBeNull();
+    expect(papercupChatFailover({ engine: undefined, failure: cap })).toBeNull();
   });
 });

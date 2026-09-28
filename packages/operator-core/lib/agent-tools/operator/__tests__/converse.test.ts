@@ -518,6 +518,94 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     expect(op.allowedTools).not.toContain('mcp__agentmcp__voice:delegate_deep');
   });
 
+  // WI-10003608: avi-test's codex account was capped until Oct 3 and the retry re-ran
+  // the same capped backend, so every portal turn died twice.
+  const CODEX_CAP =
+    'codex exited 1: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase ' +
+    'more credits or try again at Oct 3rd, 2026 5:30 PM.';
+  const papercupTurn = () => {
+    delete process.env.PAPERCUP_CHAT_MODEL;
+    delete process.env.PAPERCUP_CHAT_BACKEND;
+    vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
+    const ctx = { ...makeCtx(), role: 'papercup' };
+    return { ctx, run: () => handler({ messages: [], trigger: 'user_message', role: 'papercup', sessionUser: null }, ctx) };
+  };
+  const callOf = (i: number) => vi.mocked(runAgentChat).mock.calls[i][0] as { model?: string; backend?: string };
+
+  it('papercup: a capped codex account fails the retry over to claude-code and re-announces provenance', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let n = 0;
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      n += 1;
+      if (n === 1) {
+        yield { type: 'error', message: CODEX_CAP };
+        return;
+      }
+      yield { type: 'delta', text: 'answered on claude' };
+    });
+    const { ctx, run } = papercupTurn();
+    const res = await run();
+    expect(runAgentChat).toHaveBeenCalledTimes(2);
+    expect(callOf(0)).toMatchObject({ model: 'gpt-5.6-luna:low', backend: 'codex' });
+    expect(callOf(1)).toMatchObject({ model: 'sonnet:low', backend: 'claude-code' });
+    const provenance = ctx.emit.mock.calls.filter(([name]) => name === 'provenance').map(([, data]) => data);
+    expect(provenance).toEqual([
+      { type: 'provenance', engine: 'codex', model: 'gpt-5.6-luna:low' },
+      { type: 'provenance', engine: 'claude-code', model: 'sonnet:low' },
+    ]);
+    expect(res.data.assembled).toBe('answered on claude');
+    errSpy.mockRestore();
+  });
+
+  it('papercup: a transient rate limit keeps the same-backend retry', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let n = 0;
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      n += 1;
+      if (n === 1) {
+        yield { type: 'error', message: 'codex exited 1: 429 Too Many Requests — retry after 30s' };
+        return;
+      }
+      yield { type: 'delta', text: 'ok' };
+    });
+    const { run } = papercupTurn();
+    await run();
+    expect(runAgentChat).toHaveBeenCalledTimes(2);
+    expect(callOf(1)).toMatchObject({ model: 'gpt-5.6-luna:low', backend: 'codex' });
+    errSpy.mockRestore();
+  });
+
+  it('papercup: when the alternate also fails, the turn error names the backend that ran LAST', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let n = 0;
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      n += 1;
+      yield {
+        type: 'error',
+        message:
+          n === 1
+            ? CODEX_CAP
+            : 'claude-code exited 1: API Error: 401 {"type":"error","error":{"type":"authentication_error"}}',
+      };
+    });
+    const { run } = papercupTurn();
+    await expect(run()).rejects.toThrow(/claude-code, model sonnet:low: .*401/);
+    expect(runAgentChat).toHaveBeenCalledTimes(2);
+    errSpy.mockRestore();
+  });
+
+  it('the operator role never fails over — only the papercup chat pin pairs backends', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(runAgentChat).mockImplementation(async function* (): AnyGen {
+      yield { type: 'error', message: CODEX_CAP };
+    });
+    await expect(handler({ messages: [], sessionUser: null }, makeCtx())).rejects.toThrow(/no output/i);
+    expect(runAgentChat).toHaveBeenCalledTimes(2);
+    expect(callOf(1).model).toBe(callOf(0).model);
+    expect(callOf(1).backend).toBe(callOf(0).backend);
+    errSpy.mockRestore();
+  });
+
   it('hostTrust=public: NO superuser mount, doors + card + deep tool; tool-less without the boundary bearer (D-007 §2)', async () => {
     vi.mocked(activeWorkspaceId).mockReturnValue('ws-real');
     // Fail-closed: no principalToken ⇒ no mcpConfig at all, allowedTools empty —
