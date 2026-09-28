@@ -206,9 +206,14 @@ fn psu_holder(layout: &Layout) -> PsuHolder {
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => PsuHolder::Absent,
         Err(error) => PsuHolder::Foreign(format!("unreadable ({error})")),
-        Ok(meta) if !meta.file_type().is_symlink() => {
-            PsuHolder::Foreign(if meta.is_dir() { "a directory" } else { "a file" }.to_string())
-        }
+        Ok(meta) if !meta.file_type().is_symlink() => PsuHolder::Foreign(
+            if meta.is_dir() {
+                "a directory"
+            } else {
+                "a file"
+            }
+            .to_string(),
+        ),
         Ok(_) => match fs::read_link(&path) {
             Ok(target) if target.starts_with(&layout.home) => PsuHolder::Pui,
             // `metadata` follows the link from its own directory, so a relative
@@ -427,26 +432,9 @@ pub fn stamp_json() -> Value {
     })
 }
 
-/// Run an executable that was written moments ago. A fork on another thread
-/// can briefly inherit the writer's descriptor, and exec then fails ETXTBSY
-/// until that child execs; retry for a moment rather than refuse a good release.
-/// The bound is wall-clock, not an attempt count: on a loaded machine a forked
-/// child can sit between fork and exec for far longer than a few retries.
-fn output_of_fresh_executable(command: &mut Command) -> std::io::Result<std::process::Output> {
-    const ETXTBSY: i32 = 26; // the same errno on Linux and macOS
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        match command.output() {
-            Err(error)
-                if error.raw_os_error() == Some(ETXTBSY)
-                    && std::time::Instant::now() < deadline =>
-            {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-            result => return result,
-        }
-    }
-}
+/// Run an executable that was written moments ago (ETXTBSY-tolerant; see
+/// `fresh_exec`) rather than refuse a good release over a fork race.
+use crate::fresh_exec::output as output_of_fresh_executable;
 
 fn verify_executes_here(unit: &ReleaseUnit) -> Result<()> {
     let here = install::this_target();
@@ -867,7 +855,11 @@ fn prune_releases(layout: &Layout) -> Result<()> {
     let keep: Vec<String> = [layout.current(), layout.previous()]
         .iter()
         .filter_map(|link| fs::read_link(link).ok())
-        .filter_map(|target| target.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .filter_map(|target| {
+            target
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .collect();
     for entry in fs::read_dir(layout.releases())? {
         let entry = entry?;
@@ -895,7 +887,9 @@ fn snapshot_user_state(layout: &Layout, from: &str, to: &str) -> Result<PathBuf>
         .filter(|name| layout.data_dir.join(name).is_file())
         .collect();
     let taken_at = epoch_now();
-    let mut dir = layout.snapshots().join(format!("{taken_at:012}--{from}--{to}"));
+    let mut dir = layout
+        .snapshots()
+        .join(format!("{taken_at:012}--{from}--{to}"));
     let mut suffix = 1;
     while dir.exists() {
         dir = layout
@@ -1022,8 +1016,7 @@ pub fn apply_rollback(
             for name in PUI_OWNED_STATE {
                 let live = layout.data_dir.join(name);
                 if files.iter().any(|file| file == name) {
-                    fs::copy(dir.join(name), &live)
-                        .with_context(|| format!("restore {name}"))?;
+                    fs::copy(dir.join(name), &live).with_context(|| format!("restore {name}"))?;
                 } else if live.exists() {
                     fs::remove_file(&live).with_context(|| format!("restore {name}"))?;
                 }
@@ -1193,7 +1186,11 @@ fn published_digest(archive: &Path) -> Result<Option<String>> {
     Ok(None)
 }
 
-pub fn open_source(layout: &Layout, from: &Path, expected_sha256: Option<&str>) -> Result<OpenedSource> {
+pub fn open_source(
+    layout: &Layout,
+    from: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<OpenedSource> {
     if from.is_dir() {
         if !from.join(MANIFEST_NAME).is_file() {
             bail!(
@@ -1227,10 +1224,11 @@ pub fn open_source(layout: &Layout, from: &Path, expected_sha256: Option<&str>) 
             );
         }
     }
-    let unpack = layout
-        .home
-        .join("downloads")
-        .join(format!("unpack-{}-{}", std::process::id(), epoch_now()));
+    let unpack = layout.home.join("downloads").join(format!(
+        "unpack-{}-{}",
+        std::process::id(),
+        epoch_now()
+    ));
     fs::create_dir_all(&unpack).with_context(|| format!("create {}", unpack.display()))?;
     // Constructed before unpacking so every early return below removes the dir.
     let mut opened = OpenedSource {
@@ -1282,9 +1280,14 @@ pub enum LifecycleOp {
     /// Install `from` (a release directory, a `.tar.gz`, or an `https://` URL
     /// from the update channel) over the current release. A download must carry
     /// the channel's digest.
-    Update { from: String, sha256: Option<String> },
+    Update {
+        from: String,
+        sha256: Option<String>,
+    },
     Rollback,
-    Uninstall { purge: bool },
+    Uninstall {
+        purge: bool,
+    },
     Diagnostics,
 }
 
@@ -1386,15 +1389,43 @@ pub fn redact_url(value: &str) -> String {
 pub fn redact_env(name: &str, value: &str) -> String {
     let upper = name.to_ascii_uppercase();
     const SENSITIVE: &[&str] = &[
-        "TOKEN", "SECRET", "KEY", "PASSWORD", "PASSWD", "AUTH", "COOKIE", "CREDENTIAL", "SESSION",
+        "TOKEN",
+        "SECRET",
+        "KEY",
+        "PASSWORD",
+        "PASSWD",
+        "AUTH",
+        "COOKIE",
+        "CREDENTIAL",
+        "SESSION",
     ];
     const CONFIGURATION: &[&str] = &[
-        "PUI_HOME", "PUI_BIN_DIR", "PUI_INSTALL_MANIFEST", "PUI_COMPANION_WASM",
-        "PUI_UPDATE_CHANNEL", "PUI_OPERATOR", "PUI_FLEET", "PUI_SEAT", "PUI_NOTIFY", "PUI_DUMP",
-        "PUI_LIVE_AUDIO", "PUI_VOICE_INPUT", "PUI_VOICE_OUTPUT", "PUI_BUILD_SHA", "PUI_BUILD_EPOCH",
-        "PUI_BUILD_DIRTY", "PUI_CENSUS_UPDATE", "PAPERCUSP_OPERATOR_URL", "PAPERCUSP_HONO_PORT",
-        "PAPERCUSP_HARNESS_SLUG", "PAPERCUSP_SID", "PAPERCUSP_AGENT", "PAPERCUSP_TUI_OWNER",
-        "ZELLIJ", "ZELLIJ_PANE_ID", "ZELLIJ_CONFIG_DIR",
+        "PUI_HOME",
+        "PUI_BIN_DIR",
+        "PUI_INSTALL_MANIFEST",
+        "PUI_COMPANION_WASM",
+        "PUI_UPDATE_CHANNEL",
+        "PUI_OPERATOR",
+        "PUI_FLEET",
+        "PUI_SEAT",
+        "PUI_NOTIFY",
+        "PUI_DUMP",
+        "PUI_LIVE_AUDIO",
+        "PUI_VOICE_INPUT",
+        "PUI_VOICE_OUTPUT",
+        "PUI_BUILD_SHA",
+        "PUI_BUILD_EPOCH",
+        "PUI_BUILD_DIRTY",
+        "PUI_CENSUS_UPDATE",
+        "PAPERCUSP_OPERATOR_URL",
+        "PAPERCUSP_HONO_PORT",
+        "PAPERCUSP_HARNESS_SLUG",
+        "PAPERCUSP_SID",
+        "PAPERCUSP_AGENT",
+        "PAPERCUSP_TUI_OWNER",
+        "ZELLIJ",
+        "ZELLIJ_PANE_ID",
+        "ZELLIJ_CONFIG_DIR",
     ];
     if SENSITIVE.iter().any(|marker| upper.contains(marker)) {
         "[redacted]".to_string()
@@ -1414,7 +1445,8 @@ fn channel_location(layout: &Layout, env: &[(String, String)]) -> Option<String>
     {
         return Some(value.trim().to_string());
     }
-    let config: Value = serde_json::from_slice(&fs::read(layout.home.join("channel.json")).ok()?).ok()?;
+    let config: Value =
+        serde_json::from_slice(&fs::read(layout.home.join("channel.json")).ok()?).ok()?;
     config
         .get("url")
         .and_then(Value::as_str)
@@ -1429,7 +1461,14 @@ fn fetch(url: &str, dest: &Path, max_secs: u32) -> Result<()> {
         bail!("refusing to download {url}: update channels and releases must use https");
     }
     let output = Command::new("curl")
-        .args(["-fsSL", "--proto", "=https", "--max-time", &max_secs.to_string(), "-o"])
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "--max-time",
+            &max_secs.to_string(),
+            "-o",
+        ])
         .arg(dest)
         .arg(url)
         .output()
@@ -1473,7 +1512,9 @@ pub fn newest_in_channel(
     {
         let (Some(version), Some(artifact)) = (
             release.get("version").and_then(Value::as_str),
-            release.get("artifacts").and_then(|artifacts| artifacts.get(target)),
+            release
+                .get("artifacts")
+                .and_then(|artifacts| artifacts.get(target)),
         ) else {
             continue;
         };
@@ -1503,7 +1544,10 @@ fn installed_version(layout: &Layout) -> String {
         .unwrap_or_else(|| install::BUILD_VERSION.to_string())
 }
 
-fn check_for_updates(layout: &Layout, ctx: &LifecycleContext) -> Result<(Vec<String>, Option<LifecycleOp>)> {
+fn check_for_updates(
+    layout: &Layout,
+    ctx: &LifecycleContext,
+) -> Result<(Vec<String>, Option<LifecycleOp>)> {
     let installed = installed_version(layout);
     let Some(location) = channel_location(layout, &ctx.env) else {
         return Ok((
@@ -1516,7 +1560,10 @@ fn check_for_updates(layout: &Layout, ctx: &LifecycleContext) -> Result<(Vec<Str
         ));
     };
     let text = if is_url(&location) {
-        let dest = layout.home.join("downloads").join(format!("channel-{}.json", std::process::id()));
+        let dest = layout
+            .home
+            .join("downloads")
+            .join(format!("channel-{}.json", std::process::id()));
         fs::create_dir_all(dest.parent().expect("downloads dir has a parent"))?;
         fetch(&location, &dest, 30)?;
         let text = fs::read_to_string(&dest);
@@ -1555,7 +1602,8 @@ fn open_update_source(layout: &Layout, from: &str, sha256: Option<&str>) -> Resu
     if !is_url(from) {
         return open_source(layout, Path::new(from), sha256);
     }
-    let digest = sha256.context("a download needs the channel's sha256; refusing an unverifiable release")?;
+    let digest = sha256
+        .context("a download needs the channel's sha256; refusing an unverifiable release")?;
     let name = from
         .rsplit('/')
         .next()
@@ -1583,7 +1631,11 @@ fn about_lines(layout: &Layout, ctx: &LifecycleContext) -> Vec<String> {
         "PUI {} · source {}{} · {}",
         build.version,
         short_sha(&build.source_sha),
-        if build.source_dirty == Some(true) { " (dirty)" } else { "" },
+        if build.source_dirty == Some(true) {
+            " (dirty)"
+        } else {
+            ""
+        },
         install::this_target()
     )];
     let running = ctx.exe.as_deref();
@@ -1608,7 +1660,9 @@ fn about_lines(layout: &Layout, ctx: &LifecycleContext) -> Vec<String> {
         }
         _ => lines.push(format!(
             "installed from a source checkout ({}); `pui self` manages release installs only",
-            running.map(|path| path.display().to_string()).unwrap_or_else(|| "unknown path".into())
+            running
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "unknown path".into())
         )),
     }
     lines.push(format!(
@@ -1624,7 +1678,8 @@ fn about_lines(layout: &Layout, ctx: &LifecycleContext) -> Vec<String> {
 /// A support report with no conversation content, prompts or credentials.
 pub fn diagnostics_report(layout: &Layout, ctx: &LifecycleContext) -> Vec<String> {
     let mut lines = vec![
-        "PUI diagnostics (redacted: no conversation content, prompts, tokens or credentials)".to_string(),
+        "PUI diagnostics (redacted: no conversation content, prompts, tokens or credentials)"
+            .to_string(),
     ];
     lines.extend(about_lines(layout, ctx));
     let status = status(layout, ctx.path_var.as_deref());
@@ -1638,8 +1693,18 @@ pub fn diagnostics_report(layout: &Layout, ctx: &LifecycleContext) -> Vec<String
                 if check.is_ok() { "OK" } else { "STALE" },
                 check.manifest_path.display()
             ));
-            lines.extend(check.problems.iter().map(|problem| format!("problem: {problem}")));
-            lines.extend(check.warnings.iter().map(|warning| format!("warning: {warning}")));
+            lines.extend(
+                check
+                    .problems
+                    .iter()
+                    .map(|problem| format!("problem: {problem}")),
+            );
+            lines.extend(
+                check
+                    .warnings
+                    .iter()
+                    .map(|warning| format!("warning: {warning}")),
+            );
         }
         Err(error) => lines.push(format!("local install: ERROR {error:#}")),
     }
@@ -1691,7 +1756,9 @@ pub fn preview(op: &LifecycleOp, layout: &Layout, ctx: &LifecycleContext) -> Lif
             )?;
             Ok((plan.preview(), Some(op.clone())))
         })(),
-        LifecycleOp::Rollback => plan_rollback(layout).map(|plan| (plan.preview(), Some(op.clone()))),
+        LifecycleOp::Rollback => {
+            plan_rollback(layout).map(|plan| (plan.preview(), Some(op.clone())))
+        }
         LifecycleOp::Uninstall { purge } => {
             plan_uninstall(layout, *purge).map(|plan| (plan.preview(), Some(op.clone())))
         }
@@ -1704,11 +1771,19 @@ pub fn preview(op: &LifecycleOp, layout: &Layout, ctx: &LifecycleContext) -> Lif
                 lines.push(String::new());
                 lines.push(armed.confirm_hint().to_string());
             }
-            LifecycleView { title, lines, armed }
+            LifecycleView {
+                title,
+                lines,
+                armed,
+            }
         }
         Err(error) => LifecycleView {
             title,
-            lines: vec![format!("{error:#}"), String::new(), "Nothing was changed.".into()],
+            lines: vec![
+                format!("{error:#}"),
+                String::new(),
+                "Nothing was changed.".into(),
+            ],
             armed: None,
         },
     }
@@ -1730,7 +1805,11 @@ pub fn apply(op: &LifecycleOp, layout: &Layout, ctx: &LifecycleContext) -> Lifec
             )?;
             apply_activation(layout, &unit, &plan)?;
             Ok(vec![
-                format!("✓ {} is installed and active; {} is kept for rollback", plan.to, plan.from.as_deref().unwrap_or("nothing")),
+                format!(
+                    "✓ {} is installed and active; {} is kept for rollback",
+                    plan.to,
+                    plan.from.as_deref().unwrap_or("nothing")
+                ),
                 RESTART_NOTE.to_string(),
             ])
         })(),
@@ -1758,7 +1837,8 @@ pub fn apply(op: &LifecycleOp, layout: &Layout, ctx: &LifecycleContext) -> Lifec
         LifecycleOp::Diagnostics => save_diagnostics(layout, ctx).map(|path| {
             vec![
                 format!("✓ saved {}", path.display()),
-                "It holds no conversation content or credentials; review it before sharing.".to_string(),
+                "It holds no conversation content or credentials; review it before sharing."
+                    .to_string(),
             ]
         }),
     };
@@ -1843,7 +1923,9 @@ pub fn run(args: &[String]) -> Result<()> {
         print!("{SELF_HELP}");
         return Ok(());
     };
-    if matches!(verb, "-h" | "--help" | "help") || args.iter().any(|arg| arg == "-h" || arg == "--help") {
+    if matches!(verb, "-h" | "--help" | "help")
+        || args.iter().any(|arg| arg == "-h" || arg == "--help")
+    {
         print!("{SELF_HELP}");
         return Ok(());
     }
@@ -1892,16 +1974,19 @@ pub fn run(args: &[String]) -> Result<()> {
             for note in &status.notes {
                 println!("note: {note}");
             }
-            if status.current.as_ref().is_some_and(|release| release.problem.is_some()) {
+            if status
+                .current
+                .as_ref()
+                .is_some_and(|release| release.problem.is_some())
+            {
                 bail!("the installed release failed verification; reinstall it with `pui self install --from …`");
             }
             Ok(())
         }
         "install" | "update" => {
-            let from = options
-                .from
-                .as_deref()
-                .with_context(|| format!("`pui self {verb}` needs --from <release-dir|archive.tar.gz>"))?;
+            let from = options.from.as_deref().with_context(|| {
+                format!("`pui self {verb}` needs --from <release-dir|archive.tar.gz>")
+            })?;
             let source = open_source(&layout, from, None)?;
             let unit = read_release_unit(&source.root)?;
             let kind = if verb == "install" {
@@ -2013,7 +2098,9 @@ mod tests {
         let binary = root.join("bin/pui");
         fs::write(
             &binary,
-            format!("#!/bin/sh\n[ \"$1 $2\" = \"self stamp\" ] || exit 64\nprintf '%s\\n' '{stamp}'\n"),
+            format!(
+                "#!/bin/sh\n[ \"$1 $2\" = \"self stamp\" ] || exit 64\nprintf '%s\\n' '{stamp}'\n"
+            ),
         )
         .unwrap();
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
@@ -2069,10 +2156,9 @@ mod tests {
         );
         // The launcher runs the COPY in the release store, not the source dir.
         fs::remove_dir_all(&unit).unwrap();
-        let output = output_of_fresh_executable(
-            Command::new(layout.launcher()).args(["self", "stamp"]),
-        )
-        .unwrap();
+        let output =
+            output_of_fresh_executable(Command::new(layout.launcher()).args(["self", "stamp"]))
+                .unwrap();
         assert!(output.status.success());
         let status = status(&layout, Some(layout.bin_dir.as_os_str()));
         assert_eq!(status.current.unwrap().problem, None);
@@ -2301,8 +2387,18 @@ mod tests {
             ActivationKind::Install,
         )
         .unwrap();
-        activate(&layout, &fake_unit(dir.path(), "0.2.0", "bbbbbbbbbbbbbbbb"), update).unwrap();
-        activate(&layout, &fake_unit(dir.path(), "0.3.0", "cccccccccccccccc"), update).unwrap();
+        activate(
+            &layout,
+            &fake_unit(dir.path(), "0.2.0", "bbbbbbbbbbbbbbbb"),
+            update,
+        )
+        .unwrap();
+        activate(
+            &layout,
+            &fake_unit(dir.path(), "0.3.0", "cccccccccccccccc"),
+            update,
+        )
+        .unwrap();
 
         let mut kept: Vec<String> = fs::read_dir(layout.releases())
             .unwrap()
@@ -2353,7 +2449,10 @@ mod tests {
         assert_eq!(purge.kept_state, vec![operator.clone()]);
         apply_uninstall(&layout, &purge).unwrap();
         assert!(!state.exists());
-        assert!(operator.exists(), "operator.json is shared and never purged");
+        assert!(
+            operator.exists(),
+            "operator.json is shared and never purged"
+        );
     }
 
     /// A unit that also ships `bin/psu` (D-031), answering `psu-of <version>`.
@@ -2366,7 +2465,8 @@ mod tests {
     }
 
     fn run_psu_link(layout: &Layout) -> String {
-        let output = Command::new(layout.psu_launcher()).output().unwrap();
+        // The fake psu was written moments ago; a parallel test's fork can hold it busy.
+        let output = output_of_fresh_executable(&mut Command::new(layout.psu_launcher())).unwrap();
         String::from_utf8_lossy(&output.stdout).trim().to_string()
     }
 
@@ -2405,7 +2505,11 @@ mod tests {
             update,
         )
         .unwrap();
-        assert_eq!(run_psu_link(&layout), "psu-of 0.2.0", "update moves psu with current");
+        assert_eq!(
+            run_psu_link(&layout),
+            "psu-of 0.2.0",
+            "update moves psu with current"
+        );
 
         // A release without psu (older than D-031) must not leave a dangling link
         // that would shadow a psu later on PATH.
@@ -2499,8 +2603,11 @@ mod tests {
         let dir = tempdir().unwrap();
         let layout = layout(dir.path());
         fs::create_dir_all(&layout.bin_dir).unwrap();
-        std::os::unix::fs::symlink(dir.path().join("deleted-checkout/psu"), layout.psu_launcher())
-            .unwrap();
+        std::os::unix::fs::symlink(
+            dir.path().join("deleted-checkout/psu"),
+            layout.psu_launcher(),
+        )
+        .unwrap();
 
         activate(
             &layout,
@@ -2512,9 +2619,10 @@ mod tests {
 
         let plan = plan_uninstall(&layout, false).unwrap();
         assert_eq!(plan.psu_launcher, Some(layout.psu_launcher()));
-        assert!(plan
-            .preview()
-            .contains(&format!("remove psu link: {}", layout.psu_launcher().display())));
+        assert!(plan.preview().contains(&format!(
+            "remove psu link: {}",
+            layout.psu_launcher().display()
+        )));
         apply_uninstall(&layout, &plan).unwrap();
         assert!(fs::symlink_metadata(layout.psu_launcher()).is_err());
         assert!(fs::symlink_metadata(layout.launcher()).is_err());
@@ -2537,7 +2645,10 @@ mod tests {
         .to_string();
 
         assert!(error.contains("not a PUI launcher link"), "{error}");
-        assert_eq!(fs::read(layout.launcher()).unwrap(), b"#!/bin/sh\necho mine\n");
+        assert_eq!(
+            fs::read(layout.launcher()).unwrap(),
+            b"#!/bin/sh\necho mine\n"
+        );
         assert!(
             fs::symlink_metadata(layout.current()).is_err(),
             "the conflict is refused before anything switches"
@@ -2563,15 +2674,22 @@ mod tests {
         assert!(status.success());
         let digest = install::sha256_file(&archive).unwrap();
 
-        fs::write(dist.join("SHA256SUMS"), format!("{}  pui-0.1.0-test.tar.gz\n", "0".repeat(64)))
-            .unwrap();
+        fs::write(
+            dist.join("SHA256SUMS"),
+            format!("{}  pui-0.1.0-test.tar.gz\n", "0".repeat(64)),
+        )
+        .unwrap();
         let error = open_source(&layout, &archive, None)
             .err()
             .expect("a wrong digest must be refused")
             .to_string();
         assert!(error.contains("published digest"), "{error}");
 
-        fs::write(dist.join("SHA256SUMS"), format!("{digest}  pui-0.1.0-test.tar.gz\n")).unwrap();
+        fs::write(
+            dist.join("SHA256SUMS"),
+            format!("{digest}  pui-0.1.0-test.tar.gz\n"),
+        )
+        .unwrap();
         let source = open_source(&layout, &archive, None).unwrap();
         assert_eq!(source.digest.as_deref(), Some(digest.as_str()));
         let unpacked = source.root.clone();
@@ -2625,7 +2743,10 @@ mod tests {
 
         assert_eq!(status.path_resolves_to, Some(shadow));
         assert!(
-            status.notes.iter().any(|note| note.contains("shadows the installed launcher")),
+            status
+                .notes
+                .iter()
+                .any(|note| note.contains("shadows the installed launcher")),
             "{:?}",
             status.notes
         );
@@ -2678,13 +2799,29 @@ mod tests {
 
         let previewed = preview(&update, &layout, &ctx(&[]));
         assert_eq!(previewed.armed.as_ref(), Some(&update));
-        assert!(previewed.lines[0].contains("0.1.0-aaaaaaaaaaaa"), "{:?}", previewed.lines);
-        assert!(previewed.lines.iter().any(|line| line.contains("y installs it")));
-        assert_eq!(current_id(&layout).as_deref(), Some("0.1.0-aaaaaaaaaaaa"), "a preview changes nothing");
+        assert!(
+            previewed.lines[0].contains("0.1.0-aaaaaaaaaaaa"),
+            "{:?}",
+            previewed.lines
+        );
+        assert!(previewed
+            .lines
+            .iter()
+            .any(|line| line.contains("y installs it")));
+        assert_eq!(
+            current_id(&layout).as_deref(),
+            Some("0.1.0-aaaaaaaaaaaa"),
+            "a preview changes nothing"
+        );
 
         let done = apply(&update, &layout, &ctx(&[]));
         assert_eq!(done.armed, None);
-        assert_eq!(current_id(&layout).as_deref(), Some("0.2.0-bbbbbbbbbbbb"), "{:?}", done.lines);
+        assert_eq!(
+            current_id(&layout).as_deref(),
+            Some("0.2.0-bbbbbbbbbbbb"),
+            "{:?}",
+            done.lines
+        );
 
         let rollback = preview(&LifecycleOp::Rollback, &layout, &ctx(&[]));
         assert_eq!(rollback.armed, Some(LifecycleOp::Rollback));
@@ -2698,10 +2835,17 @@ mod tests {
         let dir = tempdir().unwrap();
         let layout = layout(dir.path());
 
-        for op in [LifecycleOp::Rollback, LifecycleOp::Uninstall { purge: false }] {
+        for op in [
+            LifecycleOp::Rollback,
+            LifecycleOp::Uninstall { purge: false },
+        ] {
             let view = preview(&op, &layout, &ctx(&[]));
             assert_eq!(view.armed, None, "{op:?}");
-            assert!(view.lines.iter().any(|line| line == "Nothing was changed."), "{:?}", view.lines);
+            assert!(
+                view.lines.iter().any(|line| line == "Nothing was changed."),
+                "{:?}",
+                view.lines
+            );
         }
     }
 
@@ -2713,7 +2857,10 @@ mod tests {
         let view = preview(&LifecycleOp::CheckUpdates, &layout, &ctx(&[]));
 
         assert_eq!(view.armed, None);
-        assert!(view.lines.iter().any(|line| line.contains("No update channel is configured")));
+        assert!(view
+            .lines
+            .iter()
+            .any(|line| line.contains("No update channel is configured")));
     }
 
     #[test]
@@ -2745,7 +2892,11 @@ mod tests {
 
         let view = preview(&LifecycleOp::CheckUpdates, &layout, &ctx(&env));
 
-        assert!(view.lines[0].contains("PUI 0.3.0 is available"), "{:?}", view.lines);
+        assert!(
+            view.lines[0].contains("PUI 0.3.0 is available"),
+            "{:?}",
+            view.lines
+        );
         let Some(LifecycleOp::Update { from, sha256 }) = view.armed.clone() else {
             panic!("the newer release must be armed: {view:?}");
         };
@@ -2757,22 +2908,39 @@ mod tests {
             sha256: Some("f".repeat(64)),
         };
         let refused = apply(&wrong_digest, &layout, &ctx(&env));
-        assert!(refused.lines[0].contains("published digest"), "{:?}", refused.lines);
+        assert!(
+            refused.lines[0].contains("published digest"),
+            "{:?}",
+            refused.lines
+        );
         assert_eq!(current_id(&layout).as_deref(), Some("0.1.0-aaaaaaaaaaaa"));
 
         apply(view.armed.as_ref().unwrap(), &layout, &ctx(&env));
         assert_eq!(current_id(&layout).as_deref(), Some("0.3.0-cccccccccccc"));
         let again = preview(&LifecycleOp::CheckUpdates, &layout, &ctx(&env));
-        assert!(again.lines[0].contains("0.3.0 is up to date"), "{:?}", again.lines);
+        assert!(
+            again.lines[0].contains("0.3.0 is up to date"),
+            "{:?}",
+            again.lines
+        );
     }
 
     #[test]
     fn a_download_without_a_digest_or_over_plain_http_is_refused() {
         let dir = tempdir().unwrap();
         let layout = layout(dir.path());
-        let no_digest = open_update_source(&layout, "https://example.invalid/pui-0.2.0-x.tar.gz", None);
-        assert!(no_digest.err().unwrap().to_string().contains("needs the channel's sha256"));
-        let plain = open_update_source(&layout, "http://example.invalid/pui-0.2.0-x.tar.gz", Some("0"));
+        let no_digest =
+            open_update_source(&layout, "https://example.invalid/pui-0.2.0-x.tar.gz", None);
+        assert!(no_digest
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("needs the channel's sha256"));
+        let plain = open_update_source(
+            &layout,
+            "http://example.invalid/pui-0.2.0-x.tar.gz",
+            Some("0"),
+        );
         assert!(plain.err().unwrap().to_string().contains("must use https"));
     }
 
@@ -2793,22 +2961,47 @@ mod tests {
         let report = diagnostics_report(&layout, &ctx(&env)).join("\n");
 
         for secret in [
-            "sk-live-SECRET", "SECRET2", "SECRET3", "hunter2", "pw@", "PRIVATE4", "PRIVATE5", "PRIVATE6",
+            "sk-live-SECRET",
+            "SECRET2",
+            "SECRET3",
+            "hunter2",
+            "pw@",
+            "PRIVATE4",
+            "PRIVATE5",
+            "PRIVATE6",
         ] {
             assert!(!report.contains(secret), "{secret} leaked:\n{report}");
         }
-        assert!(report.contains("env PAPERCUSP_API_TOKEN=[redacted]"), "{report}");
-        assert!(report.contains("env PUI_OPERATOR=https://[redacted]@op.example/api?[redacted]"), "{report}");
+        assert!(
+            report.contains("env PAPERCUSP_API_TOKEN=[redacted]"),
+            "{report}"
+        );
+        assert!(
+            report.contains("env PUI_OPERATOR=https://[redacted]@op.example/api?[redacted]"),
+            "{report}"
+        );
         assert!(report.contains("env PUI_FLEET=alpha"), "{report}");
-        assert!(report.contains("env PUI_SETUP_DRAFT=[set, value withheld]"), "{report}");
-        assert!(report.contains("env PUI_NOT_YET_INVENTED=[set, value withheld]"), "{report}");
-        assert!(report.contains("operator endpoint: https://[redacted]@op.example:9443/api?[redacted]"), "{report}");
+        assert!(
+            report.contains("env PUI_SETUP_DRAFT=[set, value withheld]"),
+            "{report}"
+        );
+        assert!(
+            report.contains("env PUI_NOT_YET_INVENTED=[set, value withheld]"),
+            "{report}"
+        );
+        assert!(
+            report.contains("operator endpoint: https://[redacted]@op.example:9443/api?[redacted]"),
+            "{report}"
+        );
 
         let saved = apply(&LifecycleOp::Diagnostics, &layout, &ctx(&env));
         let path = saved.lines[0].trim_start_matches("✓ saved ");
         let written = fs::read_to_string(path).unwrap();
         assert!(!written.contains("sk-live-SECRET"));
-        assert_eq!(fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]

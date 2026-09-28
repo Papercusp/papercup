@@ -119,28 +119,10 @@ fn helper_failure(path: &Path, code: Option<i32>, stderr: &str) -> String {
     )
 }
 
-/// Spawn `path`, retrying ETXTBSY. A freshly written executable can be briefly
-/// "busy" when any other thread forks while the writer's fd is still open: the
-/// forked child inherits that write fd until it execs. That is a kernel-level
-/// race, not a broken install (Go's os/exec retries it the same way), so a
-/// short bounded retry is the fix rather than surfacing "reinstall PUI".
-fn spawn_retrying_text_busy(command: &mut Command) -> std::io::Result<std::process::Child> {
-    const ETXTBSY: i32 = 26;
-    let mut delay = Duration::from_millis(5);
-    for _ in 0..8 {
-        match command.spawn() {
-            Err(error) if error.raw_os_error() == Some(ETXTBSY) => {
-                std::thread::sleep(delay);
-                delay = (delay * 2).min(Duration::from_millis(200));
-            }
-            other => return other,
-        }
-    }
-    command.spawn()
-}
-
 fn spawn_helper_at(path: &Path, command: &str, signals: Signals) -> Result<HelperPipe> {
-    let mut child = spawn_retrying_text_busy(
+    // ETXTBSY-tolerant: a just-installed helper can be briefly held busy by a
+    // concurrent fork; that is a race, not a broken install.
+    let mut child = crate::fresh_exec::spawn(
         Command::new(path)
             .arg(command)
             .stdin(Stdio::piped())
@@ -148,11 +130,11 @@ fn spawn_helper_at(path: &Path, command: &str, signals: Signals) -> Result<Helpe
             .stderr(Stdio::piped()),
     )
     .with_context(|| {
-            format!(
-                "voice is unavailable: pui-audio could not start at {}; reinstall PUI",
-                path.display()
-            )
-        })?;
+        format!(
+            "voice is unavailable: pui-audio could not start at {}; reinstall PUI",
+            path.display()
+        )
+    })?;
     let input = child.stdin.take();
     let mut output = child.stdout.take().context("helper stdout missing")?;
     let mut stderr = child.stderr.take().context("helper stderr missing")?;
@@ -946,6 +928,28 @@ mod helper_process_tests {
             .unwrap_err()
             .to_string()
             .contains("install libasound2"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_survives_a_helper_briefly_held_open_for_writing() {
+        // Exec of a file that is open for writing fails with ETXTBSY. That is what a
+        // concurrent fork inheriting the installer's write fd looks like; the spawn
+        // must wait it out instead of reporting a broken install.
+        let (_dir, path) = helper("while read -r line; do :; done", &[]);
+        let writer = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let busy = Command::new(&path).arg("capture").spawn();
+        assert_eq!(busy.err().and_then(|e| e.raw_os_error()), Some(26));
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            drop(writer);
+        });
+        let pipe = spawn_helper_at(&path, "capture", Signals::default()).unwrap();
+        release.join().unwrap();
+        drop(pipe);
     }
 
     #[test]
