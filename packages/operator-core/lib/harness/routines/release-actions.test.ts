@@ -3207,6 +3207,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       unmeasured: 1,
       alarms: [{ ws: '@papercusp/web', file: 'a.test.ts', proof: 'abc' }],
       offReasons: [],
+      recorder: null,
       headline: 'per-file reuse: 31 of 40 candidate file(s) reused',
     };
     const d = buildCheckpointDetail({ reason: 'advanced', green: true, testPassReuse });
