@@ -30,6 +30,7 @@ import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { unwrapToolResult, type ToolResult } from '@papercusp/tooldef';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -49,6 +50,8 @@ import {
   SubmitResultSchema,
 } from './operation-contract';
 import { BlueprintOperationClient, createProjectedBlueprintOperationPort } from './operation-client';
+import { P013B_OPERATION, P013B_TEMPLATE, P013B_TEMPLATE_CONTENT } from './operation-performance-b-driver';
+import { redactTriggerArgsForPlanInputs } from '../external-triggers/plan-run-payload';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../..');
@@ -73,7 +76,10 @@ const RUNNABLE = new Map(ALL_FENCES.flatMap((f) => {
   const id = /(?:^|\s)runnable=([\w-]+)/.exec(f.meta)?.[1];
   return id ? [[id, f] as const] : [];
 }));
-const EXPECTED_RUNNABLE = ['declaration', 'tool-routes', 'submit', 'signal', 'resume', 'cancel', 'submit-program', 'typed-client'];
+const EXPECTED_RUNNABLE = [
+  'declaration', 'tool-routes', 'submit', 'signal', 'resume', 'cancel', 'submit-program', 'typed-client',
+  'plan-target', 'trigger-operation', 'trigger-bind', 'trigger-migrate', 'schedule-operation',
+];
 const json = <T = Record<string, unknown>>(id: string): T => {
   const fence = RUNNABLE.get(id);
   if (!fence) throw new Error(`runnable fence ${id} missing from ${DOC_PATH}`);
@@ -292,6 +298,56 @@ describe('P-014 published blueprint-operation page', () => {
     for (const [name, path] of Object.entries(routes)) {
       expect(lookupByMcpName(name)?.expose.http?.path, name).toBe(path);
     }
+  });
+
+  it('pins the documented plan target to the template the P-013 fork/join suite runs, and compiles the added operations', () => {
+    const planTarget = json<{ id: string; target: { template: Record<string, unknown> } }>('plan-target');
+    expect(planTarget.id).toBe(P013B_OPERATION);
+    expect(planTarget.target.template).toEqual({
+      kind: 'plan-template', ref: P013B_TEMPLATE, revision: '0', contentHash: hashPlanContent(P013B_TEMPLATE_CONTENT),
+    });
+    // The page tells readers to add these operations to the documented declaration.
+    const source = {
+      ...DECLARATION,
+      operations: [...DECLARATION.operations, json('trigger-operation'), planTarget],
+    } as unknown as typeof DECLARATION;
+    expect(() => BlueprintSchema.parse(source)).not.toThrow();
+    const compiled = JSON.stringify(compileAgentSpecification({ source }));
+    expect(compiled).toContain('"triage"');
+    expect(compiled).toContain(P013B_TEMPLATE);
+  });
+
+  it('documents trigger and schedule arguments the live tools accept, with inputs their target operations admit', async () => {
+    const { default: bindTool } = await import('../agent-tools/triggers/bind');
+    const { default: setScheduleTool } = await import('../agent-tools/plans/set-schedule');
+    const inputSchema = (op: unknown) => (op as { inputSchema: Record<string, unknown> }).inputSchema;
+    const triggerOperation = json<{ id: string }>('trigger-operation');
+
+    const bind = json<{ sourceId: string; eventPattern: string; operationId: string; input: Record<string, unknown> }>('trigger-bind');
+    expect(bindTool.args.safeParse(bind).success).toBe(true);
+    expect(bind.operationId).toBe(triggerOperation.id);
+    // Exactly what the binding engine submits: the redacted routing envelope plus the literal input.
+    const routing = redactTriggerArgsForPlanInputs({
+      trigger: {
+        key: bind.eventPattern, source: 'github', event: 'issues.opened', sourceId: bind.sourceId,
+        externalId: '42', occurredAt: null, datatypeId: 'github.issue', dedupeKey: 'github:42',
+        payload: { title: 'private provider payload' },
+      },
+    });
+    expect(JSON.stringify(routing)).not.toContain('private provider payload');
+    expect(conforms(inputSchema(triggerOperation), { ...routing, ...bind.input })).toBe(true);
+    expect(conforms(inputSchema(triggerOperation), bind.input)).toBe(false);
+
+    const migrate = json<Record<string, unknown>>('trigger-migrate');
+    expect(bindTool.args.safeParse(migrate).success).toBe(true);
+    // Source, pattern, filter and storm policy are copied from the legacy binding, never re-supplied.
+    expect(bindTool.args.safeParse({ ...migrate, eventPattern: bind.eventPattern }).success).toBe(false);
+
+    const schedule = json<{ schedule: { operation: { operationId: string; input: Record<string, unknown> } } }>('schedule-operation');
+    expect(setScheduleTool.args.safeParse(schedule).success).toBe(true);
+    const scheduled = DECLARATION.operations.find((op) => op.id === schedule.schedule.operation.operationId);
+    expect(scheduled).toBeDefined();
+    expect(conforms(inputSchema(scheduled), schedule.schedule.operation.input)).toBe(true);
   });
 });
 
