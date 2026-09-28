@@ -631,12 +631,51 @@ async function cli(argv: string[]): Promise<unknown> {
   );
 }
 
+type PhysicalDrillCliStream = { write(chunk: string, callback: (error?: Error | null) => void): boolean };
+
+function writeFlushed(stream: PhysicalDrillCliStream, text: string): Promise<void> {
+  return new Promise((resolveWrite) => {
+    stream.write(text, () => resolveWrite());
+  });
+}
+
+/**
+ * Run one producer mode, write its result, then END THE PROCESS (WI-10003741).
+ *
+ * The scenario calls every mode over ssh and waits for the remote process to
+ * exit. Modes that take or release a file lock open the @papercusp/locks pg
+ * pool, whose idle clients keep the event loop alive, so a CLI that only sets
+ * `process.exitCode` never exits. Measured in P-505 run 23: `phase-d-dirty`
+ * wrote its receipt at 21:50:03Z and was still running 26 minutes later, which
+ * stalled Phase D until the dirt lock's TTL nearly lapsed. The exit waits for
+ * the write callback so a piped stdout is flushed before the process ends.
+ */
+export async function runPhysicalDrillCliToExit(
+  argv: string[],
+  deps: {
+    run: (argv: string[]) => Promise<unknown>;
+    stdout: PhysicalDrillCliStream;
+    stderr: PhysicalDrillCliStream;
+    exit: (code: number) => void;
+  },
+): Promise<void> {
+  let code = 0;
+  try {
+    const result = await deps.run(argv);
+    await writeFlushed(deps.stdout, `${JSON.stringify(result)}\n`);
+  } catch (error) {
+    code = 1;
+    await writeFlushed(deps.stderr, `${error instanceof Error ? error.message : String(error)}\n`);
+  }
+  deps.exit(code);
+}
+
 const invokedPath = process.argv[1];
 if (invokedPath && samePhysicalDrillPath(invokedPath, fileURLToPath(import.meta.url))) {
-  cli(process.argv.slice(2))
-    .then((result) => process.stdout.write(`${JSON.stringify(result)}\n`))
-    .catch((error) => {
-      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-      process.exitCode = 1;
-    });
+  void runPhysicalDrillCliToExit(process.argv.slice(2), {
+    run: cli,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    exit: (code) => process.exit(code),
+  });
 }
