@@ -37,7 +37,7 @@ const h = vi.hoisted(() => ({
     fireTimedOutAwaits: vi.fn(async (): Promise<unknown[]> => []),
     expireLapsedAwaits: vi.fn(async () => 0),
     stampAnnouncementsFired: vi.fn(async () => {}),
-    recordKeyFire: vi.fn(async () => {}),
+    recordKeyFire: vi.fn(async (): Promise<Awaited<ReturnType<typeof import('./store').recordKeyFire>> | undefined> => undefined),
     reconcileFiredWakeDeliveries: vi.fn(async () => 0),
     cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
     listActiveAwaitsForKey: vi.fn(async (_key: string): Promise<AwaitRow[]> => []),
