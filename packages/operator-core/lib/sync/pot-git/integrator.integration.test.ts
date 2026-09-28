@@ -143,6 +143,124 @@ describe('pot-git integrator (real bare repo)', () => {
   });
 });
 
+/**
+ * WI-10003731 — per-host escalation files committed into a shared pot repo made
+ * every member head content-conflict with staging, so the integrator parked it
+ * forever (P-505 physical drill 2026-09-28: tower staging vs VM head conflicted
+ * on exactly `.papercusp/state/escalations/{github-bridge,origin-freshness-watchdog}.md`).
+ * Each case gets its own repo so the staging lineage is exactly what it builds.
+ */
+describe('pot-git integrator — retired per-host state conflicts (WI-10003731)', () => {
+  const ESC = '.papercusp/state/escalations';
+  let root: string;
+  let n = 0;
+  const integ = dev();
+  const tower = dev();
+  const vm = dev();
+  const hex = (d: string) => deviceNamespaceKey(d);
+
+  async function freshRepo(): Promise<string> {
+    n += 1;
+    return ensurePotGitRepo('hive-hl', `repo-${n}`);
+  }
+  async function show(repo: string, rev: string, path: string): Promise<string | null> {
+    const r = await defaultRunGit(['show', `${rev}:${path}`], repo);
+    return r.code === 0 ? r.stdout : null;
+  }
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'integ-hl-'));
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
+  });
+  afterAll(async () => {
+    delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('integrates a head whose ONLY conflicts are per-host state files, keeping staging\'s copy', async () => {
+    const repo = await freshRepo();
+    const base = await commit(repo, {
+      'app.txt': 'v1',
+      [`${ESC}/github-bridge.md`]: 'base verdict\n',
+      [`${ESC}/origin-freshness-watchdog.md`]: 'base verdict\n',
+    });
+    const towerHead = await commit(repo, {
+      'app.txt': 'v1',
+      'tower.txt': 'tower work\n',
+      [`${ESC}/github-bridge.md`]: 'tower verdict\n',
+      [`${ESC}/origin-freshness-watchdog.md`]: 'tower verdict\n',
+    }, base);
+    const seeded = await integrateMemberHeads(repo, integ, [{ deviceHex: hex(tower), sha: towerHead }]);
+    expect(seeded.staging).toBe(towerHead);
+
+    const vmHead = await commit(repo, {
+      'app.txt': 'v1',
+      'vm-work.txt': 'real vm work\n',
+      [`${ESC}/github-bridge.md`]: 'vm verdict\n',
+      [`${ESC}/origin-freshness-watchdog.md`]: 'vm verdict\n',
+    }, base);
+    const r = await integrateMemberHeads(repo, integ, [{ deviceHex: hex(vm), sha: vmHead }]);
+
+    expect(r.skippedConflicts).toEqual([]);
+    expect(r.advanced).toBe(true);
+    expect(r.integrated).toEqual([hex(vm)]);
+    expect(r.resolvedHostLocalState).toHaveLength(1);
+    expect(r.resolvedHostLocalState[0]).toMatchObject({ deviceHex: hex(vm), sha: vmHead });
+    expect([...r.resolvedHostLocalState[0].paths].sort()).toEqual([
+      `${ESC}/github-bridge.md`,
+      `${ESC}/origin-freshness-watchdog.md`,
+    ]);
+    // Both lines are in staging; staging's per-host copy won; the member's real work landed.
+    expect(await contains(repo, r.staging!, vmHead)).toBe(true);
+    expect(await contains(repo, r.staging!, towerHead)).toBe(true);
+    expect(await show(repo, r.staging!, `${ESC}/github-bridge.md`)).toBe('tower verdict\n');
+    expect(await show(repo, r.staging!, `${ESC}/origin-freshness-watchdog.md`)).toBe('tower verdict\n');
+    expect(await show(repo, r.staging!, 'vm-work.txt')).toBe('real vm work\n');
+    expect(await show(repo, r.staging!, 'tower.txt')).toBe('tower work\n');
+    expect(await readStaging(repo, integ)).toBe(r.staging);
+
+    // Idempotent: the integrated head is now contained → a re-run is a no-op.
+    const again = await integrateMemberHeads(repo, integ, [{ deviceHex: hex(vm), sha: vmHead }]);
+    expect(again.advanced).toBe(false);
+    expect(again.resolvedHostLocalState).toEqual([]);
+  });
+
+  it('still parks a head when a REAL file conflicts alongside per-host state, naming every path', async () => {
+    const repo = await freshRepo();
+    const base = await commit(repo, { 'app.txt': 'v1\n', [`${ESC}/git-sync.md`]: 'base\n' });
+    const towerHead = await commit(repo, { 'app.txt': 'tower edit\n', [`${ESC}/git-sync.md`]: 'tower\n' }, base);
+    await integrateMemberHeads(repo, integ, [{ deviceHex: hex(tower), sha: towerHead }]);
+    const vmHead = await commit(repo, { 'app.txt': 'vm edit\n', [`${ESC}/git-sync.md`]: 'vm\n' }, base);
+
+    const r = await integrateMemberHeads(repo, integ, [{ deviceHex: hex(vm), sha: vmHead }]);
+
+    expect(r.advanced).toBe(false);
+    expect(r.integrated).toEqual([]);
+    expect(r.resolvedHostLocalState).toEqual([]);
+    expect(r.skippedConflicts).toHaveLength(1);
+    expect(r.skippedConflicts[0]).toMatchObject({ deviceHex: hex(vm), sha: vmHead });
+    expect(r.skippedConflicts[0].error).toBeUndefined();
+    expect([...r.skippedConflicts[0].paths].sort()).toEqual(['.papercusp/state/escalations/git-sync.md', 'app.txt']);
+  });
+
+  it('parks a modify/delete on a per-host state path (-X ours cannot resolve it) and reports the path', async () => {
+    const repo = await freshRepo();
+    const base = await commit(repo, { 'app.txt': 'v1\n', [`${ESC}/green-stall.md`]: 'base\n' });
+    // Staging DELETED the escalation file; the member MODIFIED it.
+    const towerHead = await commit(repo, { 'app.txt': 'v1\n', 'tower.txt': 't\n' }, base);
+    await integrateMemberHeads(repo, integ, [{ deviceHex: hex(tower), sha: towerHead }]);
+    const vmHead = await commit(repo, { 'app.txt': 'v1\n', [`${ESC}/green-stall.md`]: 'vm\n' }, base);
+
+    const r = await integrateMemberHeads(repo, integ, [{ deviceHex: hex(vm), sha: vmHead }]);
+
+    expect(r.advanced).toBe(false);
+    expect(r.resolvedHostLocalState).toEqual([]);
+    expect(r.skippedConflicts).toEqual([
+      { deviceHex: hex(vm), sha: vmHead, paths: [`${ESC}/green-stall.md`] },
+    ]);
+  });
+});
+
 function integrateMemberHeads(...args: Parameters<typeof integrateMemberHeadsUnderTest>) {
   const [repo, device, heads, opts] = args;
   return integrateMemberHeadsUnderTest(repo, device, heads, { ...hiveEffectFixture(), ...opts });

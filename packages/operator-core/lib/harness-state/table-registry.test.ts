@@ -6,6 +6,7 @@ import {
   NEEDS_REVIEW,
   DEFAULT_SPEC,
   GIT_TABLES,
+  RETIRED_HOST_LOCAL_GIT_TABLES,
 } from './table-registry';
 
 describe('harness-state table-registry (P-002 two-axis model)', () => {
@@ -118,6 +119,26 @@ describe('harness-state table-registry (P-002 two-axis model)', () => {
     for (const t of ['harness_branch_actions', 'harness_lanes']) {
       expect(resolveTableSpec(t)).toEqual(DEFAULT_SPEC);
       expect(GIT_TABLES).not.toContain(t);
+    }
+  });
+
+  it('per-host watchdog verdicts (harness_escalations) are NOT git-synced (WI-10003731)', () => {
+    // Every writer is a machine-local watchdog upserting ITS host's verdict under
+    // the same (harness_slug, phase) key, so each device of a multi-device pot
+    // committed a different body for the same file and every member head
+    // conflicted with staging (P-505 physical drill, 2026-09-28).
+    expect(resolveTableSpec('harness_escalations')).toEqual(DEFAULT_SPEC);
+    expect(resolveTableSpec('harness_shared.harness_escalations').sync).toBe('none');
+    expect(RETIRED_HOST_LOCAL_GIT_TABLES).toContain('harness_escalations');
+  });
+
+  it('invariant: a retired host-local table can never be git-synced again', () => {
+    // The pot-git integrator lets staging win conflicts under these tables'
+    // directories. That is only sound while nothing git-syncs them — a table
+    // re-added to GIT_DOCS would have its REAL cross-device edits silently dropped.
+    for (const t of RETIRED_HOST_LOCAL_GIT_TABLES) {
+      expect(GIT_TABLES).not.toContain(t);
+      expect(resolveTableSpec(t).sync).not.toBe('git');
     }
   });
 

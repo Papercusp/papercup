@@ -107,6 +107,24 @@ export function isHostLocalStatePath(path: string): boolean {
   return HOST_LOCAL_STATE_DIRS.some((d) => path.startsWith(d));
 }
 
+/**
+ * One-line suffix naming what each parked head conflicted on, for the
+ * integrator's status note. Bounded (≤3 heads × ≤3 paths) so a pathological
+ * conflict cannot bloat routine metadata; '' when nothing was parked.
+ */
+export function formatParkedConflicts(parked: readonly SkippedConflict[]): string {
+  if (parked.length === 0) return '';
+  const head = parked.slice(0, 3).map((c) => {
+    const who = `${c.deviceHex.slice(0, 12)}@${c.sha.slice(0, 8)}`;
+    if (c.error) return `${who}: merge error (${c.error.slice(0, 120)})`;
+    const shown = c.paths.slice(0, 3).join(', ');
+    const more = c.paths.length > 3 ? ` +${c.paths.length - 3} more` : '';
+    return `${who}: ${shown || '(no paths reported)'}${more}`;
+  });
+  const moreHeads = parked.length > 3 ? `; +${parked.length - 3} more head(s)` : '';
+  return ` parked: ${head.join('; ')}${moreHeads}`;
+}
+
 async function isAncestor(repoPath: string, ancestor: string, descendant: string, runGit: RunGit): Promise<boolean> {
   const r = await runGit(['merge-base', '--is-ancestor', ancestor, descendant], repoPath);
   return r.code === 0;

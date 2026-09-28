@@ -75,6 +75,7 @@ import {
   runGithubBridgeTick,
 } from '../../sync/pot-git/github-bridge-tick';
 import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
+import { formatParkedConflicts } from '../../sync/pot-git/integrator';
 import { runWorktreeBridgeTick, WORKTREE_BRIDGE_RETRY_TTL_MS } from '../../sync/pot-git/worktree-bridge-tick';
 import {
   HiveEffectAuthorityError,
