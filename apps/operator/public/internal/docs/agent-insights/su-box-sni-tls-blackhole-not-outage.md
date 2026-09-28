@@ -134,6 +134,44 @@ live without needing the apex hostname to be reachable from here at all.
 5. If the domain genuinely IS down (the external `WebFetch` check also
    fails), that's real — proceed normally.
 
+## When you must WRITE to a papercusp host from this box (release publish)
+
+Verification can detour through `WebFetch` or `pages.dev`; an **upload** cannot.
+The workspace-host release cut (`apps/operator/lib/release/workspace-host-release-cut-cli.ts`
+→ `scripts/publish-workspace-host-artifacts.mjs`) PUTs a \~2 GB bundle to
+`cupboard.papercusp.com`. Under the blackhole that stalls in the TLS handshake and
+undici reports it as `ConnectTimeoutError` at `publish.multipart.initiate` — a
+TLS-stage stall that reads like a TCP fault (measured 2026-09-24, r44 cut; TCP to
+`172.67.145.145:443` connected in 17 ms, same IP with SNI `www.cloudflare.com`
+answered 200, TLS 1.2-only and X25519-only both still hung, `nft list ruleset`
+had no matching rule).
+
+Route the publish through an off-network hop. Node 25's built-in `fetch` honours
+`NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY`, but only for an **HTTP CONNECT** proxy, so
+pair an SSH SOCKS tunnel with a small CONNECT→SOCKS bridge:
+
+```bash
+# 1. SOCKS tunnel to any GCP VM that reaches cupboard (get the exact ssh argv
+#    from: gcloud compute ssh <vm> --zone <zone> --dry-run). Background it.
+ssh -N -D 127.0.0.1:47181 -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 <vm>
+# 2. CONNECT -> SOCKS bridge (`scripts/sni-relay-proxy.mjs`).
+node scripts/sni-relay-proxy.mjs 47180 47181
+# 3. Prove it before the long job: both must print 200.
+curl -sS -o /dev/null -w '%{http_code}\n' -x http://127.0.0.1:47180 https://cupboard.papercusp.com/
+NODE_USE_ENV_PROXY=1 HTTPS_PROXY=http://127.0.0.1:47180 node -e \
+  "fetch('https://cupboard.papercusp.com/').then(r=>console.log(r.status))"
+# 4. Re-run the SAME cut command with the proxy env. The publish is journaled,
+#    so a re-run resumes at the failed stage instead of rebuilding.
+export NODE_USE_ENV_PROXY=1 HTTPS_PROXY=http://127.0.0.1:47180 \
+       NO_PROXY=127.0.0.1,localhost,::1
+```
+
+Check the ports are free first (`ss -ltnp 'sport = :<port>'`): on 2026-09-24
+`18080`/`18081` were already held by another agent's ssh, and a `curl -x` to a
+port you did not bind talks to someone else's listener. The r44 publish (60 × 32 MiB
+parts) finished in about three minutes through this route. The machines themselves
+download the bundle from inside GCP, so provisioning and upgrades are not affected.
+
 ## What was NOT fixed here (and why)
 
 The underlying filter is **this dev box's own network egress**, not anything

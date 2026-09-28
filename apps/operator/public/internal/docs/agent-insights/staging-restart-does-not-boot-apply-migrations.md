@@ -1,73 +1,28 @@
-# A papercup-staging-api restart does NOT boot-apply migrations
+# Staging restarts run migration preflight before serving
 URL: /internal/docs/agent-insights/staging-restart-does-not-boot-apply-migrations
 
-:3170 is a secondary host (PAPERCUSP_BACKGROUND_WORKERS=0) and skips the A1 boot-apply by design — apply pending sql/*.sql via the runner directly, not by restarting staging
+Request-only :3170 now invokes the guarded boot migration runner. Verify the target migration tree, backup rendezvous and ledger before cutover; a restart is not proof of successful migration.
 
-## The trap
+## Current behavior
 
-The fleet habit is "restart `papercup-staging-api` to boot-apply migration NNN" —
-two agents announced exactly that on 2026-06-12 (migrations 240 and 241). The
-restart **does not apply migrations**. The staging host on `:3170` is a
-request-only **secondary host**: its unit sets `PAPERCUSP_HONO_PORT=3170`, which
-makes `backgroundWorkersEnabled()` default OFF, and the A1 boot-apply is gated on
-that flag (`apps/operator/bin/host-bootstrap.ts` — `if (backgroundWorkers)` wraps
-the `applyPendingMigrationsAtBoot()` call). The boot log says so explicitly:
+Rechecked against source on 2026-09-24 for EI-24180022773715880. The historical title and June 2026 claim that a staging restart never applies migrations are obsolete. The slug is retained so existing links resolve.
 
-```
-[host] PAPERCUSP_BACKGROUND_WORKERS=0 — secondary host: skipping hyperbee substrate, git-export, and DBOS background machinery (EI-126)
-```
+A request-only host, including :3170 with background workers disabled, calls `waitForBootMigrationGate()` before opening HTTP service. That branch invokes `applyPendingMigrationsAtBoot()` through the existing in-flight deduplication seam. The native endpoint listener and HTTP startup share this preflight. A missing result or any failed migration rejects startup; `hono-host.ts` does not open the request server on that failure. Background-worker exclusion still controls background machinery, but does not exempt a request-serving process from schema readiness.
 
-…and contains zero `[boot-migrate]` lines. Five frontier-program migrations
-(241–245) sat unapplied on the live DB while their lanes' code note-skipped,
-each author believing a staging restart (theirs or a peer's) had applied them.
+The regression coverage is in `apps/operator/bin/host-bootstrap.startup-guards.test.ts`: it checks the coordinated request-only preflight, single-flight behavior, success gate ordering and failure refusal.
 
-Restarting `:3170` is still right for **loading code edits** (no file-watch on
-the Hono host) — it just doesn't touch the schema.
+## Backup and target-tree safety
 
-## What actually applies migrations on the dev box
+`db-boot-migrate.ts` coordinates with backups through the shared migration advisory rendezvous. If that lock is busy and an applied-ledger read proves every armed migration in the selected SQL tree is already applied, startup can continue without applying a migration. The runner freezes that proven file set so a newly appearing file cannot slip through without the lock.
 
-* The **primary** host's boot (background workers ON — the release `:3070`
-  operator or the Tauri dev shell's spawned operator), via
-  `applyPendingMigrationsAtBoot()`.
-* `db:migrate { confirm: true }` — but the real apply additionally requires
-  `PAPERCUSP_ALLOW_DB_MIGRATE=1` in the serving operator's env, which the dev
-  box does not set, so it reports "apply WITHHELD".
-* **The direct path that always works**: run the real runner yourself —
-  `applyPendingMigrations` from `@papercusp/embedded-postgres-server` against
-  `getHarnessAdminUrl()` (mirror `packages/operator-core/lib/db-boot-migrate.ts`:
-  `max: 1` client, `prepare: false`, `lock_timeout`). It is idempotent and
-  records `harness_shared.schema_migrations` ledger rows — this is NOT the raw
-  `psql -f` anti-pattern.
+If any migration is pending, or the applied-set check cannot establish the no-op, startup waits for the backup rendezvous. This wait intentionally disables both lock and statement timeouts; killing a backup or bypassing the rendezvous is not a recovery procedure. A pending migration can therefore leave an already-stopped staging service unavailable for the backup window. A one-time observation that no backup holds the lock does not eliminate a race with the next backup.
 
-```ts
-import postgres from 'postgres';
-import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
-import { getHarnessAdminUrl } from '.../packages/operator-core/lib/embedded-pg-discovery';
+Observed on 2026-09-24: a staging cutover stopped the ready API before migration1223 could acquire the backup rendezvous. After the backup finished, that target's pinned SQL then failed forward-compatibility validation. The corrected migration and a guarded apply recovered service. These are separate prerequisites: backup coordination and validation of the exact target migration source. EI-24180022773715880 tracks preserving availability across the rendezvous; EI-24180437038891110 tracks the staging-sync migration-lint preflight. Do not describe the one-time recovery as the durable availability fix.
 
-const client = postgres(await getHarnessAdminUrl(), {
-  max: 1, prepare: false,
-  connection: { lock_timeout: 15_000, application_name: 'manual-migrate' },
-});
-await applyPendingMigrations({ client, sqlDir: '<repo>/libs/papercusp/libs/db/sql', log: console.log });
-await client.end({ timeout: 5 });
-```
+## Applying and verifying a migration
 
-Afterwards regenerate the pulled schema:
-`node libs/papercusp/libs/db/scripts/pull-schema.mjs`.
+Use `db:migrate { file: "<canonical migration filename>" }` to inspect the coordinated operation, then its authorized `confirm:true` path when appropriate. The current schema requires `file`. Relative paths resolve from the canonical source tree, not the serving release checkout. Actual apply also depends on the serving host's migration authorization. An apply-withheld or refused receipt is not a successful migration. Use the supported authorization/escalation path; the former runbook's bare direct-runner example is withdrawn because it does not express the current coordination and snapshot safeguards.
 
-## How to tell whether your migration is actually live
+For a risky or destructive change, create and independently verify the required backup snapshot before applying. Preserve the returned apply receipt and ledger evidence. `db:migrations { like: "1223" }` distinguishes pending, draft-not-armed and absent source from an applied ledger entry. When pin identity matters, compare the applied checksum with the exact migration file in the target checkout.
 
-Don't trust the restart, and don't trust `db:check_drift` alone — it resolves
-the **serving** operator's sql dir, which for `:3070` is the *release* checkout
-(your staging-tree migration isn't even on that disk yet, so it can't show as
-`missing`). Ask the ledger directly:
-
-```
-db:migrations { like: "241" }
-```
-
-A bare number is a PREFIX match. Prefer it over a hand-written `filename LIKE
-'241%'` query against the ledger table: when nothing matches, the verb returns a
-VERDICT — pending, draft-not-armed, or no-such-migration — where the raw query
-returns zero rows, and zero rows cannot tell you which of those three you are
-looking at. That distinction is the whole question this section asks.
+After a coordinated staging activation, verify a healthy serving process and its exact source revision. A restart request being accepted is not readiness, and a live :3070 response says nothing about which build :3170 serves. Staging-sync follows local committed staging HEAD; an older tracked origin/staging ref is not the target authority. Do not edit the serving checkout to accelerate activation.
