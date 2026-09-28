@@ -55,6 +55,12 @@ export const AUDIT_SCRIPT = join(DESKTOP_BIN, 'audit-release-bundle.py');
 /** Files this script adds at the export root, outside the shared selection. */
 export const ADDED_FILES = ['NOTICE', 'START-HERE.md', 'MANIFEST.json'];
 
+/** @typedef {{ name: string, ok: boolean, status: string, detail: string }} GateResult */
+/** @typedef {{ detector: string, rule: string, path: string, line: number, sha256: string, allowlisted?: boolean }} GateFinding */
+/** @typedef {{ ok: boolean, exitCode: number, results: GateResult[], findings?: GateFinding[] }} GateVerdict */
+/** @typedef {(dir: string, opts: { env?: NodeJS.ProcessEnv }) => Promise<GateVerdict>} Gate */
+/** @typedef {(message: string) => void} Log */
+
 export class PreviewError extends Error {
   /** @param {string} message @param {number} [exitCode] */
   constructor(message, exitCode = 1) {
@@ -246,6 +252,7 @@ export async function startHereText(dir, manifest) {
  * Export one pinned commit as the public-safe cut into `out` (must not exist).
  * Deterministic for a given commit — no timestamps — so a drift check compares
  * content, not clock.
+ * @param {{ repoRoot?: string, ref?: string, out: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
  */
 export async function exportSnapshot({
   repoRoot = ROOT,
@@ -255,7 +262,7 @@ export async function exportSnapshot({
   selectionLib = SELECTION_LIB,
   env = process.env,
   log = () => {},
-} = {}) {
+}) {
   if (!out) throw new PreviewError('exportSnapshot: out is required', 2);
   if (existsSync(out)) throw new PreviewError(`refusing to overwrite existing ${out}`, 2);
   const commit = resolveCommit(repoRoot, ref);
@@ -312,7 +319,9 @@ function which(bin, env) {
 /**
  * The fail-closed gate. Every detector must RUN and come back clean; a finding
  * refuses (exit 1) and a detector that cannot run refuses too (exit 2).
- * @returns {{ ok: boolean, exitCode: number, results: { name: string, ok: boolean, status: string, detail: string }[] }}
+ * @param {string} dir
+ * @param {{ env?: NodeJS.ProcessEnv, auditScript?: string, allowlistPath?: string }} [opts]
+ * @returns {Promise<GateVerdict>}
  */
 export async function runGate(dir, { env = process.env, auditScript = AUDIT_SCRIPT, allowlistPath = ALLOWLIST_PATH } = {}) {
   const results = [];
@@ -406,6 +415,7 @@ export const ALLOWLIST_PATH = join(ROOT, 'scripts', 'source-preview-allowlist.js
  * never of the release audit, whose BENIGN_ERE stays the one vendor-key rule.
  * An entry matches one exact (detector, rule, path, secret-hash): a changed or new
  * value in the same file is a new finding. Every entry must carry a reason.
+ * @returns {Promise<{ detector: string, rule: string, path: string, sha256: string, reason: string }[]>}
  */
 export async function loadAllowlist(path = ALLOWLIST_PATH) {
   if (!existsSync(path)) return [];
@@ -425,41 +435,77 @@ export function isAllowlisted(entries, f) {
   return entries.some((e) => e.detector === f.detector && e.rule === f.rule && e.path === f.path && e.sha256 === f.sha256);
 }
 
-/** The git tree SHA a directory would commit as (every file, ignore rules overridden). */
-export function treeShaOf(dir) {
+/**
+ * The tree a drift check compares, written into `gitDir` from `tree`: the snapshot with
+ * its identity neutralized — MANIFEST.json dropped, and the source commit that NOTICE
+ * and START-HERE.md name replaced by a placeholder. So a superproject commit that
+ * changes nothing the preview ships is not drift (git-sync commits every few minutes),
+ * while a changed shipped file, NOTICE or START-HERE text, or a hand edit on the
+ * preview still is. A tree without a readable MANIFEST.json compares as-is. All three
+ * files sit at the root, so only the root tree is rewritten.
+ * @returns {{ comparable: string, sourceCommit: string | null }}
+ */
+function comparableTree(gitDir, tree) {
+  const g = (args, opts) => run('git', ['--git-dir', gitDir, ...args], opts);
+  const entries = g(['ls-tree', '-z', tree]).split('\0').filter(Boolean).map((line) => {
+    const tab = line.indexOf('\t');
+    const [mode, type, sha] = line.slice(0, tab).split(' ');
+    return { mode, type, sha, name: line.slice(tab + 1) };
+  });
+  const manifest = entries.find((e) => e.name === 'MANIFEST.json' && e.type === 'blob');
+  let sourceCommit = null;
+  try { sourceCommit = manifest ? JSON.parse(g(['cat-file', 'blob', manifest.sha]))?.source?.commit ?? null : null; } catch { sourceCommit = null; }
+  if (typeof sourceCommit !== 'string' || !/^[0-9a-f]{40}$/.test(sourceCommit)) return { comparable: tree, sourceCommit: null };
+  const kept = entries.filter((e) => e !== manifest).map((e) => {
+    if (e.type !== 'blob' || !['NOTICE', 'START-HERE.md'].includes(e.name)) return e;
+    const text = g(['cat-file', 'blob', e.sha]);
+    return { ...e, sha: g(['hash-object', '-w', '--stdin'], { input: text.split(sourceCommit).join('<source-commit>') }).trim() };
+  });
+  const comparable = g(['mktree', '-z'], { input: kept.map((e) => `${e.mode} ${e.type} ${e.sha}\t${e.name}\0`).join('') }).trim();
+  return { comparable, sourceCommit };
+}
+
+/** The git tree a directory would commit as (every file, ignore rules overridden), and its comparable tree. */
+export function exportTrees(dir) {
   const gitDir = join(tmpdir(), `source-preview-tree-${process.pid}-${Date.now()}`);
   try {
     run('git', ['init', '-q', '--bare', gitDir]);
     const base = ['--git-dir', gitDir, '--work-tree', dir, '-c', 'core.autocrlf=false', '-c', 'core.fileMode=true'];
     run('git', [...base, 'add', '-A', '-f', '.']);
-    return run('git', [...base, 'write-tree']).trim();
+    const tree = run('git', [...base, 'write-tree']).trim();
+    return { tree, ...comparableTree(gitDir, tree) };
   } finally {
     spawnSync('rm', ['-rf', gitDir]);
   }
 }
 
-/** The tree SHA at `branch` of `remote`, or null when the branch does not exist. */
-export function remoteTreeSha(remote, branch = 'main') {
+/** The tree at `branch` of `remote` and its comparable tree, or null when the branch does not exist. */
+export function remoteTrees(remote, branch = 'main') {
   const gitDir = join(tmpdir(), `source-preview-remote-${process.pid}-${Date.now()}`);
   try {
     run('git', ['init', '-q', '--bare', gitDir]);
     const heads = run('git', ['--git-dir', gitDir, 'ls-remote', remote, `refs/heads/${branch}`]).trim();
     if (!heads) return null;
     run('git', ['--git-dir', gitDir, 'fetch', '-q', '--depth', '1', remote, `refs/heads/${branch}`]);
-    return run('git', ['--git-dir', gitDir, 'rev-parse', 'FETCH_HEAD^{tree}']).trim();
+    const tree = run('git', ['--git-dir', gitDir, 'rev-parse', 'FETCH_HEAD^{tree}']).trim();
+    return { tree, ...comparableTree(gitDir, tree) };
   } finally {
     spawnSync('rm', ['-rf', gitDir]);
   }
 }
 
-/** Compare the remote preview with a fresh export of `ref`. */
+/**
+ * Compare the remote preview with a fresh export of `ref`.
+ * @param {{ repoRoot?: string, ref?: string, remote?: string, env?: NodeJS.ProcessEnv, selectScript?: string, log?: Log }} [opts]
+ */
 export async function checkDrift({ repoRoot = ROOT, ref = DEFAULT_REF, remote = DEFAULT_REMOTE, env = process.env, selectScript, log = () => {} } = {}) {
   const work = await mkdtemp(join(tmpdir(), 'source-preview-check-'));
   try {
     const { out, manifest } = await exportSnapshot({ repoRoot, ref, out: join(work, 'export'), env, selectScript, log });
-    const expected = treeShaOf(out);
-    const actual = remoteTreeSha(remote);
-    return { inSync: expected === actual, expected, actual, commit: manifest.source.commit };
+    const expected = exportTrees(out).comparable;
+    const current = remoteTrees(remote);
+    const actual = current?.comparable ?? null;
+    return { inSync: expected === actual, expected, actual, commit: manifest.source.commit, previewCommit: current?.sourceCommit ?? null };
   } finally {
     await rm(work, { recursive: true, force: true });
   }
@@ -468,6 +514,7 @@ export async function checkDrift({ repoRoot = ROOT, ref = DEFAULT_REF, remote = 
 /**
  * Re-export, re-gate, and (with confirm) replace the preview with ONE commit.
  * The gate runs before anything is committed; a failing gate pushes nothing.
+ * @param {{ repoRoot?: string, ref?: string, remote?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log }} [opts]
  */
 export async function pushSnapshot({
   repoRoot = ROOT, ref = DEFAULT_REF, remote = DEFAULT_REMOTE, confirm = false,
@@ -479,9 +526,11 @@ export async function pushSnapshot({
     log('gating the export');
     const verdict = await gate(out, { env });
     if (!verdict.ok) return { pushed: false, reason: 'gate', verdict, commit: manifest.source.commit };
-    const tree = treeShaOf(out);
-    const current = remoteTreeSha(remote);
-    if (current === tree) return { pushed: false, reason: 'in-sync', verdict, tree, commit: manifest.source.commit };
+    const { tree, comparable } = exportTrees(out);
+    const current = remoteTrees(remote);
+    if (current?.comparable === comparable) {
+      return { pushed: false, reason: 'in-sync', verdict, tree, commit: manifest.source.commit, previewCommit: current.sourceCommit };
+    }
     if (!confirm) return { pushed: false, reason: 'dry-run', verdict, tree, commit: manifest.source.commit };
     const gitDir = join(work, 'repo.git');
     run('git', ['init', '-q', '--bare', gitDir]);
@@ -491,7 +540,7 @@ export async function pushSnapshot({
     const identity = { GIT_AUTHOR_NAME: 'Papercusp', GIT_AUTHOR_EMAIL: 'source-preview@papercusp.invalid', GIT_COMMITTER_NAME: 'Papercusp', GIT_COMMITTER_EMAIL: 'source-preview@papercusp.invalid' };
     const commit = run('git', ['--git-dir', gitDir, 'commit-tree', written, '-m', `Source preview of ${SOURCE_REPO}@${manifest.source.commit.slice(0, 12)}\n\nPublic-safe source cut, gated. See MANIFEST.json and NOTICE.`], { env: { ...process.env, ...identity } }).trim();
     run('git', ['--git-dir', gitDir, 'push', '-q', '--force', remote, `${commit}:refs/heads/main`]);
-    const after = remoteTreeSha(remote);
+    const after = remoteTrees(remote)?.tree ?? null;
     if (after !== written) throw new PreviewError(`push verification failed: remote tree ${after} ≠ ${written}`);
     return { pushed: true, verdict, tree: written, pushedCommit: commit, commit: manifest.source.commit };
   } finally {
@@ -542,15 +591,15 @@ async function main(argv) {
   if (cmd === 'check') {
     const r = await checkDrift({ ref: opts.ref ?? DEFAULT_REF, remote: opts.remote ?? DEFAULT_REMOTE, log });
     console.log(r.inSync
-      ? `in sync: ${PREVIEW_REPO} matches ${SOURCE_REPO}@${r.commit} (tree ${r.expected})`
-      : `DRIFT: ${PREVIEW_REPO} tree ${r.actual ?? '(no main branch)'} ≠ fresh export of ${r.commit} (tree ${r.expected}) — run npm run preview:push`);
+      ? `in sync: ${PREVIEW_REPO} (snapshot of ${r.previewCommit}) ships the same content as a fresh export of ${SOURCE_REPO}@${r.commit}`
+      : `DRIFT: ${PREVIEW_REPO} ${r.actual ? `(snapshot of ${r.previewCommit ?? 'unknown'})` : '(no main branch)'} differs from a fresh export of ${SOURCE_REPO}@${r.commit} — run npm run preview:push`);
     return r.inSync ? 0 : 1;
   }
   if (cmd === 'push') {
     const r = await pushSnapshot({ ref: opts.ref ?? DEFAULT_REF, remote: opts.remote ?? DEFAULT_REMOTE, confirm: Boolean(opts.confirm), log });
     printGate(r.verdict);
     if (r.reason === 'gate') { console.log('REFUSED: the gate found problems — nothing was pushed'); return r.verdict.exitCode; }
-    if (r.reason === 'in-sync') { console.log(`already in sync with ${SOURCE_REPO}@${r.commit} — nothing to push`); return 0; }
+    if (r.reason === 'in-sync') { console.log(`already in sync: the preview (snapshot of ${r.previewCommit}) ships the same content as ${SOURCE_REPO}@${r.commit} — nothing to push`); return 0; }
     if (r.reason === 'dry-run') { console.log(`dry run: would replace ${PREVIEW_REPO} main with tree ${r.tree} (${SOURCE_REPO}@${r.commit}). Re-run with --confirm.`); return 0; }
     console.log(`pushed ${r.pushedCommit} (tree ${r.tree}) = ${SOURCE_REPO}@${r.commit} → ${PREVIEW_REPO}`);
     return 0;

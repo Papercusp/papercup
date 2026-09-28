@@ -16,7 +16,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { checkDrift, pushSnapshot, remoteTreeSha } from '../../../scripts/source-preview.mjs';
+import { checkDrift, pushSnapshot, remoteTrees } from '../../../scripts/source-preview.mjs';
 import { childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
 
 let tmp: string;
@@ -97,10 +97,11 @@ describe('source-preview sync — a confirmed push publishes one orphan commit',
     expect(remoteGit(['rev-list', '--parents', '-n', '1', 'main']).split(' ')).toHaveLength(1);
     expect(remoteGit(['log', '-1', '--format=%an <%ae>', 'main'])).toBe('Papercusp <source-preview@papercusp.invalid>');
     expect(remoteGit(['log', '-1', '--format=%B', 'main'])).toContain(fx.commit.slice(0, 12));
-    expect(remoteTreeSha(remote)).toBe(r.tree);
+    expect(remoteTrees(remote)?.tree).toBe(r.tree);
 
     const check = await checkDrift(opts());
-    expect(check).toMatchObject({ inSync: true, expected: r.tree, actual: r.tree });
+    expect(check).toMatchObject({ inSync: true, commit: fx.commit, previewCommit: fx.commit });
+    expect(check.actual).toBe(check.expected);
   }, 120_000);
 
   it('does not push again when already in sync', async () => {
@@ -110,10 +111,27 @@ describe('source-preview sync — a confirmed push publishes one orphan commit',
     expect(remoteGit(['rev-parse', 'main'])).toBe(before);
   }, 120_000);
 
-  it('stays in sync when only a path the preview drops changes', async () => {
-    commitChange('scratch/notes.md', 'more scratch\n', 'scratch only');
-    expect(await checkDrift(opts())).toMatchObject({ inSync: true });
+  it('stays in sync, and pushes nothing, when a new commit changes only a path the preview drops', async () => {
+    const before = remoteGit(['rev-parse', 'main']);
+    const head = commitChange('scratch/notes.md', 'more scratch\n', 'scratch only');
+    expect(await checkDrift(opts())).toMatchObject({ inSync: true, commit: head, previewCommit: fx.commit });
+    expect(await pushSnapshot(opts({ confirm: true, gate: passing }))).toMatchObject({ pushed: false, reason: 'in-sync' });
+    expect(remoteGit(['rev-parse', 'main'])).toBe(before);
   }, 120_000);
+
+  it('reports a hand edit on the preview as drift', async () => {
+    const clone = join(tmp, 'tamper');
+    spawnSync('git', ['clone', '-q', remote, clone]);
+    write(clone, 'NOTICE', 'anything goes\n');
+    git(clone, ['commit', '-q', '-am', 'hand edit']);
+    git(clone, ['push', '-q', 'origin', 'HEAD:main']);
+    expect(await checkDrift(opts())).toMatchObject({ inSync: false });
+
+    const r = await pushSnapshot(opts({ confirm: true, gate: passing }));
+    expect(r).toMatchObject({ pushed: true });
+    expect(remoteGit(['rev-list', '--count', 'main'])).toBe('1');
+    expect(await checkDrift(opts())).toMatchObject({ inSync: true });
+  }, 180_000);
 
   it('detects drift after a shipped file changes, and a re-push replaces the preview with one new orphan commit', async () => {
     const first = remoteGit(['rev-parse', 'main']);
