@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   partitionReapableTasks,
+  partitionSuccessorTasks,
+  RESUME_RESERVATION_MAX_LEASE_SEC,
   runSessionEndLeaseRelease,
   scheduleSessionEndLeaseRelease,
   type SessionEndLeaseReleaseDeps,
@@ -241,6 +243,47 @@ describe('runSessionEndLeaseRelease', () => {
     });
   });
 
+  // EI-24355092354007517: the keyed PUI resume leaves `ended_at` set from
+  // reservation until `beforeReady`. The pass scheduled by an EARLIER end fired
+  // inside that window (15s after gen0 ended ≈ gen3's startup) and SIGTERMed the
+  // starting child (exit 143, always on repetition 3 of the resume guard).
+  it('defers — touching no lease store — while a resume reservation is in flight', async () => {
+    h.loadRow.mockResolvedValueOnce({ ...ENDED, resumeInFlight: true });
+    h.listTasks.mockResolvedValue([{ taskId: 'task-starting' } as TaskRow]);
+
+    await expect(runSessionEndLeaseRelease(77, deps())).resolves.toMatchObject({
+      ok: false,
+      reason: 'resume-in-flight',
+      ownerId: 'su-ended',
+    });
+    expect(h.releaseLocks).not.toHaveBeenCalled();
+    expect(h.releaseWorkItems).not.toHaveBeenCalled();
+    expect(h.listTasks).not.toHaveBeenCalled();
+    expect(h.killTask).not.toHaveBeenCalled();
+  });
+
+  it('never reaps a task that started after the recorded end, and still reaps the ended incarnation', async () => {
+    // The resume can spawn between the row read and the task listing, before
+    // its reservation is visible to this pass. Start time is the invariant:
+    // a task begun after the end cannot belong to the incarnation that ended.
+    h.listTasks.mockResolvedValue([
+      { taskId: 'task-ended-gen', startedAt: '2026-08-22T20:00:40Z' } as TaskRow,
+      { taskId: 'task-successor', startedAt: '2026-08-22T20:01:25Z' } as TaskRow,
+      { taskId: 'task-no-start' } as TaskRow,
+    ]);
+    h.killTask.mockImplementation(async (taskId) => ({ ok: true, taskId, action: 'kill' }));
+
+    const result = await runSessionEndLeaseRelease(77, deps());
+
+    expect(h.killTask).not.toHaveBeenCalledWith('task-successor', expect.anything());
+    expect(h.killTask.mock.calls.map(([taskId]) => taskId)).toEqual(['task-ended-gen', 'task-no-start']);
+    expect(result).toMatchObject({
+      ok: true,
+      reapedTaskIds: ['task-ended-gen', 'task-no-start'],
+      successorTaskIds: ['task-successor'],
+    });
+  });
+
   it('accounts for a task-ledger read failure independently of both lease stores', async () => {
     h.listTasks.mockRejectedValueOnce(new Error('task ledger down'));
 
@@ -377,6 +420,21 @@ describe('scheduleSessionEndLeaseRelease', () => {
     expect(h.releaseWorkItems).toHaveBeenCalledTimes(1);
   });
 
+  it('retries an in-flight resume and cleans up once its reservation was released unfinalized', async () => {
+    vi.useFakeTimers();
+    h.loadRow
+      .mockResolvedValueOnce({ ...ENDED, resumeInFlight: true })
+      .mockResolvedValueOnce(ENDED);
+
+    scheduleSessionEndLeaseRelease(77, { delayMs: 25, retryDelayMs: 25, deps: deps() });
+    await vi.advanceTimersByTimeAsync(25);
+    expect(h.releaseLocks).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(25);
+
+    expect(h.loadRow).toHaveBeenCalledTimes(2);
+    expect(h.releaseLocks).toHaveBeenCalledTimes(1);
+  });
+
   it('bounds repeated owner-live retries and leaves the periodic reaper as backstop', async () => {
     vi.useFakeTimers();
     h.loadProtectedOwners.mockResolvedValue(new Set(['su-ended']));
@@ -397,6 +455,42 @@ describe('scheduleSessionEndLeaseRelease', () => {
     expect(h.releaseLocks).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('periodic lease reaper remains the backstop'));
     warn.mockRestore();
+  });
+});
+
+describe('partitionSuccessorTasks — start time separates a resume successor from the ended incarnation', () => {
+  const END = new Date('2026-08-22T20:01:13Z');
+  const before = { taskId: 'before', startedAt: '2026-08-22T20:01:12.999Z' } as TaskRow;
+  const atEnd = { taskId: 'at-end', startedAt: '2026-08-22T20:01:13Z' } as TaskRow;
+  const after = { taskId: 'after', startedAt: '2026-08-22T20:01:13.001Z' } as TaskRow;
+  const garbage = { taskId: 'garbage', startedAt: 'not-a-date' } as TaskRow;
+
+  /** The bug: every live row under the native session id treated as the dead one. */
+  const WRONG_partition = (rows: readonly TaskRow[]) => ({ ended: [...rows], successors: [] as TaskRow[] });
+
+  it('CALIBRATION: only a row started strictly after the end is a successor', () => {
+    const { ended, successors } = partitionSuccessorTasks([before, atEnd, after, garbage], END);
+    expect(ended.map((r) => r.taskId)).toEqual(['before', 'at-end', 'garbage']);
+    expect(successors.map((r) => r.taskId)).toEqual(['after']);
+  });
+
+  it('CONTROL: the pre-fix behaviour would have reaped the successor', () => {
+    const { ended } = WRONG_partition([before, after]);
+    expect(ended.map((r) => r.taskId)).toContain('after');
+  });
+});
+
+describe('resume reservation lease bound', () => {
+  it('matches the clamp acquireAdvSessionResume applies, so no live reservation reads as expired', () => {
+    const source = readFileSync(new URL('./adv-sessions.ts', import.meta.url), 'utf8');
+    expect(source).toContain(`export const RESUME_RESERVATION_MAX_LEASE_SEC = ${RESUME_RESERVATION_MAX_LEASE_SEC};`);
+    expect(source).toContain('Math.min(RESUME_RESERVATION_MAX_LEASE_SEC, Math.floor(leaseSec))');
+  });
+
+  it('reads the reservation in BOTH row queries (current and older-schema fallback)', () => {
+    const source = readFileSync(new URL('./session-end-lease-release-hook.ts', import.meta.url), 'utf8');
+    const reads = source.match(/s\.resume_claim_key IS NOT NULL/g) ?? [];
+    expect(reads).toHaveLength(2);
   });
 });
 

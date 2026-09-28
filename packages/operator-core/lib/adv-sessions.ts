@@ -1194,6 +1194,10 @@ const RESUME_CLAIM_WINDOW_SEC = 300;
  * launcher setup completes in seconds, while a dead launcher must not strand
  * an intentionally ended session. Callers may pass a measured override. */
 export const RESUME_RESERVATION_LEASE_SEC = 60;
+/** Upper clamp on any requested resume reservation lease. The delayed
+ * session-end lease cleanup treats a reservation younger than this as a resume
+ * still starting up (EI-24355092354007517); its local copy is pinned to this. */
+export const RESUME_RESERVATION_MAX_LEASE_SEC = 300;
 
 /**
  * Positive local evidence that an exact resume has no competing agent process.
@@ -1289,7 +1293,7 @@ export async function acquireAdvSessionResume(
 ): Promise<AdvSessionResumeReservation> {
   const key = resumeClaimKey.trim();
   if (!key) throw new Error('resumeClaimKey must be non-empty');
-  const boundedLeaseSec = Math.max(1, Math.min(300, Math.floor(leaseSec)));
+  const boundedLeaseSec = Math.max(1, Math.min(RESUME_RESERVATION_MAX_LEASE_SEC, Math.floor(leaseSec)));
   const boundedStaleSec = Math.max(1, Math.floor(staleActiveSec));
   const { sql } = getOrgPg();
 

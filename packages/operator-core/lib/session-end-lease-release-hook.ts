@@ -26,6 +26,14 @@ export const SESSION_END_LEASE_RELEASE_DELAY_MS = 15_000;
  */
 export const SESSION_END_LEASE_RELEASE_RETRY_DELAY_MS = 15_000;
 export const SESSION_END_LEASE_RELEASE_MAX_OWNER_LIVE_RETRIES = 3;
+/**
+ * The longest resume reservation `acquireAdvSessionResume` will grant (it clamps
+ * the requested lease to 300s). A reservation younger than this may still be in
+ * flight, so the delayed pass must not treat its row as dead. Kept local so this
+ * hook's eager module graph stays leaf-like (adv-sessions imports this hook);
+ * pinned to the adv-sessions bound by session-end-lease-release-hook.test.ts.
+ */
+export const RESUME_RESERVATION_MAX_LEASE_SEC = 300;
 
 export interface SessionEndLeaseRow {
   id: number;
@@ -37,6 +45,13 @@ export interface SessionEndLeaseRow {
   ownerHasOpenSession: boolean;
   /** The poison marker matches this exact ended adv-session generation. */
   poisoned?: boolean;
+  /**
+   * A resume reservation is held on this row and has not yet finalized or been
+   * released (EI-24355092354007517). The keyed resume path leaves `ended_at` set
+   * from acquisition until the new child reaches `beforeReady`, so an ended row
+   * with a live reservation is a successor STARTING UP, not a dead session.
+   */
+  resumeInFlight?: boolean;
 }
 
 export interface SessionEndLeaseReleaseDeps {
@@ -66,6 +81,7 @@ export type SessionEndLeaseReleaseReason =
   | 'owner-missing'
   | 'owner-resumed'
   | 'owner-live'
+  | 'resume-in-flight'
   | 'partial-failure';
 
 export interface SessionEndLeaseReleaseResult {
@@ -84,6 +100,10 @@ export interface SessionEndLeaseReleaseResult {
    *  rather than silently dropped: "we skipped 3" and "there were none" are
    *  different facts, and only one of them means the exemption is working. */
   exemptTaskIds?: string[];
+  /** Live rows under the same native session id that STARTED after the row's
+   *  recorded end — a resume successor, deliberately NOT reaped
+   *  (EI-24355092354007517). Reported so "skipped a successor" is visible. */
+  successorTaskIds?: string[];
   failedEffects?: Array<'locks' | 'work-items' | 'tasks'>;
 }
 
@@ -125,11 +145,15 @@ async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndL
       ended_at: Date | string | null;
       owner_has_open_session: boolean;
       poisoned: boolean;
+      resume_in_flight: boolean;
     }[];
   let rows: Row;
   try {
     rows = await sql<Row>`
       SELECT s.id, s.workspace_id, s.coord_owner_id, s.session_id, s.cwd, s.ended_at,
+             (s.resume_claim_key IS NOT NULL
+               AND s.resume_claimed_at > now() - make_interval(secs => ${RESUME_RESERVATION_MAX_LEASE_SEC})
+             ) AS resume_in_flight,
              COALESCE(
                b.control_state #>> '{lifecycle,poisoned,advSessionId}' = s.id::text
                AND date_trunc('milliseconds', (b.control_state #>> '{lifecycle,poisoned,startedAt}')::timestamptz)
@@ -154,6 +178,9 @@ async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndL
     if ((error as { code?: string } | null)?.code !== '42P01') throw error;
     rows = await sql<Row>`
       SELECT s.id, s.workspace_id, s.coord_owner_id, s.session_id, s.cwd, s.ended_at,
+             (s.resume_claim_key IS NOT NULL
+               AND s.resume_claimed_at > now() - make_interval(secs => ${RESUME_RESERVATION_MAX_LEASE_SEC})
+             ) AS resume_in_flight,
              false AS poisoned,
              EXISTS (
                SELECT 1
@@ -177,7 +204,30 @@ async function loadSessionEndLeaseRow(advSessionId: number): Promise<SessionEndL
     endedAt: row.ended_at == null ? null : new Date(row.ended_at),
     ownerHasOpenSession: row.owner_has_open_session,
     poisoned: row.poisoned === true,
+    resumeInFlight: row.resume_in_flight === true,
   };
+}
+
+/**
+ * EI-24355092354007517: a task that STARTED after the row's recorded end cannot
+ * belong to the incarnation that ended. It is a resume successor under the same
+ * native session id, spawned between this pass's row read and its task listing
+ * (or before a reservation became visible). Reaping it killed exact resumes in
+ * their startup window with SIGTERM (exit 143). A missing or unparseable start
+ * time stays reapable, so the dead incarnation's own rows are never exempted.
+ */
+export function partitionSuccessorTasks(
+  rows: readonly TaskRow[],
+  endedAt: Date,
+): { ended: TaskRow[]; successors: TaskRow[] } {
+  const endMs = endedAt.getTime();
+  const ended: TaskRow[] = [];
+  const successors: TaskRow[] = [];
+  for (const row of rows) {
+    const startedMs = row.startedAt ? Date.parse(row.startedAt) : Number.NaN;
+    (Number.isFinite(startedMs) && Number.isFinite(endMs) && startedMs > endMs ? successors : ended).push(row);
+  }
+  return { ended, successors };
 }
 
 async function loadProtectedOwners(endingOwnerId: string): Promise<ReadonlySet<string>> {
@@ -219,6 +269,10 @@ export async function runSessionEndLeaseRelease(
   const ownerId = row.coordOwnerId?.trim() ?? '';
   if (!ownerId) return { ok: false, reason: 'owner-missing' };
   if (row.ownerHasOpenSession) return { ok: false, reason: 'owner-resumed', ownerId };
+  // A held resume reservation means a successor is starting on THIS row. It
+  // either finalizes (row reopens → row-not-ended) or releases (row stays ended
+  // → a later retry cleans up). Acting now would reap the starting child.
+  if (row.resumeInFlight) return { ok: false, reason: 'resume-in-flight', ownerId };
 
   const protectedOwners = await (deps.loadProtectedOwners ?? loadProtectedOwners)(ownerId);
   // A transcript-confirmed poison marker is an explicit verdict that this exact
@@ -279,7 +333,8 @@ export async function runSessionEndLeaseRelease(
     // it with it. Auto-reaping was put to the owner in two forms
     // (reap-when-provably-dead, reap-fleet-spawned-only) and both were
     // declined. Do not widen this without a fresh owner ruling.
-    const { reapable: tasks, exempt } = partitionReapableTasks(listed);
+    const { ended: endedIncarnation, successors } = partitionSuccessorTasks(listed, row.endedAt!);
+    const { reapable: tasks, exempt } = partitionReapableTasks(endedIncarnation);
     const outcomes = await Promise.allSettled(
       tasks.map((task) => killTask(task.taskId, { reapTerminalResidue: true })),
     );
@@ -306,6 +361,7 @@ export async function runSessionEndLeaseRelease(
       reapedTaskIds,
       failedTaskIds,
       exemptTaskIds: exempt.map((task) => task.taskId),
+      successorTaskIds: successors.map((task) => task.taskId),
     };
   };
 
@@ -345,6 +401,7 @@ export async function runSessionEndLeaseRelease(
     reapedTaskIds: tasks.status === 'fulfilled' ? tasks.value.reapedTaskIds : [],
     failedTaskIds: tasks.status === 'fulfilled' ? tasks.value.failedTaskIds : [],
     exemptTaskIds: tasks.status === 'fulfilled' ? tasks.value.exemptTaskIds : [],
+    successorTaskIds: tasks.status === 'fulfilled' ? tasks.value.successorTaskIds : [],
   };
 }
 
@@ -373,7 +430,9 @@ function scheduleSessionEndLeaseReleaseAttempt(
         // a successor row. Both are successful continuation, not cleanup
         // failures, and neither should schedule another attempt or warn.
         if (result.reason === 'owner-resumed' || result.reason === 'row-not-ended') return;
-        if (result.reason === 'owner-live') {
+        // A starting resume resolves within its reservation lease, so retry it
+        // on the same bounded budget as a still-live owner signal.
+        if (result.reason === 'owner-live' || result.reason === 'resume-in-flight') {
           const maxRetries = Math.max(
             0,
             opts.maxOwnerLiveRetries ?? SESSION_END_LEASE_RELEASE_MAX_OWNER_LIVE_RETRIES,
