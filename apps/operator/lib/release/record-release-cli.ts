@@ -1080,7 +1080,9 @@ export async function generateSite(
     );
   }
 
-  const rows = await listReleases(sql, scope.workspaceId);
+  // Every surface but `assets` renders registry content; an assets-only force skips the reads.
+  const needsRegistry = [...siteScope.surfaces].some((surface) => surface !== 'assets');
+  const rows = needsRegistry ? await listReleases(sql, scope.workspaceId) : [];
   const hydratedAll: HydratedRelease[] = [];
   for (const row of rows) {
     const { items, plans, internalCount } = await hydrateRelease(sql, scope, row);
@@ -1088,77 +1090,112 @@ export async function generateSite(
   }
 
   const opts = { generatedAt: new Date(), analytics: POSTHOG_PUBLIC_DEFAULTS, redact };
-  const held = isPageHeld();
-  const indexHtml = held ? renderHoldingHtml(opts) : renderIndexHtml(hydratedAll, opts);
-  assertReleaseHistoryIndexSizeBudget(indexHtml);
-  fs.mkdirSync(path.join(outDir, 'plans'), { recursive: true });
-  fs.mkdirSync(path.join(outDir, 'work-items'), { recursive: true });
-  fs.mkdirSync(path.join(outDir, 'changes'), { recursive: true });
-  await buildReleaseHistoryAssets(outDir);
-  for (const release of hydratedAll) {
-    const stem = releaseHistoryStem(release.row.version, release.row.channel);
-    fs.writeFileSync(path.join(outDir, 'changes', `${stem}.json`), JSON.stringify(releaseProjectHistory(release, scope, opts.redact)));
-    fs.writeFileSync(path.join(outDir, 'changes', `${stem}.html`), renderProjectHistoryPage(release, opts));
+  let pages = 0;
+  if (want('assets')) await buildReleaseHistoryAssets(outDir);
+  if (want('changes')) {
+    fs.mkdirSync(path.join(outDir, 'changes'), { recursive: true });
+    for (const release of hydratedAll) {
+      const stem = releaseHistoryStem(release.row.version, release.row.channel);
+      tally.write(path.join(outDir, 'changes', `${stem}.json`), JSON.stringify(releaseProjectHistory(release, scope, opts.redact)));
+      tally.write(path.join(outDir, 'changes', `${stem}.html`), renderProjectHistoryPage(release, opts));
+      pages++;
+    }
   }
-  // ── The hold swaps ONLY index.html. ────────────────────────────────────────
-  // history.json and the plan pages are still written, and the installers on the
-  // host are untouched, so: the in-app Update Center keeps working (it reads
-  // history.json — blanking it would empty every installed app's update
-  // history), direct installer links keep resolving, and restoring the page is
-  // just re-rendering this one file. A hold hides the page; it does not unship a
-  // release.
-  fs.writeFileSync(
-    path.join(outDir, 'index.html'),
-    indexHtml,
-    'utf8',
-  );
-  if (held) {
-    console.log(
-      '[record-release] ⚠ HOLDING PAGE is active — index.html says "NEXT UPDATE COMING SOON".\n' +
-        '                 history.json, the plan pages and every installer are unchanged.\n' +
-        '                 Restore the real page with: bin/restore-release-page.sh',
-    );
+  if (want('index')) {
+    const held = isPageHeld();
+    const indexHtml = held ? renderHoldingHtml(opts) : renderIndexHtml(hydratedAll, opts);
+    assertReleaseHistoryIndexSizeBudget(indexHtml);
+    fs.mkdirSync(outDir, { recursive: true });
+    // ── The hold swaps ONLY index.html. ──────────────────────────────────────
+    // history.json and the plan pages are still written, and the installers on the
+    // host are untouched, so: the in-app Update Center keeps working (it reads
+    // history.json — blanking it would empty every installed app's update
+    // history), direct installer links keep resolving, and restoring the page is
+    // just re-rendering this one file. A hold hides the page; it does not unship a
+    // release.
+    tally.write(path.join(outDir, 'index.html'), indexHtml);
+    if (held) {
+      console.log(
+        '[record-release] ⚠ HOLDING PAGE is active — index.html says "NEXT UPDATE COMING SOON".\n' +
+          '                 history.json, the plan pages and every installer are unchanged.\n' +
+          '                 Restore the real page with: bin/restore-release-page.sh',
+      );
+    }
+    // The machine-readable twin of the page — what the in-app Update Center reads.
+    // Same registry, same scrub, published to the same host as latest.json.
+    tally.write(path.join(outDir, 'history.json'), renderHistoryJson(hydratedAll, opts));
+    pages++;
   }
-  // The machine-readable twin of the page — what the in-app Update Center reads.
-  // Same registry, same scrub, published to the same host as latest.json.
-  fs.writeFileSync(path.join(outDir, 'history.json'), renderHistoryJson(hydratedAll, opts), 'utf8');
-  let pages = 1 + hydratedAll.length;
 
   // One page per plan, newest release wins when a plan spans several (it carries
   // the most recent status).
-  const seen = new Set<string>();
-  for (const rel of hydratedAll) {
-    for (const plan of rel.plans) {
-      if (seen.has(plan.slug)) continue;
-      seen.add(plan.slug);
-      const html = renderPlanPageHtml(plan, { ...opts, version: rel.row.version });
-      fs.writeFileSync(path.join(outDir, planPagePath(plan.slug)), html, 'utf8');
-      pages++;
+  if (want('plans')) {
+    fs.mkdirSync(path.join(outDir, 'plans'), { recursive: true });
+    const seen = new Set<string>();
+    for (const rel of hydratedAll) {
+      for (const plan of rel.plans) {
+        if (seen.has(plan.slug)) continue;
+        seen.add(plan.slug);
+        const html = renderPlanPageHtml(plan, { ...opts, version: rel.row.version });
+        tally.write(path.join(outDir, planPagePath(plan.slug)), html);
+        pages++;
+      }
     }
   }
 
   // One page per work item. A frozen item id can appear in more than one release;
   // listReleases() is newest-first, so the first occurrence carries the freshest
   // canonical metadata and identifies the most recent release that shipped it.
-  const seenItems = new Set<string>();
-  for (const rel of hydratedAll) {
-    for (const item of rel.items) {
-      if (seenItems.has(item.id)) continue;
-      seenItems.add(item.id);
-      const plan = item.planSlug
-        ? rel.plans.find((candidate) => candidate.slug === item.planSlug) ?? null
-        : null;
-      const html = renderWorkItemPageHtml(item, {
-        ...opts,
-        version: rel.row.version,
-        channel: rel.row.channel,
-        plan,
-      });
-      fs.writeFileSync(path.join(outDir, workItemPagePath(item.id)), html, 'utf8');
-      pages++;
+  if (want('work-items')) {
+    fs.mkdirSync(path.join(outDir, 'work-items'), { recursive: true });
+    const seenItems = new Set<string>();
+    for (const rel of hydratedAll) {
+      for (const item of rel.items) {
+        if (seenItems.has(item.id)) continue;
+        seenItems.add(item.id);
+        const plan = item.planSlug
+          ? rel.plans.find((candidate) => candidate.slug === item.planSlug) ?? null
+          : null;
+        const html = renderWorkItemPageHtml(item, {
+          ...opts,
+          version: rel.row.version,
+          channel: rel.row.channel,
+          plan,
+        });
+        tally.write(path.join(outDir, workItemPagePath(item.id)), html);
+        pages++;
+      }
     }
   }
-  return { pages };
+  return { pages, written: tally.written, unchanged: tally.unchanged };
+}
+
+/**
+ * Durable record of a scoped (--only) regenerate, written BEFORE anything renders. Fail-closed:
+ * a force that cannot be recorded does not run. The registry connection is required to render
+ * at all, so this costs no availability.
+ */
+export async function auditScopedRegenerate(
+  sql: postgres.Sql,
+  scope: Scope,
+  siteScope: SiteScope,
+  actor: string = process.env.PAPERCUSP_SID || process.env.PAPERCUSP_OWNER_ID || 'record-release-cli',
+): Promise<void> {
+  const surfaces = [...siteScope.surfaces];
+  const skipped = SITE_SURFACES.filter((surface) => !siteScope.surfaces.has(surface));
+  await sql.unsafe(
+    `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+    [
+      `release-site-scoped-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      Date.now(),
+      actor,
+      'release:site-regenerate-scoped',
+      'release-history-site',
+      JSON.stringify({ surfaces, skipped, reason: siteScope.reason, workItem: 'WI-10003694' }),
+      scope.workspaceId,
+    ],
+  );
 }
 
 export async function run(opts: RecordOpts): Promise<number> {

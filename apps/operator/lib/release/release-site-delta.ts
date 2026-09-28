@@ -67,7 +67,12 @@ export interface PublishManifest {
 
 export interface PublishPlan {
   schema: typeof PLAN_SCHEMA;
-  mode: 'full' | 'incremental';
+  /**
+   * full        — upload + gate everything (the pre-existing behaviour).
+   * incremental — upload + gate only what differs from the last verified publish.
+   * only        — a caller-judged FORCE: upload + gate exactly the named files, nothing else.
+   */
+  mode: 'full' | 'incremental' | 'only';
   reason: string;
   /** Paths to upload (every path in full mode). */
   upload: string[];
@@ -76,8 +81,11 @@ export interface PublishPlan {
   /** Paths the identity gate must scan before anything is uploaded. */
   gate: string[];
   unchangedCount: number;
-  /** The manifest to record once this publish has been verified. */
-  next: PublishManifest;
+  /**
+   * The manifest to record once this publish has been verified — null when this publish cannot
+   * establish the state of the WHOLE site (an `only` publish with no usable prior manifest).
+   */
+  next: PublishManifest | null;
 }
 
 // ── Generator side ───────────────────────────────────────────────────────────
@@ -242,6 +250,49 @@ function isMirrored(rel: string): boolean {
   return MIRRORED_DIRS.some((dir) => rel.startsWith(`${dir}/`));
 }
 
+export interface PlanOnlyInput {
+  /** Hashes of exactly the named files. */
+  only: Record<string, string>;
+  previous: PublishManifest | null;
+  target: string;
+  gateFingerprint: string;
+  reason: string;
+  now?: Date;
+}
+
+/**
+ * `ONLY=<file,…>` — the publish-side force (owner #821). The caller judged that nothing else
+ * changed, so it uploads and gates exactly those files and skips hashing the other ~29k.
+ *
+ * The manifest can still advance, but only when the rest of it is trustworthy: same target and
+ * same gate rules. Otherwise nothing is recorded, and the next ordinary publish falls back to
+ * full — a force never manufactures a claim about files it did not look at.
+ */
+export function planOnlyPublish(input: PlanOnlyInput): PublishPlan {
+  const upload = Object.keys(input.only).sort();
+  const previous = input.previous;
+  const canAdvance =
+    previous !== null &&
+    previous.target === input.target &&
+    previous.gateFingerprint === input.gateFingerprint;
+  return {
+    schema: PLAN_SCHEMA,
+    mode: 'only',
+    reason: `forced ONLY publish — ${input.reason}`,
+    upload,
+    remove: [],
+    gate: upload,
+    unchangedCount: 0,
+    next: canAdvance
+      ? {
+          ...previous,
+          publishedAt: (input.now ?? new Date()).toISOString(),
+          files: { ...previous.files, ...input.only },
+        }
+      : null,
+  };
+}
+
 /**
  * Decide what this publish uploads, deletes and gates. Pure: the whole safety argument lives
  * here, so it is the part the tests pin.
@@ -366,23 +417,60 @@ export async function main(
     }
     const resolvedLiterals = literals ?? identityLiterals();
     const started = Date.now();
-    const current = hashSite(siteDir);
     const { manifest, problem } = readManifest(manifestFile);
-    const plan = planPublish({
-      current,
-      previous: manifest,
-      previousProblem: problem,
-      target: publishTarget(bucket, keyPrefix),
-      gateFingerprint: gateFingerprint(resolvedLiterals, defaultGateRuleSources()),
-      full: rest.includes('--full'),
-    });
+    const target = publishTarget(bucket, keyPrefix);
+    const fingerprint = gateFingerprint(resolvedLiterals, defaultGateRuleSources());
+    const onlyRaw = flag(rest, '--only');
+    let plan: PublishPlan;
+    let hashed: number;
+    if (onlyRaw !== null) {
+      const reason = (flag(rest, '--reason') ?? '').trim();
+      if (reason.length < 8) {
+        console.error(
+          'release-site-delta: --only is a FORCE (it skips the rest of the site) — say why with --reason "<why only these files changed>".',
+        );
+        return 2;
+      }
+      const siteRoot = path.resolve(siteDir);
+      const only: Record<string, string> = {};
+      for (const rel of onlyRaw.split(',').map((part) => part.trim()).filter(Boolean)) {
+        const full = path.resolve(siteRoot, rel);
+        const inSite = full.startsWith(`${siteRoot}${path.sep}`);
+        const posix = toPosix(path.relative(siteRoot, full));
+        const published =
+          (SITE_FILES as readonly string[]).includes(posix) ||
+          SITE_DIRS.some((dir) => posix.startsWith(`${dir}/`));
+        if (!inSite || !published || !fs.existsSync(full) || !fs.statSync(full).isFile()) {
+          console.error(`release-site-delta: --only ${rel} is not a published file in ${siteDir}.`);
+          return 2;
+        }
+        only[posix] = sha256Bytes(fs.readFileSync(full));
+      }
+      if (Object.keys(only).length === 0) {
+        console.error('release-site-delta: --only named no files.');
+        return 2;
+      }
+      plan = planOnlyPublish({ only, previous: manifest, target, gateFingerprint: fingerprint, reason });
+      hashed = Object.keys(only).length;
+    } else {
+      const current = hashSite(siteDir);
+      plan = planPublish({
+        current,
+        previous: manifest,
+        previousProblem: problem,
+        target,
+        gateFingerprint: fingerprint,
+        full: rest.includes('--full'),
+      });
+      hashed = Object.keys(current).length;
+    }
     fs.writeFileSync(out, JSON.stringify(plan));
     writeList(gateList, plan.gate);
     writeList(removeList, plan.remove);
-    if (stage && plan.mode === 'incremental') stageFiles(siteDir, stage, plan.upload);
+    if (stage && plan.mode !== 'full') stageFiles(siteDir, stage, plan.upload);
     console.log(
       `[delta] mode=${plan.mode} upload=${plan.upload.length} remove=${plan.remove.length} ` +
-        `unchanged=${plan.unchangedCount} gate=${plan.gate.length} hashed=${Object.keys(current).length} ` +
+        `unchanged=${plan.unchangedCount} gate=${plan.gate.length} hashed=${hashed} ` +
         `in ${((Date.now() - started) / 1000).toFixed(1)}s — ${plan.reason}`,
     );
     return 0;
@@ -395,8 +483,19 @@ export async function main(
       return 2;
     }
     const plan = JSON.parse(fs.readFileSync(planFile, 'utf8')) as PublishPlan;
-    if (plan.schema !== PLAN_SCHEMA || plan.next?.schema !== MANIFEST_SCHEMA) {
+    if (plan.schema !== PLAN_SCHEMA) {
       console.error(`release-site-delta: ${planFile} is not a ${PLAN_SCHEMA} document.`);
+      return 2;
+    }
+    if (plan.next === null) {
+      console.log(
+        '[delta] published state NOT recorded — this ONLY publish cannot vouch for the rest of the site, ' +
+          'so the next ordinary publish runs full once and records it.',
+      );
+      return 0;
+    }
+    if (plan.next.schema !== MANIFEST_SCHEMA) {
+      console.error(`release-site-delta: ${planFile} carries no ${MANIFEST_SCHEMA} manifest.`);
       return 2;
     }
     writeManifestAtomic(manifestFile, { ...plan.next, publishedAt: new Date().toISOString() });
