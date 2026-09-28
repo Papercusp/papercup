@@ -164,7 +164,17 @@ describe('pc-heavy PSI freeze accounting persists frozen wall-clock time (EI-219
       expect(frozenTotalMs).toBeGreaterThanOrEqual(1000);
       expect(frozenEpisodes).toBeGreaterThanOrEqual(1);
     } finally {
-      if (!exited) child.kill('SIGKILL');
+      if (!exited) {
+        // SIGTERM, not SIGKILL: pc-heavy's TERM trap forwards the signal to its own
+        // group and its EXIT trap reaps it (the admitted `sleep` and the PSI sampler).
+        // SIGKILL on the wrapper skipped both traps and orphaned those children, which
+        // kept writing into `dir` while afterEach removed it (ENOTEMPTY under gate
+        // load, WI-10003582). Await the exit so teardown never races the tree.
+        child.kill('SIGTERM');
+        await waitFor('pc-heavy exited after SIGTERM', () => exited, 10_000).catch(() => {
+          child.kill('SIGKILL');
+        });
+      }
     }
   }, 30_000);
 
