@@ -4,8 +4,10 @@
 #   vh_phase setup "" 1              # id, comma-separated deps, reusable (1/0) — declaration order
 #   vh_phase leg-a setup
 #   vh_phase leg-b setup
+#   vh_scope hive-git physical-drill # optional: guard-rail scope tags (see vh_preflight)
 #   vh_init my-drill "$EVIDENCE_ROOT" "$@"   # consumes --only/--from/--reuse; VH_ARGS = the rest
-#   vh_preflight check_rig           # optional: a failure blocks every phase
+#   vh_preflight check_rig           # optional: a failure blocks every phase; with scope tags it
+#                                    # also runs the matching guard-rail probes (VH_GUARD_RAIL_SOURCE)
 #   vh_run setup  phase_setup        # each phase is a function
 #   vh_run leg-a  phase_leg_a
 #   vh_run leg-b  phase_leg_b
@@ -21,9 +23,11 @@
 # the macOS stock /bin/bash 3.2.
 
 VH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-declare -ga VH_PHASE_IDS=()
+declare -ga VH_PHASE_IDS=() VH_SCOPE_TAGS=()
 declare -gA VH_DEPS=() VH_REUSABLE=() VH_ACTION=() VH_REUSE_FROM=() VH_STATUS=()
 VH_PREFLIGHT_FAILED=0
+VH_PREFLIGHT_DONE=0
+VH_PREFLIGHT_FN=""
 
 _vh_tsx() {
   if [ -n "${VH_TSX:-}" ]; then echo "$VH_TSX"; return; fi
@@ -66,6 +70,10 @@ vh_phase() {
   VH_REUSABLE[$1]="${3:-0}"
 }
 
+# Scope tags for guard-rail selection (before vh_init): the preflight runs every probe from
+# VH_GUARD_RAIL_SOURCE that shares a tag.
+vh_scope() { VH_SCOPE_TAGS+=("$@"); }
+
 vh_init() {
   local name="$1" root="$2"; shift 2
   VH_NAME="$name"
@@ -96,7 +104,9 @@ vh_init() {
       printf '{"id":%s,"dependsOn":[%s],"reusable":%s}' "$(_vh_json_str "$id")" "$deps" \
         "$([ "${VH_REUSABLE[$id]}" = 1 ] && echo true || echo false)"
     done
-    printf ']}\n'
+    local tags="" t
+    for t in "${VH_SCOPE_TAGS[@]}"; do tags+="${tags:+,}$(_vh_json_str "$t")"; done
+    printf '],"scopeTags":[%s]}\n' "$tags"
   } > "$VH_RUN_DIR/contract.json"
   local plan
   plan="$("$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" plan --run-dir "$VH_RUN_DIR" "${sel[@]}")" || return 2
@@ -129,12 +139,46 @@ _vh_exec() {
   [ "$status" = passed ]
 }
 
+# The harness's own check (if any) and then the guard rails; both run, so one run reports
+# every broken precondition, and the harness's own failure names the reason when both fail.
+_vh_preflight_body() {
+  local rc=0
+  if [ -n "$VH_PREFLIGHT_FN" ]; then "$VH_PREFLIGHT_FN" || rc=$?; fi
+  local own_fail="$VH_CUR_FAIL" own_detail="$VH_CUR_DETAIL" own_step="$VH_CUR_STEP"
+  [ -z "$own_fail" ] && [ "$rc" -ne 0 ] && own_fail="exit-$rc"
+  local out="" line grc=0 greason="" gdetail=""
+  if [ "${#VH_SCOPE_TAGS[@]}" -gt 0 ]; then
+    vh_step guard-rails
+    out="$("$(_vh_tsx)" "$VH_LIB_DIR/src/cli.ts" guard-rails --run-dir "$VH_RUN_DIR")" || grc=$?
+    while IFS= read -r line; do
+      case "$line" in
+        "VH_GUARD_RAILS_FAILED "*)
+          greason="${line#*reason=}"; greason="${greason%% detail=*}"; gdetail="${line#* detail=}" ;;
+        ?*) echo "$line" ;;
+      esac
+    done <<< "$out"
+    [ "$grc" -ne 0 ] && [ -z "$greason" ] && greason="guard-rail-check-error:$grc"
+  fi
+  if [ -n "$own_fail" ]; then
+    VH_CUR_STEP="$own_step"
+    vh_fail "$own_fail" "$own_detail${gdetail:+; $gdetail}"
+    return 1
+  fi
+  if [ -n "$greason" ]; then vh_fail "$greason" "$gdetail"; return 1; fi
+  return 0
+}
+
+# vh_preflight [fn] — fn is the harness's own fast check. With scope tags declared, the
+# first vh_run calls this itself if the harness did not, so the rails always run.
 vh_preflight() {
-  _vh_exec preflight "$1" || VH_PREFLIGHT_FAILED=1
+  VH_PREFLIGHT_FN="${1:-}"
+  VH_PREFLIGHT_DONE=1
+  _vh_exec preflight _vh_preflight_body || VH_PREFLIGHT_FAILED=1
 }
 
 vh_run() {
   local id="$1" fn="$2" d
+  if [ "$VH_PREFLIGHT_DONE" = 0 ] && [ "${#VH_SCOPE_TAGS[@]}" -gt 0 ]; then vh_preflight; fi
   case "${VH_ACTION[$id]:-}" in
     "") echo "vh_run: phase $id was not declared with vh_phase" >&2; return 2 ;;
     skip) _vh_record "$id" skipped "" not-selected "" "" "" 0; return 0 ;;
