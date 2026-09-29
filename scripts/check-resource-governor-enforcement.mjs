@@ -488,7 +488,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for apps/operator/lib/release/desktop-perf-gate.ts: its only start is `readNewestCommitAtMs`, one awaited `git log -n 64 --format=%ct <ref>` metadata read (15s timeout) that the post-suite desktop-perf gate issues once per green-checkpoint verdict to age the measured build against main (WI-10003815). It returns a single number, retains nothing, starts no resident queue, and sits behind an injectable IO seam that tests fake. The gate that calls it is fail-soft, so a failed read degrades the verdict to unknown rather than blocking; release/control metadata must stay runnable while productive capacity is pressured.",
+      "P-016 reviewed bypass disposition for apps/operator/lib/release/desktop-perf-gate.ts: its starts are awaited git metadata reads (15s timeout each) that the post-suite desktop-perf gate issues once per green-checkpoint verdict: `readNewestCommitAtMs` (one `git log -n 64 --format=%ct <ref>`, to age the measured build against main, WI-10003815) and `classifyBuildSha` (at most two `git rev-parse --verify` and two `git merge-base --is-ancestor`, to relate the build's recorded sha to the candidate and main, plan desktop-perf-measure-candidate-build-2026-09-29 P-002). They return scalars, retain nothing, start no resident queue, and sit behind an injectable IO seam that tests fake. The gate that calls them is fail-soft, so a failed read degrades the verdict to unknown rather than blocking; release/control metadata must stay runnable while productive capacity is pressured.",
   },
   {
     path: "apps/operator/lib/release/git-ops.ts",
