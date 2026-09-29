@@ -134,12 +134,48 @@ const MEASURES_PATH = path.join(RESULTS_DIR, "measures.jsonl");
 export { MEASURES_PATH };
 
 /**
- * Host-pressure stamps describe the environment around a run; they are not a
+ * Context-stamp prefixes: `host:` (the box) and `build:` (the artifact measured).
+ * A COPY of DESKTOP_PERF_CONTEXT_STAMP_PREFIXES in
+ * packages/operator-core/lib/admin-test-suites-shared.ts, which this runner does not
+ * import; perf-report.node-test.ts fails if the two drift.
+ */
+export const CONTEXT_STAMP_PREFIXES = ["host:", "build:"] as const;
+
+/** Copy of DESKTOP_PERF_BINARY_BUILT_AT_KEY (same pin as above). */
+export const BINARY_BUILT_AT_KEY = "build:packaged-binary-mtime-ms";
+
+/**
+ * Context stamps describe the environment around a run; they are not a
  * test outcome. A preflight/session failure can still reach WDIO's onComplete,
- * so a host-only batch must never mint a fresh green performance run.
+ * so a stamp-only batch must never mint a fresh green performance run.
  */
 export function hasRunOutcomeMeasure(measures: readonly PerfMeasure[]): boolean {
-  return measures.some((measure) => !measure.key.startsWith("host:"));
+  return measures.some(
+    (measure) => !CONTEXT_STAMP_PREFIXES.some((prefix) => measure.key.startsWith(prefix)),
+  );
+}
+
+/**
+ * Stamp WHEN the binary under test was built: its file mtime, epoch ms (WI-10003815).
+ *
+ * The run's `gitSha` is the checkout HEAD at run time, and nothing here rebuilds the
+ * packaged binary, so without this stamp a run cannot say which code it timed. The
+ * release gate compares this against the green pin and refuses to charge a candidate
+ * with a breach measured on a build older than `main`: that measured a tree the
+ * candidate had already moved past (observed 2026-09-29 on a 12-day-old binary).
+ *
+ * A stamp, not a budget (`budget: null`, `ok: true`), in unit `count` because a new
+ * unit 400s the whole batch on a not-yet-redeployed validator. Never throws: an
+ * unreadable binary only loses the stamp, and the gate then makes no attribution call.
+ */
+export function recordBinaryIdentity(appPath: string): void {
+  try {
+    const mtimeMs = Math.round(statSync(appPath).mtimeMs);
+    if (!Number.isFinite(mtimeMs) || mtimeMs <= 0) return;
+    recordMeasure({ key: BINARY_BUILT_AT_KEY, value: mtimeMs, unit: "count", budget: null, ok: true });
+  } catch {
+    /* no stat — the stamp is omitted, never faked */
+  }
 }
 
 /** Keep the published workspace aligned with the workspace exercised by WDIO.

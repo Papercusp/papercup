@@ -103,6 +103,13 @@ describe('desktop-perf run outcome admission', () => {
     ])).toBe(false);
   });
 
+  it('rejects a batch of only host + build stamps (WI-10003815: build: is context too)', () => {
+    expect(hasDesktopPerfOutcomeMeasure([
+      { key: 'host:psi-cpu-some-avg10-pct:start', value: 0.1, unit: 'count', budget: null, ok: true },
+      { key: 'build:packaged-binary-mtime-ms', value: 1_789_600_000_000, unit: 'count', budget: null, ok: true },
+    ])).toBe(false);
+  });
+
   it('admits a measured timing or invariant alongside host context', () => {
     const host = { key: 'host:psi-cpu-some-avg10-pct:start', value: 0.1, unit: 'count' as const, budget: null, ok: true };
     expect(hasDesktopPerfOutcomeMeasure([

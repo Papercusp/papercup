@@ -25,6 +25,7 @@ import {
   hasRunOutcomeMeasure,
   operatorBaseUrl,
   readMeasures,
+  recordBinaryIdentity,
   recordHostPressure,
   resetMeasures,
   type PrivateIpcFixture,
@@ -626,6 +627,10 @@ export const config: WebdriverIO.Config = {
       // eslint-disable-next-line no-console
       console.warn(`[perf-report] could not stat the app binary at ${TAURI_APP_PATH}`);
     }
+    // Stamp WHICH build is being measured (WI-10003815): the release gate needs it to
+    // tell a candidate's regression from a stale binary's. After resetMeasures, same
+    // as the pressure stamp below.
+    recordBinaryIdentity(TAURI_APP_PATH);
     // Stamp the host pressure this run STARTS under (D-005). Must come AFTER
     // resetMeasures, or the reset would wipe the stamp it just wrote.
     recordHostPressure("start");
