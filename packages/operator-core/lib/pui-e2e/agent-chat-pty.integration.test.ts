@@ -3304,6 +3304,18 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     }
   });
 
+  // pui-chat-first-ux-2026-09-28 P-003 / R-03: the default chat screen shows
+  // only model, directory, context and cost. These are the token classes the
+  // falsifier names — session ids, sequence numbers, lifecycle and
+  // reconciliation states, pot/role/store names, operator URLs, account routes
+  // and "unknown" usage rows. They belong in `pui doctor` or Ctrl+O details.
+  const CHAT_JARGON: readonly RegExp[] = [
+    /\badv \d/, /\bseq \d/, /reconciliation/, /waiting-for-owner/, /SU session/, /SU · /,
+    new RegExp(`pot ${HARNESS}`), /role operator/, /\bstore /, /https?:\/\//, /\baccount \S/, /unknown/,
+  ];
+  const chatJargonIn = (frame: string): string[] =>
+    CHAT_JARGON.filter((pattern) => pattern.test(frame)).map(String);
+
   // pui-chat-first-ux-2026-09-28 P-001 acceptance. Owner #783: `pui` must start
   // the way `claude` / `codex` do — one conversation, full screen, in the
   // directory it was started from, ready to type. No zellij, no workbench tab
@@ -3316,7 +3328,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       launchDir, sdkCwds: scriptedEngine.sdkCwds, requests: scriptedEngine.requests, ...pane.failureEvidence(),
     })));
     try {
-      await pane.waitFor(`pot ${HARNESS} · role operator · session new`, { timeoutMs: 40_000 });
+      // The status line names the engine and the launch directory (P-003).
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
       const opening = pane.screen();
       // No workbench chrome: the tab strip and the Overview tab are absent.
       expect(opening).not.toContain('h:Overview');
@@ -3330,7 +3343,16 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       // The session runs where `pui` was started, not in the project checkout.
       expect(scriptedEngine.sdkCwds.at(-1)).toBe(launchDir);
       expect(pane.screen()).not.toContain('h:Overview');
-      console.info('PUI_P001_CHAT_FIRST_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frame: pane.screen() }));
+      // P-003 / R-03: the ready frame carries no internal jargon …
+      const ready = pane.screen();
+      expect(chatJargonIn(ready), ready).toEqual([]);
+      // … and Ctrl+O reveals the diagnostics, then hides them again.
+      pane.write('\u000f');
+      await pane.waitFor('reconciliation: ');
+      expect(pane.screen()).toMatch(/\badv \d/);
+      pane.write('\u000f');
+      await vi.waitFor(() => expect(chatJargonIn(pane.screen())).toEqual([]), { timeout: 10_000, interval: 100 });
+      console.info('PUI_P001_CHAT_FIRST_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frame: ready }));
     } finally {
       await pane.stop();
       rmSync(launchDir, { recursive: true, force: true });
@@ -3365,8 +3387,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       commandPosts: commandPosts.length, traffic: sessionTraffic, ...pane.failureEvidence(),
     })));
     try {
-      // Chat-first opens with the composer focused: no `o`, no `i`.
-      await pane.waitFor(`pot ${HARNESS} · role operator · session new`, { timeoutMs: 40_000 });
+      // Chat-first opens with the composer focused: no `o`, no `i`. Its
+      // status line names the engine and the launch directory (P-003).
+      await pane.waitFor(`Claude · ${REPO_ROOT}`, { timeoutMs: 40_000 });
       pane.write(prompt);
       pane.enter();
       await pane.waitFor('· starting ·', { timeoutMs: 60_000 });

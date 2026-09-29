@@ -120,16 +120,10 @@ export function cacheVerifyArgs(npmArgs = []) {
 }
 
 /**
- * Resolve npm's repeatable workspace selectors to the canonical repo-relative
- * directories consumed by the dependency-integrity scanners. npm accepts both
- * package names and paths, while those scanners intentionally accept paths only.
- * No selector means a full install and therefore a full-tree verification.
+ * npm's repeatable workspace selectors (`--workspace X`, `--workspace=X`, `-w X`,
+ * `-w=X`) in argv order. An empty list means an unscoped, whole-project command.
  */
-export function verificationScopeForNpmArgs({
-  repoRoot = DEFAULT_REPO_ROOT,
-  npmArgs = [],
-  deps = {},
-} = {}) {
+export function workspaceSelectorsForNpmArgs(npmArgs = []) {
   const selectors = [];
   for (let index = 0; index < npmArgs.length; index += 1) {
     const arg = npmArgs[index];
@@ -142,6 +136,21 @@ export function verificationScopeForNpmArgs({
       selectors.push(arg.slice("-w=".length));
     }
   }
+  return selectors;
+}
+
+/**
+ * Resolve npm's repeatable workspace selectors to the canonical repo-relative
+ * directories consumed by the dependency-integrity scanners. npm accepts both
+ * package names and paths, while those scanners intentionally accept paths only.
+ * No selector means a full install and therefore a full-tree verification.
+ */
+export function verificationScopeForNpmArgs({
+  repoRoot = DEFAULT_REPO_ROOT,
+  npmArgs = [],
+  deps = {},
+} = {}) {
+  const selectors = workspaceSelectorsForNpmArgs(npmArgs);
   if (selectors.length === 0)
     return { workspaceDirs: undefined, repairWorkspaceArgs: [] };
 
