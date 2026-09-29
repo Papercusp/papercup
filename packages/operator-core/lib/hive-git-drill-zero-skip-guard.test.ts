@@ -1806,6 +1806,29 @@ esac
     expect(physicalScenario).toContain("grep -q 'duplicate signed production staging events'");
   });
 
+  it('waits for each converged Phase D observation instead of reading a host once (WI-10003811)', () => {
+    // P-505 run 30: first-source and first-destination were read 7-23s after
+    // the signed event and caught both hosts mid-flight.
+    const converged = [
+      ['tower first-source', '"$first_head"', '"$first_dir/source-observation.json" 1200'],
+      ['vm first-destination', '"$first_head"', '"$first_dir/destination-observation.json" 1200'],
+      ['vm dirty-after', '"$second_head"', '"$dirty_dir/after-observation.json" 300'],
+    ] as const;
+    for (const [stage, head, tail] of converged) {
+      const call = new RegExp(
+        `phase_d_observe_converged ${stage} "\\$tower_device" "\\$run_id" ${head.replace(/\$/g, '\\$')} \\\\\\n\\s+${tail.replace(/\$/g, '\\$')}\\n`,
+      );
+      expect(physicalScenario, stage).toMatch(call);
+      // No one-shot read of the same stage survives beside the waiting one.
+      expect(physicalScenario, stage).not.toMatch(new RegExp(`phase-d-observe ${stage} `));
+    }
+    // The dirty-after bound stays inside the dirt lock's 30-minute TTL.
+    expect(Number(/dirty-after [^\n]*\\\n\s+"\$dirty_dir\/after-observation\.json" (\d+)/.exec(physicalScenario)?.[1])).toBeLessThan(1800);
+    // Exit 3 means "not converged yet": retry after nudging git-sync; anything else fails.
+    expect(physicalScenario).toMatch(/\[ "\$rc" -eq 3 \] \\\n\s+\|\| fail "phase D \$host \$stage observation failed/);
+    expect(physicalScenario).toContain('if [ "$host" = tower ]; then run_tower_git_sync; else run_vm_git_sync; fi');
+  });
+
   it('holds the VM author below steer only across the below-steer window and always undoes it (WI-10003723)', () => {
     // P-505 run 15: the tower pinned the VM user at 'steer', so the integrator
     // auto-integrated the VM head and the pending request never appeared.
