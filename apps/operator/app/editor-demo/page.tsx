@@ -8,7 +8,6 @@ import { Checkbox } from '../harness/Checkbox';
 const MonacoPane     = dynamic(() => import('./panes/MonacoPane'),     { ssr: false, loading: () => <Loading name="Monaco" /> });
 const CodeMirrorPane = dynamic(() => import('./panes/CodeMirrorPane'), { ssr: false, loading: () => <Loading name="CodeMirror 6" /> });
 const MilkdownPane   = dynamic(() => import('./panes/MilkdownPane'),   { ssr: false, loading: () => <Loading name="Milkdown" /> });
-const MDXEditorPane  = dynamic(() => import('./panes/MDXEditorPane'),  { ssr: false, loading: () => <Loading name="MDXEditor" /> });
 const TiptapPane     = dynamic(() => import('./panes/TiptapPane'),     { ssr: false, loading: () => <Loading name="Tiptap" /> });
 const UiwMdPane      = dynamic(() => import('./panes/UiwMdPane'),      { ssr: false, loading: () => <Loading name="@uiw/react-md-editor" /> });
 const BlockNotePane  = dynamic(() => import('./panes/BlockNotePane'),  { ssr: false, loading: () => <Loading name="BlockNote" /> });
@@ -17,7 +16,7 @@ const ToastUIPane    = dynamic(() => import('./panes/ToastUIPane'),    { ssr: fa
 const VditorPane     = dynamic(() => import('./panes/VditorPane'),     { ssr: false, loading: () => <Loading name="Vditor" /> });
 const LexicalPane    = dynamic(() => import('./panes/LexicalPane'),    { ssr: false, loading: () => <Loading name="Lexical" /> });
 
-type EditorId = 'textarea' | 'monaco' | 'codemirror' | 'uiw' | 'toastui' | 'vditor' | 'milkdown' | 'mdxeditor' | 'tiptap' | 'blocknote' | 'plate' | 'lexical';
+type EditorId = 'textarea' | 'monaco' | 'codemirror' | 'uiw' | 'toastui' | 'vditor' | 'milkdown' | 'tiptap' | 'blocknote' | 'plate' | 'lexical';
 
 const EDITORS: Array<{ id: EditorId; label: string; tier: string; bundle: string; mdRoundTrip: string; }> = [
   { id: 'textarea',   label: 'Plain <textarea>',     tier: 'baseline',                 bundle: '0 KB',     mdRoundTrip: 'lossless' },
@@ -27,7 +26,6 @@ const EDITORS: Array<{ id: EditorId; label: string; tier: string; bundle: string
   { id: 'toastui',    label: 'Toast UI',             tier: 'split + WYSIWYG modes',    bundle: '~400 KB',  mdRoundTrip: 'good' },
   { id: 'vditor',     label: 'Vditor',               tier: 'tri-mode (sv/ir/wysiwyg)', bundle: '~450 KB',  mdRoundTrip: 'good' },
   { id: 'milkdown',   label: 'Milkdown',             tier: 'WYSIWYG (md-native)',      bundle: '~180 KB',  mdRoundTrip: 'good (markdown core)' },
-  { id: 'mdxeditor',  label: 'MDXEditor',            tier: 'WYSIWYG (Lexical)',        bundle: '~300 KB',  mdRoundTrip: 'good' },
   { id: 'tiptap',     label: 'Tiptap',               tier: 'WYSIWYG (HTML core)',      bundle: '~150 KB',  mdRoundTrip: 'lossy (HTML→md)' },
   { id: 'blocknote',  label: 'BlockNote',            tier: 'WYSIWYG (Notion-style)',   bundle: '~250 KB',  mdRoundTrip: 'lossy' },
   { id: 'plate',      label: 'Plate',                tier: 'WYSIWYG (Slate)',          bundle: '~280 KB',  mdRoundTrip: 'good' },
@@ -111,7 +109,6 @@ export default function EditorDemoPage() {
           {active === 'codemirror' && <CodeMirrorPane value={value} onChange={setValue} />}
           {active === 'uiw'        && <UiwMdPane      value={value} onChange={setValue} />}
           {active === 'milkdown'   && <MilkdownPane   value={value} onChange={setValue} />}
-          {active === 'mdxeditor'  && <MDXEditorPane  value={value} onChange={setValue} />}
           {active === 'tiptap'     && <TiptapPane     value={value} onChange={setValue} />}
           {active === 'blocknote'  && <BlockNotePane  value={value} onChange={setValue} />}
           {active === 'plate'      && <PlatePane      value={value} onChange={setValue} />}
