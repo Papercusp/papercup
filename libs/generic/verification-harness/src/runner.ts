@@ -17,6 +17,15 @@ import {
   type PhaseResult,
   validateContract,
 } from './contract.js';
+import {
+  describeGuardRailFailure,
+  GUARD_RAIL_SOURCE_ENV,
+  type GuardRailProbe,
+  type GuardRailReport,
+  loadGuardRailsFromCommand,
+  runGuardRails,
+  selectGuardRails,
+} from './guard-rails.js';
 import { planSelection } from './select.js';
 
 export type PhaseOutcome = { ok: true; detail?: string } | { ok: false; reasonCode: string; step?: string; detail?: string };
@@ -37,6 +46,13 @@ export interface RunHarnessArgs {
   runPhase: (ctx: PhaseContext) => Promise<PhaseOutcome>;
   /** Fast checks that run before any phase; a failure blocks every phase. */
   preflight?: (ctx: PhaseContext) => Promise<PhaseOutcome>;
+  /**
+   * Guard-rail probes (or a loader for them). The preflight runs those sharing a tag with
+   * contract.scopeTags. Omitted: the command named by VH_GUARD_RAIL_SOURCE, if set.
+   */
+  guardRails?: readonly GuardRailProbe[] | (() => Promise<readonly GuardRailProbe[]>);
+  /** Working directory for guard-rail probes and the source command. */
+  guardRailCwd?: string;
   selection?: HarnessSelection;
   /** A prior run (result or its dir) whose passed reusable phases may satisfy dependencies. */
   reuseFrom?: HarnessRunResult | string | null;
@@ -91,11 +107,60 @@ export function formatSummaryLine(result: HarnessRunResult): string {
   const count = (s: PhaseResult['status']) => result.phases.filter((p) => p.status === s).length;
   const ff = result.firstFailure;
   const first = ff ? `${ff.phase}/${ff.step ?? '-'}/${ff.reasonCode ?? '-'}` : 'none';
+  const gr = result.guardRails;
+  const rails = !gr
+    ? ''
+    : gr.source === 'unconfigured'
+      ? ' guard_rails=unconfigured'
+      : ` guard_rails=${gr.results.filter((r) => r.ok).length}/${gr.selected}`;
   return (
     `HARNESS_RESULT harness=${result.harness} verdict=${result.verdict} run=${result.runId} first_failure=${first}` +
     ` passed=${count('passed')} failed=${count('failed')} blocked=${count('blocked')} skipped=${count('skipped')}` +
-    ` reused=${count('reused')} evidence=${result.evidenceDir}`
+    ` reused=${count('reused')}${rails} evidence=${result.evidenceDir}`
   );
+}
+
+/**
+ * Runs the guard rails that apply to `tags` into `evidenceDir`. Returns the report plus a
+ * preflight outcome: any rail that does not hold (or a source that cannot answer) fails it.
+ */
+export async function checkGuardRails(args: {
+  tags: readonly string[];
+  guardRails?: RunHarnessArgs['guardRails'];
+  cwd?: string;
+  evidenceDir: string;
+}): Promise<{ report: GuardRailReport | null; outcome: PhaseOutcome }> {
+  if (args.tags.length === 0) return { report: null, outcome: { ok: true } };
+  const sourceCmd = process.env[GUARD_RAIL_SOURCE_ENV]?.trim();
+  const source: GuardRailReport['source'] = args.guardRails ? 'arg' : sourceCmd ? 'command' : 'unconfigured';
+  if (source === 'unconfigured') {
+    return { report: { source, selected: 0, results: [] }, outcome: { ok: true, detail: 'guard rails unconfigured' } };
+  }
+  let probes: readonly GuardRailProbe[];
+  try {
+    const g = args.guardRails;
+    probes = g ? (typeof g === 'function' ? await g() : g) : await loadGuardRailsFromCommand(sourceCmd!, args.tags, { cwd: args.cwd });
+  } catch (err) {
+    return {
+      report: { source, selected: 0, results: [] },
+      outcome: { ok: false, reasonCode: 'guard-rail-source-failed', step: 'guard-rails', detail: err instanceof Error ? err.message : String(err) },
+    };
+  }
+  const selected = selectGuardRails(probes, args.tags);
+  const run = await runGuardRails(selected, { cwd: args.cwd, evidenceDir: args.evidenceDir });
+  const report: GuardRailReport = { source, selected: selected.length, results: run.results };
+  if (run.firstFailure) {
+    return {
+      report,
+      outcome: {
+        ok: false,
+        reasonCode: `guard-rail:${run.firstFailure.key}`,
+        step: 'guard-rails',
+        detail: run.results.filter((r) => !r.ok).map(describeGuardRailFailure).join('; '),
+      },
+    };
+  }
+  return { report, outcome: { ok: true, detail: `${selected.length} guard rail(s) hold` } };
 }
 
 async function runOne(
@@ -179,8 +244,25 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
     await writeRunResult(result);
   };
 
-  if (args.preflight) {
-    result.preflight = await runOne(PREFLIGHT_PHASE_ID, args.preflight, runId, runDir, now);
+  // The harness's own preflight and the guard rails both run (never-abort), so one run reports
+  // every broken precondition; the first failure names the reason.
+  const tags = contract.scopeTags ?? [];
+  if (args.preflight || tags.length > 0) {
+    const own = args.preflight;
+    result.preflight = await runOne(
+      PREFLIGHT_PHASE_ID,
+      async (ctx) => {
+        const first = own ? await own(ctx) : ({ ok: true } as PhaseOutcome);
+        const rails = await checkGuardRails({ tags, guardRails: args.guardRails, cwd: args.guardRailCwd, evidenceDir: ctx.evidenceDir });
+        result.guardRails = rails.report;
+        if (!first.ok) return rails.outcome.ok ? first : { ...first, detail: [first.detail, rails.outcome.detail].filter(Boolean).join('; ') };
+        if (!rails.outcome.ok) return rails.outcome;
+        return { ok: true, detail: [first.detail, rails.outcome.detail].filter(Boolean).join('; ') || undefined };
+      },
+      runId,
+      runDir,
+      now,
+    );
     await checkpoint();
   }
   const preflightFailed = result.preflight !== null && result.preflight.status !== 'passed';

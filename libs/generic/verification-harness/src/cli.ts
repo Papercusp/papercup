@@ -7,11 +7,24 @@
  *   cli.ts finalize --run-dir <dir> --evidence-root <root>
  *     reads contract.json + plan.json + phases.jsonl, writes result.json, repoints <root>/latest,
  *     prints the HARNESS_RESULT line; exit 0 on pass, 1 otherwise
+ *   cli.ts guard-rails --run-dir <dir>
+ *     runs the guard rails matching contract.json's scopeTags (source: VH_GUARD_RAIL_SOURCE),
+ *     writes <dir>/guard-rails.json, prints a VH_GUARD_RAIL line per probe; exit 0 when every
+ *     rail holds, 1 otherwise (with a final VH_GUARD_RAILS_FAILED reason=… detail=… line)
  */
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { type HarnessContract, type HarnessRunResult, type PhaseResult, validateContract } from './contract.js';
-import { deriveVerdict, formatSummaryLine, linkLatest, loadRunResult, PREFLIGHT_PHASE_ID, writeRunResult } from './runner.js';
+import type { GuardRailReport } from './guard-rails.js';
+import {
+  checkGuardRails,
+  deriveVerdict,
+  formatSummaryLine,
+  linkLatest,
+  loadRunResult,
+  PREFLIGHT_PHASE_ID,
+  writeRunResult,
+} from './runner.js';
 import { type PlannedPhase, parseSelectionArgs, planSelection } from './select.js';
 
 interface StoredPlan {
@@ -92,6 +105,7 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
     phases: contract.phases.map((p) => toResult(p.id, recorded.get(p.id), 'failed', 'not-reported')),
     verdict: 'fail',
     firstFailure: null,
+    guardRails: await readGuardRailReport(runDir),
     startedAt: plan.startedAt,
     endedAt: new Date().toISOString(),
   };
@@ -101,8 +115,45 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
   return { line: formatSummaryLine(result), result };
 }
 
+const GUARD_RAIL_REPORT = 'guard-rails.json';
+
+async function readGuardRailReport(runDir: string): Promise<GuardRailReport | null> {
+  try {
+    return JSON.parse(await readFile(path.join(runDir, GUARD_RAIL_REPORT), 'utf8')) as GuardRailReport;
+  } catch {
+    return null;
+  }
+}
+
+/** One line per value, so a shell `read` never splits on an embedded newline. */
+const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim();
+
+export async function guardRailsCommand(argv: string[]): Promise<{ out: string; ok: boolean }> {
+  const runDir = flag(argv, '--run-dir');
+  const contract = await readContract(runDir);
+  const { report, outcome } = await checkGuardRails({
+    tags: contract.scopeTags ?? [],
+    cwd: process.cwd(),
+    evidenceDir: path.join(runDir, 'phases', PREFLIGHT_PHASE_ID),
+  });
+  if (report) await writeFile(path.join(runDir, GUARD_RAIL_REPORT), `${JSON.stringify(report, null, 2)}\n`);
+  const lines = (report?.results ?? []).map(
+    (r) => `VH_GUARD_RAIL key=${r.key} status=${r.ok ? 'held' : 'broken'}${r.reasonCode ? ` reason=${r.reasonCode}` : ''}`,
+  );
+  lines.push(
+    `VH_GUARD_RAILS source=${report?.source ?? 'none'} selected=${report?.selected ?? 0} held=${(report?.results ?? []).filter((r) => r.ok).length}`,
+  );
+  if (!outcome.ok) lines.push(`VH_GUARD_RAILS_FAILED reason=${outcome.reasonCode} detail=${oneLine(outcome.detail ?? '')}`);
+  return { out: lines.join('\n'), ok: outcome.ok };
+}
+
 async function main(): Promise<number> {
   const [cmd, ...argv] = process.argv.slice(2);
+  if (cmd === 'guard-rails') {
+    const { out, ok } = await guardRailsCommand(argv);
+    process.stdout.write(`${out}\n`);
+    return ok ? 0 : 1;
+  }
   if (cmd === 'plan') {
     process.stdout.write(`${await planCommand(argv)}\n`);
     return 0;
@@ -112,7 +163,7 @@ async function main(): Promise<number> {
     process.stdout.write(`${line}\n`);
     return result.verdict === 'pass' ? 0 : 1;
   }
-  process.stderr.write('usage: cli.ts plan|finalize --run-dir <dir> [...]\n');
+  process.stderr.write('usage: cli.ts plan|finalize|guard-rails --run-dir <dir> [...]\n');
   return 2;
 }
 

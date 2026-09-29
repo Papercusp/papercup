@@ -9,6 +9,7 @@
  * whose passed result a later `--only` / `--from` run may take from a prior run's evidence
  * instead of paying for it again.
  */
+import { GUARD_RAIL_TAG, type GuardRailReport } from './guard-rails.js';
 
 export interface PhaseSpec {
   id: string;
@@ -22,6 +23,8 @@ export interface PhaseSpec {
 export interface HarnessContract {
   name: string;
   phases: readonly PhaseSpec[];
+  /** Where this harness sits, for guard-rail selection: its preflight runs every probe sharing a tag. */
+  scopeTags?: readonly string[];
 }
 
 /** passed · failed · blocked (a dependency did not pass) · skipped (not selected) · reused (prior run). */
@@ -61,6 +64,8 @@ export interface HarnessRunResult {
   phases: PhaseResult[];
   verdict: HarnessVerdict;
   firstFailure: { phase: string; step: string | null; reasonCode: string | null } | null;
+  /** Guard rails checked in preflight; null when the harness declares no scope tags. */
+  guardRails?: GuardRailReport | null;
   startedAt: string;
   endedAt: string | null;
 }
@@ -76,6 +81,8 @@ export class HarnessContractError extends Error {
 export function validateContract(contract: HarnessContract): void {
   if (!contract.name) throw new HarnessContractError('contract.name is required');
   if (contract.phases.length === 0) throw new HarnessContractError(`${contract.name}: no phases declared`);
+  const badTag = (contract.scopeTags ?? []).find((t) => !GUARD_RAIL_TAG.test(t));
+  if (badTag !== undefined) throw new HarnessContractError(`${contract.name}: invalid scope tag ${JSON.stringify(badTag)}`);
   const seen = new Set<string>();
   for (const p of contract.phases) {
     if (!p.id || /[\s,/]/.test(p.id)) {
