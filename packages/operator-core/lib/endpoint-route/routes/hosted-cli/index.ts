@@ -175,6 +175,15 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
   const origin = new URL(deps.publicOrigin).origin;
   const clock = deps.clock ?? (() => new Date());
   const random = deps.randomBytes ?? ((size: number) => nodeRandomBytes(size));
+
+  /** Display label for a sign-in's organization; a lookup failure degrades to no label, never to an error. */
+  async function organizationLabel(organizationId: string): Promise<string | null> {
+    try {
+      return await deps.store.organizationName(organizationId);
+    } catch {
+      return null;
+    }
+  }
   const devicePagePath = '/api/hosted/cli/device';
 
   async function authenticate(request: Request): Promise<CliCaller | Response> {
@@ -364,6 +373,8 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
               tokenType: 'Bearer',
               tokenId: result.token.id,
               organizationId: result.token.organizationId,
+              // A label only: the grant is already consumed, so a failed lookup must not lose the token.
+              organizationName: await organizationLabel(result.token.organizationId),
               userId: result.token.userId,
               expiresAt: result.token.expiresAt.toISOString(),
             },
@@ -401,6 +412,7 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
         {
           ok: true,
           organizationId: caller.token.organizationId,
+          organizationName: await organizationLabel(caller.token.organizationId),
           userId: caller.token.userId,
           permissions: [...caller.permissions].sort(),
           workspaces: rows.map((row) => ({

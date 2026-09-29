@@ -57,6 +57,9 @@ function memoryStore(workspaces: Record<string, HostedCliWorkspace[]>) {
     async listWorkspaces(organizationId) {
       return workspaces[organizationId] ?? [];
     },
+    async organizationName(organizationId) {
+      return ({ 'org-a': 'Avi Labs' } as Record<string, string>)[organizationId] ?? null;
+    },
   };
   return { store, grants, tokens };
 }
@@ -172,7 +175,8 @@ describe('hosted psu CLI routes', () => {
 
     t.advance(5_000);
     const issued = await (await poll()).json();
-    expect(issued).toMatchObject({ ok: true, tokenType: 'Bearer', organizationId: 'org-a', userId: 'user-1' });
+    // WI-10003910: the organization's name travels with the token so several sign-ins can be told apart.
+    expect(issued).toMatchObject({ ok: true, tokenType: 'Bearer', organizationId: 'org-a', organizationName: 'Avi Labs', userId: 'user-1' });
     expect(issued.accessToken).toMatch(/^pct_[A-Za-z0-9_-]{43}$/);
     expect(await (await poll()).json()).toMatchObject({ error: 'invalid_grant' });
   });
@@ -240,6 +244,7 @@ describe('hosted psu CLI routes', () => {
     const listed = await (await t.call('GET', '/hosted/cli/workspaces', { headers: auth })).json();
     expect(listed.workspaces.map((w: { id: string }) => w.id)).toEqual(['ws-a']);
     expect(listed.workspaces[0].reachable).toBe(true);
+    expect(listed.organizationName).toBe('Avi Labs');
 
     const other = await t.call('POST', '/hosted/cli/workspaces/:workspaceId/terminal', {
       method: 'POST', headers: auth, body: '{}', params: { workspaceId: 'ws-b' },
