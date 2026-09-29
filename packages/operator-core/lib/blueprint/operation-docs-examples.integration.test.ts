@@ -287,9 +287,35 @@ describe('P-014 published blueprint-operation page', () => {
       if (/runnable=/.test(fence.meta)) continue;
       expect(fence.meta, `unlabeled fence: ${fence.body.slice(0, 80)}`).toMatch(/\bconceptual\b/);
     }
-    // The page must not imply a plan is required, nor claim unmeasured numbers.
+    // The page must not imply a plan is required.
     expect(PAGE).toMatch(/do \*\*not\*\* need a\s+Papercusp plan/);
-    expect(PAGE).toMatch(/none are claimed until then/);
+  });
+
+  it('claims only measured P-013 numbers: each workload section names its evidence file, and every FAIL is disclosed', () => {
+    const perf = PAGE.slice(PAGE.indexOf('## Performance'));
+    expect(perf.startsWith('## Performance')).toBe(true);
+    expect(perf).not.toMatch(/Placeholder|none are claimed until then/);
+    const sections = perf.split(/^### /m).slice(1).filter((s) => /^[A-D]\. /.test(s));
+    expect(sections.map((s) => s[0])).toEqual(['A', 'B', 'C', 'D']);
+    for (const section of sections) {
+      const heading = /^([A-D])\. .* — (PASS|FAIL) (\d+)\/(\d+)$/m.exec(section);
+      expect(heading, section.slice(0, 80)).not.toBeNull();
+      const [, key, verdict, passed, total] = heading!;
+      const evidence = /^Evidence: `(docs\/evidence\/p013-workload-[a-d][\w.-]*\.json)`\.$/m.exec(section)?.[1];
+      expect(evidence, `workload ${key} names no evidence file`).toBeTruthy();
+      const artifact = JSON.parse(readFileSync(resolve(REPO_ROOT, evidence!), 'utf8'));
+      const rows = section.split('\n').filter((line) => /^\| (warm|cold|throughput)/.test(line));
+      expect(rows.length, `workload ${key} table rows`).toBe(Number(total));
+      expect(rows.filter((line) => line.endsWith('| pass |')).length, `workload ${key} passing rows`).toBe(Number(passed));
+      expect(verdict === 'PASS', `workload ${key} verdict`).toBe(passed === total);
+      if (artifact.grade?.checks) {
+        expect(artifact.grade.checks.length, `workload ${key} graded checks`).toBe(Number(total));
+        expect(artifact.grade.checks.filter((c: { passed: boolean }) => c.passed).length).toBe(Number(passed));
+        expect(artifact.grade.verdict).toBe(verdict.toLowerCase());
+      }
+      // A failing workload stays on the page with its governing decision and tracked residual.
+      if (verdict === 'FAIL') expect(section).toMatch(/does not meet its budget[\s\S]*plan decision D-\d{3}[\s\S]*tracked as (WI|EI)-\d+/);
+    }
   });
 
   it('documents the live tool names and HTTP routes', () => {
