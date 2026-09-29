@@ -1482,3 +1482,53 @@ describe('settleEdgeReadersFor (WI-10003631 one prefetch per settle)', () => {
     expect(fallback.listIn).toHaveBeenCalledWith(me, { rel: 'duplicates' });
   });
 });
+
+describe('detached emit tracking (WI-10003882)', () => {
+  // The global afterEach drainDetached() (lib/detached-imports/setup-vitest.ts) only waits for
+  // promises registered with trackDetached. An emit that escapes the registry keeps writing the
+  // key-fire latch after its test ends, and deadlocked against the next test's TRUNCATE.
+  it('keeps the claimable fan-out registered until its emit settles', async () => {
+    const { pendingDetachedCount, drainDetached } = await import('./detached-imports');
+    await drainDetached();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    let emitted = false;
+    const emit = vi.fn(async (_opts: EmitOpts) => {
+      await gate;
+      emitted = true;
+      return { ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 };
+    });
+    emitWorkItemClaimableEvent(
+      wi({ id: 'WI-DETACHED-TRACK', state: 'open', assignee: null, harness: 'papercusp' }),
+      'created',
+      { emit, duplicateAdmissionCheck: async () => true },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(pendingDetachedCount()).toBeGreaterThanOrEqual(1);
+    const drained = drainDetached();
+    release();
+    await drained;
+    expect(emitted).toBe(true);
+    expect(pendingDetachedCount()).toBe(0);
+  });
+
+  it('work-items.ts never tracks only the work-items-events import', () => {
+    // `trackDetached(import('./work-items-events')).then(emit)` registers the import promise, not
+    // the emit, so drainDetached() returns while the emit's DB write is still running. The whole
+    // chain must be inside trackDetached: `trackDetached(import('./work-items-events').then(emit))`.
+    const src = readFileSync(fileURLToPath(new URL('./work-items.ts', import.meta.url)), 'utf8');
+    const importOnly = src.match(/trackDetached\(import\('\.\/work-items-events'\)\)\s*\.then/g) ?? [];
+    expect(importOnly).toEqual([]);
+    // Positive control: the tracked-chain form is present, so the regex reads the real file.
+    expect(src).toMatch(/trackDetached\(import\('\.\/work-items-events'\)\s*\.then/);
+  });
+
+  it('work-items-events.ts registers every fire-and-forget emit chain', () => {
+    // The emit* functions return void, so the caller cannot track their inner chain; each
+    // detached chain must register itself.
+    const src = readFileSync(fileURLToPath(new URL('./work-items-events.ts', import.meta.url)), 'utf8');
+    expect(src.match(/void Promise\.resolve\(\)/g) ?? []).toEqual([]);
+    expect(src).toMatch(/void trackDetached\(Promise\.resolve\(\)/);
+  });
+});

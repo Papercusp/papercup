@@ -4385,8 +4385,8 @@ export async function setWorkItemState(
   // durable signal, not a prose message. Same fire-and-forget shape.
   if (result && result.state === 'blocked' && wi.state !== 'blocked') {
     const blocked = result;
-    void trackDetached(import('./work-items-events'))
-      .then((m) => m.emitWorkItemBlockedEvent(blocked))
+    void trackDetached(import('./work-items-events')
+      .then((m) => m.emitWorkItemBlockedEvent(blocked)))
       .catch(() => {});
   }
   // EI-15461: a feature transitioning INTO `passed` that was minted by
@@ -5464,8 +5464,8 @@ export async function claimWorkItem(
         .catch(() => {});
     }
     won.interestWatch = await armWorkItemHolderInterests(won, assignee);
-    void trackDetached(import('./work-items-events'))
-      .then((m) => m.emitWorkItemClaimedEvent(won, assignee))
+    void trackDetached(import('./work-items-events')
+      .then((m) => m.emitWorkItemClaimedEvent(won, assignee)))
       .catch(() => {});
     // P-009 / D-011 / D-014: "claiming IS declaring the goal" — so the goal ref
     // is stamped from here, the ONE chokepoint every by-id claim path funnels
@@ -7617,8 +7617,8 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
   // plugin-system-hive-port P-004: same claimed-event as claimWorkItem.
   if (claimed) {
     claimed.interestWatch = await armWorkItemHolderInterests(claimed, filter.assignee);
-    void trackDetached(import('./work-items-events'))
-      .then((m) => m.emitWorkItemClaimedEvent(claimed!, filter.assignee))
+    void trackDetached(import('./work-items-events')
+      .then((m) => m.emitWorkItemClaimedEvent(claimed!, filter.assignee)))
       .catch(() => {});
   }
   return claimed;
@@ -9540,8 +9540,8 @@ export async function unlinkWorkItem(
   // silently strands to its 30-min timeout-wake. Fire-and-forget + lazy import
   // (mirrors the settle-path call above) — never blocks or fails this write.
   if (rel === 'blocks') {
-    void trackDetached(import('./work-items-events'))
-      .then((m) => m.emitUnblockedOnEdgeRemoved(dst, id))
+    void trackDetached(import('./work-items-events')
+      .then((m) => m.emitUnblockedOnEdgeRemoved(dst, id)))
       .catch(() => {});
   }
   return { ok: true };

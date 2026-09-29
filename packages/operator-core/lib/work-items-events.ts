@@ -117,7 +117,7 @@ export function emitWorkItemClaimedEvent(
     assignee,
     title: wi.title,
   });
-  void Promise.resolve()
+  void trackDetached(Promise.resolve()
     .then(() =>
       emit({
         key: `work-item:claimed:${wi.id}`,
@@ -126,7 +126,7 @@ export function emitWorkItemClaimedEvent(
         source: 'work-items',
       }),
     )
-    .catch((e: unknown) => failSoft(`claimed-event for ${wi.id}`, e));
+    .catch((e: unknown) => failSoft(`claimed-event for ${wi.id}`, e)));
 }
 
 /**
@@ -157,13 +157,13 @@ export function emitWorkItemCreatedEvent(
     title: wi.title,
   });
   const summary = `${wi.id} created (${wi.kind}${wi.severity ? `, ${wi.severity}` : ''}): ${wi.title}`;
-  void Promise.resolve()
+  void trackDetached(Promise.resolve()
     .then(() => emit({ key: 'work-item:created', summary, payload, source: 'work-items' }))
-    .catch((e: unknown) => failSoft(`created-event for ${wi.id}`, e));
+    .catch((e: unknown) => failSoft(`created-event for ${wi.id}`, e)));
   if (wi.severity) {
-    void Promise.resolve()
+    void trackDetached(Promise.resolve()
       .then(() => emit({ key: `work-item:created:${wi.severity}`, summary, payload, source: 'work-items' }))
-      .catch((e: unknown) => failSoft(`created-event(severity) for ${wi.id}`, e));
+      .catch((e: unknown) => failSoft(`created-event(severity) for ${wi.id}`, e)));
   }
   // P-007: a create that lands unclaimed-claimable also announces the canonical
   // pool key — co-fired HERE (not at the createWorkItem call site) so the event
@@ -489,7 +489,7 @@ export function emitWorkItemBlockedEvent(wi: WorkItem, deps: Pick<SettledEventsD
     harness: wi.harness,
     title: wi.title,
   });
-  void Promise.resolve()
+  void trackDetached(Promise.resolve()
     .then(() =>
       emit({
         key: `work-item:blocked:${wi.id}`,
@@ -499,7 +499,7 @@ export function emitWorkItemBlockedEvent(wi: WorkItem, deps: Pick<SettledEventsD
         source: 'work-items',
       }),
     )
-    .catch((e: unknown) => failSoft(`blocked-event for ${wi.id}`, e));
+    .catch((e: unknown) => failSoft(`blocked-event for ${wi.id}`, e)));
 }
 
 /**
@@ -528,7 +528,7 @@ export function emitWorkItemStatusEvent(
     harness: wi.harness,
     title: wi.title,
   });
-  void Promise.resolve()
+  void trackDetached(Promise.resolve()
     .then(() =>
       emit({
         key: `work-item:status:${wi.id}`,
@@ -537,7 +537,7 @@ export function emitWorkItemStatusEvent(
         source: 'work-items',
       }),
     )
-    .catch((e: unknown) => failSoft(`status-event for ${wi.id}`, e));
+    .catch((e: unknown) => failSoft(`status-event for ${wi.id}`, e)));
   // WI-4180 (the P-007 audit's gap (A), owner-requested close): a bare state
   // flip INTO a claimable state (blocked→todo, a done→open reopen) is the
   // fourth return-to-pool moment — it used to fire only this general key,
