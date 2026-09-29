@@ -181,6 +181,35 @@ function workItemDepsFor(opts: { rel?: string } | undefined, read: () => Promise
 /** The production edge reader: canonical work-item blocks + coord_links compatibility edges. */
 export const blockingEdgeReader: BlockingEdgeReader = createBlockingEdgeReader(edgeLinkStore);
 
+/** The three edge sets a settle fans out on (WI-10003631): outgoing `blocks`
+ *  (merged with canonical work_item_deps exactly as `blockingEdgeReader.listOut`
+ *  merges them), outgoing `fixes`, and incoming `duplicates`. */
+export interface SettleEdges {
+  blocksOut: LinkRow[];
+  fixesOut: LinkRow[];
+  duplicatesIn: LinkRow[];
+}
+
+/** One coord_links statement (plus the canonical deps read, concurrently) instead of
+ *  three separate `listOut`/`listIn` reads per settle. Row sets are identical to
+ *  `blockingEdgeReader.listOut(ref,{rel:'blocks'})`, `.listOut(ref,{rel:'fixes'})`
+ *  and `.listIn(ref,{rel:'duplicates'})`. */
+export async function readSettleEdges(
+  ref: ObjectRef,
+  store: Pick<PgLinkStore, 'listAround'> = edgeLinkStore,
+  depStore: Pick<BlockingEdgeReader, 'listOut'> = workItemDepEdgeReader,
+): Promise<SettleEdges> {
+  const [around, depBlocks] = await Promise.all([
+    store.listAround(ref, { outRels: ['blocks', 'fixes'], inRels: ['duplicates'] }),
+    depStore.listOut(ref, { rel: 'blocks' }),
+  ]);
+  return {
+    blocksOut: mergeBlockingRows(around.out.filter((r) => r.rel === 'blocks'), depBlocks),
+    fixesOut: around.out.filter((r) => r.rel === 'fixes'),
+    duplicatesIn: around.in.filter((r) => r.rel === 'duplicates'),
+  };
+}
+
 /** Build readiness nodes from items + a blocker map (pure). */
 export function toReadinessNodes(
   items: readonly BlockingNode[],

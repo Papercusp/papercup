@@ -28,7 +28,13 @@ import type { LinkRow, ObjectRef } from '@papercusp/coordination/capabilities';
 import { TERMINAL_STATUSES } from './dbos/frontier-readiness';
 import { emitAwaitedEvent } from './events/await/engine';
 import { FEATURE_KIND } from './issue-blocks-merge';
-import { blockingEdgeReader, ISSUE_TERMINAL_STATUSES, type BlockingEdgeReader } from './work-item-blocking';
+import {
+  blockingEdgeReader,
+  ISSUE_TERMINAL_STATUSES,
+  readSettleEdges,
+  type BlockingEdgeReader,
+  type SettleEdges,
+} from './work-item-blocking';
 import { isObservationLaneItem } from './fleet/placement-gather';
 import {
   CLAIM_STATES_ALLOWLIST,
@@ -1114,14 +1120,53 @@ export async function emitWorkItemDoneEvent(
 }
 
 /**
+ * WI-10003631: `listOut`/`listIn` stand-ins for ONE settle that answer the three
+ * settle edge queries (blocks out, fixes out, duplicates in) for `ref` from a single
+ * lazy prefetch (`readSettleEdges`), and pass every other query straight to the
+ * production reader. A failed prefetch is not cached as an answer: it falls back to
+ * the live per-relation read, so each fail-soft scope sees the same error it would
+ * have seen before.
+ */
+export function settleEdgeReadersFor(
+  ref: ObjectRef,
+  read: (ref: ObjectRef) => Promise<SettleEdges> = readSettleEdges,
+  fallback: Pick<BlockingEdgeReader, 'listOut' | 'listIn'> = blockingEdgeReader,
+): Pick<BlockingEdgeReader, 'listOut' | 'listIn'> {
+  let prefetch: Promise<SettleEdges | null> | null = null;
+  const edges = () => (prefetch ??= read(ref).catch(() => null));
+  const same = (r: ObjectRef) => r.kind === ref.kind && r.ref === ref.ref;
+  return {
+    listOut: async (src, opts) => {
+      const rel = opts?.rel;
+      if (same(src) && (rel === 'blocks' || rel === 'fixes')) {
+        const e = await edges();
+        if (e) return rel === 'blocks' ? e.blocksOut : e.fixesOut;
+      }
+      return fallback.listOut(src, opts);
+    },
+    listIn: async (dst, opts) => {
+      if (same(dst) && opts?.rel === 'duplicates') {
+        const e = await edges();
+        if (e) return e.duplicatesIn;
+      }
+      return fallback.listIn(dst, opts);
+    },
+  };
+}
+
+/**
  * Fire the settled-item events for `wi` (which has ALREADY transitioned to a
  * settled state). Never throws.
  */
 export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEventsDeps = {}): Promise<void> {
   const emit = deps.emit ?? emitAwaitedEvent;
   const getItem = deps.getItem ?? getWorkItem;
-  const listOut = deps.listOut ?? blockingEdgeReader.listOut;
-  const listIn = deps.listIn ?? blockingEdgeReader.listIn;
+  // WI-10003631: with the production readers, the three settle edge reads (blocks
+  // out, fixes out, duplicates in) are served from ONE prefetch statement. Injected
+  // readers keep their exact per-call behaviour.
+  const settleEdgeReaders = deps.listOut || deps.listIn ? null : settleEdgeReadersFor(workItemObjectRef(wi));
+  const listOut = deps.listOut ?? settleEdgeReaders?.listOut ?? blockingEdgeReader.listOut;
+  const listIn = deps.listIn ?? settleEdgeReaders?.listIn ?? blockingEdgeReader.listIn;
   const listInMany = resolveListInMany(deps);
   const notifySubscribers = deps.notifySubscribers ?? defaultNotifySubscribers;
   const reconcileCriticalAlert = deps.reconcileCriticalWorkItemAlert ?? reconcileCriticalWorkItemAlert;
