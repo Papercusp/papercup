@@ -473,7 +473,7 @@
     },
     "svgo": "^4.1.0",
     "@qdrant/js-client-rest": {
-      "undici": "7.29.1"
+      "undici": "^7.29.1"
     },
     "@ai-sdk/provider-utils": {
       "undici": "^6.28.1"
