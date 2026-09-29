@@ -46,6 +46,7 @@ import {
 } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
 import { factsCellDelta } from './cells';
+import { loadGuardRailProbes } from './guard-rail-probes';
 import { assumptionSelectorsFor, resolveAssumptions } from './assumptions';
 
 const WS = 'ws-facts-int';
@@ -276,6 +277,9 @@ beforeAll(async () => {
     // P-010: optional executable re-verification pair. The fixture audit makes
     // the store INSERT/SELECT shape and the real DB CHECK move together.
     '940-agent-facts-recheck-contract.sql',
+    // P-004 (expensive-verification-loops): recheck may carry an executable `exec` probe;
+    // the widened CHECK and the loader's partial index come with it.
+    '1240-agent-facts-recheck-exec.sql',
   ];
   // EI-18808675015292160: applies the list (EI-6887 strip semantics unchanged)
   // but AUDITS it first against the real sql/ dir — so the "list DRIFTED from the
@@ -2362,6 +2366,92 @@ describe('P-010 standing-fact recheck contract (migration 940)', () => {
     await expect(insertRaw('extra', { ...recheck, surprise: true })).rejects.toThrow();
     await expect(insertRaw('too-long', { probe: 'x'.repeat(501), falsifier: 'no' })).rejects.toThrow();
     await expect(insertRaw('valid', recheck)).resolves.toBeDefined();
+  });
+});
+
+describe('P-004 executable guard rails (migration 1240, guard-rail-probes.ts)', () => {
+  const recheck = {
+    probe: 'Check the rig lease is held before booting the VM sidecar.',
+    falsifier: 'The lease probe exits non-zero.',
+  };
+  const exec = { command: 'true', expectExitCode: 0, scope: ['p505'] };
+  const insertRaw = (key: string, value: unknown, extra = '') =>
+    db.sql.unsafe(
+      `INSERT INTO harness_shared.agent_facts
+         (workspace_id, scope, scope_ref, key, body, created_by, expires_at, recheck${extra ? ', source_hive, origin, shareable' : ''})
+       VALUES ($1, 'workspace', NULL, $2, 'raw write', 'su-int', now() + interval '1 day', $3::text::jsonb${extra})`,
+      [WS, key, JSON.stringify(value)],
+    );
+
+  it('the DB CHECK admits a well-formed exec and refuses one the loader would misread', async () => {
+    await expect(insertRaw('guard-rail:ok', { ...recheck, exec })).resolves.toBeDefined();
+    await expect(insertRaw('guard-rail:no-scope', { ...recheck, exec: { ...exec, scope: [] } })).rejects.toThrow();
+    await expect(
+      insertRaw('guard-rail:string-code', { ...recheck, exec: { ...exec, expectExitCode: '0' } }),
+    ).rejects.toThrow();
+    await expect(insertRaw('guard-rail:no-command', { ...recheck, exec: { expectExitCode: 0, scope: ['p505'] } })).rejects.toThrow();
+  });
+
+  it('loads live local-origin exec facts whose scope overlaps, and nothing else', async () => {
+    await assertFact(
+      {
+        scope: 'workspace',
+        key: 'guard-rail:rig-lease',
+        body: 'hold the rig lease before touching the VM',
+        kind: 'convention',
+        recheck: { ...recheck, exec: { ...exec, stdoutIncludes: 'held' } },
+        createdBy: 'su-int',
+        workspaceId: WS,
+      },
+      db.sql,
+    );
+    await assertFact(
+      {
+        scope: 'workspace',
+        key: 'guard-rail:other-harness',
+        body: 'a rail for a different harness',
+        kind: 'convention',
+        recheck: { ...recheck, exec: { ...exec, scope: ['relcut'] } },
+        createdBy: 'su-int',
+        workspaceId: WS,
+      },
+      db.sql,
+    );
+    await assertFact(
+      { scope: 'workspace', key: 'guard-rail:prose-only', body: 'no exec', kind: 'convention', recheck, createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    // D-003: a federated copy of an exec fact must never be executed here.
+    await insertRaw('guard-rail:federated', { ...recheck, exec }, ", 'peer-log-key', 'remote', true");
+    await assertFact(
+      {
+        scope: 'workspace',
+        key: 'guard-rail:retracted',
+        body: 'withdrawn',
+        kind: 'convention',
+        recheck: { ...recheck, exec },
+        createdBy: 'su-int',
+        workspaceId: WS,
+      },
+      db.sql,
+    );
+    await retractFact({ scope: 'workspace', key: 'guard-rail:retracted', workspaceId: WS, reason: 'test' }, db.sql);
+
+    const probes = await loadGuardRailProbes({ tags: ['p505'], workspaceId: WS }, db.sql);
+    expect(probes).toEqual([
+      {
+        key: 'guard-rail:rig-lease',
+        command: 'true',
+        expect: { exitCode: 0, stdoutIncludes: 'held' },
+        scope: ['p505'],
+        lesson: 'hold the rig lease before touching the VM',
+      },
+    ]);
+    expect((await loadGuardRailProbes({ tags: ['relcut', 'p505'], workspaceId: WS }, db.sql)).map((p) => p.key)).toEqual([
+      'guard-rail:other-harness',
+      'guard-rail:rig-lease',
+    ]);
+    expect(await loadGuardRailProbes({ tags: [], workspaceId: WS }, db.sql)).toEqual([]);
   });
 });
 

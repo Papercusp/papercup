@@ -130,6 +130,52 @@ describe('facts:assert recheck contract', () => {
     expect(payload.recheckMissing).toBeUndefined();
   });
 
+  describe('P-004 recheck.exec (executable guard rail)', () => {
+    const exec = { command: 'test -f /tmp/x 2>/dev/null', expectExitCode: 0, scope: ['p505', 'p505'] };
+
+    it('the schema accepts a bounded exec and refuses unknown keys or an out-of-range exit code', () => {
+      expect(assertTool.args.safeParse({ ...base, recheck: { ...recheck, exec } }).success).toBe(true);
+      expect(
+        assertTool.args.safeParse({ ...base, recheck: { ...recheck, exec: { ...exec, shell: 'zsh' } } }).success,
+      ).toBe(false);
+      expect(
+        assertTool.args.safeParse({ ...base, recheck: { ...recheck, exec: { ...exec, expectExitCode: 256 } } }).success,
+      ).toBe(false);
+      expect(assertTool.args.safeParse({ ...base, recheck: { ...recheck, exec: { ...exec, scope: [] } } }).success).toBe(
+        false,
+      );
+    });
+
+    it('the store seam trims the command, de-duplicates scope and refuses a bad tag', () => {
+      expect(normalizeFactRecheck({ ...recheck, exec: { ...exec, command: `  ${exec.command}  ` } })).toEqual({
+        ...recheck,
+        exec: { command: exec.command, expectExitCode: 0, scope: ['p505'] },
+      });
+      expect(() => normalizeFactRecheck({ ...recheck, exec: { ...exec, scope: ['P505'] } })).toThrow(/invalid tag/);
+      expect(() => normalizeFactRecheck({ ...recheck, exec: { ...exec, stdoutIncludes: '' } })).toThrow(
+        /stdoutIncludes/,
+      );
+      expect(() => normalizeFactRecheck({ ...recheck, exec: 'true' })).toThrow(/recheck\.exec must be an object/);
+    });
+
+    it('the handler persists exec byte-exact (no tool-tag neutralization of a shell command)', async () => {
+      const withAngles = { ...exec, command: 'grep -q "<parameter" f; test $? -le 1' };
+      await assertTool.handler({ ...base, recheck: { ...recheck, exec: withAngles } } as never, ctx);
+      expect(h.assertFact.mock.calls[0][0].recheck?.exec).toEqual(withAngles);
+    });
+
+    it('the fold says where the rail is auto-checked, not the command', () => {
+      const fact = storedFact({
+        ...base,
+        recheck: { ...recheck, exec: { command: 'echo secret-cmd', expectExitCode: 0, scope: ['p505', 'relcut'] } },
+        createdBy: 'su-test',
+      } as AssertFactInput);
+      const rendered = renderFactsFold([fact], Date.parse('2026-08-22T00:00:00.000Z'));
+      expect(rendered).toContain('AUTO-CHECKED in preflight [p505,relcut]');
+      expect(rendered).not.toContain('secret-cmd');
+    });
+  });
+
   it('renders age + probe/falsifier in the fold and never excerpts the pair from facts:list', () => {
     const fact = storedFact({
       ...base,

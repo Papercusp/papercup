@@ -132,6 +132,7 @@ beforeAll(async () => {
       '795-agent-facts-volatile-measurements.sql',
       '801-agent-facts-retraction-reason.sql',
       '940-agent-facts-recheck-contract.sql',
+      '1240-agent-facts-recheck-exec.sql',
       '610-push-delivery.sql',
     ],
     { label: 'dead-end-matcher-io.integration.test.ts' },
