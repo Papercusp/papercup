@@ -8,6 +8,10 @@
  * plausible number that is wrong, which is exactly the failure mode this plan
  * exists to correct. So the invariants are asserted, not assumed.
  */
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import { GOLD_QUERY_CLASSES } from '@papercusp/memory/bench';
@@ -21,11 +25,19 @@ import {
 } from './prose-corpus';
 import { PROSE_GOLD_SET_VERSION, loadProseGoldSetFixture } from './prose-gold-set';
 
-const corpus = loadProseCorpusFixture();
-const corpusMeta = loadProseCorpusFixtureMeta();
-const gold = loadProseGoldSetFixture();
+// The two fixtures are real session, doc and plan text, so the public source export
+// omits them (open-source-release-2026-09-29 P-005). Where they are absent the fixture
+// guards skip; the sampler tests below need no fixture and always run.
+const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
+const fixturesPresent =
+  fs.existsSync(path.join(FIXTURES_DIR, `prose-corpus.${PROSE_CORPUS_FIXTURE_VERSION}.json`)) &&
+  fs.existsSync(path.join(FIXTURES_DIR, `prose-gold-set.${PROSE_GOLD_SET_VERSION}.json`));
 
-describe('prose corpus fixture', () => {
+const corpus = fixturesPresent ? loadProseCorpusFixture() : [];
+const corpusMeta = fixturesPresent ? loadProseCorpusFixtureMeta() : (undefined as never);
+const gold = fixturesPresent ? loadProseGoldSetFixture() : (undefined as never);
+
+describe.skipIf(!fixturesPresent)('prose corpus fixture', () => {
   it('is present, non-trivial, and uniquely keyed', () => {
     expect(corpus.length).toBeGreaterThan(1500);
     const keys = new Set(corpus.map((e) => e.key));
@@ -65,7 +77,7 @@ describe('prose corpus fixture', () => {
   });
 });
 
-describe('prose gold set fixture', () => {
+describe.skipIf(!fixturesPresent)('prose gold set fixture', () => {
   it('binds to the frozen corpus version', () => {
     // Expected keys are meaningless against a different corpus revision.
     expect(gold.corpusVersion).toBe(PROSE_CORPUS_FIXTURE_VERSION);

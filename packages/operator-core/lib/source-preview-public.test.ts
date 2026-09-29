@@ -14,10 +14,12 @@
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  PUBLIC_COMMUNITY_FILES,
   PUBLIC_LICENSE_PATH,
+  readCommunityFiles,
   assertRemoteMatchesTarget,
   checkDrift,
   exportSnapshot,
@@ -88,6 +90,13 @@ describe('public target — licensed export', () => {
     const readme = readFileSync(join(out, 'README.md'), 'utf8');
     expect(readme).toContain('Elastic License 2.0');
     expect(readme).not.toMatch(/replaced wholesale/);
+    expect(readme).toContain('## Contributing, security and telemetry');
+    expect(readme).toContain('PAPERCUSP_POSTHOG_KEY');
+    for (const name of PUBLIC_COMMUNITY_FILES) {
+      expect(readFileSync(join(out, name), 'utf8')).toBe(readFileSync(join(dirname(PUBLIC_LICENSE_PATH), name), 'utf8'));
+    }
+    expect(readFileSync(join(out, 'CONTRIBUTING.md'), 'utf8')).toMatch(/Contributor License Agreement/);
+    expect(readFileSync(join(out, 'SECURITY.md'), 'utf8')).toMatch(/Report a vulnerability/);
   }, 120_000);
 
   it('the preview export stays evaluation-only and carries no LICENSE', async () => {
@@ -96,7 +105,17 @@ describe('public target — licensed export', () => {
     expect(manifest.target).toBe('preview');
     expect(readFileSync(join(out, 'NOTICE'), 'utf8')).toMatch(/EVALUATION ONLY/);
     expect(() => readFileSync(join(out, 'LICENSE'))).toThrow();
+    for (const name of PUBLIC_COMMUNITY_FILES) expect(() => readFileSync(join(out, name))).toThrow();
   }, 120_000);
+
+  it('refuses a public export whose community files are missing or empty', () => {
+    const dir = mkdtempSync(join(tmp, 'community-'));
+    expect(() => readCommunityFiles(dir)).toThrow(/needs CONTRIBUTING\.md/);
+    for (const name of PUBLIC_COMMUNITY_FILES) writeFileSync(join(dir, name), `# ${name}\n`);
+    writeFileSync(join(dir, 'SECURITY.md'), '  \n');
+    expect(() => readCommunityFiles(dir)).toThrow(/SECURITY\.md is empty/);
+    expect(readCommunityFiles(dirname(PUBLIC_LICENSE_PATH)).map((f) => f.name)).toEqual(PUBLIC_COMMUNITY_FILES);
+  });
 
   it('refuses a missing or wrong LICENSE for the public target', () => {
     expect(() => readLicense(join(tmp, 'nope'))).toThrow(/needs its LICENSE/);
