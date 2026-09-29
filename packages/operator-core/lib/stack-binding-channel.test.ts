@@ -148,4 +148,41 @@ describe('renderStackTransitionContext (P-012)', () => {
     expect(result.requiresFreshContext).toBe(true);
     expect(result.text).toContain('relaunch-with-carry');
   });
+
+  // portable-identity P-003 (EI-24345639608517597): the addressed Project-guide parts a
+  // stack change reaches ride the SAME transition. Real-PG + real take-leadership proof:
+  // doc-projection/wearer-transition.integration.test.ts.
+  it('P-003: take-leadership also delivers the guide parts addressed to the leader — layer payloads unchanged; a failed read is VISIBLE, never silent', async () => {
+    const delivery = { state: state({ stack: [SU_POSTURE_REFS.leader] }), stackBefore: [SU_POSTURE_REFS.member] };
+    const rows = [
+      { part_key: 'lead', body: 'LEADER RULE.', ordinal: 1, target_section: 'Fleet', stack_scope: ['blueprint:su.fleet-leader'] },
+      { part_key: 'member', body: 'MEMBER RULE.', ordinal: 2, target_section: 'Fleet', stack_scope: ['blueprint:su.fleet-member'] },
+    ];
+    const sql = {
+      unsafe: async (_q: string, params: unknown[]) => rows.filter((r) => r.stack_scope.some((t) => (params[3] as string[]).includes(t))),
+    } as never;
+    const layersOnly = await renderStackTransitionContextResult(delivery, opts);
+    const withGuide = await renderStackTransitionContextResult(delivery, { ...opts, guide: { workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql } });
+    // Producer behaviour is unchanged: same layer text first, same flags.
+    expect(withGuide.text.startsWith(layersOnly.text)).toBe(true);
+    expect(withGuide.rendered).toBe(layersOnly.rendered);
+    expect(withGuide.requiresFreshContext).toBe(layersOnly.requiresFreshContext);
+    const guideText = withGuide.text.slice(layersOnly.text.length);
+    expect(guideText).toContain('## Addressed guidance — now applies');
+    expect(guideText).toContain('LEADER RULE.');
+    expect(guideText).toContain('`member`');
+    expect(guideText).not.toContain('MEMBER RULE.');
+
+    const warnings: string[] = [];
+    const failed = await renderStackTransitionContextResult(delivery, {
+      ...opts,
+      warn: (m) => warnings.push(m),
+      guide: { workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql: { unsafe: async () => { throw new Error('relation missing'); } } as never },
+    });
+    expect(failed.rendered).toBe(true);
+    expect(failed.text.startsWith(layersOnly.text)).toBe(true);
+    expect(failed.text).toContain('## Addressed guidance — could not be read');
+    expect(failed.text).toContain('relation missing');
+    expect(warnings.some((w) => w.includes('addressed guide not read'))).toBe(true);
+  });
 });

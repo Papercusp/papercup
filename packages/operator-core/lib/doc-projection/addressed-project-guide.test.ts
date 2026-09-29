@@ -2,11 +2,16 @@ import { describe, expect, it } from 'vitest';
 // ⚠ ONE LINE, deliberately — see project-doc-parts.test.ts for why the directive must sit on the specifier line.
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
 import { addressedInventory, assemble, parseAudienceArg, partIsAddressed, partReachesAudience, projectClient, PROJECTION_BUDGET_CHARS } from '../../../../scripts/project-doc-parts.mjs';
+import * as blueprint from '@papercusp/orchestrator/blueprint';
 import {
   ADDRESSED_GUIDE_MAX_CHARS,
+  composeAddressedGuideTransition,
   composeProjectGuideForWearer,
+  guideHarnessForLaunchProfile,
+  guideTargetFromLaunchSpec,
   projectGuideComposerForWearer,
   renderAddressedGuideSections,
+  suGuideWearer,
   type AddressedGuidePart,
 } from './addressed-project-guide';
 import {
@@ -277,5 +282,107 @@ describe('addressed-project-guide — the launch seam', () => {
     expect(calls[0]).toEqual(['ws', 'papercusp', 'claude-md', ['blueprint:su.fleet-leader', 'role:su', 'slot:fleet-posture'], ['codex', 'all']]);
     expect(out.addressed?.partKeys).toEqual(['lead-1']);
     expect(out.text).toContain('Leaders bench lanes.');
+  });
+});
+
+/**
+ * portable-identity-packages-2026-09-26 P-003 (EI-24345639608517597) — ONE wearer path.
+ * Launch and a mid-session stack change derive the wearer, the guide's harness and the
+ * read the same way, so launch-as-member + the member→leader transition carries exactly
+ * the addressed parts launch-as-leader carries. The real-PG, real take-leadership half
+ * of this is wearer-transition.integration.test.ts.
+ */
+describe('addressed-project-guide — one wearer path for launch and mid-session (P-003)', () => {
+  const leaderRule: AddressedGuidePart = { part_key: 'lead', body: 'LEADER RULE.', ordinal: 1, target_section: 'Fleet', stack_scope: ['blueprint:su.fleet-leader'] };
+  const memberRule: AddressedGuidePart = { part_key: 'member', body: 'MEMBER RULE.', ordinal: 2, target_section: 'Fleet', stack_scope: ['blueprint:su.fleet-member'] };
+  const postureRule: AddressedGuidePart = { part_key: 'posture', body: 'ANY POSTURE RULE.', ordinal: 3, target_section: 'Fleet', stack_scope: ['slot:fleet-posture'] };
+  const autoRule: AddressedGuidePart = { part_key: 'auto', body: 'AUTO RULE.', ordinal: 4, target_section: 'Autonomy', stack_scope: ['blueprint:su.mode-auto'] };
+  const rows = [leaderRule, memberRule, postureRule, autoRule];
+  /** A stub `Sql` that answers the reader's query the way PG does: rows whose stack_scope meets the tokens. */
+  function stubSql(calls: unknown[][] = []) {
+    return {
+      unsafe: async (_q: string, params: unknown[]) => {
+        calls.push(params);
+        const tokens = params[3] as string[];
+        return rows.filter((r) => r.stack_scope.some((t) => tokens.includes(t)));
+      },
+    } as never;
+  }
+  const wearerFor = (fleetRole: string | null, modes: string[] = []) =>
+    suGuideWearer(blueprint, blueprint.suSessionBinding({ fleetRole, modes }).layers);
+
+  it('suGuideWearer: the static su layers with the runtime binding attached over them (exclusive slots replace)', () => {
+    expect(suGuideWearer(blueprint, [])).toEqual({ role: 'su', layers: blueprint.SU_STATIC_LAYERS.map((l) => ({ slot: l.slot, id: l.id })) });
+    const leader = wearerFor('leader', ['auto']);
+    expect(leader.layers).toEqual(expect.arrayContaining([
+      { slot: 'domain', id: 'papercusp-engineer' },
+      { slot: 'fleet-posture', id: 'su.fleet-leader' },
+      { slot: 'autonomy', id: 'su.mode-auto' },
+    ]));
+    // A SELECTED domain displaces the default one — the rendered stack's attach semantics.
+    const selected = suGuideWearer(blueprint, [{ slot: 'domain', id: 'research-steward' }]);
+    expect(selected.layers.filter((l) => l.slot === 'domain')).toEqual([{ slot: 'domain', id: 'research-steward' }]);
+    // The launch's own tokens for a leader-with-AUTO (pinned in role-launch-spec.test.ts) come out of THIS mapping.
+    expect(guideAddressesForWearer(leader)).toEqual(expect.arrayContaining([
+      'role:su', 'blueprint:papercusp-engineer', 'blueprint:su-collaborator', 'blueprint:su.practice',
+      'blueprint:su.fleet-leader', 'slot:fleet-posture', 'blueprint:su.mode-auto', 'slot:autonomy',
+    ]));
+  });
+
+  it('guideHarnessForLaunchProfile: engineer → the projector harness, power → the managed harness, generic → none', () => {
+    expect(guideHarnessForLaunchProfile(undefined, 'acme', {})).toBe('papercusp');
+    expect(guideHarnessForLaunchProfile('engineer', 'acme', { PAPERCUSP_HARNESS_SLUG: 'papercup' })).toBe('papercup');
+    expect(guideHarnessForLaunchProfile('POWER', ' acme ', {})).toBe('acme');
+    expect(guideHarnessForLaunchProfile('power', null, {})).toBeNull();
+    expect(guideHarnessForLaunchProfile('generic', 'acme', {})).toBeNull();
+  });
+
+  it('guideTargetFromLaunchSpec: the launch record’s profile/harness/agent, falling back to the turn’s client', () => {
+    expect(guideTargetFromLaunchSpec({ profile: 'power', harnessSlug: 'acme', agent: 'codex', workspaceId: 'w2' }, { workspaceId: 'w1', client: 'claude' }))
+      .toEqual({ workspaceId: 'w2', harnessSlug: 'acme', client: 'codex' });
+    expect(guideTargetFromLaunchSpec(null, { workspaceId: 'w1', client: 'claude' }))
+      .toEqual({ workspaceId: 'w1', harnessSlug: process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp', client: 'claude' });
+    expect(guideTargetFromLaunchSpec({ profile: 'generic', agent: 'claude' }, { workspaceId: 'w1' })).toBeNull();
+    expect(guideTargetFromLaunchSpec({ profile: 'engineer' }, { workspaceId: 'w1', client: null })).toBeNull();
+  });
+
+  it('member → leader: attaches what only the leader reaches (rendered as the launch renders it), names what it lost, never re-sends what both reach', async () => {
+    const calls: unknown[][] = [];
+    const before = wearerFor('member');
+    const after = wearerFor('leader', ['auto']);
+    const t = await composeAddressedGuideTransition({ workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql: stubSql(calls), before, after });
+    // ONE read over the union of both wearers' tokens.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![3]).toEqual([...new Set([...guideAddressesForWearer(before), ...guideAddressesForWearer(after)])]);
+    expect(t.attachedPartKeys).toEqual(['lead', 'auto']);
+    expect(t.detachedPartKeys).toEqual(['member']);
+    // Parity with launch: launch-as-member minus detached plus attached == launch-as-leader.
+    const launchKeys = async (w: typeof before) =>
+      (await projectGuideComposerForWearer({ wearer: w, workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql: stubSql() })({ text: '# G\n', source: 'G' })).addressed?.partKeys ?? [];
+    const asMember = await launchKeys(before);
+    const asLeader = await launchKeys(after);
+    expect(new Set([...asMember.filter((k) => !t.detachedPartKeys.includes(k)), ...t.attachedPartKeys])).toEqual(new Set(asLeader));
+    // The attached sections are byte-identical to the projector's (and launch's) rendering of the same rows.
+    expect(t.text).toContain(assemble([leaderRule, autoRule]));
+    expect(t.text).toContain('## Addressed guidance — now applies');
+    expect(t.text).toContain('- `member` (section “Fleet”) — addressed to `blueprint:su.fleet-member`');
+    expect(t.text).not.toContain('MEMBER RULE.');
+    expect(t.text).not.toContain('ANY POSTURE RULE.');
+    expect(t.truncated).toBe(false);
+  });
+
+  it('no token change ⇒ no read and no text; a failed read THROWS (the caller surfaces it) and the budget seam still applies', async () => {
+    const calls: unknown[][] = [];
+    const w = wearerFor('member');
+    const same = await composeAddressedGuideTransition({ workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql: stubSql(calls), before: w, after: wearerFor('member') });
+    expect(same.text).toBe('');
+    expect(calls).toHaveLength(0);
+    await expect(composeAddressedGuideTransition({
+      workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', before: w, after: wearerFor('leader'),
+      sql: { unsafe: async () => { throw new Error('relation missing'); } } as never,
+    })).rejects.toThrow('relation missing');
+    const small = await composeAddressedGuideTransition({ workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql: stubSql(), before: w, after: wearerFor('leader', ['auto']), maxChars: 120 });
+    expect(small.truncated).toBe(true);
+    expect(small.text).toContain('harness_doc_parts:papercusp/claude-md');
   });
 });
