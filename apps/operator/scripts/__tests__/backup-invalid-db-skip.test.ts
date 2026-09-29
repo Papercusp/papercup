@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -107,5 +107,121 @@ describe('papercusp-db-backup.sh — invalid (datconnlimit=-2) databases (WI-100
       .join('\n');
     expect(code).not.toMatch(/FAILED\+=\(\s*"\$inv"/);
     expect(code).toMatch(/"invalidSkipped": \[%s\]/);
+  });
+});
+
+/**
+ * Plan papercusp-db-backup-invalid-db-2026-09-27 — clauses AUTO-BAR-R-1 (unit
+ * layer) and P-001-VALID-DUMP-FAILURE.
+ *
+ * Runs the script's REAL enumeration -> per-database dump loop -> OK /
+ * STATUS.json / exit tail, each extracted by its markers (never re-typed), with
+ * only the two external edges stubbed: `sudo` (the Postgres catalog) and
+ * `dump_one` (pg_dump). The dump_one stub fails for every INVALID database,
+ * which is what pg_dump really does ("cannot connect to invalid database"), so
+ * if the enumeration ever admits one again the exit code turns red HERE.
+ *
+ * The two cases pull in opposite directions on purpose: skipping must keep an
+ * INVALID leftover from reddening the run, and must NOT also swallow a genuine
+ * dump failure on a VALID database.
+ */
+const PIPELINE_CATALOG: ReadonlyArray<readonly [name: string, allow: string, limit: string]> = [
+  ['papercusp', '1', '-1'],
+  ['oddsdb', '1', '-1'],
+  ['papercusp_it_baseline_abc', '1', '-2'],
+  ['org_x', '1', '-2'],
+];
+const INVALID_NAMES = PIPELINE_CATALOG.filter((r) => r[2] === '-2').map((r) => r[0]);
+
+function pipelineStubSudo(): string {
+  const rowsLit = PIPELINE_CATALOG.map((r) => r.join('\\t')).join('\\n');
+  // Function replacement: in a replacement STRING, `$'` means "text after the
+  // match", which would silently corrupt bash's `$'…'` quoting.
+  const stub = STUB_SUDO.replace(/^rows=.*$/m, () => `rows=$'${rowsLit}'`);
+  expect(stub, 'catalog rows must be substituted into the sudo stub').not.toBe(STUB_SUDO);
+  return stub;
+}
+
+/** From `is_tiered() {` through the end of the `for db in $DBS; do … done` loop. */
+function dumpLoopBlock(): string {
+  const start = src.indexOf('is_tiered() {');
+  expect(start, 'is_tiered() must exist').toBeGreaterThan(-1);
+  const loop = src.indexOf('for db in $DBS; do', start);
+  expect(loop, 'the per-database dump loop must follow is_tiered').toBeGreaterThan(-1);
+  const end = src.indexOf('\ndone\n', loop);
+  expect(end).toBeGreaterThan(-1);
+  const block = src.slice(start, end + 5);
+  expect(block, 'the loop must route dump_one failures into FAILED').toMatch(/dump_one "\$db" "\$db"/);
+  return block;
+}
+
+/** From the ELAPSED computation to end of file: OK, STATUS.json, and the exit code. */
+function tailBlock(): string {
+  const start = src.indexOf('ELAPSED=$(( $(date +%s) - START ))');
+  expect(start, 'ELAPSED computation must exist').toBeGreaterThan(-1);
+  return src.slice(start);
+}
+
+function runPipeline(failDbs: readonly string[]) {
+  const dir = mkdtempSync(join(tmpdir(), 'backup-pipeline-'));
+  try {
+    const bin = join(dir, 'bin');
+    const dump = join(dir, 'dump');
+    execFileSync('mkdir', ['-p', bin, dump]);
+    writeFileSync(join(bin, 'sudo'), pipelineStubSudo());
+    chmodSync(join(bin, 'sudo'), 0o755);
+    const harness = [
+      'set -uo pipefail',
+      `EXCLUDE_RE='(_test$|^template)'`,
+      `log() { printf 'LOG %s\\n' "$*"; }`,
+      enumerationBlock(),
+      'DUMPED=(); FAILED=(); TIER_DUMPED=(); TIER_FAILED=()',
+      'PC_BACKUP_TIERS_ENABLED=0; PC_BACKUP_TIER_DBS=papercusp',
+      // pg_dump edge: record the attempt, fail for anything in STUB_FAIL_DBS.
+      `dump_one() { printf 'DUMP_ATTEMPT %s\\n' "$1"; case " $STUB_FAIL_DBS " in *" $1 "*) return 1 ;; esac; return 0; }`,
+      dumpLoopBlock(),
+      `START=$(date +%s); DUMP='${dump}'; STATUS="$DUMP/STATUS.json"; ODDS_OK=false; ODDS_NOTE=''; PSQL=false`,
+      tailBlock(),
+    ].join('\n');
+    const run = spawnSync('bash', ['-c', harness], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, STUB_FAIL_DBS: failDbs.join(' ') },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    const status = JSON.parse(readFileSync(join(dump, 'STATUS.json'), 'utf8')) as {
+      ok: boolean;
+      dumped: string[];
+      failed: string[];
+      invalidSkipped: string[];
+    };
+    const attempted = [...run.stdout.matchAll(/^DUMP_ATTEMPT (\S+)$/gm)].map((m) => m[1]);
+    return { exitCode: run.status, status, attempted, stdout: run.stdout };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe('papercusp-db-backup.sh — exit code with INVALID leftovers present (plan papercusp-db-backup-invalid-db-2026-09-27)', () => {
+  it('AUTO-BAR-R-1: exits 0 and reports ok while INVALID databases exist, dumping only the valid ones', () => {
+    // pg_dump fails on every INVALID database, exactly as it does live.
+    const r = runPipeline(INVALID_NAMES);
+    expect(r.attempted).toEqual(['papercusp', 'oddsdb']);
+    expect(r.exitCode).toBe(0);
+    expect(r.status.ok).toBe(true);
+    expect(r.status.failed).toEqual([]);
+    expect(r.status.dumped).toEqual(['papercusp', 'oddsdb']);
+    expect([...r.status.invalidSkipped].sort()).toEqual([...INVALID_NAMES].sort());
+  });
+
+  it('P-001-VALID-DUMP-FAILURE: a pg_dump failure on a VALID database exits non-zero and lists it in STATUS.json failed', () => {
+    const r = runPipeline([...INVALID_NAMES, 'oddsdb']);
+    expect(r.attempted).toEqual(['papercusp', 'oddsdb']);
+    expect(r.exitCode).toBe(1);
+    expect(r.status.ok).toBe(false);
+    expect(r.status.failed).toEqual(['oddsdb']);
+    expect(r.status.dumped).toEqual(['papercusp']);
+    // The INVALID leftovers stay reported as skipped, never folded into failed.
+    expect([...r.status.invalidSkipped].sort()).toEqual([...INVALID_NAMES].sort());
+    expect(r.stdout).toMatch(/LOG backup FAILED in \d+s: oddsdb$/m);
   });
 });
