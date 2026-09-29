@@ -2207,6 +2207,45 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         f === "scripts/check-lockfile-census.mjs"),
   },
   {
+    // open-source-release-2026-09-29 P-017 / D-001, WI-10003906 — the LICENSE gates
+    // (owner directive #931: npm + Rust license checks block main). Siblings of the two
+    // advisory gates above, over the SAME derived lockfile population (censusOrThrow), so
+    // a new lockfile anywhere is license-checked with no list to update. A dependency whose
+    // license is not permissive or weak-copyleft fails unless scripts/license-exceptions.json
+    // records a review of its real license text.
+    //
+    // COST measured 2026-09-29: npm leg 0.3s (6 lockfiles, 3,399 packages, no network);
+    // cargo leg 2.2s (7 lockfiles, 1,187 crates, `cargo metadata --offline`, falling back
+    // to a networked resolve only when a crate is not cached). A resolve that still fails
+    // exits 2 with LICENSE_GATE_RESULT status=undetermined — "re-run", never "clean".
+    //
+    // Safe to wire NOW: measured green over the whole real tree first (0 denied, 25 reviewed
+    // exceptions, 70 weak-copyleft components reported), after nodebox was removed (P-018).
+    workspace: "@papercusp/operator-core",
+    script: "lint:npm-licenses",
+    appliesTo: (f) =>
+      !f.includes("node_modules/") &&
+      (f.endsWith("/package-lock.json") ||
+        f === "package-lock.json" ||
+        f === "scripts/check-licenses.mjs" ||
+        f === "scripts/license-exceptions.json" ||
+        f === "scripts/check-lockfile-census.mjs"),
+  },
+  {
+    // The cargo leg of the license gate above (WI-10003906). Same script, same exceptions
+    // file; split so an npm-only change does not pay for a cargo resolve and vice versa.
+    workspace: "@papercusp/operator-core",
+    script: "lint:rust-licenses",
+    appliesTo: (f) =>
+      !f.includes("node_modules/") &&
+      (f.endsWith("/Cargo.lock") ||
+        f === "Cargo.lock" ||
+        f.endsWith("/Cargo.toml") ||
+        f === "scripts/check-licenses.mjs" ||
+        f === "scripts/license-exceptions.json" ||
+        f === "scripts/check-lockfile-census.mjs"),
+  },
+  {
     // restore-papercusp-main-green-2026-08-20 / WI-212675 — the tight-wall-clock-budget
     // guard (EI-20290625014691548). A test asserting `elapsed < 80ms` is green for its
     // author and red under the shared gate's load, so the defect class it catches is
