@@ -56,6 +56,7 @@ import type { PlanItemLaneBlock } from './scheduler/plan-item-lane-guard';
 import type { InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import type { BatchResolveItem } from './agent-tools/coordination/escalations';
 import { parseAgenticPlanExecutionTarget, type AgenticPlanExecutionTarget } from './agentic-plan-execution-target';
+import { trackDetached } from './detached-imports';
 import type { assignAndWakeActionableWorkItems } from './agent-tools/coordination/actionable-work-item-dispatch';
 
 /**
@@ -246,7 +247,9 @@ export function emitWorkItemClaimableEvent(
   const emit = deps.emit ?? emitAwaitedEvent;
   const checkAdmission = deps.duplicateAdmissionCheck ?? defaultDuplicateAdmissionCheck;
   const payload = workItemClaimableEventPayload(wi, reason);
-  void Promise.resolve()
+  // WI-10003882: registered so drainDetached() can await the fan-out (and its
+  // key-fire latch write) instead of racing a test's TRUNCATE or pool teardown.
+  void trackDetached(Promise.resolve()
     .then(async () => {
       // The scheduler rejects admission-pending rows before claiming them. Keep the
       // broad wake at the same floor or parked agents will wake on work they cannot
@@ -278,7 +281,7 @@ export function emitWorkItemClaimableEvent(
         payload,
         source: 'work-items',
       });
-    })
+    }))
     .catch((e: unknown) => failSoft(`claimable-event for ${wi.id}`, e));
 }
 
