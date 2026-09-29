@@ -226,7 +226,25 @@ function row(record: WorkOfferStoreRecord = requestRecord()) {
 
 function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
   const setDisposition = vi.fn(async () => true);
-  const spawnMembers = vi.fn(async () => ({ opened: 2, failed: 0, firstError: null }));
+  // Handles for every opened member, as defaultSpawnMembers returns them, so a
+  // refusing test exercises the real stop path (EI-24635523980082322). The
+  // no-handles branch is covered by its own test.
+  const spawnMembers = vi.fn(async () => ({
+    opened: 2,
+    failed: 0,
+    firstError: null,
+    members: [
+      { taskId: 'task-m1', pid: 4101, logPath: '/tmp/m1.normalized.log' },
+      { taskId: 'task-m2', pid: 4102, logPath: '/tmp/m2.normalized.log' },
+    ],
+  }));
+  const stopSpawnedMembers = vi.fn(async (members: unknown[]) => ({
+    stopped: members.length,
+    notStopped: 0,
+    detail: `stopped ${members.length}/${members.length} opened member(s)`,
+  }));
+  // No auth signature in the member logs by default; the log-classification test overrides.
+  const readMemberLogTail = vi.fn(async (_path: string) => null as string | null);
   // The `_args` parameter is load-bearing for TYPES, not behaviour: declared
   // zero-arg, the mock's calls are typed `[]`, so reading back the emitted
   // receipt (`emitReceipt.mock.calls[0]![0]`) is a TS2493 tuple-index error.
@@ -266,6 +284,8 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
     availabilityForFleet: vi.fn(async () => AVAILABILITY) as any,
     setDisposition,
     spawnMembers,
+    stopSpawnedMembers,
+    readMemberLogTail,
     emitReceipt,
     getBuildInfo: vi.fn(() => ({ sha: 'buildabc', version: '0.0.13' })),
     probeAgentRuntime,
@@ -477,6 +497,101 @@ describe('honorSpawnRequestFromProjection', () => {
             code: 'account_unfulfillable',
             detail: expect.stringMatching(/could not AUTHENTICATE/),
           }),
+        }),
+      );
+    });
+
+    it('a refused member is STOPPED before the refusal federates (EI-24635523980082322)', async () => {
+      const members = [{ taskId: 'task-m1', pid: 4101, logPath: '/tmp/m1.normalized.log' }];
+      const stopSpawnedMembers = vi.fn(async () => ({
+        stopped: 1,
+        notStopped: 0,
+        detail: 'stopped 1/1 opened member(s)',
+      }));
+      const verifyLocalMemberBoot = vi.fn(async () => ({
+        observed: false,
+        detail: "member su-slow registered presence in 'alpha', but no tool invocation was attributed",
+      }));
+      const { d, emitReceipt } = deps({
+        verifyLocalMemberBoot,
+        stopSpawnedMembers,
+        readMemberLogTail: vi.fn(async () => 'claude booted, waiting on its first turn'),
+        spawnMembers: vi.fn(async () => ({ opened: 1, failed: 1, firstError: 'second window failed', members })),
+      });
+      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({
+        outcome: 'refused',
+        code: 'member_boot_unconfirmed',
+      });
+      expect(stopSpawnedMembers).toHaveBeenCalledWith(members);
+      expect(stopSpawnedMembers.mock.invocationCallOrder[0]).toBeLessThan(emitReceipt.mock.invocationCallOrder[0]!);
+      expect(emitReceipt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'refusal',
+          refusal: expect.objectContaining({ detail: expect.stringContaining('Member cleanup: stopped 1/1') }),
+        }),
+      );
+    });
+
+    it('a revoked login visible only in the member log attributes account_unfulfillable (EI-24635529006243850)', async () => {
+      const members = [{ taskId: 'task-m1', pid: 4101, logPath: '/tmp/m1.normalized.log' }];
+      const resolveHonorAccount = vi.fn(async () => ({
+        ok: true as const,
+        account: 'default',
+        downgradedFrom: 'auto' as const,
+        loginEvidence: 'assumed-darwin-keychain' as const,
+      }));
+      // Verbatim shape from the 0.0.25 VM member's normalized log: no transcript
+      // was written, so first-turn verification carries no failureDetail.
+      const readMemberLogTail = vi.fn(
+        async () => '✻ Sautéing…\n⏺Please run /login · API Error: 401 OAuth access token has been \nrevoked.\n❯ ',
+      );
+      const verifyLocalMemberBoot = vi.fn(async () => ({
+        observed: false,
+        detail: "member su-3b8f1 registered presence in 'alpha', but no tool invocation was attributed",
+      }));
+      const { d, emitReceipt } = deps({
+        resolveHonorAccount,
+        verifyLocalMemberBoot,
+        readMemberLogTail,
+        stopSpawnedMembers: vi.fn(async () => ({ stopped: 1, notStopped: 0, detail: 'stopped 1/1 opened member(s)' })),
+        spawnMembers: vi.fn(async () => ({ opened: 1, failed: 1, firstError: null, members })),
+      });
+      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({
+        outcome: 'refused',
+        code: 'account_unfulfillable',
+      });
+      expect(readMemberLogTail).toHaveBeenCalledWith('/tmp/m1.normalized.log');
+      const emitted = emitReceipt.mock.calls[0]![0] as { refusal: { detail: string } };
+      expect(emitted.refusal.detail).toContain('OAuth access token has been revoked.');
+      // The excerpt, never the whole log tail, is what federates.
+      expect(emitted.refusal.detail).not.toContain('Sautéing');
+    });
+
+    it('a spawner with no member handles is reported as NOT stopped, never silently', async () => {
+      const verifyLocalMemberBoot = vi.fn(async () => ({
+        observed: false,
+        detail: "member su-phantom registered presence in 'alpha', but no tool invocation was attributed",
+      }));
+      const stopSpawnedMembers = vi.fn();
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const { d, emitReceipt } = deps({
+        verifyLocalMemberBoot,
+        stopSpawnedMembers,
+        spawnMembers: vi.fn(async () => ({ opened: 2, failed: 0, firstError: null })),
+      });
+      try {
+        expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({
+          outcome: 'refused',
+          code: 'member_boot_unconfirmed',
+        });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('2 opened member(s) were NOT stopped'));
+      } finally {
+        warn.mockRestore();
+      }
+      expect(stopSpawnedMembers).not.toHaveBeenCalled();
+      expect(emitReceipt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          refusal: expect.objectContaining({ detail: expect.stringContaining('2 opened member(s) were NOT stopped') }),
         }),
       );
     });

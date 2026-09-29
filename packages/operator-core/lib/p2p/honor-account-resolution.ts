@@ -292,6 +292,25 @@ export async function resolveHonorAccount(
 const AUTH_FAILURE_RE =
   /(OAuth session expired|could not be refreshed|disabled Claude subscription access|failed to authenticate|authentication[ _-]?error|invalid api key|not logged in|please run .{0,12}claude (login|setup-token)|please ?run ?\/login|login expired|OAuth access token has been|API Error: 401|credit balance is too low|--account \S+ could not be honored)/i;
 
+/**
+ * EI-24635529006243850: the auth-failure line (plus its continuation — the CLI wraps
+ * "…has been" / "revoked.") from a member's boot log, ANSI-stripped and bounded, or
+ * null when the log carries no auth signature. The classification detail is
+ * federated in a receipt, so a caller passes this excerpt, never a whole log tail.
+ */
+export function extractAuthFailureExcerpt(log: string): string | null {
+  // eslint-disable-next-line no-control-regex
+  const lines = log.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split(/\r?\n/);
+  const i = lines.findIndex((l) => AUTH_FAILURE_RE.test(l));
+  if (i < 0) return null;
+  return lines
+    .slice(i, i + 2)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 400);
+}
+
 export interface HonorSpawnFailureClassification {
   code: 'account_unfulfillable' | 'spawn_failed';
   detail: string;

@@ -88,6 +88,7 @@ import {
   resolveHonorAccount as resolveHonorAccountCore,
   probeLocalClaudeLogin,
   classifyHonorSpawnFailure,
+  extractAuthFailureExcerpt,
   type HonorAccountResolution,
 } from './honor-account-resolution';
 import type { OrgSql } from '../work-items';
@@ -1256,13 +1257,14 @@ export async function honorSpawnRequestFromProjection(
     // only an explicit auth signature upgrades the generic fail-closed result.
     // EI-24635529006243850: a CLI whose first API call 401s may never write a
     // transcript, leaving failureDetail empty while the member's own boot log
-    // names the cause — fall back to that log before choosing the code.
+    // names the cause — fall back to that log's auth line before choosing the code.
     let failureEvidence = bootVerify.failureDetail ?? null;
     if (!failureEvidence) {
       for (const m of spawn.members ?? []) {
         const tail = m.logPath ? await readMemberLogTail(m.logPath) : null;
-        if (tail) {
-          failureEvidence = tail;
+        const excerpt = tail ? extractAuthFailureExcerpt(tail) : null;
+        if (excerpt) {
+          failureEvidence = excerpt;
           break;
         }
       }

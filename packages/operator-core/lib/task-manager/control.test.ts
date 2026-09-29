@@ -799,6 +799,7 @@ describe('killTask — external kill-intent notice, unconfined pid path (EI-2190
     try {
       const out = await killTask('c5-notify', {
         readIdentity: () => 'linux:b:1',
+        readProcessGroup: () => null,
         kill: (_pid: number, _signal: NodeJS.Signals) => {
           expect(notified).toEqual([['c5-notify', 'SIGTERM']]);
         },
@@ -821,6 +822,59 @@ describe('killTask — external kill-intent notice, unconfined pid path (EI-2190
     } finally {
       unsubscribe();
     }
+  });
+});
+
+describe('killTask — unconfined process group (EI-24635523980082322)', () => {
+  it('signals the whole group when the verified pid leads it (a detached launch)', async () => {
+    row({ taskId: 'g1', confined: false, scopeUnit: null, pid: 68752, processIdentity: 'darwin:t0' });
+    const kill = vi.fn();
+    const out = await killTask('g1', { kill, readIdentity: () => 'darwin:t0', readProcessGroup: () => 68752 });
+    expect(out).toMatchObject({ ok: true, detail: 'process group 68752 signalled SIGTERM' });
+    expect(kill.mock.calls).toEqual([[-68752, 'SIGTERM']]);
+    expect(store.closed).toEqual([{ taskId: 'g1', state: 'killed', reason: 'group kill SIGTERM' }]);
+  });
+
+  it('keeps the single-pid signal when the pid sits in someone else\'s group', async () => {
+    row({ taskId: 'g2', confined: false, scopeUnit: null, pid: 68752, processIdentity: 'darwin:t0' });
+    const kill = vi.fn();
+    const out = await killTask('g2', { kill, readIdentity: () => 'darwin:t0', readProcessGroup: () => 1 });
+    expect(out).toMatchObject({ ok: true, detail: 'pid 68752 signalled SIGTERM' });
+    expect(kill.mock.calls).toEqual([[68752, 'SIGTERM']]);
+  });
+
+  it('escalates to SIGKILL on the group when the leader is still ours after the grace period', async () => {
+    row({ taskId: 'g3', confined: false, scopeUnit: null, pid: 68752, processIdentity: 'darwin:t0' });
+    const kill = vi.fn();
+    const sleep = vi.fn(async () => {});
+    const out = await killTask('g3', {
+      kill,
+      sleep,
+      escalateAfterMs: 5_000,
+      readIdentity: () => 'darwin:t0',
+      readProcessGroup: () => 68752,
+    });
+    expect(sleep).toHaveBeenCalledWith(5_000);
+    expect(kill.mock.calls).toEqual([
+      [-68752, 'SIGTERM'],
+      [-68752, 'SIGKILL'],
+    ]);
+    expect(out).toMatchObject({ ok: true, detail: 'process group 68752 signalled SIGTERM (escalated to SIGKILL)' });
+  });
+
+  it('does not escalate once the leader is gone (its group id could be recycled)', async () => {
+    row({ taskId: 'g4', confined: false, scopeUnit: null, pid: 68752, processIdentity: 'darwin:t0' });
+    const kill = vi.fn();
+    const identities = ['darwin:t0', null];
+    const out = await killTask('g4', {
+      kill,
+      sleep: async () => {},
+      escalateAfterMs: 5_000,
+      readIdentity: () => identities.shift() ?? null,
+      readProcessGroup: () => 68752,
+    });
+    expect(kill.mock.calls).toEqual([[-68752, 'SIGTERM']]);
+    expect(out).toMatchObject({ ok: true, detail: 'process group 68752 signalled SIGTERM' });
   });
 });
 
