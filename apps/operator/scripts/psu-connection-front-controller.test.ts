@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   HOSTED_LOGIN_CHOICE,
+  HOSTED_RECONNECT_POLLS,
+  HOSTED_RECONNECT_POLL_MS,
   PSU_CONNECTION_STORE_VERSION,
   defaultPsuConnectionStorePath,
   loadPsuConnectionStore,
@@ -569,11 +571,236 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
         interactive: false,
         fetch: portal.fetch,
         notice: vi.fn(),
-        openHostedTerminal: async () => ({ exit: null, closeReason: "connector_lost" }),
+        openHostedTerminal: async () => ({
+          exit: null,
+          bound: true,
+          closeCode: 1006,
+          closeReason: "connector_lost",
+        }),
       }),
     ).rejects.toThrow(
       "psu --connect=portal.example.test/ws-live --connect-session=sess_1",
     );
+  });
+
+  describe("when the workspace machine's link to Papercusp cloud is down (WI-10003909)", () => {
+    const NOW = Date.parse("2026-09-29T17:00:00.000Z");
+    const THREE_MIN_AGO = new Date(NOW - 180_000).toISOString();
+    const linkDown = {
+      id: "ws-live",
+      displayName: "avi-test",
+      state: "active",
+      reachable: false,
+      connectorHeartbeatAt: THREE_MIN_AGO,
+    };
+    const live = { ...linkDown, reachable: true, connectorHeartbeatAt: new Date(NOW).toISOString() };
+    const listing = (...rounds: Array<Array<Record<string, unknown>>>) => {
+      let round = 0;
+      return () => ({
+        status: 200,
+        body: { ok: true, workspaces: rounds[Math.min(round++, rounds.length - 1)] },
+      });
+    };
+    const ticketReply = () => ({
+      status: 200,
+      body: {
+        ok: true,
+        socketUrl: `wss://portal.example.test/api/hosted/connectors/socket?ticket=${TICKET}`,
+        session: "sess_1",
+      },
+    });
+    const harness = (
+      home: string,
+      storePath: string,
+      fetch: ReturnType<typeof fakePortal>["fetch"],
+    ) => {
+      const sleeps: number[] = [];
+      const notices: string[] = [];
+      return {
+        sleeps,
+        notices,
+        deps: {
+          home,
+          storePath,
+          interactive: false,
+          fetch,
+          now: () => NOW,
+          sleep: async (ms: number) => {
+            sleeps.push(ms);
+          },
+          notice: (line: string) => {
+            notices.push(line);
+          },
+        },
+      };
+    };
+    const paths = (calls: FetchCall[]) => calls.map((call) => new URL(call.url).pathname);
+
+    it("says the machine is running but its link is down, waits for it, then attaches", async () => {
+      const home = tempHome();
+      const storePath = savedStore(home, [hostedProfile()]);
+      const portal = fakePortal({
+        "/api/hosted/cli/workspaces": listing([linkDown], [linkDown], [live]),
+        "/api/hosted/cli/workspaces/ws-live/terminal": ticketReply,
+      });
+      const { deps, sleeps, notices } = harness(home, storePath, portal.fetch);
+
+      await expect(
+        runPsuConnectionFrontController(["--connect=portal.example.test/ws-live"], {
+          ...deps,
+          openHostedTerminal: async () => ({ exit: { code: 0, signal: 0 }, bound: true }),
+        }),
+      ).resolves.toMatchObject({ handled: true, exitCode: 0 });
+
+      expect(notices[0]).toBe(
+        `psu: ws-live is running, but its link to Papercusp cloud is down, last heard 3 min ago; waiting up to ${(HOSTED_RECONNECT_POLLS * HOSTED_RECONNECT_POLL_MS) / 1000}s for it to reconnect`,
+      );
+      expect(notices).toContain("psu: ws-live reconnected to Papercusp cloud");
+      expect(sleeps).toEqual([HOSTED_RECONNECT_POLL_MS, HOSTED_RECONNECT_POLL_MS]);
+      expect(paths(portal.calls)).toEqual([
+        "/api/hosted/cli/workspaces",
+        "/api/hosted/cli/workspaces",
+        "/api/hosted/cli/workspaces",
+        "/api/hosted/cli/workspaces/ws-live/terminal",
+      ]);
+    });
+
+    it("gives up after the bounded wait with the truth, never a resume hint", async () => {
+      const home = tempHome();
+      const storePath = savedStore(home, [hostedProfile()]);
+      const portal = fakePortal({
+        "/api/hosted/cli/workspaces": listing([linkDown]),
+      });
+      const { deps, sleeps } = harness(home, storePath, portal.fetch);
+      const openHostedTerminal = vi.fn();
+
+      const failure = runPsuConnectionFrontController(["--connect=portal.example.test/ws-live"], {
+        ...deps,
+        openHostedTerminal,
+      });
+      await expect(failure).rejects.toThrow(
+        "Workspace 'ws-live' is running, but its link to Papercusp cloud is down, last heard 3 min ago, and it did not reconnect while psu waited",
+      );
+      await expect(failure).rejects.not.toThrow("--connect-session");
+      expect(sleeps).toHaveLength(HOSTED_RECONNECT_POLLS);
+      expect(openHostedTerminal).not.toHaveBeenCalled();
+      expect(paths(portal.calls)).not.toContain("/api/hosted/cli/workspaces/ws-live/terminal");
+    });
+
+    it("still refuses a stopped workspace at once, without waiting", async () => {
+      const home = tempHome();
+      const storePath = savedStore(home, [hostedProfile()]);
+      const portal = fakePortal({
+        "/api/hosted/cli/workspaces": listing([{ ...linkDown, state: "stopped" }]),
+      });
+      const { deps, sleeps } = harness(home, storePath, portal.fetch);
+      await expect(
+        runPsuConnectionFrontController(["--connect=portal.example.test/ws-live"], deps),
+      ).rejects.toThrow("'ws-live' is not connected right now (stopped). Start it in the portal");
+      expect(sleeps).toEqual([]);
+    });
+
+    it("retries with a fresh ticket when the terminal is refused because the link just dropped", async () => {
+      const home = tempHome();
+      const storePath = savedStore(home, [hostedProfile()]);
+      let opens = 0;
+      const portal = fakePortal({
+        "/api/hosted/cli/workspaces": listing([live], [live]),
+        "/api/hosted/cli/workspaces/ws-live/terminal": () =>
+          ++opens === 1
+            ? {
+                status: 409,
+                body: {
+                  ok: false,
+                  error: { code: "workspace_not_reachable", connectorHeartbeatAt: THREE_MIN_AGO },
+                },
+              }
+            : ticketReply(),
+      });
+      const { deps, notices } = harness(home, storePath, portal.fetch);
+
+      await expect(
+        runPsuConnectionFrontController(["--connect=portal.example.test/ws-live"], {
+          ...deps,
+          openHostedTerminal: async () => ({ exit: { code: 0, signal: 0 }, bound: true }),
+        }),
+      ).resolves.toMatchObject({ handled: true, exitCode: 0 });
+      expect(opens).toBe(2);
+      expect(notices[0]).toContain("its link to Papercusp cloud is down, last heard 3 min ago");
+    });
+
+    it("treats 4411 before a shell bound as the machine reconnecting: waits and reattaches", async () => {
+      const home = tempHome();
+      const storePath = savedStore(home, [hostedProfile()]);
+      const portal = fakePortal({
+        "/api/hosted/cli/workspaces": listing([live]),
+        "/api/hosted/cli/workspaces/ws-live/terminal": ticketReply,
+      });
+      const { deps } = harness(home, storePath, portal.fetch);
+      const results = [
+        { exit: null, bound: false, closeCode: 4411, closeReason: "connector_unavailable" },
+        { exit: { code: 0, signal: 0 }, bound: true },
+      ];
+      const openHostedTerminal = vi.fn(async () => results.shift());
+
+      await expect(
+        runPsuConnectionFrontController(["--connect=portal.example.test/ws-live"], {
+          ...deps,
+          openHostedTerminal,
+        }),
+      ).resolves.toMatchObject({ handled: true, exitCode: 0 });
+      expect(openHostedTerminal).toHaveBeenCalledTimes(2);
+      expect(paths(portal.calls).filter((path) => path.endsWith("/terminal"))).toHaveLength(2);
+    });
+
+    it("offers --connect-session only when a shell actually started", async () => {
+      const home = tempHome();
+      const storePath = savedStore(home, [hostedProfile()]);
+      const portal = fakePortal({
+        "/api/hosted/cli/workspaces": listing([live]),
+        "/api/hosted/cli/workspaces/ws-live/terminal": ticketReply,
+      });
+      const { deps } = harness(home, storePath, portal.fetch);
+      const run = (result: Record<string, unknown>) =>
+        runPsuConnectionFrontController(["--connect=portal.example.test/ws-live"], {
+          ...deps,
+          openHostedTerminal: async () => result,
+        });
+
+      const dropped = run({
+        exit: null,
+        bound: true,
+        closeCode: 4412,
+        closeReason: "connector_disconnected",
+      });
+      await expect(dropped).rejects.toThrow(
+        "The workspace machine's link to Papercusp cloud dropped (connector_disconnected)",
+      );
+      await expect(dropped).rejects.toThrow(
+        "psu --connect=portal.example.test/ws-live --connect-session=sess_1",
+      );
+
+      const neverStarted = run({ exit: null, bound: false, closeCode: 1006, closeReason: "" });
+      await expect(neverStarted).rejects.toThrow(
+        "The connection to ws-live closed before a shell started. Nothing was started there",
+      );
+      await expect(neverStarted).rejects.not.toThrow("--connect-session");
+    });
+
+    it("names link-down workspaces when none is reachable and no workspace was chosen", async () => {
+      const home = tempHome();
+      const storePath = savedStore(home, [hostedProfile()]);
+      const portal = fakePortal({
+        "/api/hosted/cli/workspaces": listing([linkDown]),
+      });
+      const { deps, sleeps } = harness(home, storePath, portal.fetch);
+      await expect(
+        runPsuConnectionFrontController(["--connect=portal.example.test"], deps),
+      ).rejects.toThrow(
+        `None of your workspaces at ${PORTAL} is reachable right now: ws-live is running, but its link to Papercusp cloud is down, last heard 3 min ago.`,
+      );
+      expect(sleeps).toEqual([]);
+    });
   });
 
   it("turns an expired sign-in and a stopped workspace into actionable errors", async () => {
