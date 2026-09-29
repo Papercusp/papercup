@@ -1134,6 +1134,68 @@ describe('Kopia managed entrypoint contract', () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  it('refunds the escalation of an override cycle that yielded to a priority waiter', () => {
+    // Measured 2026-09-29 (WI-10003884): once the hourly db-dump became a
+    // --priority-on-contention waiter, it preempted the overdue hot sweep at every
+    // :00 tick. Each preempted cycle had spent the once-per-hour escalation, so the
+    // :30 tick deferred on pressure with escalation_retry_in_sec and label=hot went
+    // 18,958s without a finish. A yield is not the "fails for a non-pressure reason"
+    // case the retry exists for, so the next tick must be free to override again.
+    const { dir, env } = fixture();
+    seedDeadlineBase(dir, 'hot', 25_200);
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; while :; do sleep 0.05; done' _ "$HOT_READY" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe --priority-on-contention -- true >"$DB_LOG" 2>&1 || exit 92
+        wait "$hot"
+        [ "$?" -eq ${SCHEDULED_DEFER_EXIT} ] || exit 93
+        grep -q 'result=staleness-override-armed' "$HOT_LOG" || exit 94
+        grep -q 'result=escalation-refunded reason=priority-waiter shared-guard handoff' "$HOT_LOG" || exit 95
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...env, HOT_READY: join(dir, 'hot-ready'), HOT_LOG: join(dir, 'hot.log'), DB_LOG: join(dir, 'db.log') },
+        timeout: 10_000,
+      },
+    );
+    const hotLog = existsSync(join(dir, 'hot.log')) ? readFileSync(join(dir, 'hot.log'), 'utf8') : 'missing';
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}\nhot guard:\n${hotLog}`).toBe(0);
+
+    // The next tick lands on a pressured host with the sweep still overdue.
+    pressureFile(join(dir, 'memory.pressure'), 23.84);
+    const marker = join(dir, 'ran');
+    const next = run(['--mode', 'scheduled', '--label', 'hot', '--', 'touch', marker], env);
+
+    expect(next.status, next.stderr).toBe(0);
+    expect(next.stdout).toContain('result=admitted-despite-pressure reason=memory-pressure');
+    expect(next.stdout).not.toContain('escalation_retry_in_sec');
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it('keeps the escalation spent when an override cycle ends on its own', () => {
+    // Calibration for the refund above: only a handoff refunds. A cycle that ran to
+    // its own exit -- here a failing child -- keeps the retry window, exactly as
+    // 'does not ignore pressure again on the very next tick after an escalation'.
+    const { dir, env } = fixture();
+    seedDeadlineBase(dir, 'hot', 25_200);
+    const first = run(['--mode', 'scheduled', '--label', 'hot', '--', 'false'], env);
+    expect(first.stdout).toContain('result=staleness-override-armed');
+    expect(first.stdout).not.toContain('escalation-refunded');
+
+    pressureFile(join(dir, 'memory.pressure'), 23.84);
+    const next = run(['--mode', 'scheduled', '--label', 'hot', '--', 'true'], env);
+    expect(next.status, next.stderr).toBe(SCHEDULED_DEFER_EXIT);
+    expect(next.stdout).toMatch(/escalation_retry_in_sec=\d+/);
+  });
+
   it('waits for the lock when a scheduled cycle is already past its staleness deadline', () => {
     const { dir, env } = fixture();
     seedDeadlineBase(dir, 'stale-lock', 25_200);

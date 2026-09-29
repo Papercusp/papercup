@@ -410,6 +410,16 @@ run_scheduled_command() {
   child_rc=$?
   if [ -n "$runtime_abort_reason" ]; then
     guard_log "result=deferred-during-run reason=$runtime_abort_reason child_rc=$child_rc"
+    # The escalation retry exists so a backup that FAILS for a non-pressure reason
+    # cannot override pressure on every tick forever. A cycle that yielded to a
+    # priority waiter did not fail, so it must not spend the once-per-retry
+    # override. Measured 2026-09-29 (WI-10003884): the hourly db-dump preempted the
+    # overdue hot sweep at every :00 tick, each preemption spent the escalation, and
+    # the :30 tick then deferred on pressure -- label=hot went 18,958s unfinished.
+    if [ "$pressure_escalated" -eq 1 ]; then
+      rm -f "$escalation_path" 2>/dev/null || true
+      guard_log "result=escalation-refunded reason=$runtime_abort_reason"
+    fi
     return "$scheduled_defer_exit"
   fi
   return "$child_rc"
