@@ -290,6 +290,11 @@ describe('hosted self-signup admission (real Postgres, real roles)', () => {
       // duplicate_identity is what lets the route sign a returning user in.
       expect(again).toEqual({ ok: false, code: 'duplicate_identity', retryable: false });
     }
+    // A returning user's sign-up click is a sign-in, not an admission attempt:
+    // it must leave no ledger row behind. Measured live 2026-09-29 (WI-10002240):
+    // the committed pre-admission ledger write left a 'pending' row per replay
+    // that nothing ever resolved.
+    expect(await attemptStatuses(email)).toEqual(['completed']);
   });
 
   it('SIGNIN-NO-ADMISSION: ordinary sign-in refuses a nonmember and writes nothing', async () => {
