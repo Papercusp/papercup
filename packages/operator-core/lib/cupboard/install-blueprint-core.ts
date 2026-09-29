@@ -38,12 +38,23 @@ import { resolveBlueprintPackageInputs, type BlueprintPackageResolver } from '..
 import { resolveSeedPackKey } from '../knowledge-packs/seed-pack-key';
 import {
   BlueprintLifecycleError,
+  buildBlueprintReleaseArchive,
   commitBlueprintRelease,
+  verifyListedBlueprintRelease,
   type BlueprintActivationLayer,
   type BlueprintActivationPreflight,
   type BlueprintReleaseDiff,
   type BlueprintLifecycleOperation,
 } from './blueprint-release';
+import {
+  ClassContractImportError,
+  classContractConsentSubject,
+  readClassContractSources,
+  type ClassContractConsent,
+  type ClassContractPayloadEntry,
+  type ImportClassContractsInput,
+  type ImportClassContractsResult,
+} from './class-contract-payload';
 import {
   resolveCapabilityGrants,
   type CapabilityGrantSet,
@@ -80,6 +91,10 @@ export interface InstallBlueprintCoreInput {
   /** Trusted Cupboard moderation receipt for this exact listed artifact. Direct
    * GitHub URL installs cannot supply one through the public install door. */
   modeApproval?: { listingId: string; approvedArtifactContentHash: string };
+  /** Administrator consent for the release's third-party class contracts
+   * (P-021), bound to the exact artifact hash and {ref, contractHash} set that
+   * a `class_contract_consent_required` refusal returned. */
+  classContractConsent?: ClassContractConsent;
   capabilityContext?: {
     workspaceId: string;
     potSlug: string;
@@ -114,6 +129,8 @@ export interface InstallBlueprintCoreResult {
   capabilityGrants: CapabilityGrantResolutionVerdict | null;
   capabilityProviderReview: CapabilityProviderPackageClosureReview | null;
   capabilityProviderInstalls: CapabilityProviderPackageInstallResult | null;
+  /** Consent-bound class-contract import; null when the release carries none. */
+  classContracts: ImportClassContractsResult | null;
 }
 
 export interface InstallBlueprintCoreDeps {
@@ -153,6 +170,19 @@ export interface InstallBlueprintCoreDeps {
   commitCapabilitySelections?: (
     selections: readonly CapabilityProviderSelection[],
   ) => Promise<{ rollback: () => Promise<void> }>;
+  /** Consent-bound writer into the destination capability-class registry
+   * (`importCupboardClassContracts`, scoped to the install's workspace). */
+  importClassContracts?: (
+    input: Omit<ImportClassContractsInput, 'workspaceId'>,
+  ) => Promise<ImportClassContractsResult>;
+}
+
+function classContractInstallError(error: ClassContractImportError, data: Record<string, unknown> = {}): InstallBlueprintError {
+  const consent = error.code === 'consent-required' || error.code === 'consent-rejected' || error.code === 'consent-mismatch';
+  return new InstallBlueprintError(error.message, consent ? 409 : 422, `class_contract_${error.code}`, {
+    refusals: error.refusals,
+    ...data,
+  });
 }
 
 const GITHUB_URL_RE = /^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,38}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}?(?:\.git)?\/?$/;
@@ -425,6 +455,81 @@ export async function installBlueprintFromCupboardCore(
     if (!depCheck.pins?.length) {
       throw new InstallBlueprintError(`blueprint "${id}" package pins invalid: ${depCheck.messages.join('; ')}`, 422);
     }
+    const version = typeof raw.version === 'string'
+      ? raw.version
+      : depCheck.pins.find((pin) => pin.packageKind === 'blueprint' && pin.ref === id)?.revision ?? 'unversioned';
+
+    // P-021 / D-015: third-party class contracts ride in the signed closure.
+    // They enter the destination registry only after the listed release has
+    // verified (hash pin + publisher signature) and only with administrator
+    // consent bound to this exact artifact and contract set — before grant
+    // resolution, so a grant on a novel class resolves against the registry.
+    let classContracts: ClassContractPayloadEntry[] = [];
+    try {
+      classContracts = await readClassContractSources(bpDir);
+    } catch (error) {
+      if (error instanceof ClassContractImportError) throw classContractInstallError(error);
+      throw error;
+    }
+    let classContractImport: ImportClassContractsResult | null = null;
+    if (classContracts.length > 0) {
+      let verifiedPublisherLogin: string | null;
+      let artifactContentHash: string;
+      let closurePins: Array<{ packageKind: string; ref: string }>;
+      try {
+        const archive = buildBlueprintReleaseArchive(depCheck.pins, id, classContracts);
+        ({ verifiedPublisherLogin } = verifyListedBlueprintRelease({
+          id, version, archive, expectedRelease: input.expectedRelease,
+        }));
+        artifactContentHash = archive.package.rootHash;
+        closurePins = archive.pins.map((pin) => ({ packageKind: pin.packageKind, ref: pin.ref }));
+      } catch (error) {
+        if (error instanceof ClassContractImportError) throw classContractInstallError(error);
+        if (error instanceof BlueprintLifecycleError) throw new InstallBlueprintError(error.message, error.status);
+        throw error;
+      }
+      const consentSubject = classContractConsentSubject(artifactContentHash, classContracts);
+      const review = { consentSubject, contracts: classContracts };
+      if (!verifiedPublisherLogin) {
+        throw new InstallBlueprintError(
+          `blueprint "${id}" carries class contracts but no verified publisher signature; ` +
+            'contracts are importable only from a signed Cupboard release',
+          422,
+          'class_contract_unsigned-publisher',
+          review,
+        );
+      }
+      if (!input.classContractConsent) {
+        throw new InstallBlueprintError(
+          `blueprint "${id}" carries ${classContracts.length} class contract(s) that need administrator consent ` +
+            'for this exact artifact before they enter the capability-class registry',
+          409,
+          'class_contract_consent_required',
+          review,
+        );
+      }
+      if (!deps.importClassContracts) {
+        throw new InstallBlueprintError(
+          'class-contract importer is not configured for this install path',
+          500,
+          'class_contract_importer_unavailable',
+          review,
+        );
+      }
+      try {
+        classContractImport = await deps.importClassContracts({
+          artifactContentHash,
+          publisherLogin: verifiedPublisherLogin,
+          entries: classContracts,
+          closurePins,
+          consent: input.classContractConsent,
+          listingRef: input.listingRef ?? id,
+        });
+      } catch (error) {
+        if (error instanceof ClassContractImportError) throw classContractInstallError(error, review);
+        throw error;
+      }
+    }
 
     let capabilityGrantResolution: CapabilityGrantResolutionVerdict | null = null;
     let capabilityProviderReview: CapabilityProviderPackageClosureReview | null = null;
@@ -564,9 +669,6 @@ export async function installBlueprintFromCupboardCore(
       }
     }
 
-    const version = typeof raw.version === 'string'
-      ? raw.version
-      : depCheck.pins?.find((pin) => pin.packageKind === 'blueprint' && pin.ref === id)?.revision ?? 'unversioned';
     let lifecycle: Awaited<ReturnType<typeof commitBlueprintRelease>>;
     try {
       lifecycle = await commitBlueprintRelease({
@@ -576,6 +678,7 @@ export async function installBlueprintFromCupboardCore(
         version,
         source: url,
         pins: depCheck.pins ?? [],
+        classContracts,
         activationStack: input.activationStack,
         expectedRelease: input.expectedRelease,
         modeApproval: typeof modePolicyRef === 'string' ? {
@@ -629,6 +732,7 @@ export async function installBlueprintFromCupboardCore(
       capabilityGrants: capabilityGrantResolution,
       capabilityProviderReview,
       capabilityProviderInstalls,
+      classContracts: classContractImport,
     };
   } finally {
     await fs.rm(cloneDir, { recursive: true, force: true }).catch(() => {});

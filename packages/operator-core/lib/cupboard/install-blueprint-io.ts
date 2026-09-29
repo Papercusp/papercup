@@ -33,6 +33,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { potHomeSlugForHarness } from '../hive-federation';
 import { resolveCupboardBaseUrl } from './base-url';
 import { validateListingManifest, type CupboardReleaseManifest } from './listing-manifest';
+import { importCupboardClassContracts, type ClassContractConsent } from './class-contract-payload';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import {
   installBlueprintFromCupboardCore,
@@ -83,6 +84,9 @@ export interface InstallBlueprintFromCupboardInput {
   capabilityRole?: string;
   /** Exact class ref to provider package or provider package@version. */
   capabilityProviderSelections?: Readonly<Record<string, string>>;
+  /** P-021: consent for the release's class contracts, echoing the exact
+   * `consentSubject` a `class_contract_consent_required` refusal returned. */
+  classContractConsent?: ClassContractConsent;
 }
 
 export interface InstallBlueprintClosureResult extends InstallBlueprintCoreResult {
@@ -196,8 +200,17 @@ export async function fetchCupboardBlueprintIds(): Promise<Set<string>> {
  *  tiers (blueprint-role-bundling P-007). */
 function makeInstallCoreDeps(
   capabilityScope?: { workspaceId: string; potSlug: string },
+  registryWorkspaceId?: string,
 ): InstallBlueprintCoreDeps {
+  const classRegistryWorkspace = capabilityScope?.workspaceId ?? registryWorkspaceId;
   return {
+    ...(classRegistryWorkspace ? {
+      importClassContracts: (input) => importCupboardClassContracts(getOrgPg().sql, {
+        ...input,
+        workspaceId: classRegistryWorkspace,
+        importedBy: 'cupboard:install-blueprint',
+      }),
+    } : {}),
     cloneRepo: gitCloneShallow,
     installedBlueprintsDir: INSTALLED_BLUEPRINTS_DIR,
     tmpDir: tmpdir,
@@ -431,8 +444,9 @@ export async function installBlueprintFromCupboard(
       activationStack: activationLayers(input.activationStack),
       expectedRelease,
       modeApproval,
+      ...(input.classContractConsent ? { classContractConsent: input.classContractConsent } : {}),
       ...(capabilityContext ? { capabilityContext } : {}),
-    }, makeInstallCoreDeps(capabilityScope));
+    }, makeInstallCoreDeps(capabilityScope, workspaceId));
 
     // D-001's consent-gated plugin fetch: with `installPlugins: true`, install
     // each declared plugin resolvable from the Cupboard (not yet installed).

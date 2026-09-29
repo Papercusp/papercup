@@ -8,7 +8,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import {
   BlueprintSourceDocumentSchema,
   blueprintPackageInputs,
@@ -35,6 +35,12 @@ import {
 import { listingManifestSigningBytes, unsignedListingManifest, type CupboardReleaseManifest } from './listing-manifest';
 import { verifyEd25519 } from '../identity/ed25519';
 import type { ReleaseGateInput } from './publish-release-gate';
+import {
+  ClassContractImportError,
+  readClassContractSources,
+  validateClassContractPayload,
+  type ClassContractPayloadEntry,
+} from './class-contract-payload';
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 const INDEX_SCHEMA_VERSION = 1 as const;
@@ -81,6 +87,8 @@ export interface BlueprintReleaseArchive {
   package: ArtifactPackage;
   root: ResolvedPackageInput;
   pins: ResolvedPackageInput[];
+  /** P-021 typed class-contract section; covered by the artifact hash and signature. */
+  classContracts: ClassContractPayloadEntry[];
 }
 
 export interface BlueprintReleaseDiff {
@@ -100,6 +108,9 @@ export interface CommitBlueprintReleaseInput {
   source: string;
   pins: readonly ResolvedPackageInput[];
   activationStack?: readonly BlueprintActivationLayer[];
+  /** Third-party class contracts carried beside the blueprint (P-021). They are
+   * part of the hashed closure, so a changed contract fails the pin/signature. */
+  classContracts?: readonly unknown[];
   /**
    * The listed release identity. `manifest` is the WHOLE signed manifest as the
    * publisher signed it — carried verbatim, never reconstructed from the pins
@@ -199,9 +210,17 @@ function releasePinSummary(pin: ResolvedPackageInput) {
   return { packageKind: pin.packageKind, ref: pin.ref, revision: pin.revision, contentHash: pin.contentHash };
 }
 
+/**
+ * The canonical closure bytes. A non-empty `classContracts` section (P-021 /
+ * D-015) joins the SAME JSON document, so the Merkle root and the publisher
+ * signature cover each contract; it is omitted when empty so every existing
+ * artifact hash is unchanged. Throws `ClassContractImportError` (`forged-hash`)
+ * when a declared contract hash does not match its canonical bytes.
+ */
 export function buildBlueprintReleaseArchive(
   pinsInput: readonly ResolvedPackageInput[],
   id: string,
+  classContractsInput: readonly unknown[] = [],
 ): BlueprintReleaseArchive {
   assertSafeId(id);
   const pins = validateAgentInputClosure(pinsInput)
@@ -209,11 +228,83 @@ export function buildBlueprintReleaseArchive(
     .sort((a, b) => `${a.packageKind}:${a.ref}`.localeCompare(`${b.packageKind}:${b.ref}`));
   const root = pins.find((pin) => pin.packageKind === 'blueprint' && pin.ref === id);
   if (!root) throw new BlueprintLifecycleError(`blueprint ${JSON.stringify(id)} has no root package pin`, 422);
+  const classContracts = validateClassContractPayload(classContractsInput);
   const bytes = Buffer.from(
-    canonicalJson({ schemaVersion: 1, kind: 'blueprint', id, root: releasePinSummary(root), pins }),
+    canonicalJson({
+      schemaVersion: 1,
+      kind: 'blueprint',
+      id,
+      root: releasePinSummary(root),
+      pins,
+      ...(classContracts.length ? { classContracts } : {}),
+    }),
     'utf8',
   );
-  return { bytes, package: buildArtifactPackage(bytes), root, pins };
+  return { bytes, package: buildArtifactPackage(bytes), root, pins, classContracts };
+}
+
+/**
+ * Verify a listed release against the archive the installer computed: the
+ * listed version and content-hash pins, and a PRESENT publisher signature
+ * (identities-v1 D-073/D-074). Returns the publisher login ONLY when a
+ * signature verified — the one input a class-contract namespace may trust.
+ */
+export function verifyListedBlueprintRelease(input: {
+  id: string;
+  version: string;
+  archive: BlueprintReleaseArchive;
+  expectedRelease?: CommitBlueprintReleaseInput['expectedRelease'];
+}): { verifiedPublisherLogin: string | null } {
+  const { archive } = input;
+  if (input.expectedRelease?.version && input.expectedRelease.version !== input.version) {
+    throw new BlueprintLifecycleError(
+      `blueprint ${input.id} version ${input.version} does not match listed release ${input.expectedRelease.version}`,
+      422,
+    );
+  }
+  if (
+    input.expectedRelease?.contentHash &&
+    input.expectedRelease.contentHash.toLowerCase() !== archive.package.rootHash.toLowerCase()
+  ) {
+    throw new BlueprintLifecycleError(
+      `blueprint ${input.id} package hashes to ${archive.package.rootHash}, listed release is ${input.expectedRelease.contentHash}`,
+      422,
+    );
+  }
+  // Verify a PRESENT publisher signature over the listed manifest, and refuse
+  // on failure (identities-v1 D-073/D-074). The signing bytes come from the
+  // SAME helpers publish signed with, so there is exactly one byte derivation
+  // in the system; an ABSENT manifest installs unsigned, still covered by the
+  // content-hash pin above. Only reached after the closure has been hashed,
+  // so the diagnostic can name both the computed and the signed identity.
+  const listedManifest = input.expectedRelease?.manifest;
+  if (!listedManifest?.signature) return { verifiedPublisherLogin: null };
+  const publisher = listedManifest.publisher;
+  const signedBy = publisher?.login ? `${publisher.login} ` : '';
+  const listedAs = `${listedManifest.listingRef}@${listedManifest.releaseVersion}`;
+  if (
+    !verifyEd25519(
+      listingManifestSigningBytes(unsignedListingManifest(listedManifest)),
+      publisher?.devicePubkey ?? '',
+      Buffer.from(listedManifest.signature, 'base64'),
+    )
+  ) {
+    throw new BlueprintLifecycleError(
+      `blueprint ${input.id} listed release ${listedAs} has an INVALID publisher signature — ` +
+        `the manifest does not verify against the device key it names ` +
+        `(${signedBy}${(publisher?.devicePubkey ?? 'no-pubkey').slice(0, 16)}…), ` +
+        `so its contents were altered after signing; refusing to install ${archive.package.rootHash}`,
+      422,
+    );
+  }
+  if (listedManifest.contentHash.toLowerCase() !== archive.package.rootHash.toLowerCase()) {
+    throw new BlueprintLifecycleError(
+      `blueprint ${input.id} package hashes to ${archive.package.rootHash}, but the signed manifest for ` +
+        `${listedAs} pins ${listedManifest.contentHash} — the cloned source is not the release that was signed`,
+      422,
+    );
+  }
+  return { verifiedPublisherLogin: publisher?.login?.trim() || null };
 }
 
 /** Resolve, semantically validate and snapshot the exact file/package closure
@@ -274,7 +365,15 @@ export async function snapshotBlueprintReleaseSource(input: {
         blueprints?: string[];
       }
     | undefined;
-  const archive = buildBlueprintReleaseArchive(pins, id);
+  let archive: BlueprintReleaseArchive;
+  try {
+    archive = buildBlueprintReleaseArchive(pins, id, await readClassContractSources(dirname(input.blueprintFile)));
+  } catch (error) {
+    if (error instanceof ClassContractImportError) {
+      throw new BlueprintLifecycleError(`blueprint ${id} class contracts are invalid: ${error.message}`, 422);
+    }
+    throw error;
+  }
   return {
     id,
     version: typeof raw.version === 'string' ? raw.version : archive.root.revision,
@@ -448,8 +547,11 @@ async function withLifecycleLock<T>(installedDir: string, id: string, run: () =>
 async function readArchive(installedDir: string, id: string, contentHash: string): Promise<BlueprintReleaseArchive> {
   const path = join(versionDir(installedDir, id, contentHash), 'closure.json');
   try {
-    const parsed = JSON.parse(await fs.readFile(path, 'utf8')) as { pins?: ResolvedPackageInput[] };
-    return buildBlueprintReleaseArchive(parsed.pins ?? [], id);
+    const parsed = JSON.parse(await fs.readFile(path, 'utf8')) as {
+      pins?: ResolvedPackageInput[];
+      classContracts?: unknown[];
+    };
+    return buildBlueprintReleaseArchive(parsed.pins ?? [], id, parsed.classContracts ?? []);
   } catch (error) {
     if (error instanceof BlueprintLifecycleError) throw error;
     throw new BlueprintLifecycleError(`blueprint ${id}@${contentHash} closure is unreadable: ${String(error)}`, 500);
@@ -613,7 +715,15 @@ export async function commitBlueprintRelease(
 ): Promise<CommitBlueprintReleaseResult> {
   assertSafeId(input.id);
   return withLifecycleLock(input.installedDir, input.id, async () => {
-    const archive = buildBlueprintReleaseArchive(input.pins, input.id);
+    let archive: BlueprintReleaseArchive;
+    try {
+      archive = buildBlueprintReleaseArchive(input.pins, input.id, input.classContracts ?? []);
+    } catch (error) {
+      if (error instanceof ClassContractImportError) {
+        throw new BlueprintLifecycleError(`blueprint ${input.id} class contracts are invalid: ${error.message}`, 422);
+      }
+      throw error;
+    }
     const modePolicyRef = (archive.root.value as { mode?: { policyRef?: unknown } } | undefined)?.mode?.policyRef;
     if (typeof modePolicyRef === 'string' &&
         (!input.modeApproval || input.modeApproval.policyRef !== modePolicyRef ||
@@ -628,55 +738,12 @@ export async function commitBlueprintRelease(
         .join('; ');
       throw new BlueprintLifecycleError(`blueprint ${input.id} activation slot conflict — ${details}`, 409);
     }
-    if (input.expectedRelease?.version && input.expectedRelease.version !== input.version) {
-      throw new BlueprintLifecycleError(
-        `blueprint ${input.id} version ${input.version} does not match listed release ${input.expectedRelease.version}`,
-        422,
-      );
-    }
-    if (
-      input.expectedRelease?.contentHash &&
-      input.expectedRelease.contentHash.toLowerCase() !== archive.package.rootHash.toLowerCase()
-    ) {
-      throw new BlueprintLifecycleError(
-        `blueprint ${input.id} package hashes to ${archive.package.rootHash}, listed release is ${input.expectedRelease.contentHash}`,
-        422,
-      );
-    }
-    // Verify a PRESENT publisher signature over the listed manifest, and refuse
-    // on failure (identities-v1 D-073/D-074). The signing bytes come from the
-    // SAME helpers publish signed with, so there is exactly one byte derivation
-    // in the system; an ABSENT manifest installs unsigned, still covered by the
-    // content-hash pin above. Only reached after the closure has been hashed,
-    // so the diagnostic can name both the computed and the signed identity.
-    const listedManifest = input.expectedRelease?.manifest;
-    if (listedManifest?.signature) {
-      const publisher = listedManifest.publisher;
-      const signedBy = publisher?.login ? `${publisher.login} ` : '';
-      const listedAs = `${listedManifest.listingRef}@${listedManifest.releaseVersion}`;
-      if (
-        !verifyEd25519(
-          listingManifestSigningBytes(unsignedListingManifest(listedManifest)),
-          publisher?.devicePubkey ?? '',
-          Buffer.from(listedManifest.signature, 'base64'),
-        )
-      ) {
-        throw new BlueprintLifecycleError(
-          `blueprint ${input.id} listed release ${listedAs} has an INVALID publisher signature — ` +
-            `the manifest does not verify against the device key it names ` +
-            `(${signedBy}${(publisher?.devicePubkey ?? 'no-pubkey').slice(0, 16)}…), ` +
-            `so its contents were altered after signing; refusing to install ${archive.package.rootHash}`,
-          422,
-        );
-      }
-      if (listedManifest.contentHash.toLowerCase() !== archive.package.rootHash.toLowerCase()) {
-        throw new BlueprintLifecycleError(
-          `blueprint ${input.id} package hashes to ${archive.package.rootHash}, but the signed manifest for ` +
-            `${listedAs} pins ${listedManifest.contentHash} — the cloned source is not the release that was signed`,
-          422,
-        );
-      }
-    }
+    verifyListedBlueprintRelease({
+      id: input.id,
+      version: input.version,
+      archive,
+      expectedRelease: input.expectedRelease,
+    });
     const index = await readIndex(input.installedDir, input.id);
     const priorArchive = index.activeContentHash
       ? await readArchive(input.installedDir, input.id, index.activeContentHash)
@@ -711,7 +778,11 @@ export async function commitBlueprintRelease(
       await copyPackage(input.sourceDir, join(stage, 'content'));
       await fs.writeFile(
         join(stage, 'closure.json'),
-        JSON.stringify({ schemaVersion: 1, pins: archive.pins }, null, 2) + '\n',
+        JSON.stringify({
+          schemaVersion: 1,
+          pins: archive.pins,
+          ...(archive.classContracts.length ? { classContracts: archive.classContracts } : {}),
+        }, null, 2) + '\n',
       );
       await fs.writeFile(join(stage, 'release.json'), JSON.stringify(record, null, 2) + '\n');
       await fs.rename(stage, historyDir);
