@@ -228,6 +228,17 @@ export async function main(root = ROOT) {
   return 0;
 }
 
+// No top-level await here: this module is IMPORTED on the gate's hot path (executed-source-map.mjs,
+// test-config/vitest-config.ts), and a loader that transforms it to CJS rejects top-level await at
+// transform time — that took the green-checkpoint down before any suite ran (WI-10003808).
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.exitCode = await main();
+  main().then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (error) => {
+      console.error(error);
+      process.exitCode = 1;
+    },
+  );
 }
