@@ -50,6 +50,7 @@ function run(
     source: 'admin-suite',
     status,
     gitSha: 'abc12345',
+    buildSha: null,
     runId: 'testrun-1',
     measures: [...measures, ...declaredInteractions],
   };
