@@ -370,6 +370,27 @@ describe('goals:start — the happy path', () => {
     }));
   });
 
+  it('R-4 / D-032: a baseline arm stamps kickoff and portfolio as experiment-arm; brief-only and full keep the bytes', async () => {
+    const outputsFor = async (behaviorArm: 'baseline' | 'brief-only' | 'full' | undefined) => {
+      bindIdentityMock.mockClear();
+      await bindGoalLaunchIdentity({
+        goalId: 'goal-arm', ownerId: 'su-arm', workspaceId: 'ws-test',
+        kickoff: 'GOAL kickoff', portfolio: 'GOAL PORTFOLIO SNAPSHOT', modeState: [], behaviorArm,
+      }, bindIdentityMock as never);
+      return (bindIdentityMock.mock.calls[0] as unknown as [{ outputs: unknown[] }])[0].outputs;
+    };
+    expect(await outputsFor('baseline')).toEqual(expect.arrayContaining([
+      { contributionId: 'goal-kickoff', omission: { reason: 'experiment-arm' } },
+      { contributionId: 'goal-portfolio', omission: { reason: 'experiment-arm' } },
+    ]));
+    for (const arm of ['brief-only', 'full', undefined] as const) {
+      expect(await outputsFor(arm)).toEqual(expect.arrayContaining([
+        { contributionId: 'goal-kickoff', value: 'GOAL kickoff' },
+        { contributionId: 'goal-portfolio', value: 'GOAL PORTFOLIO SNAPSHOT' },
+      ]));
+    }
+  });
+
   it('reads goal history in the production handler and injects it into the kickoff env', async () => {
     const priorAttempts = await import('../../prior-attempt-context');
     const history: GoalHistoryContext = {
