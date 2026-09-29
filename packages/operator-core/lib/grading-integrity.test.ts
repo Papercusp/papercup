@@ -846,7 +846,9 @@ describe('dispatchPendingGradingAudits', () => {
     await dispatchPendingGradingAudits({ targetIds: ['EI-state-recheck'], ctx }, d);
 
     const brief = (d.launch.mock.calls[0]?.[0] as { brief: string }).brief;
-    expect(brief).toContain("Before emitting, re-read the target scorecard's payload.observation.gradingAudit.state");
+    expect(brief).toContain('Before emitting, re-read the target with scorecards:get');
+    // EI-24583166035391772: the brief must name fields scorecards:get actually returns.
+    expect(brief).toContain('scorecard.auditTarget');
     expect(brief).toContain("gradingAudit.state is exactly 'pending'");
     expect(brief).toContain("state is not 'pending' (including 'passed', 'failed', or 'cancelled')");
     expect(brief).toContain('superseded or retracted');

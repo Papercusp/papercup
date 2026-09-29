@@ -940,3 +940,80 @@ describe('scorecard history P-009 — real PG large-corpus contract', () => {
     );
   });
 });
+
+describe('readScorecardEvidence audit-target status (EI-24583166035391772) — real PG', () => {
+  let db: OrgTestDb;
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.sql = db.adminSql;
+  });
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  // EI-24583166035391772: the grading-audit dispatch brief tells the auditor to
+  // re-check supersession, retraction and subject-rubric currentness before
+  // emitting. Those are READ-TIME relations, never stamps on the card, so the
+  // evidence-first reader must compute them — and answer explicitly, so an
+  // absent key is never read as "current".
+  it('evidence-first reader reports the audit-target status: superseded, retracted, rubric-subject currentness', async () => {
+    const AUDIT_RUBRIC = 'test-audit-target-status';
+    const insert = async (issueId: string, observation: Record<string, unknown>, at: string) => {
+      await db.adminSql`
+        INSERT INTO harness_shared.engineer_issues
+          (workspace_id, issue_id, kind, scope, title, body, severity, source,
+           state, payload, created_by, signal_origin, created_at, updated_at)
+        VALUES (
+          ${issuesScopeWorkspace()}, ${issueId}, 'change',
+          'harness:papercusp', ${`scorecard ${issueId}`}, '', 'minor', 'test',
+          'done',
+          ${JSON.stringify({ observation: { rubricRef: AUDIT_RUBRIC, sourceHive: 'papercusp', ...observation } })}::text::jsonb,
+          'su-test', 'organic',
+          ${at}::timestamptz, ${at}::timestamptz
+        )`;
+    };
+    const ratings = { honesty: { rating: 'pass', evidence: 'ran the probe' } };
+    await insert('EI-audit-target-plain', { ratings }, '2026-06-21T10:00:00Z');
+    await insert('EI-audit-target-old', { ratings }, '2026-06-21T10:01:00Z');
+    await insert('EI-audit-target-new', { ratings, supersedes: 'EI-audit-target-old' }, '2026-06-21T10:02:00Z');
+    await insert('EI-audit-target-retracted', {
+      ratings,
+      retracted: { at: '2026-06-21T10:05:00Z', by: 'su-test', reason: 'wrong subject' },
+    }, '2026-06-21T10:03:00Z');
+    await insert('EI-audit-target-rubric-subject', {
+      ratings,
+      subject: { kind: 'rubric', ref: 'no-such-rubric-for-audit-target' },
+    }, '2026-06-21T10:04:00Z');
+
+    const read = async (id: string) => {
+      const result = await readScorecardEvidence(id);
+      if (result.kind !== 'found') throw new Error(`${id}: ${result.kind}`);
+      return result.scorecard;
+    };
+
+    // A plain card answers EXPLICITLY — every key present, not absent-means-current.
+    expect((await read('EI-audit-target-plain')).auditTarget).toEqual({
+      current: true, superseded: false, supersededBy: null, retracted: false, subjectRubricCurrentness: null,
+    });
+
+    const old = await read('EI-audit-target-old');
+    expect(old.supersededBy).toBe('EI-audit-target-new');
+    expect(old.auditTarget).toMatchObject({ current: false, superseded: true, supersededBy: 'EI-audit-target-new' });
+    // The superseder itself is current.
+    expect((await read('EI-audit-target-new')).auditTarget).toMatchObject({ current: true, superseded: false });
+
+    const retracted = await read('EI-audit-target-retracted');
+    expect(retracted.auditTarget).toMatchObject({ current: false, retracted: true, superseded: false });
+
+    // A rubric subject whose live identity cannot be resolved is NOT current.
+    const rubricSubject = await read('EI-audit-target-rubric-subject');
+    expect(rubricSubject.subjectRubricCurrentness).toMatchObject({ state: 'unknown', reason: 'live-identity-missing' });
+    expect(rubricSubject.auditTarget).toMatchObject({
+      current: false,
+      subjectRubricCurrentness: expect.objectContaining({ state: 'unknown' }),
+    });
+  });
+});
+

@@ -165,6 +165,47 @@ describe('mutationProbeRefusal narrowing', () => {
     }
   });
 
+  // EI-24556278753778650: a createRequire loader used to refuse EVERY test whose closure held the
+  // text `createRequire(` — including the db connection module reached by most operator-core tests.
+  describe('createRequire loaders', () => {
+    const lazyNodeRequire = [
+      "import { createRequire } from 'node:module';",
+      'let _nodeRequire: ReturnType<typeof createRequire> | undefined;',
+      'const nodeRequire = (id: string): unknown => (_nodeRequire ??= createRequire(import.meta.url))(id);',
+      "export const home = () => (nodeRequire('node:os') as { homedir(): string }).homedir();",
+      "export const exists = (p: string) => (nodeRequire('node:fs') as { existsSync(p: string): boolean }).existsSync(p);",
+    ].join('\n');
+
+    it('admits a test that reaches a createRequire loader of builtins only (the libs/db connection idiom)', async () => {
+      const dir = checkout({ ...base,
+        'src/connection.ts': `${lazyNodeRequire}\n// never \`createRequire(import.meta.url)(x)\` eagerly\n`,
+        'tests/db.test.ts': "import { home } from '../src/connection';\nimport { other } from '../src/other';\nexport default [home, other];\n" });
+      await expect(mutationProbeRefusal(dir, ['tests/db.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+    });
+
+    it('follows a literal createRequire edge into the probed source and refuses', async () => {
+      const dir = checkout({ ...base,
+        'src/cr-loader.ts': "import { createRequire } from 'node:module';\nconst req = createRequire(import.meta.url);\nexport const mod = req('./mid');\n",
+        'tests/cr.test.ts': "import { mod } from '../src/cr-loader';\nexport default mod;\n" });
+      const refusal = await mutationProbeRefusal(dir, ['tests/cr.test.ts'], probe('src/subject.ts'));
+      expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+      // Reached through the resolved edge (cr-loader → mid → subject), not a name heuristic.
+      expect(refusal!.hint).toContain(`imports ${join(dir, 'src/subject.ts')}`);
+    });
+
+    it('refuses only the tests whose closure reaches an unfollowable createRequire loader', async () => {
+      const dir = checkout({ ...base,
+        'src/dyn-loader.ts': "import { createRequire } from 'node:module';\nconst req = createRequire(import.meta.url);\nexport const load = (n: string) => req(n);\n",
+        'tests/dyn.test.ts': "import { load } from '../src/dyn-loader';\nexport default load;\n",
+        'tests/other.test.ts': "import { other } from '../src/other';\nexport default other;\n" });
+      await expect(mutationProbeRefusal(dir, ['tests/other.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+      const refusal = await mutationProbeRefusal(dir, ['tests/other.test.ts', 'tests/dyn.test.ts'], probe('src/subject.ts'));
+      expect(refusal).toMatchObject({ error: 'mutation_probe_active' });
+      expect(refusal!.hint).toContain('tests/dyn.test.ts may observe it');
+      expect(refusal!.hint).toContain('createRequire loader this walk cannot follow');
+    });
+  });
+
   it('makes no closure walk when no probe is active', async () => {
     await expect(mutationProbeRefusal(makeRoot(), ['tests/absent.test.ts'], probe())).resolves.toBeNull();
   });

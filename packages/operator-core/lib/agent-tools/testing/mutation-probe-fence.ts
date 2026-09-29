@@ -3,11 +3,12 @@ import { existsSync } from 'node:fs';
 import { readFile, realpath } from 'node:fs/promises';
 import { isBuiltin } from 'node:module';
 import { tmpdir } from 'node:os';
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { getuid } from 'node:process';
 import { build, type Metafile, type Plugin } from 'esbuild';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
+import { createRequireSpecifiers } from './create-require-specifiers';
 
 /**
  * Return active mutation-probe paths for one physical checkout. The lock is a
@@ -59,7 +60,46 @@ const externalPackages: Plugin = {
   },
 };
 
-type Closure = { status: 'complete'; files: Map<string, Set<string>> } | { status: 'incomplete'; reason: string };
+/**
+ * EI-24556278753778650: make `createRequire` loaders visible to the import graph. esbuild cannot
+ * follow a require made through `createRequire(...)`, so each such module is analysed and every
+ * specifier its loaders can load is appended as a side-effect import. esbuild then resolves those
+ * and walks them like any other edge (a builtin/package stays external), so a test's closure grows
+ * by exactly what the loader can reach. A loader whose specifier set cannot be established is
+ * recorded per MODULE, which refuses only the tests whose closure actually reaches that module.
+ */
+const CODE_FILTER = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+function createRequireEdges(unfollowable: Map<string, string>): Plugin {
+  return {
+    name: 'mutation-probe-create-require-edges',
+    setup(pluginBuild) {
+      pluginBuild.onLoad({ filter: CODE_FILTER }, async (args) => {
+        if (args.namespace !== 'file' || args.path.split(sep).includes('node_modules')) return undefined;
+        const text = await readFile(args.path, 'utf8');
+        // The regex is a cheap prefilter; the AST decides (strings and comments are not calls).
+        const dynamic = unfollowedImportAt(text) === null ? null : unfollowableImportCall(args.path, text);
+        if (dynamic) unfollowable.set(args.path, `has an import this walk cannot follow: ${dynamic}`);
+        const analysis = createRequireSpecifiers(args.path, text);
+        if (analysis === null) return undefined;
+        if (analysis.status === 'unfollowable') {
+          if (!unfollowable.has(args.path)) unfollowable.set(args.path, `has a createRequire loader this walk cannot follow: ${analysis.reason}`);
+          return undefined;
+        }
+        if (analysis.specifiers.length === 0) return undefined;
+        const ext = extname(args.path).slice(1);
+        const loader = ext === 'tsx' ? 'tsx' : ext === 'jsx' ? 'jsx' : /^[cm]?ts$/.test(ext) ? 'ts' : 'js';
+        return {
+          contents: `${text}\n${analysis.specifiers.map((spec) => `import ${JSON.stringify(spec)};`).join('\n')}\n`,
+          loader, resolveDir: dirname(args.path),
+        };
+      });
+    },
+  };
+}
+
+type Closure =
+  | { status: 'complete'; files: Map<string, Set<string>>; unfollowable: Map<string, string> }
+  | { status: 'incomplete'; reason: string };
 
 /**
  * An import esbuild could not follow. esbuild inlines every literal import it resolves and
@@ -69,7 +109,6 @@ type Closure = { status: 'complete'; files: Map<string, Set<string>> } | { statu
  * esbuild does not warn for a non-literal `import()` in ESM output, so this scan is the signal.
  */
 const IMPORT_CALL = /(?<![\w$.])(?:import|__require|require)\s*\(/g;
-const CREATE_REQUIRE = /\bcreateRequire\s*\(/;
 
 /** Skip comments as well as whitespace before classifying an import argument. */
 function importArgumentStart(text: string, start: number): number {
@@ -90,9 +129,8 @@ function importArgumentStart(text: string, start: number): number {
   }
 }
 
+/** createRequire loaders are handled by the AST analysis above, not by this textual scan. */
 function unfollowedImportAt(text: string): number | null {
-  const createRequire = CREATE_REQUIRE.exec(text);
-  if (createRequire) return createRequire.index;
   IMPORT_CALL.lastIndex = 0;
   for (const match of text.matchAll(IMPORT_CALL)) {
     const at = importArgumentStart(text, match.index + match[0].length);
@@ -110,6 +148,7 @@ function unfollowedImportAt(text: string): number | null {
  */
 async function testImportClosures(root: string, tests: string[]): Promise<Closure> {
   let metafile: Metafile;
+  const unfollowable = new Map<string, string>();
   try {
     const outdir = join(tmpdir(), 'mutation-probe-closure');
     const result = await Promise.race([
@@ -117,7 +156,7 @@ async function testImportClosures(root: string, tests: string[]): Promise<Closur
         entryPoints: tests, absWorkingDir: root, bundle: true, write: false, metafile: true,
         // Tree-shaking off so the unfollowed-import scan below sees every module's code.
         outdir, platform: 'node', format: 'esm', treeShaking: false,
-        logLevel: 'silent', plugins: [externalPackages],
+        logLevel: 'silent', plugins: [externalPackages, createRequireEdges(unfollowable)],
         loader: {
           '.json': 'json', '.md': 'text', '.sql': 'text', '.txt': 'text', '.html': 'text', '.yaml': 'text', '.yml': 'text',
           '.css': 'empty', '.scss': 'empty', '.svg': 'empty', '.png': 'empty', '.jpg': 'empty', '.gif': 'empty',
@@ -156,13 +195,18 @@ async function testImportClosures(root: string, tests: string[]): Promise<Closur
     }
     files.set(test, seen);
   }
-  return { status: 'complete', files };
+  return { status: 'complete', files, unfollowable };
 }
 
 /** Why one test file may observe a probed source, or null when its closure provably cannot. */
-async function reachReason(closure: Set<string>, test: string, probes: string[]): Promise<string | null> {
+async function reachReason(
+  closure: Set<string>, test: string, probes: string[], unfollowable: Map<string, string>,
+): Promise<string | null> {
   const hit = probes.find((probe) => closure.has(probe));
   if (hit) return `imports ${hit}`;
+  for (const [file, why] of unfollowable) {
+    if (closure.has(file)) return `${file} has a createRequire loader this walk cannot follow: ${why}`;
+  }
   // The extension-less stem also catches a path assembled at runtime (`name + '.ts'`).
   const names = probes.map((probe) => basename(probe, extname(probe)));
   for (const file of closure) {
@@ -239,7 +283,7 @@ export async function mutationProbeRefusal(
   const closure = await testImportClosures(realRoot, tests);
   if (closure.status === 'incomplete') return refuse(`the import closure could not be established (${closure.reason})`);
   for (const test of tests) {
-    const reason = await reachReason(closure.files.get(test)!, test, probes);
+    const reason = await reachReason(closure.files.get(test)!, test, probes, closure.unfollowable);
     if (reason) return refuse(`${test.startsWith(realRoot + sep) ? test.slice(realRoot.length + 1) : test} may observe it: ${reason}`);
   }
   return null;

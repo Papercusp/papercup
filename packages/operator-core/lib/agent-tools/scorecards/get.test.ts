@@ -64,6 +64,7 @@ const scorecard = {
   extraKeys: [],
   rubricResolved: true,
   synthesized: false,
+  auditTarget: { current: true, superseded: false, supersededBy: null, retracted: false, subjectRubricCurrentness: null },
 };
 
 describe('scorecards:get evidence-first projection', () => {

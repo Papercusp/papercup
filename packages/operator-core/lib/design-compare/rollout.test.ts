@@ -41,6 +41,7 @@ function review(digest: string): ScorecardEvidenceReadResult {
     issueId: 'EI-123', createdAt: '2026-09-08T22:30:00Z', createdBy: 'independent-reviewer',
     rubricRef: DESIGN_ROLLOUT_REVIEW_RUBRIC, rubricResolved: true, synthesized: false,
     subject: { kind: 'plan', ref: 'design-acceptance-journey-enforcement-2026-09-08' },
+    auditTarget: { current: true, superseded: false, supersededBy: null, retracted: false, subjectRubricCurrentness: null },
     nKeys: 5, missingKeys: [], extraKeys: [], criteria: ['r-1', 'r-2', 'r-3', 'r-4', 'r-5'].map(key => ({ key, rating: 'healthy', evidence: JSON.stringify({
       designRolloutPolicySha256: digest, verdict: 'accepted', canaryGrade: 'pass',
     }) })),
