@@ -32,7 +32,7 @@
  * background poll interval on purpose.
  *
  * Prereqs (see ../README.md): a built desktop binary, tauri-driver, and
- * WebKitWebDriver. Run: `npm test` from tools/perf-test/wdio.
+ * WebKitWebDriver. Run: `npm run test:all` from tools/perf-test/wdio.
  */
 import { browser } from "@wdio/globals";
 import { operatorBaseUrl, recordInvariant } from "../perf-report";

@@ -54,6 +54,7 @@ export const STANDALONE_PACKAGE_DIRS = [
   'papercusp-desktop',
   'libs/generic/sse',
   'libs/papercusp/packages/file-claim',
+  'tools/perf-test/wdio',
 ];
 
 /**

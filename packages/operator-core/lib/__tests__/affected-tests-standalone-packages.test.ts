@@ -173,3 +173,39 @@ describe.skipIf(!submodulePresent)('affected-tests: standalone (non-workspace) p
     });
   });
 });
+
+// WI-10003821 — the packaged-desktop WDIO runner. Its runner guards
+// (tools/perf-test/wdio/perf-report.node-test.ts) were selected by NO gate task: a change to
+// perf-report.ts resolved to zero workspaces. It is now a STANDALONE package, and its `test`
+// script is the headless guard suite (the GUI run is `test:all`).
+const WDIO_DIR = 'tools/perf-test/wdio';
+const WDIO_PKG_NAME = '@papercusp/perf-test-wdio';
+
+describe.skipIf(!existsSync(resolve(REPO_ROOT, WDIO_DIR, 'package.json')))(
+  'affected-tests: the WDIO runner package is gated headlessly (WI-10003821)',
+  () => {
+    it('a change to the runner selects its own `test` task through --prefix', () => {
+      const r = spawnSync(
+        'node',
+        [AFFECTED_TESTS, '--changed-paths', `${WDIO_DIR}/perf-report.ts`, '--print-affected'],
+        { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 300_000, killSignal: 'SIGKILL' },
+      );
+      expect(r.status, `--print-affected failed:\n${r.stderr}`).toBe(0);
+      const cmds = (r.stdout ?? '')
+        .split('\n')
+        .filter((l) => l.startsWith(`AFFECTED_WS_CMD\t${WDIO_PKG_NAME}\t`))
+        .map((l) => l.split('\t')[2]);
+      expect(
+        cmds,
+        `${WDIO_PKG_NAME} selected no task — its runner guards are back to running in no gate. ` +
+          `Check STANDALONE_PACKAGE_DIRS in scripts/affected-tests.mjs.`,
+      ).toEqual([`npm --prefix ${WDIO_DIR} run --silent test`]);
+    });
+
+    it('the `test` script that task runs never reaches the GUI suite', () => {
+      const scripts: Record<string, string> = pkgAt(WDIO_DIR).scripts ?? {};
+      expect(scripts.test).toBeTruthy();
+      expect(scripts.test, 'a gate box cannot boot the packaged binary').not.toMatch(/test:wdio|wdio run/);
+    });
+  },
+);

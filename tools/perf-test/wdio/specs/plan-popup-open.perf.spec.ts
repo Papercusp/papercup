@@ -13,7 +13,7 @@
  * eval clock) give a trustworthy warm-open time.
  *
  * Prereqs (see ../README.md): a built desktop binary, tauri-driver, and
- * WebKitWebDriver. Run: `npm test` from tools/perf-test/wdio.
+ * WebKitWebDriver. Run: `npm run test:all` from tools/perf-test/wdio.
  */
 import { browser } from "@wdio/globals";
 import { recordInteractionMs, recordMeasure } from "../perf-report";
