@@ -274,7 +274,7 @@ export async function launchGoalHolderSession(
   }
   const identityContribution = await (deps.bindIdentity ?? bindGoalLaunchIdentity)({
     goalId, ownerId: launched.ownerId, workspaceId, kickoff: kickoffPrompt,
-    portfolio: portfolioBlock,
+    portfolio: portfolioBlock, behaviorArm,
   });
 
   return {

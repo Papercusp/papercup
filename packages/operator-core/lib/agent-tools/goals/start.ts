@@ -232,6 +232,14 @@ export interface GoalLaunchIdentityInput {
   portfolio: string | null;
   /** Omitted while a recovery holder launches before its GOAL mode attachment. */
   modeState?: unknown;
+  /**
+   * R-4 / D-032. The arm this launch ran under. An arm that withholds the brief
+   * ('baseline') stamps `goal-kickoff` and `goal-portfolio` as omitted with
+   * reason 'experiment-arm', so a grader can verify arm integrity from the
+   * receipt instead of mistaking a withheld brief for a genuinely absent one.
+   * Absent ⇒ 'full'.
+   */
+  behaviorArm?: GoalBehaviorArm | null;
 }
 
 /** Pin one successful launch's existing kickoff/portfolio bytes. Recovery
@@ -242,6 +250,7 @@ export async function bindGoalLaunchIdentity(
 ){
   try {
     const bind = binder ?? (await import('../../agent-identities/source')).bindSelectedIdentityOutputs;
+    const armWithheld = input.behaviorArm ? goalArmWithholdsBrief(input.behaviorArm) : false;
     return await bind({
       identityId: 'su.mode-goal',
       sourceTier: 'selected',
@@ -249,10 +258,14 @@ export async function bindGoalLaunchIdentity(
         input.modeState === undefined
           ? { contributionId: 'current-mode-state', omission: { reason: 'not-requested' } }
           : { contributionId: 'current-mode-state', value: input.modeState },
-        { contributionId: 'goal-kickoff', value: input.kickoff },
-        input.portfolio
-          ? { contributionId: 'goal-portfolio', value: input.portfolio }
-          : { contributionId: 'goal-portfolio', omission: { reason: 'ineligible' } },
+        armWithheld
+          ? { contributionId: 'goal-kickoff', omission: { reason: 'experiment-arm' } }
+          : { contributionId: 'goal-kickoff', value: input.kickoff },
+        armWithheld
+          ? { contributionId: 'goal-portfolio', omission: { reason: 'experiment-arm' } }
+          : input.portfolio
+            ? { contributionId: 'goal-portfolio', value: input.portfolio }
+            : { contributionId: 'goal-portfolio', omission: { reason: 'ineligible' } },
       ],
       scope: { workspace: input.workspaceId, goal: input.goalId, ownerId: input.ownerId, sink: 'launch' },
       observedAt: new Date().toISOString(),
@@ -959,7 +972,7 @@ export default defineTool({
     }
 
     await recordGoalLaunchIdentityBinding({
-      goalId: id, ownerId, workspaceId, kickoff, portfolio: portfolioText, modeState: modeRes,
+      goalId: id, ownerId, workspaceId, kickoff, portfolio: portfolioText, modeState: modeRes, behaviorArm,
     }, ctx.metadata);
 
     // ── 3.5 the drain lane's delegated leader and puller ────────────────
