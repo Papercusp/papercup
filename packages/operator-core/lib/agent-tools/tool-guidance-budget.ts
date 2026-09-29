@@ -455,8 +455,8 @@ export const ALLOW_OVER_SCHEMA_BUDGET: ReadonlyMap<string, number> = new Map([
   // Lowered 2026-09-16 (EI-23379068490085254): 43,283 -> 40,501 after completionSpec's
   // `.describe()` dropped its duplicated field enumeration, second object example, and
   // the rules each field's own describe already owns. Paid twice (completion + items[]).
-  ['work_items:complete', 43_000], // measured 40,501
-  ['coord:send', 41_000], // measured 38,185
+  ['work_items:complete', 26_000], // measured 23,984
+  ['coord:send', 34_000], // measured 32,095
   ['rubrics:propose', 39_000], // measured 36,402
   ['rubrics:amend', 30_000], // measured 27,927
   ['work_items:checkpoint', 25_000], // measured 23,358
