@@ -26,7 +26,7 @@ import type { Embedder, Listing, SearchSourceParams } from '@papercusp/search';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import { fitsProseColumns, resolveProseProfileIdSelection } from '../../search/prose-vector-dims';
-import { sectionAnchorBase } from '../../search/doc-section-anchor';
+import { sectionAnchorBase } from '@papercusp/search';
 
 /** Over-fetch factor: several sections of one page can crowd the top-k; fetch
  *  extra rows so page-level dedupe still fills `limit` distinct pages. */

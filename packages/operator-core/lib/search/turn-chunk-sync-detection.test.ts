@@ -19,7 +19,8 @@
  * the old code's was not, and that is precisely what is pinned here.
  */
 import { describe, expect, it } from 'vitest';
-import { splitTurnChunks, syncTurnChunks } from './turn-chunk-sync';
+import { splitWindows } from '@papercusp/search';
+import { syncTurnChunks, TURN_WINDOW } from './turn-chunk-sync';
 
 interface Recorded {
   query: string;
@@ -122,14 +123,14 @@ describe('turn-chunk-sync detection + marking (migration 1117)', () => {
     // why the marker write lives OUTSIDE the `chunks.length > 0` branch, and
     // this test is what stops a future refactor tucking it back inside.
     //
-    // Empty text is the ONLY input that reaches this path (splitTurnChunks
+    // Empty text is the ONLY input that reaches this path (splitWindows
     // returns [] only for length 0), and the detection query's own
     // `length(text) > minChars` means production cannot produce it — so this
     // pins DEFENSIVE behaviour, not a reachable case. It is still worth pinning:
     // the branch placement it protects is reachable by edit, which is the
     // failure mode in question.
     const zeroChunk = '';
-    expect(splitTurnChunks(zeroChunk), 'precondition: this input yields no chunks').toEqual([]);
+    expect(splitWindows(zeroChunk, TURN_WINDOW), 'precondition: this input yields no chunks').toEqual([]);
 
     const { sql, calls } = fakeSql([{ ...TURN, text: zeroChunk }]);
     const stats = await syncTurnChunks(sql, { batch: 10 });
