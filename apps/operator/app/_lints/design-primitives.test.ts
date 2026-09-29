@@ -573,6 +573,59 @@ function unexpectedSmallButtonWithoutMinHeight(): string[] {
   return offenders;
 }
 
+/**
+ * The invisible-overlay hit target (WI-10003857). A custom switch/checkbox
+ * paints its own track + thumb and stacks a transparent native `<input>` over
+ * them — `position:absolute; inset:0; opacity:0` — so the input catches the
+ * click. But `inset:0` does NOT size a checkbox/radio: it is a REPLACED element,
+ * and an absolutely positioned replaced element keeps its intrinsic box (~12px
+ * in WebKitGTK) whatever its offsets say (CSS 2.1 §10.3.8). The input then
+ * covers one corner of the control and every click elsewhere lands on an inert
+ * span. On a two-state switch that corner is where the thumb sits when OFF, so
+ * switching ON works and switching OFF silently does nothing — the owner's
+ * "I can't deselect the top pot" in the Learning tab's pot dropdown. Nothing
+ * else catches it: typecheck, jsdom tests (no layout) and a synthetic
+ * `.click()` on the input all pass; only a real pointer at the thumb fails.
+ *
+ * True when a rule targets an `input`, makes it a transparent absolute overlay,
+ * and does not declare BOTH `width` and `height` (any value — `100%` is the fix).
+ */
+export function overlayInputMissingSize(selectorList: string, decls: string): boolean {
+  const targetsInput = selectorList
+    .split(',')
+    .map((s) => s.trim().split(/[\s>+~]+/).pop() ?? '')
+    .some((compound) => /^input(?=[.:#[]|$)/.test(compound));
+  if (!targetsInput) return false;
+  if (!/(?<![a-z-])position\s*:\s*(?:absolute|fixed)\b/.test(decls)) return false;
+  if (!/(?<![a-z-])opacity\s*:\s*0(?:\.0*)?\s*(?:[;!]|$)/.test(decls)) return false;
+  const stretched = /(?<![a-z-])inset\s*:\s*0(?:px)?\s*(?:[;!]|$)/.test(decls) ||
+    (/(?<![a-z-])left\s*:\s*0/.test(decls) && /(?<![a-z-])right\s*:\s*0/.test(decls)) ||
+    (/(?<![a-z-])top\s*:\s*0/.test(decls) && /(?<![a-z-])bottom\s*:\s*0/.test(decls));
+  if (!stretched) return false;
+  const hasWidth = /(?<![a-z-])width\s*:/.test(decls);
+  const hasHeight = /(?<![a-z-])height\s*:/.test(decls);
+  return !(hasWidth && hasHeight);
+}
+
+function unexpectedOverlayInputWithoutSize(): string[] {
+  const offenders: string[] = [];
+  const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
+  for (const file of collectFiles()) {
+    const content = readCode(file);
+    for (const match of content.matchAll(ruleRe)) {
+      const [whole, rawSelectors, decls] = match;
+      // Trim first: a blanked comment above the rule (stripComments keeps its
+      // bytes as spaces) would otherwise inflate the selector past the guard.
+      const selectorList = rawSelectors.trim();
+      if (selectorList.length === 0 || selectorList.length > 200 || /[;]/.test(selectorList)) continue;
+      if (!overlayInputMissingSize(selectorList, decls)) continue;
+      const before = content.slice(0, match.index! + whole.indexOf(selectorList));
+      offenders.push(`${rel(file)}:${before.split('\n').length}: ${selectorList}`);
+    }
+  }
+  return offenders;
+}
+
 function unexpectedDirectCyanLiteralsInAuditedFiles(): string[] {
   const offenders: string[] = [];
   // All six brand-adjacent cyan/sky shades (P-006f): cyan-400/300, sky-500/400/300/200
@@ -814,6 +867,40 @@ describe('design primitive lint', () => {
           'fix), or raise the declared height to >=26px.',
       },
     );
+  });
+
+  // ENFORCED rule (WI-10003857): a transparent overlay <input> with no explicit
+  // size keeps its intrinsic ~12px box, so the switch only toggles from one
+  // corner — "switch on works, switch off does nothing".
+  it('blocks a transparent absolute overlay <input> that does not declare width and height', () => {
+    warnOrFail('Overlay <input> hit target without width/height', unexpectedOverlayInputWithoutSize(), {
+      enforce: true,
+      hint:
+        'An absolutely positioned checkbox/radio ignores inset:0 for sizing (replaced element), ' +
+        'so it covers only a corner of the control (WI-10003857). Add width: 100%; height: 100%; ' +
+        'appearance: none; to the overlay input rule.',
+    });
+  });
+});
+
+describe('overlay input hit-target matching', () => {
+  it('flags the pre-fix switch rule and passes the fixed one', () => {
+    // Calibration pair: the exact rule that shipped the bug, and its fix.
+    const broken = 'position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer;';
+    const fixed =
+      'position: absolute; inset: 0; width: 100%; height: 100%; appearance: none; opacity: 0; margin: 0;';
+    expect(overlayInputMissingSize('.pc-lloop__sw input', broken)).toBe(true);
+    expect(overlayInputMissingSize('.pc-lloop__sw input', fixed)).toBe(false);
+    expect(overlayInputMissingSize('.x input[type=checkbox]', 'position:absolute;left:0;right:0;top:0;bottom:0;opacity:0')).toBe(true);
+  });
+
+  it('ignores rules that are not a transparent stretched overlay on an input', () => {
+    const broken = 'position: absolute; inset: 0; opacity: 0;';
+    expect(overlayInputMissingSize('.pc-lloop__swtrack', broken)).toBe(false);
+    expect(overlayInputMissingSize('.x input + span', broken)).toBe(false);
+    expect(overlayInputMissingSize('.x input', 'position: absolute; inset: 0; opacity: .5;')).toBe(false);
+    expect(overlayInputMissingSize('.x input', 'position: relative; opacity: 0;')).toBe(false);
+    expect(overlayInputMissingSize('.x input:disabled', 'cursor: default;')).toBe(false);
   });
 });
 
