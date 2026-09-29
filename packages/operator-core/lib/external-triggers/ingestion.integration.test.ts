@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { isCompilableSchema } from '../datatype-payload-validation';
-import { ingestExternalTriggerEvent } from './ingestion';
+import { ingestExternalTriggerEvent, PENDING_DELIVERY_LEASE_SECONDS } from './ingestion';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -181,6 +181,82 @@ describe('external trigger ingestion core', () => {
       { sink_kind: 'personal-vault', outcome: 'delivered', attempts: 2 },
       { sink_kind: 'trigger-bindings', outcome: 'delivered', attempts: 1 },
     ]);
+  });
+
+  // WI-10003159: a claimant that died between claimDelivery and finishDelivery
+  // left an event-bus row 'pending' forever. It was never reclaimed, the binding
+  // sink refused to queue without a delivered event-bus row, and one orphaned
+  // row froze a Gmail source's sync for 11 days.
+  it('reclaims an orphaned pending claim once its lease expires, but not a live one', async () => {
+    const seedPending = async (externalId: string, ageSeconds: number) => {
+      await sql`
+        INSERT INTO harness_shared.trigger_deliveries
+          (workspace_id, source_id, dedupe_key, datatype_id, event_key, payload,
+           sink_kind, sink_ref, outcome, attempts, updated_at)
+        VALUES (
+          'papercusp-workspace', ${sourceId}, ${`gmail:${externalId}`}, 'email-message',
+          'ext:gmail:message.received', '{}'::jsonb, 'event-bus', 'workspace', 'pending', 1,
+          now() - (${ageSeconds} * interval '1 second')
+        )`;
+    };
+    const emitOk = () =>
+      vi.fn(async () => ({
+        ok: true as const,
+        key: 'ext:gmail:message.received',
+        woken: 0,
+        notified: [],
+        msgId: null,
+        waiters: 0,
+      }));
+    const ingest = (externalId: string, emit: ReturnType<typeof emitOk>) =>
+      ingestExternalTriggerEvent(
+        sql,
+        {
+          workspaceId: 'papercusp-workspace',
+          sourceId,
+          source: 'gmail',
+          event: 'message.received',
+          externalId,
+          datatypeId: 'email-message',
+          adapterPayload: {},
+          normalize: () => ({ id: externalId, subject: 'Orphaned claim' }),
+        },
+        { emit },
+      );
+
+    await seedPending('m-orphaned', PENDING_DELIVERY_LEASE_SECONDS + 60);
+    const orphanedEmit = emitOk();
+    const recovered = await ingest('m-orphaned', orphanedEmit);
+    expect(recovered.ok).toBe(true);
+    expect(orphanedEmit).toHaveBeenCalledTimes(1);
+    expect(recovered.deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sinkKind: 'event-bus', outcome: 'delivered', deduped: false }),
+        expect.objectContaining({ sinkKind: 'trigger-bindings', outcome: 'delivered', deduped: false }),
+      ]),
+    );
+    const orphanedRows = await sql<{ sink_kind: string; outcome: string; attempts: number }[]>`
+      SELECT sink_kind, outcome, attempts FROM harness_shared.trigger_deliveries
+       WHERE dedupe_key = 'gmail:m-orphaned' ORDER BY sink_kind`;
+    expect(orphanedRows).toEqual([
+      { sink_kind: 'event-bus', outcome: 'delivered', attempts: 2 },
+      { sink_kind: 'trigger-bindings', outcome: 'delivered', attempts: 1 },
+    ]);
+
+    // A claim inside its lease may still be in flight; replay must not steal it.
+    await seedPending('m-in-flight', 60);
+    const inFlightEmit = emitOk();
+    const deferred = await ingest('m-in-flight', inFlightEmit);
+    expect(inFlightEmit).not.toHaveBeenCalled();
+    expect(deferred.deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ sinkKind: 'event-bus', outcome: 'pending', deduped: true }),
+      ]),
+    );
+    const [inFlightRow] = await sql<{ outcome: string; attempts: number }[]>`
+      SELECT outcome, attempts FROM harness_shared.trigger_deliveries
+       WHERE dedupe_key = 'gmail:m-in-flight' AND sink_kind = 'event-bus'`;
+    expect(inFlightRow).toEqual({ outcome: 'pending', attempts: 1 });
   });
 
   it('dedupes provider replay without re-emitting either sink', async () => {
