@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-505 run 34 live: the exact 0.0.25 Papercusp Server candidate (deb sha256 matched to the release handoff) passes the P-301 hive-git drill with zero skips, including same-run two-physical-machine legs A-G (tower + macOS VM) with both device keys attesting",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "evidencePlane": "live",
+  "plan": "p2p-public-release-endgame-2026-09-01",
+  "planItem": "P-204",
+  "specId": "AUTO-BAR-R-1-P-204",
+  "specRevision": 3,
+  "workItem": "WI-2039874",
+  "governingDecisions": ["D-038", "D-078", "D-079"],
+  "observer": "su-3ee17ad9-e8f0-4145-bce5-732819d9ea4e",
+  "limitations": [
+    "Per D-079 item 3: the tower's long-lived bg-host and :3070 operator stayed on live green main, not 93f1c72063; the drill's own sidecar and the macOS VM peer ran the exact 0.0.25 build. The P-401 auditor should weigh the tower hub as current main plus the exact .deb.",
+    "Legs A, B and C of the single-box scaffold ran the relcut-0025 integration tests from source (93f1c72063 blobs); their physical counterparts are the same-run physical legVerdicts.",
+    "The outer launcher wrapper was SIGKILLed after the drill printed DRILL_EXIT=0, so the log has no LAUNCHER_EXIT line."
+  ],
+  "subject": {
+    "release": "0.0.25-alpha",
+    "releaseSourceSha": "93f1c72063bb422583c9c24e7092f1bed767f64f",
+    "harnessSha": "c909af81a2ded9cee776ce40fb10903110de0f85",
+    "harnessDelta": "c909af81a2 = 93f1c72063 + drill-harness-only Phase B source-convergence wait (physical-drill-phase-b.ts, physical-drill-producer.ts); no shipped-product file differs",
+    "papercuspDesktopPin": "55aa18ebb345966c195725eed6ec91d0284d5ad9",
+    "artifact": "Papercusp Server_0.0.25_amd64.deb",
+    "debSha256": "dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23",
+    "releaseHandoffSha256": "55d8c10b82f474933865aa9b95b7bd15d28f9992113acc0b47a63560a915d06d",
+    "vmAppVersion": "0.0.25",
+    "topology": {
+      "kind": "two-physical-machines",
+      "hosts": [
+        { "id": "tower", "deviceKey": "IXfGu216EI/z1gNQG06dG9CUMUlY/clesNYQPoWXgRc=" },
+        { "id": "vm", "deviceKey": "dcJWGlbQWdL8tQtNr3Xtojf3hyf1b0JRdYFGE4jM/bo=" }
+      ]
+    },
+    "testHive": "hello-world-3-pot (throwaway TEST hive; GitHub fork aviynw/hello-world-3-pot)"
+  },
+  "command": [
+    "bash .papercusp/scratch/p505-run34-exact-0025-launch.sh  (checks deb sha256 against the release handoff, waits for the content-topic/canon==fork readiness gate, then:)",
+    "cd <relcut-0025>/papercusp-desktop && PAPERCUSP_REPO_DIR=<relcut-0025> HIVE_GIT_PHYSICAL_PROBE_CMD=<relcut-0025>/papercusp-desktop/bin/vm-rig/hive-git-physical-probe.sh REQUIRE_ZERO_SKIPS=1 bash bin/hive-git-drill.sh '<Papercusp Server_0.0.25_amd64.deb>'"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-29T20:33:40Z",
+  "finishedAt": "2026-09-29T20:55:18Z",
+  "physicalRun": {
+    "runId": "p505-physical-20260929T204000Z-1811003",
+    "schemaVersion": "hive-git-physical-evidence/v1",
+    "window": { "startedAt": "2026-09-29T20:40:00.964Z", "finishedAt": "2026-09-29T20:52:40.985Z" },
+    "legVerdicts": [
+      { "leg": "A", "status": "pass", "scope": "physical", "observedAt": "2026-09-29T20:42:22.920Z" },
+      { "leg": "B", "status": "pass", "scope": "physical", "observedAt": "2026-09-29T20:43:50.128Z" },
+      { "leg": "C", "status": "pass", "scope": "physical", "observedAt": "2026-09-29T20:44:03.268Z" },
+      { "leg": "D", "status": "pass", "scope": "physical", "observedAt": "2026-09-29T20:47:56.138Z" },
+      { "leg": "E", "status": "pass", "scope": "physical", "observedAt": "2026-09-29T20:52:06.649Z" },
+      { "leg": "F", "status": "pass", "scope": "physical", "observedAt": "2026-09-29T20:52:26.687Z" },
+      { "leg": "G", "status": "pass", "scope": "physical", "observedAt": "2026-09-29T20:52:34.857Z" }
+    ],
+    "attestedBy": ["tower", "vm"]
+  },
+  "summary": "Drill result: 'P-301 hive-git drill: PASS=15 FAIL=0 SKIP=0 / OVERALL: PASS — release acceptance green; all Phase-3 legs ran with zero skips / DRILL_EXIT=0'. The deb under test was sha256-matched to the 0.0.25 release handoff before launch (expect == actual), and the macOS VM peer reported app version 0.0.25. The same-run physical evidence (runId above) carries pass verdicts for legs A-G at scope 'physical' across two physical machines, each signed by both host device keys, and the drill's SKIP census accepted it for LEG E (P-306 GitHub bridge: bridged-mode, commit-only members, sole egress, OID chain, watchdog, divergence, rollback) and LEG G (P-308 chaos: A-F then election, higher grant, successor accept, stale fence, retry hold, PG blip, restart). SCOPE OF THIS RECORD: it proves R-1's physical-peer hive-git behaviours (discovery/join via cold-clone + announce-driven fetch, exact signed-ref scope/generation with tamper/rollback refusal, integrator publication with below-steer queueing, gc/secret/oversized-blob guards, GitHub bridge, restart/PG-blip recovery) on the exact candidate. It does NOT by itself prove R-1's F1-F8 feature set, separate optional packs, full installer lineage beyond the Server deb checksum, trusted-seat revocation, or owner-authorized protected effects; those need their own evidence. Note: the outer launcher wrapper was SIGKILLed after DRILL_EXIT=0 was printed, so the log has no LAUNCHER_EXIT line; the drill script itself exited 0.",
+  "assertions": [
+    { "id": "exact-artifact", "passed": true, "evidence": "DEB sha256 expect=dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23 actual=dd38a3ac49925949c99e01642cc32f631823d31a9ee72ef8137845b0599b1d23 (expect read from the 0.0.25 release handoff); VM app version: 0.0.25; VM health version 0.0.25" },
+    { "id": "zero-skips", "passed": true, "evidence": "REQUIRE_ZERO_SKIPS=1; 'PASS=15 FAIL=0 SKIP=0'; 'all Phase-3 legs ran with zero skips'" },
+    { "id": "two-physical-peers", "passed": true, "evidence": "physical evidence topology kind two-physical-machines (tower IXfGu216..., vm dcJWGlbQ...); attestations signed by both device keys; legVerdicts A-G all pass scope physical inside window 20:40:00.964Z-20:52:40.985Z" },
+    { "id": "leg-mode-bridged-and-rollback", "passed": true, "evidence": "hiveGit.mode row set to bridged; rollback: row deleted, getHiveGitMode reads 'legacy' (fail-open default)" },
+    { "id": "leg-a-cold-clone-join", "passed": true, "evidence": "LEG A (P-302) G-8 cold-clone bootstrap: 13/13 tests passed (bootstrap.integration.test.ts); physical leg A pass 20:42:22.920Z" },
+    { "id": "leg-b-announce-fetch-signed-refs", "passed": true, "evidence": "LEG B (P-303) G-3 announce -> fetch -> sigrefs accept -> heads reconcile -> mirrored: 12/12 tests passed (ref-announce.integration.test.ts); physical leg B pass 20:43:50.128Z" },
+    { "id": "leg-c-trust-tamper", "passed": true, "evidence": "LEG C (P-304) relay-lie detection, rollback refusal (G-4b), non-member scope-serve-gate refusal: 4/4 tests passed (leg-c-trust-drill.integration.test.ts); physical leg C pass 20:44:03.268Z" },
+    { "id": "leg-d-integrator", "passed": true, "evidence": "LEG D (P-305) integrator computed + published canonical staging from the steer-tier head; a non-steer head landed pending in the real PG integration-requests queue with a visible receipt; the other worktree ff-advanced; a dirty/locked file was never touched (G-7b); physical leg D pass 20:47:56.138Z" },
+    { "id": "leg-e-github-bridge", "passed": true, "evidence": "LEG E (P-306) physical GitHub bridge: same-run bridged-mode/commit-only/sole-egress/OID-chain/watchdog/divergence/rollback evidence validated (run p505-physical-20260929T204000Z-1811003); physical leg E pass 20:52:06.649Z" },
+    { "id": "leg-f-gc-and-publish-guards", "passed": true, "evidence": "LEG F (P-307) G-9 gc kept work-ref + newest 2, pruned oldest, archived the departed namespace; G-10 clean commit admitted, planted AWS-key-shaped secret refused (code=secrets), 6KB blob over 4KB cap refused (code=blob-over-cap); physical leg F pass 20:52:26.687Z" },
+    { "id": "leg-g-chaos-restart", "passed": true, "evidence": "LEG G (P-308) physical chaos: same-run A-F -> election -> higher grant -> successor accept -> stale fence -> retry hold -> PG blip -> restart evidence validated; physical leg G pass 20:52:34.857Z" }
+  ],
+  "runnerLogs": [
+    { "path": ".papercusp/scratch/p505-run34.log", "sha256": "1cc01f2abe5cfaffad34041b34665ec5a5baba63626157dd86b656829422cf71", "bytes": 6022 },
+    { "path": ".papercusp/scratch/p505-run34-physical-evidence.json", "sha256": "fabdc522ca47e9d761a52751407f27a193f010adc465b3a9aabfb47fab4fc43c", "bytes": 61483 },
+    { "path": ".papercusp/scratch/p505-run34-exact-0025-launch.sh", "sha256": "98a5cf4279400ff40ea85780920f4bdae62c884e9548a9650bac8405c4fc42e9", "bytes": 4376 }
+  ],
+  "measuredBlobs": [
+    { "path": "packages/operator-core/lib/sync/pot-git/physical-drill-phase-b.ts", "blob": "bbcd15dd61f844e6d0b73249d9b386b87cf2f352" },
+    { "path": "packages/operator-core/lib/sync/pot-git/physical-drill-producer.ts", "blob": "5cbdd80825cc0288d6ece38a3145381eb0092470" },
+    { "path": "packages/operator-core/lib/sync/pot-git/bootstrap.integration.test.ts", "blob": "bae4e0db47364a0d9bf8ac74420d1800139d3c1b" },
+    { "path": "packages/operator-core/lib/sync/pot-git/ref-announce.integration.test.ts", "blob": "bf1fa83e9466297d7e1923ef7a2c9dfda6260c5c" },
+    { "path": "packages/operator-core/lib/sync/pot-git/leg-c-trust-drill.integration.test.ts", "blob": "befa63d4828883b5f4e66deecbb8ac86c53c8b7c" },
+    { "path": "packages/operator-core/lib/sync/pot-git/integrator-tick.ts", "blob": "3ccd23f9b0b4a2f856181387e78c07ca61d72e2b" },
+    { "path": "packages/operator-core/lib/harness/git-sync/git-sync-action.ts", "blob": "d1d2774f0ef58b0b44ba23101b9ef58e9f02b7a7" },
+    { "path": "bin/hive-git-drill.sh", "blob": "887fe406e3ec4949e8747dbdda2391f0eb077c24", "repo": "papercusp-desktop@55aa18eb" },
+    { "path": "bin/vm-rig/hive-git-physical-probe.sh", "blob": "b73e99ad39663e0956a0d9f3f5b7a3200840aa34", "repo": "papercusp-desktop@55aa18eb" }
+  ]
+}
