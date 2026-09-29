@@ -26,6 +26,7 @@ const inspectionSchema = z.object({
     recipe: z.object({ id: z.string().min(1), revision: z.string().min(1) }),
     script: z.object({ source: z.string().min(1).max(20_000) }),
     staticToolCalls: z.array(z.object({ tool: z.string(), args: z.unknown(), dynamicArgs: z.boolean() })).max(200),
+    bindings: z.object({ values: z.record(z.string(), z.unknown()) }),
     durability: z.object({ pin: pinSchema }),
     execution: z.object({ mode: z.literal('server'), lifecycle: z.literal('foreground') }),
   }),
@@ -38,6 +39,9 @@ export type IdentityRecipeConformance = {
   toolNames: string[];
   requiredCapabilities: string[];
   outputSchema: Record<string, unknown>;
+  /** The binding values the pin was taken over. The runtime re-inspects with
+   * exactly these, so it reproduces the pinned bindingsSha256 (P-013, D-019). */
+  bindings?: { values: Record<string, unknown> };
 } | {
   ok: false;
   code: 'authority-unavailable' | 'output-schema-mismatch' | 'inspection-failed' |
@@ -146,7 +150,7 @@ export async function inspectIdentityRecipeClassProvider(input: {
 /** External network rights have two existing spellings: capability:net for
  * host fetch and net:* for plugin confinement. Wildcard tool requirements
  * cannot prove absence of egress either. */
-function hasEgress(capability: string): boolean {
+export function hasEgress(capability: string): boolean {
   return capability === '*' || capability === 'capability:*' || capability === 'capability:net' ||
     capability === 'net' || capability.startsWith('net:');
 }
@@ -198,11 +202,17 @@ async function hasIndirectFacadeUse(source: string): Promise<boolean> {
   return indirect;
 }
 
-/** Installation-time inspection under the wearer, narrowed by declared needs
- * and the host's pot/role ceiling. Tools/recipes deps are trusted host seams,
- * never values accepted from an identity package.
- */
-export async function inspectIdentityRecipeProvider(input: {
+/** Grants = wearer ∩ declared needs ∩ pot/role ceiling; '*' in one set admits
+ * whatever the others name. Shared by inspection and the runtime (P-013). */
+export function narrowIdentityCapabilities(
+  wearer: ReadonlySet<string>, declaredNeeds: readonly string[], ceiling: ReadonlySet<string>,
+): Set<string> {
+  const sets = [wearer, new Set(declaredNeeds), ceiling];
+  const candidates = new Set(sets.flatMap((set) => [...set]));
+  return new Set([...candidates].filter((cap) => sets.every((set) => set.has(cap) || set.has('*'))));
+}
+
+type IdentityRecipeInspectionInput = {
   recipe: SavedRecipeSelector & { revision: string };
   bindings?: { values: Record<string, unknown> };
   contract: CapabilityClassVerb;
@@ -211,8 +221,42 @@ export async function inspectIdentityRecipeProvider(input: {
   capabilityCeiling: ReadonlySet<string>;
   context: UnifiedToolContext;
   expectedPin?: IdentityRecipeInspectionPin;
-}, deps: { tools?: readonly ProjectedTool[]; recipes?: SavedRecipeAdapter } = {}): Promise<IdentityRecipeConformance> {
-  const refuse = (code: Extract<IdentityRecipeConformance, { ok: false }>['code']) => ({ ok: false as const, code });
+};
+type IdentityRecipeInspectionDeps = { tools?: readonly ProjectedTool[]; recipes?: SavedRecipeAdapter };
+
+/** What the runtime needs beyond the persisted evidence. Never stored: the
+ * source and bound inputs are re-derived by re-inspection on every call. */
+export interface IdentityRecipeRunMaterial {
+  source: string;
+  inputs: Record<string, unknown>;
+  capabilities: ReadonlySet<string>;
+  tools: readonly ProjectedTool[];
+}
+
+/** Installation-time inspection under the wearer, narrowed by declared needs
+ * and the host's pot/role ceiling. Tools/recipes deps are trusted host seams,
+ * never values accepted from an identity package.
+ */
+export async function inspectIdentityRecipeProvider(
+  input: IdentityRecipeInspectionInput, deps: IdentityRecipeInspectionDeps = {},
+): Promise<IdentityRecipeConformance> {
+  return (await inspectRecipe(input, deps)).conformance;
+}
+
+/** The same inspection, for the P-013 runtime: a passing result also carries
+ * the re-inspected script and inputs, so what runs is what was just pinned. */
+export async function inspectIdentityRecipeProviderForRun(
+  input: IdentityRecipeInspectionInput & { expectedPin: IdentityRecipeInspectionPin },
+  deps: IdentityRecipeInspectionDeps = {},
+): Promise<{ conformance: IdentityRecipeConformance; run?: IdentityRecipeRunMaterial }> {
+  return inspectRecipe(input, deps);
+}
+
+async function inspectRecipe(
+  input: IdentityRecipeInspectionInput, deps: IdentityRecipeInspectionDeps,
+): Promise<{ conformance: IdentityRecipeConformance; run?: IdentityRecipeRunMaterial }> {
+  const refuse = (code: Extract<IdentityRecipeConformance, { ok: false }>['code']) =>
+    ({ conformance: { ok: false as const, code } });
   const ctx = input.context;
   if (!ctx.principal || !ctx.role || !ctx.workspaceId || ctx.principal.workspaceId !== ctx.workspaceId ||
       ctx.signal.aborted) return refuse('authority-unavailable');
@@ -220,9 +264,8 @@ export async function inspectIdentityRecipeProvider(input: {
       canonicalJson(input.contract.outputSchema) !== canonicalJson(input.outputSchema)) {
     return refuse('output-schema-mismatch');
   }
-  const sets = [ctx.principal.capabilities, new Set(input.declaredNeeds), input.capabilityCeiling];
-  const candidates = new Set(sets.flatMap((set) => [...set]));
-  const capabilities = new Set([...candidates].filter((cap) => sets.every((set) => set.has(cap) || set.has('*'))));
+  const capabilities = narrowIdentityCapabilities(ctx.principal.capabilities, input.declaredNeeds,
+    input.capabilityCeiling);
   const context: UnifiedToolContext = {
     ...ctx, isSuperuser: false, gateBypass: undefined,
     principal: { ...ctx.principal, capabilities },
@@ -291,7 +334,11 @@ export async function inspectIdentityRecipeProvider(input: {
       break;
     }
   }
-  return { ok: true, recipe: normalized.recipe, inspectionPin: pin,
-    toolNames: [...names].sort(), requiredCapabilities: [...required].sort(),
-    outputSchema: JSON.parse(canonicalJson(input.contract.outputSchema)) as Record<string, unknown> };
+  return {
+    conformance: { ok: true, recipe: normalized.recipe, inspectionPin: pin,
+      toolNames: [...names].sort(), requiredCapabilities: [...required].sort(),
+      outputSchema: JSON.parse(canonicalJson(input.contract.outputSchema)) as Record<string, unknown>,
+      ...(input.bindings ? { bindings: { values: input.bindings.values } } : {}) },
+    run: { source: normalized.script.source, inputs: normalized.bindings.values, capabilities, tools },
+  };
 }
