@@ -111,6 +111,45 @@ export interface CriterionCheckPathValidation {
   /** Criterion key → its Cargo manifest and explicit source attribution, normalized to
    *  repo-root-relative form. */
   normalizedCargoByKey: Record<string, NormalizedCargoCheckPaths>;
+  /**
+   * EI-24372605712471072: check paths accepted as PLANNED — not in the tree yet, admitted
+   * only because the caller passed `allowPlannedPaths`. Always present (empty when the
+   * allowance is off). Grading re-validates without the allowance, so a planned file that
+   * never gets written still refuses the emit (`check_path_unresolved`).
+   */
+  planned: CriterionCheckPathFailure[];
+}
+
+/**
+ * EI-24372605712471072 — the subject-plan statuses whose implementation has NOT begun.
+ *
+ * An acceptance BAR names its proof: the test file that will show the requirement holds.
+ * Before the plan starts, that file does not exist yet — it is written by the plan's own
+ * items. The activation seed never asserted check paths, but every amendment re-asserted
+ * them over the full criterion set, so an honest pre-start BAR (one naming its real,
+ * future test file) was refused and the author was pushed toward a weaker manual check.
+ * The two gates disagreed about the same criteria.
+ *
+ * On these statuses a rubric amendment treats a missing path as planned. Once the plan
+ * starts (active, awaiting-acceptance, shipped, …) every amendment is strict again, and
+ * grading is always strict.
+ */
+export const PLANNED_PATH_SUBJECT_PLAN_STATUSES: ReadonlySet<string> = new Set(['draft', 'ready']);
+
+/** True when a rubric write against a subject plan in `status` may accept planned paths. */
+export function subjectPlanAllowsPlannedPaths(status: string | null | undefined): boolean {
+  return typeof status === 'string' && PLANNED_PATH_SUBJECT_PLAN_STATUSES.has(status);
+}
+
+export interface CriterionCheckPathOptions {
+  root?: string;
+  /**
+   * Accept a relative check path that does not exist yet as planned instead of refusing
+   * it. Only a rubric write against an un-started subject plan may pass this (see
+   * {@link subjectPlanAllowsPlannedPaths}); grading never does. Absolute paths, ambiguous
+   * workspace-relative spellings, and non-test filenames are still refused.
+   */
+  allowPlannedPaths?: boolean;
 }
 
 /**
@@ -173,11 +212,12 @@ function describeUnroutableTestPath(file: string): string | null {
  */
 export function validateCriterionCheckPaths(
   criteria: ReadonlyArray<CheckedCriterion>,
-  opts: { root?: string } = {},
+  opts: CriterionCheckPathOptions = {},
 ): CriterionCheckPathValidation {
   const root = opts.root ?? resolveAgentWorkspaceRoot({});
   const failures: CriterionCheckPathFailure[] = [];
   const scopeFailures: CriterionCheckPathFailure[] = [];
+  const planned: CriterionCheckPathFailure[] = [];
   const normalizedByKey: Record<string, string[]> = {};
   const normalizedCargoByKey: Record<string, NormalizedCargoCheckPaths> = {};
   let checked = 0;
@@ -232,13 +272,20 @@ export function validateCriterionCheckPaths(
         const candidate = resolve(root, path);
         const isFile = isRegularFileInsideRoot(root, candidate);
         if (!isFile) {
-          valid = false;
-          failures.push({
+          const miss: CriterionCheckPathFailure = {
             criterionKey: c.key,
             path,
             reason: 'does not resolve to a regular file in the live tree',
             checkKind: 'cargo',
-          });
+          };
+          // A path that exists but is not a regular file (a directory) is wrong now and
+          // stays wrong; only a path that is absent entirely can be planned.
+          if (opts.allowPlannedPaths && !existsSync(candidate) && isPlannedPathInsideRoot(root, candidate)) {
+            planned.push(miss);
+          } else {
+            valid = false;
+            failures.push(miss);
+          }
         }
       }
       if (valid) {
@@ -284,14 +331,27 @@ export function validateCriterionCheckPaths(
       const resolves = externalCheckout
         ? existsSync(candidate) && statSync(candidate).isFile()
         : isRegularFileInsideRoot(root, candidate);
-      if (!resolves) {
+      // Planned: absent entirely (not a directory), inside the tree, and relative.
+      const plannable =
+        !resolves && opts.allowPlannedPaths === true && !isAbsolute(f) &&
+        !existsSync(candidate) && isPlannedPathInsideRoot(root, candidate);
+      if (!resolves && !plannable) {
         failures.push({ criterionKey: c.key, path: f, reason: 'does not resolve against the live tree' });
         continue;
       }
+      // The filename-shape rule applies to a planned file too: a future file the router
+      // would skip as NON_TEST is as ungradeable as an existing one.
       const unroutable = describeUnroutableTestPath(f);
       if (unroutable) {
         failures.push({ criterionKey: c.key, path: f, reason: unroutable });
         continue;
+      }
+      if (plannable) {
+        planned.push({
+          criterionKey: c.key,
+          path: f,
+          reason: 'not in the tree yet — accepted as planned; grading refuses it until the file exists',
+        });
       }
       normalized.push(f);
     }
@@ -307,6 +367,7 @@ export function validateCriterionCheckPaths(
     scopeFailures,
     normalizedByKey,
     normalizedCargoByKey,
+    planned,
   };
 }
 
@@ -340,6 +401,7 @@ export function selectCriterionCheckRoot(
   criteria: ReadonlyArray<CheckedCriterion>,
   requested: string,
   canonicalRepoRoot: string = REPO_ROOT,
+  opts: Pick<CriterionCheckPathOptions, 'allowPlannedPaths'> = {},
 ): SelectedCriterionCheckRoot {
   const validations = new Map<string, CriterionCheckPathValidation>();
   const validationFor = (root: string): CriterionCheckPathValidation => {
@@ -356,7 +418,12 @@ export function selectCriterionCheckRoot(
     // Scope faults are root-independent and deliberately do not choose a tree.
     resolvesEvery: (root) => validationFor(root).failures.length === 0,
   }) ?? { root: requested, source: 'requested' as const };
-  return { ...selected, validation: validationFor(selected.root) };
+  // The tree is chosen by the STRICT validation, so the allowance can never pick a tree
+  // where existing files look "planned". It only changes how the chosen tree is judged.
+  const validation = opts.allowPlannedPaths
+    ? validateCriterionCheckPaths(criteria, { root: selected.root, allowPlannedPaths: true })
+    : validationFor(selected.root);
+  return { ...selected, validation };
 }
 
 /**
@@ -368,11 +435,13 @@ export function selectCriterionCheckRoot(
  */
 export function assertCriterionCheckPathsResolve(
   criteria: ReadonlyArray<CheckedCriterion>,
-  opts: { root?: string } = {},
-): void {
+  opts: CriterionCheckPathOptions = {},
+): CriterionCheckPathValidation {
   const requested = opts.root ?? resolveAgentWorkspaceRoot({});
-  const v = selectCriterionCheckRoot(criteria, requested).validation;
-  if (v.ok) return;
+  const v = selectCriterionCheckRoot(criteria, requested, REPO_ROOT, {
+    allowPlannedPaths: opts.allowPlannedPaths === true,
+  }).validation;
+  if (v.ok) return v;
   const parts: string[] = [];
   if (v.failures.length > 0) {
     const testsFailures = v.failures.filter((f) => f.checkKind !== 'cargo');
@@ -717,6 +786,17 @@ function isInsideRoot(root: string, candidate: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Containment for a PLANNED path, which does not exist yet: {@link isInsideRoot} realpaths
+ * the candidate and so always answers false for it. A lexical check is enough here, since
+ * grading re-validates the file with the realpath form once it exists.
+ */
+function isPlannedPathInsideRoot(root: string, candidate: string): boolean {
+  const rootAbs = resolve(root);
+  const candidateAbs = resolve(candidate);
+  return candidateAbs.startsWith(`${rootAbs}${sep}`);
 }
 
 function isRegularFileInsideRoot(root: string, candidate: string): boolean {

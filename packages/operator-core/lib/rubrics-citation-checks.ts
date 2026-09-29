@@ -62,6 +62,25 @@ export interface AcceptanceRubricCitationValidation {
   /** Explicit anchors that were associated with a cited path and checked. */
   checkedAnchors: AcceptanceRubricCitationAnchor[];
   failures: AcceptanceRubricCitationFailure[];
+  /**
+   * EI-24372605712471072: citations accepted as PLANNED instead of refused — a missing
+   * file or a missing named anchor, admitted only when the caller passed
+   * `allowPlannedPaths` (a subject plan whose implementation has not begun). Always
+   * present (empty when the allowance is off) so a caller can surface them.
+   */
+  planned: AcceptanceRubricCitationFailure[];
+}
+
+export interface AcceptanceRubricCitationOptions {
+  root?: string;
+  deps?: AcceptanceRubricCitationDeps;
+  /**
+   * Treat a citation to a file (or a named symbol / test case) that does not exist YET as
+   * planned rather than refusing it. Only a rubric write against a subject plan whose
+   * implementation has not begun may pass this; see `subjectPlanAllowsPlannedPaths`.
+   * Absolute, repo-escaping, and non-file citations are still refused.
+   */
+  allowPlannedPaths?: boolean;
 }
 
 export interface AcceptanceRubricCitationDeps {
@@ -299,12 +318,22 @@ function failure(
  */
 export function validateAcceptanceRubricCitationPaths(
   criteria: ReadonlyArray<AcceptanceRubricCitationCriterion>,
-  opts: { root?: string; deps?: AcceptanceRubricCitationDeps } = {},
+  opts: AcceptanceRubricCitationOptions = {},
 ): AcceptanceRubricCitationValidation {
   const root = opts.root ?? resolveAgentWorkspaceRoot({});
   const statFile = opts.deps?.statFile ?? defaultStatFile;
   const readFile = opts.deps?.readFile ?? defaultReadFile;
   const failures: AcceptanceRubricCitationFailure[] = [];
+  const planned: AcceptanceRubricCitationFailure[] = [];
+  // Only the "does not exist yet" reasons can be planned. A path that is absolute,
+  // escapes the repository, or names a directory is wrong now and will stay wrong.
+  const refuseOrPlan = (item: AcceptanceRubricCitationFailure): void => {
+    if (opts.allowPlannedPaths && (item.reason === 'path_missing' || item.reason === 'literal_missing')) {
+      planned.push(item);
+    } else {
+      failures.push(item);
+    }
+  };
   const checkedAnchors: AcceptanceRubricCitationAnchor[] = [];
   const seenPaths = new Set<string>();
   let checkedPaths = 0;
@@ -350,7 +379,7 @@ export function validateAcceptanceRubricCitationPaths(
 
         const stat = statFile(root, path);
         if (!stat) {
-          failures.push(
+          refuseOrPlan(
             failure(
               criterion.key,
               source,
@@ -379,7 +408,7 @@ export function validateAcceptanceRubricCitationPaths(
           };
           checkedAnchors.push(record);
           if (body == null || !body.includes(anchor.literal)) {
-            failures.push(
+            refuseOrPlan(
               failure(
                 criterion.key,
                 source,
@@ -395,16 +424,19 @@ export function validateAcceptanceRubricCitationPaths(
     }
   }
 
-  return { ok: failures.length === 0, checkedPaths, checkedAnchors, failures };
+  return { ok: failures.length === 0, checkedPaths, checkedAnchors, failures, planned };
 }
 
-/** Throw the standard caller-facing refusal used by rubrics:propose. */
+/**
+ * Throw the standard caller-facing refusal used by rubrics:propose. Returns the
+ * validation when it passes, so a caller can surface citations accepted as planned.
+ */
 export function assertAcceptanceRubricCitationPathsResolve(
   criteria: ReadonlyArray<AcceptanceRubricCitationCriterion>,
-  opts: { root?: string; deps?: AcceptanceRubricCitationDeps } = {},
-): void {
+  opts: AcceptanceRubricCitationOptions = {},
+): AcceptanceRubricCitationValidation {
   const result = validateAcceptanceRubricCitationPaths(criteria, opts);
-  if (result.ok) return;
+  if (result.ok) return result;
 
   const lines = result.failures.map((item) => {
     const anchor = item.literal ? ` — literal ${JSON.stringify(item.literal)}` : '';

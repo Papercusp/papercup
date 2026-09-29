@@ -59,8 +59,15 @@ import {
   type RubricLossAck,
 } from './agent-tools/plans/rubric-loss-guard';
 import { isConversationAuditRequiredValue } from './agent-tools/plans/plan-activation-gate';
-import { assertCriterionCheckPathsResolve } from './rubrics-criterion-checks';
-import { assertAcceptanceRubricCitationPathsResolve } from './rubrics-citation-checks';
+import {
+  assertCriterionCheckPathsResolve,
+  subjectPlanAllowsPlannedPaths,
+  type CriterionCheckPathValidation,
+} from './rubrics-criterion-checks';
+import {
+  assertAcceptanceRubricCitationPathsResolve,
+  type AcceptanceRubricCitationValidation,
+} from './rubrics-citation-checks';
 import { acceptanceBarContractGaps } from './acceptance-bar-contract-completeness';
 import { classifyAmendmentAdditivity } from './acceptance-bar-amendment-additivity';
 import { assertRubricRatingVocabulary } from './rubric-rating-vocabulary';
@@ -3476,6 +3483,42 @@ interface AcceptanceAmendmentClauseRow {
   exemption: Record<string, unknown> | null;
 }
 
+/** A path a rubric write accepted as planned (EI-24372605712471072). */
+export interface PlannedRubricPath {
+  criterionKey: string;
+  path: string;
+  /** Which gate would otherwise have refused it. */
+  kind: 'tests-check' | 'cargo-check' | 'method-citation' | 'replication-citation';
+  /** For a citation whose file exists but lacks the named symbol / test case. */
+  literal?: string;
+}
+
+/** Merge both validators' planned lists into one stable, de-duplicated list. */
+export function collectPlannedRubricPaths(
+  citations: Pick<AcceptanceRubricCitationValidation, 'planned'>,
+  checks: Pick<CriterionCheckPathValidation, 'planned'>,
+): PlannedRubricPath[] {
+  const out = new Map<string, PlannedRubricPath>();
+  for (const item of checks.planned) {
+    const entry: PlannedRubricPath = {
+      criterionKey: item.criterionKey,
+      path: item.path,
+      kind: item.checkKind === 'cargo' ? 'cargo-check' : 'tests-check',
+    };
+    out.set(`${entry.kind}\u0000${entry.criterionKey}\u0000${entry.path}`, entry);
+  }
+  for (const item of citations.planned) {
+    const entry: PlannedRubricPath = {
+      criterionKey: item.criterionKey,
+      path: item.path,
+      kind: item.source === 'replication' ? 'replication-citation' : 'method-citation',
+      ...(item.literal ? { literal: item.literal } : {}),
+    };
+    out.set(`${entry.kind}\u0000${entry.criterionKey}\u0000${entry.path}\u0000${entry.literal ?? ''}`, entry);
+  }
+  return [...out.values()];
+}
+
 interface AcceptanceAmendmentResult {
   rubric: Rubric;
   decisionId: string;
@@ -3565,6 +3608,13 @@ export interface AcceptanceBarAmendmentPreview {
    * contract and automated proof, and `raisesProofFloorOnly` when that is its only effect.
    */
   readinessDelta: import('./acceptance-bar-amendment-readiness').AcceptanceBarAmendmentReadinessDelta;
+  /**
+   * EI-24372605712471072: check files and method/replication citations that are not in the
+   * tree yet and were accepted only because the subject plan has not started (draft/ready).
+   * Each must exist by grading time: scorecards:emit refuses a tests-check file that does
+   * not resolve, and every amendment after the plan starts re-validates strictly.
+   */
+  plannedPaths: PlannedRubricPath[];
   nextRepair: { code: string; action: string };
   /**
    * The independence population a prospective approver must stay OUTSIDE of, so a
@@ -4124,8 +4174,14 @@ async function amendAcceptanceBarRubric(
       const amended = applyRubricAmendment(stored, input);
       const built = buildRubricTemplateData(amended);
       await assertRubricCompositionLinksResolve(amended);
-      assertAcceptanceRubricCitationPathsResolve(amended.criteria, { root: amended.checkPathRoot });
-      assertCriterionCheckPathsResolve(amended.criteria, { root: amended.checkPathRoot });
+      // EI-24372605712471072: before the subject plan starts, its BARs may name proof
+      // files the plan's own items will write. Those are accepted as planned (and named on
+      // the preview); a started plan stays strict, and grading always is.
+      const allowPlannedPaths = subjectPlanAllowsPlannedPaths(subjectRow.status);
+      const plannedPaths = collectPlannedRubricPaths(
+        assertAcceptanceRubricCitationPathsResolve(amended.criteria, { root: amended.checkPathRoot, allowPlannedPaths }),
+        assertCriterionCheckPathsResolve(amended.criteria, { root: amended.checkPathRoot, allowPlannedPaths }),
+      );
       const actorId = (input.actorId ?? input.by ?? stored.createdBy ?? '').trim();
       const reason = (input.reason ?? `rubrics:amend ${input.rubricId}`).trim();
       const oldRubricRevision = Number(rubricRow.version);
@@ -4549,6 +4605,7 @@ async function amendAcceptanceBarRubric(
             ...(previewImplementers ? { implementers: previewImplementers } : {}),
             ...(approverEligibility ? { approverEligibility } : {}),
             readinessDelta,
+            plannedPaths,
             nextRepair: missingMethod
               ? {
                   code: 'bar_snapshot_method_missing',
@@ -5111,12 +5168,15 @@ export async function amendRubric(input: AmendRubricInput): Promise<Rubric | nul
           if (meaningRevision !== undefined) contract.meaningRevision = meaningRevision;
         }
       }
+      // Links resolve first so the subject plan's status is known: before it starts, a
+      // missing check file or citation is accepted as planned (EI-24372605712471072).
+      const links = amended.kind === 'acceptance' ? await assertAcceptanceLinksResolve(amended) : null;
+      const allowPlannedPaths = amended.kind === 'acceptance' && subjectPlanAllowsPlannedPaths(links?.subjectPlanStatus);
       if (amended.kind === 'acceptance') {
-        assertAcceptanceRubricCitationPathsResolve(amended.criteria, { root: amended.checkPathRoot });
+        assertAcceptanceRubricCitationPathsResolve(amended.criteria, { root: amended.checkPathRoot, allowPlannedPaths });
       }
-      if (amended.kind === 'acceptance') await assertAcceptanceLinksResolve(amended);
       assertNoSilentRubricLoss(stored, amended);
-      assertCriterionCheckPathsResolve(amended.criteria, { root: amended.checkPathRoot });
+      assertCriterionCheckPathsResolve(amended.criteria, { root: amended.checkPathRoot, allowPlannedPaths });
 
       // Keep the current narrative body (requirements, plan items, decisions,
       // and any hand-authored evidence context) intact. A criterion amendment
