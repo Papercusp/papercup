@@ -7595,6 +7595,10 @@ mod tests {
             startup_chat("here", Some("su-session"), "2026-09-07T01:00:00Z"),
             startup_chat("elsewhere", Some("su-session"), "2026-09-07T02:00:00Z"),
         ];
+        use crate::su_session::{
+            SuSessionBackend, SuSessionInventoryEntry, SuSessionLifecycleState,
+            SuSessionReconciliation,
+        };
         let row = |id: &str, cwd: Option<&str>| SuSessionInventoryEntry {
             agent_chat_id: id.into(),
             adv_session_id: 1,

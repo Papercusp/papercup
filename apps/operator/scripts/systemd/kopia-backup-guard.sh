@@ -32,20 +32,28 @@ label=kopia
 # papercusp-state (19G) and papercusp-transcript (83G), then was killed at
 # 00:21:19 before recording success; hourly cadence had collapsed to 4-17h gaps.
 restart_safe=1
-# --priority-on-contention makes lock contention a PRIORITY WAIT instead of a
-# deferral, for a scheduled producer whose cadence equals its recovery-point
-# deadline. Without it, a scheduled cycle that finds the lock held exits 75 unless
-# its last success is already max_defer seconds old. For the hourly db-dump that
-# is structurally wrong: a successful run leaves the next tick ~2300-2500s after
-# the previous success, below max_defer=3600, so ANY contention at that tick
-# discards the whole hour; the tick after is past max_defer, arms the override and
-# runs. Measured 2026-09-29 (WI-10003884): 'backup OK' only at even hours for 16h,
-# every odd-hour tick logging result=deferred reason=lock-held staleness_sec=2327..2527,
-# and the 1h dump-source freshness alarm firing between runs. The wait still
-# registers a priority request, so a restart-safe hot sweep yields the lock; a
-# --no-restart-safe or wait-mode holder is simply waited out, which is never later
-# than the next hourly tick would have been. Pressure admission still applies once
-# the lock is held. Default 0 keeps every other scheduled label byte-identical.
+# --priority-on-contention turns a transient obstacle at the tick into a bounded
+# WAIT instead of a deferral, for a scheduled producer whose cadence equals its
+# recovery-point deadline. For such a producer ANY deferral at the tick right
+# after a success discards the whole hour: a successful run leaves that tick
+# ~2000-2500s after the previous success, below max_defer=3600, so the floor does
+# not arm; the tick after is past max_defer, arms the override and runs. The
+# cadence therefore halves no matter WHICH obstacle deferred the tick. Both
+# obstacles are measured (WI-10003884):
+#
+#   LOCK CONTENTION -- 2026-09-29: 'backup OK' only at even hours for 16h, every
+#   odd-hour tick logging result=deferred reason=lock-held staleness_sec=2327..2527,
+#   and the 1h dump-source freshness alarm firing between runs. The lock wait
+#   registers a priority request, so a restart-safe hot sweep yields the lock; a
+#   --no-restart-safe or wait-mode holder is simply waited out, which is never
+#   later than the next hourly tick would have been.
+#
+#   ADMISSION PRESSURE -- the first tick after the lock wait went live (13:00 EDT
+#   2026-09-29) waited out the lock for 5s, then logged result=deferred
+#   reason=io-pressure full_avg10=15.40 limit=10 staleness_sec=2003: the same
+#   hour, lost to the other obstacle. See wait_out_admission_pressure.
+#
+# Default 0 keeps every other scheduled label byte-identical.
 priority_on_contention=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -125,6 +133,13 @@ scheduled_child_tempfail_exit=74
 escalation_retry="${KOPIA_BACKUP_ESCALATION_RETRY_SEC:-3600}"
 is_number "$max_defer" || { echo "invalid KOPIA_BACKUP_MAX_DEFER_SEC=$max_defer" >&2; exit 64; }
 is_number "$escalation_retry" || { echo "invalid KOPIA_BACKUP_ESCALATION_RETRY_SEC=$escalation_retry" >&2; exit 64; }
+# Budget for a --priority-on-contention producer's admission-pressure wait, summed
+# across the whole cycle. The staleness floor normally ends that wait first
+# (~max_defer minus the tick's staleness, ~1100-1600s for the hourly dump); the
+# budget only bounds the corner where the floor declines to re-arm because it
+# escalated less than escalation_retry ago. One recovery-point deadline by default.
+priority_pressure_wait_max="${KOPIA_BACKUP_PRIORITY_PRESSURE_WAIT_MAX_SEC:-$max_defer}"
+is_number "$priority_pressure_wait_max" || { echo "invalid KOPIA_BACKUP_PRIORITY_PRESSURE_WAIT_MAX_SEC=$priority_pressure_wait_max" >&2; exit 64; }
 
 state_dir="${KOPIA_BACKUP_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/papercusp/kopia-backup-guard}"
 # The label reaches this from the command line and becomes a path segment.
@@ -400,6 +415,78 @@ run_scheduled_command() {
   return "$child_rc"
 }
 
+# Take the shared lock for a scheduled cycle, or exit with the deferral status.
+# Called once before admission and again after every admission-pressure wait, so
+# a re-acquire follows exactly the same three branches as the first acquire.
+acquire_scheduled_lock() {
+  flock -n 9 && return 0
+  if [ "$pressure_escalated" = 1 ]; then
+    register_priority_request
+    guard_log "result=waiting reason=staleness-override-lock $staleness_override_reason"
+  elif [ "$priority_on_contention" = 1 ]; then
+    register_priority_request
+    guard_log "result=waiting reason=priority-on-contention $staleness_override_reason"
+  else
+    guard_log "result=deferred reason=lock-held $staleness_override_reason"
+    exit "$scheduled_defer_exit"
+  fi
+  flock 9 || exit "$scheduled_defer_exit"
+  cleanup_priority_request
+}
+
+# Evaluate every admission signal before taking ONE deferral decision. The
+# staleness floor applies to all of them. An unreadable PSI file defers exactly
+# like real pressure and so must escalate exactly like it: otherwise a host that
+# stops publishing pressure never backs up again either.
+evaluate_admission() {
+  admission_block_reason=
+  memory_psi=$(read_full_avg10 "$memory_path") || memory_psi=
+  io_psi=$(read_full_avg10 "$io_path") || io_psi=
+  if [ -z "$memory_psi" ]; then
+    admission_block_reason="pressure-unavailable signal=memory path=$memory_path"
+  elif [ -z "$io_psi" ]; then
+    admission_block_reason="pressure-unavailable signal=io path=$io_path"
+  elif at_or_above "$memory_psi" "$memory_limit"; then
+    admission_block_reason="memory-pressure full_avg10=$memory_psi limit=$memory_limit"
+  elif at_or_above "$io_psi" "$io_limit"; then
+    admission_block_reason="io-pressure full_avg10=$io_psi limit=$io_limit"
+  fi
+}
+
+# A --priority-on-contention producer whose admission is blocked WAITS for the
+# block to lift instead of exiting (see priority_on_contention above for why a
+# deferral costs such a producer a whole hour). The wait is bounded three ways,
+# and every exit is logged:
+#   - pressure clears on any one sample   -> return 0, admit normally;
+#   - the staleness floor arms meanwhile  -> return 0, admitted-despite-pressure,
+#     which is exactly what the NEXT tick would have done ~1h later, with the
+#     same cgroup caps -- so waiting never admits a run the floor would not;
+#   - the cycle's wait budget runs out    -> return 1, the caller defers as before.
+# The caller releases the shared lock BEFORE calling this. Holding it here would
+# block every wait-mode producer (the daily home snapshot, the workspace dump)
+# for the whole wait, although those producers ignore pressure by design.
+pressure_wait_started=
+pressure_waited_sec=0
+wait_out_admission_pressure() {
+  [ -n "$pressure_wait_started" ] || pressure_wait_started=$(date +%s)
+  guard_log "result=waiting reason=priority-on-pressure $admission_block_reason $staleness_override_reason"
+  while :; do
+    pressure_waited_sec=$(( $(date +%s) - pressure_wait_started ))
+    if at_or_above "$pressure_waited_sec" "$priority_pressure_wait_max"; then
+      return 1
+    fi
+    sleep "$monitor_interval"
+    evaluate_admission
+    if [ -z "$admission_block_reason" ]; then
+      pressure_waited_sec=$(( $(date +%s) - pressure_wait_started ))
+      guard_log "result=pressure-cleared waited_sec=$pressure_waited_sec"
+      return 0
+    fi
+    # Logs result=staleness-override-armed itself when it arms.
+    arm_staleness_override && return 0
+  done
+}
+
 if [ "$mode" = scheduled ]; then
   # Lock contention is another deferral path. Arm the staleness floor before
   # the nonblocking flock so a scheduled producer cannot defer forever without
@@ -407,22 +494,7 @@ if [ "$mode" = scheduled ]; then
   # floor is armed, become a priority waiter: the hot-sweep handoff recognizes
   # this marker and yields the shared lock instead of starving this producer.
   arm_staleness_override || true
-  if ! flock -n 9; then
-    if [ "$pressure_escalated" = 1 ]; then
-      register_priority_request
-      guard_log "result=waiting reason=staleness-override-lock $staleness_override_reason"
-      flock 9 || exit "$scheduled_defer_exit"
-      cleanup_priority_request
-    elif [ "$priority_on_contention" = 1 ]; then
-      register_priority_request
-      guard_log "result=waiting reason=priority-on-contention $staleness_override_reason"
-      flock 9 || exit "$scheduled_defer_exit"
-      cleanup_priority_request
-    else
-      guard_log "result=deferred reason=lock-held $staleness_override_reason"
-      exit "$scheduled_defer_exit"
-    fi
-  fi
+  acquire_scheduled_lock
 
   # WHY THE CGROUP AND NOT /proc/pressure -- measured on this host 2026-09-05.
   #
@@ -473,32 +545,31 @@ if [ "$mode" = scheduled ]; then
   fi
   guard_log "result=psi-scope scope=$psi_scope memory_path=$memory_path io_path=$io_path"
 
-  # Evaluate every admission signal before taking ONE deferral decision. The
-  # staleness floor was armed once before lock acquisition and applies to all of
-  # them. An unreadable PSI file defers exactly like real pressure and so must
-  # escalate exactly like it: otherwise a host that stops publishing pressure
-  # never backs up again either.
-  admission_block_reason=
-  memory_psi=$(read_full_avg10 "$memory_path") || memory_psi=
-  io_psi=$(read_full_avg10 "$io_path") || io_psi=
-  if [ -z "$memory_psi" ]; then
-    admission_block_reason="pressure-unavailable signal=memory path=$memory_path"
-  elif [ -z "$io_psi" ]; then
-    admission_block_reason="pressure-unavailable signal=io path=$io_path"
-  elif at_or_above "$memory_psi" "$memory_limit"; then
-    admission_block_reason="memory-pressure full_avg10=$memory_psi limit=$memory_limit"
-  elif at_or_above "$io_psi" "$io_limit"; then
-    admission_block_reason="io-pressure full_avg10=$io_psi limit=$io_limit"
-  fi
-
-  if [ -n "$admission_block_reason" ]; then
+  # The staleness floor was armed once before lock acquisition and applies to
+  # every admission signal (see evaluate_admission).
+  evaluate_admission
+  while [ -n "$admission_block_reason" ]; do
     if [ "$pressure_escalated" = 1 ]; then
       guard_log "result=admitted-despite-pressure reason=$admission_block_reason $staleness_override_reason"
-    else
+      break
+    fi
+    if [ "$priority_on_contention" != 1 ]; then
       guard_log "result=deferred reason=$admission_block_reason $staleness_override_reason"
       exit "$scheduled_defer_exit"
     fi
-  fi
+    # Priority producer: pressure DELAYS this cycle and may not cancel it. Never
+    # wait on pressure while holding the shared lock (see
+    # wait_out_admission_pressure), then re-take it through the same branches
+    # and re-check: a long lock wait can outlast the lull that ended the
+    # pressure wait. The budget spans every pass, so this loop terminates.
+    flock -u 9
+    if ! wait_out_admission_pressure; then
+      guard_log "result=deferred reason=$admission_block_reason $staleness_override_reason waited_sec=$pressure_waited_sec"
+      exit "$scheduled_defer_exit"
+    fi
+    acquire_scheduled_lock
+    evaluate_admission
+  done
 else
   register_priority_request
   guard_log "result=waiting reason=lock"

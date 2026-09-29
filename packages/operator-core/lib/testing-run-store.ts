@@ -713,6 +713,13 @@ export interface SpawnRequest {
    */
   runtimeMaxSec?: number | null;
   /**
+   * The work-item this run verifies, when the caller knows it unambiguously
+   * (expensive-verification-loops P-001). Stamped on the task-ledger row so a
+   * long detached run is counted as an attempt against that item. Omit it rather
+   * than guess: an unlinked run is recorded as unknown, a wrong link is not.
+   */
+  workItemId?: string | null;
+  /**
    * JSON reports produced by detached Vitest commands that cannot load the
    * Papercusp admin reporter (typically an independent checkout). The store
    * ingests these on close, in the operator process where the tenant-scoped
@@ -828,6 +835,7 @@ function prepareRun(req: SpawnRequest): PreparedRun {
     cwd,
     runtimeMaxSec: req.runtimeMaxSec,
     launchedBy: 'testing-run-store',
+    workItemId: req.workItemId ?? null,
     detail: { runId, kind: req.kind },
   };
   // task-manager P-008: mint the task id + confinement decision before the

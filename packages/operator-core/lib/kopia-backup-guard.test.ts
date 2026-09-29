@@ -100,6 +100,14 @@ async function waitForPath(path: string, timeoutMs = 10_000): Promise<void> {
   }
 }
 
+async function waitForOutput(read: () => string, text: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!read().includes(text)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for "${text}" in:\n${read()}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -1145,6 +1153,109 @@ describe('Kopia managed entrypoint contract', () => {
     );
 
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
+  });
+
+  // WI-10003884, second half. The --priority-on-contention lock wait went live and the
+  // very first tick after it (13:00 EDT 2026-09-29) waited out the lock for 5s, then
+  // logged result=deferred reason=io-pressure full_avg10=15.40 staleness_sec=2003: the
+  // same hour, lost to the OTHER obstacle. Cadence == deadline means ANY deferral at the
+  // post-success tick halves the cadence, so admission pressure must be a bounded wait
+  // too. A/B on identical pressure and staleness, one flag apart.
+  it('waits out admission pressure, without holding the lock, when the producer asks for --priority-on-contention', async () => {
+    const { dir, env } = fixture(0, 15.4);
+
+    // A: no flag. Every other scheduled label keeps today's contract.
+    seedDeadlineBase(dir, 'plain', 2_003);
+    const plainMarker = join(dir, 'plain-must-not-run');
+    const plain = run(['--mode', 'scheduled', '--label', 'plain', '--', 'touch', plainMarker], env);
+    expect(plain.status, plain.stderr).toBe(SCHEDULED_DEFER_EXIT);
+    expect(plain.stdout).toContain('result=deferred reason=io-pressure full_avg10=15.40');
+    expect(plain.stdout).not.toContain('priority-on-pressure');
+    expect(existsSync(plainMarker)).toBe(false);
+
+    // B: the flag, as the db-dump unit passes it.
+    seedDeadlineBase(dir, 'db-dump', 2_003);
+    const dbRan = join(dir, 'db-ran');
+    const child = spawn(
+      'bash',
+      [guard, '--mode', 'scheduled', '--label', 'db-dump', '--no-restart-safe', '--priority-on-contention', '--', 'touch', dbRan],
+      { env, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    const closed = new Promise<number | null>((resolve) => child.once('close', resolve));
+
+    await waitForOutput(() => stdout, 'result=waiting reason=priority-on-pressure io-pressure full_avg10=15.40');
+    // The shared lock is RELEASED for the wait. Wait-mode producers ignore pressure by
+    // design; holding the lock here would park them behind someone else's PSI for up to
+    // the whole wait. If the lock were held, this blocks until run()'s 10s timeout.
+    const holderRan = join(dir, 'holder-ran');
+    const holder = run(['--mode', 'wait', '--label', 'daily-home-vm', '--', 'touch', holderRan], env);
+    expect(holder.status, `${holder.stdout}\n${holder.stderr}`).toBe(0);
+    expect(existsSync(holderRan)).toBe(true);
+    expect(existsSync(dbRan)).toBe(false);
+
+    pressureFile(env.KOPIA_BACKUP_IO_PSI_PATH!, 3);
+    await expect(closed).resolves.toBe(0);
+    expect(stderr).toBe('');
+    expect(stdout).toMatch(/result=pressure-cleared waited_sec=\d+/);
+    expect(stdout).toContain('result=finished mode=scheduled rc=0');
+    expect(stdout).not.toContain('result=deferred');
+    // Pressure cleared on its own, so the floor never had to override it.
+    expect(stdout).not.toContain('result=admitted-despite-pressure');
+    expect(existsSync(dbRan)).toBe(true);
+  }, 30_000);
+
+  it('admits a --priority-on-contention producer once its pressure wait reaches the staleness deadline', () => {
+    const { dir, env } = fixture(0, 15.4);
+    // ~2s short of max_defer=3600, under pressure that never lifts.
+    seedDeadlineBase(dir, 'db-dump', 3_598);
+    const marker = join(dir, 'ran');
+    const result = run(
+      ['--mode', 'scheduled', '--label', 'db-dump', '--no-restart-safe', '--priority-on-contention', '--', 'touch', marker],
+      env,
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const out = result.stdout;
+    const waiting = out.indexOf('result=waiting reason=priority-on-pressure');
+    const armed = out.indexOf('result=staleness-override-armed');
+    const admitted = out.indexOf('result=admitted-despite-pressure reason=io-pressure');
+    const finished = out.indexOf('result=finished mode=scheduled rc=0');
+    // The same admission the NEXT tick would have made an hour later, made in-cycle.
+    expect(waiting, out).toBeGreaterThanOrEqual(0);
+    expect(armed, out).toBeGreaterThan(waiting);
+    expect(admitted, out).toBeGreaterThan(armed);
+    expect(finished, out).toBeGreaterThan(admitted);
+    expect(out).not.toContain('result=deferred');
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it('defers after the priority pressure wait spends its budget, and says how long it waited', () => {
+    const fx = fixture(0, 15.4);
+    const { dir } = fx;
+    const env = { ...fx.env, KOPIA_BACKUP_PRIORITY_PRESSURE_WAIT_MAX_SEC: '1' };
+    // Far from max_defer, so only the budget can end this wait.
+    seedDeadlineBase(dir, 'db-dump', 2_003);
+    const marker = join(dir, 'must-not-run');
+    const result = run(
+      ['--mode', 'scheduled', '--label', 'db-dump', '--no-restart-safe', '--priority-on-contention', '--', 'touch', marker],
+      env,
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(SCHEDULED_DEFER_EXIT);
+    expect(result.stdout).toContain('result=waiting reason=priority-on-pressure');
+    expect(result.stdout).toMatch(
+      /result=deferred reason=io-pressure full_avg10=15\.40 limit=10 staleness_sec=\d+ max_defer_sec=3600 waited_sec=[1-9]\d*/,
+    );
+    expect(result.stdout).not.toContain('result=started');
+    expect(existsSync(marker)).toBe(false);
   });
 
   it('does not retire an escalated run on the same pressure that admitted it', () => {

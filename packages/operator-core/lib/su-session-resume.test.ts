@@ -51,7 +51,7 @@ function fixture(backend: 'claude' | 'codex' | 'omp'): DurableSuSessionRecord {
     specificationRevision: 'spec-1', stateRevision: 'state-2' });
   return { advSessionId: 42, workspaceId: 'workspace', agentChatId: 'saved-chat', backend,
     nativeSessionId: 'saved-native', ownerId: 'saved-owner', harnessSlug: 'project',
-    runtimeGeneration: 3, pid: null, endedAt: 'yesterday', lifecycle: 'ended',
+    runtimeGeneration: 3, pid: null, endedAt: 'yesterday', lifecycle: 'ended', cwd: '/project',
     descriptor: { identity: { agentChatId: 'saved-chat', advSessionId: 42, workspaceId: 'workspace',
       harnessSlug: 'project', backend, nativeSessionId: 'saved-native', ownerId: 'saved-owner' },
     lifecycle: 'ended', role: 'su', runtimeGeneration: 3, model: 'saved-model', accountServed: null, accountRoute: 'named-account',

@@ -130,7 +130,8 @@ import {
   type GovernedExecutionSettlement,
 } from '../../resource-governor/execution';
 import type { ResourceDemand } from '../../resource-governor/admission';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+import { resolveBashTaskProvenance } from '../capability/bash';
 import {
   prepareTestEvidence,
   finishTestEvidence,
@@ -271,6 +272,9 @@ export function buildDetachedTestRunRequest(opts: {
   workspaceId?: string;
   harnessSlug?: string;
   timeoutMs?: number;
+  /** expensive-verification-loops P-001: the work-item this run verifies, stamped on
+   *  the task-ledger row so a long detached run counts as an attempt against it. */
+  workItemId?: string;
 }): SpawnRequest {
   // An explicit Vitest reporter replaces the reporters declared by the workspace config.
   // The admin reporter normally writes durable testRunIds directly. A single integration
@@ -319,6 +323,7 @@ export function buildDetachedTestRunRequest(opts: {
         }
       : {}),
     runtimeMaxSec: detachedRecoveryRuntimeMaxSec(opts.timeoutMs),
+    ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
     ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
@@ -340,6 +345,9 @@ export function buildDetachedMixedTestRunRequest(opts: {
   workspaceId?: string;
   harnessSlug?: string;
   timeoutMs?: number;
+  /** expensive-verification-loops P-001: the work-item this run verifies, stamped on
+   *  the task-ledger row so a long detached run counts as an attempt against it. */
+  workItemId?: string;
 }): SpawnRequest {
   const commands: Array<{ command: string; args: string[]; cwd: string }> = [];
   const detachedReportArtifacts: NonNullable<SpawnRequest['detachedReportArtifacts']> = [];
@@ -429,6 +437,7 @@ export function buildDetachedMixedTestRunRequest(opts: {
     // A detached continuation is a fresh operation, not the expired foreground
     // remainder. It gets the full bounded test window, including mixed-root suites.
     runtimeMaxSec: detachedRecoveryRuntimeMaxSec(opts.timeoutMs),
+    ...(opts.workItemId ? { workItemId: opts.workItemId } : {}),
     ...(Object.keys(env).length > 0 ? { env } : {}),
   };
 }
@@ -2580,6 +2589,8 @@ export async function runTestFilesCore(opts: {
   /** Request scope to stamp on the reporter's durable test-run rows. */
   workspaceId?: string;
   harnessSlug?: string;
+  /** Work-item a detached recovery run is attributed to (expensive-verification-loops P-001). */
+  workItemId?: string;
   runId?: string;
   /** Recursive mixed-root groups defer detached recovery to their outer operation. */
   allowDetachedRecovery?: boolean;
@@ -2620,6 +2631,7 @@ export async function runTestFilesCore(opts: {
             ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
             ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
             ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
+            ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
             timeoutMs,
           }),
         );
@@ -2863,6 +2875,7 @@ export async function runTestFilesCore(opts: {
                 ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
                 ...(opts.workspaceId !== undefined ? { workspaceId: opts.workspaceId } : {}),
                 ...(opts.harnessSlug !== undefined ? { harnessSlug: opts.harnessSlug } : {}),
+                ...(opts.workItemId !== undefined ? { workItemId: opts.workItemId } : {}),
                 timeoutMs,
               }),
             )
@@ -3275,6 +3288,15 @@ export default defineTool({
         return { data: { ok: false, error: 'evidence_preparation_failed', message: String(error) } };
       }
     }
+    // expensive-verification-loops P-001: a run that outlives the foreground clamp
+    // continues detached, and that detached run is the expensive attempt the loop
+    // detector counts per work-item. An evidence request names its item explicitly;
+    // otherwise use the caller's unambiguous held claim — the same rule capability:bash
+    // applies, so one agent's runs link identically through either door.
+    const attemptWorkItemId =
+      evidenceRequest?.workItemId ??
+      (await resolveBashTaskProvenance(ctx as unknown as ResolveIdentityCtx, harnessSlug ?? null)).workItemId ??
+      undefined;
     const result = await runTestFilesCore({
       files,
       runId,
@@ -3283,6 +3305,7 @@ export default defineTool({
       signal: ctx.signal,
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
       ...(harnessSlug ? { harnessSlug } : {}),
+      ...(attemptWorkItemId ? { workItemId: attemptWorkItemId } : {}),
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
     });
