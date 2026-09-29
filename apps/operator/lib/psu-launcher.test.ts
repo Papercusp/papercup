@@ -7667,6 +7667,65 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     }
   });
 
+  it("keeps the seed as a scripted port's ONLY first turn — no plain kickoff reaches the PTY host (WI-10003858)", () => {
+    // Live failure 2026-09-29: consult-dispatch launches every convert with the
+    // brief in PAPERCUSP_KICKOFF_PROMPT. The port folds it into the seed as
+    // currentInstruction, but the fresh target re-read the same env as a plain
+    // kickoff, and psu-pty-host refuses kickoff + kickoffFile together — so every
+    // grader convert exited 1 in <0.4s before its session existed.
+    const BRIEF = "Answer consult conv-x: grade the acceptance rubric.";
+    const provenanceDir = mkdtempSync(join(tmpdir(), "su-port-kickoff-prov-"));
+    const env = {
+      PAPERCUSP_KICKOFF_PROMPT: BRIEF,
+      PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+    };
+    const previous = process.env.PAPERCUSP_KICKOFF_PROMPT;
+    try {
+      process.env.PAPERCUSP_KICKOFF_PROMPT = BRIEF;
+      for (const scripted of [
+        parseArgs(["--no-picker", "--agent=codex", "--model=sol:high"]),
+        parseArgs([
+          "--no-picker",
+          "--agent=codex",
+          "--model=sol:high",
+          `--kickoff=${BRIEF}`,
+        ]),
+      ]) {
+        const target = resolveResumeTarget(source, scripted);
+        // The instruction still reaches the target — through the seed.
+        expect(
+          sessionPortRequestBody(source, target, {}, scripted).currentInstruction,
+        ).toBe(BRIEF);
+        // Control: the caller's untransformed args DO resolve a plain kickoff, so
+        // the assertion below is not passing on a dead env or a missing flag.
+        expect(
+          finalizeFreshSuArgs("codex", [], { kickoffPrompt: null }, scripted, env)
+            .kickoffSeeded,
+        ).toBe(true);
+        const targetArgs = sessionPortTargetArgs(
+          source,
+          target,
+          {},
+          { ...scripted, addDir: [], passthrough: [] },
+          { token: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}` },
+        );
+        const fresh = finalizeFreshSuArgs(
+          "codex",
+          [],
+          { kickoffPrompt: null },
+          targetArgs,
+          env,
+        );
+        expect(fresh.kickoff).toBeNull();
+        expect(fresh.kickoffSeeded).toBe(false);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_KICKOFF_PROMPT;
+      else process.env.PAPERCUSP_KICKOFF_PROMPT = previous;
+      rmSync(provenanceDir, { recursive: true, force: true });
+    }
+  });
+
   it("records resume provenance and forwards the opaque handshake/source cwd to bootstrap", () => {
     const args = sessionPortTargetArgs(
       source,
