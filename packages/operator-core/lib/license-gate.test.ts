@@ -281,7 +281,7 @@ describe('installer leg — attributeInstaller', () => {
     });
     expect(r.unreviewed).toEqual([]);
     expect(r.denied).toEqual([]);
-    expect(r.components.find((c: { name: string }) => c.name === 'psql+readline').verdict).toBe('aggregate');
+    expect(r.components.find((c: { name: string }) => c.name === 'psql+readline')?.verdict).toBe('aggregate');
   });
 
   it('refuses an unknown native binary and a model not covered by a kind:"model" component', () => {
