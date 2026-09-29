@@ -1,0 +1,56 @@
+{
+  "plan": "operator-identity-kernel-latency-2026-09-23",
+  "item": "P-003",
+  "workItem": "WI-10002638",
+  "clauses": ["AUTO-BAR-R-1-P-003@5 (live)", "AUTO-BAR-R-4-P-003@5 (deployed)"],
+  "measuredBy": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+  "measuredAt": "2026-09-29T06:36Z..06:49Z",
+  "deployed": {
+    "sha": "d425508f01edf8d29045e9d89e6f0fd115febf74",
+    "health3070": "d425508f01 at 06:36Z, 06:42Z, 06:44Z, 06:45Z",
+    "workers": [1167007, 1167013, 1167022, 1167037, 1167082, 1167089],
+    "workersStarted": "~2026-09-29T06:34:04Z (reuseport farm, cwd papercup-release/apps/operator)",
+    "releaseCheckoutHead": "d425508f01edf8d29045e9d89e6f0fd115febf74",
+    "gate": "d425508f is green main (green-checkpoint promoted); release:deploy liveCertification certified, verdict GREEN",
+    "deployEvent": "release:deployed:d425508f01edf8d29045e9d89e6f0fd115febf74 fired ~06:35Z (unforced auto-deploy started 06:30:07Z)"
+  },
+  "R4_deployedSource": {
+    "blobs": {
+      "packages/operator-core/lib/capability-envelope/identity-grants-port.ts": "f5ddd86ef485e0ffac646f96e905a70498bbe6b4 at d425508f == staging == working tree == papercup-release worktree == papercup-release HEAD",
+      "packages/operator-core/lib/projected-tool-deps.ts": "3cb3df2ad37c2272b398edbd88a437a85f5d2e7b at d425508f == staging == working tree == papercup-release worktree == papercup-release HEAD"
+    },
+    "deployedBundle": "papercup-release/apps/operator/dist-host/hono-host.mjs (mtime 2026-09-29T06:34Z): pinModuleState key '@papercusp/operator-core.identity-resolution-cache' present (1); identityResolutionCache get/set/delete/keys/size present",
+    "laterEdit": "none: the staging blob equals the reviewed/deployed blob for both files",
+    "cacheMechanism": "module-scope pinModuleState LRU keyed by adv_sessions id + xmin (row version); no new table, service, or flag"
+  },
+  "R1_live": {
+    "drivenWindow": {
+      "driver": ".papercusp/scratch/kl-p003-r1-driven.sh (gitignored scratch; reproduced here)",
+      "bracketBefore": "harness_shared.adv_sessions id 31256 xmin 732652185 @ 2026-09-29T06:44:02.745Z",
+      "bracketAfter": "harness_shared.adv_sessions id 31256 xmin 732652185 @ 2026-09-29T06:45:19.696Z (unchanged row)",
+      "calls": "200 x coord:whoami as su-b0451bbf via scripts/mcp-call.mjs --port 3070, 4-way parallel, 06:44:05.759Z..06:44:17.785Z, 200/200 exit 0",
+      "ledger": "harness_shared.tool_invocations serving_host=port-3070, tool coord:whoami, owner su-b0451bbf, 06:44:05-06:44:20Z: 200 rows status ok; 200/200 have kernel.preflight.serverAudit.identityLaunchRecord AND kernel.enforce.serverAudit.identityLaunchRecord == {advSessionId:'31256', xmin:'732652185'} (== bracket); 200/200 serving_build_sha d425508f01; 200/200 preflight applied + enforce allow. Per serving worker (ledger pid): 33, 30, 37, 32, 37, 31, so every worker, including the profiled one, served >= 30 unchanged-row authorizations",
+      "profile": {
+        "method": "scripts/cpu-sample.mjs <pid> 75000 (V8 Profiler via SIGUSR1 inspector, 200us sampling)",
+        "worker": 1167013,
+        "samples": 284047,
+        "nonIdleSamples": 5403,
+        "checkIdentityGrantKernelDescendedHotSamples": 7,
+        "hotShareOfNonIdlePct": 0.13,
+        "checkIdentityGrantKernelDescendedAllShareOfNonIdlePct": 1.148,
+        "hotFrames": "replayAgentSpecification 0, stableStringify 0, cloneJson 1, SHA-256 (update/digest/Hash) 8",
+        "analyzer": ".papercusp/scratch/kl-p003-r1-analyze.mjs (node-tree walk: self-time of hot frames whose ancestor chain contains checkIdentityGrantKernel; excludes (idle)/(program)/inspector frames)"
+      }
+    },
+    "undrivenProfiles": "45s profiles of 5 of 6 workers 06:37-06:42Z: 16955 non-idle samples, 0 kernel-descended samples. This is vacuous for the kernel share because 0 governed su calls reached :3070 in that window (su MCP traffic was served by port-3170 via :9071), which is why the driven window was used",
+    "lag": {
+      "source": "~/.papercusp/perf-baselines/<ts>-scheduled.json signals.eventLoopLag (E1 capture-signals.py reading :3070 /api/health/deep), all window_mature=true",
+      "preCacheNearDeploy_7708e704": { "06:30:01Z": 20.2, "06:32:01Z": 20.2, "06:34:01Z": 20.3, "median": 20.2 },
+      "postDeploy_d425508f_clean": { "06:44:01Z": 20.2, "06:46:01Z": 20.2, "06:48:01Z": 20.2, "median": 20.2 },
+      "postDeploy_duringProfiling": { "06:36:01Z": 20.2, "06:38:02Z": 20.2, "06:40:02Z": 20.4, "06:42:01Z": 20.3 },
+      "bound": "median(post) 20.2 <= 1.2 x median(pre) 24.24: PASS; no mature post-deploy p95 >= 250ms",
+      "loadavg1": { "pre": [18.71, 41.75, 36.67], "post": [45.49, 20.68, 22.67] }
+    },
+    "falsifierVerdict": "not falsified: hot share 0.13% <= 5%; 5403 >= 1000 non-idle samples; >= 20 unchanged-row stamped authorizations on the profiled worker with bracketed id+xmin and serving-SHA receipts; three mature lag windows each side; post median within 1.2x of pre"
+  }
+}
