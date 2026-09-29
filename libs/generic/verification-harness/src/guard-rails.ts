@@ -189,11 +189,15 @@ export async function loadGuardRailsFromCommand(
       env: { ...process.env, VH_SCOPE_TAGS: tags.join(',') },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.stdout.on('data', (d: Buffer) => {
-      out += d.toString('utf8');
+    // Decode at the stream (StringDecoder-backed) so a multi-byte UTF-8 char split
+    // across two 'data' chunks is not corrupted into replacement characters.
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d: string) => {
+      out += d;
     });
-    child.stderr.on('data', (d: Buffer) => {
-      err = tail(err + d.toString('utf8'));
+    child.stderr.on('data', (d: string) => {
+      err = tail(err + d);
     });
     child.on('error', reject);
     child.on('close', (c) => resolve({ code: c, stdout: out, stderr: err }));
