@@ -58,6 +58,10 @@ vi.mock('./goals/holder', async (importOriginal) => ({
 import {
   GOAL_LAUNCH_DEFAULTS,
   UNLIMITED_CEILING,
+  goalArmWithholdsBrief,
+  goalArmWithholdsReminders,
+  goalWithholdsTurnStartReminders,
+  resolveGoalBehaviorArm,
   goalLaunchSettingsSchema,
   launchProfileSchema,
   foldLaunchProfile,

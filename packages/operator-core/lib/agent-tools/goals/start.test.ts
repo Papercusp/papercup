@@ -959,6 +959,45 @@ describe('the kickoff brief', () => {
     // fact, so an agent that never received one has no cue anything is wrong.
     expect(brief).not.toContain('(delivered with your orient)');
   });
+
+  // R-4 / D-032 (goal-agent-behavior-feedback-2026-09-06): the experiment arm
+  // withholds TEXT only. 'full' and 'brief-only' carry the complete launch brief;
+  // 'baseline' drops the portfolio and history blocks and keeps every other line.
+  describe('R-4 behaviour-experiment arm', () => {
+    const writtenAt = new Date('2026-09-29T01:00:00Z');
+    const history = {
+      status: 'available',
+      brief: { fingerprint: 'arm-history-fp', fanOut: { admitted: 0, total: 0, cap: 24, truncated: false }, attempts: [] },
+      recovery: { tool: 'goals:get', args: { id: 'g-arm' } },
+    } as never;
+    const base = {
+      goalId: 'g-arm', title: 'Arm outcome', killCriterion: 'arm stop', budgetCents: 1_000,
+      renderedPortfolio: 'GOAL PORTFOLIO SNAPSHOT — arm fixture', history, writtenAt,
+    };
+
+    it("'full' is byte-identical to an arm-less brief", () => {
+      expect(buildGoalKickoffBrief({ ...base, behaviorArm: 'full' })).toBe(buildGoalKickoffBrief(base));
+      expect(buildGoalKickoffBrief({ ...base, behaviorArm: null })).toBe(buildGoalKickoffBrief(base));
+    });
+
+    it("'brief-only' keeps the full launch brief (it withholds only per-turn reminders)", () => {
+      expect(buildGoalKickoffBrief({ ...base, behaviorArm: 'brief-only' })).toBe(buildGoalKickoffBrief(base));
+    });
+
+    it("'baseline' withholds the portfolio and history but keeps outcome, kill, ceiling and contract lines", () => {
+      const full = buildGoalKickoffBrief(base);
+      const baseline = buildGoalKickoffBrief({ ...base, behaviorArm: 'baseline' });
+      expect(full).toContain('GOAL PORTFOLIO SNAPSHOT — arm fixture');
+      expect(full).toContain('arm-history-fp');
+      expect(baseline).not.toContain('GOAL PORTFOLIO SNAPSHOT');
+      expect(baseline).not.toContain('arm-history-fp');
+      for (const line of ['OUTCOME — Arm outcome', 'KILL THIS IF — arm stop', 'CEILING — $10.00 declared', 'modes[].contract']) {
+        expect(baseline).toContain(line);
+      }
+      // Withholding removes lines; it never rewrites the ones that remain.
+      for (const line of baseline.split('\n')) expect(full.split('\n')).toContain(line);
+    });
+  });
 });
 
 // ── EI-20049757392342975 ──────────────────────────────────────────────────
