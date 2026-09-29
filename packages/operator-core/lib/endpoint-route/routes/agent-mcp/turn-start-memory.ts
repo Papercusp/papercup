@@ -43,6 +43,18 @@ type ControlDelivery = {
   candidate?: { generation: number; activationRevision?: ActivationRevision };
 };
 
+// portable-identity P-010: the package half of orientation. Its receipt
+// (allocation, deliveries, omissions) is staged on its own surface under the
+// same delivery token, so it commits only once the hook proves it printed it.
+const PACKAGE_SINK_DELIVERY_SURFACE = 'turn-start-package-sink';
+// Discovery (anchor + identity sources) plus the evaluator's own 1.5s turn
+// ceiling, kept inside the hook's 2.5s response wall.
+const PACKAGE_SINK_WALL_MS = 1_800;
+type PackageSinkDelivery = {
+  classes: import('../../../agent-identities/package-orientation-classes').PackageOrientationClass[];
+  receipt: Record<string, unknown> | null;
+};
+
 /*
  * NO LENGTH FLOOR HERE — deliberately (context-injection-audit-2026-07-28 P-035
  * / F-E). A `MIN_PROMPT_CHARS = 40` gate used to skip recall for any prompt
@@ -544,13 +556,71 @@ const turnStartMemory = defineTool({
         }
       })();
 
-      const [control, orientation, memory, personal] = await Promise.all([
+      // portable-identity P-010: every package contribution the wearer's stack
+      // declares at the turn-start sink, evaluated under ONE aggregate budget
+      // (agent-identities/turn-start-package-sink.ts). Concurrent with the
+      // platform half and bounded, so a slow provider costs its omission row,
+      // never the turn. Gated with orientation: it renders into that block.
+      const packagePromise = (async (): Promise<PackageSinkDelivery> => {
+        const none: PackageSinkDelivery = { classes: [], receipt: null };
+        try {
+          const [{ getFlag }, { FLAGS }, { ackAndRead }, { evaluateTurnStartPackageSink, packageSinkReceipt }] =
+            await Promise.all([
+              import('@papercusp/flags/server'),
+              import('@papercusp/flags'),
+              import('../../../agent-tools/coordination/read-cursors'),
+              import('../../../agent-identities/turn-start-package-sink'),
+            ]);
+          const on = await getFlag(FLAGS.TURN_START_ORIENTATION, 'system').catch(() => true);
+          if (!on) return none;
+          // Commit last turn's receipt only if the hook proves it printed that text.
+          await ackAndRead(owner, PACKAGE_SINK_DELIVERY_SURFACE, {
+            confirmedToken: typeof body.confirmedDelivery === 'string' ? body.confirmedDelivery : null,
+          }).catch(() => null);
+          const detach = new AbortController();
+          const measured = await withBoundedTimeout(
+            evaluateTurnStartPackageSink({ ownerId: owner, workspaceId, turnId: randomUUID(), signal: detach.signal }),
+            { fallback: null, timeoutMs: PACKAGE_SINK_WALL_MS, label: 'turn-start:package-sink' },
+          );
+          if (!measured.value) {
+            detach.abort();
+            return none;
+          }
+          return { classes: measured.value.classes, receipt: packageSinkReceipt(measured.value) };
+        } catch {
+          return none;
+        }
+      })();
+
+      const [control, orientation, memory, personal, packages] = await Promise.all([
         controlPromise,
         orientationPromise,
         memoryPromise,
         personalPromise,
+        packagePromise,
       ]);
       let deliveryToken = orientation.deliveryToken;
+      let orientationBlock = orientation.block;
+      if (packages.classes.length > 0) {
+        try {
+          const { appendPackageOrientationRows } = await import('../../../agent-identities/package-orientation-classes');
+          orientationBlock = appendPackageOrientationRows(orientation.block, packages.classes).block;
+        } catch {
+          // The platform block is already staged; it is delivered unchanged.
+        }
+      }
+      if (packages.receipt) {
+        const token = deliveryToken ?? randomUUID();
+        try {
+          const { stage } = await import('../../../agent-tools/coordination/read-cursors');
+          await stage(owner, PACKAGE_SINK_DELIVERY_SURFACE, {
+            ...packages.receipt, rendered: orientationBlock !== orientation.block,
+          }, { deliveryToken: token });
+          deliveryToken = token;
+        } catch {
+          // An unstaged receipt only loses provenance; the rows are still delivered.
+        }
+      }
       if (control.candidate) {
         const token = deliveryToken ?? randomUUID();
         try {
@@ -568,7 +638,7 @@ const turnStartMemory = defineTool({
       // Most-binding first; the private block is visibly separate and last.
       return Response.json({
         ok: true,
-        text: [control.text, orientation.block, memory, personal].filter(Boolean).join('\n\n'),
+        text: [control.text, orientationBlock, memory, personal].filter(Boolean).join('\n\n'),
         ...(deliveryToken ? { deliveryToken } : {}),
       });
     } catch {
