@@ -17,6 +17,8 @@
 # inside it: check each command explicitly. A later phase still runs after a failure unless
 # it depends on the failed phase (never-abort). Each phase gets "$VH_PHASE_DIR" for evidence.
 # Selection rules and the result schema live in src/cli.ts (TS), shared with the TS runner.
+# Needs bash >= 4.2 (associative arrays, declare -g): run it on the Linux side, never under
+# the macOS stock /bin/bash 3.2.
 
 VH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 declare -ga VH_PHASE_IDS=()
@@ -104,7 +106,7 @@ vh_init() {
     VH_ACTION[$p]="$a"
     VH_REUSE_FROM[$p]="$r"
   done <<< "$plan"
-  echo "VH_RUN harness=$name run=$VH_RUN_ID evidence=$VH_RUN_DIR plan=$(echo "$plan" | awk -F'\t' '{printf "%s%s:%s", NR>1?",":"", $1, $2}')"
+  echo "VH_RUN harness=$name run=$VH_RUN_ID evidence=$VH_RUN_DIR plan=$(echo "$plan" | awk -F'\t' '{printf "%s%s:%s", (NR>1 ? "," : ""), $1, $2}')"
 }
 
 vh_step() { VH_CUR_STEP="$1"; echo "VH_STEP phase=${VH_CUR_PHASE:-?} step=$1"; }
