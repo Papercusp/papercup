@@ -284,8 +284,12 @@ vi.mock('../su-session-claude-engine', async (original) => {
                 }
                 // The canonical block must agree with what was streamed, or the
                 // adapter's reconciliation (:538) would be papering over a
-                // difference this clause exists to detect.
-                output.write({ type: 'assistant', session_id: nativeId, message: { content: [
+                // difference this clause exists to detect. It carries the SAME
+                // message.id as message_start, exactly as real Claude does:
+                // without it the adapter cannot reconcile, re-emits the whole
+                // reply as a second delta, and a screen read between that
+                // delta and the replacing `completed` shows the reply twice.
+                output.write({ type: 'assistant', session_id: nativeId, message: { id: 'pui-stream-msg', content: [
                   { type: 'text', text: scriptedEngine.streamChunks.join('') },
                 ] } });
                 result();
