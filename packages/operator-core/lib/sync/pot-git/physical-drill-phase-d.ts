@@ -860,45 +860,93 @@ export async function restorePhysicalPhaseDTier(
   };
 }
 
-/** Read a cryptographically valid staging event from this host's production fed-event log. */
+/** Ceiling for {@link capturePhysicalPhaseDEvent}'s wait; matches the scenario's 20-minute phase deadlines. */
+export const PHASE_D_EVENT_WAIT_MAX_MS = 20 * 60_000;
+/** Poll interval while {@link capturePhysicalPhaseDEvent} waits for the event to land. */
+export const PHASE_D_EVENT_POLL_MS = 5_000;
+/** Marker in the error thrown when MORE than one signed event names the head; callers must not retry it. */
+export const PHASE_D_EVENT_DUPLICATE_MARKER = 'duplicate signed production staging events' as const;
+
+type PhysicalPhaseDEventDeps = PhysicalPhaseDDeps & {
+  nowMs?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+};
+
+/**
+ * Read a cryptographically valid staging event from this host's production fed-event log.
+ *
+ * `waitMs` (default 0, capped at {@link PHASE_D_EVENT_WAIT_MAX_MS}) polls until the
+ * event lands. The scenario reads the tower's event straight after a tower
+ * git-sync:run, and that call legitimately returns `in_progress` once the pass
+ * outlasts its 45s window. A one-shot read then finds nothing and fails the phase
+ * although the one event arrives seconds later. Measured: P-505 run 27, integrate
+ * returned in_progress and the single seq-56 event for the head landed 67s after
+ * ratification (WI-10003787).
+ *
+ * Zero matches keep waiting. More than one match fails at once with
+ * {@link PHASE_D_EVENT_DUPLICATE_MARKER}: a re-announced sha is a producer
+ * defect (WI-10003781), and waiting would only turn it into a timeout.
+ */
 export async function capturePhysicalPhaseDEvent(
   input: {
     hostId: PhysicalPhaseDHost;
     afterRowId: number;
     integratorDeviceKey: string;
     stagingSha: string;
+    waitMs?: number;
   },
-  deps: PhysicalPhaseDDeps = {},
+  deps: PhysicalPhaseDEventDeps = {},
 ): Promise<PhysicalPhaseDEvent> {
   const sql = deps.sql ?? getOrgPg().sql;
-  const rows = await sql<Array<{ id: number; observed_at: string; body: Record<string, unknown> }>>`
-    SELECT id, ts::text AS observed_at, body
-      FROM harness_shared.coord_event_log
-     WHERE workspace_id = ${PHASE_D_WORKSPACE}
-       AND harness_slug = ${PHASE_A_POT_HOME}
-       AND surface = 'messages'
-       AND id > ${input.afterRowId}
-       AND body->'fed_event'->>'key' = ${STAGING_ADVANCE_EVENT_KEY}
-       AND body->'fed_event'->>'repo_key' = ${PHASE_A_REPO_KEY}
-     ORDER BY id ASC
-     LIMIT 200
-  `;
-  const matches = rows.flatMap((row) => {
-    const fed = row.body?.fed_event as Record<string, unknown> | undefined;
-    const payload = fed?.payload;
-    if (
-      fed?.source !== 'git-sync-integrator' ||
-      !isSignedStagingAdvance(payload) ||
-      payload.device_pubkey !== input.integratorDeviceKey ||
-      payload.staging_sha !== input.stagingSha ||
-      !verifyStagingAdvance(payload, input.integratorDeviceKey)
-    ) {
-      return [];
+  const nowMs = deps.nowMs ?? Date.now;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const waitMs = Math.max(0, Math.min(input.waitMs ?? 0, PHASE_D_EVENT_WAIT_MAX_MS));
+  const deadline = nowMs() + waitMs;
+  let matches: Array<{
+    row: { id: number; observed_at: string; body: Record<string, unknown> };
+    payload: SignedStagingAdvance;
+  }>;
+  for (;;) {
+    const rows = await sql<Array<{ id: number; observed_at: string; body: Record<string, unknown> }>>`
+      SELECT id, ts::text AS observed_at, body
+        FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${PHASE_D_WORKSPACE}
+         AND harness_slug = ${PHASE_A_POT_HOME}
+         AND surface = 'messages'
+         AND id > ${input.afterRowId}
+         AND body->'fed_event'->>'key' = ${STAGING_ADVANCE_EVENT_KEY}
+         AND body->'fed_event'->>'repo_key' = ${PHASE_A_REPO_KEY}
+       ORDER BY id ASC
+       LIMIT 200
+    `;
+    matches = rows.flatMap((row) => {
+      const fed = row.body?.fed_event as Record<string, unknown> | undefined;
+      const payload = fed?.payload;
+      if (
+        fed?.source !== 'git-sync-integrator' ||
+        !isSignedStagingAdvance(payload) ||
+        payload.device_pubkey !== input.integratorDeviceKey ||
+        payload.staging_sha !== input.stagingSha ||
+        !verifyStagingAdvance(payload, input.integratorDeviceKey)
+      ) {
+        return [];
+      }
+      return [{ row, payload }];
+    });
+    if (matches.length > 1) {
+      const seen = matches.map((m) => `row ${m.row.id} seq ${m.payload.seq}`).join(', ');
+      throw new Error(
+        `physical Phase D found ${matches.length} ${PHASE_D_EVENT_DUPLICATE_MARKER} for the run-bound head (${seen}); expected exactly one`,
+      );
     }
-    return [{ row, payload }];
-  });
-  if (matches.length !== 1) {
-    throw new Error('physical Phase D expected exactly one signed production staging event for the run-bound head');
+    if (matches.length === 1) break;
+    const remaining = deadline - nowMs();
+    if (remaining <= 0) {
+      throw new Error(
+        `physical Phase D expected exactly one signed production staging event for the run-bound head; none arrived within ${Math.round(waitMs / 1000)}s`,
+      );
+    }
+    await sleep(Math.min(PHASE_D_EVENT_POLL_MS, remaining));
   }
   const match = matches[0]!;
   return {

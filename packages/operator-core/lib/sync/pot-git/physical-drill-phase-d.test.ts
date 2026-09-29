@@ -7,8 +7,12 @@ import { signStagingAdvance } from './staging-advance';
 import { defaultRunGit } from './storage';
 import { physicalDrillGitSyncSlug } from './physical-drill-phase-a';
 import {
+  PHASE_D_EVENT_DUPLICATE_MARKER,
+  PHASE_D_EVENT_POLL_MS,
   PHASE_D_EVENT_SCHEMA,
+  PHASE_D_EVENT_WAIT_MAX_MS,
   PHASE_D_INPUT_SCHEMA,
+  capturePhysicalPhaseDEvent,
   PHASE_D_MUTATION_SCHEMA,
   PHASE_D_OBSERVATION_SCHEMA,
   PHASE_D_RATIFICATION_SCHEMA,
@@ -860,5 +864,141 @@ describe('P-505 Phase D below-steer tier hold (WI-10003723)', () => {
     await expect(restorePhysicalPhaseDTier({ holdPath }, deps(fake))).rejects.toThrow('malformed');
     expect(await readFile(holdPath, 'utf8')).toContain(PHASE_D_TIER_HOLD_SCHEMA);
     expect(fake.rows.get(vmUser)?.tier).toBe('steer');
+  });
+});
+
+describe('P-505 Phase D event capture waits for the one signed event (WI-10003787)', () => {
+  type EventRow = { id: number; observed_at: string; body: Record<string, unknown> };
+  type CaptureSql = NonNullable<Parameters<typeof capturePhysicalPhaseDEvent>[1]>['sql'];
+
+  async function signedRow(
+    id: number,
+    seq: number,
+    stagingSha: string,
+    tower: ReturnType<typeof generateEd25519KeypairDer>,
+  ): Promise<EventRow> {
+    const payload = await signStagingAdvance(
+      { devicePubkeyBase64: tower.pubkeyBase64, epoch: 4, seq, stagingSha, nowMs: Date.parse('2026-09-29T00:05:00Z') },
+      (bytes) => Promise.resolve(signWithPrivateKeyDer(tower.privateKeyDer, bytes)),
+    );
+    return {
+      id,
+      observed_at: '2026-09-29 00:05:03.933+00',
+      body: {
+        fed_event: { key: 'pot-git:staging-advance', source: 'git-sync-integrator', repo_key: 'gh-1303510992', payload },
+      },
+    };
+  }
+
+  /** A fake sql that answers successive queries from `batches`, repeating the last one. */
+  function scriptedSql(batches: EventRow[][]): { sql: CaptureSql; queries: () => number } {
+    let calls = 0;
+    const sql = (async () => {
+      const batch = batches[Math.min(calls, batches.length - 1)] ?? [];
+      calls += 1;
+      return batch;
+    }) as unknown as CaptureSql;
+    return { sql, queries: () => calls };
+  }
+
+  /** A virtual clock: sleep advances time instead of waiting. */
+  function virtualClock(): { nowMs: () => number; sleep: (ms: number) => Promise<void>; sleeps: number[] } {
+    let now = Date.parse('2026-09-29T00:04:00Z');
+    const sleeps: number[] = [];
+    return {
+      nowMs: () => now,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+      sleeps,
+    };
+  }
+
+  it('keeps polling while the event has not landed and returns it once it does (run 27 shape)', async () => {
+    const tower = generateEd25519KeypairDer();
+    const head = oid('e');
+    const row = await signedRow(22035519, 56, head, tower);
+    const fake = scriptedSql([[], [], [row]]);
+    const clock = virtualClock();
+    const event = await capturePhysicalPhaseDEvent(
+      { hostId: 'tower', afterRowId: 0, integratorDeviceKey: tower.pubkeyBase64, stagingSha: head, waitMs: 600_000 },
+      { sql: fake.sql, nowMs: clock.nowMs, sleep: clock.sleep },
+    );
+    expect(event.schemaVersion).toBe(PHASE_D_EVENT_SCHEMA);
+    expect(event.rowId).toBe(22035519);
+    expect(event.payload.seq).toBe(56);
+    expect(fake.queries()).toBe(3);
+    expect(clock.sleeps).toEqual([PHASE_D_EVENT_POLL_MS, PHASE_D_EVENT_POLL_MS]);
+  });
+
+  it('fails at once on two signed events for one head instead of waiting them out', async () => {
+    const tower = generateEd25519KeypairDer();
+    const head = oid('e');
+    const fake = scriptedSql([[await signedRow(54, 54, head, tower), await signedRow(55, 55, head, tower)]]);
+    const clock = virtualClock();
+    await expect(
+      capturePhysicalPhaseDEvent(
+        { hostId: 'tower', afterRowId: 0, integratorDeviceKey: tower.pubkeyBase64, stagingSha: head, waitMs: 600_000 },
+        { sql: fake.sql, nowMs: clock.nowMs, sleep: clock.sleep },
+      ),
+    ).rejects.toThrow(PHASE_D_EVENT_DUPLICATE_MARKER);
+    expect(fake.queries()).toBe(1);
+    expect(clock.sleeps).toEqual([]);
+  });
+
+  it('ignores events for other heads, other devices and unsigned rows while waiting', async () => {
+    const tower = generateEd25519KeypairDer();
+    const other = generateEd25519KeypairDer();
+    const head = oid('e');
+    const noise = [
+      await signedRow(1, 1, oid('f'), tower),
+      await signedRow(2, 2, head, other),
+      { id: 3, observed_at: '2026-09-29 00:05:00+00', body: { fed_event: { source: 'git-sync-integrator', payload: {} } } },
+    ];
+    const fake = scriptedSql([noise, [...noise, await signedRow(4, 3, head, tower)]]);
+    const clock = virtualClock();
+    const event = await capturePhysicalPhaseDEvent(
+      { hostId: 'vm', afterRowId: 0, integratorDeviceKey: tower.pubkeyBase64, stagingSha: head, waitMs: 60_000 },
+      { sql: fake.sql, nowMs: clock.nowMs, sleep: clock.sleep },
+    );
+    expect(event.rowId).toBe(4);
+    expect(fake.queries()).toBe(2);
+  });
+
+  it('gives up at the deadline with a not-arrived error, and a zero wait reads exactly once', async () => {
+    const tower = generateEd25519KeypairDer();
+    const head = oid('e');
+    const input = { hostId: 'tower' as const, afterRowId: 0, integratorDeviceKey: tower.pubkeyBase64, stagingSha: head };
+
+    const waiting = scriptedSql([[]]);
+    const clock = virtualClock();
+    await expect(
+      capturePhysicalPhaseDEvent({ ...input, waitMs: 12_000 }, { sql: waiting.sql, nowMs: clock.nowMs, sleep: clock.sleep }),
+    ).rejects.toThrow(/expected exactly one signed production staging event.*none arrived within 12s/);
+    expect(clock.sleeps).toEqual([PHASE_D_EVENT_POLL_MS, PHASE_D_EVENT_POLL_MS, 2_000]);
+    expect(waiting.queries()).toBe(4);
+
+    const once = scriptedSql([[]]);
+    const idle = virtualClock();
+    await expect(
+      capturePhysicalPhaseDEvent(input, { sql: once.sql, nowMs: idle.nowMs, sleep: idle.sleep }),
+    ).rejects.toThrow('none arrived within 0s');
+    expect(once.queries()).toBe(1);
+    expect(idle.sleeps).toEqual([]);
+  });
+
+  it('caps the wait at the scenario phase deadline', async () => {
+    const tower = generateEd25519KeypairDer();
+    const fake = scriptedSql([[]]);
+    const clock = virtualClock();
+    const started = clock.nowMs();
+    await expect(
+      capturePhysicalPhaseDEvent(
+        { hostId: 'tower', afterRowId: 0, integratorDeviceKey: tower.pubkeyBase64, stagingSha: oid('e'), waitMs: 10 * PHASE_D_EVENT_WAIT_MAX_MS },
+        { sql: fake.sql, nowMs: clock.nowMs, sleep: clock.sleep },
+      ),
+    ).rejects.toThrow(`none arrived within ${PHASE_D_EVENT_WAIT_MAX_MS / 1000}s`);
+    expect(clock.nowMs() - started).toBe(PHASE_D_EVENT_WAIT_MAX_MS);
   });
 });

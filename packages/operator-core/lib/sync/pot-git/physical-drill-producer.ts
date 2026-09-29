@@ -32,6 +32,7 @@ import {
   type PhysicalPhaseCInput,
 } from './physical-drill-phase-c';
 import {
+  PHASE_D_EVENT_WAIT_MAX_MS,
   capturePhysicalPhaseDEvent,
   capturePhysicalPhaseDObservation,
   capturePhysicalPhaseDRequest,
@@ -427,17 +428,22 @@ async function cli(argv: string[]): Promise<unknown> {
     return ratifyPhysicalPhaseDRequest({ devicePubkey, headSha });
   }
   if (mode === 'phase-d-event') {
-    const [hostId, afterRowIdRaw, integratorDeviceKey, stagingSha] = args;
+    const [hostId, afterRowIdRaw, integratorDeviceKey, stagingSha, waitSecondsRaw] = args;
     const afterRowId = Number(afterRowIdRaw);
+    // Optional bounded wait (WI-10003787): the tower's event can land after git-sync:run returns in_progress.
+    const waitSeconds = waitSecondsRaw === undefined ? 0 : Number(waitSecondsRaw);
     if (
       (hostId !== 'tower' && hostId !== 'vm') ||
       !Number.isSafeInteger(afterRowId) ||
       afterRowId < 0 ||
       !integratorDeviceKey ||
-      !stagingSha
+      !stagingSha ||
+      !Number.isSafeInteger(waitSeconds) ||
+      waitSeconds < 0 ||
+      waitSeconds * 1000 > PHASE_D_EVENT_WAIT_MAX_MS
     ) {
       throw new Error(
-        'usage: physical-drill-producer phase-d-event <tower|vm> <after-row-id> <integrator-device-key> <staging-sha>',
+        'usage: physical-drill-producer phase-d-event <tower|vm> <after-row-id> <integrator-device-key> <staging-sha> [wait-seconds<=1200]',
       );
     }
     return capturePhysicalPhaseDEvent({
@@ -445,6 +451,7 @@ async function cli(argv: string[]): Promise<unknown> {
       afterRowId,
       integratorDeviceKey,
       stagingSha,
+      waitMs: waitSeconds * 1000,
     });
   }
   if (mode === 'phase-d-observe') {
