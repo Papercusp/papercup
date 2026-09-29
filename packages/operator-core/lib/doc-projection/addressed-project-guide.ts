@@ -296,10 +296,19 @@ export interface AddressedGuideTransition {
  * launch renders them, under a mid-session lede) and name the ones only `before` reached.
  * Held to the same budget seam as the launch guide. Throws on a read failure — the
  * caller decides how to surface it (it must not be silent: a lost attach is the bug).
+ *
+ * `before: null` is a FULL-RESYNC (the control transition carried no `stackBefore`, which
+ * happens whenever more than one anchor generation moved between deliveries — a
+ * take-leadership bumps posture, AUTO and the loop). The anchor's
+ * replace-full-never-merge-behind rule applies: deliver the COMPLETE addressed set for
+ * `after` — exactly what a launch with that stack composes — under a lede that says it
+ * replaces any addressed guidance delivered earlier (what that was is unknown here, so it
+ * cannot be named part by part).
  */
 export async function composeAddressedGuideTransition(
-  input: AddressedGuideTarget & { before: GuideWearer; after: GuideWearer; maxChars?: number },
+  input: AddressedGuideTarget & { before: GuideWearer | null; after: GuideWearer; maxChars?: number },
 ): Promise<AddressedGuideTransition> {
+  if (input.before === null) return composeAddressedGuideResync({ ...input, after: input.after });
   const tokensBefore = guideAddressesForWearer(input.before);
   const tokensAfter = guideAddressesForWearer(input.after);
   const none: AddressedGuideTransition = {
@@ -351,6 +360,69 @@ export async function composeAddressedGuideTransition(
     tokensAfter,
     attachedPartKeys: attached.map((p) => p.part_key),
     detachedPartKeys: detached.map((p) => p.part_key),
+    truncated: budgeted.truncated,
+  };
+}
+
+/** Whether this guide carries ANY live addressed part for the client (the reader's predicate minus the tokens). */
+async function hasAddressedGuideParts(target: AddressedGuideTarget): Promise<boolean> {
+  const s = target.sql ?? getOrgPg().sql;
+  const rows = (await s.unsafe(
+    `SELECT 1 AS present
+       FROM harness_shared.harness_doc_parts
+      WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3
+        AND tombstone = false
+        AND cardinality(stack_scope) > 0
+        AND client_scope && $4::text[]
+      LIMIT 1`,
+    [target.workspaceId, target.harnessSlug, target.docId ?? 'claude-md', [target.client, 'all']],
+  )) as unknown as unknown[];
+  return rows.length > 0;
+}
+
+/** Full-resync half of `composeAddressedGuideTransition`: the complete set, replacing whatever came before. */
+async function composeAddressedGuideResync(
+  input: AddressedGuideTarget & { after: GuideWearer; maxChars?: number },
+): Promise<AddressedGuideTransition> {
+  const tokensAfter = guideAddressesForWearer(input.after);
+  const parts = await readAddressedGuideParts({
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    docId: input.docId,
+    client: input.client,
+    tokens: tokensAfter,
+    sql: input.sql,
+  });
+  const none: AddressedGuideTransition = {
+    text: '', tokensBefore: [], tokensAfter, attachedPartKeys: [], detachedPartKeys: [], truncated: false,
+  };
+  // Nothing reaches the new stack: say so only when this guide HAS addressed parts for the
+  // client (something could have been delivered earlier); otherwise the resync is silent.
+  if (parts.length === 0 && !(await hasAddressedGuideParts(input))) return none;
+  const body = parts.length > 0
+    ? renderAddressedGuideSections(
+        parts,
+        tokensAfter,
+        '## Addressed guidance — the complete set for this session’s stack\n\n' +
+          `> Your stack changed mid-session and was re-synced in full (matching ${tokensAfter.map((t) => `\`${t}\``).join(', ')}). ` +
+          'These are ALL the Project-guide sections addressed to it — exactly what a launch with this stack carries — and they ' +
+          'REPLACE any addressed guidance delivered to you earlier: an addressed section not listed here no longer applies. ' +
+          'They are NOT in the repo\'s `CLAUDE.md`; they live as addressed doc parts (`harness_doc_parts.stack_scope`).',
+      )
+    : '## Addressed guidance — none for this session’s stack\n\n' +
+      '> Your stack changed mid-session and was re-synced in full: no Project-guide section is addressed to it, so any ' +
+      'addressed guidance delivered to you earlier no longer applies.\n';
+  const budgeted = projectGuideAtBudget(
+    body,
+    `harness_doc_parts:${input.harnessSlug}/${input.docId ?? 'claude-md'}`,
+    input.maxChars ?? ADDRESSED_GUIDE_MAX_CHARS,
+  );
+  return {
+    text: budgeted.text,
+    tokensBefore: [],
+    tokensAfter,
+    attachedPartKeys: parts.map((p) => p.part_key),
+    detachedPartKeys: [],
     truncated: budgeted.truncated,
   };
 }

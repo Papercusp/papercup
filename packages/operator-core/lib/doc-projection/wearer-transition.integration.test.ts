@@ -22,7 +22,7 @@
  * Only launch leaves unrelated to the guide are stubbed (signing, token, cwd, the playbook
  * renderer — whose composeProjectGuide argument is captured and run for real).
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const renderSuPlaybookMock = vi.hoisted(() =>
   vi.fn(async (..._args: unknown[]) => ({ text: 'SU PLAYBOOK BODY', baseSource: '/p/su.md', overlaySource: '/p/o.md' })),
@@ -52,6 +52,7 @@ import {
   readGateSelectedLaunchSpec,
 } from '../agent-tools/coordination/control-anchor';
 import { takeFleetLeadership } from '../agent-tools/fleet_registry/take-leadership-core';
+import { setMode } from '../modes/store';
 import { DEFAULT_CLAIM_SPEC } from '../scheduler/claim-spec';
 import { setClaimSpec } from '../scheduler/claim-spec-store';
 import { buildLaunchSpec } from '../role-launch-spec';
@@ -92,6 +93,13 @@ async function launchGuide(fleetRole: 'member' | 'leader', modes: string[]) {
   expect(typeof call?.composeProjectGuide, 'buildLaunchSpec handed renderSuPlaybook no guide composer').toBe('function');
   return call.composeProjectGuide!({ text: DEFAULT_GUIDE, source: '/repo/CLAUDE.md' });
 }
+
+beforeEach(() => {
+  // take-leadership publishes the fleet directory best-effort; with no p2p peer in this fixture
+  // that leaf logs a warn. Not part of the guide path — the channel's own warnings are asserted
+  // through its `warn` seam below. (Per test: the fail-on-console guard re-patches console each test.)
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
 
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
@@ -138,7 +146,7 @@ afterAll(async () => {
 describe('P-003 — a real mid-session take-leadership delivers exactly what a leader launch delivers', () => {
   it('member → leader through the control transition carries the leader-addressed guide parts', async () => {
     // 1. The member's delivered baseline: its anchor as a MEMBER, acknowledged (delivery cursor at that generation).
-    const asMember = await buildAndPersistControlAnchor(MEMBER, WS, { sql: fx.admin, loop: null });
+    const asMember = await buildAndPersistControlAnchor(MEMBER, WS, { sql: fx.admin });
     const baseline = await preparePendingControlTransition(MEMBER, WS, fx.admin);
     expect(baseline, 'the member anchor produced no pending generation').not.toBeNull();
     expect(baseline!.state.stack).toContain(SU_POSTURE_REFS.member);
@@ -155,13 +163,16 @@ describe('P-003 — a real mid-session take-leadership delivers exactly what a l
     expect(outcome.demotedPriorLeader).toBe(LEADER);
     expect((await getFleet(WS, FLEET, fx.admin))?.leaderOwnerId).toBe(MEMBER);
 
-    // 3. The control anchor re-derives the stack; the pending transition carries before → after.
-    await buildAndPersistControlAnchor(MEMBER, WS, { sql: fx.admin, loop: null });
+    // 3. The control anchor re-derives the stack. Take-leadership moves several anchor facts
+    //    (posture, AUTO, the loop), so the next delivery may be an exact next-generation
+    //    transition (stackBefore = member) OR a full-resync (no stackBefore) — both are real.
+    await buildAndPersistControlAnchor(MEMBER, WS, { sql: fx.admin });
     const transition = await preparePendingControlTransition(MEMBER, WS, fx.admin);
     expect(transition, 'take-leadership produced no pending control transition').not.toBeNull();
     expect(transition!.generation).toBeGreaterThan(baseline!.generation);
-    expect(transition!.stackBefore).toContain(SU_POSTURE_REFS.member);
     expect(transition!.state.stack).toContain(SU_POSTURE_REFS.leader);
+    if (transition!.kind === 'transition') expect(transition!.stackBefore).toContain(SU_POSTURE_REFS.member);
+    else expect(transition!.stackBefore).toBeUndefined();
     const leaderModes = [...(transition!.state.modes ?? [])];
 
     // 4. The turn-start guide target: the gate-selected launch record of THIS session.
@@ -188,29 +199,65 @@ describe('P-003 — a real mid-session take-leadership delivers exactly what a l
     expect(leaderKeys).toContain('lead');
     expect(leaderKeys).not.toContain('codex-lead');
 
-    // The transition's attach/detach sets, read back from what was actually delivered.
+    // EXACTLY what the leader launch delivers, checked for EVERY seeded part:
+    //  - an exact next-generation transition carries the difference (member launch − detached + attached);
+    //  - a full-resync carries the leader launch's complete addressed set and says it replaces the old one.
     const attached = leaderKeys.filter((k) => !memberKeys.includes(k));
     const detached = memberKeys.filter((k) => !leaderKeys.includes(k));
-    const bodyOf = (k: string) => PARTS.find(([key]) => key === k)![4];
-    expect(attached.length).toBeGreaterThan(0);
-    // EXACTLY what a leader launch adds: every attached body delivered, nothing else re-sent.
-    for (const k of attached) {
-      expect(guideHalf).toContain(bodyOf(k));
-      expect(leaderLaunch.text).toContain(bodyOf(k));
+    expect(attached).toContain('lead');
+    expect(detached).toContain('member');
+    const expectedBodies = new Set(transition!.kind === 'transition' ? attached : leaderKeys);
+    expectExactlyDelivered(guideHalf, expectedBodies);
+    for (const k of expectedBodies) expect(leaderLaunch.text).toContain(bodyOf(k));
+    if (transition!.kind === 'transition') {
+      for (const k of detached) expect(guideHalf).toContain(`\`${k}\``);
+    } else {
+      expect(guideHalf).toContain('## Addressed guidance — the complete set for this session’s stack');
+      expect(guideHalf).toContain('REPLACE any addressed guidance delivered to you earlier');
     }
-    for (const k of detached) {
-      expect(guideHalf).toContain(`\`${k}\``);
-      expect(guideHalf).not.toContain(bodyOf(k));
-    }
-    for (const k of memberKeys.filter((key) => leaderKeys.includes(key))) expect(guideHalf).not.toContain(bodyOf(k));
-    expect(guideHalf).not.toContain('CODEX-ONLY LEADER RULE.');
-    expect(guideHalf).not.toContain(UNADDRESSED_BODY);
-    expect(guideHalf).not.toContain(DEFAULT_GUIDE.trim());
     // AUTO arrived with leadership (leader control) — its addressed part rides the same transition.
-    if (leaderModes.includes('auto') && !memberModes.includes('auto')) expect(attached).toContain('auto');
+    if (leaderModes.includes('auto') && !memberModes.includes('auto')) expect(expectedBodies.has('auto')).toBe(true);
 
     // 7. The delivery cursor is the anchor's, untouched by the guide: acknowledging advances it, and nothing is pending after.
     expect(await acknowledgeControlTransition(MEMBER, WS, transition!.generation, fx.admin)).toBe(true);
     expect(await preparePendingControlTransition(MEMBER, WS, fx.admin)).toBeNull();
+    leaderModesAfterTakeover = leaderModes;
+  }, 120_000);
+
+  it('the new leader leaving AUTO: the next transition names the AUTO-addressed part as no longer applying, and re-sends nothing', async () => {
+    expect(leaderModesAfterTakeover, 'depends on the take-leadership case above').toContain('auto');
+    const off = await setMode({ workspaceId: WS, ownerId: MEMBER, modeId: 'auto', enabled: false, reason: 'P-003 exit AUTO', setBy: MEMBER, sql: fx.admin });
+    expect(off.ok).toBe(true);
+    await buildAndPersistControlAnchor(MEMBER, WS, { sql: fx.admin });
+    const transition = await preparePendingControlTransition(MEMBER, WS, fx.admin);
+    expect(transition).not.toBeNull();
+    expect(transition!.state.stack).not.toContain('autonomy:su.mode-auto');
+    const guide = guideTargetFromLaunchSpec(await readGateSelectedLaunchSpec(fx.admin, MEMBER, WS), { workspaceId: WS });
+    const layersOnly = await renderStackTransitionContextResult(transition, {});
+    const delivered = await renderStackTransitionContextResult(transition, { guide });
+    const guideHalf = delivered.text.slice(layersOnly.text.length);
+    const leaderNoAuto = await launchGuide('leader', [...(transition!.state.modes ?? [])]);
+    const keys = leaderNoAuto.addressed?.partKeys ?? [];
+    expect(keys).not.toContain('auto');
+    if (transition!.kind === 'transition') {
+      expectExactlyDelivered(guideHalf, new Set());
+      expect(guideHalf).toContain('## Addressed guidance — no longer applies');
+      expect(guideHalf).toContain('`auto`');
+    } else {
+      expectExactlyDelivered(guideHalf, new Set(keys));
+    }
+    expect(await acknowledgeControlTransition(MEMBER, WS, transition!.generation, fx.admin)).toBe(true);
   }, 120_000);
 });
+
+let leaderModesAfterTakeover: string[] = [];
+const bodyOf = (k: string) => PARTS.find(([key]) => key === k)![4];
+/** Every seeded body appears in the delivered guide half iff its key is expected — and nothing unaddressed or default leaks. */
+function expectExactlyDelivered(guideHalf: string, expected: ReadonlySet<string>) {
+  for (const [key, , , , body] of PARTS) {
+    if (expected.has(key)) expect(guideHalf, `expected ${key} delivered`).toContain(body);
+    else expect(guideHalf, `expected ${key} NOT delivered`).not.toContain(body);
+  }
+  expect(guideHalf).not.toContain(UNADDRESSED_BODY);
+  expect(guideHalf).not.toContain(DEFAULT_GUIDE.trim());
+}

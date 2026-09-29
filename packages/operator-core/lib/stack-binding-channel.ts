@@ -225,7 +225,9 @@ export async function renderStackTransitionContextResult(
       try {
         const guide = await composeAddressedGuideTransition({
           ...opts.guide,
-          before: suGuideWearer(bp, from.layers),
+          // A full-resync (no stackBefore) re-delivers the COMPLETE addressed set, replacing
+          // what came before — the anchor's replace-full rule, same as the layer half above.
+          before: before == null ? null : suGuideWearer(bp, from.layers),
           after: suGuideWearer(bp, to.layers),
         });
         if (guide.text) parts.push(guide.text.replace(/\n+$/, ''));

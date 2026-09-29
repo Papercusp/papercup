@@ -385,4 +385,30 @@ describe('addressed-project-guide — one wearer path for launch and mid-session
     expect(small.truncated).toBe(true);
     expect(small.text).toContain('harness_doc_parts:papercusp/claude-md');
   });
+
+  it('FULL-RESYNC (before: null): the complete set a launch with the new stack carries, replacing earlier guidance; silent when the guide has no addressed parts', async () => {
+    const after = wearerFor('leader', ['auto']);
+    const full = await composeAddressedGuideTransition({ workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql: stubSql(), before: null, after });
+    const launch = await projectGuideComposerForWearer({ wearer: after, workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', sql: stubSql() })({ text: '# G\n', source: 'G' });
+    expect(full.attachedPartKeys).toEqual(launch.addressed?.partKeys);
+    expect(full.attachedPartKeys).toEqual(['lead', 'posture', 'auto']);
+    expect(full.detachedPartKeys).toEqual([]);
+    expect(full.text).toContain('## Addressed guidance — the complete set for this session’s stack');
+    expect(full.text).toContain('REPLACE any addressed guidance delivered to you earlier');
+    expect(full.text).toContain(assemble([leaderRule, postureRule, autoRule]));
+    expect(full.text).not.toContain('MEMBER RULE.');
+
+    // Nothing reaches the new stack: a notice only when this guide HAS addressed parts for the client.
+    const bare = wearerFor(null);
+    const withParts = await composeAddressedGuideTransition({
+      workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', before: null, after: bare,
+      sql: { unsafe: async (q: string) => (q.includes('SELECT 1 AS present') ? [{ present: 1 }] : []) } as never,
+    });
+    expect(withParts.text).toContain('## Addressed guidance — none for this session’s stack');
+    const noParts = await composeAddressedGuideTransition({
+      workspaceId: 'ws', harnessSlug: 'papercusp', client: 'claude', before: null, after: bare,
+      sql: { unsafe: async () => [] } as never,
+    });
+    expect(noParts.text).toBe('');
+  });
 });
