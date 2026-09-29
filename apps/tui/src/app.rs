@@ -4372,6 +4372,16 @@ impl App {
                 );
                 self.apply_copy_outcome(outcome)
             }
+            // pui-chat-first-ux P-010: in the default single-session chat,
+            // /resume switches THIS chat to an earlier conversation in place
+            // (the conversation picker attaches it here). The fleet switcher
+            // below routes Enter to workbench panes and windows, which the
+            // single-session chat does not have: its Enter ran
+            // `zellij action new-pane` and failed "There is no active session!".
+            SlashKind::Resume if self.chat_first => {
+                self.open_conversation_picker();
+                Action::Render
+            }
             SlashKind::Resume => {
                 self.session_switcher = Some(SessionSwitcher {
                     loading: true,
@@ -5759,6 +5769,22 @@ impl App {
             let reconciliation = inventory
                 .map(|entry| entry.reconciliation.to_string())
                 .unwrap_or_else(|| "legacy chat".to_string());
+            let turns = format!(
+                "{} turn{}",
+                chat.turn_count,
+                if chat.turn_count == 1 { "" } else { "s" }
+            );
+            if self.chat_first {
+                // pui-chat-first-ux P-010: the default chat's /resume list reads
+                // like Claude Code's — which conversation and when — with no
+                // role, backend lifecycle, chat id or reconciliation jargon.
+                return PickerOption {
+                    id: format!("chat:{}", chat.id),
+                    label: format!("{}{} · {}", if active { "● " } else { "" }, title, turns),
+                    hint: Some(format!("updated {}", Self::human_timestamp(&chat.updated_at))),
+                    disabled: false,
+                };
+            }
             PickerOption {
                 id: format!("chat:{}", chat.id),
                 label: format!(
@@ -5778,6 +5804,17 @@ impl App {
             }
         }));
         self.session_picker = Some(SessionPicker::new(PickerAxis::Conversation, options));
+    }
+
+    /// `2026-09-29T16:47:13.228Z` → `2026-09-29 16:47 UTC` for the /resume list.
+    /// Anything that is not an ISO-8601 instant is shown unchanged.
+    fn human_timestamp(ts: &str) -> String {
+        let bytes = ts.as_bytes();
+        if ts.is_ascii() && ts.len() >= 16 && bytes[10] == b'T' && bytes[13] == b':' {
+            format!("{} {} UTC", &ts[..10], &ts[11..16])
+        } else {
+            ts.to_string()
+        }
     }
 
     /// Keep an already-open conversation picker in sync with an asynchronous
@@ -15974,6 +16011,65 @@ mod tests {
             .unwrap();
         a.session_picker.as_mut().unwrap().sel = idx;
         a.commit_session_picker()
+    }
+
+    /// pui-chat-first-ux P-010: in the default chat, /resume opens the
+    /// conversation picker (in-place attach), never the fleet switcher whose
+    /// Enter launches a zellij pane the single-session chat does not have.
+    #[test]
+    fn chat_first_slash_resume_attaches_the_chosen_conversation_in_place() {
+        let mut a = App::new();
+        a.chat_first = true;
+        a.agent_chat_summaries = vec![chat_summary_for("chat-earlier")];
+        a.su_session_inventory = vec![inventory_row_for(
+            "chat-earlier",
+            crate::su_session::SuSessionReconciliation::EndedArchived,
+        )];
+        let opened = a.run_slash_command("resume");
+        assert_eq!(opened, Action::Render);
+        assert!(a.session_switcher.is_none(), "the fleet switcher must not open");
+        let picker = a.session_picker.as_ref().expect("conversation picker opens");
+        assert_eq!(picker.axis, crate::session_config::PickerAxis::Conversation);
+        let row = picker
+            .options
+            .iter()
+            .find(|option| option.id == "chat:chat-earlier")
+            .expect("the earlier conversation is listed");
+        assert_eq!(row.label, "session · 2 turns");
+        assert_eq!(row.hint.as_deref(), Some("updated 2026-08-29 00:00 UTC"));
+        for jargon in ["operator", "Codex", "chat-earlier", "ended", "archived"] {
+            assert!(
+                !row.label.contains(jargon) && !row.hint.as_deref().unwrap_or("").contains(jargon),
+                "{jargon:?} leaked into the /resume row: {row:?}"
+            );
+        }
+        assert!(matches!(
+            a.commit_session_picker(),
+            Action::AttachSuSession {
+                adv_session_id: 42,
+                ..
+            }
+        ));
+        assert_eq!(a.agent_chat_id.as_deref(), Some("chat-earlier"));
+    }
+
+    /// The workbench keeps /resume on the fleet switcher (panes and windows).
+    #[test]
+    fn workbench_slash_resume_keeps_the_fleet_switcher() {
+        let mut a = App::new();
+        a.chat_first = false;
+        let action = a.run_slash_command("resume");
+        assert!(matches!(action, Action::FetchSessionSwitcher { .. }), "{action:?}");
+        assert!(a.session_switcher.is_some());
+        assert!(a.session_picker.is_none());
+    }
+
+    #[test]
+    fn human_timestamp_formats_iso_instants_and_passes_other_text_through() {
+        assert_eq!(App::human_timestamp("2026-09-29T16:47:13.228Z"), "2026-09-29 16:47 UTC");
+        assert_eq!(App::human_timestamp("2026-08-29"), "2026-08-29");
+        assert_eq!(App::human_timestamp("yesterday"), "yesterday");
+        assert_eq!(App::human_timestamp("2026-09-29T16:47ééé"), "2026-09-29T16:47ééé");
     }
 
     #[test]
