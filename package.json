@@ -194,7 +194,7 @@
     "gate:patch-coverage": "tsx scripts/patch-coverage.ts",
     "gate:cover-loop": "tsx scripts/cover-loop.ts",
     "gate:schemathesis": "tsx scripts/schemathesis-routes.ts",
-    "perf:desktop": "cd tools/perf-test/wdio && mkdir -p results && bash -o pipefail -c 'npm test 2>&1 | tee \"results/run-$(date -u +%Y%m%dT%H%M%SZ).log\"'",
+    "perf:desktop": "cd tools/perf-test/wdio && mkdir -p results && bash -o pipefail -c 'npm run test:all 2>&1 | tee \"results/run-$(date -u +%Y%m%dT%H%M%SZ).log\"'",
     "test:doctor": "node scripts/test-doctor.mjs",
     "doctor": "node scripts/test-doctor.mjs",
     "test:flake-soak": "bash scripts/flake-soak.sh",

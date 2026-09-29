@@ -121,11 +121,14 @@ describe('test executor runnability', () => {
     expect(discoverRoute).not.toHaveBeenCalled();
   });
 
-  it('follows same-package `npm run` chains to the executor — a chained `test` script is not an executor gap', async () => {
-    // The shape that produced a false lint:tests red on 2026-09-05: `test` chains
-    // a node:test unit suite and the real wdio invocation one hop down.
+  it('follows same-package `npm run` chains to the executor — a chained script is not an executor gap', async () => {
+    // The shape that produced a false lint:tests red on 2026-09-05 was a `test` chain with the
+    // real wdio invocation one hop down. Since WI-10003821 the package's shape is: `test` is the
+    // headless node:test suite (the gate runs it), and `test:all` chains to the wdio specs.
     const scripts: Record<string, string> = {
-      test: 'npm run test:unit && npm run test:wdio',
+      test: 'npm run test:unit',
+      'test:all': 'npm run typecheck && npm run test:unit && npm run test:wdio',
+      typecheck: 'tsc --noEmit -p tsconfig.json',
       'test:unit': 'node --import tsx --test perf-report.node-test.ts',
       'test:wdio': 'wdio run wdio.conf.ts',
       'test:e2e': 'npm run-script test:e2e:real',

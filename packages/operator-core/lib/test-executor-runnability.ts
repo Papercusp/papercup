@@ -225,6 +225,14 @@ function expandPackageScript(
 }
 
 const WDIO_PACKAGE_DIR = 'tools/perf-test/wdio/';
+/**
+ * The wdio package script that runs its packaged-binary specs. NOT `test`: the green gate runs
+ * that package's `test` on every change to it (STANDALONE_PACKAGE_DIRS, WI-10003821), and a gate
+ * box cannot boot the packaged binary, so `test` is the headless node:test guard suite only.
+ * `test:all` is what `npm run perf:desktop` and the scheduled desktop-perf run invoke — the
+ * same role `test:e2e` plays for the Playwright specs below.
+ */
+const WDIO_SPEC_EXECUTOR_SCRIPT = 'test:all';
 
 function explicitExecutor(
   repoRoot: string,
@@ -248,14 +256,14 @@ function explicitExecutor(
   if (/^tools\/perf-test\/wdio\/specs\/.*\.spec\.ts$/.test(relativeFile)) {
     const config = resolve(repoRoot, `${WDIO_PACKAGE_DIR}wdio.conf.ts`);
     const packageJson = resolve(repoRoot, `${WDIO_PACKAGE_DIR}package.json`);
-    const script = expandPackageScript(deps, packageJson, 'test');
+    const script = expandPackageScript(deps, packageJson, WDIO_SPEC_EXECUTOR_SCRIPT);
     if (deps.exists(config) && script !== undefined && /\bwdio\s+run\s+wdio\.conf\.ts\b/.test(script)) {
       return { file: relativeFile, runnable: true, executor: 'webdriverio' };
     }
     return {
       file: relativeFile,
       runnable: false,
-      reason: 'WebdriverIO path has no wdio.conf.ts + package test executor',
+      reason: `WebdriverIO path has no wdio.conf.ts + package ${WDIO_SPEC_EXECUTOR_SCRIPT} executor`,
     };
   }
 
