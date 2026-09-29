@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   advanceUndispatchableGradingCascade,
   acceptanceGraderLabelPrefix,
+  answeringOwnerAtCursor,
   buildAssignedAcceptanceGraderBrief,
   carriedStaleGradingCardIds,
   classifyAcceptanceGraderStartupStall,
@@ -21,6 +22,39 @@ import {
   CONSULT_EXPIRY_REVIEW_AUTHOR,
   GRADING_CASCADE_ANSWER_GRACE_MS,
 } from './acceptance-grader';
+
+describe('answeringOwnerAtCursor (WI-10003786)', () => {
+  const routing = {
+    selection: {
+      selected: [
+        { ownerId: 'su-source-a', answeringOwnerId: 'su-fork-a' },
+        { ownerId: 'su-source-b' },
+      ],
+    },
+  };
+
+  it('reads the answering fork stamped at the current cursor, not the menu source', () => {
+    expect(answeringOwnerAtCursor(routing, 0)).toBe('su-fork-a');
+  });
+
+  it('is null when the current rank has no answering session (refused or not yet stamped)', () => {
+    expect(answeringOwnerAtCursor(routing, 1)).toBeNull();
+    expect(answeringOwnerAtCursor(routing, 2)).toBeNull();
+  });
+
+  it('accepts the jsonb column as a JSON string', () => {
+    expect(answeringOwnerAtCursor(JSON.stringify(routing), 0)).toBe('su-fork-a');
+  });
+
+  it('is null for malformed routing or cursor, never a throw', () => {
+    expect(answeringOwnerAtCursor('{not json', 0)).toBeNull();
+    expect(answeringOwnerAtCursor(null, 0)).toBeNull();
+    expect(answeringOwnerAtCursor({ selection: { selected: 'x' } }, 0)).toBeNull();
+    expect(answeringOwnerAtCursor(routing, null)).toBeNull();
+    expect(answeringOwnerAtCursor(routing, -1)).toBeNull();
+    expect(answeringOwnerAtCursor({ selection: { selected: [{ answeringOwnerId: '' }] } }, 0)).toBeNull();
+  });
+});
 
 describe('spentGradingCascadeAnswer (WI-10003451)', () => {
   const NOW = Date.parse('2026-09-27T09:25:00.000Z');
@@ -1617,8 +1651,9 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
     // exhaustive KEY SET rather than relaxed to objectContaining, so this stays a
     // detector: a future field added to the receipt fails here instead of landing
     // unnoticed.
-    expect(Object.keys(result.notified ?? {}).sort()).toEqual(['wakeInstant', 'woke']);
+    expect(Object.keys(result.notified ?? {}).sort()).toEqual(['dispatch', 'wakeInstant', 'woke']);
     expect(result.notified?.woke).toBe(1);
+    expect(result.notified?.dispatch).toBe('new');
     expect(Date.parse(result.notified?.wakeInstant ?? '')).not.toBeNaN();
     expect(launch).not.toHaveBeenCalled();
     // The WHOLE menu is handed to the cascade, but only ONE open call is made:
@@ -1642,6 +1677,60 @@ describe('resolveAcceptanceGrader (P-011 / D-009 discovery-first)', () => {
       conditionKey: 'acceptance-review-target:v1:test-key',
       id: 'WI-review-target',
     });
+  });
+
+  // WI-10003786: the grader is FORKED, never woken in place, and a re-call finds the
+  // cascade an earlier call opened. The receipt must say so, name the fork to watch,
+  // and NOT stamp a fresh wakeInstant — measured live, a re-call's re-stamped instant
+  // read as a new unanswered wake and led the author to hand-wake the parked source.
+  it('an idempotent re-call reports dispatch:existing + the answering fork, with no fresh wakeInstant', async () => {
+    const launch = freshLaunch();
+    const openCascade = vi.fn(async () => ({
+      conversationId: 'conv-live',
+      woke: 0,
+      status: 'existing' as const,
+      answeringOwnerId: 'su-fork-of-independent',
+    }));
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      discover: vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'parked', via: 'floor' as const }],
+        routing: { selection: { min: 1, max: 1, selected: [] } },
+        excluded: [],
+      })),
+      openCascade: openCascade as never,
+    });
+    expect(result.state).toBe('assigned');
+    expect(result.conversationId).toBe('conv-live');
+    expect(result.notified).toEqual({
+      woke: 0,
+      dispatch: 'existing',
+      answeringOwnerId: 'su-fork-of-independent',
+    });
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('a fresh dispatch names its answering fork alongside the wakeInstant baseline', async () => {
+    const openCascade = vi.fn(async () => ({
+      conversationId: 'conv-new',
+      woke: 1,
+      status: 'active' as const,
+      answeringOwnerId: 'su-fork-1',
+    }));
+    const result = await resolveAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(freshLaunch()),
+      discover: vi.fn(async () => ({
+        verdict: 'assigned' as const,
+        graders: [{ ownerId: 'su-independent', score: 0.71, liveness: 'live', via: 'floor' as const }],
+        routing: { selection: { min: 1, max: 1, selected: [] } },
+        excluded: [],
+      })),
+      openCascade: openCascade as never,
+    });
+    expect(Object.keys(result.notified ?? {}).sort()).toEqual(['answeringOwnerId', 'dispatch', 'wakeInstant', 'woke']);
+    expect(result.notified?.dispatch).toBe('new');
+    expect(result.notified?.answeringOwnerId).toBe('su-fork-1');
   });
 
   it('falls through to a fresh judge when every selected transcript is undispatchable', async () => {

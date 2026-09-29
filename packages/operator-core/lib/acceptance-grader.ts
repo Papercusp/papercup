@@ -291,19 +291,27 @@ export type AcceptanceGraderLifecycle = {
    * genuinely empty pool instead of presenting identically to a normal
    * fresh-judge launch (EI-21925808460100711). */
   discoveryError?: string;
-  /** Wake DELIVERY receipt for the HEAD grader ({ woke: 0 } = parked; they read
-   * the grading request on their next turn — the subscribe is durable).
+  /** DISPATCH receipt for the head grader.
    *
-   * ⚠ DELIVERY, NOT PICKUP — and they are two different facts kept separately
-   * named on purpose (P-003 R-3 / plan D-011 ruling 2). `woke` says a wake was
-   * ENQUEUED on the await-event pump; the grader has not been scheduled a turn at
-   * that point, let alone taken one. So `woke > 0` is NOT pickup and must never be
-   * read as it.
+   * ⚠ The menu grader is NEVER woken in place (R-11 / D-013): their transcript is
+   * FORKED (same backend) or CONVERTED (cross backend) into a new session that
+   * grades this one rubric. So `graders[0].ownerId` staying parked is correct, and
+   * `answeringOwnerId` — the launched session — is the one to watch (WI-10003786).
    *
-   * `wakeInstant` is recorded precisely so pickup can be established AFTERWARDS,
-   * by re-reading the grader's OWN later activity against this instant — see
+   * - `woke` counts dispatches QUEUED by THIS call (a launched fork still booting
+   *   counts). 0 with `dispatch:'existing'` is the idempotent re-call: an earlier
+   *   call already dispatched and nobody new was needed.
+   * - `dispatch` says which: `'new'` (this call opened the cascade) or
+   *   `'existing'` (it found the live one). Absent when no cascade opened.
+   * - `answeringOwnerId` is the session grading the cascade's current rank, when
+   *   one was recorded. Absent while unknown (refused dispatch, not yet stamped).
+   *
+   * ⚠ DELIVERY, NOT PICKUP (P-003 R-3 / plan D-011 ruling 2): a queued dispatch
+   * has not taken a turn, so `woke > 0` must never be read as pickup.
+   * `wakeInstant` — stamped only when THIS call dispatched — is the baseline for
+   * establishing pickup AFTERWARDS from the answering session's own activity; see
    * `observeGraderPickup` in ./acceptance-grader-pickup.ts. */
-  notified?: { woke: number; wakeInstant?: string };
+  notified?: { woke: number; dispatch?: 'new' | 'existing'; answeringOwnerId?: string; wakeInstant?: string };
   /** The durable typed review-target assignment used by this dispatch. */
   reviewReservation?: AcceptanceReviewReservationRef;
   /** Why dispatch was skipped (state 'settled'), or — on any other state — the
@@ -1404,6 +1412,37 @@ export interface OpenGradingCascadeResult {
   conversationId: string;
   woke: number;
   status: 'active' | 'existing' | 'exhausted' | 'raced';
+  /**
+   * WI-10003786 — the session actually grading the cascade's CURRENT rank: the
+   * fork/convert launched from the menu grader's transcript (R-11 / D-013), read
+   * from where `stampAnsweringOwner` persists it. NOT `graders[k].ownerId` — that
+   * is the transcript SOURCE, which is never woken and correctly stays parked.
+   * Null when the current rank's dispatch produced no session (refused, still
+   * booting before the stamp, or the read failed); absent from test doubles.
+   */
+  answeringOwnerId?: string | null;
+}
+
+/**
+ * WI-10003786 — the answering session at the cascade's current rank, read from a
+ * persisted routing snapshot: `routing.selection.selected[cursor].answeringOwnerId`,
+ * the exact location `stampAnsweringOwner` writes. Pure so the read shape is pinned
+ * by a unit test; tolerates a JSON-string column and any malformed shape (→ null).
+ */
+export function answeringOwnerAtCursor(routingRaw: unknown, cursor: unknown): string | null {
+  let routing: unknown = routingRaw;
+  if (typeof routing === 'string') {
+    try {
+      routing = JSON.parse(routing) as unknown;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof cursor !== 'number' || !Number.isInteger(cursor) || cursor < 0) return null;
+  const selected = (routing as { selection?: { selected?: unknown } } | null)?.selection?.selected;
+  if (!Array.isArray(selected)) return null;
+  const owner = (selected[cursor] as { answeringOwnerId?: unknown } | null | undefined)?.answeringOwnerId;
+  return typeof owner === 'string' && owner.length > 0 ? owner : null;
 }
 
 /**
@@ -1647,6 +1686,23 @@ async function prodOpenGradingCascade(
   const identity = resolveAgentIdentity(ctx as never);
   const sql = getOrgPg().sql;
 
+  // WI-10003786: name the session that is ACTUALLY grading, so a caller watches the
+  // fork rather than the parked transcript source. Best-effort: a failed read is
+  // reported as null (unknown), never thrown into a grading that already opened.
+  const readAnsweringOwner = async (conversationId: string): Promise<string | null> => {
+    try {
+      const rows = (await sql`
+        SELECT cascade_cursor, routing
+          FROM harness_shared.consult_state
+         WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${conversationId}
+      `) as unknown as Array<{ cascade_cursor: number | null; routing: unknown }>;
+      const row = rows[0];
+      return row ? answeringOwnerAtCursor(row.routing, row.cascade_cursor) : null;
+    } catch {
+      return null;
+    }
+  };
+
   // IDEMPOTENT. `resolveAcceptanceGrader` is re-dispatched by the
   // acceptance-grading sweep for any plan still waiting on a grade, and that was
   // harmless while assignment was a single notification — re-notifying the same
@@ -1671,7 +1727,12 @@ async function prodOpenGradingCascade(
     );
   }
   if (reconciled.liveConversationId) {
-    return { conversationId: reconciled.liveConversationId, woke: 0, status: 'existing' };
+    return {
+      conversationId: reconciled.liveConversationId,
+      woke: 0,
+      status: 'existing',
+      answeringOwnerId: await readAnsweringOwner(reconciled.liveConversationId),
+    };
   }
 
   const head = params.graders[0]!;
@@ -1813,7 +1874,12 @@ async function prodOpenGradingCascade(
       return wrote.length > 0;
     },
   });
-  return { conversationId, woke: dispatchState.woke, status: dispatchState.status };
+  return {
+    conversationId,
+    woke: dispatchState.woke,
+    status: dispatchState.status,
+    answeringOwnerId: await readAnsweringOwner(conversationId),
+  };
 }
 
 /**
@@ -2116,13 +2182,20 @@ export async function resolveAcceptanceGrader(
             ...(selection.escalation ? { escalation: selection.escalation } : {}),
             notified: {
               woke: opened?.woke ?? 0,
+              // WI-10003786: whether THIS call dispatched, or found a cascade that
+              // an earlier call already dispatched (the idempotent re-call).
+              ...(opened ? { dispatch: opened.status === 'existing' ? ('existing' as const) : ('new' as const) } : {}),
+              // The session to watch for pickup — the fork, not graders[0].
+              ...(opened?.answeringOwnerId ? { answeringOwnerId: opened.answeringOwnerId } : {}),
               // The instant delivery was enqueued — the baseline a LATER pickup
               // observation compares the grader's own activity against
-              // (`observeGraderPickup`). Recorded only when a cascade actually
-              // opened: with no wake there is nothing for a pickup to post-date,
-              // and an instant recorded anyway would make every subsequent grader
-              // action look like a confirmed pickup.
-              ...(opened ? { wakeInstant: new Date().toISOString() } : {}),
+              // (`observeGraderPickup`). Recorded only when THIS call dispatched:
+              // with no dispatch there is nothing for a pickup to post-date, and
+              // an instant recorded anyway would make every subsequent grader
+              // action look like a confirmed pickup. WI-10003786: that includes an
+              // 'existing' cascade — stamping re-call time there told the author a
+              // fresh, unanswered wake had just gone out.
+              ...(opened && opened.status !== 'existing' ? { wakeInstant: new Date().toISOString() } : {}),
             },
             reviewReservation,
             ...(settlement ? { settlement } : {}),
