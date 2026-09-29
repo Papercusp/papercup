@@ -69,6 +69,8 @@ export interface HostedCliStore {
   resolveToken(tokenHash: string, now: Date): Promise<HostedCliToken | null>;
   revokeToken(tokenId: string, reason: string, at: Date): Promise<boolean>;
   listWorkspaces(organizationId: string): Promise<readonly HostedCliWorkspace[]>;
+  /** The organization's display name, so a CLI holding several sign-ins can label each; null when unknown. */
+  organizationName(organizationId: string): Promise<string | null>;
 }
 
 export type HostedControlPlaneWorkspaceRunner = <T>(fn: (sql: Sql) => Promise<T>) => Promise<T>;
@@ -210,6 +212,16 @@ export class PostgresHostedCliStore implements HostedCliStore {
          WHERE id = ${tokenId} AND revoked_at IS NULL
         RETURNING 1`;
       return rows.length === 1;
+    });
+  }
+
+  organizationName(organizationId: string): Promise<string | null> {
+    return this.runService(async (sql) => {
+      const rows = await sql<{ display_name: string }[]>`
+        SELECT display_name FROM papercusp_auth.organizations
+         WHERE id::text = ${organizationId} AND deleted_at IS NULL`;
+      const name = rows[0]?.display_name?.trim();
+      return name ? name : null;
     });
   }
 
