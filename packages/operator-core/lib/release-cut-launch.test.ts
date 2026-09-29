@@ -27,6 +27,8 @@ import {
   readCutStatus,
   collectHandoff,
   preflightCut,
+  desktopReleaseTag,
+  DOGFOOD_CANONICAL_REMOTE,
   isReleaseArtifact,
   isUpdaterArtifact,
   CUT_UNIT,
@@ -506,6 +508,70 @@ describe('preflightCut', () => {
     const r = preflightCut({}, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p) && p !== scripts[0], isUnitActive: () => false });
     expect(r.go).toBe(true); // warnOnly does not block
     expect(r.checks.find((c) => c.name.includes('verify-provenance'))!.ok).toBe(false);
+  });
+  describe('exact release tag (EI-24611322499942803)', () => {
+    const sourceSha = 'b'.repeat(40);
+    const release = { version: '0.0.25', channel: 'alpha' as const, sourceSha };
+    const base = { ...dependencyReady, home, exists: (p: string) => allPresent.has(p), isUnitActive: () => false };
+
+    it('names the exact tag the cutter verifies', () => {
+      expect(desktopReleaseTag('0.0.25', 'alpha')).toBe('desktop-v0.0.25-alpha');
+      expect(desktopReleaseTag('1.2.3', 'stable')).toBe('desktop-v1.2.3');
+    });
+    it('a MISSING remote tag is a HARD blocker that names prepare-tag', () => {
+      const calls: Array<[string, string, string]> = [];
+      const r = preflightCut({}, { root, release }, {
+        ...base,
+        remoteTagSha: (monorepo, tag, remote) => {
+          calls.push([monorepo, tag, remote]);
+          return null;
+        },
+      });
+      expect(calls).toEqual([['/root', 'desktop-v0.0.25-alpha', DOGFOOD_CANONICAL_REMOTE]]);
+      expect(r.go).toBe(false);
+      expect(r.blockers.join()).toMatch(/release-tag: .*desktop-v0\.0\.25-alpha is missing .*prepare-tag/);
+    });
+    it('a tag pointing at another commit is a HARD blocker', () => {
+      const r = preflightCut({}, { root, release }, { ...base, remoteTagSha: () => 'c'.repeat(40) });
+      expect(r.go).toBe(false);
+      expect(r.blockers.join()).toMatch(/release-tag: .*points at cccccccccccc, not sourceSha bbbbbbbbbbbb/);
+    });
+    it('a tag at sourceSha passes', () => {
+      const r = preflightCut({}, { root, release }, { ...base, remoteTagSha: () => sourceSha });
+      expect(r.go).toBe(true);
+      expect(r.checks.find((c) => c.name === 'release-tag')).toMatchObject({ ok: true });
+    });
+    it('an unreadable remote is WARN-only and says UNMEASURED', () => {
+      const r = preflightCut({}, { root, release }, {
+        ...base,
+        remoteTagSha: () => {
+          throw new Error('fatal: unable to access');
+        },
+      });
+      expect(r.go).toBe(true);
+      const check = r.checks.find((c) => c.name === 'release-tag')!;
+      expect(check).toMatchObject({ ok: false, warnOnly: true });
+      expect(check.detail).toContain('UNMEASURED');
+    });
+    it('without a release subject the remote is never read', () => {
+      let called = false;
+      const r = preflightCut({}, { root }, { ...base, remoteTagSha: () => { called = true; return null; } });
+      expect(called).toBe(false);
+      expect(r.checks.some((c) => c.name === 'release-tag')).toBe(false);
+    });
+    it('release-local.sh checks the same remote BEFORE the precheck exit and the first manifest write', () => {
+      const cutter = fs.readFileSync(
+        fileURLToPath(new URL('../../../papercusp-desktop/bin/release-local.sh', import.meta.url)),
+        'utf8',
+      );
+      expect(cutter).toContain(`PAPERCUP_DOGFOOD_CANONICAL_REMOTE="${DOGFOOD_CANONICAL_REMOTE}"`);
+      const precondition = cutter.indexOf('_dogfood_pin_remote_sha="$(release_tag_remote_sha');
+      const precheckExit = cutter.indexOf('if [[ "${PAPERCUSP_RELEASE_PRECHECK_ONLY:-0}" == "1" ]]; then');
+      const firstBump = cutter.indexOf('bump_version_manifests "$ROOT"');
+      expect(precondition).toBeGreaterThan(-1);
+      expect(precheckExit).toBeGreaterThan(precondition);
+      expect(firstBump).toBeGreaterThan(precheckExit);
+    });
   });
   it('a cut already in flight is a HARD blocker', () => {
     const r = preflightCut({}, { root }, { ...dependencyReady, home, exists: (p) => allPresent.has(p), isUnitActive: (u) => u === CUT_UNIT });

@@ -58,6 +58,7 @@ import {
   readCutStatus,
   collectHandoff,
   preflightCut,
+  desktopReleaseTag,
   buildCutArgv,
   desktopRoot,
   integrationRoot,
@@ -571,10 +572,6 @@ const MAC_LEG_ARGUMENT_DESCRIPTION =
 const WINDOWS_LEG_ARGUMENT_DESCRIPTION =
   'Include the Windows leg (cross-compiled on Linux via bin/build-windows-cross.sh; no VM or SSH).';
 
-function desktopReleaseTag(version: string, channel: Channel): string {
-  return channel === 'stable' ? `desktop-v${version}` : `desktop-v${version}-${channel}`;
-}
-
 function prepareTagPreview(desktop: string, version: string, channel: Channel, sourceSha: string): string {
   const script = path.join(desktop, 'bin', 'release-local.sh');
   return (
@@ -620,13 +617,12 @@ export default defineTool({
       windows: z.boolean().optional().describe(WINDOWS_LEG_ARGUMENT_DESCRIPTION),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
       root: cutRootArg.optional(),
-      // Keep the read-only preflight compatible with callers that carry the
-      // same release context through every operation. Preflight does not use
-      // these values to choose checks, but rejecting them contradicts the
-      // published union-level accepted-args contract.
-      version: z.string().min(1).optional().describe('Optional release version carried as caller context; preflight is version-agnostic.'),
-      channel: z.enum(['stable', 'beta', 'alpha']).optional().describe('Optional release channel carried as caller context; preflight is channel-agnostic.'),
-      sourceSha: z.string().regex(/^[0-9a-f]{40}$/).optional().describe('Optional exact source commit carried as caller context; preflight is source-agnostic.'),
+      // The same release context callers carry through every operation. With
+      // version + sourceSha (channel defaults to alpha), preflight also checks the
+      // exact remote release tag the cut requires (EI-24611322499942803).
+      version: z.string().min(1).optional().describe('Release version. With sourceSha, preflight also checks the exact remote release tag.'),
+      channel: z.enum(['stable', 'beta', 'alpha']).optional().describe('Release channel for the tag check (default alpha).'),
+      sourceSha: z.string().regex(/^[0-9a-f]{40}$/).optional().describe('Exact source commit. With version, preflight blocks when the remote release tag is missing or points elsewhere.'),
     }),
     z.object({
       op: z.literal('prepare-tag'),
@@ -704,7 +700,11 @@ export default defineTool({
     if (args.op === 'preflight') {
       const selected = await resolveCutRoot(args.root);
       if (!selected.ok) return json({ ok: false, op: 'preflight', refused: true, reason: selected.reason });
-      const result = preflightCut(legsFrom(args), { root: selected.desktopRoot });
+      const release =
+        args.version && args.sourceSha
+          ? { version: args.version, channel: (args.channel ?? 'alpha') as Channel, sourceSha: args.sourceSha }
+          : undefined;
+      const result = preflightCut(legsFrom(args), { root: selected.desktopRoot, release });
       return json({
         ok: true,
         op: 'preflight',
@@ -1023,7 +1023,11 @@ export default defineTool({
       );
       if (!selected.ok) return json({ ok: false, op: 'run-leg', refused: true, reason: selected.reason });
 
-      const pre = preflightCut(legs, { platform, root: selected.desktopRoot });
+      const pre = preflightCut(legs, {
+        platform,
+        root: selected.desktopRoot,
+        release: { version: args.version, channel, sourceSha: args.sourceSha },
+      });
       const inFlight = pre.checks.find((c) => c.name === 'no-cut-in-flight');
       if (inFlight && !inFlight.ok) {
         return json({
@@ -1185,7 +1189,10 @@ export default defineTool({
     if (!selected.ok) return json({ ok: false, op: 'run', refused: true, reason: selected.reason });
 
     // Refuse to start a second cut over an in-flight one (structured, so the caller waits).
-    const pre = preflightCut(legs, { root: selected.desktopRoot });
+    const pre = preflightCut(legs, {
+      root: selected.desktopRoot,
+      release: { version: args.version, channel, sourceSha: args.sourceSha },
+    });
     const inFlight = pre.checks.find((c) => c.name === 'no-cut-in-flight');
     if (inFlight && !inFlight.ok) {
       return json({

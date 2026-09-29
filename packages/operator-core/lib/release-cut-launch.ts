@@ -1086,6 +1086,29 @@ export interface PreflightDeps {
   readOrchestratorScript?: (scriptPath: string) => string;
   /** Validate the cut workspace marker with the canonical release identity reader. */
   readDependencyGeneration?: (workspace: string, identityScript: string) => string;
+  /** The sha an exact release tag points at on `remote` (null = the tag is absent); throws
+   *  when the remote cannot be read. Default: `git ls-remote`. Tests inject. */
+  remoteTagSha?: (monorepo: string, tag: string, remote: string) => string | null;
+}
+
+/** The public remote the shipped app clones its dogfood hive from. release-local.sh
+ *  certifies the dogfood pin against this exact URL (`PAPERCUP_DOGFOOD_CANONICAL_REMOTE`);
+ *  release-cut-launch.test.ts pins the two to the same value. */
+export const DOGFOOD_CANONICAL_REMOTE = 'https://github.com/Papercusp/papercup';
+
+/** Same naming rule as release-local.sh's `desktop_release_tag` (bin/lib/gen-latest-manifest.sh). */
+export function desktopReleaseTag(version: string, channel: Channel): string {
+  return channel === 'stable' ? `desktop-v${version}` : `desktop-v${version}-${channel}`;
+}
+
+function defaultRemoteTagSha(monorepo: string, tag: string, remote: string): string | null {
+  const out = execFileSync('git', ['-C', monorepo, 'ls-remote', '--refs', '--tags', remote, `refs/tags/${tag}`], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 20_000,
+  });
+  const first = out.split('\n').find((line) => line.trim().length > 0);
+  return first ? first.trim().split(/\s+/)[0] : null;
 }
 
 function readDependencyGeneration(workspace: string, identityScript: string): string {
@@ -1106,11 +1129,19 @@ function readDependencyGeneration(workspace: string, identityScript: string): st
  * migration lint, release-local.sh + the three verify scripts (RELEASE-RUNBOOK §2–4)
  * that compose under this cut, and that no cut is already in flight. Requested optional
  * legs (mac/windows) add an informational line naming their native Linux cross-build
- * producer (no VM). No heavy work, no GitHub, no mutation.
+ * producer (no VM). No heavy work, no mutation. The only network read is the exact
+ * release-tag probe (`git ls-remote`), made only when `opts.release` names the release.
  */
 export function preflightCut(
   legs: CutLegs = {},
-  opts: { root?: string; platform?: Platform; orchestratorRoot?: string } = {},
+  opts: {
+    root?: string;
+    platform?: Platform;
+    orchestratorRoot?: string;
+    /** The release this cut would produce. When given, preflight also checks the exact
+     *  dogfood-pin tag on the canonical remote (EI-24611322499942803). */
+    release?: { version: string; channel: Channel; sourceSha: string };
+  } = {},
   deps: PreflightDeps = {},
 ): PreflightResult {
   const root = opts.root ?? desktopRoot();
@@ -1283,6 +1314,48 @@ export function preflightCut(
     detail: toolingDetail,
     ...(toolingWarnOnly ? { warnOnly: true } : {}),
   });
+
+  // EI-24611322499942803: the exact dogfood-pin tag. release-local.sh refuses a cut whose
+  // tag is not already on the canonical remote at the exact source sha, and only op:prepare-tag
+  // creates it. Preflight used to skip this, so go:true could precede a run that was certain
+  // to fail at the pin check (after bumping the manifests, which left the cut root dirty).
+  if (opts.release) {
+    const { version, channel, sourceSha } = opts.release;
+    const tag = desktopReleaseTag(version, channel);
+    const where = `${DOGFOOD_CANONICAL_REMOTE} refs/tags/${tag}`;
+    const prepare = `release:cut{op:'prepare-tag',version:'${version}',channel:'${channel}',sourceSha,root,confirm:true}`;
+    let remoteSha: string | null = null;
+    let probeError: string | null = null;
+    try {
+      remoteSha = (deps.remoteTagSha ?? defaultRemoteTagSha)(path.resolve(root, '..'), tag, DOGFOOD_CANONICAL_REMOTE);
+    } catch (error) {
+      probeError = error instanceof Error ? error.message.split('\n')[0] : String(error);
+    }
+    if (probeError !== null) {
+      checks.push({
+        name: 'release-tag',
+        ok: false,
+        warnOnly: true,
+        detail: `could NOT read ${where} (${probeError}) — UNMEASURED, not clean. The cut still refuses before any write if the tag is missing.`,
+      });
+    } else if (!remoteSha) {
+      checks.push({
+        name: 'release-tag',
+        ok: false,
+        detail: `${where} is missing — run ${prepare} first. The cut verifies this exact tag and refuses without it.`,
+      });
+    } else if (remoteSha !== sourceSha) {
+      checks.push({
+        name: 'release-tag',
+        ok: false,
+        detail:
+          `${where} points at ${remoteSha.slice(0, 12)}, not sourceSha ${sourceSha.slice(0, 12)} — the cut would refuse. ` +
+          'prepare-tag never moves an existing tag: cut from the tagged sha or choose a new version.',
+      });
+    } else {
+      checks.push({ name: 'release-tag', ok: true, detail: `${where} is at sourceSha ${sourceSha.slice(0, 12)}` });
+    }
+  }
 
   if (legs.mac) {
     checks.push({

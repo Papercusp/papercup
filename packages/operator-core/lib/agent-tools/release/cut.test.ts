@@ -313,7 +313,7 @@ describe('release:cut — explicit registered root routing', () => {
     expect(preflightM).toHaveBeenCalledWith({}, { root: desktopRoot });
   });
 
-  it('accepts carried release context on preflight without changing its check selection', async () => {
+  it('passes carried release context to preflight so it checks the exact release tag (EI-24611322499942803)', async () => {
     useRegisteredRoot();
     const args = {
       op: 'preflight',
@@ -329,7 +329,10 @@ describe('release:cut — explicit registered root routing', () => {
     const b = body(await tool.handler(args as never, { role: 'cup' } as never));
 
     expect(b).toMatchObject({ ok: true, op: 'preflight', root: desktopRoot, rootSelector: 'isolated', worktreeRoot });
-    expect(preflightM).toHaveBeenCalledWith({ mac: true, windows: true }, { root: desktopRoot });
+    expect(preflightM).toHaveBeenCalledWith(
+      { mac: true, windows: true },
+      { root: desktopRoot, release: { version: '0.0.20', channel: 'alpha', sourceSha } },
+    );
   });
 
   it('routes run dry-run command construction through the selected desktop root', async () => {
@@ -345,7 +348,10 @@ describe('release:cut — explicit registered root routing', () => {
     expect(b).toMatchObject({ ok: true, op: 'run', dry_run: true, root: desktopRoot, rootSelector: 'isolated', worktreeRoot });
     expect(b.wouldRun).toContain(`--working-directory=${desktopRoot}`);
     expect(launchM).not.toHaveBeenCalled();
-    expect(preflightM).toHaveBeenCalledWith({}, { root: desktopRoot });
+    expect(preflightM).toHaveBeenCalledWith(
+      {},
+      { root: desktopRoot, release: { version: '0.0.8', channel: 'alpha', sourceSha } },
+    );
   });
 
   it('routes run-leg through the selected desktop root', async () => {
@@ -360,7 +366,10 @@ describe('release:cut — explicit registered root routing', () => {
 
     expect(b).toMatchObject({ ok: true, op: 'run-leg', dry_run: true, root: desktopRoot, rootSelector: 'isolated', worktreeRoot });
     expect(b.wouldRun).toContain(`--working-directory=${desktopRoot}`);
-    expect(preflightM).toHaveBeenCalledWith({ mac: true }, { platform: 'mac', root: desktopRoot });
+    expect(preflightM).toHaveBeenCalledWith(
+      { mac: true },
+      { platform: 'mac', root: desktopRoot, release: { version: '0.0.8', channel: 'alpha', sourceSha } },
+    );
     expect(launchM).not.toHaveBeenCalled();
   });
 
@@ -863,7 +872,10 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/cut_in_flight/);
-    expect(preflightM).toHaveBeenCalledWith({ mac: true }, { platform: 'mac', root: expect.any(String) });
+    expect(preflightM).toHaveBeenCalledWith(
+      { mac: true },
+      { platform: 'mac', root: expect.any(String), release: { version: '0.0.8', channel: 'alpha', sourceSha } },
+    );
     expect(launchM).not.toHaveBeenCalled();
   });
   it('dry-run (no confirm) previews the command scoped to just this leg and does NOT launch', async () => {
