@@ -249,3 +249,19 @@ test("the root perf command preserves WDIO failures through tee", () => {
   ) as { scripts: Record<string, string> };
   assert.match(rootPackage.scripts["perf:desktop"], /bash -o pipefail/);
 });
+
+test("the gate-selected `test` script is headless; the full GUI run is `test:all` (WI-10003821)", () => {
+  // The green gate runs this package's `test` on every change here (STANDALONE_PACKAGE_DIRS in
+  // scripts/affected-tests.mjs), and a gate box cannot boot the packaged desktop binary. So `test`
+  // must never reach WDIO, and every caller that wants measures must name `test:all`.
+  const own = JSON.parse(readFileSync(path.join(__dirname, "package.json"), "utf8")) as {
+    scripts: Record<string, string>;
+  };
+  assert.doesNotMatch(own.scripts.test, /test:wdio|wdio run/, "`test` must stay headless");
+  assert.match(own.scripts.test, /test:unit/, "`test` must still run the runner guards");
+  assert.match(own.scripts["test:all"], /npm run test:wdio/, "`test:all` must run the specs");
+  const rootPackage = JSON.parse(
+    readFileSync(path.resolve(__dirname, "../../..", "package.json"), "utf8"),
+  ) as { scripts: Record<string, string> };
+  assert.match(rootPackage.scripts["perf:desktop"], /npm run test:all\b/);
+});

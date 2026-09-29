@@ -414,10 +414,11 @@ describe('stale packaged build (WI-10003815)', () => {
     expect(readBinaryBuiltAt(run([staleBuild], 'pass', NOW))).toBe(NOW - 12 * DAY);
   });
 
-  // The producer side lives in tools/perf-test/wdio, a standalone package no gate task
-  // selects, so its own node-test never runs in CI. Pin it from HERE: if the runner stops
-  // stamping (or stamps a drifted key) every run reads as unstamped and this branch goes
-  // silently inert — the run keeps blocking candidates on stale builds.
+  // The producer side lives in tools/perf-test/wdio. Its own node-test now runs at the gate
+  // too (WI-10003821), but only when that package changes; pin the cross-package contract from
+  // HERE as well, so a change on THIS side is checked against it. If the runner stops stamping
+  // (or stamps a drifted key) every run reads as unstamped and this branch goes silently
+  // inert — the run keeps blocking candidates on stale builds.
   it('the WDIO producer stamps the binary with the key this gate reads', () => {
     const wdio = (f: string) => readFileSync(new URL(`../../../../tools/perf-test/wdio/${f}`, import.meta.url), 'utf8');
     expect(wdio('perf-report.ts')).toContain(`BINARY_BUILT_AT_KEY = "${DESKTOP_PERF_BINARY_BUILT_AT_KEY}"`);
