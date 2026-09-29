@@ -50,6 +50,9 @@ const scriptedEngine = vi.hoisted(() => ({
   mode: 'success' as 'success' | 'failure' | 'stall' | 'startup-exit' | 'question' | 'wrapped-question' | 'edit' | 'stream' | 'approval'
     | 'engine-death' | 'stream-loss' | 'auth-expired' | 'rate-limit',
   successText: 'PUI structured engine replied',
+  // The success-mode Read tool's result. P-004 sets a multi-line value to prove
+  // the collapsed preview and the Ctrl+R expansion.
+  toolResultText: 'scripted engine tool result',
   // One entry per native launch: an exact resume names the dead native id in
   // `resume`; a fresh start names it in `sessionId`. The P-009 oracles read it.
   sdkSessions: [] as Array<{ resume: string | null; sessionId: string | null }>,
@@ -375,7 +378,7 @@ vi.mock('../su-session-claude-engine', async (original) => {
               { type: 'tool_use', id: 'pui-e2e-tool', name: 'Read', input: { file_path: 'README.md' } },
             ] } });
             output.write({ type: 'user', session_id: nativeId, message: { role: 'user', content: [
-              { type: 'tool_result', tool_use_id: 'pui-e2e-tool', content: 'scripted engine tool result' },
+              { type: 'tool_result', tool_use_id: 'pui-e2e-tool', content: scriptedEngine.toolResultText },
             ] } });
             output.write({ type: 'assistant', session_id: nativeId, message: { content: [
               { type: 'text', text: scriptedEngine.successText },
@@ -1676,6 +1679,7 @@ beforeEach(async () => {
   transportFault = 'none';
   scriptedEngine.mode = 'success';
   scriptedEngine.successText = 'PUI structured engine replied';
+  scriptedEngine.toolResultText = 'scripted engine tool result';
   scriptedEngine.questionCallId = 'pui-question-tool';
   scriptedEngine.questionVerdicts = [];
   scriptedEngine.approvalRequests = [
@@ -3358,6 +3362,211 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       rmSync(launchDir, { recursive: true, force: true });
     }
   }, 120_000);
+
+  // pui-chat-first-ux-2026-09-28 P-004 / R-04, composer half: the default chat
+  // takes input the way Claude Code / Codex do — a `/` command menu, multi-line
+  // input (trailing backslash + Enter, Alt+Enter), Up-arrow history, `@` file
+  // mentions, and Esc to stop a running reply. Every turn gets its OWN reply
+  // text: waiting on a reply already on screen from an earlier turn is vacuous.
+  test('P-004: the default chat composer has slash commands, multi-line input, history, @file and Esc to stop', async ({ onTestFailed }) => {
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p004-composer-')));
+    writeFileSync(path.join(launchDir, 'parity-notes.md'), '# parity notes\n');
+    const tag = randomUUID().slice(0, 8);
+    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    let stage = 'ready';
+    onTestFailed(() => console.info('PUI_P004_COMPOSER_FAILURE', JSON.stringify({
+      stage, launchDir, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+
+      // `/` opens the command menu; typing filters it; Esc dismisses it.
+      stage = 'slash-menu';
+      pane.write('/');
+      await pane.waitFor('/resume');
+      await pane.waitFor('Keys and commands');
+      pane.write('ex');
+      await pane.waitFor('/expand');
+      await pane.waitForGone('/resume');
+      pane.escape();
+      await pane.waitForGone('/expand');
+      // An unknown command is named and never sent.
+      pane.write('/nope');
+      await pane.waitFor('no command matches /nope');
+      pane.enter();
+      pane.escape();
+      await pane.waitForGone('/nope');
+      expect(scriptedEngine.requests).toEqual([]);
+
+      // Multi-line: a trailing backslash + Enter and Alt+Enter insert newlines.
+      stage = 'multiline';
+      scriptedEngine.successText = `P4 multiline reply ${tag}`;
+      pane.write(`first ${tag}\\`);
+      pane.enter();
+      pane.write(`second ${tag}`);
+      pane.write('\u001b\r');
+      pane.write(`third ${tag}`);
+      await pane.waitFor(`third ${tag}`);
+      expect(pane.screen()).not.toContain(`first ${tag}\\`);
+      expect(scriptedEngine.requests).toEqual([]);
+      const multiline = `first ${tag}\nsecond ${tag}\nthird ${tag}`;
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(scriptedEngine.requests).toEqual([multiline]);
+
+      // Up recalls the last message; Enter sends it again verbatim.
+      stage = 'history';
+      scriptedEngine.successText = `P4 history reply ${tag}`;
+      pane.write('\u001b[A');
+      await vi.waitFor(() => expect(pane.screen().split(`first ${tag}`).length).toBeGreaterThan(2), {
+        timeout: 10_000, interval: 100,
+      });
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(scriptedEngine.requests).toEqual([multiline, multiline]);
+
+      // `@` mentions a file from the launch directory.
+      stage = 'at-file';
+      scriptedEngine.successText = `P4 file reply ${tag}`;
+      pane.write(`look at ${tag}`);
+      pane.write('@');
+      await pane.waitFor('parity-notes.md');
+      pane.enter();
+      await pane.waitFor('@parity-notes.md');
+      pane.escape();
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      expect(scriptedEngine.requests.at(-1)).toContain(`look at ${tag}`);
+      expect(scriptedEngine.requests.at(-1)).toContain('@parity-notes.md');
+
+      // Esc stops a running reply.
+      stage = 'esc-interrupt';
+      scriptedEngine.mode = 'stream';
+      scriptedEngine.streamChunks = [`P4-STREAM-1-${tag} `, 'P4-STREAM-2 ', 'P4-STREAM-3 ', 'P4-STREAM-4 ', `P4-STREAM-LAST-${tag}`];
+      scriptedEngine.streamDelayMs = 1_000;
+      pane.write(`stream ${tag}`);
+      pane.enter();
+      await pane.waitFor(`P4-STREAM-1-${tag}`, { timeoutMs: 60_000 });
+      pane.escape();
+      await vi.waitFor(() => expect(commandPosts.some((command) => command.type === 'interrupt')).toBe(true), {
+        timeout: 30_000, interval: 100,
+      });
+      console.info('PUI_P004_COMPOSER_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frame: pane.screen() }));
+    } finally {
+      await pane.stop();
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  }, 240_000);
+
+  // pui-chat-first-ux-2026-09-28 P-004 / R-04, transcript half: streaming
+  // markdown renders while it arrives, tool output is a short preview that
+  // Ctrl+R expands, file edits show their diff inline, permission prompts are
+  // plain words answered with 1 / 2, `/copy` copies the last reply, and on
+  // exit the conversation is left in the terminal's own scrollback.
+  test('P-004: the default chat transcript streams markdown, collapses tool output, shows diffs and prompts inline, and leaves clean scrollback', async ({ onTestFailed }) => {
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p004-transcript-')));
+    const tag = randomUUID().slice(0, 8);
+    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    let stage = 'ready';
+    onTestFailed(() => console.info('PUI_P004_TRANSCRIPT_FAILURE', JSON.stringify({
+      stage, launchDir, requests: scriptedEngine.requests, verdicts: scriptedEngine.approvalVerdicts, ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+
+      // Streaming markdown: formatted while it is still arriving.
+      stage = 'markdown';
+      scriptedEngine.mode = 'stream';
+      scriptedEngine.streamChunks = ['## Parity heading\n\n', '- **bold item** first\n', '- second item\n\n', 'Use `inline code` here.\n\n', `P4-MD-END-${tag}`];
+      scriptedEngine.streamDelayMs = 700;
+      pane.write(`markdown ${tag}`);
+      pane.enter();
+      await pane.waitFor('bold item', { timeoutMs: 60_000 });
+      expect(pane.screen()).not.toContain(`P4-MD-END-${tag}`);
+      expect(pane.screen()).not.toContain('**bold item**');
+      await pane.waitFor(`P4-MD-END-${tag}`, { timeoutMs: 60_000 });
+      const md = pane.screen();
+      expect(md).toContain('Parity heading');
+      expect(md).not.toContain('## Parity heading');
+      expect(md).not.toContain('`inline code`');
+
+      // Tool output: a three-line preview, Ctrl+R shows it all and hides it again.
+      stage = 'tool-output';
+      scriptedEngine.mode = 'success';
+      scriptedEngine.successText = `P4 tool reply ${tag}`;
+      scriptedEngine.toolResultText = Array.from({ length: 8 }, (_, i) => `tool row ${i + 1} ${tag}`).join('\n');
+      pane.write(`read ${tag}`);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitFor(`⎿ tool row 1 ${tag}`);
+      expect(pane.screen()).toContain(`tool row 3 ${tag}`);
+      expect(pane.screen()).not.toContain(`tool row 8 ${tag}`);
+      expect(pane.screen()).toContain('+5 lines (Ctrl+R to expand)');
+      pane.write('\u0012');
+      await pane.waitFor(`tool row 8 ${tag}`);
+      pane.write('\u0012');
+      await pane.waitForGone(`tool row 8 ${tag}`);
+
+      // A file edit shows its diff in the transcript.
+      stage = 'diff';
+      scriptedEngine.mode = 'edit';
+      scriptedEngine.successText = `P4 edit reply ${tag}`;
+      pane.write(`edit ${tag}`);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitFor('let introduced = 3;');
+      expect(pane.screen()).toMatch(/\+\s+let introduced = 3;/);
+      expect(pane.screen()).toMatch(/-\s+let dropped = 2;/);
+
+      // Permission prompts: inline, in plain words, answered with 1 (allow) / 2 (deny).
+      stage = 'approval';
+      scriptedEngine.mode = 'approval';
+      scriptedEngine.successText = `P4 approval reply ${tag}`;
+      pane.write(`approve ${tag}`);
+      pane.enter();
+      await vi.waitFor(() => expect(pendingNativeCards()).toHaveLength(2), { timeout: 60_000, interval: 100 });
+      await pane.waitFor('Approve');
+      await pane.waitFor('Decline');
+      const prompt = pane.screen();
+      const shown = scriptedEngine.approvalRequests.filter((r) => prompt.includes(String(r.input.command)));
+      expect(shown, prompt).toHaveLength(1);
+      expect(chatJargonIn(prompt), prompt).toEqual([]);
+      pane.write('1');
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(1), { timeout: 30_000, interval: 100 });
+      expect(scriptedEngine.approvalVerdicts[0]).toMatchObject({ tag: shown[0].tag, verdict: { behavior: 'allow' } });
+      const peer = scriptedEngine.approvalRequests.find((r) => r.tag !== shown[0].tag);
+      await pane.waitFor(String(peer?.input.command));
+      await pane.waitFor('Decline');
+      pane.write('2');
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(2), { timeout: 30_000, interval: 100 });
+      expect(scriptedEngine.approvalVerdicts[1]).toMatchObject({ tag: peer?.tag, verdict: { behavior: 'deny' } });
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+
+      // `/copy` copies the last reply; `/exit` leaves the conversation in scrollback.
+      stage = 'copy';
+      pane.write('/copy');
+      pane.enter();
+      await vi.waitFor(() => expect(pane.clipboardWrites().join('\n')).toContain(scriptedEngine.successText), {
+        timeout: 10_000, interval: 100,
+      });
+      stage = 'scrollback';
+      const copyFrame = pane.screen();
+      pane.write('/exit');
+      pane.enter();
+      await vi.waitFor(() => {
+        const after = pane.screen();
+        expect(after).not.toContain('Message — Enter');
+        expect(after).toContain(`> markdown ${tag}`);
+        expect(after).toContain(scriptedEngine.successText);
+      }, { timeout: 15_000, interval: 100 });
+      console.info('PUI_P004_TRANSCRIPT_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, launchDir, frame: copyFrame, scrollback: pane.screen(),
+      }));
+    } finally {
+      await pane.stop();
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  }, 300_000);
 
   // pui-chat-first-ux-2026-09-28 P-003 / R-03, failed-start frame: when the
   // engine dies while starting, the default chat explains it in ONE plain

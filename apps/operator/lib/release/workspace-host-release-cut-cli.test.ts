@@ -93,6 +93,8 @@ function harness(overrides: Partial<WorkspaceHostReleaseCutDeps> = {}) {
     verifies: 0,
     publishes: [] as Array<{ taskId: string; operationId: string; args: readonly string[] }>,
     prunes: [] as Array<{ repoRoot: string; workDir: string }>,
+    rollbackResolves: [] as string[],
+    manifestRollbackVersions: [] as Array<string | null>,
   };
   let stored: WorkspaceHostBuildResult | null = null;
   const deps: WorkspaceHostReleaseCutDeps = {
@@ -115,8 +117,13 @@ function harness(overrides: Partial<WorkspaceHostReleaseCutDeps> = {}) {
       calls.verifies += 1;
     },
     readBuildResult: async () => stored,
-    emitManifest: async ({ workDir: dir }) => {
+    resolveRollbackRelease: async (taskId) => {
+      calls.rollbackResolves.push(taskId);
+      return null;
+    },
+    emitManifest: async ({ workDir: dir, rollbackVersion }) => {
       calls.manifests += 1;
+      calls.manifestRollbackVersions.push(rollbackVersion);
       mkdirSync(join(dir, 'publication'), { recursive: true });
       writeFileSync(join(dir, 'publication', 'manifest.json'), '{}');
       return { trusted: true };

@@ -2844,6 +2844,26 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         .saturating_sub(turn_error.len() as u16 + 5)
         .max(1) as usize;
     selection_rows.truncate(selection_limit);
+    // The `/` command menu (pui-chat-first-ux P-004) sits directly above the
+    // draft, inside the composer: as selection rows it grows the box and moves
+    // the cursor exactly like the status rows above it.
+    if app.chat_composing && app.pending_approvals.is_empty() {
+        if let Some(prefix) = crate::chat_commands::query(&app.chat_input) {
+            let hits = crate::chat_commands::matching(prefix);
+            if hits.is_empty() {
+                selection_rows.push(trunc(&format!("  no command matches /{prefix}"), width));
+            } else {
+                let sel = app.chat_slash_selected.min(hits.len() - 1);
+                for (i, c) in hits.iter().enumerate() {
+                    let marker = if i == sel { "›" } else { " " };
+                    selection_rows.push(trunc(
+                        &format!("{marker} /{:<8} {}", c.name, c.summary),
+                        width,
+                    ));
+                }
+            }
+        }
+    }
     // Attachments occupy one row each ABOVE the draft, so the composer has to
     // grow by exactly that many or the draft line is pushed out of its own box.
     // The draft is a real multiline editor now. Reserve one row per logical
@@ -3084,6 +3104,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                     )));
                 }
             }
+            lines.extend(tool_detail_lines(tc, inner_w, app.chat_tools_expanded));
         }
         // P-007 change cards: the affordance. The diff overlay is reachable
         // only by Enter on a CURSORED block, which nothing else on this screen
@@ -3213,11 +3234,23 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             String::new()
         };
         (
-            " Approval — Ctrl+Y approve · Ctrl+N deny ",
-            format!(
-                "⏸ {} · call {} is waiting on your decision{queued}",
-                p.tool_name, p.call_id
-            ),
+            if app.chat_first && !details {
+                // pui-chat-first-ux P-004: the permission prompt in plain words —
+                // WHAT the tool wants to do, and the Claude Code keys. The call
+                // id is internal and stays in the Ctrl+O details view.
+                " Allow this? — y / Enter yes · n / Esc no "
+            } else {
+                " Approval — Ctrl+Y approve · Ctrl+N deny "
+            },
+            if app.chat_first && !details {
+                let wants = approval_request_summary(app, p, width.saturating_sub(24));
+                trunc(&format!("⏸ {wants}{queued}"), width)
+            } else {
+                format!(
+                    "⏸ {} · call {} is waiting on your decision{queued}",
+                    p.tool_name, p.call_id
+                )
+            },
             Theme::notify(),
         )
     } else if app.su_pending_turn.is_some() && app.chat_streaming {
@@ -3317,8 +3350,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         (
             // Chat-first names the Ctrl-O details view (P-003): the ids and raw
             // errors moved there, so the way to them must be on screen.
-            if app.chat_first {
-                " Message — Enter send · ↑↓ history · Ctrl+O details "
+            if app.chat_first && app.chat_streaming {
+                " Message — Enter queue · Esc stop · Ctrl+R output · Ctrl+O details "
+            } else if app.chat_first {
+                " Message — Enter send · / commands · @ files · ↑↓ history · Ctrl+O details "
             } else {
                 " Message — Enter send · ↑↓ history · Esc cancel "
             },
@@ -5995,6 +6030,142 @@ pub(crate) fn elide_left(s: &str, n: usize) -> String {
 /// arguments that would be pure noise: absent, `null`, or an empty object. A
 /// no-argument tool then gets a clean one-line card instead of an empty bracket
 /// pair dressed up as information.
+/// Collapsed tool output shows this many lines; Ctrl+R shows up to the cap.
+const TOOL_OUTPUT_PREVIEW_LINES: usize = 3;
+const TOOL_DIFF_PREVIEW_LINES: usize = 8;
+const TOOL_EXPANDED_LINE_CAP: usize = 400;
+
+/// The readable text of a tool's terminal result, or `None` when the payload
+/// carries none. Only textual shapes are rendered — a string, a `content` /
+/// `text` / `output` / `stdout` field, or an array of `{type:'text',text}`
+/// parts; anything else (a structured envelope) is left to the semantic card,
+/// so the transcript never dumps raw JSON.
+pub(crate) fn tool_result_text(result: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    fn parts(v: &Value) -> Option<String> {
+        match v {
+            Value::String(s) => Some(s.clone()),
+            Value::Array(items) => {
+                let texts: Vec<String> = items
+                    .iter()
+                    .filter_map(|it| match it {
+                        Value::String(s) => Some(s.clone()),
+                        Value::Object(o) => o.get("text").and_then(Value::as_str).map(str::to_owned),
+                        _ => None,
+                    })
+                    .collect();
+                (!texts.is_empty()).then(|| texts.join("\n"))
+            }
+            _ => None,
+        }
+    }
+    let text = match result {
+        Value::Object(o) => ["content", "text", "output", "stdout", "result"]
+            .iter()
+            .find_map(|k| o.get(*k).and_then(parts))?,
+        other => parts(other)?,
+    };
+    let trimmed = text.trim_end();
+    (!trimmed.trim().is_empty()).then(|| trimmed.to_string())
+}
+
+/// Inline detail under a tool call (pui-chat-first-ux P-004): the diff of a
+/// file change, or a preview of the tool's output. Collapsed by default to a
+/// few lines with a "+N lines" note; `expanded` (Ctrl+R / `/expand`) shows it
+/// all, up to a cap that keeps one huge output from swallowing the transcript.
+pub(crate) fn tool_detail_lines(
+    tc: &crate::models::ChatToolCall,
+    width: usize,
+    expanded: bool,
+) -> Vec<Line<'static>> {
+    use crate::change_card::DiffLine;
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let more = |hidden: usize, out: &mut Vec<Line<'static>>| {
+        let note = if expanded {
+            format!("      … {hidden} more lines not shown")
+        } else {
+            format!("      … +{hidden} lines (Ctrl+R to expand)")
+        };
+        out.push(Line::from(Span::styled(trunc(&note, width), Theme::dim())));
+    };
+    if let Some(card) = crate::change_card::card_for_tool(tc, 0, 0) {
+        let all: Vec<&DiffLine> = card.hunks.iter().flat_map(|h| h.lines.iter()).collect();
+        let limit = if expanded {
+            TOOL_EXPANDED_LINE_CAP
+        } else {
+            TOOL_DIFF_PREVIEW_LINES
+        };
+        for dl in all.iter().take(limit) {
+            let style = match dl {
+                DiffLine::Added(_) => Theme::success(),
+                DiffLine::Removed(_) => Theme::danger(),
+                DiffLine::Context(_) => Theme::dim(),
+            };
+            out.push(Line::from(Span::styled(
+                trunc(&format!("    {} {}", dl.marker(), dl.text()), width),
+                style,
+            )));
+        }
+        let hidden = all.len().saturating_sub(limit);
+        if hidden > 0 {
+            more(hidden, &mut out);
+        }
+        return out;
+    }
+    let Some(text) = tc.result.as_ref().and_then(tool_result_text) else {
+        return out;
+    };
+    let body_w = width.saturating_sub(6).max(1);
+    let rows: Vec<String> = if expanded {
+        text.lines().flat_map(|l| wrap_text(l, body_w)).collect()
+    } else {
+        text.lines().map(str::to_owned).collect()
+    };
+    let limit = if expanded {
+        TOOL_EXPANDED_LINE_CAP
+    } else {
+        TOOL_OUTPUT_PREVIEW_LINES
+    };
+    for (i, row) in rows.iter().take(limit).enumerate() {
+        let lead = if i == 0 { "    ⎿ " } else { "      " };
+        out.push(Line::from(Span::styled(
+            trunc(&format!("{lead}{row}"), width),
+            Theme::dim(),
+        )));
+    }
+    let hidden = rows.len().saturating_sub(limit);
+    if hidden > 0 {
+        more(hidden, &mut out);
+    }
+    out
+}
+
+/// What a parked tool call wants to do, in words: the semantic card title or
+/// tool name, plus its arguments when they summarise to one line.
+fn approval_request_summary(
+    app: &App,
+    p: &crate::models::PendingApproval,
+    width: usize,
+) -> String {
+    let call = app
+        .chat_messages
+        .iter()
+        .rev()
+        .flat_map(|m| m.tools.iter())
+        .find(|t| t.id.as_deref() == Some(p.call_id.as_str()));
+    let title = call
+        .and_then(crate::semantic_tool_cards::card_for_tool)
+        .map(|c| c.title)
+        .unwrap_or_else(|| p.tool_name.clone());
+    let args = call
+        .and_then(|t| t.input.as_ref())
+        .and_then(|v| tool_input_summary(v, width.max(8)));
+    match args {
+        Some(a) => format!("{title} wants to run: {a}"),
+        None => format!("{title} is waiting for your permission"),
+    }
+}
+
 pub(crate) fn tool_input_summary(input: &serde_json::Value, width: usize) -> Option<String> {
     if width == 0 || input.is_null() {
         return None;
@@ -9311,6 +9482,39 @@ mod tests {
         assert_eq!(wrap_text("abcdef", 3), vec!["abc", "def"]);
         // An empty line is preserved (paragraph break).
         assert_eq!(wrap_text("x\n\ny", 80), vec!["x", "", "y"]);
+    }
+
+    #[test]
+    fn tool_detail_lines_preview_output_expand_it_and_show_diffs() {
+        use crate::models::{ChatToolCall, ToolOutcome};
+        let text = |lines: Vec<Line<'static>>| {
+            lines
+                .iter()
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut tc = ChatToolCall::plain("Bash".into());
+        tc.outcome = ToolOutcome::Ok;
+        tc.result = Some(serde_json::json!("r1\nr2\nr3\nr4\nr5"));
+        let collapsed = text(tool_detail_lines(&tc, 80, false));
+        assert!(collapsed.contains("⎿ r1") && collapsed.contains("r3"), "{collapsed}");
+        assert!(!collapsed.contains("r4"), "{collapsed}");
+        assert!(collapsed.contains("+2 lines (Ctrl+R to expand)"), "{collapsed}");
+        let expanded = text(tool_detail_lines(&tc, 80, true));
+        assert!(expanded.contains("r5") && !expanded.contains("Ctrl+R"), "{expanded}");
+        // A structured envelope is never dumped; text parts are.
+        tc.result = Some(serde_json::json!({ "rows": [1, 2, 3] }));
+        assert!(tool_detail_lines(&tc, 80, true).is_empty());
+        tc.result = Some(serde_json::json!({ "content": [{ "type": "text", "text": "from parts" }] }));
+        assert!(text(tool_detail_lines(&tc, 80, false)).contains("⎿ from parts"));
+        // A file edit shows its diff inline, before and after it completes.
+        let mut edit = ChatToolCall::plain("Edit".into());
+        edit.input = Some(serde_json::json!({
+            "file_path": "src/a.rs", "old_string": "let a = 1;", "new_string": "let a = 2;"
+        }));
+        let diff = text(tool_detail_lines(&edit, 80, false));
+        assert!(diff.contains("- let a = 1;") && diff.contains("+ let a = 2;"), "{diff}");
     }
 
     #[test]

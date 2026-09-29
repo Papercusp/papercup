@@ -21,6 +21,7 @@ mod card_view;
 #[cfg(test)]
 mod census;
 mod change_card;
+mod chat_commands;
 mod chat_copy;
 mod chat_tags;
 mod client;
@@ -496,8 +497,13 @@ async fn main() -> Result<()> {
     // Voice hold-to-talk (voice-mode-tui-port-2026-06-05 D-007): request key
     // RELEASE events when the terminal speaks the kitty keyboard protocol, so
     // holding `v` can drive PTT. Without support no release events arrive and
-    // PTT falls back to press-to-toggle. Best-effort; only REPORT_EVENT_TYPES is
-    // pushed (minimal — doesn't disambiguate/alter other key reporting).
+    // PTT falls back to press-to-toggle. Best-effort.
+    //
+    // DISAMBIGUATE_ESCAPE_CODES (pui-chat-first-ux P-004) makes Shift+Enter
+    // arrive as Enter+SHIFT, so it can insert a newline the way Claude Code and
+    // Codex do; without it the terminal sends a plain CR and Shift+Enter would
+    // send the message. Text keys still arrive as text under this flag. Where
+    // the protocol is absent, a trailing `\` + Enter and Alt+Enter still work.
     //
     // That probe waits up to 2 s in a terminal that never answers it, so show
     // startup progress first (pui-first-party-public-release P-013: "display
@@ -513,6 +519,7 @@ async fn main() -> Result<()> {
             out,
             crossterm::event::PushKeyboardEnhancementFlags(
                 crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                    | crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
             )
         );
     }
@@ -559,8 +566,20 @@ async fn main() -> Result<()> {
     )
     .ok();
     terminal.show_cursor().ok();
+    // pui-chat-first-ux P-004 "clean scrollback": now that the alternate screen
+    // is gone, print the conversation to the normal screen so it stays in the
+    // terminal's own scrollback (set by `run` for the chat-first surface only).
+    if let Some(text) = EXIT_TRANSCRIPT.get() {
+        println!("{text}");
+    }
     result
 }
+
+/// The chat-first conversation as plain text, handed from `run` (which owns the
+/// `App`) to `main` (which owns terminal teardown) so it can be printed AFTER
+/// the alternate screen is left — printing it earlier would land on the
+/// alternate screen and vanish with it.
+static EXIT_TRANSCRIPT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 #[cfg(test)]
 mod cli_help_tests {
@@ -2652,6 +2671,13 @@ async fn run<B: Backend>(
             }
         }
     }
+    // pui-chat-first-ux P-004 "clean scrollback": hand the chat-first transcript
+    // to `main`, which prints it once the alternate screen is gone.
+    if app.chat_first {
+        if let Some(text) = crate::chat_copy::plain_transcript(&app.chat_messages) {
+            let _ = EXIT_TRANSCRIPT.set(text);
+        }
+    }
     Ok(())
 }
 
@@ -2820,6 +2846,7 @@ fn exec_restoring_terminal(enhanced: bool, exec: impl FnOnce() -> anyhow::Error)
             out,
             crossterm::event::PushKeyboardEnhancementFlags(
                 crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                    | crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
             )
         );
     }

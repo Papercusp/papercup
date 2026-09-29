@@ -3989,9 +3989,9 @@ export function makeQuotaBlockDetector({
   agent = '',
   now = Date.now,
   deferUntilSubmit = false,
-  corroborate = null,
+  corroborate = /** @type {null | ((match: { matched: boolean, pattern: string | null, excerpt: string | null }) => string)} */ (null),
   corroborateTtlMs = QUOTA_CORROBORATE_TTL_MS,
-  onDismiss = null,
+  onDismiss = /** @type {null | ((dismissed: { matched: boolean, pattern: string | null, excerpt: string | null, blockedSinceMs: number | null }) => unknown)} */ (null),
 } = {}) {
   let buffer = '';
   let blocked = false;

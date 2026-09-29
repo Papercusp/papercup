@@ -1390,9 +1390,18 @@ export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit,
     agent?: string | undefined;
     now?: (() => number) | undefined;
     deferUntilSubmit?: boolean | undefined;
-    corroborate?: null | undefined;
+    corroborate?: ((match: {
+        matched: boolean;
+        pattern: string | null;
+        excerpt: string | null;
+    }) => string) | null | undefined;
     corroborateTtlMs?: number | undefined;
-    onDismiss?: null | undefined;
+    onDismiss?: ((dismissed: {
+        matched: boolean;
+        pattern: string | null;
+        excerpt: string | null;
+        blockedSinceMs: number | null;
+    }) => unknown) | null | undefined;
 }): {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
      *  or null when the level didn't change, so a caller can log transitions

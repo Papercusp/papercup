@@ -277,7 +277,9 @@ function pipelinePosition(overrides: Record<string, unknown> = {}): PipelinePosi
   } as unknown as PipelinePosition;
 }
 
-function fixture(options: { missingMilestone?: string; priorImageId?: string; priorImageVersion?: string } = {}) {
+function fixture(
+  options: { missingMilestone?: string; priorImageId?: string; priorImageVersion?: string; undeclaredTarget?: boolean } = {},
+) {
   const currentBytes = bundleBytes('c');
   const rollbackBytes = bundleBytes('r');
   const currentSha = bundleDigest(currentBytes);
@@ -297,7 +299,7 @@ function fixture(options: { missingMilestone?: string; priorImageId?: string; pr
     bundleSha256: currentSha,
     sourceSha: SOURCE_SHA,
     version: CURRENT_VERSION,
-    rollbackTarget: { id: IMAGE_ID, version: ROLLBACK_VERSION },
+    ...(options.undeclaredTarget ? {} : { rollbackTarget: { id: IMAGE_ID, version: ROLLBACK_VERSION } }),
   });
   const rollbackManifest = publishedManifest({
     bundleSha256: rollbackSha,
@@ -410,6 +412,63 @@ describe('release.shipment.green', () => {
 
     expect(result.outcome).toBe('refused');
     expect(result.evidenceRefs).toContain('shipment-failed:rollback-image-does-not-match-manifest-target');
+  });
+
+  describe('D-437 first green shipment (manifest declares no rollback edge)', () => {
+    it('commits with no rollback release when nothing in scope has shipped green', async () => {
+      const test = fixture({ undeclaredTarget: true });
+      const hasPriorGreenShipment = vi.fn(async () => false);
+
+      const result = await recordWorkspaceHostReleaseShipment({
+        ...test.input,
+        rollbackReleaseTaskId: undefined,
+        hasPriorGreenShipment,
+      });
+
+      expect(result.outcome).toBe('committed');
+      expect(result.rollbackReleaseTaskId).toBeNull();
+      expect(result.evidenceRefs).toContain('shipment-rollback-target:none-first-shipment');
+      expect(hasPriorGreenShipment).toHaveBeenCalledWith(TASK_ID);
+      const rollbackUrls = deriveWorkspaceHostCanonicalArtifactUrls(test.rollbackSha);
+      expect(test.fetchArtifact).not.toHaveBeenCalledWith(rollbackUrls.manifestUrl, expect.anything());
+    });
+
+    it('refuses an undeclared rollback edge once any release in scope has shipped green', async () => {
+      const test = fixture({ undeclaredTarget: true });
+
+      const result = await recordWorkspaceHostReleaseShipment({
+        ...test.input,
+        rollbackReleaseTaskId: undefined,
+        hasPriorGreenShipment: async () => true,
+      });
+
+      expect(result.outcome).toBe('refused');
+      expect(result.evidenceRefs).toContain('shipment-failed:rollback-target-undeclared');
+    });
+
+    it('refuses a declared rollback edge when no rollback release task is named', async () => {
+      const test = fixture();
+      const hasPriorGreenShipment = vi.fn(async () => false);
+
+      const result = await recordWorkspaceHostReleaseShipment({
+        ...test.input,
+        rollbackReleaseTaskId: undefined,
+        hasPriorGreenShipment,
+      });
+
+      expect(result.outcome).toBe('refused');
+      expect(result.evidenceRefs).toContain('shipment-failed:rollback-release-task-required');
+      expect(hasPriorGreenShipment).not.toHaveBeenCalled();
+    });
+
+    it('still refuses a named rollback release when the manifest declares no edge', async () => {
+      const test = fixture({ undeclaredTarget: true });
+
+      const result = await recordWorkspaceHostReleaseShipment({ ...test.input, hasPriorGreenShipment: async () => false });
+
+      expect(result.outcome).toBe('refused');
+      expect(result.evidenceRefs).toContain('shipment-failed:rollback-image-does-not-match-manifest-target');
+    });
   });
 
   it('refuses when bytes served from a content address do not match its digest', async () => {

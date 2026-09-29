@@ -62,6 +62,10 @@ import {
   WORKSPACE_HOST_PUBLISHED_SIGNATURE_NAME,
 } from '@papercusp/operator-core/lib/workspace-host/publication-manifest';
 import { WORKSPACE_HOST_RELEASE_CHANNEL } from '@papercusp/operator-core/lib/workspace-host/release-stage-receipt';
+import {
+  latestGreenShippedReleaseInScope,
+  type GreenShippedRelease,
+} from '@papercusp/operator-core/lib/workspace-host/release-shipment-green-receipt';
 
 import {
   beginReleaseTaskStage,
@@ -247,6 +251,12 @@ export interface WorkspaceHostPublicationFacts {
   desktopRevision: string;
   sourceRoot: string;
   bundleRoot: string;
+  /**
+   * Version of the last GREEN-SHIPPED release in this cut's scope, or null when nothing has shipped
+   * green yet (D-437). Required, not optional: omitting the rollback edge is what left every r5x/r60
+   * manifest unshippable, so each caller must decide it explicitly.
+   */
+  rollbackVersion: string | null;
 }
 
 /**
@@ -281,8 +291,21 @@ export function buildWorkspaceHostPublicationInput(
   if (parameters.some((parameter) => isRecord(parameter) && parameter.name === 'desktop_revision')) {
     throw new Error('template must not pin desktop_revision: it is measured from the source gitlinks');
   }
+  if (isRecord(rest.lifecycle) && rest.lifecycle.rollbackTarget !== undefined) {
+    throw new Error('template must not pin lifecycle.rollbackTarget: it is the last green-shipped release, resolved at cut time');
+  }
+  let lifecycle: Record<string, unknown> | undefined = isRecord(rest.lifecycle) ? { ...rest.lifecycle } : undefined;
+  if (facts.rollbackVersion !== null) {
+    if (typeof image.id !== 'string' || !image.id) throw new Error('publication input template image needs an id');
+    if (facts.rollbackVersion === facts.version) {
+      throw new Error(`rollback target ${facts.rollbackVersion} is the release being cut; a release cannot roll back to itself`);
+    }
+    // Every cut shares this template, so the green-shipped release published under the same image id.
+    lifecycle = { ...lifecycle, rollbackTarget: { id: image.id, version: facts.rollbackVersion } };
+  }
   return parsePublicationManifestCliInput({
     ...rest,
+    ...(lifecycle ? { lifecycle } : {}),
     image: { ...image, version: facts.version },
     source: { ...source, revision: facts.sourceSha },
     builder: { ...builder, version: facts.desktopVersion },
@@ -765,7 +788,17 @@ export interface WorkspaceHostReleaseCutDeps {
   build(plan: Omit<WorkspaceHostBuildPlan, 'releaseIdentityEnvFile' | 'signingKeyPath' | 'signingKeyPassword' | 'tauriCliVersion'>): Promise<WorkspaceHostBuildResult>;
   verifyBuild(result: WorkspaceHostBuildResult, workDir: string): Promise<void>;
   readBuildResult(workDir: string): Promise<WorkspaceHostBuildResult | null>;
-  emitManifest(input: { workDir: string; identity: WorkspaceHostReleaseIdentity; desktopVersion: string }): Promise<{ trusted: boolean }>;
+  /**
+   * The last release in this cut task's scope whose release.shipment.green committed, or null for
+   * the first shipment (D-437). Its version becomes the manifest's lifecycle.rollbackTarget.
+   */
+  resolveRollbackRelease(taskId: string): Promise<GreenShippedRelease | null>;
+  emitManifest(input: {
+    workDir: string;
+    identity: WorkspaceHostReleaseIdentity;
+    desktopVersion: string;
+    rollbackVersion: string | null;
+  }): Promise<{ trusted: boolean }>;
   publish(input: { repoRoot: string; workDir: string; taskId: string; operationId: string; args: readonly string[] }): Promise<void>;
   /** Remove the rebuildable intermediates of a published cut; returns the removed paths. */
   pruneIntermediates(input: { repoRoot: string; workDir: string }): Promise<string[]>;
@@ -960,7 +993,18 @@ export async function runWorkspaceHostReleaseCut(
 
   const manifestPath = join(workspaceHostCutPaths(options.workDir).publication, WORKSPACE_HOST_PUBLISHED_MANIFEST_NAME);
   if (!existsSync(manifestPath)) {
-    const manifest = await deps.emitManifest({ workDir: options.workDir, identity, desktopVersion });
+    const rollback = await deps.resolveRollbackRelease(state.taskId);
+    deps.log(
+      rollback
+        ? `rollback target: ${rollback.version} (last green-shipped release task ${rollback.taskId})`
+        : 'rollback target: none (no green-shipped release in scope; first shipment, D-437)',
+    );
+    const manifest = await deps.emitManifest({
+      workDir: options.workDir,
+      identity,
+      desktopVersion,
+      rollbackVersion: rollback?.version ?? null,
+    });
     if (!manifest.trusted) throw new Error(`the manifest's trust report is not trusted; see ${manifestPath}`);
     deps.log(`manifest written: ${manifestPath}`);
   } else {
@@ -1139,7 +1183,8 @@ async function main(): Promise<void> {
           const raw = await readJsonIfPresent(workspaceHostCutPaths(workDir).buildResult);
           return raw === null ? null : parseWorkspaceHostBuildResult(raw);
         },
-        emitManifest: async ({ workDir, identity, desktopVersion }) => {
+        resolveRollbackRelease: (taskId) => latestGreenShippedReleaseInScope(taskId),
+        emitManifest: async ({ workDir, identity, desktopVersion, rollbackVersion }) => {
           const cut = workspaceHostCutPaths(workDir);
           const input = buildWorkspaceHostPublicationInput(
             JSON.parse(await readFile(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8')),
@@ -1150,6 +1195,7 @@ async function main(): Promise<void> {
               desktopRevision: identity.gitlinks['papercusp-desktop'] ?? '',
               sourceRoot: cut.source,
               bundleRoot: cut.extracted,
+              rollbackVersion,
             },
           );
           await writeJsonAtomic(cut.publicationInput, input);

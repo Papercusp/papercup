@@ -638,17 +638,38 @@ describe('POST /workspace-hosts/action release-shipment', () => {
     });
   });
 
-  it('requires explicit current and rollback release task ids before invoking the writer', async () => {
+  it('requires an explicit current release task id before invoking the writer', async () => {
     const h = harness();
     const recordReleaseShipment = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordReleaseShipment']>>();
 
     const response = await post(
       { ...h.dependencies, recordReleaseShipment },
-      { ...shipmentBody, rollbackReleaseTaskId: undefined },
+      { ...shipmentBody, releaseTaskId: undefined },
     );
 
     expect(response.status).toBe(400);
     expect(recordReleaseShipment).not.toHaveBeenCalled();
+  });
+
+  it('passes an omitted rollback release task id to the writer as null (first green shipment, D-437)', async () => {
+    const h = harness();
+    const recordReleaseShipment = vi.fn<NonNullable<WorkspaceHostActionRouteDependencies['recordReleaseShipment']>>(
+      async (input) => ({
+        outcome: 'refused',
+        stage: 'release.shipment.green',
+        releaseTaskId: input.releaseTaskId,
+        rollbackReleaseTaskId: input.rollbackReleaseTaskId ?? null,
+        hostId: input.hostId,
+        bundleSha256: '',
+        sourceSha: '',
+        evidenceRefs: [],
+      }),
+    );
+
+    await post({ ...h.dependencies, recordReleaseShipment }, { ...shipmentBody, rollbackReleaseTaskId: undefined });
+
+    expect(recordReleaseShipment).toHaveBeenCalledTimes(1);
+    expect(recordReleaseShipment.mock.calls[0]![0].rollbackReleaseTaskId).toBeNull();
   });
 
   it('returns a typed conflict when the release task cannot be resolved', async () => {

@@ -287,14 +287,13 @@ export function createWorkspaceHostActionRoute(
           return requestError('rollbackReleaseTaskId has an invalid value');
         }
       }
+      // D-437: rollbackReleaseTaskId is optional here; the receipt decides whether the current
+      // manifest's declared rollback edge (or a genuine first green shipment) makes it required.
       if (
         action === RELEASE_SHIPMENT_ACTION &&
-        (typeof body.releaseTaskId !== 'string' ||
-          !TASK_ID.test(body.releaseTaskId) ||
-          typeof body.rollbackReleaseTaskId !== 'string' ||
-          !TASK_ID.test(body.rollbackReleaseTaskId))
+        (typeof body.releaseTaskId !== 'string' || !TASK_ID.test(body.releaseTaskId))
       ) {
-        return requestError('release shipment requires valid current and rollback releaseTaskId values');
+        return requestError('release shipment requires a valid releaseTaskId');
       }
       let destroyAdmission:
         | {
@@ -388,7 +387,7 @@ export function createWorkspaceHostActionRoute(
             workspaceId,
             hostId,
             releaseTaskId: body.releaseTaskId as string,
-            rollbackReleaseTaskId: body.rollbackReleaseTaskId as string,
+            rollbackReleaseTaskId: (body.rollbackReleaseTaskId as string | undefined) ?? null,
           });
           return receipt.outcome === 'committed'
             ? Response.json({ ok: true, receipt })

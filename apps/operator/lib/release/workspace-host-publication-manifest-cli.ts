@@ -243,9 +243,44 @@ export interface PublicationManifestCliInput {
   parameters: WorkspaceHostBuildManifestInput["parameters"];
   targets: WorkspaceHostBuildManifestInput["targets"];
   compatibility: WorkspaceHostImageArtifact["compatibility"];
-  lifecycle?: { publishedAt?: string };
+  lifecycle?: {
+    publishedAt?: string;
+    /**
+     * The last GREEN-SHIPPED release this one rolls back to (D-437). Omitted only for the first
+     * shipment in scope; release.shipment.green refuses a later release that omits it.
+     */
+    rollbackTarget?: { id: string; version: string };
+  };
   origin?: string;
   provenanceTool?: ArtifactTrustTool;
+}
+
+/** `input.lifecycle`: every field optional, but a present field must be well-formed. */
+function parseLifecycleInput(
+  lifecycle: unknown,
+): Pick<PublicationManifestCliInput, "lifecycle"> {
+  if (lifecycle === undefined) return {};
+  if (!isRecord(lifecycle)) throw new Error("input.lifecycle must be an object");
+  const parsed: NonNullable<PublicationManifestCliInput["lifecycle"]> = {};
+  if (lifecycle.publishedAt !== undefined) {
+    parsed.publishedAt = requiredString(
+      lifecycle.publishedAt,
+      "input.lifecycle.publishedAt",
+    );
+  }
+  const target = lifecycle.rollbackTarget;
+  if (target !== undefined) {
+    if (!isRecord(target))
+      throw new Error("input.lifecycle.rollbackTarget must be an object");
+    parsed.rollbackTarget = {
+      id: requiredString(target.id, "input.lifecycle.rollbackTarget.id"),
+      version: requiredString(
+        target.version,
+        "input.lifecycle.rollbackTarget.version",
+      ),
+    };
+  }
+  return Object.keys(parsed).length > 0 ? { lifecycle: parsed } : {};
 }
 
 /** Validate the input envelope. Field-level build rules stay in the build-manifest normalizer. */
@@ -347,16 +382,7 @@ export function parsePublicationManifestCliInput(
       value.compatibility,
       "input.compatibility",
     ) as PublicationManifestCliInput["compatibility"],
-    ...(isRecord(lifecycle) && lifecycle.publishedAt !== undefined
-      ? {
-          lifecycle: {
-            publishedAt: requiredString(
-              lifecycle.publishedAt,
-              "input.lifecycle.publishedAt",
-            ),
-          },
-        }
-      : {}),
+    ...parseLifecycleInput(lifecycle),
     ...(optionalString(value.origin, "input.origin")
       ? { origin: requiredString(value.origin, "input.origin") }
       : {}),
@@ -737,6 +763,11 @@ export async function assembleWorkspaceHostPublicationManifest(
       state: "active",
       publishedAt:
         input.lifecycle?.publishedAt ?? new Date(now).toISOString(),
+      // The rollback edge is decided at cut time (D-437), never invented here; the artifact
+      // validator refuses one that names this same image.
+      ...(input.lifecycle?.rollbackTarget
+        ? { rollbackTarget: { ...input.lifecycle.rollbackTarget } }
+        : {}),
     },
     compatibility: input.compatibility,
   };

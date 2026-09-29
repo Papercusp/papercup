@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { getOrgPg } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import {
   deriveWorkspaceHostCanonicalArtifactUrls,
   type WorkspaceHostImageArtifact,
@@ -55,7 +57,8 @@ export interface WorkspaceHostReleaseShipmentReceipt {
   outcome: 'committed' | 'refused';
   stage: typeof WORKSPACE_HOST_RELEASE_SHIPMENT_STAGE;
   releaseTaskId: string;
-  rollbackReleaseTaskId: string;
+  /** Null for a first shipment whose manifest declares no rollback edge (D-437). */
+  rollbackReleaseTaskId: string | null;
   hostId: string;
   bundleSha256: string;
   sourceSha: string;
@@ -66,8 +69,18 @@ export interface WorkspaceHostReleaseShipmentInput {
   workspaceId: string;
   hostId: string;
   releaseTaskId: string;
-  /** The release task whose published image is the current manifest's declared rollback target. */
-  rollbackReleaseTaskId: string;
+  /**
+   * The release task whose published image is the current manifest's declared rollback target.
+   * Required exactly when that manifest declares `lifecycle.rollbackTarget`; omitted for the first
+   * green shipment in a workspace, whose manifest has no earlier green-shipped release to name (D-437).
+   */
+  rollbackReleaseTaskId?: string | null;
+  /**
+   * Whether any OTHER release in this release task's workspace/harness scope has a committed
+   * `release.shipment.green` receipt. Guards the no-declared-target branch: once anything has
+   * shipped green, a manifest that omits its rollback edge is refused again.
+   */
+  hasPriorGreenShipment?: (releaseTaskId: string) => Promise<boolean>;
   ledger?: ReleaseTaskLedger;
   readHostRuntimeRelease?: (workspaceId: string, hostId: string) => Promise<unknown>;
   readPipelinePosition?: (sourceSha: string) => Promise<PipelinePosition>;
@@ -109,19 +122,114 @@ function defaultLedger(): ReleaseTaskLedger {
   return { getTask, taskReleaseJournalFromDetail, appendTaskReleaseReceipt };
 }
 
+/**
+ * Whether any OTHER deploy task in this release task's workspace + harness + launcher + artifact
+ * kind holds a committed receipt for `stage`. A pure existence census (no freshness window, no
+ * input-hash match): it tells a genuine first green shipment, which can have no rollback edge yet,
+ * from a publisher that omitted one (D-437).
+ */
+export async function hasCommittedReleaseStageInScope(
+  currentTaskId: string,
+  stage: string,
+  inject?: Sql,
+): Promise<boolean> {
+  const sql = inject ?? getOrgPg().sql;
+  const rows = await sql<Array<{ found: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1
+        FROM harness_shared.task_ledger current_task
+        JOIN harness_shared.task_ledger candidate
+          ON candidate.workspace_id = current_task.workspace_id
+         AND candidate.harness_slug IS NOT DISTINCT FROM current_task.harness_slug
+         AND candidate.task_id <> current_task.task_id
+         AND candidate.class = 'deploy'
+         AND candidate.launched_by IS NOT DISTINCT FROM current_task.launched_by
+         AND candidate.detail #>> '{release,artifactIdentity,kind}'
+               IS NOT DISTINCT FROM current_task.detail #>> '{release,artifactIdentity,kind}'
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE
+            WHEN jsonb_typeof(candidate.detail #> '{release,receipts}') = 'array'
+              THEN candidate.detail #> '{release,receipts}'
+            ELSE '[]'::jsonb
+          END
+        ) AS prior(receipt)
+       WHERE current_task.task_id = ${currentTaskId}
+         AND prior.receipt ->> 'stage' = ${stage}
+         AND prior.receipt ->> 'state' = 'committed'
+    ) AS found
+  `;
+  return rows[0]?.found === true;
+}
+
+/** The release a new cut names as its rollback edge (D-437): the last one that shipped green. */
+export interface GreenShippedRelease {
+  taskId: string;
+  version: string;
+}
+
+/**
+ * The most recent OTHER deploy task in this release task's workspace + harness + launcher +
+ * artifact kind whose `release.shipment.green` receipt committed, ordered by that receipt's
+ * `recordedAt`. Same scope as {@link hasCommittedReleaseStageInScope}, so the publisher's rollback
+ * edge and the shipment receipt's first-shipment check can never disagree about what shipped.
+ * Returns null when nothing in scope has shipped green (the first shipment has no rollback edge).
+ */
+export async function latestGreenShippedReleaseInScope(
+  currentTaskId: string,
+  inject?: Sql,
+): Promise<GreenShippedRelease | null> {
+  const sql = inject ?? getOrgPg().sql;
+  const rows = await sql<Array<{ taskId: string; version: string | null }>>`
+    SELECT candidate.task_id AS "taskId",
+           candidate.detail #>> '{release,artifactIdentity,version}' AS version
+      FROM harness_shared.task_ledger current_task
+      JOIN harness_shared.task_ledger candidate
+        ON candidate.workspace_id = current_task.workspace_id
+       AND candidate.harness_slug IS NOT DISTINCT FROM current_task.harness_slug
+       AND candidate.task_id <> current_task.task_id
+       AND candidate.class = 'deploy'
+       AND candidate.launched_by IS NOT DISTINCT FROM current_task.launched_by
+       AND candidate.detail #>> '{release,artifactIdentity,kind}'
+             IS NOT DISTINCT FROM current_task.detail #>> '{release,artifactIdentity,kind}'
+      CROSS JOIN LATERAL jsonb_array_elements(
+        CASE
+          WHEN jsonb_typeof(candidate.detail #> '{release,receipts}') = 'array'
+            THEN candidate.detail #> '{release,receipts}'
+          ELSE '[]'::jsonb
+        END
+      ) AS prior(receipt)
+     WHERE current_task.task_id = ${currentTaskId}
+       AND prior.receipt ->> 'stage' = ${WORKSPACE_HOST_RELEASE_SHIPMENT_STAGE}
+       AND prior.receipt ->> 'state' = 'committed'
+     ORDER BY prior.receipt ->> 'recordedAt' DESC NULLS LAST, candidate.task_id DESC
+     LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  if (typeof row.version !== 'string' || row.version.length === 0) {
+    // A green shipment whose task names no version cannot be pinned; publishing without an edge
+    // here would make the next shipment refuse with rollback-target-undeclared, so fail loudly now.
+    throw new Error(`green-shipped release task ${row.taskId} records no artifactIdentity.version`);
+  }
+  return { taskId: row.taskId, version: row.version };
+}
+
 export function workspaceHostReleaseShipmentStage(
   sourceSha: string,
-  rollbackReleaseTaskId: string,
+  rollbackReleaseTaskId: string | null,
 ): WorkspaceHostReleaseStage {
   return {
     stage: WORKSPACE_HOST_RELEASE_SHIPMENT_STAGE,
     identity: {
       shipmentContract: WORKSPACE_HOST_RELEASE_SHIPMENT_CONTRACT,
       sourceSha,
-      rollbackReleaseTaskId,
+      rollbackReleaseTaskId: rollbackReleaseTaskId ?? NO_ROLLBACK_RELEASE,
     },
   };
 }
+
+/** Identity/run-ref token for a shipment with no rollback release (first green shipment, D-437). */
+const NO_ROLLBACK_RELEASE = 'none';
 
 function exactBundleDigests(journal: TaskReleaseJournal): string[] {
   return releaseJournalBundleDigests(journal).filter((digest) => DIGEST.test(digest));
@@ -378,16 +486,17 @@ function releaseTaskScopeMismatch(currentTask: unknown, rollbackTask: unknown): 
 export async function recordWorkspaceHostReleaseShipment(
   input: WorkspaceHostReleaseShipmentInput,
 ): Promise<WorkspaceHostReleaseShipmentReceipt> {
-  const { workspaceId, hostId, releaseTaskId, rollbackReleaseTaskId } = input;
+  const { workspaceId, hostId, releaseTaskId } = input;
+  const rollbackReleaseTaskId = input.rollbackReleaseTaskId ?? null;
   if (
     !workspaceId.trim() ||
     !hostId.trim() ||
     !TASK_ID.test(releaseTaskId) ||
-    !TASK_ID.test(rollbackReleaseTaskId)
+    (rollbackReleaseTaskId !== null && !TASK_ID.test(rollbackReleaseTaskId))
   ) {
     throw new WorkspaceHostReleaseShipmentError(
       'invalid-input',
-      'release shipment requires workspaceId, hostId, and valid current and rollback release task ids',
+      'release shipment requires workspaceId, hostId, a valid release task id, and a valid rollback release task id when one is given',
     );
   }
   const ledger = input.ledger ?? defaultLedger();
@@ -401,7 +510,8 @@ export async function recordWorkspaceHostReleaseShipment(
   }
 
   const runRef =
-    'release-shipment-verification:' + hostId + ':' + releaseTaskId + ':' + rollbackReleaseTaskId;
+    'release-shipment-verification:' + hostId + ':' + releaseTaskId + ':' +
+    (rollbackReleaseTaskId ?? NO_ROLLBACK_RELEASE);
   const priorCommitted = currentJournal.receipts.find(
     (receipt) =>
       receipt.stage === WORKSPACE_HOST_RELEASE_SHIPMENT_STAGE &&
@@ -466,38 +576,45 @@ export async function recordWorkspaceHostReleaseShipment(
     return finish('refused', ['shipment-failed:release-source-sha-invalid']);
   }
 
-  const rollbackTask = await ledger.getTask(rollbackReleaseTaskId);
-  if (!rollbackTask) {
-    return finish('refused', ['shipment-failed:rollback-release-task-not-found']);
-  }
-  if (releaseTaskScopeMismatch(currentTask, rollbackTask)) {
-    return finish('refused', ['shipment-failed:rollback-release-task-scope-mismatch']);
-  }
-  const rollbackJournal = ledger.taskReleaseJournalFromDetail(rollbackTask.detail);
-  if (!rollbackJournal) {
-    return finish('refused', ['shipment-failed:rollback-release-journal-missing']);
-  }
-  const rollbackArtifactIdentity = asRecord(rollbackJournal.artifactIdentity);
-  if (
-    rollbackArtifactIdentity?.bundleSha256 !== undefined &&
-    (typeof rollbackArtifactIdentity.bundleSha256 !== 'string' ||
-      !DIGEST.test(rollbackArtifactIdentity.bundleSha256))
-  ) {
-    return finish('refused', ['shipment-failed:rollback-bundle-unrecorded']);
-  }
-  if (!rollbackJournal.receipts.some((receipt) => receipt.stage.startsWith('publish.') && receipt.state === 'committed')) {
-    return finish('refused', ['shipment-failed:rollback-release-not-published']);
-  }
-  if (rollbackReleaseTaskId === releaseTaskId) {
-    return finish('refused', ['shipment-failed:rollback-release-task-is-current-task']);
-  }
-  const rollbackDigests = exactBundleDigests(rollbackJournal);
-  if (rollbackDigests.length !== 1) {
-    return finish('refused', [
-      rollbackDigests.length === 0
-        ? 'shipment-failed:rollback-bundle-unrecorded'
-        : 'shipment-failed:rollback-bundle-ambiguous',
-    ]);
+  // D-437: with no rollback release named, there is no rollback task to validate here; whether that
+  // is allowed is decided below, once the current manifest shows whether it declares a rollback edge.
+  let rollbackJournal: TaskReleaseJournal | null = null;
+  let rollbackDigest: string | null = null;
+  if (rollbackReleaseTaskId !== null) {
+    const rollbackTask = await ledger.getTask(rollbackReleaseTaskId);
+    if (!rollbackTask) {
+      return finish('refused', ['shipment-failed:rollback-release-task-not-found']);
+    }
+    if (releaseTaskScopeMismatch(currentTask, rollbackTask)) {
+      return finish('refused', ['shipment-failed:rollback-release-task-scope-mismatch']);
+    }
+    rollbackJournal = ledger.taskReleaseJournalFromDetail(rollbackTask.detail);
+    if (!rollbackJournal) {
+      return finish('refused', ['shipment-failed:rollback-release-journal-missing']);
+    }
+    const rollbackArtifactIdentity = asRecord(rollbackJournal.artifactIdentity);
+    if (
+      rollbackArtifactIdentity?.bundleSha256 !== undefined &&
+      (typeof rollbackArtifactIdentity.bundleSha256 !== 'string' ||
+        !DIGEST.test(rollbackArtifactIdentity.bundleSha256))
+    ) {
+      return finish('refused', ['shipment-failed:rollback-bundle-unrecorded']);
+    }
+    if (!rollbackJournal.receipts.some((receipt) => receipt.stage.startsWith('publish.') && receipt.state === 'committed')) {
+      return finish('refused', ['shipment-failed:rollback-release-not-published']);
+    }
+    if (rollbackReleaseTaskId === releaseTaskId) {
+      return finish('refused', ['shipment-failed:rollback-release-task-is-current-task']);
+    }
+    const rollbackDigests = exactBundleDigests(rollbackJournal);
+    if (rollbackDigests.length !== 1) {
+      return finish('refused', [
+        rollbackDigests.length === 0
+          ? 'shipment-failed:rollback-bundle-unrecorded'
+          : 'shipment-failed:rollback-bundle-ambiguous',
+      ]);
+    }
+    rollbackDigest = rollbackDigests[0]!;
   }
 
   // A concrete release-owned path makes gitPipelinePosition read :3070's process start/deploy
@@ -510,7 +627,7 @@ export async function recordWorkspaceHostReleaseShipment(
   const [pipelineResult, currentBundleResult, rollbackBundleResult] = await Promise.allSettled([
     readPipeline(recorder.binding.sourceSha),
     measurePublishedBundle(fetchArtifact, recorder.binding.bundleSha256),
-    measurePublishedBundle(fetchArtifact, rollbackDigests[0]!),
+    rollbackDigest === null ? Promise.resolve(null) : measurePublishedBundle(fetchArtifact, rollbackDigest),
   ]);
 
   const evidenceRefs: string[] = [];
@@ -546,9 +663,32 @@ export async function recordWorkspaceHostReleaseShipment(
   } else {
     failures.push('shipment-failed:current-artifact-read:' + errorName(currentBundleResult.reason));
   }
-  if (rollbackBundleResult.status === 'fulfilled') {
+  if (rollbackReleaseTaskId === null || rollbackJournal === null) {
+    // D-437 first-shipment branch: no rollback release was named. That is allowed only when the
+    // current manifest declares no rollback edge AND nothing in this scope has ever shipped green.
+    if (currentMeasurement) {
+      if (currentMeasurement.manifest.artifact.lifecycle.rollbackTarget) {
+        failures.push('shipment-failed:rollback-release-task-required');
+      } else {
+        const hasPriorGreenShipment =
+          input.hasPriorGreenShipment ??
+          ((taskId: string) => hasCommittedReleaseStageInScope(taskId, WORKSPACE_HOST_RELEASE_SHIPMENT_STAGE));
+        try {
+          if (await hasPriorGreenShipment(releaseTaskId)) {
+            failures.push('shipment-failed:rollback-target-undeclared');
+          } else {
+            evidenceRefs.push('shipment-rollback-target:none-first-shipment');
+          }
+        } catch (error) {
+          failures.push('shipment-failed:prior-green-shipment-read:' + errorName(error));
+        }
+      }
+    }
+  } else if (rollbackBundleResult.status === 'fulfilled') {
     const result = rollbackBundleResult.value;
-    if (result.ok) {
+    if (result === null) {
+      failures.push('shipment-failed:rollback-artifact-unmeasured');
+    } else if (result.ok) {
       rollbackMeasurement = result.measurement;
       evidenceRefs.push(
         'shipment-rollback-manifest:' + rollbackMeasurement.manifestUrl,

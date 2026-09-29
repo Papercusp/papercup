@@ -2036,6 +2036,13 @@ pub struct App {
     /// reconciliation, pot/role and raw errors; the default chat shows only
     /// model · directory · context · cost and plain one-sentence failures.
     pub chat_details: Option<bool>,
+    /// Ctrl+R / `/expand` (pui-chat-first-ux P-004): tool calls show their
+    /// full output and complete diffs instead of a short preview. One toggle
+    /// for the whole transcript, like Claude Code's Ctrl+R.
+    pub chat_tools_expanded: bool,
+    /// Highlighted row of the composer's `/` command menu. Reset whenever the
+    /// typed text changes, clamped against the current matches when used.
+    pub chat_slash_selected: usize,
     pub plans: Vec<PlanSummary>,
     pub plan_sel: usize,
     /// Goals for the Plans-tab spine (P-032) + the goals-column cursor.
@@ -2746,6 +2753,8 @@ impl App {
             pinned: None,
             chat_first: false,
             chat_details: None,
+            chat_tools_expanded: false,
+            chat_slash_selected: 0,
             plans: Vec::new(),
             plan_sel: 0,
             goals: Vec::new(),
@@ -4291,6 +4300,92 @@ impl App {
         self.chat_history_idx = None;
         self.chat_draft.clear();
         self.chat_vertical_column = None;
+        self.chat_slash_selected = 0;
+    }
+
+    /// Stop the running turn (Esc in the composer, or Ctrl+X). Queued lines are
+    /// dropped: a queue that survived the interrupt would immediately restart
+    /// the work the owner just halted.
+    fn interrupt_chat_turn(&mut self) -> Action {
+        self.chat_queued.clear();
+        if self.su_session.is_some() {
+            return self.su_session_control(crate::su_session::SuSessionControl::Interrupt {
+                reason: Some("owner interrupt".into()),
+            });
+        }
+        Action::CancelChat
+    }
+
+    fn chat_clear_input(&mut self) {
+        self.chat_input.clear();
+        self.chat_cursor = 0;
+        self.chat_cursor_input_len = 0;
+        self.chat_leave_history_for_edit();
+    }
+
+    fn chat_toast(&mut self, level: &str, message: String) {
+        self.toast = Some(Notif {
+            level: level.to_string(),
+            message,
+            harness: None,
+            ts: None,
+        });
+    }
+
+    /// Run the composer's `/` command (pui-chat-first-ux P-004). Every command
+    /// reuses an existing action; an unknown one sends nothing and says so.
+    fn run_slash_command(&mut self, prefix: &str) -> Action {
+        use crate::chat_commands::{resolve, unknown_message, SlashKind};
+        let Some(cmd) = resolve(prefix, self.chat_slash_selected) else {
+            let message = unknown_message(prefix);
+            self.chat_toast("warn", message);
+            return Action::Render;
+        };
+        self.chat_clear_input();
+        match cmd.kind {
+            SlashKind::Help => {
+                self.show_help = true;
+                Action::Render
+            }
+            SlashKind::Details => {
+                self.chat_details = Some(!self.chat_details_visible());
+                Action::Render
+            }
+            SlashKind::Expand => {
+                self.chat_tools_expanded = !self.chat_tools_expanded;
+                Action::Render
+            }
+            SlashKind::Copy => {
+                let last = self
+                    .chat_messages
+                    .iter()
+                    .rposition(|m| m.role == "assistant" && !m.content.trim().is_empty());
+                if last.is_none() {
+                    self.chat_toast("info", "There is no reply to copy yet.".into());
+                    return Action::Render;
+                }
+                let outcome = crate::chat_copy::copy(
+                    &self.chat_messages,
+                    last,
+                    crate::chat_copy::CopyForm::Rendered,
+                    crate::chat_copy::passthrough_from_env(),
+                );
+                self.apply_copy_outcome(outcome)
+            }
+            SlashKind::Resume => {
+                self.session_switcher = Some(SessionSwitcher {
+                    loading: true,
+                    ..SessionSwitcher::default()
+                });
+                Action::FetchSessionSwitcher {
+                    query: String::new(),
+                }
+            }
+            SlashKind::Exit => {
+                self.should_quit = true;
+                Action::Quit
+            }
+        }
     }
 
     fn chat_insert_text(&mut self, text: &str) -> Action {
@@ -11786,6 +11881,12 @@ impl App {
             self.chat_details = Some(!self.chat_details_visible());
             return Action::Render;
         }
+        // Ctrl+R: expand/collapse every tool call's output and diff
+        // (pui-chat-first-ux P-004; Claude Code's Ctrl+R transcript toggle).
+        if code == KeyCode::Char('r') && mods.contains(KeyModifiers::CONTROL) {
+            self.chat_tools_expanded = !self.chat_tools_expanded;
+            return Action::Render;
+        }
         // PUBLIC_RELEASE_UX.md § Compact terminal: Ctrl-T opens the selected
         // conversation's Context full-screen from every ordinary surface — the
         // same projection the wide rail shows beside Agent Chat, now focused so
@@ -12503,13 +12604,7 @@ impl App {
             // into the session the owner just halted would restart exactly the
             // work they interrupted — and the drain fires within one tick, so
             // there is no window in which to reconsider.
-            self.chat_queued.clear();
-            if self.su_session.is_some() {
-                return self.su_session_control(crate::su_session::SuSessionControl::Interrupt {
-                    reason: Some("owner interrupt".into()),
-                });
-            }
-            return Action::CancelChat;
+            return self.interrupt_chat_turn();
         }
         // Operator chat composer captures all input while focused (like the
         // palette) so digits/letters type into the message instead of switching
@@ -12521,6 +12616,35 @@ impl App {
                 self.should_quit = true;
                 return Action::Quit;
             }
+            // pui-chat-first-ux P-004: the permission prompt is answered the way
+            // Claude Code's is — y/1/Enter allow, n/2/Esc deny — whenever the
+            // message box is empty. The prompt occupies the composer's slot, so
+            // there is no visible draft for these keys to collide with; a
+            // non-empty draft keeps typing and leaves Ctrl+Y / Ctrl+N as the
+            // answer.
+            if self.chat_first
+                && !self.pending_approvals.is_empty()
+                && self.chat_input.is_empty()
+                && !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            {
+                let verdict = match code {
+                    KeyCode::Char('y' | 'Y' | '1') | KeyCode::Enter => Some(true),
+                    KeyCode::Char('n' | 'N' | '2') | KeyCode::Esc => Some(false),
+                    _ => None,
+                };
+                if let (Some(approved), Some(p)) = (verdict, self.pending_approvals.first()) {
+                    return Action::ResolveAgentChatApproval {
+                        call_id: p.call_id.clone(),
+                        approved,
+                    };
+                }
+            }
+            // `/help` opens the help overlay while the composer keeps focus, so
+            // Esc must close it here rather than leave the message box.
+            if self.show_help && code == KeyCode::Esc {
+                self.show_help = false;
+                return Action::Render;
+            }
             // Ctrl-Z — the "undo" half of PUBLIC_RELEASE_UX.md's "undo/history"
             // composer contract. It MUST be intercepted here, ahead of the
             // `match code` below: that match ignores modifiers, so a bare
@@ -12529,20 +12653,66 @@ impl App {
             if code == KeyCode::Char('z') && mods.contains(KeyModifiers::CONTROL) {
                 return self.chat_undo();
             }
-            // Alt-Enter and Ctrl-J are the explicit multiline affordances;
-            // plain Enter remains send, even when the cursor sits in a middle
-            // logical line.
-            if (code == KeyCode::Enter && mods.contains(KeyModifiers::ALT))
+            // Alt-Enter, Ctrl-J and Shift-Enter (where the terminal reports it —
+            // kitty keyboard protocol, main.rs) are the explicit multiline
+            // affordances; plain Enter remains send, even when the cursor sits
+            // in a middle logical line.
+            if (code == KeyCode::Enter
+                && mods.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT))
                 || (code == KeyCode::Char('j') && mods.contains(KeyModifiers::CONTROL))
             {
                 return self.chat_insert_text("\n");
             }
+            // The `/` command menu (pui-chat-first-ux P-004): Up/Down pick,
+            // Tab completes, Enter runs, Esc dismisses. Typing falls through.
+            if let Some(prefix) =
+                crate::chat_commands::query(&self.chat_input).map(str::to_owned)
+            {
+                let hits = crate::chat_commands::matching(&prefix).len();
+                match code {
+                    KeyCode::Up if hits > 0 => {
+                        self.chat_slash_selected =
+                            self.chat_slash_selected.min(hits - 1).saturating_sub(1);
+                        return Action::Render;
+                    }
+                    KeyCode::Down if hits > 0 => {
+                        self.chat_slash_selected = (self.chat_slash_selected + 1).min(hits - 1);
+                        return Action::Render;
+                    }
+                    KeyCode::Tab => {
+                        let Some(cmd) =
+                            crate::chat_commands::resolve(&prefix, self.chat_slash_selected)
+                        else {
+                            return Action::Render;
+                        };
+                        self.chat_clear_input();
+                        return self.chat_insert_text(&format!("/{}", cmd.name));
+                    }
+                    KeyCode::Enter => return self.run_slash_command(&prefix),
+                    KeyCode::Esc => {
+                        self.chat_clear_input();
+                        return Action::Render;
+                    }
+                    _ => {}
+                }
+            }
             return match code {
+                // Esc stops a running turn (Claude Code / Codex parity); with
+                // nothing running it leaves the message box as before.
+                KeyCode::Esc if self.chat_streaming => self.interrupt_chat_turn(),
                 KeyCode::Esc => {
                     self.chat_composing = false;
                     Action::Render
                 }
                 KeyCode::Enter => {
+                    // A trailing backslash continues the message on a new line
+                    // (Claude Code's convention for terminals that cannot
+                    // report Shift+Enter).
+                    self.sync_chat_cursor();
+                    if self.chat_input[..self.chat_cursor].ends_with('\\') {
+                        self.chat_delete_backward();
+                        return self.chat_insert_text("\n");
+                    }
                     // A turn is in flight: QUEUE the line rather than swallowing
                     // the keypress (P-007 draft queuing). It sends itself when
                     // the turn settles.
@@ -16110,6 +16280,106 @@ mod tests {
         assert!(!a.chat_first_autostart);
         assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "  first λ 雪  ");
         assert_eq!(a.chat_account.as_deref(), Some("default"));
+    }
+
+    /// pui-chat-first-ux P-004: `/` opens a command menu; Down moves the
+    /// highlight, Enter runs the command instead of sending the text.
+    #[test]
+    fn chat_first_slash_menu_runs_a_command_instead_of_sending() {
+        let mut a = chat_first_app();
+        a.chat_input = "/e".into();
+        a.chat_cursor = 2;
+        assert!(matches!(a.on_key(KeyCode::Down, KeyModifiers::NONE), Action::Render));
+        assert_eq!(a.chat_slash_selected, 1, "Down highlights the second match (/exit)");
+        assert!(matches!(a.on_key(KeyCode::Up, KeyModifiers::NONE), Action::Render));
+        assert_eq!(a.chat_slash_selected, 0, "Up moves back to /expand");
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(action, Action::Render), "got {action:?}");
+        assert!(a.chat_tools_expanded, "/expand toggled tool output");
+        assert!(a.chat_input.is_empty(), "the command text is consumed");
+        assert!(a.su_pending_turn.is_none(), "nothing was sent");
+
+        a.chat_input = "/exit".into();
+        a.chat_cursor = 5;
+        assert!(matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Quit));
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn chat_first_unknown_slash_command_is_named_and_never_sent() {
+        let mut a = chat_first_app();
+        a.chat_input = "/nope".into();
+        a.chat_cursor = 5;
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(action, Action::Render), "got {action:?}");
+        assert!(a.su_pending_turn.is_none(), "an unknown command is not sent");
+        assert_eq!(a.chat_input, "/nope", "the text stays for editing");
+        assert!(a.toast.as_ref().is_some_and(|t| t.message.contains("/nope")));
+        assert!(matches!(a.on_key(KeyCode::Esc, KeyModifiers::NONE), Action::Render));
+        assert!(a.chat_input.is_empty(), "Esc dismisses the command");
+        // Text with a space is a message, not a command.
+        a.chat_input = "/tmp is full".into();
+        a.chat_cursor = a.chat_input.len();
+        assert!(!matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render));
+        assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "/tmp is full");
+    }
+
+    #[test]
+    fn chat_first_backslash_enter_and_shift_enter_insert_a_newline() {
+        let mut a = chat_first_app();
+        a.chat_input = "line one\\".into();
+        a.chat_cursor = a.chat_input.len();
+        assert!(matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render));
+        assert_eq!(a.chat_input, "line one\n");
+        a.on_key(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert!(matches!(a.on_key(KeyCode::Enter, KeyModifiers::SHIFT), Action::Render));
+        assert_eq!(a.chat_input, "line one\nx\n");
+        assert!(a.su_pending_turn.is_none(), "neither key sends");
+    }
+
+    #[test]
+    fn chat_first_esc_stops_a_running_reply_and_drops_the_queue() {
+        let mut a = chat_first_app();
+        a.chat_streaming = true;
+        a.chat_queued.push("queued follow-up".into());
+        let action = a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(action, Action::CancelChat), "got {action:?}");
+        assert!(a.chat_queued.is_empty());
+        assert!(a.chat_composing, "the composer keeps focus");
+    }
+
+    #[test]
+    fn chat_first_ctrl_r_toggles_full_tool_output() {
+        let mut a = chat_first_app();
+        a.chat_input = "draft".into();
+        a.on_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(a.chat_tools_expanded);
+        a.on_key(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(!a.chat_tools_expanded);
+        assert_eq!(a.chat_input, "draft", "Ctrl+R never types");
+    }
+
+    #[test]
+    fn chat_first_permission_prompt_answers_with_bare_keys_only_when_the_draft_is_empty() {
+        let mut a = chat_first_app();
+        a.pending_approvals.push(crate::models::PendingApproval {
+            call_id: "call-1".into(),
+            tool_name: "Bash".into(),
+        });
+        let action = a.on_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(
+            matches!(action, Action::ResolveAgentChatApproval { ref call_id, approved: true } if call_id == "call-1"),
+            "got {action:?}"
+        );
+        let action = a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(
+            matches!(action, Action::ResolveAgentChatApproval { approved: false, .. }),
+            "Esc denies, got {action:?}"
+        );
+        a.chat_input = "typing".into();
+        a.chat_cursor = 6;
+        a.on_key(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert_eq!(a.chat_input, "typingy", "a non-empty draft keeps typing");
     }
 
     /// pui-chat-first-ux P-003: Ctrl-O shows and hides the chat's details from

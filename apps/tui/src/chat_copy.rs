@@ -562,6 +562,46 @@ fn prev_run_is_auth_keyword(prev: Option<&str>) -> bool {
 /// quoting and prose are preserved; a run is dropped when it is
 /// credential-shaped, or when the PREVIOUS run was an authorization keyword
 /// (`Bearer <token>`, `Authorization: <token>`).
+/// The conversation as plain text for the terminal's own scrollback
+/// (pui-chat-first-ux-2026-09-28 P-004, "clean scrollback"). The chat-first PUI
+/// draws on the alternate screen, which takes the conversation with it on
+/// exit; `main` prints this to the normal screen afterwards so the transcript
+/// stays scrollable and selectable in the terminal, as a Claude Code or Codex
+/// session does. Only what the chat showed — the owner's lines, the replies,
+/// and the tools that ran — through the same [`redact_text`] as copy. A reply
+/// still streaming at exit holds raw delta text, so it is marked, not dumped.
+pub fn plain_transcript(messages: &[ChatMessage]) -> Option<String> {
+    let mut out = String::new();
+    for m in messages {
+        let body = if m.streaming { "" } else { m.content.trim_end() };
+        if body.trim().is_empty() && m.tools.is_empty() && !m.streaming {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        if m.role == "user" {
+            for (i, line) in body.lines().enumerate() {
+                out.push_str(if i == 0 { "> " } else { "  " });
+                out.push_str(line);
+                out.push('\n');
+            }
+            continue;
+        }
+        if !body.trim().is_empty() {
+            out.push_str(body);
+            out.push('\n');
+        }
+        for t in &m.tools {
+            out.push_str(&format!("  ⚙ {}\n", t.name));
+        }
+        if m.streaming {
+            out.push_str("  (reply interrupted when pui exited)\n");
+        }
+    }
+    (!out.is_empty()).then(|| redact_text(&out))
+}
+
 pub fn redact_text(s: &str) -> String {
     let s = redact_pem(s);
     let mut out = String::with_capacity(s.len());
@@ -623,6 +663,41 @@ fn redact_pem(s: &str) -> String {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod plain_transcript_tests {
+    use super::*;
+    use crate::models::{ChatMessage, ChatToolCall};
+
+    #[test]
+    fn the_scrollback_transcript_shows_what_the_chat_showed() {
+        let mut reply = ChatMessage::assistant("Here is the **plan**.\n");
+        reply.reasoning = "internal chain of thought".into();
+        reply.tools.push(ChatToolCall::plain("Read".into()));
+        let msgs = vec![ChatMessage::user("first line\nsecond line"), reply];
+        let text = plain_transcript(&msgs).expect("non-empty transcript");
+        assert_eq!(
+            text,
+            "> first line\n  second line\n\nHere is the **plan**.\n  ⚙ Read\n"
+        );
+        assert!(!text.contains("chain of thought"), "reasoning stays out");
+    }
+
+    #[test]
+    fn a_streaming_reply_is_marked_and_secrets_are_redacted() {
+        // Assembled at runtime, like the copy tests' fixture, so the tree never
+        // holds a key-shaped literal.
+        let key = format!("{}{}", "sk-", "ant-abcdefghijklmnopqrstuvwxyz0123");
+        let mut live = ChatMessage::assistant("<say>partial");
+        live.streaming = true;
+        let msgs = vec![ChatMessage::user(&format!("my key is {key}")), live];
+        let text = plain_transcript(&msgs).unwrap();
+        assert!(text.contains("(reply interrupted when pui exited)"));
+        assert!(!text.contains("<say>"));
+        assert!(!text.contains(&key), "{text}");
+        assert_eq!(plain_transcript(&[]), None);
+    }
+}
 
 #[cfg(test)]
 mod tests {
