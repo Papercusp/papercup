@@ -3359,6 +3359,51 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     }
   }, 120_000);
 
+  // pui-chat-first-ux-2026-09-28 P-003 / R-03, failed-start frame: when the
+  // engine dies while starting, the default chat explains it in ONE plain
+  // sentence with one next step, keeps the draft, and shows none of the
+  // internal state (the plan's evidence frame showed "reconciliation:
+  // failed-orphaned" and "Draft retained; reconnect to retry"). The raw error
+  // stays reachable behind Ctrl+O.
+  test('P-003: a failed start in the default chat is one plain sentence with no internal jargon', async ({ onTestFailed }) => {
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p003-launch-')));
+    const prompt = `P3 failed start ${randomUUID().slice(0, 8)}`;
+    scriptedEngine.mode = 'startup-exit';
+    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    onTestFailed(() => console.info('PUI_P003_FAILURE', JSON.stringify({
+      launchDir, requests: scriptedEngine.requests, ...pane.failureEvidence(),
+    })));
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+      expect(chatJargonIn(pane.screen()), pane.screen()).toEqual([]);
+      pane.write(prompt);
+      await pane.waitFor(prompt);
+      pane.enter();
+      await vi.waitFor(
+        () => expect(pane.screen()).toMatch(/Claude stopped( before it was ready)?; press Enter to send your message again\./),
+        { timeout: 60_000, interval: 100 },
+      );
+      const failed = pane.screen();
+      expect(chatJargonIn(failed), failed).toEqual([]);
+      expect(failed).not.toMatch(/draft retained|Message not accepted/i);
+      expect(failed).not.toContain('Type a message below');
+      expect(failed).toContain(`> ${prompt}`);
+      expect(failed.match(/Claude stopped/g)).toHaveLength(1);
+      expect(scriptedEngine.requests).toEqual([]);
+      // The raw cause is one key away, not gone.
+      pane.write('\u000f');
+      await vi.waitFor(
+        () => expect(pane.screen()).toMatch(/PUI-E2E engine exited during initialization|event stream closed unexpectedly/),
+        { timeout: 10_000, interval: 100 },
+      );
+      console.info('PUI_P003_FAILED_START_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, launchDir, frame: failed }));
+    } finally {
+      scriptedEngine.mode = 'success';
+      await pane.stop();
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   // pui-chat-first-ux-2026-09-28 P-002 / D-001 recurrence guard. Session 31362:
   // the operator process that launched the chat died while its engine was still
   // starting. Every later request met a REHYDRATED descriptor-only host
@@ -3389,10 +3434,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     try {
       // Chat-first opens with the composer focused: no `o`, no `i`. Its
       // status line names the engine and the launch directory (P-003).
-      await pane.waitFor(`Claude · ${REPO_ROOT}`, { timeoutMs: 40_000 });
+      await pane.waitFor(`Claude · ${realpathSync(REPO_ROOT)}`, { timeoutMs: 40_000 });
       pane.write(prompt);
       pane.enter();
-      await pane.waitFor('· starting ·', { timeoutMs: 60_000 });
+      // Plain startup progress (P-003), not the internal lifecycle row.
+      await pane.waitFor('Starting Claude…', { timeoutMs: 60_000 });
       await vi.waitFor(() => expect(scriptedEngine.engines.length).toBeGreaterThan(enginesBefore), { timeout: 30_000 });
       const launching = scriptedEngine.engines.at(-1)!;
       await vi.waitFor(() => expect(launching.pid()).toBeGreaterThan(0), { timeout: 30_000 });

@@ -2936,8 +2936,13 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             if app.backend_identity_error.is_some() {
                 crate::app::CHAT_DISCONNECTED_HINT
             } else if app.chat_first && app.chat_composing {
-                // Chat-first already focused the composer (P-001).
-                "Type a message below and press Enter."
+                // Chat-first already focused the composer (P-001). Once a
+                // message is typed or waiting to be resent the hint is noise.
+                if app.su_pending_turn.is_some() || !app.chat_input.is_empty() {
+                    ""
+                } else {
+                    "Type a message below and press Enter."
+                }
             } else {
                 "No messages yet — press i to talk to this agent, or s to choose a role/session."
             },
@@ -3229,7 +3234,13 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.su_pending_turn.is_some() {
         (
-            " Message not accepted — draft retained · Enter retries ",
+            // Chat-first states the failure once, in plain words, below the
+            // draft (P-003); the title only names the keys.
+            if app.chat_first && !app.chat_details_visible() {
+                " Message — Enter retries · Ctrl+O details "
+            } else {
+                " Message not accepted — draft retained · Enter retries "
+            },
             format!("> {}", app.chat_input),
             Theme::notify(),
         )
