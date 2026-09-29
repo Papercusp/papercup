@@ -36,6 +36,8 @@ const {
   getMemoryBlockBoundedResultMock,
   buildTurnStartOrientationBlockMock,
   readSuLaunchSpecByOwnerMock,
+  evaluateTurnStartPackageSinkMock,
+  packageSinkReceiptMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   preparePendingControlTransitionMock: vi.fn(),
@@ -52,6 +54,8 @@ const {
   getMemoryBlockBoundedResultMock: vi.fn(),
   buildTurnStartOrientationBlockMock: vi.fn(),
   readSuLaunchSpecByOwnerMock: vi.fn(),
+  evaluateTurnStartPackageSinkMock: vi.fn(),
+  packageSinkReceiptMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (this test is
@@ -98,6 +102,12 @@ vi.mock('../../../memory/injection-block-cache', () => ({
 vi.mock('../../../turn-start-orientation', () => ({
   buildTurnStartOrientationBlock: buildTurnStartOrientationBlockMock,
 }));
+// The real sink reads the control anchor and the class registry; its own
+// integration test owns that. Here only the endpoint's composition is measured.
+vi.mock('../../../agent-identities/turn-start-package-sink', () => ({
+  evaluateTurnStartPackageSink: evaluateTurnStartPackageSinkMock,
+  packageSinkReceipt: packageSinkReceiptMock,
+}));
 
 import routes from './turn-start-memory';
 
@@ -137,6 +147,8 @@ beforeEach(() => {
   );
   buildTurnStartOrientationBlockMock.mockReset().mockResolvedValue({ block: '', deliveryToken: null });
   readSuLaunchSpecByOwnerMock.mockReset().mockResolvedValue(null);
+  evaluateTurnStartPackageSinkMock.mockReset().mockResolvedValue({ result: null, classes: [] });
+  packageSinkReceiptMock.mockReset().mockReturnValue(null);
 });
 afterEach(() => resetReadCursorStore());
 
