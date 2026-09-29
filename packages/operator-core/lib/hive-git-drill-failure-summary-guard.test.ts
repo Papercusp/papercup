@@ -111,14 +111,14 @@ describe('physical-failure-summary.sh', () => {
 describe('the real scenario feeds the summary', () => {
   it('announces every phase before running it, in order, on stderr', () => {
     const body = extractFunction(scenario, 'run_all_phases');
-    const calls = [...body.matchAll(/phase_start ([A-G]) (phase_[a-g]_[a-z_]+);\s+(phase_[a-g]_[a-z_]+)/g)];
-    expect(calls.map(([, letter]) => letter)).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G']);
+    const calls = [...body.matchAll(/phase_start ([A-H]) (phase_[a-h]_[a-z_]+);\s+(phase_[a-h]_[a-z_]+)/g)];
+    expect(calls.map(([, letter]) => letter)).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
     for (const [, letter, announced, invoked] of calls) {
       expect(announced).toBe(invoked);
       expect(invoked.startsWith(`phase_${letter.toLowerCase()}_`)).toBe(true);
     }
     // No phase function is called from run_all_phases without its announcement.
-    const bareCalls = body.split('\n').filter((line) => /^\s*phase_[a-g]_/.test(line));
+    const bareCalls = body.split('\n').filter((line) => /^\s*phase_[a-h]_/.test(line));
     expect(bareCalls).toEqual([]);
   });
 
