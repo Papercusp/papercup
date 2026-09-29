@@ -364,6 +364,57 @@ describe('operational realization from the canonical BAR snapshot', () => {
     expect(deriveNonCodeItemProofs(s)).toEqual([]);
   });
 
+  // WI-10003864: `bar.mappings` lists every clause row keyed to a BAR, draft and retired ones
+  // included, but the snapshot proves ENFORCEABLE clauses only. Demanding proof of a mapping
+  // no evidence can ever satisfy made any plan that atomized or retired a clause unshippable.
+  describe('non-enforceable clause projections', () => {
+    /** A second BAR owned by P-001 whose only projection has NO proof at all. */
+    function withUnprovenSibling(lifecycleStatus?: AcceptanceBarContractSnapshot['bars'][number]['mappings'][number]['lifecycleStatus']) {
+      const s = proven();
+      const base = s.bars[0]!;
+      s.bars.push({
+        ...base,
+        barKey: 'R-2',
+        // A fresh array: the spread above would otherwise SHARE R-1's mapping objects.
+        mappings: [{ ...base.mappings[0]!, specId: 'spec-2', lifecycleStatus }],
+        proof: { ...base.proof, history: [], adequacy: { state: 'pass', checks: [] } },
+      });
+      return s;
+    }
+
+    it.each(['draft', 'retired', 'superseded', 'exempt'] as const)(
+      'does not demand proof of a %s projection on another BAR', (status) => {
+        expect(deriveNonCodeItemProofs(withUnprovenSibling(status))).toEqual([
+          { planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] },
+        ]);
+      });
+
+    // The measured case: an atomized parent clause stays `draft` on the SAME BAR as its
+    // enforceable children, and has no adequacy check of its own.
+    it('does not demand proof of a draft parent clause on the same BAR', () => {
+      const s = proven();
+      s.bars[0]!.mappings.push({ ...s.bars[0]!.mappings[0]!, specId: 'spec-parent', lifecycleStatus: 'draft' });
+      expect(deriveNonCodeItemProofs(s)).toEqual([
+        { planItemId: 'P-001', barKeys: ['R-1'], evidenceRefs: ['probe:current'] },
+      ]);
+    });
+
+    // Falsifiability: the skip is lifecycle-exact. An enforceable sibling is still judged.
+    it.each(['accepted', 'active'] as const)('still demands proof of an unproven %s projection', (status) => {
+      expect(deriveNonCodeItemProofs(withUnprovenSibling(status))).toEqual([]);
+    });
+
+    it('fails closed on a projection with no recorded lifecycle (a pre-field snapshot)', () => {
+      expect(deriveNonCodeItemProofs(withUnprovenSibling(undefined))).toEqual([]);
+    });
+
+    it('gives no proof to an item whose every projection is non-enforceable', () => {
+      const s = proven();
+      s.bars[0]!.mappings[0]!.lifecycleStatus = 'retired';
+      expect(deriveNonCodeItemProofs(s)).toEqual([]);
+    });
+  });
+
   // WI-10002089: the contract gate grew an `explicitlyManual` escape hatch, but this gate
   // never learned about it, so a manual BAR passed contract readiness and was then refused
   // here on the exact values that hatch produces — unshippable by construction.

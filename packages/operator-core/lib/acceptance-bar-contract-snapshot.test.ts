@@ -766,6 +766,14 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
 
     expect(snapshot.bars[0]!.readiness.clauseAcceptance).toBe('accepted');
     expect(snapshot.bars[0]!.readiness.codes).not.toContain('bar_snapshot_clause_not_accepted');
+    // WI-10003864: every mapping carries its clause lifecycle, so a per-mapping consumer
+    // (deriveNonCodeItemProofs) can skip the ones this snapshot never proves.
+    expect(snapshot.bars[0]!.mappings.map((mapping) => [mapping.specId, mapping.lifecycleStatus])).toEqual(
+      expect.arrayContaining([
+        [accepted.specId, accepted.lifecycleStatus],
+        [`${accepted.specId}-draft`, 'draft'],
+      ]),
+    );
   });
 
   it('keeps the old proof codes for a pre-field snapshot that carries no clauseAcceptance', () => {

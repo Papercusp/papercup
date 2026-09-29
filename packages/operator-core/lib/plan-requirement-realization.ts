@@ -60,6 +60,7 @@ import {
 } from './plan-audits';
 import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './acceptance-bar-contract-snapshot';
 import { barRequiresAutomatedProof } from './acceptance-bar-contract-snapshot';
+import { isEnforceableSpecLifecycle } from './agent-tools/plans/spec-clauses-store';
 
 /** Derived from the canonical BAR evaluator, never from a doc citation or a completion claim. */
 export interface NonCodeItemProof {
@@ -82,6 +83,14 @@ export function deriveNonCodeItemProofs(snapshot: AcceptanceBarContractSnapshot)
   for (const bar of snapshot.bars) {
     if (bar.role !== 'outcome') continue;
     for (const mapping of bar.mappings) {
+      // WI-10003864: judge only the projections the snapshot itself proves. `bar.mappings`
+      // lists every clause row keyed to the BAR — draft and retired ones included — while
+      // `bar.proof`, its evidence history and its adequacy checks count ENFORCEABLE clauses
+      // only. Demanding proof of a draft/retired mapping therefore demanded something no
+      // evidence can satisfy, so any plan that ever atomized or retired a clause could never
+      // realize its not-code items. A mapping without a recorded lifecycle (a snapshot built
+      // before the field existed) stays judged: absence fails closed, never open.
+      if (mapping.lifecycleStatus !== undefined && !isEnforceableSpecLifecycle(mapping.lifecycleStatus)) continue;
       const rows = byItem.get(mapping.planItemId) ?? [];
       rows.push({ bar, mapping });
       byItem.set(mapping.planItemId, rows);
