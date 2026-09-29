@@ -64,6 +64,7 @@ import {
   admittedWhereSql,
   admittedWhereSqlWi,
   admissionFailOpenSec,
+  admissionFailOpenGuaranteedSec,
   admissionPendingCreateRemedy,
   admissionPendingExplanation,
   admissionPromoterTickSec,
@@ -8191,13 +8192,13 @@ export async function explainIssueClaimFloors(
               ? {
                   clearsOnItsOwn: true as const,
                   expectedWithinSec: admissionFailOpenSec(),
-                  guaranteedWithinSec: admissionFailOpenSec(),
+                  guaranteedWithinSec: admissionFailOpenGuaranteedSec(),
                   basis: admissionStallBasis(promoterStall),
                 }
               : {
                   clearsOnItsOwn: true as const,
                   expectedWithinSec: admissionPromoterTickSec(),
-                  guaranteedWithinSec: admissionFailOpenSec(),
+                  guaranteedWithinSec: admissionFailOpenGuaranteedSec(),
                   basis: admissionStallBasis(promoterStall),
                 },
             remedy: admissionPendingCreateRemedy(),
