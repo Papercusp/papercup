@@ -514,6 +514,23 @@ export function planInteractiveHeal(
       sharedBudget.attemptsMs.shift();
     }
   }
+  // FAIRNESS (P-014 finding): the shared budget admits owners in ascending prior-attempt
+  // order, so a never-tried session is not starved by already-tried sessions retaking
+  // capacity every time the window drains. Ties keep input order; output order is unchanged.
+  const admitted = new Set<string>();
+  {
+    const candidates: Array<{ ownerId: string; attempts: number; idx: number }> = [];
+    verdicts.forEach((v, idx) => {
+      if (v.recovered || !v.dark) return;
+      const attempts = (state.get(v.ownerId)?.attemptsMs ?? []).filter((t) => nowMs - t < HEAL_ATTEMPT_WINDOW_MS).length;
+      if (attempts < maxAttempts) candidates.push({ ownerId: v.ownerId, attempts, idx });
+    });
+    candidates.sort((a, b) => a.attempts - b.attempts || a.idx - b.idx);
+    const capacity = sharedBudget
+      ? Math.max(0, sharedBudget.maxAttempts - sharedBudget.attemptsMs.length)
+      : candidates.length;
+    for (const c of candidates.slice(0, capacity)) admitted.add(c.ownerId);
+  }
   for (const v of verdicts) {
     const st = state.get(v.ownerId);
     if (v.recovered) {
@@ -540,7 +557,7 @@ export function planInteractiveHeal(
     const cur = st ?? { attemptsMs: [], sentCount: 0, notified: false };
     cur.attemptsMs = cur.attemptsMs.filter((t) => nowMs - t < HEAL_ATTEMPT_WINDOW_MS);
     if (cur.attemptsMs.length < maxAttempts) {
-      if (sharedBudget && sharedBudget.attemptsMs.length >= sharedBudget.maxAttempts) {
+      if (sharedBudget && !admitted.has(v.ownerId)) {
         // Do NOT consume the owner's attempt: this session has not been tried.
         // The rolling window drains automatically, then a later sweep admits it.
         state.set(v.ownerId, cur);

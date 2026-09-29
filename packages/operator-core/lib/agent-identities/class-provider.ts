@@ -66,9 +66,13 @@ export async function resolveIdentityClassProvider(
     if (provider.providerKind === 'operation' || provider.latencyClass !== 'sync') {
       return unavailable('operation-unavailable');
     }
-    // Storage kind alone cannot masquerade as inspected recipe conformance.
-    // Remove this refusal only when pinned inspection + runtime facade exist.
-    if (provider.providerKind === 'recipe') return unavailable('recipe-unavailable');
+    // Storage kind alone cannot masquerade as inspected recipe conformance: a
+    // recipe row is admitted only with host-inspected evidence for THIS verb,
+    // which recipe-provider-runtime.ts re-inspects against its pin (P-013, D-019).
+    if (provider.providerKind === 'recipe' &&
+        !(provider.recipeInspections && Object.hasOwn(provider.recipeInspections, input.verb))) {
+      return unavailable('recipe-unavailable');
+    }
     const contract = Object.hasOwn(capabilityClass.interfaceVerbs, input.verb)
       ? capabilityClass.interfaceVerbs[input.verb] : undefined;
     if (!contract) return unavailable('verb-unknown');
