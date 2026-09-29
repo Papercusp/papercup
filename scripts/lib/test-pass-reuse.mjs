@@ -80,7 +80,14 @@ export function isGlobalRunnerInput(rel) {
   if (/^tsconfig\.[^/]*\.json$/.test(rel)) return true;
   if (/^vitest\.[^/]*$/.test(rel)) return true;
   if (/(^|\/)vitest\.[^/]*config[^/]*\.[cm]?[jt]s$/.test(rel)) return true;
-  if (/^libs\/test-config\/(src\/|package\.json|tsconfig)/.test(rel) && !/\.test\.[cm]?[jt]sx?$/.test(rel)) {
+  if (/^libs\/test-config\/(src\/|package\.json|tsconfig)/.test(rel)) {
+    if (/\.test\.[cm]?[jt]sx?$/.test(rel)) return false;
+    // WI-10003752: fixtures only test-config's own tests read (those tests capture them as
+    // per-file inputs), and non-source files under src/ — above all the editor / atomic-write
+    // temps git-sync sweeps, e.g. `vitest-config.test.ts.tmp.<pid>.<hash>` — configure no
+    // runner. Each used to discard every pass proof fleet-wide.
+    if (/^libs\/test-config\/src\/(?:.*\/)?__fixtures__\//.test(rel)) return false;
+    if (/^libs\/test-config\/src\//.test(rel) && !/\.(?:[cm]?[jt]sx?|json)$/.test(rel)) return false;
     return true;
   }
   if (/^patches\//.test(rel)) return true;

@@ -30,6 +30,12 @@ export const EXECUTED_MAP_OUT_ENV = "PC_EXECUTED_SOURCE_MAP_OUT";
  * `PC_EXECUTED_SOURCE_MAP_RESULT_ENV` in libs/test-config/src/vitest-config.ts.
  */
 export const EXECUTED_MAP_RESULT_ENV = "PC_EXECUTED_SOURCE_MAP_RESULT";
+/**
+ * EI-24542010215430349: arm the reporter and input capture but persist nothing — the gate's rescue
+ * reruns set it. Must equal `PC_EXECUTED_SOURCE_MAP_NO_PERSIST_ENV` in
+ * libs/test-config/src/vitest-config.ts.
+ */
+export const EXECUTED_MAP_NO_PERSIST_ENV = "PC_EXECUTED_SOURCE_MAP_NO_PERSIST";
 
 const OFF = new Set(["0", "false", "off", "no"]);
 
