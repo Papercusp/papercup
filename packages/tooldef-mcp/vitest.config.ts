@@ -1,15 +1,13 @@
 import { defineConfig } from 'vitest/config';
-import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
+import { gateParticipationConfig } from '@papercusp/test-config/vitest-config';
 
 export default defineConfig({
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',
-    // Hand-rolled config (not defineVitestConfig) → opt into the /admin/testing
-    // status-chip reporter explicitly. Fail-soft; opt-out via env.
-    reporters:
-      process.env.PAPERCUSP_DISABLE_TEST_RUNS_REPORTER === '1'
-        ? ['default']
-        : ['default', ADMIN_TEST_RUNS_REPORTER_PATH],
+    // Hand-rolled config (not defineVitestConfig) → gateParticipationConfig() wires what the
+    // green-checkpoint gate needs: the /admin/testing reporter, the per-file pass-proof
+    // recorder + input capture when armed, and the reuse skip list (WI-10003716).
+    ...gateParticipationConfig(),
   },
 });

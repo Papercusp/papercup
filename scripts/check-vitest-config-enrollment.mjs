@@ -1,12 +1,18 @@
 #!/usr/bin/env node
 /**
- * Ensure every declared workspace Vitest config records the admin test-run ledger.
+ * Ensure every declared workspace Vitest config takes part in the green-checkpoint gate.
  *
- * `defineVitestConfig` is the shared source of the admin-test-runs reporter. A
- * plain `defineConfig` silently bypasses that reporter, so `testing:runs` cannot
- * distinguish an unmeasured workspace from a measured clean one. The allowlist is
- * deliberately exact: these packages use a different runner/config contract and
- * are the only accepted plain configurations.
+ * Gate participation means the admin test-runs reporter (the /admin/testing ledger), the
+ * per-file pass-proof recorder + executed-inputs capture when the runner arms them, and the
+ * per-file pass-reuse skip list. `defineVitestConfig` wires all of it, and a hand-rolled
+ * `defineConfig` gets it by spreading `gateParticipationConfig()`; both read one shared
+ * fragment in libs/test-config/src/vitest-config.ts.
+ *
+ * WI-10003716: this guard used to accept a bare `ADMIN_TEST_RUNS_REPORTER_PATH` mention. Twelve
+ * configs passed that way while recording zero pass proofs and never reusing one, because the
+ * reporter alone is not participation. It now accepts only the two helpers. The allowlist is
+ * deliberately exact: these packages use a different runner/config contract and are the only
+ * accepted plain configurations.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -49,17 +55,20 @@ function normalizePath(filePath) {
   return filePath.split(sep).join('/');
 }
 
+/** True when `code` both imports `name` in a named import and calls it. */
+function importsAndCalls(code, name) {
+  const imported = new RegExp(String.raw`import\s*\{[\s\S]*?\b${name}\b[\s\S]*?\}\s*from\s*['"][^'"]*['"]`).test(code);
+  return imported && new RegExp(String.raw`\b${name}\s*\(`).test(code);
+}
+
 /**
- * Return true when a config wires the shared reporter, either through the base
- * helper or by explicitly importing the reporter path (the established app
- * config pattern).
+ * Return true when a config takes part in the gate: it calls the shared base
+ * (`defineVitestConfig`) or spreads the gate fragment (`gateParticipationConfig`).
+ * Wiring the admin reporter path by hand is NOT enough (WI-10003716).
  */
-export function isReporterEnrolled(source, fileName) {
+export function isGateEnrolled(source, fileName) {
   const code = stripCommentsAndStrings(source, fileName);
-  const hasBaseImport = /import\s*\{[\s\S]*?\bdefineVitestConfig\b[\s\S]*?\}\s*from\s*['"][^'"]*['"]/.test(code) &&
-    /\bdefineVitestConfig\s*\(/.test(code);
-  const hasExplicitReporter = /\bADMIN_TEST_RUNS_REPORTER_PATH\b/.test(code);
-  return hasBaseImport || hasExplicitReporter;
+  return importsAndCalls(code, 'defineVitestConfig') || importsAndCalls(code, 'gateParticipationConfig');
 }
 
 /**
@@ -69,7 +78,7 @@ export function isReporterEnrolled(source, fileName) {
  */
 export function findUnenrolledConfigs(configs) {
   return configs
-    .filter(({ path, content }) => !PLAIN_CONFIG_EXEMPTIONS.has(normalizePath(path)) && !isReporterEnrolled(content, path))
+    .filter(({ path, content }) => !PLAIN_CONFIG_EXEMPTIONS.has(normalizePath(path)) && !isGateEnrolled(content, path))
     .map(({ path }) => normalizePath(path))
     .sort();
 }
@@ -136,15 +145,17 @@ export function main(root = ROOT) {
   if (findings.length > 0) {
     console.error(
       [
-        'Vitest configs without the admin test-runs reporter:',
+        'Vitest configs that do not take part in the green-checkpoint gate:',
         ...findings.map((filePath) => `  ${filePath}`),
         '',
-        'Use @papercusp/test-config/vitest-config or add an explicit reporter wiring.',
+        'Use defineVitestConfig from @papercusp/test-config/vitest-config, or spread',
+        'gateParticipationConfig() into a hand-rolled config\'s `test` block. Wiring',
+        'ADMIN_TEST_RUNS_REPORTER_PATH by hand records no pass proofs and reuses none.',
       ].join('\n'),
     );
     return 1;
   }
-  console.log('Vitest config enrollment: all declared workspace configs are reporter-wired or explicitly exempt.');
+  console.log('Vitest config enrollment: all declared workspace configs take part in the gate or are explicitly exempt.');
   return 0;
 }
 

@@ -2,24 +2,45 @@ import { describe, expect, it } from 'vitest';
 import {
   collectVitestConfigs,
   findUnenrolledConfigs,
-  isReporterEnrolled,
+  isGateEnrolled,
   PLAIN_CONFIG_EXEMPTIONS,
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- guard script is plain .mjs and intentionally has no declaration file.
 } from '../../../scripts/check-vitest-config-enrollment.mjs';
 
 describe('Vitest config enrollment guard', () => {
-  it('recognizes the shared base and explicit reporter wiring', () => {
+  it('recognizes the shared base and the gate-participation fragment', () => {
     expect(
-      isReporterEnrolled(
+      isGateEnrolled(
         `import { defineVitestConfig } from '@papercusp/test-config/vitest-config';\nexport default defineVitestConfig({ layer: 'unit' });`,
       ),
     ).toBe(true);
     expect(
-      isReporterEnrolled(
-        `import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';\nexport default { test: { reporters: [ADMIN_TEST_RUNS_REPORTER_PATH] } };`,
+      isGateEnrolled(
+        [
+          "import { defineConfig } from 'vitest/config';",
+          "import { gateParticipationConfig, sharedHostWorkerCap } from '@papercusp/test-config/vitest-config';",
+          'export default defineConfig({ test: { ...sharedHostWorkerCap(), ...gateParticipationConfig() } });',
+        ].join('\n'),
       ),
     ).toBe(true);
+  });
+
+  // WI-10003716: twelve configs passed the old guard this way while recording zero pass proofs.
+  it('does NOT accept a hand-wired admin reporter as gate participation', () => {
+    expect(
+      isGateEnrolled(
+        `import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';\nexport default { test: { reporters: [ADMIN_TEST_RUNS_REPORTER_PATH] } };`,
+      ),
+    ).toBe(false);
+  });
+
+  it('requires the fragment to be called, not merely imported', () => {
+    expect(
+      isGateEnrolled(
+        `import { gateParticipationConfig } from '@papercusp/test-config/vitest-config';\nexport default { test: {} };`,
+      ),
+    ).toBe(false);
   });
 
   it('ignores comments and flags a plain config outside the exact exemption set', () => {
@@ -40,7 +61,7 @@ describe('Vitest config enrollment guard', () => {
 
   it('does not treat reporter tokens quoted in config data as live enrollment code', () => {
     expect(
-      isReporterEnrolled(
+      isGateEnrolled(
         [
           "import { defineVitestConfig } from '@papercusp/test-config/vitest-config';",
           "const explanation = 'defineVitestConfig(';",
