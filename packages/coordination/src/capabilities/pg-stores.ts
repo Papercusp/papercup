@@ -519,6 +519,35 @@ export class PgLinkStore implements LinkableStore {
     return rows.map(toLinkRow);
   }
 
+  /** WI-10003631: `listOut(ref, {rel})` for each of `outRels` plus `listIn(ref, {rel})`
+   *  for each of `inRels`, in ONE statement. Each branch keeps its own index predicate
+   *  (UNION ALL, not an OR), and the rows come back tagged by direction so the caller
+   *  can partition them exactly as the separate reads would have returned them. */
+  async listAround(
+    ref: ObjectRef,
+    opts: { outRels: readonly string[]; inRels: readonly string[] },
+  ): Promise<{ out: LinkRow[]; in: LinkRow[] }> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    const outRels = [...opts.outRels];
+    const inRels = [...opts.inRels];
+    const rows = await sql<Array<LinkRowDb & { dir: 'out' | 'in' }>>`
+      SELECT 'out'::text AS dir, id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by, created_at
+        FROM harness_shared.coord_links
+       WHERE workspace_id = ${this.ws} AND src_kind = ${ref.kind} AND src_ref = ${ref.ref}
+         AND rel = ANY(${outRels})
+      UNION ALL
+      SELECT 'in'::text AS dir, id, src_kind, src_ref, dst_kind, dst_ref, rel, created_by, created_at
+        FROM harness_shared.coord_links
+       WHERE workspace_id = ${this.ws} AND dst_kind = ${ref.kind} AND dst_ref = ${ref.ref}
+         AND rel = ANY(${inRels})
+       ORDER BY created_at ASC, id ASC`;
+    return {
+      out: rows.filter((r) => r.dir === 'out').map(toLinkRow),
+      in: rows.filter((r) => r.dir === 'in').map(toLinkRow),
+    };
+  }
+
   async listOutMany(srcs: ObjectRef[], opts: { rel?: string } = {}): Promise<LinkRow[]> {
     if (srcs.length === 0) return [];
     await this.opts.ensureSchema();
