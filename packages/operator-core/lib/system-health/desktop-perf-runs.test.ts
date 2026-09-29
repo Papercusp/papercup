@@ -9,7 +9,7 @@ import {
 import type { AdminTestCheckResult, DesktopPerfMeasure } from '../admin-test-suites-shared';
 
 function run(id: string, createdTs: number, measures: DesktopPerfMeasure[]): DesktopPerfRun {
-  return { id, workspaceId: 'default', createdTs, source: 'admin-suite', status: 'pass', gitSha: null, runId: null, measures };
+  return { id, workspaceId: 'default', createdTs, source: 'admin-suite', status: 'pass', gitSha: null, buildSha: null, runId: null, measures };
 }
 
 describe('extractDesktopPerfMeasures', () => {
