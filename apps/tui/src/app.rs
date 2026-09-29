@@ -3130,12 +3130,64 @@ impl App {
     /// written a new message, so the whole composer is returned.
     fn text_beyond_pending_draft(&self, composer: &str) -> String {
         match self.su_pending_turn.as_ref() {
-            Some(pending) if !pending.draft.is_empty() => composer
+            Some(pending) if !pending.draft.is_empty() && self.pending_draft_in_composer() => composer
                 .strip_prefix(pending.draft.as_str())
                 .unwrap_or(composer)
                 .to_owned(),
             _ => composer.to_owned(),
         }
+    }
+
+    /// Whether the composer still holds the pending turn's draft as its
+    /// prefix. The workbench keeps it there until acknowledgement; chat-first
+    /// moves it to the transcript on Enter (`pending_owner_echo`) and only
+    /// puts it back when the send fails (`fail_su_turn` sets `error`). Once
+    /// the draft has left, a new line that merely STARTS with the same words
+    /// ("hi" then "hi there") is a whole new message and must not lose them.
+    fn pending_draft_in_composer(&self) -> bool {
+        !(self.chat_first
+            && self
+                .su_pending_turn
+                .as_ref()
+                .is_some_and(|pending| pending.error.is_none()))
+    }
+
+    /// pui-chat-first-ux P-012: the line the owner just sent that the
+    /// transcript does not show yet. Chat-first shows it the moment Enter is
+    /// pressed (Claude Code / Codex parity). Until P-012 it stayed in the
+    /// composer until the engine accepted the turn, and on a fresh launch
+    /// that wait covers the whole engine start: 15-60s of an empty
+    /// transcript read as "my message went nowhere".
+    ///
+    /// Presentation only: nothing is added to `chat_messages`, so the
+    /// model's history, copy targets and the undelivered contract are
+    /// unchanged. The echo ends when the turn's own owner line lands
+    /// (acknowledgement or stream event, both keyed `pui-turn-<commandId>`)
+    /// or when the send fails, which puts the draft back in the composer.
+    pub fn pending_owner_echo(&self) -> Option<&str> {
+        if !self.chat_first {
+            return None;
+        }
+        if let Some(pending) = self.su_pending_turn.as_ref() {
+            if pending.error.is_some()
+                || self
+                    .su_rendered_owner_turns
+                    .contains(&format!("pui-turn-{}", pending.command_id))
+            {
+                return None;
+            }
+            return Some(pending.content.as_str()).filter(|text| !text.trim().is_empty());
+        }
+        // A quick start is still resolving its project and engine: the
+        // message waits in the setup form, not yet a turn.
+        if self.chat_first_autostart {
+            return self
+                .session_setup
+                .as_ref()
+                .map(|setup| setup.message.as_str())
+                .filter(|text| !text.trim().is_empty());
+        }
+        None
     }
 
     fn fail_su_turn(&mut self, message: &str, uncertain: bool) {
@@ -4683,6 +4735,12 @@ impl App {
             pending.content.clone()
         } else {
             let attachment_references = self.attachments.references();
+            // P-012: chat-first shows the sent line in the transcript
+            // (`pending_owner_echo`), so it leaves the composer now; a failed
+            // send puts it back (`fail_su_turn`). Only when the composer IS
+            // this line — a queued turn drained later must not wipe what the
+            // owner is typing meanwhile.
+            let clear_composer = self.chat_first && self.chat_input == draft;
             self.su_pending_turn = Some(PendingSuTurn {
                 command_id: format!("pui-{}", crate::command_nonce()),
                 content: submitted.clone(),
@@ -4692,6 +4750,9 @@ impl App {
                 uncertain: false,
                 error: None,
             });
+            if clear_composer {
+                self.chat_clear_input();
+            }
             submitted
         };
         self.chat_streaming = true;
@@ -7777,6 +7838,7 @@ impl App {
     /// usual case is a first message typed before the operator answered).
     fn chat_first_quick_start(&mut self, draft: String) -> Action {
         self.open_session_setup();
+        let clear_composer = self.chat_input == draft;
         let Some(setup) = self.session_setup.as_mut() else {
             // `open_session_setup` refused (a turn is still in flight) and
             // left its reason in `session_note`; the draft stays composed.
@@ -7784,6 +7846,11 @@ impl App {
         };
         setup.message = draft;
         self.chat_first_autostart = true;
+        // P-012: the message shows in the transcript while the session starts
+        // (`pending_owner_echo`). Esc on the setup form puts it back.
+        if clear_composer {
+            self.chat_clear_input();
+        }
         self.try_chat_first_autostart()
             .unwrap_or(Action::CheckSessionSetup)
     }
@@ -16469,6 +16536,123 @@ mod tests {
         assert!(!a.chat_first_autostart);
         assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "  first λ 雪  ");
         assert_eq!(a.chat_account.as_deref(), Some("default"));
+    }
+
+    /// pui-chat-first-ux P-012: Enter moves the message into the transcript
+    /// at once (Claude Code / Codex parity) instead of leaving it in the
+    /// composer until the engine accepts the turn — on a fresh launch that
+    /// wait is the whole engine start. Acceptance then shows it exactly once.
+    #[test]
+    fn chat_first_enter_echoes_the_message_and_acceptance_shows_it_once() {
+        let mut a = chat_first_app();
+        a.chat_input = "hi there".into();
+        a.chat_cursor = a.chat_input.len();
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(action, Action::OpenSuSession { .. }), "got {action:?}");
+        assert!(a.chat_input.is_empty(), "the sent line leaves the composer");
+        assert_eq!(a.chat_cursor, 0);
+        assert_eq!(a.pending_owner_echo(), Some("hi there"));
+        assert!(
+            a.chat_messages.is_empty(),
+            "the echo is presentation only; history gets the line on acceptance"
+        );
+
+        let command_id = a.su_pending_turn.as_ref().unwrap().command_id.clone();
+        a.acknowledge_su_turn(&command_id);
+        assert_eq!(a.pending_owner_echo(), None);
+        let owner_lines: Vec<&str> = a
+            .chat_messages
+            .iter()
+            .filter(|m| m.role == "user")
+            .map(|m| m.content.as_str())
+            .collect();
+        assert_eq!(owner_lines, vec!["hi there"], "shown once, never twice");
+    }
+
+    /// The stream can deliver the owner line before the HTTP acknowledgement.
+    /// Both are keyed `pui-turn-<commandId>`, so the echo must end the moment
+    /// the stream's copy lands, or the transcript shows the message twice.
+    #[test]
+    fn chat_first_echo_ends_when_the_streamed_owner_line_lands_first() {
+        let mut a = chat_first_app();
+        a.chat_input = "hello".into();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        let command_id = a.su_pending_turn.as_ref().unwrap().command_id.clone();
+        a.su_rendered_owner_turns
+            .insert(format!("pui-turn-{command_id}"));
+        a.chat_messages.push(ChatMessage::user("hello"));
+        assert_eq!(a.pending_owner_echo(), None);
+    }
+
+    /// A refused send must not leave a line in the transcript that was never
+    /// delivered: the echo goes and the draft returns to the composer, where
+    /// Enter retries it exactly as before P-012.
+    #[test]
+    fn chat_first_failed_send_drops_the_echo_and_returns_the_draft() {
+        let mut a = chat_first_app();
+        a.chat_input = "hi".into();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(a.pending_owner_echo(), Some("hi"));
+        a.fail_su_turn("refused", false);
+        assert_eq!(a.pending_owner_echo(), None);
+        assert_eq!(a.chat_input, "hi", "the draft is back for a retry");
+        assert!(a.chat_messages.iter().all(|m| m.role != "user"));
+
+        a.chat_cursor = a.chat_input.len();
+        assert!(!matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render));
+        assert!(a.chat_input.is_empty(), "the retry leaves the composer too");
+        assert_eq!(a.pending_owner_echo(), Some("hi"));
+    }
+
+    /// Once the sent line has left the composer, a next line that happens to
+    /// START with the same words is a whole new message. The workbench-era
+    /// prefix strip turned "hi" then "hi there" into a queued " there".
+    #[test]
+    fn chat_first_next_line_starting_with_the_sent_words_is_queued_whole() {
+        let mut a = chat_first_app();
+        a.chat_input = "hi".into();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(a.chat_streaming);
+        a.chat_input = "hi there".into();
+        a.chat_cursor = a.chat_input.len();
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+        assert_eq!(a.chat_queued, vec!["hi there".to_string()]);
+    }
+
+    /// While a quick start is still waiting (here: the project list has not
+    /// answered), the message is already in the transcript; Esc on the setup
+    /// form puts it back in the composer and the echo goes.
+    #[test]
+    fn chat_first_quick_start_wait_echoes_and_esc_restores_the_draft() {
+        let mut a = chat_first_app();
+        a.harness = "not-listed-yet".into();
+        a.chat_input = "start here".into();
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(action, Action::CheckSessionSetup);
+        assert!(a.chat_first_autostart);
+        assert!(a.chat_input.is_empty());
+        assert_eq!(a.pending_owner_echo(), Some("start here"));
+
+        a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(a.session_setup.is_none());
+        assert_eq!(a.chat_input, "start here");
+        assert_eq!(a.pending_owner_echo(), None);
+    }
+
+    /// The workbench keeps its draft-retention contract: the line stays in the
+    /// composer until acknowledgement and there is no transcript echo.
+    #[test]
+    fn workbench_keeps_the_draft_in_the_composer_until_acceptance() {
+        let mut a = chat_first_app();
+        a.chat_first = false;
+        a.session_setup_accepted = true;
+        a.require_session_setup = false;
+        a.chat_input = "hi".into();
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!matches!(action, Action::Render), "got {action:?}");
+        assert!(a.su_pending_turn.is_some());
+        assert_eq!(a.chat_input, "hi");
+        assert_eq!(a.pending_owner_echo(), None);
     }
 
     /// pui-chat-first-ux P-004: `/` opens a command menu; Down moves the

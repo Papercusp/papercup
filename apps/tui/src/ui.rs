@@ -2951,7 +2951,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             }
         }
     }
-    if app.chat_messages.is_empty() {
+    if app.chat_messages.is_empty() && app.pending_owner_echo().is_none() {
         lines.push(Line::from(Span::styled(
             if app.backend_identity_error.is_some() {
                 crate::app::CHAT_DISCONNECTED_HINT
@@ -3141,6 +3141,17 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         }
         lines.push(Line::from("")); // blank separator between turns
     }
+    // pui-chat-first-ux P-012: the line the owner just sent, shown the moment
+    // Enter is pressed rather than when the engine accepts it. Rendered like
+    // an accepted owner line; `App::pending_owner_echo` ends it when that line
+    // lands or the send fails.
+    if let Some(echo) = app.pending_owner_echo() {
+        lines.push(Line::from(Span::styled("  you", Theme::selected())));
+        for wl in wrap_text(echo, inner_w) {
+            lines.push(Line::from(wl));
+        }
+        lines.push(Line::from(""));
+    }
 
     let total = lines.len() as u16;
     let visible = transcript_area.height.saturating_sub(2); // block borders
@@ -3255,7 +3266,13 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.su_pending_turn.is_some() && app.chat_streaming {
         (
-            " Sending — awaiting acceptance · draft retained ",
+            // Chat-first already shows the message in the transcript (P-012);
+            // the composer is empty and ready for the next one.
+            if app.chat_first && !details {
+                " Sending — Enter queues your next message "
+            } else {
+                " Sending — awaiting acceptance · draft retained "
+            },
             format!("> {}{queued_note}", app.chat_input),
             Theme::notify(),
         )
@@ -9364,6 +9381,40 @@ mod tests {
         let text = render(&app, 100, 16);
         assert!(text.contains("awaiting acceptance"), "{text}");
         assert!(text.contains("2 queued"), "{text}");
+    }
+
+    /// pui-chat-first-ux P-012: in the default chat the message just sent is
+    /// in the TRANSCRIPT while the turn is on its way, the composer is empty,
+    /// and the bar says Enter queues the next one — not "draft retained".
+    #[test]
+    fn chat_first_shows_the_sent_message_in_the_transcript_before_acceptance() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.chat_first = true;
+        app.chat_composing = true;
+        app.su_pending_turn = Some(crate::app::PendingSuTurn {
+            command_id: "pui-1".into(),
+            content: "please read calc.js".into(),
+            draft: "please read calc.js".into(),
+            attachment_references: Vec::new(),
+            command: None,
+            uncertain: false,
+            error: None,
+        });
+        app.chat_streaming = true;
+        let text = render(&app, 100, 16);
+        let transcript_row = text
+            .lines()
+            .find(|line| line.contains("please read calc.js"))
+            .unwrap_or_else(|| panic!("the sent line must be on screen: {text}"));
+        assert!(
+            !transcript_row.contains("> please"),
+            "it is in the transcript, not the composer: {text}"
+        );
+        assert!(text.contains("you"), "{text}");
+        assert!(text.contains("Sending — Enter queues your next message"), "{text}");
+        assert!(!text.contains("draft retained"), "{text}");
+        assert!(!text.contains("Type a message below"), "{text}");
     }
 
     /// CALIBRATION for the test above: with no queued lines the count must be
