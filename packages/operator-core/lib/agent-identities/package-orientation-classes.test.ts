@@ -32,7 +32,6 @@ const LIMITS: SinkHostLimits = {
   sinkBudget: { tokens: 60, wallClockMs: 2_000 },
   turnCeiling: { tokens: 10_000, wallClockMs: 60_000 },
   perSessionConcurrency: 2,
-  perHostConcurrency: 16,
 };
 const FENCE = { sessionId: 'sess-p010', turnId: 'turn-1', attachmentRevision: 'rev-1' };
 let seq = 0;
