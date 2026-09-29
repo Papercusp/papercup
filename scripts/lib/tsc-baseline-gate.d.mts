@@ -936,7 +936,7 @@ export function gateCoveringFile(gates: {
  * partial route set and then claim the original request was covered.
  *
  * @param {{files: Iterable<string>, suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, siblingGates?: {npmScript: string, prefixes: string[]}[]}} opts
- * @returns {{routes: {key: string, workspaceDir?: string, npmScript?: string, files: string[], scoped: boolean, command: string, args: string[]}[], unknown: string[]}}
+ * @returns {{routes: {key: string, workspaceDir?: string, standalone?: boolean, npmScript?: string, files: string[], scoped: boolean, command: string, args: string[]}[], unknown: string[]}}
  */
 export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates }: {
     files: Iterable<string>;
@@ -949,6 +949,7 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates }:
     routes: {
         key: string;
         workspaceDir?: string;
+        standalone?: boolean;
         npmScript?: string;
         files: string[];
         scoped: boolean;

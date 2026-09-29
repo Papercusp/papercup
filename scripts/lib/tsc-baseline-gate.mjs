@@ -24,6 +24,7 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { findUnextractedDeps } from '../check-declared-deps-extracted.mjs';
 import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observations.mjs';
+import { isRootWorkspace, rootWorkspacePatterns } from './submodule-installs.mjs';
 import {
   baselineWithinScope,
   formatTscServiceBanner,
@@ -1867,9 +1868,10 @@ export function partitionFilesByCoverage({ files, coveredPrefixes }) {
  *
  * @param {string} root Absolute repo root.
  * @param {string} file Repo-relative path.
- * @returns {{workspaceDir: string, packageName: string, command: string | null} | null}
+ * @returns {{workspaceDir: string, packageName: string, standalone: boolean, command: string | null} | null}
  *   `command: null` = the owning workspace declares NO typecheck script (a real coverage gap,
- *   worth saying out loud); `null` = no owning package.json found at all.
+ *   worth saying out loud); `null` = no owning package.json found at all. `standalone: true` =
+ *   no root `workspaces` pattern names the package, so it is run with `npm --prefix`.
  */
 export function suggestTypecheckGate(root, file) {
   const parts = String(file).replace(/^\.\//, '').split('/').filter(Boolean);
@@ -1884,13 +1886,39 @@ export function suggestTypecheckGate(root, file) {
       continue;
     }
     const hasTypecheck = Boolean(pkg?.scripts?.typecheck);
+    const standalone = !isRootWorkspace(dir, rootWorkspacePatterns(root));
     return {
       workspaceDir: dir,
       packageName: typeof pkg?.name === 'string' ? pkg.name : dir,
-      command: hasTypecheck ? `npm run --workspace ${dir} typecheck` : null,
+      standalone,
+      command: hasTypecheck ? `npm ${workspaceTypecheckArgs(dir, standalone).join(' ')}` : null,
     };
   }
   return null;
+}
+
+/**
+ * WI-10003822 — the `npm` argv that runs `typecheck` inside ONE owning package.
+ *
+ * A STANDALONE package (a package.json that no root `workspaces` pattern names, e.g.
+ * `tools/perf-test/wdio` or `papercusp-desktop`) is not an npm workspace, so
+ * `npm run --workspace <dir> typecheck` answers "No workspaces found" and exits 1 having
+ * checked nothing. `npm --prefix <dir> run typecheck` runs the same script there. Measured
+ * 2026-09-29 on tools/perf-test/wdio: the --workspace form exits 1, the --prefix form runs
+ * `tsc --noEmit` and exits 0. affected-tests' formatWorkspaceCommand makes the same split
+ * (EI-22152426246970496).
+ *
+ * Misclassifying a real workspace as standalone is the safe direction: `--prefix` still runs
+ * that package's script. Only the reverse ever fails.
+ *
+ * @param {string} workspaceDir Repo-relative package directory.
+ * @param {boolean} standalone True when no root `workspaces` pattern covers it.
+ * @returns {string[]} argv for `npm`, executed without a shell.
+ */
+export function workspaceTypecheckArgs(workspaceDir, standalone) {
+  return standalone
+    ? ['--prefix', workspaceDir, 'run', 'typecheck']
+    : ['run', '--workspace', workspaceDir, 'typecheck'];
 }
 
 /**
@@ -2085,17 +2113,17 @@ const AUTO_TYPECHECK_ROUTE_ENV = 'PAPERCUSP_TSC_AUTO_ROUTE';
  * partial route set and then claim the original request was covered.
  *
  * @param {{files: Iterable<string>, suggestions: Map<string, ReturnType<typeof suggestTypecheckGate>>, siblingGates?: {npmScript: string, prefixes: string[]}[]}} opts
- * @returns {{routes: {key: string, workspaceDir?: string, npmScript?: string, files: string[], scoped: boolean, command: string, args: string[]}[], unknown: string[]}}
+ * @returns {{routes: {key: string, workspaceDir?: string, standalone?: boolean, npmScript?: string, files: string[], scoped: boolean, command: string, args: string[]}[], unknown: string[]}}
  */
 export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = [] }) {
-  /** @type {Map<string, {key: string, workspaceDir?: string, npmScript?: string, files: string[], scoped: boolean}>} */
+  /** @type {Map<string, {key: string, workspaceDir?: string, standalone?: boolean, npmScript?: string, files: string[], scoped: boolean}>} */
   const grouped = new Map();
   const unknown = [];
 
   for (const raw of files) {
     const file = String(raw).replace(/^\.\//, '');
     const suggestion = suggestions?.get(file);
-    /** @type {{key: string, workspaceDir?: string, npmScript?: string, scoped: boolean} | null} */
+    /** @type {{key: string, workspaceDir?: string, standalone?: boolean, npmScript?: string, scoped: boolean} | null} */
     let route = null;
 
     // Prefer a verified exact-file sibling gate over a workspace's generic
@@ -2125,6 +2153,7 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = 
       route = {
         key: `workspace:${suggestion.workspaceDir}`,
         workspaceDir: suggestion.workspaceDir,
+        standalone: suggestion.standalone === true,
         scoped: false,
       };
     }
@@ -2147,10 +2176,11 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = 
         args: ['run', route.npmScript, '--', filesArg],
       };
     }
+    const args = workspaceTypecheckArgs(route.workspaceDir, route.standalone === true);
     return {
       ...route,
-      command: `npm run --workspace ${route.workspaceDir} typecheck`,
-      args: ['run', '--workspace', route.workspaceDir, 'typecheck'],
+      command: `npm ${args.join(' ')}`,
+      args,
     };
   });
   return { routes, unknown };
