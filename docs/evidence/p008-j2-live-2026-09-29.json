@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-008 J2R (2026-09-29): generic (non-SU) installed identity live journey re-run at current source: launch without SU/work-item fields, no SU-state change, turn-start refresh, bundled model default and recipe reach their consumers, ReAct without a workflow graph",
+  "plan": "su-mode-contract-identity-unification-2026-09-24",
+  "planItem": "P-008",
+  "workItem": "WI-10002965",
+  "parentWorkItem": "WI-10002905",
+  "supersedes": "docs/evidence/p008-j2-live-2026-09-28.json (ran against role-launch-spec.ts blob 8278b8d3; the file has since changed to 377546dd, so that run no longer measures current source)",
+  "evidencePlane": "live",
+  "framework": "operational",
+  "testLayer": "e2e",
+  "rubricCriteria": ["AUTO-BAR-R-5-P-008@3", "AUTO-BAR-R-10-P-008@3"],
+  "operatorPlane": "staging :3170 (papercusp-staging checkout) serving build c6d3f7ed44 during the run (2026-09-29T09:25Z-09:28Z). At c6d3f7ed44, packages/operator-core/lib/role-launch-spec.ts is blob 377546dd09ebe94eccd8f9aec77a2cf2ab4015de and apps/operator/scripts/psu-launcher.mjs is blob 84930f3e3fb7a82db7fa330c2c64c338ac3fac47. Both equal the canonical staging HEAD and working tree at 2026-09-29T15:16Z. Both subjects used mcpTarget spawn-host, so their MCP calls ran on :3170.",
+  "fixture": {
+    "identity": "p008-j2r-generic-domain, installed (attested) under the workspace's .papercusp/blueprints root outside the repo; slot 'domain' (exclusive, replaces the pot-inherited papercusp-engineer domain layer); knobs.aiBackend.default.model = claude-opus-4-8; bundles = [{ kind: recipe, ref: p008-j2r-generic-recipe }]; no workflow graph declared",
+    "recipe": "p008-j2r-generic-recipe, script: return \"from p008 j2r generic identity\"",
+    "installer": ".papercusp/scratch/p008-j2r/install-and-preflight.mts",
+    "preflight": ".papercusp/scratch/p008-j2r/preflight.json: modelDefault claude-opus-4-8, resourceArtifacts 1, promptMentionsRecipe false"
+  },
+  "subject": [
+    {
+      "label": "p008-j2r-subject (fleet-inherited launch)",
+      "ownerId": "su-9beaa821-0ee0-4b95-829c-c727bbce64f0",
+      "advSessionId": 31431,
+      "role": "curator",
+      "stack": ["domain:p008-j2r-generic-domain"],
+      "specificationRevision": "db0345c5fddc7e31a9cef96162cbca8ed94dc303da320ba42c9d17888ec33fde",
+      "stateRevision": "06c18621cd28c16fb57bbb9ab0ecb626d4f26f149ceb2c0bb537ec9085573ed5",
+      "launchedAt": "2026-09-29T09:25:12Z",
+      "command": "psu --launched-by=su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --fleet=r7-journey-0927 --no-picker --account=auto --agent=claude --owner-id=su-9beaa821-0ee0-4b95-829c-c727bbce64f0 --harness=papercusp --headless --role=curator --stack=domain:p008-j2r-generic-domain",
+      "transcript": "~/.papercusp/session-claude/su-9beaa821-0ee0-4b95-829c-c727bbce64f0/projects/-home-<user>-papercupai-workspace-papercusp/c0dc9cc3-8dbe-48dc-af68-c40be2cf41da.jsonl"
+    },
+    {
+      "label": "p008-j2r-subject-indep (independent launch)",
+      "ownerId": "su-a4163faf-f13c-4e6d-b65c-77405d24d732",
+      "advSessionId": 31432,
+      "role": "curator",
+      "stack": ["domain:p008-j2r-generic-domain"],
+      "specificationRevision": "daa92d3ca5f79d5f7d90d73c693205a0dfbb180af5be5a7440124cc6e35dff8f",
+      "stateRevision": "06c18621cd28c16fb57bbb9ab0ecb626d4f26f149ceb2c0bb537ec9085573ed5",
+      "launchedAt": "2026-09-29T09:25:57Z",
+      "command": "psu --launched-by=su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --no-picker --account=auto --agent=claude --owner-id=su-a4163faf-f13c-4e6d-b65c-77405d24d732 --harness=papercusp --headless --role=curator --stack=domain:p008-j2r-generic-domain",
+      "transcript": "~/.papercusp/session-claude/su-a4163faf-f13c-4e6d-b65c-77405d24d732/projects/-home-<user>-papercupai-workspace-papercusp/e5800b72-3b10-432f-aa1b-314333954cf1.jsonl"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "J2R-L1-generic-launch-without-su-assignment-fields",
+      "criteria": ["AUTO-BAR-R-10-P-008@3"],
+      "passed": true,
+      "evidence": "Both subjects launched as role 'curator' (consumes feature:none, plan:none) wearing only the generic identity. Each persisted harness_shared.adv_sessions.launch_spec (rows 31431, 31432) has exactly the keys harnessSlug, role, specificationArtifact, specificationRevision, stack, stateRevision, v, workspaceId: no work-item, fleet, goal or launch-slot field. Launch was not refused for lacking SU fields.",
+      "observed": {
+        "launchSpecKeys": ["harnessSlug", "role", "specificationArtifact", "specificationRevision", "stack", "stateRevision", "v", "workspaceId"],
+        "advSessionIds": [31431, 31432]
+      },
+      "artifact": ".papercusp/scratch/p008-j2r/launch-result.json, launch-indep-result.json"
+    },
+    {
+      "id": "J2R-L2-composing-generic-identity-changes-no-su-state",
+      "criteria": ["AUTO-BAR-R-10-P-008@3"],
+      "passed": true,
+      "evidence": "snapshot.sh captures the launcher SU's control_state (modes, route, scope, stack), its agent_modes, its coord_presence role/fleet/fleetRole, the fleet r7-journey-0927 member list, the workspace operator_quota_overrides and the recipe row count. For the independent launch, pre-indep and post-indep snapshots are identical apart from their capture time. For the fleet-inherited launch, the only differences are the subject joining the fleet roster (from the launcher's own --fleet flag) and the bundled recipe row (0 -> 1); the launcher's control state, modes, presence and quota overrides are unchanged.",
+      "observed": {
+        "independentDiff": [],
+        "fleetInheritedDiff": ["fleet r7-journey-0927 members += su-9beaa821-0ee0-4b95-829c-c727bbce64f0", "recipeRows 0 -> 1"]
+      },
+      "artifact": ".papercusp/scratch/p008-j2r/snap-pre.json, snap-post.json, snap-pre-indep.json, snap-post-indep.json, snapshot.sh"
+    },
+    {
+      "id": "J2R-L3-generic-identity-refreshes-declared-context",
+      "criteria": ["AUTO-BAR-R-10-P-008@3"],
+      "passed": true,
+      "evidence": "A second turn reached the independent subject at 2026-09-29T09:27:22.396Z (turn origin wake-pump, inbox-wake for message P008_J2R_S2). Its native transcript records two UserPromptSubmit hook_additional_context attachments on that turn: a turn-provenance stamp (09:27:22.448Z) and a 13,815-byte block (09:27:23.266Z) carrying a fresh '## Orientation' section and a '## Relevant memory (turn-start delta)' section. The Orientation block lists only other sessions' directives (FYI rows); it carries no work-item claim, loop, fleet or launch-slot assignment for the subject. The WI- ids that appear are citations inside memory excerpts. No CTRL block was emitted on this turn because the subject's control state did not change. The observation is read from the transcript by .papercusp/scratch/p008-j2r/scan-turn-context.mjs, not from the subject's self-report. The subject could not read the P008_J2R_S2 body because curator lacks coord:read, which is the L7 property.",
+      "observed": {
+        "turnAt": "2026-09-29T09:27:22.396Z",
+        "hookAttachments": [
+          { "at": "2026-09-29T09:27:22.448Z", "hookEvent": "UserPromptSubmit", "markers": ["turn-provenance"] },
+          { "at": "2026-09-29T09:27:23.266Z", "hookEvent": "UserPromptSubmit", "bytes": 13815, "markers": ["## Orientation", "## Relevant memory (turn-start delta)"] }
+        ],
+        "suAssignmentFields": []
+      },
+      "artifact": ".papercusp/scratch/p008-j2r/indep-subject-turn2.json, scan-turn-context.mjs, subject transcript"
+    },
+    {
+      "id": "J2R-L4-bundled-model-default-reaches-runtime",
+      "criteria": ["AUTO-BAR-R-5-P-008@3"],
+      "passed": true,
+      "evidence": "Neither launch command passes --model. The compiled configuration carries knobs.aiBackend.default.model = claude-opus-4-8 from the identity (preflight.json). Every assistant message in both subject transcripts records message.model = claude-opus-4-8: 10 messages for su-9beaa821 and 14 for su-a4163faf, with no other model.",
+      "observed": {
+        "configModel": "claude-opus-4-8",
+        "transcriptModels": { "su-9beaa821": { "claude-opus-4-8": 10 }, "su-a4163faf": { "claude-opus-4-8": 14 } }
+      },
+      "artifact": "subject transcripts (see subject[].transcript), .papercusp/scratch/p008-j2r/preflight.json"
+    },
+    {
+      "id": "J2R-L5-bundled-recipe-reaches-its-consumer",
+      "criteria": ["AUTO-BAR-R-5-P-008@3"],
+      "passed": true,
+      "evidence": "The recipe row count for p008-j2r-generic-recipe was 0 before the first launch and 1 after it: launch provisioning wrote the bundled recipe into harness_shared.code_recipes (authorRole blueprint-bundle). The prompt does not name the recipe (preflight promptMentionsRecipe=false). Both subjects retrieved it with recipes:get (ok=true, script text returned), and the independent subject ran it with recipes:run (ok=true, summary 'from p008 j2r generic identity').",
+      "observed": { "recipeRowsBefore": 0, "recipeRowsAfter": 1, "recipesRunSummary": "from p008 j2r generic identity" },
+      "artifact": ".papercusp/scratch/p008-j2r/indep-subject-turn1.json, fleet-subject-turn1.json, snap-pre.json, snap-post.json"
+    },
+    {
+      "id": "J2R-L6-react-launch-without-workflow-graph",
+      "criteria": ["AUTO-BAR-R-5-P-008@3"],
+      "passed": true,
+      "evidence": "The generic identity declares no workflow graph. Both subjects launched, and their transcripts show the model choosing its own tool calls turn by turn: coord:whoami, recipes:get and coord:send for su-9beaa821; recipes:get and recipes:run on turn 1 and coord:inbox then orders:get on turn 2 for su-a4163faf. No workflow runner or graph dispatch appears.",
+      "artifact": "subject transcripts"
+    },
+    {
+      "id": "J2R-L7-composition-grants-no-su-capabilities",
+      "criteria": ["AUTO-BAR-R-10-P-008@3"],
+      "passed": true,
+      "evidence": "The fleet-inherited subject's coord:whoami and coord:send were refused server-side with 'missing_capability: Principal \"system:curator\" lacks capability \"coord:read\"' and '... \"coord:write\"'. The independent subject's coord:inbox and orders:get were refused with the same coord:read refusal. The composed identity carried no SU grant: the sessions kept the curator principal.",
+      "artifact": ".papercusp/scratch/p008-j2r/fleet-subject-turn1.json, indep-subject-turn2.json"
+    }
+  ],
+  "command": [
+    "node --import tsx .papercusp/scratch/p008-j2r/install-and-preflight.mts",
+    "bash .papercusp/scratch/p008-j2r/snapshot.sh pre ; node scripts/mcp-call.mjs capability:launch-agent --json-file .papercusp/scratch/p008-j2r/launch-args.json --client su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --port 3170 ; bash .papercusp/scratch/p008-j2r/snapshot.sh post",
+    "bash .papercusp/scratch/p008-j2r/snapshot.sh pre-indep ; node scripts/mcp-call.mjs capability:launch-agent --json-file .papercusp/scratch/p008-j2r/launch-args-indep.json --client su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --port 3170 ; bash .papercusp/scratch/p008-j2r/snapshot.sh post-indep",
+    "coord:send { to:[su-a4163faf], wake:'required', expects:'action', summary:'P008_J2R_S2' }",
+    "node .papercusp/scratch/p008-j2r/scan-turn-context.mjs <indep transcript> 2026-09-29T09:27:00Z 2026-09-29T09:28:00Z"
+  ],
+  "commandBasis": "Launch request bodies are the launch-args JSON files; launch responses are launch-result.json and launch-indep-result.json. Subject observations come from each subject's native transcript (parse-transcript.mjs for tool calls/results, scan-turn-context.mjs for injected turn-start context). Launch-spec keys come from harness_shared.adv_sessions rows 31431/31432.",
+  "exitCode": 0,
+  "startedAt": "2026-09-29T09:25:12Z",
+  "finishedAt": "2026-09-29T09:27:55Z",
+  "capturedAt": "2026-09-29T15:20:00Z",
+  "notProven": [
+    "R-5 coverage is limited to the resource kinds this identity bundles: a callable recipe and a model default. Tool/provider requirements, rubrics, knowledge, and plan/goal/datatype/event/rule resources were not bundled, so they were not driven live here. Their tree-plane coverage is the integration/unit/mutation bindings on AUTO-BAR-R-5-P-008@3.",
+    "'History' and 'addressing' preservation from R-10 were not snapshotted directly. The snapshot covers the launcher's control state, modes, presence, fleet roster, quota overrides and recipe rows.",
+    "The subject role was curator, not worker: worker consumes feature:required, and psu refuses to launch it without a feature. A feature-bound role would contradict the no-work-item-state requirement.",
+    "No event_wake_deliveries row was found for the turn-2 wake by subscriber id; the delivery is evidenced by the subject transcript's wake-pump-origin turn at 09:27:22Z."
+  ],
+  "observer": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+  "recordedBy": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+  "sourcePaths": ["packages/operator-core/lib/role-launch-spec.ts", "apps/operator/scripts/psu-launcher.mjs"],
+  "summary": "Two headless Claude subjects launched on :3170 (build c6d3f7ed44, current role-launch-spec.ts and psu-launcher.mjs blobs) as role curator wearing only the installed generic identity p008-j2r-generic-domain. Their persisted launch specs carry no work-item, fleet or launch-slot fields. The independent launch changed nothing in the launcher SU's state, quotas or fleet; the fleet-inherited launch changed only the fleet roster (the launcher's own --fleet flag) and provisioned the bundled recipe. Without --model, the identity's bundled default claude-opus-4-8 was the model on all 24 assistant messages. The bundled recipe reached harness_shared.code_recipes and was callable via recipes:get and recipes:run from the agent's own ReAct loop; no workflow graph was declared. A second turn refreshed the subject's Orientation and memory context with no SU assignment fields. The curator principal was refused coord:read and coord:write, so composing the identity granted no SU capability.",
+  "timeBasis": "UTC throughout; snapshot 'at' fields come from Postgres now(); launch times come from launch-started-at files; turn and hook times come from subject transcript timestamps."
+}
