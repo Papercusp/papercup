@@ -2371,6 +2371,9 @@ describe('P-013 (gate-file-level-test-reuse-2026-09-27): gate_health.testPassReu
     timedOut: 0,
     noReport: 0,
     malformed: 0,
+    // WI-10003792: the noReport split, always emitted by the read-side parse.
+    noReportExpected: 0,
+    noReportUnexpected: 0,
     invocations: 1,
     verdict: 'recorded',
     alarm: false,
@@ -2389,6 +2392,12 @@ describe('P-013 (gate-file-level-test-reuse-2026-09-27): gate_health.testPassReu
 
   it('⭐ stores the recorder outcome with the round record (WI-10003603)', async () => {
     await track('not-green', reuse({ recorder }));
+    expect(lastGateHealthWrite()?.testPassReuse).toEqual(reuse({ recorder }));
+  });
+
+  it('a recorder persisted before the noReport split (WI-10003792) is stored with both split counts as 0', async () => {
+    const { noReportExpected: _e, noReportUnexpected: _u, ...legacyRecorder } = recorder;
+    await track('not-green', reuse({ recorder: legacyRecorder }));
     expect(lastGateHealthWrite()?.testPassReuse).toEqual(reuse({ recorder }));
   });
 
