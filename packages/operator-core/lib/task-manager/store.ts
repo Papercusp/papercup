@@ -20,6 +20,7 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { redactSensitiveText } from '../sensitive-text';
 import { readSuperuserToken } from '../superuser-token';
 import { emitTaskTerminalEvent, type TaskTerminalEventEmitter } from './task-terminal-events';
+import { recordAttemptOnClose } from '../verification-attempts/attempt-ledger';
 import {
   TASK_STATES,
   isTerminalState,
@@ -324,6 +325,8 @@ export interface CloseTaskInput {
 export interface CloseTaskEffects {
   /** Test seam; production uses the awaited-event bridge. */
   emitTerminal?: TaskTerminalEventEmitter;
+  /** Test seam; production stamps the slow-attempt record (verification-attempts). */
+  recordAttempt?: typeof recordAttemptOnClose;
 }
 
 function terminalExitCode(terminal: TaskTerminalProvenance, fallback: number | null): number | null {
@@ -426,6 +429,11 @@ export async function closeTask(
     harness_slug: string | null;
     class: string;
     launched_by: string;
+    work_item_id: string | null;
+    log_path: string | null;
+    argv: unknown;
+    started_at: Date;
+    ended_at: Date;
   }>>`
     UPDATE harness_shared.task_ledger
        SET state = ${classified.state},
@@ -452,10 +460,30 @@ export async function closeTask(
            updated_at = now()
      WHERE task_id = ${taskId}
        AND ended_at IS NULL
-    RETURNING task_id, workspace_id, harness_slug, class, launched_by
+    RETURNING task_id, workspace_id, harness_slug, class, launched_by,
+              work_item_id, log_path, argv, started_at, ended_at
   `;
   const closed = rows[0];
   if (!closed) return false;
+  // expensive-verification-loops P-001: a slow work-item attempt gets its outcome and
+  // failure fingerprint stamped on the row. Fail-soft and fire-and-forget; it returns
+  // before any I/O for a row with no work item or under the slow threshold.
+  if (closed.work_item_id) {
+    void (effects.recordAttempt ?? recordAttemptOnClose)(
+      {
+        taskId: closed.task_id,
+        workItemId: closed.work_item_id,
+        state: classified.state,
+        exitCode: classified.exitCode ?? null,
+        exitReason: classified.exitReason ?? null,
+        logPath: closed.log_path,
+        argv: Array.isArray(closed.argv) ? closed.argv.map(String) : [],
+        startedAt: closed.started_at,
+        endedAt: closed.ended_at,
+      },
+      inject ? { sql: inject } : {},
+    );
+  }
   (effects.emitTerminal ?? emitTaskTerminalEvent)({
     taskId: closed.task_id,
     workspaceId: closed.workspace_id,
