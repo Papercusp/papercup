@@ -5428,15 +5428,35 @@ export async function foldPromotedLineageIntoStaging(
             `${stagingBefore}^{tree}`,
           ])
         ).trim();
+        // WI-10003922: build the ours-merge as DATA, never with porcelain `git merge`. Porcelain
+        // merge always runs `git stash create` (builtin/merge.c save_state), which refreshes and
+        // writes the MAIN index — so on the shared canonical tree, where any agent's git command
+        // can hold .git/index.lock, it failed with "fatal: stash failed" even while this held
+        // git-sync (observed 2026-09-29, the manual bridge for EI-24610407938327281). The result
+        // is fully determined — staging's own tree with parents [staging, repairHead] — so
+        // commit-tree + a CAS update-ref produce the identical commit without touching the
+        // index or working tree. checkout-mismatch above already proved HEAD is on branchRef at
+        // stagingBefore, so moving the branch moves HEAD; the CAS refuses if it moved since.
+        const absorbMessage = `green-checkpoint: absorb promoted frozen lineage ${repairHead.slice(0, 12)}`;
+        const absorbCommit = (
+          await runGit(input.integrationRoot, [
+            "commit-tree",
+            beforeTree,
+            "-p",
+            stagingBefore,
+            "-p",
+            repairHead,
+            "-m",
+            absorbMessage,
+          ])
+        ).trim();
         await runGit(input.integrationRoot, [
-          "merge",
-          "--strategy=ours",
-          "--no-ff",
-          "--no-edit",
-          "--no-verify",
+          "update-ref",
           "-m",
-          `green-checkpoint: absorb promoted frozen lineage ${repairHead.slice(0, 12)}`,
-          repairHead,
+          absorbMessage,
+          `refs/heads/${branchRef}`,
+          absorbCommit,
+          stagingBefore,
         ]);
         const stagingAfter = await resolveCommit("HEAD");
         const afterTree = (
