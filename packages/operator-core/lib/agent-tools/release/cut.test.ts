@@ -216,6 +216,23 @@ describe('release:cut — constrained root selector', () => {
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_clean/) });
   });
 
+  it('WI-10003598: a read-only resolution (handoff) accepts the dirty root a finished cut leaves', async () => {
+    const deps = {
+      loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
+      listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
+      // What a finished cut leaves: the moved desktop gitlink and the lockfile.
+      status: () => ' M package-lock.json\n M papercusp-desktop\n',
+      canonicalPath: (candidate: string) => candidate,
+    };
+    const readOnly = await resolveCutRoot('isolated', deps, { readOnly: true });
+    expect(readOnly).toMatchObject({ ok: true });
+    // The same root still refuses a write op, and an unregistered root still refuses a read.
+    expect(await resolveCutRoot('isolated', deps)).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_clean/) });
+    expect(
+      await resolveCutRoot('/unregistered/worktree', deps, { readOnly: true }),
+    ).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_registered/) });
+  });
+
   it('accepts only the exact cutter-owned version residue for a completed-seed retry', async () => {
     const packageHead = '{\n  "name": "desktop",\n  "version": "0.0.17"\n}\n';
     const packageWorktree = '{\n  "name": "desktop",\n  "version": "0.0.18"\n}\n';

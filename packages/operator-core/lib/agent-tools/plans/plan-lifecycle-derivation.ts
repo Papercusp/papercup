@@ -50,6 +50,7 @@ import {
   type PlanLifecycleReconciliation,
   type PlanLifecycleSignals,
 } from '@papercusp/plan-parser';
+import type { GrindingMark } from '../../verification-attempts/plan-grinding';
 
 /** One measured activity timestamp and where it came from. */
 export interface PlanActivitySource {
@@ -287,6 +288,37 @@ export async function gatherPlanLifecycleSignals(
  * missing one.
  */
 export async function derivePlanLifecycleForRead(input: {
+  items: readonly PlanItem[];
+  storedStatus: string | null | undefined;
+  signals: GatherPlanLifecycleSignalsInput;
+  /**
+   * expensive-verification-loops P-002 (R-3): opt-in grinding reader; plans:get passes
+   * readGrindingItems. Absent → no `grinding` field (not measured), so pure callers and
+   * unit tests stay DB-free.
+   */
+  readGrinding?: (q: { workspaceId: string; planSlug: string; itemIds: readonly string[] }) => Promise<
+    GrindingMark[] | null
+  >;
+}): Promise<PlanLifecycleReconciliation & { grinding?: GrindingMark[] | null }> {
+  const reconciled = await deriveReconciledLifecycle(input);
+  if (!input.readGrinding) return reconciled;
+  const open = input.items
+    .filter((it) => it.storedStatus !== 'done' && it.storedStatus !== 'dropped')
+    .map((it) => it.id);
+  let grinding: GrindingMark[] | null = null;
+  try {
+    grinding = await input.readGrinding({
+      workspaceId: input.signals.workspaceId,
+      planSlug: input.signals.planSlug,
+      itemIds: open,
+    });
+  } catch {
+    grinding = null;
+  }
+  return { ...reconciled, grinding };
+}
+
+async function deriveReconciledLifecycle(input: {
   items: readonly PlanItem[];
   storedStatus: string | null | undefined;
   signals: GatherPlanLifecycleSignalsInput;

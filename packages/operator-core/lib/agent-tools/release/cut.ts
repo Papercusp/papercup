@@ -145,6 +145,13 @@ export interface CutRootResolutionOptions {
   /** A completed seed may be reused only when the remaining tracked edits are the
    * exact idempotent version bump written by release-local.sh for this version. */
   reuseSeedVersion?: string;
+  /**
+   * WI-10003598: a read-only op (handoff) inspects a finished cut, and a
+   * finished cut always leaves its root dirty (the version bump, the moved gitlink and
+   * tracked sidecar build output). They skip the clean-worktree gate that protects the
+   * write ops; the root must still be a registered cut worktree.
+   */
+  readOnly?: boolean;
 }
 
 export const RELEASE_RESUME_VERSION_PATHS = [
@@ -463,7 +470,7 @@ export async function resolveCutRoot(
       reason: `root_unreadable — could not inspect git status for '${selected.path}': ${err instanceof Error ? err.message : String(err)}`,
     };
   }
-  if (dirty.trim().length > 0) {
+  if (dirty.trim().length > 0 && !options.readOnly) {
     if (!options.reuseSeedVersion) {
       return {
         ok: false,
@@ -914,7 +921,7 @@ export default defineTool({
           reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix.`,
         });
       }
-      const selected = await resolveCutRoot(args.root);
+      const selected = await resolveCutRoot(args.root, {}, { readOnly: true });
       if (!selected.ok) return json({ ok: false, op: 'handoff', refused: true, reason: selected.reason });
       const h = collectHandoff(args.version, { root: selected.desktopRoot });
       if (!h.found) {
