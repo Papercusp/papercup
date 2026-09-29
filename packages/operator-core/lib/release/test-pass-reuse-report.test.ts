@@ -258,15 +258,19 @@ describe('pass-proof recorder outcome (WI-10003603)', () => {
       )
       .join('\n');
   /** One affected-tests invocation's recorder output, as the runner prints it. */
-  const printed = (tasks: Record<string, Line[] | null>) => {
+  // `expects` stamps the runner's arming-time report expectation (WI-10003792) onto a task's read.
+  const printed = (tasks: Record<string, Line[] | null>, expects: Record<string, boolean> = {}) => {
     const reads = Object.entries(tasks).map(([task, lines]) => ({
       task,
-      read: readExecutedMapResults('/unused', {
-        readFile: () => {
-          if (lines === null) throw new Error('ENOENT');
-          return resultFile(lines);
-        },
-      }),
+      read: {
+        ...readExecutedMapResults('/unused', {
+          readFile: () => {
+            if (lines === null) throw new Error('ENOENT');
+            return resultFile(lines);
+          },
+        }),
+        expectsReport: expects[task] ?? null,
+      },
     }));
     return [
       ...reads.flatMap(({ task, read }) => [
