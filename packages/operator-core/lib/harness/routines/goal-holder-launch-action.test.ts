@@ -170,6 +170,33 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
     expect(kickoff).toContain('history-for-goal-1');
   });
 
+  // R-4 / D-032: a relaunched holder must stay in its goal's experiment arm.
+  it("keeps a 'baseline' goal in its arm on relaunch: no portfolio, no history, no history read", async () => {
+    const base = resolution().goalBrief!;
+    const d = deps(resolution({ settings: { behaviorArm: 'baseline' }, goalBrief: { ...base, portfolio: portfolio() } }));
+    await launchGoalHolderSession(
+      { workspaceId: 'workspace-1', goalId: 'goal-1', harnessSlug: 'hive-1', kickoffPrompt: 'recovery context' },
+      d,
+    );
+    const kickoff = d.launch.mock.calls[0]?.[0]?.kickoffPrompt as string;
+    expect(kickoff).toContain('recovery context');
+    expect(kickoff).not.toContain('GOAL PORTFOLIO SNAPSHOT');
+    expect(kickoff).not.toContain('GOAL HISTORY');
+    expect(d.readHistory).not.toHaveBeenCalled();
+  });
+
+  it("'brief-only' relaunch keeps the full brief (only per-turn reminders are withheld)", async () => {
+    const base = resolution().goalBrief!;
+    const d = deps(resolution({ settings: { behaviorArm: 'brief-only' }, goalBrief: { ...base, portfolio: portfolio() } }));
+    await launchGoalHolderSession(
+      { workspaceId: 'workspace-1', goalId: 'goal-1', harnessSlug: 'hive-1', kickoffPrompt: 'recovery context' },
+      d,
+    );
+    const kickoff = d.launch.mock.calls[0]?.[0]?.kickoffPrompt as string;
+    expect(kickoff).toContain('GOAL PORTFOLIO SNAPSHOT —');
+    expect(kickoff).toContain('GOAL HISTORY — own and bounded descendant evidence');
+  });
+
   it('appends the canonical portfolio to an explicit recovery kickoff exactly once', async () => {
     const base = resolution().goalBrief!;
     const d = deps(resolution({ goalBrief: { ...base, portfolio: portfolio() } }));

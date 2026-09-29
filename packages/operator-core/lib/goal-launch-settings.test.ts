@@ -323,6 +323,35 @@ describe('resolveGoalPotPlacementAuthority', () => {
   });
 });
 
+describe('R-4 / D-032 behaviour-experiment arm', () => {
+  it('accepts each closed arm and null, and refuses an unknown arm', () => {
+    for (const behaviorArm of ['baseline', 'brief-only', 'full', null] as const) {
+      expect(goalLaunchSettingsSchema.safeParse({ behaviorArm }).success).toBe(true);
+    }
+    expect(goalLaunchSettingsSchema.safeParse({ behaviorArm: 'no-brief' }).success).toBe(false);
+  });
+
+  it("resolves absent, null and unknown values to 'full' (today's behaviour)", () => {
+    expect(resolveGoalBehaviorArm(null)).toBe('full');
+    expect(resolveGoalBehaviorArm({})).toBe('full');
+    expect(resolveGoalBehaviorArm({ behaviorArm: null })).toBe('full');
+    expect(resolveGoalBehaviorArm({ behaviorArm: 'bogus' })).toBe('full');
+    expect(resolveGoalBehaviorArm({ behaviorArm: 'baseline' })).toBe('baseline');
+  });
+
+  it('maps each arm to exactly what it withholds', () => {
+    expect([goalArmWithholdsBrief('full'), goalArmWithholdsReminders('full')]).toEqual([false, false]);
+    expect([goalArmWithholdsBrief('brief-only'), goalArmWithholdsReminders('brief-only')]).toEqual([false, true]);
+    expect([goalArmWithholdsBrief('baseline'), goalArmWithholdsReminders('baseline')]).toEqual([true, true]);
+  });
+
+  it('reads the arm from the goal row and fails soft toward full on a read error', async () => {
+    await expect(goalWithholdsTurnStartReminders('g', async () => ({ settings: { behaviorArm: 'brief-only' } }))).resolves.toBe(true);
+    await expect(goalWithholdsTurnStartReminders('g', async () => ({ settings: null }))).resolves.toBe(false);
+    await expect(goalWithholdsTurnStartReminders('g', async () => { throw new Error('pg down'); })).resolves.toBe(false);
+  });
+});
+
 describe('goalLaunchSettingsSchema', () => {
   it('accepts a full document', () => {
     const doc: GoalLaunchSettings = {
