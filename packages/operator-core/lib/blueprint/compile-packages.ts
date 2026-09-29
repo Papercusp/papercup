@@ -40,6 +40,11 @@ import {
   parseCapabilityClassRef,
   type ProviderBindingRow,
 } from '../capability-class-registry-store';
+import {
+  resolveIdentityClassProvider,
+  type IdentityClassProviderResolution,
+} from '../agent-identities/class-provider';
+import { compileJsonSchema } from '../json-schema-validation';
 
 type PackageRequest = { kind: string; ref: string; version?: string };
 export type BlueprintPackageResolver = (request: PackageRequest) => Promise<ResolvedPackageInput | null>;
@@ -47,6 +52,53 @@ export type CapabilityProviderResolver = (
   classRef: string,
   potSlug: string,
 ) => Promise<ProviderBindingRow | null>;
+/** Resolve one portable context capability (class@major + verb) for a pot. */
+export type ContextCapabilityResolver = (request: {
+  potSlug: string;
+  classRef: string;
+  verb: string;
+}) => Promise<IdentityClassProviderResolution>;
+
+type ContextContributionDeclaration = {
+  id: string;
+  inputKind: string;
+  ref: string;
+  verb?: string;
+  availability?: 'required' | 'optional';
+};
+
+/** The contract owns the output shape, so a context capability can only bind
+ * when that schema is a compilable, synchronous JSON Schema. */
+function contextOutputSchemaRefusal(schema: Record<string, unknown>): string | null {
+  try {
+    const validate = compileJsonSchema(schema);
+    return '$async' in validate && validate.$async ? 'output-schema-async' : null;
+  } catch {
+    return 'output-schema-invalid';
+  }
+}
+
+/** Pin a resolved context capability: the exact class@version and conformed
+ * provider, plus the contract verb, output schema and explicit execution kind. */
+export function contextCapabilityInput(
+  resolution: Extract<IdentityClassProviderResolution, { ok: true }>,
+): ResolvedCapabilityProviderInput {
+  const { provider } = resolution;
+  if (provider.providerKind === 'operation' || provider.latencyClass !== 'sync') {
+    throw new CompositionCompilerError('input-invalid',
+      'context capability providers must be synchronous tool or recipe bindings', resolution.requestedClassRef);
+  }
+  return {
+    ...capabilityProviderInput({ ...provider, classRef: resolution.classRef }),
+    context: {
+      requestedRef: resolution.requestedClassRef,
+      verb: resolution.verb,
+      providerKind: provider.providerKind,
+      latencyClass: 'sync',
+      outputSchema: resolution.contract.outputSchema,
+    },
+  };
+}
 
 export function capabilityProviderInput(
   binding: ProviderBindingRow,
@@ -154,6 +206,8 @@ export interface CompileBlueprintPackagesOptions {
   /** Exact target pot; inferred from the harness registry when omitted. */
   potSlug?: string;
   resolveCapabilityProvider?: CapabilityProviderResolver;
+  /** Context capabilities resolve through the pot's attested class choices by default. */
+  resolveContextCapability?: ContextCapabilityResolver;
   /** Prompt, addressed-document and versioned policy inputs belong to this same boundary. */
   input?: Omit<CompositionCompilerInput, 'source' | 'blueprint' | 'loaded' | 'sourcePath'>;
 }
@@ -225,8 +279,10 @@ export async function compileBlueprintWithPackages(
   const optionalClasses = (blueprint.grants?.optional ?? [])
     .filter((ref) => !requiredClasses.has(ref));
   const classRefs = [...requiredClasses, ...optionalClasses];
+  const contextContributions = ((blueprint as { contributions?: readonly ContextContributionDeclaration[] })
+    .contributions ?? []).filter((entry) => entry.inputKind === 'capability-provider' && entry.verb !== undefined);
   let resolvedPotSlug = options.potSlug;
-  if (!resolvedPotSlug && classRefs.length > 0) {
+  if (!resolvedPotSlug && (classRefs.length > 0 || contextContributions.length > 0)) {
     const pots = await resolvePotSlugsForHarnesses(options.workspaceId, [options.harnessSlug]);
     resolvedPotSlug = pots[0] ?? options.harnessSlug;
   }
@@ -259,6 +315,32 @@ export async function compileBlueprintWithPackages(
       capabilityProviders.push(capabilityProviderInput(binding));
     }
   }
+  // Context capabilities (P-004): each declared class@major + verb resolves to the
+  // newest stable version THIS pot selected, its passing conformed provider, and the
+  // contract's output schema. Unknown, unbound, unconformed, async or schema-less
+  // classes never bind silently: required → compile refusal; optional → an explicit
+  // `unavailable` omission receipt naming the resolver code.
+  const resolveContextCapability: ContextCapabilityResolver = options.resolveContextCapability ??
+    ((request) => resolveIdentityClassProvider(getOrgPg().sql, { workspaceId: options.workspaceId, ...request }));
+  const callerOmissions = new Set((options.input?.contributionOmissions ?? []).map((omission) => omission.id));
+  const contextOmissions: Array<{ id: string; reason: 'unavailable'; errorRef: string }> = [];
+  for (const contribution of contextContributions) {
+    if (callerOmissions.has(contribution.id)) continue;
+    const resolution: IdentityClassProviderResolution = resolvedPotSlug
+      ? await resolveContextCapability({ potSlug: resolvedPotSlug, classRef: contribution.ref, verb: contribution.verb! })
+      : { ok: false, requestedClassRef: contribution.ref, code: 'class-unbound' };
+    const code = resolution.ok ? contextOutputSchemaRefusal(resolution.contract.outputSchema) : resolution.code;
+    if (resolution.ok && !code) {
+      capabilityProviders.push(contextCapabilityInput(resolution));
+      continue;
+    }
+    if (contribution.availability === 'optional') {
+      contextOmissions.push({ id: contribution.id, reason: 'unavailable', errorRef: `capability-class:${code}` });
+      continue;
+    }
+    throw new CompositionCompilerError('input-invalid',
+      `context capability ${contribution.ref}#${contribution.verb} cannot bind: ${code}`, contribution.id);
+  }
   let memoryTarget = options.memoryTarget;
   if (!memoryTarget && packages.some((pin) => pin.packageKind === 'knowledge-pack')) {
     const pots = await resolvePotSlugsForHarnesses(options.workspaceId, [options.harnessSlug]);
@@ -288,6 +370,9 @@ export async function compileBlueprintWithPackages(
       ...(options.input?.settings ?? []),
       { ref: 'bundle-scope', revision: '1', value: scope },
     ],
+    ...(contextOmissions.length ? {
+      contributionOmissions: [...(options.input?.contributionOmissions ?? []), ...contextOmissions],
+    } : {}),
   });
 }
 
