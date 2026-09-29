@@ -55,13 +55,13 @@ describe('capability provider execution attestation (real PG)', () => {
 
   afterAll(async () => { await db?.cleanup(); });
 
-  async function insertRun(id: string, kind: string, latency: string, passed = true) {
+  async function insertRun(id: string, kind: string, latency: string, passed = true, report: object = {}) {
     await db.sql`
       INSERT INTO harness_shared.capability_class_conformance_runs
         (id, workspace_id, class_id, class_version, provider_package, provider_version,
          registry_revision, verb_bindings, structural_passed, report, provider_kind, latency_class)
       VALUES (${id}, 'ws-execution', 'context.notes', '1.0.0', ${id}, '1.0.0',
-        'registry-1', '{"read":"notes:read"}'::jsonb, ${passed}, '{}'::jsonb, ${kind}, ${latency})`;
+        'registry-1', '{"read":"notes:read"}'::jsonb, ${passed}, ${db.sql.json(report as never)}, ${kind}, ${latency})`;
   }
 
   async function insertProvider(id: string, kind: string, latency: string) {
@@ -263,4 +263,21 @@ describe('capability provider execution attestation (real PG)', () => {
       })).toMatchObject({ ok: false, code });
     },
   );
+
+  it('admits a recipe provider only with inspected evidence for the requested verb (P-013)', async () => {
+    const id = 'inspected-recipe';
+    const evidence = { ok: true, recipe: { id: 'notes:read', revision: 'a'.repeat(64) },
+      inspectionPin: { sourceSha256: 'b'.repeat(64), bindingsSha256: 'c'.repeat(64), recipeRevision: 'a'.repeat(64) },
+      toolNames: ['notes:read'], requiredCapabilities: ['notes:read'], outputSchema: { type: 'string' } };
+    await insertRun(id, 'recipe', 'sync', true, { schemaVersion: 'capability-class-recipe-v1', recipes: { read: evidence } });
+    await insertProvider(id, 'recipe', 'sync');
+    await insertPot(id, 'recipe', 'sync');
+    const request = { workspaceId: 'ws-execution', potSlug: id, classRef: 'context.notes@1', verb: 'read' };
+    const resolved = await resolveIdentityClassProvider(db.sql, request);
+    expect(resolved).toMatchObject({ ok: true, verb: 'read',
+      provider: { providerKind: 'recipe', recipeInspections: { read: evidence } } });
+    // Evidence for another verb does not admit this one.
+    expect(await resolveIdentityClassProvider(db.sql, { ...request, verb: 'summary' }))
+      .toMatchObject({ ok: false, code: 'recipe-unavailable' });
+  });
 });
