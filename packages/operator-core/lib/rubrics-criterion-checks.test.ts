@@ -23,6 +23,7 @@ import {
   evaluateCriterionCargoChecks,
   evaluateCriterionTestChecks,
   evaluateCriterionCoverageChecks,
+  subjectPlanAllowsPlannedPaths,
   type CriterionCheckRunner,
   type CriterionCargoCheckRunner,
   type CoverageMeasurement,
@@ -160,6 +161,82 @@ describe('rubricCriterionCheckSchema (P-011 schema)', () => {
     expect(
       effectiveCriterionInstrumentKey({ check: testsCheck(['a.test.ts']), instrumentKey: 'legacy-field' }),
     ).toBe('legacy-field');
+  });
+});
+
+// ── EI-24372605712471072: PLANNED paths on a subject plan that has not started ──
+describe('allowPlannedPaths — a pre-start BAR may name its future test file', () => {
+  const future = 'packages/x/written-by-the-plan.test.ts';
+
+  it('subjectPlanAllowsPlannedPaths admits only the un-started statuses', () => {
+    expect(subjectPlanAllowsPlannedPaths('draft')).toBe(true);
+    expect(subjectPlanAllowsPlannedPaths('ready')).toBe(true);
+    for (const started of ['active', 'awaiting-acceptance', 'shipped', 'done', 'superseded', '', null, undefined]) {
+      expect(subjectPlanAllowsPlannedPaths(started)).toBe(false);
+    }
+  });
+
+  it('accepts a missing, relative, test-shaped file as planned and names it', () => {
+    const v = validateCriterionCheckPaths([{ key: 'k', check: testsCheck([future]) }], { root, allowPlannedPaths: true });
+    expect(v.ok).toBe(true);
+    expect(v.failures).toEqual([]);
+    expect(v.planned).toEqual([expect.objectContaining({ criterionKey: 'k', path: future })]);
+    expect(v.normalizedByKey.k).toEqual([future]);
+  });
+
+  it('without the allowance (grading, or a started plan) the same file still refuses', () => {
+    const strict = validateCriterionCheckPaths([{ key: 'k', check: testsCheck([future]) }], { root });
+    expect(strict.ok).toBe(false);
+    expect(strict.planned).toEqual([]);
+    expect(strict.failures[0]?.reason).toContain('does not resolve');
+    expect(() => assertCriterionCheckPathsResolve([{ key: 'k', check: testsCheck([future]) }], { root })).toThrowError(
+      /invalid_args:.*written-by-the-plan\.test\.ts/s,
+    );
+    // POSITIVE CONTROL: the assert form returns the planned list with the allowance on.
+    expect(
+      assertCriterionCheckPathsResolve([{ key: 'k', check: testsCheck([future]) }], { root, allowPlannedPaths: true })
+        .planned.map((p) => p.path),
+    ).toEqual([future]);
+  });
+
+  it('still refuses what can never become valid: absolute, escaping, non-test, and directory paths', () => {
+    const v = validateCriterionCheckPaths(
+      [
+        { key: 'abs', check: testsCheck([join(root, future)]) },
+        { key: 'escape', check: testsCheck(['../outside/never.test.ts']) },
+        { key: 'shape', check: testsCheck(['packages/x/future-script.sh']) },
+        { key: 'dir', check: testsCheck(['packages/x']) },
+      ],
+      { root, allowPlannedPaths: true },
+    );
+    expect(v.ok).toBe(false);
+    expect(v.planned).toEqual([]);
+    expect(v.failures.map((f) => f.criterionKey).sort()).toEqual(['abs', 'dir', 'escape', 'shape']);
+    expect(v.failures.find((f) => f.criterionKey === 'shape')?.reason).toContain('not a test file');
+  });
+
+  it('a Cargo manifest the plan will create is planned; an existing path is not re-labelled', () => {
+    const v = validateCriterionCheckPaths(
+      [{ key: 'crate', check: { kind: 'cargo', manifestPath: 'apps/new-crate/Cargo.toml', sourceFiles: ['apps/tui/src/app.rs'] } }],
+      { root, allowPlannedPaths: true },
+    );
+    expect(v.ok).toBe(true);
+    expect(v.planned.map((p) => [p.path, p.checkKind])).toEqual([['apps/new-crate/Cargo.toml', 'cargo']]);
+  });
+
+  it('root selection stays strict: the allowance never chooses a tree where real files look planned', () => {
+    // Requested root is a phantom; the canonical root holds the file. The strict
+    // selection must still pick the canonical root, so nothing is reported as planned.
+    const phantom = join(tmpdir(), 'rubric-checks-phantom-root-does-not-exist');
+    const selected = selectCriterionCheckRoot(
+      [{ key: 'k', check: testsCheck(['packages/x/real.test.ts']) }],
+      phantom,
+      root,
+      { allowPlannedPaths: true },
+    );
+    expect(selected.source).toBe('canonical-repo');
+    expect(selected.validation.ok).toBe(true);
+    expect(selected.validation.planned).toEqual([]);
   });
 });
 

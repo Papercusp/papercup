@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-319 live self-serve hosted signup acceptance on app.papercusp.com (real WorkOS identity, headless browser)",
+  "framework": "shell",
+  "command": [
+    ".papercusp/scratch/p319-live/run-live.sh",
+    ".papercusp/scratch/p319-live/credentials-2.json",
+    "live2"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-29T16:32:03Z",
+  "finishedAt": "2026-09-29T16:32:54Z",
+  "summary": "5/5 live steps passed: ordinary sign-in refused with membership_required and zero admission writes; explicit sign-up admitted exactly one active owner membership in one new organization and landed on portal onboarding under the initial session; operator surface refused the hosted principal (403); sign-up replay reused the original admission with no new ledger row; ordinary sign-in then admitted the member.",
+  "plan": "byoc-cloud-workspaces-gcp-aws-azure-2026-08-22",
+  "workItem": "WI-10002240",
+  "environment": {
+    "origin": "https://app.papercusp.com",
+    "service": "papercusp-cloud-portal.service (:3801, prebundled @portal/hosted-auth-runtime)",
+    "portalRelease": "diTup4-btEtYvhWiPs54V-20260929162903685-716104-27c36a32",
+    "selfSignupSourceCommit": "65e00f7fb6",
+    "identityProvider": "WorkOS AuthKit (mutual-marigold-79-staging), email and password method",
+    "identitySubject": "user_01M3Q03A6W4CPPBW3NWF73TXNE",
+    "identityEmail": "<redacted controlled test address>",
+    "browser": "verdict headless Chromium, fresh profile per run"
+  },
+  "assertions": [
+    {
+      "id": "SIGNIN-NO-ADMISSION-P319",
+      "passed": true,
+      "evidencePlane": "live",
+      "evidence": "ordinary sign-in landed on https://app.papercusp.com/?hosted_auth_error=membership_required&hosted_auth_recovery=1; census after: external_identities=0 hosted_users=0 memberships=0 signup_attempts=0 hosted_sessions_live=0"
+    },
+    {
+      "id": "SIGNUP-OWNER-P319",
+      "passed": true,
+      "evidencePlane": "live",
+      "evidence": "after Create account (intent=sign-up): memberships=1 (owner/active/organization_bootstrap org=b5fff314-f02e-4533-a1ec-f0c9dba65262 orgStatus=active), distinct_orgs=1, signup_attempts=completed, legal=terms@terms-2026-09,privacy@privacy-2026-09"
+    },
+    {
+      "id": "SIGNUP-ONBOARDING-P319",
+      "passed": true,
+      "evidencePlane": "live",
+      "evidence": "landed on https://app.papercusp.com/ showing 'Set up your portal' onboarding (Organization, Workspace, Google connection, Home; links Create workspace and Continue to Home); /api/hosted/auth/session -> 200 org=b5fff314-f02e-4533-a1ec-f0c9dba65262 workspace=null subject=user_01M3Q03A6W4CPPBW3NWF73TXNE"
+    },
+    {
+      "id": "SIGNUP-IDEMPOTENT-P319",
+      "passed": true,
+      "evidencePlane": "live",
+      "evidence": "sign-up replay: memberships=1 distinct_orgs=1 signup_attempts=1 (completed)"
+    },
+    {
+      "id": "WI-10002396-operator-surface",
+      "passed": true,
+      "evidencePlane": "live",
+      "evidence": "GET /api/workspace-stats as the hosted principal -> 403 {\"ok\":false,\"error\":\"operator_surface_requires_local_profile\"}"
+    },
+    {
+      "id": "member-sign-in",
+      "passed": true,
+      "evidencePlane": "live",
+      "evidence": "ordinary sign-in after admission landed on https://app.papercusp.com/ with no hosted_auth_error"
+    }
+  ],
+  "observations": {
+    "0-baseline": { "external_identities": 0, "hosted_users": 0, "memberships": 0, "distinct_orgs": 0, "hosted_sessions_live": 0, "signup_attempts": 0, "legal_acceptances": 0 },
+    "1-signin": { "external_identities": 0, "hosted_users": 0, "memberships": 0, "distinct_orgs": 0, "hosted_sessions_live": 0, "signup_attempts": 0, "legal_acceptances": 0 },
+    "2-signup": { "external_identities": 1, "hosted_users": 1, "memberships": 1, "membership": "owner/active/organization_bootstrap", "organization": "b5fff314-f02e-4533-a1ec-f0c9dba65262", "distinct_orgs": 1, "hosted_sessions_live": 1, "signup_attempts": 1, "signup_attempt_status": "completed", "legal_acceptances": 2 },
+    "4-replay": { "external_identities": 1, "hosted_users": 1, "memberships": 1, "distinct_orgs": 1, "hosted_sessions_live": 1, "signup_attempts": 1, "signup_attempt_status": "completed", "legal_acceptances": 2 },
+    "5-member": { "external_identities": 1, "hosted_users": 1, "memberships": 1, "distinct_orgs": 1, "hosted_sessions_live": 1, "signup_attempts": 1, "legal_acceptances": 2 }
+  },
+  "priorDefect": {
+    "run": "live1 (identity user_01M3PZJ50480TJS3AC1C4GAPFA, 2026-09-29T16:21-16:26Z)",
+    "finding": "a sign-up replay by an already-linked identity left a committed 'pending' hosted_signup_attempts row; recordAttempt wrote the ledger row before its linked-identity check",
+    "fix": "self-signup.ts recordAttempt checks the linked identity before any ledger write (commit 65e00f7fb6); regression test self-signup.integration.test.ts 'does not rate-limit a returning user' fails before the fix (test run 20095658) and passes after (20095671)",
+    "verifiedLive": "live2 step 4: signup_attempts stays at 1 after the replay"
+  }
+}
