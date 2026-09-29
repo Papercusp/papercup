@@ -4,11 +4,15 @@ import {
   escapeHtml,
   formatBytes,
   groupReleaseCards,
+  INSTRUCTIONS_BODY_ID,
+  INSTRUCTIONS_LOADER_ATTR,
+  INSTRUCTIONS_PAGE_PATH,
   MAX_RELEASE_HISTORY_INDEX_BYTES,
   planPagePath,
   renderHistoryJson,
   renderHoldingHtml,
   renderIndexHtml,
+  renderInstructionsHtml,
   renderPlanPageHtml,
   renderProjectHistoryPage,
   renderWorkItemPageHtml,
@@ -25,6 +29,10 @@ import { releaseHistoryStem } from './release-project-history';
 
 const ANALYTICS: Analytics = { host: 'https://flags.example.com', projectKey: 'phc_test' };
 const GENERATED_AT = new Date('2026-07-13T00:00:00Z');
+
+/** The index minus its Instructions loader — the one script that is not the beacon (owner #868). */
+const LOADER_RE = new RegExp(`<script ${INSTRUCTIONS_LOADER_ATTR}>[\\s\\S]*?</script>`);
+const withoutInstructionsLoader = (html: string) => html.replace(LOADER_RE, '');
 
 function row(over: Partial<ReleaseRow> = {}): ReleaseRow {
   return {
@@ -262,7 +270,7 @@ describe('the beacon — the leak detector [owner: "collect stats on visits to m
    * entirely. The question was always "what does the SCRIPT read", so ask that.
    */
   const beaconOf = (html: string) => {
-    const m = /<script[^>]*>([\s\S]*?)<\/script>/.exec(html);
+    const m = /<script[^>]*>([\s\S]*?)<\/script>/.exec(withoutInstructionsLoader(html));
     return m ? m[1] : '';
   };
 
@@ -406,8 +414,11 @@ describe('PostHog parity with papercusp.com [owner 2026-07-27: "the same sort of
     }
   });
 
-  it('omits the script ENTIRELY when no analytics are configured', () => {
-    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null });
+  it('omits the beacon ENTIRELY when no analytics are configured', () => {
+    // The Instructions loader (owner #868) is the one other script; it is not analytics.
+    const html = withoutInstructionsLoader(
+      renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: null }),
+    );
     expect(html).not.toContain('<script');
     expect(html).not.toContain('fetch(');
   });
@@ -499,10 +510,16 @@ describe('links never carry the secret', () => {
   // Both are asserted, so this is a stricter guard than the line it replaced —
   // not a relaxed one. If you are here because you added a link and it failed:
   // that is the guard working. Add the host on purpose, keep the rel.
+  // The index AND instructions.html: since owner #868 the Instructions text (and
+  // its outbound links) lives on its own page, under the same secret path.
+  const publishedPages = () => [
+    renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS }),
+    renderInstructionsHtml({ generatedAt: GENERATED_AT }),
+  ];
+
   it('only links out to hosts we chose on purpose', () => {
-    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
-    const absolute = absoluteAnchors(html);
-    expect(absolute.length).toBeGreaterThan(0); // the section is supposed to have links
+    const absolute = publishedPages().flatMap(absoluteAnchors);
+    expect(absolute.length).toBeGreaterThan(0); // the instructions are supposed to have links
     for (const tag of absolute) {
       const href = /href="([^"]+)"/.exec(tag)![1];
       expect(ALLOWED_EXTERNAL_HOSTS).toContain(new URL(href).host);
@@ -515,8 +532,7 @@ describe('links never carry the secret', () => {
     // one line in a shell() that also renders plan pages, and if it is ever
     // dropped or overridden, the secret would ride out in the Referer header of
     // the very first Discord click. Two independent mechanisms, on purpose.
-    const html = renderIndexHtml([hydrated()], { generatedAt: GENERATED_AT, analytics: ANALYTICS });
-    for (const tag of absoluteAnchors(html)) {
+    for (const tag of publishedPages().flatMap(absoluteAnchors)) {
       expect(tag).toContain('rel="noopener noreferrer"');
     }
   });
@@ -671,8 +687,9 @@ describe('the homepage demo video [owner 2026-07-27: "add the same video that is
   });
 
   it('needs no JavaScript to appear — <video> is markup, like everything else here', () => {
-    // analytics:null ⇒ no script on the page at all, and the video still renders.
-    expect(html).not.toContain('<script');
+    // analytics:null ⇒ no beacon, and the video still renders. (The Instructions
+    // loader is unrelated to the video and is stripped for this check.)
+    expect(withoutInstructionsLoader(html)).not.toContain('<script');
     expect(html).toContain('<video');
   });
 
@@ -704,34 +721,63 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     expect(instructions).toBeLessThan(firstRelease);
   });
 
-  it('makes psu in a terminal the main way, with the GUI HUD tab as the alternative [owner 2026-09-28 #839]', () => {
-    // Setup still happens once in the GUI (psu has no backend/embeddings picker)...
-    expect(html).toContain('Open Papercusp GUI once');
-    // ...then psu is THE way to work, and the GUI is the named alternative.
-    expect(html).toContain('<strong>Open a terminal and run <code>psu</code>.</strong> This is the main way');
-    expect(html).toContain('Prefer the GUI? Open the <strong>HUD</strong> tab');
-    // The previous GUI-first framing, where psu was only the fallback, must not come back.
-    expect(html).not.toContain('Prefer the terminal?');
-    // The retired "GUI not ready, use psu" callout must not come back.
-    expect(html).not.toContain('The GUI is not ready yet');
-    expect(html).not.toContain('THE GUI NOT READY YET');
+  // The instructions TEXT lives only on instructions.html [owner 2026-09-28 #868].
+  const page = renderInstructionsHtml({ generatedAt: GENERATED_AT });
+
+  it('the index does NOT carry the instructions text — no release cut can change or roll it back [owner #868]', () => {
+    // The 0.0.24 publish rendered the index from a checkout pinned before that day's
+    // instruction edits, and the live text reverted (EI-24562046738478155). If the
+    // text is back in the index, a release is back in charge of it.
+    for (const text of ['Install both apps', 'Agent modes', 'EmbeddingGemma', "Don't like something about Papercusp?"]) {
+      expect(html).not.toContain(text);
+    }
+    // The section loads the separately-published page instead...
+    expect(html).toContain(`id="${INSTRUCTIONS_BODY_ID}"`);
+    expect(html).toContain(`<script ${INSTRUCTIONS_LOADER_ATTR}>`);
+    expect(html).toContain(`fetch("${INSTRUCTIONS_PAGE_PATH}"`);
+    // ...by a RELATIVE path: the base path is the secret.
+    expect(INSTRUCTIONS_PAGE_PATH).toBe('instructions.html');
   });
 
-  it('renders the setup steps as real markup — the page must work with JS disabled', () => {
-    // Same rule as the rest of the page: nothing load-bearing may depend on a
-    // script. The markdown is rendered at GENERATION time, so the steps are here.
-    expect(html).toContain('<ol>');
-    expect(html).toContain('<strong>Install both apps</strong>');
-    expect(html).toContain('EmbeddingGemma + Harrier');
+  it('without JavaScript the section is a link to the same instructions', () => {
+    expect(withoutInstructionsLoader(html)).toContain(`<a href="${INSTRUCTIONS_PAGE_PATH}">Read the setup instructions</a>`);
+  });
+
+  it('instructions.html is the page the loader reads: same element id, and a way back to the downloads', () => {
+    expect(page).toContain(`<div class="prose" id="${INSTRUCTIONS_BODY_ID}">`);
+    expect(page).toContain('href="index.html"');
+    // An unlisted page like the rest, with no script of its own (not even the beacon).
+    expect(page).toContain('noindex');
+    expect(page).toContain('name="referrer" content="no-referrer"');
+    expect(page).not.toContain('<script');
+  });
+
+  it('makes psu in a terminal the main way, with the GUI HUD tab as the alternative [owner 2026-09-28 #839]', () => {
+    // Setup still happens once in the GUI (psu has no backend/embeddings picker)...
+    expect(page).toContain('Open Papercusp GUI once');
+    // ...then psu is THE way to work, and the GUI is the named alternative.
+    expect(page).toContain('<strong>Open a terminal and run <code>psu</code>.</strong> This is the main way');
+    expect(page).toContain('Prefer the GUI? Open the <strong>HUD</strong> tab');
+    // The previous GUI-first framing, where psu was only the fallback, must not come back.
+    expect(page).not.toContain('Prefer the terminal?');
+    // The retired "GUI not ready, use psu" callout must not come back.
+    expect(page).not.toContain('The GUI is not ready yet');
+    expect(page).not.toContain('THE GUI NOT READY YET');
+  });
+
+  it('renders the setup steps as real markup, at generation time', () => {
+    expect(page).toContain('<ol>');
+    expect(page).toContain('<strong>Install both apps</strong>');
+    expect(page).toContain('EmbeddingGemma + Harrier');
     // The two sections the owner kept [2026-09-28 #811] survive the render,
     // the self-improvement one under the heading the owner chose [#823]...
     expect(INSTRUCTIONS_MD).toContain("### Don't like something about Papercusp?");
     expect(INSTRUCTIONS_MD).not.toContain('Improve Papercusp itself');
-    expect(html).toContain('Use several AI accounts (inference gateway)');
+    expect(page).toContain('Use several AI accounts (inference gateway)');
     // ...the modes section the owner brought back [#823] renders as a real list...
-    expect(html).toContain('Agent modes');
+    expect(page).toContain('Agent modes');
     for (const mode of ['AUTO', 'COLD AUTO', 'IDEATE', 'DRAIN', 'GRADE', 'TEST', 'AUDIT', 'GOAL']) {
-      expect(html).toContain(`<strong>${mode}</strong>`);
+      expect(page).toContain(`<strong>${mode}</strong>`);
     }
     // ...and the "Not ready" list the owner removed [#812] stays gone.
     expect(INSTRUCTIONS_MD).not.toContain('Not ready');
@@ -740,7 +786,7 @@ describe('the Instructions section [owner 2026-07-27]', () => {
   it('opens external links in a new tab — losing this page means losing the secret URL', () => {
     // The page IS the release: navigate away mid-setup and the only way back is
     // a URL the tester has to go dig out of a message.
-    expect(html).toContain(
+    expect(page).toContain(
       '<a target="_blank" rel="noopener noreferrer" href="https://discord.gg/HjRQ8g4Nju"',
     );
     // (That EVERY absolute link gets the treatment, not just this one, is
@@ -759,6 +805,7 @@ describe('the Instructions section [owner 2026-07-27]', () => {
     // explains the least.
     const empty = renderIndexHtml([], { generatedAt: GENERATED_AT, analytics: null });
     expect(empty).toContain('<h2>Instructions</h2>');
+    expect(empty).toContain(`<script ${INSTRUCTIONS_LOADER_ATTR}>`);
     expect(empty).toContain('No releases have been recorded yet');
   });
 
