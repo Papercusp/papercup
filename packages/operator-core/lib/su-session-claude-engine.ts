@@ -23,8 +23,16 @@ import { SuSessionStartupTimeoutError, type SuSessionHost, type SuSessionEventIn
 import { SuNativeCards } from './su-session-native-cards';
 
 export type ClaudeEngineQuery = AsyncIterable<SDKMessage> & Pick<Query, 'initializationResult' | 'mcpServerStatus' | 'interrupt' | 'close'>;
+/** Who the engine is (plan pui-chat-first-ux-2026-09-28 D-004). `su` is the
+ * workspace superuser: the su playbook as a custom prompt, the psu hook set and
+ * the papercusp-su tools. `coding-assistant` is Claude Code's own session for a
+ * directory outside a registered checkout: its preset prompt, no hooks and no
+ * MCP servers, so a greeting is answered as Claude Code would answer it. */
+export type ClaudeEngineIdentity = 'su' | 'coding-assistant';
 export interface ClaudeEngineOptions extends ClaudeSuSessionDescriptorOptions {
   host?: SuSessionHost<'claude'>;
+  /** Defaults to `su`. */
+  identity?: ClaudeEngineIdentity;
   resume?: boolean;
   /** Acceptance-only opt-in to the native permission request/card path. */
   toolApproval?: 'prompt';
@@ -282,7 +290,8 @@ export function startClaudeSuEngine(
   });
   const model = splitModelSpec(options.model);
   const launch = suLaunchArgs('claude', { promptFile: boot.promptFile, nativeSessionId: nativeId });
-  const systemPrompt = readFileSync(boot.promptFile, 'utf8');
+  const su = (options.identity ?? 'su') === 'su';
+  const systemPrompt = su ? readFileSync(boot.promptFile, 'utf8') : null;
   const env = { ...sanitizeInheritedEnv(process.env), ...boot.envelopeEnv };
   delete env.PAPERCUSP_TTY;
   // The per-session SessionStart hook otherwise mistakes the SDK initialize
@@ -301,8 +310,15 @@ export function startClaudeSuEngine(
   applyDefaultClaudeOAuthToken('claude', env);
   const authSettings = applyDefaultClaudeAuthSettingsArgs('claude', [], env);
   const settings: Settings = authSettings[0] === '--settings' ? JSON.parse(authSettings[1]) : {};
-  const guidesInPrompt = claudeMemoryFilesInPrompt(boot.cwd, systemPrompt);
-  if (guidesInPrompt.length) settings.claudeMdExcludes = [...(settings.claudeMdExcludes ?? []), ...guidesInPrompt];
+  if (systemPrompt) {
+    const guidesInPrompt = claudeMemoryFilesInPrompt(boot.cwd, systemPrompt);
+    if (guidesInPrompt.length) settings.claudeMdExcludes = [...(settings.claudeMdExcludes ?? []), ...guidesInPrompt];
+  } else {
+    // The per-session config dir carries the psu hook set (orientation,
+    // provenance and memory injection, mid-turn context, work-item nudges).
+    // Flag settings outrank that user layer, so this one key silences them all.
+    settings.disableAllHooks = true;
+  }
   // The on-disk per-session settings are also used on native exact resume.
   if (!options.query) {
     persistDefaultClaudeAuthSettings({ wrapperBin: 'claude', env });
@@ -335,11 +351,23 @@ export function startClaudeSuEngine(
     ...(model.model ? { model: model.model } : {}),
     ...(model.effort ? { effort: model.effort as Options['effort'] } : {}),
     abortController,
-    // Record the exact custom SU persona once per native conversation. On an
-    // exact resume the SDK then reuses that record verbatim instead of applying
-    // the large prompt file afresh on top of the restored conversation.
-    systemPrompt: { type: 'custom', prompt: systemPrompt, snapshot: true },
-    extraArgs: { 'exclude-dynamic-system-prompt-sections': null, 'replay-user-messages': null },
+    ...(systemPrompt
+      ? {
+        // Record the exact custom SU persona once per native conversation. On an
+        // exact resume the SDK then reuses that record verbatim instead of applying
+        // the large prompt file afresh on top of the restored conversation.
+        systemPrompt: { type: 'custom' as const, prompt: systemPrompt, snapshot: true },
+        extraArgs: { 'exclude-dynamic-system-prompt-sections': null, 'replay-user-messages': null },
+      }
+      : {
+        // Claude Code's own prompt, dynamic sections (cwd, git state, date)
+        // included, and only the MCP servers passed here: none, so neither the
+        // Papercusp tools nor that server's orientation instructions load.
+        systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const },
+        strictMcpConfig: true,
+        mcpServers: {},
+        extraArgs: { 'replay-user-messages': null },
+      }),
     spawnClaudeCodeProcess(spawnOptions) {
       const spec: TaskSpec = {
         class: 'agent-session', title: 'PUI Claude structured engine', launchedBy: 'pui-su-session',
@@ -520,30 +548,34 @@ export function startClaudeSuEngine(
     })();
     enterStartupStage('SDK initialization');
     await sdk.initializationResult();
-    enterStartupStage('SU tool connection');
-    let servers = await sdk.mcpServerStatus();
-    let suServer = servers.find((server) => server.name === 'papercusp-su');
-    // SDK initialization can finish while an MCP connection is still pending.
-    // Keep the host starting within its existing deadline until that handshake
-    // settles; failed/missing/unauthenticated connections remain refusals.
-    while (suServer && new Set(['pending', 'connecting']).has(suServer.status)) {
-      if (closed) throw new Error('Claude connection closed during SU tool initialization');
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      servers = await sdk.mcpServerStatus();
-      suServer = servers.find((server) => server.name === 'papercusp-su');
+    // A coding-assistant session loads no MCP servers, so it has no SU tool
+    // connection to wait for.
+    if (su) {
+      enterStartupStage('SU tool connection');
+      let servers = await sdk.mcpServerStatus();
+      let suServer = servers.find((server) => server.name === 'papercusp-su');
+      // SDK initialization can finish while an MCP connection is still pending.
+      // Keep the host starting within its existing deadline until that handshake
+      // settles; failed/missing/unauthenticated connections remain refusals.
+      while (suServer && new Set(['pending', 'connecting']).has(suServer.status)) {
+        if (closed) throw new Error('Claude connection closed during SU tool initialization');
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        servers = await sdk.mcpServerStatus();
+        suServer = servers.find((server) => server.name === 'papercusp-su');
+      }
+      if (suServer?.status !== 'connected') {
+        // Name WHY and WHERE: a bare 'failed' cannot tell a dead endpoint from a
+        // refused identity. The query string is dropped because it carries the
+        // session's MCP credentials.
+        const configured = suServer?.config && 'url' in suServer.config ? String(suServer.config.url) : undefined;
+        const endpoint = configured ? configured.split('?', 1)[0] : undefined;
+        const detail = [suServer?.error, endpoint && `endpoint ${endpoint}`, suServer?.scope && `scope ${suServer.scope}`]
+          .filter(Boolean).join('; ');
+        throw new Error(`Claude SU tool connection is ${suServer?.status ?? 'missing'}${detail ? ` (${detail})` : ''}; reconnect the SU tool connection (servers: ${servers.map((server) => `${server.name}:${server.status}`).join(', ') || 'none'})`);
+      }
+      readOnlySuTools = claudeReadOnlySuTools(suServer);
+      directiveDispositionSuTools = claudeDirectiveDispositionSuTools(suServer);
     }
-    if (suServer?.status !== 'connected') {
-      // Name WHY and WHERE: a bare 'failed' cannot tell a dead endpoint from a
-      // refused identity. The query string is dropped because it carries the
-      // session's MCP credentials.
-      const configured = suServer?.config && 'url' in suServer.config ? String(suServer.config.url) : undefined;
-      const endpoint = configured ? configured.split('?', 1)[0] : undefined;
-      const detail = [suServer?.error, endpoint && `endpoint ${endpoint}`, suServer?.scope && `scope ${suServer.scope}`]
-        .filter(Boolean).join('; ');
-      throw new Error(`Claude SU tool connection is ${suServer?.status ?? 'missing'}${detail ? ` (${detail})` : ''}; reconnect the SU tool connection (servers: ${servers.map((server) => `${server.name}:${server.status}`).join(', ') || 'none'})`);
-    }
-    readOnlySuTools = claudeReadOnlySuTools(suServer);
-    directiveDispositionSuTools = claudeDirectiveDispositionSuTools(suServer);
     if (options.resume) {
       adapter.host.transition('resuming', 'Restoring saved conversation before attaching the executor');
       enterStartupStage('transcript restore');
@@ -554,7 +586,9 @@ export function startClaudeSuEngine(
     await options.beforeReady?.(processId);
     if (closed) throw new Error('Claude connection closed while finalizing resume');
     ready = true;
-    adapter.host.transition('ready', 'Claude structured stream, SU tools and command executor attached');
+    adapter.host.transition('ready', su
+      ? 'Claude structured stream, SU tools and command executor attached'
+      : 'Claude structured stream and command executor attached');
   })();
   let timer: ReturnType<typeof setTimeout>;
   const readyPromise = Promise.race([

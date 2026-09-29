@@ -94,6 +94,8 @@ function peer(config: { identity?: string; cwd?: string; connected?: boolean; ho
       }),
       mcpServerStatus: vi.fn(async () => {
         if (config.holdMcp) await new Promise(() => {});
+        // Like the CLI: a strict MCP config loads only the servers passed in.
+        if (receivedOptions?.strictMcpConfig && !receivedOptions.mcpServers?.['papercusp-su']) return [];
         if (config.pendingMcp && mcpReads++ === 0) return [{ name: 'papercusp-su', status: 'pending' as const }];
         return [{ name: 'papercusp-su', status: config.connected === false ? 'failed' as const : 'connected' as const,
           ...(config.suTools ? { tools: config.suTools } : {}) }];
@@ -199,6 +201,64 @@ describe('structured Claude SU engine', () => {
     expect(p.options()?.disallowedTools).toEqual(expect.arrayContaining(['Task', 'Agent', 'Workflow']));
     expect(p.prompts).toHaveLength(0);
     expect(engine.adapter.host.recent.some(({ event }) => event.type === 'transcript')).toBe(false);
+  });
+
+  describe('engine identity (pui-chat-first-ux-2026-09-28 D-004)', () => {
+    const hooksDisabled = (options: Options | undefined) =>
+      typeof options?.settings === 'object' ? options.settings.disableAllHooks : undefined;
+
+    it('runs Claude Code\'s own prompt with no hooks and no MCP servers as a coding assistant', async () => {
+      const p = peer(); const engine = open(p, { identity: 'coding-assistant' });
+      await engine.ready;
+      expect(engine.adapter.host.descriptor().lifecycle).toBe('ready');
+      const options = p.options();
+      expect(options?.systemPrompt).toEqual({ type: 'preset', preset: 'claude_code' });
+      expect(options?.strictMcpConfig).toBe(true);
+      expect(options?.mcpServers).toEqual({});
+      expect(hooksDisabled(options)).toBe(true);
+      // Its dynamic sections (cwd, git state, date) are what ground it in the directory.
+      expect(options?.extraArgs).not.toHaveProperty('exclude-dynamic-system-prompt-sections');
+      expect(options?.extraArgs).toHaveProperty('replay-user-messages');
+      // Nothing of the SU persona reaches the child.
+      expect(JSON.stringify(options?.systemPrompt)).not.toContain('SU persona');
+      expect(typeof options?.settings === 'object' ? options.settings.claudeMdExcludes : undefined).toBeUndefined();
+      // The session's own rails are unchanged.
+      expect(options).toMatchObject({ sessionId: nativeId, cwd: dir, permissionMode: 'bypassPermissions' });
+      expect(options?.disallowedTools).toEqual(expect.arrayContaining(['Task', 'Agent', 'Workflow']));
+    });
+
+    it('becomes ready with no SU tool connection, which an SU session refuses', async () => {
+      const assistant = open(peer(), { identity: 'coding-assistant' });
+      await expect(assistant.ready).resolves.toBeUndefined();
+      expect(assistant.adapter.host.snapshot()).toMatchObject({ executorAttached: true, streamReady: true });
+      const su = open(peer({ connected: false }));
+      await expect(su.ready).rejects.toThrow(/SU tool connection is failed/);
+    });
+
+    it('keeps the SU persona, hooks and SU tools by default', async () => {
+      const p = peer(); const engine = open(p);
+      await engine.ready;
+      const options = p.options();
+      expect(options?.systemPrompt).toMatchObject({ type: 'custom', snapshot: true });
+      expect(options?.strictMcpConfig).toBeUndefined();
+      expect(options?.mcpServers).toBeUndefined();
+      expect(hooksDisabled(options)).toBeUndefined();
+      expect(options?.extraArgs).toHaveProperty('exclude-dynamic-system-prompt-sections');
+    });
+
+    it('keeps the coding-assistant identity on an exact resume', async () => {
+      const transcriptPath = join(dir, 'history-coding-assistant.jsonl');
+      writeFileSync(transcriptPath, [
+        { type: 'user', sessionId: nativeId, uuid: 'saved-user', message: { role: 'user', content: 'hi' } },
+        { type: 'assistant', sessionId: nativeId, uuid: 'saved-reply', message: { role: 'assistant', content: [{ type: 'text', text: 'Hi! What are we working on?' }] } },
+        { type: 'result', sessionId: nativeId, subtype: 'success', is_error: false },
+      ].map((record) => JSON.stringify(record) + '\n').join(''));
+      const p = peer();
+      const engine = open(p, { identity: 'coding-assistant', resume: true }, { ...runtime, transcriptPath });
+      await engine.ready;
+      expect(p.options()).toMatchObject({ resume: nativeId, strictMcpConfig: true, systemPrompt: { type: 'preset', preset: 'claude_code' } });
+      expect(hooksDisabled(p.options())).toBe(true);
+    });
   });
 
   describe('SU tool surface', () => {
