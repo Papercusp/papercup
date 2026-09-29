@@ -52,7 +52,10 @@ import {
   capturePhysicalPhaseEObservation,
   createPhysicalPhaseEDivergence,
   createPhysicalPhaseEIngress,
+  ensurePhysicalPhaseEMode,
+  PHASE_E_MODE_WAIT_MAX_MS,
   preflightPhysicalPhaseERemotes,
+  readPhysicalPhaseEMode,
   restorePhysicalPhaseEDivergence,
   runPhysicalPhaseEWatchdogSweep,
   setPhysicalPhaseEMode,
@@ -495,15 +498,28 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return preflightPhysicalPhaseERemotes();
   }
+  if (mode === 'phase-e-mode-read') {
+    if (args.length !== 0) throw new Error('usage: physical-drill-producer phase-e-mode-read');
+    return readPhysicalPhaseEMode();
+  }
+  if (mode === 'phase-e-mode-ensure') {
+    const [nextMode, runId] = args;
+    if ((nextMode !== 'legacy' && nextMode !== 'bridged') || !runId || args.length !== 2) {
+      throw new Error('usage: physical-drill-producer phase-e-mode-ensure <legacy|bridged> <run-id>');
+    }
+    return ensurePhysicalPhaseEMode({ runId, mode: nextMode });
+  }
   if (mode === 'phase-e-observe') {
-    const [hostId, stage, deviceKey, runId] = args;
+    const [hostId, stage, deviceKey, runId, waitSecRaw] = args;
+    const waitSec = waitSecRaw === undefined ? 0 : Number(waitSecRaw);
     if (
       (hostId !== 'tower' && hostId !== 'vm') ||
       !['legacy-before', 'bridged-member', 'healthy-egress', 'divergence-before', 'divergence-after', 'legacy-after'].includes(stage ?? '') ||
-      !deviceKey || !runId
+      !deviceKey || !runId || args.length > 5 ||
+      !Number.isInteger(waitSec) || waitSec < 0 || waitSec * 1000 > PHASE_E_MODE_WAIT_MAX_MS
     ) {
       throw new Error(
-        'usage: physical-drill-producer phase-e-observe <tower|vm> <legacy-before|bridged-member|healthy-egress|divergence-before|divergence-after|legacy-after> <device-key> <run-id>',
+        'usage: physical-drill-producer phase-e-observe <tower|vm> <legacy-before|bridged-member|healthy-egress|divergence-before|divergence-after|legacy-after> <device-key> <run-id> [mode-wait-sec<=1200]',
       );
     }
     return capturePhysicalPhaseEObservation({
@@ -511,6 +527,7 @@ async function cli(argv: string[]): Promise<unknown> {
       stage: stage as PhysicalPhaseEObservationStage,
       deviceKey,
       runId,
+      waitMs: waitSec * 1000,
     });
   }
   if (mode === 'phase-e-ingress') {

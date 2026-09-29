@@ -49,6 +49,25 @@ export type PhysicalPhaseEObservationStage =
   | 'divergence-after'
   | 'legacy-after';
 
+/**
+ * The mode each observation stage must show. The VM learns the tower's mode
+ * write by federation, so a one-shot read races propagation; an observation
+ * waits (bounded) for its stage's mode, then captures whatever it sees and the
+ * validator judges it (WI-10003791).
+ */
+export const PHASE_E_STAGE_MODE: Readonly<Record<PhysicalPhaseEObservationStage, 'legacy' | 'bridged'>> = {
+  'legacy-before': 'legacy',
+  'bridged-member': 'bridged',
+  'healthy-egress': 'bridged',
+  'divergence-before': 'bridged',
+  'divergence-after': 'bridged',
+  'legacy-after': 'legacy',
+};
+export const PHASE_E_MODE_WAIT_MAX_MS = 20 * 60_000;
+export const PHASE_E_MODE_POLL_MS = 5_000;
+export const PHASE_E_MODE_READ_SCHEMA = 'hive-git-physical-phase-e-mode-read/v1' as const;
+export const PHASE_E_MODE_ENSURE_SCHEMA = 'hive-git-physical-phase-e-mode-ensure/v1' as const;
+
 export type PhysicalPhaseETrigger = {
   tool: 'git-sync:run';
   installSlug: PhysicalDrillGitSyncSlug;
@@ -250,6 +269,35 @@ type PhaseEDeps = {
   fetchPushPermission?: (owner: string, repo: string) => Promise<boolean | null>;
   getMode?: typeof getPotGitMode;
   setMode?: typeof setPotGitMode;
+  readMode?: typeof readPotGitMode;
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+};
+
+export type PhysicalPhaseEModeRead = {
+  schemaVersion: typeof PHASE_E_MODE_READ_SCHEMA;
+  workspaceId: typeof PHASE_D_WORKSPACE;
+  potHomeSlug: typeof PHASE_A_POT_HOME;
+  mode: PotGitMode;
+  source: 'set' | 'absent' | 'malformed' | 'error';
+  observedAt: string;
+};
+
+/**
+ * The drill's own baseline/restore write. It is deliberately NOT evidence: the
+ * validated legacy→bridged→legacy cycle still goes through setPhysicalPhaseEMode.
+ */
+export type PhysicalPhaseEModeEnsure = {
+  schemaVersion: typeof PHASE_E_MODE_ENSURE_SCHEMA;
+  runId: string;
+  hostId: 'tower';
+  tool: 'setPotGitMode';
+  workspaceId: typeof PHASE_D_WORKSPACE;
+  potHomeSlug: typeof PHASE_A_POT_HOME;
+  from: PotGitMode;
+  to: 'legacy' | 'bridged';
+  changed: boolean;
+  observedAt: string;
 };
 
 function assertRunId(runId: string): void {
@@ -275,6 +323,11 @@ async function fixedRemoteContext(deps: PhaseEDeps = {}): Promise<RemoteContext>
     fork: entry.fork_remote,
     defaultBranch: entry.github_default_branch ?? 'main',
   };
+}
+
+/** The fixed canary's local bare store; needs no remote config (a member has none for the fork). */
+function fixedRepoPath(deps: PhaseEDeps = {}): string {
+  return deps.remoteContext?.repoPath ?? hiveGitRepoPath(PHASE_A_POT_HOME, PHASE_A_REPO_KEY);
 }
 
 async function git(runGit: RunGit, cwd: string, args: string[]): Promise<string> {
@@ -431,17 +484,108 @@ export async function setPhysicalPhaseEMode(input: { runId: string; mode: 'legac
   };
 }
 
+function stageModeReached(
+  mode: { mode: PotGitMode; source: PhysicalPhaseEModeRead['source'] },
+  stage: PhysicalPhaseEObservationStage,
+): boolean {
+  const expected = PHASE_E_STAGE_MODE[stage];
+  return mode.mode === expected && (expected !== 'bridged' || mode.source === 'set');
+}
+
+/**
+ * Poll the local mode row until it shows the stage's mode or `waitMs` runs out,
+ * then return the last read. A timeout is not an error here: the observation
+ * records what the host saw and validatePhysicalPhaseE judges it.
+ */
+export async function awaitPhysicalPhaseEStageMode(
+  input: { stage: PhysicalPhaseEObservationStage; waitMs: number },
+  deps: Pick<PhaseEDeps, 'sql' | 'readMode' | 'sleep' | 'now'> = {},
+): Promise<{ mode: PotGitMode; source: PhysicalPhaseEModeRead['source'] }> {
+  if (!Number.isInteger(input.waitMs) || input.waitMs < 0 || input.waitMs > PHASE_E_MODE_WAIT_MAX_MS) {
+    throw new Error(`physical Phase E mode wait must be an integer 0..${PHASE_E_MODE_WAIT_MAX_MS}ms`);
+  }
+  const read = deps.readMode ?? readPotGitMode;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const now = deps.now ?? Date.now;
+  const deadline = now() + input.waitMs;
+  let mode = await read(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, deps.sql);
+  while (!stageModeReached(mode, input.stage)) {
+    const remaining = deadline - now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(PHASE_E_MODE_POLL_MS, remaining));
+    mode = await read(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, deps.sql);
+  }
+  return mode;
+}
+
+/** Read the fixed canary's mode row as-is (the scenario records it before any baseline write). */
+export async function readPhysicalPhaseEMode(deps: Pick<PhaseEDeps, 'sql' | 'readMode'> = {}): Promise<PhysicalPhaseEModeRead> {
+  const read = deps.readMode ?? readPotGitMode;
+  const sql = deps.sql ?? (deps.readMode ? undefined : getOrgPg().sql);
+  const mode = await read(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
+  return {
+    schemaVersion: PHASE_E_MODE_READ_SCHEMA,
+    workspaceId: PHASE_D_WORKSPACE,
+    potHomeSlug: PHASE_A_POT_HOME,
+    mode: mode.mode,
+    source: mode.source,
+    observedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Idempotent mode write for the drill's own baseline and restore. The fixed
+ * canary keeps whatever mode the hive chose (hello-world-3-pot has been
+ * bridged since 2026-07-17), so the drill establishes the legacy start its
+ * contract needs and puts the original mode back afterwards (WI-10003791).
+ * Only legacy/bridged are touched; any other mode is the hive's and is refused.
+ */
+export async function ensurePhysicalPhaseEMode(
+  input: { runId: string; mode: 'legacy' | 'bridged' },
+  deps: PhaseEDeps = {},
+): Promise<PhysicalPhaseEModeEnsure> {
+  assertRunId(input.runId);
+  const getMode = deps.getMode ?? getPotGitMode;
+  const setMode = deps.setMode ?? setPotGitMode;
+  const sql = deps.sql ?? (deps.getMode && deps.setMode ? undefined : getOrgPg().sql);
+  const from = await getMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
+  if (from !== 'legacy' && from !== 'bridged') {
+    throw new Error(`physical Phase E refuses to change the canary out of mode ${from}`);
+  }
+  if (from !== input.mode) {
+    await setMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, input.mode, sql);
+    const after = await getMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
+    if (after !== input.mode) throw new Error(`physical Phase E mode ensure did not persist ${input.mode}`);
+  }
+  return {
+    schemaVersion: PHASE_E_MODE_ENSURE_SCHEMA,
+    runId: input.runId,
+    hostId: 'tower',
+    tool: 'setPotGitMode',
+    workspaceId: PHASE_D_WORKSPACE,
+    potHomeSlug: PHASE_A_POT_HOME,
+    from,
+    to: input.mode,
+    changed: from !== input.mode,
+    observedAt: new Date().toISOString(),
+  };
+}
+
 /** Capture fixed production routine/ref/escalation state on one physical host. */
 export async function capturePhysicalPhaseEObservation(
-  input: { runId: string; hostId: PhysicalPhaseEHost; deviceKey: string; stage: PhysicalPhaseEObservationStage },
+  input: { runId: string; hostId: PhysicalPhaseEHost; deviceKey: string; stage: PhysicalPhaseEObservationStage; waitMs?: number },
   deps: PhaseEDeps = {},
 ): Promise<PhysicalPhaseEObservation> {
   assertRunId(input.runId);
   assertDeviceKey(input.deviceKey);
   const sql = deps.sql ?? getOrgPg().sql;
   const runGit = deps.runGit ?? defaultRunGit;
-  const context = await fixedRemoteContext(deps);
-  const mode = await readPotGitMode(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, sql);
+  // Only the tower is the bridge writer. A member joined by invite carries no
+  // fork remote, and validatePhysicalPhaseE never reads a member's remote refs,
+  // so the VM records them as null instead of requiring bridge config.
+  const context = input.hostId === 'tower' ? await fixedRemoteContext(deps) : null;
+  const repoPath = context?.repoPath ?? fixedRepoPath(deps);
+  const mode = await awaitPhysicalPhaseEStageMode({ stage: input.stage, waitMs: input.waitMs ?? 0 }, { ...deps, sql });
   return {
     schemaVersion: PHASE_E_OBSERVATION_SCHEMA,
     runId: input.runId,
@@ -452,9 +596,11 @@ export async function capturePhysicalPhaseEObservation(
     mode: { value: mode.mode, source: mode.source },
     routine: await routine(sql),
     refs: {
-      canonicalStaging: await rev(runGit, context.repoPath, BRIDGE_CANONICAL_REF),
-      upstreamDefault: await remoteRef(runGit, context.repoPath, context.upstream, `refs/heads/${context.defaultBranch}`),
-      remoteStaging: await remoteRef(runGit, context.repoPath, context.fork, BRIDGE_REMOTE_STAGING_REF),
+      canonicalStaging: await rev(runGit, repoPath, BRIDGE_CANONICAL_REF),
+      upstreamDefault: context
+        ? await remoteRef(runGit, repoPath, context.upstream, `refs/heads/${context.defaultBranch}`)
+        : null,
+      remoteStaging: context ? await remoteRef(runGit, repoPath, context.fork, BRIDGE_REMOTE_STAGING_REF) : null,
     },
     bridgeEscalation: await escalation(sql, GITHUB_BRIDGE_ESCALATION_PHASE),
     watchdogEscalation: await escalation(sql, GIT_SYNC_WATCHDOG_PHASE),
