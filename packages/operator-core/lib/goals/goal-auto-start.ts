@@ -45,7 +45,7 @@ import { spawnHeadless } from '../console-spawn';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { buildAgentLaunchCommand, injectFleetArg, injectLaunchedByArg } from '../agent-launch-core';
 import { papercuspPathForWorkspace } from '../papercusp-root';
-import { goalHolderInputRefusal, resolveGoalLaunchForGoal } from '../goal-launch-settings';
+import { goalHolderInputRefusal, resolveGoalBehaviorArm, resolveGoalLaunchForGoal } from '../goal-launch-settings';
 import { activeWorkspaceId } from '../workspace-registry';
 import { setMode } from '../modes/store';
 import { getOrgPg } from '@papercusp/db-org';
@@ -346,6 +346,8 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
       body: input.body ?? null,
       portfolio: goalLaunch.goalBrief?.portfolio ?? null,
       history,
+      // R-4 / D-032: the brief builder applies the arm's withholding itself.
+      behaviorArm: resolveGoalBehaviorArm(goalLaunch.settings),
     }),
   };
   const logDir = join(papercuspPathForWorkspace(workspaceId), 'fleet-logs');

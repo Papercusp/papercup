@@ -66,7 +66,7 @@ import { refreshControlAnchorAfterMutation } from '../agent-tools/coordination/c
 // Same direction the sibling package-start door already imports (start-from-package.ts):
 // lib/goals → lib/agent-tools/goals/start. No cycle; start.ts does not import this file.
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
-import { goalHolderInputRefusal, renderGoalPortfolioBrief, resolveGoalLaunchForGoal, type GoalLaunchResolution } from '../goal-launch-settings';
+import { goalArmWithholdsBrief, goalHolderInputRefusal, renderGoalPortfolioBrief, resolveGoalBehaviorArm, resolveGoalLaunchForGoal, type GoalLaunchResolution } from '../goal-launch-settings';
 
 export interface StartGoalByIdInput {
   workspaceId: string;
@@ -363,7 +363,10 @@ export async function startGoalById(
   if (inputRefusal) {
     return { ok: false, reason: 'operating-inputs', detail: inputRefusal };
   }
-  const portfolio = resolvedLaunch.goalBrief?.portfolio ?? null;
+  // R-4 / D-032: 'baseline' withholds the portfolio (and, in buildBrief and the
+  // holder-launch door, the history block) on every launch path.
+  const behaviorArm = resolveGoalBehaviorArm(resolvedLaunch.settings);
+  const portfolio = goalArmWithholdsBrief(behaviorArm) ? null : resolvedLaunch.goalBrief?.portfolio ?? null;
   const portfolioText = portfolio && (input.kickoffPrompt == null ||
     !input.kickoffPrompt.includes('GOAL PORTFOLIO SNAPSHOT —'))
     ? (deps.renderPortfolio ?? renderGoalPortfolioBrief)(portfolio)
@@ -380,6 +383,7 @@ export async function startGoalById(
           standing: goal.standing ?? false,
           portfolio,
           renderedPortfolio: portfolioText,
+          behaviorArm,
         })
       : portfolioText
         ? input.kickoffPrompt + '\n\n' + portfolioText

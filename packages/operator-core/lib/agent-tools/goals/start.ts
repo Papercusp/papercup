@@ -50,6 +50,9 @@ import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { buildAgentLaunchCommand, injectFleetArg, injectLaunchedByArg } from '../../agent-launch-core';
 import { drainFleetAutoMintEnabled, mintDrainFleetForGoal, registerGoalDrainFleetLeader, teardownDrainFleetMint } from '../../goals/drain-fleet-mint';
 import {
+  goalArmWithholdsBrief,
+  resolveGoalBehaviorArm,
+  type GoalBehaviorArm,
   goalLaunchSettingsSchema,
   goalHolderPolicyProblem,
   goalHolderPolicySchema,
@@ -156,7 +159,16 @@ export function buildGoalKickoffBrief(opts: {
   history?: GoalHistoryContext | null;
   /** Injectable for tests; defaults to the moment the brief is written. */
   writtenAt?: Date;
+  /**
+   * R-4 / D-032 experiment arm. 'baseline' withholds the portfolio worklist
+   * and the long-horizon history block (the brief layers this plan built);
+   * every other line is identical in every arm. Absent ⇒ 'full'.
+   */
+  behaviorArm?: GoalBehaviorArm | null;
 }): string {
+  if (opts.behaviorArm && goalArmWithholdsBrief(opts.behaviorArm)) {
+    opts = { ...opts, portfolio: null, renderedPortfolio: null, history: null };
+  }
   /* Both constraints are OPTIONAL at creation since 2026-08-09 (see the args
      schema). When one is absent the brief SAYS SO rather than omitting the
      line: a missing CEILING line reads to the agent as "no budget discipline
@@ -899,9 +911,13 @@ export default defineTool({
     // consumes it only here, immediately before the holder brief is rendered.
     const { readGoalHistoryContext } = await import('../../prior-attempt-context');
     const history = await readGoalHistoryContext(id);
-    const portfolio = goalLaunch.goalBrief?.portfolio ?? null;
+    // R-4 / D-032: the arm is applied inside buildGoalKickoffBrief; the
+    // receipt's portfolio contribution must match what the kickoff carried.
+    const behaviorArm = resolveGoalBehaviorArm(launchSettings);
+    const portfolio = goalArmWithholdsBrief(behaviorArm) ? null : goalLaunch.goalBrief?.portfolio ?? null;
     const portfolioText = portfolio ? renderGoalPortfolioBrief(portfolio) : null;
     const kickoff = buildGoalKickoffBrief({
+      behaviorArm,
       goalId: id,
       title: args.title,
       killCriterion: args.killCriterion,

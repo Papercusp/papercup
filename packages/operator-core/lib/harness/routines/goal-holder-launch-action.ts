@@ -12,7 +12,9 @@
  */
 import { composeLaunchModelSpec } from '../../agent-config-constants';
 import {
+  goalArmWithholdsBrief,
   renderGoalPortfolioBrief,
+  resolveGoalBehaviorArm,
   resolveGoalLaunchForGoal,
   type GoalLaunchResolution,
 } from '../../goal-launch-settings';
@@ -207,14 +209,20 @@ export async function launchGoalHolderSession(
   // respawner and the on-demand system action) gets the same canonical brief as
   // goals:start/startGoalById without another DB read or another prompt copy.
   const explicitKickoff = input.kickoffPrompt?.trim();
-  const portfolioBlock = input.renderedPortfolio !== undefined
+  // R-4 / D-032: a relaunched holder must stay in its goal's experiment arm, so
+  // the arm is re-derived from the SAME resolved policy on every launch path.
+  const behaviorArm = resolveGoalBehaviorArm(resolved.settings);
+  const withholdBrief = goalArmWithholdsBrief(behaviorArm);
+  const portfolioBlock = withholdBrief
+    ? null
+    : input.renderedPortfolio !== undefined
     ? input.renderedPortfolio
     : resolved.goalBrief?.portfolio &&
         (!explicitKickoff || !explicitKickoff.includes('GOAL PORTFOLIO SNAPSHOT —'))
       ? (deps.renderPortfolio ?? renderGoalPortfolioBrief)(resolved.goalBrief.portfolio)
       : null;
-  const history = await deps.readHistory(goalId);
-  const historyBlock = renderGoalHistoryContext(history);
+  const history = withholdBrief ? null : await deps.readHistory(goalId);
+  const historyBlock = history === null ? null : renderGoalHistoryContext(history);
   const kickoffPrompt = explicitKickoff
     ? [
         input.kickoffPrompt!,
@@ -224,7 +232,7 @@ export async function launchGoalHolderSession(
         .filter(Boolean)
         .join('\n\n')
     : resolved.goalBrief
-      ? buildGoalKickoffBrief({ goalId, ...resolved.goalBrief, renderedPortfolio: portfolioBlock, history })
+      ? buildGoalKickoffBrief({ goalId, ...resolved.goalBrief, renderedPortfolio: portfolioBlock, history, behaviorArm })
       : null;
   if (!kickoffPrompt) {
     throw new Error(

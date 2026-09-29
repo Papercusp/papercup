@@ -380,6 +380,10 @@ export type LaunchProfile = z.infer<typeof launchProfileSchema>;
  * through the P-005 panel, and a typo'd key that is silently accepted reads back
  * as "the setting is there" while the launch ignores it.
  */
+/** R-4 / D-032: the closed behaviour-experiment arm vocabulary. */
+export const GOAL_BEHAVIOR_ARMS = ['baseline', 'brief-only', 'full'] as const;
+export type GoalBehaviorArm = (typeof GOAL_BEHAVIOR_ARMS)[number];
+
 export const goalLaunchSettingsSchema = z
   .object({
     maxAgents: ceilingSchema.describe(
@@ -445,10 +449,54 @@ export const goalLaunchSettingsSchema = z
      * by writing `null`, which must mean "unpinned", never a third state.
      */
     autoStart: z.boolean().nullable().optional(),
+    /**
+     * R-4 / D-032 (goal-agent-behavior-feedback-2026-09-06): the behaviour-
+     * experiment ARM this goal's agents run under. It withholds TEXT only —
+     * modes, code-enforced gates, budget ceilings and the tool surface are
+     * identical in every arm, so a measured difference is attributable to the
+     * withheld text. Absent / null ⇒ 'full' (today's behaviour), so no stored
+     * goal has to learn the field exists. See {@link resolveGoalBehaviorArm}.
+     */
+    behaviorArm: z.enum(GOAL_BEHAVIOR_ARMS).nullable().optional(),
   })
   .strict();
 
 export type GoalLaunchSettings = z.infer<typeof goalLaunchSettingsSchema>;
+
+/** Resolve a goal's experiment arm; anything unset or unknown reads as 'full'. */
+export function resolveGoalBehaviorArm(settings: { behaviorArm?: unknown } | null | undefined): GoalBehaviorArm {
+  const arm = settings?.behaviorArm;
+  return typeof arm === 'string' && (GOAL_BEHAVIOR_ARMS as readonly string[]).includes(arm)
+    ? (arm as GoalBehaviorArm)
+    : 'full';
+}
+
+/** 'brief-only' and 'baseline' withhold the per-turn obligation agenda and its reminders. */
+export function goalArmWithholdsReminders(arm: GoalBehaviorArm): boolean {
+  return arm !== 'full';
+}
+
+/** 'baseline' also withholds the goal-mode stewardship brief at launch. */
+export function goalArmWithholdsBrief(arm: GoalBehaviorArm): boolean {
+  return arm === 'baseline';
+}
+
+/**
+ * R-4 / D-032: does this goal's arm withhold the per-turn obligation agenda?
+ * Fail-soft toward 'full' (today's behaviour): an unreadable goal row must
+ * never silently strip reminders from a production goal.
+ */
+export async function goalWithholdsTurnStartReminders(
+  goalId: string,
+  read: (goalId: string) => Promise<{ settings: GoalLaunchSettings | null }> = readGoalLaunchSettings,
+): Promise<boolean> {
+  try {
+    const { settings } = await read(goalId);
+    return goalArmWithholdsReminders(resolveGoalBehaviorArm(settings));
+  } catch {
+    return false;
+  }
+}
 
 export interface GoalHeadcount {
   /** Live sessions whose resolved goal context is this goal. */

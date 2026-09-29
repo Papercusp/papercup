@@ -21,7 +21,16 @@ vi.mock('./agent-obligation-reader', async (original) => ({
   readAgentObligationAgenda: progressWiring.read,
 }));
 vi.mock('./goal-placement-progress-store', () => ({ reconcileGoalPlacementProgress: progressWiring.record }));
-vi.mock('./agent-obligation-reminders', () => ({ reconcileAgentObligationReminders: vi.fn(async () => {}) }));
+// R-4 / D-032: the reminder projection and the arm reader are observable so the
+// experiment-arm tests below can prove what each arm does and does not deliver.
+const armWiring = vi.hoisted(() => ({
+  reminders: vi.fn(async () => {}), withholds: vi.fn(async (_goalId: string) => false),
+}));
+vi.mock('./agent-obligation-reminders', () => ({ reconcileAgentObligationReminders: armWiring.reminders }));
+vi.mock('./goal-launch-settings', async (original) => ({
+  ...(await original<typeof import('./goal-launch-settings')>()),
+  goalWithholdsTurnStartReminders: armWiring.withholds,
+}));
 
 // The per-turn telemetry write is fire-and-forget and reaches PG; stub it so a
 // unit test never opens a pool.
@@ -123,6 +132,34 @@ describe('default orientation effect producer', () => {
       observedAt: '2026-09-23T15:00:00.000Z' });
     await defaultOrientationDeps().obligations('su-proof', 'ws-proof'); await drainDetached();
     expect(progressWiring.record).not.toHaveBeenCalled();
+  });
+  it('R-4 full arm: reads the arm for the goal and still projects reminders', async () => {
+    armWiring.reminders.mockClear();
+    armWiring.withholds.mockReset().mockResolvedValue(false);
+    const portfolio = { worklist: [{ id: 1 }], assembledAt: '2026-09-29T01:00:00.000Z' };
+    progressWiring.read.mockResolvedValue({ agenda: { primary: [] }, portfolio, goalId: 'goal-full', observedAt: portfolio.assembledAt });
+    await defaultOrientationDeps().obligations('su-proof', 'ws-proof'); await drainDetached();
+    expect(armWiring.withholds).toHaveBeenCalledExactlyOnceWith('goal-full');
+    expect(armWiring.reminders).toHaveBeenCalledTimes(1);
+  });
+  it('R-4 brief-only/baseline arm: withholds agenda and reminders, keeps the effect clock', async () => {
+    armWiring.reminders.mockClear();
+    armWiring.withholds.mockReset().mockResolvedValue(true);
+    const portfolio = { worklist: [{ id: 1 }], assembledAt: '2026-09-29T01:00:00.000Z' };
+    // A non-empty primary agenda: without the arm this would render a brief.
+    progressWiring.read.mockResolvedValue({ agenda: { primary: [{ kind: 'duty' }] }, portfolio, goalId: 'goal-arm',
+      observedAt: portfolio.assembledAt });
+    expect(await defaultOrientationDeps().obligations('su-proof', 'ws-proof')).toBeNull();
+    await drainDetached();
+    expect(armWiring.reminders).not.toHaveBeenCalled();
+    expect(progressWiring.record).toHaveBeenCalledTimes(1);
+  });
+  it('R-4 no goal: never reads an arm', async () => {
+    armWiring.withholds.mockReset().mockResolvedValue(true);
+    progressWiring.read.mockResolvedValue({ agenda: { primary: [] }, portfolio: null, goalId: null,
+      observedAt: '2026-09-29T01:00:00.000Z' });
+    await defaultOrientationDeps().obligations('su-proof', 'ws-proof'); await drainDetached();
+    expect(armWiring.withholds).not.toHaveBeenCalled();
   });
 });
 afterEach(async () => {

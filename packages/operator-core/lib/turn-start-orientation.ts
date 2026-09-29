@@ -4425,6 +4425,14 @@ export function defaultOrientationDeps(): OrientationDeps {
           module.reconcileGoalPlacementProgress({ workspaceId, ownerId, goalId,
             portfolio: { ...portfolio, worklist: portfolio.worklist.slice(0, PLAN_CONTEXT_MAX) } }))).catch(() => {});
       }
+      // R-4 / D-032: a goal running the 'baseline' or 'brief-only' experiment
+      // arm withholds the per-turn agenda AND its reminder projection. The
+      // effect clock above keeps running in every arm — it is measurement, not
+      // a reminder — so the arms stay comparable on the same instrument.
+      if (goalId) {
+        const { goalWithholdsTurnStartReminders } = await import('./goal-launch-settings');
+        if (await goalWithholdsTurnStartReminders(goalId)) return null;
+      }
       // P-005: project the SAME evaluated agenda onto the existing durable await
       // plane. Reconciliation is fail-soft internally, so an unavailable optional
       // reminder can never suppress the load-bearing guidance rendered below.
