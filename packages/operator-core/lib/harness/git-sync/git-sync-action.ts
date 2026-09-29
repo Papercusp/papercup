@@ -75,6 +75,7 @@ import {
   runGithubBridgeTick,
 } from '../../sync/pot-git/github-bridge-tick';
 import { resolveAnnouncementWatermark, runIntegratorTick } from '../../sync/pot-git/integrator-tick';
+import { githubOriginNamespaceKey } from '../../sync/pot-git/github-ingress';
 import { formatIntegratorTickStatus } from '../../sync/pot-git/integrator';
 import { runWorktreeBridgeTick, WORKTREE_BRIDGE_RETRY_TTL_MS } from '../../sync/pot-git/worktree-bridge-tick';
 import { catchUpWorktreeToWatermark } from '../../sync/pot-git/worktree-bridge';
@@ -6308,9 +6309,11 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
           stagingSha?: string | null;
         } | null;
         worktree_bridge: { epochSeq: EpochSeq | null; stagingSha?: string | null } | null;
+        github_last_admitted: string | null;
       }[]
     >`
-      SELECT metadata->'integrator' AS integrator, metadata->'worktree_bridge' AS worktree_bridge
+      SELECT metadata->'integrator' AS integrator, metadata->'worktree_bridge' AS worktree_bridge,
+             metadata->'github_bridge'->>'last_admitted' AS github_last_admitted
         FROM harness_shared.routines
        WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
        LIMIT 1
@@ -6356,6 +6359,16 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       context: signedProtocolContext,
       authority: effectAuthority,
       acceptedSnapshots: snapshots[0]?.state?.replayFloors ?? {},
+      // WI-10003820: the bridge leg (which runs BEFORE this leg in the same
+      // tick) persists the P-005-admitted github-origin head as
+      // `github_bridge.last_admitted`. Feed exactly that watermark, keyed by
+      // the same synthetic namespace the ingress wrote, so GitHub-side commits
+      // reach canonical staging. Only the admitted watermark — never the raw
+      // namespace head, which may carry an ingressed-but-blocked commit.
+      admittedGithubOriginHead:
+        entry.github_remote && rows[0]?.github_last_admitted
+          ? { deviceHex: githubOriginNamespaceKey(entry.github_remote), sha: rows[0].github_last_admitted }
+          : null,
       sign: actor.sign,
       resolveTier: async (devicePubkeyBase64) =>
         (await resolveAuthorCommsTier({ workspaceId, potHomeSlug, devicePubkey: devicePubkeyBase64 })).tier,

@@ -83,6 +83,26 @@ export interface IntegratorTickInput {
    * the legacy advanced-only behavior (existing tests/callers unaffected).
    */
   lastAnnouncedStagingSha?: string | null;
+  /**
+   * WI-10003820 — the GitHub bridge's P-005-ADMITTED github-origin head (the
+   * `routines.metadata.github_bridge.last_admitted` watermark), keyed by the
+   * synthetic github-origin namespace (`githubOriginNamespaceKey(remote)`).
+   *
+   * github-ingress.ts S-3: "the bridge layer feeds this head to the integrator
+   * EXPLICITLY, gated by the P-005 ingress admission, never via the
+   * sigrefs-verified member reconcile". The synthetic device has no keypair,
+   * so it can never hold a sigrefs floor or a comms tier: routing it through
+   * `collectGateableHeads` + the G-5c gate would drop or queue it forever.
+   * Admission IS its gate — the caller passes ONLY the admitted watermark,
+   * never the raw namespace head (an ingressed-but-blocked head stays out).
+   *
+   * Before this input existed nothing consumed the admitted head, so on a
+   * BRIDGED hive a PR merged on GitHub (or any upstream push) never reached
+   * canonical staging (measured: P-505 run 31, Phase E healthy leg).
+   * `null`/absent ⇒ no external head this pass (non-bridged hive, or nothing
+   * admitted yet).
+   */
+  admittedGithubOriginHead?: MemberHead | null;
   /** Device signer seam (prod: `bytes => signWithDeviceKey(keychainId, bytes)`). */
   sign: (bytes: Buffer) => Promise<Buffer>;
   /** Comms-trust seam (prod: `resolveAuthorCommsTier(...).then(r => r.tier)`). */
@@ -271,13 +291,31 @@ export async function runIntegratorTick(input: IntegratorTickInput): Promise<Int
   });
   errors.push(...gated.errors.map((e) => `gate ${e.devicePubkeyBase64.slice(0, 12)}: ${e.error}`));
 
+  // 3b. WI-10003820: the bridge's P-005-admitted github-origin head joins the
+  // set EXPLICITLY (github-ingress.ts S-3) — admission is its gate, so it
+  // bypasses the sigrefs floor and the device-tier gate above. A head whose
+  // commit is not in this store (a pruned or re-seeded store) is reported and
+  // skipped, never handed to merge-tree as a phantom parent.
+  const toIntegrate: MemberHead[] = [...(gated.integrate as MemberHead[])];
+  const githubHead = input.admittedGithubOriginHead;
+  if (githubHead?.sha) {
+    const present = await runGit(['cat-file', '-e', `${githubHead.sha}^{commit}`], repoPath);
+    if (present.code === 0) {
+      toIntegrate.push({ deviceHex: githubHead.deviceHex, sha: githubHead.sha });
+    } else {
+      errors.push(
+        `admitted github-origin head ${githubHead.sha.slice(0, 12)} is not in the store — not integrated this pass`,
+      );
+    }
+  }
+
   // 4. G-5 integration of the admitted heads only.
   let integration: IntegrationResult;
   try {
     integration = await integrateMemberHeads(
       repoPath,
       input.integratorDevicePubkeyBase64,
-      gated.integrate as MemberHead[],
+      toIntegrate,
       { runGit, scope: input.context, authority: input.authority },
     );
   } catch (e) {
