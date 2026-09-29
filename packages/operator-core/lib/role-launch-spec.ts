@@ -174,6 +174,7 @@ import { renderSuPlaybook } from './desktop-install/papercusp-files';
 import { composeLaunchContext } from './su-launch-context';
 import { lintInstructionText, type InstructionLintReport } from './instruction-lint';
 import { readSuperuserToken } from './superuser-token';
+import { OMITTED_DECISION_PATTERN, type IdentityOmissionReason } from './agent-identities/omission-reasons';
 import { papercuspPathForWorkspace } from './papercusp-root';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 import type { BlueprintSourceDocument, CompiledAgentSpecification, CompositionPromptFileInput, LoadedBlueprint, ResolvedAgentInput, ResolveExtendsPath, StackDocument } from '@papercusp/orchestrator/blueprint';
@@ -483,7 +484,7 @@ type EffectiveLaunchSource = {
   resolve?: ResolveExtendsPath;
   pinnedFixedPromptFiles: CompositionPromptFileInput[];
   providerInputs: ResolvedAgentInput[];
-  contributionOmissions: Array<{ id: string; reason: 'ineligible' | 'not-requested' | 'unavailable'; errorRef?: string }>;
+  contributionOmissions: Array<{ id: string; reason: IdentityOmissionReason; errorRef?: string }>;
 };
 
 async function selectedLaunchCompositionSource(
@@ -570,7 +571,7 @@ async function selectedLaunchCompositionSource(
             pin.sourceRef === `${entry.inputKind}:${entry.ref}` &&
             pin.producerRef === entry.producerRef &&
             typeof pin.decision === 'string' &&
-            /^omitted:(ineligible|not-requested|unavailable)$/.test(pin.decision));
+            OMITTED_DECISION_PATTERN.test(pin.decision));
           if (omitted.length === 1) {
             const reason = omitted[0]!.decision!.slice('omitted:'.length) as EffectiveLaunchSource['contributionOmissions'][number]['reason'];
             contributionOmissions.push({ id: entry.id, reason,

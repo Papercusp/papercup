@@ -65,10 +65,13 @@ import {
  * rather than forming a class of their own, so they have no registry entry.
  * `heldReadFailed` folds into the `held` class: its line (order 150) renders the
  * "unavailable" variant and `fingerprintOrientation` folds it into the `held`
- * token (`'!unavailable'`). Keep this list explicit — every OTHER new field still
- * fails `lint:tsc` here until it is declared.
+ * token (`'!unavailable'`). `obligationsWithheldBy` (R-4 / D-032) rides beside a
+ * null `obligations` and only changes the su.mode-goal receipt's omission reason
+ * to 'experiment-arm'; it renders nothing and never moves the obligations token.
+ * Keep this list explicit — every OTHER new field still fails `lint:tsc` here
+ * until it is declared.
  */
-type OrientationStateModifierField = 'heldReadFailed';
+type OrientationStateModifierField = 'heldReadFailed' | 'obligationsWithheldBy';
 
 const EVERY_ORIENTATION_STATE_FIELD: Record<
   Exclude<keyof OrientationState, OrientationStateModifierField>,

@@ -605,6 +605,24 @@ export interface OrientationCoupledPeer {
   intent: string;
 }
 
+/** R-4 / D-032: the obligations reader's marker that an experiment arm withheld the agenda. */
+export interface ObligationsWithheldByArm {
+  withheldBy: 'experiment-arm';
+}
+
+/**
+ * Split the obligations read into state. An arm-withheld read becomes
+ * `obligations: null` — every existing reader sees exactly what an empty agenda
+ * looks like, so nothing renders — plus the `obligationsWithheldBy` modifier the
+ * su.mode-goal receipt uses to stamp the omission honestly.
+ */
+export function splitObligationsRead(
+  read: AgentObligationBrief | ObligationsWithheldByArm | null | undefined,
+): Pick<OrientationState, 'obligations' | 'obligationsWithheldBy'> {
+  if (read && 'withheldBy' in read) return { obligations: null, obligationsWithheldBy: read.withheldBy };
+  return { obligations: read };
+}
+
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
@@ -708,6 +726,15 @@ export interface OrientationState {
    * cursor token instead of manufacturing a cleared obligation.
    */
   obligations?: AgentObligationBrief | null;
+  /**
+   * R-4 / D-032. Set only when the owner's goal runs an experiment arm that
+   * withholds the per-turn agenda. `obligations` is then null (nothing renders),
+   * and this field is what lets the su.mode-goal receipt stamp the omission
+   * 'experiment-arm' instead of 'ineligible', so an arm-withheld agenda stays
+   * distinguishable from a genuinely empty one. A modifier of the goal binding,
+   * not a class of its own.
+   */
+  obligationsWithheldBy?: 'experiment-arm';
   /**
    * KEYS of the never-drop standing facts (`dead-end:` / `wall:` / `guard-rail:`).
    *
@@ -3396,7 +3423,8 @@ export interface OrientationDeps {
   /** P-011 exact-plan executable width, or null when paused/unknown/broad. */
   executableFrontier: (ownerId: string, workspaceId: string) => Promise<OrientationExecutableFrontier | null>;
   /** Same evaluated agenda fleet:leader-brief consumes, projected to this sink's tighter cap. */
-  obligations: (ownerId: string, workspaceId: string) => Promise<AgentObligationBrief | null>;
+  /** A `{ withheldBy }` result means an R-4 experiment arm withheld the agenda. */
+  obligations: (ownerId: string, workspaceId: string) => Promise<AgentObligationBrief | ObligationsWithheldByArm | null>;
   /** KEYS of never-drop standing facts in this agent's scopes (workspace + owner). */
   neverDropFacts: (ownerId: string, workspaceId: string) => Promise<string[]>;
   /**
@@ -3556,7 +3584,7 @@ export async function resolveOrientationState(
     loopFireWithheld,
     improvementTriage,
     executableFrontier,
-    obligations,
+    ...splitObligationsRead(obligations),
     neverDropFacts,
     toolSurface,
     carryBlindWindow,
@@ -4431,7 +4459,7 @@ export function defaultOrientationDeps(): OrientationDeps {
       // a reminder — so the arms stay comparable on the same instrument.
       if (goalId) {
         const { goalWithholdsTurnStartReminders } = await import('./goal-launch-settings');
-        if (await goalWithholdsTurnStartReminders(goalId)) return null;
+        if (await goalWithholdsTurnStartReminders(goalId)) return { withheldBy: 'experiment-arm' };
       }
       // P-005: project the SAME evaluated agenda onto the existing durable await
       // plane. Reconciliation is fail-soft internally, so an unavailable optional
@@ -4581,9 +4609,11 @@ export async function bindTurnStartIdentityOutputs(input: {
             { contributionId: 'goal-portfolio', omission: { reason: 'not-requested' } },
             obligation.delivered && obligation.text
               ? { contributionId: 'goal-obligations', value: obligation.text }
-              : { contributionId: 'goal-obligations', omission: input.state.obligations
-                  ? { reason: 'unavailable', errorRef: 'turn-start:obligation-budget-trimmed' }
-                  : { reason: 'ineligible' } },
+              : { contributionId: 'goal-obligations', omission: input.state.obligationsWithheldBy
+                  ? { reason: input.state.obligationsWithheldBy }
+                  : input.state.obligations
+                    ? { reason: 'unavailable', errorRef: 'turn-start:obligation-budget-trimmed' }
+                    : { reason: 'ineligible' } },
           ],
           scope: { workspace: input.workspaceId, ownerId: input.ownerId, sink: 'turn-start' },
           observedAt,

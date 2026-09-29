@@ -149,7 +149,9 @@ describe('default orientation effect producer', () => {
     // A non-empty primary agenda: without the arm this would render a brief.
     progressWiring.read.mockResolvedValue({ agenda: { primary: [{ kind: 'duty' }] }, portfolio, goalId: 'goal-arm',
       observedAt: portfolio.assembledAt });
-    expect(await defaultOrientationDeps().obligations('su-proof', 'ws-proof')).toBeNull();
+    // The marker, not a bare null: a null is indistinguishable from an empty
+    // agenda, and D-032 requires the receipt to say the ARM withheld it.
+    expect(await defaultOrientationDeps().obligations('su-proof', 'ws-proof')).toEqual({ withheldBy: 'experiment-arm' });
     await drainDetached();
     expect(armWiring.reminders).not.toHaveBeenCalled();
     expect(progressWiring.record).toHaveBeenCalledTimes(1);
@@ -374,6 +376,30 @@ describe('goal placement receipts through the real orientation ACK path', () => 
     expect(goalCall?.[0].outputs).toContainEqual({
       contributionId: 'goal-obligations', value: f.brief.projection.text,
     });
+  });
+
+  it('R-4 / D-032: an arm-withheld agenda renders nothing and is stamped experiment-arm, distinct from an empty one', async () => {
+    const f = fixture();
+    const goalMode = { axisKey: 'goal', mode: 'goal', reason: 'owns goal', setBy: 'owner',
+      setBySelf: false, ownerDirected: true, impliedBy: null };
+    const goalObligations = () => identityBindMock.mock.calls
+      .filter(([input]) => input.identityId === 'su.mode-goal')
+      .at(-1)?.[0].outputs.find((output: { contributionId: string }) => output.contributionId === 'goal-obligations');
+
+    const withheld = await f.turn(null, {
+      modes: async () => [goalMode],
+      obligations: async () => ({ withheldBy: 'experiment-arm' as const }),
+    });
+    await drainDetached();
+    expect(withheld.block).not.toContain(f.brief.projection.text);
+    expect(goalObligations()).toEqual({ contributionId: 'goal-obligations', omission: { reason: 'experiment-arm' } });
+
+    // Control: a genuinely empty agenda keeps its old receipt, so the two cases
+    // stay distinguishable from the receipt alone.
+    identityBindMock.mockClear();
+    await f.turn(null, { modes: async () => [goalMode], obligations: async () => null });
+    await drainDetached();
+    expect(goalObligations()).toEqual({ contributionId: 'goal-obligations', omission: { reason: 'ineligible' } });
   });
 
   it('a wrong token does not prove the first exposure; only a subsequently emitted retry can be recorded', async () => {

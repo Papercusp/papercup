@@ -22,6 +22,7 @@ import {
   slotSpec,
 } from '@papercusp/orchestrator/blueprint';
 import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
+import type { IdentityOmissionReason } from './omission-reasons';
 import { parseBlueprintSource, resolveAndValidate } from '../agent-tools/blueprint/_resolve';
 import { buildBlueprintReleaseArchive, readBlueprintLifecycle } from '../cupboard/blueprint-release';
 import { compileBlueprintWithPackages, resolveBlueprintPackageInputs } from '../blueprint/compile-packages';
@@ -448,7 +449,7 @@ export async function getSelectedModeDefinitions(modeIds: readonly string[]): Pr
 export interface ProducedIdentityOutput {
   contributionId: string;
   value?: unknown;
-  omission?: { reason: 'ineligible' | 'not-requested' | 'unavailable'; errorRef?: string };
+  omission?: { reason: IdentityOmissionReason; errorRef?: string };
 }
 
 /** Pin a set of outputs already produced for one selected identity. The same
@@ -500,7 +501,7 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
   const supplied = new Set<string>();
   const settings: Array<{ ref: string; revision: string; value: unknown; producerRef: string }> = [];
   const closure: ResolvedAgentInput[] = [];
-  const omissions: Array<{ id: string; reason: 'ineligible' | 'not-requested' | 'unavailable'; errorRef?: string }> = [];
+  const omissions: Array<{ id: string; reason: IdentityOmissionReason; errorRef?: string }> = [];
   const receipts: Array<{ contributionId: string; producerRef: string; outputRevision: string | null; status: string }> = [];
   for (const output of input.outputs) {
     const selected = byId.get(output.contributionId);
