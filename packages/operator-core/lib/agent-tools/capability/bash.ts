@@ -56,6 +56,7 @@ import { resolveOwnerGoal } from '../coordination/agent-goal-sources';
 import { readAgentStateStamp } from '../../agent-state-stamp';
 import { readHeldWorkItems } from '../../carry-brief';
 import { listLiveTasks } from '../../task-manager/store';
+import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { readFrozenCandidateRepairQueue } from '../../harness/routines/release-actions';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -814,6 +815,17 @@ export default defineTool({
         content: [{ type: 'text' as const, text: JSON.stringify(frozenRefusal) }],
         isError: true,
       };
+    }
+    // expensive-verification-loops P-002: a slow launch for a work item that keeps failing
+    // slow attempts is held until the loop is audited on the item (quick calls pass).
+    const loopRefusal = await loopLaunchRefusal({
+      workspaceId,
+      workItemId: provenance.workItemId,
+      background: Boolean(args.run_in_background),
+      timeoutMs: executionTimeoutMs,
+    });
+    if (loopRefusal) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify(loopRefusal) }], isError: true };
     }
 
     // CAP-CONTRACT-P002-YIELD-SAME-JOB@1: every admitted call forks exactly

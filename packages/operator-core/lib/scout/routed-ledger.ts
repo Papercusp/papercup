@@ -363,6 +363,57 @@ export async function propagateWorkItemOutcome(input: {
   return rows.length;
 }
 
+/**
+ * The plan-store lifecycle statuses that settle a `plan:` route, mapped to the
+ * outcome {@link classifyIdeaOutcome} (outcome-feedback.ts) gives the same
+ * terminal on the sweep path: `shipped` is the plan rail's win terminal,
+ * `superseded` its loss terminal (TERMINAL_PLAN_STATUSES, plan-parser). Any other
+ * status is non-terminal and settles nothing.
+ */
+const PLAN_STATUS_OUTCOME: Readonly<Record<string, 'won' | 'lost'>> = {
+  shipped: 'won',
+  superseded: 'lost',
+};
+
+/**
+ * WI-10003894: propagate a terminal PLAN status to the routed-idea outcome cache.
+ *
+ * The plan-rail sibling of {@link propagateWorkItemOutcome}. Before this, only `wi:`
+ * routes had an eager path; a `plan:` route waited for the bounded refresh sweep
+ * (25 ideas per 15-minute wake against thousands pending), so a shipped goal plan's
+ * idea could read `pending` for more than a day and Blender's lens weights lagged
+ * every plan outcome. `refreshScoutOutcomes` stays the authoritative reconciliation
+ * path and the backstop for anything this misses.
+ *
+ * Scoped by workspace + `routed_ref` only — deliberately NOT by harness, mirroring
+ * the sweep's plan-rail terminal reads (`readScoutRefScopedTerminalEntries`): the
+ * workspace Scout records its routes under '@singleton' (EI-10520), never the member
+ * harness the plan lives in, so a harness filter would miss every Scout plan route.
+ */
+export async function propagatePlanOutcome(input: {
+  planSlug: string;
+  status: string | null | undefined;
+  workspaceId?: string;
+}): Promise<number> {
+  const outcome = PLAN_STATUS_OUTCOME[(input.status ?? '').trim().toLowerCase()];
+  if (!outcome || !input.planSlug) return 0;
+
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const routedRef = `plan:${input.planSlug}`;
+  const now = Date.now();
+  const { sql } = getOrgPg();
+  const rows = await sql<{ idea_id: string }[]>`
+    UPDATE harness_shared.scout_routed_ideas
+       SET outcome = ${outcome},
+           outcome_checked_at = ${now}
+     WHERE workspace_id = ${ws}
+       AND rail = 'plan'
+       AND routed_ref = ${routedRef}
+       AND outcome IS DISTINCT FROM ${outcome}
+    RETURNING idea_id`;
+  return rows.length;
+}
+
 /** Input to {@link gradeRoutedIdea} — one grader's verdict on a routed idea (C-2). */
 export interface GradeRoutedIdeaInput {
   /** The routed idea's id (the ledger PK). */

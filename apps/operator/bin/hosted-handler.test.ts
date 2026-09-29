@@ -98,6 +98,7 @@ describe("hosted handler", () => {
     };
     const gateway = new HostedWorkspaceConnectorGateway({
       authenticate: async () => binding,
+      recordLiveness: async () => true,
     } as never);
     const hosted = fixture(gateway);
     const server = serve({ fetch: hosted.handler, port: 0, hostname: "127.0.0.1" });
@@ -127,5 +128,69 @@ describe("hosted handler", () => {
       websocket.once("close", resolve);
       websocket.close();
     });
+  });
+
+  // P-001 (psu-cloud-connector-liveness-multi-signin-2026-09-29): on the real `ws` transport, a
+  // connector that answers pings stays and is stamped alive; one that has gone silent is
+  // terminated and stamped gone, so the CLI stops calling its machine reachable.
+  it("pings connectors over the real transport, stamps liveness, and terminates a silent one", async () => {
+    const binding = {
+      controlPlaneWorkspaceId: "control",
+      organizationId: "org-1",
+      customerWorkspaceId: "workspace-1",
+      hostId: "host-1",
+      routeLabel: "alpha",
+      generation: 5,
+      transport: "websocket" as const,
+      state: "active" as const,
+    };
+    const stamps: boolean[] = [];
+    const gateway = new HostedWorkspaceConnectorGateway({
+      authenticate: async () => binding,
+      recordLiveness: async (_binding: unknown, alive: boolean) => { stamps.push(alive); return true; },
+    } as never);
+    const hosted = fixture(gateway);
+    const server = serve({ fetch: hosted.handler, port: 0, hostname: "127.0.0.1" });
+    servers.push(server);
+    server.on("upgrade", (request, socket, head) => {
+      void hosted.upgrade(request, socket, head).then((handled) => { if (!handled) socket.destroy(); });
+    });
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind TCP");
+    const until = async (predicate: () => boolean) => {
+      for (let i = 0; i < 200 && !predicate(); i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(predicate()).toBe(true);
+    };
+    const dial = (autoPong: boolean) => new Promise<WebSocket>((resolve, reject) => {
+      const websocket = new WebSocket(`ws://127.0.0.1:${address.port}/api/hosted/connectors/socket`, {
+        headers: { authorization: `Bearer hc_${"A".repeat(43)}`, host: "alpha.workspaces.papercusp.com" },
+        autoPong,
+      });
+      websocket.once("message", () => resolve(websocket));
+      websocket.once("error", reject);
+    });
+
+    const healthy = await dial(true);
+    await until(() => stamps.length === 1);
+    hosted.relay.sweepLiveness();
+    await until(() => stamps.length === 2);
+    hosted.relay.sweepLiveness();
+    await until(() => stamps.length === 3);
+    expect(stamps).toEqual([true, true, true]);
+    expect(healthy.readyState).toBe(WebSocket.OPEN);
+
+    // A second socket for the same generation replaces the first; now make it go silent.
+    const silent = await dial(false);
+    await until(() => healthy.readyState === WebSocket.CLOSED);
+    const closed = new Promise<number>((resolve) => silent.once("close", (code) => resolve(code)));
+    hosted.relay.sweepLiveness();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(silent.readyState).toBe(WebSocket.OPEN);
+    hosted.relay.sweepLiveness();
+    // terminate() drops TCP without a close frame: the client sees 1006.
+    expect(await closed).toBe(1006);
+    await until(() => stamps.at(-1) === false);
+    hosted.relay.dispose();
   });
 });

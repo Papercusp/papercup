@@ -39,6 +39,8 @@
     "lint:guidance-returns-schema": "node ../../scripts/check-guidance-returns-schema.mjs",
     "lint:reachable-advisories": "node ../../scripts/check-reachable-advisories.mjs --strict",
     "lint:rust-advisories": "node ../../scripts/check-rust-advisories.mjs --strict",
+    "lint:npm-licenses": "node ../../scripts/check-licenses.mjs --strict --ecosystem npm",
+    "lint:rust-licenses": "node ../../scripts/check-licenses.mjs --strict --ecosystem cargo",
     "lint:no-new-result-door-optout": "node ../../scripts/check-result-door-optouts.mjs",
     "lint:lockfile-census": "node ../../scripts/check-lockfile-census.mjs --strict",
     "lint:test-timing-budgets": "node ../../scripts/check-test-timing-budgets.mjs",

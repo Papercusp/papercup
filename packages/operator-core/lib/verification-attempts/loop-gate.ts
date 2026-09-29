@@ -22,7 +22,7 @@
  * reports that and does NOT refuse. A gate nobody can clear would be worse than none.
  */
 import type { Sql } from 'postgres';
-import { listWorkItemAttempts, type WorkItemAttempt } from './attempt-ledger';
+import { listWorkItemAttempts, SLOW_ATTEMPT_MIN_MS, type WorkItemAttempt } from './attempt-ledger';
 
 export const LOOP_DISTINCT_FAILURES = 2;
 export const LOOP_REPEATED_FAILURES = 3;
@@ -212,4 +212,102 @@ export async function checkLoopGate(
     // The gate is a backstop, not a new way for a launch to fail.
     return { allowed: true, verdict: null, notesReadable: false };
   }
+}
+
+export interface LoopNudgeDeps extends LoopGateDeps {
+  send?: (input: { workspaceId: string; to: string; summary: string; body: string }) => Promise<unknown>;
+}
+
+async function defaultNudgeSend(input: { workspaceId: string; to: string; summary: string; body: string }) {
+  const { sendMessage } = await import('../agent-tools/coordination/messages');
+  return sendMessage(
+    {
+      ownerId: 'verification-loop-gate',
+      ownerLabel: 'verification-loop-gate',
+      source: 'static-client',
+      workspaceId: input.workspaceId,
+      userId: null,
+    },
+    { to: [input.to], summary: input.summary, body: input.body },
+  );
+}
+
+/**
+ * P-002 nudge: tell the attempt's launcher at the moment THIS closed attempt trips the
+ * loop rule — once, not on every later failure (those are refused at launch anyway).
+ * Silent when the owner is not an agent id, the notes are unreadable, or anything throws.
+ * Returns true when a nudge was sent.
+ */
+export async function nudgeOnNewLoop(
+  input: { workspaceId: string; workItemId: string; taskId: string; ownerId: string | null | undefined },
+  deps: LoopNudgeDeps = {},
+): Promise<boolean> {
+  try {
+    const owner = input.ownerId?.trim();
+    // launched_by falls back to a principal slug ('capability:bash') or 'unknown'.
+    if (!owner || owner === 'unknown' || owner.includes(':')) return false;
+    const attempts = await (deps.listAttempts ?? listWorkItemAttempts)(
+      { workspaceId: input.workspaceId, workItemId: input.workItemId },
+      deps.sql,
+    );
+    if (!attempts.some((a) => a.taskId === input.taskId)) return false;
+    const notes = await (deps.readNotes ?? defaultReadNotes)(input.workItemId);
+    if (notes === null) return false;
+    const opts = { now: deps.now?.() };
+    const withIt = evaluateLoop(attempts, notes, opts);
+    if (!withIt.tripped) return false;
+    const without = evaluateLoop(
+      attempts.filter((a) => a.taskId !== input.taskId),
+      notes,
+      opts,
+    );
+    if (without.tripped) return false;
+    await (deps.send ?? defaultNudgeSend)({
+      workspaceId: input.workspaceId,
+      to: owner,
+      summary: `${input.workItemId} is grinding (${withIt.triggers.join(', ')}): the next slow attempt will be held until the loop is audited`,
+      body: loopRefusalReason(input.workItemId, withIt),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The refusal a launcher returns to its caller (JSON-serialisable). */
+export interface LoopLaunchRefusal {
+  ok: false;
+  reason: 'loop_audit_required';
+  work_item_id: string;
+  triggers: LoopTrigger[];
+  fingerprints: string[];
+  message: string;
+}
+
+/**
+ * The launch seam shared by capability:bash and release:cut. Only a launch that can run
+ * past SLOW_ATTEMPT_MIN_MS is gated — a background job, or a foreground call given a
+ * longer timeout — so the quick checks an audit needs stay free. Returns null to proceed.
+ */
+export async function loopLaunchRefusal(
+  input: {
+    workspaceId: string | null | undefined;
+    workItemId: string | null | undefined;
+    background: boolean;
+    timeoutMs: number;
+  },
+  deps: LoopGateDeps = {},
+): Promise<LoopLaunchRefusal | null> {
+  if (!input.workspaceId || !input.workItemId) return null;
+  if (!input.background && input.timeoutMs <= SLOW_ATTEMPT_MIN_MS) return null;
+  const decision = await checkLoopGate({ workspaceId: input.workspaceId, workItemId: input.workItemId }, deps);
+  if (decision.allowed) return null;
+  return {
+    ok: false,
+    reason: 'loop_audit_required',
+    work_item_id: input.workItemId,
+    triggers: decision.verdict.triggers,
+    fingerprints: decision.verdict.fingerprints,
+    message: decision.reason,
+  };
 }

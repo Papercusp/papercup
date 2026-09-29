@@ -243,3 +243,123 @@ describe('HostedWorkspaceSessionBroker — operator-http channels (D-418 / WI-10
     expect(client.sent).toContainEqual(expect.objectContaining({ type: 'session.denied', reason: 'operator_http_role_fixed' }));
   });
 });
+
+/** A socket that answers pings the way `ws` does, unless told the link is dead. */
+class PingableSocket extends FakeSocket {
+  pings = 0;
+  terminated = false;
+  answersPings = true;
+  ping() {
+    this.pings += 1;
+    if (this.answersPings) queueMicrotask(() => this.emit('pong'));
+  }
+  terminate() {
+    if (this.readyState !== this.OPEN) return;
+    this.terminated = true;
+    this.readyState = 3;
+    this.emit('close');
+  }
+}
+
+// P-001 (psu-cloud-connector-liveness-multi-signin-2026-09-29). avi-test, 2026-09-29: the VM kept a
+// silent, half-open connector for ~2h; this broker had no socket for it and nothing on either side
+// noticed, so every attach closed 4411 connector_unavailable while the cloud said "reachable".
+describe('HostedWorkspaceSessionBroker — relay liveness (P-001)', () => {
+  const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  function liveBroker() {
+    const liveness: [number, boolean][] = [];
+    const audit = vi.fn();
+    const broker = new HostedWorkspaceSessionBroker({
+      pingIntervalMs: 0,
+      randomId: () => 'channel-1',
+      onAudit: audit,
+      onConnectorLiveness: (binding, alive) => liveness.push([binding.generation, alive]),
+    });
+    return { broker, liveness, audit };
+  }
+
+  it('keeps a connector that answers pings and reports each pong as liveness', async () => {
+    const { broker, liveness } = liveBroker();
+    const host = new PingableSocket();
+    broker.attachConnector(connector, host);
+    expect(liveness).toEqual([[7, true]]);
+
+    for (let sweep = 0; sweep < 3; sweep += 1) {
+      broker.sweepLiveness();
+      await flush();
+    }
+    expect(host.pings).toBe(3);
+    expect(host.terminated).toBe(false);
+    expect(liveness).toEqual([[7, true], [7, true], [7, true], [7, true]]);
+  });
+
+  it('terminates a connector that missed a pong, detaches its browsers with 4412, and reports it gone', async () => {
+    const { broker, liveness, audit } = liveBroker();
+    const host = new PingableSocket();
+    const browser = new PingableSocket();
+    broker.attachConnector(connector, host);
+    broker.attachBrowser(ticket(), browser);
+
+    host.answersPings = false;
+    broker.sweepLiveness();
+    await flush();
+    expect(host.terminated).toBe(false); // one missed pong is only suspicion
+    broker.sweepLiveness();
+
+    expect(host.terminated).toBe(true);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ action: 'connector_heartbeat_missed', generation: 7 }));
+    expect(browser.closed).toContainEqual([4412, 'connector_disconnected']);
+    expect(liveness.at(-1)).toEqual([7, false]);
+
+    // The next attach is refused truthfully instead of relaying into a dead socket.
+    const late = new PingableSocket();
+    broker.attachBrowser(ticket('hosted-session-2'), late);
+    expect(late.closed).toContainEqual([4411, 'connector_unavailable']);
+  });
+
+  it('treats any inbound frame as proof of life', async () => {
+    const { broker } = liveBroker();
+    const host = new PingableSocket();
+    host.answersPings = false;
+    broker.attachConnector(connector, host);
+    broker.sweepLiveness();
+    host.message({ type: 'relay', channelId: 'none', payload: {} });
+    broker.sweepLiveness();
+    expect(host.terminated).toBe(false);
+  });
+
+  it('pings browsers too and drops one that stopped answering, without touching connector liveness', async () => {
+    const { broker, liveness } = liveBroker();
+    const host = new PingableSocket();
+    const browser = new PingableSocket();
+    broker.attachConnector(connector, host);
+    broker.attachBrowser(ticket(), browser);
+    browser.answersPings = false;
+    broker.sweepLiveness();
+    await flush();
+    broker.sweepLiveness();
+    expect(browser.terminated).toBe(true);
+    expect(host.terminated).toBe(false);
+    expect(host.sent).toContainEqual({ type: 'relay.close', channelId: 'channel-1', reason: 'browser_disconnected' });
+    expect(liveness.every(([, alive]) => alive)).toBe(true);
+  });
+
+  it('does not report a replaced connector socket as gone', () => {
+    const { broker, liveness } = liveBroker();
+    const first = new PingableSocket();
+    const second = new PingableSocket();
+    broker.attachConnector(connector, first);
+    // Real `ws` delivers the replaced socket's close asynchronously, after the new one is bound.
+    first.close = function (this: PingableSocket, code?: number, reason?: string) {
+      this.closed.push([code, reason]);
+      this.readyState = 3;
+      queueMicrotask(() => this.emit('close'));
+    };
+    broker.attachConnector(connector, second);
+    return flush().then(() => {
+      expect(first.closed).toContainEqual([4002, 'connector_replaced']);
+      expect(liveness).toEqual([[7, true], [7, true]]);
+    });
+  });
+});

@@ -214,6 +214,8 @@
     "lint:reachable-advisories:report": "node scripts/check-reachable-advisories.mjs",
     "lint:rust-advisories": "node scripts/check-rust-advisories.mjs --strict",
     "lint:rust-advisories:report": "node scripts/check-rust-advisories.mjs",
+    "lint:licenses": "node scripts/check-licenses.mjs --strict",
+    "lint:licenses:list": "node scripts/check-licenses.mjs --list",
     "lint:lockfile-census": "node scripts/check-lockfile-census.mjs --strict",
     "lint:lockfile-census:sbom": "node scripts/check-lockfile-census.mjs --strict --sbom .papercusp/tmp/lockfile-census.sbom.json",
     "lint:no-restart": "node scripts/check-no-restart-imports.mjs",

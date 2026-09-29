@@ -3900,6 +3900,16 @@ impl App {
                     | crate::su_session::SuSessionLifecycleState::Resuming => {
                         self.chat_streaming = true;
                     }
+                    // `ready` PRECEDES the first turn: a fresh launch's first
+                    // message is still on its way when the engine reports it.
+                    // Ending the turn here (P-012) flipped the composer to the
+                    // failure title "Message — Enter retries" for the moment
+                    // between ready and acceptance, on every successful start.
+                    crate::su_session::SuSessionLifecycleState::Ready
+                        if self
+                            .su_pending_turn
+                            .as_ref()
+                            .is_some_and(|pending| pending.error.is_none()) => {}
                     crate::su_session::SuSessionLifecycleState::Ready
                     | crate::su_session::SuSessionLifecycleState::WaitingForOwner
                     | crate::su_session::SuSessionLifecycleState::Interrupted
@@ -14859,6 +14869,43 @@ mod tests {
             app.card_state.has_card(),
             "a missing conversation must not hide the question"
         );
+    }
+
+    /// P-012: `ready` precedes the first turn. A first message still on its
+    /// way when the engine reports ready must stay "Sending"; ending the turn
+    /// there showed the failure title "Message — Enter retries" between ready
+    /// and acceptance on every successful fresh launch. A ready with NO
+    /// pending turn (or a failed one) still settles the pane.
+    #[test]
+    fn ready_before_the_first_turn_is_accepted_keeps_it_sending() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        app.su_pending_turn = Some(PendingSuTurn {
+            command_id: "pui-1".into(),
+            content: "hi".into(),
+            draft: "hi".into(),
+            attachment_references: Vec::new(),
+            command: None,
+            uncertain: false,
+            error: None,
+        });
+        app.chat_streaming = true;
+        let mut ready = su_event_base("lifecycle", 1);
+        ready["previousState"] = json!("starting");
+        ready["state"] = json!("ready");
+        ready["runtimeGeneration"] = json!(1);
+        app.apply_su_session_event(su_event(ready.clone()));
+        assert!(app.chat_streaming, "the pending first turn is still sending");
+        assert!(app.su_pending_turn.is_some());
+
+        // Calibration: once the turn has failed, ready settles the pane.
+        app.su_pending_turn.as_mut().unwrap().error = Some("refused".into());
+        let mut again = ready;
+        again["eventId"] = json!("chat-1:2");
+        again["sequence"] = json!(2);
+        app.apply_su_session_event(su_event(again));
+        assert!(!app.chat_streaming);
     }
 
     #[test]

@@ -23,7 +23,7 @@ import { defineTool, type RouteDefinition } from '@papercusp/tooldef/define-tool
 import type { HostedMembershipAuthorityReader } from '../../../auth/hosted-membership-authority';
 import { isHostedPrincipal, type HostedPermission } from '../../../auth/hosted-principal';
 import type { HostedPrincipalResolver } from '../../../auth/hosted-principal-resolver';
-import type { HostedWorkspaceConnectorGateway } from '../../hosted-workspace-connector';
+import { isHostedConnectorLive, type HostedWorkspaceConnectorGateway } from '../../hosted-workspace-connector';
 import type { HostedCliStore, HostedCliToken } from './store';
 
 export { PostgresHostedCliStore, type HostedCliStore } from './store';
@@ -396,6 +396,7 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
       } catch {
         return jsonError('authority_unavailable', 503);
       }
+      const now = clock();
       return Response.json(
         {
           ok: true,
@@ -407,7 +408,9 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
             displayName: row.displayName,
             state: row.state,
             hostId: row.hostId,
-            reachable: row.connector?.state === 'active' && row.connector.transport === 'websocket',
+            // P-001: a live link, not just an active row. The relay stamps heartbeat_at on
+            // every pong, so an active row with a stale stamp is a machine whose link died.
+            reachable: isHostedConnectorLive(row.connector, now),
             connectorHeartbeatAt: row.connector?.heartbeatAt?.toISOString() ?? null,
           })),
         },
@@ -440,8 +443,11 @@ export function createHostedCliRoutes(deps: HostedCliRouteDependencies): Readonl
       const workspace = rows.find((row) => row.id === workspaceId);
       if (!workspace?.hostId) return jsonError('workspace_not_found', 404);
       const connector = workspace.connector;
-      if (!connector || connector.state !== 'active' || connector.transport !== 'websocket') {
-        return jsonError('workspace_not_reachable', 409);
+      if (!connector || !isHostedConnectorLive(connector, clock())) {
+        // Refuse here rather than mint a ticket the relay can only answer with 4411.
+        return jsonError('workspace_not_reachable', 409, {
+          connectorHeartbeatAt: connector?.heartbeatAt?.toISOString() ?? null,
+        });
       }
       // Its own hosted session id gives psu its own shell on the machine (the host keys PTYs by
       // user + session), separate from the portal's Terminal tab; reusing the key within the

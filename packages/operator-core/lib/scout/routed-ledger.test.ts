@@ -16,14 +16,17 @@ const h = vi.hoisted(() => ({
   /** Rows the existence SELECT yields. */
   selectRows: [] as Array<{ idea_id: string }>,
   queries: [] as string[],
+  /** Interpolated values per query, index-aligned with `queries`. */
+  values: [] as unknown[][],
 }));
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    sql: Object.assign((strings: TemplateStringsArray, ..._vals: unknown[]) => {
+    sql: Object.assign((strings: TemplateStringsArray, ...vals: unknown[]) => {
       const text = strings.join(' ');
       h.queries.push(text);
+      h.values.push(vals);
       if (text.includes('UPDATE harness_shared.scout_routed_ideas')) return Promise.resolve(h.updateRows);
       if (text.includes('SELECT idea_id')) return Promise.resolve(h.selectRows);
       return Promise.resolve([]);
@@ -33,7 +36,9 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
-const { gradeRoutedIdea, hiveFromPatternRefs, propagateWorkItemOutcome } = await import('./routed-ledger');
+const { gradeRoutedIdea, hiveFromPatternRefs, propagatePlanOutcome, propagateWorkItemOutcome } = await import(
+  './routed-ledger'
+);
 const sse = await import('../sync-sse');
 const invalidate = vi.mocked(sse.notifySyncInvalidate);
 
@@ -44,6 +49,7 @@ afterEach(() => {
   h.updateRows = [];
   h.selectRows = [];
   h.queries = [];
+  h.values = [];
   invalidate.mockClear();
 });
 
@@ -142,6 +148,52 @@ describe('propagateWorkItemOutcome (EI-22414305411561114)', () => {
         workspaceId: 'ws-1',
       }),
     ).resolves.toBe(0);
+    expect(h.queries).toHaveLength(0);
+  });
+});
+
+describe('propagatePlanOutcome (WI-10003894)', () => {
+  it('settles a shipped plan route as won, scoped to the plan rail and routed ref', async () => {
+    h.updateRows = [{ idea_id: 'goal-plan:x' }];
+
+    await expect(
+      propagatePlanOutcome({ planSlug: 'some-plan-2026-09-27', status: 'shipped', workspaceId: 'ws-1' }),
+    ).resolves.toBe(1);
+
+    expect(h.queries).toHaveLength(1);
+    const [text] = h.queries;
+    expect(text).toContain('UPDATE harness_shared.scout_routed_ideas');
+    expect(text).toContain("rail = 'plan'");
+    expect(text).toContain('outcome IS DISTINCT FROM');
+    expect(h.values[0]).toContain('won');
+    expect(h.values[0]).toContain('plan:some-plan-2026-09-27');
+    expect(h.values[0]).toContain('ws-1');
+  });
+
+  it('does not filter by harness: Scout records plan routes under @singleton (EI-10520)', async () => {
+    await propagatePlanOutcome({ planSlug: 'p', status: 'shipped', workspaceId: 'ws-1' });
+    expect(h.queries[0]).not.toContain('harness_slug');
+  });
+
+  it('settles a superseded plan route as lost', async () => {
+    h.updateRows = [{ idea_id: 'idea-lost' }];
+    await expect(
+      propagatePlanOutcome({ planSlug: 'replaced-plan', status: 'Superseded ', workspaceId: 'ws-1' }),
+    ).resolves.toBe(1);
+    expect(h.values[0]).toContain('lost');
+    expect(h.values[0]).not.toContain('won');
+  });
+
+  it.each(['draft', 'ready', 'active', 'awaiting-acceptance', '', null, undefined])(
+    'is a no-op without a query for non-terminal status %s',
+    async (status) => {
+      await expect(propagatePlanOutcome({ planSlug: 'p', status, workspaceId: 'ws-1' })).resolves.toBe(0);
+      expect(h.queries).toHaveLength(0);
+    },
+  );
+
+  it('is a no-op for an empty slug', async () => {
+    await expect(propagatePlanOutcome({ planSlug: '', status: 'shipped', workspaceId: 'ws-1' })).resolves.toBe(0);
     expect(h.queries).toHaveLength(0);
   });
 });

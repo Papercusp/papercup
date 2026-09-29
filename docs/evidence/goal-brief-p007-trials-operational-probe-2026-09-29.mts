@@ -31,12 +31,24 @@ const inList = (xs: readonly string[]) => xs.map(lit).join(',');
 
 const WS = 'papercusp-workspace';
 const OPERATOR = 'su-cf569f3f-d560-4ae5-8a7a-bb4bdaeb21c7'; // the session that started the trials and ran the probe
+// Counterexample mode: the falsifiability control for AUTO-BAR-R-7-P-007.
+//   R7_COUNTEREXAMPLE=arm-a-blender-plan npx tsx <this file> > <this file stem>.counterexample.json
+// re-points Arm A at the Arm B plan, a Blender-origin plan that existed before every trial goal and that no
+// Arm A goal created. Claiming that plan as Arm A's "discovered need" is the exact defect R-7 rules out: a goal
+// relabelling an existing Blender proposal as goal-local work. A sound instrument must report
+// r7-arm-a-goal-local-plan=false and exit 1 on that input. Only the Arm A plan changes; every read and every
+// other sub-assertion is the same code. Normal mode (variable unset) is unchanged.
+const COUNTEREXAMPLE = process.env.R7_COUNTEREXAMPLE ?? null;
+if (COUNTEREXAMPLE !== null && COUNTEREXAMPLE !== 'arm-a-blender-plan') {
+  throw new Error(`unknown R7_COUNTEREXAMPLE=${COUNTEREXAMPLE}; the only counterexample is arm-a-blender-plan`);
+}
+const ARM_B_PLAN = 'duplicate-screening-keys-on-authored-prose-and-its-normalize-2026-09-05';
 const ARMS = {
   A: {
     label: 'need discovery -> goal-local plan',
     goals: ['restore-reliable-hourly-papercusp-postgres-backu-9368ec', 'finish-restoring-reliable-hourly-papercusp-postg-406e99',
       'ship-plan-papercusp-db-backup-invalid-db-2026-09-8016e1'],
-    plan: 'papercusp-db-backup-invalid-db-2026-09-27',
+    plan: COUNTEREXAMPLE === 'arm-a-blender-plan' ? ARM_B_PLAN : 'papercusp-db-backup-invalid-db-2026-09-27',
   },
   B: {
     label: 'adopt existing Blender plan without cloning',
@@ -268,9 +280,23 @@ const passed = assertions.filter((a) => a.passed).length;
 process.stdout.write(`${JSON.stringify({
   schemaVersion: 1,
   kind: 'operational-test-evidence',
-  name: 'goal-brief P-007 GOAL trials operational probe (R-7)',
+  name: COUNTEREXAMPLE
+    ? 'goal-brief P-007 GOAL trials operational probe (R-7) — counterexample arm-a-blender-plan'
+    : 'goal-brief P-007 GOAL trials operational probe (R-7)',
   framework: 'shell',
-  command: ['npx', 'tsx', 'docs/evidence/goal-brief-p007-trials-operational-probe-2026-09-29.mts'],
+  command: [...(COUNTEREXAMPLE ? ['env', `R7_COUNTEREXAMPLE=${COUNTEREXAMPLE}`] : []),
+    'npx', 'tsx', 'docs/evidence/goal-brief-p007-trials-operational-probe-2026-09-29.mts'],
+  ...(COUNTEREXAMPLE
+    ? {
+        mode: 'counterexample',
+        counterexample: {
+          id: COUNTEREXAMPLE,
+          targets: 'auto-bar-r-7-p-007',
+          fault: `Arm A plan replaced by ${ARM_B_PLAN} (Blender-origin, created before every trial goal, created by no Arm A goal)`,
+          expected: 'r7-arm-a-goal-local-plan=false, auto-bar-r-7-p-007=false, exitCode 1 (caught)',
+        },
+      }
+    : {}),
   exitCode: passed === assertions.length ? 0 : 1,
   startedAt,
   finishedAt: new Date().toISOString(),

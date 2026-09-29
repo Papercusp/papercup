@@ -6354,4 +6354,107 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
     },
     900_000,
   );
+
+  // pui-chat-first-ux-2026-09-28 P-012: a fresh launch shows its first message
+  // the moment Enter is pressed and delivers it every time. P-005 run 4 is the
+  // failure this guards: 60 s of "Sending" over an empty transcript, then "press
+  // Enter to send your message again", while the engine itself reached ready.
+  // Each launch records, against Enter, when the engine was created, its
+  // lifecycle transitions, when it became ready, when the owner turn reached
+  // it and when the reply completed — so a failure names WHICH of "the engine
+  // was slow to start" and "a ready engine was never sent the turn" it was.
+  // Opt-in because every launch spends one real model turn:
+  // PUI_FIRST_MESSAGE_RUNS=<n> (the plan's bar is 10 consecutive launches).
+  test.runIf(Boolean(process.env.PUI_FIRST_MESSAGE_RUNS))(
+    'P-012: fresh launches each echo the first message on Enter and deliver it without a retry',
+    async ({ onTestFailed }) => {
+      const runs = Math.max(1, Number(process.env.PUI_FIRST_MESSAGE_RUNS) || 10);
+      const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      const results: Array<Record<string, unknown>> = [];
+      let current: Record<string, unknown> | null = null;
+      let pane: PuiPane | null = null;
+      onTestFailed(() => {
+        let screen = '';
+        try { screen = pane?.screen() ?? ''; } catch { /* pane gone */ }
+        console.info('PUI_P012_FAILURE', JSON.stringify({ results, current, screen }));
+      });
+      for (let run = 1; run <= runs; run += 1) {
+        const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p012-')));
+        const prompt = `Reply with just the word pong${run}.`;
+        const lifecycle: Array<[number, string]> = [];
+        const record: Record<string, unknown> = { run, lifecycle };
+        current = record;
+        pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols: 120, rows: 40 });
+        const enginesBefore = scriptedEngine.engines.length;
+        try {
+          await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
+          const eventsBefore = scriptedEngine.events.length;
+          pane.write(prompt);
+          await pane.waitFor(prompt);
+          const started = performance.now();
+          const at = () => Math.round(performance.now() - started);
+          pane.enter();
+          // The echo: the line is in the TRANSCRIPT (not behind the composer's
+          // "> ") within 2 s, whatever the engine is doing.
+          const echoDeadline = Date.now() + 2_000;
+          for (;;) {
+            const rows = pane.screen().split('\n');
+            const inComposer = rows.some((row) => row.includes(`> ${prompt}`));
+            if (!inComposer && rows.some((row) => row.includes(prompt))) {
+              record.echoMs = at();
+              break;
+            }
+            if (Date.now() > echoDeadline) {
+              throw new Error(`run ${run}: the message was not in the transcript within 2 s of Enter`);
+            }
+            await sleep(50);
+          }
+          const deadline = Date.now() + 240_000;
+          for (;;) {
+            const engine = scriptedEngine.engines.length > enginesBefore ? scriptedEngine.engines.at(-1) : undefined;
+            if (engine && record.engineMs === undefined) {
+              record.engineMs = at();
+              void engine.ready.then(() => { record.readyMs = at(); }, () => { record.readyFailedMs = at(); });
+            }
+            const state = engine?.adapter.host.descriptor().lifecycle;
+            if (state && lifecycle.at(-1)?.[1] !== state) lifecycle.push([at(), state]);
+            const events = scriptedEngine.events.slice(eventsBefore);
+            if (record.ownerTurnMs === undefined && events.some((e) => e.type === 'transcript' && e.role === 'owner')) {
+              record.ownerTurnMs = at();
+            }
+            if (events.some((e) => e.type === 'transcript' && e.role === 'assistant' && e.channel === 'text' && e.phase === 'completed')) {
+              record.replyMs = at();
+              break;
+            }
+            const screen = pane.screen();
+            if (screen.includes('send your message again') || screen.includes('Enter retries')) {
+              // Name the refusal, not only the sentence: the host's own command
+              // results and errors for this launch, and the raw failure the PUI
+              // keeps behind Ctrl+O.
+              record.hostEvents = events
+                .filter((e) => e.type !== 'transcript')
+                .map((e) => JSON.stringify(e).slice(0, 400));
+              pane.write('\x0f');
+              await sleep(500);
+              record.details = pane.screen();
+              throw new Error(`run ${run}: the first message failed and asked for a retry at ${at()} ms`);
+            }
+            if (state === 'failed' || state === 'ended' || Date.now() > deadline) {
+              throw new Error(`run ${run}: no reply (lifecycle ${String(state)}) at ${at()} ms`);
+            }
+            await sleep(100);
+          }
+          results.push(record);
+        } finally {
+          await pane.stop().catch(() => {});
+          // One live engine per launch would pile up across ten launches.
+          for (const engine of scriptedEngine.engines.slice(enginesBefore)) await engine.close().catch(() => {});
+          rmSync(launchDir, { recursive: true, force: true });
+        }
+      }
+      console.info('PUI_P012_TIMINGS', JSON.stringify(results));
+      expect(results).toHaveLength(runs);
+    },
+    3_600_000,
+  );
 });

@@ -3,8 +3,10 @@
  * slow attempt without an audit that names every distinct failure fingerprint.
  */
 import { describe, expect, it } from 'vitest';
-import type { WorkItemAttempt } from './attempt-ledger';
+import { SLOW_ATTEMPT_MIN_MS, type WorkItemAttempt } from './attempt-ledger';
 import {
+  loopLaunchRefusal,
+  nudgeOnNewLoop,
   ATTEMPT_AUDIT_MARKER,
   LOOP_ATTEMPT_BUDGET_MS,
   checkLoopGate,
@@ -175,5 +177,116 @@ describe('checkLoopGate', () => {
       },
     );
     expect(d.allowed).toBe(true);
+  });
+});
+
+describe('nudgeOnNewLoop — tell the launcher once', () => {
+  const setup = (attempts: WorkItemAttempt[], notes: AttemptAuditNote[] | null = []) => {
+    const sent: Array<{ to: string; summary: string; body: string }> = [];
+    return {
+      sent,
+      deps: {
+        listAttempts: async () => attempts,
+        readNotes: async () => notes,
+        now: () => now,
+        send: async (m: { to: string; summary: string; body: string }) => {
+          sent.push(m);
+        },
+      },
+    };
+  };
+  const base = { workspaceId: 'ws', workItemId: 'WI-1', ownerId: 'su-abc' };
+
+  it('nudges when THIS attempt is the one that trips the rule', async () => {
+    const first = attempt(0, 10, 'fail', 'log:aaa');
+    const second = attempt(20, 30, 'fail', 'log:bbb');
+    const s = setup([first, second]);
+    expect(await nudgeOnNewLoop({ ...base, taskId: second.taskId }, s.deps)).toBe(true);
+    expect(s.sent).toHaveLength(1);
+    expect(s.sent[0].to).toBe('su-abc');
+    expect(s.sent[0].summary).toContain('WI-1 is grinding (distinct-failures)');
+    expect(s.sent[0].body).toMatch(/^loop_audit_required — WI-1/);
+  });
+
+  it('stays silent when the loop had already tripped before this attempt', async () => {
+    const a = [attempt(0, 10, 'fail', 'log:aaa'), attempt(20, 30, 'fail', 'log:bbb')];
+    const third = attempt(40, 50, 'fail', 'log:ccc');
+    const s = setup([...a, third]);
+    expect(await nudgeOnNewLoop({ ...base, taskId: third.taskId }, s.deps)).toBe(false);
+    expect(s.sent).toHaveLength(0);
+  });
+
+  it('stays silent below the rule, for a non-agent owner, or when notes are unreadable', async () => {
+    const first = attempt(0, 10, 'fail', 'log:aaa');
+    expect(await nudgeOnNewLoop({ ...base, taskId: first.taskId }, setup([first]).deps)).toBe(false);
+    const pair = [attempt(0, 10, 'fail', 'log:aaa'), attempt(20, 30, 'fail', 'log:bbb')];
+    const last = pair[1].taskId;
+    for (const ownerId of ['capability:bash', 'unknown', null]) {
+      const s = setup(pair);
+      expect(await nudgeOnNewLoop({ ...base, ownerId, taskId: last }, s.deps)).toBe(false);
+      expect(s.sent).toHaveLength(0);
+    }
+    const unreadable = setup(pair, null);
+    expect(await nudgeOnNewLoop({ ...base, taskId: last }, unreadable.deps)).toBe(false);
+  });
+});
+
+describe('loopLaunchRefusal — the launcher seam', () => {
+  const looping = () => [attempt(0, 10, 'fail', 'log:aaa'), attempt(20, 30, 'fail', 'log:bbb')];
+  const deps = () => {
+    let reads = 0;
+    return {
+      reads: () => reads,
+      deps: {
+        listAttempts: async () => {
+          reads += 1;
+          return looping();
+        },
+        readNotes: async () => [],
+        now: () => now,
+      },
+    };
+  };
+
+  it('refuses a background launch on a looping item with a JSON-ready payload', async () => {
+    const d = deps();
+    const r = await loopLaunchRefusal(
+      { workspaceId: 'ws', workItemId: 'WI-1', background: true, timeoutMs: 1_000 },
+      d.deps,
+    );
+    expect(r).toMatchObject({ ok: false, reason: 'loop_audit_required', work_item_id: 'WI-1' });
+    expect(r?.fingerprints.sort()).toEqual(['log:aaa', 'log:bbb']);
+    expect(r?.message).toMatch(/^loop_audit_required — WI-1/);
+    expect(JSON.parse(JSON.stringify(r))).toEqual(r);
+  });
+
+  it('gates a foreground call only when its timeout lets it run past the slow threshold', async () => {
+    const quick = deps();
+    expect(
+      await loopLaunchRefusal(
+        { workspaceId: 'ws', workItemId: 'WI-1', background: false, timeoutMs: SLOW_ATTEMPT_MIN_MS },
+        quick.deps,
+      ),
+    ).toBeNull();
+    // A quick check is not even measured against the ledger.
+    expect(quick.reads()).toBe(0);
+    const long = deps();
+    expect(
+      await loopLaunchRefusal(
+        { workspaceId: 'ws', workItemId: 'WI-1', background: false, timeoutMs: SLOW_ATTEMPT_MIN_MS + 1 },
+        long.deps,
+      ),
+    ).not.toBeNull();
+  });
+
+  it('proceeds without a workspace or work item, without reading the ledger', async () => {
+    const d = deps();
+    expect(
+      await loopLaunchRefusal({ workspaceId: 'ws', workItemId: null, background: true, timeoutMs: 1 }, d.deps),
+    ).toBeNull();
+    expect(
+      await loopLaunchRefusal({ workspaceId: undefined, workItemId: 'WI-1', background: true, timeoutMs: 1 }, d.deps),
+    ).toBeNull();
+    expect(d.reads()).toBe(0);
   });
 });

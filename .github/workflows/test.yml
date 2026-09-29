@@ -247,6 +247,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run lint:workspace-deps-complete
 
+      # Dependency license gate (open-source-release-2026-09-29 P-017, WI-10003906).
+      # GATING. Reads every package-lock.json (all platforms' optional packages included)
+      # and resolves every Cargo.lock with `cargo metadata --locked`; fails on any GPL /
+      # AGPL / non-commercial / unknown license not reviewed in
+      # scripts/license-exceptions.json. The ubuntu runner image ships cargo; with no local
+      # crate cache the cargo leg falls back to a networked resolve. Exit 2 means part of
+      # the graph was not measured — that is a failure here, never a pass.
+      - name: Lint dependency licenses (npm + Rust)
+        if: ${{ !cancelled() }}
+        run: npm run lint:licenses
+
       # @restart retirement guard: the shared libs were renamed @restart/* ->
       # @papercusp/* (papercusp-systems-abstraction-2026-05-29). GATING — fails
       # the build with a "use @papercusp/<name>" message if any @restart/* import

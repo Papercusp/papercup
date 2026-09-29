@@ -22,7 +22,7 @@
 import { withWorkspace } from '@papercusp/db-org';
 import type { Sql, TransactionSql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
-import { parsePlan } from '@papercusp/plan-parser';
+import { isTerminalPlanStatus, parsePlan } from '@papercusp/plan-parser';
 import {
   getActivationAuditEditNotice,
   type ActivationAuditEditNotice,
@@ -129,6 +129,44 @@ async function capturePlanPartsForWrite(
     });
   } catch {
     /* best-effort: per-part federation must never break a committed plan write */
+  }
+}
+
+/** The routed-ledger write {@link settleRoutedPlanIdeaOnTerminalEntry} performs. */
+export type PropagatePlanOutcome = (input: {
+  planSlug: string;
+  status: string | null | undefined;
+  workspaceId?: string;
+}) => Promise<number>;
+
+/**
+ * WI-10003894: when a committed write moves a plan INTO a terminal plan-store
+ * status (shipped / superseded), settle its routed Blender idea(s) now instead of
+ * leaving them `pending` until the bounded refresh sweep reaches them. Fires only on
+ * the ENTRY edge (the prior body was non-terminal, or there was none) so ordinary
+ * edits to an already-shipped plan cost nothing. Returns the rows settled; never
+ * throws — the plan write is already committed.
+ */
+export async function settleRoutedPlanIdeaOnTerminalEntry(
+  workspaceId: string,
+  slug: string,
+  priorBody: string | null,
+  newBody: string,
+  propagate?: PropagatePlanOutcome,
+): Promise<number> {
+  try {
+    const after = deriveIndexFromContent(newBody).status;
+    if (!isTerminalPlanStatus(after)) return 0;
+    const before = priorBody === null ? null : deriveIndexFromContent(priorBody).status;
+    if (before === after) return 0;
+    const run = propagate ?? (await import('../../scout/routed-ledger')).propagatePlanOutcome;
+    return await run({ planSlug: slug, status: after, workspaceId });
+  } catch (err) {
+    console.warn(
+      `[with-plan-lock] routed-idea outcome propagation skipped for ${slug}: ` +
+        (err instanceof Error ? err.message : String(err)),
+    );
+    return 0;
   }
 }
 
@@ -920,6 +958,15 @@ export async function withPlanLock<T>(
       // so it can't disturb the committed write or the afterWrite revision.
       if (writtenBody !== null) {
         await capturePlanPartsForWrite(workspaceId, harnessSlug, slug, priorBody, writtenBody);
+      }
+      // WI-10003894: settle the plan's routed Blender idea at the moment the plan
+      // ENTERS a terminal status (shipped → won, superseded → lost), on this one
+      // content-write chokepoint so set-plan-status and raw status edits both reach
+      // it. The bounded refresh sweep stays the reconciliation backstop. Post-commit
+      // and best-effort: a failure here must never make a caller retry a committed
+      // write. The lazy import avoids a static plans ↔ scout module cycle.
+      if (writtenBody !== null) {
+        await settleRoutedPlanIdeaOnTerminalEntry(workspaceId, slug, priorBody, writtenBody);
       }
       const dependencyDiagnostics = applied.dependencyDiagnostics;
       if (!activationAudit && !dependencyDiagnostics?.length) return applied;

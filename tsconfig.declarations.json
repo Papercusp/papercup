@@ -347,6 +347,10 @@
     "scripts/check-lockfile-census.mjs",
     "scripts/check-reachable-advisories.mjs",
     "scripts/check-rust-advisories.mjs",
+    // WI-10003906 / P-017 — the npm + Rust license gate. Registered for this list's FIRST
+    // reason: it is imported directly by license-gate.test.ts, which pins the SPDX
+    // evaluator and the exception rules on fixtures.
+    "scripts/check-licenses.mjs",
     // EI-19313879938405219 — the sidecar externals-boundary verifier. Registered for
     // this list's FIRST reason: it is imported directly by
     // verify-sidecar-host-compat.test.ts, which is what makes the checker's fail-OPEN

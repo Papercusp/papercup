@@ -55,6 +55,8 @@ export interface HostedHandler {
   readonly app: Hono;
   readonly handler: (request: Request) => Promise<Response>;
   readonly upgrade: (request: IncomingMessage, socket: Duplex, head: Buffer) => Promise<boolean>;
+  /** The in-process relay. Exposed so the liveness sweep can be driven directly. */
+  readonly relay: HostedWorkspaceSessionBroker;
 }
 
 export function createHostedHandler(
@@ -81,11 +83,25 @@ export function createHostedHandler(
 
   const websocketServer = new WebSocketServer({ noServer: true });
   const gateway = plane.components.connectorGateway;
-  const sessionBroker = new HostedWorkspaceSessionBroker();
+  // P-001 (psu-cloud-connector-liveness-multi-signin-2026-09-29): the broker pings
+  // every relay socket and reports what it sees; `heartbeat_at` is what the CLI's
+  // `reachable` and terminal gate read, so a dead link stops reading as connected.
+  const sessionBroker = new HostedWorkspaceSessionBroker({
+    onConnectorLiveness: (binding, alive) => {
+      if (!gateway) return;
+      void gateway.recordLiveness(binding, alive, (error) => {
+        console.warn(
+          `[hosted-relay] could not record connector liveness (${alive ? "alive" : "gone"}) for ${binding.customerWorkspaceId} gen ${binding.generation}:`,
+          error instanceof Error ? error.message : error,
+        );
+      });
+    },
+  });
 
   return {
     plane,
     app,
+    relay: sessionBroker,
     handler: async (request) => app.fetch(request),
     async upgrade(request, socket, head) {
       if (!gateway || request.url?.split("?")[0] !== "/api/hosted/connectors/socket") return false;

@@ -25,6 +25,34 @@ export interface HostedConnectorTicketBinding extends HostedConnectorBinding {
   expiresAt: Date;
 }
 
+/**
+ * How long a connector's last recorded liveness counts as "connected" (P-001,
+ * psu-cloud-connector-liveness-multi-signin-2026-09-29).
+ *
+ * The relay broker pings every connector socket each
+ * `HOSTED_WORKSPACE_PING_INTERVAL_MS` (30s) and records `heartbeat_at` on every
+ * pong, so a live link is never more than ~30s stale. 90s tolerates two lost
+ * pongs before the cloud stops calling the machine reachable. Before this, the
+ * row state alone decided reachability, so a half-open link read as "connected"
+ * for hours (measured on avi-test, 2026-09-29).
+ */
+export const HOSTED_CONNECTOR_LIVENESS_FRESH_MS = 90_000;
+
+/** The one reachability predicate: an active WebSocket connector with a fresh heartbeat. */
+export function isHostedConnectorLive(
+  connector: { state: string; transport: string; heartbeatAt: Date | null } | null | undefined,
+  now: Date,
+): boolean {
+  if (!connector || connector.state !== 'active' || connector.transport !== 'websocket') return false;
+  if (!connector.heartbeatAt) return false;
+  return now.getTime() - connector.heartbeatAt.getTime() <= HOSTED_CONNECTOR_LIVENESS_FRESH_MS;
+}
+
+export type HostedConnectorLivenessBinding = Pick<
+  HostedConnectorBinding,
+  'controlPlaneWorkspaceId' | 'organizationId' | 'customerWorkspaceId' | 'hostId' | 'generation'
+>;
+
 export interface HostedConnectorCredential {
   binding: HostedConnectorBinding;
   bearer: string;
@@ -40,6 +68,12 @@ export interface HostedWorkspaceConnectorStore {
   register(ticketHash: string, credentialHash: string, now: Date): Promise<HostedConnectorBinding | null>;
   authenticate(credentialHash: string, now: Date): Promise<HostedConnectorBinding | null>;
   heartbeat(credentialHash: string, transport: HostedConnectorTransport, now: Date): Promise<HostedConnectorBinding | null>;
+  /**
+   * Record what the relay broker observed on the connector socket of ONE exact
+   * generation: `alive` stamps `heartbeat_at = at`, `!alive` clears it. Both are
+   * guarded by `at` so a write never moves the stamp backwards.
+   */
+  recordLiveness(binding: HostedConnectorLivenessBinding, alive: boolean, at: Date): Promise<boolean>;
   issueSessionTicket(input: HostedConnectorTicketBinding & { ticketHash: string; issuedAt: Date }): Promise<HostedConnectorTicketBinding | null>;
   consumeTicket(ticketHash: string, kind: HostedConnectorTicketKind, now: Date): Promise<HostedConnectorTicketBinding | null>;
   rotate(input: Omit<HostedConnectorBinding, 'generation' | 'state'> & { ticketHash: string; expiresAt: Date; now: Date }): Promise<HostedConnectorBinding | null>;
@@ -124,6 +158,32 @@ export class HostedWorkspaceConnectorGateway {
 
   heartbeat(bearer: string, transport: HostedConnectorTransport): Promise<HostedConnectorBinding | null> {
     return this.store.heartbeat(digest(bearer), transport, this.clock());
+  }
+
+  private readonly livenessWrites = new Map<string, Promise<unknown>>();
+
+  /**
+   * Persist the relay broker's view of one connector socket (P-001). Writes for
+   * the same connector run strictly in call order, so a detach can never be
+   * overtaken by the pong that preceded it. Failures are reported, never thrown:
+   * the caller is a socket event handler.
+   */
+  recordLiveness(
+    binding: HostedConnectorLivenessBinding,
+    alive: boolean,
+    onError: (error: unknown) => void = () => {},
+  ): Promise<void> {
+    const key = `${connectorIdentityKey(binding)}\u0000${binding.generation}`;
+    const at = this.clock();
+    const previous = this.livenessWrites.get(key) ?? Promise.resolve();
+    const next = previous
+      .then(() => this.store.recordLiveness(binding, alive, at))
+      .then(() => undefined, (error: unknown) => { onError(error); });
+    this.livenessWrites.set(key, next);
+    void next.then(() => {
+      if (this.livenessWrites.get(key) === next) this.livenessWrites.delete(key);
+    });
+    return next;
   }
 
   async issueSessionTicket(
@@ -238,6 +298,23 @@ export class PostgresHostedWorkspaceConnectorStore implements HostedWorkspaceCon
   heartbeat(hash: string, transport: HostedConnectorTransport, now: Date): Promise<HostedConnectorBinding | null> { return this.run(async (sql) => {
     const rows=await sql<ConnectorRow[]>`UPDATE papercusp_auth.hosted_workspace_connectors SET heartbeat_at=${now},updated_at=${now} WHERE credential_hash=${hash} AND state='active' AND revoked_at IS NULL AND transport=${transport} RETURNING control_workspace_id,organization_id,customer_workspace_id,host_id,route_label,generation,transport,state`;
     return rows[0] ? rowBinding(rows[0]) : null;
+  }); }
+
+  recordLiveness(binding: HostedConnectorLivenessBinding, alive: boolean, at: Date): Promise<boolean> { return this.run(async (sql) => {
+    // Deliberately leaves updated_at alone: a 30s pong stamp is not a change to the binding.
+    const rows = alive
+      ? await sql`UPDATE papercusp_auth.hosted_workspace_connectors SET heartbeat_at=${at}
+          WHERE control_workspace_id=${binding.controlPlaneWorkspaceId} AND organization_id=${binding.organizationId}
+            AND customer_workspace_id=${binding.customerWorkspaceId} AND host_id=${binding.hostId}
+            AND generation=${binding.generation} AND state='active' AND revoked_at IS NULL
+            AND (heartbeat_at IS NULL OR heartbeat_at < ${at})
+          RETURNING generation`
+      : await sql`UPDATE papercusp_auth.hosted_workspace_connectors SET heartbeat_at=NULL
+          WHERE control_workspace_id=${binding.controlPlaneWorkspaceId} AND organization_id=${binding.organizationId}
+            AND customer_workspace_id=${binding.customerWorkspaceId} AND host_id=${binding.hostId}
+            AND generation=${binding.generation} AND heartbeat_at <= ${at}
+          RETURNING generation`;
+    return rows.length > 0;
   }); }
 
   issueSessionTicket(input: HostedConnectorTicketBinding & { ticketHash: string; issuedAt: Date }): Promise<HostedConnectorTicketBinding | null> { return this.run(async (sql) => {

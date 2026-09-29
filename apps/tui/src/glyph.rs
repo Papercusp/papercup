@@ -190,10 +190,128 @@ pub fn kind_for(token: &str) -> &'static str {
     }
 }
 
+/// Tab stop used when text carrying tabs is laid out into cells.
+const TAB_STOP: usize = 8;
+
+/// Text safe to lay out into terminal cells (pui-chat-first-ux P-011): tabs
+/// expanded to the next tab stop, ANSI escape sequences (CSI, OSC and
+/// two-byte escapes) removed, and every other control character except `\n`
+/// dropped. Tool output is the usual carrier: Claude's Read result is
+/// `     1\tconst …`, and command output can carry colour codes.
+pub fn terminal_safe_text(s: &str) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut out = String::with_capacity(s.len());
+    let mut col = 0usize;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' => {
+                out.push('\n');
+                col = 0;
+            }
+            '\t' => {
+                let pad = TAB_STOP - col % TAB_STOP;
+                out.extend(std::iter::repeat(' ').take(pad));
+                col += pad;
+            }
+            '\u{1b}' => match chars.peek() {
+                // CSI: parameters and intermediates, then one final byte.
+                Some('[') => {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if ('\u{40}'..='\u{7e}').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: runs to BEL or ST (ESC \).
+                Some(']') => {
+                    chars.next();
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                Some(_) => {
+                    chars.next();
+                }
+                None => {}
+            },
+            c if c.is_control() => {}
+            c => {
+                out.push(c);
+                col += c.width().unwrap_or(0);
+            }
+        }
+    }
+    out
+}
+
+/// Blank every cell of a finished frame whose symbol holds a control
+/// character (pui-chat-first-ux P-011). A cell symbol is written to the
+/// terminal verbatim, and ratatui's `Paragraph` keeps any grapheme but `\n`,
+/// so a tab in rendered text reached the terminal: the terminal jumped to its
+/// tab stop while ratatui's model advanced one cell, and every later write on
+/// the row landed shifted. ratatui then believed cells held what it last
+/// wrote, so its diff never repaired them — the stale `1ile_pathconst`,
+/// `Sess ons` and stray `{` columns of the P-005 review. Scrubbing at the
+/// frame keeps the model and the terminal in agreement whatever a widget was
+/// handed; [`terminal_safe_text`] is the readable fix where text enters.
+pub fn scrub_control_cells(buf: &mut ratatui::buffer::Buffer) {
+    for cell in buf.content.iter_mut() {
+        if cell.symbol().chars().any(char::is_control) {
+            cell.set_symbol(" ");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn terminal_safe_text_expands_tabs_and_drops_escapes() {
+        assert_eq!(terminal_safe_text("     1\tconst a"), "     1  const a");
+        assert_eq!(terminal_safe_text("a\tb\n\tc"), "a       b\n        c");
+        assert_eq!(terminal_safe_text("\u{1b}[31mred\u{1b}[0m ok"), "red ok");
+        assert_eq!(terminal_safe_text("\u{1b}]0;title\u{7}x"), "x");
+        assert_eq!(terminal_safe_text("\u{1b}]8;;u\u{1b}\\link"), "link");
+        assert_eq!(terminal_safe_text("a\rb\u{7}c\u{7f}d"), "abcd");
+        // Wide glyphs advance the tab stop by their display width.
+        assert_eq!(terminal_safe_text("界\tx"), "界      x");
+    }
+
+    /// The P-011 mechanism, pinned at the widget layer: a Paragraph handed a
+    /// tab writes it into a cell, and the frame scrub is what removes it.
+    #[test]
+    fn scrub_removes_control_symbols_a_paragraph_writes() {
+        use ratatui::{backend::TestBackend, widgets::Paragraph, Terminal};
+        let mut term = Terminal::new(TestBackend::new(20, 1)).unwrap();
+        let has_control = |buf: &ratatui::buffer::Buffer| {
+            buf.content.iter().any(|c| c.symbol().chars().any(char::is_control))
+        };
+        let raw = term
+            .draw(|f| f.render_widget(Paragraph::new("1\tconst"), f.area()))
+            .unwrap()
+            .buffer
+            .clone();
+        assert!(has_control(&raw), "ratatui passes the tab through; the scrub must exist");
+        let scrubbed = term
+            .draw(|f| {
+                f.render_widget(Paragraph::new("1\tconst"), f.area());
+                scrub_control_cells(f.buffer_mut());
+            })
+            .unwrap()
+            .buffer
+            .clone();
+        assert!(!has_control(&scrubbed));
+    }
 
     /// Every glyph a row/cell may render must be exactly one display column.
     /// This is the load-bearing invariant (D-002): the alignment bug the

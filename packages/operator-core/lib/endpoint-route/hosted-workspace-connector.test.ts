@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  HOSTED_CONNECTOR_LIVENESS_FRESH_MS,
   HostedWorkspaceConnectorGateway,
+  isHostedConnectorLive,
+  type HostedConnectorLivenessBinding,
   type HostedConnectorBinding,
   type HostedConnectorTicketBinding,
   type HostedConnectorTicketKind,
@@ -20,6 +23,22 @@ class MemoryStore implements HostedWorkspaceConnectorStore {
   register(hash:string,credentialHash:string,now:Date){const ticket=this.take(hash,'enrollment',now);if(!ticket||!this.binding||ticket.generation!==this.binding.generation)return Promise.resolve(null);this.credentialHash=credentialHash;this.binding={...this.binding,state:'active'};return Promise.resolve(this.binding);}
   authenticate(hash:string){return Promise.resolve(this.binding?.state==='active'&&hash===this.credentialHash?this.binding:null);}
   heartbeat(hash:string,transport:HostedConnectorTransport){if(this.binding?.state!=='active'||hash!==this.credentialHash||transport!==this.binding.transport)return Promise.resolve(null);return Promise.resolve(this.binding);}
+  heartbeatAt: Date | null = null;
+  livenessCalls: [boolean, number][] = [];
+  async recordLiveness(target: HostedConnectorLivenessBinding, alive: boolean, at: Date) {
+    // A slow first write makes an out-of-order interleaving observable if the gateway ever stops serializing.
+    if (this.livenessCalls.length === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+    this.livenessCalls.push([alive, at.getTime()]);
+    if (!this.binding || this.binding.generation !== target.generation || this.binding.state !== 'active') return false;
+    if (alive) {
+      if (this.heartbeatAt && this.heartbeatAt >= at) return false;
+      this.heartbeatAt = at;
+      return true;
+    }
+    if (!this.heartbeatAt || this.heartbeatAt > at) return false;
+    this.heartbeatAt = null;
+    return true;
+  }
   issueSessionTicket(input:HostedConnectorTicketBinding&{ticketHash:string;issuedAt:Date}){if(this.binding?.state!=='active')return Promise.resolve(null);const ticket={...input,...this.binding,expiresAt:input.expiresAt,issuedAt:input.issuedAt,ticketHash:input.ticketHash,kind:'session' as const};this.tickets.set(input.ticketHash,ticket);return Promise.resolve(ticket);}
   consumeTicket(hash:string,kind:HostedConnectorTicketKind,now:Date){return Promise.resolve(this.take(hash,kind,now));}
   rotate(input:Omit<HostedConnectorBinding,'generation'|'state'>&{ticketHash:string;expiresAt:Date;now:Date}){if(this.binding?.state!=='active')return Promise.resolve(null);this.binding={...input,generation:this.binding.generation+1,state:'pending'};this.credentialHash=null;this.tickets.set(input.ticketHash,{...this.binding,kind:'enrollment',audience:'connector-register',expiresAt:input.expiresAt});return Promise.resolve(this.binding);}
@@ -71,6 +90,56 @@ describe('HostedWorkspaceConnectorGateway',()=>{
     expect(await gateway.revoke(binding)).toBe(true);
     expect(reasons).toEqual(['connector_rotated','connector_revoked']);
     expect(await gateway.authenticate(next!.bearer)).toBeNull();
+  });
+});
+
+describe('connector liveness (P-001, psu-cloud-connector-liveness-multi-signin-2026-09-29)', () => {
+  const now = new Date('2026-09-29T17:00:00Z');
+  const ago = (ms: number) => new Date(now.getTime() - ms);
+  const active = { state: 'active', transport: 'websocket' };
+
+  it('calls a connector reachable only while its heartbeat is fresh', () => {
+    expect(isHostedConnectorLive({ ...active, heartbeatAt: ago(1_000) }, now)).toBe(true);
+    expect(isHostedConnectorLive({ ...active, heartbeatAt: ago(HOSTED_CONNECTOR_LIVENESS_FRESH_MS) }, now)).toBe(true);
+    // The avi-test failure: an active row whose link died hours ago.
+    expect(isHostedConnectorLive({ ...active, heartbeatAt: ago(HOSTED_CONNECTOR_LIVENESS_FRESH_MS + 1) }, now)).toBe(false);
+    expect(isHostedConnectorLive({ ...active, heartbeatAt: ago(2 * 60 * 60_000) }, now)).toBe(false);
+    expect(isHostedConnectorLive({ ...active, heartbeatAt: null }, now)).toBe(false);
+    expect(isHostedConnectorLive({ state: 'pending', transport: 'websocket', heartbeatAt: ago(0) }, now)).toBe(false);
+    expect(isHostedConnectorLive({ state: 'active', transport: 'sse', heartbeatAt: ago(0) }, now)).toBe(false);
+    expect(isHostedConnectorLive(null, now)).toBe(false);
+  });
+
+  it('persists liveness writes for one connector in call order, so a detach is never overtaken', async () => {
+    const store = new MemoryStore();
+    const clock = { now: new Date('2026-09-29T17:00:00Z') };
+    const gateway = new HostedWorkspaceConnectorGateway(store, () => clock.now, entropy());
+    const credential = await gateway.register((await gateway.enroll(binding)).ticket);
+    const target = credential!.binding;
+
+    clock.now = new Date('2026-09-29T17:00:30Z');
+    const pong = gateway.recordLiveness(target, true);
+    clock.now = new Date('2026-09-29T17:01:00Z');
+    const detach = gateway.recordLiveness(target, false);
+    await Promise.all([pong, detach]);
+
+    expect(store.livenessCalls.map(([alive]) => alive)).toEqual([true, false]);
+    expect(store.heartbeatAt).toBeNull();
+
+    clock.now = new Date('2026-09-29T17:01:05Z');
+    await gateway.recordLiveness(target, true);
+    expect(store.heartbeatAt).toEqual(new Date('2026-09-29T17:01:05Z'));
+  });
+
+  it('reports a failed liveness write instead of throwing into the socket handler', async () => {
+    const store = new MemoryStore();
+    store.recordLiveness = () => Promise.reject(new Error('pg down'));
+    const gateway = new HostedWorkspaceConnectorGateway(store, () => new Date(), entropy());
+    const errors: unknown[] = [];
+    await expect(
+      gateway.recordLiveness({ ...binding, generation: 1 }, true, (error) => errors.push(error)),
+    ).resolves.toBeUndefined();
+    expect(errors).toHaveLength(1);
   });
 });
 

@@ -1,5 +1,6 @@
 /** Generation-bound relay between one outbound workspace connector and browser sessions. */
 import { randomUUID } from 'node:crypto';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type {
   HostedConnectorBinding,
   HostedConnectorTicketBinding,
@@ -8,6 +9,19 @@ import type {
 export const HOSTED_WORKSPACE_SESSION_PROTOCOL = 'papercusp-hosted-workspace.v1';
 export const HOSTED_WORKSPACE_MAX_MESSAGE_BYTES = 1024 * 1024;
 export const HOSTED_WORKSPACE_SESSION_IDLE_MS = 15 * 60_000;
+/**
+ * WebSocket ping cadence for every relay socket (P-001,
+ * psu-cloud-connector-liveness-multi-signin-2026-09-29).
+ *
+ * Two jobs. The traffic keeps idle timers on the path from expiring: Cloudflare
+ * closes an idle proxied WebSocket after ~100s and Cloud NAT drops an idle
+ * mapping after 20 minutes. And a socket that has not answered the previous
+ * ping by the next sweep is dead, so it is terminated instead of lingering
+ * half-open (avi-test, 2026-09-29: the VM believed it was connected for hours
+ * while this broker had no connector). `ws` answers pings automatically, so
+ * already-deployed workspace hosts need no change.
+ */
+export const HOSTED_WORKSPACE_PING_INTERVAL_MS = 30_000;
 
 export type HostedWorkspaceTabRole = 'controller' | 'observer';
 
@@ -17,8 +31,12 @@ export interface HostedWorkspaceRelaySocket {
   readonly OPEN: number;
   send(data: string | Buffer, options?: { binary?: boolean }): unknown;
   close(code?: number, reason?: string): unknown;
+  /** Liveness probe. A socket without it is never pinged or reaped. */
+  ping?(): unknown;
+  /** Drop the connection without a closing handshake (the peer is presumed gone). */
+  terminate?(): unknown;
   on(event: 'message', listener: (data: unknown, isBinary: boolean) => void): unknown;
-  on(event: 'close' | 'error', listener: () => void): unknown;
+  on(event: 'close' | 'error' | 'pong', listener: () => void): unknown;
 }
 
 export interface HostedWorkspaceSessionAuditEvent {
@@ -38,7 +56,17 @@ export interface HostedWorkspaceSessionBrokerOptions {
   maxMessageBytes?: number;
   randomId?: () => string;
   onAudit?: (event: HostedWorkspaceSessionAuditEvent) => void;
+  /**
+   * What this broker observed about a connector socket: `true` when it attaches and
+   * on every pong, `false` when the current socket for that generation goes away.
+   * The host persists it as `heartbeat_at`, which is what `reachable` reads.
+   */
+  onConnectorLiveness?: (binding: HostedConnectorBinding, alive: boolean) => void;
+  /** Ping cadence; `0` arms no timer (callers then drive `sweepLiveness()` themselves). */
+  pingIntervalMs?: number;
 }
+
+type LivenessEntry = { awaitingPong: boolean; connector: HostedConnectorBinding | null };
 
 /**
  * What a browser attached to. `role` says WHO they are; this says WHAT they carry.
@@ -164,12 +192,72 @@ export class HostedWorkspaceSessionBroker {
   private readonly maxMessageBytes: number;
   private readonly randomId: () => string;
   private readonly onAudit: (event: HostedWorkspaceSessionAuditEvent) => void;
+  private readonly onConnectorLiveness: (binding: HostedConnectorBinding, alive: boolean) => void;
+  private readonly liveness = new Map<HostedWorkspaceRelaySocket, LivenessEntry>();
+  private readonly pingTimer: ManagedHandle | null;
 
   constructor(options: HostedWorkspaceSessionBrokerOptions = {}) {
     this.idleMs = options.idleMs ?? HOSTED_WORKSPACE_SESSION_IDLE_MS;
     this.maxMessageBytes = options.maxMessageBytes ?? HOSTED_WORKSPACE_MAX_MESSAGE_BYTES;
     this.randomId = options.randomId ?? randomUUID;
     this.onAudit = options.onAudit ?? (() => {});
+    this.onConnectorLiveness = options.onConnectorLiveness ?? (() => {});
+    const pingIntervalMs = options.pingIntervalMs ?? HOSTED_WORKSPACE_PING_INTERVAL_MS;
+    this.pingTimer = pingIntervalMs > 0
+      ? managedSetInterval('hosted-relay-liveness', pingIntervalMs, () => this.sweepLiveness(), {
+          category: 'lifecycle',
+          classification: 'must-sample',
+          instanced: true,
+        })
+      : null;
+  }
+
+  /** Stop the ping timer. Sockets stay as they are. */
+  dispose(): void {
+    this.pingTimer?.stop();
+  }
+
+  /**
+   * One liveness pass: terminate every socket that has not answered the previous
+   * ping (its `close` handler then detaches it), and ping the rest. Public so tests
+   * and hosts without a timer can drive it deterministically.
+   */
+  sweepLiveness(): void {
+    for (const [socket, entry] of [...this.liveness]) {
+      if (!open(socket)) continue;
+      if (entry.awaitingPong) {
+        this.liveness.delete(socket);
+        if (entry.connector) this.audit(entry.connector, 'connector_heartbeat_missed');
+        try {
+          if (socket.terminate) socket.terminate();
+          else socket.close(4408, 'heartbeat_timeout');
+        } catch {
+          // Already gone; its close handler (if any) does the rest.
+        }
+        continue;
+      }
+      entry.awaitingPong = true;
+      try {
+        socket.ping?.();
+      } catch {
+        // A socket that cannot even be pinged is reaped on the next sweep.
+      }
+    }
+  }
+
+  /** Enrol a socket in the ping sweep. Any inbound frame counts as proof of life. */
+  private watchLiveness(socket: HostedWorkspaceRelaySocket, connector: HostedConnectorBinding | null): void {
+    if (typeof socket.ping !== 'function') return;
+    const entry: LivenessEntry = { awaitingPong: false, connector };
+    this.liveness.set(socket, entry);
+    socket.on('pong', () => {
+      entry.awaitingPong = false;
+      if (connector && this.liveness.get(socket) === entry) this.onConnectorLiveness(connector, true);
+    });
+    socket.on('message', () => { entry.awaitingPong = false; });
+    const forget = () => { if (this.liveness.get(socket) === entry) this.liveness.delete(socket); };
+    socket.on('close', forget);
+    socket.on('error', forget);
   }
 
   attachConnector(binding: HostedConnectorBinding, socket: HostedWorkspaceRelaySocket): () => void {
@@ -179,6 +267,8 @@ export class HostedWorkspaceSessionBroker {
     this.connectors.set(key, socket);
     sendJson(socket, { type: 'bound', role: 'connector', protocol: HOSTED_WORKSPACE_SESSION_PROTOCOL, binding });
     this.audit(binding, 'connector_attached');
+    this.watchLiveness(socket, binding);
+    this.onConnectorLiveness(binding, true);
 
     const onMessage = (data: unknown, isBinary: boolean) => {
       if (isBinary || byteLength(data) > this.maxMessageBytes) {
@@ -207,6 +297,7 @@ export class HostedWorkspaceSessionBroker {
         if (session.connectorKey === key) this.closeSession(session, 4412, 'connector_disconnected', false);
       }
       this.audit(binding, 'connector_detached');
+      this.onConnectorLiveness(binding, false);
     };
     socket.on('message', onMessage);
     socket.on('close', onClose);
@@ -281,6 +372,7 @@ export class HostedWorkspaceSessionBroker {
     this.sessions.set(channelId, session);
     if (kind === 'pty' && role === 'controller') this.controllers.set(controlKey, channelId);
     this.touch(session);
+    this.watchLiveness(socket, null);
     sendJson(socket, {
       type: 'session.bound',
       protocol: HOSTED_WORKSPACE_SESSION_PROTOCOL,

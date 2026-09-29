@@ -68,6 +68,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Colour-disabled mode (NO_COLOR, P-013) clears the finished frame, so it
     // holds whichever branch below painted it and however a site named a colour.
     Theme::finish_frame(f.buffer_mut());
+    // No control character may reach the terminal (P-011): it desyncs the
+    // terminal from ratatui's model and leaves stale characters behind.
+    crate::glyph::scrub_control_cells(f.buffer_mut());
 }
 
 /// The stable blocking view below the supported size: one instruction instead
@@ -6082,6 +6085,7 @@ pub(crate) fn tool_result_text(result: &serde_json::Value) -> Option<String> {
             .find_map(|k| o.get(*k).and_then(parts))?,
         other => parts(other)?,
     };
+    let text = crate::glyph::terminal_safe_text(&text);
     let trimmed = text.trim_end();
     (!trimmed.trim().is_empty()).then(|| trimmed.to_string())
 }

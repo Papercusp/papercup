@@ -51,6 +51,7 @@ import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agen
 import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { resolveBashTaskProvenance } from '../capability/bash';
+import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
 import type { ResolveIdentityCtx } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { runGovernedOperation } from '../../resource-governor/execution';
@@ -1090,6 +1091,14 @@ export default defineTool({
         });
       }
 
+      // expensive-verification-loops P-002: a cut for a work item that keeps failing
+      // slow attempts waits for an audit on the item, before any side effect below.
+      const cutWorkItem = await cutWorkItemId(ctx);
+      const loopRefusal = await loopLaunchRefusal({
+        workspaceId: activeWorkspaceId(), workItemId: cutWorkItem, background: true, timeoutMs: 0,
+      });
+      if (loopRefusal) return json({ ...loopRefusal, op: 'run-leg', refused: true });
+
       const { ownerLabel } = readIdentity(ctx);
       const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
       let migrationBootSmokeOverrideAuditId: string | null = null;
@@ -1109,7 +1118,7 @@ export default defineTool({
         platform,
         sourceSha: args.sourceSha,
         desktopRoot: selected.desktopRoot,
-        workItemId: await cutWorkItemId(ctx),
+        workItemId: cutWorkItem,
       });
       const launch = await launchDetachedCut({
         version: args.version,
@@ -1254,6 +1263,13 @@ export default defineTool({
       });
     }
 
+    // expensive-verification-loops P-002: same loop gate as run-leg.
+    const cutWorkItem = await cutWorkItemId(ctx);
+    const loopRefusal = await loopLaunchRefusal({
+      workspaceId: activeWorkspaceId(), workItemId: cutWorkItem, background: true, timeoutMs: 0,
+    });
+    if (loopRefusal) return json({ ...loopRefusal, op: 'run', refused: true });
+
     const { ownerLabel } = readIdentity(ctx);
     const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
     let migrationBootSmokeOverrideAuditId: string | null = null;
@@ -1273,7 +1289,7 @@ export default defineTool({
       platform: null,
       sourceSha: args.sourceSha,
       desktopRoot: selected.desktopRoot,
-      workItemId: await cutWorkItemId(ctx),
+      workItemId: cutWorkItem,
     });
     const launch = await launchDetachedCut({
       version: args.version,

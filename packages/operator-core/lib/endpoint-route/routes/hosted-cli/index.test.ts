@@ -75,14 +75,16 @@ function principal(organizationId: string, permissions: HostedPermission[]) {
 }
 
 function setup(options: { permissions?: HostedPermission[]; signedIn?: boolean } = {}) {
+  // The relay stamps heartbeat_at on every pong, so a connected machine's stamp is seconds old.
+  const connectorA = { state: 'active' as const, routeLabel: 'host-a', transport: 'websocket' as const, generation: 3, heartbeatAt: new Date('2026-09-24T03:59:50Z') as Date | null };
   const memory = memoryStore({
     'org-a': [{
       id: 'ws-a', displayName: 'Avi test', state: 'active', hostId: 'host-a',
-      connector: { state: 'active', routeLabel: 'host-a', transport: 'websocket', generation: 3, heartbeatAt: null },
+      connector: connectorA,
     }],
     'org-b': [{
       id: 'ws-b', displayName: 'Other tenant', state: 'active', hostId: 'host-b',
-      connector: { state: 'active', routeLabel: 'host-b', transport: 'websocket', generation: 1, heartbeatAt: null },
+      connector: { state: 'active', routeLabel: 'host-b', transport: 'websocket', generation: 1, heartbeatAt: new Date('2026-09-24T03:59:50Z') },
     }],
   });
   const tickets: unknown[] = [];
@@ -112,7 +114,11 @@ function setup(options: { permissions?: HostedPermission[]; signedIn?: boolean }
   const route = (method: string, path: string) => routes.find((r) => r.method === method && r.path === path)!;
   const call = (method: string, path: string, init: RequestInit & { params?: Record<string, string>; principal?: unknown } = {}) =>
     route(method, path).handler(new Request(`${ORIGIN}/api${path}`, init), { params: init.params ?? {}, principal: init.principal ?? null } as never) as Promise<Response>;
-  return { memory, tickets, routes, call, advance: (ms: number) => { now = new Date(now.getTime() + ms); } };
+  return {
+    memory, tickets, routes, call, connectorA,
+    now: () => now,
+    advance: (ms: number) => { now = new Date(now.getTime() + ms); },
+  };
 }
 
 async function signIn(t: ReturnType<typeof setup>, organizationId = 'org-a') {
@@ -250,6 +256,43 @@ describe('hosted psu CLI routes', () => {
       userId: 'user-1', audience: 'workspace-operator', transport: 'websocket',
       hostedSessionId: `cli.${token.tokenId}.resume-me`,
     });
+  });
+
+  // P-001 (psu-cloud-connector-liveness-multi-signin-2026-09-29). avi-test, 2026-09-29: the row said
+  // active, psu printed "connected to …", and the relay then closed 4411 connector_unavailable,
+  // because nothing but the row state decided reachability.
+  it('treats an active connector without a fresh heartbeat as unreachable and mints no ticket', async () => {
+    const t = setup();
+    const { token } = await signIn(t);
+    const auth = { authorization: `Bearer ${token.accessToken}` };
+    const open = () => t.call('POST', '/hosted/cli/workspaces/:workspaceId/terminal', {
+      method: 'POST', headers: auth, body: '{}', params: { workspaceId: 'ws-a' },
+    });
+    const reachable = async () => (await (await t.call('GET', '/hosted/cli/workspaces', { headers: auth })).json()).workspaces[0].reachable;
+
+    t.connectorA.heartbeatAt = new Date(t.now().getTime() - 2 * 60 * 60_000);
+    expect(await reachable()).toBe(false);
+    const refused = await open();
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({
+      ok: false,
+      error: { code: 'workspace_not_reachable', connectorHeartbeatAt: t.connectorA.heartbeatAt.toISOString() },
+    });
+
+    t.connectorA.heartbeatAt = null;
+    expect(await reachable()).toBe(false);
+    expect((await open()).status).toBe(409);
+    expect(t.tickets).toHaveLength(0);
+
+    // The relay stamps a pong: reachable again, and the ticket is minted.
+    t.connectorA.heartbeatAt = new Date(t.now().getTime() - 5_000);
+    expect(await reachable()).toBe(true);
+    expect((await open()).status).toBe(200);
+    expect(t.tickets).toHaveLength(1);
+
+    // Staleness is measured against the clock, not stored: the same stamp ages out.
+    t.advance(2 * 60_000);
+    expect(await reachable()).toBe(false);
   });
 
   it('re-derives permissions per request: a view-only member cannot open a terminal', async () => {

@@ -79,9 +79,15 @@ export const WEAK_COPYLEFT = new Set([
   'MPL-2.0',
 ]);
 
-/** Tier of one SPDX license id (a trailing `+` means "or later" and does not change it). */
+/**
+ * Tier of one SPDX license id (a trailing `+` means "or later" and does not change it).
+ * The deprecated bare LGPL ids (`LGPL-2.1`, `LGPL-2.1+`) that older packages still declare
+ * map to their current `-only` / `-or-later` forms, so they classify as weak-copyleft.
+ */
 export function tierOfId(id) {
-  const bare = id.replace(/\+$/, '');
+  const plus = id.endsWith('+');
+  let bare = id.replace(/\+$/, '');
+  if (/^LGPL-(2\.0|2\.1|3\.0)$/.test(bare)) bare = `${bare}-${plus ? 'or-later' : 'only'}`;
   if (PERMISSIVE.has(bare)) return TIER.PERMISSIVE;
   if (WEAK_COPYLEFT.has(bare)) return TIER.WEAK_COPYLEFT;
   return TIER.DENIED;

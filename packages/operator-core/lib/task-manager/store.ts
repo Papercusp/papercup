@@ -21,6 +21,7 @@ import { redactSensitiveText } from '../sensitive-text';
 import { readSuperuserToken } from '../superuser-token';
 import { emitTaskTerminalEvent, type TaskTerminalEventEmitter } from './task-terminal-events';
 import { recordAttemptOnClose } from '../verification-attempts/attempt-ledger';
+import { nudgeOnNewLoop } from '../verification-attempts/loop-gate';
 import {
   TASK_STATES,
   isTerminalState,
@@ -327,6 +328,8 @@ export interface CloseTaskEffects {
   emitTerminal?: TaskTerminalEventEmitter;
   /** Test seam; production stamps the slow-attempt record (verification-attempts). */
   recordAttempt?: typeof recordAttemptOnClose;
+  /** Test seam; production nudges the launcher when an attempt trips the loop rule. */
+  nudgeLoop?: typeof nudgeOnNewLoop;
 }
 
 function terminalExitCode(terminal: TaskTerminalProvenance, fallback: number | null): number | null {
@@ -469,10 +472,11 @@ export async function closeTask(
   // failure fingerprint stamped on the row. Fail-soft and fire-and-forget; it returns
   // before any I/O for a row with no work item or under the slow threshold.
   if (closed.work_item_id) {
+    const workItemId = closed.work_item_id;
     void (effects.recordAttempt ?? recordAttemptOnClose)(
       {
         taskId: closed.task_id,
-        workItemId: closed.work_item_id,
+        workItemId,
         state: classified.state,
         exitCode: classified.exitCode ?? null,
         exitReason: classified.exitReason ?? null,
@@ -482,6 +486,14 @@ export async function closeTask(
         endedAt: closed.ended_at,
       },
       inject ? { sql: inject } : {},
+    ).then((stamp) =>
+      // P-002: a non-passing attempt that trips the loop rule tells its launcher once.
+      stamp && stamp.outcome !== 'pass' && closed.workspace_id
+        ? (effects.nudgeLoop ?? nudgeOnNewLoop)(
+            { workspaceId: closed.workspace_id, workItemId, taskId: closed.task_id, ownerId: closed.launched_by },
+            inject ? { sql: inject } : {},
+          )
+        : false,
     );
   }
   (effects.emitTerminal ?? emitTaskTerminalEvent)({
