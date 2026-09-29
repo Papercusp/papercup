@@ -332,7 +332,7 @@ describe('validatePhysicalPhaseE', () => {
       const writes: string[] = [];
       const record = await ensurePhysicalPhaseEMode({ runId: RUN, mode: 'legacy' }, {
         getMode: async () => mode,
-        setMode: async (_ws, _slug, next) => { writes.push(next); mode = next; },
+        setMode: async (_ws, _slug, next) => { writes.push(String(next)); mode = next as typeof mode; },
       });
       expect(writes).toEqual(['legacy']);
       expect(record).toMatchObject({ from: 'bridged', to: 'legacy', changed: true, tool: 'setPotGitMode', hostId: 'tower' });
