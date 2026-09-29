@@ -85,6 +85,12 @@ function assertKeySegments(source: string, event: string): void {
   if (!EVENT_NAME.test(event)) throw new Error(`external_trigger_invalid_event:${event}`);
 }
 
+/**
+ * How long a 'pending' delivery claim is honoured before a replay may reclaim
+ * it. Sink deliveries complete in seconds; a claim this old was orphaned.
+ */
+export const PENDING_DELIVERY_LEASE_SECONDS = 15 * 60;
+
 function sinkIdentity(sink: Pick<ExternalTriggerSink, 'kind' | 'ref'>): string {
   return `${required(sink.kind, 'sink_kind')}\u0000${required(sink.ref, 'sink_ref')}`;
 }
@@ -108,8 +114,17 @@ async function claimDelivery(
     RETURNING id, outcome`;
   if (inserted[0]) return { row: inserted[0], shouldDeliver: true };
 
-  // A prior failed/skipped attempt is retryable. The conditional UPDATE is the
-  // atomic claimant: concurrent replayers cannot both move the same row to pending.
+  // A prior failed/skipped attempt is retryable, and so is a 'pending' claim
+  // whose lease expired: the claimant died between claim and finishDelivery
+  // (process kill, restart, lost connection), so nobody will ever finish it.
+  // Without the lease that row is a permanent dedupe hit, and for the event-bus
+  // sink it head-of-line blocks the whole source — the binding sink refuses to
+  // queue until the event-bus row is 'delivered', ingest returns ok:false, and
+  // the provider poll stops advancing (WI-10003159: a Gmail source frozen for
+  // 11 days behind one orphaned row). Every sink is replay-safe: the event bus
+  // is at-least-once and trigger_runs dedupe on (binding_id, dedupe_key).
+  // The conditional UPDATE is the atomic claimant: concurrent replayers cannot
+  // both move the same row to pending.
   const retried = await sql<DeliveryRow[]>`
     UPDATE harness_shared.trigger_deliveries
        SET outcome = 'pending', attempts = attempts + 1, error = NULL,
@@ -119,7 +134,9 @@ async function claimDelivery(
        AND dedupe_key = ${event.dedupeKey}
        AND sink_kind = ${sink.kind}
        AND sink_ref = ${sink.ref}
-       AND outcome IN ('failed', 'skipped')
+       AND (outcome IN ('failed', 'skipped')
+            OR (outcome = 'pending'
+                AND updated_at < now() - (${PENDING_DELIVERY_LEASE_SECONDS} * interval '1 second')))
     RETURNING id, outcome`;
   if (retried[0]) return { row: retried[0], shouldDeliver: true };
 
