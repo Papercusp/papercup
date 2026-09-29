@@ -707,6 +707,21 @@ export const TARGETS: BackfillTarget[] = [
     recencyCol: 'updated_at',
     recencyColKind: 'timestamptz',
   },
+  // generic-rag-chunking-2026-09-29 P-003: the SHARED chunk store (migration
+  // 1242) for every registered collection's rows past the 2,000-char window.
+  // The header (the parent's title line) is embedded with each chunk, as the
+  // P-001 bench measured it. A re-split copies vectors across by chunk_sha, so
+  // this sweep only pays for chunks whose text actually changed.
+  {
+    table: 'harness_shared.text_chunks',
+    embedCol: 'embedding',
+    bodySql: `left(concat_ws(E'\\n\\n', header, content), 2000)`,
+    keyCols: ['surface', 'parent_key', 'chunk_idx'],
+    // Backed by text_chunks_updated_idx; freshest-first like session_turn_chunks.
+    orderBySql: 'updated_at DESC',
+    recencyCol: 'updated_at',
+    recencyColKind: 'timestamptz',
+  },
   // P-008 (shared-embedding-sidecar-and-enrichment-2026-07-10): the work-item
   // ledger — ONE base table (migration 374 unified issue + feature families
   // into harness_shared.work_items; engineer_issues / harness_features_

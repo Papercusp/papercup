@@ -329,6 +329,10 @@ export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string
   // them with keyword regexes. Refilled by the TARGETS entries below.
   { table: 'harness_shared.carry_notes', column: 'note_embedding' },
   { table: 'harness_shared.coord_thread_posts', column: 'body_embedding' },
+  // Migration 1242 (generic-rag-chunking-2026-09-29 P-003): the shared chunk
+  // store for rows longer than the 2,000-char window — one table any registered
+  // collection writes into, so its vectors share the prose width.
+  { table: 'harness_shared.text_chunks', column: 'embedding' },
 ];
 
 /**
