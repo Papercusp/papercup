@@ -75,6 +75,27 @@ export function parseMeasure(raw: unknown): DesktopPerfMeasure | null {
   return { key, value: m.value, unit, budget, ok: m.ok, ...(invariant ? { invariant } : {}) };
 }
 
+const BUILD_SHA_RE = /^[0-9a-f]{7,64}$/;
+
+/**
+ * Parse the wire `buildSha` — the identity of the BINARY that was measured
+ * (desktop-perf-measure-candidate-build-2026-09-29 P-001 / D-001). Distinct from
+ * `gitSha`, which names the tree the RUNNER came from: the gate attributes a run
+ * to a candidate by this field, so a run whose binary identity is unknown must be
+ * stored as null (unattributable), never guessed.
+ *
+ * Returns `null` when the producer did not send one (a legacy producer), the
+ * lower-cased sha when it is a 7–64 char hex string, and `undefined` when it sent
+ * something malformed — the route rejects that post rather than recording a
+ * garbage identity the gate would then trust. Exported for unit test only.
+ */
+export function parseBuildSha(raw: unknown): string | null | undefined {
+  if (raw === null || raw === undefined || raw === '') return null;
+  if (typeof raw !== 'string') return undefined;
+  const sha = raw.trim().toLowerCase();
+  return BUILD_SHA_RE.test(sha) ? sha : undefined;
+}
+
 export default defineTool({
   method: 'POST',
   path: '/admin/testing/desktop-perf-runs',
@@ -135,6 +156,10 @@ export default defineTool({
         ? body.gitSha
         : (process.env.PAPERCUSP_GIT_SHA ?? process.env.PAPERCUSP_RELEASE_SHA ?? null);
     const runId = typeof body.runId === 'string' && body.runId.length > 0 ? body.runId : null;
+    const buildSha = parseBuildSha(body.buildSha);
+    if (buildSha === undefined) {
+      return new Response('buildSha must be a 7-64 character hex string, null, or absent', { status: 400 });
+    }
 
     const id = await recordDesktopPerfRun({
       workspaceId,
@@ -142,6 +167,7 @@ export default defineTool({
       status,
       measures,
       gitSha,
+      buildSha,
       runId,
     });
 

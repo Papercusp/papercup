@@ -20,7 +20,7 @@ const M = vi.hoisted(() => ({ record: vi.fn(), notify: vi.fn() }));
 vi.mock('../../../system-health/desktop-perf-runs', () => ({ recordDesktopPerfRun: M.record }));
 vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: M.notify }));
 
-import route, { hasDesktopPerfOutcomeMeasure, parseMeasure } from './testing-desktop-perf-ingest';
+import route, { hasDesktopPerfOutcomeMeasure, parseBuildSha, parseMeasure } from './testing-desktop-perf-ingest';
 
 const base = { key: 'invariant:webview-http-egress', value: 9, unit: 'count', budget: 0, ok: false };
 
@@ -92,6 +92,54 @@ describe('parseMeasure — invariant passthrough (P-003c)', () => {
     const parsed = parseMeasure({ key: 'invariant:console-errors', value: 3, unit: 'count', budget: null, ok: false, invariant: true });
     expect(parsed?.budget).toBeNull();
     expect(parsed?.invariant).toBe(true);
+  });
+});
+
+describe('buildSha — measured-binary identity (desktop-perf-measure-candidate-build P-001)', () => {
+  const post = (body: Record<string, unknown>) =>
+    route.handler(new Request('http://localhost/api/admin/testing/desktop-perf-runs', {
+      method: 'POST', body: JSON.stringify({ measures: [base], workspaceId: 'ws-perf', ...body }),
+    }), {} as never);
+
+  it('parses absent / null / empty as null (legacy producer, unattributable run)', () => {
+    expect(parseBuildSha(undefined)).toBeNull();
+    expect(parseBuildSha(null)).toBeNull();
+    expect(parseBuildSha('')).toBeNull();
+  });
+
+  it('accepts a short or full hex sha and normalises it to lower case', () => {
+    expect(parseBuildSha('4223F93')).toBe('4223f93');
+    expect(parseBuildSha(' 4223f93417df132eec90ace218a6017f5a97b8b3 ')).toBe('4223f93417df132eec90ace218a6017f5a97b8b3');
+  });
+
+  it('flags malformed identities as undefined rather than storing them', () => {
+    for (const bogus of ['abc', 'not-a-sha', 'g'.repeat(40), 'a'.repeat(65), 42, {}, ['4223f93']]) {
+      expect(parseBuildSha(bogus)).toBeUndefined();
+    }
+  });
+
+  it('round-trips a valid buildSha into the recorded run', async () => {
+    M.record.mockReset().mockResolvedValue('run-with-identity');
+    M.notify.mockReset().mockResolvedValue(undefined);
+    const res = await post({ buildSha: '4223F93417DF' });
+    expect(res.status).toBe(200);
+    expect(M.record).toHaveBeenCalledOnce();
+    expect(M.record.mock.calls[0][0]).toMatchObject({ buildSha: '4223f93417df', source: 'wdio' });
+  });
+
+  it('records buildSha:null when the producer omits it', async () => {
+    M.record.mockReset().mockResolvedValue('legacy-run');
+    M.notify.mockReset().mockResolvedValue(undefined);
+    const res = await post({});
+    expect(res.status).toBe(200);
+    expect(M.record.mock.calls[0][0]).toMatchObject({ buildSha: null });
+  });
+
+  it('rejects the whole post on a malformed buildSha and records nothing', async () => {
+    M.record.mockReset();
+    const res = await post({ buildSha: 'definitely-not-hex' });
+    expect(res.status).toBe(400);
+    expect(M.record).not.toHaveBeenCalled();
   });
 });
 
