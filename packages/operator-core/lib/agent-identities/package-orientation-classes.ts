@@ -213,18 +213,26 @@ export const ORIENTATION_BLOCK_HEADER = '## Orientation';
  */
 export function composeOrientationBlockWithPackages(input: ComposeWithPackagesInput): ComposeWithPackagesResult {
   const platform = composeOrientationBlockWithRows(input);
-  const packageRows = fitPackageOrientationRows(
-    projectPackageOrientationRows(input.packages ?? [], 'turn-start'),
-    input.packageBudgetChars ?? PACKAGE_ORIENTATION_BUDGET_CHARS,
-  );
-  if (packageRows.length === 0) {
-    return { block: platform.block, rows: platform.rows, packageRows: [], baseBlock: platform.block };
-  }
-  const head = platform.block || ORIENTATION_BLOCK_HEADER;
+  return { ...appendPackageOrientationRows(platform.block, input.packages ?? [], input.packageBudgetChars), rows: platform.rows };
+}
+
+/**
+ * PURE: append package rows to a platform block that was ALREADY composed and
+ * staged (the turn-start endpoint composes the platform half inside
+ * `buildTurnStartOrientationBlock`, before the package sink settles). The
+ * platform bytes are returned unchanged as `baseBlock`.
+ */
+export function appendPackageOrientationRows(
+  platformBlock: string,
+  packages: readonly PackageOrientationClass[],
+  budgetChars: number = PACKAGE_ORIENTATION_BUDGET_CHARS,
+): Omit<ComposeWithPackagesResult, 'rows'> {
+  const packageRows = fitPackageOrientationRows(projectPackageOrientationRows(packages, 'turn-start'), budgetChars);
+  if (packageRows.length === 0) return { block: platformBlock, packageRows: [], baseBlock: platformBlock };
+  const head = platformBlock || ORIENTATION_BLOCK_HEADER;
   return {
     block: [head, ...packageRows.map((row) => row.text)].join('\n'),
-    rows: platform.rows,
     packageRows,
-    baseBlock: platform.block,
+    baseBlock: platformBlock,
   };
 }
