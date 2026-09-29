@@ -185,7 +185,11 @@ export class PostgresHostedSelfSignupAdmission implements HostedSelfSignupAdmiss
    * `rate_limited` row it writes is committed and counts against the next
    * attempt. A returning user whose provider identity is already linked is not
    * an abuse signal — the route turns their `duplicate_identity` into a sign-in —
-   * so they are exempt from the count.
+   * so they are exempt from the count AND write no ledger row: their click is a
+   * sign-in, not an admission attempt, and a row committed here would sit in
+   * 'pending' forever because the admission that could resolve it rolls back
+   * (measured live 2026-09-29, WI-10002240). completeInTransaction still owns
+   * the attempt-id fingerprint check and the completed-attempt replay for them.
    */
   private async recordAttempt(sql: Sql, input: HostedSelfSignupInput): Promise<AttemptGate> {
     const providerId = text(input.providerId, 64) as string;
@@ -193,6 +197,14 @@ export class PostgresHostedSelfSignupAdmission implements HostedSelfSignupAdmiss
     const verifiedEmail = email(input.identity.primaryEmail) as string;
     const attemptId = text(input.attemptId, 2_048) as string;
     const fingerprint = `${providerId}|${subject}|${verifiedEmail}`;
+
+    const linked = await sql<Array<{ hosted_user_id: string }>>`
+      SELECT hosted_user_id::text AS hosted_user_id
+        FROM papercusp_auth.external_identities
+       WHERE provider = ${providerId} AND subject = ${subject}
+       LIMIT 1
+    `;
+    if (linked[0]) return 'proceed';
 
     await sql`
       INSERT INTO papercusp_auth.hosted_signup_attempts
@@ -210,14 +222,6 @@ export class PostgresHostedSelfSignupAdmission implements HostedSelfSignupAdmiss
     if (!attempt || attempt.fingerprint !== fingerprint) return 'state_conflict';
     if (attempt.status === 'completed') return 'proceed';
     if (attempt.status === 'rate_limited') return 'rate_limited';
-
-    const linked = await sql<Array<{ hosted_user_id: string }>>`
-      SELECT hosted_user_id::text AS hosted_user_id
-        FROM papercusp_auth.external_identities
-       WHERE provider = ${providerId} AND subject = ${subject}
-       LIMIT 1
-    `;
-    if (linked[0]) return 'proceed';
 
     const recent = await sql<Array<{ count: number | string }>>`
       SELECT count(*)::int AS count

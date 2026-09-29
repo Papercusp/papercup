@@ -53,8 +53,11 @@ function harness(options: { failAt?: string; recentAttempts?: number } = {}) {
       return [...attempts.values()].filter((row) => row.attempt_id === values[0]);
     }
     if (query.includes('SELECT count(*)')) return [{ count: options.recentAttempts ?? 0 }];
+    // Identities are stored as provider|subject|userId, so match on the
+    // provider|subject PREFIX. (An exact provider|subject comparison could never
+    // match, which silently kept every unit test off the linked-identity path.)
     if (query.includes('SELECT hosted_user_id')) return [...identities]
-      .filter((key) => key === `${values[0]}|${values[1]}`)
+      .filter((key) => key.startsWith(`${values[0]}|${values[1]}|`))
       .map((key) => ({ hosted_user_id: key.split('|')[2] }));
     if (query.includes('SELECT id::text AS id') && query.includes('hosted_users')) return [];
     if (query.includes('INSERT INTO papercusp_auth.hosted_users')) {
@@ -144,9 +147,11 @@ describe('hosted self-signup admission', () => {
     const callCount = h.calls;
     const replay = await h.admission.complete(input());
     expect(replay).toEqual(first);
-    // Ledger transaction (insert + locked read) then the replay read
-    // (insert + locked read + stored session) — no admission writes.
-    expect(h.calls).toBe(callCount + 5);
+    // Ledger transaction (linked-identity probe only: a linked identity writes
+    // no ledger row) then the replay read (insert + locked read + stored
+    // session) — no admission writes.
+    expect(h.calls).toBe(callCount + 4);
+    expect(h.attempts.size).toBe(1);
     expect(h.orgs.size).toBe(1);
   });
 
