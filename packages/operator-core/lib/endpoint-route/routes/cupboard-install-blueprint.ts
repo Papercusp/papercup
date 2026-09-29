@@ -9,12 +9,16 @@
  * D-001 reuse-first). This route only parses the loopback body and maps the
  * structured result to an HTTP response.
  *
- * Body: { listingId?, githubUrl?, listingRef?, installPlugins? }
+ * Body: { listingId?, githubUrl?, listingRef?, installPlugins?, potSlug?, capabilityRole?,
+ *         capabilityProviderSelections?, classContractConsent? }
+ * `classContractConsent` is parsed with the same schema as the agent tool
+ * (portable-identity-packages P-021 / D-015).
  *
  * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { installBlueprintFromCupboard } from '../../cupboard/install-blueprint-io';
+import { classContractConsentSchema, type ClassContractConsent } from '../../cupboard/class-contract-payload';
 
 export default defineTool({
   method: 'POST',
@@ -30,6 +34,7 @@ export default defineTool({
       potSlug?: string;
       capabilityRole?: string;
       capabilityProviderSelections?: Record<string, string>;
+      classContractConsent?: unknown;
     };
     try {
       body = await req.json();
@@ -42,6 +47,17 @@ export default defineTool({
     if (body.capabilityRole !== undefined &&
         (typeof body.capabilityRole !== 'string' || !body.capabilityRole.trim() || body.capabilityRole.trim().length > 120)) {
       return Response.json({ ok: false, error: 'invalid_capability_role' }, { status: 400 });
+    }
+    let classContractConsent: ClassContractConsent | undefined;
+    if (body.classContractConsent !== undefined) {
+      const parsed = classContractConsentSchema.safeParse(body.classContractConsent);
+      if (!parsed.success) {
+        return Response.json(
+          { ok: false, error: 'invalid_class_contract_consent', detail: parsed.error.issues[0]?.message },
+          { status: 400 },
+        );
+      }
+      classContractConsent = parsed.data;
     }
 
     const outcome = await installBlueprintFromCupboard({
@@ -57,6 +73,7 @@ export default defineTool({
       !Array.isArray(body.capabilityProviderSelections)
         ? { capabilityProviderSelections: body.capabilityProviderSelections }
         : {}),
+      ...(classContractConsent ? { classContractConsent } : {}),
     });
 
     if (!outcome.ok) {

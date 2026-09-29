@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { classContractConsentSchema } from '../../cupboard/class-contract-payload';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -57,6 +58,8 @@ export default defineTool({
       .describe('Administrator-declared target role for the grant ceiling. Required for a multi-role pot; omission is inferred only for a single-role pot. Selecting a role does not widen its permissions.'),
     capabilityProviderSelections: z.record(z.string(), z.string().min(1)).optional()
       .describe('Explicit provider choices keyed by exact class@version ref; values are provider package or package@version.'),
+    classContractConsent: classContractConsentSchema.optional()
+      .describe('Administrator decision on the consentSubject from a class_contract_consent_required refusal, plus decision.'),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
@@ -103,6 +106,7 @@ export default defineTool({
       ...(args.capabilityProviderSelections
         ? { capabilityProviderSelections: args.capabilityProviderSelections }
         : {}),
+      ...(args.classContractConsent ? { classContractConsent: args.classContractConsent } : {}),
     });
 
     if (!outcome.ok) {
@@ -133,6 +137,7 @@ export default defineTool({
       capabilityGrants: r.capabilityGrants,
       capabilityProviderReview: r.capabilityProviderReview,
       capabilityProviderInstalls: r.capabilityProviderInstalls,
+      ...(r.classContracts ? { classContracts: r.classContracts } : {}),
       ...(r.pluginInstalls.length > 0 ? { pluginInstalls: r.pluginInstalls } : {}),
       ...(r.blueprintInstalls.length > 0 ? { blueprintInstalls: r.blueprintInstalls } : {}),
     });

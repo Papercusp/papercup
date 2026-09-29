@@ -117,6 +117,7 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
           grants: [],
         },
         activationPreflight: { ok: true, candidate: { id: 'identity', slots: ['domain'] }, conflicts: [] },
+        classContracts: null,
         capabilityGrants: {
           ok: true,
           requirements: [{ classRef: 'crm.email@1.0.0', optional: false, state: 'choosable' }],
@@ -220,6 +221,28 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
         },
       },
     });
+  });
+
+  it('P-021: forwards class-contract consent and preserves the consent subject on refusal', async () => {
+    const consentSubject = {
+      artifactContentHash: 'b'.repeat(64),
+      contracts: [{ ref: 'acme.ledger@1', contractHash: 'c'.repeat(64) }],
+    };
+    mockInstall.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      error: 'class_contract_consent_required',
+      detail: 'blueprint "identity" carries 1 class contract(s) that need administrator consent',
+      data: { consentSubject, contracts: [] },
+    });
+    const refused = await call({ listingId: 'identity-listing' });
+    expect(mockInstall.mock.calls[0]![0]).not.toHaveProperty('classContractConsent');
+    expect(refused).toMatchObject({ ok: false, status: 409, error: 'class_contract_consent_required', data: { consentSubject } });
+
+    mockInstall.mockResolvedValueOnce({ ok: false, status: 422, error: 'class_contract_namespace-squat', detail: 'x' });
+    const consent = { ...consentSubject, decision: 'approved' as const };
+    await call({ listingId: 'identity-listing', classContractConsent: consent });
+    expect(mockInstall.mock.calls[1]![0]).toMatchObject({ classContractConsent: consent });
   });
 
   it('preserves a role-ceiling refusal instead of presenting it as installation success', async () => {
