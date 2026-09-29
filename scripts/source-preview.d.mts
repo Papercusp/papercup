@@ -105,6 +105,16 @@ export function exportSnapshot({ repoRoot, ref, out, target: targetName, license
  */
 export function readLicense(path: string): string;
 /**
+ * The public target's community files, read from `dir` (scripts/public-release/ by
+ * default — beside the LICENSE). Refuses when any is missing or empty.
+ * @param {string} dir
+ * @returns {{ name: string, text: string }[]}
+ */
+export function readCommunityFiles(dir: string): {
+    name: string;
+    text: string;
+}[];
+/**
  * The fail-closed gate. Every detector must RUN and come back clean; a finding
  * refuses (exit 1) and a detector that cannot run refuses too (exit 2).
  * @param {string} dir
@@ -245,7 +255,13 @@ export const SELECTION_LIB: string;
 export const AUDIT_SCRIPT: string;
 /** Files this script adds at the export root, outside the shared selection. */
 export const ADDED_FILES: string[];
-/** The public target also adds its LICENSE. */
+/**
+ * Community-health files the public target copies verbatim from scripts/public-release/
+ * (plan open-source-release-2026-09-29 P-007). Every one is required: a public repo
+ * without a disclosure path or contribution terms is not recoverable once cloned.
+ */
+export const PUBLIC_COMMUNITY_FILES: string[];
+/** The public target also adds its LICENSE and the community files. */
 export const PUBLIC_ADDED_FILES: string[];
 /** The env var holding the release host base URL; `${base}/index.html` is the releases page. */
 export const RELEASE_BASE_ENV: "PAPERCUSP_UPDATE_BASE_URL";

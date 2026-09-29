@@ -810,7 +810,7 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'goal:drain-dead:<goalId>',
     params: [{ name: 'goalId', required: true, describe: 'the goal whose drain fleet you hold' }],
     describe:
-      "The drain fleet DECLARED for this goal is gone — it was declared but has no live holders, so nothing is draining the goal any more. ⚠ Fires ONLY for a fleet that was actually declared and then died: a goal that never declared one (reason `no-drain-fleet-declared`) is reported but deliberately does NOT emit, because a waiter parked here is asking to hear its fleet died, not to be nagged about paperwork. The watchdog never auto-relaunches — standing a fleet back up is the goal holder's authority.",
+      "The drain fleet DECLARED for this goal is gone — it was declared but has no live holders, so nothing is draining the goal any more. ⚠ Fires ONLY for a fleet that was actually declared and then died: a goal that never declared one (reason `no-drain-fleet-declared`) is reported but deliberately does NOT emit, because a waiter parked here is asking to hear its fleet died, not to be nagged about paperwork. For an OUTCOME goal the watchdog never relaunches — standing a fleet back up is the goal holder's authority; for a STANDING goal it re-establishes the fleet itself after a dead grace, within a rate budget (WI-2140699), and still fires this key.",
     emitter:
       'goal-drain-fleet-watchdog (packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts, defaultEmitDrainDead)',
     exists: true,
@@ -821,11 +821,33 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'goal:plan-placement:<goalId>',
     params: [{ name: 'goalId', required: true, describe: 'the active goal id' }],
     describe:
-      'The canonical goal plan-placement classifier found an actionable placement state. This is a wake hint only; re-read the shared obligation agenda before launching or repairing anything.',
+      'The canonical goal plan-placement classifier found an actionable placement state. This is a wake hint only; re-read the shared obligation agenda before launching or repairing anything. Fires on every sweep (10 min) while a drain-fleet or plan-fleet verdict stands; a plan-fleet firing carries the same evidence payload as its leg-specific key (goal:plan-fleet-missing / goal:plan-fleet-unclaimed).',
     emitter:
       'goal drain fleet watchdog (packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts) — emitted from the same alert/classifier pass that owns plan-fleet placement evidence, with the key built in packages/operator-core/lib/agent-obligations.ts',
     exists: true,
     replacesPoll: 'polling the goal portfolio / plan-fleet cohort for placement gaps',
+  },
+  {
+    family: 'goal-plan-fleet-missing',
+    keyTemplate: 'goal:plan-fleet-missing:<goalId>',
+    params: [{ name: 'goalId', required: true, describe: 'the active goal id you hold' }],
+    describe:
+      "A live-held goal has a STARTED plan with open items and no LIVE fleet whose claim spec targets it — nothing will ever claim that plan's work (leg A of the plan-fleet obligation). Payload: { goalId, reason, planSlug, harnessSlug, openItemCount, openItemIds, targetingFleets[{ fleetSlug, liveness, claimSpecRef, liveClaimCount, liveClaimItemIds }], liveHolders }. Re-fires every sweep (10 min) while it stands; the holder is also messaged + woken once per new escalation. Unknown cohort/fleet state suppresses rather than fires.",
+    emitter:
+      'goal-drain-fleet-watchdog (packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts, defaultEmitPlanFleet via goalPlanFleetLegEventKey)',
+    exists: true,
+    replacesPoll: 'polling plans:list / fleet:assignments to notice a started goal plan nobody is working',
+  },
+  {
+    family: 'goal-plan-fleet-unclaimed',
+    keyTemplate: 'goal:plan-fleet-unclaimed:<goalId>',
+    params: [{ name: 'goalId', required: true, describe: 'the active goal id you hold' }],
+    describe:
+      "A live-held goal has a STARTED plan whose claim-spec-targeting fleet is LIVE but holds ZERO live claims on the plan's open items — a spec-scope or pickup failure, not a missing fleet (leg B of the plan-fleet obligation; launching another fleet will not help). Same payload and cadence as goal:plan-fleet-missing. Only one leg speaks per goal per sweep: a goal with both failures on different plans reports leg A.",
+    emitter:
+      'goal-drain-fleet-watchdog (packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts, defaultEmitPlanFleet via goalPlanFleetLegEventKey)',
+    exists: true,
+    replacesPoll: 'polling fleet:status / plan claims to notice a live plan fleet that is not pulling',
   },
   {
     family: 'goal-edit-claim',

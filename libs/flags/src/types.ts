@@ -1766,6 +1766,11 @@ export const FLAGS = {
   // (goals metadata.drainFleet, recorded via goals:update) is undeclared past
   // the kickoff grace, missing from agent_fleets, or has no live member.
   // Escalates (deduped) + emits goal:drain-dead:<goalId> for parked awaits.
+  // goal-plan-fleet-obligation-detector P-002 widened the same sweep with a
+  // PLAN-FLEET leg over the same live-held goals: a started goal plan with no
+  // live claim-spec-targeting fleet (goal:plan-fleet-missing) or with a live
+  // targeting fleet holding zero claims (goal:plan-fleet-unclaimed). Same flag
+  // on purpose — one sweep, one kill-switch.
   // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
   // no-ops before reading the goals table.
   GOAL_DRAIN_FLEET_WATCHDOG: "papercusp-goal-drain-fleet-watchdog",

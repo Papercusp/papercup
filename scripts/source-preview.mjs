@@ -108,8 +108,14 @@ export const SELECTION_LIB = join(DESKTOP_BIN, 'lib', 'source-tree-selection.sh'
 export const AUDIT_SCRIPT = join(DESKTOP_BIN, 'audit-release-bundle.py');
 /** Files this script adds at the export root, outside the shared selection. */
 export const ADDED_FILES = ['NOTICE', 'README.md', 'MANIFEST.json'];
-/** The public target also adds its LICENSE. */
-export const PUBLIC_ADDED_FILES = [...ADDED_FILES, 'LICENSE'];
+/**
+ * Community-health files the public target copies verbatim from scripts/public-release/
+ * (plan open-source-release-2026-09-29 P-007). Every one is required: a public repo
+ * without a disclosure path or contribution terms is not recoverable once cloned.
+ */
+export const PUBLIC_COMMUNITY_FILES = ['CONTRIBUTING.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md'];
+/** The public target also adds its LICENSE and the community files. */
+export const PUBLIC_ADDED_FILES = [...ADDED_FILES, 'LICENSE', ...PUBLIC_COMMUNITY_FILES];
 /** The env var holding the release host base URL; `${base}/index.html` is the releases page. */
 export const RELEASE_BASE_ENV = 'PAPERCUSP_UPDATE_BASE_URL';
 /** Where the release scripts keep that value (papercusp-desktop/bin/lib/release-host.sh). */
@@ -393,6 +399,21 @@ export async function readmeText(dir, manifest, releasesUrl) {
     '',
     'This repository is the same source without `node_modules`, so you can read it before you install.',
     '',
+    ...(isPublic
+      ? [
+        '## Contributing, security and telemetry',
+        '',
+        '- **Contributing:** see CONTRIBUTING.md. Code contributions need a signed Contributor',
+        '  License Agreement; a bot links it on your first pull request.',
+        '- **Security:** report vulnerabilities privately, as described in SECURITY.md.',
+        '- **Conduct:** everyone taking part follows CODE_OF_CONDUCT.md.',
+        '- **Telemetry is off unless you opt in** during setup, and development builds never send',
+        '  any. If you distribute your own build, point opted-in telemetry at your own PostHog',
+        '  with `PAPERCUSP_POSTHOG_HOST` and `PAPERCUSP_POSTHOG_KEY` (or `~/.papercusp/posthog.json`);',
+        '  otherwise it goes to Papercusp\'s. The in-app support chat loads only on the `/support` page.',
+        '',
+      ]
+      : []),
     '## Where to read first',
     '',
     '- `CLAUDE.md` / `AGENTS.md` — the conventions every agent in this codebase works under.',
@@ -446,9 +467,14 @@ export async function exportSnapshot({
   if (existsSync(out)) throw new PreviewError(`refusing to overwrite existing ${out}`, 2);
   const target = resolveTarget(targetName);
   const license = target.key === 'public' ? readLicense(licensePath) : null;
+  const community = target.key === 'public' ? readCommunityFiles(dirname(licensePath)) : [];
   const releasesUrl = releasesPageUrl(env);
   const commit = resolveCommit(repoRoot, ref);
   const allow = allowlistTops(selectionLib);
+  // The public repository also carries the Tauri desktop shell (P-004), which the shared
+  // selection leaves out because the installer never ships it. Materialize it too (a
+  // gitlink resolves at its pinned commit) and add it after the selection.
+  if (target.key === 'public') allow.add(DESKTOP_DIR);
   const work = await mkdtemp(join(tmpdir(), 'source-preview-'));
   const partial = `${out}.partial-${process.pid}`;
   try {
@@ -464,6 +490,7 @@ export async function exportSnapshot({
     if (sel.status !== 0) {
       throw new PreviewError(`source-tree-select refused (exit ${sel.status}): ${(sel.stderr || sel.stdout).trim().slice(-2000)}`, sel.status === 2 ? 2 : 1);
     }
+    if (target.key === 'public') copyDesktopShell(mono, partial);
     const files = await listFiles(partial);
     const vcs = files.filter((f) => f === '.git' || f.startsWith('.git/') || f.includes('/.git/') || f.endsWith('/.git'));
     if (vcs.length) throw new PreviewError(`export contains git metadata: ${vcs.slice(0, 5).join(', ')}`);
@@ -482,6 +509,7 @@ export async function exportSnapshot({
       generatedBy: 'scripts/source-preview.mjs',
     };
     if (license !== null) await fs.writeFile(join(partial, 'LICENSE'), license);
+    for (const { name, text } of community) await fs.writeFile(join(partial, name), text);
     await fs.writeFile(join(partial, 'NOTICE'), noticeText(manifest));
     await fs.writeFile(join(partial, 'README.md'), await readmeText(partial, manifest, releasesUrl));
     await fs.writeFile(join(partial, 'MANIFEST.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -506,6 +534,22 @@ export function readLicense(path) {
   const text = readFileSync(path, 'utf8');
   if (!/^Elastic License 2\.0/m.test(text)) throw new PreviewError(`${path} is not the Elastic License 2.0 text`, 2);
   return text;
+}
+
+/**
+ * The public target's community files, read from `dir` (scripts/public-release/ by
+ * default — beside the LICENSE). Refuses when any is missing or empty.
+ * @param {string} dir
+ * @returns {{ name: string, text: string }[]}
+ */
+export function readCommunityFiles(dir) {
+  return PUBLIC_COMMUNITY_FILES.map((name) => {
+    const path = join(dir, name);
+    if (!existsSync(path)) throw new PreviewError(`public target needs ${name} at ${path}`, 2);
+    const text = readFileSync(path, 'utf8');
+    if (!text.trim()) throw new PreviewError(`${path} is empty`, 2);
+    return { name, text };
+  });
 }
 
 function which(bin, env) {

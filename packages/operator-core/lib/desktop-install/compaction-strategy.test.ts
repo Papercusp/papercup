@@ -79,4 +79,17 @@ describe('renderCompactionStrategy (Claude compaction floor)', () => {
     expect(source).toContain('`parked:true,nextFireAt:null`');
     expect(source).not.toContain('VERIFY `loop:status.active === true`');
   });
+
+  it('the REAL canonical prompts render carries the self-compact-proactively section (deployed projection)', async () => {
+    // agent-self-compaction-trigger-discipline-2026-07-10 P-002: the desktop-install flow
+    // writes ~/.papercusp/compaction-strategy.md from exactly this render, so pinning the
+    // render pins what reaches running sessions.
+    const realPrompts = new URL('../../../../apps/operator/prompts', import.meta.url).pathname;
+    const out = await renderCompactionStrategy(realPrompts);
+    expect(out).toContain(
+      '## WHEN to compact — self-compact proactively; never end a turn expecting a wake that is not armed',
+    );
+    expect(out).toContain('session:request-compaction { autoContinue: true, focus }');
+    expect(out).toContain('self-compact — do not just settle');
+  });
 });

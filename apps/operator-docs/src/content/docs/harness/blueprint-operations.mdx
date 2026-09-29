@@ -92,8 +92,9 @@ by the test exactly as written:
       },
       "acceptance": {
         "resultSchema": {
-          "type": "object", "required": ["answer"],
-          "properties": { "answer": { "type": "string" } }, "additionalProperties": false
+          "type": "object", "required": ["outcome", "resolved"],
+          "properties": { "outcome": { "type": "string" }, "resolved": { "type": "boolean" } },
+          "additionalProperties": false
         }
       }
     }
@@ -172,7 +173,11 @@ already been validated against `acceptance.resultSchema`.
 ## Direct program operation
 
 A program operation uses the same verbs; only the declaration differs. It still
-creates exactly one work item and no plan:
+creates exactly one work item and no plan. Its result is the program's own outcome,
+not free-form output: a gateless program settles `{ "outcome": "done", "resolved": true }`,
+and a spine `gate` op that resolves adds its `decision`. Declare
+`acceptance.resultSchema` to admit that shape — a schema the program cannot produce
+settles the root `failed`, not `succeeded`:
 
 ```json runnable=submit-program
 { "harness": "docs-example", "operationId": "extract-program", "requestKey": "program-1", "input": { "value": "hello" }, "title": "Extract (program)" }

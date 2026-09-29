@@ -32,14 +32,19 @@ import {
   validatePhysicalPhaseG,
   type PhysicalPhaseGInput,
 } from './physical-drill-phase-g';
+import {
+  validatePhysicalPhaseH,
+  type PhysicalPhaseHInput,
+} from './physical-drill-phase-h';
 
 export { physicalDrillSigningBytes } from './physical-drill-host-receipt';
 
-const SCHEMA = 'hive-git-physical-evidence/v1';
+// v2 adds leg H (P-521 F3 serving identity, endgame D-081). v1 manifests are the historical A-G record.
+const SCHEMA = 'hive-git-physical-evidence/v2';
 const TRUST_SCHEMA = 'hive-git-physical-trust/v1';
 const TRUST_SOURCE = 'papercusp-vm-rig/v1';
 const PLAN = 'p2p-git-live-activation-2026-07-09';
-const ALL_LEGS = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
+const ALL_LEGS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'] as const;
 const SHA256 = /^[0-9a-f]{64}$/i;
 
 type JsonRecord = Record<string, unknown>;
@@ -289,7 +294,7 @@ function validateLegVerdicts(
 ): void {
   const verdicts = Array.isArray(raw.legVerdicts) ? raw.legVerdicts : [];
   if (verdicts.length !== ALL_LEGS.length) {
-    errors.push('legVerdicts must contain exactly one same-run verdict for A through G');
+    errors.push('legVerdicts must contain exactly one same-run verdict for A through H');
   }
   const seen = new Set<string>();
   for (const candidate of verdicts) {
@@ -512,6 +517,56 @@ function validateLegG(
   }
 }
 
+function validateLegH(
+  raw: JsonRecord,
+  runId: string | null,
+  startedAt: number,
+  finishedAt: number,
+  hostKeys: Set<string>,
+  errors: string[],
+): void {
+  const leg = expectRecord(raw, 'legH', errors);
+  if (!leg) return;
+
+  let verdict: ReturnType<typeof validatePhysicalPhaseH>;
+  try {
+    verdict = validatePhysicalPhaseH(leg as unknown as PhysicalPhaseHInput);
+  } catch (error) {
+    errors.push(`legH serving-identity evidence is malformed: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push('legH must contain the complete validated P-521 serving-identity evidence object');
+    return;
+  }
+  for (const error of verdict.errors) errors.push(`legH: ${error}`);
+  if (!verdict.ok || !verdict.result?.complete) {
+    errors.push('legH must contain the complete validated P-521 serving-identity evidence object');
+  }
+  if (leg.runId !== runId) errors.push('legH.runId must match the enclosing physical run');
+
+  const window = record(leg.window);
+  const legStartedAt = Date.parse(String(window?.startedAt ?? ''));
+  const legFinishedAt = Date.parse(String(window?.finishedAt ?? ''));
+  if (
+    !Number.isFinite(legStartedAt) ||
+    !Number.isFinite(legFinishedAt) ||
+    legStartedAt < startedAt ||
+    legFinishedAt > finishedAt
+  ) {
+    errors.push('legH.window must fall inside the enclosing physical-run window');
+  }
+
+  const identities = record(leg.identities);
+  const legHostKeys = new Set([
+    string(identities?.towerDeviceKey),
+    string(identities?.vmDeviceKey),
+  ].filter((value): value is string => value !== null));
+  if (
+    legHostKeys.size !== hostKeys.size ||
+    [...hostKeys].some((deviceKey) => !legHostKeys.has(deviceKey))
+  ) {
+    errors.push('legH identities must match the two attesting physical devices exactly');
+  }
+}
+
 export function validatePhysicalDrillEvidence(
   raw: unknown,
   trustedAnchor?: unknown,
@@ -581,6 +636,7 @@ export function validatePhysicalDrillEvidence(
   validateLegE(evidence, runId, startedAt, finishedAt, hostKeys, errors);
   validateLegF(evidence, runId, startedAt, finishedAt, hostKeys, errors);
   validateLegG(evidence, runId, startedAt, finishedAt, hostKeys, errors);
+  validateLegH(evidence, runId, startedAt, finishedAt, hostKeys, errors);
 
   const uniqueErrors = [...new Set(errors)];
   return {
@@ -590,7 +646,7 @@ export function validatePhysicalDrillEvidence(
     errors: uniqueErrors,
     summary:
       uniqueErrors.length === 0
-        ? `physical hive-git run ${runId} proves same-run A-G with strict D/P-305, E/P-306, F/P-307, and G/P-308 witnesses`
+        ? `physical hive-git run ${runId} proves same-run A-H with strict D/P-305, E/P-306, F/P-307, G/P-308, and H/P-521 witnesses`
         : `physical hive-git evidence rejected (${uniqueErrors.length} error${uniqueErrors.length === 1 ? '' : 's'})`,
   };
 }

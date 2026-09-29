@@ -19,7 +19,7 @@ import {
 
 function evidence(deviceKey: string): Record<string, unknown> {
   return {
-    schemaVersion: 'hive-git-physical-evidence/v1',
+    schemaVersion: 'hive-git-physical-evidence/v2',
     plan: 'p2p-git-live-activation-2026-07-09',
     runId: 'physical-run-receipt-test',
     window: {
