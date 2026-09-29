@@ -74,7 +74,7 @@ import {
   GITHUB_CREDENTIAL_HELPER_KEY,
   runGithubBridgeTick,
 } from '../../sync/pot-git/github-bridge-tick';
-import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
+import { resolveAnnouncementWatermark, runIntegratorTick } from '../../sync/pot-git/integrator-tick';
 import { formatIntegratorTickStatus } from '../../sync/pot-git/integrator';
 import { runWorktreeBridgeTick, WORKTREE_BRIDGE_RETRY_TTL_MS } from '../../sync/pot-git/worktree-bridge-tick';
 import { catchUpWorktreeToWatermark } from '../../sync/pot-git/worktree-bridge';
@@ -6300,7 +6300,13 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
     const { sql } = getOrgPg();
     const rows = await sql<
       {
-        integrator: { epoch: number; seq: number; authorityDevice?: string; storeGeneration?: string } | null;
+        integrator: {
+          epoch: number;
+          seq: number;
+          authorityDevice?: string;
+          storeGeneration?: string;
+          stagingSha?: string | null;
+        } | null;
         worktree_bridge: { epochSeq: EpochSeq | null; stagingSha?: string | null } | null;
       }[]
     >`
@@ -6332,11 +6338,21 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
       epoch,
       priorSeq,
       // Announcement watermark (see IntegratorTickInput.lastAnnouncedStagingSha):
-      // the worktree-bridge acceptance record is the persisted "last announced +
-      // accepted" staging on this machine; comparing against it (not just the
-      // per-pass ref motion) is what makes the integrator-is-the-author case
-      // announce at all. Null (never accepted) ⇒ the first integration announces.
-      lastAnnouncedStagingSha: rows[0]?.worktree_bridge?.stagingSha ?? null,
+      // comparing against the last ANNOUNCED staging (not just the per-pass ref
+      // motion) is what makes the integrator-is-the-author case announce at all.
+      // WI-10003781: prefer this integrator's own announcement record — the
+      // bridge's accepted watermark lags it until the bridge leg (which runs
+      // after this one) persists, and a pass in that window re-announced the
+      // same sha under seq+1. Null (never announced) ⇒ the first one announces.
+      lastAnnouncedStagingSha: resolveAnnouncementWatermark(
+        prior,
+        {
+          epoch,
+          authorityDevice: actor.devicePubkey,
+          storeGeneration: actor.capability.context.store_generation,
+        },
+        rows[0]?.worktree_bridge?.stagingSha ?? null,
+      ),
       context: signedProtocolContext,
       authority: effectAuthority,
       acceptedSnapshots: snapshots[0]?.state?.replayFloors ?? {},
@@ -6416,7 +6432,15 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
            SET metadata = jsonb_set(
              COALESCE(metadata, '{}'::jsonb),
              '{integrator}',
-             ${JSON.stringify({ epoch, seq: outcome.announcement.seq, authorityDevice: actor.devicePubkey, storeGeneration: signedProtocolContext.store_generation, at: Date.now() })}::text::jsonb
+             ${JSON.stringify({
+               epoch,
+               seq: outcome.announcement.seq,
+               authorityDevice: actor.devicePubkey,
+               storeGeneration: signedProtocolContext.store_generation,
+               // WI-10003781: the announce watermark resolveAnnouncementWatermark reads.
+               stagingSha: outcome.announcement.staging_sha,
+               at: Date.now(),
+             })}::text::jsonb
            )
          WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
       `;
