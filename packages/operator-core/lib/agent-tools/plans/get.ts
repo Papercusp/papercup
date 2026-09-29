@@ -36,6 +36,7 @@ import { shapePlansGet } from './get-shape';
 import { decoratePlanNowBlock } from './liveness-decoration';
 import { reconcileNowNext } from './now-next-derivation';
 import { derivePlanLifecycleForRead, normalizeActivityTimestamp } from './plan-lifecycle-derivation';
+import { markGrindingItems, readGrindingItems } from '../../verification-attempts/plan-grinding';
 import type { PlanLifecycleReconciliation } from '@papercusp/plan-parser';
 import { getAcceptanceRubricForPlan } from '../../rubrics';
 import { getLatestPlanAudit } from '../../plan-audits';
@@ -1156,11 +1157,14 @@ export default defineTool({
             // Best-effort and read-only: a failed signal lookup degrades to an
             // `unmeasured` axis (never to a fabricated value), and nothing here
             // writes to the plan.
-            let lifecycle: PlanLifecycleReconciliation | null = null;
+            let lifecycle: Awaited<ReturnType<typeof derivePlanLifecycleForRead>> | null = null;
             try {
               lifecycle = await derivePlanLifecycleForRead({
                 items: parsed.items,
                 storedStatus: status,
+                // expensive-verification-loops P-002 (R-3): mark items whose work item is
+                // grinding (tripped loop rule, no audit note yet).
+                readGrinding: readGrindingItems,
                 signals: {
                   // EI-22103498805895390: scope the signal lookups to the PLAN
                   // ROW's workspace, not the legacy 'default' constant — the
@@ -1211,7 +1215,8 @@ export default defineTool({
                       // acceptance rubric retired on ship.
                       text: lifecycle.text,
                       counts: lifecycle.derived.counts,
-                      liveItems: lifecycle.derived.liveItems,
+                      liveItems: markGrindingItems(lifecycle.derived.liveItems, lifecycle.grinding),
+                      ...(lifecycle.grinding !== undefined ? { grinding: lifecycle.grinding } : {}),
                       liveItemsTruncated: lifecycle.derived.liveItemsTruncated,
                       idleDays: lifecycle.derived.idleDays,
                       stalledAfterDays: lifecycle.derived.stalledAfterDays,
