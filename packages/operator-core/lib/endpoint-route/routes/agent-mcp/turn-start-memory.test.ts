@@ -18,7 +18,16 @@
  * This endpoint previously had NO test file at all.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { configureReadCursorStore, InMemoryReadCursorStore, resetReadCursorStore } from '../../../agent-tools/coordination/read-cursors';
+import {
+  configureReadCursorStore,
+  DELIVERY_TOKEN_KEY,
+  InMemoryReadCursorStore,
+  resetReadCursorStore,
+  type AckConfirmation,
+  type AckResult,
+  type CursorState,
+} from '../../../agent-tools/coordination/read-cursors';
+import type { PackageOrientationClass } from '../../../agent-identities/package-orientation-classes';
 
 const {
   buildMemoryContextBlockMock,
@@ -818,5 +827,86 @@ describe('control activation waits for host emission (WI-10003297)', () => {
     const recovered = await post({ owner: 'sess-1', prompt: 'retry committed proof', confirmedDelivery: null });
     expect(recovered.text).not.toContain('IDENTITY-LAYER');
     expect(acknowledgeControlTransitionMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('portable-identity P-010 package sink', () => {
+  const SURFACE = 'turn-start-package-sink';
+  const PLATFORM = '## Orientation\n- platform row';
+  const brief: PackageOrientationClass = {
+    id: 'package:pkg-a/brief',
+    identityId: 'pkg-a',
+    contributionId: 'brief',
+    applicableSinks: ['turn-start'],
+    order: 0,
+    rowCeiling: { maxRows: 3, recoveryVerb: 'x' },
+    render: () => ['- pkg-a/brief: hello'],
+  };
+
+  /** Records what the endpoint stages, and what each ACK commits, on the package surface. */
+  class RecordingStore extends InMemoryReadCursorStore {
+    readonly staged: CursorState[] = [];
+    readonly committed: Array<CursorState | null> = [];
+    override async stage(ownerId: string, surface: string, next: CursorState): Promise<void> {
+      if (surface === SURFACE) this.staged.push({ ownerId, ...next });
+      return super.stage(ownerId, surface, next);
+    }
+    override async ackAndRead(ownerId: string, surface: string, confirmation?: AckConfirmation): Promise<AckResult> {
+      const out = await super.ackAndRead(ownerId, surface, confirmation);
+      if (surface === SURFACE) this.committed.push(out.committed);
+      return out;
+    }
+  }
+  let store: RecordingStore;
+  beforeEach(() => {
+    store = new RecordingStore();
+    configureReadCursorStore(store);
+  });
+
+  it('appends package rows after the platform block and stages a rendered receipt under the delivered token', async () => {
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: PLATFORM, deliveryToken: 'tok-o' });
+    evaluateTurnStartPackageSinkMock.mockResolvedValue({ result: null, classes: [brief] });
+    packageSinkReceiptMock.mockReturnValue({ version: 1, status: 'rendered' });
+    const out = await post({ owner: 'sess-1', prompt: 'package turn' });
+    expect(out.text).toBe(`${PLATFORM}\n- pkg-a/brief: hello\n\nMEM-BLOCK`);
+    expect(out.deliveryToken).toBe('tok-o');
+    expect(store.staged).toEqual([
+      { ownerId: 'sess-1', version: 1, status: 'rendered', rendered: true, [DELIVERY_TOKEN_KEY]: 'tok-o' },
+    ]);
+  });
+
+  it('stages rendered:false under a minted token when the sink returns a receipt but no rows', async () => {
+    packageSinkReceiptMock.mockReturnValue({ version: 1, status: 'fenced' });
+    const out = await post({ owner: 'sess-1', prompt: 'fenced turn' });
+    expect(out.text).toBe('MEM-BLOCK');
+    expect(out.deliveryToken).toEqual(expect.any(String));
+    expect(store.staged).toEqual([
+      { ownerId: 'sess-1', version: 1, status: 'fenced', rendered: false, [DELIVERY_TOKEN_KEY]: out.deliveryToken },
+    ]);
+  });
+
+  it('a rejecting sink costs only its rows: platform orientation and memory are still delivered', async () => {
+    buildTurnStartOrientationBlockMock.mockResolvedValue({ block: PLATFORM, deliveryToken: 'tok-o' });
+    evaluateTurnStartPackageSinkMock.mockRejectedValue(new Error('provider exploded'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const out = await post({ owner: 'sess-1', prompt: 'sink fails' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('turn-start:package-sink failed: provider exploded'));
+    warn.mockRestore();
+    // Non-vacuous: the sink really ran and rejected (an unreachable sink also
+    // renders nothing — that is how a missing import once passed this test).
+    expect(evaluateTurnStartPackageSinkMock).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: 'sess-1', workspaceId: 'ws-test' }),
+    );
+    expect(out).toEqual({ ok: true, text: `${PLATFORM}\n\nMEM-BLOCK`, deliveryToken: 'tok-o' });
+    expect(store.staged).toEqual([]);
+    expect(packageSinkReceiptMock).not.toHaveBeenCalled();
+  });
+
+  it('commits a staged receipt only when the next turn confirms the token it was staged under', async () => {
+    packageSinkReceiptMock.mockReturnValue({ version: 1, status: 'fenced' });
+    await post({ owner: 'sess-1', prompt: 'offer' });
+    const unproved = await post({ owner: 'sess-1', prompt: 'unproved', confirmedDelivery: 'wrong-token' });
+    await post({ owner: 'sess-1', prompt: 'proved', confirmedDelivery: unproved.deliveryToken });
+    expect(store.committed).toEqual([null, null, { version: 1, status: 'fenced', rendered: false }]);
   });
 });
