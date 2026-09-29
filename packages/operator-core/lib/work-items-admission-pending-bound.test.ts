@@ -5,6 +5,7 @@ import {
   ADMISSION_FAIL_OPEN_TICKS,
   DEFAULT_PROMOTER_TICK_MINUTES,
   admissionFailOpenSec,
+  admissionFailOpenGuaranteedSec,
   admissionPendingCreateRemedy,
   admissionPendingExplanation,
   admissionPromoterTickSec,
@@ -78,6 +79,41 @@ describe('admission-pending states a bound, derived from the promoter cadence', 
         'changed, update ADMISSION_FAIL_OPEN_TICKS rather than this assertion, because the claim ' +
         "path publishes that number to callers as the wait's ceiling",
     ).toContain(`${ADMISSION_FAIL_OPEN_TICKS} * tickMinutes * 60_000`);
+  });
+
+  /**
+   * EI-24023740620851074 — the cutoff is not the guarantee. The runner only admits rows past
+   * the cutoff at the moment it FIRES, so a row that just misses one fire waits a whole
+   * cadence more. Both halves are pinned: the arithmetic, and that the seeded cron really
+   * fires one tick apart (if its schedule changes, the published bound must follow it).
+   */
+  it('the guaranteed bound is the cutoff PLUS one fail-open cadence, and the seeded cron fires one tick apart', () => {
+    expect(admissionFailOpenGuaranteedSec()).toBe(
+      (ADMISSION_FAIL_OPEN_TICKS + 1) * DEFAULT_PROMOTER_TICK_MINUTES * 60,
+    );
+    expect(admissionFailOpenGuaranteedSec(7)).toBe((ADMISSION_FAIL_OPEN_TICKS + 1) * 420);
+    expect(admissionFailOpenGuaranteedSec()).toBeGreaterThan(admissionFailOpenSec());
+
+    const seed = fs.readFileSync(
+      new URL('./harness/routines/seed-work-item-admission-fail-open-routine.ts', import.meta.url),
+      'utf8',
+    );
+    const cron = /cron:\s*'([^']+)'/.exec(seed)?.[1];
+    expect(cron, 'the fail-open seed must declare a literal cron').toBeTruthy();
+    // 6-field cron (sec min hour dom mon dow): the minute field is index 1.
+    const minutes = cron!.split(/\s+/)[1].split(',').map(Number).sort((a, b) => a - b);
+    expect(minutes.every((m) => Number.isInteger(m) && m >= 0 && m < 60)).toBe(true);
+    const gaps = minutes.map((m, i) => (i === 0 ? m + 60 - minutes[minutes.length - 1] : m - minutes[i - 1]));
+    expect(
+      Math.max(...gaps),
+      'the fail-open runner must fire at most one promoter tick apart, or admissionFailOpenGuaranteedSec under-states the wait',
+    ).toBe(DEFAULT_PROMOTER_TICK_MINUTES);
+  });
+
+  it('the claim floor publishes the GUARANTEED bound, never the bare cutoff, as guaranteedWithinSec', () => {
+    const floorSource = fs.readFileSync(new URL('./work-items.ts', import.meta.url), 'utf8');
+    expect(floorSource).not.toContain('guaranteedWithinSec: admissionFailOpenSec()');
+    expect(floorSource.match(/guaranteedWithinSec: admissionFailOpenGuaranteedSec\(\)/g)?.length).toBe(2);
   });
 });
 

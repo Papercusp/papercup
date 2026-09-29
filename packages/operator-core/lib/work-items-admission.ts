@@ -172,6 +172,20 @@ export function admissionFailOpenSec(tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES
 }
 
 /**
+ * EI-24023740620851074 — worst-case seconds from a row's creation until the fail-open
+ * backstop admits it. {@link admissionFailOpenSec} is the runner's CUTOFF AGE, not its
+ * bound: the runner admits only rows older than the cutoff AT THE MOMENT IT FIRES, and it
+ * fires once per tick (the seeded cron `0 15,45 * * * *`, pinned one tick apart by the
+ * bound test). A row one second short of the cutoff at one fire waits a whole extra tick,
+ * so the honest guarantee is cutoff + one cadence. Publishing the bare cutoff as
+ * `guaranteedWithinSec` told refused callers to retry at ~60m for rows that could not clear
+ * before ~90m — reported independently five times.
+ */
+export function admissionFailOpenGuaranteedSec(tickMinutes = DEFAULT_PROMOTER_TICK_MINUTES): number {
+  return admissionFailOpenSec(tickMinutes) + admissionPromoterTickSec(tickMinutes);
+}
+
+/**
  * EI-22166155287498355: whether the work-item-admission-promoter's MOST RECENT
  * completed fire ended in an error (typically LLM account exhaustion) — the one
  * fact the admission-pending claim floor needs to publish an HONEST retry bound
