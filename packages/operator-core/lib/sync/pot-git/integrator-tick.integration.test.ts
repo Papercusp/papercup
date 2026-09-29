@@ -352,6 +352,93 @@ describe('pot-git integrator-tick (real bare repo, faked trust + swarm seams)', 
   });
 });
 
+// WI-10003820 (P-505 run 31, Phase E): on a BRIDGED hive the GitHub bridge
+// admitted a fresh upstream commit, but nothing fed it to the integrator, so
+// canonical staging never moved. The synthetic github-origin device has no
+// keypair (no sigrefs floor, no comms tier), so the explicit input is the only
+// route; these cases pin that it integrates, and that a missing object cannot.
+describe('pot-git integrator-tick — admitted github-origin head (WI-10003820)', () => {
+  let root: string;
+  let repo: string;
+  const integrator = makeDevice();
+  const member = makeDevice();
+  // Any 64-hex namespace key; production derives it with githubOriginNamespaceKey(remote).
+  const githubOriginHex = 'ab'.repeat(32);
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), 'integ-tick-gh-'));
+    process.env.PAPERCUSP_HIVE_GIT_ROOT = root;
+    repo = await ensurePotGitRepo('hive-gh', 'repo-gh');
+  });
+  afterAll(async () => {
+    delete process.env.PAPERCUSP_HIVE_GIT_ROOT;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const tick = (priorSeq: number, admittedGithubOriginHead: { deviceHex: string; sha: string } | null) =>
+    runIntegratorTick({
+      potHomeSlug: 'hive-gh',
+      workspaceId: 'ws-gh',
+      repoKey: 'repo-gh',
+      memberDevicePubkeysBase64: [member.pubBase64],
+      integratorDevicePubkeyBase64: integrator.pubBase64,
+      epoch: 1,
+      priorSeq,
+      sign: integrator.sign,
+      resolveTier: () => 'steer',
+      admittedGithubOriginHead,
+      deps: { isIntegrator: async () => true, sql: fakeSql() },
+    });
+
+  it('merges the admitted github-origin head into staging and announces it, bypassing the device gate', async () => {
+    const base = await commit(repo, { 'shared.txt': 'base' });
+    const memberHead = await commit(repo, { 'shared.txt': 'base', 'member.txt': 'm' }, base);
+    await writeNamespaceRef(repo, member.pubBase64, WORK_REF, memberHead);
+    const seeded = await tick(0, null);
+    expect(seeded.integration?.staging).toBe(memberHead);
+
+    // A GitHub-side commit on the shared base, diverged from the hive's staging.
+    const upstream = await commit(repo, { 'shared.txt': 'base', 'upstream.txt': 'u' }, base);
+
+    // Control — the pre-fix input: without the explicit feed the admitted head
+    // never reaches staging (exactly the run-31 symptom).
+    const preFix = await tick(1, null);
+    expect(preFix.integration?.advanced).toBe(false);
+    const absent = await defaultRunGit(['merge-base', '--is-ancestor', upstream, preFix.integration!.staging!], repo);
+    expect(absent.code).not.toBe(0);
+
+    const out = await tick(1, { deviceHex: githubOriginHex, sha: upstream });
+
+    expect(out.errors).toEqual([]);
+    // The member head was already contained, so only the admitted head moved staging.
+    expect(out.gated).toEqual({ integrated: 1, queued: 0, errors: 0 });
+    expect(out.integration?.advanced).toBe(true);
+    const staging = out.integration!.staging!;
+    for (const contained of [memberHead, upstream]) {
+      const r = await defaultRunGit(['merge-base', '--is-ancestor', contained, staging], repo);
+      expect(r.code, `${contained.slice(0, 8)} must be in staging ${staging.slice(0, 8)}`).toBe(0);
+    }
+    expect(await readStaging(repo, integrator.pubBase64)).toBe(staging);
+    expect(out.announcement?.staging_sha).toBe(staging);
+    expect(verifyStagingAdvance(out.announcement!)).toBe(true);
+
+    // Idempotent: the same admitted head on the next tick is already contained.
+    const again = await tick(2, { deviceHex: githubOriginHex, sha: upstream });
+    expect(again.integration?.advanced).toBe(false);
+    expect(again.announcement).toBeNull();
+  });
+
+  it('reports and skips an admitted head whose commit is not in the store', async () => {
+    const before = await readStaging(repo, integrator.pubBase64);
+    const out = await tick(3, { deviceHex: githubOriginHex, sha: 'c'.repeat(40) });
+
+    expect(out.errors.some((e) => e.includes('not in the store'))).toBe(true);
+    expect(out.integration?.advanced).toBe(false);
+    expect(await readStaging(repo, integrator.pubBase64)).toBe(before);
+    expect(out.announcement).toBeNull();
+  });
+});
+
 /** Legacy integration scenarios still prepare real signed member snapshots;
  * the focused P513 case passes its own floors, including deliberately bad ones. */
 async function runIntegratorTick(input: Parameters<typeof runIntegratorTickUnderTest>[0]) {
