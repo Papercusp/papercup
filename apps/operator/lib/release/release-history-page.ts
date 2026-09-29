@@ -46,6 +46,14 @@
  *    would be BLANK exactly when someone needs it. The beacon is the only script,
  *    and it is best-effort: if it never runs, the page is still whole.
  *
+ *    ONE deliberate exception, the Instructions [owner 2026-09-28 #868: "the
+ *    instructions should come seperate from the release cut"]. They live on their
+ *    own page, instructions.html, published by its own command — so a release cut
+ *    or a site publish can never roll them back, and changing them needs no cut.
+ *    The index embeds that page with a tiny same-origin loader; without
+ *    JavaScript the section is a plain link to the same page. See
+ *    renderInstructions() and renderInstructionsHtml().
+ *
  *    (This is the one place I did not take the owner's suggested route verbatim —
  *    "we can use our same vditor to display the plan". Vditor is a browser editor
  *    that pulls a Lute WASM bundle at runtime; on a static page that makes the
@@ -1072,26 +1080,79 @@ function openLinksInNewTab(html: string): string {
   return html.replace(/<a href="(https?:\/\/)/g, '<a target="_blank" rel="noopener noreferrer" href="$1');
 }
 
+/** The Instructions page, relative to the index — never absolute (the base path is the secret). */
+export const INSTRUCTIONS_PAGE_PATH = 'instructions.html';
+/** The element on instructions.html whose content the index embeds. */
+export const INSTRUCTIONS_BODY_ID = 'instructions-body';
+/** Marks the index's one non-beacon script, so readers (and tests) can tell the two apart. */
+export const INSTRUCTIONS_LOADER_ATTR = 'data-instructions-loader';
+
 /**
- * The owner's "Instructions" section — the beta-tester onboarding notes, ABOVE
- * the downloads [owner 2026-07-27].
+ * Fills the index's Instructions section from instructions.html at view time.
+ * Same origin, relative path, no third party: it can only ever read a page we
+ * published next to this one. Every failure leaves the no-JS link in place.
+ */
+const INSTRUCTIONS_LOADER_JS = `(function () {
+  var box = document.getElementById(${JSON.stringify(INSTRUCTIONS_BODY_ID)});
+  if (!box || !window.fetch || !window.DOMParser) return;
+  fetch(${JSON.stringify(INSTRUCTIONS_PAGE_PATH)}, { cache: 'no-cache' })
+    .then(function (r) { return r.ok ? r.text() : null; })
+    .then(function (text) {
+      if (!text) return;
+      var src = new DOMParser().parseFromString(text, 'text/html').getElementById(${JSON.stringify(INSTRUCTIONS_BODY_ID)});
+      if (src && src.innerHTML.trim()) box.innerHTML = src.innerHTML;
+    })
+    .catch(function () {});
+})();`;
+
+/**
+ * The owner's "Instructions" section on the index — the beta-tester onboarding
+ * notes, ABOVE the downloads [owner 2026-07-27].
  *
- * The order is the whole point. The section opens by saying the GUI is not the
- * part that is ready — `psu` is — and that only lands if it is read BEFORE the
- * installer is downloaded. Underneath the downloads it would be an apology; on
- * top it is an instruction.
+ * The order is the whole point: setup steps only help if they are read BEFORE
+ * the installer is downloaded.
  *
- * Rendered from markdown HERE, at generation time, like everything else on this
- * page: a tester with JavaScript disabled (or a blocked CDN) must still get the
- * setup steps. Content lives in release-instructions.ts.
+ * ⚠ The index does NOT carry the instructions text [owner 2026-09-28 #868: "the
+ * instructions should come seperate from the release cut"]. The index is
+ * generated at release time, from whatever checkout cut the release — and the
+ * 0.0.24 publish, generated from a checkout pinned before that day's edits,
+ * silently rolled the live instructions back (EI-24562046738478155). So the
+ * text lives only on instructions.html (renderInstructionsHtml), published by
+ * bin/publish-release-instructions.sh, and this section loads it. Nothing a
+ * release does can change it, and changing it needs no release.
+ *
+ * Without JavaScript the section is a link to that page, so the steps are still
+ * one click away with scripts blocked.
  */
 function renderInstructions(): string {
   return `<section class="rel instructions">
   <div class="rel-head">
     <h2>${escapeHtml(INSTRUCTIONS_HEADING)}</h2>
   </div>
-  <div class="prose">${openLinksInNewTab(renderMarkdown(INSTRUCTIONS_MD))}</div>
+  <div class="prose" id="${INSTRUCTIONS_BODY_ID}"><p><a href="${INSTRUCTIONS_PAGE_PATH}">Read the setup instructions</a></p></div>
+  <script ${INSTRUCTIONS_LOADER_ATTR}>${INSTRUCTIONS_LOADER_JS}</script>
 </section>`;
+}
+
+/**
+ * instructions.html — the ONE place the instructions text is rendered.
+ *
+ * A complete page on its own (it is the no-JS fallback target), and the source
+ * the index's loader reads `#instructions-body` from. Rendered from markdown at
+ * generation time, like every other page here. No beacon: the index a tester
+ * opened already recorded the visit, and this page is fetched by that index.
+ *
+ * Content lives in release-instructions.ts; release-instructions-cli.ts renders
+ * this page and bin/publish-release-instructions.sh publishes it.
+ */
+export function renderInstructionsHtml(opts: Pick<PageOptions, 'generatedAt' | 'redact'>): string {
+  const body = `<p><a href="index.html">← Releases and downloads</a></p>
+<h1>Papercusp — ${escapeHtml(INSTRUCTIONS_HEADING)}</h1>
+<section class="rel instructions">
+  <div class="prose" id="${INSTRUCTIONS_BODY_ID}">${openLinksInNewTab(renderMarkdown(INSTRUCTIONS_MD))}</div>
+</section>
+<footer>Updated ${formatDate(opts.generatedAt)} · unlisted beta page</footer>`;
+  return shell(`Papercusp — ${INSTRUCTIONS_HEADING}`, body, '', opts.redact ?? identityLiterals());
 }
 
 /**

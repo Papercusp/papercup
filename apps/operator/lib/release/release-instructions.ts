@@ -28,15 +28,23 @@
  * depend on cwd, on packaging, and on which checkout generated it.
  *
  * ── Editing it ──────────────────────────────────────────────────────────────
- * It is GitHub-flavoured markdown, rendered to HTML at GENERATION time (never
- * in the browser — the page must read with JavaScript disabled). Raw HTML is
- * passed through. After editing, regenerate and re-publish:
+ * It is GitHub-flavoured markdown, rendered to HTML at GENERATION time. Raw HTML
+ * is passed through. After editing, publish it — ONE command, from the tree you
+ * edited, no release cut and no site regenerate:
  *
- *   npx tsx apps/operator/lib/release/record-release-cli.ts --regenerate
- *   papercusp-desktop/bin/publish-release-history.sh
+ *   papercusp-desktop/bin/publish-release-instructions.sh
  *
- * ⚠ Do NOT edit the generated HTML in the bundle directory — the next
- * `--regenerate` overwrites it and the edit vanishes silently.
+ * ── Why it is published separately [owner 2026-09-28, #868] ────────────────
+ * "the instructions should come seperate from the release cut". The release
+ * page used to embed this text, so every release re-rendered it from whichever
+ * checkout cut that release. The 0.0.24 publish ran from a checkout pinned
+ * before that day's edits and rolled the live instructions back
+ * (EI-24562046738478155). Now the text is rendered ONLY into instructions.html
+ * (renderInstructionsHtml), which the release index loads at view time.
+ * record-release-cli never writes that file and publish-release-history.sh
+ * never uploads it, so no release can change what testers read here.
+ *
+ * ⚠ Do NOT edit generated HTML by hand — the next publish overwrites it.
  *
  * ⚠ Every link here is rendered with `target="_blank"`, and the page ships
  * `<meta name="referrer" content="no-referrer">`, so clicking out never hands
