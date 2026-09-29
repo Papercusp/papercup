@@ -20,6 +20,7 @@ import {
   type PtyHandle,
 } from '../../pty-bridge';
 import { localPtyHostId, type PtyAccessScope } from '../../pty-ticket';
+import { callOwnerProcess, registerOwnerRpcHandler } from '../../cluster-owner-rpc';
 import {
   beginSyncEnrolment,
   completeSyncEnrolment,
@@ -104,7 +105,7 @@ function taskBelongsToCaller(task: TaskRow, taskId: string, caller: CallerScope)
   );
 }
 
-async function attachTask(taskId: string, ctx: PtyToolContext): Promise<
+async function attachTask(taskId: string, caller: CallerScope): Promise<
   | { ok: true; attachment: Attachment }
   | {
       ok: false;
@@ -113,9 +114,6 @@ async function attachTask(taskId: string, ctx: PtyToolContext): Promise<
       handleUnavailable?: boolean;
     }
 > {
-  const caller = callerScope(ctx);
-  if (!caller) return { ok: false, result: errorResult('concrete_scope_required') };
-
   let task: TaskRow | null;
   try {
     task = await getTask(taskId);
@@ -169,6 +167,232 @@ async function attachTask(taskId: string, ctx: PtyToolContext): Promise<
 
   return { ok: true, attachment: { task, handle, caller } };
 }
+
+// ── Follow-up operations, cluster-safe (WI-10003626) ──────────────────────────
+//
+// The PTY master fd lives in the ONE process that opened it. Under `node:cluster`
+// the kernel spreads an agent's follow-up calls across every worker, so the worker
+// that receives a write/resize/read/kill is usually NOT the owner. The owner pid
+// is recorded on the durable task row at open; a non-owner forwards the operation
+// through the primary (cluster-owner-rpc) and the owner executes it locally.
+
+type PtyOp =
+  | { op: 'write'; task_id: string; data: string }
+  | { op: 'resize'; task_id: string; cols: number; rows: number }
+  | { op: 'read'; task_id: string }
+  | { op: 'kill'; task_id: string };
+
+type PtyTextResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+type PtyScreenResult = {
+  content: Array<{ type: 'resource'; resource: { uri: string; mimeType: string; text: string } }>;
+  _meta: { pty: { task_id: string; encoding: 'utf-8'; cols: number; rows: number } };
+};
+type PtyToolResult = PtyTextResult | PtyScreenResult;
+
+export const CAPABILITY_PTY_RPC_KIND = 'capability-pty';
+
+function okResult(body: Record<string, unknown>): PtyToolResult {
+  return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...body }) }] };
+}
+
+async function runLocalPtyOp(op: PtyOp, attachment: Attachment): Promise<PtyToolResult> {
+  const { handle, caller } = attachment;
+  switch (op.op) {
+    case 'write':
+      if (!writePty(handle.id, Buffer.from(op.data, 'utf8'), caller.accessScope)) {
+        return errorResult('pty_session_unavailable', { task_id: op.task_id });
+      }
+      return okResult({ task_id: op.task_id, bytes_written: Buffer.byteLength(op.data, 'utf8') });
+    case 'resize':
+      if (!resizePty(handle.id, op.cols, op.rows, caller.accessScope)) {
+        return errorResult('pty_session_unavailable', { task_id: op.task_id });
+      }
+      return okResult({ task_id: op.task_id, cols: op.cols, rows: op.rows });
+    case 'read': {
+      const screen = await getScreenSerialization(handle.id, caller.accessScope);
+      if (screen === null) return errorResult('pty_session_unavailable', { task_id: op.task_id });
+      const cols = handle.headless.cols;
+      const rows = handle.headless.rows;
+      return {
+        // D-006: screen state remains a distinct, non-text medium without
+        // inventing a protocol variant. MCP already provides embedded resources;
+        // the URI + metadata carry identity/geometry while resource.text carries
+        // the bounded ANSI serialization accepted by every conforming client.
+        content: [
+          {
+            type: 'resource' as const,
+            resource: {
+              uri: `papercusp://pty/${encodeURIComponent(op.task_id)}/screen?cols=${cols}&rows=${rows}`,
+              mimeType: 'application/x-papercusp-pty-screen+ansi',
+              text: screen,
+            },
+          },
+        ],
+        _meta: { pty: { task_id: op.task_id, encoding: 'utf-8' as const, cols, rows } },
+      };
+    }
+    case 'kill':
+      if (!killPty(handle.id, caller.accessScope)) {
+        return errorResult('pty_session_unavailable', { task_id: op.task_id });
+      }
+      return okResult({ task_id: op.task_id, killed: true });
+  }
+}
+
+function ptyOwnerOf(task: TaskRow): { pid: number; hostId: string } | null {
+  const detail = (task.detail ?? {}) as Record<string, unknown>;
+  const pid = detail.ptyOwnerPid;
+  const hostId = detail.ptyOwnerHostId;
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null;
+  if (typeof hostId !== 'string' || hostId.length === 0) return null;
+  return { pid, hostId };
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the pid exists under another user — alive for our purposes.
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+/** Existing cgroup/verified-pid control path, rendered as a pty_kill result. */
+async function killViaTaskManager(taskId: string, extra: Record<string, unknown> = {}): Promise<PtyToolResult> {
+  const outcome = await killTask(taskId);
+  const payload = outcome.ok
+    ? { ok: true, task_id: taskId, killed: true, via: 'task-manager', ...extra, ...(outcome.detail ? { detail: outcome.detail } : {}) }
+    : { ok: false, task_id: taskId, reason: outcome.error, via: 'task-manager', ...extra, ...(outcome.detail ? { detail: outcome.detail } : {}) };
+  return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }], isError: !outcome.ok };
+}
+
+/**
+ * The process that held this PTY is gone, so its master fd — and with it the
+ * session — is gone too. Settle the durable row (it would otherwise read
+ * `running` forever, since the exit callback died with the owner) and say so.
+ */
+async function settleOwnerGone(op: PtyOp, cause: string, ownerPid: number): Promise<PtyToolResult> {
+  if (op.op === 'kill') return killViaTaskManager(op.task_id, { cause, owner_pid: ownerPid });
+  const outcome = await killTask(op.task_id);
+  return errorResult('pty_session_unavailable', {
+    task_id: op.task_id,
+    cause,
+    owner_pid: ownerPid,
+    reattachment: 'unrecoverable',
+    ledger_settled: outcome.ok,
+    ...(outcome.ok ? {} : { ledger_error: outcome.error }),
+    replacement_started: false,
+    advice:
+      'The worker process that held this PTY has exited, so the terminal no longer exists. Its task row has been settled. Open a new capability:pty_open session; nothing was started automatically.',
+  });
+}
+
+function isToolResult(value: unknown): value is PtyToolResult {
+  return !!value && typeof value === 'object' && Array.isArray((value as PtyToolResult).content);
+}
+
+async function recoverFromOwner(
+  op: PtyOp,
+  caller: CallerScope,
+  task: TaskRow,
+  unavailable: PtyToolResult,
+): Promise<PtyToolResult> {
+  const owner = ptyOwnerOf(task);
+  if (!owner || owner.pid === process.pid) {
+    // A row opened before ownership was recorded, or one THIS process owns but no
+    // longer holds a handle for: nobody else can serve it, so keep the
+    // pre-existing contract (kill settles through the task manager).
+    return op.op === 'kill' ? killViaTaskManager(op.task_id) : unavailable;
+  }
+  if (owner.hostId !== caller.accessScope.hostId) {
+    // A different operator service owns it (the ledger is shared). Never reap a
+    // session that may be alive elsewhere.
+    return errorResult('pty_session_unavailable', {
+      task_id: op.task_id,
+      cause: 'owned_by_other_host',
+      owner_host: owner.hostId,
+      reattachment: 'route_to_owner_host',
+      replacement_started: false,
+      advice: `This PTY is held by operator host ${owner.hostId}; follow-up calls must reach that host.`,
+    });
+  }
+  const outcome = await callOwnerProcess({
+    targetPid: owner.pid,
+    kind: CAPABILITY_PTY_RPC_KIND,
+    payload: { op, caller },
+  });
+  if (outcome.ok) {
+    return isToolResult(outcome.result)
+      ? outcome.result
+      : errorResult('pty_owner_protocol_error', { task_id: op.task_id, owner_pid: owner.pid });
+  }
+  if (outcome.code === 'owner_gone') return settleOwnerGone(op, 'owner_process_gone', owner.pid);
+  if (outcome.code === 'not_clustered' && !pidAlive(owner.pid)) {
+    // Single-process host that restarted since the PTY was opened.
+    return settleOwnerGone(op, 'owner_process_restarted', owner.pid);
+  }
+  return errorResult('pty_owner_unreachable', {
+    task_id: op.task_id,
+    owner_pid: owner.pid,
+    cause: outcome.code,
+    message: outcome.message,
+    reattachment: 'retry',
+    replacement_started: false,
+    advice:
+      'The process holding this PTY is alive but did not answer. The session was not changed; retry the same call.',
+  });
+}
+
+async function dispatchPtyOp(op: PtyOp, ctx: PtyToolContext): Promise<PtyToolResult> {
+  const caller = callerScope(ctx);
+  if (!caller) return errorResult('concrete_scope_required');
+  const attached = await attachTask(op.task_id, caller);
+  if (attached.ok) return runLocalPtyOp(op, attached.attachment);
+  if (!attached.handleUnavailable || !attached.task) return attached.result;
+  return recoverFromOwner(op, caller, attached.task, attached.result);
+}
+
+function parseForwardedPtyRequest(payload: unknown): { op: PtyOp; caller: CallerScope } | null {
+  const p = payload as { op?: Partial<PtyOp> & Record<string, unknown>; caller?: Partial<CallerScope> } | null;
+  const op = p?.op;
+  const caller = p?.caller;
+  if (!op || typeof op.task_id !== 'string' || !caller) return null;
+  if (typeof caller.ownerId !== 'string' || typeof caller.workspaceId !== 'string') return null;
+  if (typeof caller.harnessSlug !== 'string' || !caller.accessScope) return null;
+  switch (op.op) {
+    case 'write':
+      if (typeof op.data !== 'string') return null;
+      break;
+    case 'resize':
+      if (typeof op.cols !== 'number' || typeof op.rows !== 'number') return null;
+      break;
+    case 'read':
+    case 'kill':
+      break;
+    default:
+      return null;
+  }
+  return { op: op as PtyOp, caller: caller as CallerScope };
+}
+
+/**
+ * OWNER side of the forward: re-authorize against the durable row with the
+ * caller scope the receiving worker resolved, then execute locally. Never
+ * forwards again, so a request cannot bounce between workers.
+ */
+export async function serveForwardedPtyOp(payload: unknown): Promise<PtyToolResult> {
+  const request = parseForwardedPtyRequest(payload);
+  if (!request) return errorResult('pty_owner_protocol_error');
+  if (request.caller.accessScope.hostId !== localPtyHostId()) {
+    return errorResult('pty_owner_protocol_error', { task_id: request.op.task_id, cause: 'host_mismatch' });
+  }
+  const attached = await attachTask(request.op.task_id, request.caller);
+  if (!attached.ok) return attached.result;
+  return runLocalPtyOp(request.op, attached.attachment);
+}
+
+registerOwnerRpcHandler(CAPABILITY_PTY_RPC_KIND, serveForwardedPtyOp);
 
 const commonTool = {
   capability: 'capability:bash',
@@ -264,6 +488,11 @@ export const ptyOpenTool = defineTool({
           capabilityPty: true,
           ptyHandleId: handle.id,
           principalId: caller.ownerId,
+          // WI-10003626: the PTY master lives in THIS process only. Recording the
+          // owner lets a sibling cluster worker forward follow-up calls here, and
+          // lets anyone tell "owner gone" (unrecoverable) from "owner elsewhere".
+          ptyOwnerPid: process.pid,
+          ptyOwnerHostId: caller.accessScope.hostId,
           cols: args.cols ?? DEFAULT_COLS,
           rows: args.rows ?? DEFAULT_ROWS,
         },
@@ -333,24 +562,7 @@ export const ptyWriteStdinTool = defineTool({
     data: z.string().max(MAX_STDIN_CHARS).describe('UTF-8 data/keystrokes to write. Include `\n` to submit a line.'),
   }),
   async handler(args, ctx: PtyToolContext) {
-    const attached = await attachTask(args.task_id, ctx);
-    if (!attached.ok) return attached.result;
-    const { handle, caller } = attached.attachment;
-    if (!writePty(handle.id, Buffer.from(args.data, 'utf8'), caller.accessScope)) {
-      return errorResult('pty_session_unavailable', { task_id: args.task_id });
-    }
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            task_id: args.task_id,
-            bytes_written: Buffer.byteLength(args.data, 'utf8'),
-          }),
-        },
-      ],
-    };
+    return dispatchPtyOp({ op: 'write', task_id: args.task_id, data: args.data }, ctx);
   },
 });
 
@@ -371,25 +583,7 @@ export const ptyResizeTool = defineTool({
     rows: z.number().int().min(1).max(200).describe('New terminal height in rows.'),
   }),
   async handler(args, ctx: PtyToolContext) {
-    const attached = await attachTask(args.task_id, ctx);
-    if (!attached.ok) return attached.result;
-    const { handle, caller } = attached.attachment;
-    if (!resizePty(handle.id, args.cols, args.rows, caller.accessScope)) {
-      return errorResult('pty_session_unavailable', { task_id: args.task_id });
-    }
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            task_id: args.task_id,
-            cols: args.cols,
-            rows: args.rows,
-          }),
-        },
-      ],
-    };
+    return dispatchPtyOp({ op: 'resize', task_id: args.task_id, cols: args.cols, rows: args.rows }, ctx);
   },
 });
 
@@ -409,40 +603,7 @@ export const ptyReadScreenTool = defineTool({
     task_id: z.string().min(1).describe('Durable task id returned by capability:pty_open.'),
   }),
   async handler(args, ctx: PtyToolContext) {
-    const attached = await attachTask(args.task_id, ctx);
-    if (!attached.ok) return attached.result;
-    const { handle, caller } = attached.attachment;
-    const screen = await getScreenSerialization(handle.id, caller.accessScope);
-    if (screen === null) {
-      return errorResult('pty_session_unavailable', { task_id: args.task_id });
-    }
-
-    const cols = handle.headless.cols;
-    const rows = handle.headless.rows;
-    return {
-      // D-006: screen state remains a distinct, non-text medium without
-      // inventing a protocol variant. MCP already provides embedded resources;
-      // the URI + metadata carry identity/geometry while resource.text carries
-      // the bounded ANSI serialization accepted by every conforming client.
-      content: [
-        {
-          type: 'resource' as const,
-          resource: {
-            uri: `papercusp://pty/${encodeURIComponent(args.task_id)}/screen?cols=${cols}&rows=${rows}`,
-            mimeType: 'application/x-papercusp-pty-screen+ansi',
-            text: screen,
-          },
-        },
-      ],
-      _meta: {
-        pty: {
-          task_id: args.task_id,
-          encoding: 'utf-8',
-          cols,
-          rows,
-        },
-      },
-    };
+    return dispatchPtyOp({ op: 'read', task_id: args.task_id }, ctx);
   },
 });
 
@@ -460,47 +621,12 @@ export const ptyKillTool = defineTool({
     task_id: z.string().min(1).describe('Durable task id returned by capability:pty_open.'),
   }),
   async handler(args, ctx: PtyToolContext) {
-    const attached = await attachTask(args.task_id, ctx);
-    if (!attached.ok) {
-      // The PTY handle is process-local, but the task ledger is durable. A
-      // restart can therefore leave a live PTY row that this worker cannot
-      // resolve by handle. `killTask` is the existing cgroup/verified-pid
-      // control path; use it only after attachTask has authenticated and
-      // classified this exact caller-owned live row. Never fall back for
-      // foreign, malformed, or already-terminal rows.
-      if (!attached.handleUnavailable || !attached.task) return attached.result;
-      const outcome = await killTask(args.task_id);
-      const payload = outcome.ok
-        ? {
-            ok: true,
-            task_id: args.task_id,
-            killed: true,
-            via: 'task-manager',
-            ...(outcome.detail ? { detail: outcome.detail } : {}),
-          }
-        : {
-            ok: false,
-            task_id: args.task_id,
-            reason: outcome.error,
-            via: 'task-manager',
-            ...(outcome.detail ? { detail: outcome.detail } : {}),
-          };
-      return {
-        content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-        isError: !outcome.ok,
-      };
-    }
-    const { handle, caller } = attached.attachment;
-    if (!killPty(handle.id, caller.accessScope)) {
-      return errorResult('pty_session_unavailable', { task_id: args.task_id });
-    }
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ ok: true, task_id: args.task_id, killed: true }),
-        },
-      ],
-    };
+    // The PTY handle is process-local, but the task ledger is durable. When this
+    // process does not hold the handle, dispatchPtyOp forwards the kill to the
+    // owning worker, and falls back to `killTask` (the cgroup/verified-pid control
+    // path) only after attachTask has authenticated and classified this exact
+    // caller-owned live row AND its owner is gone or unrecorded. Never for
+    // foreign, malformed, or already-terminal rows.
+    return dispatchPtyOp({ op: 'kill', task_id: args.task_id }, ctx);
   },
 });

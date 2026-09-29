@@ -86,6 +86,11 @@ import {
   startWorkerStampReceiver,
   startPrimaryStampRelay,
 } from '@papercusp/operator-core/lib/agent-state-stamp-cluster';
+import {
+  startPrimaryOwnerRpcRelay,
+  startWorkerOwnerRpc,
+  type OwnerRpcClusterLike,
+} from '@papercusp/operator-core/lib/cluster-owner-rpc';
 import nodeCluster from 'node:cluster';
 import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
@@ -828,6 +833,11 @@ const clusterHandle = sidecarMode ? null : startCluster({
       if (clusterWorkers > 1) {
         startWorkerStampPublisher();
         startWorkerStampReceiver();
+        // WI-10003626: serve owner-rpc requests for process-local runtimes this
+        // worker holds (capability PTYs), and forward our own calls for runtimes
+        // a sibling holds. Without it a PTY opened on worker A is unreachable from
+        // the (N-1)/N of follow-up calls the kernel hands to other workers.
+        startWorkerOwnerRpc();
       }
     }).catch((e) => {
       console.error(
@@ -917,6 +927,11 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
         broadcast: clusterHandle.broadcast,
       })
     : undefined;
+  // WI-10003626: deliver owner-rpc requests to the worker that owns the runtime,
+  // and answer `owner_gone` authoritatively when that worker no longer exists.
+  const ownerRpcRelay = startPrimaryOwnerRpcRelay({
+    cluster: nodeCluster as unknown as OwnerRpcClusterLike,
+  });
   const shutdown = (sig: 'SIGTERM' | 'SIGINT'): void => {
     // P-005: the true-cluster PRIMARY is the process that runs the auto-implement
     // dispatch loop (it owns the background machinery). It serves no HTTP, so it
@@ -929,6 +944,7 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
     primaryManagedTimersBroadcaster?.stop();
     bootedHandlesPgPublisher.stop();
     stampRelay?.stop();
+    ownerRpcRelay.stop();
     clusterHandle.drain?.(sig);
     // WI-3849: the primary loads the same native modules as workers. Calling
     // process.exit() after worker drain still runs their hazardous env teardown;

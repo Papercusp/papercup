@@ -66,9 +66,20 @@ const mocks = vi.hoisted(() => {
   });
   const killPty = vi.fn(() => true);
   const killTask = vi.fn();
+  // WI-10003626: the owner-rpc seam. `ownerHandler` survives vi.clearAllMocks()
+  // because it is captured into plain state at module import, not read back from
+  // mock.calls (which beforeEach clears).
+  const ownerRpc: { handler: ((payload: unknown) => Promise<unknown>) | null } = { handler: null };
+  const callOwnerProcess = vi.fn();
+  const registerOwnerRpcHandler = vi.fn((kind: string, handler: (payload: unknown) => Promise<unknown>) => {
+    if (kind === 'capability-pty') ownerRpc.handler = handler;
+  });
 
   return {
     state,
+    ownerRpc,
+    callOwnerProcess,
+    registerOwnerRpcHandler,
     beginSyncEnrolment,
     completeSyncEnrolment,
     finishSyncEnrolment,
@@ -103,6 +114,10 @@ vi.mock('../../pty-bridge', () => ({
   killPty: mocks.killPty,
 }));
 vi.mock('../../pty-ticket', () => ({ localPtyHostId: () => 'host-test' }));
+vi.mock('../../cluster-owner-rpc', () => ({
+  callOwnerProcess: mocks.callOwnerProcess,
+  registerOwnerRpcHandler: mocks.registerOwnerRpcHandler,
+}));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: (ctx: { uiClientId?: string; workspaceId?: string }) => ({
     ownerId: ctx.uiClientId ?? 'su-test',
@@ -370,6 +385,180 @@ describe('interactive PTY capability family', () => {
     expect(mocks.killTask).toHaveBeenCalledWith('mptysession001');
     expect(mocks.killPty).not.toHaveBeenCalled();
     expect(mocks.spawnPty).toHaveBeenCalledTimes(1);
+  });
+
+  it('records the owning process and host on the durable row at open', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
+    expect(mocks.state.task?.detail).toMatchObject({
+      ptyOwnerPid: process.pid,
+      ptyOwnerHostId: 'host-test',
+    });
+  });
+
+  it('forwards a follow-up to the owning cluster worker and returns its result unchanged (WI-10003626)', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
+    // This worker does NOT hold the handle; a sibling worker (different pid) does.
+    mocks.state.handle = null;
+    const ownerPid = process.pid + 100_000;
+    mocks.state.task = { ...mocks.state.task, detail: { ...(mocks.state.task!.detail as object), ptyOwnerPid: ownerPid } };
+    const ownerResult = {
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, task_id: 'mptysession001', bytes_written: 8 }) }],
+    };
+    mocks.callOwnerProcess.mockResolvedValue({ ok: true, result: ownerResult });
+
+    const result = await ptyWriteStdinTool.handler({ task_id: 'mptysession001', data: 'echo ok\n' }, ctx('su-a'));
+
+    expect(result).toEqual(ownerResult);
+    expect(mocks.callOwnerProcess).toHaveBeenCalledWith({
+      targetPid: ownerPid,
+      kind: 'capability-pty',
+      payload: {
+        op: { op: 'write', task_id: 'mptysession001', data: 'echo ok\n' },
+        caller: {
+          ownerId: 'su-a',
+          workspaceId: 'ws-a',
+          harnessSlug: 'papercusp',
+          accessScope: {
+            tenantId: 'ws-a',
+            workspaceId: 'ws-a',
+            harnessSlug: 'papercusp',
+            hostId: 'host-test',
+            principalId: 'su-a',
+          },
+        },
+      },
+    });
+    expect(mocks.killTask).not.toHaveBeenCalled();
+    expect(mocks.writePty).not.toHaveBeenCalled();
+  });
+
+  it('owner side re-authorizes a forwarded request and executes it against its local handle', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
+    const handler = mocks.ownerRpc.handler;
+    expect(handler).toBeTypeOf('function');
+    const scope = (ownerId: string) => ({
+      ownerId,
+      workspaceId: 'ws-a',
+      harnessSlug: 'papercusp',
+      accessScope: { tenantId: 'ws-a', workspaceId: 'ws-a', harnessSlug: 'papercusp', hostId: 'host-test', principalId: ownerId },
+    });
+
+    const wrote = await handler!({ op: { op: 'write', task_id: 'mptysession001', data: 'ls\n' }, caller: scope('su-a') });
+    expect(parseText(wrote)).toEqual({ ok: true, task_id: 'mptysession001', bytes_written: 3 });
+    expect(mocks.state.writes).toEqual(['ls\n']);
+
+    const resized = await handler!({ op: { op: 'resize', task_id: 'mptysession001', cols: 90, rows: 20 }, caller: scope('su-a') });
+    expect(parseText(resized)).toEqual({ ok: true, task_id: 'mptysession001', cols: 90, rows: 20 });
+
+    const read = (await handler!({ op: { op: 'read', task_id: 'mptysession001' }, caller: scope('su-a') })) as any;
+    expect(read.content[0].resource.text).toBe('\u001b[2JREADY>');
+    expect(read._meta.pty).toEqual({ task_id: 'mptysession001', encoding: 'utf-8', cols: 90, rows: 20 });
+
+    // A forwarded request is authorized exactly like a direct call: a foreign
+    // principal still collapses to unknown_task_id and nothing is written.
+    const foreign = await handler!({ op: { op: 'write', task_id: 'mptysession001', data: 'x' }, caller: scope('su-b') });
+    expect(parseText(foreign)).toEqual({ ok: false, reason: 'unknown_task_id', task_id: 'mptysession001' });
+    expect(mocks.state.writes).toEqual(['ls\n']);
+
+    const malformed = await handler!({ op: { op: 'write', task_id: 'mptysession001' }, caller: scope('su-a') });
+    expect(parseText(malformed)).toMatchObject({ ok: false, reason: 'pty_owner_protocol_error' });
+    const otherHost = await handler!({
+      op: { op: 'read', task_id: 'mptysession001' },
+      caller: { ...scope('su-a'), accessScope: { ...scope('su-a').accessScope, hostId: 'elsewhere:3170' } },
+    });
+    expect(parseText(otherHost)).toMatchObject({ ok: false, reason: 'pty_owner_protocol_error', cause: 'host_mismatch' });
+  });
+
+  it('settles the durable row when the owning worker is gone, and says so', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
+    mocks.state.handle = null;
+    const ownerPid = process.pid + 100_000;
+    mocks.state.task = { ...mocks.state.task, detail: { ...(mocks.state.task!.detail as object), ptyOwnerPid: ownerPid } };
+    mocks.callOwnerProcess.mockResolvedValue({ ok: false, code: 'owner_gone', message: 'no live cluster worker' });
+
+    const read = await ptyReadScreenTool.handler({ task_id: 'mptysession001' }, ctx('su-a'));
+    expect(parseText(read)).toMatchObject({
+      ok: false,
+      reason: 'pty_session_unavailable',
+      cause: 'owner_process_gone',
+      owner_pid: ownerPid,
+      reattachment: 'unrecoverable',
+      ledger_settled: true,
+      replacement_started: false,
+    });
+    expect(mocks.killTask).toHaveBeenCalledWith('mptysession001');
+
+    mocks.killTask.mockClear();
+    const killed = await ptyKillTool.handler({ task_id: 'mptysession001' }, ctx('su-a'));
+    expect(parseText(killed)).toMatchObject({
+      ok: true,
+      killed: true,
+      via: 'task-manager',
+      cause: 'owner_process_gone',
+      owner_pid: ownerPid,
+    });
+    expect(mocks.killTask).toHaveBeenCalledWith('mptysession001');
+    expect(mocks.spawnPty).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a live-but-silent owner as retryable and leaves the session untouched', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
+    mocks.state.handle = null;
+    mocks.state.task = {
+      ...mocks.state.task,
+      detail: { ...(mocks.state.task!.detail as object), ptyOwnerPid: process.pid + 100_000 },
+    };
+    mocks.callOwnerProcess.mockResolvedValue({ ok: false, code: 'timeout', message: 'no response within 15000ms' });
+
+    const result = await ptyResizeTool.handler({ task_id: 'mptysession001', cols: 100, rows: 40 }, ctx('su-a'));
+    expect(parseText(result)).toMatchObject({
+      ok: false,
+      reason: 'pty_owner_unreachable',
+      cause: 'timeout',
+      reattachment: 'retry',
+      replacement_started: false,
+    });
+    expect(mocks.killTask).not.toHaveBeenCalled();
+  });
+
+  it('never forwards to or reaps a PTY owned by a different operator host', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
+    mocks.state.handle = null;
+    mocks.state.task = {
+      ...mocks.state.task,
+      detail: { ...(mocks.state.task!.detail as object), ptyOwnerPid: process.pid + 100_000, ptyOwnerHostId: 'box:3170' },
+    };
+
+    const killed = await ptyKillTool.handler({ task_id: 'mptysession001' }, ctx('su-a'));
+    expect(parseText(killed)).toMatchObject({
+      ok: false,
+      reason: 'pty_session_unavailable',
+      cause: 'owned_by_other_host',
+      owner_host: 'box:3170',
+    });
+    expect(mocks.callOwnerProcess).not.toHaveBeenCalled();
+    expect(mocks.killTask).not.toHaveBeenCalled();
+  });
+
+  it('on an unclustered host, settles a row whose owner pid died (restart) but not one whose owner still runs', async () => {
+    await ptyOpenTool.handler({ command: 'bash' }, ctx('su-a'));
+    mocks.state.handle = null;
+    mocks.callOwnerProcess.mockResolvedValue({ ok: false, code: 'not_clustered', message: 'no relay' });
+    const withOwner = (pid: number) => {
+      mocks.state.task = { ...mocks.state.task, detail: { ...(mocks.state.task!.detail as object), ptyOwnerPid: pid } };
+    };
+
+    // Beyond any Linux pid_max, so kill(pid, 0) is ESRCH: the previous incarnation is gone.
+    withOwner(2_000_000_000);
+    const gone = await ptyWriteStdinTool.handler({ task_id: 'mptysession001', data: 'x' }, ctx('su-a'));
+    expect(parseText(gone)).toMatchObject({ reason: 'pty_session_unavailable', cause: 'owner_process_restarted' });
+    expect(mocks.killTask).toHaveBeenCalledTimes(1);
+
+    // The parent of this test process is certainly alive: never reap on a guess.
+    withOwner(process.ppid);
+    const alive = await ptyWriteStdinTool.handler({ task_id: 'mptysession001', data: 'x' }, ctx('su-a'));
+    expect(parseText(alive)).toMatchObject({ reason: 'pty_owner_unreachable', cause: 'not_clustered' });
+    expect(mocks.killTask).toHaveBeenCalledTimes(1);
   });
 
   it('fails closed before spawn when cgroup confinement is unavailable', async () => {
