@@ -29,6 +29,12 @@ export interface DurableSuSessionRecord {
   pid: number | null;
   endedAt: string | Date | null;
   descriptor: SuSessionDescriptor | null;
+  /**
+   * The directory the session was launched in (`adv_sessions.cwd`) — for a PUI
+   * launch, the directory `pui` was started in. PUI scopes `/resume` and its
+   * startup reattach to the current directory with it (pui-chat-first-ux P-010).
+   */
+  cwd: string | null;
 }
 
 export type SuSessionBindingResult =
@@ -101,6 +107,7 @@ function mapRow(row: Record<string, unknown>): DurableSuSessionRecord {
     pid: typeof row.pid === 'number' ? row.pid : row.pid == null ? null : Number(row.pid),
     endedAt: (row.ended_at as string | Date | null | undefined) ?? null,
     descriptor,
+    cwd: typeof row.cwd === 'string' && row.cwd.trim() ? row.cwd : null,
   };
 }
 
@@ -108,7 +115,7 @@ const RECORD_COLUMNS = `
   id, workspace_id, agent, session_id, coord_owner_id,
   to_jsonb(a)->>'harness_slug' AS harness_slug,
   pid, ended_at, su_agent_chat_id, su_session_descriptor,
-  su_session_state, su_runtime_generation`;
+  su_session_state, su_runtime_generation, cwd`;
 
 /** Read one binding by its stable adv-session id or agent-chat id. */
 export async function readDurableSuSession(input: {

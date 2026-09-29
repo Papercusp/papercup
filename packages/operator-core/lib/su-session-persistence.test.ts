@@ -28,6 +28,7 @@ function record(over: Partial<DurableSuSessionRecord> = {}): DurableSuSessionRec
     pid: 9001,
     endedAt: null,
     descriptor: null,
+    cwd: null,
     ...over,
   };
 }

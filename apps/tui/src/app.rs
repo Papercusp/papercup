@@ -2030,6 +2030,10 @@ pub struct App {
     /// `pui workbench`. Unlike `pinned` this is not a dock pane: Context
     /// still follows the bound chat rather than the Sentinel roster.
     pub chat_first: bool,
+    /// The directory `pui` was started in (pui-chat-first-ux P-010). The
+    /// default chat's `/resume` lists only conversations started here, the
+    /// way Claude Code and Codex scope resume to the project directory.
+    pub launch_cwd: Option<String>,
     /// Ctrl-O details view over Agent Chat (pui-chat-first-ux P-003). `None`
     /// follows the surface default: hidden in chat-first, shown in the
     /// workbench. The details are the internal session ids, lifecycle,
@@ -2971,6 +2975,7 @@ impl App {
             su_session: None,
             su_connection_error: None,
             su_session_inventory: Vec::new(),
+            launch_cwd: crate::su_session::launch_cwd(),
             su_adopted_sessions: BTreeSet::new(),
             su_command_counter: 0,
             chat_has_more_earlier: false,
@@ -5752,7 +5757,25 @@ impl App {
     pub fn open_conversation_picker(&mut self) {
         use crate::session_config::{PickerAxis, PickerOption, SessionPicker};
         let mut options: Vec<PickerOption> = Vec::new();
-        options.extend(self.agent_chat_summaries.iter().map(|chat| {
+        let chat_first = self.chat_first;
+        let launch_cwd = self.launch_cwd.as_deref();
+        let inventory = &self.su_session_inventory;
+        let active_chat_id = self.agent_chat_id.as_deref();
+        let in_scope = |chat: &&crate::agent_chats::AgentChatSummary| {
+            // pui-chat-first-ux P-010: the default chat lists only the
+            // conversations started in this directory (plus the open one).
+            // The workbench keeps the whole pot inventory.
+            !chat_first
+                || active_chat_id == Some(chat.id.as_str())
+                || crate::su_session::session_in_directory(
+                    inventory
+                        .iter()
+                        .find(|entry| entry.agent_chat_id == chat.id)
+                        .and_then(|entry| entry.cwd.as_deref()),
+                    launch_cwd,
+                )
+        };
+        options.extend(self.agent_chat_summaries.iter().filter(in_scope).map(|chat| {
             let title = chat
                 .title
                 .as_deref()
@@ -5803,6 +5826,14 @@ impl App {
                 disabled: false,
             }
         }));
+        if self.chat_first && options.is_empty() {
+            options.push(PickerOption {
+                id: "chat:none".into(),
+                label: "No earlier conversations in this directory".into(),
+                hint: self.launch_cwd.clone(),
+                disabled: true,
+            });
+        }
         self.session_picker = Some(SessionPicker::new(PickerAxis::Conversation, options));
     }
 
@@ -15996,6 +16027,7 @@ mod tests {
             native_session_id: "rollout-42".into(),
             terminal: false,
             reconciliation,
+            cwd: None,
         }
     }
 
@@ -16020,11 +16052,14 @@ mod tests {
     fn chat_first_slash_resume_attaches_the_chosen_conversation_in_place() {
         let mut a = App::new();
         a.chat_first = true;
+        a.launch_cwd = Some("/work/app".into());
         a.agent_chat_summaries = vec![chat_summary_for("chat-earlier")];
-        a.su_session_inventory = vec![inventory_row_for(
+        let mut earlier = inventory_row_for(
             "chat-earlier",
             crate::su_session::SuSessionReconciliation::EndedArchived,
-        )];
+        );
+        earlier.cwd = Some("/work/app".into());
+        a.su_session_inventory = vec![earlier];
         let opened = a.run_slash_command("resume");
         assert_eq!(opened, Action::Render);
         assert!(a.session_switcher.is_none(), "the fleet switcher must not open");
@@ -16051,6 +16086,64 @@ mod tests {
             }
         ));
         assert_eq!(a.agent_chat_id.as_deref(), Some("chat-earlier"));
+    }
+
+    /// pui-chat-first-ux P-010: like `claude --resume`, the default chat's
+    /// /resume lists only the conversations started in this directory. One
+    /// started elsewhere, or whose directory is unknown, stays out; an empty
+    /// list says so instead of opening a blank overlay; the workbench keeps
+    /// the whole pot inventory.
+    #[test]
+    fn chat_first_slash_resume_lists_only_this_directorys_conversations() {
+        let row_in = |id: &str, cwd: Option<&str>| {
+            let mut row = inventory_row_for(
+                id,
+                crate::su_session::SuSessionReconciliation::EndedArchived,
+            );
+            row.cwd = cwd.map(str::to_owned);
+            row
+        };
+        let mut a = App::new();
+        a.chat_first = true;
+        a.launch_cwd = Some("/work/app".into());
+        a.agent_chat_summaries = vec![
+            chat_summary_for("here"),
+            chat_summary_for("other-project"),
+            chat_summary_for("unknown-dir"),
+        ];
+        a.su_session_inventory = vec![
+            row_in("here", Some("/work/app/")),
+            row_in("other-project", Some("/work/other")),
+            row_in("unknown-dir", None),
+        ];
+        a.run_slash_command("resume");
+        let ids: Vec<String> = a
+            .session_picker
+            .as_ref()
+            .expect("picker opens")
+            .options
+            .iter()
+            .map(|option| option.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["chat:here".to_string()]);
+
+        a.session_picker = None;
+        a.launch_cwd = Some("/work/empty".into());
+        a.run_slash_command("resume");
+        let picker = a.session_picker.as_ref().expect("picker opens");
+        assert_eq!(picker.options.len(), 1, "{:?}", picker.options);
+        assert!(picker.options[0].disabled);
+        assert_eq!(
+            picker.options[0].label,
+            "No earlier conversations in this directory"
+        );
+        assert_eq!(a.commit_session_picker(), Action::Render);
+        assert!(a.agent_chat_id.is_none(), "the empty row attaches nothing");
+
+        a.session_picker = None;
+        a.chat_first = false;
+        a.open_conversation_picker();
+        assert_eq!(a.session_picker.as_ref().unwrap().options.len(), 3);
     }
 
     /// The workbench keeps /resume on the fleet switcher (panes and windows).
@@ -17362,6 +17455,7 @@ mod tests {
             native_session_id: "rollout-1".into(),
             terminal: true,
             reconciliation: crate::su_session::SuSessionReconciliation::EndedArchived,
+            cwd: None,
         };
         app.update(Event::SuSessionInventory {
             harness: app.harness.clone(),
@@ -17411,6 +17505,7 @@ mod tests {
                     | crate::su_session::SuSessionLifecycleState::Failed
             ),
             reconciliation,
+            cwd: None,
         }
     }
 

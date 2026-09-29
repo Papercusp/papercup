@@ -8,6 +8,7 @@ import {
   getRegisteredSuSessionHost,
   rehydrateRegisteredSuSessionHost,
 } from '../../../su-session-host';
+import { readDurableSuSession } from '../../../su-session-persistence';
 
 async function hostFor(slug: string, chatId: string) {
   const input = {
@@ -33,7 +34,15 @@ const snapshotRoute = defineTool({
         { status: 404 },
       );
     }
-    return Response.json({ ok: true, ...host.snapshot() });
+    // pui-chat-first-ux P-010: PUI scopes /resume and its startup reattach to
+    // the directory it was started in, so the snapshot names the directory this
+    // session was launched in. `null` = not recorded (e.g. a psu launch without
+    // a caller directory), which PUI treats as "unknown", never "matches".
+    const record = await readDurableSuSession({
+      agentChatId: context.params.chatId,
+      workspaceId: activeWorkspaceId(),
+    });
+    return Response.json({ ok: true, ...host.snapshot(), launchCwd: record?.cwd ?? null });
   },
 });
 

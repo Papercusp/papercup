@@ -479,6 +479,11 @@ pub struct SuSessionSnapshot {
     /// [`SuSessionRuntimeReconciliation`].
     #[serde(default)]
     pub runtime_reconciliation: Option<SuSessionRuntimeReconciliation>,
+    /// The directory this session was launched in (`adv_sessions.cwd`).
+    /// `None` = not recorded or an older operator — unknown, never "matches".
+    /// pui-chat-first-ux P-010 scopes `/resume` and startup reattach with it.
+    #[serde(default)]
+    pub launch_cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -657,6 +662,23 @@ pub struct SuSessionInventoryEntry {
     pub native_session_id: String,
     pub terminal: bool,
     pub reconciliation: SuSessionReconciliation,
+    /// The directory the session was launched in; `None` = unknown.
+    pub cwd: Option<String>,
+}
+
+/// Whether a session launched in `session_cwd` belongs to a PUI started in
+/// `launch_cwd` (pui-chat-first-ux P-010). Like Claude Code and Codex, a
+/// conversation belongs to the directory it was started in. An unknown PUI
+/// directory matches everything (nothing to scope by); an unknown session
+/// directory matches nothing when the PUI directory is known.
+pub fn session_in_directory(session_cwd: Option<&str>, launch_cwd: Option<&str>) -> bool {
+    match (launch_cwd, session_cwd) {
+        (None, _) => true,
+        (Some(launch), Some(session)) => {
+            launch.trim_end_matches('/') == session.trim_end_matches('/')
+        }
+        (Some(_), None) => false,
+    }
 }
 
 impl SuSessionInventoryEntry {
@@ -692,6 +714,7 @@ impl SuSessionInventoryEntry {
             native_session_id: snapshot.descriptor.identity.native_session_id.clone(),
             terminal: snapshot.terminal,
             reconciliation,
+            cwd: snapshot.launch_cwd.clone(),
         }
     }
 }
@@ -1108,6 +1131,46 @@ mod tests {
             matches!(snapshot.descriptor.backend_extension, SuSessionBackendExtension::Codex { codex_home: Some(ref home) } if home == "/tmp/codex")
         );
         assert_eq!(snapshot.last_sequence, 4);
+        // An operator that predates launchCwd leaves the directory unknown.
+        assert_eq!(snapshot.launch_cwd, None);
+        assert_eq!(SuSessionInventoryEntry::from_snapshot(&snapshot).cwd, None);
+    }
+
+    /// pui-chat-first-ux P-010: the snapshot names the session's launch
+    /// directory and the inventory row carries it for /resume scoping.
+    #[test]
+    fn snapshot_launch_cwd_reaches_the_inventory_row() {
+        let snapshot: SuSessionSnapshot = serde_json::from_value(json!({
+            "ok": true,
+            "descriptor": {
+                "identity": {
+                    "agentChatId":"chat-1", "advSessionId":7, "backend":"claude",
+                    "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"
+                },
+                "lifecycle":"ended", "runtimeGeneration":1, "role":"su", "carry":"warm", "modes":[],
+                "capabilities": {"commands":{}, "features":{}},
+                "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
+            },
+            "floorSequence":1, "lastSequence":1, "terminal":true,
+            "launchCwd": "/work/app"
+        }))
+        .expect("decode snapshot");
+        assert_eq!(snapshot.launch_cwd.as_deref(), Some("/work/app"));
+        assert_eq!(
+            SuSessionInventoryEntry::from_snapshot(&snapshot).cwd.as_deref(),
+            Some("/work/app")
+        );
+    }
+
+    #[test]
+    fn session_in_directory_matches_only_the_same_directory() {
+        assert!(session_in_directory(Some("/work/app"), Some("/work/app")));
+        assert!(session_in_directory(Some("/work/app/"), Some("/work/app")));
+        assert!(!session_in_directory(Some("/work/app-2"), Some("/work/app")));
+        assert!(!session_in_directory(Some("/work"), Some("/work/app")));
+        assert!(!session_in_directory(None, Some("/work/app")));
+        assert!(session_in_directory(None, None));
+        assert!(session_in_directory(Some("/work/app"), None));
     }
 
     #[test]

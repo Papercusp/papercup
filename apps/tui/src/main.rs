@@ -5295,6 +5295,7 @@ fn surface_agent_chat_approval_hydration_failure(
 fn default_operator_chat<'a>(
     summaries: &'a [agent_chats::AgentChatSummary],
     inventory: &[crate::su_session::SuSessionInventoryEntry],
+    launch_cwd: Option<&str>,
 ) -> Option<&'a agent_chats::AgentChatSummary> {
     summaries
         .iter()
@@ -5306,6 +5307,15 @@ fn default_operator_chat<'a>(
                 .iter()
                 .find(|entry| entry.agent_chat_id == chat.id)
             {
+                // pui-chat-first-ux P-010: never reattach a session that was
+                // started in ANOTHER directory — `pui` in project A must not
+                // pick up project B's running session. A session whose
+                // directory is unknown stays eligible (older operators).
+                if let (Some(launch), Some(session_cwd)) = (launch_cwd, session.cwd.as_deref()) {
+                    if !crate::su_session::session_in_directory(Some(session_cwd), Some(launch)) {
+                        return false;
+                    }
+                }
                 return !session.terminal
                     && session.reconciliation
                         == crate::su_session::SuSessionReconciliation::Attached;
@@ -5359,7 +5369,8 @@ async fn agent_chat_load(
             }
         }
     } else {
-        default_operator_chat(&summaries, &inventory).cloned()
+        let launch_cwd = crate::su_session::launch_cwd();
+        default_operator_chat(&summaries, &inventory, launch_cwd.as_deref()).cloned()
     };
     let _ = tx.send(Event::SuSessionInventory {
         harness: harness.clone(),
@@ -7575,6 +7586,41 @@ mod tests {
         .unwrap()
     }
 
+    /// pui-chat-first-ux P-010: `pui` started in project A never reattaches a
+    /// session that is running in project B; a session whose directory is
+    /// unknown stays eligible.
+    #[test]
+    fn default_operator_chat_skips_sessions_started_in_another_directory() {
+        let chats = vec![
+            startup_chat("here", Some("su-session"), "2026-09-07T01:00:00Z"),
+            startup_chat("elsewhere", Some("su-session"), "2026-09-07T02:00:00Z"),
+        ];
+        let row = |id: &str, cwd: Option<&str>| SuSessionInventoryEntry {
+            agent_chat_id: id.into(),
+            adv_session_id: 1,
+            backend: SuSessionBackend::Codex,
+            lifecycle: SuSessionLifecycleState::Ready,
+            runtime_generation: 1,
+            native_session_id: format!("native-{id}"),
+            terminal: false,
+            reconciliation: SuSessionReconciliation::Attached,
+            cwd: cwd.map(str::to_owned),
+        };
+        let inventory = vec![row("here", Some("/work/a")), row("elsewhere", Some("/work/b"))];
+        let pick = |launch: Option<&str>| {
+            default_operator_chat(&chats, &inventory, launch).map(|chat| chat.id.clone())
+        };
+        assert_eq!(pick(Some("/work/a")).as_deref(), Some("here"));
+        assert_eq!(pick(Some("/work/b/")).as_deref(), Some("elsewhere"));
+        assert_eq!(pick(Some("/work/c")), None);
+        assert_eq!(pick(None).as_deref(), Some("elsewhere"));
+        let unknown = vec![row("here", Some("/work/a")), row("elsewhere", None)];
+        assert_eq!(
+            default_operator_chat(&chats, &unknown, Some("/work/c")).map(|chat| chat.id.as_str()),
+            Some("elsewhere")
+        );
+    }
+
     #[test]
     fn default_operator_chat_skips_newer_read_only_history() {
         let mut archived = startup_chat("archived", Some("su-session"), "2026-09-07T05:00:00Z");
@@ -7597,7 +7643,7 @@ mod tests {
             task,
             other_role,
         ];
-        assert_eq!(default_operator_chat(&chats, &[]).unwrap().id, "writable");
+        assert_eq!(default_operator_chat(&chats, &[], None).unwrap().id, "writable");
         // Historical selection is the regression control: recency alone lands
         // on a conversation that the actual dispatch policy cannot send to.
         let old_default = chats
@@ -7644,6 +7690,7 @@ mod tests {
             native_session_id: "native-live".into(),
             terminal: false,
             reconciliation: SuSessionReconciliation::Attached,
+            cwd: None,
         };
         let mut ended = live.clone();
         ended.agent_chat_id = "ended-su".into();
@@ -7651,7 +7698,7 @@ mod tests {
         ended.reconciliation = SuSessionReconciliation::EndedArchived;
         let mut inventory = vec![live, ended];
         assert_eq!(
-            default_operator_chat(&chats, &inventory).unwrap().id,
+            default_operator_chat(&chats, &inventory, None).unwrap().id,
             "bound-legacy"
         );
         for reconciliation in [
@@ -7659,7 +7706,7 @@ mod tests {
             SuSessionReconciliation::Pending,
         ] {
             inventory[0].reconciliation = reconciliation;
-            assert!(default_operator_chat(&chats, &inventory).is_none());
+            assert!(default_operator_chat(&chats, &inventory, None).is_none());
         }
     }
 
@@ -7832,7 +7879,7 @@ mod tests {
             Some("legacy-owned-loop"),
             "2026-08-27T00:00:00Z",
         )];
-        let selected = default_operator_chat(&summaries, &[]).map(|chat| chat.id.clone());
+        let selected = default_operator_chat(&summaries, &[], None).map(|chat| chat.id.clone());
         let mut app = App::new();
         app.update(Event::AgentChatLoaded {
             harness: app.harness.clone(),
