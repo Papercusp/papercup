@@ -244,6 +244,29 @@ export interface SpawnMembersResult {
   opened: number;
   failed: number;
   firstError: string | null;
+  /**
+   * EI-24635523980082322: one handle per OPENED member, so a honor that later
+   * refuses can stop what it started. Absent means the spawner could not say
+   * (a DI override); the refusal then states the members were NOT stopped.
+   */
+  members?: SpawnedMemberHandle[];
+}
+
+/** What a refusing honor needs to stop one opened member and read its boot log. */
+export interface SpawnedMemberHandle {
+  /** Task-ledger id of an enrolled (headless) launch; null for a visible window. */
+  taskId: string | null;
+  pid: number | null;
+  /** ANSI-free companion log when the spawner wrote one, else the raw log. */
+  logPath: string | null;
+}
+
+/** Outcome of {@link defaultStopSpawnedMembers} / a caller's DI override. */
+export interface StopSpawnedMembersResult {
+  stopped: number;
+  notStopped: number;
+  /** Human detail naming what was stopped and why anything was not. */
+  detail: string;
 }
 
 /** Result of {@link defaultVerifyLocalMemberBoot} / a caller's DI override. */
@@ -435,6 +458,12 @@ export interface DelegatedSpawnHonorDeps {
   availabilityForFleet?: typeof seatAvailabilityForFleet;
   setDisposition?: typeof setLocalOfferDispositionForOffer;
   spawnMembers?: (req: SpawnMembersRequest) => Promise<SpawnMembersResult>;
+  /** EI-24635523980082322: stop the members a refusing honor opened. Default
+   *  {@link defaultStopSpawnedMembers} kills through the task ledger. */
+  stopSpawnedMembers?: (members: SpawnedMemberHandle[]) => Promise<StopSpawnedMembersResult>;
+  /** EI-24635529006243850: bounded tail of a member's boot log, scanned for an
+   *  auth signature when first-turn verification found no transcript detail. */
+  readMemberLogTail?: (path: string) => Promise<string | null>;
   emitReceipt?: typeof emitP2pReceipt;
   /** Loaded responder identity sampled at each receipt emission (test seam). */
   getBuildInfo?: () => BuildInfo;
@@ -814,11 +843,73 @@ export async function defaultSpawnMembers(req: SpawnMembersRequest): Promise<Spa
   );
   let opened = 0;
   let firstError: string | null = null;
+  const members: SpawnedMemberHandle[] = [];
   for (const r of results) {
-    if (r.status === 'ok') opened += 1;
-    else if (firstError === null) firstError = r.error;
+    if (r.status === 'ok') {
+      opened += 1;
+      members.push({
+        taskId: r.taskId ?? null,
+        pid: r.pid,
+        logPath: r.normalizedLogPath ?? r.logPath ?? null,
+      });
+    } else if (firstError === null) firstError = r.error;
   }
-  return { opened, failed: req.count - opened, firstError };
+  return { opened, failed: req.count - opened, firstError, members };
+}
+
+/**
+ * EI-24635523980082322: stop every member a refusing honor opened. The requester
+ * is told `refused`, so a member left running would do work nobody accounted for
+ * (and a retry would double it). Kills go through the task ledger — the whole
+ * cgroup scope on Linux, the verified process group elsewhere — never by name.
+ * A visible-window member has no task row at this seam and is reported, not guessed at.
+ */
+export async function defaultStopSpawnedMembers(
+  members: SpawnedMemberHandle[],
+): Promise<StopSpawnedMembersResult> {
+  const { killTask } = await import('../task-manager/control');
+  let stopped = 0;
+  const problems: string[] = [];
+  for (const m of members) {
+    if (!m.taskId) {
+      problems.push(`pid ${m.pid ?? '?'} has no task-ledger row (visible window), so it was not stopped`);
+      continue;
+    }
+    const out = await killTask(m.taskId, { signal: 'SIGTERM', escalateAfterMs: 5_000 });
+    const alreadyExited =
+      !out.ok &&
+      (out.error === 'already_gone' ||
+        out.error === 'not_live' ||
+        (out.error === 'identity_mismatch' && (out.detail ?? '').includes('is gone')));
+    if (out.ok || alreadyExited) stopped += 1;
+    else problems.push(`task ${m.taskId}: ${out.error}${out.detail ? ` (${out.detail})` : ''}`);
+  }
+  const notStopped = members.length - stopped;
+  return {
+    stopped,
+    notStopped,
+    detail: `stopped ${stopped}/${members.length} opened member(s)${problems.length ? `; ${problems.join('; ')}` : ''}`,
+  };
+}
+
+/** Tail of a member's boot log, bounded so a runaway pty log is never read whole. */
+export async function defaultReadMemberLogTail(path: string): Promise<string | null> {
+  const { open } = await import('node:fs/promises');
+  const TAIL_BYTES = 16_384;
+  try {
+    const fh = await open(path, 'r');
+    try {
+      const { size } = await fh.stat();
+      const start = Math.max(0, size - TAIL_BYTES);
+      const buf = Buffer.alloc(size - start);
+      await fh.read(buf, 0, buf.length, start);
+      return buf.toString('utf8');
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -842,6 +933,8 @@ export async function honorSpawnRequestFromProjection(
   const availabilityForFleet = deps.availabilityForFleet ?? seatAvailabilityForFleet;
   const setDisposition = deps.setDisposition ?? setLocalOfferDispositionForOffer;
   const spawnMembers = deps.spawnMembers ?? defaultSpawnMembers;
+  const stopSpawnedMembers = deps.stopSpawnedMembers ?? defaultStopSpawnedMembers;
+  const readMemberLogTail = deps.readMemberLogTail ?? defaultReadMemberLogTail;
   const emitReceipt = deps.emitReceipt ?? emitP2pReceipt;
   const readBuildInfo = deps.getBuildInfo ?? getBuildInfo;
   const probeAgentRuntime = deps.probeAgentRuntime ?? defaultProbeAgentRuntime;
@@ -1161,15 +1254,45 @@ export async function honorSpawnRequestFromProjection(
     // printing an auth failure. In that case spawn.opened===1, so the earlier
     // zero-open classifier never runs. Classify the observed transcript turn;
     // only an explicit auth signature upgrades the generic fail-closed result.
-    const postSpawnFailure = bootVerify.failureDetail
+    // EI-24635529006243850: a CLI whose first API call 401s may never write a
+    // transcript, leaving failureDetail empty while the member's own boot log
+    // names the cause — fall back to that log before choosing the code.
+    let failureEvidence = bootVerify.failureDetail ?? null;
+    if (!failureEvidence) {
+      for (const m of spawn.members ?? []) {
+        const tail = m.logPath ? await readMemberLogTail(m.logPath) : null;
+        if (tail) {
+          failureEvidence = tail;
+          break;
+        }
+      }
+    }
+    const postSpawnFailure = failureEvidence
       ? classifyHonorSpawnFailure({
           count: payload.count,
-          firstError: bootVerify.failureDetail,
+          firstError: failureEvidence,
           resolved: acct,
         })
       : null;
     const attributedAuthFailure = postSpawnFailure?.code === 'account_unfulfillable' ? postSpawnFailure : null;
     const code = attributedAuthFailure?.code ?? 'member_boot_unconfirmed';
+    // EI-24635523980082322: the requester is about to be told `refused`, so the
+    // members this honor opened must not keep running. Stop them BEFORE the
+    // refusal federates, and say in the receipt whether that worked.
+    const stop: StopSpawnedMembersResult = spawn.members
+      ? await stopSpawnedMembers(spawn.members).catch((e: unknown) => ({
+          stopped: 0,
+          notStopped: spawn.members?.length ?? spawn.opened,
+          detail: `stopping opened member(s) failed: ${e instanceof Error ? e.message : String(e)}`,
+        }))
+      : {
+          stopped: 0,
+          notStopped: spawn.opened,
+          detail: `the spawner returned no member handles, so ${spawn.opened} opened member(s) were NOT stopped`,
+        };
+    if (stop.notStopped > 0) {
+      console.warn(`[delegated-spawn-honor] ${args.row.offer_id}: refusing ${code} — ${stop.detail}`);
+    }
     await setDisposition(
       args.workspaceId,
       args.potHomeSlug,
@@ -1187,10 +1310,11 @@ export async function honorSpawnRequestFromProjection(
       action: 'delegated-seat:spawn',
       refusal: {
         code,
-        detail: attributedAuthFailure
-          ? `${attributedAuthFailure.detail} First-turn verification also reported: ${bootVerify.detail}`
-          : `spawn opened ${spawn.opened}/${payload.count} member target(s), but no first agent turn was proven: ` +
-            bootVerify.detail,
+        detail:
+          (attributedAuthFailure
+            ? `${attributedAuthFailure.detail} First-turn verification also reported: ${bootVerify.detail}`
+            : `spawn opened ${spawn.opened}/${payload.count} member target(s), but no first agent turn was proven: ` +
+              bootVerify.detail) + ` Member cleanup: ${stop.detail}.`,
       },
       requester: { kind: 'session', ref: payload.requesterOwnerId, githubUserId: publisher },
       responderGithubUserId: actor.githubUserId,

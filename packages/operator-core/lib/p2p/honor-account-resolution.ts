@@ -285,9 +285,12 @@ export async function resolveHonorAccount(
  * are covered:
  *   mac → "Your organization has disabled Claude subscription access for Claude Code"
  *   win → "Failed to authenticate: OAuth session expired and could not be refreshed"
+ *   mac, Claude Code 2.x (EI-24635529006243850) → "Please run /login · API Error: 401
+ *     OAuth access token has been revoked." and "Login expired · Please run /login"
+ *     (the normalized log can drop the spaces: "Pleaserun/login")
  */
 const AUTH_FAILURE_RE =
-  /(OAuth session expired|could not be refreshed|disabled Claude subscription access|failed to authenticate|authentication[ _-]?error|invalid api key|not logged in|please run .{0,12}claude (login|setup-token)|credit balance is too low|--account \S+ could not be honored)/i;
+  /(OAuth session expired|could not be refreshed|disabled Claude subscription access|failed to authenticate|authentication[ _-]?error|invalid api key|not logged in|please run .{0,12}claude (login|setup-token)|please ?run ?\/login|login expired|OAuth access token has been|API Error: 401|credit balance is too low|--account \S+ could not be honored)/i;
 
 export interface HonorSpawnFailureClassification {
   code: 'account_unfulfillable' | 'spawn_failed';
