@@ -247,10 +247,42 @@ describe('P-003 — a real mid-session take-leadership delivers exactly what a l
       expectExactlyDelivered(guideHalf, new Set(keys));
     }
     expect(await acknowledgeControlTransition(MEMBER, WS, transition!.generation, fx.admin)).toBe(true);
+    leaderLeftAuto = true;
+  }, 120_000);
+
+  it('the leader re-entering AUTO: an exact next-generation transition attaches ONLY the AUTO-addressed part', async () => {
+    // The ATTACH half of the exact-transition diff. The take-leadership case may reach its
+    // delivery through a full resync, and the AUTO-exit case only detaches. This case pins a
+    // non-null stackBefore that newly GAINS an addressed token. It asserts the diff delivers
+    // exactly that part and re-sends nothing the session already holds.
+    expect(leaderLeftAuto, 'depends on the leave-AUTO case above').toBe(true);
+    const on = await setMode({ workspaceId: WS, ownerId: MEMBER, modeId: 'auto', enabled: true, reason: 'P-003 re-enter AUTO', setBy: MEMBER, sql: fx.admin });
+    expect(on.ok).toBe(true);
+    await buildAndPersistControlAnchor(MEMBER, WS, { sql: fx.admin });
+    const transition = await preparePendingControlTransition(MEMBER, WS, fx.admin);
+    expect(transition).not.toBeNull();
+    expect(transition!.kind, 'an acknowledged anchor one generation back must yield an exact transition').toBe('transition');
+    expect(transition!.stackBefore).toBeDefined();
+    expect(transition!.stackBefore).not.toContain('autonomy:su.mode-auto');
+    expect(transition!.state.stack).toContain('autonomy:su.mode-auto');
+    expect(transition!.state.stack).toContain(SU_POSTURE_REFS.leader);
+    const guide = guideTargetFromLaunchSpec(await readGateSelectedLaunchSpec(fx.admin, MEMBER, WS), { workspaceId: WS });
+    const layersOnly = await renderStackTransitionContextResult(transition, {});
+    const delivered = await renderStackTransitionContextResult(transition, { guide });
+    expect(delivered.text.startsWith(layersOnly.text)).toBe(true);
+    const guideHalf = delivered.text.slice(layersOnly.text.length);
+    const leaderAuto = await launchGuide('leader', [...(transition!.state.modes ?? [])]);
+    expect(leaderAuto.addressed?.partKeys ?? []).toContain('auto');
+    expectExactlyDelivered(guideHalf, new Set(['auto']));
+    expect(leaderAuto.text).toContain(bodyOf('auto'));
+    expect(guideHalf).not.toContain('## Addressed guidance — no longer applies');
+    expect(guideHalf).not.toContain('REPLACE any addressed guidance delivered to you earlier');
+    expect(await acknowledgeControlTransition(MEMBER, WS, transition!.generation, fx.admin)).toBe(true);
   }, 120_000);
 });
 
 let leaderModesAfterTakeover: string[] = [];
+let leaderLeftAuto = false;
 const bodyOf = (k: string) => PARTS.find(([key]) => key === k)![4];
 /** Every seeded body appears in the delivered guide half iff its key is expected — and nothing unaddressed or default leaks. */
 function expectExactlyDelivered(guideHalf: string, expected: ReadonlySet<string>) {
