@@ -1463,15 +1463,19 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // managed repo's, so its parts live under that harness.
   const composeProjectGuide = await (async () => {
     if (launchProfile === 'generic') return undefined;
-    const guideHarness =
-      launchProfile === 'engineer' ? (process.env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp') : harnessSlug;
-    if (!guideHarness) return undefined;
     try {
-      const { SU_STATIC_LAYERS, suSessionBinding } = await import('@papercusp/orchestrator/blueprint');
-      const { projectGuideComposerForWearer } = await import('./doc-projection/addressed-project-guide');
-      const binding = suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null }, modeCatalog);
+      const bp = await import('@papercusp/orchestrator/blueprint');
+      const { guideHarnessForLaunchProfile, projectGuideComposerForWearer, suGuideWearer } = await import(
+        './doc-projection/addressed-project-guide'
+      );
+      const guideHarness = guideHarnessForLaunchProfile(launchProfile, harnessSlug);
+      if (!guideHarness) return undefined;
+      const binding = bp.suSessionBinding({ fleetRole: input.fleetRole ?? null, modes: input.modes ?? null }, modeCatalog);
       return projectGuideComposerForWearer({
-        wearer: { role: 'su', layers: [...SU_STATIC_LAYERS, ...binding.layers] },
+        // portable-identity P-003: the SAME wearer the mid-session stack transition derives
+        // (stack-binding-channel) — requested + derived layers attached over the static su
+        // layers — so a part addressed to a selected identity reaches it at launch too.
+        wearer: suGuideWearer(bp, [...requestedStack.layers, ...binding.layers]),
         workspaceId: input.workspaceId,
         harnessSlug: guideHarness,
         client: input.agent,

@@ -32,7 +32,7 @@
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { projectGuideAtBudget } from '../prompt-assembly';
-import { guideAddressesForWearer, type GuideWearer } from './guide-address';
+import { guideAddressesForWearer, guideAddressMatches, type GuideWearer, type GuideWearerLayer } from './guide-address';
 
 /**
  * The projector's enforced budget (`PROJECTION_BUDGET_CHARS` in project-doc-parts.mjs),
@@ -93,15 +93,22 @@ export async function readAddressedGuideParts(input: ReadAddressedGuidePartsInpu
  * `target_section`, bodies joined by blank lines — under a lede that tells the reader
  * WHY these sections are here and are absent from the file on disk. Pure.
  */
-export function renderAddressedGuideSections(parts: readonly AddressedGuidePart[], tokens: readonly string[]): string {
+export function renderAddressedGuideSections(
+  parts: readonly AddressedGuidePart[],
+  tokens: readonly string[],
+  /** Override the lede block (heading + blockquote). The mid-session transition uses this;
+   *  launch keeps the default so its render stays byte-identical. */
+  lede?: string,
+): string {
   if (parts.length === 0) return '';
   const blocks: string[] = [];
   blocks.push(
-    '## Addressed guidance — for this session’s stack\n\n' +
-      `> The sections below are projected only to a launch whose stack matches ` +
-      `${tokens.map((t) => `\`${t}\``).join(', ')}. They are NOT in the repo's \`CLAUDE.md\` — ` +
-      'they live as addressed doc parts (`harness_doc_parts.stack_scope`); edit them with ' +
-      '`npm run set-doc-part -- --part-key <key> --stack-scope <tokens> …`.',
+    lede ??
+      '## Addressed guidance — for this session’s stack\n\n' +
+        `> The sections below are projected only to a launch whose stack matches ` +
+        `${tokens.map((t) => `\`${t}\``).join(', ')}. They are NOT in the repo's \`CLAUDE.md\` — ` +
+        'they live as addressed doc parts (`harness_doc_parts.stack_scope`); edit them with ' +
+        '`npm run set-doc-part -- --part-key <key> --stack-scope <tokens> …`.',
   );
   let section: string | null = null;
   for (const p of parts) {
@@ -197,5 +204,153 @@ export function projectGuideComposerForWearer(opts: {
       tokens,
       maxChars: opts.maxChars,
     });
+  };
+}
+
+// ─── One wearer path: launch and mid-session share these (portable-identity P-003) ───
+//
+// EI-24345639608517597: launch composed the addressed guide for its wearer, but a
+// mid-session stack change (take-leadership, fleet:join, a mode flip) delivered only the
+// changed LAYER text — a part addressed to `blueprint:su.fleet-leader` never reached an
+// agent that BECAME leader. The fix is not a second path: both sides derive the wearer
+// with `suGuideWearer`, resolve the guide's harness with `guideHarnessForLaunchProfile`,
+// and read through `readAddressedGuideParts`. The transition delivers exactly the
+// difference, so launch-as-member + member→leader transition carries the same addressed
+// parts as launch-as-leader.
+
+type SuBindingModule = Pick<typeof import('@papercusp/orchestrator/blueprint'), 'suEffectiveBinding' | 'normalizeStackBinding'>;
+
+/**
+ * The su wearer of a runtime binding: the static su layers with the runtime layers
+ * attached over them (exclusive slots replace — a selected domain displaces the default
+ * one, exactly as the rendered stack does). The ONE su wearer mapping for the guide.
+ */
+export function suGuideWearer(
+  bp: SuBindingModule,
+  runtimeLayers: readonly import('@papercusp/orchestrator/blueprint').BoundLayer[],
+): GuideWearer {
+  const layers: GuideWearerLayer[] = bp
+    .suEffectiveBinding(bp.normalizeStackBinding(runtimeLayers))
+    .layers.map((l) => ({ slot: l.slot, id: l.id }));
+  return { role: 'su', layers };
+}
+
+/**
+ * Which harness's doc parts a launch profile's guide was projected from: the ENGINEER
+ * profile splices papercusp's own CLAUDE.md (parts under PAPERCUSP_HARNESS_SLUG, default
+ * `papercusp`); POWER splices the managed repo's guide (its own harness); GENERIC has no
+ * guide. Unknown/absent profiles are engineer — the launch default.
+ */
+export function guideHarnessForLaunchProfile(
+  profile: string | null | undefined,
+  harnessSlug: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const p = (profile ?? '').trim().toLowerCase();
+  if (p === 'generic') return null;
+  if (p === 'power') return (harnessSlug ?? '').trim() || null;
+  return env.PAPERCUSP_HARNESS_SLUG ?? 'papercusp';
+}
+
+export interface AddressedGuideTarget {
+  workspaceId: string;
+  harnessSlug: string;
+  client: string;
+  docId?: string;
+  sql?: Sql;
+}
+
+/**
+ * The guide target of a live session, from its gate-selected launch record (the SAME
+ * record whose profile/harness/agent the launch composed with). `client` prefers the
+ * record's agent — what the launch passed — over the turn hook's report. Null when the
+ * profile carries no guide or no client is known.
+ */
+export function guideTargetFromLaunchSpec(
+  launchSpec: unknown,
+  fallback: { workspaceId: string; client?: string | null },
+): AddressedGuideTarget | null {
+  const spec = launchSpec && typeof launchSpec === 'object' ? (launchSpec as Record<string, unknown>) : {};
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  const harnessSlug = guideHarnessForLaunchProfile(str(spec.profile), str(spec.harnessSlug));
+  const client = str(spec.agent) ?? str(fallback.client);
+  if (!harnessSlug || !client) return null;
+  return { workspaceId: str(spec.workspaceId) ?? fallback.workspaceId, harnessSlug, client };
+}
+
+export interface AddressedGuideTransition {
+  /** Inject-now text: newly addressed sections, then a no-longer-applies notice. '' when nothing moved. */
+  text: string;
+  tokensBefore: string[];
+  tokensAfter: string[];
+  /** Parts the new stack reaches and the old one did not — delivered in full. */
+  attachedPartKeys: string[];
+  /** Parts the old stack reached and the new one does not — named, never re-sent. */
+  detachedPartKeys: string[];
+  truncated: boolean;
+}
+
+/**
+ * The addressed-guide half of a stack transition: read the parts addressed to either
+ * wearer in ONE query, deliver the ones only `after` reaches (rendered exactly as the
+ * launch renders them, under a mid-session lede) and name the ones only `before` reached.
+ * Held to the same budget seam as the launch guide. Throws on a read failure — the
+ * caller decides how to surface it (it must not be silent: a lost attach is the bug).
+ */
+export async function composeAddressedGuideTransition(
+  input: AddressedGuideTarget & { before: GuideWearer; after: GuideWearer; maxChars?: number },
+): Promise<AddressedGuideTransition> {
+  const tokensBefore = guideAddressesForWearer(input.before);
+  const tokensAfter = guideAddressesForWearer(input.after);
+  const none: AddressedGuideTransition = {
+    text: '', tokensBefore, tokensAfter, attachedPartKeys: [], detachedPartKeys: [], truncated: false,
+  };
+  if (tokensBefore.length === tokensAfter.length && tokensBefore.every((t, i) => t === tokensAfter[i])) return none;
+  const parts = await readAddressedGuideParts({
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    docId: input.docId,
+    client: input.client,
+    tokens: [...new Set([...tokensBefore, ...tokensAfter])],
+    sql: input.sql,
+  });
+  const attached = parts.filter((p) => guideAddressMatches(p.stack_scope, tokensAfter) && !guideAddressMatches(p.stack_scope, tokensBefore));
+  const detached = parts.filter((p) => guideAddressMatches(p.stack_scope, tokensBefore) && !guideAddressMatches(p.stack_scope, tokensAfter));
+  if (attached.length === 0 && detached.length === 0) return none;
+  const gained = tokensAfter.filter((t) => !tokensBefore.includes(t));
+  const blocks: string[] = [];
+  if (attached.length > 0) {
+    blocks.push(
+      renderAddressedGuideSections(
+        attached,
+        tokensAfter,
+        '## Addressed guidance — now applies to this session’s stack\n\n' +
+          `> Your stack changed mid-session (now matching ${gained.map((t) => `\`${t}\``).join(', ') || 'a new address'}), ` +
+          'so these Project-guide sections now apply to you — a launch with this stack carries them. ' +
+          'They are NOT in the repo\'s `CLAUDE.md`; they live as addressed doc parts (`harness_doc_parts.stack_scope`).',
+      ).replace(/\n+$/, ''),
+    );
+  }
+  if (detached.length > 0) {
+    blocks.push(
+      '## Addressed guidance — no longer applies\n\n' +
+        '> Your stack no longer matches these Project-guide sections delivered earlier; disregard them from here on:\n\n' +
+        detached
+          .map((p) => `- \`${p.part_key}\`${p.target_section && p.target_section !== GUIDE_PREAMBLE_SECTION ? ` (section “${p.target_section}”)` : ''} — addressed to ${p.stack_scope.map((t) => `\`${t}\``).join(', ')}`)
+          .join('\n'),
+    );
+  }
+  const budgeted = projectGuideAtBudget(
+    `${blocks.join('\n\n')}\n`,
+    `harness_doc_parts:${input.harnessSlug}/${input.docId ?? 'claude-md'}`,
+    input.maxChars ?? ADDRESSED_GUIDE_MAX_CHARS,
+  );
+  return {
+    text: budgeted.text,
+    tokensBefore,
+    tokensAfter,
+    attachedPartKeys: attached.map((p) => p.part_key),
+    detachedPartKeys: detached.map((p) => p.part_key),
+    truncated: budgeted.truncated,
   };
 }
