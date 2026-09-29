@@ -11,14 +11,20 @@ import {
   EXECUTED_MAP_WORKSPACE_ENV,
   executedMapEnabled,
   executedMapRecordingEnabled,
+  formatExecutedMapAlarmLines,
   formatExecutedMapLine,
+  formatExecutedMapResultLines,
+  formatExecutedMapTotalLine,
   gitChangedBetween,
   loadExecutedSourceMap,
   loadPassDurations,
   loadReuseProofs,
   resolveExecutedMapPgUrl,
+  resolveTaskReportExpectation,
   rowsToExecutedMap,
   rowsToReuseProofs,
+  scriptCommandWords,
+  summarizeExecutedMapResults,
 } from '../../../../scripts/lib/executed-source-map.mjs';
 
 /**
@@ -359,5 +365,147 @@ describe('reuse proofs loader', () => {
     expect(rel ? [...rel].sort() : rel).toEqual(['lib/b.ts', 'pkg/a.ts']);
     const abs = gitChangedBetween({ repoRoot: '/repo', exec })('x', 'y');
     expect(abs ? [...abs].sort() : abs).toEqual(['/repo/lib/b.ts', '/repo/pkg/a.ts']);
+  });
+});
+
+// WI-10003792: whether an armed task's recorder is EXPECTED to report, decided at arming from the
+// task's real script + config — so a silent enrolled task alarms and an astro check does not.
+describe('resolveTaskReportExpectation', () => {
+  const ENROLLED = "import { defineVitestConfig } from '@papercusp/test-config';\nexport default defineVitestConfig({});\n";
+  const SPREAD = "import { defineConfig } from 'vitest/config';\nimport { gateParticipationConfig } from '@papercusp/test-config';\nexport default defineConfig({ ...gateParticipationConfig() });\n";
+  const PLAIN = "import { defineConfig } from 'vitest/config';\n// defineVitestConfig( is only mentioned in a comment\nexport default defineConfig({});\n";
+  const WS = '/repo/packages/pkg';
+  const fsOf = (files: Record<string, string>) => (p: string) => {
+    if (p in files) return files[p]!;
+    throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
+  };
+  const resolveWith = (command: string, files: Record<string, string>) =>
+    resolveTaskReportExpectation({ command, wsDir: WS, readFile: fsOf(files) });
+
+  it('strips env assignments and the pc-heavy admission wrapper', () => {
+    expect(scriptCommandWords('PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs')).toEqual([
+      'node',
+      '../../scripts/run-vitest-pure-lane.mjs',
+    ]);
+    expect(scriptCommandWords('vitest run --passWithNoTests')).toEqual(['vitest', 'run', '--passWithNoTests']);
+    expect(scriptCommandWords(undefined)).toEqual([]);
+  });
+
+  it('expects a report from vitest under a gate-enrolled default config (defineVitestConfig or the spread fragment)', () => {
+    expect(resolveWith('vitest run --passWithNoTests', { [`${WS}/vitest.config.ts`]: ENROLLED })).toEqual({
+      expectsReport: true,
+      reason: 'enrolled-config',
+      config: 'vitest.config.ts',
+    });
+    // The first existing default wins; .mts when there is no .ts.
+    expect(resolveWith('vitest', { [`${WS}/vitest.config.mts`]: SPREAD })).toMatchObject({
+      expectsReport: true,
+      config: 'vitest.config.mts',
+    });
+  });
+
+  it('follows an explicit --config / --config= / -c to the config that actually runs', () => {
+    const files = { [`${WS}/vitest.config.ts`]: PLAIN, [`${WS}/vitest.lane.config.ts`]: ENROLLED };
+    for (const cmd of [
+      'vitest run --config vitest.lane.config.ts',
+      'vitest run --config=vitest.lane.config.ts',
+      'vitest run -c vitest.lane.config.ts',
+    ]) {
+      expect(resolveWith(cmd, files)).toEqual({ expectsReport: true, reason: 'enrolled-config', config: 'vitest.lane.config.ts' });
+    }
+    // …and the reverse: an enrolled default does not rescue an explicit plain config.
+    expect(
+      resolveWith('vitest run -c vitest.plain.config.ts', {
+        [`${WS}/vitest.config.ts`]: ENROLLED,
+        [`${WS}/vitest.plain.config.ts`]: PLAIN,
+      }),
+    ).toMatchObject({ expectsReport: false, reason: 'unenrolled-config', config: 'vitest.plain.config.ts' });
+  });
+
+  it('does NOT expect a report from a config outside the gate, a missing config, or a non-vitest program', () => {
+    expect(resolveWith('vitest run', { [`${WS}/vitest.config.ts`]: PLAIN })).toMatchObject({
+      expectsReport: false,
+      reason: 'unenrolled-config',
+    });
+    expect(resolveWith('vitest run', {})).toEqual({ expectsReport: false, reason: 'no-config', config: null });
+    expect(resolveWith('astro check', { [`${WS}/vitest.config.ts`]: ENROLLED })).toMatchObject({ reason: 'not-vitest' });
+    expect(resolveWith('node --test src/**/*.node-test.ts', { [`${WS}/vitest.config.ts`]: ENROLLED })).toMatchObject({
+      expectsReport: false,
+      reason: 'node-test-runner',
+    });
+    expect(resolveWith('vitest run && echo done', { [`${WS}/vitest.config.ts`]: ENROLLED })).toMatchObject({
+      expectsReport: false,
+      reason: 'compound-command',
+    });
+    expect(resolveWith('', {})).toMatchObject({ reason: 'no-command' });
+  });
+
+  it('treats a node wrapper as vitest only when its source delegates to vitest', () => {
+    const lane = 'PC_TEST_LANE=pure ../../scripts/pc-heavy.sh -- node ../../scripts/run-vitest-pure-lane.mjs';
+    const wrapperPath = '/repo/scripts/run-vitest-pure-lane.mjs';
+    expect(
+      resolveWith(lane, { [wrapperPath]: "spawn('vitest', ['run'])", [`${WS}/vitest.config.ts`]: ENROLLED }),
+    ).toMatchObject({ expectsReport: true, config: 'vitest.config.ts' });
+    expect(resolveWith(lane, { [wrapperPath]: "spawn('mocha')", [`${WS}/vitest.config.ts`]: ENROLLED })).toMatchObject({
+      expectsReport: false,
+      reason: 'not-vitest',
+    });
+    expect(resolveWith(lane, { [`${WS}/vitest.config.ts`]: ENROLLED })).toMatchObject({
+      expectsReport: false,
+      reason: 'wrapper-unreadable',
+    });
+  });
+
+  it('calibrates against the real tree: operator-core expects reports, the astro docs check does not', () => {
+    const pkg = (dir: string) => JSON.parse(readFileSync(join(REPO_ROOT, dir, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    const core = pkg('packages/operator-core');
+    for (const script of ['test', 'test:lane-pure', 'test:lane-stateful']) {
+      expect(
+        resolveTaskReportExpectation({ command: core.scripts[script], wsDir: join(REPO_ROOT, 'packages/operator-core') }),
+        script,
+      ).toMatchObject({ expectsReport: true, reason: 'enrolled-config' });
+    }
+    const docs = pkg('apps/operator-docs');
+    expect(
+      resolveTaskReportExpectation({ command: docs.scripts.test, wsDir: join(REPO_ROOT, 'apps/operator-docs') }),
+    ).toMatchObject({ expectsReport: false, reason: 'not-vitest' });
+  });
+});
+
+describe('noReport split and the unexpected-silence alarm', () => {
+  const noReport = (expectsReport?: boolean | null) => ({ status: 'no-report' as const, results: [], malformed: 0, expectsReport });
+
+  it('counts an enrolled silent task as unexpected, a never-could-report task as expected, and keeps noReport the total', () => {
+    const reported = {
+      status: 'reported' as const,
+      results: [{ outcome: 'written', rows: 4, retired: 0, skipped: 0, dirty: false, sha: 'abc', error: null }],
+      malformed: 0,
+      expectsReport: true,
+    };
+    const s = summarizeExecutedMapResults([noReport(true), noReport(false), noReport(null), noReport(), reported]);
+    expect(s).toMatchObject({ tasks: 5, written: 1, noReport: 4, noReportExpected: 1, noReportUnexpected: 1 });
+    expect(formatExecutedMapTotalLine(s)).toMatch(/ noReport=4 malformed=0 noReportExpected=1 noReportUnexpected=1$/);
+  });
+
+  it('ALARMS only on an expected-but-silent task, and says so on its result line', () => {
+    expect(formatExecutedMapAlarmLines('ws::test', noReport(true))).toEqual([
+      expect.stringMatching(/^EXECUTED_SOURCE_MAP_ALARM task=ws::test outcome=no-report-unexpected rows=0 error=\S/),
+    ]);
+    expect(formatExecutedMapAlarmLines('docs::test', noReport(false))).toEqual([]);
+    expect(formatExecutedMapAlarmLines('old::test', noReport())).toEqual([]);
+    expect(formatExecutedMapResultLines('ws::test', noReport(true))).toEqual([
+      'EXECUTED_SOURCE_MAP_RESULT task=ws::test outcome=no-report malformed=0 expected=true',
+    ]);
+    expect(formatExecutedMapResultLines('old::test', noReport())).toEqual([
+      'EXECUTED_SOURCE_MAP_RESULT task=old::test outcome=no-report malformed=0',
+    ]);
+  });
+
+  it('pins the runner wiring: expectation resolved at arming, stamped onto the read', () => {
+    const source = readFileSync(join(REPO_ROOT, 'scripts/affected-tests.mjs'), 'utf8');
+    expect(source).toMatch(/executedMapReportExpectations\.set\(\s*taskKey\(context\.t\),\s*resolveTaskReportExpectation\(\{/);
+    expect(source).toContain('expectsReport: executedMapReportExpectations.get(taskKey(t))?.expectsReport ?? null');
   });
 });
