@@ -9,8 +9,8 @@
     "docs/evidence/goal-brief-p007-trials-operational-probe-2026-09-29.mts"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-29T16:58:42.215Z",
-  "finishedAt": "2026-09-29T16:58:43.479Z",
+  "startedAt": "2026-09-29T16:59:04.139Z",
+  "finishedAt": "2026-09-29T16:59:05.257Z",
   "summary": "7/7 live assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clause AUTO-BAR-R-7-P-007.",
   "assertions": [
     {
@@ -51,7 +51,7 @@
   ],
   "plan": "goal-brief-to-claimed-plan-work-2026-09-23",
   "residualUnknowns": [
-    "Arm B plan goal attribution now reads finish-shipping-the-duplicate-screening-fix-adop-a88411, not the adopting goal stop-work-item-duplicate-screening-from-admittin-956e4d: the finish goal overwrote goal_id on adoption, so the original adopting goal is visible only through fleet membership and work-item claims, not on the plan row.",
+    "Arm B plan goal attribution now reads finish-shipping-the-duplicate-screening-fix-adop-a88411, not the adopting goal stop-work-item-duplicate-screening-from-admittin-956e4d. Whether the adopting goal ever stamped goal_id (and was later replaced) is not measured here; today the adopting goal is visible only through fleet membership and work-item claims, not on the plan row.",
     "Arm A WI-10003480 was first claimed at 2026-09-27T11:31:21.420388-04:00 by su-f89a4a6a-fe65-4d00-910b-186a47071be7, who held no membership in any Arm A drain fleet at that instant: independent of the holder, but not provably a goal-fleet claim.",
     "Arm A's ship hop (rev 30, 2026-09-29T12:21:50.011-04:00) was authored by the operator su-cf569f3f-d560-4ae5-8a7a-bb4bdaeb21c7, not by a goal fleet (disclosed as goal-brief-to-claimed-plan-work-2026-09-23#D-017). Arm A is therefore NOT an organic end-to-end terminal trace; the organic-chain claim rests on Arm B alone.",
     "Arm A's goal-local feedback row goal-plan:restore-reliable-hourly-papercusp-postgres-backu-9368ec:papercusp/papercusp-db-backup-invalid-db-2026-09-27 is still outcome=pending after its plan shipped (plan-rail outcome propagation lag, WI-10003894).",
