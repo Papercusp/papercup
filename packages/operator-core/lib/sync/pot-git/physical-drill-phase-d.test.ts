@@ -21,6 +21,7 @@ import {
   PHASE_D_TIER_HOLD_SCHEMA,
   PHASE_D_WORKSPACE,
   capturePhysicalPhaseDObservation,
+  phaseDObservationLag,
   createPhysicalPhaseDMutation,
   porcelainDirtyPaths,
   dirtyPhysicalPhaseDWorktree,
@@ -1000,5 +1001,64 @@ describe('P-505 Phase D event capture waits for the one signed event (WI-1000378
       ),
     ).rejects.toThrow(`none arrived within ${PHASE_D_EVENT_WAIT_MAX_MS / 1000}s`);
     expect(clock.nowMs() - started).toBe(PHASE_D_EVENT_WAIT_MAX_MS);
+  });
+});
+
+// WI-10003811 / P-505 run 30: the scenario read each host once, right after the
+// signed event, and caught both mid-flight. The observe CLI now waits on
+// phaseDObservationLag, and the validator judges with the same predicate.
+describe('P-505 Phase D observation convergence (WI-10003811)', () => {
+  const prior = oid('2');
+  const head = oid('a');
+  const at = (stage: PhysicalPhaseDObservation['stage'], hostId: 'tower' | 'vm') =>
+    observation({ hostId, stage, integratorDeviceKey: 'k', stagingSha: head, rowId: 10, epoch: 4, seq: 59, observedAt: '2026-09-29T01:24:53Z' });
+
+  it('reports the tower run-30 shape: its integrator published but its own bridge had not run', () => {
+    const tower = at('first-source', 'tower');
+    tower.canonicalStagingOid = prior;
+    tower.worktreeHeadOid = prior;
+    tower.cursor.stagingSha = prior;
+    expect(phaseDObservationLag(tower, 'first-source', head)).toEqual(['canonical', 'worktree', 'cursor']);
+  });
+
+  it('reports the VM run-30 shape: everything advanced except its mirror of the integrator namespace', () => {
+    const vm = at('first-destination', 'vm');
+    vm.integratorNamespaceStagingOid = prior;
+    expect(phaseDObservationLag(vm, 'first-destination', head)).toEqual(['integrator namespace']);
+  });
+
+  it('is empty once a host has converged, and requires the cursor epoch/seq', () => {
+    const vm = at('first-destination', 'vm');
+    expect(phaseDObservationLag(vm, 'first-destination', head)).toEqual([]);
+    vm.cursor.epochSeq = null;
+    expect(phaseDObservationLag(vm, 'first-destination', head)).toEqual(['cursor epoch/seq']);
+  });
+
+  it('does not wait for a dirty-after worktree, which must stay put', () => {
+    const after = at('dirty-after', 'vm');
+    after.worktreeHeadOid = prior;
+    expect(phaseDObservationLag(after, 'dirty-after', head)).toEqual([]);
+    after.integratorNamespaceStagingOid = prior;
+    expect(phaseDObservationLag(after, 'dirty-after', head)).toEqual(['integrator namespace']);
+  });
+
+  it('judges dirty-before on canonical and worktree only', () => {
+    const before = at('dirty-before', 'vm');
+    before.integratorNamespaceStagingOid = prior;
+    before.cursor.stagingSha = null;
+    before.cursor.epochSeq = null;
+    expect(phaseDObservationLag(before, 'dirty-before', head)).toEqual([]);
+    before.worktreeHeadOid = prior;
+    expect(phaseDObservationLag(before, 'dirty-before', head)).toEqual(['worktree']);
+  });
+
+  it('keeps the validator on the same predicate: the run-30 source shape is still rejected', async () => {
+    const input = clone(await fixture());
+    const first = input.firstAdvance.sourceEvent.payload.staging_sha;
+    expect(phaseDObservationLag(input.firstAdvance.sourceObservation, 'first-source', first)).toEqual([]);
+    input.firstAdvance.sourceObservation.canonicalStagingOid = oid('9');
+    expect(validatePhysicalPhaseD(input).errors).toContain(
+      'Phase D first source observation must converge canonical, cursor, and worktree to the signed staging head',
+    );
   });
 });
