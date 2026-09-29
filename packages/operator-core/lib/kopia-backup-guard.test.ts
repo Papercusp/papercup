@@ -377,6 +377,85 @@ describe('Kopia global backup guard', () => {
     expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
   });
 
+  // WI-10003884. The deferral above is right for a producer whose cadence is far shorter
+  // than its recovery-point deadline, and wrong for the hourly db-dump: a successful run
+  // leaves the next tick ~2300-2500s after that success, below the 3600s staleness floor,
+  // so ANY contention at that tick discarded the whole hour. Measured 2026-09-29: 'backup
+  // OK' only at even hours for 16h, each odd-hour tick logging deferred reason=lock-held.
+  // This is the A/B twin of the test above: identical holder and contender, one flag.
+  it('waits out a held lock instead of deferring when the producer asks for --priority-on-contention', () => {
+    const { dir, env } = fixture();
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode wait --label holder -- bash -c 'touch "$1"; sleep 0.4' _ "$READY" &
+        holder=$!
+        for _ in $(seq 1 100); do [ -e "$READY" ] && break; sleep 0.01; done
+        [ -e "$READY" ] || exit 91
+        out=$("$GUARD" --mode scheduled --label contender --priority-on-contention -- touch "$CONTENDER")
+        rc=$?
+        wait "$holder"
+        [ "$rc" -eq 0 ] &&
+          [ -e "$CONTENDER" ] &&
+          grep -q 'result=waiting reason=priority-on-contention' <<<"$out" &&
+          ! grep -q 'result=deferred reason=lock-held' <<<"$out"
+      `,
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...env, READY: join(dir, 'ready'), CONTENDER: join(dir, 'contender') },
+        timeout: 10_000,
+      },
+    );
+
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
+  });
+
+  // The wait must also REGISTER as a priority request, or a hot sweep that never pauses
+  // would hold the lock through the whole hour and the wait would be a deferral with
+  // extra steps. A scheduled-mode marker is honoured by the handoff (has_live_priority_waiter).
+  it('makes a restart-safe hot sweep yield to a --priority-on-contention producer', () => {
+    const { dir, env } = fixture();
+    const scenario = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+        set -uo pipefail
+        "$GUARD" --mode scheduled --label hot -- bash -c 'touch "$1"; while :; do sleep 0.05; done' _ "$HOT_READY" >"$HOT_LOG" 2>&1 &
+        hot=$!
+        for _ in $(seq 1 100); do [ -e "$HOT_READY" ] && break; sleep 0.01; done
+        [ -e "$HOT_READY" ] || exit 91
+        "$GUARD" --mode scheduled --label db-dump --no-restart-safe --priority-on-contention -- bash -c 'touch "$1"' _ "$DB_RAN" >"$DB_LOG" 2>&1
+        db_rc=$?
+        wait "$hot"
+        hot_rc=$?
+        [ "$db_rc" -eq 0 ] &&
+          [ -e "$DB_RAN" ] &&
+          grep -q 'result=waiting reason=priority-on-contention' "$DB_LOG" &&
+          [ "$hot_rc" -eq ${SCHEDULED_DEFER_EXIT} ] &&
+          grep -q 'result=stopping-during-run reason=priority-waiter' "$HOT_LOG"
+        `,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          ...env,
+          HOT_READY: join(dir, 'hot-ready'),
+          HOT_LOG: join(dir, 'hot.log'),
+          DB_RAN: join(dir, 'db-ran'),
+          DB_LOG: join(dir, 'db.log'),
+        },
+        timeout: 10_000,
+      },
+    );
+
+    expect(scenario.status, `${scenario.stdout}\n${scenario.stderr}`).toBe(0);
+  });
+
   it('hands the lock to a wait-mode producer instead of starving behind a hot sweep', () => {
     const { dir, env } = fixture();
     const scenario = spawnSync(
@@ -733,6 +812,18 @@ describe('Kopia managed entrypoint contract', () => {
     expect(dbService).toContain('--label db-dump --no-restart-safe');
     expect(hotService).not.toContain('--no-restart-safe');
     expect(homeService).not.toContain('--no-restart-safe');
+  });
+
+  // WI-10003884. Same activation-vs-capability rule as the test above: the priority-wait
+  // branch is inert unless the unit asks for it, so dropping the word from the unit
+  // silently restores the every-other-hour skip. Only the hourly dump needs it; a Kopia
+  // sweep that also waited on contention would stop yielding the lock to the dump.
+  it('makes lock contention a priority wait for the db dump only', () => {
+    expect(dbService).toContain('--label db-dump --no-restart-safe --priority-on-contention -- ');
+    expect(hotService).not.toContain('--priority-on-contention');
+    expect(homeService).not.toContain('--priority-on-contention');
+    expect(hotScript).not.toContain('--priority-on-contention');
+    expect(homeScript).not.toContain('--priority-on-contention');
   });
 
   it('reaps only host-owned database dumps, never the concurrent workspace dump', () => {

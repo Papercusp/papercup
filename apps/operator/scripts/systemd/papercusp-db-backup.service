@@ -59,9 +59,12 @@ OOMPolicy=kill
 # shared backup guard for the whole rewrite so the hourly dump and the
 # 30-minute snapshot timer cannot saturate I/O together or capture different
 # generations from the same run. The database dump is a scheduled producer and
-# defers on unsafe pressure/lock contention; its persisted staleness floor keeps
-# the recovery-point objective bounded. Daily/manual producers retain wait mode.
+# defers on unsafe pressure; its persisted staleness floor keeps the
+# recovery-point objective bounded. Lock contention is a priority WAIT, not a
+# deferral (--priority-on-contention, WI-10003884): with an hourly cadence and a
+# 3600s staleness floor, deferring on contention skipped every other hour.
+# Daily/manual producers retain wait mode.
 # Snapshot both the guard and its nested backup script before starting. Bash
 # reads long-running shell files lazily; an agent edit in the shared checkout
 # must not change the byte stream of an in-flight backup (EI-22458080342999427).
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/kopia-backup-guard.sh --mode scheduled --label db-dump --no-restart-safe -- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-script-snapshot.sh %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/kopia-backup-guard.sh --mode scheduled --label db-dump --no-restart-safe --priority-on-contention -- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh

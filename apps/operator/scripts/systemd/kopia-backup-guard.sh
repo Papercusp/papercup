@@ -11,7 +11,7 @@ set -uo pipefail
 # invocation and exit in one parsed list for the same reason.
 main() {
 usage() {
-  echo "usage: $0 --mode scheduled|wait [--label NAME] [--no-restart-safe] -- COMMAND [ARG ...]" >&2
+  echo "usage: $0 --mode scheduled|wait [--label NAME] [--no-restart-safe] [--priority-on-contention] -- COMMAND [ARG ...]" >&2
   exit 64
 }
 
@@ -32,6 +32,21 @@ label=kopia
 # papercusp-state (19G) and papercusp-transcript (83G), then was killed at
 # 00:21:19 before recording success; hourly cadence had collapsed to 4-17h gaps.
 restart_safe=1
+# --priority-on-contention makes lock contention a PRIORITY WAIT instead of a
+# deferral, for a scheduled producer whose cadence equals its recovery-point
+# deadline. Without it, a scheduled cycle that finds the lock held exits 75 unless
+# its last success is already max_defer seconds old. For the hourly db-dump that
+# is structurally wrong: a successful run leaves the next tick ~2300-2500s after
+# the previous success, below max_defer=3600, so ANY contention at that tick
+# discards the whole hour; the tick after is past max_defer, arms the override and
+# runs. Measured 2026-09-29 (WI-10003884): 'backup OK' only at even hours for 16h,
+# every odd-hour tick logging result=deferred reason=lock-held staleness_sec=2327..2527,
+# and the 1h dump-source freshness alarm firing between runs. The wait still
+# registers a priority request, so a restart-safe hot sweep yields the lock; a
+# --no-restart-safe or wait-mode holder is simply waited out, which is never later
+# than the next hourly tick would have been. Pressure admission still applies once
+# the lock is held. Default 0 keeps every other scheduled label byte-identical.
+priority_on_contention=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --mode)
@@ -46,6 +61,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-restart-safe)
       restart_safe=0
+      shift
+      ;;
+    --priority-on-contention)
+      priority_on_contention=1
       shift
       ;;
     --)
@@ -392,6 +411,11 @@ if [ "$mode" = scheduled ]; then
     if [ "$pressure_escalated" = 1 ]; then
       register_priority_request
       guard_log "result=waiting reason=staleness-override-lock $staleness_override_reason"
+      flock 9 || exit "$scheduled_defer_exit"
+      cleanup_priority_request
+    elif [ "$priority_on_contention" = 1 ]; then
+      register_priority_request
+      guard_log "result=waiting reason=priority-on-contention $staleness_override_reason"
       flock 9 || exit "$scheduled_defer_exit"
       cleanup_priority_request
     else
