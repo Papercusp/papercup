@@ -911,6 +911,25 @@ export interface ScorecardEvidenceRow {
   gradingAudit?: ScorecardGradingAudit;
   provisional?: ScorecardProvisional;
   retracted?: ScorecardRetraction;
+  /** Read-time: the live subject rubric vs the identity recorded at grading (subject.kind==='rubric' only). */
+  subjectRubricCurrentness?: ScorecardSubjectRubricCurrentness;
+  /** Read-time: the newer card whose observation.supersedes names this one. */
+  supersededBy?: string;
+  /**
+   * Always-present, explicit answer to "may a grading audit still target this
+   * card?" so an auditor never has to infer currentness from an ABSENT key.
+   */
+  auditTarget: ScorecardAuditTargetStatus;
+}
+
+export interface ScorecardAuditTargetStatus {
+  /** true only when not superseded, not retracted, and (for a rubric subject) the subject rubric is current. */
+  current: boolean;
+  superseded: boolean;
+  supersededBy: string | null;
+  retracted: boolean;
+  /** null when the subject is not a rubric (the check does not apply). */
+  subjectRubricCurrentness: ScorecardSubjectRubricCurrentness | null;
 }
 
 export type ScorecardEvidenceReadResult =
@@ -935,6 +954,8 @@ interface ScorecardEvidenceDb {
   grading_audit: unknown;
   provisional: unknown;
   retracted: unknown;
+  subject_rubric_identity: unknown;
+  superseded_by: string | null;
 }
 
 /**
@@ -965,7 +986,21 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
              scorecard.payload -> 'observation' -> 'synthesized' AS synthesized,
              scorecard.payload -> 'observation' -> 'gradingAudit' AS grading_audit,
              scorecard.payload -> 'observation' -> 'provisional' AS provisional,
-             scorecard.payload -> 'observation' -> 'retracted' AS retracted
+             scorecard.payload -> 'observation' -> 'retracted' AS retracted,
+             scorecard.payload -> 'observation' -> 'subjectRubricIdentity' AS subject_rubric_identity,
+             -- Same supersession predicate as listScorecards: supersession is a
+             -- READ-TIME relation (a later card names this one in "supersedes"),
+             -- never a stamp on this card's own observation (EI-24583166035391772).
+             (
+               SELECT superseder.issue_id
+                 FROM harness_shared.engineer_issues AS superseder
+                WHERE superseder.workspace_id = scorecard.workspace_id
+                  AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
+                  AND superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'
+                  AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
+                ORDER BY superseder.created_at DESC
+                LIMIT 1
+             ) AS superseded_by
         FROM harness_shared.engineer_issues AS scorecard
        WHERE scorecard.workspace_id = ${issuesScopeWorkspace()}
          AND scorecard.issue_id = ${issueId}
@@ -989,6 +1024,7 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
     gradingAudit: row.grading_audit,
     provisional: row.provisional,
     retracted: row.retracted,
+    subjectRubricIdentity: row.subject_rubric_identity,
   });
   if (!observation?.rubricRef || !observation.ratings) return { kind: 'not_scorecard' };
 
@@ -1016,6 +1052,35 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
     return rating ? [{ key, ...rating }] : [];
   });
 
+  // Read-time currentness, computed exactly as listScorecards does. These are
+  // RELATIONS (a later superseding card; the live subject rubric), never stamps
+  // on this card, so an evidence read that only projects the observation cannot
+  // answer them — the grading-audit brief requires all three (EI-24583166035391772).
+  let subjectRubricCurrentness: ScorecardSubjectRubricCurrentness | null = null;
+  if (observation.subject?.kind === 'rubric') {
+    const subjectRef = observation.subject.ref;
+    const liveSubjectRubric = subjectRef === observation.rubricRef
+      ? rubric
+      : await getRubric(subjectRef).catch(() => null);
+    subjectRubricCurrentness = classifySubjectRubricCurrentness(
+      subjectRef,
+      observation.subjectRubricIdentity,
+      liveSubjectRubric ?? null,
+    );
+  }
+  const supersededBy = row.superseded_by ?? null;
+  const retracted = Boolean(observation.retracted);
+  const auditTarget: ScorecardAuditTargetStatus = {
+    current:
+      supersededBy === null &&
+      !retracted &&
+      (subjectRubricCurrentness === null || subjectRubricCurrentness.state === 'current'),
+    superseded: supersededBy !== null,
+    supersededBy,
+    retracted,
+    subjectRubricCurrentness,
+  };
+
   return {
     kind: 'found',
     scorecard: {
@@ -1041,6 +1106,9 @@ export async function readScorecardEvidence(issueId: string): Promise<ScorecardE
       ...(observation.gradingAudit ? { gradingAudit: observation.gradingAudit } : {}),
       ...(observation.provisional ? { provisional: observation.provisional } : {}),
       ...(observation.retracted ? { retracted: observation.retracted } : {}),
+      ...(subjectRubricCurrentness ? { subjectRubricCurrentness } : {}),
+      ...(supersededBy ? { supersededBy } : {}),
+      auditTarget,
     },
   };
 }
