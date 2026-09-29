@@ -16,6 +16,7 @@ import {
   liveSettledProbe,
   reconcileCriticalWorkItemAlert,
   selectCriticalWorkItemAlerts,
+  settleEdgeReadersFor,
   workItemClaimableEventPayload,
   workItemEventPayload,
   workItemIdFromRef,
@@ -1439,5 +1440,45 @@ describe('fix/duplicate settle-notify (P-010)', () => {
     ).resolves.toBeUndefined();
     const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
     expect(keys).toContain('work-item:done:WI-FIX'); // done still fired despite fix-notify throwing
+  });
+});
+
+describe('settleEdgeReadersFor (WI-10003631 one prefetch per settle)', () => {
+  const me = { kind: 'issue', ref: 'WI-1' };
+  const blocks = [edgeRel('WI-1', 'WI-2', 'blocks')];
+  const fixes = [edgeRel('WI-1', 'WI-3', 'fixes')];
+  const dups = [edgeRel('WI-4', 'WI-1', 'duplicates')];
+  const setup = (read = vi.fn(async () => ({ blocksOut: blocks, fixesOut: fixes, duplicatesIn: dups }))) => {
+    const fallback = { listOut: vi.fn(async () => [edgeRel('X', 'Y', 'live')]), listIn: vi.fn(async () => [edgeRel('Y', 'X', 'live')]) };
+    return { read, fallback, readers: settleEdgeReadersFor(me, read as never, fallback as never) };
+  };
+
+  it('serves blocks-out, fixes-out and duplicates-in from ONE read', async () => {
+    const { read, fallback, readers } = setup();
+    expect(await readers.listOut(me, { rel: 'blocks' })).toBe(blocks);
+    expect(await readers.listOut(me, { rel: 'fixes' })).toBe(fixes);
+    expect(await readers.listIn(me, { rel: 'duplicates' })).toBe(dups);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(fallback.listOut).not.toHaveBeenCalled();
+    expect(fallback.listIn).not.toHaveBeenCalled();
+  });
+
+  it('passes other relations and other refs to the live reader without prefetching', async () => {
+    const { read, fallback, readers } = setup();
+    await readers.listOut(me, { rel: 'relates' });
+    await readers.listOut({ kind: 'issue', ref: 'WI-2' }, { rel: 'blocks' });
+    await readers.listIn(me, { rel: 'blocks' });
+    await readers.listIn({ kind: 'feature', ref: 'WI-1' }, { rel: 'duplicates' });
+    expect(read).not.toHaveBeenCalled();
+    expect(fallback.listOut).toHaveBeenCalledTimes(2);
+    expect(fallback.listIn).toHaveBeenCalledTimes(2);
+  });
+
+  it('falls back to the live per-relation read when the prefetch fails', async () => {
+    const { fallback, readers } = setup(vi.fn(async () => { throw new Error('pg down'); }));
+    expect(await readers.listOut(me, { rel: 'blocks' })).toEqual([edgeRel('X', 'Y', 'live')]);
+    expect(await readers.listIn(me, { rel: 'duplicates' })).toEqual([edgeRel('Y', 'X', 'live')]);
+    expect(fallback.listOut).toHaveBeenCalledWith(me, { rel: 'blocks' });
+    expect(fallback.listIn).toHaveBeenCalledWith(me, { rel: 'duplicates' });
   });
 });

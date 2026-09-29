@@ -9,6 +9,7 @@ import {
   ISSUE_TERMINAL_STATUSES,
   isReady,
   partitionReady,
+  readSettleEdges,
   toReadinessNodes,
   type BlockingNode,
   type BlockingEdgeReader,
@@ -118,6 +119,49 @@ const fakeEdgeStore = (rows: LinkRow[]): BlockingEdgeReader => ({
   listIn: vi.fn(async () => rows),
   listOutMany: vi.fn(async () => rows),
   listInMany: vi.fn(async () => rows),
+});
+
+describe('readSettleEdges (WI-10003631 settle-edge prefetch)', () => {
+  const issue = { kind: 'issue', ref: 'WI-1' };
+  const feature = { kind: 'feature', ref: 'demo#F-2' };
+  const planItem = { kind: 'plan_item', ref: 'demo-plan#P-001' };
+  const other = { kind: 'issue', ref: 'WI-9' };
+
+  it('returns exactly the three row sets the per-relation reader returns, in one coord statement', async () => {
+    // coord_links rows by relation, as the store would filter them for `ref`.
+    const out = [
+      linkRow(1, issue, 'blocks', feature, '2026-01-01T00:00:00.000Z'), // stale work-item block
+      linkRow(2, issue, 'blocks', planItem, '2026-01-02T00:00:00.000Z'), // non-work block survives
+      linkRow(3, issue, 'fixes', other, '2026-01-03T00:00:00.000Z'),
+    ];
+    const inn = [linkRow(5, other, 'duplicates', issue, '2026-01-05T00:00:00.000Z')];
+    const canonical = [linkRow(4, issue, 'blocks', feature, '2026-01-04T00:00:00.000Z')];
+    const byRel = (rows: LinkRow[], rel?: string) => rows.filter((r) => rel == null || r.rel === rel);
+    const coordStore: BlockingEdgeReader = {
+      listOut: vi.fn(async (_s, o) => byRel(out, o?.rel)),
+      listIn: vi.fn(async (_d, o) => byRel(inn, o?.rel)),
+      listOutMany: vi.fn(async () => []),
+      listInMany: vi.fn(async () => []),
+    };
+    const depStore: BlockingEdgeReader = {
+      listOut: vi.fn(async (_s, o) => byRel(canonical, o?.rel)),
+      listIn: vi.fn(async () => []),
+      listOutMany: vi.fn(async () => []),
+      listInMany: vi.fn(async () => []),
+    };
+    const listAround = vi.fn(async () => ({ out, in: inn }));
+
+    const got = await readSettleEdges(issue, { listAround }, depStore);
+    const reference = createBlockingEdgeReader(coordStore, depStore);
+
+    expect(listAround).toHaveBeenCalledTimes(1);
+    expect(listAround).toHaveBeenCalledWith(issue, { outRels: ['blocks', 'fixes'], inRels: ['duplicates'] });
+    expect(got.blocksOut).toEqual(await reference.listOut(issue, { rel: 'blocks' }));
+    expect(got.fixesOut).toEqual(await reference.listOut(issue, { rel: 'fixes' }));
+    expect(got.duplicatesIn).toEqual(await reference.listIn(issue, { rel: 'duplicates' }));
+    // The stale coord work-item block is replaced by the canonical one.
+    expect(got.blocksOut.map((r) => r.id)).toEqual([2, 4]);
+  });
 });
 
 describe('createBlockingEdgeReader canonical cutover (WI-41166)', () => {
