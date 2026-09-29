@@ -1926,9 +1926,62 @@ esac
     expect(physicalScenario).toContain('phase-e-diverge');
     expect(physicalScenario).toContain('phase-e-recover');
     expect(physicalScenario).toContain('phase-e-mode legacy');
-    expect(physicalScenario).toContain('trap _phase_e_cleanup RETURN');
+    expect(physicalScenario).toContain('trap phase_e_restore_on_exit EXIT');
     expect(physicalScenario).toContain('phase-e-verify');
     expect(physicalScenario).not.toMatch(/['"]git (?:fetch|push|update-ref)/);
+  });
+
+  it('starts Phase E from a recorded legacy baseline, waits for each stage mode, and always restores the canary mode (WI-10003791)', () => {
+    // P-505 run 28: the canary had been bridged since 2026-07-17, so the drill's
+    // legacy→bridged flip could not start, and its RETURN-trap cleanup would
+    // never have run under set -e.
+    const phaseE = physicalScenario.slice(
+      physicalScenario.indexOf('phase_e_github_bridge() {'),
+      physicalScenario.indexOf('phase_f_lifecycle_safety() {'),
+    );
+    const at = (needle: string, from = 0) => {
+      const i = phaseE.indexOf(needle, from);
+      expect(i, needle).toBeGreaterThan(-1);
+      return i;
+    };
+    expect(phaseE).not.toContain('trap _phase_e_cleanup RETURN');
+    expect(phaseE).not.toMatch(/trap [^\n]* RETURN/);
+    const readAt = at('phase-e-mode-read >"$phase_dir/original-mode.json"');
+    const restoreArmedAt = at('PHASE_E_RESTORE_MODE="$original_mode"');
+    const trapAt = at('trap phase_e_restore_on_exit EXIT');
+    const baselineAt = at('phase-e-mode-ensure legacy "$run_id"');
+    const startedAt = at('started_at="$(now_iso)"');
+    const flipAt = at('phase-e-mode bridged "$run_id"');
+    const rollbackAt = at('phase-e-mode legacy "$run_id"');
+    const finishedAt = at('finished_at="$(now_iso)"', rollbackAt);
+    const restoreAt = at('phase-e-mode-ensure "$PHASE_E_RESTORE_MODE" "$run_id"');
+    const verifyAt = at('"$TSX" "$PRODUCER" phase-e-verify');
+    const untrapAt = at('trap - EXIT');
+    expect(readAt).toBeLessThan(restoreArmedAt);
+    expect(restoreArmedAt).toBeLessThan(trapAt);
+    expect(trapAt).toBeLessThan(baselineAt);
+    expect(baselineAt).toBeLessThan(startedAt);
+    expect(startedAt).toBeLessThan(flipAt);
+    expect(flipAt).toBeLessThan(rollbackAt);
+    expect(finishedAt).toBeLessThan(restoreAt);
+    expect(restoreAt).toBeLessThan(verifyAt);
+    expect(verifyAt).toBeLessThan(untrapAt);
+
+    // Every mode-bearing VM observation waits for federation; the wait is bounded.
+    const vmObserves = phaseE.match(/phase-e-observe vm [a-z-]+ '\$vm_device' '\$run_id'[^"]*"/g) ?? [];
+    expect(vmObserves).toHaveLength(3);
+    for (const call of vmObserves) expect(call).toContain("'$PHASE_E_MODE_WAIT_SEC'");
+    const wait = Number(/^PHASE_E_MODE_WAIT_SEC=(\d+)$/m.exec(physicalScenario)?.[1]);
+    expect(wait).toBeGreaterThan(0);
+    expect(wait).toBeLessThanOrEqual(1200);
+
+    const exitHandler = physicalScenario.slice(
+      physicalScenario.indexOf('phase_e_restore_on_exit() {'),
+      physicalScenario.indexOf('\n}\n', physicalScenario.indexOf('phase_e_restore_on_exit() {')),
+    );
+    expect(exitHandler).toContain('phase-e-recover "$PHASE_E_DIVERGENCE_MUTATION"');
+    expect(exitHandler).toContain('phase-e-mode-ensure "$PHASE_E_RESTORE_MODE"');
+    expect(exitHandler).not.toMatch(/(?:^|[;&|]\s*)exit\b/m);
   });
 
   it('pins Phase F to two-host production GC and publish guards over private temporary repositories', () => {
