@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "papercusp-db-backup invalid-db operational probe (R-1, R-2 snapshot, R-3)",
+  "framework": "shell",
+  "command": [
+    "npx",
+    "tsx",
+    "docs/evidence/papercusp-db-backup-invalid-db-operational-probe-2026-09-29.mts"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-29T15:27:55.413Z",
+  "finishedAt": "2026-09-29T15:27:55.607Z",
+  "summary": "4/4 live assertions passed for plan papercusp-db-backup-invalid-db-2026-09-27.",
+  "assertions": [
+    {
+      "id": "auto-bar-r-1-p-001",
+      "passed": true,
+      "evidence": "2026-09-27 12:00 EDT scheduled run skipped 18 INVALID database(s) and finished (no failure line); unit now Result=success ExecMainStatus=0; STATUS.json ok=true failed=[] at 2026-09-29T10:22:10-04:00"
+    },
+    {
+      "id": "auto-bar-r-1-p-004",
+      "passed": true,
+      "evidence": "2026-09-27 12:00 EDT scheduled run skipped 18 INVALID database(s) and finished (no failure line); unit now Result=success ExecMainStatus=0; STATUS.json ok=true failed=[] at 2026-09-29T10:22:10-04:00"
+    },
+    {
+      "id": "auto-bar-r-3-p-002",
+      "passed": true,
+      "evidence": "live census: 0 INVALID in reaper scope (0 INVALID cluster-wide); first live reaper run 2026-09-27 dropped 18; reaper unit Result=success"
+    },
+    {
+      "id": "auto-bar-r-2-p-002",
+      "passed": true,
+      "evidence": "snapshot 77748 (pre_destructive, ok) finished 2026-09-27T16:41:54Z, before the first live DROP at 2026-09-27T12:44:40-04:00"
+    }
+  ],
+  "plan": "papercusp-db-backup-invalid-db-2026-09-27",
+  "observations": {
+    "r1": {
+      "firstRunInvalidSkipped": 18,
+      "firstRunFinished": true,
+      "firstRunFailed": false,
+      "currentUnit": {
+        "Result": "success",
+        "ExecMainExitTimestamp": "",
+        "ExecMainStatus": "0"
+      },
+      "statusJson": {
+        "ok": true,
+        "failed": [],
+        "invalidSkipped": [],
+        "lastRunIso": "2026-09-29T10:22:10-04:00"
+      }
+    },
+    "r3": {
+      "invalidAll": 0,
+      "invalidInScope": 0,
+      "reaperUnit": {
+        "Result": "success",
+        "ExecMainExitTimestamp": "Tue 2026-09-29 10:40:00 EDT",
+        "ExecMainStatus": "0"
+      },
+      "firstLiveRunDropped": 18
+    },
+    "r2Snapshot": {
+      "snapId": "77748",
+      "snapReason": "pre_destructive",
+      "snapStatus": "ok",
+      "snapFinished": "2026-09-27T16:41:54Z",
+      "firstDrop": "2026-09-27T12:44:40-04:00"
+    }
+  }
+}
