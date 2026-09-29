@@ -47,6 +47,12 @@ const SKIP_DIRS = new Set([
  * An entry that enrolls or disappears is reported as stale (findStaleExemptions).
  */
 export const PLAIN_CONFIG_EXEMPTIONS = new Set([
+  // Standalone public packages (WI-4973): each is its own GitHub repo that must install and test
+  // with only its own declared deps. @papercusp/test-config is private and unpublished, so a
+  // standalone clone cannot resolve it, and enrolling would break that clone. These stay
+  // gate-silent by design: the arming-time classifier (resolveTaskReportExpectation) counts them
+  // as noReportExpected (`unenrolled-config`), never noReportUnexpected. Decided on WI-10003808:
+  // pass-proof reuse over their ~29 small test files is not worth reversing WI-4973.
   'libs/generic/card-stack/vitest.config.ts',
   'libs/generic/ipc-endpoint-server/vitest.config.ts',
   'libs/generic/search/vitest.config.ts',

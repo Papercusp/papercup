@@ -17,6 +17,7 @@
     "@papercusp/publish-auth": "*"
   },
   "devDependencies": {
+    "@papercusp/test-config": "*",
     "vitest": "^4.1.4"
   }
 }
