@@ -211,6 +211,8 @@ export async function stampPlanGoalProvenance(args: {
   planSlug: string;
   ownerId: string | undefined;
   sql?: Sql;
+  /** Test seam for the worklist enrollment that follows a first stamp. */
+  enroll?: typeof enrollGoalAuthoredPlanOnWorklist;
 }): Promise<string | null> {
   const { workspaceId, harnessSlug, planSlug, ownerId } = args;
   if (!workspaceId || workspaceId === '*' || !harnessSlug || !planSlug || !ownerId) return null;
@@ -218,17 +220,103 @@ export async function stampPlanGoalProvenance(args: {
     const goalId = await resolveGoalContext(workspaceId, ownerId, args.sql);
     if (!goalId) return null;
     const sql = args.sql ?? getOrgPg().sql;
-    await sql`
+    const stamped = await sql<Array<{ plan_slug: string }>>`
       UPDATE harness_shared.harness_plans
          SET goal_id = ${goalId}
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${harnessSlug}
          AND plan_slug    = ${planSlug}
          AND goal_id IS NULL
+      RETURNING plan_slug
     `;
+    // Only the FIRST attribution enrolls the plan (WI-10003913). A plan that
+    // already belonged to a goal is not re-listed, and an owner who later
+    // removes it from the worklist keeps that removal.
+    if (Array.isArray(stamped) && stamped.length > 0) {
+      const enroll = args.enroll ?? enrollGoalAuthoredPlanOnWorklist;
+      const enrolled = await enroll({ workspaceId, goalId, harnessSlug, planSlug, actorId: ownerId, sql: args.sql })
+        .catch((error: unknown): GoalWorklistEnrollment => ({
+          outcome: 'refused', ref: goalWorklistRef(harnessSlug, planSlug),
+          code: error instanceof Error ? error.message : String(error),
+        }));
+      if (enrolled.outcome === 'refused') {
+        // Loud, not fatal: the plan exists and is stamped, but the goal's
+        // placement policy will not see it until the worklist lists it.
+        console.warn(`[goal-context] plan ${enrolled.ref} stamped to goal ${goalId} but NOT enrolled on its worklist: ${enrolled.code}`);
+      }
+    }
     return goalId;
   } catch (error) {
     if (isGoalHolderAuthorityError(error)) throw error;
     return null;
   }
+}
+
+/** The canonical worklist ref shape (`plan:<harness>/<slug>`) the portfolio reader resolves. */
+export function goalWorklistRef(harnessSlug: string, planSlug: string): string {
+  return `plan:${harnessSlug}/${planSlug}`;
+}
+
+export type GoalWorklistEnrollment =
+  | { outcome: 'enrolled'; ref: string; version: number }
+  | { outcome: 'already-listed'; ref: string }
+  | { outcome: 'refused'; ref: string; code: string };
+
+/**
+ * Put a plan the goal's OWN agent just authored onto that goal's canonical
+ * `worklist` property (WI-10003913).
+ *
+ * WHY: two rails named a goal's plans and they disagreed. `plans:new` stamps
+ * `harness_plans.goal_id` (above), but the placement policy, the goal brief
+ * and the turn-end placement receipts read ONLY `properties.worklist`. A goal
+ * whose holder never hand-edited the worklist therefore looked plan-less: its
+ * plan-placement obligation read `not-applicable` with no plan on every turn,
+ * even while its own fleet was claiming that plan's items (measured on both
+ * P-007 trial goals, 2026-09-27). Enrolling at creation makes the worklist
+ * carry what the stamp already knows, through the same CAS writer
+ * `goals:set-property` uses (agent-edit provenance; the canonical declaration
+ * is `editable_by: 'both'`).
+ *
+ * Runs in its own transaction: the goal row is locked, the current version is
+ * read under that lock, and the write is CAS-guarded against it.
+ */
+export async function enrollGoalAuthoredPlanOnWorklist(args: {
+  workspaceId: string;
+  goalId: string;
+  harnessSlug: string;
+  planSlug: string;
+  actorId: string;
+  sql?: Sql;
+  write?: typeof import('../typed-properties-db').applyGoalPropertyWrite;
+}): Promise<GoalWorklistEnrollment> {
+  const ref = goalWorklistRef(args.harnessSlug, args.planSlug);
+  const write = args.write ?? (await import('../typed-properties-db')).applyGoalPropertyWrite;
+  const { CANONICAL_WORKLIST_PROPERTY } = await import('../goals/package-property-datatypes');
+  const run = async (tx: Sql): Promise<GoalWorklistEnrollment> => {
+    const rows = await tx<Array<{ worklist: unknown }>>`
+      SELECT properties -> ${CANONICAL_WORKLIST_PROPERTY}::text AS worklist
+        FROM harness_shared.goals
+       WHERE id = ${args.goalId} AND workspace_id = ${args.workspaceId}
+       FOR UPDATE`;
+    if (!rows[0]) return { outcome: 'refused', ref, code: 'not_found' };
+    const current = (rows[0].worklist ?? null) as { value?: unknown; version?: unknown } | null;
+    const listed: unknown[] = Array.isArray(current?.value) ? [...current.value] : [];
+    if (listed.includes(ref) || listed.includes(`plan:${args.planSlug}`)) return { outcome: 'already-listed', ref };
+    const expectedVersion = typeof current?.version === 'number' ? current.version : 0;
+    const result = await write(tx, {
+      workspaceId: args.workspaceId,
+      goalId: args.goalId,
+      property: CANONICAL_WORKLIST_PROPERTY,
+      value: [...listed, ref],
+      expectedVersion,
+      provenance: 'agent-edit',
+      actorId: args.actorId,
+    });
+    if (!result.ok) return { outcome: 'refused', ref, code: result.code };
+    return { outcome: 'enrolled', ref, version: expectedVersion + 1 };
+  };
+  const sql = pg(args.sql);
+  const begin = (sql as unknown as { begin?: unknown }).begin;
+  if (typeof begin !== 'function') return run(sql);
+  return (await sql.begin((tx) => run(tx as unknown as Sql))) as GoalWorklistEnrollment;
 }

@@ -9,7 +9,7 @@
  * test, because stamping is precisely what a wrongly-inherited mode row also
  * achieves — so the mode-row assertion below is the load-bearing one.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import {
   assertGoalHolderMutationAuthority,
@@ -17,6 +17,8 @@ import {
   getInheritedGoalContext,
   setInheritedGoalContext,
   stampPlanGoalProvenance,
+  enrollGoalAuthoredPlanOnWorklist,
+  goalWorklistRef,
 } from './goal-context';
 import { readGoalHolderAuthority } from '../goals/holder';
 import { goalIdFromModes, isGoalSessionModes, GOAL_MODE } from './goal-session';
@@ -58,6 +60,7 @@ function mockSql(opts: { modes?: ModeRow[]; briefs?: Array<{ owner_id: string; w
 
     if (text.includes('UPDATE harness_shared.harness_plans')) {
       const [goalId, ws, harness, slug] = vals as string[];
+      const stamped: Array<{ plan_slug: string }> = [];
       for (const p of plans) {
         if (p.workspace_id !== ws || p.harness_slug !== harness || p.plan_slug !== slug) continue;
         // Faithful to the statement's OWN predicate: the `goal_id IS NULL`
@@ -65,9 +68,13 @@ function mockSql(opts: { modes?: ModeRow[]; briefs?: Array<{ owner_id: string; w
         // clause in production makes this mock overwrite — which is exactly
         // what fails the first-attribution test below (falsifiability: the
         // mock must not hardcode the invariant the SQL is supposed to state).
-        if (!text.includes('goal_id IS NULL') || p.goal_id == null) p.goal_id = goalId;
+        if (!text.includes('goal_id IS NULL') || p.goal_id == null) {
+          p.goal_id = goalId;
+          stamped.push({ plan_slug: p.plan_slug });
+        }
       }
-      return Promise.resolve([]);
+      // Rows come back only when the statement asks for them, as in postgres.js.
+      return Promise.resolve(text.includes('RETURNING plan_slug') ? stamped : []);
     }
     if (text.includes('WITH mine AS MATERIALIZED') && text.includes('elected_owner_id')) {
       const [ws, owner] = vals as string[];
@@ -335,6 +342,9 @@ describe('stampPlanGoalProvenance (migration 791 / goal-mode-design-intent-harde
     harnessSlug: 'hive-home',
     planSlug: 'the-plan',
     ownerId,
+    // Worklist enrollment has its own suite below; stub it here.
+    enroll: async (a: { harnessSlug: string; planSlug: string }) =>
+      ({ outcome: 'enrolled' as const, ref: goalWorklistRef(a.harnessSlug, a.planSlug), version: 1 }),
   });
 
   it('stamps a plan created by an agent RUNNING a goal', async () => {
@@ -416,5 +426,110 @@ describe('stampPlanGoalProvenance (migration 791 / goal-mode-design-intent-harde
       await stampPlanGoalProvenance({ ...stampArgs('agent-a'), ownerId: undefined as unknown as string, sql }),
     ).toBeNull();
     expect(plans[0]!.goal_id).toBeNull();
+  });
+});
+
+describe('goal-authored plans join the canonical worklist on first attribution (WI-10003913)', () => {
+  type EnrollArgs = Parameters<typeof enrollGoalAuthoredPlanOnWorklist>[0];
+  const stampArgs = { workspaceId: WS, harnessSlug: 'hive-home', planSlug: 'the-plan', ownerId: 'agent-a' };
+  const planRow = (goal: string | null = null): PlanRow => ({
+    workspace_id: WS, harness_slug: 'hive-home', plan_slug: 'the-plan', goal_id: goal,
+  });
+  const recordingEnroll = () => {
+    const calls: EnrollArgs[] = [];
+    const enroll = async (a: EnrollArgs) => {
+      calls.push(a);
+      return { outcome: 'enrolled' as const, ref: goalWorklistRef(a.harnessSlug, a.planSlug), version: 1 };
+    };
+    return { calls, enroll };
+  };
+
+  it('enrolls the plan exactly once, on the FIRST attribution', async () => {
+    const { calls, enroll } = recordingEnroll();
+    const { sql } = mockSql({ modes: [goalMode('agent-a', 'goal-42')], plans: [planRow()] });
+    expect(await stampPlanGoalProvenance({ ...stampArgs, sql, enroll })).toBe('goal-42');
+    expect(calls).toEqual([expect.objectContaining({
+      workspaceId: WS, goalId: 'goal-42', harnessSlug: 'hive-home', planSlug: 'the-plan', actorId: 'agent-a',
+    })]);
+    // Re-stamping finds goal_id already set, so nothing is re-listed (an owner's later removal sticks).
+    expect(await stampPlanGoalProvenance({ ...stampArgs, sql, enroll })).toBe('goal-42');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('never enrolls a plan another goal already owns', async () => {
+    const { calls, enroll } = recordingEnroll();
+    const { sql, plans } = mockSql({ modes: [goalMode('agent-a', 'goal-42')], plans: [planRow('goal-other')] });
+    await stampPlanGoalProvenance({ ...stampArgs, sql, enroll });
+    expect(calls).toHaveLength(0);
+    expect(plans[0]!.goal_id).toBe('goal-other');
+  });
+
+  it('a failed enrollment never fails the stamp, and says so loudly', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const enroll = async (): Promise<never> => { throw new Error('pg down'); };
+      const { sql, plans } = mockSql({ modes: [goalMode('agent-a', 'goal-42')], plans: [planRow()] });
+      expect(await stampPlanGoalProvenance({ ...stampArgs, sql, enroll })).toBe('goal-42');
+      expect(plans[0]!.goal_id).toBe('goal-42');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('NOT enrolled on its worklist: pg down'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('enrollGoalAuthoredPlanOnWorklist', () => {
+  type WriteArgs = Parameters<NonNullable<Parameters<typeof enrollGoalAuthoredPlanOnWorklist>[0]['write']>>[1];
+  const base = { workspaceId: WS, goalId: 'goal-42', harnessSlug: 'papercusp', planSlug: 'p', actorId: 'agent-a' };
+  /** A goals row read behind a postgres.js-shaped tag; `undefined` = no such goal. */
+  function goalSql(worklist: unknown) {
+    const seen: string[] = [];
+    const fn = (first: unknown): unknown => {
+      const text = (first as string[]).join('?').replace(/\s+/g, ' ');
+      seen.push(text);
+      if (text.includes('FROM harness_shared.goals')) return Promise.resolve(worklist === undefined ? [] : [{ worklist }]);
+      return Promise.resolve([]);
+    };
+    return { sql: fn as unknown as Sql, seen };
+  }
+  function recordingWrite(result: { ok: boolean; code?: string } = { ok: true }) {
+    const writes: WriteArgs[] = [];
+    const write = (async (_tx: unknown, a: WriteArgs) => { writes.push(a); return result; }) as never;
+    return { writes, write };
+  }
+
+  it('appends the ref under CAS at the version read under the row lock, keeping existing entries', async () => {
+    const { writes, write } = recordingWrite();
+    const { sql, seen } = goalSql({ value: ['plan:papercusp/older'], version: 3 });
+    expect(await enrollGoalAuthoredPlanOnWorklist({ ...base, sql, write }))
+      .toEqual({ outcome: 'enrolled', ref: 'plan:papercusp/p', version: 4 });
+    expect(writes).toEqual([expect.objectContaining({
+      goalId: 'goal-42', property: 'worklist', value: ['plan:papercusp/older', 'plan:papercusp/p'],
+      expectedVersion: 3, provenance: 'agent-edit', actorId: 'agent-a',
+    })]);
+    expect(seen.some((t) => t.includes('FOR UPDATE'))).toBe(true);
+  });
+
+  it('starts an unset worklist at version 0', async () => {
+    const { writes, write } = recordingWrite();
+    await enrollGoalAuthoredPlanOnWorklist({ ...base, sql: goalSql(null).sql, write });
+    expect(writes).toEqual([expect.objectContaining({ value: ['plan:papercusp/p'], expectedVersion: 0 })]);
+  });
+
+  it('is idempotent for an already-listed plan in either ref shape', async () => {
+    for (const listed of ['plan:papercusp/p', 'plan:p']) {
+      const { writes, write } = recordingWrite();
+      expect(await enrollGoalAuthoredPlanOnWorklist({ ...base, sql: goalSql({ value: [listed], version: 2 }).sql, write }))
+        .toEqual({ outcome: 'already-listed', ref: 'plan:papercusp/p' });
+      expect(writes).toHaveLength(0);
+    }
+  });
+
+  it('reports a missing goal and the writer refusal code instead of claiming success', async () => {
+    const { write } = recordingWrite({ ok: false, code: 'stale' });
+    expect(await enrollGoalAuthoredPlanOnWorklist({ ...base, sql: goalSql(undefined).sql, write }))
+      .toEqual({ outcome: 'refused', ref: 'plan:papercusp/p', code: 'not_found' });
+    expect(await enrollGoalAuthoredPlanOnWorklist({ ...base, sql: goalSql({ value: [], version: 1 }).sql, write }))
+      .toEqual({ outcome: 'refused', ref: 'plan:papercusp/p', code: 'stale' });
   });
 });
