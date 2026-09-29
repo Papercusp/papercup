@@ -7,9 +7,10 @@ import { getMemoryBackend, type MemoryBackend } from '../memory/backend';
 import { filterByDomains, filterByShapes, type AppliesTo, type KnowledgePack } from '../knowledge-packs/pack-format';
 import { packItemMemoryWrite, knowledgePackMemoryScope, type KnowledgePackMemoryTarget } from '../knowledge-packs/seed';
 import { packageMemoryDriver } from './package-memory-driver';
+import { packageRecipeDriver } from './package-recipe-resources';
 import { packageResourceKey, preparePackageResource, releasePackageResource,
   beginPackageInstallationRelease, finishPackageInstallationRelease,
-  recordPackageInstallationReleaseFailure,
+  recordPackageInstallationReleaseFailure, type PackageInstallationReleaseOptions,
   type PackageResourceAddress, type PackageResourceReceipt } from './package-resource-receipts';
 
 export interface KnowledgePackageResourceInput {
@@ -64,10 +65,12 @@ export async function prepareKnowledgePackageResources(sql: Sql, input: Knowledg
 }
 
 /** Replays from durable addresses, not today's pack contents or the current
- * filesystem release. Cleanup can therefore resume after upgrade/restart. */
-export async function releaseKnowledgePackageResources(
+ * filesystem release. Cleanup can therefore resume after upgrade/restart.
+ * Covers every journaled kind (memory and code-recipe); a member of any other
+ * kind stays held, and the installation records it as cleanup residue. */
+export async function releasePackageInstallation(
   sql: Sql, workspaceId: string, dependentId: string, backend?: MemoryBackend,
-  options: { onlyUnapplied?: boolean } = {},
+  options: PackageInstallationReleaseOptions = {},
 ): Promise<PackageResourceReceipt[]> {
   if (!await beginPackageInstallationRelease(sql, workspaceId, dependentId, options)) return [];
   try {
@@ -79,16 +82,21 @@ export async function releaseKnowledgePackageResources(
       FROM harness_shared.blueprint_package_resources r
       JOIN harness_shared.blueprint_package_dependents d USING (workspace_id, resource_key)
       WHERE d.workspace_id = ${workspaceId} AND d.dependent_id = ${dependentId}
-        AND r.resource_kind = 'memory' ORDER BY r.resource_key`;
+        AND r.resource_kind IN ('memory', 'code-recipe') ORDER BY r.resource_key`;
     const receipts: PackageResourceReceipt[] = [];
     for (const row of rows) {
-      // Backend initialization can throw too. Keep it after the release fence
-      // and inside the durable error boundary; empty installs need no backend.
-      backend ??= getMemoryBackend();
       const address: PackageResourceAddress = { workspaceId, memoryScope: row.memory_scope,
         packageKind: row.package_kind, packageRef: row.package_ref, packageVersion: row.package_version,
         packageHash: row.package_hash, resourceKind: row.resource_kind, itemKey: row.item_key,
         installedHash: row.installed_hash };
+      if (row.resource_kind === 'code-recipe') {
+        const receipt = await releasePackageResource(sql, address, dependentId, packageRecipeDriver(sql, address, null));
+        if (receipt) receipts.push(receipt);
+        continue;
+      }
+      // Backend initialization can throw too. Keep it after the release fence
+      // and inside the durable error boundary; empty installs need no backend.
+      backend ??= getMemoryBackend();
       const receipt = await releasePackageResource(sql, address, dependentId,
         packageMemoryDriver(backend, '', { scope: row.memory_scope }));
       if (receipt) receipts.push(receipt);

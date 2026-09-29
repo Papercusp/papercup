@@ -150,22 +150,36 @@ export async function carryAppliedPackageInstallation(tx: TransactionSql, input:
     ON CONFLICT (workspace_id, dependent_id, resource_key) DO NOTHING`;
 }
 
+export interface PackageInstallationReleaseOptions {
+  /** Compensating a failed preparation: never fence an installation that applied. */
+  onlyUnapplied?: boolean;
+  /** Resume a fence that already committed; never start a new release. A caller
+   * whose fencing transaction rolled back therefore cannot release anything. */
+  onlyReleasing?: boolean;
+}
+
 /** Commit the release fence BEFORE external cleanup. All members are ineligible
  * immediately, and a crash can replay the durable dependent addresses. */
 export async function beginPackageInstallationRelease(sql: Sql, workspaceId: string, dependentId: string,
-  options: { onlyUnapplied?: boolean } = {}): Promise<boolean> {
-  return sql.begin(async (tx) => {
-    await lock(tx, workspaceId, 'dependent:' + dependentId);
-    const row = await readPackageInstallation(tx, workspaceId, dependentId);
-    const [applied] = await tx`SELECT 1 FROM harness_shared.blueprint_package_dependents
-      WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId} AND phase = 'applied' LIMIT 1`;
-    if (options.onlyUnapplied && (row?.phase === 'applied' || applied)) return false;
-    await tx`UPDATE harness_shared.blueprint_package_installations SET phase = 'releasing', error = NULL, updated_at = now()
-      WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId} AND phase <> 'released'`;
-    await tx`UPDATE harness_shared.blueprint_package_dependents SET phase = 'released', updated_at = now()
-      WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId}`;
-    return true;
-  });
+  options: PackageInstallationReleaseOptions = {}): Promise<boolean> {
+  return sql.begin((tx) => beginPackageInstallationReleaseInTransaction(tx, workspaceId, dependentId, options));
+}
+
+/** The same fence inside a caller's transaction, e.g. the activation that
+ * supersedes this installation. It commits or rolls back with that caller. */
+export async function beginPackageInstallationReleaseInTransaction(tx: TransactionSql, workspaceId: string,
+  dependentId: string, options: PackageInstallationReleaseOptions = {}): Promise<boolean> {
+  await lock(tx, workspaceId, 'dependent:' + dependentId);
+  const row = await readPackageInstallation(tx, workspaceId, dependentId);
+  if (options.onlyReleasing && row?.phase !== 'releasing' && row?.phase !== 'cleanup_failed') return false;
+  const [applied] = await tx`SELECT 1 FROM harness_shared.blueprint_package_dependents
+    WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId} AND phase = 'applied' LIMIT 1`;
+  if (options.onlyUnapplied && (row?.phase === 'applied' || applied)) return false;
+  await tx`UPDATE harness_shared.blueprint_package_installations SET phase = 'releasing', error = NULL, updated_at = now()
+    WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId} AND phase <> 'released'`;
+  await tx`UPDATE harness_shared.blueprint_package_dependents SET phase = 'released', updated_at = now()
+    WHERE workspace_id = ${workspaceId} AND dependent_id = ${dependentId}`;
+  return true;
 }
 
 export async function finishPackageInstallationRelease(sql: Sql, workspaceId: string, dependentId: string): Promise<void> {

@@ -454,6 +454,13 @@ export function blueprintPackageProvisioners(sql: Sql, resourceInstall?: {
 }): BlueprintPackageProvisioners {
   return {
     async recipe(pin, scope) {
+      if (resourceInstall) {
+        // Journaled exact-row ownership: released with the wearer's installation.
+        const { prepareRecipePackageResource } = await import('./package-recipe-resources');
+        await prepareRecipePackageResource(sql, { pin, workspaceId: scope.workspaceId,
+          dependentId: resourceInstall.dependentId });
+        return;
+      }
       const { getRecipe, upsertRecipe } = await import('../code-recipes-store');
       const value = pin.value as { id: string; title: string; description: string; script: string; toolsUsed: string[]; tags: string[] };
       const current = await getRecipe(sql, value.id);

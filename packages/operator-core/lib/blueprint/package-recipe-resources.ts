@@ -69,15 +69,17 @@ export function planRecipePackageResource(pin: ResolvedPackageInput, workspaceId
 
 /** A code_recipes write is one PG transaction, so the journal's locked intent
  * is its cancellation fence. There is no deferred backend job after create()
- * returns; a crash leaves either no row or a row recoverable by created_by. */
+ * returns; a crash leaves either no row or a row recoverable by created_by.
+ * A null value is a release-only driver: cleanup replays from the durable
+ * address alone and can never create a row. */
 export function packageRecipeDriver(
   sql: postgres.Sql,
   address: PackageResourceAddress,
-  value: RecipePackageValue,
+  value: RecipePackageValue | null,
 ): PackageResourceDriver {
   const expected = address.installedHash;
   const read = async (writeKey: string): Promise<PackageExternalResource[]> => {
-    const row = await getRecipe(sql, value.id);
+    const row = await getRecipe(sql, address.itemKey);
     if (!row) return [];
     const fingerprint = recipePackageInstalledHash(row);
     const owner = `blueprint-package-resource:${writeKey}`;
@@ -88,6 +90,7 @@ export function packageRecipeDriver(
   return {
     recover: read,
     async create(writeKey) {
+      if (!value) throw new Error('recipe release driver cannot create package resources');
       const prior = await read(writeKey);
       if (prior.length) {
         if (prior[0]!.disposition) throw new Error('package-pin-conflict: registered recipe differs; explicit migration is required');
