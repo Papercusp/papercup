@@ -44,6 +44,7 @@
  * different space than production writes — WI-3616's whole failure mode.
  */
 import { sidecarEmbedBatch } from '@papercusp/memory';
+import { cosine, isDistinctiveProbe, rankKeys, summarizeRankings } from '@papercusp/search-core';
 import pg from 'pg';
 
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
@@ -137,7 +138,9 @@ async function embedChunked(
  *
  * RANK-based on purpose (plan D-010): cosine under gemma carries a large
  * positive offset, so absolute similarity is uninterpretable and only the
- * position of the true parent turn among distractors means anything.
+ * position of the true parent turn among distractors means anything. Ranking
+ * and its summary are @papercusp/search-core's (the chunking bench's), so both
+ * instruments score by the same rule, including ties going against the target.
  */
 function report(
   label: string,
@@ -145,48 +148,14 @@ function report(
   sim: (probeIdx: number, turnIdx: number) => number,
   note: string,
 ): void {
-  let rr = 0;
-  let r1 = 0;
-  let r5 = 0;
-  let rankSum = 0;
-  for (let i = 0; i < n; i++) {
-    const scored = Array.from({ length: n }, (_, j) => ({ j, s: sim(i, j) })).sort(
-      (a, b) => b.s - a.s,
-    );
-    const rank = scored.findIndex((x) => x.j === i) + 1;
-    rr += 1 / rank;
-    rankSum += rank;
-    if (rank === 1) r1++;
-    if (rank <= 5) r5++;
-  }
+  const keys = Array.from({ length: n }, (_, j) => String(j));
+  const ranked = keys.map((target, i) => rankKeys(keys, keys.map((_, j) => sim(i, j)), target));
+  const s = summarizeRankings(ranked, keys);
+  const pct = (x: number | null) => ((x ?? 0) * 100).toFixed(1);
   console.log(
-    `${label.padEnd(10)} ${(rr / n).toFixed(4)} ${((r1 / n) * 100).toFixed(1).padStart(7)}% ` +
-      `${((r5 / n) * 100).toFixed(1).padStart(8)}% ${(rankSum / n).toFixed(2).padStart(9)}  ${note}`,
+    `${label.padEnd(10)} ${(s.mrr ?? 0).toFixed(4)} ${pct(s.recallAt1).padStart(7)}% ` +
+      `${pct(s.recallAt5).padStart(8)}% ${(s.meanRank ?? 0).toFixed(2).padStart(9)}  ${note}`,
   );
-}
-
-function cosine(a: number[], b: number[]): number {
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
-  const d = Math.sqrt(na) * Math.sqrt(nb);
-  return d === 0 ? 0 : dot / d;
-}
-
-/**
- * A probe is only a fair test if it is DISTINCTIVE prose. A 240-char window of
- * pure punctuation/whitespace (a table rule, a base64 blob) would be
- * unretrievable at EVERY width and would depress all arms equally — noise, not
- * signal. Require some alphabetic density.
- */
-function probeIsUsable(p: string): boolean {
-  const letters = (p.match(/[A-Za-z]/g) ?? []).length;
-  return letters / p.length > 0.5 && p.trim().split(/\s+/).length >= 15;
 }
 
 async function main(): Promise<void> {
@@ -219,7 +188,7 @@ async function main(): Promise<void> {
   const turns: Turn[] = [];
   for (const r of rows) {
     if (turns.length >= SAMPLE) break;
-    if (probeIsUsable(r.text.slice(PROBE_START, PROBE_START + PROBE_LEN))) turns.push(r);
+    if (isDistinctiveProbe(r.text.slice(PROBE_START, PROBE_START + PROBE_LEN))) turns.push(r);
   }
   if (turns.length < 10) throw new Error(`only ${turns.length} usable turns — sample too small`);
 
