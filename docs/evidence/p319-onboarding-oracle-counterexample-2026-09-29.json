@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-319 SIGNUP-ONBOARDING oracle counterexample: the live onboarding check goes red on a non-admitted session from the same live run",
+  "framework": "shell",
+  "command": [
+    ".papercusp/scratch/p319-live/onboarding-oracle.sh",
+    ".papercusp/scratch/p319-live/live2-1-signin.url.txt",
+    ".papercusp/scratch/p319-live/live2-1-signin.aria.txt"
+  ],
+  "exitCode": 1,
+  "startedAt": "2026-09-29T16:47:21Z",
+  "finishedAt": "2026-09-29T16:47:21Z",
+  "summary": "Counterexample for SIGNUP-ONBOARDING-P319. The onboarding oracle (portal root with no hosted_auth_error, 'Set up your portal' heading, 'Create workspace' action) was applied to the live capture of an identity that had NOT been admitted (step 1 of live run live2: ordinary sign-in without membership). It failed on all three conditions (exit 1). The same oracle passes on the step-2 capture after explicit sign-up (exit 0), so the check distinguishes an onboarded customer from one who never reached onboarding.",
+  "plan": "byoc-cloud-workspaces-gcp-aws-azure-2026-08-22",
+  "workItem": "WI-10002240",
+  "counterexampleFor": "SIGNUP-ONBOARDING-P319",
+  "companionEvidence": "docs/evidence/p319-live-self-signup-2026-09-29.json (test run 20095693)",
+  "environment": {
+    "origin": "https://app.papercusp.com",
+    "portalRelease": "diTup4-btEtYvhWiPs54V-20260929162903685-716104-27c36a32",
+    "liveRun": "live2, 2026-09-29T16:32:03Z-16:32:54Z, identity user_01M3Q03A6W4CPPBW3NWF73TXNE",
+    "oracleSha256": "8ef50be5acf76a8d549abdc8821fb294f5694337754849f6fb844d1d722ae1ad"
+  },
+  "assertions": [
+    {
+      "id": "SIGNUP-ONBOARDING-P319-counterexample",
+      "passed": true,
+      "expected": "oracle exits 1 on the non-admitted capture",
+      "evidence": "exit 1 with: ORACLE_FAIL hosted_auth_error present (https://app.papercusp.com/?hosted_auth_error=membership_required&hosted_auth_recovery=1); ORACLE_FAIL onboarding heading absent; ORACLE_FAIL Create workspace action absent"
+    },
+    {
+      "id": "SIGNUP-ONBOARDING-P319-calibration",
+      "passed": true,
+      "expected": "oracle exits 0 on the admitted capture",
+      "evidence": "live2-2-signup: exit 0, ORACLE_PASS onboarding reached: https://app.papercusp.com/"
+    }
+  ],
+  "inputs": {
+    "negative": {
+      "url": { "path": ".papercusp/scratch/p319-live/live2-1-signin.url.txt", "sha256": "ac0959c216b2bfad9803e38ee0e75d6b91b576671149a90ceff5d6381c6f0d5f" },
+      "aria": { "path": ".papercusp/scratch/p319-live/live2-1-signin.aria.txt", "sha256": "8b7399eb4c3ca5ed3d233ae6a16b3d164f82056220e4dccb5da986cbdb191204" }
+    },
+    "positive": {
+      "url": { "path": ".papercusp/scratch/p319-live/live2-2-signup.url.txt", "sha256": "44dc2116dbcc90a213a2cddd579ca79027b6a45cb4540b1996e300a6789512a2" },
+      "aria": { "path": ".papercusp/scratch/p319-live/live2-2-signup.aria.txt", "sha256": "353ca6cfee4d052c09e1475ba9f812b5da7af3930be35761b1027c5cc7f32ef7" }
+    }
+  }
+}
