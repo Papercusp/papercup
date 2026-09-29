@@ -1,0 +1,137 @@
+// Operational probe for plan goal-brief-to-claimed-plan-work-2026-09-23, clauses AUTO-BAR-R-3-P-004 / R-3-P-007 @rev4 (READ-ONLY).
+// Run from the papercusp repo root:
+//   npx tsx docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts > docs/evidence/goal-brief-r3-live-probe-2026-09-29.json
+//   R3_COUNTEREXAMPLE=count-not-applicable npx tsx <this file> > <this file stem>.counterexample.json   (must exit 1)
+// Emits one operational-test-evidence JSON document on stdout; exit 0 iff every assertion passed.
+//
+// Clause (rev 4): goal and fleet leader consume the same obligation engine with role-appropriate actions. A
+// source-generation/worklist-revision -> selected obligation -> delivered/non-omitted brief -> decision -> effect trace
+// survives warm turns, cold restart and compaction. Omitted/stale/unmeasured input cannot be reported as ignored by the
+// agent. FALSIFIED when an omitted/stale/unconfirmed/foreign-session payload is counted as delivered opportunity or an
+// unfinished call as completed neglect.
+//
+// Subject: every goal-plan-placement receipt in harness_shared.agent_activity for this workspace.
+//   detail.goalPlacementTurn    = a CONFIRMED delivery (offered token ACKed, native completed decision after the offer)
+//   detail.goalPlacementTurnEnd = the policy observed at a native turn end (status, applicableDemand, generation)
+// Oracle: clause conditions re-checked against raw ledger rows (agent_activity, work_items, agent_fleets); nothing here
+// calls the receipt module under test. A carry-respawn/cold restart/compaction starts a NEW native session under the
+// same owner, so "survives the boundary" = confirmed chains for one owner+goal in >= 2 distinct native sessions.
+import { execFileSync } from 'node:child_process';
+
+const startedAt = new Date().toISOString();
+const assertions: Array<{ id: string; passed: boolean; evidence: string }> = [];
+const observations: Record<string, unknown> = {};
+const residualUnknowns: string[] = [];
+const assert = (id: string, passed: boolean, evidence: string) => assertions.push({ id, passed, evidence });
+type Row = Record<string, any>;
+const rows = (sql: string): Row[] => {
+  const out = execFileSync('sudo', ['-n', '-u', 'postgres', 'psql', '-d', 'papercusp', '-At', '-c',
+    `SELECT coalesce(json_agg(t), '[]'::json) FROM (${sql}) t`], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  return JSON.parse(out.trim()) as Row[];
+};
+const lit = (s: string) => `'${s.replaceAll("'", "''")}'`;
+
+const WS = 'papercusp-workspace';
+const COUNTEREXAMPLE = process.env.R3_COUNTEREXAMPLE ?? null;
+if (COUNTEREXAMPLE !== null && COUNTEREXAMPLE !== 'count-not-applicable') {
+  throw new Error(`unknown R3_COUNTEREXAMPLE=${COUNTEREXAMPLE}; the only counterexample is count-not-applicable`);
+}
+const TURN_END_MAX_LAG_MS = 60_000;
+const EFFECT_WINDOW_MS = 30 * 60_000;
+const t = (s: unknown) => (typeof s === 'string' ? Date.parse(s) : Number.NaN);
+
+const confirmedRaw = rows(`SELECT id, owner_id, session_id, created_at, detail->'goalPlacementTurn' AS r
+  FROM harness_shared.agent_activity WHERE workspace_id = ${lit(WS)} AND detail ? 'goalPlacementTurn' ORDER BY created_at`);
+const turnEnds = rows(`SELECT id, owner_id, session_id, created_at, detail->'goalPlacementTurnEnd' AS e
+  FROM harness_shared.agent_activity WHERE workspace_id = ${lit(WS)} AND detail ? 'goalPlacementTurnEnd' ORDER BY created_at`);
+observations.population = { confirmedReceipts: confirmedRaw.length, turnEndObservations: turnEnds.length,
+  turnEndStatuses: turnEnds.flatMap((e) => (e.e?.rows ?? []).map((r: Row) => `${r.status}/${r.applicableDemand}`))
+    .reduce((m: Record<string, number>, k: string) => ({ ...m, [k]: (m[k] ?? 0) + 1 }), {}) };
+
+// The counterexample is the clause's falsifier: every turn-end row is promoted to a "delivered opportunity", including
+// not-applicable / zero-demand ones that were never offered. A sound oracle must refuse it.
+type Delivered = { source: string; owner: string; session: string; goalId: string | null; planSlug: string | null;
+  obligationId: string; sourceGeneration: string; status: string | null; applicableDemand: number | null;
+  offeredAt: string | null; completedAt: string | null; confirmedAt: string | null; completedTurnRef: string | null;
+  nativeSessionId: string | null; receiptOwner: string | null; receiptWorkspace: string | null };
+const delivered: Delivered[] = confirmedRaw.map((c) => ({ source: `activity:${c.id}`, owner: c.owner_id,
+  session: c.session_id, goalId: c.r?.goalId ?? null, planSlug: c.r?.planSlug ?? null,
+  obligationId: String(c.r?.obligationId ?? ''), sourceGeneration: String(c.r?.sourceGeneration ?? ''),
+  status: c.r?.atConfirmation?.status ?? null, applicableDemand: null, offeredAt: c.r?.offeredAt ?? null,
+  completedAt: c.r?.completedAt ?? null, confirmedAt: c.r?.confirmedAt ?? null,
+  completedTurnRef: c.r?.completedTurnRef ?? null, nativeSessionId: c.r?.nativeSessionId ?? null,
+  receiptOwner: c.r?.ownerId ?? null, receiptWorkspace: c.r?.workspaceId ?? null }));
+if (COUNTEREXAMPLE === 'count-not-applicable') {
+  for (const e of turnEnds) for (const r of e.e?.rows ?? []) delivered.push({ source: `turnEnd:${e.id}`,
+    owner: e.owner_id, session: e.session_id, goalId: e.e?.goalId ?? null, planSlug: r.planSlug ?? null,
+    obligationId: String(r.obligationId ?? ''), sourceGeneration: String(r.sourceGeneration ?? ''), status: r.status,
+    applicableDemand: r.applicableDemand, offeredAt: e.e?.completedAt ?? null, completedAt: e.e?.completedAt ?? null,
+    confirmedAt: e.e?.observedAt ?? null, completedTurnRef: e.e?.completedTurnRef ?? null,
+    nativeSessionId: e.session_id, receiptOwner: e.owner_id, receiptWorkspace: WS });
+}
+
+// 1. Nothing counted as delivered may be not-applicable, zero-demand, foreign-owner/workspace/session, or unordered.
+const violations = delivered.flatMap((d) => {
+  const why: string[] = [];
+  if (d.status === 'not-applicable' || d.applicableDemand === 0) why.push('not-applicable/zero-demand');
+  if (d.receiptOwner !== d.owner || d.receiptWorkspace !== WS) why.push('foreign owner/workspace');
+  if (d.nativeSessionId !== d.session) why.push('foreign session');
+  const o = t(d.offeredAt), c = t(d.completedAt), f = t(d.confirmedAt);
+  if (!(o <= c && c <= f)) why.push('unfinished or unordered offer->completion->confirmation');
+  if (!d.obligationId || !d.sourceGeneration || !d.goalId || !d.planSlug) why.push('missing identity');
+  return why.length ? [{ source: d.source, why }] : [];
+});
+assert('r3-no-omitted-or-foreign-counted-as-delivered', violations.length === 0,
+  violations.length === 0 ? `${delivered.length} delivered rows, none not-applicable/foreign/unordered`
+    : `${violations.length}/${delivered.length} delivered rows violate the falsifier; first: ${JSON.stringify(violations.slice(0, 3))}`);
+
+// 2. A complete chain: confirmed delivery -> same-generation turn-end decision -> effect on the delivered plan.
+const clean = delivered.filter((d) => !violations.some((v) => v.source === d.source));
+const chains = clean.map((d) => {
+  const end = turnEnds.find((e) => e.owner_id === d.owner && e.session_id === d.session &&
+    e.e?.completedTurnRef === d.completedTurnRef && t(e.e?.observedAt) >= t(d.completedAt) &&
+    t(e.e?.observedAt) - t(d.completedAt) <= TURN_END_MAX_LAG_MS &&
+    (e.e?.rows ?? []).some((r: Row) => r.obligationId === d.obligationId && r.sourceGeneration === d.sourceGeneration));
+  const from = new Date(t(d.completedAt)).toISOString(), to = new Date(t(d.completedAt) + EFFECT_WINDOW_MS).toISOString();
+  const effects = d.planSlug ? rows(`SELECT feature_id, h->>'owner' AS owner, h->>'at' AS at
+      FROM harness_shared.work_items w, LATERAL jsonb_array_elements(coalesce(w.worked_by_history, '[]'::jsonb)) h
+      WHERE w.workspace_id = ${lit(WS)} AND w.source_plan_slug = ${lit(d.planSlug)}
+        AND (h->>'at')::timestamptz BETWEEN ${lit(from)} AND ${lit(to)}
+      UNION ALL SELECT fleet_slug, leader_owner_id, to_timestamp(created_at / 1000.0)::text FROM harness_shared.agent_fleets
+      WHERE workspace_id = ${lit(WS)} AND to_timestamp(created_at / 1000.0) BETWEEN ${lit(from)} AND ${lit(to)}
+        AND leader_owner_id IS NOT NULL AND fleet_slug ILIKE ${lit(`%${d.planSlug.slice(0, 24)}%`)}`) : [];
+  return { source: d.source, owner: d.owner, session: d.session, goalId: d.goalId, planSlug: d.planSlug,
+    obligation: `${d.obligationId}@${d.sourceGeneration}`, turnEnd: end ? `activity:${end.id}` : null,
+    effects: effects.slice(0, 5) };
+});
+observations.chains = chains;
+const complete = chains.filter((c) => c.turnEnd && c.effects.length > 0);
+assert('r3-generation-to-effect-chain-exists', complete.length > 0,
+  complete.length > 0 ? `${complete.length} confirmed delivery->same-generation turn-end->effect chains: ${complete.map((c) => c.source).join(', ')}`
+    : `0 complete chains (${clean.length} clean confirmed deliveries, ${chains.filter((c) => c.turnEnd).length} with a matching turn-end)`);
+
+// 3. The chain survives a boundary: one owner+goal has complete chains in >= 2 distinct native sessions.
+const byGoal = new Map<string, Set<string>>();
+for (const c of complete) byGoal.set(`${c.owner}|${c.goalId}`, (byGoal.get(`${c.owner}|${c.goalId}`) ?? new Set()).add(c.session));
+const crossing = [...byGoal].filter(([, s]) => s.size >= 2);
+assert('r3-chain-survives-session-boundary', crossing.length > 0,
+  crossing.length > 0 ? `owner|goal spanning >=2 native sessions: ${crossing.map(([k, s]) => `${k} (${s.size})`).join('; ')}`
+    : `no owner+goal has complete chains in two native sessions (${byGoal.size} owner+goal groups)`);
+
+residualUnknowns.push('Non-omission of the delivered line is attested by the writer (the receipt is staged only when the rendered block contains the action line); injected briefs are not ingested into session_turn_parts, so it is not independently re-observable here.');
+residualUnknowns.push('Compaction vs cold restart is not distinguished: both start a new native session under the same owner; memory_session_epochs keeps only the latest epoch per session.');
+residualUnknowns.push('Fleet-leader side: fleet:leader-brief tool_invocations carry no generation/receipt, so the leader half of the shared engine is covered by unit/integration layers (bindings 15943/15944), not by this live probe.');
+
+const passed = assertions.filter((a) => a.passed).length;
+process.stdout.write(`${JSON.stringify({
+  schemaVersion: 1, kind: 'operational-test-evidence',
+  name: COUNTEREXAMPLE ? `goal-brief R-3 live chain probe — counterexample ${COUNTEREXAMPLE}` : 'goal-brief R-3 live chain probe',
+  framework: 'read-only-sql-probe',
+  command: [...(COUNTEREXAMPLE ? ['env', `R3_COUNTEREXAMPLE=${COUNTEREXAMPLE}`] : []),
+    'npx', 'tsx', 'docs/evidence/goal-brief-r3-live-probe-2026-09-29.mts'],
+  exitCode: passed === assertions.length ? 0 : 1, startedAt, finishedAt: new Date().toISOString(),
+  summary: `${passed}/${assertions.length} assertions passed`, assertions,
+  plan: { slug: 'goal-brief-to-claimed-plan-work-2026-09-23', specIds: ['AUTO-BAR-R-3-P-004', 'AUTO-BAR-R-3-P-007'], specRevision: 4 },
+  residualUnknowns, observations,
+}, null, 2)}\n`);
+process.exitCode = passed === assertions.length ? 0 : 1;
