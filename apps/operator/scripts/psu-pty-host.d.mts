@@ -1344,6 +1344,33 @@ export function quotaLimitBannerMatch(text: any, agent?: string): {
     excerpt: null;
 };
 export function quotaLimitBannerVisible(text: any, agent?: string): boolean;
+/** The rendered text of one Claude Code transcript row: assistant/user text
+ *  blocks, tool_use inputs and tool_result bodies — everything the TUI can
+ *  echo onto the screen. Pure; exported for tests. */
+export function claudeTranscriptRowText(row: any): string;
+/** WI-10003875: is a latched claude quota match a REAL wall, or the TUI echoing
+ *  the transcript's own words? The bare-phrase banner patterns match the
+ *  model's prose: su-be77f2f5's final message "its own 11.5-hour limit ran
+ *  out" hit /5-hour limit/i, the static idle screen never evicted it, and every
+ *  wake for ~18h was turn-deferred-quota-blocked.
+ *
+ *  Newest row first, over user/assistant rows:
+ *    - an API-error row that is a rate limit (error 'rate_limit', or its text
+ *      matches the banner set)                          → 'walled'
+ *    - an ordinary row whose text matches the banner set → 'echo'
+ *  Non-matching rows and non-quota API errors are skipped; nothing decisive →
+ *  'unknown'. Only 'echo' may dismiss a latch, and it requires the matching
+ *  words to BE transcript content newer than any rate-limit error, so a real
+ *  wall (whose synthetic row is newer than whatever preceded it) still wins.
+ *  Pure; exported for tests. */
+/** WI-10003875: the corroborator the host wires into its claude quota
+ *  detector — the newest transcript under THIS owner's isolated
+ *  CLAUDE_CONFIG_DIR (never the shared ~/.claude, so it cannot read another
+ *  session's wall), bounded tail, verdict above. No isolated root, no
+ *  transcript, or a half-written newest row ⇒ 'unknown' (fail closed).
+ *  Exported for tests. */
+export function makeClaudeQuotaCorroborator(env?: NodeJS.ProcessEnv, home?: string): () => "unknown" | "walled" | "echo";
+export function claudeQuotaTranscriptVerdict(rows: any): "unknown" | "walled" | "echo";
 /** WI-1386682 (1): quota-wall detector. Feed it the SAME raw pty bytes the
  *  activity tracker sees (child.onData); `isBlocked()` reports whether
  *  Claude Code's own usage-limit banner is currently visible in the recent
@@ -1358,11 +1385,14 @@ export function quotaLimitBannerVisible(text: any, agent?: string): boolean;
  *  single-byte clear (which would be wrong — a redraw is routinely split
  *  across several small writes) but a level check against the current
  *  screen. Pure (no timers, no I/O); exported for tests. */
-export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit, }?: {
+export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit, corroborate, corroborateTtlMs, onDismiss, }?: {
     capBytes?: number | undefined;
     agent?: string | undefined;
     now?: (() => number) | undefined;
     deferUntilSubmit?: boolean | undefined;
+    corroborate?: null | undefined;
+    corroborateTtlMs?: number | undefined;
+    onDismiss?: null | undefined;
 }): {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
      *  or null when the level didn't change, so a caller can log transitions
@@ -1372,6 +1402,9 @@ export function makeQuotaBlockDetector({ capBytes, agent, now, deferUntilSubmit,
      * and terminal probes cannot arm it; later submits cannot clear a wall. */
     observeInput(input: any): void;
     isBlocked: () => boolean;
+    /** Corroborates too: the discovery file is refreshed on a timer, so a
+     *  prose false positive is dismissed within one refresh even when no wake
+     *  is pending, instead of advertising quotaBlocked to the operator. */
     snapshot: () => {
         quotaBlocked: boolean;
         quotaBlockedSinceMs: number | null;
@@ -2665,6 +2698,8 @@ export const SHUTDOWN_ACK_DELAY_MS: number;
  * Pure except for the injected onStarvation callback; exported for tests.
  */
 export const QUOTA_BLOCK_STARVATION_THRESHOLD_MS: number;
+/** WI-10003875: how often a LATCHED quota block re-consults its corroborator. */
+export const QUOTA_CORROBORATE_TTL_MS: 15000;
 /** How often the discovery file's activity fields are refreshed. Coarse on
  *  purpose — the consumer question is "active or idle for minutes?", and a
  *  per-byte rewrite would turn the pty bridge into an fs hot loop. */

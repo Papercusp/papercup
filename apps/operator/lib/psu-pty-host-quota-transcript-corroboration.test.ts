@@ -9,7 +9,8 @@
  * records as a synthetic `isApiErrorMessage` row with `error:'rate_limit'`).
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
+import { classifyPtyHostEvent } from '@papercusp/operator-core/lib/scout/pty-host-health-lane';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -176,6 +177,34 @@ describe('makeQuotaBlockDetector with a corroborator', () => {
     t += 1;
     expect(d.isBlocked()).toBe(false);
     expect(calls).toBe(2);
+  });
+});
+
+describe('quota-block starvation guard is actually fed (WI-10003875)', () => {
+  // hostThroughPty spawns a real pty, so the wiring is pinned at the source,
+  // like the other SOURCE guards in psu-pty-host.test.ts. The guard existed and
+  // was unit-tested but had ZERO call sites: 32 deferrals over ~18h produced no
+  // quota-block-starvation event.
+  const SOURCE = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+
+  it('feeds every quota deferral into the starvation guard', () => {
+    const at = SOURCE.indexOf("appendHostEvent(ownerId, 'turn-deferred-quota-blocked', extra);");
+    expect(at).toBeGreaterThan(0);
+    const branch = SOURCE.slice(at, SOURCE.indexOf('return { ok: false, reason: \'deferred-quota-blocked\' }', at));
+    expect(branch).toContain('observeQuotaBlockStarvation({ attempted: true })');
+  });
+
+  it('wires the transcript corroborator into the host detector', () => {
+    const at = SOURCE.indexOf('const quotaBlockDetector = makeQuotaBlockDetector({');
+    expect(at).toBeGreaterThan(0);
+    const ctor = SOURCE.slice(at, SOURCE.indexOf('});', at));
+    expect(ctor).toContain('makeClaudeQuotaCorroborator(env)');
+    expect(ctor).toContain("'quota-block-dismissed-transcript-echo'");
+  });
+
+  it('the health lane counts a dismissal as recovered and starvation as a failure', () => {
+    expect(classifyPtyHostEvent('quota-block-dismissed-transcript-echo')).toBe('recovered');
+    expect(classifyPtyHostEvent('quota-block-starvation')).toBe('failure');
   });
 });
 

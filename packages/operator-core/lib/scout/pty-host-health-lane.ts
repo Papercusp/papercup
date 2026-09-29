@@ -34,7 +34,11 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'operator-pin-healed' ||
     kind === 'owner-composer-cleared-on-respawn' ||
     kind === 'inject-mutex-force-released' ||
-    kind === 'mcp-reconnect-completed'
+    kind === 'mcp-reconnect-completed' ||
+    // WI-10003875: a claude quota latch the native transcript proved was the
+    // model's own prose, dismissed so wakes resume — a detector false positive
+    // that self-healed, worth counting but not a final failure.
+    kind === 'quota-block-dismissed-transcript-echo'
   ) return 'recovered';
 
   if (

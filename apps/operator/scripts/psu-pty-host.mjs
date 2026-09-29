@@ -3874,6 +3874,94 @@ export function quotaLimitBannerVisible(text, agent = '') {
   return quotaLimitBannerMatch(text, agent).matched;
 }
 
+/** WI-10003875: how often a LATCHED quota block re-consults its corroborator. */
+export const QUOTA_CORROBORATE_TTL_MS = 15_000;
+
+/** The rendered text of one Claude Code transcript row: assistant/user text
+ *  blocks, tool_use inputs and tool_result bodies — everything the TUI can
+ *  echo onto the screen. Pure; exported for tests. */
+export function claudeTranscriptRowText(row) {
+  const content = row?.message?.content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const parts = [];
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    if (typeof block.text === 'string') parts.push(block.text);
+    else if (block.type === 'tool_use') {
+      try {
+        parts.push(JSON.stringify(block.input ?? {}));
+      } catch {
+        /* an unserialisable input simply contributes nothing */
+      }
+    } else if (block.type === 'tool_result') {
+      const body = block.content;
+      if (typeof body === 'string') parts.push(body);
+      else if (Array.isArray(body)) {
+        for (const piece of body) if (typeof piece?.text === 'string') parts.push(piece.text);
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+/** Claude Code records a real usage wall as a SYNTHETIC assistant row
+ *  (`isApiErrorMessage:true`, `error:'rate_limit'`, model `<synthetic>`), e.g.
+ *  "You've hit your session limit · resets 7:20am (America/New_York)" —
+ *  measured across this box's transcripts 2026-09-29. */
+function claudeRowIsApiError(row) {
+  return row?.isApiErrorMessage === true || row?.error != null || row?.message?.model === '<synthetic>';
+}
+
+/** WI-10003875: is a latched claude quota match a REAL wall, or the TUI echoing
+ *  the transcript's own words? The bare-phrase banner patterns match the
+ *  model's prose: su-be77f2f5's final message "its own 11.5-hour limit ran
+ *  out" hit /5-hour limit/i, the static idle screen never evicted it, and every
+ *  wake for ~18h was turn-deferred-quota-blocked.
+ *
+ *  Newest row first, over user/assistant rows:
+ *    - an API-error row that is a rate limit (error 'rate_limit', or its text
+ *      matches the banner set)                          → 'walled'
+ *    - an ordinary row whose text matches the banner set → 'echo'
+ *  Non-matching rows and non-quota API errors are skipped; nothing decisive →
+ *  'unknown'. Only 'echo' may dismiss a latch, and it requires the matching
+ *  words to BE transcript content newer than any rate-limit error, so a real
+ *  wall (whose synthetic row is newer than whatever preceded it) still wins.
+ *  Pure; exported for tests. */
+/** WI-10003875: the corroborator the host wires into its claude quota
+ *  detector — the newest transcript under THIS owner's isolated
+ *  CLAUDE_CONFIG_DIR (never the shared ~/.claude, so it cannot read another
+ *  session's wall), bounded tail, verdict above. No isolated root, no
+ *  transcript, or a half-written newest row ⇒ 'unknown' (fail closed).
+ *  Exported for tests. */
+export function makeClaudeQuotaCorroborator(env = process.env, home = homedir()) {
+  return () =>
+    claudeQuotaTranscriptVerdict(
+      readIsolatedNativeTranscriptRows({
+        agent: 'claude',
+        env,
+        home,
+        transcriptPath: newestNativeTranscriptPath('claude', env, home),
+      }),
+    );
+}
+
+export function claudeQuotaTranscriptVerdict(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return 'unknown';
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i];
+    if (row?.type !== 'assistant' && row?.type !== 'user') continue;
+    const text = claudeTranscriptRowText(row);
+    if (claudeRowIsApiError(row)) {
+      if (row.error === 'rate_limit' || quotaLimitBannerVisible(text, 'claude')) return 'walled';
+      continue;
+    }
+    if (row.isMeta) continue;
+    if (quotaLimitBannerVisible(text, 'claude')) return 'echo';
+  }
+  return 'unknown';
+}
+
 /** How large a recent-screen window quotaBlockDetector keeps. Bounded (like
  *  makeOutputTap's capBytes) but deliberately smaller than
  *  childStartupOutput's 32_768-char window: the whole point is that the
@@ -3901,6 +3989,9 @@ export function makeQuotaBlockDetector({
   agent = '',
   now = Date.now,
   deferUntilSubmit = false,
+  corroborate = null,
+  corroborateTtlMs = QUOTA_CORROBORATE_TTL_MS,
+  onDismiss = null,
 } = {}) {
   let buffer = '';
   let blocked = false;
@@ -3908,6 +3999,43 @@ export function makeQuotaBlockDetector({
   /** @type {number | null} */
   let blockedSinceMs = null;
   let lastMatch = { matched: false, pattern: null, excerpt: null };
+  /** @type {{ atMs: number, value: string } | null} */
+  let verdict = null;
+  /** WI-10003875: a screen match is only a CANDIDATE wall. While latched,
+   *  consult the injected corroborator (the native transcript for claude) at
+   *  most once per TTL. 'echo' — the matched words are the transcript's own
+   *  content, newer than any rate_limit API error — dismisses the latch and
+   *  drops the stale window so the same static bytes cannot re-latch it.
+   *  Anything else ('walled', 'unknown', a throw) keeps today's fail-closed
+   *  level. Without a corroborator this is exactly the old `() => blocked`. */
+  const isBlockedNow = () => {
+    if (!blocked || typeof corroborate !== 'function') return blocked;
+    const t = now();
+    if (!verdict || t - verdict.atMs >= corroborateTtlMs) {
+      let value = 'unknown';
+      try {
+        value = String(corroborate(lastMatch) ?? 'unknown');
+      } catch {
+        value = 'unknown';
+      }
+      verdict = { atMs: t, value };
+    }
+    if (verdict.value !== 'echo') return true;
+    const dismissed = { ...lastMatch, blockedSinceMs };
+    buffer = '';
+    blocked = false;
+    blockedSinceMs = null;
+    verdict = null;
+    lastMatch = { matched: false, pattern: null, excerpt: null };
+    if (typeof onDismiss === 'function') {
+      try {
+        onDismiss(dismissed);
+      } catch {
+        /* a failed trace must not re-latch or break the gate */
+      }
+    }
+    return false;
+  };
   return {
     /** Feed one raw pty chunk. Returns the transition ('detected' | 'cleared')
      *  or null when the level didn't change, so a caller can log transitions
@@ -3923,6 +4051,7 @@ export function makeQuotaBlockDetector({
       if (hit.matched === blocked) return null;
       blocked = hit.matched;
       blockedSinceMs = blocked ? now() : null;
+      verdict = null;
       return blocked ? 'detected' : 'cleared';
     },
     /** Arm once per child at the standalone submit keystroke. Pasted history
@@ -3930,8 +4059,14 @@ export function makeQuotaBlockDetector({
     observeInput(input) {
       if (awaitingSubmit && /^[\r\n]+$/.test(String(input))) awaitingSubmit = false;
     },
-    isBlocked: () => blocked,
-    snapshot: () => ({ quotaBlocked: blocked, quotaBlockedSinceMs: blockedSinceMs }),
+    isBlocked: isBlockedNow,
+    /** Corroborates too: the discovery file is refreshed on a timer, so a
+     *  prose false positive is dismissed within one refresh even when no wake
+     *  is pending, instead of advertising quotaBlocked to the operator. */
+    snapshot: () => {
+      const quotaBlocked = isBlockedNow();
+      return { quotaBlocked, quotaBlockedSinceMs: blockedSinceMs };
+    },
     /** WI-2140984: WHICH pattern last matched, and the text around it — so a
      *  `quota-block-detected` row says what was actually on screen and a false
      *  positive is diagnosable from the event log alone. */
@@ -3943,6 +4078,7 @@ export function makeQuotaBlockDetector({
       blocked = false;
       awaitingSubmit = deferUntilSubmit;
       blockedSinceMs = null;
+      verdict = null;
       lastMatch = { matched: false, pattern: null, excerpt: null };
     },
   };
@@ -6716,6 +6852,21 @@ export function hostThroughPty(o) {
     // first new submission on that replay; subsequent errors still block wakes.
     deferUntilSubmit: env.PAPERCUSP_AGENT === 'codex' &&
       args.some((arg) => arg === 'resume' || arg === 'fork'),
+    // WI-10003875: claude's banner set is bare phrases, so the model's own
+    // prose can latch it on a static idle screen and defer every wake until a
+    // human types. Corroborate against this owner's isolated transcript: a
+    // rate_limit API-error row keeps the wall, the matched words appearing as
+    // ordinary transcript content dismisses it, anything else fails closed.
+    corroborate: ['', 'claude'].includes(String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase())
+      ? makeClaudeQuotaCorroborator(env)
+      : null,
+    onDismiss: (dismissed) =>
+      appendHostEvent(ownerId, 'quota-block-dismissed-transcript-echo', {
+        agent: String(env.PAPERCUSP_AGENT ?? '') || null,
+        matchedPattern: dismissed.pattern,
+        matchedExcerpt: dismissed.excerpt,
+        blockedSinceMs: dismissed.blockedSinceMs,
+      }),
   });
   // The interactive Codex CLI remains under the owner's control. Classify its
   // transient capacity copy for the durable event stream without retrying or
@@ -8777,6 +8928,11 @@ export function hostThroughPty(o) {
           if ((msg.mode === 'turn' || msg.mode === 'reset') && quotaBlockDetector.isBlocked()) {
             const extra = { mode: msg.mode, reason: 'quota-blocked' };
             appendHostEvent(ownerId, 'turn-deferred-quota-blocked', extra);
+            // WI-10003875: this deferral IS the gated-injection attempt the
+            // starvation guard counts. The guard was built and unit-tested but
+            // never fed, so an 18h prose-latched wedge (32 deferrals) emitted
+            // zero quota-block-starvation signals.
+            observeQuotaBlockStarvation({ attempted: true });
             // P-006: durable trace is the turn-deferred-quota-blocked event above.
             writeHostDiagnostic(
               `psu-pty-host: ${msg.mode} DEFERRED for ${ownerId} (quota-blocked; ` +
