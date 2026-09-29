@@ -1638,10 +1638,20 @@ const root = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 // for sse above — package-lock.json carries its own 84-entry workspaces array and CI runs
 // `npm ci` strict; the lock already records file-claim as a link entry, so normalizing it is a
 // small change whose cost is TIMING, not shape.
+//
+// WI-10003821 — tools/perf-test/wdio. The packaged-desktop WebdriverIO runner. Its
+// perf-report.node-test.ts pins the runner's own invariants (reset-before-preflight, fixture
+// continuity, stamp-only batch refusal, the binary build-time stamp the DESKTOP_PERF_GATE reads)
+// and NO gate task selected it: `--changed-paths tools/perf-test/wdio/perf-report.ts` resolved to
+// zero workspaces. It has its own node_modules and lockfile, like papercusp-desktop. Its `test`
+// script is ONLY those headless guards; the typecheck + GUI suite that needs a packaged binary is
+// `test:all` (perf:desktop and the scheduled desktop-perf run call that), because a gate box
+// cannot boot the binary and a `test` that tries would be red on every change to this package.
 const STANDALONE_PACKAGE_DIRS = [
   "papercusp-desktop",
   "libs/generic/sse",
   "libs/papercusp/packages/file-claim",
+  "tools/perf-test/wdio",
 ];
 
 // EI-19346163916263067 — NON-WORKSPACE SOURCE DIRECTORIES.
