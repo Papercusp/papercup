@@ -14373,6 +14373,14 @@ export function sessionPortTargetArgs(source, target, account, args, prepared) {
     mode: null,
     profile: "engineer",
     launchContext: args.launchContext ?? null,
+    // The session-port seed IS the target's first turn: sessionPortRequestBody
+    // already folded any scripted instruction (`--kickoff=` or the spawn-safe
+    // PAPERCUSP_KICKOFF_PROMPT env) into it as `currentInstruction`. Letting the
+    // fresh launch re-derive a plain kickoff from the same env hands the PTY
+    // host BOTH channels, which it refuses before spawning — every scripted
+    // consult convert died at boot that way (WI-10003858).
+    kickoff: false,
+    kickoffPromptText: null,
     launchedBy: null,
     ownerId: source.coordOwnerId,
     resumeSession: null,
