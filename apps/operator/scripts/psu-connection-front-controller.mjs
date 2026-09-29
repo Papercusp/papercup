@@ -488,7 +488,7 @@ function gcpIapExtraArgs(profile) {
 
 export function describePsuConnectionProfile(profile) {
   if (profile.kind === "papercusp-hosted")
-    return `${profile.name} — Papercusp cloud workspaces at ${profile.origin}`;
+    return `${profile.name} — Papercusp cloud workspaces at ${profile.origin}${profile.organizationName ? ` for ${profile.organizationName}` : ""}`;
   return `${profile.name} — GCP IAP ${profile.projectId}/${profile.zone}/${profile.instanceName} as ${profile.sshUser}`;
 }
 
@@ -498,7 +498,8 @@ export function describeHostedWorkspace(profile, workspace, now = Date.now()) {
       ? `${workspace.displayName} (${workspace.id})`
       : workspace.id;
   const state = workspace.reachable ? "" : ` — ${hostedUnreachableState(workspace, now)}`;
-  return `${profile.name}/${workspace.id} — Papercusp cloud workspace ${label}${state}`;
+  const organization = workspace.organizationName ?? profile.organizationName;
+  return `${profile.name}/${workspace.id} — Papercusp cloud workspace ${label}${organization ? ` in ${organization}` : ""}${state}`;
 }
 
 /**
@@ -931,7 +932,12 @@ async function listHostedWorkspaces(profile, deps, timeoutMs) {
   });
   if (result.status !== 200 || result.payload?.ok !== true)
     throw hostedFailure(profile, `list workspaces at ${profile.origin}`, result);
-  return Array.isArray(result.payload.workspaces) ? result.payload.workspaces : [];
+  // The cloud's current organization name labels each entry (a rename shows up
+  // at once); the name saved at sign-in covers an older cloud that sends none.
+  const organizationName = hostedOrganizationName(result.payload.organizationName);
+  return (Array.isArray(result.payload.workspaces) ? result.payload.workspaces : []).map(
+    (workspace) => (organizationName ? { ...workspace, organizationName } : workspace),
+  );
 }
 
 /** RFC 8628 device sign-in: print a code, let the person approve it in a browser, poll once per interval. */
@@ -990,25 +996,30 @@ async function hostedLogin(originInput, store, deps) {
     );
   }
 
+  const identity = {
+    origin,
+    organizationId: issued.organizationId,
+    userId: issued.userId,
+    organizationName: issued.organizationName,
+  };
+  // A re-login replaces only the sign-in for the SAME portal + organization +
+  // user; any other account or organization is kept alongside (WI-10003910).
+  const replaced = store.profiles.find((saved) => sameHostedIdentity(saved, identity)) ?? null;
   const profile = normalizeHostedProfile({
+    name: replaced?.name ?? freeHostedProfileName(origin, identity, store.profiles),
     origin,
     accessToken: issued.accessToken,
     tokenId: issued.tokenId,
     organizationId: issued.organizationId,
+    organizationName: issued.organizationName ?? replaced?.organizationName,
     userId: issued.userId,
     expiresAt: issued.expiresAt,
   });
-  const replaced = store.profiles.find((saved) => saved.name === profile.name);
-  if (replaced && replaced.kind !== "papercusp-hosted") {
-    throw new Error(
-      `Connection profile '${profile.name}' already exists; remove it before signing in`,
-    );
-  }
   savePsuConnectionStore(
     {
       ...store,
       profiles: [
-        ...store.profiles.filter((saved) => saved.name !== profile.name),
+        ...store.profiles.filter((saved) => saved !== replaced),
         profile,
       ],
     },
@@ -1236,11 +1247,14 @@ async function pickerChoices(store, deps, program = "psu") {
       });
     }
   }
-  if (!signedIn)
-    choices.push({
-      name: "Papercusp cloud — sign in to use a hosted workspace",
-      value: HOSTED_LOGIN_CHOICE,
-    });
+  // Always offered: a second account or organization is one more sign-in,
+  // kept beside the others (WI-10003910).
+  choices.push({
+    name: signedIn
+      ? "Sign in to another Papercusp cloud account or organization"
+      : "Papercusp cloud — sign in to use a hosted workspace",
+    value: HOSTED_LOGIN_CHOICE,
+  });
   return choices;
 }
 
@@ -1323,7 +1337,7 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
     signedIn = await hostedLogin(transport.loginOrigin, store, deps);
     if (!transport.explicitConnect) {
       deps.output(
-        `Signed in to ${signedIn.origin}. Run ${transport.program} --connect=${signedIn.name} to open ${transport.program} on one of your workspaces.`,
+        `Signed in to ${signedIn.origin}${signedIn.organizationName ? ` for ${signedIn.organizationName}` : ""} as '${signedIn.name}'. Run ${transport.program} --connect=${signedIn.name} to open ${transport.program} on one of your workspaces.`,
       );
       return { handled: true, argv: forwardedArgv, exitCode: 0 };
     }
@@ -1359,7 +1373,7 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
       deps.notice(
         `psu: could not reach ${profile.origin} to revoke the token; it was forgotten locally and expires on its own at ${profile.expiresAt}`,
       );
-    deps.output(`Signed out of ${profile.origin}`);
+    deps.output(`Signed out of ${describePsuConnectionProfile(profile)}`);
     return { handled: true, argv: forwardedArgv, exitCode: 0 };
   }
   if (transport.addName) {

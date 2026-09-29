@@ -2991,6 +2991,49 @@ describe("P-008: promoted frozen lineage is absorbed into staging history", () =
     expect(await revParse(repo, "main")).toBe(result.stagingAfter);
   });
 
+  it("absorbs while a peer holds the shared index lock, without touching the index or working tree (WI-10003922)", async () => {
+    const base = await commit("shared.txt", "base", "base");
+    await git(repo, ["branch", "repair", base]);
+    await git(repo, ["checkout", "-q", "repair"]);
+    const repairHead = await commit("fix.ts", "repair", "repair");
+    await git(repo, ["checkout", "-q", "main"]);
+    const stagingBefore = await commit("staging.ts", "tip", "staging tip");
+    writeFileSync(join(repo, "peer-unstaged.ts"), "uncommitted peer work");
+    // Porcelain `git merge` needs this lock (save_state runs `git stash create`, which writes
+    // the main index). On the shared tree any agent's git command can hold it, which made the
+    // bridge fail with "fatal: stash failed" while it held git-sync.
+    const indexLock = join(repo, ".git", "index.lock");
+    writeFileSync(indexLock, "held-by-peer");
+
+    const result = await foldPromotedLineageIntoStaging(
+      {
+        integrationRoot: repo,
+        integrationBranch: "main",
+        repairHead,
+        admittedPaths: ["fix.ts"],
+        workspaceId: "test-workspace",
+        installSlug: "test-harness",
+      },
+      { withGitSyncLock: async (run) => run() },
+    );
+
+    expect(result).toMatchObject({ ok: true, status: "merged", stagingBefore });
+    if (!result.ok) throw new Error(result.summary);
+    expect(
+      (
+        await git(repo, ["show", "-s", "--format=%P", result.stagingAfter])
+      ).split(" "),
+    ).toEqual([stagingBefore, repairHead]);
+    expect(await revParse(repo, "main")).toBe(result.stagingAfter);
+    expect(await git(repo, ["show", "-s", "--format=%s", result.stagingAfter])).toBe(
+      `green-checkpoint: absorb promoted frozen lineage ${repairHead.slice(0, 12)}`,
+    );
+    expect(readFileSync(join(repo, "peer-unstaged.ts"), "utf8")).toBe(
+      "uncommitted peer work",
+    );
+    expect(readFileSync(indexLock, "utf8")).toBe("held-by-peer");
+  });
+
   it("fails closed instead of leaking a staged peer change into the ancestry commit", async () => {
     const base = await commit("shared.txt", "base", "base");
     await git(repo, ["branch", "repair", base]);

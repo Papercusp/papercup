@@ -56,12 +56,42 @@ export function validateComponents(file: any): any[];
  *   syftArtifacts  [{ type, name, version, licenses: [], path }]
  *   components     parsed installer-components.json `components`
  *   npmExceptions  license-exceptions.json `npm` (npm packages use the lockfile leg's rules)
+ *
+ * @param {{
+ *   payloads?: Array<{ path: string, kind: string }>,
+ *   syftArtifacts?: Array<{ type: string, name: string, version: string, licenses: string[], path: string }>,
+ *   components?: Array<{ name: string, kind: string, paths: string[], license?: string, allow?: boolean, aggregate?: boolean, reason?: string, obligations?: string }>,
+ *   npmExceptions?: Record<string, { declared: string, license?: string, allow?: boolean, reason?: string }>,
+ * }} input
  */
 export function attributeInstaller({ payloads, syftArtifacts, components, npmExceptions }: {
-    payloads?: never[] | undefined;
-    syftArtifacts?: never[] | undefined;
-    components?: never[] | undefined;
-    npmExceptions?: {} | undefined;
+    payloads?: Array<{
+        path: string;
+        kind: string;
+    }>;
+    syftArtifacts?: Array<{
+        type: string;
+        name: string;
+        version: string;
+        licenses: string[];
+        path: string;
+    }>;
+    components?: Array<{
+        name: string;
+        kind: string;
+        paths: string[];
+        license?: string;
+        allow?: boolean;
+        aggregate?: boolean;
+        reason?: string;
+        obligations?: string;
+    }>;
+    npmExceptions?: Record<string, {
+        declared: string;
+        license?: string;
+        allow?: boolean;
+        reason?: string;
+    }>;
 }): {
     covered: number;
     denied: {
@@ -71,19 +101,19 @@ export function attributeInstaller({ payloads, syftArtifacts, components, npmExc
     }[];
     unreviewed: {
         what: string;
-        path: any;
+        path: string;
         why: string;
     }[];
     npmWeakCopyleft: any[];
     components: {
-        name: any;
-        kind: any;
-        license: any;
+        name: string;
+        kind: string;
+        license: string;
         verdict: string;
         hits: number;
-        obligations: any;
+        obligations: string | null;
     }[];
-    unusedComponents: any[];
+    unusedComponents: string[];
 };
 /**
  * Walk one unpacked installer tree: native/model payloads + Syft artifacts, with nested

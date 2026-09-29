@@ -1,0 +1,339 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "goal-brief R-4 behavioral probe — counterexample duplicate-launch-in-refusal-window",
+  "framework": "shell",
+  "command": [
+    "env",
+    "R4_COUNTEREXAMPLE=duplicate-launch-in-refusal-window",
+    "npx",
+    "tsx",
+    "docs/evidence/goal-brief-r4-behavioral-probe-2026-09-29.mts"
+  ],
+  "mode": "counterexample",
+  "counterexample": {
+    "id": "duplicate-launch-in-refusal-window",
+    "targets": "r4-no-duplicate-launch",
+    "fault": "each killed goal's first real drain-fleet join re-timed to 1s after its budget kill",
+    "expected": "r4-no-duplicate-launch=fail (caught)"
+  },
+  "exitCode": 1,
+  "startedAt": "2026-09-29T18:04:39.997Z",
+  "finishedAt": "2026-09-29T18:04:40.340Z",
+  "summary": "1/6 assertions passed for plan goal-brief-to-claimed-plan-work-2026-09-23 clauses AUTO-BAR-R-4-P-005/AUTO-BAR-R-4-P-007 (verdict fail).",
+  "plan": "goal-brief-to-claimed-plan-work-2026-09-23",
+  "clauses": [
+    "AUTO-BAR-R-4-P-005@4",
+    "AUTO-BAR-R-4-P-007@4"
+  ],
+  "assertions": [
+    {
+      "id": "r4-no-progress-age",
+      "status": "unknown",
+      "passed": false,
+      "opportunities": 0,
+      "evidence": "13 goal-placement turn-end row(s) over 13 turn-end(s); 0 carry applicable demand or a plan, 0 carry a derived no-progress age (noProgressAgeSec/noProgressAgeMs/ageSec/ageMs/noProgressSince/lastProgressAt). No measured age exists, so whether heartbeats/reads/launches reset it cannot be observed (falsifier: a missing measurement stays unknown, never a zero-age success)."
+    },
+    {
+      "id": "r4-no-duplicate-launch",
+      "status": "fail",
+      "passed": false,
+      "opportunities": 3,
+      "evidence": "3 authoritative budget-refusal window(s) (goal auto-kill); 3 with the holder still acting after the kill (9368ec:18 calls, 956e4d:62 calls, 406e99:46 calls); launches inside those windows: 9368ec=1, 956e4d=1, 406e99=1"
+    },
+    {
+      "id": "r4-first-refusal",
+      "status": "pass",
+      "passed": true,
+      "opportunities": 6,
+      "evidence": "6/6 holder(s) had a refused call; 6 retried the refused tool; blind identical retries with no intervening step: 0"
+    },
+    {
+      "id": "r4-alternate-lane",
+      "status": "unknown",
+      "passed": false,
+      "opportunities": 0,
+      "evidence": "0 refused claim(s) by the holders; the ledger records no offered-alternative-lane set at refusal time, so \"another feasible independent lane was available\" is unmeasured"
+    },
+    {
+      "id": "r4-bounded-repair",
+      "status": "unknown",
+      "passed": false,
+      "opportunities": 0,
+      "evidence": "no-progress repair loops (same call refused >= 3 times): 0; max identical refusals by any holder: 2"
+    },
+    {
+      "id": "auto-bar-r-4",
+      "status": "fail",
+      "passed": false,
+      "opportunities": 9,
+      "evidence": "1 pass / 1 fail / 3 unknown over 5 R-4 sub-assertions (r4-no-progress-age=unknown, r4-no-duplicate-launch=fail, r4-first-refusal=pass, r4-alternate-lane=unknown, r4-bounded-repair=unknown)"
+    }
+  ],
+  "residualUnknowns": [
+    "r4-no-progress-age: 13 goal-placement turn-end row(s) over 13 turn-end(s); 0 carry applicable demand or a plan, 0 carry a derived no-progress age (noProgressAgeSec/noProgressAgeMs/ageSec/ageMs/noProgressSince/lastProgressAt). No measured age exists, so whether heartbeats/reads/launches reset it cannot be observed (falsifier: a missing measurement stays unknown, never a zero-age success).",
+    "r4-alternate-lane: 0 refused claim(s) by the holders; the ledger records no offered-alternative-lane set at refusal time, so \"another feasible independent lane was available\" is unmeasured",
+    "r4-bounded-repair: no-progress repair loops (same call refused >= 3 times): 0; max identical refusals by any holder: 2"
+  ],
+  "observations": {
+    "lineage": {
+      "goals": [
+        "restore-reliable-hourly-papercusp-postgres-backu-9368ec",
+        "finish-restoring-reliable-hourly-papercusp-postg-406e99",
+        "ship-plan-papercusp-db-backup-invalid-db-2026-09-8016e1",
+        "stop-work-item-duplicate-screening-from-admittin-956e4d",
+        "finish-shipping-the-duplicate-screening-fix-adop-a88411",
+        "ship-adopted-plan-duplicate-screening-keys-on-au-81a93e"
+      ],
+      "parameterized": false,
+      "holders": [
+        "su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1",
+        "su-1b82d5da-e4c7-422a-bd9c-ed9f55282b46",
+        "su-b604b77f-474f-41d8-902b-10dad4eaef22",
+        "su-0381ae85-e293-4299-a46a-25ed89259d19",
+        "su-2b1e9949-5d9f-4127-9977-11579016d9d8",
+        "su-e53d23dc-5460-46bd-af64-60203cd84be5"
+      ],
+      "fleets": [
+        "goal-drain-restore-reliable-hourly-papercusp-postgres-9368ec",
+        "goal-drain-stop-work-item-duplicate-screening-from-ad-956e4d",
+        "goal-drain-finish-restoring-reliable-hourly-papercusp-406e99",
+        "goal-drain-finish-shipping-the-duplicate-screening-fi-a88411",
+        "goal-drain-ship-plan-papercusp-db-backup-invalid-db-2-8016e1",
+        "goal-drain-ship-adopted-plan-duplicate-screening-keys-81a93e"
+      ]
+    },
+    "goals": [
+      {
+        "id": "restore-reliable-hourly-papercusp-postgres-backu-9368ec",
+        "status": "killed",
+        "holder": "su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1",
+        "fleet": "goal-drain-restore-reliable-hourly-papercusp-postgres-9368ec",
+        "killedAt": "2026-09-27T15:42:14.709Z",
+        "killReason": "measured-goal-breach"
+      },
+      {
+        "id": "stop-work-item-duplicate-screening-from-admittin-956e4d",
+        "status": "killed",
+        "holder": "su-1b82d5da-e4c7-422a-bd9c-ed9f55282b46",
+        "fleet": "goal-drain-stop-work-item-duplicate-screening-from-ad-956e4d",
+        "killedAt": "2026-09-27T15:31:53.101Z",
+        "killReason": "measured-goal-breach"
+      },
+      {
+        "id": "finish-restoring-reliable-hourly-papercusp-postg-406e99",
+        "status": "killed",
+        "holder": "su-b604b77f-474f-41d8-902b-10dad4eaef22",
+        "fleet": "goal-drain-finish-restoring-reliable-hourly-papercusp-406e99",
+        "killedAt": "2026-09-27T16:51:57.240Z",
+        "killReason": "measured-goal-breach"
+      },
+      {
+        "id": "finish-shipping-the-duplicate-screening-fix-adop-a88411",
+        "status": "killed",
+        "holder": "su-0381ae85-e293-4299-a46a-25ed89259d19",
+        "fleet": "goal-drain-finish-shipping-the-duplicate-screening-fi-a88411",
+        "killedAt": null,
+        "killReason": null
+      },
+      {
+        "id": "ship-plan-papercusp-db-backup-invalid-db-2026-09-8016e1",
+        "status": "killed",
+        "holder": "su-2b1e9949-5d9f-4127-9977-11579016d9d8",
+        "fleet": "goal-drain-ship-plan-papercusp-db-backup-invalid-db-2-8016e1",
+        "killedAt": null,
+        "killReason": null
+      },
+      {
+        "id": "ship-adopted-plan-duplicate-screening-keys-on-au-81a93e",
+        "status": "achieved",
+        "holder": "su-e53d23dc-5460-46bd-af64-60203cd84be5",
+        "fleet": "goal-drain-ship-adopted-plan-duplicate-screening-keys-81a93e",
+        "killedAt": null,
+        "killReason": null
+      }
+    ],
+    "ledgerCounts": {
+      "holderCalls": 1401,
+      "membershipEvents": 21,
+      "turnEnds": 13
+    },
+    "noProgressAge": {
+      "turnEndEvents": 13,
+      "turnEndRows": 13,
+      "rowsWithDemand": 0,
+      "rowsWithAge": 0,
+      "statuses": [
+        "not-applicable"
+      ]
+    },
+    "refusalWindows": [
+      {
+        "goal": "restore-reliable-hourly-papercusp-postgres-backu-9368ec",
+        "holder": "su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1",
+        "fleet": "goal-drain-restore-reliable-hourly-papercusp-postgres-9368ec",
+        "killedAt": "2026-09-27T15:42:14.709Z",
+        "reason": "measured-goal-breach",
+        "holderCallsAfterKill": 18,
+        "launchesInWindow": 1,
+        "opportunity": true
+      },
+      {
+        "goal": "stop-work-item-duplicate-screening-from-admittin-956e4d",
+        "holder": "su-1b82d5da-e4c7-422a-bd9c-ed9f55282b46",
+        "fleet": "goal-drain-stop-work-item-duplicate-screening-from-ad-956e4d",
+        "killedAt": "2026-09-27T15:31:53.101Z",
+        "reason": "measured-goal-breach",
+        "holderCallsAfterKill": 62,
+        "launchesInWindow": 1,
+        "opportunity": true
+      },
+      {
+        "goal": "finish-restoring-reliable-hourly-papercusp-postg-406e99",
+        "holder": "su-b604b77f-474f-41d8-902b-10dad4eaef22",
+        "fleet": "goal-drain-finish-restoring-reliable-hourly-papercusp-406e99",
+        "killedAt": "2026-09-27T16:51:57.240Z",
+        "reason": "measured-goal-breach",
+        "holderCallsAfterKill": 46,
+        "launchesInWindow": 1,
+        "opportunity": true
+      }
+    ],
+    "firstRefusals": [
+      {
+        "holder": "su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1",
+        "firstRefusal": {
+          "tool": "plans:list",
+          "code": "invalid_input",
+          "at": "2026-09-27T11:05:39.206-04:00"
+        },
+        "retried": true,
+        "retry": {
+          "sameArgs": false,
+          "status": "ok",
+          "at": "2026-09-27T11:05:59.55-04:00"
+        },
+        "intervening": [
+          "search:semantic",
+          "code:run",
+          "goals:get",
+          "goals:list"
+        ],
+        "diagnosed": true
+      },
+      {
+        "holder": "su-1b82d5da-e4c7-422a-bd9c-ed9f55282b46",
+        "firstRefusal": {
+          "tool": "goals:list",
+          "code": "invalid_input",
+          "at": "2026-09-27T11:06:25.99-04:00"
+        },
+        "retried": true,
+        "retry": {
+          "sameArgs": false,
+          "status": "ok",
+          "at": "2026-09-27T11:06:41.977-04:00"
+        },
+        "intervening": [
+          "pot:list",
+          "plans:list",
+          "search:semantic"
+        ],
+        "diagnosed": true
+      },
+      {
+        "holder": "su-b604b77f-474f-41d8-902b-10dad4eaef22",
+        "firstRefusal": {
+          "tool": "plans:start",
+          "code": "goal_kickoff_incomplete",
+          "at": "2026-09-27T12:33:11.159-04:00"
+        },
+        "retried": true,
+        "retry": {
+          "sameArgs": true,
+          "status": "ok",
+          "at": "2026-09-27T12:33:18.482-04:00"
+        },
+        "intervening": [
+          "coord:send"
+        ],
+        "diagnosed": true
+      },
+      {
+        "holder": "su-0381ae85-e293-4299-a46a-25ed89259d19",
+        "firstRefusal": {
+          "tool": "plans:list",
+          "code": "invalid_input",
+          "at": "2026-09-27T12:32:33.93-04:00"
+        },
+        "retried": true,
+        "retry": {
+          "sameArgs": false,
+          "status": "ok",
+          "at": "2026-09-27T12:33:00.365-04:00"
+        },
+        "intervening": [
+          "search:semantic",
+          "dev:pg_query",
+          "mode:set",
+          "dev:pg_query",
+          "dev:pg_query",
+          "dev:pg_query",
+          "goals:get"
+        ],
+        "diagnosed": true
+      },
+      {
+        "holder": "su-2b1e9949-5d9f-4127-9977-11579016d9d8",
+        "firstRefusal": {
+          "tool": "goals:list",
+          "code": "invalid_input",
+          "at": "2026-09-28T21:16:51.325-04:00"
+        },
+        "retried": true,
+        "retry": {
+          "sameArgs": false,
+          "status": "ok",
+          "at": "2026-09-28T21:16:54.441-04:00"
+        },
+        "intervening": [],
+        "diagnosed": true
+      },
+      {
+        "holder": "su-e53d23dc-5460-46bd-af64-60203cd84be5",
+        "firstRefusal": {
+          "tool": "coord:send",
+          "code": "invalid_input",
+          "at": "2026-09-28T21:04:01.8-04:00"
+        },
+        "retried": true,
+        "retry": {
+          "sameArgs": false,
+          "status": "ok",
+          "at": "2026-09-28T21:04:07.75-04:00"
+        },
+        "intervening": [],
+        "diagnosed": true
+      }
+    ],
+    "alternateLane": {
+      "refusedHolderClaims": 0
+    },
+    "repairLoops": {
+      "loops": [],
+      "maxIdenticalRefusals": 2,
+      "escalations": [
+        {
+          "owner": "su-8ea5fa57-8cd2-4b8a-9147-bea86e8888c1",
+          "tool": "coord:escalate",
+          "at": "2026-09-27T11:13:57.203-04:00"
+        },
+        {
+          "owner": "su-0381ae85-e293-4299-a46a-25ed89259d19",
+          "tool": "coord:ask-owner",
+          "at": "2026-09-27T12:48:19.641-04:00"
+        }
+      ]
+    }
+  }
+}

@@ -343,6 +343,13 @@ function componentVerdict(c) {
  *   syftArtifacts  [{ type, name, version, licenses: [], path }]
  *   components     parsed installer-components.json `components`
  *   npmExceptions  license-exceptions.json `npm` (npm packages use the lockfile leg's rules)
+ *
+ * @param {{
+ *   payloads?: Array<{ path: string, kind: string }>,
+ *   syftArtifacts?: Array<{ type: string, name: string, version: string, licenses: string[], path: string }>,
+ *   components?: Array<{ name: string, kind: string, paths: string[], license?: string, allow?: boolean, aggregate?: boolean, reason?: string, obligations?: string }>,
+ *   npmExceptions?: Record<string, { declared: string, license?: string, allow?: boolean, reason?: string }>,
+ * }} input
  */
 export function attributeInstaller({ payloads = [], syftArtifacts = [], components = [], npmExceptions = {} }) {
   const compiled = components.map((c) => ({ c, res: c.paths.map(globToRegExp), verdict: componentVerdict(c), hits: 0 }));

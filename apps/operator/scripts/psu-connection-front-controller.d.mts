@@ -56,15 +56,21 @@ export function normalizeGcpIapProfile(input: any): {
 export function normalizeHostedPortalOrigin(value: any): string;
 export function hostedProfileName(origin: any): string;
 /**
- * A Papercusp cloud sign-in (WI-10002874, byoc D-412). One profile per portal;
- * it reaches every hosted workspace the signed-in person's organization role
- * allows, through the workspace machine's own outbound connector — the machine
- * accepts no inbound connection, so there is no SSH or IAP leg to configure.
+ * A name for a new cloud sign-in that no saved profile uses. The first sign-in
+ * at a portal is named for its host (so existing `--connect=<host>` keeps
+ * working); another account or organization at the same portal gets the host
+ * plus its organization's name, then the user id if that is still taken.
+ */
+export function freeHostedProfileName(origin: any, identity: any, profiles: any): any;
+/**
+ * A Papercusp cloud sign-in (WI-10002874, byoc D-412). One profile per portal
+ * + organization + user (WI-10003910), so several accounts or organizations
+ * can be signed in side by side; each reaches every hosted workspace that
+ * person's organization role allows, through the workspace machine's own
+ * outbound connector — the machine accepts no inbound connection, so there is
+ * no SSH or IAP leg to configure.
  */
 export function normalizeHostedProfile(input: any): {
-    name: string;
-    kind: string;
-    origin: string;
     accessToken: string;
     tokenId: string;
     organizationId: string;
@@ -81,6 +87,10 @@ export function normalizeHostedProfile(input: any): {
     constraints: string[];
     reconnect: string;
     audited: boolean;
+    organizationName?: string | undefined;
+    name: string;
+    kind: string;
+    origin: string;
 };
 export function defaultPsuConnectionStorePath(home?: string): string;
 export function loadPsuConnectionStore(path?: string): {
