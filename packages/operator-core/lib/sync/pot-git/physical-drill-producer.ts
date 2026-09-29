@@ -56,6 +56,7 @@ import {
   PHASE_E_MODE_WAIT_MAX_MS,
   preflightPhysicalPhaseERemotes,
   readPhysicalPhaseEMode,
+  requirePhysicalPhaseEStageMode,
   restorePhysicalPhaseEDivergence,
   runPhysicalPhaseEWatchdogSweep,
   setPhysicalPhaseEMode,
@@ -509,6 +510,19 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return ensurePhysicalPhaseEMode({ runId, mode: nextMode });
   }
+  if (mode === 'phase-e-await-mode') {
+    const [stage, waitSecRaw] = args;
+    const waitSec = Number(waitSecRaw);
+    if (
+      !['legacy-before', 'bridged-member', 'healthy-egress', 'divergence-before', 'divergence-after', 'legacy-after'].includes(stage ?? '') ||
+      args.length !== 2 || !Number.isInteger(waitSec) || waitSec < 0 || waitSec * 1000 > PHASE_E_MODE_WAIT_MAX_MS
+    ) {
+      throw new Error(
+        'usage: physical-drill-producer phase-e-await-mode <legacy-before|bridged-member|healthy-egress|divergence-before|divergence-after|legacy-after> <wait-sec<=1200>',
+      );
+    }
+    return requirePhysicalPhaseEStageMode({ stage: stage as PhysicalPhaseEObservationStage, waitMs: waitSec * 1000 });
+  }
   if (mode === 'phase-e-observe') {
     const [hostId, stage, deviceKey, runId, waitSecRaw] = args;
     const waitSec = waitSecRaw === undefined ? 0 : Number(waitSecRaw);
@@ -651,7 +665,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-quarantine-observe, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-reset, phase-d-tier-hold, phase-d-tier-restore, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-quarantine-observe, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-reset, phase-d-tier-hold, phase-d-tier-restore, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-mode-read, phase-e-mode-ensure, phase-e-await-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
   );
 }
 

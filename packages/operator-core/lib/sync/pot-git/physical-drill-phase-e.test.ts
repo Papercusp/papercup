@@ -9,10 +9,12 @@ import {
   PHASE_E_WATCHDOG_SCHEMA,
   PHASE_E_MODE_POLL_MS,
   PHASE_E_MODE_WAIT_MAX_MS,
+  PHASE_E_MODE_AWAIT_SCHEMA,
   awaitPhysicalPhaseEStageMode,
   capturePhysicalPhaseEObservation,
   ensurePhysicalPhaseEMode,
   preflightPhysicalPhaseERemotes,
+  requirePhysicalPhaseEStageMode,
   setPhysicalPhaseEMode,
   validatePhysicalPhaseE,
   type PhysicalPhaseEInput,
@@ -386,6 +388,41 @@ describe('validatePhysicalPhaseE', () => {
       expect(mode).toEqual({ mode: 'bridged', source: 'set' });
       expect(clock).toBe(12_000);
       expect(reads).toBe(4);
+    });
+
+    it('gates a member tick on the federated mode and records the wait', async () => {
+      let clock = 0;
+      const reads = [
+        { mode: 'bridged', source: 'set' },
+        { mode: 'legacy', source: 'set' },
+      ] as const;
+      let i = 0;
+      const record = await requirePhysicalPhaseEStageMode({ stage: 'legacy-after', waitMs: 60_000 }, {
+        readMode: async () => reads[Math.min(i++, reads.length - 1)],
+        sleep: async (ms) => { clock += ms; },
+        now: () => clock,
+      });
+      expect(record).toMatchObject({
+        schemaVersion: PHASE_E_MODE_AWAIT_SCHEMA,
+        stage: 'legacy-after',
+        expected: 'legacy',
+        mode: 'legacy',
+        source: 'set',
+        waitedMs: PHASE_E_MODE_POLL_MS,
+      });
+    });
+
+    it('stops the scenario when the mode never federates, instead of letting the tick run in the old mode', async () => {
+      let clock = 0;
+      await expect(requirePhysicalPhaseEStageMode({ stage: 'bridged-member', waitMs: 10_000 }, {
+        readMode: async () => ({ mode: 'legacy', source: 'set' }),
+        sleep: async (ms) => { clock += ms; },
+        now: () => clock,
+      })).rejects.toThrow('physical Phase E bridged-member: this host still reads hiveGit.mode=legacy (set) after 10000ms; expected bridged (set)');
+      // An absent row reads as bridged by default, but only a set row proves the flip arrived.
+      await expect(requirePhysicalPhaseEStageMode({ stage: 'bridged-member', waitMs: 0 }, {
+        readMode: async () => ({ mode: 'bridged', source: 'absent' }),
+      })).rejects.toThrow('this host still reads hiveGit.mode=bridged (absent)');
     });
 
     it('bounds the wait', async () => {

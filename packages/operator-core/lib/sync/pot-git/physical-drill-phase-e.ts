@@ -67,6 +67,7 @@ export const PHASE_E_MODE_WAIT_MAX_MS = 20 * 60_000;
 export const PHASE_E_MODE_POLL_MS = 5_000;
 export const PHASE_E_MODE_READ_SCHEMA = 'hive-git-physical-phase-e-mode-read/v1' as const;
 export const PHASE_E_MODE_ENSURE_SCHEMA = 'hive-git-physical-phase-e-mode-ensure/v1' as const;
+export const PHASE_E_MODE_AWAIT_SCHEMA = 'hive-git-physical-phase-e-mode-await/v1' as const;
 
 export type PhysicalPhaseETrigger = {
   tool: 'git-sync:run';
@@ -516,6 +517,53 @@ export async function awaitPhysicalPhaseEStageMode(
     mode = await read(PHASE_D_WORKSPACE, PHASE_A_POT_HOME, deps.sql);
   }
   return mode;
+}
+
+export type PhysicalPhaseEModeAwait = {
+  schemaVersion: typeof PHASE_E_MODE_AWAIT_SCHEMA;
+  workspaceId: string;
+  potHomeSlug: string;
+  stage: PhysicalPhaseEObservationStage;
+  expected: 'legacy' | 'bridged';
+  mode: PotGitMode;
+  source: PhysicalPhaseEModeRead['source'];
+  waitedMs: number;
+  observedAt: string;
+};
+
+/**
+ * Gate a member's git-sync tick on the stage's mode having reached this host.
+ * The tower writes the mode row and the VM learns it by federation, so the VM
+ * tick that follows a flip can run in the previous mode. Unlike the observation
+ * wait, a timeout here throws: the tick would measure the wrong mode, and the
+ * scenario must stop before firing it (WI-10003791 second race).
+ */
+export async function requirePhysicalPhaseEStageMode(
+  input: { stage: PhysicalPhaseEObservationStage; waitMs: number },
+  deps: Pick<PhaseEDeps, 'sql' | 'readMode' | 'sleep' | 'now'> = {},
+): Promise<PhysicalPhaseEModeAwait> {
+  const now = deps.now ?? Date.now;
+  const startedAt = now();
+  const mode = await awaitPhysicalPhaseEStageMode(input, deps);
+  const waitedMs = now() - startedAt;
+  const expected = PHASE_E_STAGE_MODE[input.stage];
+  if (!stageModeReached(mode, input.stage)) {
+    throw new Error(
+      `physical Phase E ${input.stage}: this host still reads hiveGit.mode=${mode.mode} (${mode.source}) after ${waitedMs}ms; ` +
+        `expected ${expected}${expected === 'bridged' ? ' (set)' : ''}. The mode flip has not federated here, so a git-sync tick now would run in the wrong mode.`,
+    );
+  }
+  return {
+    schemaVersion: PHASE_E_MODE_AWAIT_SCHEMA,
+    workspaceId: PHASE_D_WORKSPACE,
+    potHomeSlug: PHASE_A_POT_HOME,
+    stage: input.stage,
+    expected,
+    mode: mode.mode,
+    source: mode.source,
+    waitedMs,
+    observedAt: new Date().toISOString(),
+  };
 }
 
 /** Read the fixed canary's mode row as-is (the scenario records it before any baseline write). */

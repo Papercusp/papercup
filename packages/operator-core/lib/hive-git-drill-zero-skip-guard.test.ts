@@ -1975,6 +1975,18 @@ esac
     expect(wait).toBeGreaterThan(0);
     expect(wait).toBeLessThanOrEqual(1200);
 
+    // Second race: each VM tick after a tower mode flip must wait for the flip to
+    // federate to the VM, and a timeout must stop the scenario before the tick.
+    const memberAwaitAt = at(`phase-e-await-mode bridged-member '$PHASE_E_MODE_WAIT_SEC'`, flipAt);
+    const memberTickAt = at('run_vm_git_sync >"$phase_dir/vm-member-raw.json"', flipAt);
+    expect(memberAwaitAt).toBeLessThan(memberTickAt);
+    expect(phaseE.slice(memberAwaitAt, memberTickAt)).not.toContain('|| true');
+    const rollbackAwaitAt = at(`phase-e-await-mode legacy-after '$PHASE_E_MODE_WAIT_SEC'`, rollbackAt);
+    const rollbackTickAt = at('run_vm_git_sync >"$phase_dir/rollback-vm-raw.json"', rollbackAt);
+    expect(rollbackAwaitAt).toBeLessThan(rollbackTickAt);
+    expect(phaseE.slice(rollbackAwaitAt, rollbackTickAt)).not.toContain('|| true');
+    expect(phaseE.match(/run_vm_git_sync >/g) ?? []).toHaveLength(2);
+
     const exitHandler = physicalScenario.slice(
       physicalScenario.indexOf('phase_e_restore_on_exit() {'),
       physicalScenario.indexOf('\n}\n', physicalScenario.indexOf('phase_e_restore_on_exit() {')),
