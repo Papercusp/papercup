@@ -171,7 +171,8 @@ describe('Vitest config enrollment guard: stale exemptions and nested workspace 
   // Falsifiability control, in memory only: the real bloom-grid config with its server line
   // removed must be caught, so the HEAD check above cannot pass vacuously.
   it('would flag the real bloom-grid config if its server fragment were dropped', () => {
-    const real = collectVitestConfigs().filter(({ path }) => path === BLOOM_GRID);
+    const all: Array<{ path: string; content: string }> = collectVitestConfigs();
+    const real = all.filter(({ path }) => path === BLOOM_GRID);
     expect(real).toHaveLength(1);
     const mutated = real.map((c) => ({ ...c, content: c.content.replace('server: gateParticipationServerConfig(),', '') }));
     expect(mutated[0].content).not.toBe(real[0].content);
