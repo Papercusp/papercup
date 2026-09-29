@@ -44,6 +44,46 @@ export function linuxPpidFromProcStat(stat: string): number | null {
 }
 
 /**
+ * Linux /proc stat field 5 (pgrp — the process-group id). Same `lastIndexOf(')')`
+ * discipline as ppid above. Returns null rather than a guess: a wrong pgrp would
+ * widen a group signal to processes the caller does not own.
+ */
+export function linuxPgrpFromProcStat(stat: string): number | null {
+  const close = stat.lastIndexOf(')');
+  if (close < 0) return null;
+  // Text after comm starts at field 3 (state); pgrp is field 5 => index 2.
+  const pgrp = stat
+    .slice(close + 1)
+    .trim()
+    .split(/\s+/)[2];
+  if (!pgrp || !/^\d+$/.test(pgrp)) return null;
+  const n = Number(pgrp);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * Read the process-group id of `pid`. Any read or parse failure returns null, so a
+ * caller that would signal the whole group falls back to the single pid.
+ */
+export function readProcessGroupId(pid: number): number | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    if (process.platform === 'linux') {
+      return linuxPgrpFromProcStat(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+    }
+    if (process.platform === 'darwin') {
+      const raw = execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).trim();
+      if (!/^\d+$/.test(raw)) return null;
+      const n = Number(raw);
+      return Number.isInteger(n) && n > 0 ? n : null;
+    }
+  } catch {
+    // Process exited, permissions changed, or this platform has no safe reader.
+  }
+  return null;
+}
+
+/**
  * Linux /proc stat field 3 (state — R/S/D/Z/T/...), robust to spaces and ')' in comm.
  * Same `lastIndexOf(')')` discipline as starttime/ppid above.
  *

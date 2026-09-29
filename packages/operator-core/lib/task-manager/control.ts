@@ -23,7 +23,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
+import { linuxProcStateFromStat, readProcessGroupId, readProcessIdentity } from '../process-identity';
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
 import { notifyTaskKillRequested } from './kill-notify';
 import { closeTask, getSubtree, getTask, reopenStrandedTask, updateTaskLimits } from './store';
@@ -82,6 +82,9 @@ export interface ControlDeps {
   fs?: CgroupFs;
   kill?: (pid: number, signal: NodeJS.Signals) => void;
   readIdentity?: (pid: number) => string | null;
+  /** Process-group id of a pid (null = unknown). Lets the verified-pid path take a
+   *  detached task's whole subtree instead of only its root. */
+  readProcessGroup?: (pid: number) => number | null;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 }
@@ -92,6 +95,7 @@ function deps(d: ControlDeps = {}): Required<Omit<ControlDeps, 'now'>> & { now: 
     fs: d.fs ?? nodeCgroupFs,
     kill: d.kill ?? ((pid, signal) => process.kill(pid, signal)),
     readIdentity: d.readIdentity ?? readProcessIdentity,
+    readProcessGroup: d.readProcessGroup ?? readProcessGroupId,
     now: d.now ?? Date.now,
     sleep: d.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
   };
@@ -430,24 +434,55 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     }
     return { ok: false, taskId, action: 'kill', error: verdict.error, detail: verdict.detail };
   }
+  // EI-24635523980082322: a detached launch leads its own process group and its
+  // payload runs BELOW the recorded root. Signalling the root alone reaches a
+  // wrapper shell whose TERM trap waits on its foreground child, so the agent
+  // survives — measured on macOS, where no cgroup exists to take the subtree.
+  // Signal the group only when the verified pid IS its leader; a pid inside
+  // someone else's group keeps the single-pid signal, never a widened one.
+  const groupLeader = d.readProcessGroup(verdict.pid) === verdict.pid;
+  const target = groupLeader ? -verdict.pid : verdict.pid;
+  const targetLabel = groupLeader ? `process group ${verdict.pid}` : `pid ${verdict.pid}`;
   try {
     // EI-21905196224862433: same kill-intent notice as the confined path above —
     // an UNCONFINED job's watched child IS the real payload, so its own close
     // handler already sees `code===null, signal===<sig>` correctly, but the
     // notice is cheap to send unconditionally and keeps both paths consistent.
     notifyTaskKillRequested(taskId, signal);
-    d.kill(verdict.pid, signal);
+    d.kill(target, signal);
   } catch (e) {
     return { ok: false, taskId, action: 'kill', error: 'command_failed', detail: (e as Error).message };
   }
-  await closeTask(taskId, { state: 'killed', exitReason: `pid kill ${signal}` });
+  let escalated = false;
+  if (opts.escalateAfterMs && opts.escalateAfterMs > 0 && signal !== 'SIGKILL') {
+    await d.sleep(opts.escalateAfterMs);
+    // Re-verify before escalating: the leader still holding the identity we
+    // verified is what keeps the group id from naming a recycled pid.
+    if (verifyPidStillOurs(row, d).ok) {
+      try {
+        notifyTaskKillRequested(taskId, 'SIGKILL');
+        d.kill(target, 'SIGKILL');
+        escalated = true;
+      } catch (e) {
+        return {
+          ok: false, taskId, action: 'kill', error: 'command_failed',
+          detail: `SIGKILL escalation failed for ${targetLabel}: ${(e as Error).message}`,
+        };
+      }
+    }
+  }
+  const how = `${signal}${escalated ? ' (escalated to SIGKILL)' : ''}`;
+  await closeTask(taskId, {
+    state: 'killed',
+    exitReason: `${groupLeader ? 'group' : 'pid'} kill ${signal}${escalated ? ' (escalated)' : ''}`,
+  });
   return {
     ok: true,
     taskId,
     action: 'kill',
     detail: verdict.weak
-      ? `pid ${verdict.pid} signalled ${signal} (WEAK: row never captured a kernel identity)`
-      : `pid ${verdict.pid} signalled ${signal}`,
+      ? `${targetLabel} signalled ${how} (WEAK: row never captured a kernel identity)`
+      : `${targetLabel} signalled ${how}`,
   };
 }
 
