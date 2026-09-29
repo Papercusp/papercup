@@ -352,6 +352,49 @@ describe('vite-build-singleflight — a red build must not destroy the bundle (E
     expect(readFileSync(marker.log, 'utf8')).toContain('tapClientResource');
   }, 15_000);
 
+  // WI-10003916: a green-pin release deploy (setup-release runs the DEFAULT retain
+  // regime and discards stdout with `1>/dev/null`) failed with no vite error anywhere:
+  // the marker was written only in the RETAIN=0 branch, and the rollback's rebuild
+  // truncated .vite-build.log minutes later. Pin all three halves of the evidence.
+  it('a failing RETAIN-regime build records a marker and puts the vite error on STDERR', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+
+    const failing = launch({
+      PAPERCUSP_RETAIN_DIST_CHUNKS: '1',
+      VITE_BUILD_CMD: `echo 'RolldownError: "tapClientResource" is not exported'; exit 1`,
+    });
+    const io = collect(failing);
+    expect(await io.exited).toBe(1);
+
+    // A caller that throws stdout away still sees WHY the build failed.
+    expect(io.stderr()).toContain('build FAILED (exit 1)');
+    expect(io.stderr()).toContain('tapClientResource');
+    const marker = JSON.parse(readFileSync(join(tmp, '.vite-build-failure.json'), 'utf8'));
+    expect(marker.exitCode).toBe(1);
+    expect(readFileSync(marker.log, 'utf8')).toContain('tapClientResource');
+  }, 15_000);
+
+  it('the failed build log survives the NEXT build, and a retain success clears the stale marker', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+
+    const failing = launch({ PAPERCUSP_RETAIN_DIST_CHUNKS: '1', VITE_BUILD_CMD: `echo 'ERR-FIRST-BUILD'; exit 1` });
+    expect(await collect(failing).exited).toBe(1);
+    const failedLog = JSON.parse(readFileSync(join(tmp, '.vite-build-failure.json'), 'utf8')).log;
+
+    // The recovery build (setup-release's rollback) runs next and rewrites .vite-build.log.
+    const recovery = launch({
+      PAPERCUSP_RETAIN_DIST_CHUNKS: '1',
+      VITE_BUILD_CMD: 'echo RECOVERED > "$VITE_BUILD_OUT_ROOT/dist/index.html"; echo recovery-ok; exit 0',
+    });
+    expect(await collect(recovery).exited).toBe(0);
+
+    expect(readFileSync(join(tmp, '.vite-build.log'), 'utf8')).not.toContain('ERR-FIRST-BUILD');
+    expect(readFileSync(failedLog, 'utf8')).toContain('ERR-FIRST-BUILD');
+    expect(existsSync(join(tmp, '.vite-build-failure.json'))).toBe(false);
+  }, 15_000);
+
   it('a SUCCESSFUL build swaps the staged bundle over dist/ and clears a stale failure record', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
     seedWorkingBundle();

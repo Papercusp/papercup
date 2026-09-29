@@ -295,14 +295,32 @@ if [ "$RETAIN" -eq 0 ]; then
     # Nothing to swap — and emphatically DO NOT touch the live dist/.
     rm -rf "$STAGE"
   else
-    # FAILURE — the live dist/ was never touched and keeps serving. Record why,
-    # so host-spa.ts can say "the last build FAILED" instead of telling the user
-    # to run the build that just failed (EI-10539).
+    # FAILURE — the live dist/ was never touched and keeps serving. The failure
+    # record itself is written below for BOTH regimes (EI-10539 / WI-10003916).
     rm -rf "$STAGE"
-    printf '{"failedAt":"%s","exitCode":%s,"log":"%s"}\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" "$LOG" > "$FAILURE" 2>/dev/null || true
-    echo "[vite-build-singleflight] build FAILED (exit $status) — dist/ left intact (EI-10539). Log: $LOG" >&2
   fi
+fi
+
+# Failure evidence is REGIME-INDEPENDENT and must OUTLIVE the next build
+# (WI-10003916). Two defects combined to destroy it on a failed release deploy:
+# the record lived only in the RETAIN=0 branch above, so a default (retain)
+# build failed with no marker and no stderr line; and $LOG is truncated by the
+# very next build, which setup-release's rollback runs within minutes. Callers
+# that discard stdout (setup-release: `npm run build 1>/dev/null`) therefore
+# lost the vite error entirely. So: keep a copy the next build cannot
+# overwrite, point the marker at it, and put the tail on STDERR where every
+# caller's log sees it. A success in either regime clears the stale marker.
+FAIL_TAIL_LINES="${VITE_BUILD_FAIL_TAIL_LINES:-80}"
+if [ "$status" -ne 0 ]; then
+  FAILED_LOG="$OUT_ROOT/.vite-build-failed.log"
+  cp -f "$LOG" "$FAILED_LOG" 2>/dev/null || FAILED_LOG="$LOG"
+  printf '{"failedAt":"%s","exitCode":%s,"log":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" "$FAILED_LOG" > "$FAILURE" 2>/dev/null || true
+  echo "[vite-build-singleflight] build FAILED (exit $status) — dist/ left intact (EI-10539). Log: $FAILED_LOG" >&2
+  echo "[vite-build-singleflight] last ${FAIL_TAIL_LINES} line(s) of the failed build:" >&2
+  { tail -n "$FAIL_TAIL_LINES" "$FAILED_LOG" 2>/dev/null | sed 's/^/[vite-build-singleflight] | /' >&2; } || true
+elif [ "$RETAIN" -eq 1 ] && [ -f "$DIST/index.html" ]; then
+  rm -f "$FAILURE"
 fi
 
 # Capture a packaging snapshot while fd 9 still holds the singleflight lock.

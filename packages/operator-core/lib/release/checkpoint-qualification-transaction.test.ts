@@ -21,6 +21,7 @@ import {
   createFrozenCandidateQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairAdmitted,
+  markFrozenRepairVerificationGreen,
 } from './frozen-candidate-repair-queue';
 import {
   CHECKPOINT_ELIGIBILITY_PREDICATES,
@@ -958,6 +959,68 @@ describe('logical checkpoint qualification transaction', () => {
         }),
       ),
     ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+  });
+
+  // EI-24610407938327281: a green advance whose P-008 staging bridge lost the git-sync lock
+  // leaves `ready-to-promote` as the retry marker. Blocking the successor qualification
+  // made that retry unreachable and deadlocked the gate for hours.
+  it('preserves a promoted ready-to-promote queue so the next run can retry the staging bridge', () => {
+    const provenGreen = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'advanced',
+      green: true,
+      nowMs: 400,
+    }).transaction;
+    // Built through the real transitions (red → admit → verification green) so the
+    // parser accepts it exactly as it accepts the live row.
+    const promoted = markFrozenRepairVerificationGreen(
+      markFrozenRepairAdmitted(
+        markFrozenCandidateVerificationRed(
+          createFrozenCandidateQueue({ candidate: 'frozen-0', qualificationAttemptId: 'attempt-1', base: null, nowMs: 200 }),
+          { failingTests: ['broken.test.ts'], nowMs: 250 },
+        ),
+        {
+          atMs: 300,
+          actor: 'agent-1',
+          source: { ref: 'staging', sha: 'candidate-1' },
+          fromRepairHead: 'frozen-0',
+          toRepairHead: 'candidate-1',
+          paths: ['fixed.ts'],
+          unchanged: [],
+          blobs: { 'fixed.ts': 'blob-1' },
+        },
+      ),
+      { repairHead: 'candidate-1', nowMs: 350 },
+    );
+    expect(promoted.phase).toBe('ready-to-promote');
+    const successor = { attemptId: 'attempt-2', declaredPaths: [], candidate: 'candidate-2', nowMs: 500 };
+
+    expect(assessTerminalRepairQueueReconciliation(provenGreen, successor, promoted)).toMatchObject({
+      status: 'preserved',
+      reason: 'promoted-awaiting-staging-bridge',
+      predecessorAttemptId: 'attempt-1',
+      successorAttemptId: 'attempt-2',
+    });
+    // Negative controls — each keeps the old fail-closed verdict.
+    const red = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'not-green',
+      green: false,
+      nowMs: 400,
+    }).transaction;
+    expect(assessTerminalRepairQueueReconciliation(red, successor, promoted)).toMatchObject({
+      status: 'blocked',
+      reason: 'queue-not-safe-unstarted',
+    });
+    expect(
+      assessTerminalRepairQueueReconciliation(provenGreen, successor, { ...promoted, repairHead: 'other-head' }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+    expect(
+      assessTerminalRepairQueueReconciliation(provenGreen, successor, {
+        ...promoted,
+        qualificationAttemptId: 'someone-else',
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
   });
 
   it('preserves a predecessor-linked repair head that is ready for its first verification', () => {

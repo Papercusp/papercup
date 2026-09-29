@@ -1444,6 +1444,7 @@ export type RepairQueueReconciliation = {
     | 'queue-origin-unknown'
     | 'queue-not-safe-unstarted'
     | 'matching-untested-repair-head'
+    | 'promoted-awaiting-staging-bridge'
     | 'exact-safe-unstarted'
     | 'cas-miss';
   predecessorAttemptId: string;
@@ -1517,6 +1518,32 @@ export function assessTerminalRepairQueueReconciliation(
     return {
       status: 'blocked',
       reason: 'queue-origin-mismatch',
+      candidate: queue.candidate,
+      ...base,
+    };
+  }
+  // EI-24610407938327281: main ALREADY advanced to this queue's repairHead, but the P-008
+  // post-promotion staging bridge (green-checkpoint.ts `absorbPromotedLineageIntoStaging`)
+  // did not complete — measured 2026-09-29: git-sync held `git-sync:papercusp` at the
+  // instant the promoting run tried it — so the row stays at `ready-to-promote` as the
+  // documented idempotent retry marker for "the next tick". Only a gate RUN can retry that
+  // bridge, and a scheduled run needs a successor qualification first. Falling through to
+  // `queue-not-safe-unstarted` refused every successor (`skipped-qualification-conflict`
+  // at 16:23Z and 17:24Z), so the bridge could never be retried, staging never absorbed the
+  // promoted lineage, and no fresh cut could fast-forward main: a silent pipeline deadlock.
+  // Deliberately narrow: the terminal predecessor itself proved THIS head green and still
+  // owns the queue, and no dispatch reservation is live.
+  if (
+    originMatchesTerminal &&
+    current.phase === 'terminal' &&
+    current.outcome.kind === 'green' &&
+    queue.phase === 'ready-to-promote' &&
+    queue.repairHead === current.candidate &&
+    queue.dispatchReservation == null
+  ) {
+    return {
+      status: 'preserved',
+      reason: 'promoted-awaiting-staging-bridge',
       candidate: queue.candidate,
       ...base,
     };
