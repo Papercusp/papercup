@@ -36,7 +36,8 @@ import { createAdaptorServer } from '@hono/node-server';
 import { listenWithEaddrinuseRetry } from '@papercusp/operator-core/lib/listen-with-eaddrinuse-retry';
 import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';
 import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
-import { handler } from './host-handler';
+import { externalIngressHandler, handler } from './host-handler';
+import { externalIngressPort } from '@papercusp/operator-core/lib/auth/forwarded-request-trust';
 import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
 import { requestOnlyHost } from '@papercusp/operator-core/lib/background-workers';
 import { scheduleTranscriptSearchWarmup } from '@papercusp/operator-core/lib/transcript-search-warmup';
@@ -447,6 +448,27 @@ function startRequestServers(): void {
     });
   } else {
     listenWithEaddrinuseRetry(httpServer, { ...listenOpts, onListening: () => onListening(port) });
+  }
+
+  // external-app-access P-004 / R-7: the external-ingress listener. Opened only when
+  // PAPERCUSP_EXTERNAL_INGRESS_PORT is set (P-009's tunnel setup sets it and points
+  // the user's own tunnel here). It serves the same app, but every request runs as
+  // external ingress, so no header can reach local trust. A bind failure is logged,
+  // never fatal: the operator itself must keep serving the desktop.
+  const ingressPort = externalIngressPort();
+  if (ingressPort !== null && ingressPort !== port) {
+    const ingressServer = createAdaptorServer({ fetch: externalIngressHandler });
+    listenWithEaddrinuseRetry(ingressServer as unknown as import('node:http').Server, {
+      ...listenOpts,
+      port: ingressPort,
+      ...(cluster.isWorker ? { reusePort: true } : {}),
+      onFatal: (err: NodeJS.ErrnoException) => {
+        console.error(`[hono-host] external-ingress listener on ${hostname}:${ingressPort} failed — tunnel traffic is NOT served:`, err);
+      },
+      onListening: () => {
+        console.log(`[hono-host] external-ingress listener on ${hostname}:${ingressPort} (no local trust)`);
+      },
+    });
   }
 
   // B2 (infra-fail-fast-build-integrity P-006) — the "safe half": explicit inbound
