@@ -434,13 +434,17 @@ describe('program child admission pins the root specification', () => {
     });
     if (accepted.target.kind !== 'work-item') throw new Error('program root must be a work item');
     const rootId = accepted.target.id;
-    const [root] = await sql<Array<{ updated_ts: string | number }>>`
-      SELECT updated_ts FROM harness_shared.work_items
+    const [root] = await sql<Array<{ updated_ts: string | number; item_kind: string }>>`
+      SELECT updated_ts, item_kind FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId} AND feature_id = ${rootId}`;
     const attempt = { workspaceId, harnessSlug, workItemId: rootId,
       receiptId: accepted.receiptId, operationId: accepted.operationId,
       specificationRevision: accepted.specificationRevision,
       updatedTs: Number(root.updated_ts), requireUncancelled: true };
+    // The guard also reports the root's family, which the program workflow passes
+    // to the settling state write. Issue-family kinds are exactly bug/change/task
+    // (the engineer_issues view predicate); every other kind is feature-family.
+    const family = ['bug', 'change', 'task'].includes(root.item_kind) ? 'issue' : 'feature';
     // WI-10003631: the one-round-trip step guard must agree with the full status
     // read at every lifecycle point it is consulted on.
     const guardAgrees = async () => {
@@ -449,14 +453,14 @@ describe('program child admission pins the root specification', () => {
         getBlueprintOperationStatus(sql, accepted, 'program-caller'),
       ]);
       expect(guard).toEqual({ terminal: status.phase === 'terminal',
-        cancellationRequested: status.cancellationRequested });
+        cancellationRequested: status.cancellationRequested, family });
       return guard;
     };
-    expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: false });
+    expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: false, family });
     // WI-10003631: with a caller, the same statement proves the receipt — the
     // program start relies on it instead of a full canonical read.
     expect(await readAcceptedProgramRootGuard(sql, accepted, 'program-caller'))
-      .toEqual({ terminal: false, cancellationRequested: false });
+      .toEqual({ terminal: false, cancellationRequested: false, family });
     for (const [label, handle, caller] of [
       ['wrong caller', accepted, 'someone-else'],
       ['wrong operation', { ...accepted, operationId: 'other-op' }, 'program-caller'],
@@ -471,7 +475,7 @@ describe('program child admission pins the root specification', () => {
     await sql`UPDATE harness_shared.work_items
       SET payload = jsonb_set(payload, '{blueprintCancellation}', '{"eventId":"test"}'::jsonb, true)
       WHERE workspace_id = ${workspaceId} AND feature_id = ${rootId}`;
-    expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: true });
+    expect(await guardAgrees()).toEqual({ terminal: false, cancellationRequested: true, family });
     const raced = await runWithWorkspace(workspaceId, () => setWorkItemState(rootId, 'done', {
       harness: harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
       completionRef: blueprintProgramCompletionRef(accepted, 'succeeded'),
@@ -488,7 +492,7 @@ describe('program child admission pins the root specification', () => {
     expect(cancelled?.state).toBe('dropped');
     expect(await getBlueprintOperationStatus(sql, accepted, 'program-caller'))
       .toMatchObject({ phase: 'terminal', outcome: 'cancelled' });
-    expect(await guardAgrees()).toEqual({ terminal: true, cancellationRequested: true });
+    expect(await guardAgrees()).toEqual({ terminal: true, cancellationRequested: true, family });
   }, 90_000);
 
   it('passes root cancellation to an accepted child before reporting the root cancelled', async () => {
