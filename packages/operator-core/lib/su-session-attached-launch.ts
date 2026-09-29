@@ -1,5 +1,7 @@
 /** PUI's attached-engine branch of the shared launch-su door. */
 import { randomUUID } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { getChat } from './agent-chats-data';
 import { getAdvSession, markAdvSessionEnded, setAdvSessionPid } from './adv-sessions';
@@ -8,7 +10,8 @@ import type { PuiSuSessionBinding } from './launch-agent';
 import { nativeSessionHandleForAdvSession } from './native-session-handles';
 import { _dropSuSessionHostForTest, getRegisteredSuSessionHost, rehydrateRegisteredSuSessionHost, type SuSessionHost } from './su-session-host';
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor, readDurableSuSession } from './su-session-persistence';
-import { startClaudeSuEngine, type ClaudeSuEngine } from './su-session-claude-engine';
+import { startClaudeSuEngine, type ClaudeEngineIdentity, type ClaudeSuEngine } from './su-session-claude-engine';
+import { loadHarnessRegistry } from './harness-registry';
 import type { ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 import { startSuRpcEngine, type SuRpcEngine } from './su-session-rpc-engine';
 import type { NativeSessionHandle } from './native-session-handles';
@@ -55,6 +58,36 @@ export function _simulateLaunchingProcessLossForTest(input: {
 /** Exact-resume attempts per reconnect: the original plus one automatic retry
  * after a startup-deadline timeout (P-028). A second timeout is reported. */
 export const RESUME_STARTUP_ATTEMPTS = 2;
+
+function realDir(path: string): string {
+  try { return realpathSync(path); } catch { return resolve(path); }
+}
+
+/** Scope rule of plan pui-chat-first-ux-2026-09-28 D-004/D-005: a Claude chat
+ * whose directory lies inside a registered checkout keeps the SU identity,
+ * because that tree is shared and the psu hooks carry its lock, secrets and
+ * migration rails. Anywhere else it is Claude Code's own coding assistant. */
+export function claudeEngineIdentityForCwd(cwd: string, checkoutRoots: readonly string[]): ClaudeEngineIdentity {
+  const dir = realDir(cwd);
+  const inside = checkoutRoots.some((root) => {
+    const rel = relative(realDir(root), dir);
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  });
+  return inside ? 'su' : 'coding-assistant';
+}
+
+/** Recomputed from the same inputs on launch and on resume, so a resumed chat
+ * keeps its identity without persisted state. An unreadable registry keeps the
+ * SU identity: dropping the rails is the choice that needs positive evidence. */
+async function claudeEngineIdentityForLaunch(workspaceId: string, cwd: string | null | undefined): Promise<ClaudeEngineIdentity> {
+  if (!cwd) return 'su';
+  try {
+    const registry = await loadHarnessRegistry(workspaceId);
+    return claudeEngineIdentityForCwd(cwd, registry.projects.flatMap((project) => project.path ? [project.path] : []));
+  } catch {
+    return 'su';
+  }
+}
 
 /** Classified by the typed error's code rather than `instanceof`, so a
  * duplicated module record or a mocked host module cannot hide the class. */
@@ -140,7 +173,8 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
             active = record.backend === 'claude'
               ? startClaudeSuEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'claude' },
                 { nativeSession: resume.nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
-                { ...options, host: restored as SuSessionHost<'claude'>, resume: resume.exact })
+                { ...options, host: restored as SuSessionHost<'claude'>, resume: resume.exact,
+                  identity: await claudeEngineIdentityForLaunch(workspaceId, resume.boot.cwd) })
               : startSuRpcEngine(resume.boot, resume.binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' },
                 { ...options, nativeSession: resume.nativeSession as Extract<NativeSessionHandle, { backend: 'codex' | 'omp' }> });
             state.engines.set(key, active);
@@ -264,7 +298,8 @@ export async function launchAttachedSuSession(request: Request, input: AttachedS
       };
       engine = result.agent === 'claude'
         ? startClaudeSuEngine(result, binding as PuiSuSessionBinding & { backend: 'claude' },
-          { nativeSession: nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null }, options)
+          { nativeSession: nativeSession as ClaudeSuRuntimeBinding['nativeSession'], transcriptPath: null },
+          { ...options, identity: await claudeEngineIdentityForLaunch(workspaceId, result.cwd) })
         : startSuRpcEngine(result, binding as PuiSuSessionBinding & { backend: 'codex' | 'omp' }, options);
       state.engines.set(key, engine);
       await persistSuSessionDescriptor(result.sessionId, engine.adapter.host.descriptor());

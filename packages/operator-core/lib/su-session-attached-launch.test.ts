@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   chat: vi.fn(), read: vi.fn(), bind: vi.fn(), bootstrap: vi.fn(), engine: vi.fn(), host: vi.fn(),
   ended: vi.fn(), pid: vi.fn(), persist: vi.fn(), reconcile: vi.fn(), rpc: vi.fn(),
-  resume: vi.fn(), rehydrate: vi.fn(),
+  resume: vi.fn(), rehydrate: vi.fn(), registry: vi.fn(),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'workspace' }));
 vi.mock('./agent-chats-data', () => ({ getChat: mocks.chat }));
@@ -20,7 +23,8 @@ vi.mock('./su-session-persistence', () => ({ readDurableSuSession: mocks.read, b
 vi.mock('./su-session-claude-engine', () => ({ startClaudeSuEngine: mocks.engine }));
 vi.mock('./su-session-rpc-engine', () => ({ startSuRpcEngine: mocks.rpc }));
 vi.mock('./endpoint-route/routes/agent-mcp/bootstrap-su', () => ({ bootstrapSu: { handler: mocks.bootstrap } }));
-import { launchAttachedSuSession } from './su-session-attached-launch';
+vi.mock('./harness-registry', () => ({ loadHarnessRegistry: mocks.registry }));
+import { claudeEngineIdentityForCwd, launchAttachedSuSession } from './su-session-attached-launch';
 import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
 
 const input = { agent: 'claude', agent_chat_id: 'chat', harness_slug: 'project', account: 'default', carry: 'warm' as const };
@@ -140,6 +144,59 @@ describe('attached launch authority', () => {
     const call = (agent === 'claude' ? mocks.engine : mocks.rpc).mock.calls[0];
     expect(call[agent === 'claude' ? 3 : 2]).toMatchObject({ ...options, host: restored, beforeReady, onExit, toolApproval: 'prompt',
       ...(agent === 'claude' ? { resume: true } : { nativeSession: native }) });
+  });
+
+  describe('engine identity scope rule (pui-chat-first-ux-2026-09-28 D-004/D-005)', () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'pui-identity-')));
+    const checkout = join(base, 'checkout');
+    const fresh = join(base, 'fresh');
+    mkdirSync(join(checkout, 'packages', 'app'), { recursive: true });
+    mkdirSync(join(base, 'checkout-sibling'), { recursive: true });
+    mkdirSync(fresh, { recursive: true });
+    symlinkSync(join(checkout, 'packages'), join(base, 'linked-packages'));
+    afterAll(() => rmSync(base, { recursive: true, force: true }));
+    const identityOf = (call: unknown[] | undefined) => (call?.[3] as { identity?: string } | undefined)?.identity;
+
+    it.each([
+      { dir: () => checkout, expected: 'su', why: 'the checkout root' },
+      { dir: () => join(checkout, 'packages', 'app'), expected: 'su', why: 'a directory inside it' },
+      { dir: () => join(base, 'linked-packages'), expected: 'su', why: 'a symlink into it' },
+      { dir: () => join(base, 'checkout-sibling'), expected: 'coding-assistant', why: 'a sibling sharing its name prefix' },
+      { dir: () => base, expected: 'coding-assistant', why: 'its parent' },
+      { dir: () => fresh, expected: 'coding-assistant', why: 'an unregistered directory' },
+    ])('treats $why as $expected', ({ dir, expected }) => {
+      expect(claudeEngineIdentityForCwd(dir(), [checkout])).toBe(expected);
+    });
+
+    it('launches a fresh directory as a coding assistant and a registered checkout as SU', async () => {
+      mocks.registry.mockResolvedValue({ projects: [{ slug: 'project', path: checkout }, { slug: 'repo-less' }] });
+      mocks.bootstrap.mockImplementationOnce(async () => Response.json({ ...boot, cwd: fresh }));
+      await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'identity-fresh' });
+      mocks.bootstrap.mockImplementationOnce(async () => Response.json({ ...boot, cwd: join(checkout, 'packages') }));
+      await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'identity-checkout' });
+      expect(mocks.registry).toHaveBeenCalledWith('workspace');
+      expect(identityOf(mocks.engine.mock.calls[0])).toBe('coding-assistant');
+      expect(identityOf(mocks.engine.mock.calls[1])).toBe('su');
+    });
+
+    it('keeps the SU identity when the registry cannot be read', async () => {
+      mocks.registry.mockRejectedValue(new Error('registry unavailable'));
+      mocks.bootstrap.mockImplementationOnce(async () => Response.json({ ...boot, cwd: fresh }));
+      await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'identity-unreadable' });
+      expect(identityOf(mocks.engine.mock.calls[0])).toBe('su');
+    });
+
+    it('recomputes the identity from the saved directory on resume', async () => {
+      mocks.registry.mockResolvedValue({ projects: [{ slug: 'project', path: checkout }] });
+      mocks.read.mockResolvedValue({ backend: 'claude', harnessSlug: 'project', advSessionId: 18, ownerId: 'su-engine' });
+      mocks.rehydrate.mockResolvedValue({ snapshot: () => ({ executorAttached: false, streamReady: false, terminal: true }) });
+      mocks.resume.mockResolvedValue({ boot: { ...boot, cwd: fresh }, nativeSession: { backend: 'claude', sessionId: 'saved-native' },
+        binding: { operation: 'attached', backend: 'claude', advSessionId: 18, ownerId: 'su-engine', workspaceId: 'workspace', harnessSlug: 'project', planSlug: null },
+        options: { agentChatId: 'identity-resume' }, beforeReady: vi.fn(), onExit: vi.fn(), release: vi.fn(), exact: true });
+      await launchAttachedSuSession(request(), { ...input, agent_chat_id: 'identity-resume' });
+      expect(mocks.bootstrap).not.toHaveBeenCalled();
+      expect(mocks.engine.mock.calls[0][3]).toMatchObject({ resume: true, identity: 'coding-assistant' });
+    });
   });
 
   describe('P-028 exact-resume startup timeout is recoverable and bounded', () => {
