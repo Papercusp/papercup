@@ -176,8 +176,9 @@ export function parseTestPassReuse(output: string): TestPassReuseRun[] {
 // executed-source-map reporter) used to report only to task stderr, which the gate discards, so
 // a writer failing on every row (WI-10003597) left reuse at zero for ~8h unnoticed. affected-tests
 // now prints the lines below (formats in scripts/lib/executed-source-map.mjs):
-//   EXECUTED_SOURCE_MAP_ALARM task=<ws::script> outcome=<failed|timed-out> rows=N error=<message>
-//   EXECUTED_SOURCE_MAP_TOTAL tasks=N written=N rows=N retired=N notPersisted=N nothingToRecord=N failed=N timedOut=N noReport=N malformed=N
+//   EXECUTED_SOURCE_MAP_ALARM task=<ws::script> outcome=<failed|timed-out|no-report-unexpected> rows=N error=<message>
+//   EXECUTED_SOURCE_MAP_TOTAL tasks=N written=N rows=N retired=N notPersisted=N nothingToRecord=N failed=N timedOut=N noReport=N malformed=N noReportExpected=N noReportUnexpected=N
+// The two split keys (WI-10003792) are absent from lines written before the split; they read as 0.
 
 export interface ExecutedSourceMapRecorderTotal {
   tasks: number;
@@ -188,8 +189,13 @@ export interface ExecutedSourceMapRecorderTotal {
   nothingToRecord: number;
   failed: number;
   timedOut: number;
+  /** Armed tasks that wrote no result file — the total, whatever their expectation. */
   noReport: number;
   malformed: number;
+  /** Of `noReport`: tasks that never could report (non-vitest, or a config outside the gate). WI-10003792. */
+  noReportExpected: number;
+  /** Of `noReport`: tasks whose enrolled config SHOULD have reported — a recorder regression or a killed run. */
+  noReportUnexpected: number;
 }
 
 export interface ExecutedSourceMapRecorderAlarm {
@@ -201,16 +207,18 @@ export interface ExecutedSourceMapRecorderAlarm {
 /**
  * `write-failing` = a database write failed or timed out; `not-persisted` = the round's run was
  * not clean, so it recorded nothing; `unreported` = no armed task reported any outcome (the
- * recorder is not wired); `nothing-to-record` = clean, but no recordable file ran;
- * `recorded` = proofs landed. The first three are alarms: in the gate's own clean checkout
- * each one means the next round has nothing to reuse.
+ * recorder is not wired); `task-silent` = at least one task whose enrolled config should have
+ * reported wrote nothing (WI-10003792); `nothing-to-record` = clean, but no recordable file ran;
+ * `recorded` = proofs landed. The first four are alarms: in the gate's own clean checkout
+ * each one means the next round has nothing (or less) to reuse.
  */
 export type ExecutedSourceMapRecorderVerdict =
   | 'recorded'
   | 'nothing-to-record'
   | 'write-failing'
   | 'not-persisted'
-  | 'unreported';
+  | 'unreported'
+  | 'task-silent';
 
 export interface ExecutedSourceMapRecorderSummary extends ExecutedSourceMapRecorderTotal {
   /** TOTAL lines seen (one per affected-tests invocation). */
@@ -233,12 +241,29 @@ const RECORDER_TOTAL_KEYS = [
   'malformed',
 ] as const satisfies readonly (keyof ExecutedSourceMapRecorderTotal)[];
 
+/**
+ * WI-10003792 split of `noReport`. Kept OUT of RECORDER_TOTAL_KEYS on purpose: a TOTAL line or a
+ * persisted recorder written before the split carries neither key, and must still parse (as 0)
+ * rather than read as malformed.
+ */
+const RECORDER_SPLIT_KEYS = ['noReportExpected', 'noReportUnexpected'] as const satisfies readonly (keyof ExecutedSourceMapRecorderTotal)[];
+
 const RECORDER_LINE_RE = /^(?:\[[^\]]*\]\s*)?(EXECUTED_SOURCE_MAP_(?:TOTAL|ALARM)) (.*)$/;
-const RECORDER_ALARM_VERDICTS = new Set<ExecutedSourceMapRecorderVerdict>(['write-failing', 'not-persisted', 'unreported']);
+const RECORDER_ALARM_VERDICTS = new Set<ExecutedSourceMapRecorderVerdict>([
+  'write-failing',
+  'not-persisted',
+  'unreported',
+  'task-silent',
+]);
 
 function recorderVerdict(t: ExecutedSourceMapRecorderTotal): ExecutedSourceMapRecorderVerdict {
   if (t.failed + t.timedOut > 0) return 'write-failing';
-  if (t.tasks > 0 && t.noReport === t.tasks) return 'unreported';
+  // Every armed task silent is `unreported` — unless every one of them was KNOWN unable to report,
+  // which is a round with nothing recordable, not a broken recorder.
+  if (t.tasks > 0 && t.noReport === t.tasks) {
+    return t.noReportExpected === t.tasks ? 'nothing-to-record' : 'unreported';
+  }
+  if (t.noReportUnexpected > 0) return 'task-silent';
   if (t.written > 0) return 'recorded';
   if (t.notPersisted > 0) return 'not-persisted';
   return 'nothing-to-record';
@@ -261,6 +286,8 @@ export function summarizeExecutedSourceMapRecorder(output: string): ExecutedSour
     timedOut: 0,
     noReport: 0,
     malformed: 0,
+    noReportExpected: 0,
+    noReportUnexpected: 0,
   };
   let invocations = 0;
   const alarms: ExecutedSourceMapRecorderAlarm[] = [];
@@ -282,6 +309,7 @@ export function summarizeExecutedSourceMapRecorder(output: string): ExecutedSour
     }
     invocations += 1;
     for (const k of RECORDER_TOTAL_KEYS) total[k] += int(f.get(k)) ?? 0;
+    for (const k of RECORDER_SPLIT_KEYS) total[k] += int(f.get(k)) ?? 0;
   }
   if (invocations === 0) return null;
   const verdict = recorderVerdict(total);
@@ -303,6 +331,13 @@ function recorderHeadline(r: ExecutedSourceMapRecorderSummary): string {
       return `PASS-PROOF RECORDER persisted nothing: ${r.notPersisted} run(s) saw a dirty or sha-less checkout`;
     case 'unreported':
       return `PASS-PROOF RECORDER silent: none of ${r.tasks} recording task(s) reported an outcome`;
+    case 'task-silent': {
+      const first = r.alarms.find((a) => a.outcome === 'no-report-unexpected');
+      return (
+        `PASS-PROOF RECORDER partly silent: ${r.noReportUnexpected} enrolled task(s) reported no outcome` +
+        (first ? ` (${first.task})` : '')
+      );
+    }
   }
 }
 
@@ -389,13 +424,22 @@ export function summarizeTestPassReuse(
   };
 }
 
-const RECORDER_VERDICTS = new Set<string>(['recorded', 'nothing-to-record', 'write-failing', 'not-persisted', 'unreported']);
+const RECORDER_VERDICTS = new Set<string>([
+  'recorded',
+  'nothing-to-record',
+  'write-failing',
+  'not-persisted',
+  'unreported',
+  'task-silent',
+]);
 
 /** Shape check for a persisted `recorder`; a malformed one reads as not reported (null). */
 function parseRecorderSummary(value: unknown): ExecutedSourceMapRecorderSummary | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
   if (!isCount(v.invocations) || !RECORDER_TOTAL_KEYS.every((k) => isCount(v[k]))) return null;
+  // A record persisted before the WI-10003792 split has neither key (read as 0); a present one must be a count.
+  if (!RECORDER_SPLIT_KEYS.every((k) => v[k] === undefined || isCount(v[k]))) return null;
   if (typeof v.verdict !== 'string' || !RECORDER_VERDICTS.has(v.verdict) || typeof v.alarm !== 'boolean') return null;
   if (!Array.isArray(v.alarms)) return null;
   const alarms: ExecutedSourceMapRecorderAlarm[] = [];
@@ -405,7 +449,10 @@ function parseRecorderSummary(value: unknown): ExecutedSourceMapRecorderSummary 
     if (typeof task !== 'string' || typeof outcome !== 'string' || typeof error !== 'string') return null;
     alarms.push({ task, outcome, error });
   }
-  const totals = Object.fromEntries(RECORDER_TOTAL_KEYS.map((k) => [k, v[k] as number])) as unknown as ExecutedSourceMapRecorderTotal;
+  const totals = Object.fromEntries([
+    ...RECORDER_TOTAL_KEYS.map((k) => [k, v[k] as number]),
+    ...RECORDER_SPLIT_KEYS.map((k) => [k, (v[k] as number | undefined) ?? 0]),
+  ]) as unknown as ExecutedSourceMapRecorderTotal;
   return {
     ...totals,
     invocations: v.invocations,

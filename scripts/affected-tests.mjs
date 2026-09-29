@@ -74,6 +74,7 @@ import {
   formatExecutedMapResultLines,
   formatExecutedMapTotalLine,
   readExecutedMapResults,
+  resolveTaskReportExpectation,
   summarizeExecutedMapResults,
   connectExecutedMapPg,
   executedMapEnabled,
@@ -286,6 +287,8 @@ import {
 const RUN_TOKEN = `${process.pid}-${randomBytes(4).toString("hex")}`;
 /** WI-10003603: taskKey → the executed-source-map result file its initial invocation was given. */
 const executedMapResultFiles = new Map();
+/** WI-10003792: taskKey → whether that task's recorder is EXPECTED to report (resolved at arming). */
+const executedMapReportExpectations = new Map();
 // WI-41782: keep one attributable entry in the SHARED TMPDIR instead of one
 // top-level file per invocation. The log deliberately outlives this process so a
 // background-job notifier or later triager can read the complete verdict; deleting
@@ -6446,6 +6449,15 @@ function runCapturedTask(
   if (executedMapResultFile) {
     clearExecutedMapResult(executedMapResultFile);
     executedMapResultFiles.set(taskKey(context.t), executedMapResultFile);
+    // WI-10003792: judged from the task's REAL script + config, so a silent enrolled task alarms
+    // and a task that never could report (non-vitest, exempt config) does not.
+    executedMapReportExpectations.set(
+      taskKey(context.t),
+      resolveTaskReportExpectation({
+        command: context.t.ws.scripts?.[context.t.script],
+        wsDir: join(ROOT, context.t.ws.dir),
+      }),
+    );
   }
   const governedOptions = {
     workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
@@ -7439,7 +7451,10 @@ for (const scheduled of initialPool.results) {
   // reporter's own line went to the task's stderr, which the gate discards.
   const executedMapResultFile = executedMapResultFiles.get(taskKey(t));
   if (executedMapResultFile) {
-    const read = readExecutedMapResults(executedMapResultFile);
+    const read = {
+      ...readExecutedMapResults(executedMapResultFile),
+      expectsReport: executedMapReportExpectations.get(taskKey(t))?.expectsReport ?? null,
+    };
     executedMapReads.push(read);
     const label = `${t.ws.name}::${t.script}`;
     for (const line of formatExecutedMapResultLines(label, read)) outSync(line);
