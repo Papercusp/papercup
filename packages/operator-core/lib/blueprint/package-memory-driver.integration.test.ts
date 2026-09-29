@@ -10,10 +10,12 @@ import { EMBEDDER_DIM_SPECS } from '../../../../libs/generic/memory/src/embedder
 import { MEMORY_VECTOR_STORAGE_PROFILES } from '../../../../libs/generic/memory/src/vec-write';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { packageMemoryDriver } from './package-memory-driver';
-import { prepareKnowledgePackageResources, releaseKnowledgePackageResources } from './package-knowledge-resources';
+import { prepareKnowledgePackageResources, releasePackageInstallation } from './package-knowledge-resources';
 import { pinPackageInput, resolveBlueprint } from '@papercusp/orchestrator/blueprint';
 import { compileBlueprintWithPackages } from './compile-packages';
-import { applySessionPackageResources, carrySessionPackageResources, provisionSessionPackageResources, sessionPackageDependentId } from './session-package-resources';
+import { applySessionPackageResources, carrySessionPackageResources, provisionSessionPackageResources,
+  releaseSupersededSessionPackages, sessionPackageDependentId, type SessionPackageFence } from './session-package-resources';
+import { getRecipe } from '../code-recipes-store';
 import { readPackageInstallation } from './package-resource-receipts';
 import { provisionLaunchIdentityResources } from '../role-launch-spec';
 import { preparePackageResource, releasePackageResource, type PackageResourceAddress } from './package-resource-receipts';
@@ -115,13 +117,13 @@ describe('real canonical backend package resources', () => {
     await carry();
     await carry(); // recovery reuses the persisted source and target attempts
     expect(await readPackageInstallation(db.adminSql, workspaceId, nextId)).toMatchObject({ phase: 'preparing' });
-    await releaseKnowledgePackageResources(db.adminSql, workspaceId, priorId);
+    await releasePackageInstallation(db.adminSql, workspaceId, priorId);
     expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
       WHERE payload->>'user_id' = ${'harness:' + target} ORDER BY id`).toEqual(rows);
     await db.adminSql.begin((tx) => applySessionPackageResources(tx, next));
     expect(await readPackageInstallation(db.adminSql, workspaceId, nextId)).toMatchObject({ phase: 'applied' });
     expect(embed).toHaveBeenCalledTimes(empty ? 0 : 1);
-    await releaseKnowledgePackageResources(db.adminSql, workspaceId, nextId);
+    await releasePackageInstallation(db.adminSql, workspaceId, nextId);
     expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
       WHERE payload->>'user_id' = ${'harness:' + target}`).toHaveLength(0);
     await expect(carry()).rejects.toThrow(/applied specification/);
@@ -150,10 +152,15 @@ describe('real canonical backend package resources', () => {
     expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
       WHERE payload->>'user_id' = 'harness:compensated-target'`).toHaveLength(0);
     selectedBackend = backend();
-    // Retry the SAME source/state with a fresh, caller-persisted attempt. The
-    // failed attempt stays terminal; replay cannot silently open its fence.
-    await expect(provisionSessionPackageResources(db.adminSql, { ownerId, revision, artifacts: [artifact] }))
-      .rejects.toThrow(/released installation/);
+    // D-018: the failed attempt stays terminal. A replay without a persisted
+    // token derives the next durable attempt; it never reopens the fence.
+    const derived = { ownerId, revision, artifacts: [artifact] };
+    const { dependentId: nextAttempt } = await provisionSessionPackageResources(db.adminSql, derived);
+    expect(nextAttempt).toBe(sessionPackageDependentId(ownerId, revision, 'attempt:1'));
+    expect(await provisionSessionPackageResources(db.adminSql, derived)).toEqual({ dependentId: nextAttempt }); // restart replay
+    expect(await readPackageInstallation(db.adminSql, 'compensated-test', dependentId)).toMatchObject({ phase: 'released' });
+    await releasePackageInstallation(db.adminSql, 'compensated-test', nextAttempt, undefined, { onlyUnapplied: true });
+    // Retry the SAME source/state with a fresh, caller-persisted attempt.
     const attemptId = randomUUID();
     const retry = { ownerId, revision, artifacts: [artifact], attemptId };
     await provisionSessionPackageResources(db.adminSql, retry);
@@ -179,14 +186,14 @@ describe('real canonical backend package resources', () => {
       ownerId, workspaceId: 'compensated-test', revision, artifact, attemptId,
     }));
     // Delayed compensation of the failed attempt cannot delete its successor.
-    await releaseKnowledgePackageResources(db.adminSql, 'compensated-test', dependentId);
+    await releasePackageInstallation(db.adminSql, 'compensated-test', dependentId);
     expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
       WHERE payload->>'user_id' = 'harness:compensated-target' ORDER BY id`).toEqual(rows);
     expect(await readPackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
       .toMatchObject({ phase: 'applied' });
     await expect(provisionSessionPackageResources(db.adminSql, { ...retry, attemptId: ' ' }))
       .rejects.toThrow(/attempt/);
-    await expect(releaseKnowledgePackageResources(db.adminSql, 'compensated-test', retriedDependent, new NoopBackend()))
+    await expect(releasePackageInstallation(db.adminSql, 'compensated-test', retriedDependent, new NoopBackend()))
       .rejects.toThrow(/does not support fenced package resources/);
     expect(await readPackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
       .toMatchObject({ phase: 'cleanup_failed', error: expect.stringContaining('does not support fenced package resources') });
@@ -194,12 +201,12 @@ describe('real canonical backend package resources', () => {
       WHERE payload->>'user_id' = 'harness:compensated-target' ORDER BY id`).toEqual(rows);
     backendSelectionError = new Error('backend selector unavailable');
     try {
-      await expect(releaseKnowledgePackageResources(db.adminSql, 'compensated-test', retriedDependent))
+      await expect(releasePackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
         .rejects.toThrow('backend selector unavailable');
       expect(await readPackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
         .toMatchObject({ phase: 'cleanup_failed', error: 'backend selector unavailable' });
     } finally { backendSelectionError = undefined; }
-    await releaseKnowledgePackageResources(db.adminSql, 'compensated-test', retriedDependent);
+    await releasePackageInstallation(db.adminSql, 'compensated-test', retriedDependent);
     expect(await readPackageInstallation(db.adminSql, 'compensated-test', retriedDependent))
       .toMatchObject({ phase: 'released', error: null });
     expect(await db.adminSql`SELECT id FROM harness_shared.memory_canonical
@@ -250,6 +257,100 @@ describe('real canonical backend package resources', () => {
     expect(sessionPackageDependentId('another-wearer', revision)).not.toBe(dependentId);
   });
 
+  it('releases only final-dependent pristine resources when a wearer supersedes or detaches, and replays interrupted cleanup', async () => {
+    const workspaceId = 'supersede-test';
+    const target = 'supersede-target';
+    const recipeId = 'supersede-recipe';
+    const pack = (version: string) => pinPackageInput({ packageKind: 'knowledge-pack', ref: 'supersede-pack', revision: version, files: [],
+      value: { manifest: { id: 'supersede-pack', version, title: 'Supersede', description: 'Test' }, items: [
+        { id: 'shared', title: 'Shared', text: 'shared ' + version, kind: 'reference', appliesTo: ['any'] },
+        { id: 'ui-only', title: 'Pristine', text: 'pristine ' + version, kind: 'reference', appliesTo: ['ui'] },
+        { id: 'ui-edited', title: 'Edited', text: 'edit me ' + version, kind: 'reference', appliesTo: ['ui'] },
+      ] } });
+    const recipe = pinPackageInput({ packageKind: 'recipe', ref: recipeId, revision: '1.0.0', files: [],
+      value: { id: recipeId, title: 'Supersede recipe', description: 'Test', script: 'return 1', toolsUsed: [], tags: [] } });
+    const compile = (version: string | null, shapes: Array<'ui'>, withRecipe = false) => compileBlueprintWithPackages(
+      resolveBlueprint({ id: 'supersede-host', workItem: { kind: 'feature' }, spine: { edges: { DONE: { to: 'done' } } },
+        bundles: [...(version ? [{ kind: 'knowledge-pack' as const, ref: 'supersede-pack' }] : []),
+          ...(withRecipe ? [{ kind: 'recipe' as const, ref: recipeId }] : [])] }),
+      { workspaceId, harnessSlug: target, memoryTarget: { kind: 'harness', slug: target },
+        knowledgeSelection: { shapes, domains: [] },
+        resolvePackage: async (request) => request.kind === 'recipe' ? recipe : pack(version!) });
+    const provision = async (ownerId: string, artifact: Awaited<ReturnType<typeof compile>>, state: string) => {
+      const revision = { specificationRevision: artifact.specificationRevision, stateRevision: hash(state) };
+      const { dependentId } = await provisionSessionPackageResources(db.adminSql, { ownerId, revision, artifacts: [artifact] });
+      return { dependentId, input: { ownerId, workspaceId, revision, artifact } };
+    };
+    const apply = async (prepared: Awaited<ReturnType<typeof provision>>) =>
+      (await db.adminSql.begin((tx) => applySessionPackageResources(tx, prepared.input))).superseded;
+    const memories = () => db.adminSql<Array<{ data: string }>>`SELECT payload->>'data' AS data
+      FROM harness_shared.memory_canonical WHERE payload->>'user_id' = ${'harness:' + target} ORDER BY 1`;
+    const receipt = async (item: string, version = '1.0.0') => (await db.adminSql<Array<{ phase: string; external_refs: Array<{ id: string; disposition?: string }> }>>`
+      SELECT phase, external_refs FROM harness_shared.blueprint_package_resources
+       WHERE workspace_id = ${workspaceId} AND item_key = ${item} AND package_version = ${version}`)[0]!;
+    selectedBackend = backend();
+
+    // Two wearers depend on the same exact v1 resources; only A selects the ui items and the recipe.
+    const a1 = await provision('wearer-a', await compile('1.0.0', ['ui'], true), 'a1');
+    expect(await apply(a1)).toEqual([]);
+    const b1 = await provision('wearer-b', await compile('1.0.0', []), 'b1');
+    expect(await apply(b1)).toEqual([]);
+    expect(await getRecipe(db.adminSql, recipeId)).toMatchObject({ createdBy: expect.stringMatching(/^blueprint-package-resource:/) });
+    const edited = (await receipt('ui-edited')).external_refs[0]!.id;
+    await canonicalStore().updatePayload(edited, { data: 'user-owned revision' });
+
+    // Counterexample: an activation that rolls back must not release through its collected fences.
+    const a2 = await provision('wearer-a', await compile('2.0.0', []), 'a2');
+    let fenced: SessionPackageFence[] = [];
+    await expect(db.adminSql.begin(async (tx) => {
+      fenced = (await applySessionPackageResources(tx, a2.input)).superseded;
+      throw new Error('activation rolled back');
+    })).rejects.toThrow('activation rolled back');
+    expect(fenced).toEqual([{ workspaceId, dependentId: a1.dependentId }]);
+    await releaseSupersededSessionPackages(db.adminSql, fenced);
+    expect(await readPackageInstallation(db.adminSql, workspaceId, a1.dependentId)).toMatchObject({ phase: 'applied' });
+    const before = await memories();
+    expect(before).toHaveLength(4); // three v1 rows plus the prepared v2 shared row
+
+    // A supersedes v1. The fence commits with the activation; cleanup is interrupted mid-release.
+    const superseded = await apply(a2);
+    expect(superseded).toEqual([{ workspaceId, dependentId: a1.dependentId }]);
+    expect(await readPackageInstallation(db.adminSql, workspaceId, a1.dependentId)).toMatchObject({ phase: 'releasing' });
+    backendSelectionError = new Error('backend offline during cleanup');
+    try {
+      await expect(releaseSupersededSessionPackages(db.adminSql, superseded)).rejects.toThrow(/cleanup is incomplete/);
+    } finally { backendSelectionError = undefined; }
+    expect(await readPackageInstallation(db.adminSql, workspaceId, a1.dependentId))
+      .toMatchObject({ phase: 'cleanup_failed', error: 'backend offline during cleanup' });
+    expect(await memories()).toEqual(before);
+
+    // The wearer's next provisioning resumes the durable fence; a later replay is a no-op.
+    await provision('wearer-a', a2.input.artifact, 'a2');
+    expect(await readPackageInstallation(db.adminSql, workspaceId, a1.dependentId)).toMatchObject({ phase: 'released', error: null });
+    const afterSupersede = await memories();
+    expect(afterSupersede).toEqual([{ data: 'Shared — shared 1.0.0' }, { data: 'Shared — shared 2.0.0' },
+      { data: 'user-owned revision' }]);
+    expect(await receipt('shared')).toMatchObject({ phase: 'ready' });
+    expect(await receipt('ui-only')).toMatchObject({ phase: 'deleted' });
+    expect(await receipt('ui-edited')).toMatchObject({ phase: 'detached',
+      external_refs: [{ id: edited, disposition: 'changed' }] });
+    expect(await getRecipe(db.adminSql, recipeId)).toBeNull();
+    await releaseSupersededSessionPackages(db.adminSql, superseded);
+    expect(await memories()).toEqual(afterSupersede);
+
+    // B detaches: an applied identity with no journaled package fences B's installation.
+    const b2 = await provision('wearer-b', await compile(null, []), 'b2');
+    const detached = await apply(b2);
+    expect(detached).toEqual([{ workspaceId, dependentId: b1.dependentId }]);
+    await releaseSupersededSessionPackages(db.adminSql, detached);
+    expect(await receipt('shared')).toMatchObject({ phase: 'deleted' });
+    expect(await memories()).toEqual([{ data: 'Shared — shared 2.0.0' }, { data: 'user-owned revision' }]);
+    // The user-edited row keeps its package provenance and access restriction.
+    const [kept] = await db.adminSql`SELECT payload FROM harness_shared.memory_canonical WHERE id = ${edited}`;
+    expect(kept!.payload).toMatchObject({ pack_id: 'supersede-pack', pack_item_id: 'ui-edited', shareable: false,
+      identity_package_resource: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  });
+
   it('prepares exact pack versions with ordinary seed provenance and recovers cleanup from the journal', async () => {
     const pin = (version: string) => pinPackageInput({ packageKind: 'knowledge-pack', ref: 'fenced-pack', revision: version,
       value: { manifest: { id: 'fenced-pack', version, title: 'Pack', description: 'Test' }, items: [
@@ -270,8 +371,8 @@ describe('real canonical backend package resources', () => {
     expect(row.payload).toMatchObject({ data: 'First — 1.0.0', source: 'pack', pack_id: 'fenced-pack',
       pack_version: '1.0.0', pack_item_id: 'one', user_id: 'harness:pack-target', workspace_id: 'pack-test',
       identity_package_resource: first[0]!.resource_key, shareable: false });
-    expect((await releaseKnowledgePackageResources(db.adminSql, input.workspaceId, 'pack-a', pg)).every((r) => r.phase === 'ready')).toBe(true);
-    expect((await releaseKnowledgePackageResources(db.adminSql, input.workspaceId, 'pack-b', pg)).every((r) => r.phase === 'deleted')).toBe(true);
+    expect((await releasePackageInstallation(db.adminSql, input.workspaceId, 'pack-a', pg)).every((r) => r.phase === 'ready')).toBe(true);
+    expect((await releasePackageInstallation(db.adminSql, input.workspaceId, 'pack-b', pg)).every((r) => r.phase === 'deleted')).toBe(true);
     expect(await pg.managedWrites!.recover(next[0]!.write_key, 'harness:pack-target')).toHaveLength(1);
     await expect(prepareKnowledgePackageResources(db.adminSql, { ...input, pin: { ...pin('1.0.0'), contentHash: hash('tamper') }, dependentId: 'tamper' }, pg))
       .rejects.toThrow(/package-hash-mismatch/);

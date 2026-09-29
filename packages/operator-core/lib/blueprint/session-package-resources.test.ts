@@ -18,7 +18,7 @@ describe('session package activation artifact requirement', () => {
     await expect(applySessionPackageResources(tx as unknown as TransactionSql, {
       ownerId: 'wearer', workspaceId: 'workspace',
       revision: { specificationRevision: 'spec', stateRevision: 'state' }, artifact: null,
-    })).resolves.toBeUndefined();
+    })).resolves.toEqual({ superseded: [] });
     expect(tx).not.toHaveBeenCalled();
   });
 });
