@@ -1,0 +1,107 @@
+{
+  "$comment": "Reviewed payloads of the finished installers (open-source-release-2026-09-29 P-017, WI-10003906). Read by scripts/check-licenses.mjs --installer-tree, which audit-release-bundle.py --scan-artifact --licenses runs on every platform's finished installer. Each entry covers the files matching its path globs (relative to the unpacked installer; `**` spans directories, members of a nested archive are addressed `<archive>!/<member>`). A nested archive matched by an entry is covered whole and not expanded. Add an entry only after reading the component's real license text. kind: first-party | program | library | model | os-image | bundle. `aggregate: true` marks a separate program shipped beside the app under a copyleft license (allowed; its source must be offered). Model weights need kind \"model\": a package's code license never covers them.",
+  "components": [
+    {
+      "name": "Papercusp first-party binaries and packages",
+      "kind": "first-party",
+      "allow": true,
+      "paths": [
+        "**/usr/bin/papercusp-*",
+        "**/Papercusp*.app/Contents/MacOS/papercusp-*",
+        "**/Papercusp*.app/Contents/Info.plist",
+        "**/Papercusp Tutorial & Setup.app/**",
+        "**/Papercusp*.exe",
+        "**/sidecar/bin/pui",
+        "**/sidecar/bin/pui.exe",
+        "**/sidecar/bin/papercup",
+        "**/sidecar/bin/papercup.exe",
+        "**/sidecar/bin/papercusp-*",
+        "**/node_modules/@papercusp/**",
+        "**/node_modules/@papercupai/**",
+        "**/sidecar/orchestrator/package.json",
+        "**/sidecar/harness/package.json",
+        "**/sidecar/env-sidecars/*/harness/package.json",
+        "**/sidecar/templates/*/package.json",
+        "**/sidecar/templates/*/*/package.json"
+      ],
+      "reason": "Built from this repository. Their third-party dependencies are gated by the npm and Cargo lockfile legs of the same check."
+    },
+    {
+      "name": "Node.js runtime",
+      "kind": "program",
+      "license": "MIT",
+      "paths": ["**/sidecar/bin/node", "**/sidecar/bin/node.exe"],
+      "reason": "Official Node.js binary. MIT; its bundled components (OpenSSL Apache-2.0, ICU Unicode, libuv MIT, V8 BSD-3-Clause) are permissive.",
+      "obligations": "Ship Node's LICENSE file (it lists the bundled components)."
+    },
+    {
+      "name": "PostgreSQL client tools linked with GNU readline",
+      "kind": "program",
+      "license": "PostgreSQL AND GPL-3.0-or-later",
+      "aggregate": true,
+      "paths": ["**/sidecar/bin/.pg-real/**", "**/sidecar/bin/pg_dump", "**/sidecar/bin/pg_dumpall", "**/sidecar/bin/pg_restore", "**/sidecar/bin/psql"],
+      "reason": "pg_dump/pg_dumpall/pg_restore/psql are PostgreSQL-licensed, but .pg-real/lib ships libreadline.so.8 (GPL-3.0-or-later) and libtinfo, so the shipped psql is a GPL-3 combination. It runs as a separate program the app invokes, not linked into the app.",
+      "obligations": "Offer the corresponding source of readline (and psql) with the release, or rebuild psql against libedit to drop the GPL component."
+    },
+    {
+      "name": "GitHub CLI (gh)",
+      "kind": "program",
+      "license": "MIT",
+      "paths": ["**/sidecar/bin/gh", "**/sidecar/bin/gh.exe"],
+      "reason": "Official gh release binary, MIT. Syft reports its compiled-in Go modules; they are part of this program."
+    },
+    {
+      "name": "Kopia",
+      "kind": "program",
+      "license": "Apache-2.0",
+      "paths": ["**/sidecar/bin/kopia", "**/sidecar/bin/kopia.exe"],
+      "reason": "Official kopia release binary, Apache-2.0. Syft reports its compiled-in Go modules; they are part of this program."
+    },
+    {
+      "name": "Zellij",
+      "kind": "program",
+      "license": "MIT",
+      "paths": ["**/sidecar/bin/zellij", "**/sidecar/bin/zellij.exe"],
+      "reason": "Official zellij release binary, MIT."
+    },
+    {
+      "name": "Ubuntu 24.04 runtime root filesystem",
+      "kind": "os-image",
+      "license": "LicenseRef-Ubuntu-24.04-Distribution",
+      "aggregate": true,
+      "paths": ["**/resources/papercup-runtime.tar.gz"],
+      "reason": "A container export of an Ubuntu 24.04 base plus runtime packages, run as a separate environment. Its packages keep their own licenses (many GPL/LGPL programs); Syft finds 220 Debian packages and cannot read their licenses because the export strips /usr/share/doc.",
+      "obligations": "Name the image and its package list in the third-party notices and point to the Ubuntu archive for GPL/LGPL corresponding source."
+    },
+    {
+      "name": "EmbeddingGemma 300M (ONNX)",
+      "kind": "model",
+      "allow": true,
+      "paths": ["**/node_modules/@huggingface/transformers/models/onnx-community/embeddinggemma-300m-ONNX/**"],
+      "reason": "onnx-community conversion of google/embeddinggemma-300m, model card license: gemma. The Gemma Terms of Use permit redistribution under conditions; this is not an open-source license.",
+      "obligations": "Ship the notice 'Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms', a copy of the terms, and pass the use restrictions (Prohibited Use Policy) on to users."
+    },
+    {
+      "name": "Harrier OSS v1 0.6B (ONNX)",
+      "kind": "model",
+      "license": "MIT",
+      "paths": ["**/node_modules/@huggingface/transformers/models/onnx-community/harrier-oss-v1-0.6b-ONNX/**"],
+      "reason": "onnx-community conversion of microsoft/harrier-oss-v1-0.6b, model card license: mit."
+    },
+    {
+      "name": "Silero VAD models",
+      "kind": "model",
+      "license": "MIT",
+      "paths": ["**/spa/silero_vad_v5.onnx", "**/spa/silero_vad_legacy.onnx"],
+      "reason": "Silero VAD weights (snakers4/silero-vad, MIT), copied into the SPA from @ricky0123/vad-web."
+    },
+    {
+      "name": "Porcupine wake-word parameters",
+      "kind": "model",
+      "license": "Apache-2.0",
+      "paths": ["**/spa/porcupine/porcupine_params.pv"],
+      "reason": "porcupine_params.pv ships inside @picovoice/porcupine-web (declared Apache-2.0) and the Picovoice/porcupine repository (Apache-2.0). Running Porcupine requires a Picovoice AccessKey under Picovoice's terms of service; that is a service condition, not a redistribution term.",
+      "obligations": "Users need their own Picovoice AccessKey; state that in the third-party notices."
+    }
+  ]
+}

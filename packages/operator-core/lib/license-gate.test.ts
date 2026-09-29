@@ -22,16 +22,22 @@ import { join } from 'node:path';
 // sibling scripts/check-licenses.d.mts.
 import {
   TIER,
+  attributeInstaller,
   cargoPackagesOf,
   classify,
   declaredNpmLicense,
   evaluateExpression,
+  globToRegExp,
+  npmPackageRootOf,
   npmPackagesOf,
+  payloadKindOf,
+  validateComponents,
   validateExceptions,
 } from '../../../scripts/check-licenses.mjs';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const EXCEPTIONS_PATH = join(REPO_ROOT, 'scripts', 'license-exceptions.json');
+const COMPONENTS_PATH = join(REPO_ROOT, 'scripts', 'installer-components.json');
 
 const tier = (expr: unknown) => evaluateExpression(expr).tier;
 
@@ -215,5 +221,137 @@ describe('validateExceptions — a malformed entry must not admit anything', () 
     // or mis-keyed file cannot pass this case vacuously.
     expect(Object.keys(file.npm ?? {}).length).toBeGreaterThan(0);
     expect(Object.keys(file.cargo ?? {}).length).toBeGreaterThan(0);
+  });
+});
+
+// ── Installer leg ──────────────────────────────────────────────────────────────
+// Measured on the published 0.0.22 installers: Syft names a license for almost none of
+// the native payloads, and model weights sit inside an Apache-2.0 npm package whose code
+// license says nothing about them. These cases pin the attribution rules that decide
+// whether such a payload passes, so a later simplification cannot quietly wave it through.
+
+describe('installer leg — payload detection and path rules', () => {
+  const buf = (...bytes: number[]) => Buffer.from(bytes);
+
+  it('recognises ELF, PE (with a PE extension), Mach-O and model files; ignores text', () => {
+    expect(payloadKindOf('bin/node', buf(0x7f, 0x45, 0x4c, 0x46))).toBe('native');
+    expect(payloadKindOf('bin/gh.exe', buf(0x4d, 0x5a, 0x90, 0x00))).toBe('native');
+    expect(payloadKindOf('notes.txt', buf(0x4d, 0x5a, 0x90, 0x00))).toBeNull();
+    expect(payloadKindOf('App.app/Contents/MacOS/app', buf(0xcf, 0xfa, 0xed, 0xfe))).toBe('native');
+    expect(payloadKindOf('Foo.class', buf(0xca, 0xfe, 0xba, 0xbe))).toBeNull();
+    expect(payloadKindOf('m/onnx/model.onnx_data_1', null)).toBe('model');
+    expect(payloadKindOf('spa/porcupine/porcupine_params.pv', null)).toBe('model');
+    expect(payloadKindOf('readme.md', buf(0x23, 0x20, 0x48, 0x69))).toBeNull();
+  });
+
+  it('globs: ** spans directories, * and ? stay within one segment, archive members use !/', () => {
+    expect(globToRegExp('**/sidecar/bin/node').test('usr/lib/App/sidecar/bin/node')).toBe(true);
+    expect(globToRegExp('**/sidecar/bin/node').test('sidecar/bin/node')).toBe(true);
+    expect(globToRegExp('**/templates/*/package.json').test('x/templates/a/package.json')).toBe(true);
+    expect(globToRegExp('**/templates/*/package.json').test('x/templates/a/node_modules/b/package.json')).toBe(false);
+    expect(globToRegExp('**/rt.tar.gz!/**').test('res/rt.tar.gz!/usr/bin/bash')).toBe(true);
+    expect(globToRegExp('**/lib?.so').test('a/libX.so')).toBe(true);
+  });
+
+  it('npmPackageRootOf finds the innermost package directory, scoped or not', () => {
+    expect(npmPackageRootOf('s/node_modules/sharp/build/x.node')).toBe('s/node_modules/sharp');
+    expect(npmPackageRootOf('s/node_modules/a/node_modules/@img/b/lib/x.so')).toBe('s/node_modules/a/node_modules/@img/b');
+    expect(npmPackageRootOf('s/node_modules/sharp')).toBeNull();
+    expect(npmPackageRootOf('s/bin/node')).toBeNull();
+  });
+});
+
+describe('installer leg — attributeInstaller', () => {
+  const components = [
+    { name: 'Node', kind: 'program', license: 'MIT', paths: ['**/bin/node'], reason: 'official Node binary' },
+    { name: 'psql+readline', kind: 'program', license: 'PostgreSQL AND GPL-3.0-or-later', aggregate: true, paths: ['**/bin/.pg-real/**'], reason: 'separate program with GPL readline' },
+    { name: 'Gemma', kind: 'model', allow: true, paths: ['**/models/gemma/**'], reason: 'Gemma terms reviewed' },
+    { name: 'Mislabelled model', kind: 'program', license: 'MIT', paths: ['**/models/other/**'], reason: 'wrong kind for a model' },
+  ];
+
+  it('covers reviewed payloads, and a binary inside an npm package by that package', () => {
+    const r = attributeInstaller({
+      components,
+      payloads: [
+        { path: 'a/bin/node', kind: 'native' },
+        { path: 'a/bin/.pg-real/lib/libreadline.so.8', kind: 'native' },
+        { path: 'a/node_modules/sharp/build/sharp.node', kind: 'native' },
+        { path: 'a/node_modules/t/models/gemma/model.onnx', kind: 'model' },
+      ],
+    });
+    expect(r.unreviewed).toEqual([]);
+    expect(r.denied).toEqual([]);
+    expect(r.components.find((c: { name: string }) => c.name === 'psql+readline').verdict).toBe('aggregate');
+  });
+
+  it('refuses an unknown native binary and a model not covered by a kind:"model" component', () => {
+    const r = attributeInstaller({
+      components,
+      payloads: [
+        { path: 'a/bin/mystery', kind: 'native' },
+        // Inside an npm package: the package's code license does NOT cover model weights.
+        { path: 'a/node_modules/t/weights/model.onnx', kind: 'model' },
+        // Matched, but by a component that is not kind "model".
+        { path: 'a/models/other/w.safetensors', kind: 'model' },
+      ],
+    });
+    expect(r.unreviewed.map((u: { path: string }) => u.path)).toEqual([
+      'a/bin/mystery', 'a/node_modules/t/weights/model.onnx', 'a/models/other/w.safetensors',
+    ]);
+  });
+
+  it('npm packages go through the lockfile rules; package-internal package.json files do not', () => {
+    const r = attributeInstaller({
+      components,
+      npmExceptions: { reviewed: { declared: '<none>', license: 'MIT', reason: 'LICENSE text is MIT' } },
+      syftArtifacts: [
+        { type: 'npm', name: 'ok', version: '1', licenses: ['MIT'], path: 's/node_modules/ok/package.json' },
+        { type: 'npm', name: 'gpl', version: '1', licenses: ['GPL-3.0-only'], path: 's/node_modules/gpl/package.json' },
+        { type: 'npm', name: 'reviewed', version: '1', licenses: [], path: 's/node_modules/reviewed/package.json' },
+        { type: 'npm', name: 'fixture', version: 'UNKNOWN', licenses: [], path: 's/node_modules/resolve/test/fixture/package.json' },
+        { type: 'npm', name: 'firstparty', version: '0', licenses: [], path: 's/orchestrator/package.json' },
+      ],
+    });
+    expect(r.denied.map((d: { what: string }) => d.what)).toEqual(['npm:firstparty@0', 'npm:gpl@1']);
+  });
+
+  it('non-npm Syft packages: covered by a component or containing npm package, else own license, else unreviewed', () => {
+    const r = attributeInstaller({
+      components,
+      syftArtifacts: [
+        { type: 'go-module', name: 'x', version: '1', licenses: [], path: 'a/bin/node' },
+        { type: 'github-action', name: 'y', version: '1', licenses: [], path: 's/node_modules/p/.github/workflows/ci.yml' },
+        { type: 'binary', name: 'ffmpeg', version: '6', licenses: ['GPL-2.0-or-later'], path: 'a/usr/lib/libavcodec.so' },
+        { type: 'deb', name: 'bash', version: '5', licenses: [], path: 'a/var/lib/dpkg/status' },
+      ],
+    });
+    expect(r.denied.map((d: { what: string }) => d.what)).toEqual(['binary:ffmpeg@6']);
+    expect(r.unreviewed.map((u: { what: string }) => u.what)).toEqual(['deb:bash@5']);
+  });
+});
+
+describe('installer leg — validateComponents', () => {
+  it('refuses a denied license unless it is an aggregate program, and aggregate on a library', () => {
+    const problems = validateComponents({
+      components: [
+        { name: 'gpl-lib', kind: 'library', license: 'GPL-3.0-only', paths: ['**/x.so'], reason: 'long enough reason' },
+        { name: 'agg-lib', kind: 'library', license: 'MIT', aggregate: true, paths: ['**/y.so'], reason: 'long enough reason' },
+        { name: 'no-paths', kind: 'program', license: 'MIT', paths: [], reason: 'long enough reason' },
+        { name: 'bad-kind', kind: 'blob', license: 'MIT', paths: ['a'], reason: 'long enough reason' },
+        { name: 'ok-agg', kind: 'program', license: 'GPL-2.0-only', aggregate: true, paths: ['**/git.exe'], reason: 'MinGit as a separate program' },
+      ],
+    });
+    expect(problems.some((p: string) => p.includes('(gpl-lib)') && p.includes('denied'))).toBe(true);
+    expect(problems.some((p: string) => p.includes('(agg-lib)') && p.includes('aggregate'))).toBe(true);
+    expect(problems.some((p: string) => p.includes('(no-paths)'))).toBe(true);
+    expect(problems.some((p: string) => p.includes('(bad-kind)'))).toBe(true);
+    expect(problems.some((p: string) => p.includes('(ok-agg)'))).toBe(false);
+  });
+
+  it('the committed scripts/installer-components.json is valid and carries every component kind it relies on', () => {
+    const file = JSON.parse(readFileSync(COMPONENTS_PATH, 'utf8'));
+    expect(validateComponents(file)).toEqual([]);
+    const kinds = new Set(file.components.map((c: { kind: string }) => c.kind));
+    for (const k of ['first-party', 'program', 'model', 'os-image']) expect(kinds.has(k), k).toBe(true);
   });
 });
