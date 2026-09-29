@@ -2430,6 +2430,7 @@ export function resumeArgsFor(
     addDir = [],
     allowSubagents,
     model = null,
+    personaFile = null,
     env = process.env,
   } = {},
 ) {
@@ -2465,10 +2466,28 @@ export function resumeArgsFor(
     // unless this resume explicitly opts in (`psu --resume … --allow-subagents`).
     // `--model`/`--effort` are top-level claude flags — a resume honors them like a
     // fresh launch (WI-3758: model select on resume).
+    //
+    // The base persona on RESUME too (EI-24628537598753105). A resumed
+    // conversation looks intact without it, because claude restores the system
+    // prompt from the transcript's prompt_snapshot. But the process argv carries
+    // no --system-prompt-file, so the first conversation it starts FRESH — the
+    // cold-auto in-place reset (/clear) — boots on claude's stock coding prompt:
+    // no playbook, no carry, no identity. And mintRecycleArgs only swaps a flag
+    // that is already present, so a recycle or carry-respawn of this process
+    // inherits the same hole. Same flags as suLaunchArgs; the caller passes a
+    // fresh render (refreshPersonaRender), or null to keep the old argv.
+    const personaArgs = personaFile
+      ? [
+          "--system-prompt-file",
+          personaFile,
+          "--exclude-dynamic-system-prompt-sections",
+        ]
+      : [];
     return {
       bin: "claude",
       args: [
         ...resume,
+        ...personaArgs,
         "--dangerously-skip-permissions",
         "--permission-mode",
         "bypassPermissions",
@@ -3493,8 +3512,9 @@ export function mintRecycleArgs(
     // relying on that would be an accident waiting to be reordered), and only when
     // the caller actually obtained a fresh render — a null personaFile means the
     // refresh was unavailable or failed, and then keeping the inherited path is the
-    // deliberate fail-soft: a stale prompt beats a lost session. An argv with no
-    // --system-prompt-file at all (omp/codex) is left alone; we never ADD the flag.
+    // deliberate fail-soft: a stale prompt beats a lost session. An omp/codex argv
+    // (no --system-prompt-file) is left alone; a CLAUDE argv without the flag gets
+    // one after this loop (EI-24628537598753105).
     if (persona && a === "--system-prompt-file") {
       out.push("--system-prompt-file", persona);
       i++; // consume the stale render path
@@ -3537,6 +3557,20 @@ export function mintRecycleArgs(
       continue;
     }
     out.push(a);
+  }
+  // EI-24628537598753105: the one place the persona IS added. A claude argv
+  // with no --system-prompt-file is a process resumed before resumeArgsFor
+  // carried the persona (or one whose resume render failed); its successor would
+  // otherwise boot on claude's stock coding prompt with only the carry appended.
+  // omp/codex never reach here with a persona that means anything to them.
+  const hasPersonaFlag = raw.some(
+    (a) =>
+      a === "--system-prompt-file" || a.startsWith("--system-prompt-file="),
+  );
+  if (persona && isClaude && !hasPersonaFlag) {
+    out.push("--system-prompt-file", persona);
+    if (!raw.includes("--exclude-dynamic-system-prompt-sections"))
+      out.push("--exclude-dynamic-system-prompt-sections");
   }
   if (!hasSessionId) out.push("--session-id", freshId);
   return { args: out, nativeId: freshId };
@@ -12686,6 +12720,20 @@ async function launchResume(
       applyCodexContextWindow(env.CODEX_HOME, resumeModel);
     }
 
+    // EI-24628537598753105: give the resumed claude process its base persona in
+    // argv (see resumeArgsFor), so a cold-auto reset or a recycle of it does not
+    // boot on the stock prompt. Fail-soft exactly like the respawn path: a null
+    // render resumes with the old argv. An untracked fork is skipped — it would be
+    // handed the ORIGINAL owner's render.
+    let personaFile = null;
+    if (session.agent === "claude" && session.coordOwnerId && !fork) {
+      const persona = await refreshPersonaRender(session.coordOwnerId);
+      personaFile = persona.promptFile;
+      if (!personaFile && persona.reason !== "no-launch-spec")
+        console.error(
+          `psu: persona re-render unavailable (${persona.reason}) — resuming without --system-prompt-file; a later /clear or respawn of this process starts on the stock prompt`,
+        );
+    }
     const { bin, args } = resumeArgsFor(session, {
       coordExtPath,
       injectHookPath,
@@ -12694,6 +12742,7 @@ async function launchResume(
       addDir,
       allowSubagents,
       model: resumeModel,
+      personaFile,
     });
     if (brain && session.agent === "claude")
       args.push(NATIVE_SCHEDULER_DENY_FLAG);
@@ -13326,13 +13375,16 @@ export async function launchTrackedFork(
       `psu: could not seed the fork transcript (${e?.message ?? e}) — continuing; claude --resume may not find the original.`,
     );
   }
-  // Resume the ORIGINAL's id, fork into the FORCED fork id. No playbook re-inject.
+  // Resume the ORIGINAL's id, fork into the FORCED fork id. No playbook turn is
+  // re-injected, but the fork's OWN render rides in argv (EI-24628537598753105):
+  // without it the first fresh conversation of this process boots stock.
   const { bin, args: forkArgs } = resumeArgsFor(session, {
     fork: true,
     forkSessionId: forkId,
     addDir: args.addDir,
     allowSubagents: args.allowSubagents,
     model,
+    personaFile: res.promptFile || null,
   });
   if (args.passthrough?.length) forkArgs.push(...args.passthrough);
   console.error(

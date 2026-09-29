@@ -6750,7 +6750,12 @@ export function hostThroughPty(o) {
    *  (su-cold-auto-mode P-004b): same command/args/cwd/env means PAPERCUSP_SID,
    *  locks, hooks, and the control socket all survive — only the process is new.
    *  Reads the CURRENT terminal size each spawn. */
+  // The argv the LIVE child was spawned with. `args` stays the original launch
+  // argv (every respawn mints from it), so it cannot say whether the current
+  // child carries a persona flag; coldResetModeForAgent needs exactly that.
+  let liveChildArgs = args;
   const spawnChild = (spawnArgs = args) => {
+    liveChildArgs = spawnArgs;
     const target = resolveAgentPtyTarget({ command, args: spawnArgs, env, cwd });
     return pty.spawn(target.command, target.args, {
       name: ptyName,
@@ -9051,7 +9056,8 @@ export function hostThroughPty(o) {
         const hardReset =
           msg.mode === 'recycle' ||
           msg.mode === 'carry-respawn' ||
-          (msg.mode === 'reset' && coldResetModeForAgent(env.PAPERCUSP_AGENT) === 'recycle');
+          (msg.mode === 'reset' &&
+            coldResetModeForAgent(env.PAPERCUSP_AGENT, liveChildArgs) === 'recycle');
         if (hardReset) {
           // measured-agent-productivity P-004: a quota recovery is a durable
           // operation, not a fire-and-forget lifecycle request. The outer socket
