@@ -564,13 +564,19 @@ const turnStartMemory = defineTool({
       const packagePromise = (async (): Promise<PackageSinkDelivery> => {
         const none: PackageSinkDelivery = { classes: [], receipt: null };
         try {
-          const [{ getFlag }, { FLAGS }, { ackAndRead }, { evaluateTurnStartPackageSink, packageSinkReceipt }] =
-            await Promise.all([
-              import('@papercusp/flags/server'),
-              import('@papercusp/flags'),
-              import('../../../agent-tools/coordination/read-cursors'),
-              import('../../../agent-identities/turn-start-package-sink'),
-            ]);
+          const [
+            { getFlag },
+            { FLAGS },
+            { ackAndRead },
+            { evaluateTurnStartPackageSink, packageSinkReceipt },
+            { withBoundedTimeout },
+          ] = await Promise.all([
+            import('@papercusp/flags/server'),
+            import('@papercusp/flags'),
+            import('../../../agent-tools/coordination/read-cursors'),
+            import('../../../agent-identities/turn-start-package-sink'),
+            import('../../../bounded-timeout'),
+          ]);
           const on = await getFlag(FLAGS.TURN_START_ORIENTATION, 'system').catch(() => true);
           if (!on) return none;
           // Commit last turn's receipt only if the hook proves it printed that text.
