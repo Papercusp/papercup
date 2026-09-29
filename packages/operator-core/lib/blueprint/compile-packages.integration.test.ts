@@ -115,8 +115,9 @@ describe('compileBlueprintWithPackages production composition (integration)', ()
       packageKind: 'recipe',
       ref: 'leaf',
       revision: '1.0.0',
-      files: [{ path: 'recipe.json', bytes: '{"script":"return 1"}' }],
-      value: { id: 'leaf', script: 'return 1' },
+      files: [{ path: 'recipe.json', bytes: '{"title":"Leaf","script":"return 1"}' }],
+      // The shape readRecipeDir emits: description defaults to '', arrays to [].
+      value: { id: 'leaf', title: 'Leaf', description: '', script: 'return 1', toolsUsed: [], tags: [] },
     });
     const root = pinPackageInput({
       packageKind: 'rubric',
@@ -153,6 +154,28 @@ describe('compileBlueprintWithPackages production composition (integration)', ()
     }));
     expect(specificationPrompt(replayAgentSpecification(JSON.parse(JSON.stringify(artifact)))))
       .toBe(specificationPrompt(artifact));
+  });
+
+  it('refuses a malformed recipe package at compile, before launch-time provisioning can', async () => {
+    const malformed = pinPackageInput({
+      packageKind: 'recipe',
+      ref: 'no-title',
+      revision: '1.0.0',
+      files: [{ path: 'recipe.json', bytes: '{"script":"return 1"}' }],
+      value: { id: 'no-title', script: 'return 1' },
+    });
+    const loaded = resolveBlueprint({
+      id: 'integration-malformed-recipe',
+      bundles: [{ kind: 'recipe', ref: 'no-title', version: '1.0.0' }],
+      workItem: { kind: 'feature' },
+      spine: { edges: { DONE: { to: 'done' } } },
+    });
+    await expect(compileBlueprintWithPackages(loaded, {
+      workspaceId: 'integration-workspace',
+      harnessSlug: 'integration-harness',
+      input: { prompt: { text: 'Compose this pinned stack.' } },
+      resolvePackage: async ({ kind, ref }) => (kind === 'recipe' && ref === 'no-title' ? malformed : null),
+    })).rejects.toMatchObject({ code: 'input-invalid' });
   });
 
   it('resolves real installed content, persists its pinned recipe and replays after its source disappears', async () => {
