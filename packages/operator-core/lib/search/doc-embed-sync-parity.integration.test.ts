@@ -57,6 +57,12 @@ const pages = golden.markdown.map((g) => ({
   body: expand(g.parts),
 }));
 
+// A page that splits into zero sections stores no row, so there is no page_sha
+// to short-circuit on: every sync re-evaluates it, deletes nothing and writes
+// nothing, yet counts it as changed. That is the sync's behaviour before and
+// after the move, so the counts below expect it rather than zero.
+const SECTIONLESS = golden.markdown.filter((g) => g.sections.length === 0).length;
+
 function source(bodies: Map<string, string>): DocSource {
   return {
     name: SOURCE_KEY,
@@ -76,11 +82,31 @@ describe('doc_sections re-sync through the library markdown splitter (live SQL)'
       [SOURCE_KEY],
     );
 
+  let seeded = 0;
+
+  // Seed every page's sections, embedded, as the sync would have left them.
+  // One statement, so a loaded host is not paying ~400 round-trips.
   beforeAll(async () => {
     const dsn = inject('baselineSchemaDsn');
     await assertPgReachable(dsn, 'doc-embed-sync-parity.integration');
     sql = postgres(dsn, { max: 1, onnotice: () => {} });
-  }, 60_000);
+
+    const cols: string[][] = [[], [], [], [], [], [], []];
+    for (const { page, body } of pages) {
+      for (const s of splitDocSections(page.title, body)) {
+        [page.slug, s.anchor, s.title, page.url, s.content, pageSha(page.title, body)].forEach((v, i) => cols[i].push(v));
+        seeded += 1;
+      }
+    }
+    await sql.unsafe(
+      `INSERT INTO harness_shared.doc_sections
+         (source_key, slug, anchor, title, url, content, page_sha, embedding, embedding_mode)
+       SELECT $1, slug, anchor, title, url, content, page_sha, $7::vector, $8
+         FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $9::text[])
+           AS t(slug, anchor, title, url, content, page_sha)`,
+      [SOURCE_KEY, cols[0], cols[1], cols[2], cols[3], cols[4], VECTOR, EMBED_MODE, cols[5]],
+    );
+  }, 180_000);
 
   afterAll(async () => {
     await sql?.unsafe(`DELETE FROM harness_shared.doc_sections WHERE source_key = $1`, [SOURCE_KEY]);
@@ -109,22 +135,10 @@ describe('doc_sections re-sync through the library markdown splitter (live SQL)'
   });
 
   it('re-syncing embedded rows clears zero embeddings and leaves the stored rows unchanged', async () => {
-    let seeded = 0;
-    for (const { page, body } of pages) {
-      for (const s of splitDocSections(page.title, body)) {
-        await sql.unsafe(
-          `INSERT INTO harness_shared.doc_sections
-             (source_key, slug, anchor, title, url, content, page_sha, embedding, embedding_mode)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)`,
-          [SOURCE_KEY, page.slug, s.anchor, s.title, page.url, s.content, pageSha(page.title, body), VECTOR, EMBED_MODE],
-        );
-        seeded += 1;
-      }
-    }
     expect(seeded).toBe(golden.markdown.reduce((n, g) => n + g.sections.length, 0));
 
     const stats = await syncDocSourceSections(sql, source(new Map(pages.map((p) => [p.page.slug, p.body]))));
-    expect(stats).toMatchObject({ pages: pages.length, changed: 0, sections: 0, pruned: 0, errors: 0 });
+    expect(stats).toMatchObject({ pages: pages.length, changed: SECTIONLESS, sections: 0, pruned: 0, errors: 0 });
 
     const rows = await storedRows();
     expect(rows).toHaveLength(seeded);
@@ -134,13 +148,23 @@ describe('doc_sections re-sync through the library markdown splitter (live SQL)'
     // database collation, which need not agree with code-unit order.
     const byKey = (a: { slug: string; anchor: string }, b: { slug: string; anchor: string }) =>
       a.slug === b.slug ? (a.anchor < b.anchor ? -1 : 1) : a.slug < b.slug ? -1 : 1;
+    // The splitter cuts on UTF-16 code units, so a hard cut inside an overlong
+    // line can split a surrogate pair; PG stores the lone half as U+FFFD. Compare
+    // against the text PG receives, which is what the old splitter wrote too.
+    const asStored = (s: string) =>
+      s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�');
     const expected = pages
       .flatMap(({ page, body }) =>
-        splitDocSections(page.title, body).map((s) => ({ slug: page.slug, anchor: s.anchor, title: s.title, content: s.content })),
+        splitDocSections(page.title, body).map((s) => ({
+          slug: page.slug,
+          anchor: s.anchor,
+          title: asStored(s.title),
+          content: asStored(s.content),
+        })),
       )
       .sort(byKey);
     expect(rows.map(({ has_embedding: _, ...r }) => r).sort(byKey)).toEqual(expected);
-  });
+  }, 120_000);
 
   it('positive control: a page whose text changed does lose its embeddings', async () => {
     const target = pages.find((p) => p.golden.name === 'nested-and-deep');
@@ -149,12 +173,12 @@ describe('doc_sections re-sync through the library markdown splitter (live SQL)'
     bodies.set(target.page.slug, `${target.body}\n\n## Added later\n\nA section appended after the rows were embedded.`);
 
     const stats = await syncDocSourceSections(sql, source(bodies));
-    expect(stats).toMatchObject({ changed: 1, errors: 0 });
+    expect(stats).toMatchObject({ changed: SECTIONLESS + 1, errors: 0 });
 
     const rows = await storedRows();
     const changed = rows.filter((r) => r.slug === target.page.slug);
     expect(changed.length).toBeGreaterThan(0);
     expect(changed.every((r) => !r.has_embedding)).toBe(true);
     expect(rows.filter((r) => r.slug !== target.page.slug && !r.has_embedding)).toEqual([]);
-  });
+  }, 120_000);
 });
