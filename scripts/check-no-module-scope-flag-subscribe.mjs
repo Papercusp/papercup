@@ -253,7 +253,7 @@ export function checkUnpopulatedDeclaration(callText) {
   return null;
 }
 
-// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 2. Do NOT add new
+// BASELINE seeded 2026-07-28 (WI-6650) with 14 files; now 1. Do NOT add new
 // entries; each removal (lazy-init the site, per coordination/log.ts's
 // ensureCoordFlagInit) shrinks this set.
 //
@@ -313,7 +313,7 @@ export function checkUnpopulatedDeclaration(callText) {
 // module-scope forms (`void refreshLexiconPack()` at :43, whose body reaches getFlag,
 // and `onFlagChange(` at :44), so migrating only the visible one would have gone green
 // on a still-unimportable file with the BASELINE then certifying it fixed.
-//   It also had a HIDDEN reader, the shape that keeps auth-config-overrides.ts below:
+//   It also had a HIDDEN reader, the shape that kept auth-config-overrides.ts deferred:
 // `configureLexicon({ activePackId: () => cachedPackId })` — and `term()` calls
 // `host.activePackId()` LIVE on every call, so that closure, not the exported getter,
 // is the hot read path. Fixed by pointing the seam at `activeServerPackId` itself, so
@@ -323,19 +323,18 @@ export function checkUnpopulatedDeclaration(callText) {
 // pre-refresh window is unchanged. The seed is guarded on a `packIdResolved` flag
 // because `refreshLexiconPack` is EXPORTED: an arm occurring after an explicit refresh
 // must not reset a resolved value back to the flag default.
+//
+// Removed 2026-09-29 (WI-6650 residual): auth-config-overrides.ts, onto the same helper,
+// SEEDED, forced by a gate red — a new `capability/bash` import edge reached it through
+// exec-sandbox.ts and killed collection of ~20 files on frozen candidate 5ec99902. It was
+// the deferred entry that used to sit here, and both reasons it was deferred are handled:
+// (1) the HIDDEN reader `resolveTestingFullAccess` (installed into agent-mcp's gate-bypass,
+// reading the module vars directly) arms along with the three exported getters; (2) the
+// PERMISSIVE unpopulated state is closed on hosts by an explicit boot warm,
+// `armAuthConfigRefresh()` in apps/operator/bin/host-bootstrap.ts, which restores the
+// boot-time subscription the module-scope form gave them. The seed is guarded on
+// `resolved`, as in lexicon/configure.ts, because `refreshAuthConfigOverrides` is exported.
 export const BASELINE = new Set([
-  // ⚠ EXAMINED AND DEFERRED, NOT MISSED — do NOT pattern-match this one onto its
-  // siblings above. It looks identical (same config-override family, same timer,
-  // same registerOverrideConcern) and is not: (1) it has a HIDDEN reader —
-  // `resolveTestingFullAccess`, installed at module scope via
-  // setTestingFullAccessResolver, reads the module vars DIRECTLY rather than through
-  // an exported getter, so arming the three exported getters alone would leave the
-  // actual auth gate unarmed; and (2) its unpopulated state is the PERMISSIVE one
-  // (testingFullAccessEnabled defaults true), so lazy arming widens the window in
-  // which a kill-switch flipped OFF has not yet taken effect. Per lazy-flag-refresh's
-  // "behaviour this DOES change" note, a cache like this needs an explicit warm on a
-  // boot path, not lazy arming alone. Migrate it deliberately, with that warm.
-  'packages/operator-core/lib/auth-config-overrides.ts',
   // ⚠ EXAMINED AND DEFERRED, NOT MISSED — and the reason is NOT the usual one, so do not
   // reach for `seed` here on the strength of it having unblocked issues-engineer. This is
   // not a flag-mirror CACHE at all: the module has no exports and no reader, and exists
