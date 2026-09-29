@@ -189,6 +189,7 @@
     "@papercusp/tooldef": "*",
     "@papercusp/tooldef-mcp": "*",
     "@papercusp/ui-primitives": "*",
+    "@papercusp/verification-harness": "*",
     "@testcontainers/postgresql": "^11.14.0",
     "@workos-inc/node": "^10.10.0",
     "adm-zip": "^0.6.1",

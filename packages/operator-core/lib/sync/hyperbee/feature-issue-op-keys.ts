@@ -1037,9 +1037,14 @@ function toAgentFactValue(row: Record<string, unknown>): AgentFactWireRow {
     // a peer is unfalsifiable there. The receiver shape-guards it
     // (isFactRecheck); an ill-shaped value is dropped to null here rather than
     // refusing the whole op, since the rest of the fact is still worth carrying.
+    // P-004 (D-003): recheck.exec is a shell command, so it never leaves the hive
+    // that wrote it — the prose probe/falsifier travel, the executable form does not.
     recheck:
       row.recheck && typeof row.recheck === 'object' && !Array.isArray(row.recheck)
-        ? (row.recheck as { probe: string; falsifier: string })
+        ? {
+            probe: (row.recheck as { probe: string }).probe,
+            falsifier: (row.recheck as { falsifier: string }).falsifier,
+          }
         : null,
     // P-008 (b): the cells this fact rests on. A jsonb ARRAY — note the guard
     // here is the inverse of the object columns above.

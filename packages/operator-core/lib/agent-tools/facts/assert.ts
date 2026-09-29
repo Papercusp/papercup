@@ -24,6 +24,7 @@ import {
   FACT_SCOPES,
   FACT_BODY_MAX_CHARS,
   FACT_RECHECK_FIELD_MAX_CHARS,
+  FACT_RECHECK_EXEC_MAX_SCOPE_TAGS,
   FACT_CONFIDENCE_LEVELS,
   CONVENTION_ENFORCEMENT_TIERS,
   FACT_MAX_DEPENDENCIES,
@@ -108,6 +109,18 @@ const FACT_RECHECK_SCHEMA = z
       .min(1)
       .max(FACT_RECHECK_FIELD_MAX_CHARS)
       .describe('The concrete result or observation that means this fact is false and must be retracted or corrected.'),
+    exec: z
+      .object({
+        command: z.string().min(1).max(FACT_RECHECK_FIELD_MAX_CHARS),
+        expectExitCode: z.number().int().min(0).max(255),
+        stdoutIncludes: z.string().min(1).max(FACT_RECHECK_FIELD_MAX_CHARS).optional(),
+        scope: z.array(z.string()).min(1).max(FACT_RECHECK_EXEC_MAX_SCOPE_TAGS),
+      })
+      .strict()
+      .optional()
+      .describe(
+        'Optional executable form of probe for a guard rail: a bash command whose exit code (and stdout literal) means the fact HOLDS. Harness preflights whose scope tags overlap `scope` (e.g. ["p505"]) run it and fail fast when it breaks.',
+      ),
   })
   .strict()
   .optional()
@@ -965,10 +978,13 @@ export default defineTool({
     // drops or truncates content) rather than refuse: P-007's "never lose a write
     // outright" applies here exactly as it does to the truncation path below.
     const safeSettledBy = neutralizeToolCallTags(args.settledBy);
+    // recheck.exec is EXECUTED by harness preflights and never folded into a prompt, so it
+    // passes through byte-exact — the swap would corrupt a shell command.
     const safeRecheck = args.recheck
       ? {
           probe: neutralizeToolCallTags(args.recheck.probe),
           falsifier: neutralizeToolCallTags(args.recheck.falsifier),
+          ...(args.recheck.exec ? { exec: args.recheck.exec } : {}),
         }
       : null;
     const slotted = normalizeFactInput(args.key, args.body, args.slot);

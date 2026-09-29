@@ -33,6 +33,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { InvalidInputError } from '@papercusp/tooldef';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { GUARD_RAIL_TAG } from '@papercusp/verification-harness';
 import { activeWorkspaceId } from '../workspace-registry';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 // P-008 (b): the unknown vocabulary a failed dependency read records. Imported,
@@ -193,18 +194,73 @@ export const FACT_RECHECK_FIELD_MAX_CHARS = 500;
 export interface FactRecheck {
   probe: string;
   falsifier: string;
+  /** P-004 (1240): the probe's executable form — a guard rail harness preflights run. */
+  exec?: FactRecheckExec;
 }
 
-/** Store-boundary validation for the recheck pair. PURE. */
+/**
+ * A shell command whose `expectExitCode` (and `stdoutIncludes`, when set) means the fact still
+ * HOLDS. Contract-conforming harnesses (libs/generic/verification-harness) run it in preflight
+ * when `scope` shares a tag with theirs; only local-origin facts are ever executed (D-003).
+ */
+export interface FactRecheckExec {
+  command: string;
+  expectExitCode: number;
+  stdoutIncludes?: string;
+  scope: string[];
+}
+
+export const FACT_RECHECK_EXEC_MAX_SCOPE_TAGS = 8;
+const RECHECK_EXEC_KEYS = new Set(['command', 'expectExitCode', 'stdoutIncludes', 'scope']);
+
+function validateFactRecheckExec(input: unknown): string | null {
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return 'recheck.exec must be an object { command, expectExitCode, stdoutIncludes?, scope }';
+  }
+  const raw = input as Record<string, unknown>;
+  const extra = Object.keys(raw).find((k) => !RECHECK_EXEC_KEYS.has(k));
+  if (extra !== undefined) return `recheck.exec has unknown key ${JSON.stringify(extra)}`;
+  if (typeof raw.command !== 'string' || raw.command.trim() === '') {
+    return 'recheck.exec.command must be a non-empty string';
+  }
+  if (raw.command.trim().length > FACT_RECHECK_FIELD_MAX_CHARS) {
+    return `recheck.exec.command exceeds the ${FACT_RECHECK_FIELD_MAX_CHARS}-character cap`;
+  }
+  const code = raw.expectExitCode;
+  if (typeof code !== 'number' || !Number.isInteger(code) || code < 0 || code > 255) {
+    return 'recheck.exec.expectExitCode must be an integer 0..255';
+  }
+  if (raw.stdoutIncludes !== undefined) {
+    if (typeof raw.stdoutIncludes !== 'string' || raw.stdoutIncludes === '') {
+      return 'recheck.exec.stdoutIncludes must be a non-empty string when set';
+    }
+    if (raw.stdoutIncludes.length > FACT_RECHECK_FIELD_MAX_CHARS) {
+      return `recheck.exec.stdoutIncludes exceeds the ${FACT_RECHECK_FIELD_MAX_CHARS}-character cap`;
+    }
+  }
+  const scope = raw.scope;
+  if (!Array.isArray(scope) || scope.length === 0 || scope.length > FACT_RECHECK_EXEC_MAX_SCOPE_TAGS) {
+    return `recheck.exec.scope must name 1..${FACT_RECHECK_EXEC_MAX_SCOPE_TAGS} tags`;
+  }
+  const bad = scope.find((t) => typeof t !== 'string' || !GUARD_RAIL_TAG.test(t));
+  if (bad !== undefined) {
+    return `recheck.exec.scope has invalid tag ${JSON.stringify(bad)} (lowercase, digits and :._-, at most 64 chars)`;
+  }
+  return null;
+}
+
+/** Store-boundary validation for the recheck contract. PURE. */
 export function validateFactRecheck(input: unknown): string | null {
   if (input == null) return null;
   if (typeof input !== 'object' || Array.isArray(input)) {
-    return 'recheck must be an object with exactly { probe, falsifier }';
+    return 'recheck must be an object { probe, falsifier, exec? }';
   }
   const raw = input as Record<string, unknown>;
-  const keys = Object.keys(raw).sort();
+  const keys = Object.keys(raw)
+    .filter((k) => k !== 'exec')
+    .sort();
   if (keys.length !== 2 || keys[0] !== 'falsifier' || keys[1] !== 'probe') {
-    return 'recheck must contain exactly probe and falsifier';
+    return 'recheck must contain exactly probe and falsifier (plus an optional exec)';
   }
   for (const field of ['probe', 'falsifier'] as const) {
     const value = raw[field];
@@ -215,16 +271,31 @@ export function validateFactRecheck(input: unknown): string | null {
       return `recheck.${field} exceeds the ${FACT_RECHECK_FIELD_MAX_CHARS}-character cap`;
     }
   }
+  if ('exec' in raw) return validateFactRecheckExec(raw.exec);
   return null;
 }
 
-/** Validate + canonicalize a caller-supplied recheck pair at the store seam. */
+/** Canonical form of an already-validated recheck: trimmed text, de-duplicated scope. */
+function canonicalFactRecheck(raw: Record<string, unknown>): FactRecheck {
+  const out: FactRecheck = { probe: (raw.probe as string).trim(), falsifier: (raw.falsifier as string).trim() };
+  if (raw.exec !== undefined) {
+    const e = raw.exec as Record<string, unknown>;
+    out.exec = {
+      command: (e.command as string).trim(),
+      expectExitCode: e.expectExitCode as number,
+      ...(e.stdoutIncludes !== undefined ? { stdoutIncludes: e.stdoutIncludes as string } : {}),
+      scope: [...new Set(e.scope as string[])],
+    };
+  }
+  return out;
+}
+
+/** Validate + canonicalize a caller-supplied recheck contract at the store seam. */
 export function normalizeFactRecheck(input: unknown): FactRecheck | null {
   const error = validateFactRecheck(input);
   if (error) throw new InvalidInputError(`facts:assert — ${error}`);
   if (input == null) return null;
-  const raw = input as Record<'probe' | 'falsifier', string>;
-  return { probe: raw.probe.trim(), falsifier: raw.falsifier.trim() };
+  return canonicalFactRecheck(input as Record<string, unknown>);
 }
 
 /** Defensive DB/wire read: malformed legacy or out-of-band data never folds. */
@@ -238,8 +309,7 @@ export function parseFactRecheck(raw: unknown): FactRecheck | null {
   }
   if (validateFactRecheck(raw)) return null;
   if (raw == null) return null;
-  const value = raw as Record<'probe' | 'falsifier', string>;
-  return { probe: value.probe.trim(), falsifier: value.falsifier.trim() };
+  return canonicalFactRecheck(raw as Record<string, unknown>);
 }
 /** P-007: bounded verbatim quote inside a source-provenance stamp (fold-friendly —
  *  mirrors RELAY_RENDER_CHARS; a fold can carry 12+ facts, so quotes stay short). */
@@ -3598,7 +3668,10 @@ export function renderFactsFold(
     // judged by its values"). Without it the fold says only "nobody could
     // determine this", which reads as an invitation to go determine it.
     const settles = f.kind === 'undecidable' && f.settledBy ? ` — SETTLED BY: ${f.settledBy}` : '';
-    const recheck = f.recheck ? ` — RECHECK: ${f.recheck.probe} — FALSIFIED IF: ${f.recheck.falsifier}` : '';
+    // P-004: an exec probe is enforced by harness preflights, so the fold names where it runs
+    // (scope) rather than repeating the command the prose probe already describes.
+    const exec = f.recheck?.exec ? ` — AUTO-CHECKED in preflight [${f.recheck.exec.scope.join(',')}]` : '';
+    const recheck = f.recheck ? ` — RECHECK: ${f.recheck.probe} — FALSIFIED IF: ${f.recheck.falsifier}${exec}` : '';
     return `• [${scope}${aud}] ${badge}${snapshot}${f.body}${settles}${recheck} (${expiry}, ${age}${src}${cite})`;
   });
   // P-004 / D-006: the header above presents these as THE standing facts. When the
