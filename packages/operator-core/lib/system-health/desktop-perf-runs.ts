@@ -48,6 +48,13 @@ export interface DesktopPerfRun {
   source: DesktopPerfSource;
   status: DesktopPerfRunStatus;
   gitSha: string | null;
+  /**
+   * Source identity of the packaged binary this run MEASURED, read from the build's
+   * own identity record — not the checkout HEAD (that is `gitSha`). Null when the
+   * build recorded none; the gate then falls back to the file-mtime rule
+   * (desktop-perf-measure-candidate-build-2026-09-29 D-001).
+   */
+  buildSha: string | null;
   runId: string | null;
   measures: DesktopPerfMeasure[];
 }
@@ -153,6 +160,8 @@ export interface RecordDesktopPerfRunInput {
   status: DesktopPerfRunStatus;
   measures: DesktopPerfMeasure[];
   gitSha?: string | null;
+  /** Identity of the measured build (see DesktopPerfRun.buildSha). Absent = unknown. */
+  buildSha?: string | null;
   runId?: string | null;
   createdTs?: number;
 }
@@ -164,10 +173,10 @@ export async function recordDesktopPerfRun(input: RecordDesktopPerfRunInput): Pr
   const createdTs = input.createdTs ?? Date.now();
   await sql`
     INSERT INTO harness_shared.desktop_perf_runs
-      (id, workspace_id, created_ts, source, status, git_sha, run_id, measures)
+      (id, workspace_id, created_ts, source, status, git_sha, build_sha, run_id, measures)
     VALUES
       (${id}, ${input.workspaceId}, ${createdTs}, ${input.source}, ${input.status},
-       ${input.gitSha ?? null}, ${input.runId ?? null},
+       ${input.gitSha ?? null}, ${input.buildSha ?? null}, ${input.runId ?? null},
        ${sql.json(input.measures as unknown as JSONValueCompat)})
   `;
   return id;
@@ -188,11 +197,12 @@ export async function readDesktopPerfRuns(
       source: string;
       status: string;
       git_sha: string | null;
+      build_sha: string | null;
       run_id: string | null;
       measures: DesktopPerfMeasure[] | null;
     }>
   >`
-    SELECT id, workspace_id, created_ts, source, status, git_sha, run_id, measures
+    SELECT id, workspace_id, created_ts, source, status, git_sha, build_sha, run_id, measures
       FROM harness_shared.desktop_perf_runs
      WHERE workspace_id = ${workspaceId}
      ORDER BY created_ts DESC
@@ -205,6 +215,7 @@ export async function readDesktopPerfRuns(
     source: (r.source === 'wdio' ? 'wdio' : 'admin-suite') as DesktopPerfSource,
     status: toRunStatus(r.status as AdminTestStatus),
     gitSha: r.git_sha,
+    buildSha: r.build_sha,
     runId: r.run_id,
     measures: Array.isArray(r.measures) ? r.measures : [],
   }));
