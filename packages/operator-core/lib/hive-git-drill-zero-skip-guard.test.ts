@@ -35,6 +35,7 @@ import {
   executePhysicalPhaseG,
   type PhysicalPhaseGInput,
 } from './sync/pot-git/physical-drill-phase-g';
+import { buildPhysicalPhaseHInput } from './sync/pot-git/physical-drill-phase-h.fixture';
 
 function repoRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -558,7 +559,7 @@ function physicalFixture(): Record<string, any> {
   const tower = generateEd25519KeypairDer();
   const vm = generateEd25519KeypairDer();
   const fixture: Record<string, any> = {
-    schemaVersion: 'hive-git-physical-evidence/v1',
+    schemaVersion: 'hive-git-physical-evidence/v2',
     plan: 'p2p-git-live-activation-2026-07-09',
     runId: physicalRunId,
     window: { startedAt: '2026-08-13T12:00:00Z', finishedAt: '2026-08-13T12:30:00Z' },
@@ -573,7 +574,7 @@ function physicalFixture(): Record<string, any> {
       { host: 'tower', path: towerLog, sha256: digest(towerLog) },
       { host: 'vm', path: vmLog, sha256: digest(vmLog) },
     ],
-    legVerdicts: [...'ABCDEFG'].map((leg, index) => ({
+    legVerdicts: [...'ABCDEFGH'].map((leg, index) => ({
       leg,
       status: 'pass',
       scope: 'physical',
@@ -592,6 +593,12 @@ function physicalFixture(): Record<string, any> {
       };
       return input;
     })(),
+    legH: buildPhysicalPhaseHInput({
+      runId: physicalRunId,
+      towerDeviceKey: tower.pubkeyBase64,
+      vmDeviceKey: vm.pubkeyBase64,
+      startMs: Date.parse('2026-08-13T12:20:00Z'),
+    }),
   };
   const bytes = physicalDrillSigningBytes(fixture);
   fixture.attestations = [tower, vm].map((device) => ({
@@ -1034,7 +1041,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     }
   });
 
-  it('installs the ready fixed A-G scenario but refuses physical mutation without the explicit execution grant', () => {
+  it('installs the ready fixed A-H scenario but refuses physical mutation without the explicit execution grant', () => {
     const contract = spawnSync(physicalScenarioPath, ['--contract-check'], {
       encoding: 'utf8',
       timeout: 120_000,
@@ -1045,7 +1052,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
       implementationState: 'ready-v1',
       ready: true,
-      phases: [...'ABCDEFG'],
+      phases: [...'ABCDEFGH'],
       phaseContracts: {
         A: 'executor-installed',
         B: 'executor-installed',
@@ -1054,6 +1061,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         E: 'executor-installed',
         F: 'executor-installed',
         G: 'executor-installed',
+        H: 'executor-installed',
       },
     });
 
@@ -1095,7 +1103,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       physicalScenario.lastIndexOf('run_all_phases'),
     );
     expect(physicalScenario).toContain('physical_run_id="p505-physical-');
-    expect(physicalScenario.match(/local run_id="\$physical_run_id"/g)).toHaveLength(4);
+    expect(physicalScenario.match(/local run_id="\$physical_run_id"/g)).toHaveLength(5);
     expect(physicalScenario.indexOf('[ "$IMPLEMENTATION_STATE" = \'ready-v1\' ]')).toBeLessThan(
       physicalScenario.lastIndexOf('run_all_phases'),
     );
@@ -2185,7 +2193,7 @@ esac
     expect(readiness.stderr).toBe('');
   });
 
-  it('accepts a same-run A-G physical artifact only with hash-matching witnesses from both hosts', () => {
+  it('accepts a same-run A-H physical artifact only with hash-matching witnesses from both hosts', () => {
     const fixture = physicalFixture();
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict).toMatchObject({ ok: true, runId: 'physical-run-2026-08-13T120000Z', errors: [] });
@@ -2225,7 +2233,7 @@ esac
     expect(result.status, result.stderr).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({
       ok: true,
-      schemaVersion: 'hive-git-physical-evidence/v1',
+      schemaVersion: 'hive-git-physical-evidence/v2',
     });
   }, VALIDATOR_TEST_TIMEOUT_MS);
 
