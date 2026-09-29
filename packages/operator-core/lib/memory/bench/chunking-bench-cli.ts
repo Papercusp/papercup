@@ -5,7 +5,8 @@
  *   ./node_modules/.bin/tsx packages/operator-core/lib/memory/bench/chunking-bench-cli.ts
  *   --collection plans|operator_turns|work_items|escalations|consult
  *   [--folds 2] [--long 30] [--short 30] [--max-chunks 4,8,16,32]
- *   [--probe-at N] [--seed s] [--model gemma] [--sidecar URL] [--json PATH]
+ *   [--margins 0,0.02,0.04] [--probe-at N] [--seed s] [--model gemma]
+ *   [--sidecar URL] [--json PATH]
  *
  * The D-016 instrument (turn-truncation-width-cli.ts) generalized: the method
  * lives in @papercusp/search-core (runChunkingBench), and this file supplies
@@ -60,11 +61,11 @@ const argOf = (flag: string): string | undefined => {
   const i = process.argv.indexOf(flag);
   return i !== -1 ? process.argv[i + 1] : undefined;
 };
-const numList = (s: string): number[] =>
+const numList = (s: string, min = 1): number[] =>
   s
     .split(',')
     .map((x) => Number(x.trim()))
-    .filter((n) => Number.isFinite(n) && n > 0);
+    .filter((n) => Number.isFinite(n) && n >= min);
 
 /** The parent vector's window: every TARGETS bodySql cuts its text at 2,000. */
 const CUT = 2000;
@@ -216,7 +217,7 @@ function printArm(a: ArmResult): void {
   const t = a.tail;
   const s = a.short;
   console.log(
-    `${a.label.padEnd(12)} ${fmt(t.mrr)} ${fmt(t.recallAt1, 3).padStart(6)} ${fmt(t.recallAt5, 3).padStart(6)} ` +
+    `${a.label.padEnd(18)} ${fmt(t.mrr)} ${fmt(t.recallAt1, 3).padStart(6)} ${fmt(t.recallAt5, 3).padStart(6)} ` +
       `${fmt(t.meanRank, 2).padStart(6)} ${fmt(t.containedRate, 2).padStart(5)} ${`+${t.improved}/-${t.worsened}`.padStart(7)}` +
       `   ${fmt(s.mrr)} ${fmt(s.recallAt1, 3).padStart(6)} ${`-${s.worsened}`.padStart(4)}`,
   );
@@ -230,6 +231,9 @@ async function main(): Promise<void> {
   const nLong = Number(argOf('--long') ?? 30);
   const nShort = Number(argOf('--short') ?? 30);
   const maxChunks = numList(argOf('--max-chunks') ?? '4,8,16,32');
+  // Plain best-match plus margins that make a chunk displace a row only when it
+  // beats it clearly — the lever against short-row demotion (R-2).
+  const chunkMargins = numList(argOf('--margins') ?? '0,0.02,0.04,0.06,0.08', 0);
   const probeAt = argOf('--probe-at') !== undefined ? Number(argOf('--probe-at')) : undefined;
   const seed = argOf('--seed') ?? 'p001';
   const jsonPath = argOf('--json');
@@ -265,7 +269,8 @@ async function main(): Promise<void> {
   console.log(
     `[chunking-bench] collection=${name} table=${c.table} model=${MODEL} seed=${seed} ` +
       `probe=${probeAt === undefined ? 'seeded-tail' : `at-${probeAt}`} len=${PROBE_LEN} ` +
-      `chunk=${TURN_CHUNK_CHARS}/${TURN_CHUNK_OVERLAP} caps=${maxChunks.join(',')} splitters=${c.splitters.join(',')}`,
+      `chunk=${TURN_CHUNK_CHARS}/${TURN_CHUNK_OVERLAP} caps=${maxChunks.join(',')} margins=${chunkMargins.join(',')} ` +
+      `splitters=${c.splitters.join(',')}`,
   );
   console.log(
     `[chunking-bench] rows past the cut: ${over} of ${total} (${((over / Math.max(total, 1)) * 100).toFixed(1)}%). ` +
@@ -279,20 +284,25 @@ async function main(): Promise<void> {
     folds: benchFolds,
     splitters,
     maxChunks,
+    chunkMargins,
     minChunkTextChars: CUT,
     embed: makeEmbed(url),
   });
   const decision = decideChunking(result, RULE);
 
-  console.log(`\npool sizes ${result.poolSizes.join(',')}; ambiguous probes dropped ${result.ambiguousProbesDropped}`);
+  const parentArm = result.arms[0];
+  console.log(
+    `\npool sizes ${result.poolSizes.join(',')}; scored probes: tail ${parentArm.tail.n}, short ${parentArm.short.n} ` +
+      `(ambiguous dropped ${result.ambiguousProbesDropped})`,
+  );
   for (const [s, st] of Object.entries(result.splitters)) {
     const atCap = Object.entries(st.rowsAtCap)
       .map(([k, n]) => `@${k}:${n}`)
       .join(' ');
     console.log(`splitter ${s}: ${st.chunkedRows} chunked rows, ${st.meanChunks.toFixed(1)} chunks/row at max cap; rows filling the cap ${atCap}`);
   }
-  console.log('\n             ─────────────── tail (past the cut) ───────────────   ── short rows ──');
-  console.log('arm          MRR       r@1    r@5  mRank  cont.  +/-vsP     MRR       r@1  -vsP');
+  console.log('\n                   ─────────────── tail (past the cut) ───────────────   ── short rows ──');
+  console.log('arm                MRR       r@1    r@5  mRank  cont.  +/-vsP     MRR       r@1  -vsP');
   for (const a of result.arms) printArm(a);
   console.log(`\nverdict: ${decision.verdict}${decision.arm ? ` (${decision.arm.label})` : ''}`);
   for (const r of decision.reasons) console.log(`  - ${r}`);
