@@ -480,7 +480,7 @@ export async function settleAcceptedCoordProgram(
     const cancel = async () => {
       closedByCancel = true;
       return setWorkItemState(rootId, 'dropped', {
-        harness: handle.harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
+        harness: handle.harnessSlug, family: current.family, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
         completionRef: `blueprint-program:cancelled:receipt:${handle.receiptId}`,
         completionAuthority: 'validated',
         acceptedProgramAttempt: { ...attempt, requireUncancelled: false },
@@ -494,7 +494,7 @@ export async function settleAcceptedCoordProgram(
           ...(outcome.decision === undefined ? {} : { decision: outcome.decision }) };
         try {
           closed = await setWorkItemState(rootId, 'done', {
-            harness: handle.harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
+            harness: handle.harnessSlug, family: current.family, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
             completionRef: blueprintProgramCompletionRef(handle, 'succeeded'),
             completionAuthority: 'validated', outputPayload: output,
             acceptedProgramAttempt: attempt,
@@ -512,7 +512,7 @@ export async function settleAcceptedCoordProgram(
         if (reread.cancellationRequested) closed = await cancel();
         else {
           closed = await setWorkItemState(rootId, 'dropped', {
-            harness: handle.harnessSlug, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
+            harness: handle.harnessSlug, family: current.family, by: BLUEPRINT_PROGRAM_COMPLETION_OWNER,
             completionRef: blueprintProgramCompletionRef(handle, 'failed'),
             completionAuthority: 'validated', acceptedProgramAttempt: attempt,
             ...(rejectedResult ? { completionEvidence: { summary: rejectedResult } } : {}),

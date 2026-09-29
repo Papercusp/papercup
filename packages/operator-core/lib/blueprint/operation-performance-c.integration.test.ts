@@ -63,7 +63,9 @@ const dedicatedPgMode = process.env.P013_DEDICATED_PG === 'native'
 const dedicatedPgRequested = dedicatedPgMode !== null;
 const DEDICATED_PG_SETTINGS: Record<string, string> = { max_connections: '200', dynamic_shared_memory_type: 'mmap',
   // WI-10003631: P013_STMTS_BY_ARM needs pg_stat_statements preloaded in the dedicated cluster.
-  ...(process.env.P013_STMTS_BY_ARM ? { shared_preload_libraries: 'pg_stat_statements' } : {}) };
+  ...(process.env.P013_STMTS_BY_ARM ? { shared_preload_libraries: 'pg_stat_statements' } : {}),
+  // D-035: P013_TRIGGER_PROFILE attributes server-exec to trigger functions (pg_stat_user_functions).
+  ...(process.env.P013_TRIGGER_PROFILE ? { track_functions: 'pl' } : {}) };
 // D-024: size the getOrgPg() stand-in pool like production (the resource profile's
 // pgPoolMax), not the fixture default of 2; P013_ORG_POOL_MAX=<n> pins it.
 const P013_ORG_POOL_MAX = (() => {
@@ -249,6 +251,7 @@ describe('P-013 workload C fixture', () => {
         const stmts: Record<string, unknown> = {};
         for (const arm of ['control', 'candidate'] as const) {
           await db.adminSql`SELECT pg_stat_statements_reset()`;
+          if (process.env.P013_TRIGGER_PROFILE) await db.adminSql`SELECT pg_stat_reset()`;
           callsites.clear();
           for (let i = 0; i < stmtSamples; i++) samples.push(await runArm(arm, sequence++));
           if (process.env.P013_CALLSITES) {
@@ -262,9 +265,20 @@ describe('P-013 workload C fixture', () => {
                AND query NOT ILIKE '%pg_stat_statements%'`;
           const calls = rows.reduce((sum, r) => sum + r.calls, 0);
           const ms = rows.reduce((sum, r) => sum + r.ms, 0);
+          const shape = (r: { query: string; calls: number; ms: number }) => ({ query: r.query,
+            perOp: r.calls / stmtSamples, msPerOp: +(r.ms / stmtSamples).toFixed(3), msPerCall: +(r.ms / Math.max(1, r.calls)).toFixed(3) });
           stmts[arm] = { samples: stmtSamples, statementsPerOp: calls / stmtSamples, serverExecMsPerOp: ms / stmtSamples,
-            top: rows.sort((a, b) => b.calls - a.calls).slice(0, 30)
-              .map((r) => ({ query: r.query, perOp: r.calls / stmtSamples, msPerOp: +(r.ms / stmtSamples).toFixed(3) })) };
+            top: [...rows].sort((a, b) => b.calls - a.calls).slice(0, 30).map(shape),
+            // WI-10003631 D-035: the server-exec tail ranked by total_exec_time.
+            topByMs: [...rows].sort((a, b) => b.ms - a.ms).slice(0, 20).map(shape) };
+          if (process.env.P013_TRIGGER_PROFILE) {
+            await db.adminSql`SELECT pg_stat_force_next_flush()`;
+            const fns = await db.adminSql<Array<{ fn: string; calls: number; self: number; total: number }>>`
+              SELECT schemaname || '.' || funcname AS fn, calls::float8 AS calls, self_time::float8 AS self,
+                     total_time::float8 AS total FROM pg_stat_user_functions ORDER BY self_time DESC LIMIT 20`;
+            (stmts[arm] as Record<string, unknown>).functions = fns.map((f) => ({ fn: f.fn,
+              perOp: f.calls / stmtSamples, selfMsPerOp: +(f.self / stmtSamples).toFixed(3), totalMsPerOp: +(f.total / stmtSamples).toFixed(3) }));
+          }
         }
         console.info('P-013 workload C statements by arm', JSON.stringify(stmts));
       }

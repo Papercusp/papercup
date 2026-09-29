@@ -3459,6 +3459,9 @@ export async function setWorkItemState(
   opts: {
     harness?: string;
     by?: string;
+    /** The item's family, when the caller has already read it from the `work_items`
+     *  row in `harness`. `'feature'` skips the issue-family probe (WI-10003631). */
+    family?: WorkItemFamily;
     /**
      * Internal dispatch-first handoff: suppress only the broad
      * `work-item:claimable` co-fire when this state transition enters the pool.
@@ -3530,7 +3533,12 @@ export async function setWorkItemState(
     force?: boolean;
   } = {},
 ): Promise<WorkItem | null> {
-  const wi = await getWorkItem(id, opts.harness);
+  // WI-10003631: a caller that already read the row's family from work_items (the
+  // accepted-program settle) skips the issue-view probe that always misses for a
+  // feature-family item.
+  const wi = opts.family === 'feature'
+    ? await getFeatureWorkItemOnly(id, opts.harness)
+    : await getWorkItem(id, opts.harness);
   if (!wi) return null;
   // The feature writer below uses this same receipt inside its UPDATE. Check
   // before any completion attestation or other pre-write side effect as well.

@@ -347,6 +347,8 @@ const ISSUE_FAMILY_KINDS: ReadonlySet<string> = new Set(['bug', 'change', 'task'
 export interface AcceptedProgramRootGuard {
   terminal: boolean;
   cancellationRequested: boolean;
+  /** The root row's family, read from `work_items` in the handle's harness. */
+  family: 'issue' | 'feature';
 }
 
 /** One-round-trip liveness guard for an accepted program's root work item
@@ -407,6 +409,7 @@ export async function readAcceptedProgramRootGuard(
   return {
     terminal: isSettledWorkItem({ family, state: row.status } as Pick<WorkItem, 'family' | 'state'>),
     cancellationRequested: row.cancel_requested || row.marked === true,
+    family,
   };
 }
 
