@@ -239,6 +239,16 @@ import {
 // deliberately outside the root npm workspaces (the lockfile carries them as standalone links),
 // so `npm --workspace <name>` cannot address them from the superproject root.
 import { STANDALONE_PACKAGE_DIRS } from "../../../../scripts/lib/test-runner-classes.mjs";
+// EI-24542010215430349: the rescue reruns arm the SAME executed-source capture the suite armed
+// (scripts/affected-tests.mjs), through the runner's own constants — never retyped literals.
+import {
+  EXECUTED_MAP_NO_PERSIST_ENV,
+  EXECUTED_MAP_OUT_ENV,
+  EXECUTED_MAP_RESULT_ENV,
+  EXECUTED_MAP_WORKSPACE_ENV,
+  executedMapRecordingEnabled,
+} from "../../../../scripts/lib/executed-source-map.mjs";
+import { TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reuse.mjs";
 // WI-10000288: a repair-signature leg that answers "I verified NOTHING" (EXIT_NOT_CHECKED)
 // is not a failing leg, and judging it as one red-pins the candidate forever — no fix to the
 // SUBJECT can repair a verdict that was never about the subject. These guards infer their
@@ -6818,6 +6828,48 @@ export function needsOwnFileRunner(
     /\.selftest\.sh$/.test(file) ||
     isStandaloneNodeTestFile(rootDir, workspace, file)
   );
+}
+
+/**
+ * EI-24542010215430349: stamp a rescue rerun (load-flake isolation, co-execution confirmation,
+ * worker-crash workspace rerun) with the executed-source capture the SUITE ran that file under.
+ *
+ * The suite arms the executed-source-map reporter and its per-file input capture on every unit
+ * vitest task (scripts/affected-tests.mjs `recordsExecutedMap`: the `test` script and the lanes).
+ * A rescue rerun that runs UNARMED changes a variable the rescue is not meant to change: a red
+ * the capture itself causes (a capture-setup crash, a fixture the capture's fs hooks break)
+ * passes unarmed and is absorbed as a load flake — false green. Every rescue rerun goes through
+ * the workspace's `test` script, so it is armed exactly when the suite would have armed it:
+ * recording enabled and no `*.integration.test.*` file (those ran under the unarmed
+ * `test:integration` script, so arming them would be the variable change in the other direction).
+ *
+ * Armed NO-PERSIST: a rescue rerun is not a suite run, so nothing it sees becomes a reusable pass
+ * proof or retires one. It also never inherits the suite's per-task result file, rows file or
+ * pass-reuse skip list — a skip list would drop the very file the rescue re-runs.
+ *
+ * Mutates and returns whether it armed, so the caller's log can say which way it ran.
+ */
+export function armRescueRerunCapture(
+  env: NodeJS.ProcessEnv,
+  input: { workspace: string; files: readonly string[] },
+): boolean {
+  for (const key of [
+    EXECUTED_MAP_WORKSPACE_ENV,
+    EXECUTED_MAP_NO_PERSIST_ENV,
+    EXECUTED_MAP_RESULT_ENV,
+    EXECUTED_MAP_OUT_ENV,
+    TEST_REUSE_SKIP_LIST_ENV,
+  ]) {
+    delete env[key];
+  }
+  const armed =
+    executedMapRecordingEnabled(env) &&
+    !input.files.some((file) => /\.integration\.test\./.test(file));
+  if (armed) {
+    env[EXECUTED_MAP_WORKSPACE_ENV] = input.workspace;
+    env[EXECUTED_MAP_NO_PERSIST_ENV] = "1";
+  }
+  return armed;
 }
 
 /**
@@ -17469,6 +17521,8 @@ export function realCheckpointDeps(
     );
     env.VITEST_MAX_FORKS = "1";
     env.VITEST_MAX_THREADS = "1";
+    const captureArmed = armRescueRerunCapture(env, { workspace, files: [file] });
+    log(`isolation: re-running ${workspace}::${file} (executed-source capture ${captureArmed ? "armed no-persist" : "unarmed"})`);
     // EI-18669336904251384: measure wall-clock duration so the retry-loop log can tell a
     // real ambient-load starvation (slow) apart from a fast deterministic failure (real
     // break / stale candidate) instead of blaming load unconditionally.
@@ -17544,6 +17598,8 @@ export function realCheckpointDeps(
       undefined,
       cfg.greenCheckpointCapacityMode,
     );
+    const captureArmed = armRescueRerunCapture(env, { workspace, files });
+    log(`isolation: co-execution re-run of ${workspace} (${files.length} file(s); executed-source capture ${captureArmed ? "armed no-persist" : "unarmed"})`);
     try {
       // EI-19332206710686203: this re-run needs the generous per-test deadline too, and the
       // reason is easy to get backwards. Absorption requires BOTH every file to pass alone
@@ -17621,6 +17677,10 @@ export function realCheckpointDeps(
     );
     env.VITEST_MAX_FORKS = "1";
     env.VITEST_MAX_THREADS = "1";
+    // This re-runs the workspace's whole `test` script — the exact invocation the suite armed —
+    // so it is armed the same way (no named files, so no integration carve-out applies).
+    const captureArmed = armRescueRerunCapture(env, { workspace, files: [] });
+    log(`worker-crash: re-running workspace ${workspace} (executed-source capture ${captureArmed ? "armed no-persist" : "unarmed"})`);
     // EI-19332206710686203: same rescue-discrimination problem as isolationRun — this re-runs
     // a whole workspace at single concurrency after a worker-pool crash, on a box still under
     // the load that crashed it. On vitest's 5s default a merely-slow test is scored

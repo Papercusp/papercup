@@ -162,6 +162,23 @@ describe('isGlobalRunnerInput', () => {
     expect(isGlobalRunnerInput('packages/operator-core/package.json')).toBe(false);
     expect(isGlobalRunnerInput('packages/operator-core/vitest.config.ts')).toBe(true);
   });
+
+  // WI-10003752: replayed from real commits (592850d, ff4e267, e1cb05e) — each discarded every
+  // pass proof fleet-wide while changing nothing any other workspace's runner reads.
+  it('ignores test-config fixtures and swept non-source temps, but not real runner sources', () => {
+    expect(isGlobalRunnerInput('libs/test-config/src/__fixtures__/armed-capture/sample.txt')).toBe(false);
+    expect(isGlobalRunnerInput('libs/test-config/src/__fixtures__/armed-capture/nested/x.ts')).toBe(false);
+    expect(isGlobalRunnerInput('libs/test-config/src/vitest-config.test.ts.tmp.4121.a1b2c3')).toBe(false);
+    expect(isGlobalRunnerInput('libs/test-config/src/vitest-config.ts.tmp')).toBe(false);
+    // The calibration half: every real runner source still invalidates (a rule that excluded
+    // these would pass the lines above vacuously).
+    expect(isGlobalRunnerInput('libs/test-config/src/vitest-config.ts')).toBe(true);
+    expect(isGlobalRunnerInput('libs/test-config/src/executed-source-map-reporter.ts')).toBe(true);
+    expect(isGlobalRunnerInput('libs/test-config/src/setup.mjs')).toBe(true);
+    expect(isGlobalRunnerInput('libs/test-config/src/quarantine.json')).toBe(true);
+    expect(isGlobalRunnerInput('libs/test-config/package.json')).toBe(true);
+    expect(isGlobalRunnerInput('libs/test-config/tsconfig.json')).toBe(true);
+  });
 });
 
 describe('env toggles and the report line', () => {

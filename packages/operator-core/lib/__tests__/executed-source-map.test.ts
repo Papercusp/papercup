@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EXECUTED_MAP_ENV,
+  EXECUTED_MAP_NO_PERSIST_ENV,
   EXECUTED_MAP_RECORD_ENV,
   EXECUTED_MAP_RESULT_ENV,
   EXECUTED_MAP_WORKSPACE_ENV,
@@ -237,6 +238,11 @@ describe('scripts/affected-tests.mjs wiring (source pins)', () => {
       `PC_EXECUTED_SOURCE_MAP_WORKSPACE_ENV = '${EXECUTED_MAP_WORKSPACE_ENV}'`,
     );
     expect(source).toContain('formatExecutedMapLine(t.ws.name, result.executedMap, executedMap.rows)');
+    // EI-24542010215430349: the gate's rescue reruns arm no-persist through this constant.
+    expect(EXECUTED_MAP_NO_PERSIST_ENV).toBe('PC_EXECUTED_SOURCE_MAP_NO_PERSIST');
+    expect(readFileSync(join(REPO_ROOT, 'libs/test-config/src/vitest-config.ts'), 'utf8')).toContain(
+      `PC_EXECUTED_SOURCE_MAP_NO_PERSIST_ENV = '${EXECUTED_MAP_NO_PERSIST_ENV}'`,
+    );
   });
 
   it('is fail-open: no database, no sha, a slow read — each is a reason string, never a thrown selection', () => {

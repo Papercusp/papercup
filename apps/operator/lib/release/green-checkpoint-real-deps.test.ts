@@ -23,6 +23,8 @@ import {
   expect,
   beforeAll,
   afterAll,
+  beforeEach,
+  afterEach,
   onTestFinished,
   vi,
 } from "vitest";
@@ -63,6 +65,7 @@ import {
   resolveWorkspaceFileTestInvocation,
   resolveWorkspaceTestInvocation,
   isStandaloneNodeTestFile,
+  armRescueRerunCapture,
   CONCURRENT_CONFIRM_TIMEOUT_MS,
   ISOLATION_RUN_TIMEOUT_MS,
   RESCUE_TEST_TIMEOUT_MS,
@@ -80,6 +83,14 @@ import {
   type CheckpointDeps,
 } from "./green-checkpoint";
 import { releaseConfig, type ReleaseConfig } from "./release-config";
+import {
+  EXECUTED_MAP_NO_PERSIST_ENV,
+  EXECUTED_MAP_OUT_ENV,
+  EXECUTED_MAP_RECORD_ENV,
+  EXECUTED_MAP_RESULT_ENV,
+  EXECUTED_MAP_WORKSPACE_ENV,
+} from "../../../../scripts/lib/executed-source-map.mjs";
+import { TEST_REUSE_SKIP_LIST_ENV } from "../../../../scripts/lib/test-pass-reuse.mjs";
 import {
   selectStaleEscalations,
   SELF_RECONCILING_META_KEY,
@@ -3991,6 +4002,121 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
     expect(
       calls.filter((call) => call.cmd === "npm" && call.args.includes(vitestFile)),
     ).toHaveLength(2);
+  });
+});
+
+// ── EI-24542010215430349: rescue reruns run under the capture the suite ran under ──
+//
+// The suite arms the executed-source-map reporter + per-file input capture on every unit vitest
+// task. A rescue rerun that ran UNARMED changed a second variable besides concurrency: a red the
+// capture itself caused passed unarmed and was absorbed as a load flake. Each rescue now arms the
+// same capture NO-PERSIST (nothing it sees becomes a reusable pass proof) and never inherits the
+// suite's result file, rows file or pass-reuse skip list.
+describe("EI-24542010215430349: rescue reruns arm executed-source capture, no-persist", () => {
+  // This file itself runs inside the gate's suite, whose process env carries the suite's own
+  // arming (result file, skip list, workspace name, possibly the record toggle). Pin every key
+  // the helper reads or writes, so the assertions never depend on the outer run.
+  const PINNED = [
+    EXECUTED_MAP_RECORD_ENV,
+    EXECUTED_MAP_WORKSPACE_ENV,
+    EXECUTED_MAP_NO_PERSIST_ENV,
+    EXECUTED_MAP_RESULT_ENV,
+    EXECUTED_MAP_OUT_ENV,
+    TEST_REUSE_SKIP_LIST_ENV,
+  ];
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of PINNED) saved[k] = process.env[k];
+    for (const k of PINNED) delete process.env[k];
+    // What a leaked outer suite env looks like: the rescue must strip all of it.
+    process.env[EXECUTED_MAP_WORKSPACE_ENV] = "@outer/suite-ws";
+    process.env[EXECUTED_MAP_RESULT_ENV] = "/tmp/outer-suite-result.jsonl";
+    process.env[EXECUTED_MAP_OUT_ENV] = "/tmp/outer-suite-rows.json";
+    process.env[TEST_REUSE_SKIP_LIST_ENV] = "/tmp/outer-suite-skip-list.json";
+  });
+  afterEach(() => {
+    for (const k of PINNED) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
+  const armedAs = (env: NodeJS.ProcessEnv | undefined, workspace: string) => {
+    expect(env?.[EXECUTED_MAP_WORKSPACE_ENV]).toBe(workspace);
+    expect(env?.[EXECUTED_MAP_NO_PERSIST_ENV]).toBe("1");
+    for (const k of [EXECUTED_MAP_RESULT_ENV, EXECUTED_MAP_OUT_ENV, TEST_REUSE_SKIP_LIST_ENV]) {
+      expect(env?.[k], k).toBeUndefined();
+    }
+  };
+  const unarmed = (env: NodeJS.ProcessEnv | undefined) => {
+    for (const k of [
+      EXECUTED_MAP_WORKSPACE_ENV,
+      EXECUTED_MAP_NO_PERSIST_ENV,
+      EXECUTED_MAP_RESULT_ENV,
+      EXECUTED_MAP_OUT_ENV,
+      TEST_REUSE_SKIP_LIST_ENV,
+    ]) {
+      expect(env?.[k], k).toBeUndefined();
+    }
+  };
+
+  it("helper: a unit file is armed no-persist and stripped of every suite-only channel", () => {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    expect(armRescueRerunCapture(env, { workspace: "@x/w", files: ["lib/a.test.ts"] })).toBe(true);
+    armedAs(env, "@x/w");
+  });
+
+  it("helper: an integration file stays unarmed — the suite ran it under the unarmed test:integration", () => {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    expect(
+      armRescueRerunCapture(env, { workspace: "@x/w", files: ["lib/a.test.ts", "lib/b.integration.test.ts"] }),
+    ).toBe(false);
+    unarmed(env);
+  });
+
+  it("helper: recording switched off stays unarmed, exactly as the suite would", () => {
+    for (const off of ["0", "false", "off", "no"]) {
+      const env: NodeJS.ProcessEnv = { ...process.env, [EXECUTED_MAP_RECORD_ENV]: off };
+      expect(armRescueRerunCapture(env, { workspace: "@x/w", files: ["lib/a.test.ts"] })).toBe(false);
+      unarmed(env);
+    }
+  });
+
+  const RED_TWO_FILES =
+    ">>> @example/fixture-pkg :: npm run test\n" +
+    " FAIL  lib/a.test.ts > alpha\n" +
+    " FAIL  lib/b.test.ts > beta\n" +
+    "2 non-quarantined task(s) failed.";
+
+  it("wired: both isolation re-runs AND the confirming co-execution run spawn armed no-persist", async () => {
+    // calls: 0 red suite, 1+2 the two isolation re-runs, 3 the confirming co-execution run.
+    const { exec, calls } = makeExec([{ code: 1, stdout: RED_TWO_FILES }, { code: 0 }, { code: 0 }, { code: 0 }]);
+    await realCheckpointDeps(cfg, exec).runGreen(cpTree, "base-sha");
+    const rescues = calls.slice(1, 4);
+    expect(rescues.map((c) => c.args.includes("lib/a.test.ts") || c.args.includes("lib/b.test.ts"))).toEqual([true, true, true]);
+    for (const c of rescues) armedAs(c.opts?.env, "@example/fixture-pkg");
+  });
+
+  it("wired: the worker-pool-crash workspace re-run spawns armed no-persist", async () => {
+    const crash =
+      ">>> @example/fixture-pkg :: npm run test\n" +
+      "Error: [vitest-pool]: Worker forks emitted error.\n" +
+      "Caused by: Error: Worker exited unexpectedly\n" +
+      "1 non-quarantined task(s) failed.";
+    const { exec, calls } = makeExec([{ code: 1, stdout: crash }, { code: 0 }]);
+    await realCheckpointDeps(cfg, exec).runGreen(cpTree, "base-sha");
+    armedAs(calls[1].opts?.env, "@example/fixture-pkg");
+  });
+
+  it("wired: an isolation re-run of an integration file spawns unarmed", async () => {
+    const { exec, calls } = makeExec([]);
+    await realCheckpointDeps(cfg, exec).isolationRun?.({
+      workspace: "@example/fixture-pkg",
+      file: "lib/a.integration.test.ts",
+    });
+    const run = calls.find((c) => c.args.includes("lib/a.integration.test.ts"));
+    expect(run).toBeDefined();
+    unarmed(run!.opts?.env);
   });
 });
 
