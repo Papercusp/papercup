@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: Elastic-2.0
 // Style Dictionary v4 config for papercup (desktop + harness).
 //
 // Emits two CSS files imported by apps/operator/app/globals.css:

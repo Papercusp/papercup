@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: Elastic-2.0
 //
 // Regenerates design-token CSS outputs and fails if the working tree
 // differs. Catches the drift case where someone edits a token source
