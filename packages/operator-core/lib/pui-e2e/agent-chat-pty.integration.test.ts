@@ -6195,4 +6195,163 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       await pane.stop().catch(() => {});
     }
   }, 600_000);
+
+  // pui-chat-first-ux-2026-09-28 P-005: the side-by-side review against Claude
+  // Code and Codex CLI. These are the five tasks the review driver
+  // (.papercusp/scratch/p005-side-by-side.mts) gives stock `claude` and `codex`,
+  // run in a fresh launch directory against this fresh operator: what a new
+  // user sees, with no shared workspace backlog for the engine to orient to.
+  // Opt-in because it spends real model turns: PUI_REVIEW_FRAMES_DIR receives
+  // one rendered 120x40 frame per step plus summary.json with per-step timings.
+  test.runIf(Boolean(process.env.PUI_REVIEW_FRAMES_DIR))(
+    'P-005: the five side-by-side review tasks work in a fresh launch directory',
+    async ({ onTestFailed }) => {
+      const out = process.env.PUI_REVIEW_FRAMES_DIR!;
+      mkdirSync(out, { recursive: true });
+      const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p005-review-')));
+      const calc = 'function add(a, b) {\n  return a + b;\n}\n\nfunction mul(a, b) {\n  return a * b;\n}\n\nmodule.exports = { add, mul };\n';
+      writeFileSync(path.join(launchDir, 'calc.js'), calc);
+      writeFileSync(path.join(launchDir, 'calc.test.js'), "const test = require('node:test');\nconst assert = require('node:assert');\nconst { add, mul } = require('./calc');\n\ntest('add', () => assert.strictEqual(add(2, 3), 5));\ntest('mul', () => assert.strictEqual(mul(2, 3), 6));\n");
+      writeFileSync(path.join(launchDir, 'package.json'), JSON.stringify({ name: 'p005-proj', version: '1.0.0', scripts: { test: 'node --test' } }, null, 2) + '\n');
+      const frame = (label: string, screen: string) => writeFileSync(path.join(out, `${label}.txt`), screen);
+      const log: Array<Record<string, unknown>> = [];
+      const approvals: string[] = [];
+      const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      let pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols: 120, rows: 40 });
+      onTestFailed(() => {
+        try { frame('failure', pane.screen()); } catch { /* pane gone */ }
+        console.info('PUI_P005_REVIEW_FAILURE', JSON.stringify({ launchDir, log, approvals, ...pane.failureEvidence() }));
+      });
+      // A native Edit/Write/Bash card is answered once, as the reviewing owner
+      // would; the card itself is saved as a frame. SU-tool cards use the pane's.
+      let approvedAt = 0;
+      const approveNativeCard = (label: string): void => {
+        if (Date.now() - approvedAt < 750) return;
+        const screen = pane.screen();
+        const lines = screen.split('\n').map((line) => line.replace(/[│┌┐└┘─]/g, ' ').trim());
+        const tool = lines.map((line) => /^Allow ([A-Za-z][\w]*)\?/.exec(line)?.[1]).find((name) => name && !name.startsWith('mcp__'));
+        const pick = tool && lines.map((line) => /^(?:› )?(\d)\. Approve\b/.exec(line)?.[1]).find(Boolean);
+        if (!tool || !pick) return;
+        frame(`${label}-approval-${approvals.length + 1}`, screen);
+        pane.pty.write(pick);
+        approvals.push(`${label}:${tool}`);
+        approvedAt = Date.now();
+      };
+      // A question card the agent opens on its own (e.g. "what would you like to
+      // work on?") parks the turn. A stock CLI never does that for these tasks,
+      // so the review records it and skips the card with Esc, as a user would.
+      const questions: string[] = [];
+      const retries: string[] = [];
+      let retriedAt = 0;
+      let skippedAt = 0;
+      const skipQuestionCard = (label: string): void => {
+        if (Date.now() - skippedAt < 1_500 || Date.now() - approvedAt < 5_000) return;
+        const open = pendingNativeCards().filter((card) => !isSuToolApprovalCard(card));
+        const screen = pane.screen();
+        // Tool approvals are cards too; only a card with no `Allow <tool>?` is a question.
+        const approval = screen.split('\n').some((line) => /^[\s│]*Allow [A-Za-z][\w]*\?/.test(line));
+        if (!open.length || approval || !screen.includes('Esc skip')) return;
+        frame(`${label}-question-${questions.length + 1}`, screen);
+        questions.push(`${label}: ${open[0].prompt}`);
+        pane.pty.write('\u001b');
+        skippedAt = Date.now();
+      };
+      // One owner turn, finished when its engine waits for the owner again with
+      // no open card, after an assistant reply in this turn. (`waiting-for-owner`
+      // is the idle state after a turn; `ready` precedes the first one.) Timings
+      // are from Enter.
+      const turn = async (label: string, prompt: string): Promise<string> => {
+        const eventsBefore = scriptedEngine.events.length;
+        pane.write(prompt);
+        await pane.waitFor(prompt.slice(0, 40));
+        const started = performance.now();
+        pane.enter();
+        let firstReplyMs: number | null = null;
+        const deadline = Date.now() + 300_000;
+        let nextProgressFrame = Date.now() + 15_000;
+        for (;;) {
+          pane.settleSuToolApproval();
+          approveNativeCard(label);
+          skipQuestionCard(label);
+          // A failed send offers "press Enter to send your message again"; the
+          // review retries as a user would, at most twice, and records it.
+          if (pane.screen().includes('send your message again') && Date.now() - retriedAt > 5_000) {
+            if (retries.filter((entry) => entry.startsWith(`${label}:`)).length >= 2) {
+              frame(`${label}-send-failed`, pane.screen());
+              throw new Error(`${label}: the message could not be sent after two retries`);
+            }
+            frame(`${label}-retry-${retries.length + 1}`, pane.screen());
+            retries.push(`${label}: ${Math.round((performance.now() - started) / 1000)}s`);
+            retriedAt = Date.now();
+            pane.enter();
+          }
+          // What a waiting user sees: one frame every 15 s of a slow turn.
+          if (Date.now() >= nextProgressFrame) {
+            frame(`${label}-at-${Math.round((performance.now() - started) / 1000)}s`, pane.screen());
+            nextProgressFrame += 15_000;
+          }
+          const events = scriptedEngine.events.slice(eventsBefore);
+          const replies = events.filter((event) => event.type === 'transcript' && event.role === 'assistant' && event.channel === 'text');
+          if (firstReplyMs === null && replies.length) firstReplyMs = Math.round(performance.now() - started);
+          const lifecycle = scriptedEngine.engines.at(-1)?.adapter.host.descriptor().lifecycle;
+          const completed = replies.filter((event) => event.type === 'transcript' && event.phase === 'completed');
+          const idle = lifecycle === 'ready' || (lifecycle === 'waiting-for-owner' && pendingNativeCards().length === 0);
+          if (idle && completed.length) {
+            await sleep(1_500);
+            frame(label, pane.screen());
+            const reply = completed.map((event) => (event.type === 'transcript' ? String(event.content) : '')).join('\n');
+            log.push({ label, prompt, firstReplyMs, totalMs: Math.round(performance.now() - started), reply });
+            return reply;
+          }
+          if (lifecycle === 'failed' || lifecycle === 'ended' || Date.now() > deadline) {
+            frame(`${label}-stuck`, pane.screen());
+            throw new Error(`${label} did not finish (lifecycle ${String(lifecycle)})`);
+          }
+          await sleep(200);
+        }
+      };
+      try {
+        await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
+        frame('00-ready', pane.screen());
+        await turn('01-greeting', 'hi');
+        const explained = await turn('02-read-explain', 'Read calc.js and explain what it does in two sentences.');
+        expect(explained).toMatch(/add/i);
+        await turn('03-edit', 'Edit calc.js so that add() accepts an optional third number and adds it too.');
+        expect(readFileSync(path.join(launchDir, 'calc.js'), 'utf8')).not.toBe(calc);
+        const tested = await turn('04-run-tests', 'Run the tests with npm test and tell me whether they pass.');
+        expect(tested).toMatch(/pass/i);
+
+        // Quit the way a user does, start `pui` again in the same directory and
+        // pick the conversation back up.
+        pane.write('/exit');
+        await pane.waitFor('/exit');
+        const exitStarted = performance.now();
+        pane.enter();
+        const exitedCleanly = await Promise.race([pane['exit'].then(() => true), sleep(20_000).then(() => false)]);
+        log.push({ label: '05a-exit', exitedCleanly, exitMs: Math.round(performance.now() - exitStarted) });
+        await pane.stop().catch(() => {});
+        pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir, cols: 120, rows: 40 });
+        await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 60_000 });
+        frame('05a-relaunch', pane.screen());
+        pane.write('/resume');
+        await pane.waitFor('/resume');
+        pane.enter();
+        await sleep(2_000);
+        frame('05b-resume-picker', pane.screen());
+        // The review conversation is the only earlier one in this workspace.
+        pane.enter();
+        await pane.waitFor('calc.js', { timeoutMs: 60_000 });
+        await sleep(1_500);
+        frame('05c-resumed', pane.screen());
+        const recalled = await turn('05-resume-recall', 'What change did we make to calc.js earlier in this conversation? One sentence.');
+        expect(recalled).toMatch(/third|optional|three/i);
+        writeFileSync(path.join(out, 'summary.json'), JSON.stringify({ cli: 'pui', binary: bin, binarySha256, cols: 120, rows: 40, launchDir, approvals, questions, retries, log }, null, 2) + '\n');
+        console.info('PUI_P005_REVIEW', JSON.stringify({ approvals, log: log.map(({ label, firstReplyMs, totalMs }) => ({ label, firstReplyMs, totalMs })) }));
+      } finally {
+        await pane.stop().catch(() => {});
+        rmSync(launchDir, { recursive: true, force: true });
+      }
+    },
+    900_000,
+  );
 });
