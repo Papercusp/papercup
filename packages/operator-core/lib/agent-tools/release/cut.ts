@@ -50,6 +50,8 @@ import * as path from 'node:path';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
+import { resolveBashTaskProvenance } from '../capability/bash';
+import type { ResolveIdentityCtx } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { runGovernedOperation } from '../../resource-governor/execution';
 import { loadHarnessRegistry, type HarnessRegistry } from '../../harness-registry';
@@ -271,6 +273,7 @@ async function openCutOperation(input: {
   platform: Platform | null;
   sourceSha: string;
   desktopRoot: string;
+  workItemId?: string | null;
 }): Promise<{ operation: BeginCutOperationResult | null; reason?: string }> {
   try {
     const operation = await beginCutOperation({
@@ -282,6 +285,7 @@ async function openCutOperation(input: {
         gitlinks: readSourceGitlinks(integrationRoot(), input.sourceSha),
       },
       cwd: input.desktopRoot,
+      workItemId: input.workItemId ?? null,
     });
     return { operation };
   } catch (error) {
@@ -291,6 +295,19 @@ async function openCutOperation(input: {
         error instanceof Error ? error.message : String(error)
       }`,
     };
+  }
+}
+
+/**
+ * The work-item a cut serves (expensive-verification-loops P-001: a cut is an expensive
+ * verification attempt). Same unambiguous-held-claim rule as capability:bash, and
+ * fail-soft: an unattributable cut still fires, just unlinked.
+ */
+async function cutWorkItemId(ctx: unknown): Promise<string | null> {
+  try {
+    return (await resolveBashTaskProvenance(ctx as ResolveIdentityCtx, null)).workItemId;
+  } catch {
+    return null;
   }
 }
 
@@ -1092,6 +1109,7 @@ export default defineTool({
         platform,
         sourceSha: args.sourceSha,
         desktopRoot: selected.desktopRoot,
+        workItemId: await cutWorkItemId(ctx),
       });
       const launch = await launchDetachedCut({
         version: args.version,
@@ -1255,6 +1273,7 @@ export default defineTool({
       platform: null,
       sourceSha: args.sourceSha,
       desktopRoot: selected.desktopRoot,
+      workItemId: await cutWorkItemId(ctx),
     });
     const launch = await launchDetachedCut({
       version: args.version,

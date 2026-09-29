@@ -148,6 +148,9 @@ export interface BeginCutOperationInput {
   credential?: CutOperationCredential;
   /** papercusp-desktop root the cut runs in — recorded so discovery can report WHERE. */
   cwd?: string | null;
+  /** The work-item this cut serves, when the caller's claim names it unambiguously
+   *  (expensive-verification-loops P-001: a cut is an expensive verification attempt). */
+  workItemId?: string | null;
   workspaceId?: string;
   harnessSlug?: string | null;
   /** Pre-minted ids. Injectable so a test asserts an exact row rather than a random one. */
@@ -198,6 +201,7 @@ export async function beginCutOperation(
       cwd: input.cwd ?? null,
       launchedBy: CUT_OPERATION_LAUNCHED_BY,
       harnessSlug: input.harnessSlug ?? null,
+      workItemId: input.workItemId ?? null,
       detail: {
         channel: identity.channel,
         version: identity.version,

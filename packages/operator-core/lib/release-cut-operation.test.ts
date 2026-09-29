@@ -149,6 +149,24 @@ describe('beginCutOperation', () => {
     expect((calls[0].spec.detail as Record<string, unknown>).platform).toBeNull();
   });
 
+  it('stamps the served work-item on the ledger row, and an explicit null when there is none', async () => {
+    // expensive-verification-loops P-001: the attempt ledger counts a closed row per
+    // work_item_id, so the cut row must carry the item it serves.
+    const linked = captureRegister();
+    await beginCutOperation(
+      { identity: identity(), workItemId: 'WI-10002524' },
+      { registerTask: linked.registerTask, newTaskId: () => 'task1', newOperationId: () => 'op-1' },
+    );
+    expect(linked.calls[0].spec.workItemId).toBe('WI-10002524');
+
+    const unlinked = captureRegister();
+    await beginCutOperation(
+      { identity: identity() },
+      { registerTask: unlinked.registerTask, newTaskId: () => 'task2', newOperationId: () => 'op-2' },
+    );
+    expect(unlinked.calls[0].spec.workItemId).toBeNull();
+  });
+
   it('mints distinct ids when none are supplied', async () => {
     const { registerTask } = captureRegister();
     const a = await beginCutOperation({ identity: identity() }, { registerTask });

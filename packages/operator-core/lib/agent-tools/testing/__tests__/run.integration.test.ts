@@ -1306,6 +1306,23 @@ describe('testing:run (integration)', () => {
       PAPERCUSP_TEST_RUN_HARNESS: 'papercusp',
       PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace',
     });
+    // No work-item was named, so none is invented.
+    expect(request).not.toHaveProperty('workItemId');
+  });
+
+  it('carries the verified work-item onto the detached request (expensive-verification-loops P-001)', () => {
+    const single = buildDetachedTestRunRequest({
+      root: REPO_ROOT,
+      files: ['packages/example.test.ts'],
+      workItemId: 'WI-10003898',
+    });
+    expect(single.workItemId).toBe('WI-10003898');
+
+    const mixed = buildDetachedMixedTestRunRequest({
+      groups: [{ root: REPO_ROOT, files: ['packages/example.test.ts'] }],
+      workItemId: 'WI-10003898',
+    });
+    expect(mixed.workItemId).toBe('WI-10003898');
   });
 
   it('uses parent-side JSON ledger ingestion for a single detached integration file', () => {
