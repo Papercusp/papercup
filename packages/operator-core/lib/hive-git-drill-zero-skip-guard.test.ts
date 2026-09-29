@@ -1792,6 +1792,20 @@ esac
     expect(physicalScenario).not.toMatch(/['"]git (?:fetch|update-ref)/);
   });
 
+  it('waits for the tower staging event and fails fast on a duplicate (WI-10003787)', () => {
+    // P-505 run 27: the tower integrate returned in_progress and a one-shot
+    // phase-d-event read ran before the single signed event landed.
+    const towerCaptures = physicalScenario.match(/phase-d-event tower 0 [^\n]*/g) ?? [];
+    expect(towerCaptures).toHaveLength(2);
+    for (const call of towerCaptures) expect(call).toContain('"$PHASE_D_TOWER_EVENT_WAIT_SEC"');
+    const wait = Number(/^PHASE_D_TOWER_EVENT_WAIT_SEC=(\d+)$/m.exec(physicalScenario)?.[1]);
+    expect(wait).toBeGreaterThan(45);
+    expect(wait).toBeLessThanOrEqual(1200);
+    const vmLoops = physicalScenario.match(/phase-d-event vm 0 [\s\S]*?\n {4}phase_d_fail_on_duplicate_event /g) ?? [];
+    expect(vmLoops).toHaveLength(2);
+    expect(physicalScenario).toContain("grep -q 'duplicate signed production staging events'");
+  });
+
   it('holds the VM author below steer only across the below-steer window and always undoes it (WI-10003723)', () => {
     // P-505 run 15: the tower pinned the VM user at 'steer', so the integrator
     // auto-integrated the VM head and the pending request never appeared.
