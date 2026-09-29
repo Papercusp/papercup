@@ -29,8 +29,9 @@
  * because it calls `generate()` at module scope and would emit declarations into
  * this shared working tree as a side effect of collecting the suite.
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import ts from 'typescript';
 
 export interface ParityProblem {
@@ -102,22 +103,84 @@ export function comparePair(
 }
 
 /**
- * Every `.d.mts` under `repoRoot`, excluding dependency and VCS directories.
+ * Paths under `gitRoot` that git reports as UNTRACKED AND IGNORED, relative to
+ * `gitRoot` with `/` separators (`--directory` collapses a wholly-ignored directory
+ * to one entry). Tracked files are never listed — not even one force-added under an
+ * ignore pattern — so pruning by this set cannot hide a declaration git knows about,
+ * and an untracked-but-NOT-ignored declaration stays visible, which is the state
+ * this guard exists to catch.
+ *
+ * Empty when `gitRoot` is not a git work tree (a tmpdir fixture, an exported
+ * tarball) or git fails or times out; the exact exclusions in `allDeclarations`
+ * still apply there. Every failure mode walks MORE, never less — a false red, not
+ * a hidden declaration.
+ */
+export function ignoredUntrackedPaths(gitRoot: string): Set<string> {
+  try {
+    const out = execFileSync(
+      'git',
+      ['-C', gitRoot, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
+      {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: 30_000,
+      },
+    );
+    return new Set(
+      out
+        .split('\0')
+        .filter(Boolean)
+        .map((p) => p.replace(/\/$/, '')),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function posix(path: string): string {
+  return path.split(sep).join('/');
+}
+
+/** Record `gitRoot`'s untracked+ignored paths in `ignored`, keyed repo-relative. */
+function addIgnoredUnder(ignored: Set<string>, repoRoot: string, gitRoot: string): void {
+  const prefix = posix(relative(repoRoot, gitRoot));
+  for (const p of ignoredUntrackedPaths(gitRoot)) ignored.add(prefix ? `${prefix}/${p}` : p);
+}
+
+/**
+ * Every `.d.mts` under `repoRoot`, excluding dependency and VCS directories and
+ * anything git reports as untracked AND ignored.
  *
  * Deliberately a filesystem walk rather than `git ls-files`: the declarations that
  * most need policing are the ones nobody registered, and an untracked-but-present
- * one is exactly the state this guard exists to catch.
+ * one is exactly the state this guard exists to catch. What it must NOT walk is
+ * gitignored disposable content — scratch snapshots, generated mirrors, frozen
+ * worktrees — which can never reach the gate and only false-reds local runs of the
+ * shared tree (EI-24553552437295746 / WI-10003807: a peer's gitignored
+ * `.papercusp/scratch/source-preview` copy failed every local check). The ignore
+ * set is taken from git itself rather than a list of directory names, so a new
+ * disposable directory needs no edit here; each nested git root (a submodule)
+ * contributes its own ignore rules as the walk enters it.
  */
-export function allDeclarations(repoRoot: string, dir = repoRoot, acc: string[] = []): string[] {
+export function allDeclarations(repoRoot: string): string[] {
+  const ignored = new Set<string>();
+  addIgnoredUnder(ignored, repoRoot, repoRoot);
+  const acc: string[] = [];
+  walkDeclarations(repoRoot, repoRoot, ignored, acc);
+  return acc;
+}
+
+function walkDeclarations(repoRoot: string, dir: string, ignored: Set<string>, acc: string[]): void {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === 'node_modules' || entry.name === '.git') continue;
     const abs = join(dir, entry.name);
     const repoRelative = relative(repoRoot, abs);
-    // Frozen-candidate repair worktrees are complete historical repo snapshots, not
-    // part of the canonical tree this check is judging. Generated runtime mirrors
-    // under any `.papercusp/tmp*` directory are likewise disposable copies, not
-    // declaration surfaces owned by this checkout. Walking either lets stale
-    // temporary content false-red current staging. Keep these exclusions exact: the
+    if (ignored.has(posix(repoRelative))) continue;
+    // Non-git fallback (the ignore set is empty outside a work tree): frozen-candidate
+    // repair worktrees are complete historical repo snapshots, and generated runtime
+    // mirrors under any `.papercusp/tmp*` directory are disposable copies — neither is
+    // a declaration surface owned by this checkout. Keep these exclusions exact: the
     // guard must still see untracked declarations in every other directory,
     // including other dot-directories.
     const segments = repoRelative.split(/[\\/]/);
@@ -131,10 +194,11 @@ export function allDeclarations(repoRoot: string, dir = repoRoot, acc: string[] 
     ) {
       continue;
     }
-    if (entry.isDirectory()) allDeclarations(repoRoot, abs, acc);
-    else if (entry.name.endsWith('.d.mts')) acc.push(relative(repoRoot, abs));
+    if (entry.isDirectory()) {
+      if (existsSync(join(abs, '.git'))) addIgnoredUnder(ignored, repoRoot, abs);
+      walkDeclarations(repoRoot, abs, ignored, acc);
+    } else if (entry.name.endsWith('.d.mts')) acc.push(repoRelative);
   }
-  return acc;
 }
 
 /**

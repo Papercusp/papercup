@@ -21,6 +21,7 @@
  *    every hand-written declaration and get it switched off.
  */
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -172,6 +173,59 @@ describe('declaration export parity — calibration', () => {
           stranded: ['newlyAdded'],
           phantom: [],
         },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('prunes what git reports as untracked+ignored — scratch, any ignored dir, a nested repo’s own ignores — without hiding tracked or merely-untracked drift (EI-24553552437295746)', () => {
+    // The filed defect: a peer's gitignored `.papercusp/scratch/source-preview` copy
+    // false-redded every local run of this suite and of `gen:declarations:check`.
+    // Each entry below would be reported by a walker that ignores `.gitignore`; the
+    // three that must SURVIVE pin the guard's purpose (untracked-but-present drift,
+    // a force-tracked file under an ignore pattern, a nested repo's real source).
+    const root = mkdtempSync(join(tmpdir(), 'declaration-parity-gitignore-'));
+    const git = (cwd: string, ...args: string[]) =>
+      execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore', timeout: 30_000 });
+    const pair = (dir: string, name: string, extra: string) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `${name}.d.mts`), 'export const present: number;\n');
+      writeFileSync(
+        join(dir, `${name}.mjs`),
+        `export const present = 1;\nexport const ${extra} = 2;\n`,
+      );
+    };
+    try {
+      git(root, 'init', '-q');
+      writeFileSync(join(root, '.gitignore'), '**/.papercusp/scratch/\ngenerated-out/\nlegacy/\n');
+      pair(join(root, 'scripts'), 'canonical', 'newlyAdded');
+      pair(
+        join(root, '.papercusp', 'scratch', 'source-preview', 'readme-check-1', 'scripts'),
+        'stale',
+        'scratchOnly',
+      );
+      pair(join(root, 'generated-out'), 'mirror', 'generatedOnly');
+      pair(join(root, 'legacy'), 'kept', 'legacyAdded');
+      git(root, 'add', '-f', 'legacy/kept.d.mts', 'legacy/kept.mjs');
+      const nested = join(root, 'libs', 'nested');
+      mkdirSync(nested, { recursive: true });
+      git(nested, 'init', '-q');
+      writeFileSync(join(nested, '.gitignore'), 'scratch/\n');
+      pair(join(nested, 'scratch'), 'stale', 'nestedScratchOnly');
+      pair(join(nested, 'src'), 'real', 'nestedAdded');
+
+      expect(allDeclarations(root).sort()).toEqual([
+        'legacy/kept.d.mts',
+        'libs/nested/src/real.d.mts',
+        'scripts/canonical.d.mts',
+      ]);
+      expect(
+        exportParityProblems(root, new Set()).map((p) => [p.declaration, p.stranded]),
+      ).toEqual([
+        ['legacy/kept.d.mts', ['legacyAdded']],
+        ['libs/nested/src/real.d.mts', ['nestedAdded']],
+        ['scripts/canonical.d.mts', ['newlyAdded']],
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
