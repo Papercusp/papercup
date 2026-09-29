@@ -65,6 +65,8 @@ export interface WorkItemAttempt {
   label: string | null;
   source: VerificationAttemptStamp['source'];
   commandFingerprint: string | null;
+  /** The harness's own phase / step / reason code, when the attempt reported one. */
+  structured?: StructuredFailure | null;
 }
 
 function sqlOf(inject?: Sql): Sql {
@@ -233,6 +235,7 @@ export async function listWorkItemAttempts(
       label: r.attempt?.label ?? null,
       source: r.attempt?.source ?? null,
       commandFingerprint: r.attempt?.commandFingerprint ?? null,
+      structured: r.attempt?.structured ?? null,
     };
   });
 }

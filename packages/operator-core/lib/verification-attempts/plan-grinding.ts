@@ -43,11 +43,18 @@ export interface ReadGrindingDeps extends LoopGateDeps {
   }) => Promise<LinkedWorkItem[]>;
 }
 
-async function defaultListLinked(
+/**
+ * The plan's work items (linked to `itemIds`) that have at least one slow attempt. Grinding
+ * reads only live items; iteration metrics pass `includeTerminal` because a pass usually
+ * closes the item.
+ */
+export async function listPlanLinkedWorkItems(
   input: { workspaceId: string; planSlug: string; itemIds: readonly string[] },
   sql: Sql,
+  opts: { includeTerminal?: boolean } = {},
 ): Promise<LinkedWorkItem[]> {
   const ids = [...input.itemIds];
+  const terminal = opts.includeTerminal ? [] : [...ANY_FAMILY_TERMINAL_STATES];
   const rows = await sql<{ feature_id: string; item_ids: string[] | null }[]>`
     SELECT w.feature_id,
            ARRAY(
@@ -62,7 +69,7 @@ async function defaultListLinked(
             OR w.payload #>> '{plan_item,plan_slug}' = ${input.planSlug})
        AND (COALESCE(w.source_plan_item_ids, ARRAY[]::text[]) && ${ids}::text[]
             OR w.payload #>> '{plan_item,item_id}' = ANY(${ids}::text[]))
-       AND NOT (w.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+       AND NOT (w.status = ANY(${terminal}::text[]))
        AND w.lane IS DISTINCT FROM 'observation'
        AND EXISTS (
          SELECT 1 FROM harness_shared.task_ledger t
@@ -106,7 +113,7 @@ export async function readGrindingItems(
   try {
     const linked = deps.listLinked
       ? await deps.listLinked(input)
-      : await defaultListLinked(input, deps.sql ?? (getOrgPg().sql as unknown as Sql));
+      : await listPlanLinkedWorkItems(input, deps.sql ?? (getOrgPg().sql as unknown as Sql));
     const marks: GrindingMark[] = [];
     for (const link of linked) {
       const decision = await checkLoopGate({ workspaceId: input.workspaceId, workItemId: link.workItemId }, deps);

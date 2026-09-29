@@ -51,6 +51,7 @@ import {
   type PlanLifecycleSignals,
 } from '@papercusp/plan-parser';
 import type { GrindingMark } from '../../verification-attempts/plan-grinding';
+import type { IterationMetric } from '../../verification-attempts/plan-iteration-metrics';
 
 /** One measured activity timestamp and where it came from. */
 export interface PlanActivitySource {
@@ -299,9 +300,30 @@ export async function derivePlanLifecycleForRead(input: {
   readGrinding?: (q: { workspaceId: string; planSlug: string; itemIds: readonly string[] }) => Promise<
     GrindingMark[] | null
   >;
-}): Promise<PlanLifecycleReconciliation & { grinding?: GrindingMark[] | null }> {
+  /**
+   * expensive-verification-loops P-007 (R-12): opt-in reader for each item's
+   * attempts-until-pass and failure-class split; plans:get passes readIterationMetrics.
+   * Reads every item (done ones included). Absent → no `iterations` field.
+   */
+  readIterations?: (q: { workspaceId: string; planSlug: string; itemIds: readonly string[] }) => Promise<
+    IterationMetric[] | null
+  >;
+}): Promise<PlanLifecycleReconciliation & { grinding?: GrindingMark[] | null; iterations?: IterationMetric[] | null }> {
   const reconciled = await deriveReconciledLifecycle(input);
-  if (!input.readGrinding) return reconciled;
+  let iterations: IterationMetric[] | null | undefined;
+  if (input.readIterations) {
+    try {
+      iterations = await input.readIterations({
+        workspaceId: input.signals.workspaceId,
+        planSlug: input.signals.planSlug,
+        itemIds: input.items.map((it) => it.id),
+      });
+    } catch {
+      iterations = null;
+    }
+  }
+  const withIterations = iterations !== undefined ? { ...reconciled, iterations } : reconciled;
+  if (!input.readGrinding) return withIterations;
   const open = input.items
     .filter((it) => it.storedStatus !== 'done' && it.storedStatus !== 'dropped')
     .map((it) => it.id);
@@ -315,7 +337,7 @@ export async function derivePlanLifecycleForRead(input: {
   } catch {
     grinding = null;
   }
-  return { ...reconciled, grinding };
+  return { ...withIterations, grinding };
 }
 
 async function deriveReconciledLifecycle(input: {

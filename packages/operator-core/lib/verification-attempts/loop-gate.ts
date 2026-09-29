@@ -152,7 +152,8 @@ export interface LoopGateDeps {
   sql?: Sql;
 }
 
-async function defaultReadNotes(workItemId: string): Promise<AttemptAuditNote[] | null> {
+/** A work item's comment thread as audit-note candidates; null when it cannot be read. */
+export async function readAttemptAuditNotes(workItemId: string): Promise<AttemptAuditNote[] | null> {
   try {
     // Lazy: issues-engineer is heavy and this module is imported on launch paths.
     const { getIssueThreadWindow } = await import('../issues-engineer');
@@ -200,7 +201,7 @@ export async function checkLoopGate(
       deps.sql,
     );
     if (attempts.length === 0) return { allowed: true, verdict: null, notesReadable: false };
-    const notes = await (deps.readNotes ?? defaultReadNotes)(input.workItemId);
+    const notes = await (deps.readNotes ?? readAttemptAuditNotes)(input.workItemId);
     const verdict = evaluateLoop(attempts, notes ?? [], {
       now: deps.now?.(),
       ...(input.budgetMs ? { budgetMs: input.budgetMs } : {}),
@@ -251,7 +252,7 @@ export async function nudgeOnNewLoop(
       deps.sql,
     );
     if (!attempts.some((a) => a.taskId === input.taskId)) return false;
-    const notes = await (deps.readNotes ?? defaultReadNotes)(input.workItemId);
+    const notes = await (deps.readNotes ?? readAttemptAuditNotes)(input.workItemId);
     if (notes === null) return false;
     const opts = { now: deps.now?.() };
     const withIt = evaluateLoop(attempts, notes, opts);
