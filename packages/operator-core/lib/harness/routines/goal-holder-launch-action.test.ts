@@ -152,9 +152,11 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
     expect(kickoff).toContain('OUTCOME — Keep the queue moving');
     expect(kickoff).toContain('KILL THIS IF — the stewardship goal is explicitly stopped');
     expect(kickoff).toContain('CEILING — $10.00 per week');
+    // behaviorArm: the identity binding records the goal's experiment arm (R-4 / D-032) so a
+    // relaunched holder stays in it; with no arm set on the goal it resolves to 'full'.
     expect(d.bindIdentity).toHaveBeenCalledExactlyOnceWith({
       goalId: 'goal-1', ownerId: 'su-new-holder', workspaceId: 'workspace-1',
-      kickoff, portfolio: null,
+      kickoff, portfolio: null, behaviorArm: 'full',
     });
   });
 
