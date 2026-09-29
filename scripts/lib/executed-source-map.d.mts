@@ -182,6 +182,37 @@ export function executedMapResultPath(root: string, runToken: string, taskLabel:
  */
 export function clearExecutedMapResult(filePath: string): void;
 /**
+ * The argv words of a package.json script command, with leading `VAR=value` env assignments and a
+ * `…/pc-heavy.sh --` admission wrapper removed (both run the same program underneath).
+ *
+ * @param {string | null | undefined} command
+ * @returns {string[]}
+ */
+export function scriptCommandWords(command: string | null | undefined): string[];
+/**
+ * @typedef {{ expectsReport: boolean, reason: 'enrolled-config' | 'unenrolled-config' | 'no-config' | 'not-vitest' | 'node-test-runner' | 'wrapper-unreadable' | 'compound-command' | 'no-command', config: string | null }} TaskReportExpectation
+ */
+/**
+ * Whether a recording task's pass-proof recorder is EXPECTED to write a result file: the script
+ * runs vitest (directly, or through a node wrapper that delegates to vitest) under a config that
+ * takes part in the gate (`isGateEnrolled`, the same rule scripts/check-vitest-config-enrollment.mjs
+ * enforces). Config resolution: an explicit `--config` / `-c` flag, else the workspace's default
+ * `vitest.config.{ts,mts,js,mjs}`. A missing config, an unreadable wrapper, a non-vitest program and
+ * a compound shell command all resolve to NOT expected — a false alarm on a task that never could
+ * report is the failure this split exists to remove.
+ *
+ * @param {{ command: string | null | undefined, wsDir: string, readFile?: (p: string) => string, isEnrolled?: (source: string, fileName: string) => boolean }} o
+ *   `wsDir` is the workspace directory (absolute, or relative to the process cwd); config paths
+ *   are resolved against it, and `config` in the result is reported relative to it.
+ * @returns {TaskReportExpectation}
+ */
+export function resolveTaskReportExpectation({ command, wsDir, readFile, isEnrolled, }: {
+    command: string | null | undefined;
+    wsDir: string;
+    readFile?: (p: string) => string;
+    isEnrolled?: (source: string, fileName: string) => boolean;
+}): TaskReportExpectation;
+/**
  * Read one task's result file. A missing or empty file is `no-report` (the reporter never flushed:
  * the task crashed or was killed, or its vitest config does not wire the reporter). A line that is
  * not a well-formed result is counted as `malformed`, never guessed at.
@@ -202,9 +233,11 @@ export function readExecutedMapResults(filePath: string, { readFile }?: {
  */
 export function formatExecutedMapResultLines(taskLabel: string, read: ExecutedMapResultRead): string[];
 /**
- * ALARM lines for flushes whose write did not land. `not-persisted` is NOT an alarm here: on an
- * agent's shared dirty checkout it is the designed outcome; the gate decides whether its own clean
- * round persisted nothing.
+ * ALARM lines for flushes whose write did not land, and (WI-10003792) for a task whose enrolled
+ * config was EXPECTED to report but wrote nothing (`outcome=no-report-unexpected`: the task was
+ * killed before its run ended, or the recorder's wiring regressed). `not-persisted` is NOT an alarm
+ * here: on an agent's shared dirty checkout it is the designed outcome; the gate decides whether
+ * its own clean round persisted nothing.
  *
  * @param {string} taskLabel
  * @param {ExecutedMapResultRead} read
@@ -224,6 +257,8 @@ export function summarizeExecutedMapResults(reads: ExecutedMapResultRead[]): {
     failed: number;
     timedOut: number;
     noReport: number;
+    noReportExpected: number;
+    noReportUnexpected: number;
     malformed: number;
 };
 /**
@@ -253,6 +288,11 @@ export const EXECUTED_MAP_RESULT_ENV: "PC_EXECUTED_SOURCE_MAP_RESULT";
 export const EXECUTED_MAP_NO_PERSIST_ENV: "PC_EXECUTED_SOURCE_MAP_NO_PERSIST";
 /** Every outcome the reporter writes (`ExecutedSourceMapOutcome` in the reporter). */
 export const EXECUTED_MAP_RESULT_OUTCOMES: readonly string[];
+export type TaskReportExpectation = {
+    expectsReport: boolean;
+    reason: "enrolled-config" | "unenrolled-config" | "no-config" | "not-vitest" | "node-test-runner" | "wrapper-unreadable" | "compound-command" | "no-command";
+    config: string | null;
+};
 export type ExecutedMapResult = {
     outcome: string;
     rows: number;
@@ -262,8 +302,12 @@ export type ExecutedMapResult = {
     sha: string | null;
     error: string | null;
 };
+/**
+ * `expectsReport` is stamped by the runner from `resolveTaskReportExpectation` (absent/null = unknown).
+ */
 export type ExecutedMapResultRead = {
     status: "reported" | "no-report";
     results: ExecutedMapResult[];
     malformed: number;
+    expectsReport?: boolean | null;
 };

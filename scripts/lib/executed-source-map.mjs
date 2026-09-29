@@ -15,6 +15,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import path from "node:path";
+import { isGateEnrolled } from "../check-vitest-config-enrollment.mjs";
 
 /** Set to `0`/`false`/`off` to leave the static selection un-pruned (default: pruning ON). */
 export const EXECUTED_MAP_ENV = "AFFECTED_EXECUTED_MAP";
@@ -336,9 +337,10 @@ export function formatExecutedMapLine(wsName, summary, rows) {
 // failed on every row (WI-10003597) recorded zero pass proofs for ~8h with nothing noticing. The
 // runner names a per-task result file, reads it back after the task, and prints
 //   EXECUTED_SOURCE_MAP_RESULT task=<ws::script> outcome=<o> rows=N retired=N skipped=N dirty=<b> sha=<s>
-//   EXECUTED_SOURCE_MAP_ALARM task=<ws::script> outcome=<failed|timed-out> error=<message>
-//   EXECUTED_SOURCE_MAP_TOTAL tasks=N written=N rows=N retired=N notPersisted=N nothingToRecord=N failed=N timedOut=N noReport=N malformed=N
-// into the run log; packages/operator-core/lib/release/test-pass-reuse-report.ts parses them into
+//   EXECUTED_SOURCE_MAP_ALARM task=<ws::script> outcome=<failed|timed-out|no-report-unexpected> error=<message>
+//   EXECUTED_SOURCE_MAP_TOTAL tasks=N written=N rows=N retired=N notPersisted=N nothingToRecord=N failed=N timedOut=N noReport=N malformed=N noReportExpected=N noReportUnexpected=N
+// into the run log (`noReport` is the total; the two split keys, WI-10003792, are absent from logs
+// written before the split and count only tasks whose report expectation was resolved at arming); packages/operator-core/lib/release/test-pass-reuse-report.ts parses them into
 // the gate's per-round reuse health record.
 
 /** Every outcome the reporter writes (`ExecutedSourceMapOutcome` in the reporter). */
@@ -378,9 +380,119 @@ export function clearExecutedMapResult(filePath) {
   }
 }
 
+// ── Report expectation (WI-10003792) ───────────────────────────────────────────────────────────
+// A task is armed whenever it is a unit vitest-shaped script, but only a task whose REAL vitest
+// config takes part in the gate can ever write a result file. Without this split, a newly-enrolled
+// task that went silent (a recorder regression) counted exactly like an astro check or a plain
+// exempt config that never could report. The expectation is decided at ARMING time from the
+// task's own script and config, never guessed afterwards from the missing file.
+
+const VITEST_DEFAULT_CONFIG_NAMES = Object.freeze([
+  "vitest.config.ts",
+  "vitest.config.mts",
+  "vitest.config.js",
+  "vitest.config.mjs",
+]);
+
+/**
+ * The argv words of a package.json script command, with leading `VAR=value` env assignments and a
+ * `…/pc-heavy.sh --` admission wrapper removed (both run the same program underneath).
+ *
+ * @param {string | null | undefined} command
+ * @returns {string[]}
+ */
+export function scriptCommandWords(command) {
+  const words = String(command ?? "").trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i += 1;
+  if (i < words.length && /(^|\/)pc-heavy\.sh$/.test(words[i])) {
+    i += 1;
+    if (words[i] === "--") i += 1;
+  }
+  return words.slice(i);
+}
+
+/** The value of a `--config <p>` / `--config=<p>` / `-c <p>` flag, or null. */
+function configFlag(words) {
+  for (let i = 0; i < words.length; i += 1) {
+    const w = words[i];
+    if (w.startsWith("--config=")) return w.slice("--config=".length) || null;
+    if ((w === "--config" || w === "-c") && words[i + 1] && !words[i + 1].startsWith("-")) return words[i + 1];
+  }
+  return null;
+}
+
+/**
+ * @typedef {{ expectsReport: boolean, reason: 'enrolled-config' | 'unenrolled-config' | 'no-config' | 'not-vitest' | 'node-test-runner' | 'wrapper-unreadable' | 'compound-command' | 'no-command', config: string | null }} TaskReportExpectation
+ */
+
+/**
+ * Whether a recording task's pass-proof recorder is EXPECTED to write a result file: the script
+ * runs vitest (directly, or through a node wrapper that delegates to vitest) under a config that
+ * takes part in the gate (`isGateEnrolled`, the same rule scripts/check-vitest-config-enrollment.mjs
+ * enforces). Config resolution: an explicit `--config` / `-c` flag, else the workspace's default
+ * `vitest.config.{ts,mts,js,mjs}`. A missing config, an unreadable wrapper, a non-vitest program and
+ * a compound shell command all resolve to NOT expected — a false alarm on a task that never could
+ * report is the failure this split exists to remove.
+ *
+ * @param {{ command: string | null | undefined, wsDir: string, readFile?: (p: string) => string, isEnrolled?: (source: string, fileName: string) => boolean }} o
+ *   `wsDir` is the workspace directory (absolute, or relative to the process cwd); config paths
+ *   are resolved against it, and `config` in the result is reported relative to it.
+ * @returns {TaskReportExpectation}
+ */
+export function resolveTaskReportExpectation({
+  command,
+  wsDir,
+  readFile = (p) => readFileSync(p, "utf8"),
+  isEnrolled = isGateEnrolled,
+}) {
+  const no = (reason, config = null) => ({ expectsReport: false, reason, config });
+  if (/[;&|`]|\$\(/.test(String(command ?? ""))) return no("compound-command");
+  const words = scriptCommandWords(command);
+  if (words.length === 0) return no("no-command");
+  const program = path.basename(words[0]);
+  let rest;
+  if (program === "vitest") {
+    rest = words.slice(1);
+  } else if (program === "node") {
+    const args = words.slice(1);
+    if (args.includes("--test")) return no("node-test-runner");
+    const scriptIndex = args.findIndex((a) => !a.startsWith("-"));
+    const scriptArg = scriptIndex < 0 ? null : args[scriptIndex];
+    if (!scriptArg || !/\.(?:[cm]?js|[cm]?ts)$/.test(scriptArg)) return no("not-vitest");
+    let wrapper;
+    try {
+      wrapper = readFile(path.resolve(wsDir, scriptArg));
+    } catch {
+      return no("wrapper-unreadable");
+    }
+    if (!/\bvitest\b/.test(wrapper)) return no("not-vitest");
+    rest = args.slice(scriptIndex + 1);
+  } else {
+    return no("not-vitest");
+  }
+  const explicit = configFlag(rest);
+  const candidates = explicit ? [explicit] : VITEST_DEFAULT_CONFIG_NAMES;
+  for (const name of candidates) {
+    const abs = path.resolve(wsDir, name);
+    let source;
+    try {
+      source = readFile(abs);
+    } catch {
+      continue;
+    }
+    const config = path.relative(path.resolve(wsDir), abs).split(path.sep).join("/");
+    return isEnrolled(source, abs)
+      ? { expectsReport: true, reason: "enrolled-config", config }
+      : no("unenrolled-config", config);
+  }
+  return no("no-config", explicit);
+}
+
 /**
  * @typedef {{ outcome: string, rows: number, retired: number, skipped: number, dirty: boolean, sha: string | null, error: string | null }} ExecutedMapResult
- * @typedef {{ status: 'reported' | 'no-report', results: ExecutedMapResult[], malformed: number }} ExecutedMapResultRead
+ * @typedef {{ status: 'reported' | 'no-report', results: ExecutedMapResult[], malformed: number, expectsReport?: boolean | null }} ExecutedMapResultRead
+ *   `expectsReport` is stamped by the runner from `resolveTaskReportExpectation` (absent/null = unknown).
  */
 
 const count = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : null);
@@ -447,7 +559,8 @@ function oneLine(s) {
  */
 export function formatExecutedMapResultLines(taskLabel, read) {
   if (read.status === "no-report") {
-    return [`EXECUTED_SOURCE_MAP_RESULT task=${taskLabel} outcome=no-report malformed=${read.malformed}`];
+    const expected = typeof read.expectsReport === "boolean" ? ` expected=${read.expectsReport}` : "";
+    return [`EXECUTED_SOURCE_MAP_RESULT task=${taskLabel} outcome=no-report malformed=${read.malformed}${expected}`];
   }
   return read.results.map(
     (r) =>
@@ -457,15 +570,25 @@ export function formatExecutedMapResultLines(taskLabel, read) {
 }
 
 /**
- * ALARM lines for flushes whose write did not land. `not-persisted` is NOT an alarm here: on an
- * agent's shared dirty checkout it is the designed outcome; the gate decides whether its own clean
- * round persisted nothing.
+ * ALARM lines for flushes whose write did not land, and (WI-10003792) for a task whose enrolled
+ * config was EXPECTED to report but wrote nothing (`outcome=no-report-unexpected`: the task was
+ * killed before its run ended, or the recorder's wiring regressed). `not-persisted` is NOT an alarm
+ * here: on an agent's shared dirty checkout it is the designed outcome; the gate decides whether
+ * its own clean round persisted nothing.
  *
  * @param {string} taskLabel
  * @param {ExecutedMapResultRead} read
  * @returns {string[]}
  */
 export function formatExecutedMapAlarmLines(taskLabel, read) {
+  if (read.status === "no-report") {
+    return read.expectsReport === true
+      ? [
+          `EXECUTED_SOURCE_MAP_ALARM task=${taskLabel} outcome=no-report-unexpected rows=0 ` +
+            `error=enrolled task wrote no recorder result (killed before its run ended, or the recorder is unwired)`,
+        ]
+      : [];
+  }
   return read.results
     .filter((r) => r.outcome === "failed" || r.outcome === "timed-out")
     .map(
@@ -488,12 +611,17 @@ export function summarizeExecutedMapResults(reads) {
     failed: 0,
     timedOut: 0,
     noReport: 0,
+    noReportExpected: 0,
+    noReportUnexpected: 0,
     malformed: 0,
   };
   for (const read of reads) {
     s.malformed += read.malformed;
     if (read.status === "no-report") {
+      // `noReport` stays the total; the split counts only tasks whose expectation is known.
       s.noReport += 1;
+      if (read.expectsReport === true) s.noReportUnexpected += 1;
+      else if (read.expectsReport === false) s.noReportExpected += 1;
       continue;
     }
     for (const r of read.results) {
@@ -518,6 +646,7 @@ export function formatExecutedMapTotalLine(s) {
   return (
     `EXECUTED_SOURCE_MAP_TOTAL tasks=${s.tasks} written=${s.written} rows=${s.rows} retired=${s.retired} ` +
     `notPersisted=${s.notPersisted} nothingToRecord=${s.nothingToRecord} failed=${s.failed} ` +
-    `timedOut=${s.timedOut} noReport=${s.noReport} malformed=${s.malformed}`
+    `timedOut=${s.timedOut} noReport=${s.noReport} malformed=${s.malformed} ` +
+    `noReportExpected=${s.noReportExpected} noReportUnexpected=${s.noReportUnexpected}`
   );
 }
