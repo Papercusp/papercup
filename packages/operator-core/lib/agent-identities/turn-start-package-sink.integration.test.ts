@@ -135,6 +135,41 @@ describe('turn-start package sink (real anchor + catalog + class registry)', () 
     await db?.cleanup();
   });
 
+  it('DIAG-TEMP resolution concurrency', async () => {
+    const { resolveIdentityClassProvider } = await import('./class-provider');
+    const one = () => resolveIdentityClassProvider(db.adminSql, { workspaceId: WS, potSlug: POT, classRef: 'context.notes@1', verb: 'read' })
+      .then((r) => (r.ok ? 'ok' : r.code), (e) => `throw:${String(e)}`);
+    const seq = [await one(), await one()];
+    const par = await Promise.all([one(), one(), one()]);
+    console.log('DIAG', JSON.stringify({ seq, par, options: (db.adminSql as unknown as { options?: { max?: number } }).options?.max }));
+    const { defaultTurnStartPackageSinkDeps } = await import('./turn-start-package-sink');
+    const real = defaultTurnStartPackageSinkDeps();
+    await wear('owner-diag', ['domain:pkg-a', 'domain:pkg-b']);
+    const log: unknown[] = [];
+    await evaluateTurnStartPackageSink({ ownerId: 'owner-diag', workspaceId: WS, turnId: 'd1', deps: { limits: LIMITS,
+      readDueContributions: async (id) => { const r = await real.readDueContributions(id); log.push({ due: id, r }); return r; },
+      produceContext: async (call) => {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        const s = getOrgPg().sql;
+        log.push({ id: call.contribution.id, sameSql: s === db.adminSql, pre: await one() });
+        const { signal: _s, ...rest } = call;
+        try { const out = await real.produceContext(call); log.push({ call: rest, ok: true }); return out; }
+        catch (e) { log.push({ call: rest, err: String(e) }); throw e; }
+      } } });
+    console.log('DIAG2', JSON.stringify(log));
+    const after = await one();
+    const rows = await db.adminSql`SELECT workspace_id, id, version, status, created_at FROM harness_shared.capability_class_registry WHERE id LIKE 'context.%' ORDER BY id`;
+    console.log('DIAG3', JSON.stringify({ after, rows }));
+    const par2 = await Promise.all([one(), one(), one(), one()]);
+    const [c1, c2] = [await db.adminSql.reserve(), await db.adminSql.reserve()].map((c) => c);
+    const probe = async (c: typeof c1) => (await c`SELECT current_user AS u, session_user AS su, current_setting('search_path') AS sp,
+      current_setting('transaction_isolation') AS iso, pg_backend_pid() AS pid,
+      (SELECT count(*) FROM harness_shared.capability_class_registry) AS n,
+      (SELECT relrowsecurity FROM pg_class WHERE oid = 'harness_shared.capability_class_registry'::regclass) AS rls`)[0];
+    console.log('DIAG4', JSON.stringify({ par2, c1: await probe(c1), c2: await probe(c2) }));
+    c1.release(); c2.release();
+  }, 120_000);
+
   it('shares ONE aggregate budget across every worn identity, in priority order, and renders it', async () => {
     await wear('owner-agg', ['domain:pkg-a', 'domain:pkg-b']);
     const sink = await evaluateTurnStartPackageSink({ ownerId: 'owner-agg', workspaceId: WS, deps: { limits: LIMITS }, turnId:'t1' });
