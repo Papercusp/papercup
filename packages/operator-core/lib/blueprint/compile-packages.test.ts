@@ -23,7 +23,10 @@ const resolveBlueprintPackageInputs: typeof resolveCurrentBlueprintPackageInputs
 
 const pin = (ref: string, packageKind: 'recipe' | 'rubric' | 'knowledge-pack' = 'recipe') => pinPackageInput({
   packageKind, ref, revision: '1.0.0', files: [{ path: 'manifest.json', bytes: ref }],
-  value: { id: ref, script: 'return 1', criteria: [{ id: 'correct' }] },
+  // A recipe carries the shape readRecipeDir emits; compile refuses anything less.
+  value: packageKind === 'recipe'
+    ? { id: ref, title: ref, description: '', script: 'return 1', toolsUsed: [], tags: [] }
+    : { id: ref, script: 'return 1', criteria: [{ id: 'correct' }] },
 });
 const reference = ({ packageKind, ref, revision, contentHash }: ResolvedPackageInput) =>
   ({ packageKind, ref, revision, contentHash });
