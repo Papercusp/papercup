@@ -58,6 +58,15 @@
  *    (non-standing) goals keep the report-only posture: their holder decides.
  *  - Dedup is delegated to openEscalation's (dedupKind, subjectSignature) PG
  *    dedup — cluster-safe, no new state surface.
+ *  - PLAN-FLEET LEG (goal-plan-fleet-obligation-detector-2026-08-27, D-002:
+ *    widen this sweep, don't fork one). The same live-held goals are also
+ *    judged on their STARTED plans: leg A = a plan with open items and no live
+ *    fleet whose claim spec targets it; leg B = a live targeting fleet holding
+ *    zero live claims on it. One verdict per goal (A beats B), unknown
+ *    suppresses. Delivered as a deduped escalation (dedupKind
+ *    'goal-plan-fleet-obligation'), the shared goal:plan-placement key plus a
+ *    leg-specific key (goal:plan-fleet-missing / goal:plan-fleet-unclaimed), and
+ *    — on a newly opened escalation only — a message + wake to the holders.
  */
 import type { Sql } from 'postgres';
 import { goalPlanPlacementChangedKey } from '../agent-obligations';
@@ -378,7 +387,8 @@ export function classifyGoalPlanFleetCoverage(
  * The join deliberately uses normalized plan items and their TTL-backed claims,
  * plus current fleet membership for claim attribution. A read/validation/oracle
  * failure returns UNKNOWN for the entire leg; it never degrades to "no fleet" or
- * "zero claims". P-002 wires this classifier into escalation/event delivery.
+ * "zero claims". The sweep's plan-fleet leg ({@link runPlanFleetLeg}) delivers
+ * the classifier's verdict as an escalation, events and a holder wake.
  */
 export async function readGoalPlanFleetCohort(
   sql: Sql,
@@ -555,6 +565,89 @@ export async function readGoalPlanFleetObservation(
   } catch {
     return { status: 'unknown', alert: null, applicablePlanCount: null };
   }
+}
+
+// ── goal-plan-fleet-obligation-detector P-002: delivering the plan-fleet verdict ──
+
+/**
+ * PURE: the leg-specific parkable key for a plan-fleet alert (D-003: each leg
+ * emits a DISTINCT event). A holder that only cares that a started plan lost
+ * its fleet parks on `goal:plan-fleet-missing:<goalId>`; one that launched a
+ * fleet and wants to hear it is not pulling parks on
+ * `goal:plan-fleet-unclaimed:<goalId>`. The shared obligation key
+ * (`goal:plan-placement:<goalId>`) fires alongside either.
+ */
+export function goalPlanFleetLegEventKey(alert: Pick<GoalPlanFleetAlert, 'goalId' | 'reason'>): string {
+  return alert.reason === 'started-plan-no-live-targeting-fleet'
+    ? `goal:plan-fleet-missing:${alert.goalId}`
+    : `goal:plan-fleet-unclaimed:${alert.goalId}`;
+}
+
+/** Bound on the id lists an event payload carries; the counts stay exact. */
+export const GOAL_PLAN_FLEET_EVENT_MAX_IDS = 25;
+
+/**
+ * PURE: the evidence a plan-fleet event carries — plan, targeting fleets (with
+ * the claim spec each was selected by), their live claims, and the holders the
+ * verdict rests on. Everything a woken holder needs to act without re-deriving
+ * the cohort; id lists are capped, their counts are not.
+ */
+export function goalPlanFleetEventPayload(alert: GoalPlanFleetAlert) {
+  const cap = (ids: readonly string[]) => ids.slice(0, GOAL_PLAN_FLEET_EVENT_MAX_IDS);
+  return {
+    goalId: alert.goalId,
+    reason: alert.reason,
+    planSlug: alert.planSlug,
+    harnessSlug: alert.harnessSlug,
+    openItemCount: alert.itemIds.length,
+    openItemIds: cap(alert.itemIds),
+    targetingFleets: alert.targetingFleets.map((f) => ({
+      fleetSlug: f.fleetSlug,
+      liveness: f.liveness,
+      // cup_claim_specs.bee_id — the spec whose positive plan leaf made this fleet a target.
+      claimSpecRef: `fleet:${f.fleetSlug}`,
+      liveClaimCount: f.liveClaimItemIds.length,
+      liveClaimItemIds: cap(f.liveClaimItemIds),
+    })),
+    liveHolders: alert.liveHolders,
+  };
+}
+
+/**
+ * PURE: the escalation dedup subject. The plan is part of the subject: when one
+ * plan is repaired and a different plan of the same goal still fails, that is a
+ * new actionable condition, not a repeat of the old one.
+ */
+export function goalPlanFleetSubjectSignature(
+  alert: Pick<GoalPlanFleetAlert, 'workspaceId' | 'goalId' | 'reason' | 'planSlug'>,
+): string {
+  return `${alert.workspaceId}:${alert.goalId}:${alert.reason}:${alert.planSlug}`;
+}
+
+/** PURE: the remedy text shared by the escalation and the holder message. */
+export function goalPlanFleetRemedy(alert: GoalPlanFleetAlert): string {
+  const fleets = alert.targetingFleets.map((f) => `'${f.fleetSlug}' (${f.liveness})`).join(', ');
+  if (alert.reason === 'started-plan-no-live-targeting-fleet') {
+    return (
+      `Started plan '${alert.planSlug}' (${alert.harnessSlug}) has ${alert.itemIds.length} open item(s) and ` +
+      (alert.targetingFleets.length === 0
+        ? 'NO fleet whose claim spec targets it'
+        : `no LIVE fleet whose claim spec targets it (targeting: ${fleets})`) +
+      `, so nothing will ever claim its work. Remedy — re-read your obligation agenda (it carries the exact, ` +
+      `admission-checked launch), then either launch a plan fleet (fleet:launch-on-plan { plan: ` +
+      `'${alert.planSlug}' }), point an existing live lane at it (scheduler:set_claim_spec with a positive ` +
+      `{ field:'plan', op:'=', value:'${alert.planSlug}' } leaf), or stop the plan if it is no longer wanted.`
+    );
+  }
+  return (
+    `Started plan '${alert.planSlug}' (${alert.harnessSlug}) has ${alert.itemIds.length} open item(s) and ` +
+    `live fleet(s) whose claim spec targets it (${fleets}), but those fleets hold ZERO live claims on its ` +
+    `items. That is a spec-scope or pickup failure, not a missing fleet: launching another fleet will not ` +
+    `help. Remedy — check that the spec's other filter leaves admit these items (scheduler:preview_spec_delta ` +
+    `{ fleet, proposed } lists what a corrected revision would admit), that the items are claimable (not ` +
+    `blocked by unfinished dependencies), and that the members are taking turns (fleet:status); then wake ` +
+    `a member to scheduler:get_next.`
+  );
 }
 
 export interface GoalDrainAlert {
@@ -757,6 +850,19 @@ export interface GoalDrainFleetSweepDeps {
   /** The budget is spent: ONE deduped human-facing escalation. */
   escalateRelaunchExhausted: (alert: GoalDrainAlert, attemptsInWindow: number) => Promise<void>;
   deadGraceMs: number;
+
+  // ── goal-plan-fleet-obligation-detector P-002: the plan-fleet leg ──
+  /** The canonical, fail-closed plan-fleet cohort read ({@link readGoalPlanFleetCohort}). */
+  readPlanFleetCohort: (
+    goals: readonly GoalDrainRowLike[],
+    resolveFleetLiveness: GoalDrainFleetSweepDeps['resolveFleetLiveness'],
+  ) => Promise<GoalPlanFleetCohort>;
+  /** Deduped escalation; `opened:false` means an open one for the same subject was coalesced. */
+  escalatePlanFleet: (alert: GoalPlanFleetAlert) => Promise<{ opened: boolean }>;
+  /** The shared placement key plus the leg-specific key, both carrying the evidence payload. */
+  emitPlanFleet: (alert: GoalPlanFleetAlert) => Promise<void>;
+  /** Message + directed wake to the live holders — only on a NEWLY opened escalation. */
+  notifyPlanFleetHolders: (alert: GoalPlanFleetAlert) => Promise<void>;
 }
 
 async function defaultFlagEnabled(): Promise<boolean> {
@@ -1536,6 +1642,84 @@ async function defaultEmitDrainDead(alert: GoalDrainAlert): Promise<void> {
   await Promise.all(emits);
 }
 
+// ── goal-plan-fleet-obligation-detector P-002: plan-fleet leg defaults ──────
+
+const PLAN_FLEET_SUMMARY: Record<GoalPlanFleetReason, string> = {
+  'started-plan-no-live-targeting-fleet': 'has no live fleet targeting it',
+  'started-plan-targeting-fleet-zero-live-claims': 'has a live targeting fleet holding zero claims on it',
+};
+
+async function defaultEscalatePlanFleet(alert: GoalPlanFleetAlert): Promise<{ opened: boolean }> {
+  const opened = await openEscalation(WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary: `Goal '${alert.goalId}' is live-held but started plan '${alert.planSlug}' ${PLAN_FLEET_SUMMARY[alert.reason]}`,
+    body:
+      `The goal "${alert.title}" (${alert.goalId}, workspace ${alert.workspaceId}) is actively held ` +
+      `(live holder(s): ${alert.liveHolders.join(', ')}).\n\n` +
+      `${goalPlanFleetRemedy(alert)}\n\n` +
+      `Why this alarms: a goal that STARTS a plan and never gets it claimed looks healthy on every ` +
+      `count-based surface — the plan reads 'started', the holder reads live — while no work moves. ` +
+      `Parkable events: ${goalPlanFleetLegEventKey(alert)} (this leg) and goal:plan-placement:${alert.goalId} ` +
+      `(any placement change).`,
+    meta: {
+      dedupKind: 'goal-plan-fleet-obligation',
+      subjectSignature: goalPlanFleetSubjectSignature(alert),
+      goalId: alert.goalId,
+      goalWorkspaceId: alert.workspaceId,
+      ...goalPlanFleetEventPayload(alert),
+    },
+  });
+  return { opened: opened.coalesced !== true };
+}
+
+async function defaultEmitPlanFleet(alert: GoalPlanFleetAlert): Promise<void> {
+  const { emitAwaitedEvent } = await import('../events/await/engine');
+  const payload = goalPlanFleetEventPayload(alert);
+  await Promise.all([
+    emitAwaitedEvent({
+      key: goalPlanPlacementChangedKey(alert.goalId),
+      workspaceId: alert.workspaceId,
+      source: 'goal-drain-fleet-watchdog',
+      payload,
+      summary: `goal plan-placement classifier requires re-evaluation (${alert.reason}: ${alert.planSlug})`,
+    }),
+    emitAwaitedEvent({
+      key: goalPlanFleetLegEventKey(alert),
+      workspaceId: alert.workspaceId,
+      source: 'goal-drain-fleet-watchdog',
+      payload,
+      summary: `started plan '${alert.planSlug}' ${PLAN_FLEET_SUMMARY[alert.reason]}`,
+    }),
+  ]);
+}
+
+/**
+ * The 2026-09-01 lesson (EI-22089613547454936): an event alone wakes only a
+ * holder that remembered to park on it, and the cold-carry holder did not. So a
+ * NEW episode also reaches the holder directly — a durable inbox message with
+ * the remedy plus a directed wake. Only on a newly opened escalation: the sweep
+ * runs every 10 minutes, and re-waking the holder on every tick of a condition
+ * it already knows about would be noise.
+ */
+async function defaultNotifyPlanFleetHolders(alert: GoalPlanFleetAlert): Promise<void> {
+  const [{ sendMessage }, { wakeRecipients }] = await Promise.all([
+    import('../agent-tools/coordination/messages'),
+    import('../agent-tools/coordination/inbox-wake'),
+  ]);
+  const summary = `Goal '${alert.goalId}': started plan '${alert.planSlug}' ${PLAN_FLEET_SUMMARY[alert.reason]}`;
+  await sendMessage(WATCHDOG_IDENTITY, {
+    to: alert.liveHolders,
+    summary,
+    body: `${goalPlanFleetRemedy(alert)}\n\nEvidence: ${JSON.stringify(goalPlanFleetEventPayload(alert))}`,
+  });
+  await wakeRecipients(alert.liveHolders, {
+    summary,
+    payload: goalPlanFleetEventPayload(alert),
+    source: 'goal-drain-fleet-watchdog',
+    workspaceId: alert.workspaceId,
+  });
+}
+
 function sweepDeps(sql: Sql, overrides: Partial<GoalDrainFleetSweepDeps>): GoalDrainFleetSweepDeps {
   const resolveLiveness = overrides.resolveLiveness ?? resolveHolderLiveness;
   return {
@@ -1556,6 +1740,10 @@ function sweepDeps(sql: Sql, overrides: Partial<GoalDrainFleetSweepDeps>): GoalD
     notifyRelaunch: defaultNotifyRelaunch,
     escalateRelaunchExhausted: defaultEscalateRelaunchExhausted,
     deadGraceMs: GOAL_DRAIN_FLEET_DEAD_GRACE_MS,
+    readPlanFleetCohort: (goals, resolveFleetLiveness) => readGoalPlanFleetCohort(sql, goals, resolveFleetLiveness),
+    escalatePlanFleet: defaultEscalatePlanFleet,
+    emitPlanFleet: defaultEmitPlanFleet,
+    notifyPlanFleetHolders: defaultNotifyPlanFleetHolders,
     ...overrides,
   };
 }
@@ -1568,6 +1756,76 @@ export interface GoalDrainFleetSweepResult {
   relaunched: number;
   /** WI-2140699: standing goals whose relaunch budget is spent (escalated, deduped). */
   relaunchCapped: number;
+  /** P-002: goals whose plan-fleet verdict was escalated this sweep (0 when the cohort read is unknown). */
+  planFleetEscalated: number;
+}
+
+/**
+ * goal-plan-fleet-obligation-detector P-002: deliver the plan-fleet verdict.
+ *
+ * Same population and suppression as the drain leg: only goals with a
+ * POSITIVELY-live holder are judged (the liveness sibling owns unheld goals), and
+ * an unknown cohort suppresses the whole leg — never "no fleet"/"zero claims".
+ * {@link classifyGoalPlanFleetCoverage} already guarantees ONE verdict per goal
+ * (leg A beats leg B). The drain leg and this leg are different obligations with
+ * different remedies (a goal-scoped standing lane vs. a fleet on a started plan),
+ * so a goal can carry one of each; neither ever speaks twice for itself.
+ *
+ * Every failure is contained per alert, and the whole leg is fail-soft: it can
+ * never cost the drain leg or the ledger-clear loop that follows it.
+ */
+async function runPlanFleetLeg(
+  deps: GoalDrainFleetSweepDeps,
+  goals: readonly GoalDrainRowLike[],
+  holders: readonly GoalHolderLike[],
+  verdicts: ReadonlyMap<string, LivenessVerdict>,
+): Promise<number> {
+  const liveHeld = goals.filter((g) =>
+    holders.some((h) => {
+      if (h.goalId !== g.goalId || h.workspaceId !== g.workspaceId) return false;
+      const v = verdicts.get(h.ownerId);
+      return v ? holderCountsAsAlive(v) : false;
+    }),
+  );
+  if (liveHeld.length === 0) return 0;
+  let cohort: GoalPlanFleetCohort;
+  try {
+    cohort = await deps.readPlanFleetCohort(liveHeld, deps.resolveFleetLiveness);
+  } catch {
+    return 0; // an injected reader that throws is the same UNKNOWN as a failed read
+  }
+  if (cohort.status === 'unknown') return 0;
+
+  let escalated = 0;
+  for (const goal of liveHeld) {
+    const alert = classifyGoalPlanFleetCoverage(goal, holders, verdicts, cohort);
+    if (!alert) continue;
+    let opened = false;
+    try {
+      opened = (await deps.escalatePlanFleet(alert)).opened;
+      escalated += 1;
+    } catch (e) {
+      console.warn(
+        `[goal-drain-fleet-watchdog] plan-fleet escalate failed for ${alert.goalId} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    try {
+      await deps.emitPlanFleet(alert);
+    } catch (e) {
+      console.warn(
+        `[goal-drain-fleet-watchdog] plan-fleet event emit failed for ${alert.goalId} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    if (!opened) continue;
+    try {
+      await deps.notifyPlanFleetHolders(alert);
+    } catch (e) {
+      console.warn(
+        `[goal-drain-fleet-watchdog] plan-fleet holder notify failed for ${alert.goalId} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+  return escalated;
 }
 
 /**
@@ -1632,7 +1890,7 @@ export async function runGoalDrainFleetSweepOnce(
   overrides: Partial<GoalDrainFleetSweepDeps> = {},
 ): Promise<GoalDrainFleetSweepResult> {
   const deps = sweepDeps(sql, overrides);
-  const none = { relaunched: 0, relaunchCapped: 0 };
+  const none = { relaunched: 0, relaunchCapped: 0, planFleetEscalated: 0 };
   if (!(await deps.flagEnabled())) return { scanned: 0, escalated: 0, skipped: true, ...none };
 
   const { goals, holders } = await deps.readGoals();
@@ -1695,6 +1953,17 @@ export async function runGoalDrainFleetSweepOnce(
     }
   }
 
+  // goal-plan-fleet-obligation-detector P-002: the plan-fleet leg, on the same
+  // live-held population, flag, interval and escalation dedup as the drain leg.
+  let planFleetEscalated = 0;
+  try {
+    planFleetEscalated = await runPlanFleetLeg(deps, goals, relevant, verdicts);
+  } catch (e) {
+    console.warn(
+      `[goal-drain-fleet-watchdog] plan-fleet leg failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
   // WI-2140699: a declared fleet that reads ALIVE ends any open dead episode —
   // including a needs-human hold, which a hand-restored fleet has satisfied.
   // Only a POSITIVE alive verdict clears; unknown/dead leave the ledger alone.
@@ -1710,7 +1979,7 @@ export async function runGoalDrainFleetSweepOnce(
       );
     }
   }
-  return { scanned: goals.length, escalated, skipped: false, relaunched, relaunchCapped };
+  return { scanned: goals.length, escalated, skipped: false, relaunched, relaunchCapped, planFleetEscalated };
 }
 
 let watchdogTimer: ManagedHandle | null = null;
