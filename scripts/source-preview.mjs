@@ -44,13 +44,14 @@
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { promises as fs, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { promises as fs, existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
@@ -108,14 +109,35 @@ export const SELECTION_LIB = join(DESKTOP_BIN, 'lib', 'source-tree-selection.sh'
 export const AUDIT_SCRIPT = join(DESKTOP_BIN, 'audit-release-bundle.py');
 /** Files this script adds at the export root, outside the shared selection. */
 export const ADDED_FILES = ['NOTICE', 'README.md', 'MANIFEST.json'];
+/** The Tauri desktop shell, shipped only by the public target (P-004). */
+export const DESKTOP_DIR = 'papercusp-desktop';
+/**
+ * What the public target leaves out of the desktop shell (GNU tar patterns, relative to
+ * the shell root): generated sidecar copies, build output, local agent state and stray
+ * files, and the internal VM/cloud test rigs, which drive the maintainers' own machines.
+ */
+export const DESKTOP_PUBLIC_EXCLUDES = [
+  './src-tauri/env-sidecars',
+  './src-tauri/target',
+  './node_modules',
+  './.papercusp',
+  './.papercup-console-active.*',
+  './b',
+  './bin/vm-rig',
+  './bin/deb-hetzner-*',
+  './bin/mac-vm-*',
+  './scripts/linux-test-vm',
+  './scripts/windows-vm',
+];
 /**
  * Community-health files the public target copies verbatim from scripts/public-release/
  * (plan open-source-release-2026-09-29 P-007). Every one is required: a public repo
  * without a disclosure path or contribution terms is not recoverable once cloned.
  */
 export const PUBLIC_COMMUNITY_FILES = ['CONTRIBUTING.md', 'SECURITY.md', 'CODE_OF_CONDUCT.md'];
-/** The public target also adds its LICENSE and the community files. */
-export const PUBLIC_ADDED_FILES = [...ADDED_FILES, 'LICENSE', ...PUBLIC_COMMUNITY_FILES];
+/** The public target also adds its LICENSE, the community files, and THIRD-PARTY-NOTICES.md
+ *  (generated from the export's own lockfiles by check-licenses.mjs — P-017 step 5). */
+export const PUBLIC_ADDED_FILES = [...ADDED_FILES, 'LICENSE', ...PUBLIC_COMMUNITY_FILES, NOTICES_FILE];
 /** The env var holding the release host base URL; `${base}/index.html` is the releases page. */
 export const RELEASE_BASE_ENV = 'PAPERCUSP_UPDATE_BASE_URL';
 /** Where the release scripts keep that value (papercusp-desktop/bin/lib/release-host.sh). */
@@ -334,7 +356,8 @@ export async function readmeText(dir, manifest, releasesUrl) {
       `- Exported from \`${manifest.source.repo}\` at \`${manifest.source.commit}\`, with`,
       `  ${manifest.submodules.length} submodule(s) flattened in at their pinned commits (MANIFEST.json).`,
       '- It is the same public-safe source cut the Papercusp Server installer carries, without',
-      '  `node_modules` (run `npm ci` to install dependencies from `package-lock.json`).',
+      '  `node_modules` (run `npm ci` to install dependencies from `package-lock.json`), plus the',
+      '  Tauri desktop shell in `papercusp-desktop/`.',
       '- Each update is a new commit on top of the previous one, so `git pull` works and forks',
       '  and pull requests keep a shared history.',
       '',
@@ -450,7 +473,9 @@ export function sourceYear(repo, commit) {
  * Export one pinned commit as the public-safe cut into `out` (must not exist).
  * Deterministic for a given commit — no timestamps — so a drift check compares
  * content, not clock.
- * @param {{ repoRoot?: string, ref?: string, out: string, target?: string, licensePath?: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
+ * `thirdPartyNotices(dir)` renders THIRD-PARTY-NOTICES.md for the public target; tests
+ * inject a stub so they need no cargo resolve.
+ * @param {{ repoRoot?: string, ref?: string, out: string, target?: string, licensePath?: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log, thirdPartyNotices?: (dir: string) => { text: string, undetermined: string[] } }} opts
  */
 export async function exportSnapshot({
   repoRoot = ROOT,
@@ -462,6 +487,7 @@ export async function exportSnapshot({
   selectionLib = SELECTION_LIB,
   env = process.env,
   log = () => {},
+  thirdPartyNotices = (dir) => collectThirdPartyNotices(dir),
 }) {
   if (!out) throw new PreviewError('exportSnapshot: out is required', 2);
   if (existsSync(out)) throw new PreviewError(`refusing to overwrite existing ${out}`, 2);
@@ -510,6 +536,15 @@ export async function exportSnapshot({
     };
     if (license !== null) await fs.writeFile(join(partial, 'LICENSE'), license);
     for (const { name, text } of community) await fs.writeFile(join(partial, name), text);
+    if (target.key === 'public') {
+      // Generated from the EXPORTED lockfiles, so it lists exactly what ships. A partial
+      // measurement must not publish as a complete notices file.
+      const notices = thirdPartyNotices(partial);
+      if (notices.undetermined.length) {
+        throw new Error(`${NOTICES_FILE}: part of the dependency graph was not measured — ${notices.undetermined.join('; ')}`);
+      }
+      await fs.writeFile(join(partial, NOTICES_FILE), notices.text);
+    }
     await fs.writeFile(join(partial, 'NOTICE'), noticeText(manifest));
     await fs.writeFile(join(partial, 'README.md'), await readmeText(partial, manifest, releasesUrl));
     await fs.writeFile(join(partial, 'MANIFEST.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -534,6 +569,25 @@ export function readLicense(path) {
   const text = readFileSync(path, 'utf8');
   if (!/^Elastic License 2\.0/m.test(text)) throw new PreviewError(`${path} is not the Elastic License 2.0 text`, 2);
   return text;
+}
+
+/**
+ * Copy the desktop shell from the materialized tree into the public export, minus
+ * generated and internal paths. Refuses when the commit has no desktop shell: a public
+ * source release without its shell is not the product (P-004). Everything copied is
+ * still checked by the same bundle audit as the rest of the export.
+ * @param {string} mono the materialized commit
+ * @param {string} into the export being assembled
+ */
+export function copyDesktopShell(mono, into) {
+  const from = join(mono, DESKTOP_DIR);
+  if (!existsSync(from) || readdirSync(from).length === 0) {
+    throw new PreviewError(`public target needs the desktop shell at ${DESKTOP_DIR}/ in the source commit`, 2);
+  }
+  const dest = join(into, DESKTOP_DIR);
+  run('mkdir', ['-p', dest]);
+  const excludes = DESKTOP_PUBLIC_EXCLUDES.map((p) => `--exclude=${p}`);
+  run('bash', ['-c', 'set -euo pipefail; src="$1"; dst="$2"; shift 2; tar -C "$src" -cf - "$@" . | tar -C "$dst" -xf -', '_', from, dest, ...excludes]);
 }
 
 /**
@@ -738,15 +792,15 @@ export function remoteTrees(remote, branch = 'main') {
 
 /**
  * Compare the remote preview with a fresh export of `ref`.
- * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, env?: NodeJS.ProcessEnv, selectScript?: string, log?: Log }} [opts]
+ * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, env?: NodeJS.ProcessEnv, selectScript?: string, log?: Log, thirdPartyNotices?: (dir: string) => { text: string, undetermined: string[] } }} [opts]
  */
-export async function checkDrift({ repoRoot = ROOT, ref = DEFAULT_REF, remote, target = 'preview', licensePath, env = process.env, selectScript, log = () => {} } = {}) {
+export async function checkDrift({ repoRoot = ROOT, ref = DEFAULT_REF, remote, target = 'preview', licensePath, env = process.env, selectScript, log = () => {}, thirdPartyNotices } = {}) {
   const t = resolveTarget(target);
   remote = remote ?? defaultRemote(t);
   assertRemoteMatchesTarget(t, remote);
   const work = await mkdtemp(join(tmpdir(), 'source-preview-check-'));
   try {
-    const { out, manifest } = await exportSnapshot({ repoRoot, ref, out: join(work, 'export'), target, licensePath, env, selectScript, log });
+    const { out, manifest } = await exportSnapshot({ repoRoot, ref, out: join(work, 'export'), target, licensePath, env, selectScript, log, thirdPartyNotices });
     const expected = exportTrees(out).comparable;
     const current = remoteTrees(remote);
     const actual = current?.comparable ?? null;
@@ -761,18 +815,18 @@ export async function checkDrift({ repoRoot = ROOT, ref = DEFAULT_REF, remote, t
  * parentless commit (force push); the public target gets a new commit on top of its current
  * main, pushed without --force, so a concurrent push is refused rather than overwritten.
  * The gate runs before anything is committed; a failing gate pushes nothing.
- * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log }} [opts]
+ * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log, thirdPartyNotices?: (dir: string) => { text: string, undetermined: string[] } }} [opts]
  */
 export async function pushSnapshot({
   repoRoot = ROOT, ref = DEFAULT_REF, remote, target = 'preview', licensePath, confirm = false,
-  env = process.env, selectScript, gate = runGate, log = () => {},
+  env = process.env, selectScript, gate = runGate, log = () => {}, thirdPartyNotices,
 } = {}) {
   const t = resolveTarget(target);
   remote = remote ?? defaultRemote(t);
   assertRemoteMatchesTarget(t, remote);
   const work = await mkdtemp(join(tmpdir(), 'source-preview-push-'));
   try {
-    const { out, manifest } = await exportSnapshot({ repoRoot, ref, out: join(work, 'export'), target, licensePath, env, selectScript, log });
+    const { out, manifest } = await exportSnapshot({ repoRoot, ref, out: join(work, 'export'), target, licensePath, env, selectScript, log, thirdPartyNotices });
     log('gating the export');
     const verdict = await gate(out, { env });
     if (!verdict.ok) return { pushed: false, reason: 'gate', verdict, commit: manifest.source.commit };

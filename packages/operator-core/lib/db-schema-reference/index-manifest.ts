@@ -23,8 +23,8 @@
 import type { IndexManifest } from '../schema-object-drift';
 
 export const INDEX_MANIFEST: IndexManifest = {
-  "generatedAt": "2026-09-09T08:54:25.102Z",
-  "migrationCountAtGeneration": 957,
+  "generatedAt": "2026-09-29T23:37:42.991Z",
+  "migrationCountAtGeneration": 1042,
   "indexes": [
     {
       "schema": "audit",
@@ -420,6 +420,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "agent_chats_consolidated_continued_from_idx",
+      "table": "agent_chats_consolidated",
+      "definition": "CREATE INDEX agent_chats_consolidated_continued_from_idx ON harness_shared.agent_chats_consolidated USING btree (workspace_id, harness_slug, continued_from_chat_id) WHERE (continued_from_chat_id IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "agent_chats_consolidated_pkey",
       "table": "agent_chats_consolidated",
       "definition": "CREATE UNIQUE INDEX agent_chats_consolidated_pkey ON harness_shared.agent_chats_consolidated USING btree (workspace_id, harness_slug, id)",
@@ -487,6 +494,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "agent_facts",
       "definition": "CREATE UNIQUE INDEX agent_facts_pkey ON harness_shared.agent_facts USING btree (id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "agent_facts_recheck_exec",
+      "table": "agent_facts",
+      "definition": "CREATE INDEX agent_facts_recheck_exec ON harness_shared.agent_facts USING btree (workspace_id) WHERE ((recheck ? 'exec'::text) AND (retracted_at IS NULL) AND (superseded_at IS NULL))",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -689,6 +703,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "agent_usage_samples_ws_bucket_ts_idx",
       "table": "agent_usage_samples",
       "definition": "CREATE INDEX agent_usage_samples_ws_bucket_ts_idx ON harness_shared.agent_usage_samples USING btree (workspace_id, bucket_key, ts DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "agent_usage_samples_ws_event_key_idx",
+      "table": "agent_usage_samples",
+      "definition": "CREATE UNIQUE INDEX agent_usage_samples_ws_event_key_idx ON harness_shared.agent_usage_samples USING btree (workspace_id, usage_event_key) WHERE (usage_event_key IS NOT NULL)",
       "constraintBacked": false
     },
     {
@@ -1155,6 +1176,20 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "bak_20260914_keyless_title_identity_repairs_pkey",
+      "table": "bak_20260914_keyless_title_identity_repairs",
+      "definition": "CREATE UNIQUE INDEX bak_20260914_keyless_title_identity_repairs_pkey ON harness_shared.bak_20260914_keyless_title_identity_repairs USING btree (workspace_id, harness_slug, title_key, loser_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "bak_20260914_work_items_keyless_title_identity_uq",
+      "table": "bak_20260914_work_items_keyless_title_identity",
+      "definition": "CREATE UNIQUE INDEX bak_20260914_work_items_keyless_title_identity_uq ON harness_shared.bak_20260914_work_items_keyless_title_identity USING btree (workspace_id, harness_slug, feature_id)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "bash_tool_substitution_fires_pkey",
       "table": "bash_tool_substitution_fires",
       "definition": "CREATE UNIQUE INDEX bash_tool_substitution_fires_pkey ON harness_shared.bash_tool_substitution_fires USING btree (id)",
@@ -1421,6 +1456,90 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "blueprint_invocation_item_recovery_idx",
+      "table": "work_items",
+      "definition": "CREATE INDEX blueprint_invocation_item_recovery_idx ON harness_shared.work_items USING btree (workspace_id, harness_slug, (((payload -> 'blueprintOperation'::text) ->> 'operationId'::text)), (((payload -> 'blueprintOperation'::text) ->> 'callerId'::text)), (((payload -> 'blueprintOperation'::text) ->> 'requestKey'::text))) WHERE (payload ? 'blueprintOperation'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_operation_invocatio_workspace_id_harness_slug_cal_key",
+      "table": "blueprint_operation_invocations",
+      "definition": "CREATE UNIQUE INDEX blueprint_operation_invocatio_workspace_id_harness_slug_cal_key ON harness_shared.blueprint_operation_invocations USING btree (workspace_id, harness_slug, caller_id, operation_id, request_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_operation_invocations_pkey",
+      "table": "blueprint_operation_invocations",
+      "definition": "CREATE UNIQUE INDEX blueprint_operation_invocations_pkey ON harness_shared.blueprint_operation_invocations USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_operation_invocations_unstarted_idx",
+      "table": "blueprint_operation_invocations",
+      "definition": "CREATE INDEX blueprint_operation_invocations_unstarted_idx ON harness_shared.blueprint_operation_invocations USING btree (id) WHERE ((target_kind = 'work-item'::text) AND (program_started_at IS NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_package_dependents_pkey",
+      "table": "blueprint_package_dependents",
+      "definition": "CREATE UNIQUE INDEX blueprint_package_dependents_pkey ON harness_shared.blueprint_package_dependents USING btree (workspace_id, dependent_id, resource_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_package_dependents_resource_idx",
+      "table": "blueprint_package_dependents",
+      "definition": "CREATE INDEX blueprint_package_dependents_resource_idx ON harness_shared.blueprint_package_dependents USING btree (workspace_id, resource_key) WHERE (phase <> 'released'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_package_installations_owner_idx",
+      "table": "blueprint_package_installations",
+      "definition": "CREATE INDEX blueprint_package_installations_owner_idx ON harness_shared.blueprint_package_installations USING btree (workspace_id, owner_id) WHERE (phase <> 'released'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_package_installations_pkey",
+      "table": "blueprint_package_installations",
+      "definition": "CREATE UNIQUE INDEX blueprint_package_installations_pkey ON harness_shared.blueprint_package_installations USING btree (workspace_id, dependent_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_package_resources_pkey",
+      "table": "blueprint_package_resources",
+      "definition": "CREATE UNIQUE INDEX blueprint_package_resources_pkey ON harness_shared.blueprint_package_resources USING btree (workspace_id, resource_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_package_resources_pkey",
+      "table": "blueprint_package_resources",
+      "definition": "CREATE UNIQUE INDEX blueprint_package_resources_pkey ON harness_shared.blueprint_package_resources USING btree (workspace_id, resource_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_package_resources_workspace_id_write_key_key",
+      "table": "blueprint_package_resources",
+      "definition": "CREATE UNIQUE INDEX blueprint_package_resources_workspace_id_write_key_key ON harness_shared.blueprint_package_resources USING btree (workspace_id, write_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "blueprint_specifications_pkey",
+      "table": "blueprint_specifications",
+      "definition": "CREATE UNIQUE INDEX blueprint_specifications_pkey ON harness_shared.blueprint_specifications USING btree (workspace_id, harness_slug, specification_revision)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
       "name": "blueprints_pkey",
       "table": "blueprints",
       "definition": "CREATE UNIQUE INDEX blueprints_pkey ON harness_shared.blueprints USING btree (workspace_id, harness_slug)",
@@ -1519,9 +1638,16 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
-      "name": "capability_class_conformance_binding_identity_uq",
+      "name": "capability_class_conformance_execution_uq",
       "table": "capability_class_conformance_runs",
-      "definition": "CREATE UNIQUE INDEX capability_class_conformance_binding_identity_uq ON harness_shared.capability_class_conformance_runs USING btree (workspace_id, class_id, class_version, provider_package, provider_version, id, structural_passed)",
+      "definition": "CREATE UNIQUE INDEX capability_class_conformance_execution_uq ON harness_shared.capability_class_conformance_runs USING btree (workspace_id, class_id, class_version, provider_package, provider_version, id, structural_passed, provider_kind, latency_class)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "capability_class_conformance_execution_uq",
+      "table": "capability_class_conformance_runs",
+      "definition": "CREATE UNIQUE INDEX capability_class_conformance_execution_uq ON harness_shared.capability_class_conformance_runs USING btree (workspace_id, class_id, class_version, provider_package, provider_version, id, structural_passed, provider_kind, latency_class)",
       "constraintBacked": true
     },
     {
@@ -1547,13 +1673,6 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
-      "name": "capability_class_provider_bindings_pkey",
-      "table": "capability_class_provider_bindings",
-      "definition": "CREATE UNIQUE INDEX capability_class_provider_bindings_pkey ON harness_shared.capability_class_provider_bindings USING btree (workspace_id, class_id, class_version, provider_package, provider_version)",
-      "constraintBacked": true
-    },
-    {
-      "schema": "harness_shared",
       "name": "capability_class_provider_discovery_idx",
       "table": "capability_class_provider_bindings",
       "definition": "CREATE INDEX capability_class_provider_discovery_idx ON harness_shared.capability_class_provider_bindings USING btree (workspace_id, class_id, class_version, status)",
@@ -1561,9 +1680,30 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "capability_class_provider_execution_uq",
+      "table": "capability_class_provider_bindings",
+      "definition": "CREATE UNIQUE INDEX capability_class_provider_execution_uq ON harness_shared.capability_class_provider_bindings USING btree (workspace_id, class_id, class_version, provider_package, provider_version, provider_kind, latency_class)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "capability_class_provider_execution_uq",
+      "table": "capability_class_provider_bindings",
+      "definition": "CREATE UNIQUE INDEX capability_class_provider_execution_uq ON harness_shared.capability_class_provider_bindings USING btree (workspace_id, class_id, class_version, provider_package, provider_version, provider_kind, latency_class)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
       "name": "capability_class_registry_embedding_hnsw_idx",
       "table": "capability_class_registry",
       "definition": "CREATE INDEX capability_class_registry_embedding_hnsw_idx ON harness_shared.capability_class_registry USING hnsw (embedding vector_cosine_ops)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "capability_class_registry_namespace_provenance_idx",
+      "table": "capability_class_registry",
+      "definition": "CREATE INDEX capability_class_registry_namespace_provenance_idx ON harness_shared.capability_class_registry USING btree (workspace_id, split_part(id, '.'::text, 1), provenance_kind)",
       "constraintBacked": false
     },
     {
@@ -1606,20 +1746,6 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "capability_class_registry_title_tsv_idx",
       "table": "capability_class_registry",
       "definition": "CREATE INDEX capability_class_registry_title_tsv_idx ON harness_shared.capability_class_registry USING gin (title_tsv)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "carry_notes_embedding_hnsw_idx",
-      "table": "carry_notes",
-      "definition": "CREATE INDEX carry_notes_embedding_hnsw_idx ON harness_shared.carry_notes USING hnsw (note_embedding vector_cosine_ops)",
-      "constraintBacked": false
-    },
-    {
-      "schema": "harness_shared",
-      "name": "carry_notes_embedding_mode_idx",
-      "table": "carry_notes",
-      "definition": "CREATE INDEX carry_notes_embedding_mode_idx ON harness_shared.carry_notes USING btree (note_embedding_mode) WHERE (note_embedding_mode IS NOT NULL)",
       "constraintBacked": false
     },
     {
@@ -1711,6 +1837,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "code_recipe_runs_ws_idx",
       "table": "code_recipe_runs",
       "definition": "CREATE INDEX code_recipe_runs_ws_idx ON harness_shared.code_recipe_runs USING btree (workspace_id, ts DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "code_recipes_embedding_hnsw_idx",
+      "table": "code_recipes",
+      "definition": "CREATE INDEX code_recipes_embedding_hnsw_idx ON harness_shared.code_recipes USING hnsw (embedding vector_cosine_ops)",
       "constraintBacked": false
     },
     {
@@ -1897,6 +2030,41 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "coord_blueprint_operation_msg_uq",
+      "table": "coord_event_log",
+      "definition": "CREATE UNIQUE INDEX coord_blueprint_operation_msg_uq ON harness_shared.coord_event_log USING btree (workspace_id, surface, msg_id) WHERE (surface = 'blueprint-operation'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "coord_blueprint_operation_receipt_events_idx",
+      "table": "coord_event_log",
+      "definition": "CREATE INDEX coord_blueprint_operation_receipt_events_idx ON harness_shared.coord_event_log USING btree (workspace_id, writer_key, id DESC) WHERE (surface = 'blueprint-operation'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "coord_blueprint_plan_run_events_idx",
+      "table": "coord_event_log",
+      "definition": "CREATE INDEX coord_blueprint_plan_run_events_idx ON harness_shared.coord_event_log USING btree (workspace_id, ((body ->> 'runId'::text)), id) WHERE ((surface = 'blueprint-operation'::text) AND ((body ->> 'runId'::text) IS NOT NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "coord_blueprint_work_item_events_idx",
+      "table": "coord_event_log",
+      "definition": "CREATE INDEX coord_blueprint_work_item_events_idx ON harness_shared.coord_event_log USING btree (workspace_id, ((body ->> 'workItemId'::text)), id) WHERE ((surface = 'blueprint-operation'::text) AND ((body ->> 'workItemId'::text) IS NOT NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "coord_conversations_lane_provenance_idx",
+      "table": "coord_conversations",
+      "definition": "CREATE INDEX coord_conversations_lane_provenance_idx ON harness_shared.coord_conversations USING btree (workspace_id, plan_slug, work_item_id) WHERE ((plan_slug IS NOT NULL) AND (work_item_id IS NOT NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "coord_conversations_open_idx",
       "table": "coord_conversations",
       "definition": "CREATE INDEX coord_conversations_open_idx ON harness_shared.coord_conversations USING btree (workspace_id, kind, created_at DESC) WHERE (state = 'open'::text)",
@@ -1970,6 +2138,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "coord_event_log_conditions_idx",
       "table": "coord_event_log",
       "definition": "CREATE INDEX coord_event_log_conditions_idx ON harness_shared.coord_event_log USING btree (workspace_id, id) WHERE ((surface = 'messages'::text) AND ((body ? 'condition_key'::text) OR (body ? 'resolves_condition'::text)))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "coord_event_log_escalation_reroute_of_idx",
+      "table": "coord_event_log",
+      "definition": "CREATE INDEX coord_event_log_escalation_reroute_of_idx ON harness_shared.coord_event_log USING btree (((body ->> 'escalationRerouteOf'::text))) WHERE (body ? 'escalationRerouteOf'::text)",
       "constraintBacked": false
     },
     {
@@ -2506,6 +2681,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "customer_workspaces_one_live_per_organization_uq",
+      "table": "customer_workspaces",
+      "definition": "CREATE UNIQUE INDEX customer_workspaces_one_live_per_organization_uq ON harness_shared.customer_workspaces USING btree (workspace_id, organization_id) WHERE (state <> 'deleted'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "customer_workspaces_org_identity_uq",
       "table": "customer_workspaces",
       "definition": "CREATE UNIQUE INDEX customer_workspaces_org_identity_uq ON harness_shared.customer_workspaces USING btree (workspace_id, organization_id, id)",
@@ -2982,6 +3164,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "event_awaits_fired_wake_recovery",
+      "table": "event_awaits",
+      "definition": "CREATE INDEX event_awaits_fired_wake_recovery ON harness_shared.event_awaits USING btree (workspace_id, fired_at, id) WHERE ((once = true) AND (policy = 'wake'::text) AND (fired_at IS NOT NULL) AND (node_id IS NULL) AND (root_id IS NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "event_awaits_inbox_wake_one_per_agent",
       "table": "event_awaits",
       "definition": "CREATE UNIQUE INDEX event_awaits_inbox_wake_one_per_agent ON harness_shared.event_awaits USING btree (workspace_id, subscriber_id, event_key) WHERE ((policy = 'wake'::text) AND (once = false) AND (cancelled_at IS NULL) AND (event_key ~~ 'coord:inbox-wake:%'::text))",
@@ -3024,6 +3213,55 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "event_key_registry_embedding_hnsw_idx",
+      "table": "event_key_registry",
+      "definition": "CREATE INDEX event_key_registry_embedding_hnsw_idx ON harness_shared.event_key_registry USING hnsw (embedding vector_cosine_ops)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "event_key_registry_pkey",
+      "table": "event_key_registry",
+      "definition": "CREATE UNIQUE INDEX event_key_registry_pkey ON harness_shared.event_key_registry USING btree (workspace_id, event_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "event_key_registry_review_pending_idx",
+      "table": "event_key_registry",
+      "definition": "CREATE INDEX event_key_registry_review_pending_idx ON harness_shared.event_key_registry USING btree (review_status) WHERE (review_status = 'pending'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "event_key_registry_tags_idx",
+      "table": "event_key_registry",
+      "definition": "CREATE INDEX event_key_registry_tags_idx ON harness_shared.event_key_registry USING gin (tags)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "event_key_registry_title_tsv_idx",
+      "table": "event_key_registry",
+      "definition": "CREATE INDEX event_key_registry_title_tsv_idx ON harness_shared.event_key_registry USING gin (title_tsv)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "event_key_registry_underived_idx",
+      "table": "event_key_registry",
+      "definition": "CREATE INDEX event_key_registry_underived_idx ON harness_shared.event_key_registry USING btree (workspace_id, status) WHERE ((derived_at IS NULL) OR (emitter_exists IS FALSE))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "event_reactions_contributor_idx",
+      "table": "event_reactions",
+      "definition": "CREATE INDEX event_reactions_contributor_idx ON harness_shared.event_reactions USING btree (workspace_id, contributor, fired_at DESC) WHERE (contributor IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "event_reactions_pkey",
       "table": "event_reactions",
       "definition": "CREATE UNIQUE INDEX event_reactions_pkey ON harness_shared.event_reactions USING btree (dedup_id)",
@@ -3049,6 +3287,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "event_wake_attempts",
       "definition": "CREATE UNIQUE INDEX event_wake_attempts_pkey ON harness_shared.event_wake_attempts USING btree (id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "event_wake_deliveries_await_lookup",
+      "table": "event_wake_deliveries",
+      "definition": "CREATE INDEX event_wake_deliveries_await_lookup ON harness_shared.event_wake_deliveries USING btree (workspace_id, await_id)",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -4585,6 +4830,20 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "host_kernel_memory_samples_pkey",
+      "table": "host_kernel_memory_samples",
+      "definition": "CREATE UNIQUE INDEX host_kernel_memory_samples_pkey ON harness_shared.host_kernel_memory_samples USING btree (boot_id, bucket_at)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "host_kernel_memory_samples_sampled_at_idx",
+      "table": "host_kernel_memory_samples",
+      "definition": "CREATE INDEX host_kernel_memory_samples_sampled_at_idx ON harness_shared.host_kernel_memory_samples USING btree (sampled_at)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "hpa_plan_item_idx",
       "table": "harness_plan_assertions",
       "definition": "CREATE INDEX hpa_plan_item_idx ON harness_shared.harness_plan_assertions USING btree (workspace_id, harness_slug, plan_slug, item_id)",
@@ -5341,6 +5600,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "memory_managed_writes_pkey",
+      "table": "memory_managed_writes",
+      "definition": "CREATE UNIQUE INDEX memory_managed_writes_pkey ON harness_shared.memory_managed_writes USING btree (write_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
       "name": "memory_precision_bench_pkey",
       "table": "memory_precision_bench",
       "definition": "CREATE UNIQUE INDEX memory_precision_bench_pkey ON harness_shared.memory_precision_bench USING btree (id)",
@@ -5761,6 +6027,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "operator_consult_expert_routing_pkey",
+      "table": "operator_consult_expert_routing",
+      "definition": "CREATE UNIQUE INDEX operator_consult_expert_routing_pkey ON harness_shared.operator_consult_expert_routing USING btree (workspace_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
       "name": "operator_context_doors_config_pkey",
       "table": "operator_context_doors_config",
       "definition": "CREATE UNIQUE INDEX operator_context_doors_config_pkey ON harness_shared.operator_context_doors_config USING btree (workspace_id)",
@@ -5869,6 +6142,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "operator_curation_state_pkey",
       "table": "operator_curation_state",
       "definition": "CREATE UNIQUE INDEX operator_curation_state_pkey ON harness_shared.operator_curation_state USING btree (workspace_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "operator_embed_device_pkey",
+      "table": "operator_embed_device",
+      "definition": "CREATE UNIQUE INDEX operator_embed_device_pkey ON harness_shared.operator_embed_device USING btree (workspace_id)",
       "constraintBacked": true
     },
     {
@@ -6209,10 +6489,66 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "orientation_class_reach_by_class",
+      "table": "orientation_class_reach",
+      "definition": "CREATE INDEX orientation_class_reach_by_class ON harness_shared.orientation_class_reach USING btree (workspace_id, sink, class_id)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "orientation_class_reach_pkey",
+      "table": "orientation_class_reach",
+      "definition": "CREATE UNIQUE INDEX orientation_class_reach_pkey ON harness_shared.orientation_class_reach USING btree (workspace_id, owner_id, sink, class_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "orientation_obligation_action_dispositioned",
+      "table": "orientation_obligation_action",
+      "definition": "CREATE INDEX orientation_obligation_action_dispositioned ON harness_shared.orientation_obligation_action USING btree (workspace_id, class_id) WHERE (dispositioned_at IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "orientation_obligation_action_open",
+      "table": "orientation_obligation_action",
+      "definition": "CREATE INDEX orientation_obligation_action_open ON harness_shared.orientation_obligation_action USING btree (workspace_id, owner_id) WHERE (dispositioned_at IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "orientation_obligation_action_pkey",
+      "table": "orientation_obligation_action",
+      "definition": "CREATE UNIQUE INDEX orientation_obligation_action_pkey ON harness_shared.orientation_obligation_action USING btree (workspace_id, owner_id, class_id, row_key)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
       "name": "owner_activity_pkey",
       "table": "owner_activity",
       "definition": "CREATE UNIQUE INDEX owner_activity_pkey ON harness_shared.owner_activity USING btree (workspace_id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "owner_directive_agenda_owner_idx",
+      "table": "owner_directive_agenda",
+      "definition": "CREATE INDEX owner_directive_agenda_owner_idx ON harness_shared.owner_directive_agenda USING btree (workspace_id, owner_id, directive_id)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "owner_directive_agenda_pkey",
+      "table": "owner_directive_agenda",
+      "definition": "CREATE UNIQUE INDEX owner_directive_agenda_pkey ON harness_shared.owner_directive_agenda USING btree (workspace_id, directive_id, owner_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "owner_directives_hook_captured_idx",
+      "table": "owner_directives",
+      "definition": "CREATE INDEX owner_directives_hook_captured_idx ON harness_shared.owner_directives USING btree (workspace_id, captured_by_hook, created_at) WHERE captured_by_hook",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -6703,6 +7039,27 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "personal_vault_settings",
       "definition": "CREATE UNIQUE INDEX personal_vault_settings_pkey ON harness_shared.personal_vault_settings USING btree (workspace_id, user_id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "pg_query_advisory_fires_label_window_idx",
+      "table": "pg_query_advisory_fires",
+      "definition": "CREATE INDEX pg_query_advisory_fires_label_window_idx ON harness_shared.pg_query_advisory_fires USING btree (workspace_id, advisory_label, fired_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "pg_query_advisory_fires_pkey",
+      "table": "pg_query_advisory_fires",
+      "definition": "CREATE UNIQUE INDEX pg_query_advisory_fires_pkey ON harness_shared.pg_query_advisory_fires USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "pg_query_advisory_fires_window_idx",
+      "table": "pg_query_advisory_fires",
+      "definition": "CREATE INDEX pg_query_advisory_fires_window_idx ON harness_shared.pg_query_advisory_fires USING btree (fired_at DESC)",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -7686,6 +8043,41 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "psu_pty_host_events_digest_uk",
+      "table": "psu_pty_host_events",
+      "definition": "CREATE UNIQUE INDEX psu_pty_host_events_digest_uk ON harness_shared.psu_pty_host_events USING btree (row_digest)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "psu_pty_host_events_kind_ts_idx",
+      "table": "psu_pty_host_events",
+      "definition": "CREATE INDEX psu_pty_host_events_kind_ts_idx ON harness_shared.psu_pty_host_events USING btree (kind, ts DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "psu_pty_host_events_owner_ts_idx",
+      "table": "psu_pty_host_events",
+      "definition": "CREATE INDEX psu_pty_host_events_owner_ts_idx ON harness_shared.psu_pty_host_events USING btree (owner_id, ts DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "psu_pty_host_events_pkey",
+      "table": "psu_pty_host_events",
+      "definition": "CREATE UNIQUE INDEX psu_pty_host_events_pkey ON harness_shared.psu_pty_host_events USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "psu_pty_host_events_ts_idx",
+      "table": "psu_pty_host_events",
+      "definition": "CREATE INDEX psu_pty_host_events_ts_idx ON harness_shared.psu_pty_host_events USING btree (ts)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "pty_viewer_heartbeats_fresh_idx",
       "table": "pty_viewer_heartbeats",
       "definition": "CREATE INDEX pty_viewer_heartbeats_fresh_idx ON harness_shared.pty_viewer_heartbeats USING btree (viewer_attached_at, owner_sid)",
@@ -7822,6 +8214,90 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "replay_runs_ws_created_idx",
       "table": "replay_runs",
       "definition": "CREATE INDEX replay_runs_ws_created_idx ON harness_shared.replay_runs USING btree (workspace_id, created_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_chunks_embedding_hnsw",
+      "table": "report_library_chunks",
+      "definition": "CREATE INDEX report_library_chunks_embedding_hnsw ON harness_shared.report_library_chunks USING hnsw (embedding vector_cosine_ops)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_chunks_pkey",
+      "table": "report_library_chunks",
+      "definition": "CREATE UNIQUE INDEX report_library_chunks_pkey ON harness_shared.report_library_chunks USING btree (workspace_id, report_id, chunk_idx)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_chunks_unembedded_idx",
+      "table": "report_library_chunks",
+      "definition": "CREATE INDEX report_library_chunks_unembedded_idx ON harness_shared.report_library_chunks USING btree (workspace_id, report_id) WHERE (embedding IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_kind_idx",
+      "table": "report_library",
+      "definition": "CREATE INDEX report_library_kind_idx ON harness_shared.report_library USING btree (workspace_id, kind, published_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_lineage_idx",
+      "table": "report_library",
+      "definition": "CREATE INDEX report_library_lineage_idx ON harness_shared.report_library USING btree (workspace_id, lineage_id, published_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_origin_idx",
+      "table": "report_library",
+      "definition": "CREATE INDEX report_library_origin_idx ON harness_shared.report_library USING btree (workspace_id, origin_harness_slug, published_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_pkey",
+      "table": "report_library",
+      "definition": "CREATE UNIQUE INDEX report_library_pkey ON harness_shared.report_library USING btree (workspace_id, report_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_pkey",
+      "table": "report_library",
+      "definition": "CREATE UNIQUE INDEX report_library_pkey ON harness_shared.report_library USING btree (workspace_id, report_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_published_idx",
+      "table": "report_library",
+      "definition": "CREATE INDEX report_library_published_idx ON harness_shared.report_library USING btree (workspace_id, published_at DESC) WHERE (retired_at IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_subject_idx",
+      "table": "report_library",
+      "definition": "CREATE INDEX report_library_subject_idx ON harness_shared.report_library USING btree (workspace_id, subject_kind, subject_ref)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_tags_idx",
+      "table": "report_library",
+      "definition": "CREATE INDEX report_library_tags_idx ON harness_shared.report_library USING gin (tags)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "report_library_tsv_idx",
+      "table": "report_library",
+      "definition": "CREATE INDEX report_library_tsv_idx ON harness_shared.report_library USING gin (search_tsv)",
       "constraintBacked": false
     },
     {
@@ -8054,6 +8530,20 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "routines",
       "definition": "CREATE UNIQUE INDEX routines_workspace_install_slug_name_key ON harness_shared.routines USING btree (workspace_id, install_slug, name)",
       "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "rubric_amend_receipts_finished_idx",
+      "table": "rubric_amend_receipts",
+      "definition": "CREATE INDEX rubric_amend_receipts_finished_idx ON harness_shared.rubric_amend_receipts USING btree (finished_at) WHERE (state <> 'running'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "rubric_amend_receipts_pkey",
+      "table": "rubric_amend_receipts",
+      "definition": "CREATE UNIQUE INDEX rubric_amend_receipts_pkey ON harness_shared.rubric_amend_receipts USING btree (workspace_id, rubric_ref, idempotency_key)",
+      "constraintBacked": true
     },
     {
       "schema": "harness_shared",
@@ -8407,6 +8897,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "session_pending_gates_decide_by_idx",
+      "table": "session_pending_gates",
+      "definition": "CREATE INDEX session_pending_gates_decide_by_idx ON harness_shared.session_pending_gates USING btree (workspace_id, decide_by) WHERE ((closed_at IS NULL) AND (decide_by IS NOT NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "session_pending_gates_open_idx",
       "table": "session_pending_gates",
       "definition": "CREATE INDEX session_pending_gates_open_idx ON harness_shared.session_pending_gates USING btree (workspace_id, opened_at DESC) WHERE (closed_at IS NULL)",
@@ -8428,6 +8925,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "session_ports_logical_request_idx",
+      "table": "session_ports",
+      "definition": "CREATE INDEX session_ports_logical_request_idx ON harness_shared.session_ports USING btree (workspace_id, logical_request_key, prepared_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "session_ports_pending_idx",
       "table": "session_ports",
       "definition": "CREATE INDEX session_ports_pending_idx ON harness_shared.session_ports USING btree (expires_at) WHERE (status = ANY (ARRAY['prepared'::text, 'pending'::text]))",
@@ -8439,6 +8943,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "session_ports",
       "definition": "CREATE UNIQUE INDEX session_ports_pkey ON harness_shared.session_ports USING btree (id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "session_ports_retry_idx",
+      "table": "session_ports",
+      "definition": "CREATE INDEX session_ports_retry_idx ON harness_shared.session_ports USING btree (retry_of_port_id) WHERE (retry_of_port_id IS NOT NULL)",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -8918,9 +9429,9 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
-      "name": "spec_evidence_bindings_dedup",
+      "name": "spec_evidence_bindings_dedup_live",
       "table": "spec_evidence_bindings",
-      "definition": "CREATE UNIQUE INDEX spec_evidence_bindings_dedup ON harness_shared.spec_evidence_bindings USING btree (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision, binding_fingerprint)",
+      "definition": "CREATE UNIQUE INDEX spec_evidence_bindings_dedup_live ON harness_shared.spec_evidence_bindings USING btree (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision, binding_fingerprint) WHERE (retracted_at IS NULL)",
       "constraintBacked": false
     },
     {
@@ -9327,6 +9838,34 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "testing_surfaces_source_file",
       "table": "testing_surfaces",
       "definition": "CREATE INDEX testing_surfaces_source_file ON harness_shared.testing_surfaces USING btree (source_file) WHERE ((source_file IS NOT NULL) AND (retired_at IS NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "text_chunks_embedding_hnsw_idx",
+      "table": "text_chunks",
+      "definition": "CREATE INDEX text_chunks_embedding_hnsw_idx ON harness_shared.text_chunks USING hnsw (embedding vector_cosine_ops)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "text_chunks_embedding_mode_idx",
+      "table": "text_chunks",
+      "definition": "CREATE INDEX text_chunks_embedding_mode_idx ON harness_shared.text_chunks USING btree (embedding_mode) WHERE (embedding_mode IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "text_chunks_pkey",
+      "table": "text_chunks",
+      "definition": "CREATE UNIQUE INDEX text_chunks_pkey ON harness_shared.text_chunks USING btree (surface, parent_key, chunk_idx)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "text_chunks_updated_idx",
+      "table": "text_chunks",
+      "definition": "CREATE INDEX text_chunks_updated_idx ON harness_shared.text_chunks USING btree (updated_at)",
       "constraintBacked": false
     },
     {
@@ -10318,6 +10857,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "work_items_acceptance_drain_plan_idx",
+      "table": "work_items",
+      "definition": "CREATE INDEX work_items_acceptance_drain_plan_idx ON harness_shared.work_items USING btree (workspace_id, ((payload ->> 'acceptanceDrainPlan'::text))) WHERE ((payload ->> 'acceptanceDrainPlan'::text) IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "work_items_author_pubkey_local_idx",
       "table": "work_items",
       "definition": "CREATE INDEX work_items_author_pubkey_local_idx ON harness_shared.work_items USING btree (workspace_id, author_pubkey) WHERE ((author_pubkey IS NOT NULL) AND (author_pubkey <> ''::text) AND (item_kind <> ALL (ARRAY['bug'::text, 'change'::text, 'task'::text])))",
@@ -10346,6 +10892,13 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "harness_shared",
+      "name": "work_items_completion_event_intent_idx",
+      "table": "work_items",
+      "definition": "CREATE INDEX work_items_completion_event_intent_idx ON harness_shared.work_items USING btree (workspace_id, closed_ts, feature_id) WHERE (payload ? '_completionEventIntentId'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
       "name": "work_items_condition_key_uq",
       "table": "work_items",
       "definition": "CREATE UNIQUE INDEX work_items_condition_key_uq ON harness_shared.work_items USING btree (workspace_id, harness_slug, condition_key) WHERE (condition_key IS NOT NULL)",
@@ -10356,6 +10909,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "work_items_design_created_keyset_idx",
       "table": "work_items",
       "definition": "CREATE INDEX work_items_design_created_keyset_idx ON harness_shared.work_items USING btree (workspace_id, harness_slug, COALESCE(created_ts, (0)::bigint) DESC, feature_id DESC) WHERE ((needs_design = true) AND (item_kind <> ALL (ARRAY['bug'::text, 'change'::text, 'task'::text])))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "work_items_directive_ref_idx",
+      "table": "work_items",
+      "definition": "CREATE INDEX work_items_directive_ref_idx ON harness_shared.work_items USING btree (workspace_id, directive_ref) WHERE (directive_ref IS NOT NULL)",
       "constraintBacked": false
     },
     {
@@ -10391,6 +10951,13 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "work_items_goal_id_idx",
       "table": "work_items",
       "definition": "CREATE INDEX work_items_goal_id_idx ON harness_shared.work_items USING btree (workspace_id, goal_id) WHERE (goal_id IS NOT NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "work_items_keyless_title_identity_uq",
+      "table": "work_items",
+      "definition": "CREATE UNIQUE INDEX work_items_keyless_title_identity_uq ON harness_shared.work_items USING btree (workspace_id, harness_slug, ((payload #>> '{admissionIdentity,titleKey}'::text[]))) WHERE ((item_kind = ANY (ARRAY['bug'::text, 'change'::text, 'task'::text])) AND ((status IS NULL) OR (status <> ALL (ARRAY['passed'::text, 'deprecated'::text, 'resolved'::text, 'closed'::text, 'done'::text, 'dropped'::text]))) AND (NULLIF(btrim((payload ->> 'watchdogKey'::text)), ''::text) IS NULL) AND (COALESCE((payload ->> 'lane'::text), 'improvement'::text) <> 'observation'::text) AND ((payload #>> '{admissionIdentity,schemaVersion}'::text[]) = 'admission-identity-v1'::text) AND (NULLIF(btrim((payload #>> '{admissionIdentity,titleKey}'::text[])), ''::text) IS NOT NULL))",
       "constraintBacked": false
     },
     {
@@ -10441,6 +11008,20 @@ export const INDEX_MANIFEST: IndexManifest = {
       "table": "work_items",
       "definition": "CREATE UNIQUE INDEX work_items_scoped_identity ON harness_shared.work_items USING btree (workspace_id, harness_slug, feature_id)",
       "constraintBacked": true
+    },
+    {
+      "schema": "harness_shared",
+      "name": "work_items_twin_rekey_marker_idx",
+      "table": "work_items",
+      "definition": "CREATE INDEX work_items_twin_rekey_marker_idx ON harness_shared.work_items USING btree (workspace_id, (((payload -> '_physicalTwinRekey'::text) ->> 'oldId'::text))) WHERE (((payload -> '_physicalTwinRekey'::text) ->> 'migration'::text) = '826'::text)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "harness_shared",
+      "name": "work_items_twin_repair_marker_idx",
+      "table": "work_items",
+      "definition": "CREATE INDEX work_items_twin_repair_marker_idx ON harness_shared.work_items USING btree (workspace_id, feature_id) WHERE (((payload -> '_physicalTwinRepair'::text) ->> 'migration'::text) = '826'::text)",
+      "constraintBacked": false
     },
     {
       "schema": "harness_shared",
@@ -10738,6 +11319,62 @@ export const INDEX_MANIFEST: IndexManifest = {
     },
     {
       "schema": "papercusp_auth",
+      "name": "hosted_cli_device_grants_expiry_idx",
+      "table": "hosted_cli_device_grants",
+      "definition": "CREATE INDEX hosted_cli_device_grants_expiry_idx ON papercusp_auth.hosted_cli_device_grants USING btree (expires_at)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_cli_device_grants_pkey",
+      "table": "hosted_cli_device_grants",
+      "definition": "CREATE UNIQUE INDEX hosted_cli_device_grants_pkey ON papercusp_auth.hosted_cli_device_grants USING btree (device_code_hash)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_cli_device_grants_user_code_key",
+      "table": "hosted_cli_device_grants",
+      "definition": "CREATE UNIQUE INDEX hosted_cli_device_grants_user_code_key ON papercusp_auth.hosted_cli_device_grants USING btree (user_code)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_cli_tokens_pkey",
+      "table": "hosted_cli_tokens",
+      "definition": "CREATE UNIQUE INDEX hosted_cli_tokens_pkey ON papercusp_auth.hosted_cli_tokens USING btree (id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_cli_tokens_token_hash_key",
+      "table": "hosted_cli_tokens",
+      "definition": "CREATE UNIQUE INDEX hosted_cli_tokens_token_hash_key ON papercusp_auth.hosted_cli_tokens USING btree (token_hash)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_cli_tokens_user_idx",
+      "table": "hosted_cli_tokens",
+      "definition": "CREATE INDEX hosted_cli_tokens_user_idx ON papercusp_auth.hosted_cli_tokens USING btree (user_id, organization_id) WHERE (revoked_at IS NULL)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_entitlements_pkey",
+      "table": "hosted_entitlements",
+      "definition": "CREATE UNIQUE INDEX hosted_entitlements_pkey ON papercusp_auth.hosted_entitlements USING btree (organization_id, user_id, kind)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_entitlements_user_idx",
+      "table": "hosted_entitlements",
+      "definition": "CREATE INDEX hosted_entitlements_user_idx ON papercusp_auth.hosted_entitlements USING btree (user_id, organization_id)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
       "name": "hosted_sessions_expiry_idx",
       "table": "hosted_sessions",
       "definition": "CREATE INDEX hosted_sessions_expiry_idx ON papercusp_auth.hosted_sessions USING btree (expires_at, id) WHERE (revoked_at IS NULL)",
@@ -10761,8 +11398,8 @@ export const INDEX_MANIFEST: IndexManifest = {
       "schema": "papercusp_auth",
       "name": "hosted_sessions_upstream_session_key",
       "table": "hosted_sessions",
-      "definition": "CREATE UNIQUE INDEX hosted_sessions_upstream_session_key ON papercusp_auth.hosted_sessions USING btree (upstream_provider, upstream_session_id)",
-      "constraintBacked": true
+      "definition": "CREATE UNIQUE INDEX hosted_sessions_upstream_session_key ON papercusp_auth.hosted_sessions USING btree (upstream_provider, upstream_session_id) WHERE (revoked_at IS NULL)",
+      "constraintBacked": false
     },
     {
       "schema": "papercusp_auth",
@@ -10776,6 +11413,27 @@ export const INDEX_MANIFEST: IndexManifest = {
       "name": "hosted_sessions_workspace_active_idx",
       "table": "hosted_sessions",
       "definition": "CREATE INDEX hosted_sessions_workspace_active_idx ON papercusp_auth.hosted_sessions USING btree (workspace_id, expires_at, id) WHERE ((revoked_at IS NULL) AND (workspace_id IS NOT NULL))",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_signup_attempts_email_created_idx",
+      "table": "hosted_signup_attempts",
+      "definition": "CREATE INDEX hosted_signup_attempts_email_created_idx ON papercusp_auth.hosted_signup_attempts USING btree (email, created_at DESC)",
+      "constraintBacked": false
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_signup_attempts_pkey",
+      "table": "hosted_signup_attempts",
+      "definition": "CREATE UNIQUE INDEX hosted_signup_attempts_pkey ON papercusp_auth.hosted_signup_attempts USING btree (attempt_id)",
+      "constraintBacked": true
+    },
+    {
+      "schema": "papercusp_auth",
+      "name": "hosted_signup_attempts_provider_subject_idx",
+      "table": "hosted_signup_attempts",
+      "definition": "CREATE UNIQUE INDEX hosted_signup_attempts_provider_subject_idx ON papercusp_auth.hosted_signup_attempts USING btree (provider, subject) WHERE (status = 'completed'::text)",
       "constraintBacked": false
     },
     {

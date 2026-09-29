@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import type {
-  PotCapabilityProviderBindingRow,
-  ProviderBindingRow,
-} from '../capability-class-registry-store';
+import type { ProviderBindingRow } from '../capability-class-registry-store';
 import {
   findCapabilityProviderIdentityDependents,
+  recipeProviderConsentRefusal,
+  recipeProviderConsentSubject,
+  recipeProviderPins,
   resolveCapabilityGrants,
+  type CapabilityPotBinding,
   type CapabilityProviderCandidate,
 } from './capability-grant-resolver';
 
@@ -28,6 +29,7 @@ const candidate = (
   overrides: Partial<CapabilityProviderCandidate> = {},
 ): CapabilityProviderCandidate => ({
   ...binding(),
+  providerKind: 'tool',
   price: null,
   activePotBindings: 1,
   passingStructuralRuns: 1,
@@ -36,9 +38,10 @@ const candidate = (
 });
 
 const potBinding = (
-  overrides: Partial<PotCapabilityProviderBindingRow> = {},
-): PotCapabilityProviderBindingRow => ({
+  overrides: Partial<CapabilityPotBinding> = {},
+): CapabilityPotBinding => ({
   ...binding(),
+  providerKind: 'tool',
   potSlug: 'sales-ops',
   boundBy: 'operator-1',
   boundAt: '2026-09-07T00:00:00.000Z',
@@ -275,5 +278,60 @@ describe('findCapabilityProviderIdentityDependents', () => {
         optional: false,
       },
     ]);
+  });
+});
+
+describe('recipe provider pins and consent (P-013, D-019)', () => {
+  const hex = (c: string) => c.repeat(64);
+  const inspection = (recipeId: string) => ({
+    ok: true as const,
+    recipe: { id: recipeId, revision: hex('a') },
+    inspectionPin: { sourceSha256: hex('b'), bindingsSha256: hex('c'), recipeRevision: hex('a') },
+    toolNames: ['crm:read', 'crm:list'],
+    requiredCapabilities: [],
+    outputSchema: { type: 'object' },
+  });
+  const recipe = (overrides: Partial<CapabilityProviderCandidate> = {}) => candidate({
+    providerPackage: 'initech-recipes',
+    providerKind: 'recipe',
+    verbBindings: { send: 'initech:send' },
+    recipeInspections: { send: inspection('initech:send') },
+    ...overrides,
+  });
+
+  it('pins every bound verb, and yields null for a kind-only or mismatched row', () => {
+    expect(recipeProviderPins(recipe())).toEqual([{
+      verb: 'send', recipeId: 'initech:send', recipeRevision: hex('a'),
+      inspectionPinSha256: expect.stringMatching(/^[0-9a-f]{64}$/), toolNames: ['crm:list', 'crm:read'],
+    }]);
+    expect(recipeProviderPins(recipe({ recipeInspections: undefined }))).toBeNull();
+    expect(recipeProviderPins(recipe({ recipeInspections: { send: inspection('initech:other') } }))).toBeNull();
+    expect(recipeProviderPins(candidate())).toBeNull();
+  });
+
+  it('does not offer a kind-only recipe row as a candidate', async () => {
+    const result = await resolveCapabilityGrants(
+      { requires: ['crm.email@1.0.0'] },
+      { getPotBinding: async () => null, listCandidates: async () => [recipe({ recipeInspections: undefined })] },
+      { mode: 'agent' },
+    );
+    expect(result.missingRequired).toEqual(['crm.email@1.0.0']);
+  });
+
+  it('builds a subject only for recipe selections and refuses anything but the echoed approval', async () => {
+    const result = await resolveCapabilityGrants(
+      { requires: ['crm.email@1.0.0'] },
+      { getPotBinding: async () => null, listCandidates: async () => [recipe()] },
+      { mode: 'agent' },
+    );
+    expect(result.selected[0]).toMatchObject({ providerKind: 'recipe', reason: 'evidence-policy' });
+    const scope = { workspaceId: 'workspace-1', potSlug: 'sales-ops' };
+    expect(recipeProviderConsentSubject(scope, [{ ...result.selected[0]!, providerKind: 'tool' }])).toBeNull();
+    const subject = recipeProviderConsentSubject(scope, result.selected)!;
+    expect(recipeProviderConsentRefusal(undefined, subject)?.code).toBe('consent_required');
+    expect(recipeProviderConsentRefusal({ ...subject, decision: 'rejected' }, subject)?.code).toBe('consent_rejected');
+    expect(recipeProviderConsentRefusal({ ...subject, potSlug: 'other-pot', decision: 'approved' }, subject)?.code)
+      .toBe('consent_mismatch');
+    expect(recipeProviderConsentRefusal({ ...structuredClone(subject), decision: 'approved' }, subject)).toBeNull();
   });
 });

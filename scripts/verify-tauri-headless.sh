@@ -705,6 +705,30 @@ validate_assertion_command_preflight() {
 
 validate_assertion_command_preflight || exit $?
 
+# ── Verification-harness contract (expensive-verification-loops P-006) ───────
+# Bracket mode: phases prepare → boot → assert are marked at their section starts, the
+# script keeps its own exit semantics (teardown exits with the assertion's code), and each
+# run gets a structured per-phase result + one retained evidence dir + a HARNESS_RESULT line
+# on stderr. It starts AFTER the dependency preflights above, which must fail in seconds
+# without creating anything (the contract's tsx step writes a cache under TMPDIR).
+# VH_FAIL_OPEN: instrumentation that cannot start never blocks a verify.
+VH_SH="$REPO_DIR/libs/generic/verification-harness/bin/vh.sh"
+if [ -f "$VH_SH" ]; then
+  # shellcheck source=libs/generic/verification-harness/bin/vh.sh
+  source "$VH_SH"
+  VH_LOG_FD="${VH_LOG_FD:-2}"
+  VH_FAIL_OPEN="${VH_FAIL_OPEN:-1}"
+  vh_phase prepare ""
+  vh_phase boot prepare
+  vh_phase assert boot
+  vh_init verify-tauri-headless "${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}"
+  vh_begin prepare
+  vh_bracket_trap   # finalizes an exit before `trap teardown EXIT`; teardown calls vh_exit itself
+else
+  echo "VH_DISABLED harness=verify-tauri-headless reason=vh.sh-missing:$VH_SH" >&2
+  vh_begin() { :; }; vh_step() { :; }; vh_skip_rest() { :; }; vh_exit() { :; }
+fi
+
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 # EI-20229366113827667: cargo compilation and bridge readiness are separate
 # phases. A cold Rust build can consume most of the bridge budget before the
@@ -1996,6 +2020,7 @@ handle_signal() {
 teardown() {
   local ec=$?
   [ "$SIGNAL_EXIT_CODE" -ne 0 ] && ec="$SIGNAL_EXIT_CODE"
+  vh_exit "$ec"   # record the open phase (failed unless ec=0) + HARNESS_RESULT; never changes ec
   # Cleanup can itself run commands which receive a signal. Disable all traps
   # before the first side effect so the EXIT path cannot run twice.
   trap - EXIT INT TERM HUP
@@ -2656,8 +2681,10 @@ strip_ansi() { sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g'; }
 desktop_binary_started() {
   strip_ansi < "$LOG" 2>/dev/null | grep -qE "Running[[:space:]]+.*papercusp-desktop"
 }
+vh_begin boot
 while :; do
   BOOT_ATTEMPTS=$((BOOT_ATTEMPTS + 1))
+  vh_step "launch-attempt-$BOOT_ATTEMPTS"
   write_and_launch_tauri
 
   # EI-20229366113827667: keep cargo/build time out of the bridge-readiness
@@ -3562,6 +3589,9 @@ if [ "${1:-}" = "--boot-only" ]; then
     echo "FATAL: could not transfer verifier ownership marker to boot-only keeper under $WORK" >&2
     exit 1
   }
+  # The rig is up and handed to the caller: finalize the contract now (assert is theirs).
+  vh_skip_rest boot-only
+  vh_exit 0
   trap - EXIT INT TERM   # caller owns teardown from here
   write_stop_script
 
@@ -3751,5 +3781,6 @@ if [ "$ISOLATED_DB" = "1" ]; then
   export PAPERCUSP_VERIFY_TAURI_ISOLATED=1
 fi
 
+vh_begin assert
 log "running assertion command: $*"
 "$@"

@@ -8,7 +8,8 @@
  * subdir per phase, `result.json` rewritten after every phase so a killed run still leaves
  * its partial result) and repoints `<evidenceRoot>/latest` at it when it ends.
  */
-import { mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import {
   type HarnessContract,
@@ -81,6 +82,29 @@ export interface RunHarnessArgs {
   codeRoot?: string;
   /** Run the expensive tier despite a tier-gate refusal. The reason is kept on the result. */
   overrideTierGate?: { reason: string } | null;
+  /**
+   * How many phases may run at once (default 1: strictly in declaration order). Above 1, a phase
+   * starts as soon as its dependencies have settled — independent scenarios of a battery run side
+   * by side while a dependent phase still waits for its setup.
+   */
+  concurrency?: number;
+}
+
+/** A FIFO slot pool: at most `n` callbacks in flight. */
+function createSlots(n: number): <T>(fn: () => Promise<T>) => Promise<T> {
+  let free = n;
+  const waiters: (() => void)[] = [];
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (free > 0) free--;
+    else await new Promise<void>((resolve) => waiters.push(resolve));
+    try {
+      return await fn();
+    } finally {
+      const next = waiters.shift();
+      if (next) next();
+      else free++;
+    }
+  };
 }
 
 export const PREFLIGHT_PHASE_ID = 'preflight';
@@ -110,6 +134,70 @@ export async function linkLatest(evidenceRoot: string, runDir: string): Promise<
   await rm(tmp, { force: true });
   await symlink(path.relative(evidenceRoot, runDir), tmp);
   await rename(tmp, path.join(evidenceRoot, 'latest'));
+}
+
+/**
+ * Where a harness keeps its runs when the caller names no root: `$VH_EVIDENCE_ROOT_BASE/<harness>`,
+ * else the XDG state dir (`$XDG_STATE_HOME`, default `~/.local/state`) `/verification-harness/<harness>`.
+ * vh.sh's `vh_default_root` resolves the same path.
+ */
+export function defaultEvidenceRoot(harness: string, env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.VH_EVIDENCE_ROOT_BASE?.trim();
+  if (explicit) return path.join(explicit, harness);
+  const state = env.XDG_STATE_HOME?.trim() || path.join(env.HOME?.trim() || homedir(), '.local', 'state');
+  return path.join(state, 'verification-harness', harness);
+}
+
+/** Run dirs are named by newRunId (and vh.sh): `<yyyymmddThhmmssZ>-<pid>`. */
+const RUN_DIR_RE = /^\d{8}T\d{6}Z-\d+$/;
+export const DEFAULT_KEEP_RUNS = 30;
+/** A run dir with no result.json yet is in progress unless it is older than this. */
+const IN_PROGRESS_GRACE_MS = 24 * 60 * 60 * 1000;
+
+export function keepRunsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.VH_KEEP_RUNS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_KEEP_RUNS;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_KEEP_RUNS;
+}
+
+/**
+ * Retention: keep the newest `keep` run dirs under the evidence root and remove older ones. A
+ * harness that runs many times a day (a headless UI verify) would otherwise grow the root without
+ * bound. Never removes the run `latest` points at, nor a run still in progress (no result.json yet
+ * and younger than a day). `VH_KEEP_RUNS` sets the default; 0 disables pruning. Returns the removed
+ * run ids.
+ */
+export async function pruneRuns(evidenceRoot: string, keep = keepRunsFromEnv(), now = Date.now()): Promise<string[]> {
+  if (!(keep > 0)) return [];
+  let names: string[];
+  try {
+    names = (await readdir(evidenceRoot, { withFileTypes: true }))
+      .filter((d) => d.isDirectory() && RUN_DIR_RE.test(d.name))
+      .map((d) => d.name);
+  } catch {
+    return [];
+  }
+  names.sort(); // the timestamp prefix sorts chronologically
+  let latest: string | null = null;
+  try {
+    latest = path.basename(await readlink(path.join(evidenceRoot, 'latest')));
+  } catch {
+    /* no latest link yet */
+  }
+  const removed: string[] = [];
+  for (const name of names.slice(0, Math.max(0, names.length - keep))) {
+    if (name === latest) continue;
+    const dir = path.join(evidenceRoot, name);
+    const finished = await stat(path.join(dir, 'result.json')).then(() => true, () => false);
+    if (!finished) {
+      const born = await stat(dir).then((s) => s.mtimeMs, () => now);
+      if (now - born < IN_PROGRESS_GRACE_MS) continue;
+    }
+    await rm(dir, { recursive: true, force: true });
+    removed.push(name);
+  }
+  return removed;
 }
 
 export function deriveVerdict(result: Pick<HarnessRunResult, 'preflight' | 'phases' | 'tierGate'>): {
@@ -368,28 +456,57 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   };
 
   const statusOf = new Map<string, PhaseResult['status']>();
-  for (const step of plan) {
-    const spec = contract.phases.find((p) => p.id === step.phase)!;
-    let r: PhaseResult;
-    if (step.action === 'skip') {
-      r = notRun(spec.id, runDir, 'skipped', step.reason ?? 'not-selected');
-    } else if (step.action === 'reuse') {
-      r = notRun(spec.id, runDir, 'reused', null, { reusedFromRunId: step.reuseFromRunId! });
-    } else if (preflightFailed) {
-      r = notRun(spec.id, runDir, 'blocked', 'preflight-failed');
-    } else {
-      const unmet = (spec.dependsOn ?? []).find((d) => statusOf.get(d) !== 'passed' && statusOf.get(d) !== 'reused');
-      r = unmet
-        ? notRun(spec.id, runDir, 'blocked', `dependency:${unmet}:${statusOf.get(unmet) ?? 'unknown'}`)
-        : await runTiered(spec.id);
+  const notRunFor = (step: (typeof plan)[number]): PhaseResult | null => {
+    if (step.action === 'skip') return notRun(step.phase, runDir, 'skipped', step.reason ?? 'not-selected');
+    if (step.action === 'reuse') return notRun(step.phase, runDir, 'reused', null, { reusedFromRunId: step.reuseFromRunId! });
+    if (preflightFailed) return notRun(step.phase, runDir, 'blocked', 'preflight-failed');
+    return null;
+  };
+  const unmetDependency = (id: string): PhaseResult | null => {
+    const unmet = (byId.get(id)!.dependsOn ?? []).find((d) => statusOf.get(d) !== 'passed' && statusOf.get(d) !== 'reused');
+    return unmet ? notRun(id, runDir, 'blocked', `dependency:${unmet}:${statusOf.get(unmet) ?? 'unknown'}`) : null;
+  };
+  const concurrency = Math.max(1, Math.floor(args.concurrency ?? 1));
+
+  if (concurrency === 1) {
+    for (const step of plan) {
+      const r = notRunFor(step) ?? unmetDependency(step.phase) ?? (await runTiered(step.phase));
+      statusOf.set(step.phase, r.status);
+      result.phases.push(r);
+      await checkpoint();
     }
-    statusOf.set(spec.id, r.status);
-    result.phases.push(r);
-    await checkpoint();
+  } else {
+    // A phase starts once every dependency has settled and a slot is free; results stay in
+    // declaration order, and result.json is rewritten (serially) as each phase settles.
+    const slot = createSlots(concurrency);
+    const settled = new Map<string, Promise<PhaseResult>>();
+    const ordered: (PhaseResult | undefined)[] = [];
+    let writes: Promise<void> = Promise.resolve();
+    plan.forEach((step, i) => {
+      const run = async (): Promise<PhaseResult> => {
+        const early = notRunFor(step);
+        if (early) return early;
+        await Promise.all((byId.get(step.phase)!.dependsOn ?? []).map((d) => settled.get(d)));
+        return unmetDependency(step.phase) ?? slot(() => runTiered(step.phase));
+      };
+      settled.set(
+        step.phase,
+        run().then(async (r) => {
+          statusOf.set(step.phase, r.status);
+          ordered[i] = r;
+          result.phases = ordered.filter((x): x is PhaseResult => x !== undefined);
+          writes = writes.then(checkpoint);
+          await writes;
+          return r;
+        }),
+      );
+    });
+    await Promise.all(settled.values());
   }
 
   result.endedAt = now().toISOString();
   await checkpoint();
   await linkLatest(args.evidenceRoot, runDir);
+  await pruneRuns(args.evidenceRoot);
   return result;
 }

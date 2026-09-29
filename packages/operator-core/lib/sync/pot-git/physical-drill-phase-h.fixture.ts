@@ -23,7 +23,7 @@ export const PHASE_H_FIXTURE_HIVE_ID = 'hive-pubkey-base64';
 export const PHASE_H_FIXTURE_REPO_KEY = 'hello-world-3-pot';
 export const PHASE_H_FIXTURE_GEN_1 = `sg2-1-${'a'.repeat(40)}`;
 export const PHASE_H_FIXTURE_GEN_2 = `sg2-2-${'b'.repeat(40)}`;
-export const PHASE_H_FIXTURE_OWNER_BEFORE = { pid: 69706, healthSha: 'aef4431553c9', launcher: 'rig-sidecar-current/boot-headless-current.sh' };
+export const PHASE_H_FIXTURE_OWNER_BEFORE = { pid: 69706, build: 'aef4431553c9', launcher: 'rig-sidecar-current/boot-headless-current.sh' };
 export const PHASE_H_FIXTURE_OWNER_AFTER = { ...PHASE_H_FIXTURE_OWNER_BEFORE, pid: 71234 };
 export const PHASE_H_FIXTURE_PUBLISHER_PID = 80001;
 

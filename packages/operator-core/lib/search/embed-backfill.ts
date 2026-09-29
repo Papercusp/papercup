@@ -918,22 +918,10 @@ export const TARGETS: BackfillTarget[] = [
     recencyCol: 'created_at',
     recencyColKind: 'timestamptz',
   },
-  // Migration 1097 (WI-2142144): work-item checkpoints / armed-loop carry-notes —
-  // the whole continuity-recovery design (post-compaction carry docs, prior-attempt
-  // context, loop:checkpoint resumption) reads THIS table, and until now it had no
-  // index of any kind, so prior-attempt-context.ts had no alternative to greping the
-  // `note` column with keyword regexes. PK is (workspace_id, scope) — no surrogate id.
-  {
-    table: 'harness_shared.carry_notes',
-    embedCol: 'note_embedding',
-    bodySql: `left(COALESCE(note, ''), 2000)`,
-    keyCols: ['workspace_id', 'scope'],
-    // No dedicated index on updated_ts, but the table is ~10.3k rows at introduction
-    // (2026-09-02) — same "trivial sort" territory as code_recipes (~9.1k, no index).
-    orderBySql: 'updated_ts DESC',
-    recencyCol: 'updated_ts',
-    recencyColKind: 'epochMs',
-  },
+  // harness_shared.carry_notes is deliberately NOT a target: migration 1243
+  // dropped note_embedding because nothing read it (generic-rag-chunking-2026-09-29
+  // D-020). Carry notes are recovered by scope key and note_tsv. Re-add the column
+  // and an entry here only together with a semantic reader.
   // Migration 1097 (WI-2142144): coord thread discussion posts — the second of the
   // two only-unindexed continuity corpora. PK is a bigserial `id`, which is already
   // the sweep's freshest-first order AND a real index (the primary key btree) — no

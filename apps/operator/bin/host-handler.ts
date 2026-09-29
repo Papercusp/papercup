@@ -38,6 +38,7 @@ import {
 import { backpressureMiddleware } from './host-backpressure';
 import { requestDeadlineMiddleware } from './host-request-deadline';
 import { runWithLoopbackPeerVerdict } from '@papercusp/operator-core/lib/auth/loopback-peer-trust';
+import { runAsExternalIngress } from '@papercusp/operator-core/lib/auth/forwarded-request-trust';
 
 const host = new Hono();
 
@@ -135,4 +136,18 @@ export async function handler(
   // single-user hosts — see loopbackPeerUidPolicyActive().
   const socket = env?.incoming?.socket ?? null;
   return runWithLoopbackPeerVerdict(socket, () => host.fetch(req, env));
+}
+
+/**
+ * external-app-access P-004 / R-7: the handler for the external-ingress listener
+ * (`PAPERCUSP_EXTERNAL_INGRESS_PORT`). A user's own tunnel points here; every request
+ * runs as external ingress, so every local-trust gate refuses it — even one whose
+ * tunnel rewrote Host to localhost and stripped every forwarding header (D-010's
+ * third case, which headers alone cannot tell apart from the desktop).
+ */
+export function externalIngressHandler(
+  req: Request,
+  env?: HttpBindings | Http2Bindings,
+): Promise<Response> {
+  return runAsExternalIngress('external-ingress', () => handler(req, env));
 }

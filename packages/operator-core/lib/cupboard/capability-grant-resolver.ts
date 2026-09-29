@@ -3,11 +3,20 @@
  * Registry and marketplace reads are injected so unavailable evidence stays
  * unknown instead of being mistaken for price zero or no adoption.
  */
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
+import { canonicalJson } from '../authority/authority-rpc-envelope';
 import {
   parseCapabilityClassRef,
+  type CapabilityProviderKind,
   type PotCapabilityProviderBindingRow,
   type ProviderBindingRow,
+  type ProviderExecutionContract,
 } from '../capability-class-registry-store';
+
+/** The execution kind is attested by the registry read, never inferred. A
+ * recipe row carries its per-verb inspection evidence (P-013, D-019). */
+export type ProviderKindEvidence = Pick<ProviderExecutionContract, 'providerKind' | 'recipeInspections'>;
 
 export type CapabilityGrantState = 'satisfied' | 'choosable' | 'absent';
 export type CapabilityGrantInstallMode = 'interactive' | 'agent';
@@ -24,27 +33,42 @@ export interface CapabilityProviderPriceEvidence {
 }
 
 /** Evidence shown by the picker. Unknown price/adoption facts are explicit nulls. */
-export interface CapabilityProviderCandidate extends ProviderBindingRow {
+export interface CapabilityProviderCandidate extends ProviderBindingRow, ProviderKindEvidence {
   price: CapabilityProviderPriceEvidence | null;
   activePotBindings: number | null;
   passingStructuralRuns: number;
   totalStructuralRuns: number;
 }
 
+/** One inspected recipe verb, as the administrator consents to it. */
+export interface RecipeProviderPin {
+  verb: string;
+  recipeId: string;
+  recipeRevision: string;
+  /** sha256 of the canonical inspection pin the conformance run recorded. */
+  inspectionPinSha256: string;
+  toolNames: string[];
+}
+
 export interface CapabilityProviderSelection {
   classRef: string;
   providerPackage: string;
   providerVersion: string;
+  providerKind: CapabilityProviderKind;
+  /** Recipe selections only: the exact inspected verbs the binding would run. */
+  recipePins?: RecipeProviderPin[];
   reason: CapabilityProviderSelectionReason;
   /** Agent-selected choices are disclosed; existing bindings are reused silently. */
   disclosureRequired: boolean;
 }
 
+export type CapabilityPotBinding = PotCapabilityProviderBindingRow & ProviderKindEvidence;
+
 export interface ResolvedCapabilityGrant {
   classRef: string;
   optional: boolean;
   state: CapabilityGrantState;
-  binding?: PotCapabilityProviderBindingRow;
+  binding?: CapabilityPotBinding;
   candidates?: CapabilityProviderCandidate[];
   selection?: CapabilityProviderSelection;
   absentReason?: 'invalid-class-ref' | 'no-conformant-provider';
@@ -58,7 +82,7 @@ export interface CapabilityGrantSet {
 }
 
 export interface CapabilityGrantResolverDeps {
-  getPotBinding: (classRef: string) => Promise<PotCapabilityProviderBindingRow | null>;
+  getPotBinding: (classRef: string) => Promise<CapabilityPotBinding | null>;
   listCandidates: (classRef: string) => Promise<readonly CapabilityProviderCandidate[]>;
 }
 
@@ -142,6 +166,26 @@ export function compareCapabilityProviderCandidates(
     : b.providerVersion.localeCompare(a.providerVersion, undefined, { numeric: true });
 }
 
+/** Per-verb pins for a recipe provider, or null when any bound verb lacks
+ * inspected evidence for exactly the recipe it binds (a kind-only row). */
+export function recipeProviderPins(provider: Pick<ProviderBindingRow, 'verbBindings'> & ProviderKindEvidence): RecipeProviderPin[] | null {
+  const verbs = Object.keys(provider.verbBindings).sort();
+  if (provider.providerKind !== 'recipe' || !provider.recipeInspections || verbs.length === 0) return null;
+  const pins: RecipeProviderPin[] = [];
+  for (const verb of verbs) {
+    const inspection = Object.hasOwn(provider.recipeInspections, verb) ? provider.recipeInspections[verb] : undefined;
+    if (!inspection || inspection.recipe.id !== provider.verbBindings[verb]) return null;
+    pins.push({
+      verb,
+      recipeId: inspection.recipe.id,
+      recipeRevision: inspection.recipe.revision,
+      inspectionPinSha256: createHash('sha256').update(canonicalJson(inspection.inspectionPin)).digest('hex'),
+      toolNames: [...new Set(inspection.toolNames)].sort(),
+    });
+  }
+  return pins;
+}
+
 function usableCandidates(
   classRef: string,
   candidates: readonly CapabilityProviderCandidate[],
@@ -151,7 +195,10 @@ function usableCandidates(
     if (
       exactClassRef(candidate.classRef) === classRef &&
       candidate.status === 'active' &&
-      candidate.conformanceStatus === 'passed'
+      candidate.conformanceStatus === 'passed' &&
+      // Execution admits a recipe only with inspected per-verb evidence
+      // (D-019), so install never offers a kind-only recipe row either.
+      (candidate.providerKind === 'tool' || recipeProviderPins(candidate) !== null)
     ) {
       unique.set(providerRef(candidate), candidate);
     }
@@ -176,11 +223,14 @@ function select(
   mode: CapabilityGrantInstallMode,
 ): CapabilityProviderSelection | null {
   const candidate = candidates.find((item) => hintMatches(item, hint));
+  const pins = candidate ? recipeProviderPins(candidate) : null;
   return candidate
     ? {
         classRef,
         providerPackage: candidate.providerPackage,
         providerVersion: candidate.providerVersion,
+        providerKind: candidate.providerKind,
+        ...(pins ? { recipePins: pins } : {}),
         reason,
         disclosureRequired: mode === 'agent',
       }
@@ -249,8 +299,11 @@ export async function resolveCapabilityGrants(
     // An explicit but invalid choice is never replaced behind the caller's
     // back. A stale publisher hint, however, may fall through to the documented
     // agent policy while the warning remains visible in selectionProblem.
+    // The automatic policy prefers the best tool provider; it reaches a recipe
+    // only when no tool provider exists, and that choice still needs consent.
     if (!choice && !explicit && options.mode === 'agent') {
-      choice = select(classRef, candidates, providerRef(candidates[0]!), 'evidence-policy', options.mode);
+      const best = candidates.find((item) => item.providerKind === 'tool') ?? candidates[0]!;
+      choice = select(classRef, candidates, providerRef(best), 'evidence-policy', options.mode);
     }
 
     resolved.push({
@@ -291,6 +344,105 @@ export async function resolveCapabilityGrants(
     missingOptional,
     disclosures,
   };
+}
+
+/** The exact subject an administrator approves before a recipe provider is
+ * bound to a pot: the pot plus every selected recipe provider's per-verb pins. */
+export interface RecipeProviderConsentSubject {
+  workspaceId: string;
+  potSlug: string;
+  providers: Array<{
+    classRef: string;
+    providerPackage: string;
+    providerVersion: string;
+    recipes: RecipeProviderPin[];
+  }>;
+}
+
+export type RecipeProviderConsent = RecipeProviderConsentSubject & { decision: 'approved' | 'rejected' };
+
+export const recipeProviderConsentSchema = z
+  .object({
+    workspaceId: z.string().min(1).max(120),
+    potSlug: z.string().min(1).max(120),
+    providers: z
+      .array(
+        z.object({
+          classRef: z.string().min(1).max(200),
+          providerPackage: z.string().min(1).max(200),
+          providerVersion: z.string().min(1).max(200),
+          recipes: z
+            .array(
+              z.object({
+                verb: z.string().min(1).max(200),
+                recipeId: z.string().min(1).max(200),
+                recipeRevision: z.string().min(1).max(200),
+                inspectionPinSha256: z.string().regex(/^[0-9a-f]{64}$/),
+                toolNames: z.array(z.string().min(1).max(200)).max(200),
+              }).strict(),
+            )
+            .max(100),
+        }).strict(),
+      )
+      .min(1)
+      .max(100),
+    decision: z.enum(['approved', 'rejected']),
+  })
+  .strict();
+// Compile-time guard: the wire schema and the consent type cannot drift apart.
+const _recipeConsentSchemaMatchesType: RecipeProviderConsent = {} as z.infer<typeof recipeProviderConsentSchema>;
+void _recipeConsentSchemaMatchesType;
+
+export interface RecipeProviderConsentRefusal {
+  code: 'consent_required' | 'consent_rejected' | 'consent_mismatch';
+  detail: string;
+}
+
+/** Null when the selection binds no recipe provider (existing bindings were
+ * consented when they were made, so only NEW selections need a subject). */
+export function recipeProviderConsentSubject(
+  scope: { workspaceId: string; potSlug: string },
+  selected: readonly CapabilityProviderSelection[],
+): RecipeProviderConsentSubject | null {
+  const providers = selected
+    .filter((selection) => selection.providerKind === 'recipe')
+    .map((selection) => ({
+      classRef: selection.classRef,
+      providerPackage: selection.providerPackage,
+      providerVersion: selection.providerVersion,
+      recipes: selection.recipePins ?? [],
+    }))
+    .sort((a, b) => a.classRef.localeCompare(b.classRef));
+  return providers.length > 0
+    ? { workspaceId: scope.workspaceId, potSlug: scope.potSlug, providers }
+    : null;
+}
+
+export function recipeProviderConsentRefusal(
+  consent: RecipeProviderConsent | null | undefined,
+  subject: RecipeProviderConsentSubject,
+): RecipeProviderConsentRefusal | null {
+  if (!consent) {
+    return { code: 'consent_required', detail: 'binding a recipe provider needs administrator consent for this exact pot and recipe pin set' };
+  }
+  if (consent.decision === 'rejected') {
+    return { code: 'consent_rejected', detail: 'the administrator rejected these recipe providers' };
+  }
+  if (consent.decision !== 'approved') {
+    return { code: 'consent_required', detail: `unknown consent decision ${JSON.stringify(consent.decision)}` };
+  }
+  const offered: RecipeProviderConsentSubject = {
+    workspaceId: consent.workspaceId,
+    potSlug: consent.potSlug,
+    providers: consent.providers ?? [],
+  };
+  if (canonicalJson(offered) !== canonicalJson(subject)) {
+    return {
+      code: 'consent_mismatch',
+      detail: 'consent was given for a different pot, provider set, or recipe pin than the one being bound',
+    };
+  }
+  return null;
 }
 
 /**

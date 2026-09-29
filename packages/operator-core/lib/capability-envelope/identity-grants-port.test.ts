@@ -818,6 +818,7 @@ describe('P-005 production policy reader', () => {
     expect(io.state).toHaveBeenCalledWith('operator_capability_envelopes', 'ws-a', { fresh: true });
     expect(io.binding).toHaveBeenCalledWith(expect.anything(), {
       workspaceId: 'ws-a', potSlug: 'sales-pot', classId: 'crm.email', classVersion: '1.0.0',
+      providerKinds: ['tool', 'recipe'],
     });
   });
 
@@ -863,7 +864,7 @@ describe('P-005 install and runtime use the same ceiling', () => {
   function installFixture() {
     const f = fixture();
     const resolution: CapabilityGrantResolutionVerdict = {
-      ok: true, requirements: [{ classRef: CLASS, optional: false, state: 'satisfied', binding: f.policy.bindings[0] }],
+      ok: true, requirements: [{ classRef: CLASS, optional: false, state: 'satisfied', binding: { ...f.policy.bindings[0]!, providerKind: 'tool' } }],
       satisfied: [CLASS], selected: [], missingRequired: [], requiresChoice: [], missingOptional: [], disclosures: [],
     };
     return { ...f, input: { workspaceId: 'ws-a', potSlug: 'sales', role: 'worker', resolution } };
@@ -892,12 +893,12 @@ describe('P-005 install and runtime use the same ceiling', () => {
   it('checks a selected candidate without first installing it or binding it', async () => {
     const f = installFixture();
     const selection = {
-      classRef: CLASS, providerPackage: 'mail-provider', providerVersion: '1.0.0',
+      classRef: CLASS, providerPackage: 'mail-provider', providerVersion: '1.0.0', providerKind: 'tool' as const,
       reason: 'explicit-selection' as const, disclosureRequired: true,
     };
     f.input.resolution.requirements = [{
       classRef: CLASS, optional: false, state: 'choosable', selection,
-      candidates: [{ ...f.policy.bindings[0], price: null, activePotBindings: 0, passingStructuralRuns: 1, totalStructuralRuns: 1 }],
+      candidates: [{ ...f.policy.bindings[0]!, providerKind: 'tool', price: null, activePotBindings: 0, passingStructuralRuns: 1, totalStructuralRuns: 1 }],
     }];
     f.input.resolution.selected = [selection];
     const policy = { ...f.policy, bindings: [] };

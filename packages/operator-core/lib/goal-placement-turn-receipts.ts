@@ -118,11 +118,17 @@ export async function observeGoalPlacementAdmission(input: AdmissionInput, deps:
 
 /** A delayed journal must not relabel today's state as an old turn's state. */
 export const GOAL_PLACEMENT_TURN_END_MAX_LAG_MS = 60_000;
+/** The Stop hook can read the transcript before the client flushes the final response
+ * (measured 2026-09-29: the hook's read 170ms after the final entry's stamp still ended on
+ * the request's PROGRESS turn), so a progress tail is polled briefly before it is refused. */
+export const GOAL_PLACEMENT_TURN_END_SETTLE_POLLS = 10;
+export const GOAL_PLACEMENT_TURN_END_SETTLE_POLL_MS = 200;
 export interface GoalPlacementTurnEndDeps extends Pick<GoalPlacementTurnReceiptDeps, 'current' | 'tail' | 'append' | 'now'> {
   goalSubject: (ownerId: string, workspaceId: string) => Promise<string | null>;
   agenda: (ownerId: string, workspaceId: string) => Promise<AgentObligationAgendaRead>;
   pending?: (ownerId: string, workspaceId: string) => Promise<unknown>;
   admission?: (input: AdmissionInput) => Promise<GoalPlacementAdmissionObservation>;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export interface GoalPlacementTurnReceiptDeps {
@@ -190,7 +196,14 @@ export async function recordGoalPlacementTurnEnd(input: {
   if (!session || session.sessionId !== input.nativeSessionId || session.sourceKind !== input.sourceKind) {
     return { recorded: false, reason: 'native-session-mismatch' };
   }
-  const completed = latestCompletedDecision(session, await deps.tail(session));
+  let tail = await deps.tail(session);
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let poll = 0; poll < GOAL_PLACEMENT_TURN_END_SETTLE_POLLS && !latestCompletedDecision(session, tail) &&
+    tail[tail.length - 1]?.speaker === 'assistant' && tail[tail.length - 1]?.responseDisposition === 'progress'; poll++) {
+    await sleep(GOAL_PLACEMENT_TURN_END_SETTLE_POLL_MS);
+    tail = await deps.tail(session);
+  }
+  const completed = latestCompletedDecision(session, tail);
   if (!completed) return { recorded: false, reason: 'native-decision-not-complete' };
   const endedAt = completed.ts!.getTime();
   const timely = (now: number) => Number.isFinite(now) && now >= endedAt && now - endedAt <= GOAL_PLACEMENT_TURN_END_MAX_LAG_MS;
@@ -250,7 +263,9 @@ export async function boundedRecordGoalPlacementTurnEnd(input: Parameters<typeof
     import('./bounded-timeout'), import('./detached-imports'),
   ]);
   return (await withBoundedTimeout(trackDetached(recordGoalPlacementTurnEnd(input)), {
-    timeoutMs: 1000, label: 'goal-placement-turn-end', fallback: { recorded: false, reason: 'turn-end-read-unavailable' },
+    // Settle polling (<=2s) plus the agenda read (0.65-0.92s measured live) must both fit, and
+    // the detached Stop hook's 5s HTTP budget still has to cover the journal leg after this.
+    timeoutMs: 3_500, label: 'goal-placement-turn-end', fallback: { recorded: false, reason: 'turn-end-read-unavailable' },
   })).value;
 }
 

@@ -19,7 +19,11 @@ import {
   type InstallBlueprintCoreDeps,
 } from './install-blueprint-core';
 import { buildBlueprintReleaseArchive, readBlueprintLifecycle, snapshotBlueprintReleaseSource } from './blueprint-release';
-import type { CapabilityProviderCandidate } from './capability-grant-resolver';
+import type {
+  CapabilityProviderCandidate,
+  RecipeProviderConsent,
+  RecipeProviderConsentSubject,
+} from './capability-grant-resolver';
 
 let root: string;        // scratch root for fixtures + install target
 let fixtureRepo: string; // the "remote" repo a fake clone copies from
@@ -38,6 +42,7 @@ const capabilityCandidate = (): CapabilityProviderCandidate => ({
   providerPackage: 'acme-crm',
   providerVersion: '2.0.0',
   verbBindings: { send: 'acme:send-email' },
+  providerKind: 'tool',
   conformanceRunId: 'run-acme',
   conformanceStatus: 'passed',
   behavioralStatus: 'not-required',
@@ -639,6 +644,145 @@ describe('installBlueprintFromCupboardCore', () => {
       }),
     ]);
     expect(result.capabilityGrants?.disclosures).toHaveLength(1);
+  });
+
+  describe('recipe provider consent seat (P-013, D-019)', () => {
+    const hex = (c: string) => c.repeat(64);
+    const recipeCandidate = (): CapabilityProviderCandidate => ({
+      ...capabilityCandidate(),
+      providerPackage: 'initech-crm-recipes',
+      providerVersion: '1.0.0',
+      providerKind: 'recipe',
+      verbBindings: { send: 'initech:send-summary' },
+      conformanceRunId: 'run-initech',
+      recipeInspections: {
+        send: {
+          ok: true,
+          recipe: { id: 'initech:send-summary', revision: hex('a') },
+          inspectionPin: { sourceSha256: hex('b'), bindingsSha256: hex('c'), recipeRevision: hex('a') },
+          toolNames: ['crm:read', 'crm:list', 'crm:read'],
+          requiredCapabilities: [],
+          outputSchema: { type: 'object' },
+        },
+      },
+    });
+    const recipeInstall = (
+      recipeProviderConsent?: RecipeProviderConsent,
+      commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} })),
+    ) => installBlueprintFromCupboardCore(
+      {
+        githubUrl: 'https://github.com/acme/neat-bp',
+        capabilityContext: {
+          workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'interactive',
+          selections: { 'crm.email@1.0.0': 'initech-crm-recipes@1.0.0' },
+          ...(recipeProviderConsent ? { recipeProviderConsent } : {}),
+        },
+      },
+      makeDeps({
+        capabilityGrantDeps: {
+          getPotBinding: async () => null,
+          listCandidates: async () => [capabilityCandidate(), recipeCandidate()],
+        },
+        commitCapabilitySelections,
+      }),
+    );
+
+    beforeEach(async () => {
+      await writeBlueprint(
+        fixtureRepo,
+        RUNNABLE_YAML + '\nslots: [{ slot: domain }]' + '\ngrants: { requires: [crm.email@1.0.0] }',
+      );
+    });
+
+    it('refuses an unconsented recipe selection before any write and returns the exact subject', async () => {
+      const commit = vi.fn(async () => ({ rollback: async () => {} }));
+      const refusal = await recipeInstall(undefined, commit).catch((error: unknown) => error);
+      expect(refusal).toMatchObject({
+        status: 409,
+        code: 'capability_recipe_provider_consent_required',
+        data: {
+          consentSubject: {
+            workspaceId: 'workspace-1',
+            potSlug: 'sales-ops',
+            providers: [{
+              classRef: 'crm.email@1.0.0',
+              providerPackage: 'initech-crm-recipes',
+              providerVersion: '1.0.0',
+              recipes: [{
+                verb: 'send',
+                recipeId: 'initech:send-summary',
+                recipeRevision: hex('a'),
+                toolNames: ['crm:list', 'crm:read'],
+              }],
+            }],
+          },
+        },
+      });
+      const pin = (refusal as { data: { consentSubject: { providers: Array<{ recipes: Array<{ inspectionPinSha256: string }> }> } } })
+        .data.consentSubject.providers[0]!.recipes[0]!.inspectionPinSha256;
+      expect(pin).toMatch(/^[0-9a-f]{64}$/);
+      expect(commit).not.toHaveBeenCalled();
+      expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+    });
+
+    it('binds the recipe provider, with its pins, only after consent to the echoed subject', async () => {
+      const refusal = await recipeInstall().catch((error: unknown) => error) as { data: { consentSubject: RecipeProviderConsentSubject } };
+      const commit = vi.fn(async () => ({ rollback: async () => {} }));
+      await recipeInstall({ ...refusal.data.consentSubject, decision: 'approved' }, commit);
+      expect(commit).toHaveBeenCalledWith([
+        expect.objectContaining({
+          providerPackage: 'initech-crm-recipes',
+          providerKind: 'recipe',
+          recipePins: [expect.objectContaining({ verb: 'send', recipeId: 'initech:send-summary' })],
+        }),
+      ]);
+      expect(existsSync(join(installedDir, 'neat-bp', 'blueprint.yaml'))).toBe(true);
+    });
+
+    it('refuses a consent whose pin differs from the inspected one, and a rejection', async () => {
+      const refusal = await recipeInstall().catch((error: unknown) => error) as { data: { consentSubject: RecipeProviderConsentSubject } };
+      const subject = structuredClone(refusal.data.consentSubject);
+      subject.providers[0]!.recipes[0]!.inspectionPinSha256 = hex('0');
+      await expect(recipeInstall({ ...subject, decision: 'approved' })).rejects.toMatchObject({
+        status: 409, code: 'capability_recipe_provider_consent_mismatch',
+      });
+      await expect(recipeInstall({ ...refusal.data.consentSubject, decision: 'rejected' })).rejects.toMatchObject({
+        status: 409, code: 'capability_recipe_provider_consent_rejected',
+      });
+    });
+
+    it('never offers a kind-only recipe row, and the agent policy prefers a tool provider', async () => {
+      const { recipeInspections: _dropped, ...kindOnly } = recipeCandidate();
+      await expect(installBlueprintFromCupboardCore(
+        {
+          githubUrl: 'https://github.com/acme/neat-bp',
+          capabilityContext: {
+            workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'interactive',
+            selections: { 'crm.email@1.0.0': 'initech-crm-recipes@1.0.0' },
+          },
+        },
+        makeDeps({ capabilityGrantDeps: { getPotBinding: async () => null, listCandidates: async () => [kindOnly] } }),
+      )).rejects.toMatchObject({ code: 'required_capability_provider_absent' });
+
+      const commit = vi.fn(async () => ({ rollback: async () => {} }));
+      await installBlueprintFromCupboardCore(
+        {
+          githubUrl: 'https://github.com/acme/neat-bp',
+          capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent' },
+        },
+        makeDeps({
+          capabilityGrantDeps: {
+            getPotBinding: async () => null,
+            // The recipe row outranks globex on behavioral evidence; the automatic policy still takes the tool.
+            listCandidates: async () => [recipeCandidate(), rivalCapabilityCandidate()],
+          },
+          commitCapabilitySelections: commit,
+        }),
+      );
+      expect(commit).toHaveBeenCalledWith([
+        expect.objectContaining({ providerPackage: 'globex-crm', providerKind: 'tool', reason: 'evidence-policy' }),
+      ]);
+    });
   });
 
   it('returns the complete provider review and requires consent before package or identity writes', async () => {

@@ -129,6 +129,7 @@ describe('cupboard:install-blueprint lifecycle wiring', () => {
             classRef: 'crm.email@1.0.0',
             providerPackage: 'acme-crm',
             providerVersion: '2.0.0',
+            providerKind: 'tool',
             reason: 'explicit-selection',
             disclosureRequired: true,
           }],

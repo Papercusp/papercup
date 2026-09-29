@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { classContractConsentSchema } from '../../cupboard/class-contract-payload';
+import { recipeProviderConsentSchema } from '../../cupboard/capability-grant-resolver';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -60,6 +61,8 @@ export default defineTool({
       .describe('Explicit provider choices keyed by exact class@version ref; values are provider package or package@version.'),
     classContractConsent: classContractConsentSchema.optional()
       .describe('Administrator decision on the consentSubject from a class_contract_consent_required refusal, plus decision.'),
+    recipeProviderConsent: recipeProviderConsentSchema.optional()
+      .describe('Administrator decision on the consentSubject from a capability_recipe_provider_consent_required refusal, plus decision.'),
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
@@ -107,6 +110,7 @@ export default defineTool({
         ? { capabilityProviderSelections: args.capabilityProviderSelections }
         : {}),
       ...(args.classContractConsent ? { classContractConsent: args.classContractConsent } : {}),
+      ...(args.recipeProviderConsent ? { recipeProviderConsent: args.recipeProviderConsent } : {}),
     });
 
     if (!outcome.ok) {

@@ -137,7 +137,21 @@ describe('physical Phase H serving-identity validator', () => {
 
   it('rejects a restart that changed the served artifact', () => {
     const input = validInput();
-    input.vmOwner.after = { ...input.vmOwner.after, healthSha: '93f1c72063ab' };
+    input.vmOwner.after = { ...input.vmOwner.after, build: '93f1c72063ab' };
+    expectRejected(input, 'restarted: owner was not restarted on the same artifact and launcher');
+  });
+
+  it('accepts a release-build owner identified by version on both sides of the restart', () => {
+    const input = validInput();
+    input.vmOwner.before = { ...input.vmOwner.before, build: 'version:0.0.25' };
+    input.vmOwner.after = { ...input.vmOwner.after, build: 'version:0.0.25' };
+    expect(validatePhysicalPhaseH(input)).toMatchObject({ ok: true, errors: [] });
+  });
+
+  it('rejects a restart whose owner carried no build identity', () => {
+    const input = validInput();
+    input.vmOwner.before = { ...input.vmOwner.before, build: '' };
+    input.vmOwner.after = { ...input.vmOwner.after, build: '' };
     expectRejected(input, 'restarted: owner was not restarted on the same artifact and launcher');
   });
 

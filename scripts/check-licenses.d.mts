@@ -126,6 +126,36 @@ export function collectInstallerTree(root: any, components: any, prefix?: string
     undetermined: any[];
     files: number;
 };
+/**
+ * Render the notices document. Pure over its inputs so the guard test runs on fixtures.
+ * @param {{ npm?: Array<{name:string,version:string,effective:string,tier:number}>, cargo?: Array<{name:string,version:string,effective:string,tier:number}> }} rowsByEco
+ */
+export function renderThirdPartyNotices(rowsByEco: {
+    npm?: Array<{
+        name: string;
+        version: string;
+        effective: string;
+        tier: number;
+    }>;
+    cargo?: Array<{
+        name: string;
+        version: string;
+        effective: string;
+        tier: number;
+    }>;
+}): string;
+/**
+ * Collect every package under `root` (lockfile census) and render the notices file.
+ * `undetermined` non-empty means part of the graph was not measured — callers must not
+ * publish the text as complete.
+ */
+export function collectThirdPartyNotices(root: any, { ecosystems }?: {
+    ecosystems?: string[] | undefined;
+}): {
+    text: string;
+    undetermined: string[];
+    rowsByEco: {};
+};
 export function main(argv?: string[], root?: string): 2 | 0 | 1;
 export const ROOT: string;
 export const EXCEPTIONS_PATH: string;
@@ -142,3 +172,4 @@ export const PERMISSIVE: Set<string>;
 export const WEAK_COPYLEFT: Set<string>;
 export const INSTALLER_COMPONENTS_PATH: string;
 export const COMPONENT_KINDS: readonly string[];
+export const NOTICES_FILE: "THIRD-PARTY-NOTICES.md";

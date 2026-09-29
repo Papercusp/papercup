@@ -783,7 +783,12 @@ export async function listActiveCapabilityProviderCandidates(
   workspaceId: string,
   classId: string,
   classVersion: string,
+  /** Same opt-in contract as getPotCapabilityProviderBinding: tools unless a
+   * typed caller names other kinds and enforces their admission (P-013). */
+  options: { providerKinds?: readonly CapabilityProviderKind[] } = {},
 ): Promise<Array<CapabilityProviderCandidateRow & ProviderExecutionContract>> {
+  const providerKinds = options.providerKinds ?? ['tool'];
+  if (providerKinds.length === 0) return [];
   const rows = await sql<CandidateDbRow[]>`
     SELECT ${BINDING_SELECT(sql)},
            (
@@ -820,7 +825,7 @@ export async function listActiveCapabilityProviderCandidates(
      WHERE b.workspace_id = ${workspaceId}
        AND b.class_id = ${classId}
        AND b.class_version = ${classVersion}
-       AND b.provider_kind = 'tool'
+       AND b.provider_kind IN ${sql(providerKinds)}
        AND b.status = 'active'
        AND r.structural_passed = true
      ORDER BY b.provider_package, b.provider_version DESC`;

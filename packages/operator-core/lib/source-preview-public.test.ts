@@ -12,7 +12,7 @@
  * these cases pin the contract without network or scanners.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -27,7 +27,16 @@ import {
   readLicense,
   resolveTarget,
 } from '../../../scripts/source-preview.mjs';
-import { childEnv, git, makeSuperproject, write, type Superproject } from './source-preview.fixture';
+import {
+  DROPPED,
+  PUBLIC_DESKTOP_DROPPED,
+  PUBLIC_DESKTOP_SHIPPED,
+  childEnv,
+  git,
+  makeSuperproject,
+  write,
+  type Superproject,
+} from './source-preview.fixture';
 
 let tmp: string;
 let fx: Superproject;
@@ -42,7 +51,11 @@ function remoteGit(args: string[]): string {
   return r.stdout.trim();
 }
 
-const opts = (extra = {}) => ({ repoRoot: fx.repo, ref: 'main', remote, target: 'public', env: childEnv(), ...extra });
+// The real notices collector resolves every Cargo workspace; the fixture has none, so the
+// export tests inject a stub and the collector itself is covered in license-gate.test.ts.
+const NOTICES_STUB = '# Third-party notices\n\nstub\n';
+const thirdPartyNotices = () => ({ text: NOTICES_STUB, undetermined: [] as string[] });
+const opts = (extra = {}) => ({ repoRoot: fx.repo, ref: 'main', remote, target: 'public', env: childEnv(), thirdPartyNotices, ...extra });
 
 function commitChange(rel: string, body: string, msg: string): string {
   write(fx.repo, rel, body);
@@ -81,9 +94,10 @@ describe('public target — the two repositories never cross', () => {
 describe('public target — licensed export', () => {
   it('ships the Elastic License 2.0 text verbatim plus a license NOTICE, and names the target in MANIFEST.json', async () => {
     const out = join(tmp, 'public-export');
-    const { manifest } = await exportSnapshot({ repoRoot: fx.repo, ref: 'main', out, target: 'public', env: childEnv() });
+    const { manifest } = await exportSnapshot({ repoRoot: fx.repo, ref: 'main', out, target: 'public', env: childEnv(), thirdPartyNotices });
     expect(manifest).toMatchObject({ target: 'public', source: { commit: fx.commit } });
     expect(readFileSync(join(out, 'LICENSE'), 'utf8')).toBe(readFileSync(PUBLIC_LICENSE_PATH, 'utf8'));
+    expect(readFileSync(join(out, 'THIRD-PARTY-NOTICES.md'), 'utf8')).toBe(NOTICES_STUB);
     const notice = readFileSync(join(out, 'NOTICE'), 'utf8');
     expect(notice).toContain('Elastic License 2.0');
     expect(notice).not.toMatch(/EVALUATION ONLY/);
@@ -91,6 +105,11 @@ describe('public target — licensed export', () => {
     expect(readme).toContain('Elastic License 2.0');
     expect(readme).not.toMatch(/replaced wholesale/);
     expect(readme).toContain('## Contributing, security and telemetry');
+    // P-004: the public cut carries the desktop shell, minus generated/internal paths.
+    for (const p of PUBLIC_DESKTOP_SHIPPED) expect(existsSync(join(out, p)), p).toBe(true);
+    for (const p of PUBLIC_DESKTOP_DROPPED) expect(existsSync(join(out, p)), p).toBe(false);
+    expect(manifest.submodules.map((s: { path: string }) => s.path)).not.toContain('papercusp-desktop'); // a plain dir in the fixture
+    for (const p of DROPPED.filter((d) => !d.startsWith('papercusp-desktop/'))) expect(existsSync(join(out, p)), p).toBe(false);
     expect(readme).toContain('PAPERCUSP_POSTHOG_KEY');
     for (const name of PUBLIC_COMMUNITY_FILES) {
       expect(readFileSync(join(out, name), 'utf8')).toBe(readFileSync(join(dirname(PUBLIC_LICENSE_PATH), name), 'utf8'));
@@ -106,6 +125,16 @@ describe('public target — licensed export', () => {
     expect(readFileSync(join(out, 'NOTICE'), 'utf8')).toMatch(/EVALUATION ONLY/);
     expect(() => readFileSync(join(out, 'LICENSE'))).toThrow();
     for (const name of PUBLIC_COMMUNITY_FILES) expect(() => readFileSync(join(out, name))).toThrow();
+    expect(existsSync(join(out, 'THIRD-PARTY-NOTICES.md'))).toBe(false);
+  }, 120_000);
+
+  it('refuses a public export whose third-party notices were only partly measured, and leaves no output', async () => {
+    const out = join(tmp, 'public-export-partial-notices');
+    await expect(exportSnapshot({
+      repoRoot: fx.repo, ref: 'main', out, target: 'public', env: childEnv(),
+      thirdPartyNotices: () => ({ text: NOTICES_STUB, undetermined: ['cargo: Cargo.lock: cargo metadata failed'] }),
+    })).rejects.toThrow(/THIRD-PARTY-NOTICES\.md: part of the dependency graph was not measured/);
+    expect(existsSync(out)).toBe(false);
   }, 120_000);
 
   it('refuses a public export whose community files are missing or empty', () => {

@@ -43,7 +43,7 @@ import { ROLE_ENVELOPES, type RoleEnvelope } from './policy';
 // constants here keeps one source of truth rather than a second copy to drift.
 import { RECOVERY_DOOR_TOOL, RECOVERY_DOOR_DISPATCH_WRAPPER, isRecoveryDoorCall } from './recovery-door';
 import { isLazyIdentityLaunchRecord } from './lazy-launch-record';
-import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
+import { recipeProviderPins, type CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
 
 export interface IdentityGrantPolicy {
   policyRevision: string;
@@ -341,6 +341,7 @@ export const readIdentityGrantPolicy: PolicyReader = async (input) => {
     if (!parsed) throw new Error(`invalid capability class ${classRef}`);
     const binding = await getPotCapabilityProviderBinding(getOrgPg().sql, {
       workspaceId: input.workspaceId, potSlug, classId: parsed.id, classVersion: parsed.version,
+      providerKinds: ['tool', 'recipe'],
     });
     if (binding) bindings.push(binding);
   }
@@ -407,7 +408,16 @@ export async function validateIdentityInstallGrants(
       failures.push(failure('provider-changed', requirement.classRef));
       continue;
     }
-    for (const toolName of new Set(Object.values(provider.verbBindings))) {
+    // A recipe provider's verbBindings name recipes. Its reach is the tools its
+    // inspected scripts call, so those are what the ceiling must admit (D-019).
+    const toolNames = provider.providerKind === 'recipe'
+      ? recipeProviderPins(provider)?.flatMap((pin) => pin.toolNames) ?? null
+      : Object.values(provider.verbBindings);
+    if (!toolNames) {
+      failures.push(failure('provider-unbound', requirement.classRef));
+      continue;
+    }
+    for (const toolName of new Set(toolNames)) {
       const cause = identityGrantToolFailure({ ...policy, toolName });
       if (cause) failures.push(failure(cause, requirement.classRef, toolName));
     }

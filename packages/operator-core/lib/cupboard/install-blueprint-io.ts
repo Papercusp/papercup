@@ -28,12 +28,14 @@ import {
   getPotCapabilityProviderBinding,
   listActiveCapabilityProviderCandidates,
   parseCapabilityClassRef,
+  type CapabilityProviderKind,
 } from '../capability-class-registry-store';
 import { activeWorkspaceId } from '../workspace-registry';
 import { potHomeSlugForHarness } from '../hive-federation';
 import { resolveCupboardBaseUrl } from './base-url';
 import { validateListingManifest, type CupboardReleaseManifest } from './listing-manifest';
 import { importCupboardClassContracts, type ClassContractConsent } from './class-contract-payload';
+import type { RecipeProviderConsent } from './capability-grant-resolver';
 import { derivePackCatalog, depHostSetsFromCatalog } from './pack-catalog';
 import {
   installBlueprintFromCupboardCore,
@@ -57,6 +59,10 @@ import {
   uninstallBlueprintRelease,
   type BlueprintActivationLayer,
 } from './blueprint-release';
+
+/** Install resolves, binds and compensates tool AND inspected recipe providers;
+ * recipe selections pass install-core's consent seat first (P-013, D-019). */
+const INSTALL_PROVIDER_KINDS: readonly CapabilityProviderKind[] = ['tool', 'recipe'];
 
 export interface InstallBlueprintFromCupboardInput {
   /** Resolve the repo URL + listing_ref from the Cupboard listing. */
@@ -87,6 +93,9 @@ export interface InstallBlueprintFromCupboardInput {
   /** P-021: consent for the release's class contracts, echoing the exact
    * `consentSubject` a `class_contract_consent_required` refusal returned. */
   classContractConsent?: ClassContractConsent;
+  /** P-013: consent to bind selected recipe providers, echoing the exact
+   * `consentSubject` a `capability_recipe_provider_consent_required` refusal returned. */
+  recipeProviderConsent?: RecipeProviderConsent;
 }
 
 export interface InstallBlueprintClosureResult extends InstallBlueprintCoreResult {
@@ -233,6 +242,7 @@ function makeInstallCoreDeps(
             ...capabilityScope,
             classId: parsed.id,
             classVersion: parsed.version,
+            providerKinds: INSTALL_PROVIDER_KINDS,
           });
         },
         async listCandidates(classRef: string) {
@@ -243,6 +253,7 @@ function makeInstallCoreDeps(
             capabilityScope.workspaceId,
             parsed.id,
             parsed.version,
+            { providerKinds: INSTALL_PROVIDER_KINDS },
           );
           return rows.map((row) => ({ ...row, price: null }));
         },
@@ -285,6 +296,7 @@ function makeInstallCoreDeps(
               classId: parsed.id,
               classVersion: parsed.version,
               includeInactiveProvider: true,
+              providerKinds: INSTALL_PROVIDER_KINDS,
             });
             if (previous?.status === 'active') {
               if (
@@ -305,6 +317,7 @@ function makeInstallCoreDeps(
               providerPackage: selection.providerPackage,
               providerVersion: selection.providerVersion,
               boundBy: 'cupboard:install-blueprint',
+              providerKind: selection.providerKind,
             });
             changes.push({
               classId: parsed.id,
@@ -326,6 +339,7 @@ function makeInstallCoreDeps(
                   classId: change.classId,
                   classVersion: change.classVersion,
                   includeInactiveProvider: true,
+                  providerKinds: INSTALL_PROVIDER_KINDS,
                 });
                 if (
                   !current ||
@@ -345,6 +359,7 @@ function makeInstallCoreDeps(
                     providerPackage: change.previous.providerPackage,
                     providerVersion: change.previous.providerVersion,
                     boundBy: change.previous.boundBy,
+                    providerKind: change.previous.providerKind,
                   });
                 } else {
                   await deletePotCapabilityProviderBinding(tx, {
@@ -434,6 +449,7 @@ export async function installBlueprintFromCupboard(
         role: input.capabilityRole,
         selections: input.capabilityProviderSelections,
         installProviderPackages: input.installPlugins === true,
+        ...(input.recipeProviderConsent ? { recipeProviderConsent: input.recipeProviderConsent } : {}),
       }
     : undefined;
 

@@ -5478,6 +5478,11 @@ export function frozenRepairHasNoMeasuredFailures(
  * same predicate to the queue's own failing set, so green-checkpoint's once-per-head
  * unmeasured-red retest fires precisely when the dispatcher would refuse. Any read failure
  * answers false (keep the old dispatch-only behaviour).
+ *
+ * Also true when the latest repair tick re-ran every queue signature at the current
+ * repairHead and each passed (`repairTickClearedQueueSignature`): a red the gate cannot
+ * reproduce at the same head leaves the dispatcher skipping on a snapshot mismatch every
+ * tick, which is the same deadlock reached by a different refusal.
  */
 export async function frozenRepairRedIsUnmeasured(
   ctx: GateVerdictTarget,
@@ -5487,13 +5492,17 @@ export async function frozenRepairRedIsUnmeasured(
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
     const rows = (await sql.unsafe(
-      `SELECT metadata->'gate_health'->>'failingTestsMeasured' AS ftm
+      `SELECT metadata->'gate_health'->>'failingTestsMeasured' AS ftm,
+              metadata->'gate_health'->'repairTickLegs' AS legs
          FROM harness_shared.routines
         WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
       [ctx.installSlug],
-    )) as Array<{ ftm: string | null }>;
+    )) as Array<{ ftm: string | null; legs: unknown }>;
     const ftm = rows[0]?.ftm === 'true' ? true : rows[0]?.ftm === 'false' ? false : null;
-    return frozenRepairHasNoMeasuredFailures(repairQueue, repairQueue.failingTests, ftm);
+    if (frozenRepairHasNoMeasuredFailures(repairQueue, repairQueue.failingTests, ftm)) return true;
+    const { parseRepairTickLegs, repairTickClearedQueueSignature } =
+      await import('../../release/repair-tick-legs-snapshot');
+    return repairTickClearedQueueSignature(parseRepairTickLegs(rows[0]?.legs), repairQueue);
   } catch {
     return false;
   }

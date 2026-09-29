@@ -103,7 +103,9 @@ export type PhysicalPhaseHAttempt = {
   sigrefsAfter: PhaseHNamespaceSigrefs;
 };
 
-export type PhaseHOwnerIdentity = { pid: number; healthSha: string; launcher: string };
+// build is the owner's health sha, or `version:<v>` for a release build whose
+// health reports no sha (the installed artifact).
+export type PhaseHOwnerIdentity = { pid: number; build: string; launcher: string };
 
 export type PhysicalPhaseHStepInput = {
   vm: PhysicalPhaseHObservation;
@@ -434,7 +436,7 @@ export function validatePhysicalPhaseH(input: PhysicalPhaseHInput): PhysicalPhas
     errors.push('omitted: sigrefs moved while serving was unavailable');
   }
   // restarted: same artifact, new runtime; the old capability refuses, the fresh one publishes.
-  const artifactStable = after.pid !== before.pid && after.healthSha === before.healthSha && after.launcher === before.launcher;
+  const artifactStable = after.pid !== before.pid && Boolean(before.build) && after.build === before.build && after.launcher === before.launcher;
   if (!artifactStable) errors.push('restarted: owner was not restarted on the same artifact and launcher');
   if (!c2 || c2.runtimeId === c1?.runtimeId || c2.identity.devicePubkeyBase64 !== vmDeviceKey) errors.push('restarted: no fresh runtime capability for the VM device');
   if (restarted.vm.advertisement.publisherId === pre.vm.advertisement.publisherId) errors.push('restarted: advertisement publisher did not change');

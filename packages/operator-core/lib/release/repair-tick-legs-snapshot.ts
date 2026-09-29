@@ -116,3 +116,31 @@ export function repairTickLegsCurrent(
   if (!liveRepairHeadSha) return null;
   return liveRepairHeadSha.startsWith(snapshot.head);
 }
+
+/**
+ * PURE: did the latest repair tick RE-RUN every signature the frozen queue is red on, at the
+ * queue's CURRENT repairHead, and see each one pass?
+ *
+ * That is a red the gate itself could not reproduce at the same head. It deadlocks exactly
+ * like an unmeasured red (WI-10003213): the hold tick persists a candidate snapshot with an
+ * empty failing set, so `candidateSnapshotMatchesDispatch` never matches the queue's own
+ * signature and the fixer dispatch is skipped every tick, while nothing else runs a suite.
+ * Measured 2026-09-29 on queue 5ec99902 / head aa948759: the verify reported
+ * `@papercusp/operator-core :: test:lane-stateful` FAIL with no failing test file recorded,
+ * and the repair tick at the same head passed that leg (1159s).
+ *
+ * Every queue signature must appear among the tick's PASSING legs — a signature the tick did
+ * not re-run is not evidence of anything, so a queue red on a test FILE (never a tick leg)
+ * stays on the fixer path.
+ */
+export function repairTickClearedQueueSignature(
+  snapshot: StoredRepairTickLegs | null,
+  queue: { repairHead: string; failingTests?: readonly string[] | null },
+): boolean {
+  if (!snapshot || !snapshot.ok) return false;
+  if (repairTickLegsCurrent(snapshot, queue.repairHead) !== true) return false;
+  const failing = queue.failingTests ?? [];
+  if (failing.length === 0) return false;
+  const passed = new Set(snapshot.legs.filter((leg) => leg.status === 'pass').map((leg) => leg.id));
+  return failing.every((id) => passed.has(id));
+}

@@ -48,9 +48,10 @@
  *   node scripts/check-licenses.mjs --strict             # the gate
  *   node scripts/check-licenses.mjs --ecosystem npm      # npm | cargo | all
  *   node scripts/check-licenses.mjs --list               # every package + effective license
+ *   node scripts/check-licenses.mjs --notices <path>     # write THIRD-PARTY-NOTICES.md
  */
 
-import { readFileSync, existsSync, readdirSync, openSync, readSync, closeSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, openSync, readSync, closeSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { join, dirname, basename } from 'node:path';
@@ -573,6 +574,69 @@ function collectCargo(root, lockfiles) {
   return { packages, undetermined };
 }
 
+// ── THIRD-PARTY-NOTICES (P-017 step 5) ──────────────────────────────────────────
+// The public export ships a notices file generated from ITS OWN lockfiles by the same
+// census + collectors + classifier the gate uses, so the file can never list a different
+// dependency set from the one the gate judged, and it needs no committed copy to drift.
+
+export const NOTICES_FILE = 'THIRD-PARTY-NOTICES.md';
+
+/**
+ * Render the notices document. Pure over its inputs so the guard test runs on fixtures.
+ * @param {{ npm?: Array<{name:string,version:string,effective:string,tier:number}>, cargo?: Array<{name:string,version:string,effective:string,tier:number}> }} rowsByEco
+ */
+export function renderThirdPartyNotices(rowsByEco) {
+  const lines = [
+    '# Third-party notices',
+    '',
+    'Papercusp depends on the third-party packages listed below. Each keeps its own license;',
+    'the Elastic License 2.0 in LICENSE covers only Papercusp\'s own code. This file is',
+    'generated from the lockfiles in this tree by scripts/check-licenses.mjs (the same',
+    'classifier the license gate runs), so it lists exactly the dependency set that was checked.',
+    '',
+    'Packages under a weak-copyleft license (MPL, LGPL, EPL) are used unmodified; their',
+    'source is available from the registry named by each ecosystem, and their license terms',
+    'apply only to their own files.',
+  ];
+  for (const [eco, title] of [['npm', 'npm packages'], ['cargo', 'Rust crates']]) {
+    const rows = rowsByEco[eco] ?? [];
+    if (rows.length === 0) continue;
+    const byLicense = new Map();
+    for (const r of rows) {
+      const lic = r.effective || 'UNKNOWN';
+      if (!byLicense.has(lic)) byLicense.set(lic, new Set());
+      byLicense.get(lic).add(`${r.name}@${r.version}`);
+    }
+    const uniq = new Set(rows.map((r) => `${r.name}@${r.version}`)).size;
+    lines.push('', `## ${title} (${uniq})`);
+    for (const lic of [...byLicense.keys()].sort()) {
+      const pkgs = [...byLicense.get(lic)].sort();
+      lines.push('', `### ${lic} (${pkgs.length})`, '', pkgs.join(', '));
+    }
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Collect every package under `root` (lockfile census) and render the notices file.
+ * `undetermined` non-empty means part of the graph was not measured — callers must not
+ * publish the text as complete.
+ */
+export function collectThirdPartyNotices(root, { ecosystems = ['npm', 'cargo'] } = {}) {
+  const exceptionsFile = readJson(EXCEPTIONS_PATH);
+  const census = censusOrThrow(root);
+  const rowsByEco = {};
+  const undetermined = [];
+  for (const eco of ecosystems) {
+    const lockfiles = census.filter((f) => basename(f) === (eco === 'npm' ? 'package-lock.json' : 'Cargo.lock'));
+    const collected = eco === 'npm' ? collectNpm(root, lockfiles) : collectCargo(root, lockfiles);
+    rowsByEco[eco] = classify(collected.packages, exceptionsFile[eco] ?? {}).rows;
+    undetermined.push(...collected.undetermined.map((u) => `${eco}: ${u}`));
+    if (eco === 'npm' && rowsByEco[eco].length === 0) undetermined.push('npm: no packages collected');
+  }
+  return { text: renderThirdPartyNotices(rowsByEco), undetermined, rowsByEco };
+}
+
 function parseArgs(argv) {
   const args = { strict: false, list: false, ecosystem: 'all', installerTrees: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -580,6 +644,7 @@ function parseArgs(argv) {
     if (a === '--strict') args.strict = true;
     else if (a === '--list') args.list = true;
     else if (a === '--installer-tree') args.installerTrees.push(argv[++i]);
+    else if (a === '--notices') args.notices = argv[++i];
     else if (a === '--ecosystem') args.ecosystem = argv[++i];
     else if (a.startsWith('--ecosystem=')) args.ecosystem = a.slice('--ecosystem='.length);
     else throw new Error(`unknown argument: ${a}`);
@@ -598,6 +663,16 @@ export function main(argv = process.argv.slice(2), root = ROOT) {
     return 1;
   }
   if (args.installerTrees.length) return installerMain(args, exceptionsFile);
+  if (args.notices) {
+    const { text, undetermined: missing } = collectThirdPartyNotices(root, {
+      ecosystems: args.ecosystem === 'all' ? ['npm', 'cargo'] : [args.ecosystem],
+    });
+    for (const u of missing) console.log(`  UNDETERMINED ${u}`);
+    if (missing.length) { console.log('LICENSE_NOTICES_RESULT status=undetermined'); return 2; }
+    writeFileSync(args.notices, text);
+    console.log(`LICENSE_NOTICES_RESULT status=written path=${args.notices}`);
+    return 0;
+  }
 
   const census = censusOrThrow(root);
   const ecosystems = args.ecosystem === 'all' ? ['npm', 'cargo'] : [args.ecosystem];

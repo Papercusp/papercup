@@ -56,11 +56,14 @@ import {
   type ImportClassContractsResult,
 } from './class-contract-payload';
 import {
+  recipeProviderConsentRefusal,
+  recipeProviderConsentSubject,
   resolveCapabilityGrants,
   type CapabilityGrantSet,
   type CapabilityGrantResolutionVerdict,
   type CapabilityGrantResolverDeps,
   type CapabilityProviderSelection,
+  type RecipeProviderConsent,
   type ResolveCapabilityGrantOptions,
 } from './capability-grant-resolver';
 import type {
@@ -104,6 +107,9 @@ export interface InstallBlueprintCoreInput {
     /** Consent to install the selected provider packages after their complete
      * transitive review set has been returned/approved. */
     installProviderPackages?: boolean;
+    /** Administrator decision on the consentSubject a
+     * `capability_recipe_provider_consent_required` refusal returned (P-013). */
+    recipeProviderConsent?: RecipeProviderConsent;
   };
 }
 
@@ -583,6 +589,27 @@ export async function installBlueprintFromCupboardCore(
           `capability class ${ceilingFailures[0].classRef ?? '(unknown)'}: ${ceilingFailures[0].cause}`,
           403, 'capability_unsatisfied', { failures: ceilingFailures },
         );
+      }
+
+      // A recipe provider runs third-party scripts under the wearer's narrowed
+      // principal, so binding one needs consent to its exact pins (D-019).
+      const recipeConsentSubject = recipeProviderConsentSubject(
+        input.capabilityContext,
+        capabilityGrantResolution.selected,
+      );
+      if (recipeConsentSubject) {
+        const refusal = recipeProviderConsentRefusal(
+          input.capabilityContext.recipeProviderConsent,
+          recipeConsentSubject,
+        );
+        if (refusal) {
+          throw new InstallBlueprintError(
+            refusal.detail,
+            409,
+            'capability_recipe_provider_' + refusal.code,
+            { capabilityGrants: capabilityGrantResolution, consentSubject: recipeConsentSubject },
+          );
+        }
       }
 
       if (capabilityGrantResolution.selected.length > 0) {

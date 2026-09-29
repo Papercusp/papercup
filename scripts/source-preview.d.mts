@@ -64,9 +64,11 @@ export function sourceYear(repo: string, commit: string): number;
  * Export one pinned commit as the public-safe cut into `out` (must not exist).
  * Deterministic for a given commit — no timestamps — so a drift check compares
  * content, not clock.
- * @param {{ repoRoot?: string, ref?: string, out: string, target?: string, licensePath?: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
+ * `thirdPartyNotices(dir)` renders THIRD-PARTY-NOTICES.md for the public target; tests
+ * inject a stub so they need no cargo resolve.
+ * @param {{ repoRoot?: string, ref?: string, out: string, target?: string, licensePath?: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log, thirdPartyNotices?: (dir: string) => { text: string, undetermined: string[] } }} opts
  */
-export function exportSnapshot({ repoRoot, ref, out, target: targetName, licensePath, selectScript, selectionLib, env, log, }: {
+export function exportSnapshot({ repoRoot, ref, out, target: targetName, licensePath, selectScript, selectionLib, env, log, thirdPartyNotices, }: {
     repoRoot?: string;
     ref?: string;
     out: string;
@@ -76,6 +78,10 @@ export function exportSnapshot({ repoRoot, ref, out, target: targetName, license
     selectionLib?: string;
     env?: NodeJS.ProcessEnv;
     log?: Log;
+    thirdPartyNotices?: (dir: string) => {
+        text: string;
+        undetermined: string[];
+    };
 }): Promise<{
     out: string;
     manifest: {
@@ -104,6 +110,15 @@ export function exportSnapshot({ repoRoot, ref, out, target: targetName, license
  * @param {string} path
  */
 export function readLicense(path: string): string;
+/**
+ * Copy the desktop shell from the materialized tree into the public export, minus
+ * generated and internal paths. Refuses when the commit has no desktop shell: a public
+ * source release without its shell is not the product (P-004). Everything copied is
+ * still checked by the same bundle audit as the rest of the export.
+ * @param {string} mono the materialized commit
+ * @param {string} into the export being assembled
+ */
+export function copyDesktopShell(mono: string, into: string): void;
 /**
  * The public target's community files, read from `dir` (scripts/public-release/ by
  * default — beside the LICENSE). Refuses when any is missing or empty.
@@ -156,9 +171,9 @@ export function remoteTrees(remote: any, branch?: string): {
 } | null;
 /**
  * Compare the remote preview with a fresh export of `ref`.
- * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, env?: NodeJS.ProcessEnv, selectScript?: string, log?: Log }} [opts]
+ * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, env?: NodeJS.ProcessEnv, selectScript?: string, log?: Log, thirdPartyNotices?: (dir: string) => { text: string, undetermined: string[] } }} [opts]
  */
-export function checkDrift({ repoRoot, ref, remote, target, licensePath, env, selectScript, log }?: {
+export function checkDrift({ repoRoot, ref, remote, target, licensePath, env, selectScript, log, thirdPartyNotices }?: {
     repoRoot?: string;
     ref?: string;
     remote?: string;
@@ -167,6 +182,10 @@ export function checkDrift({ repoRoot, ref, remote, target, licensePath, env, se
     env?: NodeJS.ProcessEnv;
     selectScript?: string;
     log?: Log;
+    thirdPartyNotices?: (dir: string) => {
+        text: string;
+        undetermined: string[];
+    };
 }): Promise<{
     inSync: boolean;
     expected: string;
@@ -179,9 +198,9 @@ export function checkDrift({ repoRoot, ref, remote, target, licensePath, env, se
  * parentless commit (force push); the public target gets a new commit on top of its current
  * main, pushed without --force, so a concurrent push is refused rather than overwritten.
  * The gate runs before anything is committed; a failing gate pushes nothing.
- * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log }} [opts]
+ * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log, thirdPartyNotices?: (dir: string) => { text: string, undetermined: string[] } }} [opts]
  */
-export function pushSnapshot({ repoRoot, ref, remote, target, licensePath, confirm, env, selectScript, gate, log, }?: {
+export function pushSnapshot({ repoRoot, ref, remote, target, licensePath, confirm, env, selectScript, gate, log, thirdPartyNotices, }?: {
     repoRoot?: string;
     ref?: string;
     remote?: string;
@@ -192,6 +211,10 @@ export function pushSnapshot({ repoRoot, ref, remote, target, licensePath, confi
     selectScript?: string;
     gate?: Gate;
     log?: Log;
+    thirdPartyNotices?: (dir: string) => {
+        text: string;
+        undetermined: string[];
+    };
 }): Promise<{
     pushed: boolean;
     reason: string;
@@ -255,13 +278,22 @@ export const SELECTION_LIB: string;
 export const AUDIT_SCRIPT: string;
 /** Files this script adds at the export root, outside the shared selection. */
 export const ADDED_FILES: string[];
+/** The Tauri desktop shell, shipped only by the public target (P-004). */
+export const DESKTOP_DIR: "papercusp-desktop";
+/**
+ * What the public target leaves out of the desktop shell (GNU tar patterns, relative to
+ * the shell root): generated sidecar copies, build output, local agent state and stray
+ * files, and the internal VM/cloud test rigs, which drive the maintainers' own machines.
+ */
+export const DESKTOP_PUBLIC_EXCLUDES: string[];
 /**
  * Community-health files the public target copies verbatim from scripts/public-release/
  * (plan open-source-release-2026-09-29 P-007). Every one is required: a public repo
  * without a disclosure path or contribution terms is not recoverable once cloned.
  */
 export const PUBLIC_COMMUNITY_FILES: string[];
-/** The public target also adds its LICENSE and the community files. */
+/** The public target also adds its LICENSE, the community files, and THIRD-PARTY-NOTICES.md
+ *  (generated from the export's own lockfiles by check-licenses.mjs — P-017 step 5). */
 export const PUBLIC_ADDED_FILES: string[];
 /** The env var holding the release host base URL; `${base}/index.html` is the releases page. */
 export const RELEASE_BASE_ENV: "PAPERCUSP_UPDATE_BASE_URL";

@@ -21,6 +21,7 @@ import {
   deriveVerdict,
   formatSummaryLine,
   linkLatest,
+  pruneRuns,
   loadRunResult,
   PREFLIGHT_PHASE_ID,
   writeRunResult,
@@ -112,6 +113,7 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
   Object.assign(result, deriveVerdict(result));
   await writeRunResult(result);
   await linkLatest(evidenceRoot, runDir);
+  await pruneRuns(evidenceRoot);
   return { line: formatSummaryLine(result), result };
 }
 

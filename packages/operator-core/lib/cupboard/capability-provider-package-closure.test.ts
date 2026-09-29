@@ -11,6 +11,7 @@ import {
 const selection = (providerPackage: string, providerVersion: string, classRef: string): CapabilityProviderSelection => ({
   providerPackage,
   providerVersion,
+  providerKind: 'tool',
   classRef,
   reason: 'explicit-selection',
   disclosureRequired: false,

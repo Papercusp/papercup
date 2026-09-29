@@ -8,7 +8,7 @@ import { readVerbatimTail, type TranscriptTailTurn } from './turn-journal';
 import {
   confirmGoalPlacementDelivery, deliveredGoalPlacementRows, prepareGoalPlacementDelivery,
   type GoalPlacementTurnReceiptDeps,
-  recordGoalPlacementTurnEnd, type GoalPlacementTurnEndDeps,
+  recordGoalPlacementTurnEnd, type GoalPlacementTurnEndDeps, GOAL_PLACEMENT_TURN_END_SETTLE_POLLS,
   observeGoalPlacementAdmission, qualifyGoalPlacementTurn, type GoalPlacementAdmissionDeps,
   type GoalPlacementAdmissionObservation,
 } from './goal-placement-turn-receipts';
@@ -220,7 +220,8 @@ describe('native turn-end policy observation', () => {
     f.setTail([turn('prior', 1), turn('current', 3)]); f.setNow(4);
     const read = { goalId: 'goal', portfolio: null, observedAt: at(4).toISOString(),
       agenda: { evaluations: [row] } } as AgentObligationAgendaRead;
-    const deps: GoalPlacementTurnEndDeps = { ...f.deps, goalSubject: vi.fn(async () => 'goal'), agenda: vi.fn(async () => read) };
+    const deps: GoalPlacementTurnEndDeps = { ...f.deps, goalSubject: vi.fn(async () => 'goal'), agenda: vi.fn(async () => read),
+      sleep: vi.fn(async () => {}) };
     const endInput = { ownerId: 'holder', workspaceId: 'workspace', nativeSessionId: session.sessionId, sourceKind: session.sourceKind };
     return { ...f, read, deps, endInput };
   }
@@ -288,6 +289,20 @@ describe('native turn-end policy observation', () => {
     const f = endFixture(); f.setTail([turn('prior', 1), turn('current', 3, disposition)]);
     expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).reason).toBe('native-decision-not-complete');
     expect(f.deps.agenda).not.toHaveBeenCalled();
+    // Only a progress tail can be a flush race; the others are real non-completions and are never polled.
+    expect(f.deps.sleep).toHaveBeenCalledTimes(disposition === 'progress' ? GOAL_PLACEMENT_TURN_END_SETTLE_POLLS : 0);
+  });
+  it('waits out the Stop-hook flush race: a progress tail that settles to the delivered response is recorded', async () => {
+    const f = endFixture();
+    const progress = [turn('prior', 1), turn('current', 3, 'progress')];
+    const settled = [turn('prior', 1), turn('current', 3, 'progress'), turn('current', 3)];
+    f.setTail(progress);
+    let polls = 0;
+    f.deps.sleep = vi.fn(async () => { polls += 1; if (polls === 2) f.setTail(settled); });
+    const result = await recordGoalPlacementTurnEnd(f.endInput, f.deps);
+    expect(result).toMatchObject({ recorded: true });
+    expect(f.deps.sleep).toHaveBeenCalledTimes(2);
+    expect(f.deps.append).toHaveBeenCalledOnce();
   });
   it('refuses a newer user request or an unattributed tail, including a request starting during the policy read', async () => {
     const f = endFixture();

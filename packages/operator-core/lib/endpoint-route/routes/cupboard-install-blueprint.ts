@@ -10,15 +10,16 @@
  * structured result to an HTTP response.
  *
  * Body: { listingId?, githubUrl?, listingRef?, installPlugins?, potSlug?, capabilityRole?,
- *         capabilityProviderSelections?, classContractConsent? }
- * `classContractConsent` is parsed with the same schema as the agent tool
- * (portable-identity-packages P-021 / D-015).
+ *         capabilityProviderSelections?, classContractConsent?, recipeProviderConsent? }
+ * `classContractConsent` and `recipeProviderConsent` are parsed with the same
+ * schemas as the agent tool (portable-identity-packages P-021 / D-015, P-013 / D-019).
  *
  * `auth: 'loopback'` (auth-tier Wave 1) — loopback-only via the operator's Host-header gate.
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { installBlueprintFromCupboard } from '../../cupboard/install-blueprint-io';
 import { classContractConsentSchema, type ClassContractConsent } from '../../cupboard/class-contract-payload';
+import { recipeProviderConsentSchema, type RecipeProviderConsent } from '../../cupboard/capability-grant-resolver';
 
 export default defineTool({
   method: 'POST',
@@ -35,6 +36,7 @@ export default defineTool({
       capabilityRole?: string;
       capabilityProviderSelections?: Record<string, string>;
       classContractConsent?: unknown;
+      recipeProviderConsent?: unknown;
     };
     try {
       body = await req.json();
@@ -59,6 +61,17 @@ export default defineTool({
       }
       classContractConsent = parsed.data;
     }
+    let recipeProviderConsent: RecipeProviderConsent | undefined;
+    if (body.recipeProviderConsent !== undefined) {
+      const parsed = recipeProviderConsentSchema.safeParse(body.recipeProviderConsent);
+      if (!parsed.success) {
+        return Response.json(
+          { ok: false, error: 'invalid_recipe_provider_consent', detail: parsed.error.issues[0]?.message },
+          { status: 400 },
+        );
+      }
+      recipeProviderConsent = parsed.data;
+    }
 
     const outcome = await installBlueprintFromCupboard({
       ...(typeof body.listingId === 'string' ? { listingId: body.listingId } : {}),
@@ -74,6 +87,7 @@ export default defineTool({
         ? { capabilityProviderSelections: body.capabilityProviderSelections }
         : {}),
       ...(classContractConsent ? { classContractConsent } : {}),
+      ...(recipeProviderConsent ? { recipeProviderConsent } : {}),
     });
 
     if (!outcome.ok) {

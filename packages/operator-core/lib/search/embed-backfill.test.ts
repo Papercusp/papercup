@@ -770,7 +770,11 @@ describe('every TARGETS bodySql caps its free-text input (EI-12967)', () => {
       // left(<col-or-coalesce>, N). Constant/short expressions (verb, titles) are fine
       // uncapped; every target below DOES reference a free-text column, so demand a cap
       // present somewhere in the expression.
-      const leftCaps = [...target.bodySql.matchAll(/left\(\s*(?:COALESCE\([^)]*\)|\w+)\s*,\s*(\d+)\s*\)/g)];
+      // The capped argument may be a bare column or ANY single-level call — COALESCE(…),
+      // or concat_ws(…) for a header + content body (harness_shared.text_chunks) — the
+      // property is that the whole embed input sits inside a left(…, N), not which
+      // function builds it.
+      const leftCaps = [...target.bodySql.matchAll(/left\(\s*(?:\w+\([^)]*\)|\w+)\s*,\s*(\d+)\s*\)/g)];
       expect(leftCaps.length, `${target.table}.bodySql has no left(…, N) cap: ${target.bodySql}`).toBeGreaterThan(0);
       for (const m of leftCaps) {
         expect(Number(m[1]), `${target.table}.bodySql cap exceeds 2000: ${target.bodySql}`).toBeLessThanOrEqual(2000);

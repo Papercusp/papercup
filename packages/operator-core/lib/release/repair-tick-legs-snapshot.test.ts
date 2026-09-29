@@ -7,7 +7,12 @@
  * (or a filtered leg list), never throw — this parses an externally-controlled JSONB blob.
  */
 import { describe, it, expect } from 'vitest';
-import { parseRepairTickLegs, repairTickLegsCurrent } from './repair-tick-legs-snapshot';
+import {
+  parseRepairTickLegs,
+  repairTickClearedQueueSignature,
+  repairTickLegsCurrent,
+  type StoredRepairTickLegs,
+} from './repair-tick-legs-snapshot';
 
 describe('parseRepairTickLegs', () => {
   it('parses a well-formed measurement, including a mix of pass/fail/errored legs', () => {
@@ -115,5 +120,54 @@ describe('repairTickLegsCurrent', () => {
 
   it('is null (unknown, not false) when there is no live repairHead to compare against', () => {
     expect(repairTickLegsCurrent({ head: 'abc123def456' }, null)).toBeNull();
+  });
+});
+
+describe('repairTickClearedQueueSignature', () => {
+  const HEAD = 'aa9487596d5406cc49d424a4162d99634b214cdf';
+  const LANE = '@papercusp/operator-core :: test:lane-stateful';
+  const tick = (over: Partial<StoredRepairTickLegs> = {}): StoredRepairTickLegs => ({
+    head: HEAD.slice(0, 12),
+    atMs: 1_000,
+    ok: true,
+    failingSignatures: [],
+    legs: [
+      { id: 'lint:tsc', status: 'pass', durationMs: 1 },
+      { id: LANE, status: 'pass', durationMs: 1_159_339 },
+    ],
+    ...over,
+  });
+
+  it('is true when the tick at the current head re-ran and passed every queue signature', () => {
+    expect(repairTickClearedQueueSignature(tick(), { repairHead: HEAD, failingTests: [LANE] })).toBe(true);
+  });
+
+  it('is false when the tick measured an earlier head', () => {
+    expect(
+      repairTickClearedQueueSignature(tick({ head: 'fff000000000' }), { repairHead: HEAD, failingTests: [LANE] }),
+    ).toBe(false);
+  });
+
+  it('is false when any tick leg failed', () => {
+    expect(
+      repairTickClearedQueueSignature(tick({ ok: false, failingSignatures: ['lint:tsc'] }), {
+        repairHead: HEAD,
+        failingTests: [LANE],
+      }),
+    ).toBe(false);
+  });
+
+  it('is false when a queue signature was never re-run by the tick (a test file, not a leg)', () => {
+    expect(
+      repairTickClearedQueueSignature(tick(), {
+        repairHead: HEAD,
+        failingTests: [LANE, 'lib/agent-tools/plans/arm-schedule.test.ts'],
+      }),
+    ).toBe(false);
+  });
+
+  it('is false with no measurement or an empty queue failing set', () => {
+    expect(repairTickClearedQueueSignature(null, { repairHead: HEAD, failingTests: [LANE] })).toBe(false);
+    expect(repairTickClearedQueueSignature(tick(), { repairHead: HEAD, failingTests: [] })).toBe(false);
   });
 });

@@ -16,7 +16,8 @@
  * committed exceptions file against the same validator the gate runs first.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // Enrolled in tsconfig.declarations.json, so this import is typed by the generated
 // sibling scripts/check-licenses.d.mts.
@@ -25,6 +26,8 @@ import {
   attributeInstaller,
   cargoPackagesOf,
   classify,
+  collectThirdPartyNotices,
+  renderThirdPartyNotices,
   declaredNpmLicense,
   evaluateExpression,
   globToRegExp,
@@ -353,5 +356,48 @@ describe('installer leg — validateComponents', () => {
     expect(validateComponents(file)).toEqual([]);
     const kinds = new Set(file.components.map((c: { kind: string }) => c.kind));
     for (const k of ['first-party', 'program', 'model', 'os-image']) expect(kinds.has(k), k).toBe(true);
+  });
+});
+
+describe('THIRD-PARTY-NOTICES (P-017 step 5)', () => {
+  it('groups packages by effective license per ecosystem, deduplicated and sorted', () => {
+    const text = renderThirdPartyNotices({
+      npm: [
+        { name: 'zod', version: '3.0.0', effective: 'MIT', tier: TIER.PERMISSIVE },
+        { name: 'axe-core', version: '4.0.0', effective: 'MPL-2.0', tier: TIER.WEAK_COPYLEFT },
+        { name: 'acorn', version: '8.0.0', effective: 'MIT', tier: TIER.PERMISSIVE },
+        { name: 'zod', version: '3.0.0', effective: 'MIT', tier: TIER.PERMISSIVE },
+      ],
+      cargo: [{ name: 'serde', version: '1.0.0', effective: 'Apache-2.0 OR MIT', tier: TIER.PERMISSIVE }],
+    });
+    expect(text).toContain('## npm packages (3)');
+    expect(text).toContain('### MIT (2)\n\nacorn@8.0.0, zod@3.0.0');
+    expect(text).toContain('### MPL-2.0 (1)\n\naxe-core@4.0.0');
+    expect(text.indexOf('### MIT')).toBeLessThan(text.indexOf('### MPL-2.0'));
+    expect(text).toContain('## Rust crates (1)');
+    expect(text).toContain('Elastic License 2.0');
+  });
+
+  it('omits an ecosystem with no packages', () => {
+    expect(renderThirdPartyNotices({ npm: [{ name: 'a', version: '1', effective: 'MIT', tier: TIER.PERMISSIVE }] }))
+      .not.toContain('Rust crates');
+  });
+
+  it('collects from a real lockfile tree, and refuses a tree with no lockfiles instead of rendering an empty file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'license-notices-'));
+    try {
+      expect(() => collectThirdPartyNotices(dir, { ecosystems: ['npm'] })).toThrow(/ZERO lockfiles/);
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fx', version: '0.0.0' }));
+      writeFileSync(join(dir, 'package-lock.json'), JSON.stringify({
+        name: 'fx', lockfileVersion: 3,
+        packages: { '': { name: 'fx' }, 'node_modules/left-pad': { version: '1.3.0', license: 'WTFPL' }, 'node_modules/acorn': { version: '8.0.0', license: 'MIT' } },
+      }));
+      const r = collectThirdPartyNotices(dir, { ecosystems: ['npm'] });
+      expect(r.undetermined).toEqual([]);
+      expect(r.text).toContain('acorn@8.0.0');
+      expect(r.text).toContain('left-pad@1.3.0');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

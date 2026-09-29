@@ -55,6 +55,17 @@ export const SHIPPED = [
   'libs/papercusp/plugins/markdown-preview/papercusp.json', // a sibling plugin still ships
 ];
 
+/** Desktop-shell paths only the PUBLIC target ships (P-004); the preview drops the whole shell. */
+export const PUBLIC_DESKTOP_SHIPPED = ['papercusp-desktop/README.md', 'papercusp-desktop/src-tauri/Cargo.toml'];
+
+/** Desktop-shell paths the public target still leaves out (generated, local state, internal rigs). */
+export const PUBLIC_DESKTOP_DROPPED = [
+  'papercusp-desktop/src-tauri/env-sidecars/staging/serve.mjs',
+  'papercusp-desktop/bin/vm-rig/deploy.sh',
+  'papercusp-desktop/bin/deb-hetzner-matrix.sh',
+  'papercusp-desktop/.papercusp/state/lock.json',
+];
+
 /** Tracked paths the shared selection must drop, each for a different reason. */
 export const DROPPED = [
   'apps/operator/.env', //                 privacy exclude (from the gate)
@@ -75,6 +86,10 @@ export const DROPPED = [
   'docs/evidence/run.json', //             internal content
   'docs/reports/report.md', //             internal content
   'libs/generic/papergrid/grid-core/storybook-static/index.html', // built output
+  'packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json', // real session/plan text
+  'packages/operator-core/lib/memory/bench/fixtures/prose-gold-set.v1.json', // …and its gold set
+  ...PUBLIC_DESKTOP_SHIPPED.filter((p) => p !== 'papercusp-desktop/README.md'), // preview: whole shell
+  ...PUBLIC_DESKTOP_DROPPED, //                    …and so every path under it
 ];
 
 export interface Superproject {
@@ -113,6 +128,10 @@ export function makeSuperproject(root: string): Superproject {
   write(repo, 'scratch/notes.md', 'scratch\n');
   write(repo, '.papercusp/pi-sessions/s1.jsonl', '{"turn":1}\n');
   write(repo, 'papercusp-desktop/README.md', '# desktop shell\n');
+  write(repo, 'papercusp-desktop/src-tauri/Cargo.toml', '[package]\nname = "papercusp-desktop"\nlicense = "Elastic-2.0"\n');
+  for (const p of PUBLIC_DESKTOP_DROPPED) write(repo, p, 'internal\n');
+  write(repo, 'packages/operator-core/lib/memory/bench/fixtures/prose-corpus.v1.json', '{"entries":[]}\n');
+  write(repo, 'packages/operator-core/lib/memory/bench/fixtures/prose-gold-set.v1.json', '{"queries":[]}\n');
   write(repo, 'node_modules/leftpad/index.js', 'module.exports = 1;\n');
   write(repo, 'apps/operator/node_modules/x/index.js', 'module.exports = 2;\n');
   write(repo, 'apps/operator/.next/cache.bin', 'cache\n');

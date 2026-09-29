@@ -16,7 +16,7 @@
  * Plan §9.1, §12.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -30,6 +30,7 @@ import { findPromotionCandidates, formatCandidatesReport } from '@papercusp/oper
 import { promoteShape } from '@papercusp/operator-core/lib/llm-testing/promotion/promote';
 import { replayFixture, reEvaluateRun } from '@papercusp/operator-core/lib/llm-testing/replay';
 import { validateSuContracts } from '@papercusp/operator-core/lib/llm-testing/targets/su-contracts';
+import { runScenarioBattery } from '@papercusp/operator-core/lib/llm-testing/battery-harness';
 import {
   LLM_TEST_EXIT_NOTHING_RAN,
   llmTestExitCode,
@@ -385,7 +386,7 @@ async function main(): Promise<void> {
 
   const concurrency = Math.max(1, args.parallel ?? 1);
   if (concurrency > 1) {
-    console.log(`[llm-test] --parallel ${concurrency} — scenarios run in batches of ${concurrency}.`);
+    console.log(`[llm-test] --parallel ${concurrency} — up to ${concurrency} scenarios run at once.`);
   }
 
   // Operator seams for the generic runner. `--no-persist` omits the store seam
@@ -401,7 +402,7 @@ async function main(): Promise<void> {
     console.log(`[llm-test] --variant '${variant.id}' (${[variant.promptOverlay && 'promptOverlay', variant.configDelta && 'configDelta'].filter(Boolean).join(' + ') || 'empty'})`);
   }
 
-  const runOne = async (scenario: typeof scenarios[number]): Promise<ScenarioOutcome> => {
+  const runOne = async (scenario: typeof scenarios[number], evidenceDir: string): Promise<ScenarioOutcome> => {
     const scenarioFilePath = resolveScenarioFilePath(scenario);
     process.stdout.write(`\n▶ ${scenario.id}  [${scenario.target}]\n`);
     let report;
@@ -426,6 +427,7 @@ async function main(): Promise<void> {
       return 'failed';
     }
     printReport(report);
+    writeFileSync(join(evidenceDir, 'report-summary.json'), `${JSON.stringify(reportSummary(scenario.id, report), null, 2)}\n`);
     // A live-model run is the `llm` test layer; record it in the shared test ledger so
     // acceptance BARs requiring `llm` can bind to it (EI-24434635346407728).
     if (!args.noPersist) {
@@ -443,11 +445,11 @@ async function main(): Promise<void> {
       : 'executed';
   };
 
-  const outcomes: ScenarioOutcome[] = [];
-  for (let i = 0; i < scenarios.length; i += concurrency) {
-    const batch = scenarios.slice(i, i + concurrency);
-    outcomes.push(...(await Promise.all(batch.map(runOne))));
-  }
+  // The battery runs through the verification-harness contract (EVL P-006): one phase per
+  // scenario, one retained evidence dir per run, and a HARNESS_RESULT line naming the first
+  // failing scenario. The exit code keeps its own semantics (nothing-ran is not a pass).
+  const { outcomes, summaryLine } = await runScenarioBattery({ scenarios, concurrency, runScenario: runOne });
+  console.log(`\n${summaryLine}`);
 
   const exitCode = llmTestExitCode(outcomes);
   if (outcomes.some((o) => o === 'skipped')) {
@@ -475,6 +477,21 @@ function resolveScenarioFilePath(scenario: { id: string; target: string }): stri
     scenario.target,
     join(here, '..', '..', '..', 'packages', 'operator-core', 'lib', 'llm-testing', 'scenarios'),
   );
+}
+
+/** The compact per-scenario record kept in the run's evidence dir (the full report is in PG). */
+function reportSummary(scenarioId: string, report: ReturnType<typeof runScenario> extends Promise<infer R> ? R : never) {
+  return {
+    scenarioId,
+    verdict: report.verdict,
+    runs: report.runs.map((r) => ({
+      status: r.status,
+      costUsd: r.summary.totalCostUsd,
+      turns: r.summary.turns.length,
+      assertErrors: r.violations.filter((v) => v.severity === 'error').map((v) => `[${v.assertKind}] ${v.claim}`),
+      judgeErrors: r.judge.findings.filter((f) => f.severity === 'error').map((f) => `${f.axis}: ${f.claim}`),
+    })),
+  };
 }
 
 function printReport(report: ReturnType<typeof runScenario> extends Promise<infer R> ? R : never): void {

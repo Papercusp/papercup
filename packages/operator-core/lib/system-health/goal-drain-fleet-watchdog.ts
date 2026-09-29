@@ -1664,8 +1664,8 @@ async function defaultEscalatePlanFleet(alert: GoalPlanFleetAlert): Promise<{ op
     meta: {
       dedupKind: 'goal-plan-fleet-obligation',
       subjectSignature: goalPlanFleetSubjectSignature(alert),
-      goalId: alert.goalId,
       goalWorkspaceId: alert.workspaceId,
+      // carries goalId, reason, plan, fleets, claims and holders
       ...goalPlanFleetEventPayload(alert),
     },
   });
