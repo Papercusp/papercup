@@ -323,7 +323,12 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
     if (latch && latch.announcementPending === false) announcementPending = false;
     latchedSubscribers = latch?.eventSubscribers;
   } catch (e) {
-    log(`key-fire latch record failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
+    // WI-10003882: a Postgres lock failure's `detail` names both sides of the lock
+    // cycle (which process waits on which transaction). The message alone
+    // ("deadlock detected") leaves the contending statement unrecoverable.
+    const detail = (e as { detail?: unknown } | null)?.detail;
+    log(`key-fire latch record failed for ${opts.key}: ${e instanceof Error ? e.message : e}`
+      + (typeof detail === 'string' && detail ? ` | ${detail.replace(/\s+/g, ' ')}` : ''));
   }
 
   // pui-agent-context-cockpit P-026: reuse the activity ledger + its existing
