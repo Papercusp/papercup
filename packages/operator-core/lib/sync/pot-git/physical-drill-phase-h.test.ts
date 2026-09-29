@@ -5,194 +5,39 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import {
-  PHASE_H_ATTEMPT_SCHEMA,
-  PHASE_H_INPUT_SCHEMA,
-  PHASE_H_MIN_OMISSION_MS,
-  PHASE_H_OBSERVATION_SCHEMA,
   PHASE_H_PLAN_ITEM,
   assertPhysicalPhaseHStep,
   physicalPhaseHInputDigest,
   readPhaseHNamespaceSigrefs,
   validatePhysicalPhaseH,
-  type PhaseHCapabilitySummary,
-  type PhaseHNamespaceSigrefs,
   type PhysicalPhaseHInput,
-  type PhysicalPhaseHObservation,
-  type PhysicalPhaseHStep,
 } from './physical-drill-phase-h';
-import { GIT_SERVING_LEASE_MS, type GitServingCapability } from './serving-capability';
+import {
+  PHASE_H_FIXTURE_GEN_1 as GEN_1,
+  PHASE_H_FIXTURE_GEN_2 as GEN_2,
+  PHASE_H_FIXTURE_HIVE_ID as HIVE_ID,
+  PHASE_H_FIXTURE_OWNER_AFTER as OWNER_AFTER,
+  PHASE_H_FIXTURE_REPO_KEY as REPO_KEY,
+  buildPhysicalPhaseHInput,
+  phaseHFixtureOid as oid,
+  phaseHFixtureSigrefs,
+} from './physical-drill-phase-h.fixture';
+import { GIT_SERVING_LEASE_MS } from './serving-capability';
 import { SIGREFS_REF, SIGREFS_SCHEMA_VERSION_CONTEXT, sigrefsSigningBytes, type SigrefsPayload } from './sigrefs';
 import { deviceNamespaceKey } from './storage';
 
 const RUN = 'p521-physical-phase-h-0001';
 const START_MS = Date.parse('2026-09-29T20:00:00.000Z');
-const HIVE_ID = 'hive-pubkey-base64';
-const REPO_KEY = 'hello-world-3-pot';
-const GEN_1 = `sg2-1-${'a'.repeat(40)}`;
-const GEN_2 = `sg2-2-${'b'.repeat(40)}`;
-const OWNER_BEFORE = { pid: 69706, healthSha: 'aef4431553c9', launcher: 'rig-sidecar-current/boot-headless-current.sh' };
-const OWNER_AFTER = { ...OWNER_BEFORE, pid: 71234 };
-const PUBLISHER_PID = 80001;
 
 const vm = generateEd25519KeypairDer();
 const tower = generateEd25519KeypairDer();
-const oid = (seed: number) => seed.toString(16).padStart(40, '0');
+const sigrefs = (sigrefsOid: string, version: number, storeGeneration: string, refs: Array<{ ref: string; sha: string }>) =>
+  phaseHFixtureSigrefs(vm.pubkeyBase64, sigrefsOid, version, storeGeneration, refs);
 
 let baseline: PhysicalPhaseHInput;
 
-function capability(runtimeId: string, storeGeneration: string, issuedAtMs: number): GitServingCapability {
-  return {
-    v: 1,
-    workspaceId: 'papercusp-workspace',
-    installSlug: REPO_KEY,
-    potHomeSlug: REPO_KEY,
-    scope: { hive_id: HIVE_ID, repo_key: REPO_KEY },
-    runtimeId,
-    identity: { devicePubkeyBase64: vm.pubkeyBase64, githubUserId: 42, keychainId: 'papercusp-device' },
-    context: { hive_id: HIVE_ID, repo_key: REPO_KEY, store_generation: storeGeneration },
-    issuedAtMs,
-    expiresAtMs: issuedAtMs + GIT_SERVING_LEASE_MS,
-  };
-}
-
-function summary(c: GitServingCapability): PhaseHCapabilitySummary {
-  return {
-    runtimeId: c.runtimeId,
-    storeGeneration: c.context.store_generation,
-    devicePubkeyBase64: c.identity.devicePubkeyBase64,
-    issuedAtMs: c.issuedAtMs,
-    expiresAtMs: c.expiresAtMs,
-  };
-}
-
-function sigrefs(sigrefsOid: string, version: number, storeGeneration: string, commits: Array<{ ref: string; sha: string }>): PhaseHNamespaceSigrefs {
-  return { deviceKey: vm.pubkeyBase64, sigrefsOid, version, storeGeneration, signatureValid: true, refs: commits };
-}
-
-function buildBaseline(): PhysicalPhaseHInput {
-  let clock = START_MS;
-  const tick = () => new Date((clock += 1_000)).toISOString();
-  const ns = deviceNamespaceKey(vm.pubkeyBase64);
-  const c1 = capability('runtime-1', GEN_1, START_MS);
-  const c2 = capability('runtime-2', GEN_1, START_MS + 120_000);
-  // Store replacement need not reboot the owner, so the runtime may survive it.
-  const c3 = capability('runtime-2', GEN_2, START_MS + 240_000);
-  const commit = (step: PhysicalPhaseHStep, seed: number) => ({
-    ref: `refs/namespaces/${ns}/refs/heads/p521-phase-h-${step}-${RUN}`,
-    oid: oid(seed),
-    signed: { ref: `refs/heads/p521-phase-h-${step}-${RUN}`, sha: oid(seed) },
-  });
-  const commits = { pre: commit('pre', 1), omitted: commit('omitted', 2), restarted: commit('restarted', 3), replaced: commit('replaced', 4) };
-  const s0 = sigrefs(oid(100), 10, GEN_1, []);
-  const s1 = sigrefs(oid(101), 11, GEN_1, [commits.pre.signed]);
-  const s2 = sigrefs(oid(102), 12, GEN_1, [commits.pre.signed, commits.omitted.signed, commits.restarted.signed]);
-  const s3 = sigrefs(oid(103), 13, GEN_2, [commits.replaced.signed]);
-
-  const observation = (hostId: 'vm' | 'tower', step: PhysicalPhaseHStep, parts: {
-    capability?: GitServingCapability | null;
-    publisherId?: string;
-    ageMs?: number;
-    incarnation?: string;
-    namespace: PhaseHNamespaceSigrefs;
-  }): PhysicalPhaseHObservation => {
-    const observedAt = tick();
-    const ready = parts.capability ?? null;
-    return {
-      schemaVersion: PHASE_H_OBSERVATION_SCHEMA,
-      hostId,
-      step,
-      observedAt,
-      observerPid: hostId === 'vm' ? 80100 : 80200,
-      advertisement: {
-        present: hostId === 'vm',
-        publisherId: parts.publisherId ?? null,
-        sentAtMs: hostId === 'vm' ? Date.parse(observedAt) - (parts.ageMs ?? 1_000) : null,
-        ageMs: hostId === 'vm' ? (parts.ageMs ?? 1_000) : null,
-      },
-      serving: ready
-        ? { status: 'ready', retryable: false, reason: null, capability: ready }
-        : { status: 'unknown', retryable: true, reason: 'owner advertisement is stale', capability: null },
-      storeIncarnation: parts.incarnation ?? null,
-      namespaces: [parts.namespace],
-    };
-  };
-  const refused = (c: GitServingCapability) => ({
-    outcome: 'refused' as const,
-    capability: summary(c),
-    code: 'GIT_SERVING_UNAVAILABLE',
-    retryable: true,
-    message: 'pot-git serving unavailable: unknown (owner advertisement is stale); retry next tick',
-  });
-  const step = (name: PhysicalPhaseHStep, parts: {
-    owner: GitServingCapability | null;
-    publisherId: string;
-    ageMs?: number;
-    incarnation: string;
-    guard: PhysicalPhaseHInput['steps']['pre']['attempt']['capturedGuard'];
-    before: PhaseHNamespaceSigrefs;
-    after: PhaseHNamespaceSigrefs;
-    published: boolean;
-  }) => {
-    const vmObservation = observation('vm', name, {
-      capability: parts.owner, publisherId: parts.publisherId, ageMs: parts.ageMs, incarnation: parts.incarnation, namespace: parts.before,
-    });
-    const startedAt = tick();
-    const finishedAt = tick();
-    return {
-      vm: vmObservation,
-      attempt: {
-        schemaVersion: PHASE_H_ATTEMPT_SCHEMA,
-        hostId: 'vm' as const,
-        step: name,
-        runId: RUN,
-        startedAt,
-        finishedAt,
-        publisherPid: PUBLISHER_PID,
-        resolution: parts.owner
-          ? { status: 'ready', retryable: false, reason: null, capability: summary(parts.owner) }
-          : { status: 'unknown', retryable: true, reason: 'owner advertisement is stale', capability: null },
-        capturedGuard: parts.guard,
-        bootAttempts: 0,
-        commit: { ref: commits[name].ref, oid: commits[name].oid },
-        published: parts.published ? { version: parts.after.version!, sigrefsOid: parts.after.sigrefsOid! } : null,
-        sigrefsBefore: parts.before,
-        sigrefsAfter: parts.after,
-      },
-      tower: observation('tower', name, { namespace: parts.after }),
-    };
-  };
-
-  const steps = {
-    pre: step('pre', {
-      owner: c1, publisherId: 'publisher-1', incarnation: oid(200),
-      guard: { outcome: 'signed', capability: summary(c1), signatureValid: true },
-      before: s0, after: s1, published: true,
-    }),
-    omitted: step('omitted', {
-      owner: null, publisherId: 'publisher-1', ageMs: PHASE_H_MIN_OMISSION_MS + 1_000, incarnation: oid(200),
-      guard: refused(c1), before: s1, after: s1, published: false,
-    }),
-    restarted: step('restarted', {
-      owner: c2, publisherId: 'publisher-2', incarnation: oid(200),
-      guard: refused(c1), before: s1, after: s2, published: true,
-    }),
-    replaced: step('replaced', {
-      owner: c3, publisherId: 'publisher-2', incarnation: oid(201),
-      guard: refused(c2), before: s2, after: s3, published: true,
-    }),
-  };
-  return {
-    schemaVersion: PHASE_H_INPUT_SCHEMA,
-    runId: RUN,
-    window: { startedAt: new Date(START_MS).toISOString(), finishedAt: new Date(clock + 1_000).toISOString() },
-    identities: { towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64 },
-    vmOwner: { before: OWNER_BEFORE, after: OWNER_AFTER, frozenMs: PHASE_H_MIN_OMISSION_MS + 5_000 },
-    steps,
-  };
-}
-
 beforeAll(() => {
-  baseline = buildBaseline();
+  baseline = buildPhysicalPhaseHInput({ runId: RUN, towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64, startMs: START_MS });
 });
 
 function validInput(): PhysicalPhaseHInput {

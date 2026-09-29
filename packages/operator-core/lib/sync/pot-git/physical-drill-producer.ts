@@ -80,6 +80,13 @@ import {
   type PhysicalPhaseGInput,
 } from './physical-drill-phase-g';
 import {
+  attemptPhysicalPhaseH,
+  observePhysicalPhaseH,
+  validatePhysicalPhaseH,
+  type PhysicalPhaseHInput,
+  type PhysicalPhaseHObservation,
+} from './physical-drill-phase-h';
+import {
   validatePostGoReleaseCanary,
   type PostGoReleaseCanaryInput,
 } from './post-go-release-canary';
@@ -655,6 +662,40 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return verdict;
   }
+  if (mode === 'phase-h-observe') {
+    const [hostId, step, repoPath, ...deviceKeys] = args;
+    if ((hostId !== 'tower' && hostId !== 'vm') || !step || !repoPath || deviceKeys.length === 0) {
+      throw new Error(
+        'usage: physical-drill-producer phase-h-observe <tower|vm> <pre|omitted|restarted|replaced> <canonical-repo-path> <device-key...>',
+      );
+    }
+    return observePhysicalPhaseH({ hostId, step, repoPath, deviceKeys });
+  }
+  if (mode === 'phase-h-attempt') {
+    // The captured capability comes only from a recorded VM observation, so the
+    // capability a step tests is the one the owner actually advertised earlier.
+    const [step, repoPath, deviceKey, runId, capturedObservationPath] = args;
+    if (!step || !repoPath || !deviceKey || !runId || !capturedObservationPath) {
+      throw new Error(
+        'usage: physical-drill-producer phase-h-attempt <pre|omitted|restarted|replaced> <canonical-vm-repo-path> <vm-device-key> <run-id> <captured-vm-observation.json>',
+      );
+    }
+    const observation = readJson(capturedObservationPath) as PhysicalPhaseHObservation;
+    const captured = observation?.hostId === 'vm' ? observation.serving?.capability : null;
+    if (!captured) {
+      throw new Error(`physical-drill-producer: ${capturedObservationPath} holds no ready VM serving capability`);
+    }
+    return attemptPhysicalPhaseH({ step, repoPath, deviceKey, runId, captured });
+  }
+  if (mode === 'phase-h-verify') {
+    const [inputPath] = args;
+    if (!inputPath) throw new Error('usage: physical-drill-producer phase-h-verify <private-run-input.json>');
+    const verdict = validatePhysicalPhaseH(readJson(inputPath) as PhysicalPhaseHInput);
+    if (!verdict.ok) {
+      throw new Error(`physical-drill-producer: Phase H rejected: ${verdict.errors.join('; ')}`);
+    }
+    return verdict;
+  }
   if (mode === 'post-go-canary-verify') {
     const [inputPath] = args;
     if (!inputPath) {
@@ -703,7 +744,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-quarantine-observe, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-reset, phase-d-tier-hold, phase-d-tier-restore, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-mode-read, phase-e-mode-ensure, phase-e-await-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-quarantine-observe, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-reset, phase-d-tier-hold, phase-d-tier-restore, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-mode-read, phase-e-mode-ensure, phase-e-await-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, phase-h-observe, phase-h-attempt, phase-h-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
   );
 }
 
