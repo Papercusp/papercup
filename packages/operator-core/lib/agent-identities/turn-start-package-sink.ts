@@ -31,9 +31,28 @@
  * Fail-open, visibly: a provider failure is an omission row the sink renders; a
  * discovery failure yields no package half at all and is reported in `error`,
  * never thrown into the turn.
+ *
+ * The production dependencies are imported statically, never per call. They
+ * load when the endpoint loads this module, before the evaluator's clock
+ * starts, so a cold module graph cannot spend the sink's wall-clock budget. A
+ * per-call `import()` also let two concurrent providers bind different
+ * instances of `@papercusp/db-org` (measured under a vitest mock: the second
+ * provider resolved against another database).
  */
 import { createHash, randomUUID } from 'node:crypto';
-import type { InjectionPoint } from '@papercusp/orchestrator/blueprint';
+import { readFile } from 'node:fs/promises';
+import { getOrgPg } from '@papercusp/db-org';
+import {
+  BlueprintSourceDocumentSchema,
+  resolveBlueprintSource,
+  type InjectionPoint,
+} from '@papercusp/orchestrator/blueprint';
+import { parseBlueprintSource } from '../agent-tools/blueprint/_resolve';
+import { operatorResolveExtends } from '../blueprint/installed-blueprints';
+import { dispatchReadOnlyTool } from '../events/await/predicate-watch';
+import { resolveIdentityClassProvider } from './class-provider';
+import { validateIdentityProviderOutput } from './provider-output';
+import { getIdentitySource, localDirs } from './source';
 import {
   DEFAULT_SINK_HOST_LIMITS,
   evaluateSinkInvocation,
@@ -215,7 +234,6 @@ export function packageSinkReceipt(sink: TurnStartPackageSink): Record<string, u
 export function defaultTurnStartPackageSinkDeps(): TurnStartPackageSinkDeps {
   return {
     readWearer: async (ownerId, workspaceId) => {
-      const { getOrgPg } = await import('@papercusp/db-org');
       const rows = await getOrgPg().sql<{ control_state: unknown; control_generation: string | number | null }[]>`
         SELECT control_state, control_generation
           FROM harness_shared.session_briefs
@@ -238,14 +256,6 @@ export function defaultTurnStartPackageSinkDeps(): TurnStartPackageSinkDeps {
       };
     },
     readDueContributions: async (identityId) => {
-      const [{ getIdentitySource, localDirs }, { parseBlueprintSource }, { operatorResolveExtends },
-        { resolveBlueprintSource, BlueprintSourceDocumentSchema }, { readFile }] = await Promise.all([
-        import('./source'),
-        import('../agent-tools/blueprint/_resolve'),
-        import('../blueprint/installed-blueprints'),
-        import('@papercusp/orchestrator/blueprint'),
-        import('node:fs/promises'),
-      ]);
       const identity = await getIdentitySource(identityId);
       // A layer the catalog cannot resolve declares nothing this sink can run.
       if (!identity.ok || !identity.sourcePath) return [];
@@ -262,13 +272,6 @@ export function defaultTurnStartPackageSinkDeps(): TurnStartPackageSinkDeps {
       }));
     },
     produceContext: async (call) => {
-      const [{ getOrgPg }, { resolveIdentityClassProvider }, { dispatchReadOnlyTool }, { validateIdentityProviderOutput }] =
-        await Promise.all([
-          import('@papercusp/db-org'),
-          import('./class-provider'),
-          import('../events/await/predicate-watch'),
-          import('./provider-output'),
-        ]);
       const resolved = await resolveIdentityClassProvider(getOrgPg().sql, {
         workspaceId: call.workspaceId, potSlug: call.potSlug,
         classRef: call.contribution.ref, verb: call.contribution.verb,
