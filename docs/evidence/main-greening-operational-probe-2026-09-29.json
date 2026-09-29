@@ -1,0 +1,147 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "main-greening operational probe (r007, r001, r009)",
+ "framework": "shell",
+ "command": [
+  "npx",
+  "tsx",
+  "docs/evidence/main-greening-operational-probe-2026-09-29.mts",
+  "all"
+ ],
+ "exitCode": 0,
+ "startedAt": "2026-09-29T08:58:34.244Z",
+ "finishedAt": "2026-09-29T08:58:36.090Z",
+ "summary": "15/15 live assertions passed for plan main-greening-control-plane-durable-fix-2026-09-21.",
+ "assertions": [
+  {
+   "id": "auto-bar-r-007-status-p-005",
+   "passed": true,
+   "evidence": "deployed :3070 (d425508f01) status for live attempt d0ea2393-1913-42b1-8140-c1708bf86aa2 exposes agesMs.attempt=12752637"
+  },
+  {
+   "id": "auto-bar-r-007-progress-age-p-005",
+   "passed": true,
+   "evidence": "same status exposes agesMs.progress=3334601 (lastProgressAtMs=1790668980465)"
+  },
+  {
+   "id": "auto-bar-r-007-freshness-p-005",
+   "passed": true,
+   "evidence": "10/10 live attempts whose progress was written after their scheduler fire report the fresher progress age (e.g. dummy-pot-0707: agesMs.progress=2907004 < agesMs.scheduled=2911177)"
+  },
+  {
+   "id": "auto-bar-r-007-fire-exclusion-p-005",
+   "passed": true,
+   "evidence": "10/10 live attempts with a scheduler fire newer than their last progress keep the older progress age (e.g. calendar attempt 302fcec6-221c-4024-b421-dfc8d988a601: lastScheduledAtMs=1790668980651 > lastProgressAtMs=1790233391413, agesMs.progress=438923970 > agesMs.scheduled=3334732)"
+  },
+  {
+   "id": "auto-bar-r-007-terminal-age-p-005",
+   "passed": true,
+   "evidence": "live terminal attempt f2b57bb5-31b7-49ec-91c3-9b592c744c26 (oddsmith, code-inconclusive) status exposes agesMs.terminal=376975"
+  },
+  {
+   "id": "auto-bar-r-007-terminal-freshness-p-005",
+   "passed": true,
+   "evidence": "the terminal timestamp is the attempt's freshest clock: agesMs.terminal=376975 < agesMs.progress=387305"
+  },
+  {
+   "id": "auto-bar-r-007-conflict-p-005",
+   "passed": true,
+   "evidence": "identity check over live attempt f2b57bb5-31b7-49ec-91c3-9b592c744c26: matching identity -> []; stale identity -> [\"attempt stored=f2b57bb5-31b7-49ec-91c3-9b592c744c26 produced=probe-stale-attempt\",\"run stored=349a7f32-250b-4bc7-b2a4-1703a3a0157a produced=probe-stale-run\"]"
+  },
+  {
+   "id": "auto-bar-r-001-p-001",
+   "passed": true,
+   "evidence": "incident red driven on WI-10003256 (kind bug, source plan <none>, done) outside this plan; 0 of 78 current control-plane (R-002..R-008) bindings sit on it"
+  },
+  {
+   "id": "auto-bar-r-001-independent-p-001",
+   "passed": true,
+   "evidence": "78 current control-plane bindings (work items WI-10002996,WI-10002997,WI-10002998,WI-10003000,WI-10003001) cite the incident candidate cc83bd6e / repair head 09e39c5d 0 times: the control-plane fix was proven without touching the repair lane"
+  },
+  {
+   "id": "auto-bar-r-009-verdict-p-005",
+   "passed": true,
+   "evidence": "gate suite ran on exact repair head 01a67545f3af: 10461 clean-tree ci rows over 7448 files; 2 file(s) failed then passed on retry, 0 left failing"
+  },
+  {
+   "id": "auto-bar-r-009-main-p-005",
+   "passed": true,
+   "evidence": "main reflog records main set to exactly 01a67545f3af (1 entry), and it remains an ancestor of main d425508f01ed"
+  },
+  {
+   "id": "auto-bar-r-009-green-pin-p-005",
+   "passed": true,
+   "evidence": "main is green-only (automation fast-forwards it on a green verdict), so the reflog entry at 01a67545f3af is the green-pin promotion of the exact repair head"
+  },
+  {
+   "id": "auto-bar-r-009-deploy-p-005",
+   "passed": true,
+   "evidence": "deployed :3070 serves d425508f01 (d425508f01ed), which contains repair head 01a67545f3af as an ancestor"
+  },
+  {
+   "id": "auto-bar-r-009-p-005",
+   "passed": true,
+   "evidence": "incident candidate ac857b4ba0f1 is an ancestor of repair head 01a67545f3af, whose gate run left 0 failing files, and the deployed build contains it"
+  },
+  {
+   "id": "auto-bar-r-009-runtime-parity-p-007",
+   "passed": true,
+   "evidence": "deployed d425508f01 (contains repair head) and staging 9df6c51d0c project the same live qualification lifecycle: identical on attempt/phase/outcome/clocks/runner/nextAction"
+  }
+ ],
+ "plan": "main-greening-control-plane-durable-fix-2026-09-21",
+ "observationsNote": "Recorded verbatim from the probe's stdout except the two per-row arrays r007ProgressAfterFire and r007FireAfterProgress, which are cut to their first entry plus the full install list (10 rows each in the run). Re-run the command to regenerate them in full.",
+ "observations": {
+  "r007Deployed": { "healthSha": "d425508f01", "releaseCheckoutHead": "d425508f01edf8d29045e9d89e6f0fd115febf74" },
+  "r007PapercuspLiveStatus": {
+   "attemptId": "d0ea2393-1913-42b1-8140-c1708bf86aa2",
+   "phase": "waiting",
+   "clocks": { "lastScheduledAtMs": 1790670183155, "lastStartedAtMs": 1790668980465, "lastProgressAtMs": 1790668980465, "lastTerminalVerdictAtMs": null },
+   "agesMs": { "attempt": 12752637, "scheduled": 2131911, "started": 3334601, "progress": 3334601, "terminal": null },
+   "runnerHealth": { "state": "none", "liveness": "unknown", "phase": null, "progressAgeMs": null },
+   "safeNextAction": "launch-preflight-runner"
+  },
+  "r007ProgressAfterFire": {
+   "count": 10,
+   "installs": ["dummy-pot-0707", "hello-world-2-hive", "hello-world-3", "hello-world-hive", "oddsmith", "papercusp-public-site", "phone-app", "quartermaster", "recipe-app", "scout-runtime"],
+   "first": { "install": "dummy-pot-0707", "attemptId": "982daba5-06e5-4394-b08e-17baa1c23731", "agesMs": { "attempt": 2911195, "scheduled": 2911177, "started": 2907004, "progress": 2907004, "terminal": 2903872 } }
+  },
+  "r007FireAfterProgress": {
+   "count": 10,
+   "installs": ["calendar", "email", "hello-world-3-pot", "hotel-reservations", "panda-gallery", "papercusp", "papercusp-public-site-pot", "portal", "sidestage", "spoon-knife-hive"],
+   "first": { "install": "calendar", "attemptId": "302fcec6-221c-4024-b421-dfc8d988a601", "phase": "running", "clocks": { "lastScheduledAtMs": 1790668980651, "lastStartedAtMs": 1790233391413, "lastProgressAtMs": 1790233391413, "lastTerminalVerdictAtMs": null }, "agesMs": { "attempt": 438931285, "scheduled": 3334732, "started": 438923970, "progress": 438923970, "terminal": null } }
+  },
+  "r007TerminalRow": {
+   "install": "oddsmith",
+   "attemptId": "f2b57bb5-31b7-49ec-91c3-9b592c744c26",
+   "outcome": { "kind": "code-inconclusive", "reason": "error" },
+   "clocks": { "lastScheduledAtMs": 1790671923280, "lastStartedAtMs": 1790671928153, "lastProgressAtMs": 1790671928153, "lastTerminalVerdictAtMs": 1790671938483 },
+   "agesMs": { "attempt": 392182, "scheduled": 392178, "started": 387305, "progress": 387305, "terminal": 376975 }
+  },
+  "r007Conflict": {
+   "agree": [],
+   "stale": ["attempt stored=f2b57bb5-31b7-49ec-91c3-9b592c744c26 produced=probe-stale-attempt", "run stored=349a7f32-250b-4bc7-b2a4-1703a3a0157a produced=probe-stale-run"]
+  },
+  "r001IncidentLane": ["WI-10003256", "bug", "<none>", "done"],
+  "r001ControlPlaneCensus": { "currentBindings": "78", "onIncidentItem": "0", "citingIncidentShas": "0", "workItems": "WI-10002996,WI-10002997,WI-10002998,WI-10003000,WI-10003001" },
+  "r009Verdict": {
+   "ciRows": 10461,
+   "files": 7448,
+   "failedThenRetried": [
+    "packages/operator-core/lib/knowledge-packs/domain-default-packs.test.ts: pass>fail>pass",
+    "packages/operator-core/lib/harness/register-papercusp.test.ts: fail>fail>pass>pass"
+   ],
+   "unrecovered": []
+  },
+  "r009Promotion": {
+   "mainNow": "d425508f01edf8d29045e9d89e6f0fd115febf74",
+   "mainReflogEntriesAtRepairHead": ["01a67545f3afff3cdee35c21a9d6476acad93579 main@{1790613839} branch: Reset to 01a67545f3afff3cdee35c21a9d6476acad93579"],
+   "deployedSha": "d425508f01edf8d29045e9d89e6f0fd115febf74"
+  },
+  "p007Parity": {
+   "deployed": { "sha": "d425508f01", "attemptId": "d0ea2393-1913-42b1-8140-c1708bf86aa2", "phase": "waiting", "outcome": "pre-suite-no-verdict", "clocks": { "lastScheduledAtMs": 1790670183155, "lastStartedAtMs": 1790668980465, "lastProgressAtMs": 1790668980465, "lastTerminalVerdictAtMs": null }, "runnerState": "none", "safeNextAction": "launch-preflight-runner" },
+   "staging": { "sha": "9df6c51d0c", "attemptId": "d0ea2393-1913-42b1-8140-c1708bf86aa2", "phase": "waiting", "outcome": "pre-suite-no-verdict", "clocks": { "lastScheduledAtMs": 1790670183155, "lastStartedAtMs": 1790668980465, "lastProgressAtMs": 1790668980465, "lastTerminalVerdictAtMs": null }, "runnerState": "none", "safeNextAction": "launch-preflight-runner" }
+  }
+ }
+}

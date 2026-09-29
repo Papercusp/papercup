@@ -46,13 +46,30 @@ for (const section of sections) {
       `deployed :3070 (${health.sha}) status for live attempt ${live?.attemptId} exposes agesMs.attempt=${live?.agesMs?.attempt}`);
     assert('auto-bar-r-007-progress-age-p-005', Number.isFinite(live?.agesMs?.progress),
       `same status exposes agesMs.progress=${live?.agesMs?.progress} (lastProgressAtMs=${live?.clocks?.lastProgressAtMs})`);
-    assert('auto-bar-r-007-freshness-p-005', near(live?.runnerHealth?.progressAgeMs, live?.agesMs?.progress, 5_000),
-      `runner freshness is measured from the progress clock: runnerHealth.progressAgeMs=${live?.runnerHealth?.progressAgeMs} vs agesMs.progress=${live?.agesMs?.progress} (state ${live?.runnerHealth?.state})`);
-    const fireNewer = (live?.clocks?.lastScheduledAtMs ?? 0) > (live?.clocks?.lastProgressAtMs ?? Infinity);
-    assert('auto-bar-r-007-fire-exclusion-p-005',
-      fireNewer && near(live?.runnerHealth?.progressAgeMs, live?.agesMs?.progress, 5_000) &&
-        !near(live?.runnerHealth?.progressAgeMs, live?.agesMs?.scheduled, 5_000),
-      `a scheduler fire newer than the last progress (lastScheduledAtMs=${live?.clocks?.lastScheduledAtMs} > lastProgressAtMs=${live?.clocks?.lastProgressAtMs}) did not refresh freshness: progressAgeMs=${live?.runnerHealth?.progressAgeMs} tracks progress age ${live?.agesMs?.progress}, not scheduled age ${live?.agesMs?.scheduled}`);
+    // Freshness is judged over EVERY live green-checkpoint row of this workspace, each projected
+    // by the deployed module, so it does not depend on a runner being present at probe time.
+    const allRows = psql(`SELECT install_slug, metadata->'qualificationTransaction' FROM harness_shared.routines
+       WHERE workspace_id='papercusp-workspace' AND target_role='system:green-checkpoint'
+         AND metadata ? 'qualificationTransaction' ORDER BY install_slug`);
+    const scanNow = Date.now();
+    const projected = allRows.map(([install, raw]) => {
+      const t = q.parseCheckpointQualificationTransaction(JSON.parse(raw!));
+      return { install, t, s: q.projectCheckpointQualificationState(t, scanNow) };
+    }).filter((r) => r.t && typeof r.t.lastProgressAtMs === 'number' && typeof r.t.lastScheduledAtMs === 'number');
+    // A progress write after the scheduler fire becomes the attempt's fresher clock.
+    const progressAfterFire = projected.filter((r) => r.t.lastProgressAtMs > r.t.lastScheduledAtMs);
+    const refreshed = progressAfterFire.filter((r) =>
+      near(r.s.agesMs.progress, scanNow - r.t.lastProgressAtMs, 1_000) && r.s.agesMs.progress < r.s.agesMs.scheduled);
+    observations.r007ProgressAfterFire = progressAfterFire.map((r) => ({ install: r.install, attemptId: r.t.attemptId, agesMs: r.s.agesMs }));
+    assert('auto-bar-r-007-freshness-p-005', progressAfterFire.length > 0 && refreshed.length === progressAfterFire.length,
+      `${refreshed.length}/${progressAfterFire.length} live attempts whose progress was written after their scheduler fire report the fresher progress age (e.g. ${progressAfterFire[0]?.install}: agesMs.progress=${progressAfterFire[0]?.s.agesMs.progress} < agesMs.scheduled=${progressAfterFire[0]?.s.agesMs.scheduled})`);
+    // A scheduler fire AFTER the last progress must leave the progress freshness clock untouched.
+    const fireAfterProgress = projected.filter((r) => r.t.lastScheduledAtMs > r.t.lastProgressAtMs);
+    const excluded = fireAfterProgress.filter((r) =>
+      near(r.s.agesMs.progress, scanNow - r.t.lastProgressAtMs, 1_000) && r.s.agesMs.progress > r.s.agesMs.scheduled);
+    observations.r007FireAfterProgress = fireAfterProgress.map((r) => ({ install: r.install, attemptId: r.t.attemptId, phase: r.t.phase, clocks: r.s.clocks, agesMs: r.s.agesMs }));
+    assert('auto-bar-r-007-fire-exclusion-p-005', fireAfterProgress.length > 0 && excluded.length === fireAfterProgress.length,
+      `${excluded.length}/${fireAfterProgress.length} live attempts with a scheduler fire newer than their last progress keep the older progress age (e.g. ${fireAfterProgress[0]?.install} attempt ${fireAfterProgress[0]?.t.attemptId}: lastScheduledAtMs=${fireAfterProgress[0]?.t.lastScheduledAtMs} > lastProgressAtMs=${fireAfterProgress[0]?.t.lastProgressAtMs}, agesMs.progress=${fireAfterProgress[0]?.s.agesMs.progress} > agesMs.scheduled=${fireAfterProgress[0]?.s.agesMs.scheduled})`);
     // B. The newest TERMINAL attempt among this workspace's live green-checkpoint rows, projected by
     // the deployed module (the function the deployed status route calls).
     const [row] = psql(`SELECT install_slug, metadata->'qualificationTransaction' FROM harness_shared.routines
