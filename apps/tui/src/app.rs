@@ -2030,6 +2030,12 @@ pub struct App {
     /// `pui workbench`. Unlike `pinned` this is not a dock pane: Context
     /// still follows the bound chat rather than the Sentinel roster.
     pub chat_first: bool,
+    /// Ctrl-O details view over Agent Chat (pui-chat-first-ux P-003). `None`
+    /// follows the surface default: hidden in chat-first, shown in the
+    /// workbench. The details are the internal session ids, lifecycle,
+    /// reconciliation, pot/role and raw errors; the default chat shows only
+    /// model · directory · context · cost and plain one-sentence failures.
+    pub chat_details: Option<bool>,
     pub plans: Vec<PlanSummary>,
     pub plan_sel: usize,
     /// Goals for the Plans-tab spine (P-032) + the goals-column cursor.
@@ -2739,6 +2745,7 @@ impl App {
             view_state_restore_pending: true,
             pinned: None,
             chat_first: false,
+            chat_details: None,
             plans: Vec::new(),
             plan_sel: 0,
             goals: Vec::new(),
@@ -6109,6 +6116,139 @@ impl App {
         Some(format!(
             "usage in {input} / out {output} / cost {cost} / context unknown"
         ))
+    }
+
+    /// Whether the Ctrl-O details view is showing (pui-chat-first-ux P-003).
+    /// Chat-first hides it by default; the workbench is an operator console
+    /// and shows it unless the owner toggled it off.
+    pub fn chat_details_visible(&self) -> bool {
+        self.chat_details.unwrap_or(!self.chat_first)
+    }
+
+    /// The default chat status line (P-003 / R-03): model · directory ·
+    /// context · cost, the last two only when measured. It carries nothing
+    /// internal — no session ids, lifecycle, pot, role, store or operator
+    /// address; those live in the Ctrl-O details view and `pui doctor`.
+    pub fn chat_status_line(&self) -> String {
+        if self.backend_identity_error.is_some() {
+            return "Not connected · send a message to set up PUI".to_string();
+        }
+        let mut fields = vec![self.chat_model_label(), self.chat_directory_label()];
+        // The Agent Chat contract has no context-consumption measurement yet,
+        // so context use is left out rather than printed as "unknown".
+        if let Some(cents) = self.agent_chat_usage.cost_usd_cents {
+            fields.push(format!("${:.2}", cents / 100.0));
+        }
+        fields.join(" · ")
+    }
+
+    /// The engine this conversation runs on, in product words ("Claude").
+    fn chat_engine_label(&self) -> &'static str {
+        self.su_session
+            .as_ref()
+            .map(|session| session.backend())
+            .or(self.su_backend)
+            .unwrap_or(crate::su_session::PUI_DEFAULT_SU_BACKEND)
+            .label()
+    }
+
+    /// The model that last answered, else the one picked for the next turn,
+    /// else the engine's own name (its configured default model).
+    fn chat_model_label(&self) -> String {
+        let known = |model: &str| {
+            let model = model.trim();
+            (!model.is_empty() && !model.eq_ignore_ascii_case("unknown")).then(|| model.to_string())
+        };
+        self.chat_messages
+            .iter()
+            .rev()
+            .filter_map(|m| m.provenance.as_ref())
+            .find_map(|p| known(&p.model))
+            .or_else(|| self.chat_model.as_deref().and_then(known))
+            .unwrap_or_else(|| self.chat_engine_label().to_string())
+    }
+
+    /// The launch directory, with the home prefix shortened to `~` as in a
+    /// shell prompt.
+    fn chat_directory_label(&self) -> String {
+        let dir = self.project_root.display().to_string();
+        match std::env::var("HOME") {
+            Ok(home) if !home.is_empty() && home != "/" => match dir.strip_prefix(&home) {
+                Some("") => "~".to_string(),
+                Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+                _ => dir,
+            },
+            _ => dir,
+        }
+    }
+
+    /// The raw failure the chat is currently showing, if any: the unsent
+    /// turn's refusal, a lost connection, or the error of a session that is no
+    /// longer live. Shown verbatim only in the details view.
+    pub fn chat_raw_failure(&self) -> Option<&str> {
+        self.su_pending_turn
+            .as_ref()
+            .filter(|_| !self.chat_streaming)
+            .and_then(|turn| turn.error.as_deref())
+            .or(self.su_connection_error.as_deref())
+            .or_else(|| {
+                self.su_session
+                    .as_ref()
+                    .filter(|session| !session.is_live())
+                    .and_then(|session| session.error.as_deref())
+            })
+    }
+
+    /// The one plain sentence the default chat shows for a failure (R-03):
+    /// what went wrong and the single next step. The raw text can carry
+    /// session ids, reconciliation states and operator addresses, so it stays
+    /// behind Ctrl-O.
+    pub fn chat_failure_sentence(&self) -> Option<String> {
+        let raw = self.chat_raw_failure()?.to_ascii_lowercase();
+        let engine = self.chat_engine_label();
+        let pending = self.su_pending_turn.as_ref();
+        let retry = if pending.is_some() {
+            "press Enter to send your message again"
+        } else {
+            "send a message to start it again"
+        };
+        if pending.is_some_and(|turn| turn.uncertain) {
+            return Some(format!(
+                "It is not clear whether {engine} received your message; press Enter to check."
+            ));
+        }
+        let sentence = if raw.contains("/login")
+            || raw.contains("not logged in")
+            || raw.contains("authentication")
+            || raw.contains("401")
+        {
+            format!("{engine} is not signed in; sign in to {engine}, then {retry}.")
+        } else if self.su_connection_error.is_some()
+            || raw.contains("connection refused")
+            || raw.contains("error sending request")
+            || raw.contains("unreachable")
+        {
+            // Opening or reaching the session failed. An engine that died
+            // mid-start also closes its event stream, but that is the
+            // "before it was ready" case below, not a lost connection.
+            format!("PUI lost its connection to {engine}; {retry}.")
+        } else if self.su_session.as_ref().is_some_and(|session| {
+            matches!(
+                session.lifecycle,
+                crate::su_session::SuSessionLifecycleState::Starting
+                    | crate::su_session::SuSessionLifecycleState::Resuming
+            )
+        }) || raw.contains("ready")
+            || raw.contains("initiali")
+            || raw.contains("startup")
+        {
+            format!("{engine} stopped before it was ready; {retry}.")
+        } else if self.su_session.as_ref().is_some_and(|s| s.is_live()) {
+            format!("{engine} did not accept your message; {retry}.")
+        } else {
+            format!("{engine} stopped; {retry}.")
+        };
+        Some(sentence)
     }
 
     /// Settings tab (P10): store the operator feature flags as a sorted Vec (the
@@ -11638,6 +11778,14 @@ impl App {
                 query: String::new(),
             };
         }
+        // pui-chat-first-ux P-003: Ctrl-O shows or hides the chat's details
+        // (session ids, lifecycle, reconciliation, pot/role, raw errors) — the
+        // same key Claude Code uses to expand detail. It never touches the
+        // draft, so it works while the composer has focus.
+        if code == KeyCode::Char('o') && mods.contains(KeyModifiers::CONTROL) {
+            self.chat_details = Some(!self.chat_details_visible());
+            return Action::Render;
+        }
         // PUBLIC_RELEASE_UX.md § Compact terminal: Ctrl-T opens the selected
         // conversation's Context full-screen from every ordinary surface — the
         // same projection the wide rail shows beside Agent Chat, now focused so
@@ -15962,6 +16110,46 @@ mod tests {
         assert!(!a.chat_first_autostart);
         assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "  first λ 雪  ");
         assert_eq!(a.chat_account.as_deref(), Some("default"));
+    }
+
+    /// pui-chat-first-ux P-003: Ctrl-O shows and hides the chat's details from
+    /// the focused composer without typing into the draft.
+    #[test]
+    fn chat_first_ctrl_o_toggles_details_without_touching_the_draft() {
+        let mut a = chat_first_app();
+        a.chat_input = "half-typed".into();
+        assert!(!a.chat_details_visible(), "chat-first hides details by default");
+        let action = a.on_key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert!(matches!(action, Action::Render), "got {action:?}");
+        assert!(a.chat_details_visible());
+        assert_eq!(a.chat_input, "half-typed");
+        assert!(a.chat_composing);
+        a.on_key(KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert!(!a.chat_details_visible());
+        assert_eq!(a.chat_input, "half-typed");
+    }
+
+    /// pui-chat-first-ux P-003: an engine that dies while starting (the
+    /// stream-error path) reads as one plain sentence with the retry step; the
+    /// raw "SU-session: …" text is kept for the details view only.
+    #[test]
+    fn chat_first_startup_failure_is_one_plain_sentence() {
+        let mut a = chat_first_app();
+        a.chat_input = "hello".into();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        a.update(Event::SuSessionOpened(su_binding()));
+        a.agent_chat_id = Some("chat-1".into());
+        a.update(Event::SuSessionStreamError {
+            chat_id: "chat-1".into(),
+            message: "event stream closed unexpectedly".into(),
+        });
+        assert_eq!(
+            a.chat_failure_sentence().as_deref(),
+            Some("Claude stopped before it was ready; press Enter to send your message again.")
+        );
+        assert!(a
+            .chat_raw_failure()
+            .is_some_and(|raw| raw.contains("event stream closed unexpectedly")));
     }
 
     /// A message typed before the operator answered waits on the form (which

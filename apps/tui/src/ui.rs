@@ -2788,21 +2788,29 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
 /// the latest (0 = pinned to the newest). The in-flight assistant bubble shows a
 /// live `<say>` preview via `chat_tags::live_preview`.
 fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
+    // pui-chat-first-ux P-003 / R-03: the default chat carries no internal
+    // jargon. Session ids, lifecycle, reconciliation, pot/role and raw errors
+    // show only in the Ctrl-O details view (on by default in the workbench).
+    let details = app.chat_details_visible();
     // Background reads may clear the global status error. Keep the actual
     // refusal with the unsent turn so the owner can act on it before retrying.
-    let turn_error: Vec<String> = app
-        .su_pending_turn
-        .as_ref()
-        .filter(|_| !app.chat_streaming)
-        .and_then(|turn| turn.error.as_ref())
-        .or(app.su_connection_error.as_ref())
-        .map(|error| {
-            wrap_text(error, area.width.saturating_sub(2).max(1) as usize)
-                .into_iter()
-                .take(6)
-                .collect()
-        })
-        .unwrap_or_default();
+    // Without details it is ONE plain sentence: cause and next step.
+    let turn_error: Vec<String> = if details {
+        app.su_pending_turn
+            .as_ref()
+            .filter(|_| !app.chat_streaming)
+            .and_then(|turn| turn.error.clone())
+            .or(app.su_connection_error.clone())
+    } else {
+        app.chat_failure_sentence()
+    }
+    .map(|error| {
+        wrap_text(&error, area.width.saturating_sub(2).max(1) as usize)
+            .into_iter()
+            .take(6)
+            .collect()
+    })
+    .unwrap_or_default();
     // Inline card (sentinel-tui-shared-backend-and-cards Phase 2a): when the
     // operator brain has an open `chat:ask_choice` card, reserve a bottom strip
     // for it (between the transcript and the composer) and render it there. The
@@ -2813,7 +2821,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // terminal leaves too little room for the complete configuration row.
     let width = area.width.saturating_sub(2).max(1) as usize;
     let mut selection_rows: Vec<String> = Vec::new();
-    for field in app.agent_chat_selection_label().split(" · ") {
+    let selection = if details {
+        app.agent_chat_selection_label()
+    } else {
+        app.chat_status_line()
+    };
+    for field in selection.split(" · ") {
         if let Some(last) = selection_rows.last_mut() {
             if Line::from(last.as_str()).width() + 3 + Line::from(field).width() <= width {
                 last.push_str(" · ");
@@ -2864,7 +2877,32 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
 
     let inner_w = transcript_area.width.saturating_sub(2).max(1) as usize; // minus borders
     let mut lines: Vec<Line> = Vec::new();
-    if let Some(session) = app.su_session.as_ref() {
+    if !details {
+        // Plain progress in product words; a failure is the composer's one
+        // sentence instead, so it is never shown twice.
+        if let Some(session) = app
+            .su_session
+            .as_ref()
+            .filter(|_| app.chat_failure_sentence().is_none())
+        {
+            use crate::su_session::SuSessionLifecycleState as L;
+            let engine = session.backend().label();
+            let progress = if session.stale {
+                Some(format!("Reconnecting to {engine}…"))
+            } else {
+                match session.lifecycle {
+                    L::Starting => Some(format!("Starting {engine}…")),
+                    L::Resuming => Some(format!("Resuming {engine}…")),
+                    L::Compacting => Some("Compacting the conversation…".to_string()),
+                    _ => None,
+                }
+            };
+            if let Some(progress) = progress {
+                lines.push(Line::from(Span::styled(progress, Theme::dim())));
+            }
+        }
+    }
+    if let Some(session) = app.su_session.as_ref().filter(|_| details) {
         let lifecycle = format!(
             "SU session · {} · adv {} · seq {}{}",
             session.lifecycle,
@@ -2897,6 +2935,9 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(Span::styled(
             if app.backend_identity_error.is_some() {
                 crate::app::CHAT_DISCONNECTED_HINT
+            } else if app.chat_first && app.chat_composing {
+                // Chat-first already focused the composer (P-001).
+                "Type a message below and press Enter."
             } else {
                 "No messages yet — press i to talk to this agent, or s to choose a role/session."
             },
@@ -2928,7 +2969,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             format!("  {header}")
         };
         lines.push(Line::from(Span::styled(header, who_style)));
-        if let Some(provenance) = m.provenance.as_ref() {
+        if let Some(provenance) = m.provenance.as_ref().filter(|_| details) {
             lines.push(Line::from(Span::styled(
                 format!(
                     "  {} · {} · account {}",
@@ -3263,7 +3304,13 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.chat_composing {
         (
-            " Message — Enter send · ↑↓ history · Esc cancel ",
+            // Chat-first names the Ctrl-O details view (P-003): the ids and raw
+            // errors moved there, so the way to them must be on screen.
+            if app.chat_first {
+                " Message — Enter send · ↑↓ history · Ctrl+O details "
+            } else {
+                " Message — Enter send · ↑↓ history · Esc cancel "
+            },
             // Newlines from a bracketed paste are shown as ⏎ rather than stripped:
             // the model keeps the text verbatim (D-017 #1), and a raw \n inside a
             // single-line Span would render as a blank or a tofu box, hiding from
@@ -8795,6 +8842,145 @@ mod tests {
             measured_zero.contains("usage in 0 / out 0 / cost $0.0000 / context unknown"),
             "{measured_zero}"
         );
+    }
+
+    /// A chat-first app bound to a live, attached session with every internal
+    /// identifier R-03 forbids on the default screen (pui-chat-first-ux P-003).
+    fn chat_first_bound_app() -> App {
+        use crate::su_session::{
+            SuSessionBackend, SuSessionBinding, SuSessionLifecycleState, SuSessionReconciliation,
+            SuSessionState,
+        };
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.chat_first = true;
+        app.chat_composing = true;
+        app.harness = "papercusp".into();
+        app.agent_chat_id = Some("7d1b0a8d-69e4-4c1e-9a55-00000000c0de".into());
+        app.project_root = "/work/demo".into();
+        let mut session = SuSessionState::from_binding(SuSessionBinding {
+            operation: "launch".into(),
+            backend: SuSessionBackend::Claude,
+            adv_session_id: 31362,
+            owner_id: None,
+            workspace_id: None,
+            harness_slug: Some("papercusp".into()),
+            plan_slug: None,
+            native_session: None,
+        });
+        session.lifecycle = SuSessionLifecycleState::WaitingForOwner;
+        session.reconciliation = SuSessionReconciliation::Attached;
+        session.last_sequence = 13;
+        app.su_session = Some(session);
+        app.chat_messages = vec![
+            crate::models::ChatMessage::user("hello"),
+            crate::models::ChatMessage::assistant("Hi — what are we working on?"),
+        ];
+        app
+    }
+
+    /// The token classes R-03 forbids on the default chat screen: session ids,
+    /// sequence numbers, lifecycle and reconciliation states, pot/role/store
+    /// names, operator addresses, account routes and "unknown" usage rows.
+    fn assert_no_chat_jargon(frame: &str) {
+        for forbidden in [
+            "adv ",
+            "31362",
+            "seq ",
+            "7d1b0a8d",
+            "reconciliation",
+            "waiting-for-owner",
+            "SU session",
+            "SU · ",
+            "pot ",
+            "role ",
+            "store ",
+            "http://",
+            "account ",
+            "unknown",
+        ] {
+            assert!(
+                !frame.contains(forbidden),
+                "default chat shows `{forbidden}`:\n{frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn chat_first_default_frame_shows_model_directory_and_only_measured_cost() {
+        let mut app = chat_first_bound_app();
+        let frame = render(&app, 120, 24);
+        assert_no_chat_jargon(&frame);
+        assert!(frame.contains("Claude · /work/demo"), "{frame}");
+        assert!(frame.contains("Ctrl+O details"), "{frame}");
+        assert!(!frame.contains('$'), "no cost before one is measured:\n{frame}");
+
+        app.agent_chat_usage.cost_usd_cents = Some(12.0);
+        let priced = render(&app, 120, 24);
+        assert_no_chat_jargon(&priced);
+        assert!(priced.contains("Claude · /work/demo · $0.12"), "{priced}");
+    }
+
+    #[test]
+    fn chat_first_names_the_model_that_answered_without_its_account_route() {
+        let mut app = chat_first_bound_app();
+        app.chat_messages[1].provenance = Some(crate::models::ChatProvenance {
+            engine: "claude".into(),
+            model: "claude-sonnet-4-5".into(),
+            account_route: "aviynw3_claude".into(),
+        });
+        let frame = render(&app, 120, 24);
+        assert_no_chat_jargon(&frame);
+        assert!(frame.contains("claude-sonnet-4-5 · /work/demo"), "{frame}");
+        assert!(!frame.contains("aviynw3"), "{frame}");
+    }
+
+    #[test]
+    fn chat_details_view_holds_the_internal_ids_and_the_workbench_shows_it() {
+        let mut app = chat_first_bound_app();
+        app.chat_details = Some(true);
+        let details = render(&app, 150, 24);
+        for shown in ["adv 31362", "seq 13", "reconciliation: attached", "pot papercusp"] {
+            assert!(details.contains(shown), "details view lacks `{shown}`:\n{details}");
+        }
+        // The workbench is the operator console: details are its default.
+        let mut workbench = chat_first_bound_app();
+        workbench.chat_first = false;
+        assert!(workbench.chat_details_visible());
+        assert!(render(&workbench, 150, 24).contains("adv 31362"));
+    }
+
+    #[test]
+    fn chat_first_failure_is_one_plain_sentence_and_the_raw_error_waits_behind_details() {
+        let mut app = chat_first_bound_app();
+        let raw = "SU-session host is not attached (adv 31362) via http://127.0.0.1:9071";
+        let session = app.su_session.as_mut().unwrap();
+        session.lifecycle = crate::su_session::SuSessionLifecycleState::Failed;
+        session.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
+        session.error = Some(raw.into());
+        let frame = render(&app, 120, 24);
+        assert_no_chat_jargon(&frame);
+        assert!(
+            frame.contains("Claude stopped; send a message to start it again."),
+            "{frame}"
+        );
+        // Shown once, in the composer, not echoed in the transcript header.
+        assert_eq!(frame.matches("Claude stopped").count(), 1, "{frame}");
+
+        app.chat_details = Some(true);
+        assert!(render(&app, 160, 24).contains("SU-session host is not attached"));
+    }
+
+    #[test]
+    fn chat_first_startup_progress_is_plain_words() {
+        let mut app = chat_first_bound_app();
+        app.su_session.as_mut().unwrap().lifecycle =
+            crate::su_session::SuSessionLifecycleState::Starting;
+        app.chat_messages.clear();
+        let frame = render(&app, 120, 24);
+        assert_no_chat_jargon(&frame);
+        assert!(frame.contains("Starting Claude…"), "{frame}");
+        assert!(frame.contains("Type a message below and press Enter."), "{frame}");
     }
 
     /// EI-22067863854642076: a legacy/unclassified conversation's composer
