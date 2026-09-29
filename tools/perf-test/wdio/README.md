@@ -28,9 +28,14 @@ cd papercusp-desktop && npm run build     # tauri build → src-tauri/target/rel
 # 2. Run every spec against the binary, capturing a per-run log:
 npm run perf:desktop                       # from the repo root
 
-#    …or run wdio directly:
-cd tools/perf-test/wdio && npm test
+#    …or run wdio directly (typecheck + runner unit guards + every spec):
+cd tools/perf-test/wdio && npm run test:all
 ```
+
+> `npm test` here runs ONLY the headless runner unit guards (`perf-report.node-test.ts`).
+> That is deliberate: `tools/perf-test/wdio` is in `STANDALONE_PACKAGE_DIRS`
+> (`scripts/affected-tests.mjs`), so the green gate runs its `test` script on every change to
+> this package, and the gate cannot boot a packaged desktop binary. The full run is `test:all`.
 
 `wdio.conf.ts` resolves the binary from `TAURI_APP_PATH` (or the real build
 locations — release preferred, honoring `CARGO_TARGET_DIR`), preflight-checks

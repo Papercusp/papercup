@@ -41,7 +41,7 @@
  * the canonical constants — keep the two in sync when a budget changes.
  *
  * Prereqs (../README.md): a built desktop binary, tauri-driver, WebKitWebDriver.
- * Run: `npm test` from tools/perf-test/wdio (or `npm run perf:desktop` at root).
+ * Run: `npm run test:all` from tools/perf-test/wdio (or `npm run perf:desktop` at root).
  */
 import { browser } from "@wdio/globals";
 import { recordInteractionMs } from "../perf-report";

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import {
   runDesktopPerfScheduledRun,
   type DesktopPerfScheduledRunIO,
@@ -65,7 +66,7 @@ describe('runDesktopPerfScheduledRun', () => {
     await Promise.resolve();
   }
 
-  it('spawns `npm test` in the wdio dir and resolves ran:true on a clean exit', async () => {
+  it('spawns `npm run test:all` in the wdio dir and resolves ran:true on a clean exit', async () => {
     const { io: fakeIo, child, spawnFn } = io();
     const p = runDesktopPerfScheduledRun(fakeIo);
     await flushReadEnabledTick();
@@ -74,11 +75,30 @@ describe('runDesktopPerfScheduledRun', () => {
     expect(r.ran).toBe(true);
     expect(r.exitCode).toBe(0);
     expect(typeof r.durationMs).toBe('number');
+    // `test:all` is the script that boots the packaged binary; the package's plain `test`
+    // is the headless runner-guard suite the gate runs (WI-10003821) and produces no measures.
     expect(spawnFn).toHaveBeenCalledWith(
       'npm',
-      ['test'],
+      ['run', 'test:all'],
       expect.objectContaining({ cwd: expect.stringContaining('tools/perf-test/wdio') }),
     );
+  });
+
+  it('spawns a wdio script that really runs the WDIO suite, not just the unit guards', async () => {
+    // Pins the spawned script to the package it names. Renaming `test:all`, or dropping
+    // `test:wdio` from it, would leave this tick "succeeding" while measuring nothing.
+    const { io: fakeIo, child, spawnFn } = io();
+    const p = runDesktopPerfScheduledRun(fakeIo);
+    await flushReadEnabledTick();
+    child.emit('close', 0);
+    await p;
+    const args = spawnFn.mock.calls.at(-1)?.[1] as string[] | undefined;
+    expect(args?.slice(0, 1)).toEqual(['run']);
+    const script = args?.[1] ?? '';
+    const pkg = JSON.parse(
+      readFileSync(new URL('../../../../tools/perf-test/wdio/package.json', import.meta.url), 'utf8'),
+    ) as { scripts: Record<string, string> };
+    expect(pkg.scripts[script], `wdio has no "${script}" script`).toContain('npm run test:wdio');
   });
 
   it('still resolves ran:true on a NONZERO exit — a test-finding failure is not a tick failure', async () => {

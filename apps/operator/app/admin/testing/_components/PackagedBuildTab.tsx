@@ -83,7 +83,7 @@ cd tools/perf-test/wdio && npm install
 
 # Build + test:
 cd papercusp-desktop && npm run build
-cd tools/perf-test/wdio && npm test`}
+cd tools/perf-test/wdio && npm run test:all`}
         </pre>
         <p style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 8 }}>
           See <code>tools/perf-test/wdio/README.md</code> for the full architecture vs. the

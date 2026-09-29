@@ -187,7 +187,10 @@ export async function runDesktopPerfScheduledRun(
     // `operatorBaseUrl`'s "one literal, one place" note. An operator explicitly
     // targeting staging still overrides it when invoking the suite directly.
     const { PAPERCUSP_OPERATOR_URL: _hostOperatorUrl, ...childEnv } = process.env;
-    const child = io.spawnFn('npm', ['test'], {
+    // `test:all`, NOT `test`: the package's `test` is the headless runner-guard suite the
+    // green gate selects (WI-10003821). Only `test:all` boots the packaged binary and
+    // produces the measures this tick exists to collect.
+    const child = io.spawnFn('npm', ['run', 'test:all'], {
       cwd: WDIO_DIR,
       env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
