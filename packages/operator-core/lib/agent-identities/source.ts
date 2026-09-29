@@ -23,6 +23,10 @@ import {
 } from '@papercusp/orchestrator/blueprint';
 import { BUILTIN_MODE_COMPONENTS } from '@papercusp/orchestrator/mode-catalog';
 import type { IdentityOmissionReason } from './omission-reasons';
+import { validateIdentityProviderOutput } from './provider-output';
+
+/** One context capability value, provenance envelope included (P-004). */
+const IDENTITY_CONTEXT_OUTPUT_MAX_BYTES = 16_384;
 import { parseBlueprintSource, resolveAndValidate } from '../agent-tools/blueprint/_resolve';
 import { buildBlueprintReleaseArchive, readBlueprintLifecycle } from '../cupboard/blueprint-release';
 import { compileBlueprintWithPackages, resolveBlueprintPackageInputs } from '../blueprint/compile-packages';
@@ -495,20 +499,40 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
   }
   const declarations = document.contributions as Array<{
     id: string; purpose: string; source: string; inputKind: string; ref: string;
-    producerRef?: string; availability?: string;
+    producerRef?: string; availability?: string; verb?: string; refresh?: string;
   }> | undefined;
   const byId = new Map((declarations ?? []).map((entry) => [entry.id, entry]));
   const supplied = new Set<string>();
   const settings: Array<{ ref: string; revision: string; value: unknown; producerRef: string }> = [];
   const closure: ResolvedAgentInput[] = [];
   const omissions: Array<{ id: string; reason: IdentityOmissionReason; errorRef?: string }> = [];
-  const receipts: Array<{ contributionId: string; producerRef: string; outputRevision: string | null; status: string }> = [];
+  const receipts: Array<{
+    contributionId: string; producerRef: string; outputRevision: string | null; status: string;
+    errorRef?: string; classRef?: string; providerRef?: string;
+  }> = [];
+  // Context capability outputs are validated AFTER compilation, against the exact
+  // output schema the compiler pinned for this pot (P-004) — never before.
+  const capabilityOutputs: Array<{ declaration: NonNullable<typeof declarations>[number]; json: string }> = [];
   for (const output of input.outputs) {
     const selected = byId.get(output.contributionId);
     if (!selected || selected.source !== 'provider' || !selected.producerRef ||
         !((selected.purpose === 'operational' && selected.inputKind === 'setting') ||
-          (selected.purpose === 'prompt' && selected.inputKind === 'prompt-file'))) {
+          (selected.purpose === 'prompt' && selected.inputKind === 'prompt-file') ||
+          (selected.purpose === 'resource' && selected.inputKind === 'capability-provider' &&
+            selected.verb !== undefined))) {
       throw new Error('identity ' + input.identityId + ' has no provider contribution ' + output.contributionId);
+    }
+    if (selected.inputKind === 'capability-provider' && output.value !== undefined) {
+      if (supplied.has(selected.id) || output.omission !== undefined) {
+        throw new Error('identity output needs one unique produced value or omission receipt');
+      }
+      // The serialized transport bytes, never a plugin-owned object (provider-output.ts).
+      if (typeof output.value !== 'string') {
+        throw new Error('identity context capability output needs the serialized JSON its provider returned');
+      }
+      supplied.add(selected.id);
+      capabilityOutputs.push({ declaration: selected, json: output.value });
+      continue;
     }
     if (supplied.has(selected.id) || (output.value === undefined) === (output.omission === undefined)) {
       throw new Error('identity output needs one unique produced value or omission receipt');
@@ -536,7 +560,19 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
     receipts.push({ contributionId: selected.id, producerRef: selected.producerRef,
       outputRevision: revision, status: 'bound' });
   }
+  const contributionRefreshForSink = input.scope.sink === 'turn-start' ? 'turn' : input.scope.sink;
   for (const entry of declarations ?? []) {
+    // A context capability's provider is pinned (or explicitly omitted as
+    // unavailable) by compileBlueprintWithPackages itself; a not-requested receipt
+    // here would contradict that pin. A REQUIRED one that is due at this sink
+    // must deliver its output, exactly like a due prompt.
+    if (entry.inputKind === 'capability-provider' && entry.verb !== undefined) {
+      if (entry.availability !== 'optional' && !supplied.has(entry.id) &&
+          entry.refresh === contributionRefreshForSink) {
+        throw new Error(`identity ${input.identityId} context capability ${entry.id} is due at this sink`);
+      }
+      continue;
+    }
     if (entry.availability === 'optional' && !supplied.has(entry.id)) {
       omissions.push({ id: entry.id, reason: 'not-requested' });
     }
@@ -578,7 +614,8 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
     ...(contributionRefresh ? { contributionRefresh } : {}),
   };
   const hasResources = Boolean(document.bundles?.length || document.grants?.requires?.length ||
-    document.grants?.optional?.length || resolveSeedPackKey(document).packId);
+    document.grants?.optional?.length || resolveSeedPackKey(document).packId ||
+    declarations?.some((entry) => entry.inputKind === 'capability-provider' && entry.verb !== undefined));
   const workspaceId = input.scope.workspace;
   const harnessSlug = input.scope.harness;
   if (hasResources && (typeof workspaceId !== 'string' || !workspaceId.trim() ||
@@ -591,6 +628,39 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
       sourcePath, resolve: resolver, input: compileInput,
     })
     : compileAgentSpecification(compileInput);
+  const capabilityDeliveries: Array<{ contributionId: string; text: string; bytes: number }> = [];
+  for (const { declaration, json } of capabilityOutputs) {
+    const pinned = artifact.inputs.find((entry) => entry.kind === 'capability-provider' &&
+      entry.context?.requestedRef === declaration.ref && entry.context.verb === declaration.verb);
+    const producerRef = declaration.producerRef!;
+    if (!pinned || pinned.kind !== 'capability-provider' || !pinned.context) {
+      // The compiler recorded this optional class as unavailable for the pot; a
+      // value for it has no pinned contract to validate against, so it cannot bind.
+      receipts.push({ contributionId: declaration.id, producerRef, outputRevision: null,
+        status: 'omitted:unavailable', errorRef: 'capability-class:not-pinned' });
+      continue;
+    }
+    const providerRef = `${pinned.providerPackage}@${pinned.providerVersion}`;
+    const checked = validateIdentityProviderOutput({
+      json,
+      outputSchema: pinned.context.outputSchema,
+      provenance: { author: pinned.providerPackage, identityRef: input.identityId, providerRef, classRef: pinned.ref },
+      maxBytes: IDENTITY_CONTEXT_OUTPUT_MAX_BYTES,
+    });
+    if (checked.status === 'omitted') {
+      if (declaration.availability !== 'optional') {
+        throw new Error(`identity ${input.identityId} context capability ${declaration.id} output refused: ${checked.reason}`);
+      }
+      receipts.push({ contributionId: declaration.id, producerRef, outputRevision: null,
+        status: 'omitted:unavailable', errorRef: `capability-output:${checked.reason}`,
+        classRef: pinned.ref, providerRef });
+      continue;
+    }
+    receipts.push({ contributionId: declaration.id, producerRef,
+      outputRevision: createHash('sha256').update(checked.text).digest('hex'),
+      status: 'bound', classRef: pinned.ref, providerRef });
+    capabilityDeliveries.push({ contributionId: declaration.id, text: checked.text, bytes: checked.bytes });
+  }
   return {
     identityId: input.identityId,
     sourceRevision: source.layers.at(-1)!.contentHash,
@@ -599,6 +669,8 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
     specificationRevision: artifact.specificationRevision,
     artifact,
     contributions: receipts,
+    /** Validated, provenance-enveloped context capability text for the sink. */
+    capabilityOutputs: capabilityDeliveries,
     observedAt: input.observedAt,
     scope: input.scope,
   };
@@ -607,7 +679,8 @@ async function bindSelectedIdentityOutputsWithArtifact(input: BindSelectedIdenti
 /** Public producer receipt for turn-start, orient and fleet metadata. The
  * full artifact carries live output bytes, so it must not ride in that metadata. */
 export async function bindSelectedIdentityOutputs(input: BindSelectedIdentityOutputsInput) {
-  const { artifact: _artifact, ...receipt } = await bindSelectedIdentityOutputsWithArtifact(input);
+  const { artifact: _artifact, capabilityOutputs: _capabilityOutputs, ...receipt } =
+    await bindSelectedIdentityOutputsWithArtifact(input);
   return receipt;
 }
 
