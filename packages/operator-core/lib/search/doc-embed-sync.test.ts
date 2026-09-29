@@ -13,14 +13,12 @@ import type { Sql } from 'postgres';
 import type { DocSource, DocPage } from '@papercusp/docs-engine';
 import {
   splitDocSections,
-  chunkSectionText,
   pageSha,
   syncDocSourceSections,
   refreshDocPageSectionsWithSql,
   runDocSectionsSyncOnce,
   queueHarnessDocSectionSync,
 } from './doc-embed-sync';
-import { chunkAnchor, sectionAnchorBase, isContinuationAnchor } from './doc-section-anchor';
 
 function fakeSql(existing: Array<{ slug: string; page_sha: string }> = []) {
   const calls: Array<{ q: string; params: unknown[] }> = [];
@@ -53,6 +51,9 @@ function fakeSource(pages: Array<{ page: DocPage; body: string }>, name = 'test-
   };
 }
 
+// The splitting itself (fences, dedupe, min-content floor, part caps, anchor
+// convention) is tested in @papercusp/search's chunk.test.ts and pinned to the
+// pre-move output by chunk.golden.test.ts. These cover the doc-specific layer.
 describe('splitDocSections', () => {
   it('splits on headings with a preamble section and Page › Heading titles', () => {
     const body = [
@@ -71,106 +72,19 @@ describe('splitDocSections', () => {
     expect(s[1].content).toContain('Alpha body');
   });
 
-  it('never splits on a heading-looking line inside a code fence', () => {
-    const body = [
-      '## Real Section',
-      'Some intro long enough to count here.',
-      '```bash',
-      '# not a heading, just a comment',
-      '## also not a heading',
-      '```',
-      'trailing text after the fence block.',
-    ].join('\n');
-    const s = splitDocSections('P', body);
-    expect(s).toHaveLength(1);
-    expect(s[0].anchor).toBe('real-section');
-    expect(s[0].content).toContain('also not a heading');
-    expect(s[0].content).toContain('trailing text');
-  });
-
-  it('dedupes repeated heading anchors with -2/-3 suffixes', () => {
-    const body = [
-      '## Setup',
-      'first setup section body, long enough.',
-      '## Setup',
-      'second setup section body, long enough.',
-    ].join('\n');
-    const s = splitDocSections('P', body);
-    expect(s.map((x) => x.anchor)).toEqual(['setup', 'setup-2']);
-  });
-
-  it('skips tiny sections', () => {
-    const body = ['## Big', 'a real section body, long enough to keep.', '## Tiny', 'ok'].join('\n');
-    const s = splitDocSections('P', body);
-    expect(s).toHaveLength(1);
-    expect(s[0].anchor).toBe('big');
-  });
-
   // EI-20059161453678027: the tail of an over-long section used to be sliced
-  // off and was therefore unembedded — permanently unmatchable by the semantic
-  // leg. It must survive as its own row instead.
-  it('chunks an over-long section across rows instead of truncating it', () => {
+  // off and was therefore unembedded. Each continuation row must repeat the
+  // heading title, because the title is part of the embed input.
+  it('repeats the section title on every continuation row', () => {
     const body = ['## Big', 'x'.repeat(5000), '## After', 'a following section, long enough.'].join('\n');
-    const s = splitDocSections('P', body);
-    const big = s.filter((x) => x.anchor === 'big' || x.anchor.startsWith('big~'));
+    const big = splitDocSections('P', body).filter((x) => x.anchor === 'big' || x.anchor.startsWith('big~'));
     expect(big.map((x) => x.anchor)).toEqual(['big', 'big~2', 'big~3']);
-    // Every character is retained, and no row exceeds the per-row cap.
-    expect(big.map((x) => x.content).join('').length).toBe(5000);
-    for (const row of big) expect(row.content.length).toBeLessThanOrEqual(2000);
-    // Each chunk repeats the heading title (it is part of the embed input).
     for (const row of big) expect(row.title).toBe('P › Big');
-    // A later heading is still emitted — chunking must not push it out.
-    expect(s.some((x) => x.anchor === 'after')).toBe(true);
   });
 
-  it('leaves a page whose sections all fit under the cap byte-identical', () => {
-    const body = ['## Alpha', 'alpha body text that is long enough.'].join('\n');
-    const s = splitDocSections('P', body);
-    expect(s).toHaveLength(1);
-    expect(s[0].anchor).toBe('alpha');
-  });
-
-  it('does not let a continuation suffix consume a duplicate-heading slot', () => {
-    const body = ['## Setup', 'y'.repeat(3000), '## Setup', 'second setup body, long enough.'].join('\n');
-    const s = splitDocSections('P', body);
-    expect(s.map((x) => x.anchor)).toEqual(['setup', 'setup~2', 'setup-2']);
-  });
-});
-
-describe('chunkSectionText', () => {
-  it('returns the text unchanged when it fits', () => {
-    expect(chunkSectionText('short enough', 100)).toEqual(['short enough']);
-    expect(chunkSectionText('', 100)).toEqual([]);
-  });
-
-  it('never emits an orphan tail below the min-content floor', () => {
-    // 2,050 chars would greedily split 2000 + 50; the 50-char orphan would then
-    // be dropped by SECTION_MIN_CHARS, losing content at the tail — the exact
-    // failure this fix exists to remove. Even splitting prevents it.
-    const chunks = chunkSectionText('z'.repeat(2050), 2000);
-    expect(chunks).toHaveLength(2);
-    for (const c of chunks) expect(c.length).toBeGreaterThanOrEqual(20);
-    expect(chunks.join('').length).toBe(2050);
-  });
-
-  it('breaks on line boundaries when it can', () => {
-    const text = ['aaaa', 'bbbb', 'cccc', 'dddd'].join('\n');
-    const chunks = chunkSectionText(text, 10);
-    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(10);
-    expect(chunks.join('\n')).toBe(text);
-  });
-
-  it('hard-splits a single line longer than the cap', () => {
-    const chunks = chunkSectionText('q'.repeat(45), 10);
-    for (const c of chunks) expect(c.length).toBeLessThanOrEqual(10);
-    expect(chunks.join('').length).toBe(45);
-  });
-
-  it('leaves depth-4+ headings inside their parent section', () => {
-    const body = ['## Parent', 'parent body long enough to keep.', '#### Deep detail', 'deep body text.'].join('\n');
-    const s = splitDocSections('P', body);
-    expect(s).toHaveLength(1);
-    expect(s[0].content).toContain('#### Deep detail');
+  it('titles a nested section by its own heading, not its ancestry', () => {
+    const body = ['## Outer', 'outer body long enough to keep.', '### Inner', 'inner body long enough to keep.'].join('\n');
+    expect(splitDocSections('P', body).map((x) => x.title)).toEqual(['P › Outer', 'P › Inner']);
   });
 });
 
@@ -259,35 +173,6 @@ describe('syncDocSourceSections', () => {
     ]);
     const stats = await syncDocSourceSections(sql, src);
     expect(stats).toMatchObject({ errors: 1, changed: 1 });
-  });
-});
-
-describe('doc-section-anchor', () => {
-  it('round-trips a chunk anchor back to its navigable heading', () => {
-    expect(chunkAnchor('setup', 0)).toBe('setup');
-    expect(chunkAnchor('setup', 1)).toBe('setup~2');
-    expect(sectionAnchorBase('setup~2')).toBe('setup');
-    expect(sectionAnchorBase('setup')).toBe('setup');
-  });
-
-  it('handles the page-preamble anchor ("")', () => {
-    expect(chunkAnchor('', 0)).toBe('');
-    expect(sectionAnchorBase(chunkAnchor('', 1))).toBe('');
-  });
-
-  // The separator must be one slugifyAnchor can never emit, or a real heading
-  // would be mistaken for a continuation row and mis-navigated.
-  it('does not mistake a real heading ending in a digit for a chunk', () => {
-    expect(isContinuationAnchor('step-2')).toBe(false);
-    expect(sectionAnchorBase('step-2')).toBe('step-2');
-    expect(isContinuationAnchor('step~2')).toBe(true);
-  });
-
-  it('every anchor the splitter emits round-trips to a real heading anchor', () => {
-    const body = ['## Long Heading', 'w'.repeat(4500), '## Short', 'short body, long enough to keep.'].join('\n');
-    for (const s of splitDocSections('P', body)) {
-      expect(['long-heading', 'short']).toContain(sectionAnchorBase(s.anchor));
-    }
   });
 });
 

@@ -49,8 +49,9 @@ import pg from 'pg';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { EMBED_SIDECAR_CAP_EMBED } from '../embed-sidecar-server';
 import { resolveProcessSidecarUrl } from '../embed-sidecar-wiring';
+import { splitWindows } from '@papercusp/search';
 import {
-  splitTurnChunks,
+  MAX_CHUNKS_PER_TURN,
   TURN_CHUNK_CHARS,
   TURN_CHUNK_OVERLAP,
 } from '../../search/turn-chunk-sync';
@@ -83,7 +84,7 @@ const PROBE_LEN = 240;
  * Chunk width for the chunked arm — see the arm's comment in main().
  *
  * Defaults come from the SHIPPED constants, and the arm splits with the SHIPPED
- * `splitTurnChunks` (P-034). This bench used to carry its own inline copy of the
+ * `splitWindows` (P-034; in @papercusp/search since generic-rag-chunking P-002). This bench used to carry its own inline copy of the
  * loop, which was fine while chunking was a hypothesis and became a liability
  * the moment it became production: a benchmark measuring a private copy of the
  * algorithm silently stops being evidence about the real path once the two
@@ -269,7 +270,7 @@ async function main(): Promise<void> {
   // queried). Overlap keeps a probe that straddles a boundary from being split
   // across two chunks and diluted in both.
   const chunksPerTurn: string[][] = turns.map((t) =>
-    splitTurnChunks(t.text, { size: CHUNK, overlap: CHUNK_OVERLAP }),
+    splitWindows(t.text, { size: CHUNK, overlap: CHUNK_OVERLAP, maxChunks: MAX_CHUNKS_PER_TURN }),
   );
   const flat = chunksPerTurn.flat();
   const flatVecs = await embedChunked(url, 'document', flat);

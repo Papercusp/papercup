@@ -19,18 +19,21 @@
  * lane, space-aware re-embed on mode flips).
  *
  * ⚠ THE SPLITTER IS THE MEASURED ONE, NOT A REIMPLEMENTATION OF IT.
- * `splitTurnChunks` below is the exact algorithm D-016's numbers came from, and
- * the bench that produced them (memory/bench/turn-truncation-width-cli.ts) now
- * IMPORTS it rather than carrying its own copy. That is deliberate: a benchmark
- * that measures a private copy of the algorithm stops being evidence about the
- * shipped path the moment the two drift, and the drift is silent — both keep
- * "working". Re-running the bench now re-measures production.
+ * `splitWindows` (@papercusp/search, moved there verbatim and golden-pinned by
+ * generic-rag-chunking-2026-09-29 P-002) at TURN_WINDOW is the exact algorithm
+ * D-016's numbers came from, and the bench that produced them
+ * (memory/bench/turn-truncation-width-cli.ts) IMPORTS it rather than carrying
+ * its own copy. That is deliberate: a benchmark that measures a private copy of
+ * the algorithm stops being evidence about the shipped path the moment the two
+ * drift, and the drift is silent — both keep "working". Re-running the bench
+ * re-measures production.
  */
 
 import { createHash } from 'node:crypto';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { splitWindows, type WindowSplitOptions } from '@papercusp/search';
 
 /**
  * Chunk width, in characters. 1500 is the measured arm from D-016 — not a
@@ -83,34 +86,14 @@ export interface TurnChunkSyncStats {
 }
 
 /**
- * Split a turn's text into overlapping chunks.
- *
- * THE EXACT ALGORITHM D-016 MEASURED. Step is `size - overlap`, and the loop
- * stops as soon as a chunk reaches the end of the text, so the final chunk is
- * whatever remains rather than a padded or re-anchored window.
- *
- * A turn is scored at query time by the MAX over its chunk vectors, never the
- * mean — a turn is relevant if ANY part of it is, which is how a chunked index
- * is queried. Averaging would reintroduce exactly the dilution chunking exists
- * to remove.
+ * The window a session turn is split with: D-016's measured arm. A turn is
+ * scored at query time by the MAX over its chunk vectors, never the mean.
  */
-export function splitTurnChunks(
-  text: string,
-  opts: { size?: number; overlap?: number; maxChunks?: number } = {},
-): string[] {
-  const size = opts.size ?? TURN_CHUNK_CHARS;
-  const overlap = opts.overlap ?? TURN_CHUNK_OVERLAP;
-  const maxChunks = opts.maxChunks ?? MAX_CHUNKS_PER_TURN;
-  if (text.length === 0) return [];
-  const step = Math.max(1, size - overlap);
-  const out: string[] = [];
-  for (let s = 0; s < text.length; s += step) {
-    out.push(text.slice(s, s + size));
-    if (out.length >= maxChunks) break;
-    if (s + size >= text.length) break;
-  }
-  return out;
-}
+export const TURN_WINDOW: WindowSplitOptions = {
+  size: TURN_CHUNK_CHARS,
+  overlap: TURN_CHUNK_OVERLAP,
+  maxChunks: MAX_CHUNKS_PER_TURN,
+};
 
 /**
  * sha256 of a turn's full text — the change key.
@@ -220,7 +203,7 @@ export async function syncTurnChunks(
       // Hashing moved out of the detection predicate; it did not disappear,
       // because turn_sha remains the chunk row's change key.
       const sha = turnSha(t.text);
-      const chunks = splitTurnChunks(t.text);
+      const chunks = splitWindows(t.text, TURN_WINDOW);
       // Replace wholesale: a shorter re-ingested turn must not leave its old
       // tail chunks behind, and an ON CONFLICT upsert cannot delete them.
       await sql.unsafe(

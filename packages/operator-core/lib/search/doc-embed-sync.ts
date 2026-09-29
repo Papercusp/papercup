@@ -16,8 +16,9 @@
  * (fence-aware: a `# line` inside a code block never splits), so an
  * agent-insights runbook lands as several focused vectors instead of one
  * 20k-char soup. A section still longer than the per-row cap is CHUNKED across
- * several rows rather than truncated — see SPLITTER_VERSION and
- * doc-section-anchor for why the tail has to be its own row to be matchable.
+ * several rows rather than truncated — see SPLITTER_VERSION and the anchor
+ * convention (chunkAnchor in @papercusp/search) for why the tail has to be its
+ * own row to be matchable.
  *
  * Cadence: the engineering + project surfaces sync ONCE per process
  * (runDocSectionsSyncOnce, called from the periodic sweep tick). That matches
@@ -48,7 +49,7 @@ import type { Sql } from 'postgres';
 import type { DocSource } from '@papercusp/docs-engine';
 import { getOrgPg } from '@papercusp/db-org';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { chunkAnchor } from './doc-section-anchor';
+import { splitMarkdown, type MarkdownSplitOptions } from '@papercusp/search';
 import { cooperativeYield } from '../event-loop-lag-monitor';
 
 /** Per-ROW text cap — mirrors the 2k-char embed-input convention
@@ -101,15 +102,6 @@ export interface DocSyncStats {
   errors: number;
 }
 
-/** Same slugify rule as the adapters' extractHeadings — anchors line up with
- *  the toc ids docs:get accepts as `heading`. */
-function slugifyAnchor(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
 export function pageSha(title: string, body: string): string {
   return createHash('sha256')
     .update(SPLITTER_VERSION)
@@ -121,96 +113,35 @@ export function pageSha(title: string, body: string): string {
 }
 
 /**
- * Split one section's text into rows of at most `max` chars, breaking on line
- * boundaries. Chunks are sized EVENLY (ceil(len/parts)) rather than greedily
- * filled, which is what keeps a 2,050-char section from becoming a 2,000-char
- * row plus a 50-char orphan that the SECTION_MIN_CHARS floor would then drop —
- * i.e. it prevents this fix from re-creating content loss at the tail.
- *
- * A single line longer than `max` (a minified blob, a wide table row) has no
- * break to honour and is hard-split; that is the one case where a chunk
- * boundary can land mid-word.
+ * How doc pages are split: headings of depth 1–3, the row cap, the min-content
+ * floor and both per-page caps above. Anchors follow the same slug rule as the
+ * adapters' extractHeadings, so they line up with the toc ids docs:get accepts
+ * as `heading`.
  */
-export function chunkSectionText(text: string, max: number = SECTION_MAX_CHARS): string[] {
-  if (text.length === 0) return [];
-  if (text.length <= max) return [text];
-
-  const parts = Math.ceil(text.length / max);
-  const target = Math.ceil(text.length / parts);
-
-  const units: string[] = [];
-  for (const line of text.split('\n')) {
-    if (line.length <= max) units.push(line);
-    else for (let i = 0; i < line.length; i += max) units.push(line.slice(i, i + max));
-  }
-
-  const out: string[] = [];
-  let cur = '';
-  for (const u of units) {
-    const candidate = cur === '' ? u : `${cur}\n${u}`;
-    // Break when the row would overflow the hard cap, or once it has reached
-    // its even-split target — never when `cur` is still empty, so a single
-    // over-long unit is emitted rather than dropped.
-    if (cur !== '' && (candidate.length > max || cur.length >= target)) {
-      out.push(cur);
-      cur = u;
-    } else {
-      cur = candidate;
-    }
-  }
-  if (cur !== '') out.push(cur);
-  return out;
-}
+export const DOC_MARKDOWN_SPLIT: MarkdownSplitOptions = {
+  maxChars: SECTION_MAX_CHARS,
+  minChars: SECTION_MIN_CHARS,
+  headingDepth: 3,
+  maxSections: MAX_SECTIONS_PER_PAGE,
+  maxRows: MAX_ROWS_PER_PAGE,
+};
 
 /**
- * Split rendered markdown into embeddable sections on heading depth 1–3
- * (deeper headings stay inside their parent section). Fence-aware; anchors
- * deduped with -2/-3 suffixes.
+ * Split a rendered page into doc_sections rows with @papercusp/search's
+ * markdown splitter (moved there verbatim by generic-rag-chunking-2026-09-29
+ * P-002 and golden-pinned, so stored rows and their embeddings stay valid).
  *
- * A section longer than SECTION_MAX_CHARS becomes SEVERAL rows (chunk 0 keeps
- * the heading's own anchor, continuations get `<anchor>~N` — see
- * doc-section-anchor). Every chunk repeats the section title, because the
- * embed input is `title || '\n' || content`: repeating it keeps each
- * continuation vector anchored to its heading instead of floating as
+ * Every row carries its section title, "Page › Heading", continuation parts
+ * included, because the embed input is `title || '\n' || content`: repeating it
+ * keeps each continuation vector anchored to its heading instead of floating as
  * context-free prose.
  */
 export function splitDocSections(pageTitle: string, body: string): DocSection[] {
-  const raw: Array<{ heading: string | null; lines: string[] }> = [{ heading: null, lines: [] }];
-  let fenceMark: string | null = null;
-  for (const line of body.split('\n')) {
-    const fm = /^\s*(`{3,}|~{3,})/.exec(line);
-    if (fm) {
-      if (fenceMark === null) fenceMark = fm[1][0];
-      else if (fm[1][0] === fenceMark) fenceMark = null;
-      raw[raw.length - 1].lines.push(line);
-      continue;
-    }
-    const hm = fenceMark === null ? /^(#{1,3})\s+(.+?)\s*$/.exec(line) : null;
-    if (hm) raw.push({ heading: hm[2].trim(), lines: [] });
-    else raw[raw.length - 1].lines.push(line);
-  }
-
-  const seen = new Map<string, number>();
-  const out: DocSection[] = [];
-  let headings = 0;
-  for (const s of raw) {
-    if (headings >= MAX_SECTIONS_PER_PAGE || out.length >= MAX_ROWS_PER_PAGE) break;
-    const content = s.lines.join('\n').trim();
-    if (content.length < SECTION_MIN_CHARS) continue;
-    let anchor = s.heading === null ? '' : slugifyAnchor(s.heading) || 'section';
-    // Dedupe on the BASE anchor only — continuation suffixes are storage
-    // identity, not headings, and must not consume a -2/-3 slot.
-    const n = seen.get(anchor) ?? 0;
-    seen.set(anchor, n + 1);
-    if (n > 0) anchor = `${anchor}-${n + 1}`;
-    headings += 1;
-    const title = s.heading === null ? pageTitle : `${pageTitle} › ${s.heading}`;
-    const chunks = chunkSectionText(content);
-    for (let i = 0; i < chunks.length && out.length < MAX_ROWS_PER_PAGE; i += 1) {
-      out.push({ anchor: chunkAnchor(anchor, i), title, content: chunks[i] });
-    }
-  }
-  return out;
+  return splitMarkdown(body, DOC_MARKDOWN_SPLIT).map((s) => ({
+    anchor: s.anchor,
+    title: s.headingPath.length === 0 ? pageTitle : `${pageTitle} › ${s.headingPath[s.headingPath.length - 1]}`,
+    content: s.content,
+  }));
 }
 
 /**
