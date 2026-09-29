@@ -79,6 +79,14 @@ describe('P002 goal planning behavioral falsifiers', () => {
     expect(row.reason).toContain('foreign');
     expect(row.action?.summary).toContain('do not adopt or duplicate');
   });
+  // AUTO-BAR-R-8 rev 4: "original proposal/plan/goal links ... are lost".
+  it('links.preserved: adoption keeps the goal scope and targets the original canonical plan ref, never a new one', () => {
+    const i = input(portfolio(), 'adopt-plan');
+    const row = subject.goalPlanningObligation(i);
+    expect(row.scope).toMatchObject({ ownerId: base.ownerId, goalId: base.goalId });
+    expect(row.action?.targetRef).toBe('plan:fixture/existing');
+    expect(known(i).review!.planRefs).toContain(row.action?.targetRef);
+  });
   it.each([true, false])('keeps existing plan work ahead of new planning, executable=%s', (ready) => {
     const p = portfolio(true, ready);
     const agenda = subject.buildAgentObligationAgenda({ goalPlanning: input(p), planPlacement: {
@@ -89,6 +97,39 @@ describe('P002 goal planning behavioral falsifiers', () => {
     expect(agenda.primary[0]).toMatchObject({ family: 'plan-placement', status: ready ? 'due' : 'blocked' });
     expect(agenda.primary[0]?.action?.tool).toBe(ready ? 'fleet:launch-on-plan' : undefined);
     expect(agenda.primary.findIndex((r) => r.family === 'planning-needed')).toBeGreaterThan(0);
+  });
+
+  // AUTO-BAR-R-9 rev 4: "changed planning inputs or an expired review interval incorrectly leave
+  // the review obligation satisfied" / "observation-clock-only changes must not manufacture a new
+  // review need" / "unsupported review assertions receive credit".
+  it('review.interval-expired: a supported sufficient review older than the interval is due again', () => {
+    const i = input(portfolio(true), 'existing-plans-sufficient');
+    known(i).review!.reviewedAt = new Date(Date.parse(NOW) - 3_600_000).toISOString();
+    expect(subject.goalPlanningObligation(i)).toMatchObject({ status: 'due', title: 'Review uncovered goal needs' });
+  });
+  it('review.inputs-changed: a changed goal outcome invalidates the prior sufficient review', () => {
+    const p = portfolio(true);
+    const i = input(p, 'existing-plans-sufficient');
+    known(i).portfolio = { ...p, goal: { ...p.goal, body: 'Recover checkout and refunds' } };
+    expect(subject.goalPlanningObligation(i)).toMatchObject({ status: 'due', title: 'Review uncovered goal needs' });
+  });
+  it('review.clock-only: a later observation within the interval does not manufacture a review need', () => {
+    const p = portfolio(true);
+    const i = input(p, 'existing-plans-sufficient');
+    const later = new Date(Date.parse(NOW) + 60_000).toISOString();
+    known(i).portfolio = { ...p, assembledAt: later };
+    expect(subject.goalPlanningObligation({ ...i, observedAt: later })).toMatchObject({ status: 'satisfied', applicableDemand: 0 });
+  });
+  it('review.future-dated: a review stamped after the observation earns no credit', () => {
+    const i = input(portfolio(true), 'existing-plans-sufficient');
+    known(i).review!.reviewedAt = new Date(Date.parse(NOW) + 60_000).toISOString();
+    expect(subject.goalPlanningObligation(i).status).toBe('due');
+  });
+  it('source.unreadable: an unreadable planning source is unknown, never no demand', () => {
+    const failure = { code: 'fixture-read-failed', detail: 'fixture read failed', retry: 'retry the read' };
+    const row = subject.goalPlanningObligation({ ...base, read: { status: 'unknown', failure } } as GoalPlanningProviderInput);
+    expect(row).toMatchObject({ status: 'unknown', applicableDemand: 0 });
+    expect(row.status).not.toBe('satisfied');
   });
 });
 
