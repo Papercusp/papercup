@@ -974,6 +974,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/check-js-syntax.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/check-licenses.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/check-licenses.mjs (WI-10003906): the license gate's children — `cargo metadata --locked` for the Rust leg, `tar -xf` + `syft` for the report-only installer leg — are synchronous execFileSync calls, each with an explicit timeout, awaited before the next step. It runs as a CI/release guard invoked from the command line, creates no detached worker or resident queue, and must stay runnable while productive capacity is pressured.",
+  },
+  {
     path: "scripts/check-lint-guard-reachability.mjs",
     code: "resource-start-outside-admission",
     disposition: "bypass",
