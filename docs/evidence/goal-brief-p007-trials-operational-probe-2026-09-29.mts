@@ -127,7 +127,7 @@ observations.goals = goals.map((g) => ({
     + `(${g0?.created_at}); Blender idea ${ARMS.B.blenderIdea} still routed_ref=${blender?.routed_ref}; plans attributed to any `
     + `Arm B goal: ${armBPlans.map((r) => r.plan_slug).join(',') || 'none'} (exactly the adopted plan, so no clone)`);
   if (p && p.goal_id !== ARMS.B.goals[0]) residualUnknowns.push(
-    `Arm B plan goal attribution now reads ${p.goal_id}, not the adopting goal ${ARMS.B.goals[0]}: the finish goal overwrote goal_id on adoption, so the original adopting goal is visible only through fleet membership and work-item claims, not on the plan row.`);
+    `Arm B plan goal attribution now reads ${p.goal_id}, not the adopting goal ${ARMS.B.goals[0]}. Whether the adopting goal ever stamped goal_id (and was later replaced) is not measured here; today the adopting goal is visible only through fleet membership and work-item claims, not on the plan row.`);
 }
 
 // ── Sub-assertion 3: independent member claims in both arms ──
