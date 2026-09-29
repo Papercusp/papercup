@@ -872,7 +872,167 @@ describe("psu Papercusp cloud connections (WI-10002874)", () => {
         value: "portal.example.test/ws-stopped",
         disabled: "not connected",
       }),
+      // WI-10003910: signing in to a second account or organization is always on offer.
+      {
+        name: "Sign in to another Papercusp cloud account or organization",
+        value: HOSTED_LOGIN_CHOICE,
+      },
     ]);
+  });
+
+  describe("several cloud sign-ins at once (WI-10003910)", () => {
+    const deviceCode = () => ({
+      status: 200,
+      body: {
+        ok: true,
+        deviceCode: `pdc_${"d".repeat(43)}`,
+        userCode: "BCDF-GHJK",
+        verificationUri: `${PORTAL}/api/hosted/cli/device`,
+        verificationUriComplete: `${PORTAL}/api/hosted/cli/device?user_code=BCDF-GHJK`,
+        expiresIn: 600,
+        interval: 5,
+      },
+    });
+    const issuing = (identity: { organizationId: string; organizationName?: string; userId: string }) => () => ({
+      status: 200,
+      body: {
+        ok: true,
+        accessToken: NEW_TOKEN,
+        tokenId: "hct_new",
+        expiresAt: "2026-10-24T00:00:00.000Z",
+        ...identity,
+      },
+    });
+    const signIn = async (
+      home: string,
+      storePath: string,
+      identity: { organizationId: string; organizationName?: string; userId: string },
+    ) => {
+      const portal = fakePortal({
+        "/api/hosted/cli/device/code": deviceCode,
+        "/api/hosted/cli/device/token": issuing(identity),
+        "/api/hosted/cli/logout": () => ({ status: 200, body: { ok: true } }),
+      });
+      const output: string[] = [];
+      await runPsuConnectionFrontController([`--connect-login=${PORTAL}`], {
+        home,
+        storePath,
+        interactive: false,
+        fetch: portal.fetch,
+        sleep: async () => {},
+        notice: vi.fn(),
+        output: (line: string) => output.push(line),
+      });
+      return { portal, output };
+    };
+
+    it("keeps a second organization's sign-in beside the first, named for that organization", async () => {
+      const home = tempHome();
+      const storePath = savedStore(home, [hostedProfile()]);
+      const { portal, output } = await signIn(home, storePath, {
+        organizationId: "0c6f3a52-1111-4222-8333-944445555666",
+        organizationName: "Acme Robotics",
+        userId: "user_01",
+      });
+
+      const profiles = loadPsuConnectionStore(storePath).profiles;
+      expect(profiles.map((profile: { name: string }) => profile.name)).toEqual([
+        "portal.example.test",
+        "portal.example.test-acme-robotics",
+      ]);
+      expect(profiles[0]).toEqual(hostedProfile());
+      expect(profiles[1]).toMatchObject({
+        organizationId: "0c6f3a52-1111-4222-8333-944445555666",
+        organizationName: "Acme Robotics",
+        accessToken: NEW_TOKEN,
+      });
+      // The first sign-in's token is untouched: nothing was signed out.
+      expect(portal.calls.map((call) => new URL(call.url).pathname)).not.toContain(
+        "/api/hosted/cli/logout",
+      );
+      expect(output[0]).toBe(
+        "Signed in to https://portal.example.test for Acme Robotics as 'portal.example.test-acme-robotics'. Run psu --connect=portal.example.test-acme-robotics to open psu on one of your workspaces.",
+      );
+    });
+
+    it("replaces only the SAME portal + organization + user, and signs the old token out", async () => {
+      const home = tempHome();
+      const original = hostedProfile();
+      const storePath = savedStore(home, [original]);
+      const { portal } = await signIn(home, storePath, {
+        organizationId: original.organizationId,
+        userId: original.userId,
+      });
+
+      const profiles = loadPsuConnectionStore(storePath).profiles;
+      expect(profiles).toHaveLength(1);
+      expect(profiles[0]).toMatchObject({ name: "portal.example.test", accessToken: NEW_TOKEN });
+      const logout = portal.calls.find((call) => call.url.endsWith("/hosted/cli/logout"));
+      expect(logout?.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    });
+
+    it("tells two users of one organization apart, and never takes a machine profile's name", async () => {
+      const home = tempHome();
+      const machine = normalizeGcpIapProfile({
+        name: "portal.example.test",
+        projectId: "papercusp-dev-123",
+        zone: "us-central1-a",
+        instanceName: "workspace-1",
+        sshUser: "alice_example_com",
+      });
+      const storePath = savedStore(home, [machine]);
+      const org = "0c6f3a52-1111-4222-8333-944445555666";
+      await signIn(home, storePath, { organizationId: org, organizationName: "Acme", userId: "user_01" });
+      await signIn(home, storePath, { organizationId: org, organizationName: "Acme", userId: "user_02" });
+
+      expect(
+        loadPsuConnectionStore(storePath).profiles.map((profile: { name: string }) => profile.name),
+      ).toEqual([
+        "portal.example.test",
+        "portal.example.test-acme",
+        "portal.example.test-acme-user-02",
+      ]);
+    });
+
+    it("labels each sign-in's workspaces with its organization, preferring the cloud's current name", async () => {
+      const home = tempHome();
+      const storePath = savedStore(home, [
+        normalizeHostedProfile({ ...hostedProfile(), organizationName: "Old Name" }),
+      ]);
+      const portal = fakePortal({
+        "/api/hosted/cli/workspaces": () => ({
+          status: 200,
+          body: {
+            ok: true,
+            organizationName: "Acme Robotics",
+            workspaces: [{ id: "ws-live", displayName: "avi-test", state: "active", reachable: true }],
+          },
+        }),
+      });
+      const output: string[] = [];
+      await runPsuConnectionFrontController(["--connect-list"], {
+        home,
+        storePath,
+        interactive: false,
+        fetch: portal.fetch,
+        notice: vi.fn(),
+        output: (line: string) => output.push(line),
+      });
+      expect(output).toContain(
+        "portal.example.test — Papercusp cloud workspaces at https://portal.example.test for Old Name",
+      );
+      expect(output).toContain(
+        "  portal.example.test/ws-live — Papercusp cloud workspace avi-test (ws-live) in Acme Robotics",
+      );
+    });
+
+    it("strips control characters from an organization name before it reaches the terminal", () => {
+      const profile = normalizeHostedProfile({
+        ...hostedProfile(),
+        organizationName: "Evil\u001b[2JCorp\n",
+      });
+      expect(profile.organizationName).toBe("Evil [2JCorp");
+    });
   });
 
   it("signs out by revoking the token and forgetting the profile", async () => {
