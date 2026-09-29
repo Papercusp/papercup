@@ -100,6 +100,7 @@ import {
   tscChildEnv,
   collectAutoTypecheckRoutes,
   runAutoTypecheckRoutes,
+  workspaceTypecheckArgs,
   formatLintTscRunStamp,
   gitHeadShaForLintTsc,
   writeLintTscRunMarker,
@@ -3400,7 +3401,44 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
       );
       expect(s).not.toBeNull();
       expect(s!.workspaceDir).toBe('apps/operator-vite');
+      expect(s!.standalone).toBe(false);
       expect(s!.command).toBe('npm run --workspace apps/operator-vite typecheck');
+    });
+
+    it('routes a STANDALONE package through npm --prefix, never --workspace (WI-10003822)', () => {
+      // tools/perf-test/wdio has its own package.json but no root `workspaces` pattern names it.
+      // `npm run --workspace tools/perf-test/wdio typecheck` answers "No workspaces found" and
+      // exits 1 having checked nothing; this is the file the bug was observed on.
+      const s = suggestTypecheckGate(REPO_ROOT, 'tools/perf-test/wdio/perf-report.ts');
+      expect(s).not.toBeNull();
+      expect(s!.workspaceDir).toBe('tools/perf-test/wdio');
+      expect(s!.standalone).toBe(true);
+      expect(s!.command).toBe('npm --prefix tools/perf-test/wdio run typecheck');
+    });
+
+    it('classifies membership from the root workspaces patterns, both glob and exact forms', () => {
+      const root = mkdtempSync(join(tmpdir(), 'tsc-gate-standalone-'));
+      try {
+        writeFileSync(
+          join(root, 'package.json'),
+          JSON.stringify({ name: 'mono', private: true, workspaces: ['apps/*', 'libs/listed'] }),
+        );
+        for (const dir of ['apps/globbed', 'libs/listed', 'tools/solo']) {
+          mkdirSync(join(root, dir), { recursive: true });
+          writeFileSync(
+            join(root, dir, 'package.json'),
+            JSON.stringify({ name: dir.replace('/', '-'), scripts: { typecheck: 'tsc --noEmit' } }),
+          );
+        }
+        const globbed = suggestTypecheckGate(root, 'apps/globbed/src/a.ts');
+        const listed = suggestTypecheckGate(root, 'libs/listed/src/b.ts');
+        const solo = suggestTypecheckGate(root, 'tools/solo/src/c.ts');
+        expect(globbed).toMatchObject({ standalone: false, command: 'npm run --workspace apps/globbed typecheck' });
+        expect(listed).toMatchObject({ standalone: false, command: 'npm run --workspace libs/listed typecheck' });
+        expect(solo).toMatchObject({ standalone: true, command: 'npm --prefix tools/solo run typecheck' });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     });
 
     it('finds the NEAREST owning package, not the first ancestor with a package.json', () => {
@@ -3454,6 +3492,7 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         {
           workspaceDir: 'apps/operator-vite',
           packageName: '@papercusp/operator-vite',
+          standalone: false,
           command: 'npm run --workspace apps/operator-vite typecheck',
         },
       ],
@@ -3497,7 +3536,7 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         label: 'operator-core',
         uncovered: [file],
         suggestions: new Map([
-          [file, { workspaceDir: 'libs/papercusp/libs/db', packageName: '@papercusp/db-org', command }],
+          [file, { workspaceDir: 'libs/papercusp/libs/db', packageName: '@papercusp/db-org', standalone: false, command }],
         ]),
         fatal: true,
       }).join('\n');
@@ -3521,7 +3560,7 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         label: 'operator-core',
         uncovered: ['apps/thing/src/x.ts'],
         suggestions: new Map([
-          ['apps/thing/src/x.ts', { workspaceDir: 'apps/thing', packageName: 'thing', command: null }],
+          ['apps/thing/src/x.ts', { workspaceDir: 'apps/thing', packageName: 'thing', standalone: false, command: null }],
         ]),
         fatal: true,
       }).join('\n');
@@ -3657,6 +3696,7 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
             {
               workspaceDir: 'apps/operator',
               packageName: '@papercusp/web',
+              standalone: false,
               command: 'npm run --workspace apps/operator typecheck',
             },
           ],
@@ -3691,6 +3731,7 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
             {
               workspaceDir: 'apps/operator',
               packageName: 'web',
+              standalone: false,
               command: 'npm run --workspace apps/operator typecheck',
             },
           ]]),
@@ -3713,6 +3754,7 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
             {
               workspaceDir: 'apps/operator',
               packageName: 'web',
+              standalone: false,
               command: 'npm run --workspace apps/operator typecheck',
             },
           ]]),
@@ -3731,7 +3773,7 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
           suggestions: new Map([
             [
               'apps/operator/scripts/ptool.test.ts',
-              { workspaceDir: 'apps/operator', packageName: 'web', command: 'npm run --workspace apps/operator typecheck' },
+              { workspaceDir: 'apps/operator', packageName: 'web', standalone: false, command: 'npm run --workspace apps/operator typecheck' },
             ],
           ]),
         });
@@ -3752,6 +3794,78 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
           options: { cwd: '/repo', stdio: 'inherit' },
         });
         expect((invocations[0].options.env as Record<string, string>).PAPERCUSP_TSC_AUTO_ROUTE).toBe('1');
+      });
+
+      it('plans a standalone package as npm --prefix and a workspace package as npm run --workspace (WI-10003822)', () => {
+        expect(workspaceTypecheckArgs('tools/solo', true)).toEqual(['--prefix', 'tools/solo', 'run', 'typecheck']);
+        expect(workspaceTypecheckArgs('apps/operator', false)).toEqual(['run', '--workspace', 'apps/operator', 'typecheck']);
+        const planned = collectAutoTypecheckRoutes({
+          files: ['tools/solo/a.ts', 'apps/operator/b.ts'],
+          suggestions: new Map([
+            [
+              'tools/solo/a.ts',
+              { workspaceDir: 'tools/solo', packageName: 'solo', standalone: true, command: 'npm --prefix tools/solo run typecheck' },
+            ],
+            [
+              'apps/operator/b.ts',
+              { workspaceDir: 'apps/operator', packageName: 'web', standalone: false, command: 'npm run --workspace apps/operator typecheck' },
+            ],
+          ]),
+        });
+        expect(planned.unknown).toEqual([]);
+        expect(planned.routes).toEqual([
+          expect.objectContaining({
+            workspaceDir: 'tools/solo',
+            command: 'npm --prefix tools/solo run typecheck',
+            args: ['--prefix', 'tools/solo', 'run', 'typecheck'],
+          }),
+          expect.objectContaining({
+            workspaceDir: 'apps/operator',
+            command: 'npm run --workspace apps/operator typecheck',
+            args: ['run', '--workspace', 'apps/operator', 'typecheck'],
+          }),
+        ]);
+      });
+
+      it('a planned standalone route really runs the package script under npm; the old --workspace argv does not (WI-10003822)', () => {
+        const root = mkdtempSync(join(tmpdir(), 'tsc-gate-standalone-npm-'));
+        try {
+          writeFileSync(
+            join(root, 'package.json'),
+            JSON.stringify({ name: 'mono', private: true, workspaces: ['apps/*'] }),
+          );
+          mkdirSync(join(root, 'tools', 'solo'), { recursive: true });
+          writeFileSync(
+            join(root, 'tools', 'solo', 'package.json'),
+            JSON.stringify({
+              name: 'solo',
+              private: true,
+              scripts: { typecheck: `node -e "require('fs').writeFileSync('ran.txt','ok')"` },
+            }),
+          );
+          const file = 'tools/solo/src/a.ts';
+          const planned = collectAutoTypecheckRoutes({
+            files: [file],
+            suggestions: new Map([[file, suggestTypecheckGate(root, file)]]),
+          });
+          expect(planned.routes.map((r: { args: string[] }) => r.args)).toEqual([
+            ['--prefix', 'tools/solo', 'run', 'typecheck'],
+          ]);
+          const quiet = (cmd: string, args: string[], options: Record<string, unknown>) =>
+            execFileSync(cmd, args, { ...options, stdio: 'pipe' });
+
+          expect(runAutoTypecheckRoutes({ root, routes: planned.routes, execFile: quiet })).toBe(0);
+          expect(readFileSync(join(root, 'tools', 'solo', 'ran.txt'), 'utf8')).toBe('ok');
+
+          // Control: the argv this route used to emit fails for the same package, so the
+          // assertions above would have caught the bug rather than passing vacuously.
+          rmSync(join(root, 'tools', 'solo', 'ran.txt'));
+          const oldArgs = ['run', '--workspace', 'tools/solo', 'typecheck'];
+          expect(runAutoTypecheckRoutes({ root, routes: [{ args: oldArgs }], execFile: quiet })).not.toBe(0);
+          expect(existsSync(join(root, 'tools', 'solo', 'ran.txt'))).toBe(false);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
       });
     });
 
@@ -3845,7 +3959,7 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
       // apps/operator declares no `typecheck` script — which is precisely why the old code
       // called it permanently uncheckable.
       const noWorkspaceScript = new Map([
-        [OPERATOR_FILE, { workspaceDir: 'apps/operator', packageName: 'operator', command: null }],
+        [OPERATOR_FILE, { workspaceDir: 'apps/operator', packageName: 'operator', standalone: false, command: null }],
       ]);
       const siblingGates = [{ npmScript: 'lint:tsc:operator', prefixes: ['apps/operator/'] }];
 
