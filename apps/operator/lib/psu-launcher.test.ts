@@ -9608,7 +9608,7 @@ describe("mintRecycleArgs — personaFile swap (stale-prompt-render-in-live-sess
     }
   });
 
-  it("never ADDS --system-prompt-file to an argv that has none, and never touches --append-system-prompt-file", () => {
+  it("never ADDS --system-prompt-file for a non-claude (or unnamed) agent, and never touches --append-system-prompt-file", () => {
     // omp/codex do not take --system-prompt-file; injecting one would be a new flag
     // on a backend that never asked for it. And the APPEND flag carries the carry
     // document + the launch brief — swapping that would drop the session's mission.
@@ -9625,6 +9625,75 @@ describe("mintRecycleArgs — personaFile swap (stale-prompt-render-in-live-sess
       carry,
     ]);
     expect(args).not.toContain(NEW_RENDER);
+  });
+});
+
+describe("a resumed claude process keeps its persona across /clear and respawn (EI-24628537598753105)", () => {
+  const FRESH = "ffffabcd-1234-5678-9abc-def012345678";
+  const mintId = () => FRESH;
+  const RENDER = "/home/u/.papercusp/launch-context/session-refresh-su-abc.md";
+  const RESUMED = "ebe4d65d-bb40-43af-86a9-35a9446fed37";
+  const persona = (args: string[]) => {
+    const i = args.indexOf("--system-prompt-file");
+    return i >= 0 ? args[i + 1] : null;
+  };
+
+  it("resumeArgsFor puts the fresh render in the claude resume argv, with the same flags as a fresh SU launch", () => {
+    // Measured 2026-09-29 (su-89238d16): `psu --resume` ran `claude --resume <id>`
+    // with no persona flag; the cold-auto /clear then opened native 8506ff77 on
+    // claude's 6,312-char stock prompt instead of the 181K playbook.
+    const { args } = resumeArgsFor(
+      { agent: "claude", cwd: "/x", sessionId: RESUMED },
+      { personaFile: RENDER },
+    );
+    expect(args.slice(0, 2)).toEqual(["--resume", RESUMED]);
+    expect(persona(args)).toBe(RENDER);
+    expect(args).toContain("--exclude-dynamic-system-prompt-sections");
+  });
+
+  it("resumeArgsFor without a render keeps the old argv (fail-soft)", () => {
+    for (const personaFile of [null, undefined]) {
+      const { args } = resumeArgsFor(
+        { agent: "claude", cwd: "/x", sessionId: RESUMED },
+        { personaFile },
+      );
+      expect(args).not.toContain("--system-prompt-file");
+      expect(args).not.toContain("--exclude-dynamic-system-prompt-sections");
+    }
+  });
+
+  it("mintRecycleArgs ADDS the render to a claude argv that has none (a pre-fix resumed process heals on its next respawn)", () => {
+    const carry = "/home/u/.papercusp/launch-context/carry-su-abc.md";
+    const { args, nativeId } = mintRecycleArgs(
+      ["--resume", RESUMED, "--dangerously-skip-permissions", "--append-system-prompt-file", carry],
+      { mintId, agent: "claude", personaFile: RENDER },
+    );
+    expect(nativeId).toBe(FRESH);
+    expect(args).not.toContain("--resume");
+    expect(args).not.toContain(RESUMED);
+    expect(persona(args)).toBe(RENDER);
+    expect(args.filter((a: string) => a === "--system-prompt-file")).toHaveLength(1);
+    expect(args.filter((a: string) => a === "--exclude-dynamic-system-prompt-sections")).toHaveLength(1);
+    // The carry document is untouched.
+    expect(args[args.indexOf("--append-system-prompt-file") + 1]).toBe(carry);
+  });
+
+  it("mintRecycleArgs adds nothing to a claude argv without a render", () => {
+    const { args } = mintRecycleArgs(["--resume", RESUMED], {
+      mintId,
+      agent: "claude",
+      personaFile: null,
+    });
+    expect(args).toEqual(["--session-id", FRESH]);
+  });
+
+  it("mintRecycleArgs does not duplicate --exclude-dynamic-system-prompt-sections already in argv", () => {
+    const { args } = mintRecycleArgs(
+      ["--resume", RESUMED, "--exclude-dynamic-system-prompt-sections"],
+      { mintId, agent: "claude", personaFile: RENDER },
+    );
+    expect(args.filter((a: string) => a === "--exclude-dynamic-system-prompt-sections")).toHaveLength(1);
+    expect(persona(args)).toBe(RENDER);
   });
 });
 

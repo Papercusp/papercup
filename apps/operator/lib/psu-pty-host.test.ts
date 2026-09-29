@@ -1390,6 +1390,22 @@ describe('coldResetModeForAgent (backend-aware cold reset)', () => {
     expect(coldResetModeForAgent('omp')).toBe('reset');
     expect(coldResetModeForAgent('')).toBe('reset');
   });
+
+  // EI-24628537598753105: a claude child with no persona flag (a pre-fix
+  // `psu --resume`) must not /clear onto the stock prompt; a recycle re-renders it.
+  it('routes a claude child spawned WITHOUT --system-prompt-file to a hard recycle', () => {
+    expect(coldResetModeForAgent('claude', ['--resume', 'ebe4d65d', '--dangerously-skip-permissions'])).toBe('recycle');
+  });
+
+  it('keeps a claude child that carries its persona on the in-place reset', () => {
+    expect(coldResetModeForAgent('claude', ['--system-prompt-file', '/p.md', '--session-id', 'x'])).toBe('reset');
+    expect(coldResetModeForAgent('claude', ['--system-prompt-file=/p.md'])).toBe('reset');
+  });
+
+  it('never escalates OMP on its argv, and defaults to reset when the argv is unknown', () => {
+    expect(coldResetModeForAgent('omp', ['--no-lsp'])).toBe('reset');
+    expect(coldResetModeForAgent('claude', null)).toBe('reset');
+  });
 });
 
 describe('submitVerifyQuietMs (WI-2975 — decoupled from OUTPUT_QUIET_MS)', () => {
