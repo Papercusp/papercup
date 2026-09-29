@@ -305,9 +305,13 @@ export async function derivePlanLifecycleForRead(input: {
    * attempts-until-pass and failure-class split; plans:get passes readIterationMetrics.
    * Reads every item (done ones included). Absent → no `iterations` field.
    */
-  readIterations?: (q: { workspaceId: string; planSlug: string; itemIds: readonly string[] }) => Promise<
-    IterationMetric[] | null
-  >;
+  readIterations?: (q: {
+    workspaceId: string;
+    planSlug: string;
+    itemIds: readonly string[];
+    /** Item text by id — carries each item's declared `attempt-cost:` / `iteration-budget:`. */
+    itemTexts: Readonly<Record<string, string>>;
+  }) => Promise<IterationMetric[] | null>;
 }): Promise<PlanLifecycleReconciliation & { grinding?: GrindingMark[] | null; iterations?: IterationMetric[] | null }> {
   const reconciled = await deriveReconciledLifecycle(input);
   let iterations: IterationMetric[] | null | undefined;
@@ -317,6 +321,7 @@ export async function derivePlanLifecycleForRead(input: {
         workspaceId: input.signals.workspaceId,
         planSlug: input.signals.planSlug,
         itemIds: input.items.map((it) => it.id),
+        itemTexts: Object.fromEntries(input.items.map((it) => [it.id, it.text])),
       });
     } catch {
       iterations = null;

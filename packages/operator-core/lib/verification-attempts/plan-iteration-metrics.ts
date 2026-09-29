@@ -46,6 +46,45 @@ export interface IterationMetric {
   failed: FailureClassSplit;
   cancelled: number;
   running: number;
+  /** The item's declared per-attempt cost + iteration budget (`attempt-cost:20m iteration-budget:3`), or null. */
+  budget: IterationBudget | null;
+  /**
+   * True when a declared iteration budget is spent: the item passed only after more attempts
+   * than budgeted, or has used every budgeted attempt without passing.
+   */
+  overBudget: boolean;
+}
+
+/**
+ * An item's declared verification budget, parsed from inline keywords on its plan line:
+ * `attempt-cost:<n>(s|m|h)` (the expected wall time of ONE slow attempt) and
+ * `iteration-budget:<n>` (how many slow attempts acceptance may take). Either may be absent.
+ */
+export interface IterationBudget {
+  attemptCostMs: number | null;
+  iterations: number | null;
+  /** attemptCostMs × iterations when both are declared — the item's total slow-check budget. */
+  totalCostMs: number | null;
+}
+
+const ATTEMPT_COST = /(?:^|\s)attempt-cost:\s*(\d+(?:\.\d+)?)\s*(s|m|h)\b/i;
+const ITERATION_BUDGET = /(?:^|\s)iteration-budget:\s*(\d+)\b/i;
+const UNIT_MS: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000 };
+
+/** Pure: the budget declared on one plan item's text, or null when it declares neither keyword. */
+export function parseIterationBudget(text: string | null | undefined): IterationBudget | null {
+  if (!text) return null;
+  const cost = ATTEMPT_COST.exec(text);
+  const iters = ITERATION_BUDGET.exec(text);
+  const attemptCostMs = cost ? Math.round(Number(cost[1]) * UNIT_MS[cost[2]!.toLowerCase()]!) : null;
+  const iterations = iters ? Number(iters[1]) : null;
+  if (attemptCostMs === null && (iterations === null || iterations <= 0)) return null;
+  const validIterations = iterations !== null && iterations > 0 ? iterations : null;
+  return {
+    attemptCostMs,
+    iterations: validIterations,
+    totalCostMs: attemptCostMs !== null && validIterations !== null ? attemptCostMs * validIterations : null,
+  };
 }
 
 const CLASS_WORD = /\b(product|harness|environment|env)\b/gi;
@@ -107,6 +146,7 @@ export function iterationMetric(
   workItemIds: readonly string[],
   attempts: readonly WorkItemAttempt[],
   auditClasses: ReadonlyMap<string, FailureClass>,
+  budget: IterationBudget | null = null,
 ): IterationMetric {
   const ordered = [...attempts].sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt));
   const failed: FailureClassSplit = { product: 0, harness: 0, environment: 0, unclassified: 0 };
@@ -130,6 +170,9 @@ export function iterationMetric(
     }
     failed[classifyFailure(a, auditClasses)] += 1;
   }
+  const cap = budget?.iterations ?? null;
+  const overBudget =
+    cap !== null && (attemptsUntilPass !== null ? attemptsUntilPass > cap : finished >= cap);
   return {
     itemId,
     workItemIds: [...workItemIds].sort(),
@@ -139,6 +182,8 @@ export function iterationMetric(
     failed,
     cancelled,
     running,
+    budget,
+    overBudget,
   };
 }
 
@@ -155,16 +200,29 @@ export interface ReadIterationDeps {
  * read fails; a work item whose notes cannot be read is classified without audit tags.
  */
 export async function readIterationMetrics(
-  input: { workspaceId: string; planSlug: string; itemIds: readonly string[] },
+  input: {
+    workspaceId: string;
+    planSlug: string;
+    itemIds: readonly string[];
+    /** Plan item text by id — the source of each item's declared budget (see parseIterationBudget). */
+    itemTexts?: Readonly<Record<string, string>>;
+  },
   deps: ReadIterationDeps = {},
 ): Promise<IterationMetric[] | null> {
   if (input.itemIds.length === 0) return [];
+  const budgets = new Map<string, IterationBudget>();
+  for (const id of input.itemIds) {
+    const b = parseIterationBudget(input.itemTexts?.[id]);
+    if (b) budgets.set(id, b);
+  }
   try {
     const sql = deps.sql ?? (getOrgPg().sql as unknown as Sql);
     const linked = deps.listLinked
       ? await deps.listLinked(input)
       : await listPlanLinkedWorkItems(input, sql, { includeTerminal: true });
-    const byItem = new Map<string, { workItemIds: string[]; attempts: WorkItemAttempt[]; classes: Map<string, FailureClass> }>();
+    type Slot = { workItemIds: string[]; attempts: WorkItemAttempt[]; classes: Map<string, FailureClass> };
+    const emptySlot = (): Slot => ({ workItemIds: [], attempts: [], classes: new Map() });
+    const byItem = new Map<string, Slot>();
     for (const link of linked) {
       const attempts = await (deps.listAttempts ?? listWorkItemAttempts)(
         { workspaceId: input.workspaceId, workItemId: link.workItemId },
@@ -174,15 +232,22 @@ export async function readIterationMetrics(
       const notes = (await (deps.readNotes ?? readAttemptAuditNotes)(link.workItemId)) ?? [];
       const classes = auditFailureClasses(notes, [...new Set(attempts.map(attemptKey))]);
       for (const itemId of link.itemIds) {
-        const slot = byItem.get(itemId) ?? { workItemIds: [], attempts: [], classes: new Map() };
+        const slot = byItem.get(itemId) ?? emptySlot();
         slot.workItemIds.push(link.workItemId);
         slot.attempts.push(...attempts);
         for (const [fp, c] of classes) slot.classes.set(fp, c);
         byItem.set(itemId, slot);
       }
     }
+    // An item that declares a budget is reported even before its first slow attempt, so the
+    // owner sees the declared cost next to the items already spending it.
+    for (const itemId of budgets.keys()) {
+      if (!byItem.has(itemId)) byItem.set(itemId, emptySlot());
+    }
     return [...byItem.entries()]
-      .map(([itemId, s]) => iterationMetric(itemId, s.workItemIds, s.attempts, s.classes))
+      .map(([itemId, s]) =>
+        iterationMetric(itemId, s.workItemIds, s.attempts, s.classes, budgets.get(itemId) ?? null),
+      )
       .sort((a, b) => a.itemId.localeCompare(b.itemId));
   } catch {
     return null;
@@ -196,5 +261,11 @@ export function formatIterationMetric(m: IterationMetric): string {
     .filter((k) => m.failed[k] > 0)
     .map((k) => `${m.failed[k]} ${k}`)
     .join(', ');
-  return `${m.itemId} ${head}${split ? ` · failed: ${split}` : ''}${m.running ? ` · ${m.running} running` : ''}`;
+  const b = m.budget;
+  const budget = b
+    ? ` · budget ${[b.iterations !== null ? `${b.iterations} attempt(s)` : null, b.attemptCostMs !== null ? `${Math.round(b.attemptCostMs / 60_000)}m each` : null]
+        .filter(Boolean)
+        .join(' × ')}${m.overBudget ? ' — OVER BUDGET' : ''}`
+    : '';
+  return `${m.itemId} ${head}${split ? ` · failed: ${split}` : ''}${m.running ? ` · ${m.running} running` : ''}${budget}`;
 }

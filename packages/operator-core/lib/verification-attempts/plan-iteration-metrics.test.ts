@@ -9,6 +9,7 @@ import {
   classifyFailure,
   formatIterationMetric,
   iterationMetric,
+  parseIterationBudget,
   readIterationMetrics,
 } from './plan-iteration-metrics';
 
@@ -84,6 +85,8 @@ describe('iteration metric', () => {
       failed: { product: 1, harness: 1, environment: 1, unclassified: 1 },
       cancelled: 1,
       running: 1,
+      budget: null,
+      overBudget: false,
     });
     expect(formatIterationMetric(m)).toBe('P-003 4 attempt(s) to pass · failed: 1 product, 1 harness, 1 environment, 1 unclassified · 1 running');
   });
@@ -93,6 +96,30 @@ describe('iteration metric', () => {
     expect(m.attemptsUntilPass).toBeNull();
     expect(m.passed).toBe(false);
     expect(formatIterationMetric(m)).toBe('P-004 2 attempt(s), not passed · failed: 2 unclassified');
+  });
+});
+
+describe('declared iteration budget', () => {
+  it('parses attempt-cost and iteration-budget keywords from the item text; neither → null', () => {
+    expect(parseIterationBudget('Drill passes attempt-cost:1.5h iteration-budget:4')).toEqual({
+      attemptCostMs: 5_400_000,
+      iterations: 4,
+      totalCostMs: 21_600_000,
+    });
+    expect(parseIterationBudget('attempt-cost: 90s')).toEqual({ attemptCostMs: 90_000, iterations: null, totalCostMs: null });
+    expect(parseIterationBudget('costs a lot, budget unknown')).toBeNull();
+    expect(parseIterationBudget('iteration-budget:0')).toBeNull();
+    expect(parseIterationBudget('xattempt-cost:5m')).toBeNull();
+    expect(parseIterationBudget(undefined)).toBeNull();
+  });
+
+  it('over budget = passed only after more attempts than budgeted, or every budgeted attempt used without a pass', () => {
+    const budget = { attemptCostMs: null, iterations: 2, totalCostMs: null };
+    const passedInBudget = iterationMetric('P-1', [], [attempt('fail', 'a'), attempt('pass', null)], new Map(), budget);
+    const passedLate = iterationMetric('P-2', [], [attempt('fail', 'a'), attempt('fail', 'b'), attempt('pass', null)], new Map(), budget);
+    const oneLeft = iterationMetric('P-3', [], [attempt('fail', 'a')], new Map(), budget);
+    const spent = iterationMetric('P-4', [], [attempt('fail', 'a'), attempt('fail', 'b')], new Map(), budget);
+    expect([passedInBudget, passedLate, oneLeft, spent].map((m) => m.overBudget)).toEqual([false, true, false, true]);
   });
 });
 
@@ -126,8 +153,38 @@ describe('readIterationMetrics', () => {
         failed: { product: 0, harness: 0, environment: 2, unclassified: 0 },
         cancelled: 0,
         running: 0,
+        budget: null,
+        overBudget: false,
       },
     ]);
+  });
+
+  it('reports an item that declares a budget before its first attempt, and flags a spent budget', async () => {
+    const metrics = await readIterationMetrics(
+      {
+        workspaceId: 'w',
+        planSlug: 'p',
+        itemIds: ['P-001', 'P-002', 'P-003'],
+        itemTexts: {
+          'P-001': 'Physical drill phase E passes attempt-cost:20m iteration-budget:2',
+          'P-002': 'Headless UI check iteration-budget:3',
+          'P-003': 'No declaration here',
+        },
+      },
+      {
+        sql: {} as never,
+        listLinked: async () => [{ workItemId: 'WI-1', itemIds: ['P-001'] }],
+        listAttempts: async () => [attempt('fail', 'a'), attempt('fail', 'b')],
+        readNotes: async () => null,
+      },
+    );
+    expect(metrics?.map((m) => [m.itemId, m.attempts, m.overBudget, m.budget])).toEqual([
+      ['P-001', 2, true, { attemptCostMs: 1_200_000, iterations: 2, totalCostMs: 2_400_000 }],
+      ['P-002', 0, false, { attemptCostMs: null, iterations: 3, totalCostMs: null }],
+    ]);
+    expect(formatIterationMetric(metrics![0]!)).toBe(
+      'P-001 2 attempt(s), not passed · failed: 2 unclassified · budget 2 attempt(s) × 20m each — OVER BUDGET',
+    );
   });
 
   it('a failed read is "not measured" (null), never an empty list', async () => {

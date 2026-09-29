@@ -37,6 +37,7 @@ import { decoratePlanNowBlock } from './liveness-decoration';
 import { reconcileNowNext } from './now-next-derivation';
 import { derivePlanLifecycleForRead, normalizeActivityTimestamp } from './plan-lifecycle-derivation';
 import { markGrindingItems, readGrindingItems } from '../../verification-attempts/plan-grinding';
+import { readIterationMetrics } from '../../verification-attempts/plan-iteration-metrics';
 import type { PlanLifecycleReconciliation } from '@papercusp/plan-parser';
 import { getAcceptanceRubricForPlan } from '../../rubrics';
 import { getLatestPlanAudit } from '../../plan-audits';
@@ -1165,6 +1166,9 @@ export default defineTool({
                 // expensive-verification-loops P-002 (R-3): mark items whose work item is
                 // grinding (tripped loop rule, no audit note yet).
                 readGrinding: readGrindingItems,
+                // expensive-verification-loops P-007 (R-12): attempts-until-pass and the
+                // product / harness / environment split of failed slow attempts, per item.
+                readIterations: readIterationMetrics,
                 signals: {
                   // EI-22103498805895390: scope the signal lookups to the PLAN
                   // ROW's workspace, not the legacy 'default' constant — the
@@ -1217,6 +1221,7 @@ export default defineTool({
                       counts: lifecycle.derived.counts,
                       liveItems: markGrindingItems(lifecycle.derived.liveItems, lifecycle.grinding),
                       ...(lifecycle.grinding !== undefined ? { grinding: lifecycle.grinding } : {}),
+                      ...(lifecycle.iterations !== undefined ? { iterations: lifecycle.iterations } : {}),
                       liveItemsTruncated: lifecycle.derived.liveItemsTruncated,
                       idleDays: lifecycle.derived.idleDays,
                       stalledAfterDays: lifecycle.derived.stalledAfterDays,
