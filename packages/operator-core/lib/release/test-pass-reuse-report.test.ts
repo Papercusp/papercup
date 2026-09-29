@@ -322,6 +322,55 @@ describe('pass-proof recorder outcome (WI-10003603)', () => {
     expect(quiet).toMatchObject({ verdict: 'nothing-to-record', alarm: false });
   });
 
+  // WI-10003792: an enrolled task that went silent used to hide inside noReport, indistinguishable
+  // from an astro check that never could report.
+  it('ALARMS task-silent when an enrolled task reported nothing, even though others recorded', () => {
+    const out = printed(
+      {
+        'core::test': [{ outcome: 'written', rows: 12 }],
+        'lib::test': null,
+        'docs::test': null,
+      },
+      { 'core::test': true, 'lib::test': true, 'docs::test': false },
+    );
+    const r = summarizeExecutedSourceMapRecorder(out)!;
+    expect(r).toMatchObject({
+      verdict: 'task-silent',
+      alarm: true,
+      noReport: 2,
+      noReportExpected: 1,
+      noReportUnexpected: 1,
+      written: 1,
+    });
+    expect(r.alarms).toEqual([expect.objectContaining({ task: 'lib::test', outcome: 'no-report-unexpected' })]);
+    const health = buildTestPassReuseHealth(out, 'abcdef1234567', 1)!;
+    expect(health.headline).toContain('PASS-PROOF RECORDER partly silent: 1 enrolled task(s) reported no outcome (lib::test)');
+  });
+
+  it('does NOT alarm when every silent task was known unable to report', () => {
+    const onlyExpected = summarizeExecutedSourceMapRecorder(
+      printed({ 'core::test': [{ outcome: 'written', rows: 3 }], 'docs::test': null }, { 'core::test': true, 'docs::test': false }),
+    )!;
+    expect(onlyExpected).toMatchObject({ verdict: 'recorded', alarm: false, noReportExpected: 1, noReportUnexpected: 0 });
+    // All armed tasks silent, all of them unable to report: nothing recordable, not a broken recorder.
+    const allExpected = summarizeExecutedSourceMapRecorder(printed({ 'docs::test': null, 'cli::test': null }, { 'docs::test': false, 'cli::test': false }))!;
+    expect(allExpected).toMatchObject({ verdict: 'nothing-to-record', alarm: false });
+    // …but one unknown-expectation task among them keeps the old `unreported` reading.
+    const mixed = summarizeExecutedSourceMapRecorder(printed({ 'docs::test': null, 'x::test': null }, { 'docs::test': false }))!;
+    expect(mixed).toMatchObject({ verdict: 'unreported', alarm: true });
+  });
+
+  it('still reads a TOTAL line written before the split, with both split counts at 0', () => {
+    const legacy =
+      'EXECUTED_SOURCE_MAP_TOTAL tasks=2 written=1 rows=5 retired=0 notPersisted=0 nothingToRecord=0 failed=0 timedOut=0 noReport=1 malformed=0';
+    expect(summarizeExecutedSourceMapRecorder(legacy)).toMatchObject({
+      verdict: 'recorded',
+      noReport: 1,
+      noReportExpected: 0,
+      noReportUnexpected: 0,
+    });
+  });
+
   it('builds a health record from recorder lines alone, and round-trips it through the parser', () => {
     const out = printed({ 'a::test': [{ outcome: 'failed', rows: 1, error: 'db down' }] });
     const built = buildTestPassReuseHealth(out, 'abcdef1234567', 7)!;
