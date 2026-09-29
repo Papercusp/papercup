@@ -11,6 +11,14 @@
  */
 import { GUARD_RAIL_TAG, type GuardRailReport } from './guard-rails.js';
 
+/**
+ * A harness that can run the same phases on a cheap rig (same-box, local, mocked) and on an
+ * expensive one (physical rig, full release cut) declares both tiers. The runner then refuses
+ * the expensive tier for any phase whose code changed since it last passed the cheap tier.
+ */
+export const TIERS = ['cheap', 'expensive'] as const;
+export type Tier = (typeof TIERS)[number];
+
 export interface PhaseSpec {
   id: string;
   /** Phases whose pass (or reuse) this phase needs. Declared earlier than this phase. */
@@ -18,6 +26,17 @@ export interface PhaseSpec {
   /** Setup whose passed result a selective re-run may reuse from a prior run. */
   reusable?: boolean;
   description?: string;
+  /**
+   * The tiers this phase runs in (default: every tier the contract declares). A phase that runs
+   * only on the expensive tier covers a physical-only property and is exempt from the tier gate.
+   */
+  tiers?: readonly Tier[];
+  /**
+   * The code that defines this phase, as paths relative to the code root: a file, a directory,
+   * or `script.sh#shell_function` for one function of a shell script. Its hash is the phase's
+   * identity for the tier gate. Required on a phase that runs in both tiers.
+   */
+  code?: readonly string[];
 }
 
 export interface HarnessContract {
@@ -25,6 +44,14 @@ export interface HarnessContract {
   phases: readonly PhaseSpec[];
   /** Where this harness sits, for guard-rail selection: its preflight runs every probe sharing a tag. */
   scopeTags?: readonly string[];
+  /** What each tier runs on (e.g. cheap: "same-box two-instance rig", expensive: "physical rig"). */
+  tiers?: Readonly<Record<Tier, string>>;
+}
+
+/** The tiers a phase runs in under this contract (empty when the contract declares no tiers). */
+export function phaseTiers(contract: HarnessContract, spec: PhaseSpec): readonly Tier[] {
+  if (!contract.tiers) return [];
+  return spec.tiers ?? TIERS;
 }
 
 /** passed · failed · blocked (a dependency did not pass) · skipped (not selected) · reused (prior run). */
