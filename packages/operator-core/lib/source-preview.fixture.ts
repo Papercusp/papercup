@@ -52,6 +52,7 @@ export const SHIPPED = [
   'docs/architecture.md',
   'libs/papercusp/package.json',
   'libs/papercusp/libs/db/sql/001-init.sql',
+  'libs/papercusp/plugins/markdown-preview/papercusp.json', // a sibling plugin still ships
 ];
 
 /** Tracked paths the shared selection must drop, each for a different reason. */
@@ -64,6 +65,7 @@ export const DROPPED = [
   'node_modules/leftpad/index.js', //      preview never ships dependencies
   'apps/operator/node_modules/x/index.js', // …at any depth
   'apps/operator/.next/cache.bin', //      heavy exclude
+  'libs/papercusp/plugins/gitnexus-bridge/index.ts', // license exclude (GitNexus is noncommercial)
 ];
 
 export interface Superproject {
@@ -80,6 +82,8 @@ export function makeSuperproject(root: string): Superproject {
   git(subSrc, ['init', '-q', '-b', 'main']);
   write(subSrc, 'package.json', JSON.stringify({ name: '@papercusp/core', description: 'core platform libraries' }, null, 2));
   write(subSrc, 'libs/db/sql/001-init.sql', 'CREATE TABLE t (id int);\n');
+  write(subSrc, 'plugins/markdown-preview/papercusp.json', '{"name":"markdown-preview"}\n');
+  write(subSrc, 'plugins/gitnexus-bridge/index.ts', "spawn('npx', ['gitnexus', 'mcp']);\n");
   git(subSrc, ['add', '-A']);
   git(subSrc, ['commit', '-q', '-m', 'core']);
   const subCommit = git(subSrc, ['rev-parse', 'HEAD']);
