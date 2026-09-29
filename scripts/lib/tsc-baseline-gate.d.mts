@@ -795,15 +795,36 @@ export function partitionFilesByCoverage({ files, coveredPrefixes }: {
  *
  * @param {string} root Absolute repo root.
  * @param {string} file Repo-relative path.
- * @returns {{workspaceDir: string, packageName: string, command: string | null} | null}
+ * @returns {{workspaceDir: string, packageName: string, standalone: boolean, command: string | null} | null}
  *   `command: null` = the owning workspace declares NO typecheck script (a real coverage gap,
- *   worth saying out loud); `null` = no owning package.json found at all.
+ *   worth saying out loud); `null` = no owning package.json found at all. `standalone: true` =
+ *   no root `workspaces` pattern names the package, so it is run with `npm --prefix`.
  */
 export function suggestTypecheckGate(root: string, file: string): {
     workspaceDir: string;
     packageName: string;
+    standalone: boolean;
     command: string | null;
 } | null;
+/**
+ * WI-10003822 — the `npm` argv that runs `typecheck` inside ONE owning package.
+ *
+ * A STANDALONE package (a package.json that no root `workspaces` pattern names, e.g.
+ * `tools/perf-test/wdio` or `papercusp-desktop`) is not an npm workspace, so
+ * `npm run --workspace <dir> typecheck` answers "No workspaces found" and exits 1 having
+ * checked nothing. `npm --prefix <dir> run typecheck` runs the same script there. Measured
+ * 2026-09-29 on tools/perf-test/wdio: the --workspace form exits 1, the --prefix form runs
+ * `tsc --noEmit` and exits 0. affected-tests' formatWorkspaceCommand makes the same split
+ * (EI-22152426246970496).
+ *
+ * Misclassifying a real workspace as standalone is the safe direction: `--prefix` still runs
+ * that package's script. Only the reverse ever fails.
+ *
+ * @param {string} workspaceDir Repo-relative package directory.
+ * @param {boolean} standalone True when no root `workspaces` pattern covers it.
+ * @returns {string[]} argv for `npm`, executed without a shell.
+ */
+export function workspaceTypecheckArgs(workspaceDir: string, standalone: boolean): string[];
 /**
  * EI-19461218392796337 — the repo-relative prefixes ONE sibling gate module actually compiles.
  *
