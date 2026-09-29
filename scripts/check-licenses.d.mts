@@ -42,6 +42,60 @@ export function classify(packages: any, exceptions?: {}): {
 };
 /** Validate the exceptions file shape; a malformed entry must not silently admit anything. */
 export function validateExceptions(file: any): string[];
+/** 'model' | 'native' | null for one file, from its path and its first four bytes. */
+export function payloadKindOf(relPath: any, head: any): "native" | "model" | null;
+/** A path glob → RegExp over '/'-separated relative paths: `**` spans dirs, `*` and `?` do not. */
+export function globToRegExp(glob: any): RegExp;
+/** The node_modules/<pkg> (or node_modules/@scope/pkg) directory containing a path, if any. */
+export function npmPackageRootOf(relPath: any): string | null;
+/** Validate the installer component manifest; a malformed entry must not cover anything. */
+export function validateComponents(file: any): any[];
+/**
+ * Attribute every installer item. Pure over its inputs so the guard test runs on fixtures.
+ *   payloads       [{ path, kind: 'native'|'model' }]         from the tree walk
+ *   syftArtifacts  [{ type, name, version, licenses: [], path }]
+ *   components     parsed installer-components.json `components`
+ *   npmExceptions  license-exceptions.json `npm` (npm packages use the lockfile leg's rules)
+ */
+export function attributeInstaller({ payloads, syftArtifacts, components, npmExceptions }: {
+    payloads?: never[] | undefined;
+    syftArtifacts?: never[] | undefined;
+    components?: never[] | undefined;
+    npmExceptions?: {} | undefined;
+}): {
+    covered: number;
+    denied: {
+        what: string;
+        path: any;
+        why: string;
+    }[];
+    unreviewed: {
+        what: string;
+        path: any;
+        why: string;
+    }[];
+    npmWeakCopyleft: any[];
+    components: {
+        name: any;
+        kind: any;
+        license: any;
+        verdict: string;
+        hits: number;
+        obligations: any;
+    }[];
+    unusedComponents: any[];
+};
+/**
+ * Walk one unpacked installer tree: native/model payloads + Syft artifacts, with nested
+ * tarballs expanded (members addressed as `<archive>!/<member>`) unless a reviewed
+ * component already covers the archive whole.
+ */
+export function collectInstallerTree(root: any, components: any, prefix?: string, depth?: number): {
+    payloads: any[];
+    syftArtifacts: any;
+    undetermined: any[];
+    files: number;
+};
 export function main(argv?: string[], root?: string): 2 | 0 | 1;
 export const ROOT: string;
 export const EXCEPTIONS_PATH: string;
@@ -56,3 +110,5 @@ export const PERMISSIVE: Set<string>;
 /** File-level copyleft: usable in a closed or differently-licensed app; changes to the
  *  component's own files must be shared, and its license + source offer shipped. */
 export const WEAK_COPYLEFT: Set<string>;
+export const INSTALLER_COMPONENTS_PATH: string;
+export const COMPONENT_KINDS: readonly string[];

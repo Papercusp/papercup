@@ -89,7 +89,7 @@ export function loadPsuConnectionStore(path?: string): {
 };
 export function savePsuConnectionStore(store: any, path?: string): void;
 export function describePsuConnectionProfile(profile: any): string;
-export function describeHostedWorkspace(profile: any, workspace: any): string;
+export function describeHostedWorkspace(profile: any, workspace: any, now?: number): string;
 /**
  * @returns {Promise<{ handled: boolean, argv: string[], exitCode?: number }>}
  */
@@ -104,3 +104,12 @@ export const DEFAULT_REMOTE_OPERATOR_PORT: 3070;
 export const DEFAULT_HOSTED_PORTAL_ORIGIN: "https://app.papercusp.com";
 /** Picker value for "sign in to Papercusp cloud". Not a legal profile name, so it cannot collide. */
 export const HOSTED_LOGIN_CHOICE: ":login";
+/**
+ * How long psu waits for a running workspace's machine to re-establish its
+ * link to Papercusp cloud before giving up. The machine's connector reconnects
+ * with a 1s-floor jittered backoff, and the relay drops a dead link within one
+ * 30s ping round, so a brief blip normally clears well inside this budget.
+ * One budget covers the whole attach, however many times the link drops.
+ */
+export const HOSTED_RECONNECT_POLL_MS: 3000;
+export const HOSTED_RECONNECT_POLLS: 15;

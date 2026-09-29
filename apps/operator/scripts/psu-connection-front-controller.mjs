@@ -296,10 +296,59 @@ export function hostedProfileName(origin) {
 }
 
 /**
- * A Papercusp cloud sign-in (WI-10002874, byoc D-412). One profile per portal;
- * it reaches every hosted workspace the signed-in person's organization role
- * allows, through the workspace machine's own outbound connector — the machine
- * accepts no inbound connection, so there is no SSH or IAP leg to configure.
+ * A name for a new cloud sign-in that no saved profile uses. The first sign-in
+ * at a portal is named for its host (so existing `--connect=<host>` keeps
+ * working); another account or organization at the same portal gets the host
+ * plus its organization's name, then the user id if that is still taken.
+ */
+export function freeHostedProfileName(origin, identity, profiles) {
+  const taken = new Set(profiles.map((profile) => profile.name));
+  const host = hostedProfileName(origin);
+  const fit = (value) =>
+    value.slice(0, 64).replace(/[^A-Za-z0-9]+$/, "") || host.slice(0, 64);
+  const slug = (value) =>
+    String(value ?? "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 24);
+  const org = slug(identity.organizationName) || slug(identity.organizationId).slice(0, 8);
+  const candidates = [
+    host,
+    fit(`${host}-${org}`),
+    fit(`${host}-${org}-${slug(identity.userId).slice(0, 8)}`),
+  ];
+  for (const candidate of candidates) if (!taken.has(candidate)) return candidate;
+  for (let n = 2; ; n += 1) {
+    const candidate = fit(`${host}-${org}`.slice(0, 60)) + `-${n}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/** Same portal, organization and user: the one sign-in a re-login may replace. */
+function sameHostedIdentity(profile, { origin, organizationId, userId }) {
+  return (
+    profile.kind === "papercusp-hosted" &&
+    profile.origin === origin &&
+    profile.organizationId === organizationId &&
+    profile.userId === userId
+  );
+}
+
+function hostedOrganizationName(value) {
+  if (typeof value !== "string") return null;
+  // A display label only; control characters could rewrite the terminal.
+  const name = value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 120);
+  return name || null;
+}
+
+/**
+ * A Papercusp cloud sign-in (WI-10002874, byoc D-412). One profile per portal
+ * + organization + user (WI-10003910), so several accounts or organizations
+ * can be signed in side by side; each reaches every hosted workspace that
+ * person's organization role allows, through the workspace machine's own
+ * outbound connector — the machine accepts no inbound connection, so there is
+ * no SSH or IAP leg to configure.
  */
 export function normalizeHostedProfile(input) {
   const origin = normalizeHostedPortalOrigin(input.origin);
@@ -311,10 +360,12 @@ export function normalizeHostedProfile(input) {
   const expiresAt = new Date(input.expiresAt);
   if (Number.isNaN(expiresAt.getTime()))
     throw new Error("Papercusp CLI token expiry has an invalid value");
+  const organizationName = hostedOrganizationName(input.organizationName);
   return {
     name,
     kind: "papercusp-hosted",
     origin,
+    ...(organizationName ? { organizationName } : {}),
     accessToken: requiredValue(
       input.accessToken,
       "Papercusp CLI token",
@@ -441,13 +492,41 @@ export function describePsuConnectionProfile(profile) {
   return `${profile.name} — GCP IAP ${profile.projectId}/${profile.zone}/${profile.instanceName} as ${profile.sshUser}`;
 }
 
-export function describeHostedWorkspace(profile, workspace) {
+export function describeHostedWorkspace(profile, workspace, now = Date.now()) {
   const label =
     workspace.displayName && workspace.displayName !== workspace.id
       ? `${workspace.displayName} (${workspace.id})`
       : workspace.id;
-  const state = workspace.reachable ? "" : ` — not connected (${workspace.state})`;
+  const state = workspace.reachable ? "" : ` — ${hostedUnreachableState(workspace, now)}`;
   return `${profile.name}/${workspace.id} — Papercusp cloud workspace ${label}${state}`;
+}
+
+/**
+ * A running workspace (`state: 'active'`) that is not reachable is a machine
+ * whose link to Papercusp cloud dropped; it normally reconnects on its own.
+ * Anything else is a machine that is not running.
+ */
+function hostedLinkDown(workspace) {
+  return workspace.state === "active" && !workspace.reachable;
+}
+
+function formatHostedAge(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 90) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return `${minutes} min`;
+  return `${Math.round(minutes / 60)} h`;
+}
+
+function hostedLastHeard(workspace, now) {
+  const at = Date.parse(workspace.connectorHeartbeatAt ?? "");
+  return Number.isFinite(at) ? `, last heard ${formatHostedAge(now - at)} ago` : "";
+}
+
+function hostedUnreachableState(workspace, now) {
+  return hostedLinkDown(workspace)
+    ? `running, but its link to Papercusp cloud is down${hostedLastHeard(workspace, now)}`
+    : `not connected (${workspace.state})`;
 }
 
 function defaultCommandAvailable(command) {
@@ -525,7 +604,9 @@ function defaultOpenBrowser(url) {
  * Bridge this terminal to a hosted workspace PTY over the connector relay —
  * the same `papercusp-hosted-workspace.v1` socket the portal's Terminal tab
  * uses (apps/operator/app/cloud-workspaces/hosted-workspace-session-protocol.ts).
- * Resolves when the socket closes; `exit` is set only if the remote shell ended.
+ * Resolves when the socket closes; `exit` is set only if the remote shell ended,
+ * and `bound` only once the relay bound this socket to a shell on the machine —
+ * without it there is no shell to resume.
  */
 function defaultOpenHostedTerminal({ socketUrl, initialInput, notice }) {
   const stdin = process.stdin;
@@ -535,6 +616,7 @@ function defaultOpenHostedTerminal({ socketUrl, initialInput, notice }) {
     let role = null;
     let exit = null;
     let resumed = false;
+    let bound = false;
     const send = (message) => {
       if (socket.readyState === WebSocket.OPEN)
         socket.send(JSON.stringify(message));
@@ -586,6 +668,7 @@ function defaultOpenHostedTerminal({ socketUrl, initialInput, notice }) {
       switch (message?.type) {
         case "session.bound":
           role = message.role;
+          bound = true;
           return;
         case "session.role":
           role = message.role;
@@ -596,6 +679,7 @@ function defaultOpenHostedTerminal({ socketUrl, initialInput, notice }) {
           return;
         case "pty.ready":
           role = message.role;
+          bound = true;
           resumed = message.resumed === true;
           onResize();
           if (resumed) notice("psu: resumed your detached shell");
@@ -627,7 +711,7 @@ function defaultOpenHostedTerminal({ socketUrl, initialInput, notice }) {
     socket.addEventListener("error", () => {});
     socket.addEventListener("close", (event) => {
       cleanup();
-      resolve({ exit, resumed, closeCode: event.code, closeReason: event.reason });
+      resolve({ exit, resumed, bound, closeCode: event.code, closeReason: event.reason });
     });
   });
 }
@@ -776,6 +860,14 @@ function hostedSessionKey(profile, workspaceId, argv, program = "psu") {
   return hash.update(argv.join("\0")).digest("base64url").slice(0, 22);
 }
 
+/**
+ * Relay close codes for a lost machine link (hosted-workspace-session.ts):
+ * 4411 = no live connector when this socket attached, 4412 = the connector
+ * dropped while this socket was open.
+ */
+const HOSTED_CLOSE_CONNECTOR_UNAVAILABLE = 4411;
+const HOSTED_CLOSE_CONNECTOR_DISCONNECTED = 4412;
+
 const HOSTED_ERROR_GUIDANCE = {
   cli_token_required: "psu is not signed in",
   cli_token_invalid: "this psu sign-in has expired or was signed out",
@@ -783,7 +875,7 @@ const HOSTED_ERROR_GUIDANCE = {
     "your account is no longer an active member of that organization",
   workspace_not_found: "that workspace is not in your organization",
   workspace_not_reachable:
-    "the workspace machine is not connected right now (it may be stopped or still starting)",
+    "the workspace machine's link to Papercusp cloud is down (it may be stopped, still starting, or reconnecting)",
   authority_unavailable: "the Papercusp cloud could not check your access; try again",
   ticket_unavailable: "the Papercusp cloud could not open a session; try again",
 };
@@ -938,7 +1030,58 @@ function parseSelection(selection) {
     : { name: selection.slice(0, slash), workspaceId: selection.slice(slash + 1) || null };
 }
 
+/**
+ * How long psu waits for a running workspace's machine to re-establish its
+ * link to Papercusp cloud before giving up. The machine's connector reconnects
+ * with a 1s-floor jittered backoff, and the relay drops a dead link within one
+ * 30s ping round, so a brief blip normally clears well inside this budget.
+ * One budget covers the whole attach, however many times the link drops.
+ */
+export const HOSTED_RECONNECT_POLL_MS = 3_000;
+export const HOSTED_RECONNECT_POLLS = 15;
+
+function hostedNotRunningError(workspace) {
+  return new Error(
+    `Workspace '${workspace.id}' is not connected right now (${workspace.state}). Start it in the portal, then retry.`,
+  );
+}
+
+/**
+ * Wait (within `budget`) for a running workspace whose link to Papercusp cloud
+ * is down to reconnect. Resolves with the reachable workspace; otherwise throws
+ * an error that says what is actually wrong.
+ */
+async function awaitHostedLink(profile, workspace, budget, deps) {
+  let current = workspace;
+  if (budget.polls > 0)
+    deps.notice(
+      `psu: ${current.id} is ${hostedUnreachableState(current, deps.now())}; waiting up to ${Math.round((budget.polls * HOSTED_RECONNECT_POLL_MS) / 1000)}s for it to reconnect`,
+    );
+  while (budget.polls > 0) {
+    budget.polls -= 1;
+    await deps.sleep(HOSTED_RECONNECT_POLL_MS);
+    const listed = (await listHostedWorkspaces(profile, deps)).find(
+      (candidate) => candidate.id === current.id,
+    );
+    if (!listed)
+      throw new Error(
+        `Workspace '${current.id}' is no longer in your organization at ${profile.origin}.`,
+      );
+    if (listed.reachable) {
+      deps.notice(`psu: ${listed.id} reconnected to Papercusp cloud`);
+      return listed;
+    }
+    if (!hostedLinkDown(listed)) throw hostedNotRunningError(listed);
+    current = listed;
+  }
+  throw new Error(
+    `Workspace '${current.id}' is ${hostedUnreachableState(current, deps.now())}, and it did not reconnect while psu waited. ` +
+      "The machine normally reconnects on its own: retry in a minute, and report it if it stays down.",
+  );
+}
+
 async function runHostedConnection(profile, workspaceId, forwardedArgv, transport, pickerAllowed, deps) {
+  const budget = { polls: HOSTED_RECONNECT_POLLS };
   const workspaces = await listHostedWorkspaces(profile, deps);
   let workspace = null;
   if (workspaceId) {
@@ -947,10 +1090,10 @@ async function runHostedConnection(profile, workspaceId, forwardedArgv, transpor
       throw new Error(
         `Workspace '${workspaceId}' is not in your organization at ${profile.origin}. Run psu --connect-list to see yours.`,
       );
-    if (!workspace.reachable)
-      throw new Error(
-        `Workspace '${workspaceId}' is not connected right now (${workspace.state}). Start it in the portal, then retry.`,
-      );
+    if (!workspace.reachable) {
+      if (!hostedLinkDown(workspace)) throw hostedNotRunningError(workspace);
+      workspace = await awaitHostedLink(profile, workspace, budget, deps);
+    }
   } else {
     const reachable = workspaces.filter((candidate) => candidate.reachable);
     if (reachable.length === 1) workspace = reachable[0];
@@ -966,10 +1109,15 @@ async function runHostedConnection(profile, workspaceId, forwardedArgv, transpor
     }
     if (!workspace) {
       const listed = workspaces.map((candidate) => candidate.id).join(", ") || "none";
+      const linkDown = workspaces.filter(hostedLinkDown);
       throw new Error(
-        reachable.length === 0
-          ? `None of your workspaces at ${profile.origin} is connected right now (yours: ${listed}). Start one in the portal, then retry.`
-          : `Choose a workspace with --connect=${profile.name}/<workspace> (connected: ${reachable.map((candidate) => candidate.id).join(", ")})`,
+        reachable.length > 0
+          ? `Choose a workspace with --connect=${profile.name}/<workspace> (connected: ${reachable.map((candidate) => candidate.id).join(", ")})`
+          : linkDown.length > 0
+            ? `None of your workspaces at ${profile.origin} is reachable right now: ${linkDown
+                .map((candidate) => `${candidate.id} is ${hostedUnreachableState(candidate, deps.now())}`)
+                .join("; ")}. A running machine normally reconnects on its own; run psu --connect=${profile.name}/<workspace> to wait for it.`
+            : `None of your workspaces at ${profile.origin} is connected right now (yours: ${listed}). Start one in the portal, then retry.`,
       );
     }
   }
@@ -978,41 +1126,79 @@ async function runHostedConnection(profile, workspaceId, forwardedArgv, transpor
   const session =
     transport.sessionKey ??
     hostedSessionKey(profile, workspace.id, forwardedArgv, program);
-  const opened = await hostedRequest(
-    deps,
-    profile,
-    `/hosted/cli/workspaces/${encodeURIComponent(workspace.id)}/terminal`,
-    { method: "POST", body: { session } },
-  );
-  if (opened.status !== 200 || opened.payload?.ok !== true)
-    throw hostedFailure(profile, `open a terminal on ${workspace.id}`, opened);
-  // Take only the single-use ticket from the reply and address the relay at
-  // the portal psu already trusts with its token — never at a host the reply names.
-  let ticket = null;
-  try {
-    ticket = new URL(opened.payload.socketUrl).searchParams.get("ticket");
-  } catch {
-    ticket = null;
-  }
-  if (!ticket || !HOSTED_TICKET_RE.test(ticket))
-    throw new Error(`The Papercusp cloud returned an unusable session for ${workspace.id}`);
-  const socketUrl = new URL("/api/hosted/connectors/socket", profile.origin);
-  socketUrl.protocol = socketUrl.protocol === "http:" ? "ws:" : "wss:";
-  socketUrl.searchParams.set("ticket", ticket);
-
-  deps.notice(`psu: connected to ${describeHostedWorkspace(profile, workspace)}`);
   const initialInput = `exec env PAPERCUSP_PSU_CONNECTION_FORWARDED=1 ${program}${forwardedArgv
     .map((cell) => ` ${shellQuote(cell)}`)
     .join("")}\r`;
-  const result = await deps.openHostedTerminal({
-    socketUrl: socketUrl.toString(),
-    initialInput,
-    notice: deps.notice,
-  });
-  if (result.exit) return { handled: true, argv: forwardedArgv, exitCode: result.exit.code ?? 1 };
-  throw new Error(
-    `The connection to ${workspace.id} closed${result.closeReason ? ` (${result.closeReason})` : ""}. Your shell stays alive on the machine for a while: run ${program} --connect=${profile.name}/${workspace.id} --connect-session=${opened.payload.session ?? session} to resume it.`,
-  );
+  // Each pass mints a fresh single-use ticket; the same session key means a
+  // retry lands on the same shell if one was already started.
+  for (;;) {
+    const opened = await hostedRequest(
+      deps,
+      profile,
+      `/hosted/cli/workspaces/${encodeURIComponent(workspace.id)}/terminal`,
+      { method: "POST", body: { session } },
+    );
+    const openError = opened.payload?.error;
+    const openCode = typeof openError === "string" ? openError : openError?.code;
+    if (opened.status === 409 && openCode === "workspace_not_reachable") {
+      // The link dropped between the listing and the ticket.
+      workspace = await awaitHostedLink(
+        profile,
+        {
+          ...workspace,
+          reachable: false,
+          connectorHeartbeatAt: openError?.connectorHeartbeatAt ?? workspace.connectorHeartbeatAt,
+        },
+        budget,
+        deps,
+      );
+      continue;
+    }
+    if (opened.status !== 200 || opened.payload?.ok !== true)
+      throw hostedFailure(profile, `open a terminal on ${workspace.id}`, opened);
+    // Take only the single-use ticket from the reply and address the relay at
+    // the portal psu already trusts with its token — never at a host the reply names.
+    let ticket = null;
+    try {
+      ticket = new URL(opened.payload.socketUrl).searchParams.get("ticket");
+    } catch {
+      ticket = null;
+    }
+    if (!ticket || !HOSTED_TICKET_RE.test(ticket))
+      throw new Error(`The Papercusp cloud returned an unusable session for ${workspace.id}`);
+    const socketUrl = new URL("/api/hosted/connectors/socket", profile.origin);
+    socketUrl.protocol = socketUrl.protocol === "http:" ? "ws:" : "wss:";
+    socketUrl.searchParams.set("ticket", ticket);
+
+    deps.notice(`psu: connected to ${describeHostedWorkspace(profile, workspace, deps.now())}`);
+    const result = await deps.openHostedTerminal({
+      socketUrl: socketUrl.toString(),
+      initialInput,
+      notice: deps.notice,
+    });
+    if (result.exit) return { handled: true, argv: forwardedArgv, exitCode: result.exit.code ?? 1 };
+    const reason = result.closeReason ? ` (${result.closeReason})` : "";
+    const linkLost =
+      result.closeCode === HOSTED_CLOSE_CONNECTOR_UNAVAILABLE ||
+      result.closeCode === HOSTED_CLOSE_CONNECTOR_DISCONNECTED;
+    if (result.bound) {
+      const resume = `${program} --connect=${profile.name}/${workspace.id} --connect-session=${opened.payload.session ?? session}`;
+      throw new Error(
+        linkLost
+          ? `The workspace machine's link to Papercusp cloud dropped${reason}. Your shell stays alive on the machine for a while: once it reconnects, run ${resume} to resume it.`
+          : `The connection to ${workspace.id} closed${reason}. Your shell stays alive on the machine for a while: run ${resume} to resume it.`,
+      );
+    }
+    // No shell was started, so there is nothing to resume. A lost link before
+    // the shell bound is the machine reconnecting: wait for it and try again.
+    if (linkLost) {
+      workspace = await awaitHostedLink(profile, { ...workspace, reachable: false }, budget, deps);
+      continue;
+    }
+    throw new Error(
+      `The connection to ${workspace.id} closed before a shell started${reason}. Nothing was started there; retry ${program} --connect=${profile.name}/${workspace.id}.`,
+    );
+  }
 }
 
 /**
@@ -1037,7 +1223,9 @@ async function pickerChoices(store, deps, program = "psu") {
         choices.push({
           name: describeHostedWorkspace(profile, workspace),
           value: `${profile.name}/${workspace.id}`,
-          ...(workspace.reachable ? {} : { disabled: "not connected" }),
+          ...(workspace.reachable
+            ? {}
+            : { disabled: hostedLinkDown(workspace) ? "link to Papercusp cloud down" : "not connected" }),
         });
       }
     } catch (error) {
