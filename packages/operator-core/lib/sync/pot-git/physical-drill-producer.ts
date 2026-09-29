@@ -35,6 +35,7 @@ import {
   PHASE_D_EVENT_WAIT_MAX_MS,
   capturePhysicalPhaseDEvent,
   capturePhysicalPhaseDObservation,
+  phaseDObservationLag,
   capturePhysicalPhaseDRequest,
   createPhysicalPhaseDMutation,
   dirtyPhysicalPhaseDWorktree,
@@ -459,23 +460,37 @@ async function cli(argv: string[]): Promise<unknown> {
     });
   }
   if (mode === 'phase-d-observe') {
-    const [hostId, stage, integratorDeviceKey, runId] = args;
+    const [hostId, stage, integratorDeviceKey, runId, expectedSha] = args;
     if (
       (hostId !== 'tower' && hostId !== 'vm') ||
       !['first-source', 'first-destination', 'dirty-before', 'dirty-after'].includes(stage ?? '') ||
       !integratorDeviceKey ||
-      !runId
+      !runId ||
+      (expectedSha !== undefined && !/^[0-9a-f]{40}$/.test(expectedSha))
     ) {
       throw new Error(
-        'usage: physical-drill-producer phase-d-observe <tower|vm> <first-source|first-destination|dirty-before|dirty-after> <integrator-device-key> <run-id>',
+        'usage: physical-drill-producer phase-d-observe <tower|vm> <first-source|first-destination|dirty-before|dirty-after> <integrator-device-key> <run-id> [expected-staging-sha]',
       );
     }
-    return capturePhysicalPhaseDObservation({
+    const observation = await capturePhysicalPhaseDObservation({
       hostId: hostId as PhysicalPhaseDHost,
       stage: stage as PhysicalPhaseDObservationStage,
       integratorDeviceKey,
       runId,
     });
+    // With an expected head, a host that has not converged yet exits 3 and still
+    // prints the observation, so the scenario can nudge git-sync and retry
+    // without losing the evidence (WI-10003811).
+    if (expectedSha !== undefined) {
+      const lagging = phaseDObservationLag(observation, stage as PhysicalPhaseDObservationStage, expectedSha);
+      if (lagging.length > 0) {
+        throw new PhysicalDrillIncompleteEvidenceError(
+          `physical-drill-producer: ${hostId} ${stage} has not converged to ${expectedSha}: lagging ${lagging.join(', ')}`,
+          observation,
+        );
+      }
+    }
+    return observation;
   }
   if (mode === 'phase-d-verify') {
     const [inputPath] = args;
@@ -702,10 +717,33 @@ export async function runPhysicalDrillCliToExit(
     const result = await deps.run(argv);
     await writeFlushed(deps.stdout, `${JSON.stringify(result)}\n`);
   } catch (error) {
-    code = 1;
+    if (error instanceof PhysicalDrillIncompleteEvidenceError) {
+      code = PHYSICAL_DRILL_INCOMPLETE_EXIT;
+      await writeFlushed(deps.stdout, `${JSON.stringify(error.evidence)}\n`);
+    } else {
+      code = 1;
+    }
     await writeFlushed(deps.stderr, `${error instanceof Error ? error.message : String(error)}\n`);
   }
   deps.exit(code);
+}
+
+/** Exit code for "the evidence is valid but the host has not converged yet; retry". */
+export const PHYSICAL_DRILL_INCOMPLETE_EXIT = 3;
+
+/**
+ * A mode that measured something real but not yet the state it waits for. The
+ * CLI prints `evidence` to stdout and exits {@link PHYSICAL_DRILL_INCOMPLETE_EXIT},
+ * so a retry loop keeps the last observation for diagnostics (WI-10003811).
+ */
+export class PhysicalDrillIncompleteEvidenceError extends Error {
+  constructor(
+    message: string,
+    readonly evidence: unknown,
+  ) {
+    super(message);
+    this.name = 'PhysicalDrillIncompleteEvidenceError';
+  }
 }
 
 const invokedPath = process.argv[1];

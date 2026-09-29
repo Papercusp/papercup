@@ -1171,6 +1171,37 @@ function validateObservation(
   time(observation.observedAt, `${label}.observedAt`, errors);
 }
 
+/**
+ * Names the refs of a Phase D observation that have not yet reached
+ * `expectedSha`; an empty list means the host has converged for `stage`
+ * (WI-10003811).
+ *
+ * Each host reaches the signed head asynchronously, and P-505 run 30 read both
+ * hosts once, mid-flight. Twenty seconds after the tower's own integrator
+ * published, its canonical ref, worktree and cursor were still on the prior
+ * head. The VM had advanced everything except its mirror of the integrator's
+ * namespace ref. Both converged minutes later. The observe CLI waits on this
+ * predicate and the validator below judges with it, so the wait and the verdict
+ * cannot disagree about which refs must match.
+ *
+ * `dirty-after` leaves the worktree out on purpose: that stage proves the
+ * bridge advanced the mirror and cursor while leaving the dirty worktree alone.
+ */
+export function phaseDObservationLag(
+  observation: PhysicalPhaseDObservation,
+  stage: PhysicalPhaseDObservationStage,
+  expectedSha: string,
+): string[] {
+  const fields: Array<[string, string | null]> = [];
+  if (stage !== 'dirty-before') fields.push(['integrator namespace', observation.integratorNamespaceStagingOid]);
+  fields.push(['canonical', observation.canonicalStagingOid]);
+  if (stage !== 'dirty-after') fields.push(['worktree', observation.worktreeHeadOid]);
+  if (stage !== 'dirty-before') fields.push(['cursor', observation.cursor.stagingSha]);
+  const lagging = fields.filter(([, oid]) => oid !== expectedSha).map(([name]) => name);
+  if (stage !== 'dirty-before' && !observation.cursor.epochSeq) lagging.push('cursor epoch/seq');
+  return lagging;
+}
+
 /** Strict, pure causal validator for the assembled two-host Phase D evidence. */
 export function validatePhysicalPhaseD(input: PhysicalPhaseDInput): PhysicalPhaseDVerdict {
   const errors: string[] = [];
@@ -1240,15 +1271,12 @@ export function validatePhysicalPhaseD(input: PhysicalPhaseDInput): PhysicalPhas
 
   const firstSha = input.firstAdvance.sourceEvent.payload.staging_sha;
   const firstDestination = input.firstAdvance.destinationObservation;
-  for (const [label, observation] of [
-    ['source', input.firstAdvance.sourceObservation],
-    ['destination', firstDestination],
+  for (const [label, stage, observation] of [
+    ['source', 'first-source', input.firstAdvance.sourceObservation],
+    ['destination', 'first-destination', firstDestination],
   ] as const) {
     if (
-      observation.integratorNamespaceStagingOid !== firstSha ||
-      observation.canonicalStagingOid !== firstSha ||
-      observation.worktreeHeadOid !== firstSha ||
-      observation.cursor.stagingSha !== firstSha ||
+      phaseDObservationLag(observation, stage, firstSha).length > 0 ||
       !observation.cursor.epochSeq ||
       compareEpochSeq(observation.cursor.epochSeq, input.firstAdvance.sourceEvent.payload) !== 0
     ) {
@@ -1281,8 +1309,7 @@ export function validatePhysicalPhaseD(input: PhysicalPhaseDInput): PhysicalPhas
   const dirtyBefore = input.dirtyAdvance.dirtyBefore;
   const dirtyAfter = input.dirtyAdvance.dirtyAfter;
   if (
-    dirtyBefore.canonicalStagingOid !== firstSha ||
-    dirtyBefore.worktreeHeadOid !== firstSha ||
+    phaseDObservationLag(dirtyBefore, 'dirty-before', firstSha).length > 0 ||
     !dirtyBefore.dirtyPaths.includes(PHASE_D_SENTINEL) ||
     !dirtyBefore.protectedFileSha256 ||
     !SHA256.test(dirtyBefore.protectedFileSha256)
@@ -1290,9 +1317,7 @@ export function validatePhysicalPhaseD(input: PhysicalPhaseDInput): PhysicalPhas
     errors.push('Phase D dirty-before observation must bind the overlapping dirty file at the first staging head');
   }
   if (
-    dirtyAfter.integratorNamespaceStagingOid !== secondSha ||
-    dirtyAfter.canonicalStagingOid !== secondSha ||
-    dirtyAfter.cursor.stagingSha !== secondSha ||
+    phaseDObservationLag(dirtyAfter, 'dirty-after', secondSha).length > 0 ||
     !dirtyAfter.cursor.epochSeq ||
     compareEpochSeq(dirtyAfter.cursor.epochSeq, input.dirtyAdvance.sourceEvent.payload) !== 0 ||
     dirtyAfter.cursor.lastEventId < input.dirtyAdvance.destinationEvent.rowId ||
