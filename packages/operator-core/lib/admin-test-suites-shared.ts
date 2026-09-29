@@ -68,6 +68,37 @@ export interface DesktopPerfMeasure {
   invariant?: boolean;
 }
 
+/**
+ * Key prefixes of CONTEXT STAMPS: measures that describe the circumstances of a
+ * run (`host:` — the box it ran on; `build:` — the artifact it measured) rather
+ * than a result. A stamp is `budget: null` / `ok: true` and is never evidence that
+ * a spec measured anything, so a batch holding ONLY stamps is not a publishable
+ * run (the ingest route and the WDIO publisher both refuse one).
+ *
+ * The WDIO runner (tools/perf-test/wdio/perf-report.ts) cannot import this module
+ * and carries the same literals; perf-report.node-test.ts pins that copy to this one.
+ */
+export const DESKTOP_PERF_CONTEXT_STAMP_PREFIXES = ['host:', 'build:'] as const;
+
+/**
+ * `build:` stamp: the measured packaged binary's file mtime, epoch ms — WHEN the
+ * build under test was produced (WI-10003815).
+ *
+ * WHY IT EXISTS. The runner measures the newest packaged binary on disk and nothing
+ * rebuilds it, so a run's `gitSha` (the checkout HEAD at run time) says nothing
+ * about the code actually timed. On 2026-09-29 the desktop-perf gate held a
+ * suite-green candidate on a quiet-host breach measured against a 12-day-old
+ * binary. This stamp lets the gate tell "the candidate regressed" from "the
+ * measured build predates the green pin, so whatever it shows is already on main".
+ * Carried as unit `count` because a new unit 400s the whole batch on a
+ * not-yet-redeployed validator (see DesktopPerfMetricUnit).
+ */
+export const DESKTOP_PERF_BINARY_BUILT_AT_KEY = 'build:packaged-binary-mtime-ms';
+
+export function isDesktopPerfContextStamp(key: string): boolean {
+  return DESKTOP_PERF_CONTEXT_STAMP_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
 export type DesktopPerfSource = 'admin-suite' | 'wdio';
 /** Worst per-run rollup — 'skip' collapses to 'pass'. */
 export type DesktopPerfRunStatus = 'pass' | 'warn' | 'fail';

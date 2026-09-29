@@ -20388,8 +20388,12 @@ export function realCheckpointDeps(
           pressure: null,
         };
       }
+      // WI-10003815: baselineRef lets the gate refuse to charge the candidate with a
+      // breach measured on a packaged build older than the green pin.
       return runDesktopPerfGate(await desktopPerfGatePolicyFromFlags(), {
         candidateSha: candidate,
+        baselineRef: cfg.releaseRef,
+        repoRoot: cfg.integrationRoot,
       });
     },
     // P-016 (agent-tool-delta-protocol D-008): the real delta gate reads the

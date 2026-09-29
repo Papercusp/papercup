@@ -27,19 +27,21 @@
  * diverge.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import type {
-  DesktopPerfMeasure,
-  DesktopPerfMetricUnit,
-  DesktopPerfRunStatus,
+import {
+  isDesktopPerfContextStamp,
+  type DesktopPerfMeasure,
+  type DesktopPerfMetricUnit,
+  type DesktopPerfRunStatus,
 } from '../../../admin-test-suites-shared';
 import { recordDesktopPerfRun } from '../../../system-health/desktop-perf-runs';
 
 const UNITS: readonly DesktopPerfMetricUnit[] = ['ms', 'kb', 'count'];
 const STATUSES: readonly DesktopPerfRunStatus[] = ['pass', 'warn', 'fail'];
 
-/** Host stamps are measurement context, not evidence that a suite ran. */
+/** Context stamps (`host:` box, `build:` artifact) are measurement context, not
+ *  evidence that a suite ran. */
 export function hasDesktopPerfOutcomeMeasure(measures: readonly DesktopPerfMeasure[]): boolean {
-  return measures.some((measure) => !measure.key.startsWith('host:'));
+  return measures.some((measure) => !isDesktopPerfContextStamp(measure.key));
 }
 
 /** Parse one wire measure, or null when it does not satisfy DesktopPerfMeasure.

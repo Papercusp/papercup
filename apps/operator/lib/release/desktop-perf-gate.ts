@@ -51,8 +51,11 @@
  * the buildable, framework-agnostic substrate.
  */
 
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { DESKTOP_PERF_BINARY_BUILT_AT_KEY } from '@papercusp/operator-core/lib/admin-test-suites-shared';
 import {
   DESKTOP_PERF_BUDGETS,
   type DesktopPerfBudgets,
@@ -267,6 +270,52 @@ function shaLabel(candidateSha?: string): string {
   return candidateSha ? candidateSha.slice(0, 8) : 'candidate';
 }
 
+/**
+ * The green pin the candidate would be promoted OVER, and the newest commit time it
+ * contains. `newestCommitAtMs` is null when it could not be read; the gate then
+ * makes no attribution call, exactly as if no baseline had been supplied.
+ */
+export interface DesktopPerfBaseline {
+  ref: string;
+  newestCommitAtMs: number | null;
+}
+
+/**
+ * Slack for git-sync's sweep lag: a binary built from the working tree holds edits
+ * whose commit lands minutes AFTER the build, so "built before the baseline's newest
+ * commit" only proves "cannot contain it" once the gap exceeds the sweep cadence.
+ */
+export const BUILD_SWEEP_LAG_TOLERANCE_MS = 30 * 60 * 1000;
+
+/** When the measured packaged binary was built (its `build:` stamp), or null when the run carries none. */
+export function readBinaryBuiltAt(run: DesktopPerfRun): number | null {
+  const m = run.measures.find((x) => x.key === DESKTOP_PERF_BINARY_BUILT_AT_KEY);
+  return m && Number.isFinite(m.value) && m.value > 0 ? m.value : null;
+}
+
+/**
+ * True when the run measured a build that PREDATES the baseline (green pin) by more
+ * than the sweep-lag tolerance (WI-10003815). Anything such a build shows is already
+ * on the baseline, so no verdict on it can be the candidate's: holding the candidate
+ * cannot keep it off `main`, and a clean reading says nothing about the candidate either.
+ *
+ * Only a POSITIVE proof demotes. An unstamped run or an unreadable baseline keeps
+ * the pre-existing behaviour rather than inventing a verdict in either direction.
+ */
+export function binaryPredatesBaseline(
+  run: DesktopPerfRun,
+  baseline: DesktopPerfBaseline | null | undefined,
+): { builtAt: number; baselineAt: number } | null {
+  const builtAt = readBinaryBuiltAt(run);
+  const baselineAt = baseline?.newestCommitAtMs ?? null;
+  if (builtAt === null || baselineAt === null) return null;
+  return builtAt + BUILD_SWEEP_LAG_TOLERANCE_MS < baselineAt ? { builtAt, baselineAt } : null;
+}
+
+function isoMinute(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 16) + 'Z';
+}
+
 function fmtMeasure(m: DesktopPerfMeasure): string {
   const v = m.unit === 'kb' ? `${Math.round(m.value / 1024)}MB` : m.unit === 'count' ? `${m.value}` : `${Math.round(m.value)}ms`;
   const b = m.budget === null ? '' : m.unit === 'kb' ? `${Math.round(m.budget / 1024)}MB` : m.unit === 'count' ? `${m.budget}` : `${Math.round(m.budget)}ms`;
@@ -377,6 +426,8 @@ function fmtUnmeasuredInvariant(m: DesktopPerfMeasure): string {
  *   disabled                         → pass  (no-op; the gate is opt-in via the flag)
  *   no run / no measures (unknown)   → pass  (fail-soft: never block on missing data)
  *   run older than policy.maxAgeMs   → pass  (fail-soft: stale data is not a verdict)
+ *   binary built before `baseline`   → warn  (unknown: a stale BUILD is not the candidate —
+ *                                            WI-10003815; findings reported as pre-existing)
  *   an INVARIANT measure breached    → block ALWAYS (independent of policy.block)
  *   an INVARIANT never MEASURED      → warn  (unknown: a probe that did not run is not a
  *                                            breach — WI-39665 D-008)
@@ -387,13 +438,15 @@ function fmtUnmeasuredInvariant(m: DesktopPerfMeasure): string {
  *   crit (a budgeted measure breach) → block IFF policy.block else warn
  *
  * `now` is injected rather than read from the clock so the staleness branch is
- * deterministically testable.
+ * deterministically testable. `baseline` (the green pin) enables the stale-build
+ * branch; without it that branch never fires — see {@link binaryPredatesBaseline}.
  */
 export function evaluateDesktopPerfGate(
   run: DesktopPerfRun | null,
   policy: DesktopPerfGatePolicy,
   candidateSha?: string,
   now: number = Date.now(),
+  baseline?: DesktopPerfBaseline | null,
 ): DesktopPerfGateDecision {
   const sha = shaLabel(candidateSha);
 
@@ -437,6 +490,36 @@ export function evaluateDesktopPerfGate(
       summary:
         `🟧 desktop-perf-gate: latest desktop-perf run is STALE (${ageHrs}h old > ${maxHrs}h window) — ` +
         `${sha} advances UNMEASURED; nothing is producing fresh runs`,
+      verdictStatus: 'unknown',
+      pressure,
+    };
+  }
+
+  // A STALE BUILD IS NOT THE CANDIDATE (WI-10003815). The run is fresh, but the binary it
+  // timed may not be: the producer measures whatever packaged build is newest on disk and
+  // nothing rebuilds it. Observed 2026-09-29: a quiet-host plan-popup-open breach measured
+  // on a 12-day-old binary held a suite-green candidate. A build that predates the green
+  // pin can only show what is ALREADY on it, so holding the candidate cannot keep that
+  // off `main`, and a clean reading says nothing about the candidate either. Same shape as
+  // the staleness branch above, and placed ahead of the invariant branch for the same
+  // reason: a breach recorded against a tree the candidate has moved past must not hold it
+  // hostage. `warn` rather than `pass` (D-007), with every finding still named — a
+  // pre-existing regression is real and must stay audible, just not charged to the candidate.
+  const predates = binaryPredatesBaseline(run, baseline);
+  if (predates && baseline) {
+    const gapDays = ((predates.baselineAt - predates.builtAt) / 86_400_000).toFixed(1);
+    const why =
+      `the measured packaged binary was built ${isoMinute(predates.builtAt)}, ${gapDays}d before the newest ` +
+      `commit on ${baseline.ref} (${isoMinute(predates.baselineAt)}), so it cannot contain ${sha} and anything it shows is already on ${baseline.ref}`;
+    const found = [...breachedInvariants(run).map(fmtInvariant), ...failingMeasures(run).map(fmtMeasure)];
+    return {
+      action: 'warn',
+      reasons: [`UNATTRIBUTABLE (stale build): ${why}`, ...found.map((r) => `pre-existing on ${baseline.ref}: ${r}`)],
+      summary:
+        found.length > 0
+          ? `🟧 desktop-perf-gate: desktop-perf miss on a STALE BUILD, NOT reported as ${sha}'s regression — ${why}. ` +
+            `Deploy advances; pre-existing: ${found.join('; ')}. Rebuild the packaged binary to measure the candidate.`
+          : `🟧 desktop-perf-gate: ${sha} advances UNMEASURED — ${why}. Rebuild the packaged binary to measure the candidate.`,
       verdictStatus: 'unknown',
       pressure,
     };
@@ -637,10 +720,37 @@ export async function desktopPerfGatePolicyFromFlags(
 /** IO seam for {@link runDesktopPerfGate} (injected as fakes in tests). */
 export interface DesktopPerfGateIO {
   readLatestRun: (workspaceId: string) => Promise<DesktopPerfRun | null>;
+  /** Newest commit time (epoch ms) reachable within the last few commits of `ref`, or null. */
+  readNewestCommitAtMs?: (ref: string, repoRoot: string) => Promise<number | null>;
+}
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * How far back {@link readNewestCommitAtMs} looks. It takes the MAX over a window, not
+ * the tip's date, because repair-queue admission commits ("admit N path(s) onto frozen
+ * lineage …") carry a deterministic 2000-01-01 committer date; `main` routinely sits on
+ * one, so its tip date would say the green pin is 26 years old.
+ */
+const BASELINE_COMMIT_WINDOW = 64;
+
+export async function readNewestCommitAtMs(ref: string, repoRoot: string): Promise<number | null> {
+  const { stdout } = await execFileAsync(
+    'git',
+    ['-C', repoRoot, 'log', '-n', String(BASELINE_COMMIT_WINDOW), '--format=%ct', ref, '--'],
+    { encoding: 'utf8', timeout: 15_000 },
+  );
+  let newest = 0;
+  for (const line of stdout.split('\n')) {
+    const s = Number(line.trim());
+    if (Number.isFinite(s) && s > newest) newest = s;
+  }
+  return newest > 0 ? newest * 1000 : null;
 }
 
 const defaultDesktopPerfGateIO: DesktopPerfGateIO = {
   readLatestRun: async (workspaceId) => (await readDesktopPerfRuns(workspaceId, 1))[0] ?? null,
+  readNewestCommitAtMs,
 };
 
 /**
@@ -653,7 +763,15 @@ const defaultDesktopPerfGateIO: DesktopPerfGateIO = {
  */
 export async function runDesktopPerfGate(
   policy: DesktopPerfGatePolicy,
-  opts: { workspaceId?: string; candidateSha?: string; io?: DesktopPerfGateIO } = {},
+  opts: {
+    workspaceId?: string;
+    candidateSha?: string;
+    /** The green pin the candidate would promote over (e.g. `main`). Enables the stale-build branch. */
+    baselineRef?: string;
+    /** Repository holding `baselineRef`; defaults to the process cwd. */
+    repoRoot?: string;
+    io?: DesktopPerfGateIO;
+  } = {},
 ): Promise<DesktopPerfGateDecision> {
   const candidateSha = opts.candidateSha;
   if (!policy.enabled) {
@@ -662,5 +780,12 @@ export async function runDesktopPerfGate(
   const workspaceId = opts.workspaceId ?? process.env.PAPERCUSP_WORKSPACE_ID ?? 'default';
   const io = opts.io ?? defaultDesktopPerfGateIO;
   const run = await io.readLatestRun(workspaceId).catch(() => null);
-  return evaluateDesktopPerfGate(run, policy, candidateSha);
+  let baseline: DesktopPerfBaseline | null = null;
+  if (opts.baselineRef) {
+    const read = io.readNewestCommitAtMs ?? readNewestCommitAtMs;
+    // Fail-soft: an unreadable baseline makes no attribution call (see binaryPredatesBaseline).
+    const newestCommitAtMs = await read(opts.baselineRef, opts.repoRoot ?? process.cwd()).catch(() => null);
+    baseline = { ref: opts.baselineRef, newestCommitAtMs };
+  }
+  return evaluateDesktopPerfGate(run, policy, candidateSha, Date.now(), baseline);
 }
