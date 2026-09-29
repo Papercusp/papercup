@@ -181,6 +181,10 @@ async function persistDesktopPerfRun(record: RunRecord, done: AdminTestSuiteDone
     status: toRunStatus(done.status),
     measures,
     gitSha,
+    // The in-app suite measures the RUNNING operator, not a packaged binary, so it
+    // has no built-artifact identity to attribute — null, stated explicitly, so the
+    // gate reads "unattributable" rather than inferring one from gitSha (D-001).
+    buildSha: null,
     runId: record.snapshot.runId,
   });
   try {

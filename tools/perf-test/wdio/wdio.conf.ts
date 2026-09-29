@@ -26,6 +26,7 @@ import {
   operatorBaseUrl,
   readMeasures,
   recordBinaryIdentity,
+  readBuildIdentity,
   recordHostPressure,
   resetMeasures,
   type PrivateIpcFixture,
@@ -513,6 +514,8 @@ async function publishMeasures(): Promise<void> {
           measures,
           gitSha,
           process.env.PAPERCUSP_PERF_RUN_ID ?? null,
+          process.env,
+          readBuildIdentity(TAURI_APP_PATH),
         ),
       ),
     });

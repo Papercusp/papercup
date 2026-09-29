@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import path from "node:path";
 import test from "node:test";
 import type { Browser } from "webdriverio";
 
-import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, type PerfMeasure } from "./perf-report";
+import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, BUILD_IDENTITY_FILE, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, readBuildIdentity, type PerfMeasure } from "./perf-report";
 import {
   isTerminalWebDriverSessionError,
   waitForPackagedAppUrl,
@@ -183,15 +183,76 @@ test("desktop perf receipts retain the measured workspace across the WDIO publis
   }), {
     measures,
     gitSha: null,
+    buildSha: null,
     runId: "named-profile",
     workspaceId: "papercusp-workspace",
   });
   assert.deepEqual(desktopPerfRunPayload(measures, "checkout-sha", null, {}), {
     measures,
     gitSha: "checkout-sha",
+    buildSha: null,
     runId: null,
   });
   assert.equal("workspaceId" in desktopPerfRunPayload(measures, null, null, {}), false);
+});
+
+test("the binary's recorded build identity rides on named and unnamed runs alike", () => {
+  const measures = [{ key: "interaction:plan-popup-open", value: 1010, unit: "ms", budget: 1500, ok: true }] as const;
+  // A named profile drops the checkout sha (it is not the build) but keeps the
+  // binary's own identity, which describes the artifact actually measured.
+  assert.equal(desktopPerfRunPayload(measures, "checkout-sha", "named-profile", {}, "4223f93417df").buildSha, "4223f93417df");
+  assert.equal(desktopPerfRunPayload(measures, "checkout-sha", "named-profile", {}, "4223f93417df").gitSha, null);
+  assert.equal(desktopPerfRunPayload(measures, "checkout-sha", null, {}, "4223f93417df").buildSha, "4223f93417df");
+});
+
+test("readBuildIdentity finds the profile-dir identity above a deb staging binary", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "perf-build-identity-"));
+  try {
+    const bin = path.join(root, "release", "bundle", "deb", "pkg_0.0.1_amd64", "data", "usr", "bin", "papercusp-desktop");
+    mkdirSync(path.dirname(bin), { recursive: true });
+    writeFileSync(bin, "binary");
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(bin, past, past);
+    writeFileSync(path.join(root, "release", BUILD_IDENTITY_FILE), JSON.stringify({ buildSha: "4223F93417DF132EEC90ACE218A6017F5A97B8B3" }));
+    assert.equal(readBuildIdentity(bin), "4223f93417df132eec90ace218a6017f5a97b8b3");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readBuildIdentity refuses an identity OLDER than the binary (rebuilt after the scripted build)", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "perf-build-identity-"));
+  try {
+    const bin = path.join(root, "release", "papercusp-desktop");
+    mkdirSync(path.dirname(bin), { recursive: true });
+    const identity = path.join(root, "release", BUILD_IDENTITY_FILE);
+    writeFileSync(identity, JSON.stringify({ buildSha: "4223f93417df" }));
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(identity, past, past);
+    writeFileSync(bin, "rebuilt later by a plain tauri build");
+    assert.equal(readBuildIdentity(bin), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("readBuildIdentity returns null for a missing binary, missing file, or malformed sha", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "perf-build-identity-"));
+  try {
+    assert.equal(readBuildIdentity(path.join(root, "absent")), null);
+    const bin = path.join(root, "release", "papercusp-desktop");
+    mkdirSync(path.dirname(bin), { recursive: true });
+    writeFileSync(bin, "binary");
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(bin, past, past);
+    assert.equal(readBuildIdentity(bin, 2), null);
+    writeFileSync(path.join(root, "release", BUILD_IDENTITY_FILE), JSON.stringify({ buildSha: "not-a-sha" }));
+    assert.equal(readBuildIdentity(bin), null);
+    writeFileSync(path.join(root, "release", BUILD_IDENTITY_FILE), "{ truncated");
+    assert.equal(readBuildIdentity(bin), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("the runner resets stale measures before any preflight can throw", () => {

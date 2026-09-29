@@ -178,6 +178,57 @@ export function recordBinaryIdentity(appPath: string): void {
   }
 }
 
+/** The build-identity file `papercusp-desktop/bin/build-deb-repacked.sh` writes into
+ *  the cargo profile dir (`<target>/<profile>/`) after a successful `tauri build`. */
+export const BUILD_IDENTITY_FILE = "build-identity.json";
+
+/** Slack for filesystem mtime granularity between the binary and the identity file
+ *  written moments after it. Far below any real rebuild interval. */
+const IDENTITY_MTIME_SLACK_MS = 2_000;
+
+/**
+ * The source sha of the build that produced the binary under test, or null
+ * (desktop-perf-measure-candidate-build-2026-09-29 P-001 / D-001).
+ *
+ * `gitSha` names the tree the RUNNER came from; the release gate needs the tree the
+ * BINARY came from, and nothing in the binary exposes that. So the build records it:
+ * this walks up from the binary (a deb staging path `<profile>/bundle/deb/<pkg>/data/
+ * usr/bin/<bin>` is six levels below `<profile>`; a raw `<profile>/<bin>` is one) to
+ * the nearest `build-identity.json`.
+ *
+ * The file is trusted ONLY when it is at least as new as the binary: an identity
+ * written by an EARLIER scripted build, left beside a binary re-built afterwards by a
+ * plain `tauri build`, would otherwise attribute the new binary to the old sha — the
+ * exact misattribution D-001 exists to prevent. Never throws; every doubt is null,
+ * which the gate reads as "unattributable", never as a guess.
+ */
+export function readBuildIdentity(appPath: string, maxLevels = 7): string | null {
+  let binaryMtimeMs: number;
+  try {
+    binaryMtimeMs = statSync(appPath).mtimeMs;
+  } catch {
+    return null;
+  }
+  let dir = path.dirname(appPath);
+  for (let level = 0; level < maxLevels; level += 1) {
+    const candidate = path.join(dir, BUILD_IDENTITY_FILE);
+    if (existsSync(candidate)) {
+      try {
+        if (statSync(candidate).mtimeMs + IDENTITY_MTIME_SLACK_MS < binaryMtimeMs) return null;
+        const parsed = JSON.parse(readFileSync(candidate, "utf8")) as { buildSha?: unknown };
+        const sha = typeof parsed.buildSha === "string" ? parsed.buildSha.trim().toLowerCase() : "";
+        return /^[0-9a-f]{7,64}$/.test(sha) ? sha : null;
+      } catch {
+        return null;
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
 /** Keep the published workspace aligned with the workspace exercised by WDIO.
  * The ingest route already accepts workspaceId; omitting it stores a private
  * staging scenario under the operator host's unrelated default workspace. */
@@ -186,6 +237,7 @@ export function desktopPerfRunPayload(
   gitSha: string | null,
   runId: string | null,
   env: NodeJS.ProcessEnv = process.env,
+  buildSha: string | null = null,
 ) {
   const workspaceId = env.PAPERCUSP_PERF_WORKSPACE_ID?.trim();
   const namedProfile = runId?.trim() || null;
@@ -195,6 +247,9 @@ export function desktopPerfRunPayload(
     // from different commits. The WDIO checkout HEAD is not that build. Keep
     // checkout correlation only for ordinary unnamed runs.
     gitSha: namedProfile ? null : gitSha,
+    // The binary's own recorded identity is valid for named and unnamed runs alike:
+    // it describes the artifact, not the checkout the runner happens to sit in.
+    buildSha,
     runId: namedProfile,
     ...(workspaceId ? { workspaceId } : {}),
   };
