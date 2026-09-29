@@ -26,6 +26,7 @@ import {
   listSpecClauses,
   type SpecBehaviorClass,
   type SpecClauseRevision,
+  type SpecLifecycleStatus,
 } from './agent-tools/plans/spec-clauses-store';
 import { listSpecEvidence, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { activeSpecEvidence, evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
@@ -276,6 +277,15 @@ export interface AcceptanceBarTrace {
     sourceBarSetHash: string | null;
     sourceRubricRevision: number | null;
     evidencePlane: 'tree' | 'deployed' | 'live' | null;
+    /**
+     * The mapped clause's lifecycle (WI-10003864). `mappings` lists EVERY clause row keyed
+     * to this BAR, including draft and retired ones, while every proof judgement on this
+     * trace counts only enforceable clauses (`isEnforceableSpecLifecycle`). Consumers that
+     * judge per mapping must skip a non-enforceable one, or a clause the snapshot never
+     * proves blocks its item forever. Absent on snapshots written before this field
+     * existed; consumers treat absence as enforceable (fail closed).
+     */
+    lifecycleStatus?: SpecLifecycleStatus;
   }>;
   workContracts: Array<{
     workItemId: string;
@@ -1107,6 +1117,7 @@ export function projectAcceptanceBarContractSnapshot(
       sourceBarSetHash: clause.sourceBar?.barSetHash ?? null,
       sourceRubricRevision: clause.sourceBar?.rubricRevision ?? null,
       evidencePlane: clause.sourceBar?.evidencePlane ?? null,
+      lifecycleStatus: clause.lifecycleStatus,
     }));
     const contracts = clauses
       .flatMap((clause) =>
