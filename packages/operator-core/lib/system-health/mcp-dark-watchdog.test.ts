@@ -280,6 +280,25 @@ describe('planInteractiveHeal (the cross-pass heal ladder — tri-state verdicts
     expect(state.get('su-c')?.attemptsMs).toHaveLength(1);
   });
 
+  it('shared budget admits never-tried owners BEFORE retries, so a drained window cannot starve a fresh owner (P-014)', () => {
+    const state = new Map();
+    const budget = { attemptsMs: [] as number[], maxAttempts: 2, windowMs: 10 * M };
+    const all = ['su-a', 'su-b', 'su-c'].map((ownerId) => ({ ownerId, dark: true }));
+    planInteractiveHeal(state, all, INOW, 2, budget); // a,b healed; c deferred
+
+    // Window drained; a and b are STILL dark with one attempt each, c has none.
+    // c must win a slot over a's retry; output order still follows the input order.
+    const steps = planInteractiveHeal(state, all, INOW + 11 * M, 2, budget);
+    expect(steps).toEqual([
+      { ownerId: 'su-a', action: 'heal' },
+      { ownerId: 'su-b', action: 'defer-budget' },
+      { ownerId: 'su-c', action: 'heal' },
+    ]);
+    // The deferred retry did not burn b's per-owner attempt.
+    expect(state.get('su-b')?.attemptsMs).toHaveLength(1);
+    expect(state.get('su-c')?.attemptsMs).toHaveLength(1);
+  });
+
   it('reconnect jitter is stable per owner/window, bounded, and disableable for tests', () => {
     const a = interactiveHealJitterMs('su-a', INOW, 2_000);
     expect(a).toBeGreaterThan(0);
@@ -493,6 +512,107 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     expect(out.budgetDeferred).toEqual([owners[2]]);
     expect(mcpReconnectViaPtyMock).toHaveBeenCalledTimes(2);
     vi.useRealTimers();
+  });
+
+  it('a debug/manual zero-presence host WITHOUT call-origin proof stays inert (no heal, no darkness) (P-014)', async () => {
+    const owner = 'su-manual-debug-session';
+    // No presence row, and no tool-surface proof: hook calls below the actionable
+    // floor / absent. A null beat alone must never trigger a reconnect (2026-07-20 guard).
+    const { tag } = fakeSql({
+      openPhases: [],
+      toolSurfaceByOwner: { [owner]: { hookCalls: 0, windowMinutes: 4 } },
+    });
+    listLiveHostsMock.mockReturnValue([{ ownerId: owner, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M }]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+    try {
+      const out = await checkInteractiveMcpDark(tag, {
+        jitterMaxMs: 0,
+        sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+      });
+      expect(out.darkOwners).not.toContain(owner);
+      expect(out.healSent).toEqual([]);
+      expect(out.budgetDeferred).toEqual([]);
+      expect(mcpReconnectViaPtyMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a budget-deferred owner is healed by a LATER pass once the rolling window drains, and only then (P-014)', async () => {
+    const owners = ['su-win-a', 'su-win-b', 'su-win-c'];
+    const budget = { attemptsMs: [] as number[], maxAttempts: 2, windowMs: 10 * M };
+    const { tag } = fakeSql({
+      openPhases: [],
+      toolSurfaceByOwner: Object.fromEntries(owners.map((owner) => [owner, { hookCalls: 25, windowMinutes: 5 }])),
+    });
+    listLiveHostsMock.mockReturnValue(
+      owners.map((ownerId) => ({ ownerId, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M })),
+    );
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(INOW);
+      const first = await checkInteractiveMcpDark(tag, { jitterMaxMs: 0, sharedBudget: budget });
+      expect(first.healSent).toEqual(owners.slice(0, 2));
+      expect(first.budgetDeferred).toEqual([owners[2]]);
+
+      // Still inside the window: the burst stays capped, nobody new is admitted
+      // beyond the shared budget (a/b are also inside their own cooldown ladder).
+      vi.setSystemTime(INOW + 2 * M);
+      mcpReconnectViaPtyMock.mockClear();
+      const inside = await checkInteractiveMcpDark(tag, { jitterMaxMs: 0, sharedBudget: budget });
+      expect(inside.healSent).not.toContain(owners[2]);
+      expect(budget.attemptsMs.length).toBeLessThanOrEqual(2);
+
+      // Window drained: capacity returns and the deferred owner finally gets a real attempt.
+      vi.setSystemTime(INOW + 11 * M);
+      mcpReconnectViaPtyMock.mockClear();
+      const after = await checkInteractiveMcpDark(tag, { jitterMaxMs: 0, sharedBudget: budget });
+      expect(after.healSent).toContain(owners[2]);
+      expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(owners[2]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('admitted reconnects are spread by bounded per-owner jitter instead of firing in lockstep (P-013)', async () => {
+    const owners = ['su-jit-a', 'su-jit-b', 'su-jit-c'];
+    const JITTER_MAX = 400;
+    const { tag } = fakeSql({
+      openPhases: [],
+      toolSurfaceByOwner: Object.fromEntries(owners.map((owner) => [owner, { hookCalls: 25, windowMinutes: 5 }])),
+    });
+    listLiveHostsMock.mockReturnValue(
+      owners.map((ownerId) => ({ ownerId, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M })),
+    );
+    mcpReconnectViaPtyMock.mockClear();
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout'] });
+    vi.setSystemTime(INOW);
+    try {
+      const pass = checkInteractiveMcpDark(tag, {
+        jitterMaxMs: JITTER_MAX,
+        sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+      });
+      // Virtual time only advances here, so the elapsed ms at which each reconnect
+      // lands is exactly the sum of the sequential jitter sleeps.
+      const callAtMs: number[] = [];
+      for (let t = 1; t <= JITTER_MAX * owners.length + 5 && callAtMs.length < owners.length; t += 1) {
+        await vi.advanceTimersByTimeAsync(1);
+        while (callAtMs.length < mcpReconnectViaPtyMock.mock.calls.length) callAtMs.push(t);
+      }
+      const out = await pass;
+
+      const jitters = owners.map((o) => interactiveHealJitterMs(o, INOW, JITTER_MAX));
+      for (const j of jitters) {
+        expect(j).toBeGreaterThanOrEqual(1);
+        expect(j).toBeLessThanOrEqual(JITTER_MAX);
+      }
+      expect(out.healSent).toEqual(owners);
+      // Nothing fired immediately, and the three sends are strictly staggered.
+      expect(callAtMs).toEqual([jitters[0], jitters[0] + jitters[1], jitters[0] + jitters[1] + jitters[2]]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('never throws when the escalations SELECT itself fails (fail-soft, per the function contract)', async () => {
