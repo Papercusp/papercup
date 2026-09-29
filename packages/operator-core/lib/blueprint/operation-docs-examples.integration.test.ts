@@ -55,7 +55,9 @@ import { redactTriggerArgsForPlanInputs } from '../external-triggers/plan-run-pa
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../..');
-const DOC_PATH = resolve(REPO_ROOT, 'apps/operator-docs/src/content/docs/harness/blueprint-operations.mdx');
+// Overridable so scripts/mutation-probe.sh can point this suite at a mutated copy (copy-out mode).
+const DOC_PATH = process.env.PAPERCUSP_BLUEPRINT_OPERATIONS_DOC_PROBE_PATH
+  ?? resolve(REPO_ROOT, 'apps/operator-docs/src/content/docs/harness/blueprint-operations.mdx');
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 const readMigration = (f: string) =>
   readFileSync(resolve(SQL_DIR, f), 'utf8')
