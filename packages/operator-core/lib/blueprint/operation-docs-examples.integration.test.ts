@@ -52,6 +52,8 @@ import {
 import { BlueprintOperationClient, createProjectedBlueprintOperationPort } from './operation-client';
 import { P013B_OPERATION, P013B_TEMPLATE, P013B_TEMPLATE_CONTENT } from './operation-performance-b-driver';
 import { redactTriggerArgsForPlanInputs } from '../external-triggers/plan-run-payload';
+import { runProgramCore } from '../coord-ops/program-runner';
+import { programOperationOutput } from './program-operation-output';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../../../..');
@@ -229,6 +231,19 @@ async function settle(handle: BlueprintOperationHandle, output: Record<string, u
              output, evidenceRef: 'verification:docs-examples',
            } })}::text::jsonb
      WHERE feature_id = ${handle.target.id} AND workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}`;
+}
+/** WI-10004002: the output the REAL program runner produces for the documented
+ * declaration, never a hand-written literal (a literal `{ answer }` once hid a
+ * documented resultSchema no program root could satisfy). Step ops are stubbed —
+ * their results do not reach a gateless outcome — while the gate/no-gate outcome
+ * mapping is runProgramCore's own and the settled shape is the writer's. */
+async function documentedProgramOutput(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const outcome = await runProgramCore({
+    blueprint: BlueprintSchema.parse(DECLARATION), payload,
+    ctx: { identity: { ownerId: CALLER.slug }, callerId: CALLER.slug, workItemId: null, depth: 0, log: () => {} } as never,
+    runOp: async () => ({}),
+  });
+  return programOperationOutput(outcome);
 }
 const resultSchemaOf = (operationId: string) =>
   DECLARATION.operations.find((op) => op.id === operationId)!.acceptance.resultSchema;
@@ -438,9 +453,13 @@ describe.each<Transport>(['http', 'mcp'])('P-014 documented direct operations ov
     expect(handle).toMatchObject({ operationId: 'extract-program', target: { kind: 'work-item' } });
     expect(SubmitResultSchema.parse(await call(T.submit, args)).handle).toEqual(handle);
     expect(BlueprintOperationStatusSchema.parse(await call(T.status, { handle }))).toMatchObject({ phase: 'accepted' });
-    await settle(handle, { answer: 'program answer' });
+    const programOutput = await documentedProgramOutput(args.input as Record<string, unknown>);
+    // The documented resultSchema must admit what a program root really settles with.
+    expect(conforms(resultSchemaOf('extract-program'), programOutput)).toBe(true);
+    await settle(handle, programOutput);
     const result = BlueprintOperationResultSchema.parse(await call(T.result, { handle }));
     if (result.state !== 'ready') throw new Error(`expected ready, got ${result.state}`);
+    expect(result.output).toEqual(programOutput);
     expect(conforms(resultSchemaOf('extract-program'), result.output)).toBe(true);
     // Documented refusal: cancelling a terminal operation.
     await expect(call(T.cancel, { handle, ...json('cancel') }))
