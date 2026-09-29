@@ -1,12 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   cacheVerifyArgs,
+  lockfileDepFlagOnlyChanges,
   publishDependencyGeneration,
+  readLockfileText,
+  restoreScopedFlagOnlyLockfileRewrite,
+  workspaceSelectorsForNpmArgs,
   npmChildEnv,
   normalizeNpmArgs,
   parseCliArgs,
@@ -18,6 +28,173 @@ import {
   verifyNpmCache,
 } from "./npm-install-safe.mjs";
 import { PACKAGE_CACHE_MUTEX_NAME, withFsMutex } from "./lib/fs-mutex.mjs";
+
+// WI-10003114 fixture: the measured shape of the 2026-09-29 flip. An unscoped
+// install wrote `devOptional`; the desktop build's scoped install wrote `dev`
+// (and added a bare `optional`) back, touching no version/resolved/integrity.
+function lockfileFixture({ jsdomFlags, zodFlags, undiciVersion = "7.16.0" }) {
+  return {
+    name: "papercusp",
+    version: "0.0.0",
+    lockfileVersion: 3,
+    requires: true,
+    packages: {
+      "": { name: "papercusp", workspaces: ["apps/*"] },
+      "node_modules/@asamuzakjp/css-color": {
+        version: "5.1.11",
+        ...jsdomFlags,
+        license: "MIT",
+      },
+      "node_modules/zod": { version: "3.25.76", license: "MIT", ...zodFlags },
+      "node_modules/undici": {
+        version: undiciVersion,
+        resolved: `https://registry.npmjs.org/undici/-/undici-${undiciVersion}.tgz`,
+        integrity: `sha512-${undiciVersion}`,
+      },
+    },
+  };
+}
+
+const unscopedLock = lockfileFixture({
+  jsdomFlags: { devOptional: true },
+  zodFlags: {},
+});
+const scopedLock = lockfileFixture({
+  jsdomFlags: { dev: true },
+  zodFlags: { optional: true },
+});
+
+const lockText = (lock) => `${JSON.stringify(lock, null, 2)}\n`;
+
+test("workspaceSelectorsForNpmArgs reads every npm workspace selector form", () => {
+  assert.deepEqual(
+    workspaceSelectorsForNpmArgs([
+      "install",
+      "--workspace=@papercusp/web",
+      "--workspace",
+      "@papercusp/sse",
+      "-w",
+      "apps/operator-vite",
+      "-w=@papercusp/omp",
+    ]),
+    ["@papercusp/web", "@papercusp/sse", "apps/operator-vite", "@papercusp/omp"],
+  );
+  assert.deepEqual(workspaceSelectorsForNpmArgs(["install", "--legacy-peer-deps"]), []);
+});
+
+test("lockfileDepFlagOnlyChanges names entries that differ only in dependency-type flags", () => {
+  assert.deepEqual(lockfileDepFlagOnlyChanges(unscopedLock, scopedLock), [
+    "node_modules/@asamuzakjp/css-color",
+    "node_modules/zod",
+  ]);
+  assert.deepEqual(lockfileDepFlagOnlyChanges(unscopedLock, unscopedLock), []);
+});
+
+test("lockfileDepFlagOnlyChanges refuses anything that changes what gets installed", () => {
+  const versionBump = lockfileFixture({
+    jsdomFlags: { dev: true },
+    zodFlags: { optional: true },
+    undiciVersion: "7.24.0",
+  });
+  assert.equal(lockfileDepFlagOnlyChanges(unscopedLock, versionBump), null);
+
+  const added = structuredClone(scopedLock);
+  added.packages["node_modules/left-pad"] = { version: "1.3.0" };
+  assert.equal(lockfileDepFlagOnlyChanges(unscopedLock, added), null);
+
+  const removed = structuredClone(scopedLock);
+  delete removed.packages["node_modules/zod"];
+  assert.equal(lockfileDepFlagOnlyChanges(unscopedLock, removed), null);
+
+  const newEdge = structuredClone(scopedLock);
+  newEdge.packages["node_modules/zod"].dependencies = { tslib: "^2" };
+  assert.equal(lockfileDepFlagOnlyChanges(unscopedLock, newEdge), null);
+
+  const topLevel = structuredClone(scopedLock);
+  topLevel.lockfileVersion = 2;
+  assert.equal(lockfileDepFlagOnlyChanges(unscopedLock, topLevel), null);
+
+  assert.equal(lockfileDepFlagOnlyChanges(unscopedLock, null), null);
+});
+
+test("restoreScopedFlagOnlyLockfileRewrite restores the pre-install bytes after a flag-only rewrite", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "npm-install-safe-flags-"));
+  try {
+    const committed = lockText(unscopedLock);
+    writeFileSync(join(repoRoot, "package-lock.json"), lockText(scopedLock));
+    const result = restoreScopedFlagOnlyLockfileRewrite({
+      repoRoot,
+      beforeText: committed,
+    });
+    assert.equal(result.restored, true);
+    assert.equal(result.reason, "dep-flags-only");
+    assert.equal(result.entries.length, 2);
+    assert.equal(
+      readFileSync(join(repoRoot, "package-lock.json"), "utf8"),
+      committed,
+    );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("restoreScopedFlagOnlyLockfileRewrite keeps a substantive rewrite exactly as npm wrote it", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "npm-install-safe-flags-"));
+  try {
+    const rewritten = lockText(
+      lockfileFixture({
+        jsdomFlags: { dev: true },
+        zodFlags: {},
+        undiciVersion: "7.24.0",
+      }),
+    );
+    writeFileSync(join(repoRoot, "package-lock.json"), rewritten);
+    const result = restoreScopedFlagOnlyLockfileRewrite({
+      repoRoot,
+      beforeText: lockText(unscopedLock),
+    });
+    assert.deepEqual(result, {
+      restored: false,
+      reason: "substantive-change",
+      entries: [],
+    });
+    assert.equal(
+      readFileSync(join(repoRoot, "package-lock.json"), "utf8"),
+      rewritten,
+    );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("restoreScopedFlagOnlyLockfileRewrite is a no-op without a before snapshot, an unchanged file, or a removed file", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "npm-install-safe-flags-"));
+  try {
+    assert.equal(readLockfileText(repoRoot), undefined);
+    assert.equal(
+      restoreScopedFlagOnlyLockfileRewrite({ repoRoot, beforeText: undefined })
+        .reason,
+      "no-lockfile-before",
+    );
+    assert.equal(
+      restoreScopedFlagOnlyLockfileRewrite({
+        repoRoot,
+        beforeText: lockText(unscopedLock),
+      }).reason,
+      "lockfile-removed",
+    );
+    const committed = lockText(unscopedLock);
+    writeFileSync(join(repoRoot, "package-lock.json"), committed);
+    assert.equal(readLockfileText(repoRoot), committed);
+    assert.equal(
+      restoreScopedFlagOnlyLockfileRewrite({ repoRoot, beforeText: committed })
+        .reason,
+      "unchanged",
+    );
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
 
 test("cacheVerifyArgs preserves an explicit npm cache path", () => {
   assert.deepEqual(cacheVerifyArgs(["dedupe", "--cache", "/tmp/npm-cache"]), [

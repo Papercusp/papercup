@@ -66,6 +66,7 @@ import {
 import { createHash } from "node:crypto";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import {
   PACKAGE_CACHE_MUTEX_NAME,
   withFsMutexRead,
@@ -336,6 +337,139 @@ export function removePackageLocalRepairLockEntries({
 
   if (removed.length > 0) writeLock(lock);
   return removed;
+}
+
+/**
+ * npm's per-entry dependency-type flags in package-lock.json. They record HOW a
+ * package is reachable (only through devDependencies, only through optional
+ * edges, through either, as a peer) — never WHICH bytes are installed.
+ */
+const LOCKFILE_DEP_FLAG_KEYS = new Set(["dev", "optional", "devOptional", "peer"]);
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function withoutLockfileDepFlags(entry) {
+  if (!isPlainObject(entry)) return entry;
+  const rest = {};
+  for (const [key, value] of Object.entries(entry)) {
+    if (!LOCKFILE_DEP_FLAG_KEYS.has(key)) rest[key] = value;
+  }
+  return rest;
+}
+
+/**
+ * Compare two parsed lockfiles. Returns the `packages` keys whose ONLY
+ * difference is npm's dependency-type flags (`[]` = semantically identical), or
+ * `null` when ANYTHING else differs: a version, resolved URL or integrity, a
+ * dependency edge, an added or removed package, or any top-level field.
+ */
+export function lockfileDepFlagOnlyChanges(before, after) {
+  if (!isPlainObject(before) || !isPlainObject(after)) return null;
+  const topKeys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  for (const key of topKeys) {
+    if (key !== "packages" && !isDeepStrictEqual(before[key], after[key]))
+      return null;
+  }
+  const beforePackages = before.packages;
+  const afterPackages = after.packages;
+  if (!isPlainObject(beforePackages) || !isPlainObject(afterPackages))
+    return null;
+  const beforeKeys = Object.keys(beforePackages);
+  if (beforeKeys.length !== Object.keys(afterPackages).length) return null;
+  const changed = [];
+  for (const key of beforeKeys) {
+    if (!Object.hasOwn(afterPackages, key)) return null;
+    const was = beforePackages[key];
+    const now = afterPackages[key];
+    if (isDeepStrictEqual(was, now)) continue;
+    if (
+      !isDeepStrictEqual(withoutLockfileDepFlags(was), withoutLockfileDepFlags(now))
+    )
+      return null;
+    changed.push(key);
+  }
+  return changed;
+}
+
+/** The root package-lock.json text, or `undefined` when there is none. */
+export function readLockfileText(repoRoot = DEFAULT_REPO_ROOT, deps = {}) {
+  const lockPath = join(resolve(repoRoot), "package-lock.json");
+  const readText = deps.readText ?? (() => readFileSync(lockPath, "utf8"));
+  try {
+    return readText();
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/**
+ * WI-10003114: undo a workspace-scoped command's lockfile rewrite when it changed
+ * nothing but npm's dependency-type flags.
+ *
+ * `npm install --workspace=A --workspace=B` recomputes dev/optional/devOptional
+ * for the WHOLE lockfile, but it does so without seeing the whole workspace graph.
+ * An unscoped install writes one set of flags and a scoped install writes another,
+ * so the committed lockfile flips between them depending on which ran last.
+ * Measured 2026-09-29: an unscoped shared-tree install flipped 196 entries
+ * dev -> devOptional. The desktop sidecar build's scoped installs then flipped
+ * them back inside the exact-SHA live-certification checkout. Every certification
+ * of green main 93f1c720 went RED `certification-source-dirty-at-build-end`
+ * (dirty file: package-lock.json only) even though every functional leg passed.
+ *
+ * Restoring those bytes cannot change what is installed: the rewrite touched no
+ * version, URL, integrity or dependency edge (a formatting-only rewrite is
+ * restored for the same reason). A substantive rewrite (a new dependency, a
+ * version bump, a removed package) is left exactly as npm wrote it. Unscoped
+ * installs are never touched: they are the writer that sees the whole graph.
+ */
+export function restoreScopedFlagOnlyLockfileRewrite({
+  repoRoot = DEFAULT_REPO_ROOT,
+  beforeText,
+  deps = {},
+} = {}) {
+  if (typeof beforeText !== "string")
+    return { restored: false, reason: "no-lockfile-before", entries: [] };
+  const root = resolve(repoRoot);
+  const lockPath = join(root, "package-lock.json");
+  const afterText = readLockfileText(root, deps);
+  if (afterText === undefined)
+    return { restored: false, reason: "lockfile-removed", entries: [] };
+  if (afterText === beforeText)
+    return { restored: false, reason: "unchanged", entries: [] };
+  let before;
+  let after;
+  try {
+    before = JSON.parse(beforeText);
+    after = JSON.parse(afterText);
+  } catch {
+    return { restored: false, reason: "unparseable", entries: [] };
+  }
+  const changed = lockfileDepFlagOnlyChanges(before, after);
+  if (changed === null)
+    return { restored: false, reason: "substantive-change", entries: [] };
+  const writeText =
+    deps.writeText ??
+    ((text) => {
+      const tempPath = join(
+        root,
+        `.package-lock.json.papercusp-flag-restore-${process.pid}`,
+      );
+      try {
+        writeFileSync(tempPath, text);
+        renameSync(tempPath, lockPath);
+      } finally {
+        rmSync(tempPath, { force: true });
+      }
+    });
+  writeText(beforeText);
+  return {
+    restored: true,
+    reason: changed.length === 0 ? "formatting-only" : "dep-flags-only",
+    entries: changed,
+  };
 }
 
 /**
@@ -727,6 +861,12 @@ export async function main(argv = process.argv.slice(2)) {
           console.log(
             `NPM_INSTALL_SAFE running: npm ${npmArgs.join(" ")} (root=${repoRoot}, lock=${lockName})`,
           );
+          // WI-10003114: a workspace-scoped command recomputes dependency-type flags from a
+          // partial view of the graph; snapshot the lockfile so a flag-only rewrite can be undone.
+          const lockfileBeforeScopedCommand =
+            workspaceSelectorsForNpmArgs(npmArgs).length > 0
+              ? readLockfileText(repoRoot)
+              : undefined;
           // Tell the root `preinstall` guard that THIS install is the sanctioned one — it holds the
           // writer lock, so it cannot tear a green-checkpoint dependency copy. Without the marker the
           // guard cannot distinguish us from the bare `npm install` it exists to refuse.
@@ -738,9 +878,23 @@ export async function main(argv = process.argv.slice(2)) {
           if (result.error) throw result.error;
           const status = result.status ?? 1;
           // A FAILED npm run reports its own error — never mask it with a dep verdict.
-          if (status !== 0 || process.env.PAPERCUSP_SKIP_DEP_VERIFY === "1")
-            return status;
-          return verifyDepsExtracted({ repoRoot, npmArgs, env: npmEnv });
+          if (status !== 0) return status;
+          const verdict =
+            process.env.PAPERCUSP_SKIP_DEP_VERIFY === "1"
+              ? 0
+              : await verifyDepsExtracted({ repoRoot, npmArgs, env: npmEnv });
+          // After verification, because its bounded repair re-runs a scoped install.
+          if (lockfileBeforeScopedCommand !== undefined) {
+            const restore = restoreScopedFlagOnlyLockfileRewrite({
+              repoRoot,
+              beforeText: lockfileBeforeScopedCommand,
+            });
+            if (restore.restored)
+              console.log(
+                `NPM_INSTALL_SAFE kept the pre-install package-lock.json: this workspace-scoped command rewrote only npm dependency-type flags (${restore.reason}, ${restore.entries.length} entr${restore.entries.length === 1 ? "y" : "ies"}); a scoped install is not authoritative for them (WI-10003114)`,
+              );
+          }
+          return verdict;
         },
         {
           onWaiting: ({ owner, elapsedMs }) => {
