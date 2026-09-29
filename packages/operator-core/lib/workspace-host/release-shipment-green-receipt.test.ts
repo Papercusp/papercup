@@ -31,8 +31,10 @@ import {
   memoryReleaseLedger,
   receipt,
 } from './release-journal-test-support';
+import type { Sql } from 'postgres';
 import {
   WORKSPACE_HOST_RELEASE_SHIPMENT_STAGE,
+  latestGreenShippedReleaseInScope,
   recordWorkspaceHostReleaseShipment,
 } from './release-shipment-green-receipt';
 
@@ -486,5 +488,37 @@ describe('release.shipment.green', () => {
 
     expect(result.outcome).toBe('refused');
     expect(result.evidenceRefs.some((ref) => ref.startsWith('shipment-failed:bundle-digest-mismatch'))).toBe(true);
+  });
+});
+
+// WI-10003878 / D-437: the publisher's rollback edge reader. The SQL scope is shared with the
+// first-shipment EXISTS check; these pin the parameters it binds and how it reads the row.
+describe('latestGreenShippedReleaseInScope', () => {
+  function fakeSql(rows: unknown[]) {
+    const values: unknown[][] = [];
+    const sql = (async (_strings: TemplateStringsArray, ...bound: unknown[]) => {
+      values.push(bound);
+      return rows;
+    }) as unknown as Sql;
+    return { sql, values };
+  }
+
+  it('returns the green-shipped task and its version, scoped from this cut task and the shipment stage', async () => {
+    const { sql, values } = fakeSql([{ taskId: 'prior-green', version: '0.0.21-p318r60' }]);
+    await expect(latestGreenShippedReleaseInScope('cut-task', sql)).resolves.toEqual({
+      taskId: 'prior-green',
+      version: '0.0.21-p318r60',
+    });
+    expect(values).toEqual([['cut-task', WORKSPACE_HOST_RELEASE_SHIPMENT_STAGE]]);
+  });
+
+  it('returns null when nothing in scope has shipped green (the first shipment)', async () => {
+    await expect(latestGreenShippedReleaseInScope('cut-task', fakeSql([]).sql)).resolves.toBeNull();
+  });
+
+  it('refuses a green shipment whose task records no version rather than publishing without an edge', async () => {
+    await expect(
+      latestGreenShippedReleaseInScope('cut-task', fakeSql([{ taskId: 'prior-green', version: null }]).sql),
+    ).rejects.toThrow(/records no artifactIdentity\.version/);
   });
 });

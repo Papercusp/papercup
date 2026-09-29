@@ -202,6 +202,30 @@ describe("publication manifest CLI input", () => {
     });
     expect(parsed.materials[0]?.sha256).toBeUndefined();
   });
+
+  // WI-10003878 / D-437: the rollback edge release.shipment.green verifies must survive parsing.
+  it("carries lifecycle.rollbackTarget through and refuses a malformed one", () => {
+    const parsed = parsePublicationManifestCliInput({
+      ...cliInput(),
+      lifecycle: { rollbackTarget: { id: "papercusp-workspace-host", version: "0.0.17" } },
+    });
+    expect(parsed.lifecycle).toEqual({
+      rollbackTarget: { id: "papercusp-workspace-host", version: "0.0.17" },
+    });
+    expect(() =>
+      parsePublicationManifestCliInput({
+        ...cliInput(),
+        lifecycle: { rollbackTarget: { id: "papercusp-workspace-host" } },
+      }),
+    ).toThrow(/input\.lifecycle\.rollbackTarget\.version/);
+    expect(() =>
+      parsePublicationManifestCliInput({ ...cliInput(), lifecycle: "yesterday" }),
+    ).toThrow(/input\.lifecycle must be an object/);
+    // An empty lifecycle stays absent, as before.
+    expect(
+      parsePublicationManifestCliInput({ ...cliInput(), lifecycle: {} }).lifecycle,
+    ).toBeUndefined();
+  });
 });
 
 describe("bundled Node publication guard", () => {
@@ -451,10 +475,28 @@ describe("manifest assembly", () => {
     expect(manifest.artifact.release.bundleSha256).toBe(BUNDLE_SHA);
     expect(manifest.artifact.buildManifest.releaseArtifact.sha256).toBe(BUNDLE_SHA);
     expect(manifest.artifact.lifecycle.state).toBe("active");
+    // First shipment: no rollback edge unless the cut supplied one (D-437).
+    expect(manifest.artifact.lifecycle.rollbackTarget).toBeUndefined();
     expect(manifest.trustReport.trusted).toBe(true);
     expect(manifest.trustReport.policy).toEqual(
       WORKSPACE_HOST_PUBLICATION_TRUST_POLICY,
     );
+  });
+
+  // WI-10003878: every r54-r60 manifest lacked this field, so no shipment could commit.
+  it("publishes the cut's rollback edge in artifact.lifecycle.rollbackTarget", async () => {
+    const input = {
+      ...cliInput(),
+      lifecycle: { rollbackTarget: { id: "papercusp-workspace-host", version: "0.0.17" } },
+    };
+    const { manifest } = await assembleWorkspaceHostPublicationManifest(
+      assemblyFacts({ input }),
+    );
+    expect(manifest.artifact.lifecycle.rollbackTarget).toEqual({
+      id: "papercusp-workspace-host",
+      version: "0.0.17",
+    });
+    expect(manifest.trustReport.trusted).toBe(true);
   });
 
   it("content-addresses the published URLs at the measured digest", async () => {

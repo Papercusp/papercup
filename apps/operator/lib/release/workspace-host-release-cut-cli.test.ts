@@ -199,6 +199,30 @@ describe('managed workspace-host cut journal (D-394)', () => {
     expect(h.calls.builds).toBe(1);
     expect(h.calls.manifests).toBe(1);
     expect(h.journal().receipts.filter((entry) => entry.stage === WORKSPACE_HOST_BUILD_STAGE)).toHaveLength(2);
+    // The rollback edge is decided once, with the manifest; a resume does not re-resolve it.
+    expect(h.calls.rollbackResolves).toEqual([TASK_ID]);
+  });
+
+  // WI-10003878 / D-437: the manifest names the last green-shipped release as its rollback edge.
+  it('resolves the rollback edge from this cut task and hands its version to the manifest', async () => {
+    const shipped = harness({
+      resolveRollbackRelease: async (taskId) => {
+        shipped.calls.rollbackResolves.push(taskId);
+        return { taskId: 'prior-green-task', version: '0.0.21-p318r60' };
+      },
+    });
+    await runWorkspaceHostReleaseCut(options(), shipped.deps);
+    expect(shipped.calls.rollbackResolves).toEqual([TASK_ID]);
+    expect(shipped.calls.manifestRollbackVersions).toEqual(['0.0.21-p318r60']);
+  });
+
+  // Positive control for the test above, in its own test: the work directory is per-test, and a
+  // second cut in the same directory resumes the first cut's task instead of opening its own.
+  it('hands the manifest no rollback edge when nothing in scope has shipped green (first shipment)', async () => {
+    const first = harness();
+    await runWorkspaceHostReleaseCut(options(), first.deps);
+    expect(first.calls.rollbackResolves).toEqual([TASK_ID]);
+    expect(first.calls.manifestRollbackVersions).toEqual([null]);
   });
 
   it('refuses to reuse a committed build whose bytes are gone', async () => {
@@ -472,6 +496,7 @@ describe('publication input', () => {
     desktopRevision: DESKTOP_PIN,
     sourceRoot: '/work/source',
     bundleRoot: '/work/extracted',
+    rollbackVersion: null,
   };
 
   it('fills the tracked template from measured facts and passes the manifest CLI parser', () => {
@@ -503,6 +528,31 @@ describe('publication input', () => {
         facts,
       ),
     ).toThrow(/desktop_revision/);
+  });
+
+  // WI-10003878 / D-437: before this, no manifest ever carried lifecycle.rollbackTarget, so
+  // release.shipment.green refused every r5x/r60 release.
+  it('writes the last green-shipped release as lifecycle.rollbackTarget, and none for a first shipment', () => {
+    const template = JSON.parse(readFileSync(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8'));
+    const withEdge = buildWorkspaceHostPublicationInput(template, { ...facts, rollbackVersion: '0.0.21-p318r60' });
+    expect(withEdge.lifecycle?.rollbackTarget).toEqual({ id: template.image.id, version: '0.0.21-p318r60' });
+    expect(withEdge.lifecycle?.rollbackTarget?.id).toBe('papercusp-workspace-host');
+
+    const first = buildWorkspaceHostPublicationInput(template, facts);
+    expect(first.lifecycle?.rollbackTarget).toBeUndefined();
+  });
+
+  it('refuses a rollback edge to the release being cut, and a template that authors the edge', () => {
+    const template = JSON.parse(readFileSync(WORKSPACE_HOST_PUBLICATION_INPUT_TEMPLATE, 'utf8'));
+    expect(() => buildWorkspaceHostPublicationInput(template, { ...facts, rollbackVersion: VERSION })).toThrow(
+      /cannot roll back to itself/,
+    );
+    expect(() =>
+      buildWorkspaceHostPublicationInput(
+        { ...template, lifecycle: { rollbackTarget: { id: 'papercusp-workspace-host', version: '0.0.1' } } },
+        facts,
+      ),
+    ).toThrow(/must not pin lifecycle.rollbackTarget/);
   });
 });
 
