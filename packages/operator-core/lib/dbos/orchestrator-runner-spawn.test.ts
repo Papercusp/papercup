@@ -177,13 +177,21 @@ describe('spawnInvokeOnce', () => {
   // body.timeoutMs: 280_000 truly kills at 280s, not the 600s host default.
   it('per-request opts.timeoutMs overrides the module-level PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS default', async () => {
     H.cmd = node('setInterval(() => {}, 5000)'); // never exits on its own
-    const start = Date.now();
-    // Module default is 600ms (env above). A per-request 200ms must kill sooner.
-    const r = await spawnInvokeOnce(process.cwd(), 'worker', [], {}, { timeoutMs: 200 });
-    const elapsed = Date.now() - start;
-    expect(elapsed).toBeLessThan(500); // killed at ~200ms, well before the 600ms default
-    expect(r.timedOut).toBe(true);
-    expect(r.exitCode).not.toBe(0);
+    // Module default is 600ms (env above). A per-request 200ms must arm the kill timer.
+    // Assert the ARMED DELAY, not wall-clock elapsed: `timedOut` is set by either timer,
+    // and an elapsed bound measured around a real child spawn absorbs the spawn cost,
+    // which under gate load exceeded the whole 200-vs-600 margin (WI-10003853: 1028ms).
+    const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const r = await spawnInvokeOnce(process.cwd(), 'worker', [], {}, { timeoutMs: 200 });
+      const armedDelays = setTimeoutSpy.mock.calls.map((call) => call[1]);
+      expect(armedDelays).toContain(200);
+      expect(armedDelays).not.toContain(600);
+      expect(r.timedOut).toBe(true);
+      expect(r.exitCode).not.toBe(0);
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
   }, 10_000);
 
   it('release-fixer first-turn silence guard kills before the full invoke deadline', async () => {
@@ -194,7 +202,6 @@ describe('spawnInvokeOnce', () => {
       'process.stdout.write("[2026-08-20T12:15:34.000Z] prompt-budget role=release-fixer total=63586\\n");' +
         'setInterval(() => {}, 5000)',
     );
-    const start = Date.now();
     const r = await spawnInvokeOnce(
       process.cwd(),
       'release-fixer',
@@ -202,11 +209,13 @@ describe('spawnInvokeOnce', () => {
       {},
       { timeoutMs: 1_000, firstTurnTimeoutMs: 200 },
     );
-    const elapsed = Date.now() - start;
+    // firstTurnTimedOut is only set when the first-turn guard fires BEFORE the overall
+    // timer (runChild's guard returns early once timedOut is set), so it alone proves
+    // the guard beat the 1s deadline. No wall-clock bound: it absorbed the child-spawn
+    // cost and flaked under gate load (WI-10003853).
     expect(r.firstTurnTimedOut).toBe(true);
     expect(r.timedOut).toBe(true);
     expect(r.stderr).toContain('release-fixer first-turn timeout');
-    expect(elapsed).toBeLessThan(900);
   }, 10_000);
 
   it('release-fixer first-turn silence guard clears when an agent stream starts', async () => {
