@@ -1607,16 +1607,20 @@ describe('template_data persistence boundary — the set-template-data door', ()
   // seeding (see the note at the end of this helper). It is OPT-IN because it
   // writes template_data, which advances clause revisions — cases that assert
   // exact revision numbers or history counts want the bare seed.
-  async function seedBarContract(subject: string, opts: { authorMethods?: boolean; evidencePlane?: 'tree' | 'live' } = {}) {
+  async function seedBarContract(
+    subject: string,
+    opts: { authorMethods?: boolean; evidencePlane?: 'tree' | 'live'; planStatus?: 'active' | 'draft' } = {},
+  ) {
     const { seedAcceptanceBarsInTransaction } = await import('./acceptance-bar-seed');
     const { hashPlanContent } = await import('./agent-tools/plans/content-hash');
     const workspaceId = activeWorkspaceId();
-    const content = `---\ntitle: METHOD pins\nslug: ${subject}\nstatus: active\n---\n\n## Requirements\n\n**R-1 — First outcome.** The first outcome holds.\n\n**R-2 — Second outcome.** The second outcome holds.\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n| R-1 | P-001 | tree |\n| R-2 | P-002 | tree |\n\n## Work\n\n- **P-001** \`done\` first outcome\n- **P-002** \`done\` second outcome\n`;
+    const planStatus = opts.planStatus ?? 'active';
+    const content = `---\ntitle: METHOD pins\nslug: ${subject}\nstatus: ${planStatus}\n---\n\n## Requirements\n\n**R-1 — First outcome.** The first outcome holds.\n\n**R-2 — Second outcome.** The second outcome holds.\n\n## Design\n\n### Bar-to-work map for this plan\n\n| bar | implementing plan items | evidence plane |\n|---|---|---|\n| R-1 | P-001 | tree |\n| R-2 | P-002 | tree |\n\n## Work\n\n- **P-001** \`done\` first outcome\n- **P-002** \`done\` second outcome\n`;
     const seededContent = opts.evidencePlane === 'live' ? content.replaceAll('| tree |', '| live |') : content;
     await db.adminSql`
       INSERT INTO harness_shared.harness_plans
         (workspace_id,harness_slug,plan_slug,content,content_hash,version,title,status,owner,acceptance_bar_epoch,acceptance_bar_cohort)
-      VALUES (${workspaceId},'papercusp',${subject},${seededContent},${hashPlanContent(seededContent)},1,'METHOD pins','active','su-test',1,'post-epoch')`;
+      VALUES (${workspaceId},'papercusp',${subject},${seededContent},${hashPlanContent(seededContent)},1,'METHOD pins',${planStatus},'su-test',1,'post-epoch')`;
     for (const [index, item] of ['P-001', 'P-002'].entries()) {
       await db.adminSql`INSERT INTO harness_shared.plan_items
         (workspace_id,harness_slug,plan_slug,item_id,seq,status,item_text)
@@ -1641,7 +1645,7 @@ describe('template_data persistence boundary — the set-template-data door', ()
         planSlug: subject,
         planContent: seededContent,
         planTitle: 'METHOD pins',
-        planStatus: 'active',
+        planStatus,
         planVersion: 1,
         adoptionEpoch: 1,
         cohort: 'post-epoch',
@@ -1733,6 +1737,53 @@ describe('template_data persistence boundary — the set-template-data door', ()
       })),
     };
     expect((await rubrics.previewAcceptanceBarAmendment(manual))?.changedBars).toEqual(['R-1', 'R-2']);
+  });
+
+  // EI-24372605712471072: a BAR on a plan that has not started may name the test file its
+  // own items will write. The seed already allowed that; amendment used to refuse it.
+  describe('planned proof paths on an un-started subject plan', () => {
+    const plannedTest = 'packages/operator-core/lib/planned-by-the-subject-plan-ei24372605712471072.test.ts';
+    const bindPlanned = (
+      rubricId: string,
+      criteria: NonNullable<Awaited<ReturnType<typeof rubrics.getRubric>>>['criteria'],
+    ) => ({
+      rubricId,
+      actorId: 'method-author',
+      reason: 'Bind each BAR to the test file the plan will write.',
+      criteria: criteria.map((criterion) => ({
+        ...criterion,
+        method: `Run the focused unit test in ${plannedTest}.`,
+        check: { kind: 'tests' as const, files: [plannedTest] },
+        requiredTestLayers: ['unit'],
+      })),
+    });
+
+    it('a draft subject plan accepts the planned file, names it on the preview, and persists the check', async () => {
+      const seeded = await seedBarContract('planned-proof-draft', { planStatus: 'draft' });
+      const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+      const amendment = bindPlanned(seeded.rubricSlug, before.criteria);
+
+      const preview = await rubrics.previewAcceptanceBarAmendment(amendment);
+      expect(preview?.changedBars).toEqual(['R-1', 'R-2']);
+      const planned = preview!.plannedPaths;
+      expect(new Set(planned.map((p) => p.path))).toEqual(new Set([plannedTest]));
+      expect(new Set(planned.map((p) => p.kind))).toEqual(new Set(['tests-check', 'method-citation']));
+
+      const after = await rubrics.amendRubric({ ...amendment, approvalRef: await postApproval(amendment) });
+      expect(after?.criteria.map((criterion) => criterion.check)).toEqual([
+        { kind: 'tests', files: [plannedTest] },
+        { kind: 'tests', files: [plannedTest] },
+      ]);
+    });
+
+    it('a started subject plan still refuses the same amendment', async () => {
+      const seeded = await seedBarContract('planned-proof-active');
+      const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+      await expect(
+        rubrics.previewAcceptanceBarAmendment(bindPlanned(seeded.rubricSlug, before.criteria)),
+      ).rejects.toThrow(/invalid_args: proposeRubric:.*planned-by-the-subject-plan-ei24372605712471072/s);
+      expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(before.revision);
+    });
   });
 
   it('refuses a live-plane manual BAR changed to tests without a layer', async () => {

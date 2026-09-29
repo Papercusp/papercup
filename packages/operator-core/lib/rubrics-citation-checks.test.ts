@@ -199,6 +199,7 @@ describe('validateAcceptanceRubricCitationPaths — EI-21818117666341180', () =>
       checkedPaths: 0,
       checkedAnchors: [],
       failures: [],
+      planned: [],
     });
   });
 });
@@ -218,6 +219,53 @@ describe('assertAcceptanceRubricCitationPathsResolve', () => {
         { root, deps },
       ),
     ).not.toThrow();
+  });
+});
+
+// EI-24372605712471072: before the subject plan starts, a citation may name code or a test
+// case the plan's own items will write. Only "not there yet" is plannable.
+describe('allowPlannedPaths — citations to code the plan has not written yet', () => {
+  const futureModule = 'packages/operator-core/lib/events/await/written-later.ts';
+  const planned = (): AcceptanceRubricCitationCriterion => ({
+    key: 'R-1',
+    method: `Read the chunker in ${futureModule}.`,
+    replication:
+      `Run testing:run { files: ['${executorTest}'] }; inspect the test named 'a case the plan will add'.`,
+  });
+
+  it('accepts a missing file and a missing named test case as planned, and lists both', () => {
+    const result = validateAcceptanceRubricCitationPaths([planned()], { root, deps, allowPlannedPaths: true });
+    expect(result.ok).toBe(true);
+    expect(result.failures).toEqual([]);
+    expect(result.planned.map((p) => [p.source, p.path, p.reason, p.literal])).toEqual([
+      ['method', futureModule, 'path_missing', undefined],
+      ['replication', executorTest, 'literal_missing', 'a case the plan will add'],
+    ]);
+  });
+
+  it('without the allowance the same criterion refuses (a started plan, or plain propose)', () => {
+    const strict = validateAcceptanceRubricCitationPaths([planned()], { root, deps });
+    expect(strict.ok).toBe(false);
+    expect(strict.planned).toEqual([]);
+    expect(strict.failures.map((f) => f.reason).sort()).toEqual(['literal_missing', 'path_missing']);
+    expect(() => assertAcceptanceRubricCitationPathsResolve([planned()], { root, deps })).toThrowError(
+      /invalid_args:.*written-later\.ts/s,
+    );
+  });
+
+  it('never plans a citation that is wrong regardless of timing (escaping, not a file)', () => {
+    const dirLikeFile = 'packages/operator-core/lib/events/await/a-directory.ts';
+    mkdirSync(resolve(root, dirLikeFile), { recursive: true });
+    const result = validateAcceptanceRubricCitationPaths(
+      [
+        { key: 'escape', method: 'Read packages/../../etc/written-later.ts.' },
+        { key: 'dir', method: `Read ${dirLikeFile}.` },
+      ],
+      { root, deps, allowPlannedPaths: true },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.planned).toEqual([]);
+    expect(result.failures.map((f) => f.reason).sort()).toEqual(['not_a_file', 'path_escapes_repo']);
   });
 });
 
