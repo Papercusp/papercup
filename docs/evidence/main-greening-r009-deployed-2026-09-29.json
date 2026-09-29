@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "plan": "main-greening-control-plane-durable-fix-2026-09-21",
+  "planItem": "P-005",
+  "workItem": "WI-10002996",
+  "barRequirement": "R-009",
+  "evidencePlane": "deployed",
+  "recordedBy": "su-539c555c-adf6-4271-9758-338743c26513",
+  "recordedAt": "2026-09-29T08:10:00Z",
+  "incident": {
+    "frozenCandidate": "ac857b4ba0f1c2e78683cd1366c6bfaca6320068",
+    "repairHead": "01a67545f3afff3cdee35c21a9d6476acad93579",
+    "repairHeadCommitSubject": "admit 3 path(s) onto frozen lineage ac857b4ba0f1",
+    "repairWorkItem": "WI-10003582",
+    "note": "Round 7 of the frozen repair queue for candidate ac857b4b admitted fixes for the three round-6 red legs, advancing repairHead 971ae4ab -> 01a67545."
+  },
+  "verdict": {
+    "claim": "A fresh green-checkpoint verdict was obtained for the exact repair head 01a67545.",
+    "observed": "green-checkpoint broadcast 2026-09-28T16:44:06.924Z: 'papercusp:main advanced to 01a67545 (green, deployable) [load-flake absorbed] [1 passed on retry - NOT a clean green] Was 09e39c5d.' Event release:green:papercusp payload {sha:01a67545, from:09e39c5d}; candidateSource frozen-repair-queue; runId 03a72719.",
+    "caveat": "The verdict absorbed one load flake that passed on retry. The repair head was then carried inside three further full green verdicts (1a412c98, 01f34218, d425508f), each of which contains 01a67545 as an ancestor.",
+    "recheck": "coord:feed / search:fulltext for 'main advanced to 01a67545'; git merge-base --is-ancestor 01a67545f3af d425508f01ed"
+  },
+  "greenPin": {
+    "claim": "The green pin was promoted to exactly the repair head.",
+    "observed": "The green-checkpoint promotion that set main to 01a67545 is the green-pin advance (main is green-only; the pin and main move together on a green verdict). D-012 records main == origin/main == green pin == 01a67545 at the 16:44:07Z verdict.",
+    "recheck": "plans:get main-greening-control-plane-durable-fix-2026-09-21 decision D-012"
+  },
+  "main": {
+    "claim": "main was promoted to exactly the repair head.",
+    "observed": "git reflog main: 'main@{2026-09-28T16:43:59+00:00}: branch: Reset to 01a67545f3afff3cdee35c21a9d6476acad93579'. Later automated resets: 1a412c98 at 21:21:15Z, 01f34218 at 23:44:55Z, d425508f at 2026-09-29T03:13:48Z.",
+    "recheck": "TZ=UTC git reflog show --date=iso-strict-local main | grep 01a67545"
+  },
+  "deploy": {
+    "claim": "The live operator deployment contains the promoted repair head.",
+    "deployedSha": "d425508f01edf8d29045e9d89e6f0fd115febf74",
+    "deployedAt": "2026-09-29T06:35:42Z",
+    "deployedBy": "release-deploy (release-trigger; unforced). Message: 'deployed d425508f (992 commit(s), 12 migration(s)) - advanced release checkout 7708e704 -> d425508f'.",
+    "liveCertification": "~/.papercusp/live-fed-gate/verdicts.jsonl row ts 2026-09-29T06:20:51Z verdict GREEN head d425508f01, certification_target_sha d425508f01ed, legs content_matrix PASS-971, from_repo PASS, local_matrix PASS, build OK, source_mode rebuilt.",
+    "serving": "state:read deploy.3070.sha -> d425508f01edf8d29045e9d89e6f0fd115febf74 with assessment 'executing' (serving process started after the code change); GET 127.0.0.1:3070/api/health -> sha d425508f01 at 2026-09-29T07:57:53Z; release:deploy status greenPinSha d425508f, deployedBehindGreenPin 0.",
+    "containment": {
+      "ancestry": "git merge-base --is-ancestor 01a67545 d425508f -> true",
+      "repairLineagePaths": 75,
+      "blobIdenticalAtDeployed": 66,
+      "changedAfterRepairHead": 9,
+      "changedPathsAnalysis": {
+        "packages/operator-core/lib/agent-tools/dev/restart.test.ts": "6/6 repair-added lines still present",
+        "packages/operator-core/lib/blueprint/operation-performance.integration.test.ts": "3/3 repair-added lines still present",
+        "packages/operator-core/lib/carry-doc-request-settlement.integration.test.ts": "3/3 repair-added lines still present",
+        "packages/operator-core/lib/sync/hyperbee/perf/no-pg-stub.mjs": "3/3 repair-added lines still present",
+        "scripts/check-resource-governor-enforcement.mjs": "15/15 repair-added lines still present",
+        "scripts/launch-prose-budget-baseline.json": "0/7 lines verbatim, by design: the repair raised four ceilings as a labelled TEMPORARY MITIGATION (WI-10003582); the durable fix EI-24511252962859723 trimmed the guide and ratcheted the ceilings back down (254200->249800, 231200->226900, 120800->116600 x2). This is the planned follow-through, not a revert, and d425508f passed its gate with it.",
+        "libs/papercusp": "submodule pin ffe05fb0d7 (repair) is an ancestor of c0909b3608 (deployed)",
+        "libs/test-config": "submodule pin f2262d996c (repair) is an ancestor of 4849d348c8 (deployed)",
+        "papercusp-desktop": "submodule pin d4c63f7650 (repair) is an ancestor of ac0744baf5 (deployed)"
+      }
+    },
+    "recheck": "state:read {cell:'deploy.3070.sha'}; curl 127.0.0.1:3070/api/health; git diff --name-only ac857b4ba0f1 01a67545f3af then compare blobs at d425508f01ed"
+  },
+  "incidentRepaired": {
+    "claim": "The measured red for the current incident (frozen candidate ac857b4b) is repaired.",
+    "observed": "The frozen lineage converged green at repair head 01a67545 (verdict above). Four consecutive green gate verdicts followed on commits containing it (01a67545, 1a412c98, 01f34218, d425508f). The deployed d425508f carries the repair and passed exact-SHA live certification GREEN.",
+    "falsifier": "FALSIFIED if the gate went red again on a candidate containing 01a67545 for the same failing files, if d425508f did not contain the repair lines, or if :3070 did not serve a commit containing 01a67545. None holds as of 2026-09-29T08:00Z."
+  },
+  "priorClaimCorrected": "On 2026-09-29 at 02:58Z this session told the owner that waiting would not produce a GREEN live certification (citing WI-10003819). That was wrong: d425508f banked GREEN at 06:20:51Z including local_matrix PASS, and deployed without a force."
+}

@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "plan": "main-greening-control-plane-durable-fix-2026-09-21",
+  "planItem": "P-007",
+  "workItem": "WI-10003016",
+  "evidencePlane": "deployed",
+  "recordedBy": "su-539c555c-adf6-4271-9758-338743c26513",
+  "observedAt": "2026-09-29T08:04:30Z",
+  "promotionChain": {
+    "repairHead": "01a67545f3afff3cdee35c21a9d6476acad93579",
+    "greenPinAndMain": "main reset to exactly 01a67545 at 2026-09-28T16:43:59Z on the green verdict (see docs/evidence/main-greening-r009-deployed-2026-09-29.json)",
+    "deployedProcess": "release-operator :3070 buildSha d425508f01 (buildShaSource health); state:read deploy.3070.sha = d425508f01edf8d29045e9d89e6f0fd115febf74, assessment 'executing' (serving process started after the code change); deployed unforced 2026-09-29T06:35:42Z; 01a67545 is an ancestor of d425508f",
+    "otherServingRuntimes": "dev:pipeline_position servingRuntimes at ~08:03Z: staging-operator 862540bcaf, bg-host b97f7300a1 (canonical tree, runtime-vintage), gateway 67ed85bf86. All report containsChange=true (blob method) for packages/operator-core/lib/release/checkpoint-qualification-transaction.ts."
+  },
+  "stagingBaseline": {
+    "verifiedAt": "fd32fb385afc36130175525733aade993f4cbb87",
+    "proof": "P-006 / WI-10002997: seven R-008 regression clauses with adequacy passes and independent audits on :3170",
+    "relation": "fd32fb385a is an ancestor of the deployed d425508f. Of the 15 P-006 source/test paths, 8 are blob-identical at d425508f and 7 grew with later work (green-checkpoint.ts, events/await/store.ts, checkpoint-qualification-transaction.ts, frozen-candidate-repair-queue.ts, routines/release-actions.ts, plus two test files with additions only). Parity is therefore established on BEHAVIOUR below, not byte identity."
+  },
+  "lifecycleBehaviourComparison": {
+    "method": "One simultaneous release:deploy {op:'status', payloadTier:'full'} read against the deployed operator :3070 (d425508f) and the staging operator :3170 (862540bcaf), both via scripts/mcp-call.mjs, both reading the same live Postgres and the same in-flight green-checkpoint run. Read-only; no gate action taken.",
+    "fieldsCompared": 19,
+    "fieldsNonNull": 19,
+    "identical": [
+      "state = gate-verdict-stale",
+      "gate.green = false",
+      "gate.consecutiveReds = 1",
+      "gate.stalled = true",
+      "gate.fireStale = false",
+      "gate.verdictStale = true",
+      "gate.lastVerdict.status = skipped-joined-attempt (checkpoint-attempt collision resolved by join, not a duplicate run)",
+      "gate.lastVerdict.candidate = 7f0ddb0626660fb1ac7b499dffe741679f10582e",
+      "gate.freezeAndConverge.enabled = true",
+      "gate.freezeAndConverge.state = converging",
+      "gate.repairQueue.candidate = 4223f93417df132eec90ace218a6017f5a97b8b3",
+      "gate.repairQueue.repairHead = 48da1fe658f8c009e89fa8c4ed74607953246223",
+      "checkpointRunInFlight.active = true",
+      "checkpointRunInFlight.systemd.invocationId = ee158d81cbf84d27a2442fb39c12d7e8",
+      "checkpointRunInFlight.progressAtMs = 1790669062586 (freshness keyed on progress, not scheduler fire)",
+      "deploy.greenPinSha = d425508f01edf8d29045e9d89e6f0fd115febf74",
+      "deploy.deployedSha = d425508f01edf8d29045e9d89e6f0fd115febf74",
+      "deploy.deployedBehindGreenPin = 0"
+    ],
+    "differences": [
+      "checkpointRunInFlight.startedAtMs: :3070 1790668980836 vs :3170 1790668980833 (3 ms). Each process derives the start time independently from the systemd unit timestamp at read time; this is derivation jitter, not a lifecycle-semantics difference."
+    ],
+    "verdict": "PARITY: the deployed build and the verified staging/current-build line interpret the same live checkpoint lifecycle (active run identity, progress-based freshness, joined-attempt terminal outcome, freeze-and-converge repair queue, pin/deploy position) identically."
+  },
+  "scopeNote": "The in-flight run belongs to a separate, later gate incident (candidate 4223f934 / repair head 48da1fe6, lastVerdict candidate 7f0ddb06) owned by another agent. This comparison only read it; it took no LIVE_GATE_OPS action.",
+  "falsifier": "FALSIFIED if :3070 did not serve a commit containing 01a67545, or if the deployed and staging builds disagreed on any lifecycle field in the same instant (run identity, progress time, terminal outcome, freeze state, repair queue)."
+}
