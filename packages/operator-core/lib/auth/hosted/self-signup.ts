@@ -14,6 +14,7 @@ import type { HostedIdentityBinding } from '../../endpoint-route/routes/hosted-a
 import type { HostedSession } from '../hosted-session';
 import type { HostedVerifiedIdentity } from './provider';
 import { hostedMembershipAuthorityVersion } from '../hosted-membership-authority';
+import type { HostedServiceContextRunner } from './workos-lifecycle-postgres';
 
 export type HostedSelfSignupFailureCode =
   | 'invalid_request'
@@ -143,14 +144,25 @@ function sessionFromRow(row: SessionRow): HostedSession {
   };
 }
 
+/** Signup attempts one normalized email may start per rolling hour before refusal. */
+export const HOSTED_SELF_SIGNUP_ATTEMPTS_PER_EMAIL_PER_HOUR = 5;
+
+type AttemptGate = 'proceed' | 'rate_limited' | 'state_conflict';
+
 /** Hosted-service adapter. `run` is injectable for hermetic tests. */
 export class PostgresHostedSelfSignupAdmission implements HostedSelfSignupAdmission {
-  constructor(private readonly run: (fn: (sql: Sql) => Promise<HostedSelfSignupSuccess>) => Promise<HostedSelfSignupSuccess> =
-    (fn) => withHostedServiceContext(fn)) {}
+  constructor(private readonly run: HostedServiceContextRunner = (fn) => withHostedServiceContext(fn)) {}
 
   async complete(input: HostedSelfSignupInput): Promise<HostedSelfSignupResult> {
     try {
       validate(input);
+      // Two transactions on purpose. The attempt ledger must COMMIT before the
+      // admission runs: every refusal inside the admission throws and rolls its
+      // transaction back, so a ledger row written there would vanish with it and
+      // the per-email limit would only ever count completed signups (which the
+      // duplicate check already caps at one) — i.e. it could never fire.
+      const gate = await this.run((sql) => this.recordAttempt(sql, input));
+      if (gate !== 'proceed') throw new HostedSelfSignupError(gate);
       return await this.run((sql) => this.completeInTransaction(sql, input));
     } catch (error) {
       if (error instanceof HostedSelfSignupError) {
@@ -164,6 +176,65 @@ export class PostgresHostedSelfSignupAdmission implements HostedSelfSignupAdmiss
       }
       return { ok: false, code: 'unavailable', retryable: true };
     }
+  }
+
+  /**
+   * Commit this attempt to the ledger and apply the per-email abuse limit.
+   *
+   * Runs in its OWN transaction and never throws for a refusal, so a
+   * `rate_limited` row it writes is committed and counts against the next
+   * attempt. A returning user whose provider identity is already linked is not
+   * an abuse signal — the route turns their `duplicate_identity` into a sign-in —
+   * so they are exempt from the count.
+   */
+  private async recordAttempt(sql: Sql, input: HostedSelfSignupInput): Promise<AttemptGate> {
+    const providerId = text(input.providerId, 64) as string;
+    const subject = text(input.identity.externalUserId) as string;
+    const verifiedEmail = email(input.identity.primaryEmail) as string;
+    const attemptId = text(input.attemptId, 2_048) as string;
+    const fingerprint = `${providerId}|${subject}|${verifiedEmail}`;
+
+    await sql`
+      INSERT INTO papercusp_auth.hosted_signup_attempts
+        (attempt_id, provider, subject, email, fingerprint, status)
+      VALUES (${attemptId}, ${providerId}, ${subject}, ${verifiedEmail}, ${fingerprint}, 'pending')
+      ON CONFLICT (attempt_id) DO NOTHING
+    `;
+    const attempts = await sql<Array<{ fingerprint: string; status: string }>>`
+      SELECT fingerprint, status
+        FROM papercusp_auth.hosted_signup_attempts
+       WHERE attempt_id = ${attemptId}
+       FOR UPDATE
+    `;
+    const attempt = attempts[0];
+    if (!attempt || attempt.fingerprint !== fingerprint) return 'state_conflict';
+    if (attempt.status === 'completed') return 'proceed';
+    if (attempt.status === 'rate_limited') return 'rate_limited';
+
+    const linked = await sql<Array<{ hosted_user_id: string }>>`
+      SELECT hosted_user_id::text AS hosted_user_id
+        FROM papercusp_auth.external_identities
+       WHERE provider = ${providerId} AND subject = ${subject}
+       LIMIT 1
+    `;
+    if (linked[0]) return 'proceed';
+
+    const recent = await sql<Array<{ count: number | string }>>`
+      SELECT count(*)::int AS count
+        FROM papercusp_auth.hosted_signup_attempts
+       WHERE email = ${verifiedEmail}
+         AND created_at > now() - interval '1 hour'
+         AND attempt_id <> ${attemptId}
+    `;
+    if (Number(recent[0]?.count ?? 0) >= HOSTED_SELF_SIGNUP_ATTEMPTS_PER_EMAIL_PER_HOUR) {
+      await sql`
+        UPDATE papercusp_auth.hosted_signup_attempts
+           SET status = 'rate_limited', updated_at = now()
+         WHERE attempt_id = ${attemptId}
+      `;
+      return 'rate_limited';
+    }
+    return 'proceed';
   }
 
   private async completeInTransaction(sql: Sql, input: HostedSelfSignupInput): Promise<HostedSelfSignupSuccess> {
@@ -214,21 +285,8 @@ export class PostgresHostedSelfSignupAdmission implements HostedSelfSignupAdmiss
       };
     }
 
-    const recent = await sql<Array<{ count: number | string }>>`
-      SELECT count(*)::int AS count
-        FROM papercusp_auth.hosted_signup_attempts
-       WHERE email = ${verifiedEmail}
-         AND created_at > now() - interval '1 hour'
-         AND attempt_id <> ${attemptId}
-    `;
-    if (Number(recent[0]?.count ?? 0) >= 5) {
-      await sql`
-        UPDATE papercusp_auth.hosted_signup_attempts
-           SET status = 'rate_limited', updated_at = now()
-         WHERE attempt_id = ${attemptId}
-      `;
-      throw new HostedSelfSignupError('rate_limited');
-    }
+    // The per-email limit was applied by recordAttempt in its own committed
+    // transaction; nothing here may record a refusal, because it rolls back.
 
     // Serialize admissions for one normalized email without introducing a
     // global unique-email rule (existing hosted identities may legitimately

@@ -28,7 +28,7 @@ function input(overrides: Partial<HostedSelfSignupInput> = {}): HostedSelfSignup
 }
 
 /** Minimal SQL harness for the adapter's transaction contract. */
-function harness(options: { failAt?: string } = {}) {
+function harness(options: { failAt?: string; recentAttempts?: number } = {}) {
   const attempts = new Map<string, any>();
   const users = new Set<string>();
   const identities = new Set<string>();
@@ -49,9 +49,10 @@ function harness(options: { failAt?: string } = {}) {
       });
       return [];
     }
-    if (query.includes('SELECT attempt_id')) return [...attempts.values()]
-      .filter((row) => row.attempt_id === values[0]);
-    if (query.includes('SELECT count(*)')) return [{ count: 0 }];
+    if (query.includes('FROM papercusp_auth.hosted_signup_attempts') && query.includes('FOR UPDATE')) {
+      return [...attempts.values()].filter((row) => row.attempt_id === values[0]);
+    }
+    if (query.includes('SELECT count(*)')) return [{ count: options.recentAttempts ?? 0 }];
     if (query.includes('SELECT hosted_user_id')) return [...identities]
       .filter((key) => key === `${values[0]}|${values[1]}`)
       .map((key) => ({ hosted_user_id: key.split('|')[2] }));
@@ -92,6 +93,11 @@ function harness(options: { failAt?: string } = {}) {
     if (query.includes('SELECT id, user_id, organization_id') && query.includes('hosted_sessions')) {
       return [...sessions.values()].filter((row) => row.id === values[0]);
     }
+    if (query.includes('UPDATE papercusp_auth.hosted_signup_attempts') && query.includes("'rate_limited'")) {
+      const row = attempts.get(String(values.at(-1)));
+      if (row) row.status = 'rate_limited';
+      return [];
+    }
     if (query.includes('UPDATE papercusp_auth.hosted_signup_attempts')) {
       const row = attempts.get(String(values.at(-1)));
       if (row) {
@@ -104,8 +110,16 @@ function harness(options: { failAt?: string } = {}) {
     }
     return [];
   }) as unknown as Sql;
-  const admission = new PostgresHostedSelfSignupAdmission(async (fn) => fn(sql));
-  return { admission, attempts, sessions, orgs, get calls() { return calls; } };
+  let transactions = 0;
+  const admission = new PostgresHostedSelfSignupAdmission(async (fn) => {
+    transactions += 1;
+    return fn(sql);
+  });
+  return {
+    admission, attempts, sessions, orgs, users,
+    get calls() { return calls; },
+    get transactions() { return transactions; },
+  };
 }
 
 describe('hosted self-signup admission', () => {
@@ -130,8 +144,33 @@ describe('hosted self-signup admission', () => {
     const callCount = h.calls;
     const replay = await h.admission.complete(input());
     expect(replay).toEqual(first);
-    expect(h.calls).toBe(callCount + 3);
+    // Ledger transaction (insert + locked read) then the replay read
+    // (insert + locked read + stored session) — no admission writes.
+    expect(h.calls).toBe(callCount + 5);
     expect(h.orgs.size).toBe(1);
+  });
+
+  it('refuses past the per-email limit in its own transaction, before any admission write', async () => {
+    const h = harness({ recentAttempts: 5 });
+    const result = await h.admission.complete(input());
+    expect(result).toEqual({ ok: false, code: 'rate_limited', retryable: false });
+    // Exactly one transaction ran — the ledger one — so the refusal it records
+    // is committed rather than rolled back with a failed admission.
+    expect(h.transactions).toBe(1);
+    expect(h.attempts.get('attempt-1')?.status).toBe('rate_limited');
+    expect(h.users.size).toBe(0);
+
+    // The same attempt stays refused without a second count.
+    expect(await h.admission.complete(input())).toEqual({ ok: false, code: 'rate_limited', retryable: false });
+  });
+
+  it('keeps a reused attempt id bound to its original identity', async () => {
+    const h = harness();
+    expect((await h.admission.complete(input())).ok).toBe(true);
+    const hijack = await h.admission.complete(input({
+      identity: { ...input().identity, externalUserId: 'workos-user-2', primaryEmail: 'other@example.com' },
+    }));
+    expect(hijack).toEqual({ ok: false, code: 'state_conflict', retryable: false });
   });
 
   it('fails closed and exposes no partial binding when the transaction errors', async () => {
