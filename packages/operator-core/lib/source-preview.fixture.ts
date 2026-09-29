@@ -66,6 +66,15 @@ export const DROPPED = [
   'apps/operator/node_modules/x/index.js', // …at any depth
   'apps/operator/.next/cache.bin', //      heavy exclude
   'libs/papercusp/plugins/gitnexus-bridge/index.ts', // license exclude (GitNexus is noncommercial)
+  '.gitmodules', //                        not on the allowlist: names private submodule repos
+  'apps/papercusp-publish/src/worker.ts', // closed-layer workspace (open-source-release P-005)
+  'apps/the-swarm-site/index.html', //     closed-layer workspace
+  'libs/marketplace-public-ui/index.ts', // closed-layer workspace
+  'libs/generic/prospect-contract/index.ts', // closed-layer workspace
+  'docs/briefs/brief.html', //             internal content
+  'docs/evidence/run.json', //             internal content
+  'docs/reports/report.md', //             internal content
+  'libs/generic/papergrid/grid-core/storybook-static/index.html', // built output
 ];
 
 export interface Superproject {
@@ -107,6 +116,14 @@ export function makeSuperproject(root: string): Superproject {
   write(repo, 'node_modules/leftpad/index.js', 'module.exports = 1;\n');
   write(repo, 'apps/operator/node_modules/x/index.js', 'module.exports = 2;\n');
   write(repo, 'apps/operator/.next/cache.bin', 'cache\n');
+  write(repo, 'apps/papercusp-publish/src/worker.ts', 'export default {};\n');
+  write(repo, 'apps/the-swarm-site/index.html', '<html></html>\n');
+  write(repo, 'libs/marketplace-public-ui/index.ts', 'export {};\n');
+  write(repo, 'libs/generic/prospect-contract/index.ts', 'export {};\n');
+  write(repo, 'docs/briefs/brief.html', '<p>brief</p>\n');
+  write(repo, 'docs/evidence/run.json', '{}\n');
+  write(repo, 'docs/reports/report.md', '# report\n');
+  write(repo, 'libs/generic/papergrid/grid-core/storybook-static/index.html', '<html></html>\n');
   git(repo, ['add', '-A', '-f']);
   git(repo, ['submodule', 'add', '-q', subSrc, 'libs/papercusp']);
   git(repo, ['commit', '-q', '-m', 'fixture superproject']);
