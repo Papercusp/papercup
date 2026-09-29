@@ -345,6 +345,8 @@ fn draw_brain_view(f: &mut Frame, state: &BrainViewState) {
     f.render_widget(Paragraph::new(header_line(state)), chunks[0]);
     draw_transcript(f, state, chunks[1]);
     f.render_widget(Paragraph::new(footer_line(state)), chunks[2]);
+    // The second real terminal in the binary gets the same P-011 guarantee.
+    crate::glyph::scrub_control_cells(f.buffer_mut());
 }
 
 fn header_line(state: &BrainViewState) -> Line<'static> {

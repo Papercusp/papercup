@@ -262,7 +262,9 @@ fn draw_overlays(f: &mut Frame, app: &App) {
         draw_pot_picker(f, app);
     } else if let Some(picker) = &app.session_picker {
         draw_session_picker(f, picker);
-    } else if app.session_setup.is_some() {
+    } else if app.session_setup.is_some() && app.chat_first_quiet_wait().is_none() {
+        // A chat-first quick start still settling keeps the chat on screen
+        // (P-012); the form opens only on a reason the owner must act on.
         draw_session_setup(f, app);
     } else if let Some(menu) = &app.fleet_action_menu {
         draw_fleet_menu(f, menu);
@@ -2923,6 +2925,9 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             if let Some(progress) = progress {
                 lines.push(Line::from(Span::styled(progress, Theme::dim())));
             }
+        } else if let Some(progress) = app.chat_first_quiet_wait() {
+            // P-012: no session exists yet; the quick start is settling.
+            lines.push(Line::from(Span::styled(progress, Theme::dim())));
         }
     }
     if let Some(session) = app.su_session.as_ref().filter(|_| details) {
@@ -6123,7 +6128,10 @@ pub(crate) fn tool_detail_lines(
                 DiffLine::Context(_) => Theme::dim(),
             };
             out.push(Line::from(Span::styled(
-                trunc(&format!("    {} {}", dl.marker(), dl.text()), width),
+                trunc(
+                    &format!("    {} {}", dl.marker(), crate::glyph::terminal_safe_text(dl.text())),
+                    width,
+                ),
                 style,
             )));
         }
@@ -9174,6 +9182,33 @@ mod tests {
         assert!(render(&app, 160, 24).contains("SU-session host is not attached"));
     }
 
+    /// pui-chat-first-ux P-012: while a chat-first quick start is still
+    /// settling (here: the operator identity has not answered), the owner
+    /// sees the chat with their message and "Starting Claude…" — not the
+    /// New-session form. Past the quiet wait the form opens and says why.
+    #[test]
+    fn chat_first_settling_quick_start_shows_the_chat_not_the_setup_form() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.chat_first = true;
+        app.chat_composing = true;
+        app.harness = "papercusp".into();
+        app.open_session_setup();
+        app.session_setup.as_mut().unwrap().message = "hello there".into();
+        app.chat_first_autostart = true;
+        app.chat_first_autostart_since = Some(std::time::Instant::now());
+        let frame = render(&app, 120, 40);
+        assert!(frame.contains("Starting Claude…"), "{frame}");
+        assert!(frame.contains("hello there"), "{frame}");
+        assert!(!frame.contains("New session"), "{frame}");
+        assert_no_chat_jargon(&frame);
+
+        app.chat_first_autostart_since =
+            std::time::Instant::now().checked_sub(crate::app::CHAT_FIRST_QUIET_WAIT);
+        let frame = render(&app, 120, 40);
+        assert!(frame.contains("New session"), "{frame}");
+    }
+
     #[test]
     fn chat_first_startup_progress_is_plain_words() {
         let mut app = chat_first_bound_app();
@@ -9563,6 +9598,18 @@ mod tests {
         assert!(tool_detail_lines(&tc, 80, true).is_empty());
         tc.result = Some(serde_json::json!({ "content": [{ "type": "text", "text": "from parts" }] }));
         assert!(text(tool_detail_lines(&tc, 80, false)).contains("⎿ from parts"));
+        // P-011: Claude's Read result (`     1\tconst …`) and coloured command
+        // output reach the transcript with no control character left.
+        tc.result = Some(serde_json::json!("     1\tconst test = 1;\n\u{1b}[32mok\u{1b}[0m"));
+        let read = text(tool_detail_lines(&tc, 80, false));
+        assert!(read.contains("⎿      1  const test = 1;") && read.contains("      ok"), "{read}");
+        assert!(!read.chars().any(|c| c.is_control() && c != '\n'), "{read:?}");
+        let mut tabbed = ChatToolCall::plain("Edit".into());
+        tabbed.input = Some(serde_json::json!({
+            "file_path": "a.go", "old_string": "\treturn 1", "new_string": "\treturn 2"
+        }));
+        let tab_diff = text(tool_detail_lines(&tabbed, 80, false));
+        assert!(tab_diff.contains("- ") && !tab_diff.contains('\t'), "{tab_diff:?}");
         // A file edit shows its diff inline, before and after it completes.
         let mut edit = ChatToolCall::plain("Edit".into());
         edit.input = Some(serde_json::json!({

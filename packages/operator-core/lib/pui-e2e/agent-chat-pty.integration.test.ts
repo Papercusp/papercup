@@ -3578,6 +3578,93 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   // internal state (the plan's evidence frame showed "reconciliation:
   // failed-orphaned" and "Draft retained; reconnect to retry"). The raw error
   // stays reachable behind Ctrl+O.
+  // pui-chat-first-ux-2026-09-28 P-011: redraws leave no stale characters.
+  // P-005 showed '⎿ 1ile_pathconst test = …' — Claude's Read result carries a
+  // tab ('     1\tconst …'); ratatui wrote it into a cell, the terminal jumped
+  // to its tab stop, and every later cell on the row landed shifted while
+  // ratatui believed otherwise, so its diff never repaired them. A resize makes
+  // ratatui clear and repaint from its model: that repaint IS the clean render
+  // of the same state, and the incremental screen must equal it row for row.
+  test('P-011: tool previews, an approval card and the session picker redraw over prior content with no stale characters', async ({ onTestFailed }) => {
+    const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p011-')));
+    const tag = randomUUID().slice(0, 8);
+    const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd: launchDir });
+    let stage = 'ready';
+    let incremental = '';
+    let clean = '';
+    onTestFailed(() => console.info('PUI_P011_FAILURE', JSON.stringify({
+      stage, launchDir, incremental, clean, ...pane.failureEvidence(),
+    })));
+    const cleanRepaint = async (): Promise<string> => {
+      const { cols, rows } = pane.size;
+      pane.resize(cols, rows + 1);
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      pane.resize(cols, rows);
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      return pane.screen();
+    };
+    try {
+      await pane.waitFor(`Claude · ${launchDir}`, { timeoutMs: 40_000 });
+      stage = 'tool-preview';
+      const rawStart = pane.rawSince().length;
+      scriptedEngine.mode = 'success';
+      scriptedEngine.successText = `P11 reply ${tag}`;
+      scriptedEngine.toolResultText = [
+        `     1\tconst p011 = require('node:test'); // ${tag}`,
+        "     2\tconst assert = require('node:assert');",
+        '\u001b[32mcoloured ok\u001b[0m',
+      ].join('\n');
+      pane.write(`read ${tag}`);
+      pane.enter();
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitFor(`const p011 = require('node:test'); // ${tag}`);
+      incremental = pane.screen();
+      // The tab is expanded where the text enters, and no control character
+      // other than the terminal's own escape sequences ever reaches the PTY.
+      expect(incremental).toMatch(new RegExp(`⎿ {6}1 {2}const p011 = require\\('node:test'\\); // ${tag}`));
+      expect(incremental).toContain('coloured ok');
+      expect(incremental).not.toContain('[32m');
+      expect(pane.rawSince(rawStart)).not.toContain('\t');
+      clean = await cleanRepaint();
+      expect(incremental.split('\n')).toEqual(clean.split('\n'));
+
+      // The approval card draws over the tool preview above. Its arguments
+      // carry a tab and a newline, the characters that shifted P-005's card.
+      stage = 'approval-card';
+      scriptedEngine.mode = 'approval';
+      scriptedEngine.successText = `P11 approval reply ${tag}`;
+      scriptedEngine.approvalRequests = [
+        { tag: `P11-${tag}`, input: { command: `printf 'a\\tb\\n'\t# P11-${tag}\nsecond line` } },
+      ];
+      pane.write(`approve ${tag}`);
+      pane.enter();
+      await pane.waitFor('Approve', { timeoutMs: 60_000 });
+      await pane.waitFor(`P11-${tag}`);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      incremental = pane.screen();
+      expect(pane.rawSince(rawStart)).not.toContain('\t');
+      clean = await cleanRepaint();
+      expect(incremental.split('\n')).toEqual(clean.split('\n'));
+      pane.write('2');
+      await vi.waitFor(() => expect(scriptedEngine.approvalVerdicts).toHaveLength(1), { timeout: 30_000, interval: 100 });
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+
+      stage = 'picker';
+      pane.write('\u0013');
+      await pane.waitFor('Sessions');
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      incremental = pane.screen();
+      expect(incremental).not.toContain('Sess ons');
+      clean = await cleanRepaint();
+      expect(incremental.split('\n')).toEqual(clean.split('\n'));
+      pane.write('\u001b');
+      await pane.waitForGone('Sessions');
+    } finally {
+      await pane.stop();
+      rmSync(launchDir, { recursive: true, force: true });
+    }
+  }, 240_000);
+
   test('P-003: a failed start in the default chat is one plain sentence with no internal jargon', async ({ onTestFailed }) => {
     const launchDir = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-p003-launch-')));
     const prompt = `P3 failed start ${randomUUID().slice(0, 8)}`;
@@ -6365,6 +6452,8 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
   // was slow to start" and "a ready engine was never sent the turn" it was.
   // Opt-in because every launch spends one real model turn:
   // PUI_FIRST_MESSAGE_RUNS=<n> (the plan's bar is 10 consecutive launches).
+  // Through `npm run test:file` also set PAPERCUSP_TEST_FILE_TIMEOUT_MS=3600000:
+  // the router's default 10-minute file budget is shorter than ten real launches.
   test.runIf(Boolean(process.env.PUI_FIRST_MESSAGE_RUNS))(
     'P-012: fresh launches each echo the first message on Enter and deliver it without a retry',
     async ({ onTestFailed }) => {

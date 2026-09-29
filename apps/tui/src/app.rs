@@ -69,6 +69,10 @@ pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
 /// answers (P-021): sending a message opens setup, which offers the cloud path.
 pub const SETUP_DISCONNECTED_LABEL: &str =
     "not connected to an operator · send a message to open setup";
+/// How long a chat-first quick start may wait behind the chat (the message
+/// echoed, "Starting Claude…" above it) before the setup form opens on the
+/// live reason (`App::chat_first_quiet_wait`, pui-chat-first-ux P-012).
+pub const CHAT_FIRST_QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 pub const CHAT_DISCONNECTED_HINT: &str = "Not connected — press i and send a message to open setup, where l signs in to Papercusp cloud.";
 pub const SETUP_UNREACHABLE_NOTE: &str = "Nothing answered at that address. For a local setup, install and start the separate Papercusp Server package from your Papercusp release download page, then press r. The desktop app is optional; l signs in to cloud and h uses a remote host.";
 
@@ -2148,6 +2152,13 @@ pub struct App {
     /// cleared when the session starts or the owner takes over the setup
     /// form (any key into it, or Esc).
     pub chat_first_autostart: bool,
+    /// When the pending chat-first quick start began waiting. Bounds the
+    /// quiet wait (`chat_first_quiet_wait`, P-012): past
+    /// `CHAT_FIRST_QUIET_WAIT` the setup form opens on the live reason.
+    pub chat_first_autostart_since: Option<std::time::Instant>,
+    /// The operator's project list has answered at least once. Until then an
+    /// unknown default project means "not loaded yet", not "no such project".
+    pub harnesses_loaded: bool,
     /// Model override for THIS chat's turns. `None` ⇒ send no `model` at all and
     /// let the server apply the surface default.
     pub chat_model: Option<String>,
@@ -2800,6 +2811,8 @@ impl App {
             session_setup: None,
             require_session_setup: false,
             chat_first_autostart: false,
+            chat_first_autostart_since: None,
+            harnesses_loaded: false,
             session_setup_accepted: false,
             chat_model: None,
             chat_effort: None,
@@ -5265,6 +5278,7 @@ impl App {
 
     pub fn set_harnesses(&mut self, harnesses: Vec<HarnessRef>) {
         self.harnesses = harnesses;
+        self.harnesses_loaded = true;
         if self.harness_sel >= self.harnesses.len() {
             self.harness_sel = self.harnesses.len().saturating_sub(1);
         }
@@ -7856,6 +7870,7 @@ impl App {
         };
         setup.message = draft;
         self.chat_first_autostart = true;
+        self.chat_first_autostart_since = Some(std::time::Instant::now());
         // P-012: the message shows in the transcript while the session starts
         // (`pending_owner_echo`). Esc on the setup form puts it back.
         if clear_composer {
@@ -7863,6 +7878,40 @@ impl App {
         }
         self.try_chat_first_autostart()
             .unwrap_or(Action::CheckSessionSetup)
+    }
+
+    /// pui-chat-first-ux P-012: the progress line a pending chat-first quick
+    /// start shows INSTEAD of the setup form, while what it waits on clears
+    /// by itself — the operator identity, the project list or the runtime
+    /// config has not answered yet. The owner keeps seeing the chat with
+    /// their message in it, as Claude Code shows while it starts. `None` when
+    /// nothing is pending, when the wait needs the owner (unreachable
+    /// operator, no such project, an operator that cannot run sessions), or
+    /// once it has lasted `CHAT_FIRST_QUIET_WAIT`: then the form opens and
+    /// names the reason.
+    pub fn chat_first_quiet_wait(&self) -> Option<String> {
+        if !self.chat_first_autostart {
+            return None;
+        }
+        let setup = self.session_setup.as_ref()?;
+        if self.chat_first_autostart_since?.elapsed() >= CHAT_FIRST_QUIET_WAIT {
+            return None;
+        }
+        let project = if setup.step == 0 {
+            &self.harness
+        } else {
+            &setup.project
+        };
+        let settling = if self.backend_identity_error.is_some() {
+            false
+        } else if self.backend_identity.is_none() {
+            true
+        } else if !self.harnesses.iter().any(|p| &p.slug == project) {
+            !self.harnesses_loaded
+        } else {
+            self.operator_config.agent.is_none()
+        };
+        settling.then(|| format!("Starting {}…", setup.backend.label()))
     }
 
     /// Advance a pending chat-first quick start. Returns the launch action
@@ -11974,6 +12023,16 @@ impl App {
                 return Action::CheckSessionSetup;
             }
             return Action::Render;
+        }
+        // P-012: a quick start waiting quietly keeps the chat on screen and
+        // the setup form hidden, so the form's keys must not reach it (any
+        // of them would cancel the start and open the form). Esc cancels the
+        // start and returns the message to the composer, as on the form.
+        if self.chat_first_quiet_wait().is_some() && self.session_picker.is_none() {
+            return match code {
+                KeyCode::Esc => self.session_setup_key(code, mods),
+                _ => Action::Render,
+            };
         }
         // Notifications history overlay: any key closes it.
         if self.session_setup.is_some() {
@@ -16684,6 +16743,75 @@ mod tests {
         assert!(a.session_setup.is_none());
         assert_eq!(a.chat_input, "start here");
         assert_eq!(a.pending_owner_echo(), None);
+    }
+
+    /// pui-chat-first-ux P-012 (real-engine run 3, launch 6): the first Enter
+    /// arrived before the operator's project list, and the New-session form
+    /// covered the chat — the owner saw a project picker, not their message.
+    /// While the start waits on something that clears by itself, a stray key
+    /// neither cancels it nor opens the hidden form, and it proceeds with the
+    /// exact message the moment the list lands.
+    #[test]
+    fn chat_first_quick_start_waits_behind_the_chat_until_the_project_list_lands() {
+        let mut a = chat_first_app();
+        a.harnesses.clear();
+        a.harnesses_loaded = false;
+        a.chat_input = "hello".into();
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::CheckSessionSetup);
+        assert_eq!(a.chat_first_quiet_wait().as_deref(), Some("Starting Claude…"));
+        assert_eq!(a.pending_owner_echo(), Some("hello"));
+
+        assert_eq!(a.on_key(KeyCode::Char('x'), KeyModifiers::NONE), Action::Render);
+        assert!(a.chat_first_autostart, "a stray key must not cancel the start");
+        assert_eq!(a.session_setup.as_ref().unwrap().message, "hello");
+
+        a.set_harnesses(vec![HarnessRef {
+            slug: "chosen-project".into(),
+            path: None,
+        }]);
+        let action = a.try_chat_first_autostart().expect("launches once the list lands");
+        assert!(
+            matches!(
+                action,
+                Action::OpenSuSession { ref harness, initial_turn: Some(ref text), .. }
+                    if harness == "chosen-project" && text == "hello"
+            ),
+            "got {action:?}"
+        );
+    }
+
+    /// The quiet wait is for conditions that clear by themselves. A loaded
+    /// list without the project needs the owner, and a wait longer than
+    /// `CHAT_FIRST_QUIET_WAIT` must say why: both open the form, and Esc
+    /// during a quiet wait still cancels and returns the message.
+    #[test]
+    fn chat_first_quick_start_opens_the_form_when_the_wait_needs_the_owner_or_runs_long() {
+        let mut a = chat_first_app();
+        a.harness = "not-listed".into();
+        a.chat_input = "hello".into();
+        a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(a.chat_first_autostart);
+        assert_eq!(a.chat_first_quiet_wait(), None, "missing project needs the owner");
+
+        let mut b = chat_first_app();
+        b.harnesses.clear();
+        b.harnesses_loaded = false;
+        b.chat_input = "hello".into();
+        b.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(b.chat_first_quiet_wait().is_some());
+        b.chat_first_autostart_since =
+            std::time::Instant::now().checked_sub(CHAT_FIRST_QUIET_WAIT);
+        assert_eq!(b.chat_first_quiet_wait(), None, "a long wait opens the form");
+
+        let mut c = chat_first_app();
+        c.backend_identity = None;
+        c.chat_input = "hello".into();
+        c.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(c.chat_first_quiet_wait().is_some(), "identity not answered yet");
+        c.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(c.session_setup.is_none());
+        assert!(!c.chat_first_autostart);
+        assert_eq!(c.chat_input, "hello");
     }
 
     /// The workbench keeps its draft-retention contract: the line stays in the
