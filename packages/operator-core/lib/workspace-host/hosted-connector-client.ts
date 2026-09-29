@@ -33,6 +33,7 @@
  * once `bound` has arrived.
  */
 import { WebSocket } from 'ws';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { HostedConnectorBinding } from '../endpoint-route/hosted-workspace-connector';
 import type { HostedHostOutboundEnvelope } from './hosted-session-host';
 
@@ -45,6 +46,25 @@ export const HOSTED_CONNECTOR_REVOKED_CLOSE_CODE = 4001;
 export const HOSTED_CONNECTOR_MIN_BACKOFF_MS = 1_000;
 export const HOSTED_CONNECTOR_MAX_BACKOFF_MS = 60_000;
 
+/**
+ * Liveness, watched from the VM side (P-002 of plan
+ * psu-cloud-connector-liveness-multi-signin-2026-09-29).
+ *
+ * A TCP link can die with neither end seeing a FIN or RST: a NAT or load balancer
+ * forgets the mapping, the VM is suspended, the path changes. `ws` then reports the
+ * socket OPEN forever and no `close` ever fires, so the reconnect loop below never
+ * runs. The control plane pings every 30s and terminates its own end (P-001), but
+ * that cannot reach a VM whose half still believes it is connected.
+ *
+ * So the client watches for silence itself. It pings on its own cadence, counts ANY
+ * inbound frame (open, message, ping, pong) as proof of life, and terminates and
+ * reconnects once nothing has arrived for `HOSTED_CONNECTOR_SILENCE_TIMEOUT_MS`.
+ * The window also covers a handshake that never completes, because the clock starts
+ * when the socket is created, not when it opens.
+ */
+export const HOSTED_CONNECTOR_PING_INTERVAL_MS = 25_000;
+export const HOSTED_CONNECTOR_SILENCE_TIMEOUT_MS = 75_000;
+
 /** The narrow client surface used here; `ws.WebSocket` satisfies it. */
 export interface HostedConnectorClientSocket {
   readonly readyState: number;
@@ -55,6 +75,10 @@ export interface HostedConnectorClientSocket {
   on(event: 'message', listener: (data: unknown, isBinary: boolean) => void): unknown;
   on(event: 'close', listener: (code: number, reason: unknown) => void): unknown;
   on(event: 'error', listener: (error: unknown) => void): unknown;
+  on(event: 'ping' | 'pong', listener: () => void): unknown;
+  /** Optional so a minimal socket still works; `ws` has both, and the watchdog uses them. */
+  ping?(): unknown;
+  terminate?(): unknown;
 }
 
 /**
@@ -89,6 +113,10 @@ export interface HostedConnectorClientOptions {
   createSocket?: (url: string, headers: Record<string, string>) => HostedConnectorClientSocket;
   minBackoffMs?: number;
   maxBackoffMs?: number;
+  /** Defaults to `HOSTED_CONNECTOR_PING_INTERVAL_MS`; also the watchdog's check cadence. */
+  pingIntervalMs?: number;
+  /** Defaults to `HOSTED_CONNECTOR_SILENCE_TIMEOUT_MS`. */
+  silenceTimeoutMs?: number;
   /** Injected for tests; defaults to `Math.random`. */
   random?: () => number;
 }
@@ -139,15 +167,21 @@ export class HostedWorkspaceConnectorClient {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private attempt = 0;
   private stopped = false;
+  private liveness: ManagedHandle | null = null;
+  private lastInboundAt = 0;
   private readonly createSocket: (url: string, headers: Record<string, string>) => HostedConnectorClientSocket;
   private readonly minBackoffMs: number;
   private readonly maxBackoffMs: number;
+  private readonly pingIntervalMs: number;
+  private readonly silenceTimeoutMs: number;
   private readonly random: () => number;
 
   constructor(private readonly options: HostedConnectorClientOptions) {
     this.createSocket = options.createSocket ?? defaultCreateSocket;
     this.minBackoffMs = options.minBackoffMs ?? HOSTED_CONNECTOR_MIN_BACKOFF_MS;
     this.maxBackoffMs = options.maxBackoffMs ?? HOSTED_CONNECTOR_MAX_BACKOFF_MS;
+    this.pingIntervalMs = options.pingIntervalMs ?? HOSTED_CONNECTOR_PING_INTERVAL_MS;
+    this.silenceTimeoutMs = options.silenceTimeoutMs ?? HOSTED_CONNECTOR_SILENCE_TIMEOUT_MS;
     this.random = options.random ?? Math.random;
   }
 
@@ -167,6 +201,7 @@ export class HostedWorkspaceConnectorClient {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.unwatch();
     const socket = this.socket;
     this.socket = null;
     try {
@@ -207,8 +242,10 @@ export class HostedWorkspaceConnectorClient {
       return;
     }
     this.socket = socket;
+    this.watch(socket);
 
     socket.on('open', () => {
+      this.markInbound(socket);
       // The attempt counter resets on OPEN, not on `bound`. A control plane that
       // accepts the socket and then closes it is still a reachable control plane;
       // resetting only on `bound` would keep a healthy host at max backoff forever
@@ -216,7 +253,13 @@ export class HostedWorkspaceConnectorClient {
       this.attempt = 0;
     });
 
+    // `ws` answers the control plane's pings by itself; hearing them, or the pongs to
+    // our own pings, is what tells a quiet-but-healthy link from a dead one.
+    socket.on('ping', () => this.markInbound(socket));
+    socket.on('pong', () => this.markInbound(socket));
+
     socket.on('message', (data, isBinary) => {
+      this.markInbound(socket);
       if (isBinary) return;
       const raw = text(data);
       if (raw === null) return;
@@ -237,6 +280,7 @@ export class HostedWorkspaceConnectorClient {
     socket.on('close', (code, reason) => {
       if (this.socket !== socket) return;
       this.socket = null;
+      this.unwatch();
       const detail = `${code}${reason ? `: ${text(reason) ?? ''}` : ''}`;
       this.options.onDisconnect?.(detail);
       if (code === HOSTED_CONNECTOR_REVOKED_CLOSE_CODE) {
@@ -253,6 +297,63 @@ export class HostedWorkspaceConnectorClient {
       // `ws` always follows an error with a close, which is where reconnect is
       // decided. Handling it here too would double-schedule.
     });
+  }
+
+  private markInbound(socket: HostedConnectorClientSocket): void {
+    if (this.socket === socket) this.lastInboundAt = Date.now();
+  }
+
+  /** One watchdog per socket; it is replaced whenever the socket is. */
+  private watch(socket: HostedConnectorClientSocket): void {
+    this.unwatch();
+    this.lastInboundAt = Date.now();
+    this.liveness = managedSetInterval(
+      'hosted-connector-liveness',
+      this.pingIntervalMs,
+      () => this.checkLiveness(socket),
+      { category: 'lifecycle', instanced: true, classification: 'timeout-reaper' },
+    );
+  }
+
+  private unwatch(): void {
+    this.liveness?.stop();
+    this.liveness = null;
+  }
+
+  private checkLiveness(socket: HostedConnectorClientSocket): void {
+    if (this.socket !== socket) {
+      this.unwatch();
+      return;
+    }
+    const silentMs = Date.now() - this.lastInboundAt;
+    if (silentMs >= this.silenceTimeoutMs) {
+      this.dropSilentSocket(socket, `liveness_timeout: no inbound frame for ${Math.round(silentMs / 1000)}s`);
+      return;
+    }
+    if (socket.readyState !== socket.OPEN) return;
+    try {
+      socket.ping?.();
+    } catch {
+      /* a socket dying under us; the silence check reaps it on a later tick */
+    }
+  }
+
+  /**
+   * Treat a silent socket as dead. It is detached BEFORE it is terminated, so the
+   * `close` that `ws` emits afterwards is ignored by the handler's identity check and
+   * cannot schedule a second reconnect.
+   */
+  private dropSilentSocket(socket: HostedConnectorClientSocket, detail: string): void {
+    this.socket = null;
+    this.unwatch();
+    try {
+      if (socket.terminate) socket.terminate();
+      else socket.close(4000, 'liveness_timeout');
+    } catch {
+      /* already torn down */
+    }
+    this.options.onDisconnect?.(detail);
+    this.scheduleReconnect(detail);
   }
 
   private scheduleReconnect(detail: string): void {

@@ -1543,6 +1543,19 @@ export function runBootstrap(): void {
     }
   }
 
+  // Auth-config flag subscription warm (WI-6650 residual, 2026-09-29). The module now
+  // arms its flag subscription on first READ instead of at import (so a partial
+  // flags/server mock can still collect any test that reaches it), but its unpopulated
+  // state is the PERMISSIVE one for the testing-full-access kill-switch. Every host —
+  // utility hosts included, since any MCP dispatch reaches the gate-bypass resolver —
+  // therefore subscribes at boot, exactly as the module-scope form used to. Dynamic,
+  // like the warms below, so it does not widen this module's static import graph.
+  void import('@papercusp/operator-core/lib/auth-config-overrides')
+    .then(({ armAuthConfigRefresh }) => armAuthConfigRefresh())
+    .catch((e) =>
+      console.warn('[auth-config] boot flag-subscription warm failed (non-fatal):', e instanceof Error ? e.message : e),
+    );
+
   // Best-effort memory warm-up (memory-backend-improve-and-hybrid P-004a; hoisted
   // EI-12962): fire one throwaway memory search so the user's first chat turn
   // doesn't pay the mem0-client + embedder cold-start (~4-5s measured live).

@@ -11,6 +11,8 @@ type Listeners = {
   message: Array<(data: unknown, isBinary: boolean) => void>;
   close: Array<(code: number, reason: unknown) => void>;
   error: Array<(error: unknown) => void>;
+  ping: Array<() => void>;
+  pong: Array<() => void>;
 };
 
 class FakeSocket implements HostedConnectorClientSocket {
@@ -18,7 +20,9 @@ class FakeSocket implements HostedConnectorClientSocket {
   readyState = 0;
   readonly sent: string[] = [];
   closedWith: { code?: number; reason?: string } | null = null;
-  private readonly listeners: Listeners = { open: [], message: [], close: [], error: [] };
+  pingsSent = 0;
+  terminated = false;
+  private readonly listeners: Listeners = { open: [], message: [], close: [], error: [], ping: [], pong: [] };
 
   constructor(readonly url: string, readonly headers: Record<string, string>) {}
 
@@ -34,6 +38,7 @@ class FakeSocket implements HostedConnectorClientSocket {
   on(event: 'message', listener: (data: unknown, isBinary: boolean) => void): unknown;
   on(event: 'close', listener: (code: number, reason: unknown) => void): unknown;
   on(event: 'error', listener: (error: unknown) => void): unknown;
+  on(event: 'ping' | 'pong', listener: () => void): unknown;
   on(event: keyof Listeners, listener: never): unknown {
     (this.listeners[event] as unknown[]).push(listener);
     return this;
@@ -51,6 +56,22 @@ class FakeSocket implements HostedConnectorClientSocket {
   emitClose(code: number, reason = ''): void {
     this.readyState = 3;
     for (const fn of this.listeners.close) fn(code, reason);
+  }
+  /** A ping from the control plane (`ws` auto-answers it). */
+  emitPing(): void {
+    for (const fn of this.listeners.ping) fn();
+  }
+  /** The control plane's answer to one of our pings. */
+  emitPong(): void {
+    for (const fn of this.listeners.pong) fn();
+  }
+  ping(): void {
+    this.pingsSent += 1;
+  }
+  /** Like `ws`: a hard teardown that still emits `close` afterwards. */
+  terminate(): void {
+    this.terminated = true;
+    this.emitClose(1006);
   }
 }
 
@@ -282,5 +303,105 @@ describe('HostedWorkspaceConnectorClient', () => {
     first.emitClose(1006);
     vi.advanceTimersByTime(60_000);
     expect(sockets).toHaveLength(2);
+  });
+});
+
+describe('HostedWorkspaceConnectorClient liveness watchdog (P-002)', () => {
+  // Defaults on purpose: 25s ping cadence, 75s of silence before the socket is declared dead.
+
+  it('pings the control plane on its own cadence while the link is open', () => {
+    const { client, sockets } = harness();
+    client.start();
+    sockets[0]!.emitOpen();
+    vi.advanceTimersByTime(25_000);
+    expect(sockets[0]!.pingsSent).toBe(1);
+    sockets[0]!.emitPong();
+    vi.advanceTimersByTime(25_000);
+    expect(sockets[0]!.pingsSent).toBe(2);
+  });
+
+  it('terminates a silent open socket and reconnects exactly once (the half-open case)', () => {
+    // `ws` never emits close for a link that died without a FIN/RST, so without the
+    // watchdog this socket would stay "open" forever and nothing would reconnect.
+    const { client, sockets, disconnects } = harness();
+    client.start();
+    sockets[0]!.emitOpen();
+    vi.advanceTimersByTime(74_999);
+    expect(sockets[0]!.terminated).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(sockets[0]!.terminated).toBe(true);
+    expect(client.connected).toBe(false);
+    expect(disconnects).toEqual([expect.stringMatching(/^liveness_timeout: no inbound frame for 75s$/)]);
+    vi.advanceTimersByTime(10);
+    expect(sockets).toHaveLength(2);
+    // The close that terminate() emits must not schedule a second reconnect.
+    vi.advanceTimersByTime(1_000);
+    expect(sockets).toHaveLength(2);
+    expect(disconnects).toHaveLength(1);
+  });
+
+  it('stays connected while pongs, control-plane pings or messages keep arriving', () => {
+    const { client, sockets } = harness();
+    client.start();
+    const socket = sockets[0]!;
+    socket.emitOpen();
+    for (let i = 0; i < 4; i += 1) {
+      vi.advanceTimersByTime(50_000);
+      socket.emitPong();
+    }
+    for (let i = 0; i < 4; i += 1) {
+      vi.advanceTimersByTime(50_000);
+      socket.emitPing();
+    }
+    for (let i = 0; i < 4; i += 1) {
+      vi.advanceTimersByTime(50_000);
+      socket.emitMessage({ type: 'noop' });
+    }
+    expect(socket.terminated).toBe(false);
+    expect(sockets).toHaveLength(1);
+    expect(client.connected).toBe(true);
+  });
+
+  it('reaps a handshake that never completes, without pinging it', () => {
+    const { client, sockets } = harness();
+    client.start();
+    vi.advanceTimersByTime(75_000);
+    expect(sockets[0]!.terminated).toBe(true);
+    expect(sockets[0]!.pingsSent).toBe(0);
+    vi.advanceTimersByTime(10);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it('falls back to close() when the socket has no terminate()', () => {
+    const { client, sockets } = harness();
+    client.start();
+    const socket = sockets[0]!;
+    (socket as { terminate?: unknown }).terminate = undefined;
+    socket.emitOpen();
+    vi.advanceTimersByTime(75_000);
+    expect(socket.closedWith).toEqual({ code: 4000, reason: 'liveness_timeout' });
+    vi.advanceTimersByTime(10);
+    expect(sockets).toHaveLength(2);
+  });
+
+  it('disarms the watchdog on stop()', () => {
+    const { client, sockets } = harness();
+    client.start();
+    sockets[0]!.emitOpen();
+    client.stop();
+    vi.advanceTimersByTime(300_000);
+    expect(sockets[0]!.terminated).toBe(false);
+    expect(sockets[0]!.pingsSent).toBe(0);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('honours injected cadence and timeout', () => {
+    const { client, sockets } = harness({ pingIntervalMs: 1_000, silenceTimeoutMs: 3_000 });
+    client.start();
+    sockets[0]!.emitOpen();
+    vi.advanceTimersByTime(2_000);
+    expect(sockets[0]!.pingsSent).toBe(2);
+    vi.advanceTimersByTime(1_000);
+    expect(sockets[0]!.terminated).toBe(true);
   });
 });

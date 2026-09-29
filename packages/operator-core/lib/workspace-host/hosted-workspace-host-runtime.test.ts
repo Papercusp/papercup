@@ -75,6 +75,10 @@ class FakeSocket implements HostedConnectorClientSocket {
     this.readyState = 3;
     this.emit('close', code, '');
   }
+  /** The control plane's keepalive ping (it sends one every 30s on a healthy link). */
+  emitPing(): void {
+    this.emit('ping');
+  }
 }
 
 const BINDING = {
@@ -366,6 +370,19 @@ describe('createHostedWorkspaceHostRuntime', () => {
       return socket;
     }
 
+    /**
+     * Keep a connected link healthy for `ms`: the control plane pings every 30s, and
+     * the connector's liveness watchdog (P-002) drops a link that stays silent for 75s.
+     */
+    function liveFor(socket: FakeSocket, ms: number): void {
+      for (let elapsed = 0; elapsed < ms; ) {
+        const step = Math.min(30_000, ms - elapsed);
+        vi.advanceTimersByTime(step);
+        elapsed += step;
+        socket.emitPing();
+      }
+    }
+
     it('keeps a running PTY alive through an outage longer than the idle window and resumes it', async () => {
       const { value, sockets, ptys } = withPtys();
       value.start();
@@ -402,8 +419,8 @@ describe('createHostedWorkspaceHostRuntime', () => {
       sockets[0]!.emitMessage({ type: 'bound', role: 'connector', binding: BINDING });
       await value.adapter!.accept(openPty('c1'));
       outage(sockets, HOSTED_HOST_SESSION_IDLE_MS * 2);
-      recover(sockets);
-      vi.advanceTimersByTime(HOSTED_HOST_SESSION_IDLE_MS - 1);
+      const socket = recover(sockets);
+      liveFor(socket, HOSTED_HOST_SESSION_IDLE_MS - 1);
       expect(ptys[0]!.killed).toBe(false);
       vi.advanceTimersByTime(2);
       expect(ptys[0]!.killed).toBe(true);

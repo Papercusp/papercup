@@ -1711,6 +1711,14 @@ export const P016_DISPOSITION_REGISTRY = new Map(
 export const BYPASS_REGISTRY = new Map([
   ...P016_DISPOSITION_REGISTRY,
   [
+    "packages/operator-core/lib/agent-identities/sink-evaluator.ts::hidden-or-static-capacity",
+    {
+      disposition: "semantic",
+      reason:
+        "P-013 reviewed semantic disposition for sink-evaluator.ts (portable-identity-packages P-010, D-009/D-017; WI-10003925): the only concurrency bound is SinkHostLimits.perSessionConcurrency, a per-session Semaphore that caps how many of ONE session's identity context providers are in flight at its sink invocations. A slot is released only when the provider's promise settles, so a provider that ignores its abort signal stays counted against its own session instead of becoming an orphan (D-009's hard admission cap). It is a sink-evaluation policy, like the per-invocation token and wall-clock budgets beside it, not a host capacity figure: the former static per-host Semaphore was removed, so host in-flight is at most perSessionConcurrency times the live sessions, and launched sessions already hold a durable Governor 'agent' admission lease (spawnGovernedAgentProcess). Providers run in-process inside the turn hook and may call only approved read-only bindings (D-009); any process such a binding starts is admitted at its own seam. sinkHostStatus() publishes live per-session and summed host in-flight counts.",
+    },
+  ],
+  [
     "packages/operator-core/lib/agent-tools/testing/mutation-probe-fence.ts::unbounded-resident-queue",
     {
       disposition: "semantic",
