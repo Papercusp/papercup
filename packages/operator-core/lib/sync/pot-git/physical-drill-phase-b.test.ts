@@ -12,6 +12,7 @@ import {
   PHASE_B_INPUT_SCHEMA,
   capturePhysicalPhaseBRepo,
   createPhysicalPhaseBCommit,
+  phaseBObservationLag,
   validatePhysicalPhaseB,
   type PhysicalPhaseBDirection,
   type PhysicalPhaseBDirectionInput,
@@ -313,5 +314,46 @@ describe('P-505 fixed physical Phase B bidirectional ref-announcement executor c
         'vm-to-tower observations do not preserve commit-before-publish-before-receive causal order',
       ]),
     );
+  });
+
+  // P-505 run 33b: the tower source was read once, after the fresh sigrefs were
+  // signed and announced but before its local sigrefs ref moved. The wait
+  // predicate must call exactly that store lagging and every accepted after-store
+  // converged, or the scenario either rejects a good transfer or waits forever.
+  it('reports convergence lag on the run-33b source shape and none on accepted evidence', async () => {
+    const accepted = await fixture();
+    for (const direction of accepted.directions) {
+      const expected = {
+        oid: direction.mutation.oid,
+        beforeSigrefsVersion: direction.observations.sourceBefore.signedSigrefs!.version,
+      };
+      expect(phaseBObservationLag(direction.observations.sourceAfter, expected)).toEqual([]);
+      expect(phaseBObservationLag(direction.observations.destinationAfter, expected)).toEqual([]);
+    }
+
+    const lagging = clone(accepted);
+    const forward = lagging.directions[0];
+    forward.observations.sourceAfter.sigrefsOid = forward.observations.sourceBefore.sigrefsOid;
+    forward.observations.sourceAfter.signedSigrefs = forward.observations.sourceBefore.signedSigrefs;
+    expect(
+      phaseBObservationLag(forward.observations.sourceAfter, {
+        oid: forward.mutation.oid,
+        beforeSigrefsVersion: forward.observations.sourceBefore.signedSigrefs!.version,
+      }),
+    ).toEqual(['sigrefs version', 'signed transfer ref']);
+    expect(validatePhysicalPhaseB(lagging).errors).toEqual(
+      expect.arrayContaining([
+        'tower-to-vm source sigrefs version must advance after the fresh commit',
+        'tower-to-vm post-commit sigrefs must sign the exact fresh transfer ref and OID',
+      ]),
+    );
+
+    const absent = { ...accepted.directions[1].observations.destinationAfter, refOid: null };
+    expect(
+      phaseBObservationLag(absent, {
+        oid: accepted.directions[1].mutation.oid,
+        beforeSigrefsVersion: accepted.directions[1].observations.sourceBefore.signedSigrefs!.version,
+      }),
+    ).toEqual(['transfer ref']);
   });
 });

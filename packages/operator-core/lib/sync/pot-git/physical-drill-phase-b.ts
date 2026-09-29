@@ -279,6 +279,31 @@ export function capturePhysicalPhaseBRepo(input: {
   };
 }
 
+/**
+ * What a `present` observation still lacks before it shows the post-commit
+ * signed snapshot validateDirection requires (empty = converged): the transfer
+ * ref at the fresh OID, a sigrefs version past the pre-commit one, and that
+ * version signing the transfer ref at the same OID. The scenario polls on it
+ * through `phase-b-observe ... <expected-oid> <before-sigrefs-version>`, which
+ * exits 3 while it is non-empty. P-505 run 33b read the tower source once, 11s
+ * after the fresh sigrefs were signed and announced but before its local
+ * sigrefs ref moved, and rejected a transfer that had already reached the VM.
+ */
+export function phaseBObservationLag(
+  observation: PhysicalPhaseBObservation,
+  expected: { oid: string; beforeSigrefsVersion: number },
+): string[] {
+  const lagging: string[] = [];
+  if (observation.refOid !== expected.oid) lagging.push('transfer ref');
+  const signed = observation.signedSigrefs;
+  if (!signed || signed.version <= expected.beforeSigrefsVersion) lagging.push('sigrefs version');
+  const namespacedRef = observation.ref.split(`/namespaces/${observation.namespace}/`)[1];
+  if (!signed?.refs.some((entry) => entry.ref === namespacedRef && entry.sha === expected.oid)) {
+    lagging.push('signed transfer ref');
+  }
+  return lagging;
+}
+
 export function createPhysicalPhaseBCommit(input: {
   sourceHost: PhysicalPhaseBHost;
   direction: PhysicalPhaseBDirection;

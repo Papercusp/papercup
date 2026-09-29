@@ -20,6 +20,7 @@ import {
 import {
   capturePhysicalPhaseBRepo,
   createPhysicalPhaseBCommit,
+  phaseBObservationLag,
   validatePhysicalPhaseB,
   type PhysicalPhaseBDirection,
   type PhysicalPhaseBHost,
@@ -293,20 +294,26 @@ async function cli(argv: string[]): Promise<unknown> {
     return verdict;
   }
   if (mode === 'phase-b-observe') {
-    const [hostId, direction, state, repoPath, sourceDeviceKey, runId, observedAt] = args;
+    const [hostId, direction, state, repoPath, sourceDeviceKey, runId, ...rest] = args;
+    // One trailing arg is an observed-at stamp; two are a convergence expectation.
+    const observedAt = rest.length === 1 ? rest[0] : undefined;
+    const [expectedOid, beforeSigrefsVersion] = rest.length === 2 ? rest : [];
     if (
       (hostId !== 'tower' && hostId !== 'vm') ||
       (direction !== 'tower-to-vm' && direction !== 'vm-to-tower') ||
       (state !== 'present' && state !== 'absent') ||
       !repoPath ||
       !sourceDeviceKey ||
-      !runId
+      !runId ||
+      rest.length > 2 ||
+      (expectedOid !== undefined &&
+        (state !== 'present' || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(expectedOid) || !/^\d+$/.test(beforeSigrefsVersion ?? '')))
     ) {
       throw new Error(
-        'usage: physical-drill-producer phase-b-observe <tower|vm> <tower-to-vm|vm-to-tower> <present|absent> <repo-path> <source-device-key> <run-id> [observed-at]',
+        'usage: physical-drill-producer phase-b-observe <tower|vm> <tower-to-vm|vm-to-tower> <present|absent> <repo-path> <source-device-key> <run-id> [observed-at | <expected-oid> <before-sigrefs-version>]',
       );
     }
-    return capturePhysicalPhaseBRepo({
+    const observation = capturePhysicalPhaseBRepo({
       hostId: hostId as PhysicalPhaseBHost,
       direction: direction as PhysicalPhaseBDirection,
       state,
@@ -315,6 +322,22 @@ async function cli(argv: string[]): Promise<unknown> {
       runId,
       ...(observedAt ? { observedAt } : {}),
     });
+    // With an expectation, a store whose signed sigrefs do not yet cover the
+    // fresh commit exits 3 and still prints the observation, so the scenario can
+    // nudge git-sync and retry without losing the evidence (P-505 run 33b).
+    if (expectedOid !== undefined) {
+      const lagging = phaseBObservationLag(observation, {
+        oid: expectedOid,
+        beforeSigrefsVersion: Number(beforeSigrefsVersion),
+      });
+      if (lagging.length > 0) {
+        throw new PhysicalDrillIncompleteEvidenceError(
+          `physical-drill-producer: ${hostId} ${direction} has not converged to ${expectedOid}: lagging ${lagging.join(', ')}`,
+          observation,
+        );
+      }
+    }
+    return observation;
   }
   if (mode === 'phase-b-commit') {
     const [sourceHost, direction, repoPath, sourceDeviceKey, runId, createdAt] = args;

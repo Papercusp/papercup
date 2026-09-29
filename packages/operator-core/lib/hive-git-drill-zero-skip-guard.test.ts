@@ -1620,6 +1620,54 @@ esac
     }
   });
 
+  // P-505 run 33b: the source store was read ONCE right after its publish fire,
+  // which can return in_progress, and Phase B rejected a transfer the VM had
+  // already received. Each source read must carry the convergence expectation,
+  // retry on the producer's exit 3 with a git-sync nudge, and re-stamp the
+  // publish finish inside that loop, before the observation.
+  it('reads each Phase B source store until its signed sigrefs cover the fresh commit', () => {
+    const start = physicalScenario.indexOf('phase_b_ref_announce()');
+    const end = physicalScenario.indexOf('phase_c_trust_negative_controls()');
+    const phaseB = physicalScenario.slice(start, end);
+    const legs = [
+      {
+        fired: `require_git_sync_fired "$forward_dir/source-publish-raw.json"`,
+        stamp: 'forward_publish_finished="$(now_iso)"',
+        observe: '"$tower_device" "$run_id" "$forward_oid" "$forward_before_version"',
+        output: '>"$forward_dir/source-after.json"',
+        nudge: 'run_tower_git_sync >"$forward_dir/source-publish-nudge-$attempt.json"',
+        destination: `'$tower_device' '$run_id' '$forward_oid' '$forward_before_version'`,
+      },
+      {
+        fired: `require_git_sync_fired "$reverse_dir/source-publish-raw.json"`,
+        stamp: 'reverse_publish_finished="$(now_iso)"',
+        observe: `'$vm_device' '$run_id' '$reverse_oid' '$reverse_before_version'`,
+        output: '>"$reverse_dir/source-after.json"',
+        nudge: 'run_vm_git_sync >"$reverse_dir/source-publish-nudge-$attempt.json"',
+        destination: '"$vm_device" "$run_id" "$reverse_oid" "$reverse_before_version"',
+      },
+    ];
+    for (const leg of legs) {
+      const fired = phaseB.indexOf(leg.fired);
+      const loop = phaseB.indexOf('while :; do', fired);
+      const stamp = phaseB.indexOf(leg.stamp, fired);
+      const observe = phaseB.indexOf(leg.observe, fired);
+      const output = phaseB.indexOf(leg.output, observe);
+      const retry = phaseB.indexOf('[ "$rc" -eq 3 ]', output);
+      const nudge = phaseB.indexOf(leg.nudge, retry);
+      expect(fired, leg.fired).toBeGreaterThan(-1);
+      expect(loop, 'the source read must sit in a retry loop').toBeGreaterThan(fired);
+      expect(stamp, `${leg.stamp} must be inside the loop`).toBeGreaterThan(loop);
+      expect(observe, `${leg.observe} must follow the stamp`).toBeGreaterThan(stamp);
+      expect(output, 'the expectation must be on the source-after observation').toBeGreaterThan(observe);
+      expect(retry, 'only exit 3 (not converged) may retry').toBeGreaterThan(output);
+      expect(nudge, leg.nudge).toBeGreaterThan(retry);
+      expect(phaseB.split(leg.stamp).length - 1).toBe(1);
+      // The destination waits for the same signed snapshot, not just the ref.
+      expect(phaseB.indexOf(leg.destination, nudge), leg.destination).toBeGreaterThan(nudge);
+    }
+  });
+
   // WI-10003711: Phase A's strict parity must not depend on the 10-min scheduled
   // tick. Its poll loop drives both hosts' production receive, rate-limited, the
   // same way Phase B drives each attempt.
