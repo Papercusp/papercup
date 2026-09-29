@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -33,6 +33,17 @@ const backupHealthCheckPath = fileURLToPath(
 // path in as `{}` (repo CLAUDE.md, "Proving a guard is falsifiable" — tier 2). Without
 // it the only way to test a mutant is an in-tree edit, which git-sync can commit.
 const guard = process.env.KOPIA_GUARD_SCRIPT_UNDER_TEST || join(systemdDir, 'kopia-backup-guard.sh');
+// A copy-out subject MUST keep this basename. has_live_priority_waiter recognises a
+// waiter by `kopia-backup-guard.sh` in its /proc cmdline, so a copy named e.g.
+// `base.sh` fails the priority-handoff tests on the UNMUTATED program -- and in a
+// mutation probe that reads as a caught mutant. Measured 2026-09-29 (WI-10003884):
+// a base copy named base.sh failed 4 of 43. Refuse the run instead of lying.
+if (basename(guard) !== 'kopia-backup-guard.sh') {
+  throw new Error(
+    `KOPIA_GUARD_SCRIPT_UNDER_TEST must be named kopia-backup-guard.sh (got ${basename(guard)}); ` +
+      'copy it to <dir>/kopia-backup-guard.sh instead',
+  );
+}
 const hotScriptPath = join(systemdDir, 'kopia-snapshot-all.sh');
 const SCHEDULED_DEFER_EXIT = 75;
 const tempDirs: string[] = [];
@@ -1191,18 +1202,25 @@ describe('Kopia managed entrypoint contract', () => {
     });
     const closed = new Promise<number | null>((resolve) => child.once('close', resolve));
 
-    await waitForOutput(() => stdout, 'result=waiting reason=priority-on-pressure io-pressure full_avg10=15.40');
-    // The shared lock is RELEASED for the wait. Wait-mode producers ignore pressure by
-    // design; holding the lock here would park them behind someone else's PSI for up to
-    // the whole wait. If the lock were held, this blocks until run()'s 10s timeout.
-    const holderRan = join(dir, 'holder-ran');
-    const holder = run(['--mode', 'wait', '--label', 'daily-home-vm', '--', 'touch', holderRan], env);
-    expect(holder.status, `${holder.stdout}\n${holder.stderr}`).toBe(0);
-    expect(existsSync(holderRan)).toBe(true);
-    expect(existsSync(dbRan)).toBe(false);
+    try {
+      await waitForOutput(() => stdout, 'result=waiting reason=priority-on-pressure io-pressure full_avg10=15.40');
+      // The shared lock is RELEASED for the wait. Wait-mode producers ignore pressure by
+      // design; holding the lock here would park them behind someone else's PSI for up to
+      // the whole wait. If the lock were held, this blocks until run()'s 10s timeout.
+      const holderRan = join(dir, 'holder-ran');
+      const holder = run(['--mode', 'wait', '--label', 'daily-home-vm', '--', 'touch', holderRan], env);
+      expect(holder.status, `${holder.stdout}\n${holder.stderr}`).toBe(0);
+      expect(existsSync(holderRan)).toBe(true);
+      expect(existsSync(dbRan)).toBe(false);
 
-    pressureFile(env.KOPIA_BACKUP_IO_PSI_PATH!, 3);
-    await expect(closed).resolves.toBe(0);
+      pressureFile(env.KOPIA_BACKUP_IO_PSI_PATH!, 3);
+      await expect(closed).resolves.toBe(0);
+    } finally {
+      // A failed assertion above must not strand a guard that is still waiting on
+      // pressure: it would sit out its whole budget (an hour by default) after the test
+      // is gone -- the leaked-fixture class of WI-10002887.
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
     expect(stderr).toBe('');
     expect(stdout).toMatch(/result=pressure-cleared waited_sec=\d+/);
     expect(stdout).toContain('result=finished mode=scheduled rc=0');
