@@ -686,7 +686,17 @@ export default function LearningLoopControl() {
         .pc-lloop__state--paused { color: var(--warn); }
         .pc-lloop__swrow { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 2px 0 8px; cursor: pointer; }
         .pc-lloop__sw { position: relative; display: inline-flex; flex: none; }
-        .pc-lloop__sw input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+        /* The invisible input IS the hit target, so it must cover the whole
+           track. "inset: 0" alone does NOT size it: a checkbox is a replaced
+           element, and an absolutely positioned replaced element keeps its
+           intrinsic ~12px box whatever the offsets say (CSS 2.1 §10.3.8). It
+           then covered only the track's LEFT end, which is where the thumb
+           sits when OFF — so switching ON worked, and clicking the thumb of an
+           ON switch hit the bare span and did nothing: "I can't turn the top
+           pot off" (WI-10003857; the top pot is the one that is on). Explicit
+           width/height plus "appearance: none" make the box obey the offsets.
+           lint:design-primitives now refuses an overlay input without them. */
+        .pc-lloop__sw input { position: absolute; inset: 0; width: 100%; height: 100%; appearance: none; opacity: 0; margin: 0; cursor: pointer; }
         .pc-lloop__swtrack { width: 30px; height: 17px; border-radius: 999px; background: var(--border-strong); transition: background var(--dur-fast); pointer-events: none; }
         .pc-lloop__swthumb { position: absolute; top: 2.5px; left: 3px; width: 12px; height: 12px; border-radius: 50%; background: var(--fg); transition: transform var(--dur-fast); pointer-events: none; }
         .pc-lloop__sw input:checked + .pc-lloop__swtrack { background: var(--accent); }
