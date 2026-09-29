@@ -23,7 +23,15 @@ export interface GitContext {
 }
 
 const CACHE_TTL_MS = 30_000;
+/** Per-`git` budget. Production callers keep the D-007 bound; a caller that must assert a real
+ *  resolution on a loaded box (the live-repo test) passes a wider one. */
+const DEFAULT_GIT_TIMEOUT_MS = 200;
 let _cached: { value: GitContext; expiresAt: number } | null = null;
+
+export interface ResolveGitContextOptions {
+  /** Hard budget for each `git rev-parse` call; timing out yields `null` for that field. */
+  timeoutMs?: number;
+}
 
 function runWithTimeout(cmd: string, cwd: string, timeoutMs: number): Promise<string | null> {
   return new Promise((resolve) => {
@@ -38,16 +46,17 @@ function runWithTimeout(cmd: string, cwd: string, timeoutMs: number): Promise<st
   });
 }
 
-export async function resolveGitContext(): Promise<GitContext> {
+export async function resolveGitContext(options: ResolveGitContextOptions = {}): Promise<GitContext> {
   const now = Date.now();
   if (_cached && _cached.expiresAt > now) return _cached.value;
 
+  const timeoutMs = options.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
   // Keep git metadata aligned with the tree the agent edits, not the
   // operator's release-checkout cwd.
   const root = resolveAgentWorkspaceRoot({});
   const [branchRaw, commitRaw] = await Promise.all([
-    runWithTimeout('git rev-parse --abbrev-ref HEAD', root, 200),
-    runWithTimeout('git rev-parse HEAD', root, 200),
+    runWithTimeout('git rev-parse --abbrev-ref HEAD', root, timeoutMs),
+    runWithTimeout('git rev-parse HEAD', root, timeoutMs),
   ]);
 
   const value: GitContext = {

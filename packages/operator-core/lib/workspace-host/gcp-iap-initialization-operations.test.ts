@@ -363,9 +363,11 @@ describe('GCP IAP workspace-host initialization operations', () => {
           }),
         ).rejects.toThrow(/timed out/);
         expect(descendantPid).toBeGreaterThan(0);
-        // `close`, unlike `exit`, waits for the descendant's inherited pipes too.
+        // `close`, unlike `exit`, waits for the descendant's inherited pipes too. Without the
+        // process-group kill the descendant holds them for its full 30s, so any window well
+        // under 30s separates fixed from broken; a 1s window was a load race (WI-10003860).
         expect(
-          await Promise.race([closed!.then(() => true), delay(1_000, false)]),
+          await Promise.race([closed!.then(() => true), delay(10_000, false)]),
         ).toBe(true);
       } finally {
         // Also clean up the intentionally red pre-fix reproduction.

@@ -29,7 +29,10 @@ describe.skipIf(!IS_GIT_REPO)('resolveGitContext', () => {
   });
 
   it('returns a branch name and a commit sha in this checkout', async () => {
-    const ctx = await resolveGitContext();
+    // The production 200ms budget legitimately yields null under load (D-007 fail-soft), which
+    // made this assertion red the gate at 7f0ddb06 (WI-10003860). This case asserts that a real
+    // checkout RESOLVES, so it gets a budget no loaded box exhausts.
+    const ctx = await resolveGitContext({ timeoutMs: 15_000 });
     // branch may legitimately be null on a detached HEAD; commit shouldn't be
     expect(ctx.commit).toMatch(/^[0-9a-f]{40}$/);
   });
