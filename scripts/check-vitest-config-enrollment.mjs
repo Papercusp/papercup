@@ -13,6 +13,14 @@
  * reporter alone is not participation. It now accepts only the two helpers. The allowlist is
  * deliberately exact: these packages use a different runner/config contract and are the only
  * accepted plain configurations.
+ *
+ * WI-10003808 adds two checks:
+ *  - a STALE exemption (an exempt path that is now enrolled, or no longer exists) is a finding,
+ *    so the exemption set can only shrink as configs enroll;
+ *  - a hand-rolled enrolled config under a NESTED Vite workspace root must also set
+ *    `server: gateParticipationServerConfig()`, or its jsdom files cannot load the gate's setup
+ *    file from libs/test-config. The nested root is DERIVED from Vite's own
+ *    `searchForWorkspaceRoot`, never a hand list.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -36,18 +44,17 @@ const SKIP_DIRS = new Set([
 /**
  * These configs intentionally do not use the shared Vitest base. Keep this set
  * path-specific so adding a new plain config cannot silently become an exemption.
+ * An entry that enrolls or disappears is reported as stale (findStaleExemptions).
  */
 export const PLAIN_CONFIG_EXEMPTIONS = new Set([
   'libs/generic/card-stack/vitest.config.ts',
-  'libs/generic/dock-workbench/vitest.config.ts',
   'libs/generic/ipc-endpoint-server/vitest.config.ts',
-  'libs/generic/papergrid/bloom-grid/vitest.config.ts',
-  'libs/generic/papergrid/kv-persist-indexeddb/vitest.config.ts',
-  'libs/generic/papergrid/kv-persist/vitest.config.ts',
   'libs/generic/search/vitest.config.ts',
   'libs/agent-chat/vitest.config.ts',
   'libs/generic/git-graph/vitest.config.ts',
   'libs/generic/ui-primitives/vitest.config.ts',
+  // node:test package (`node --test src/**/*.node-test.ts`); its vitest config is `include: []`
+  // and runs nothing, so it has no pass proofs to record.
   'libs/papercusp/packages/cli/vitest.config.ts',
 ]);
 
@@ -79,6 +86,40 @@ export function isGateEnrolled(source, fileName) {
 export function findUnenrolledConfigs(configs) {
   return configs
     .filter(({ path, content }) => !PLAIN_CONFIG_EXEMPTIONS.has(normalizePath(path)) && !isGateEnrolled(content, path))
+    .map(({ path }) => normalizePath(path))
+    .sort();
+}
+
+/**
+ * Exempt paths that no longer earn their exemption: the config now takes part in the gate, or it
+ * is not among the collected configs at all. Each is reported with the reason.
+ */
+export function findStaleExemptions(configs, exemptions = PLAIN_CONFIG_EXEMPTIONS) {
+  const byPath = new Map(configs.map(({ path, content }) => [normalizePath(path), content]));
+  const stale = [];
+  for (const exempt of exemptions) {
+    if (!byPath.has(exempt)) stale.push(`${exempt} (missing: no such declared workspace config)`);
+    else if (isGateEnrolled(byPath.get(exempt), exempt)) stale.push(`${exempt} (enrolled: remove the exemption)`);
+  }
+  return stale.sort();
+}
+
+/**
+ * Hand-rolled enrolled configs (gateParticipationConfig without defineVitestConfig) whose Vite
+ * workspace root is not the repository root and which do not call gateParticipationServerConfig().
+ * `workspaceRootOf(absoluteConfigDir)` must answer what Vite answers (searchForWorkspaceRoot);
+ * it is injected so this rule stays hermetic and the module never loads Vite at import time
+ * (scripts/lib/executed-source-map.mjs imports this module on the gate's hot path).
+ */
+export function findNestedRootConfigsWithoutServerFragment(configs, workspaceRootOf, root = ROOT) {
+  const repoRoot = resolve(root);
+  return configs
+    .filter(({ path, content }) => {
+      const code = stripCommentsAndStrings(content, path);
+      if (!importsAndCalls(code, 'gateParticipationConfig') || importsAndCalls(code, 'defineVitestConfig')) return false;
+      if (importsAndCalls(code, 'gateParticipationServerConfig')) return false;
+      return resolve(workspaceRootOf(join(repoRoot, dirname(path)))) !== repoRoot;
+    })
     .map(({ path }) => normalizePath(path))
     .sort();
 }
@@ -140,18 +181,40 @@ export function collectVitestConfigs(root = ROOT) {
   return configs.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-export function main(root = ROOT) {
-  const findings = findUnenrolledConfigs(collectVitestConfigs(root));
-  if (findings.length > 0) {
-    console.error(
+export async function main(root = ROOT) {
+  const configs = collectVitestConfigs(root);
+  const { searchForWorkspaceRoot } = await import('vite');
+  const sections = [
+    [
+      'Vitest configs that do not take part in the green-checkpoint gate:',
+      findUnenrolledConfigs(configs),
       [
-        'Vitest configs that do not take part in the green-checkpoint gate:',
-        ...findings.map((filePath) => `  ${filePath}`),
-        '',
         'Use defineVitestConfig from @papercusp/test-config/vitest-config, or spread',
         'gateParticipationConfig() into a hand-rolled config\'s `test` block. Wiring',
         'ADMIN_TEST_RUNS_REPORTER_PATH by hand records no pass proofs and reuses none.',
-      ].join('\n'),
+      ],
+    ],
+    [
+      'Stale PLAIN_CONFIG_EXEMPTIONS entries (scripts/check-vitest-config-enrollment.mjs):',
+      findStaleExemptions(configs),
+      ['Remove each from the set: an enrolled or missing config no longer needs an exemption.'],
+    ],
+    [
+      'Enrolled configs under a nested Vite workspace root without the server fragment:',
+      findNestedRootConfigsWithoutServerFragment(configs, (dir) => searchForWorkspaceRoot(dir), root),
+      [
+        'Set `server: gateParticipationServerConfig()` (from @papercusp/test-config/vitest-config).',
+        'Vite\'s default fs.allow stops at the nested root, so jsdom files cannot load the gate\'s',
+        'setup file from libs/test-config.',
+      ],
+    ],
+  ];
+  const failing = sections.filter(([, findings]) => findings.length > 0);
+  if (failing.length > 0) {
+    console.error(
+      failing
+        .flatMap(([heading, findings, advice]) => [heading, ...findings.map((f) => `  ${f}`), '', ...advice, ''])
+        .join('\n'),
     );
     return 1;
   }
@@ -160,5 +223,5 @@ export function main(root = ROOT) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.exitCode = main();
+  process.exitCode = await main();
 }
