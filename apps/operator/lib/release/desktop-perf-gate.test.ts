@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   evaluateDesktopPerfGate,
@@ -12,8 +13,13 @@ import {
   PSI_FULL_KEY_PREFIX,
   classifyRunPressure,
   readHostPressure,
+  readBinaryBuiltAt,
+  binaryPredatesBaseline,
+  BUILD_SWEEP_LAG_TOLERANCE_MS,
+  type DesktopPerfBaseline,
   type DesktopPerfGatePolicy,
 } from './desktop-perf-gate';
+import { DESKTOP_PERF_BINARY_BUILT_AT_KEY } from '@papercusp/operator-core/lib/admin-test-suites-shared';
 import { DESKTOP_PERF_BUDGETS } from '@papercusp/operator-core/lib/system-health/desktop-perf-budgets';
 import type { DesktopPerfRun, DesktopPerfMeasure } from '@papercusp/operator-core/lib/system-health/desktop-perf-runs';
 
@@ -291,6 +297,143 @@ describe('runDesktopPerfGate', () => {
     expect(d.action).toBe('warn');
     expect(d.action).not.toBe('block');
     expect(d.verdictStatus).toBe('unknown');
+  });
+
+  it('baselineRef threads the baseline time into the stale-build branch (WI-10003815)', async () => {
+    const calls: Array<[string, string]> = [];
+    const builtAt = Date.now() - 12 * 86_400_000;
+    const d = await runDesktopPerfGate(ARMED, {
+      candidateSha: 'd425508f01ed', baselineRef: 'main', repoRoot: '/repo',
+      io: {
+        readLatestRun: async () => run([breach, ...quiet(), builtStamp(builtAt)]),
+        readNewestCommitAtMs: async (ref, root) => { calls.push([ref, root]); return Date.now() - 3_600_000; },
+      },
+    });
+    expect(calls).toEqual([['main', '/repo']]);
+    expect(d.action).toBe('warn');
+    expect(d.reasons[0]).toMatch(/UNATTRIBUTABLE \(stale build\)/);
+  });
+
+  it('an unreadable baseline makes no attribution call — the breach still blocks', async () => {
+    const d = await runDesktopPerfGate(ARMED, {
+      baselineRef: 'main',
+      io: {
+        readLatestRun: async () => run([breach, ...quiet(), builtStamp(Date.now() - 12 * 86_400_000)]),
+        readNewestCommitAtMs: async () => { throw new Error('git failed'); },
+      },
+    });
+    expect(d.action).toBe('block');
+  });
+
+  it('no baselineRef → the baseline is never read (callers opt in)', async () => {
+    let reads = 0;
+    const d = await runDesktopPerfGate(ARMED, {
+      io: {
+        readLatestRun: async () => run([breach, ...quiet(), builtStamp(Date.now() - 12 * 86_400_000)]),
+        readNewestCommitAtMs: async () => { reads += 1; return Date.now(); },
+      },
+    });
+    expect(reads).toBe(0);
+    expect(d.action).toBe('block');
+  });
+});
+
+/** The WDIO runner's `build:` stamp — when the measured packaged binary was built. */
+function builtStamp(builtAtMs: number): DesktopPerfMeasure {
+  return { key: DESKTOP_PERF_BINARY_BUILT_AT_KEY, value: builtAtMs, unit: 'count', budget: null, ok: true };
+}
+
+/**
+ * WI-10003815 — a fresh RUN of a stale BUILD. Observed 2026-09-29: a quiet-host
+ * plan-popup-open breach (1540ms > 1500) measured on a 12-day-old packaged binary
+ * held suite-green repairHead d425508f. A build older than the green pin can only
+ * show what is already on it, so the gate must not charge the candidate with it.
+ */
+describe('stale packaged build (WI-10003815)', () => {
+  const NOW = 1_790_650_000_000;
+  const DAY = 86_400_000;
+  const MAIN: DesktopPerfBaseline = { ref: 'main', newestCommitAtMs: NOW - 5 * 3_600_000 };
+  const staleBuild = builtStamp(NOW - 12 * DAY);
+
+  it('the observed case: quiet breach on a 12-day-old build → warn, reported as pre-existing, never block', () => {
+    const d = evaluateDesktopPerfGate(run([breach, ...quiet(), staleBuild], 'fail', NOW), ARMED, 'd425508f01ed', NOW, MAIN);
+    expect(d.action).toBe('warn');
+    expect(d.verdictStatus).toBe('unknown');
+    expect(d.pressure).toBe('quiet');
+    expect(d.reasons[0]).toMatch(/UNATTRIBUTABLE \(stale build\).*cannot contain d425508f/);
+    // The finding is not swallowed: it stays audible, charged to main rather than the candidate.
+    expect(d.reasons).toContain('pre-existing on main: interaction:plan-popup-open 1800ms > budget 1500ms');
+    expect(d.summary).toMatch(/STALE BUILD, NOT reported as d425508f's regression/);
+    expect(d.summary).toContain('11.8d before');
+  });
+
+  it('CONTROL: the same breach on a build newer than main still blocks', () => {
+    const fresh = builtStamp(MAIN.newestCommitAtMs! + 60_000);
+    const d = evaluateDesktopPerfGate(run([breach, ...quiet(), fresh], 'fail', NOW), ARMED, 'd425508f01ed', NOW, MAIN);
+    expect(d.action).toBe('block');
+    expect(d.verdictStatus).toBe('crit');
+  });
+
+  it('an invariant breach on a stale build warns too — it is already on main', () => {
+    const d = evaluateDesktopPerfGate(run([egressBreach, staleBuild], 'fail', NOW), ARMED, 'abc12345', NOW, MAIN);
+    expect(d.action).toBe('warn');
+    expect(d.reasons.some((r) => r.startsWith('pre-existing on main: invariant:webview-http-egress'))).toBe(true);
+  });
+
+  it('a clean run on a stale build is not a clear: warn, UNMEASURED', () => {
+    const d = evaluateDesktopPerfGate(run([ok, ...quiet(), staleBuild], 'pass', NOW), ARMED, 'abc12345', NOW, MAIN);
+    expect(d.action).toBe('warn');
+    expect(d.verdictStatus).toBe('unknown');
+    expect(d.summary).toContain('abc12345 advances UNMEASURED');
+  });
+
+  it('within the sweep-lag tolerance the build may contain the pin → the breach still blocks', () => {
+    const nearly = builtStamp(MAIN.newestCommitAtMs! - BUILD_SWEEP_LAG_TOLERANCE_MS + 60_000);
+    const d = evaluateDesktopPerfGate(run([breach, ...quiet(), nearly], 'fail', NOW), ARMED, 'abc12345', NOW, MAIN);
+    expect(d.action).toBe('block');
+  });
+
+  it('only a positive proof demotes: unstamped run, unknown baseline, or no baseline keep the old verdict', () => {
+    const cases: Array<[DesktopPerfMeasure[], DesktopPerfBaseline | null | undefined]> = [
+      [[breach, ...quiet()], MAIN],
+      [[breach, ...quiet(), staleBuild], { ref: 'main', newestCommitAtMs: null }],
+      [[breach, ...quiet(), staleBuild], undefined],
+    ];
+    for (const [measures, baseline] of cases) {
+      expect(evaluateDesktopPerfGate(run(measures, 'fail', NOW), ARMED, 'abc12345', NOW, baseline).action).toBe('block');
+    }
+  });
+
+  it('a stale RUN still reports as a stale run, not a stale build (branch order)', () => {
+    const d = evaluateDesktopPerfGate(run([breach, ...quiet(), staleBuild], 'fail', NOW - 2 * DAY), ARMED, 'abc12345', NOW, MAIN);
+    expect(d.summary).toMatch(/latest desktop-perf run is STALE/);
+  });
+
+  it('readBinaryBuiltAt ignores a non-positive stamp', () => {
+    expect(readBinaryBuiltAt(run([builtStamp(0)], 'pass', NOW))).toBeNull();
+    expect(readBinaryBuiltAt(run([staleBuild], 'pass', NOW))).toBe(NOW - 12 * DAY);
+  });
+
+  // The producer side lives in tools/perf-test/wdio, a standalone package no gate task
+  // selects, so its own node-test never runs in CI. Pin it from HERE: if the runner stops
+  // stamping (or stamps a drifted key) every run reads as unstamped and this branch goes
+  // silently inert — the run keeps blocking candidates on stale builds.
+  it('the WDIO producer stamps the binary with the key this gate reads', () => {
+    const wdio = (f: string) => readFileSync(new URL(`../../../../tools/perf-test/wdio/${f}`, import.meta.url), 'utf8');
+    expect(wdio('perf-report.ts')).toContain(`BINARY_BUILT_AT_KEY = "${DESKTOP_PERF_BINARY_BUILT_AT_KEY}"`);
+    const conf = wdio('wdio.conf.ts');
+    const onPrepare = conf.slice(conf.indexOf('async onPrepare()'), conf.indexOf('async onComplete()'));
+    const stamp = onPrepare.indexOf('recordBinaryIdentity(TAURI_APP_PATH);');
+    expect(stamp).toBeGreaterThan(onPrepare.indexOf('resetMeasures();'));
+    expect(onPrepare.indexOf('resetMeasures();')).toBeGreaterThanOrEqual(0);
+  });
+
+  it('binaryPredatesBaseline is the single predicate the branch uses', () => {
+    expect(binaryPredatesBaseline(run([staleBuild], 'pass', NOW), MAIN)).toEqual({
+      builtAt: NOW - 12 * DAY,
+      baselineAt: MAIN.newestCommitAtMs,
+    });
+    expect(binaryPredatesBaseline(run([], 'pass', NOW), MAIN)).toBeNull();
   });
 });
 

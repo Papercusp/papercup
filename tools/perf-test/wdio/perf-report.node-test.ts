@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import type { Browser } from "webdriverio";
 
-import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, desktopPerfRunPayload, hasRunOutcomeMeasure, type PerfMeasure } from "./perf-report";
+import { assertPrivateIpcFixture, assertPrivateIpcFixtureUnchanged, BINARY_BUILT_AT_KEY, CONTEXT_STAMP_PREFIXES, desktopPerfRunPayload, hasRunOutcomeMeasure, type PerfMeasure } from "./perf-report";
 import {
   isTerminalWebDriverSessionError,
   waitForPackagedAppUrl,
@@ -214,6 +214,33 @@ test("named native publishing checks fixture continuity before sending a receipt
     publish.indexOf("assertPrivateIpcFixtureUnchanged(initialPrivateIpcFixture);") <
       publish.indexOf("await fetch(url"),
   );
+});
+
+test("a build: stamp is context, not an outcome (WI-10003815)", () => {
+  assert.equal(hasRunOutcomeMeasure([
+    host("host:psi-cpu-some-avg10-pct:start"),
+    { key: BINARY_BUILT_AT_KEY, value: 1_789_600_000_000, unit: "count", budget: null, ok: true },
+  ]), false);
+});
+
+test("the runner's stamp literals match the gate's canonical constants", () => {
+  // The runner cannot import operator-core, so it carries copies; a drifted key would
+  // silently disable the release gate's stale-build check.
+  const shared = readFileSync(
+    path.resolve(__dirname, "../../..", "packages/operator-core/lib/admin-test-suites-shared.ts"),
+    "utf8",
+  );
+  assert(shared.includes(`DESKTOP_PERF_BINARY_BUILT_AT_KEY = '${BINARY_BUILT_AT_KEY}'`));
+  const prefixes = CONTEXT_STAMP_PREFIXES.map((p) => `'${p}'`).join(", ");
+  assert(shared.includes(`DESKTOP_PERF_CONTEXT_STAMP_PREFIXES = [${prefixes}] as const`));
+});
+
+test("the runner stamps the binary under test before any spec can measure", () => {
+  const config = readFileSync(path.join(__dirname, "wdio.conf.ts"), "utf8");
+  const onPrepare = config.slice(config.indexOf("async onPrepare()"), config.indexOf("async onComplete()"));
+  const stamp = onPrepare.indexOf("recordBinaryIdentity(TAURI_APP_PATH);");
+  assert(stamp >= 0, "onPrepare must record the measured binary's build time");
+  assert(stamp > onPrepare.indexOf("resetMeasures();"), "a stamp written before the reset is wiped");
 });
 
 test("the root perf command preserves WDIO failures through tee", () => {
