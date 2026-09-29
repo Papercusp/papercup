@@ -112,7 +112,17 @@ export interface StackTransitionContextOptions {
   /** Selected session cwd, so a harness-local identity override resolves first. */
   repoDir?: string;
   /** DI seam: the orchestrator blueprint module (tests pass the real one loaded eagerly). */
-  blueprint?: Pick<Blueprint, 'stackBindingFromRefs' | 'emptyStackBinding' | 'diffStackBindings' | 'composeSuStackMutation' | 'slotSpec'>;
+  blueprint?: Pick<
+    Blueprint,
+    'stackBindingFromRefs' | 'emptyStackBinding' | 'diffStackBindings' | 'composeSuStackMutation' | 'slotSpec' | 'suEffectiveBinding' | 'normalizeStackBinding'
+  >;
+  /**
+   * portable-identity P-003: where this session's addressed Project-guide parts live
+   * (`guideTargetFromLaunchSpec` over the gate-selected launch record). When set, a stack
+   * change also delivers the guide sections the NEW stack reaches and names the ones it no
+   * longer does — the same parts a launch with the new stack composes. Omit ⇒ layer text only.
+   */
+  guide?: import('./doc-projection/addressed-project-guide').AddressedGuideTarget | null;
   /** Optional desired revision to stamp on a prepared mutation payload. */
   activation?: {
     specificationRevision: string;
@@ -206,6 +216,28 @@ export async function renderStackTransitionContextResult(
         requiresFreshContext = true;
       }
       cursor = applied.runtimeBinding;
+    }
+    if (opts.guide) {
+      // The addressed-guide half of the SAME transition — the wearer mapping and the read
+      // are the launch's own (addressed-project-guide.ts). A read failure is surfaced IN the
+      // delivered text, never swallowed: a silently-missed attach is the bug this closes.
+      const { composeAddressedGuideTransition, suGuideWearer } = await import('./doc-projection/addressed-project-guide');
+      try {
+        const guide = await composeAddressedGuideTransition({
+          ...opts.guide,
+          before: suGuideWearer(bp, from.layers),
+          after: suGuideWearer(bp, to.layers),
+        });
+        if (guide.text) parts.push(guide.text.replace(/\n+$/, ''));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        warn(`[stack-binding-channel] addressed guide not read for stack transition: ${msg}`);
+        parts.push(
+          '## Addressed guidance — could not be read\n\n' +
+            `> Your stack changed, but the Project-guide sections addressed to it could not be read (${msg}). ` +
+            'A launch with this stack may carry guidance you have not received.',
+        );
+      }
     }
     return {
       text: parts.join('\n\n'),

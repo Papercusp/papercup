@@ -227,9 +227,25 @@ const turnStartMemory = defineTool({
           let stackRequiresFreshContext = false;
           try {
             const { renderStackTransitionContextResult } = await import('../../../stack-binding-channel');
-            const rendered = await renderStackTransitionContextResult(
-              transition,
-              activationRevision
+            // portable-identity P-003: the addressed Project-guide parts a stack change
+            // reaches ride the SAME transition. Target = the gate-selected launch record's
+            // profile/harness/agent — what the launch composed with. Unresolvable ⇒ layer text only.
+            const guide = await (async () => {
+              try {
+                const [{ readGateSelectedLaunchSpec }, { guideTargetFromLaunchSpec }, { getOrgPg }] = await Promise.all([
+                  import('../../../agent-tools/coordination/control-anchor'),
+                  import('../../../doc-projection/addressed-project-guide'),
+                  import('@papercusp/db-org'),
+                ]);
+                const spec = await readGateSelectedLaunchSpec(getOrgPg().sql, owner, workspaceId);
+                return guideTargetFromLaunchSpec(spec, { workspaceId, client: typeof body.client === 'string' ? body.client : null });
+              } catch {
+                return null;
+              }
+            })();
+            const rendered = await renderStackTransitionContextResult(transition, {
+              ...(guide ? { guide } : {}),
+              ...(activationRevision
                 ? {
                     repoDir: typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : undefined,
                     activation: {
@@ -238,8 +254,8 @@ const turnStartMemory = defineTool({
                       idempotencyKey: `session-activation:${owner}:${activationRevision.specificationRevision}:${activationRevision.stateRevision}`,
                     },
                   }
-                : undefined,
-            );
+                : {}),
+            });
             stack = rendered.text;
             stackRendered = rendered.rendered;
             stackRequiresFreshContext = rendered.requiresFreshContext;

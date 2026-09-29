@@ -787,7 +787,8 @@ export const consumePendingControlTransition = preparePendingControlTransition;
  * Every writer of `activation.applied` vets against THIS row — vetting against any
  * other is how an acknowledgement wedged a session (EI-23703586803892464).
  */
-async function readGateSelectedLaunchSpec(tx: Sql, ownerId: string, workspaceId: string): Promise<unknown> {
+/** Exported for the turn-start guide target (portable-identity P-003) — the SAME record selection the activation gate uses. */
+export async function readGateSelectedLaunchSpec(tx: Sql, ownerId: string, workspaceId: string): Promise<unknown> {
   const rows = await tx<Array<{ launch_spec: unknown }>>`
     SELECT to_jsonb(s)->'launch_spec' AS launch_spec
       FROM harness_shared.adv_sessions s
