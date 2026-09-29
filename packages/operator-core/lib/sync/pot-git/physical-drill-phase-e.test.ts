@@ -7,6 +7,11 @@ import {
   PHASE_E_OBSERVATION_SCHEMA,
   PHASE_E_RECOVERY_SCHEMA,
   PHASE_E_WATCHDOG_SCHEMA,
+  PHASE_E_MODE_POLL_MS,
+  PHASE_E_MODE_WAIT_MAX_MS,
+  awaitPhysicalPhaseEStageMode,
+  capturePhysicalPhaseEObservation,
+  ensurePhysicalPhaseEMode,
   preflightPhysicalPhaseERemotes,
   setPhysicalPhaseEMode,
   validatePhysicalPhaseE,
@@ -316,6 +321,114 @@ describe('validatePhysicalPhaseE', () => {
       },
     )).rejects.toThrow('physical Phase E mode flip requires legacy before bridged; observed p2p-only');
     expect(writes).toBe(0);
+  });
+
+  describe('drill baseline, stage-mode wait and member observation (WI-10003791)', () => {
+    // Every harness_shared query in the observation returns no rows.
+    const emptySql = (async () => []) as unknown as NonNullable<Parameters<typeof capturePhysicalPhaseEObservation>[1]>['sql'];
+
+    it('establishes a legacy baseline from a bridged canary with one production write', async () => {
+      let mode: 'legacy' | 'bridged' | 'p2p-only' = 'bridged';
+      const writes: string[] = [];
+      const record = await ensurePhysicalPhaseEMode({ runId: RUN, mode: 'legacy' }, {
+        getMode: async () => mode,
+        setMode: async (_ws, _slug, next) => { writes.push(next); mode = next; },
+      });
+      expect(writes).toEqual(['legacy']);
+      expect(record).toMatchObject({ from: 'bridged', to: 'legacy', changed: true, tool: 'setPotGitMode', hostId: 'tower' });
+    });
+
+    it('does not write when the canary is already in the requested mode', async () => {
+      let writes = 0;
+      const record = await ensurePhysicalPhaseEMode({ runId: RUN, mode: 'bridged' }, {
+        getMode: async () => 'bridged',
+        setMode: async () => { writes += 1; },
+      });
+      expect(writes).toBe(0);
+      expect(record).toMatchObject({ from: 'bridged', to: 'bridged', changed: false });
+    });
+
+    it('refuses to move a canary out of a mode the drill does not own', async () => {
+      let writes = 0;
+      await expect(ensurePhysicalPhaseEMode({ runId: RUN, mode: 'legacy' }, {
+        getMode: async () => 'p2p-only',
+        setMode: async () => { writes += 1; },
+      })).rejects.toThrow('physical Phase E refuses to change the canary out of mode p2p-only');
+      expect(writes).toBe(0);
+    });
+
+    it('waits for the federated bridged row instead of reading once', async () => {
+      let clock = 0;
+      const reads = [
+        { mode: 'legacy', source: 'set' },
+        { mode: 'bridged', source: 'absent' },
+        { mode: 'bridged', source: 'set' },
+      ] as const;
+      let i = 0;
+      const mode = await awaitPhysicalPhaseEStageMode({ stage: 'bridged-member', waitMs: 60_000 }, {
+        readMode: async () => reads[Math.min(i++, reads.length - 1)],
+        sleep: async (ms) => { clock += ms; },
+        now: () => clock,
+      });
+      expect(mode).toEqual({ mode: 'bridged', source: 'set' });
+      expect(i).toBe(3);
+      expect(clock).toBe(2 * PHASE_E_MODE_POLL_MS);
+    });
+
+    it('returns the last read at the deadline so the validator judges the stale mode', async () => {
+      let clock = 0;
+      let reads = 0;
+      const mode = await awaitPhysicalPhaseEStageMode({ stage: 'legacy-before', waitMs: 12_000 }, {
+        readMode: async () => { reads += 1; return { mode: 'bridged', source: 'set' }; },
+        sleep: async (ms) => { clock += ms; },
+        now: () => clock,
+      });
+      expect(mode).toEqual({ mode: 'bridged', source: 'set' });
+      expect(clock).toBe(12_000);
+      expect(reads).toBe(4);
+    });
+
+    it('bounds the wait', async () => {
+      await expect(awaitPhysicalPhaseEStageMode(
+        { stage: 'legacy-after', waitMs: PHASE_E_MODE_WAIT_MAX_MS + 1 },
+        { readMode: async () => ({ mode: 'legacy', source: 'set' }) },
+      )).rejects.toThrow('physical Phase E mode wait must be an integer');
+    });
+
+    it('observes a member without the bridge-only fork remote and without reading any remote', async () => {
+      const gitArgs: string[][] = [];
+      const observation = await capturePhysicalPhaseEObservation(
+        { runId: RUN, hostId: 'vm', deviceKey: VM, stage: 'legacy-before' },
+        {
+          sql: emptySql,
+          loadRegistry: async () => ({
+            projects: [{ slug: 'hello-world-3-pot', github_remote: 'https://github.com/papercupai/hello-world-3-pot' }],
+          }),
+          readMode: async () => ({ mode: 'legacy', source: 'set' }),
+          runGit: async (args) => {
+            gitArgs.push(args);
+            return { code: 0, stdout: `${A}\n`, stderr: '' };
+          },
+        },
+      );
+      expect(observation.refs).toEqual({ canonicalStaging: A, upstreamDefault: null, remoteStaging: null });
+      expect(observation.mode).toEqual({ value: 'legacy', source: 'set' });
+      expect(gitArgs.some((args) => args[0] === 'ls-remote')).toBe(false);
+    });
+
+    it('still requires both remotes on the tower, which is the bridge writer', async () => {
+      await expect(capturePhysicalPhaseEObservation(
+        { runId: RUN, hostId: 'tower', deviceKey: TOWER, stage: 'legacy-before' },
+        {
+          sql: emptySql,
+          loadRegistry: async () => ({
+            projects: [{ slug: 'hello-world-3-pot', github_remote: 'https://github.com/papercupai/hello-world-3-pot' }],
+          }),
+          readMode: async () => ({ mode: 'legacy', source: 'set' }),
+          runGit: async () => ({ code: 0, stdout: `${A}\n`, stderr: '' }),
+        },
+      )).rejects.toThrow('requires both upstream and fork remotes');
+    });
   });
 
   it('accepts the complete two-host production-spine causal object', () => {
