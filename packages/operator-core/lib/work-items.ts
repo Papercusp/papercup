@@ -2531,8 +2531,8 @@ function maybeFireUrgentWake(input: CreateWorkItemInput, wi: WorkItem): void {
  */
 function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
   if (!assignTo) return;
-  void trackDetached(import('./work-items-events'))
-    .then((m) => m.emitWorkItemClaimedEvent(wi, assignTo))
+  void trackDetached(import('./work-items-events')
+    .then((m) => m.emitWorkItemClaimedEvent(wi, assignTo)))
     .catch(() => {});
 }
 
@@ -2571,8 +2571,8 @@ export async function armWorkItemHolderInterests(
 function maybeFireCreatedEvent(wi: WorkItem): void {
   // P-007: emitWorkItemCreatedEvent internally co-fires the canonical
   // `work-item:claimable` key for an unclaimed-claimable create — one hook here.
-  void trackDetached(import('./work-items-events'))
-    .then((m) => m.emitWorkItemCreatedEvent(wi))
+  void trackDetached(import('./work-items-events')
+    .then((m) => m.emitWorkItemCreatedEvent(wi)))
     .catch(() => {});
 }
 
@@ -4292,12 +4292,14 @@ export async function setWorkItemState(
         .then((m) => m.clearKeyFire(`work-item:done:${id}`, { firedBefore: reopenedAtMs }))
         .catch(() => {});
     }
-    void trackDetached(import('./work-items-events'))
+    // WI-10003882: track the whole emit chain, not just the import, so a test's
+    // drainDetached() waits for the latch write before it TRUNCATEs or tears down.
+    void trackDetached(import('./work-items-events')
       .then((m) =>
         m.emitWorkItemStatusEvent(transitioned, prevState, {
           announceClaimable: opts.announceClaimable,
         }),
-      )
+      ))
       .catch(() => {});
   }
   // await-event-primitive P-012/P-013: a SETTLED item fires
@@ -4331,8 +4333,8 @@ export async function setWorkItemState(
         )
         .catch(() => {}),
     ]);
-    void trackDetached(import('./work-items-events'))
-      .then((m) => m.emitWorkItemSettledEvents(settled, { priorAssignee }))
+    void trackDetached(import('./work-items-events')
+      .then((m) => m.emitWorkItemSettledEvents(settled, { priorAssignee })))
       .catch(() => {});
     // WI-4119: generated blocker follows are no longer useful once this
     // blocker settles. Keep cleanup on the lifecycle write path so it does not
