@@ -50,7 +50,7 @@ import * as path from 'node:path';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
-import { resolveBashTaskProvenance } from '../capability/bash';
+import { resolveBashTaskProvenance } from '../capability/bash-task-provenance';
 import { loopLaunchRefusal } from '../../verification-attempts/loop-gate';
 import type { ResolveIdentityCtx } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';

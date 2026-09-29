@@ -13,6 +13,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import { splitModelSpec } from './agent-config-constants';
 import { resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
+import { syncPersonalClaudeMemory } from './interactive-claude-config';
 import type { PuiSuSessionBinding } from './launch-agent';
 import { createClaudeSuSessionAdapter, type ClaudeNativeCommandVerdict, type ClaudeSuSessionAdapter, type ClaudeSuSessionDescriptorOptions, type ClaudeSuRuntimeBinding } from './su-session-claude-adapter';
 import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from './task-manager/enroll-sync';
@@ -324,6 +325,9 @@ export function startClaudeSuEngine(
     persistDefaultClaudeAuthSettings({ wrapperBin: 'claude', env });
     applyGithubTokenEnv(env);
     recordSessionOwner(nativeId, binding.ownerId, { advSessionId: binding.advSessionId });
+    // Claude Code's own agent reads the user's personal CLAUDE.md like stock
+    // `claude`; the psu persona never does (interactive-claude-config.ts).
+    if (env.CLAUDE_CONFIG_DIR) syncPersonalClaudeMemory(env.CLAUDE_CONFIG_DIR, !su, env.HOME || undefined);
   }
   // Reuse the launcher's deny policy as well as its environment sanitizer.
   const disallowedTools = launch.args.filter((a: string) => a.startsWith('--disallowedTools=')).flatMap((a: string) => a.slice('--disallowedTools='.length).split(','));

@@ -14,7 +14,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { resolveBashTaskProvenance } from './bash';
+import { resolveBashTaskProvenance } from './bash-task-provenance';
 
 const OWNER = 'su-b5f45c90-be2b-4ad6-b9fc-a03353f6b3bb';
 

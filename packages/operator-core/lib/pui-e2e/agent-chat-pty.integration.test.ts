@@ -103,6 +103,9 @@ const scriptedEngine = vi.hoisted(() => ({
   questionVerdicts: [] as Array<{ behavior: string; updatedInput?: Record<string, unknown>; message?: string }>,
   requests: [] as string[],
   sdkPermissions: [] as Array<{ mode: string | undefined; bypass: boolean | undefined }>,
+  // Which agent the SDK was asked to run (P-007): the prompt kind, the MCP
+  // servers it may load, and whether the psu hook set is silenced.
+  sdkIdentities: [] as Array<{ prompt: string; mcpServers: string[] | null; strictMcp: boolean; hooksOff: boolean }>,
   engines: [] as (ClaudeSuEngine | SuRpcEngine)[],
   events: [] as SuSessionEvent[],
   initialization: Promise.resolve(),
@@ -157,6 +160,14 @@ vi.mock('../su-session-claude-engine', async (original) => {
           bypass: sdkOptions.allowDangerouslySkipPermissions });
         scriptedEngine.sdkSessions.push({ resume: sdkOptions.resume ?? null, sessionId: sdkOptions.sessionId ?? null });
         scriptedEngine.sdkCwds.push(String(sdkOptions.cwd ?? ''));
+        const sdkPrompt = sdkOptions.systemPrompt;
+        scriptedEngine.sdkIdentities.push({
+          prompt: typeof sdkPrompt === 'object' && !Array.isArray(sdkPrompt) && sdkPrompt.type === 'preset'
+            ? `preset:${sdkPrompt.preset}` : typeof sdkPrompt === 'object' && !Array.isArray(sdkPrompt) ? sdkPrompt.type : 'text',
+          mcpServers: sdkOptions.mcpServers ? Object.keys(sdkOptions.mcpServers) : null,
+          strictMcp: sdkOptions.strictMcpConfig === true,
+          hooksOff: typeof sdkOptions.settings === 'object' && sdkOptions.settings?.disableAllHooks === true,
+        });
         // The real SDK launches the native CLI through this hook, and it is the
         // ONLY place the engine learns its pid (su-session-claude-engine.ts
         // `spawnClaudeCodeProcess`). Resume readiness refuses a null pid
@@ -1703,6 +1714,7 @@ beforeEach(async () => {
   scriptedEngine.sdkPermissions = [];
   scriptedEngine.sdkSessions = [];
   scriptedEngine.sdkCwds = [];
+  scriptedEngine.sdkIdentities = [];
   scriptedEngine.events = [];
   scriptedEngine.initialization = Promise.resolve();
   initializeWarnings = [];
@@ -3350,6 +3362,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(scriptedEngine.requests).toEqual([prompt]);
       // The session runs where `pui` was started, not in the project checkout.
       expect(scriptedEngine.sdkCwds.at(-1)).toBe(launchDir);
+      // P-007: outside every registered checkout it is Claude Code's own agent —
+      // its preset prompt, no MCP servers (so no Papercusp tools) and no psu hooks.
+      expect(scriptedEngine.sdkIdentities.at(-1)).toEqual({
+        prompt: 'preset:claude_code', mcpServers: [], strictMcp: true, hooksOff: true,
+      });
       expect(pane.screen()).not.toContain('h:Overview');
       // P-003 / R-03: the ready frame carries no internal jargon …
       const ready = pane.screen();

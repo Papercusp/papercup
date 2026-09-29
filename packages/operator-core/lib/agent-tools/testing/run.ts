@@ -131,7 +131,7 @@ import {
 } from '../../resource-governor/execution';
 import type { ResourceDemand } from '../../resource-governor/admission';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
-import { resolveBashTaskProvenance } from '../capability/bash';
+import { resolveBashTaskProvenance } from '../capability/bash-task-provenance';
 import {
   prepareTestEvidence,
   finishTestEvidence,

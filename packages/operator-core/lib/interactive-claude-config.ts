@@ -90,6 +90,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -933,6 +934,30 @@ function linkInto(src: string, dest: string): void {
     symlinkSync(src, dest);
   } catch {
     /* best-effort — claude surfaces a missing entry the same as a fresh user */
+  }
+}
+
+/**
+ * A PUI chat opened outside every registered checkout is Claude Code's own
+ * agent, not the psu persona (pui-chat-first-ux-2026-09-28 P-007 / D-006), so
+ * like stock `claude` it loads the user's personal global memory. `include`
+ * links exactly the PERSONAL_MEMORY_ENTRIES the mirror skips; `!include`
+ * removes those links again, so a session whose identity changed on resume
+ * never keeps them under the psu persona. Only our own symlinks are removed.
+ */
+export function syncPersonalClaudeMemory(configDir: string, include: boolean, home = homedir()): void {
+  for (const name of PERSONAL_MEMORY_ENTRIES) {
+    const src = join(home, '.claude', name);
+    const dest = join(configDir, name);
+    if (include) {
+      if (present(src)) linkInto(src, dest);
+      continue;
+    }
+    try {
+      if (lstatSync(dest).isSymbolicLink() && readlinkSync(dest) === src) rmSync(dest);
+    } catch {
+      /* absent — nothing to remove */
+    }
   }
 }
 

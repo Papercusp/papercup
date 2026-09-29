@@ -39,6 +39,7 @@ import {
   RECOVER_HOOK_SOURCE,
   RECOVER_INTENT,
   RECOVER_PLAYBOOK,
+  syncPersonalClaudeMemory,
   writeInteractiveClaudeConfig,
 } from './interactive-claude-config';
 
@@ -344,6 +345,29 @@ describe('writeInteractiveClaudeConfig', () => {
     // creds-only strip): the personal-memory skip must not collateral-damage these.
     expect(lstatSync(join(configDir, '.credentials.json')).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(configDir, 'settings.json'), 'utf8')).toContain('PreToolUse');
+  });
+
+  it('pui-chat-first-ux P-007: a coding-assistant chat gets the personal memory; switching back to psu removes only our links', () => {
+    seedHome(home);
+    const { configDir } = writeInteractiveClaudeConfig({ sid: 'su-coding', home });
+    syncPersonalClaudeMemory(configDir, true, home);
+    // Like stock `claude`: the CLAUDE.md entrypoint and its `@AGENTS.md` target.
+    expect(readlinkSync(join(configDir, 'CLAUDE.md'))).toBe(join(home, '.claude', 'CLAUDE.md'));
+    expect(readFileSync(join(configDir, 'AGENTS.md'), 'utf8')).toContain('Personal rules');
+    // An entry the user does not have stays absent (no dangling link).
+    expect(() => lstatSync(join(configDir, 'CLAUDE.local.md'))).toThrow();
+    // Idempotent on resume.
+    syncPersonalClaudeMemory(configDir, true, home);
+    expect(readlinkSync(join(configDir, 'CLAUDE.md'))).toBe(join(home, '.claude', 'CLAUDE.md'));
+
+    // The psu persona never keeps them — but a real file someone put there is not ours.
+    writeFileSync(join(configDir, 'CLAUDE.local.md'), 'session-local\n');
+    syncPersonalClaudeMemory(configDir, false, home);
+    expect(() => lstatSync(join(configDir, 'CLAUDE.md'))).toThrow();
+    expect(() => lstatSync(join(configDir, 'AGENTS.md'))).toThrow();
+    expect(readFileSync(join(configDir, 'CLAUDE.local.md'), 'utf8')).toBe('session-local\n');
+    // The user's own files are untouched.
+    expect(readFileSync(join(home, '.claude', 'CLAUDE.md'), 'utf8')).toBe('@AGENTS.md\n');
   });
 
   it('symlinks the sibling ~/.claude.json (user-level MCP + onboarding/trust carry through)', () => {
