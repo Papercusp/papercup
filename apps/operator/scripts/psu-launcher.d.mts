@@ -605,13 +605,20 @@ export function resumeKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
  * and codex via its own config; passing --hook to either is meaningless.
  */
 export function resolveOmpInjectHookPath(agent: any, home?: string): string | undefined;
+/**
+ * @param {any} session
+ * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv }} [opts]
+ */
 export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, personaFile, env, }?: {
-    fork?: boolean | undefined;
-    forkSessionId?: null | undefined;
-    addDir?: never[] | undefined;
-    model?: null | undefined;
-    personaFile?: null | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
+    coordExtPath?: string;
+    injectHookPath?: string;
+    fork?: boolean;
+    forkSessionId?: string | null;
+    addDir?: string[];
+    allowSubagents?: boolean;
+    model?: string | null;
+    personaFile?: string | null;
+    env?: NodeJS.ProcessEnv;
 }): {
     bin: string;
     args: any[];

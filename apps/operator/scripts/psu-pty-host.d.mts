@@ -2364,9 +2364,18 @@ export function contextClearCommandForAgent(agent: any): "/new" | "/clear";
  * place, but Codex's `/new` command only changes the visible TUI state; the
  * long-lived Codex process still retains the context that the cold boundary is
  * meant to discard. Route Codex reset envelopes through the existing hard
- * recycle path so a fresh child process is guaranteed. Pure — exported for
- * tests. */
-export function coldResetModeForAgent(agent: any): "reset" | "recycle";
+ * recycle path so a fresh child process is guaranteed.
+ *
+ * A Claude child spawned WITHOUT --system-prompt-file (a `psu --resume` from
+ * before resumeArgsFor carried the persona, or one whose resume render failed)
+ * takes the hard path too (EI-24628537598753105): `/clear` would open its fresh
+ * conversation on claude's stock coding prompt, while a recycle re-renders the
+ * persona and mintRecycleArgs adds the flag. `childArgs` is the LIVE child's
+ * argv; omitted, the verdict is the backend default. Pure — exported for tests.
+ * @param {string | null | undefined} agent
+ * @param {readonly unknown[] | null} [childArgs]
+ * @returns {'reset' | 'recycle'} */
+export function coldResetModeForAgent(agent: string | null | undefined, childArgs?: readonly unknown[] | null): "reset" | "recycle";
 /** The RESET-CONTEXT settle window (repaint budget after the clear submits).
  *  Session-env tunable, module default as fallback.
  *  @param {EnvironmentMap} [env]

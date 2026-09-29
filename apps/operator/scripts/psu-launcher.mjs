@@ -2420,6 +2420,10 @@ export function resolveOmpInjectHookPath(agent, home = homedir()) {
   return existsSync(hook) ? hook : undefined;
 }
 
+/**
+ * @param {any} session
+ * @param {{ coordExtPath?: string, injectHookPath?: string, fork?: boolean, forkSessionId?: string | null, addDir?: string[], allowSubagents?: boolean, model?: string | null, personaFile?: string | null, env?: NodeJS.ProcessEnv }} [opts]
+ */
 export function resumeArgsFor(
   session,
   {
