@@ -312,6 +312,33 @@ export function binaryPredatesBaseline(
   return builtAt + BUILD_SWEEP_LAG_TOLERANCE_MS < baselineAt ? { builtAt, baselineAt } : null;
 }
 
+/**
+ * How the measured build relates to the judged candidate and the green pin, read from
+ * the build's OWN recorded source sha (`DesktopPerfRun.buildSha`) — plan
+ * desktop-perf-measure-candidate-build-2026-09-29 P-002 / D-001.
+ *
+ *   candidate          — the build IS the judged candidate: attributable.
+ *   candidate-ancestor — strictly inside the candidate's promotion delta (an ancestor of
+ *                        the candidate that is not on the pin): attributable, because
+ *                        everything it adds would reach `main` with the candidate.
+ *   on-baseline        — contained in the green pin: anything it shows is already there.
+ *   unrelated          — a real commit that is neither (a newer tip, a side branch): it is
+ *                        not what would be promoted, so it cannot be charged to it.
+ *   unknown            — no clean identity recorded, or git could not answer. Only this
+ *                        falls back to the build-time (mtime) rule.
+ */
+export type DesktopPerfBuildRelation = 'candidate' | 'candidate-ancestor' | 'on-baseline' | 'unrelated' | 'unknown';
+
+export interface DesktopPerfBuildAttribution {
+  /** Full sha when git resolved it, else the recorded value, else null. */
+  buildSha: string | null;
+  relation: DesktopPerfBuildRelation;
+}
+
+function shortSha(sha: string | null): string {
+  return sha ? sha.slice(0, 8) : 'unknown';
+}
+
 function isoMinute(ms: number): string {
   return new Date(ms).toISOString().slice(0, 16) + 'Z';
 }
@@ -426,8 +453,10 @@ function fmtUnmeasuredInvariant(m: DesktopPerfMeasure): string {
  *   disabled                         → pass  (no-op; the gate is opt-in via the flag)
  *   no run / no measures (unknown)   → pass  (fail-soft: never block on missing data)
  *   run older than policy.maxAgeMs   → pass  (fail-soft: stale data is not a verdict)
+ *   build identity on the pin / unrelated → warn (unknown: not the candidate's build — P-002;
+ *                                            findings reported as pre-existing / on that build)
  *   binary built before `baseline`   → warn  (unknown: a stale BUILD is not the candidate —
- *                                            WI-10003815; findings reported as pre-existing)
+ *                                            WI-10003815; ONLY when no identity names the build)
  *   an INVARIANT measure breached    → block ALWAYS (independent of policy.block)
  *   an INVARIANT never MEASURED      → warn  (unknown: a probe that did not run is not a
  *                                            breach — WI-39665 D-008)
@@ -447,6 +476,7 @@ export function evaluateDesktopPerfGate(
   candidateSha?: string,
   now: number = Date.now(),
   baseline?: DesktopPerfBaseline | null,
+  attribution?: DesktopPerfBuildAttribution | null,
 ): DesktopPerfGateDecision {
   const sha = shaLabel(candidateSha);
 
@@ -505,7 +535,35 @@ export function evaluateDesktopPerfGate(
   // reason: a breach recorded against a tree the candidate has moved past must not hold it
   // hostage. `warn` rather than `pass` (D-007), with every finding still named — a
   // pre-existing regression is real and must stay audible, just not charged to the candidate.
-  const predates = binaryPredatesBaseline(run, baseline);
+  //
+  // BUILD IDENTITY OUTRANKS BUILD TIME (plan desktop-perf-measure-candidate-build-2026-09-29
+  // P-002 / D-001). When the build recorded its own source sha, the gate reads it and the
+  // mtime rule below is only the fallback for builds that recorded none: time attribution
+  // misreads any rebuild that is not the candidate as the candidate.
+  const relation = attribution?.relation ?? 'unknown';
+  if (relation === 'on-baseline' || relation === 'unrelated') {
+    const found = [...breachedInvariants(run).map(fmtInvariant), ...failingMeasures(run).map(fmtMeasure)];
+    const pin = baseline?.ref ?? 'the green pin';
+    const build = shortSha(attribution?.buildSha ?? null);
+    const why =
+      relation === 'on-baseline'
+        ? `the measured packaged binary was built from ${build}, which is already on ${pin}, so it cannot contain ${sha} and anything it shows is already on ${pin}`
+        : `the measured packaged binary was built from ${build}, which is neither ${sha} nor on ${pin}, so it is not what would be promoted`;
+    const label = relation === 'on-baseline' ? `pre-existing on ${pin}` : `on build ${build}`;
+    return {
+      action: 'warn',
+      reasons: [`UNATTRIBUTABLE (build identity): ${why}`, ...found.map((r) => `${label}: ${r}`)],
+      summary:
+        found.length > 0
+          ? `🟧 desktop-perf-gate: desktop-perf miss on build ${build}, NOT reported as ${sha}'s regression — ${why}. ` +
+            `Deploy advances; ${label}: ${found.join('; ')}. Build and measure the candidate to judge it.`
+          : `🟧 desktop-perf-gate: ${sha} advances UNMEASURED — ${why}. Build and measure the candidate to judge it.`,
+      verdictStatus: 'unknown',
+      pressure,
+    };
+  }
+  const identityProvesCandidate = relation === 'candidate' || relation === 'candidate-ancestor';
+  const predates = identityProvesCandidate ? null : binaryPredatesBaseline(run, baseline);
   if (predates && baseline) {
     const gapDays = ((predates.baselineAt - predates.builtAt) / 86_400_000).toFixed(1);
     const why =
@@ -722,6 +780,11 @@ export interface DesktopPerfGateIO {
   readLatestRun: (workspaceId: string) => Promise<DesktopPerfRun | null>;
   /** Newest commit time (epoch ms) reachable within the last few commits of `ref`, or null. */
   readNewestCommitAtMs?: (ref: string, repoRoot: string) => Promise<number | null>;
+  /** Relate the measured build's recorded sha to the candidate and the pin (P-002). */
+  classifyBuild?: (
+    buildSha: string | null,
+    opts: { candidateSha?: string; baselineRef?: string; repoRoot: string },
+  ) => Promise<DesktopPerfBuildAttribution>;
 }
 
 const execFileAsync = promisify(execFile);
@@ -748,9 +811,69 @@ export async function readNewestCommitAtMs(ref: string, repoRoot: string): Promi
   return newest > 0 ? newest * 1000 : null;
 }
 
+/** Full commit sha `rev` names in `repoRoot`, or null when git cannot resolve it. */
+async function resolveCommit(rev: string, repoRoot: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', repoRoot, 'rev-parse', '--verify', '--quiet', `${rev}^{commit}`],
+      { encoding: 'utf8', timeout: 15_000 },
+    );
+    const sha = stdout.trim();
+    return /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `git merge-base --is-ancestor`: true / false from its documented exit codes 0 / 1;
+ * null for anything else (a bad ref, a timeout) — "could not tell", never "no".
+ */
+async function isAncestor(ancestor: string, descendant: string, repoRoot: string): Promise<boolean | null> {
+  try {
+    await execFileAsync('git', ['-C', repoRoot, 'merge-base', '--is-ancestor', ancestor, descendant], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    return true;
+  } catch (err) {
+    return (err as { code?: unknown }).code === 1 ? false : null;
+  }
+}
+
+/**
+ * Relate a measured build's recorded source sha to the judged candidate and the green
+ * pin — see {@link DesktopPerfBuildRelation}. Pure git reads in `repoRoot` (the
+ * integration tree the build came from). Every doubt resolves to `unknown`, which the
+ * gate answers with its pre-existing build-time rule rather than a guess. Order
+ * matters: a build that is on the pin is pre-existing even though the pin is itself an
+ * ancestor of the candidate.
+ */
+export async function classifyBuildSha(
+  buildSha: string | null,
+  opts: { candidateSha?: string; baselineRef?: string; repoRoot: string },
+): Promise<DesktopPerfBuildAttribution> {
+  if (!buildSha) return { buildSha: null, relation: 'unknown' };
+  const build = await resolveCommit(buildSha, opts.repoRoot);
+  if (!build) return { buildSha, relation: 'unknown' };
+  const candidate = opts.candidateSha ? await resolveCommit(opts.candidateSha, opts.repoRoot) : null;
+  if (candidate && candidate === build) return { buildSha: build, relation: 'candidate' };
+  if (opts.baselineRef) {
+    const onPin = await isAncestor(build, opts.baselineRef, opts.repoRoot);
+    if (onPin === null) return { buildSha: build, relation: 'unknown' };
+    if (onPin) return { buildSha: build, relation: 'on-baseline' };
+  }
+  if (!candidate) return { buildSha: build, relation: 'unknown' };
+  const inDelta = await isAncestor(build, candidate, opts.repoRoot);
+  if (inDelta === null) return { buildSha: build, relation: 'unknown' };
+  return { buildSha: build, relation: inDelta ? 'candidate-ancestor' : 'unrelated' };
+}
+
 const defaultDesktopPerfGateIO: DesktopPerfGateIO = {
   readLatestRun: async (workspaceId) => (await readDesktopPerfRuns(workspaceId, 1))[0] ?? null,
   readNewestCommitAtMs,
+  classifyBuild: classifyBuildSha,
 };
 
 /**
@@ -787,5 +910,16 @@ export async function runDesktopPerfGate(
     const newestCommitAtMs = await read(opts.baselineRef, opts.repoRoot ?? process.cwd()).catch(() => null);
     baseline = { ref: opts.baselineRef, newestCommitAtMs };
   }
-  return evaluateDesktopPerfGate(run, policy, candidateSha, Date.now(), baseline);
+  // P-002: attribute by the build's own recorded identity. Fail-soft like the baseline
+  // read — an unanswerable classification is `unknown`, i.e. the build-time fallback.
+  let attribution: DesktopPerfBuildAttribution | null = null;
+  if (run?.buildSha && (candidateSha || opts.baselineRef)) {
+    const classify = io.classifyBuild ?? classifyBuildSha;
+    attribution = await classify(run.buildSha, {
+      candidateSha,
+      baselineRef: opts.baselineRef,
+      repoRoot: opts.repoRoot ?? process.cwd(),
+    }).catch(() => ({ buildSha: run.buildSha, relation: 'unknown' as const }));
+  }
+  return evaluateDesktopPerfGate(run, policy, candidateSha, Date.now(), baseline, attribution);
 }

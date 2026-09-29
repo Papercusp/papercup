@@ -178,9 +178,10 @@ export function recordBinaryIdentity(appPath: string): void {
   }
 }
 
-/** The build-identity file `papercusp-desktop/bin/build-deb-repacked.sh` writes into
- *  the cargo profile dir (`<target>/<profile>/`) after a successful `tauri build`. */
-export const BUILD_IDENTITY_FILE = "build-identity.json";
+/** The build-provenance file `papercusp-desktop/bin/build-deb-repacked.sh` writes into
+ *  the cargo profile dir (`<target>/<profile>/`) after a successful `tauri build`.
+ *  Name fixed by plan desktop-perf-measure-candidate-build-2026-09-29 P-001. */
+export const BUILD_IDENTITY_FILE = "build-provenance.json";
 
 /** Slack for filesystem mtime granularity between the binary and the identity file
  *  written moments after it. Far below any real rebuild interval. */
@@ -194,13 +195,19 @@ const IDENTITY_MTIME_SLACK_MS = 2_000;
  * BINARY came from, and nothing in the binary exposes that. So the build records it:
  * this walks up from the binary (a deb staging path `<profile>/bundle/deb/<pkg>/data/
  * usr/bin/<bin>` is six levels below `<profile>`; a raw `<profile>/<bin>` is one) to
- * the nearest `build-identity.json`.
+ * the nearest `build-provenance.json`.
  *
  * The file is trusted ONLY when it is at least as new as the binary: an identity
  * written by an EARLIER scripted build, left beside a binary re-built afterwards by a
  * plain `tauri build`, would otherwise attribute the new binary to the old sha — the
  * exact misattribution D-001 exists to prevent. Never throws; every doubt is null,
  * which the gate reads as "unattributable", never as a guess.
+ *
+ * A DIRTY build (`"dirty": true` — built with uncommitted tracked edits) is null too
+ * (P-002). Its binary is `buildSha` PLUS edits that land in LATER commits, which may be
+ * in the judged candidate but not on the green pin; attributing it to `buildSha` would
+ * let the gate call a regression those edits caused "pre-existing on main". Only a
+ * clean build names its source exactly.
  */
 export function readBuildIdentity(appPath: string, maxLevels = 7): string | null {
   let binaryMtimeMs: number;
@@ -215,7 +222,8 @@ export function readBuildIdentity(appPath: string, maxLevels = 7): string | null
     if (existsSync(candidate)) {
       try {
         if (statSync(candidate).mtimeMs + IDENTITY_MTIME_SLACK_MS < binaryMtimeMs) return null;
-        const parsed = JSON.parse(readFileSync(candidate, "utf8")) as { buildSha?: unknown };
+        const parsed = JSON.parse(readFileSync(candidate, "utf8")) as { buildSha?: unknown; dirty?: unknown };
+        if (parsed.dirty === true) return null;
         const sha = typeof parsed.buildSha === "string" ? parsed.buildSha.trim().toLowerCase() : "";
         return /^[0-9a-f]{7,64}$/.test(sha) ? sha : null;
       } catch {

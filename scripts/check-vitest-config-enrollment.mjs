@@ -53,6 +53,8 @@ export const PLAIN_CONFIG_EXEMPTIONS = new Set([
   // gate-silent by design: the arming-time classifier (resolveTaskReportExpectation) counts them
   // as noReportExpected (`unenrolled-config`), never noReportUnexpected. Decided on WI-10003808:
   // pass-proof reuse over their ~29 small test files is not worth reversing WI-4973.
+  // libs/generic/desktop-ipc (github.com/Papercusp/desktop-ipc) is the same class but has NO
+  // config file, so it never appears in this set: the classifier counts it `no-config`, expected.
   'libs/generic/card-stack/vitest.config.ts',
   'libs/generic/ipc-endpoint-server/vitest.config.ts',
   'libs/generic/search/vitest.config.ts',

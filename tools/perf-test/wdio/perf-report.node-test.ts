@@ -236,6 +236,25 @@ test("readBuildIdentity refuses an identity OLDER than the binary (rebuilt after
   }
 });
 
+test("readBuildIdentity refuses a DIRTY build — its binary is not exactly the recorded sha (P-002)", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "perf-build-identity-"));
+  try {
+    const bin = path.join(root, "release", "papercusp-desktop");
+    mkdirSync(path.dirname(bin), { recursive: true });
+    writeFileSync(bin, "binary");
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(bin, past, past);
+    const identity = path.join(root, "release", BUILD_IDENTITY_FILE);
+    writeFileSync(identity, JSON.stringify({ buildSha: "4223f93417df", dirty: true }));
+    assert.equal(readBuildIdentity(bin), null);
+    // CONTROL: the same file recorded clean is trusted.
+    writeFileSync(identity, JSON.stringify({ buildSha: "4223f93417df", dirty: false }));
+    assert.equal(readBuildIdentity(bin), "4223f93417df");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("readBuildIdentity returns null for a missing binary, missing file, or malformed sha", () => {
   const root = mkdtempSync(path.join(tmpdir(), "perf-build-identity-"));
   try {

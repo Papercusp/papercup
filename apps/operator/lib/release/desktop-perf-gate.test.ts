@@ -1,6 +1,11 @@
-import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  classifyBuildSha,
+  type DesktopPerfBuildAttribution,
   evaluateDesktopPerfGate,
   desktopPerfGatePolicyFromFlags,
   runDesktopPerfGate,
@@ -436,6 +441,158 @@ describe('stale packaged build (WI-10003815)', () => {
       baselineAt: MAIN.newestCommitAtMs,
     });
     expect(binaryPredatesBaseline(run([], 'pass', NOW), MAIN)).toBeNull();
+  });
+});
+
+/**
+ * Plan desktop-perf-measure-candidate-build-2026-09-29 P-002 / D-001 — attribute by the
+ * build's OWN recorded source sha before falling back to build time. Time attribution
+ * misreads any rebuild that is not the candidate as the candidate; identity cannot.
+ */
+describe('build-identity attribution (P-002)', () => {
+  const NOW = 1_790_650_000_000;
+  const DAY = 86_400_000;
+  const MAIN: DesktopPerfBaseline = { ref: 'main', newestCommitAtMs: NOW - 5 * 3_600_000 };
+  const CAND = 'd425508f01ed00000000000000000000000000aa';
+  const attr = (relation: DesktopPerfBuildAttribution['relation'], buildSha: string | null = 'b1d0000000000000000000000000000000000000'): DesktopPerfBuildAttribution => ({ buildSha, relation });
+  const freshBuild = builtStamp(MAIN.newestCommitAtMs! + 60_000);
+  const staleBuild = builtStamp(NOW - 12 * DAY);
+  const breached = (stamp: DesktopPerfMeasure) => run([breach, ...quiet(), stamp], 'fail', NOW);
+
+  it('build on the pin → warn, findings reported as pre-existing — even when build TIME says fresh', () => {
+    // The case time attribution gets wrong: a rebuild of main made after main's newest commit.
+    const d = evaluateDesktopPerfGate(breached(freshBuild), ARMED, CAND, NOW, MAIN, attr('on-baseline'));
+    expect(d.action).toBe('warn');
+    expect(d.verdictStatus).toBe('unknown');
+    expect(d.reasons[0]).toMatch(/UNATTRIBUTABLE \(build identity\).*built from b1d00000, which is already on main/);
+    expect(d.reasons).toContain('pre-existing on main: interaction:plan-popup-open 1800ms > budget 1500ms');
+    expect(d.summary).toMatch(/NOT reported as d425508f's regression/);
+  });
+
+  it('CONTROL: the same run with no identity falls back to build time and blocks', () => {
+    for (const a of [undefined, null, attr('unknown'), attr('unknown', null)]) {
+      expect(evaluateDesktopPerfGate(breached(freshBuild), ARMED, CAND, NOW, MAIN, a).action).toBe('block');
+    }
+  });
+
+  it('build IS the candidate → attributable even when build time predates main (identity outranks mtime)', () => {
+    const d = evaluateDesktopPerfGate(breached(staleBuild), ARMED, CAND, NOW, MAIN, attr('candidate', CAND));
+    expect(d.action).toBe('block');
+    expect(d.verdictStatus).toBe('crit');
+  });
+
+  it('build inside the candidate delta → attributable (it would reach main with the candidate)', () => {
+    expect(evaluateDesktopPerfGate(breached(staleBuild), ARMED, CAND, NOW, MAIN, attr('candidate-ancestor')).action).toBe('block');
+  });
+
+  it('a candidate-identified clean run clears', () => {
+    const d = evaluateDesktopPerfGate(run([ok, ...quiet(), staleBuild], 'pass', NOW), ARMED, CAND, NOW, MAIN, attr('candidate', CAND));
+    expect(d.action).toBe('pass');
+    expect(d.verdictStatus).toBe('ok');
+  });
+
+  it('an unrelated build (newer tip / side branch) is not charged to the candidate', () => {
+    const d = evaluateDesktopPerfGate(breached(freshBuild), ARMED, CAND, NOW, MAIN, attr('unrelated'));
+    expect(d.action).toBe('warn');
+    expect(d.reasons[0]).toMatch(/neither d425508f nor on main, so it is not what would be promoted/);
+    expect(d.reasons).toContain('on build b1d00000: interaction:plan-popup-open 1800ms > budget 1500ms');
+  });
+
+  it('an invariant breach on a pre-existing build warns rather than blocks', () => {
+    const d = evaluateDesktopPerfGate(run([egressBreach, freshBuild], 'fail', NOW), ARMED, CAND, NOW, MAIN, attr('on-baseline'));
+    expect(d.action).toBe('warn');
+    expect(d.reasons.some((r) => r.startsWith('pre-existing on main: invariant:webview-http-egress'))).toBe(true);
+  });
+
+  it('a clean pre-existing build is not a clear: warn, UNMEASURED', () => {
+    const d = evaluateDesktopPerfGate(run([ok, ...quiet(), freshBuild], 'pass', NOW), ARMED, CAND, NOW, MAIN, attr('on-baseline'));
+    expect(d.action).toBe('warn');
+    expect(d.summary).toContain('d425508f advances UNMEASURED');
+  });
+
+  it('a stale RUN still reports as a stale run (branch order)', () => {
+    const d = evaluateDesktopPerfGate(run([breach, ...quiet(), freshBuild], 'fail', NOW - 2 * DAY), ARMED, CAND, NOW, MAIN, attr('on-baseline'));
+    expect(d.summary).toMatch(/latest desktop-perf run is STALE/);
+  });
+
+  it('runDesktopPerfGate classifies the run buildSha against candidate + pin', async () => {
+    const calls: Array<[string | null, { candidateSha?: string; baselineRef?: string; repoRoot: string }]> = [];
+    const d = await runDesktopPerfGate(ARMED, {
+      candidateSha: CAND, baselineRef: 'main', repoRoot: '/repo',
+      io: {
+        readLatestRun: async () => ({ ...run([breach, ...quiet(), freshBuild]), buildSha: 'b1d0' }),
+        readNewestCommitAtMs: async () => Date.now() - 3_600_000,
+        classifyBuild: async (sha, opts) => { calls.push([sha, opts]); return attr('on-baseline'); },
+      },
+    });
+    expect(calls).toEqual([['b1d0', { candidateSha: CAND, baselineRef: 'main', repoRoot: '/repo' }]]);
+    expect(d.action).toBe('warn');
+    expect(d.reasons[0]).toMatch(/UNATTRIBUTABLE \(build identity\)/);
+  });
+
+  it('runDesktopPerfGate: no recorded buildSha → never classified; a failing classifier degrades to the time rule', async () => {
+    let classified = 0;
+    const base = { candidateSha: CAND, baselineRef: 'main', repoRoot: '/repo' };
+    const noIdentity = await runDesktopPerfGate(ARMED, {
+      ...base,
+      io: {
+        readLatestRun: async () => run([breach, ...quiet(), builtStamp(Date.now())]),
+        readNewestCommitAtMs: async () => Date.now() - 3_600_000,
+        classifyBuild: async () => { classified += 1; return attr('on-baseline'); },
+      },
+    });
+    expect(classified).toBe(0);
+    expect(noIdentity.action).toBe('block');
+    const failing = await runDesktopPerfGate(ARMED, {
+      ...base,
+      io: {
+        readLatestRun: async () => ({ ...run([breach, ...quiet(), builtStamp(Date.now())]), buildSha: 'b1d0' }),
+        readNewestCommitAtMs: async () => Date.now() - 3_600_000,
+        classifyBuild: async () => { throw new Error('git failed'); },
+      },
+    });
+    expect(failing.action).toBe('block');
+  });
+
+  describe('classifyBuildSha against a real repository', () => {
+    // main: A — B ; candidate: B — C — D (D = candidate) ; side: A — S
+    let repo = '';
+    const sha: Record<string, string> = {};
+    const git = (...args: string[]) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+    beforeAll(() => {
+      repo = mkdtempSync(path.join(tmpdir(), 'desktop-perf-identity-'));
+      git('init', '-q', '-b', 'main');
+      git('config', 'user.email', 't@example.invalid');
+      git('config', 'user.name', 't');
+      const commit = (name: string) => { git('commit', '-q', '--allow-empty', '-m', name); sha[name] = git('rev-parse', 'HEAD'); };
+      commit('A'); commit('B');
+      git('checkout', '-q', '-b', 'cand'); commit('C'); commit('D'); commit('E');
+      git('checkout', '-q', sha.A!); commit('S');
+      git('checkout', '-q', 'main');
+    });
+    afterAll(() => { if (repo) rmSync(repo, { recursive: true, force: true }); });
+    const classify = (build: string | null, candidateSha: string | undefined = sha.D, baselineRef: string | undefined = 'main') =>
+      classifyBuildSha(build, { candidateSha, baselineRef, repoRoot: repo });
+
+    it('names each relation from git ancestry, resolving short shas to full ones', async () => {
+      expect(await classify(sha.D!.slice(0, 10))).toEqual({ buildSha: sha.D, relation: 'candidate' });
+      expect(await classify(sha.A!)).toEqual({ buildSha: sha.A, relation: 'on-baseline' });
+      expect(await classify(sha.B!)).toEqual({ buildSha: sha.B, relation: 'on-baseline' });
+      expect(await classify(sha.C!)).toEqual({ buildSha: sha.C, relation: 'candidate-ancestor' });
+      expect(await classify(sha.E!)).toEqual({ buildSha: sha.E, relation: 'unrelated' }); // newer than the candidate
+      expect(await classify(sha.S!)).toEqual({ buildSha: sha.S, relation: 'unrelated' }); // side branch
+    });
+
+    it('every doubt is unknown: no sha, a sha git cannot resolve, an unreadable pin, no candidate', async () => {
+      expect(await classify(null)).toEqual({ buildSha: null, relation: 'unknown' });
+      expect(await classify('0123456789abcdef0123456789abcdef01234567')).toEqual({ buildSha: '0123456789abcdef0123456789abcdef01234567', relation: 'unknown' });
+      expect((await classify(sha.C!, sha.D, 'no-such-ref')).relation).toBe('unknown');
+      // (classifyBuildSha directly: an explicit `undefined` would re-apply the helper's defaults.)
+      expect((await classifyBuildSha(sha.C!, { baselineRef: 'main', repoRoot: repo })).relation).toBe('unknown');
+      expect((await classifyBuildSha(sha.A!, { baselineRef: 'main', repoRoot: repo })).relation).toBe('on-baseline');
+      // With no pin to test against, the candidate lineage still answers.
+      expect((await classifyBuildSha(sha.C!, { candidateSha: sha.D, repoRoot: repo })).relation).toBe('candidate-ancestor');
+    });
   });
 });
 
