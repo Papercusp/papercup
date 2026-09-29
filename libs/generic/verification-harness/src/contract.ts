@@ -9,7 +9,9 @@
  * whose passed result a later `--only` / `--from` run may take from a prior run's evidence
  * instead of paying for it again.
  */
+import path from 'node:path';
 import { GUARD_RAIL_TAG, type GuardRailReport } from './guard-rails.js';
+import type { TierGateReport, TierReceiptsReport } from './tier-gate.js';
 
 /**
  * A harness that can run the same phases on a cheap rig (same-box, local, mocked) and on an
@@ -73,7 +75,8 @@ export interface PhaseResult {
   reusedFromRunId?: string;
 }
 
-export type HarnessVerdict = 'pass' | 'fail' | 'preflight-failed';
+/** tier-refused: an expensive-tier run the tier gate refused before paying for preflight or any phase. */
+export type HarnessVerdict = 'pass' | 'fail' | 'preflight-failed' | 'tier-refused';
 
 export interface HarnessSelection {
   only: string[] | null;
@@ -93,6 +96,12 @@ export interface HarnessRunResult {
   firstFailure: { phase: string; step: string | null; reasonCode: string | null } | null;
   /** Guard rails checked in preflight; null when the harness declares no scope tags. */
   guardRails?: GuardRailReport | null;
+  /** The tier this run ran on; null/absent when the contract declares no tiers. */
+  tier?: Tier | null;
+  /** Expensive tier: the gate's per-phase verdict (refused phases name why). */
+  tierGate?: TierGateReport | null;
+  /** Cheap tier: where passing phases' code hashes were recorded. */
+  tierReceipts?: TierReceiptsReport | null;
   startedAt: string;
   endedAt: string | null;
 }
@@ -125,5 +134,36 @@ export function validateContract(contract: HarnessContract): void {
       }
     }
     seen.add(p.id);
+  }
+  validateTiers(contract);
+}
+
+function validateTiers(contract: HarnessContract): void {
+  const byId = new Map(contract.phases.map((p) => [p.id, p]));
+  if (!contract.tiers) {
+    const tiered = contract.phases.find((p) => p.tiers !== undefined);
+    if (tiered) throw new HarnessContractError(`${contract.name}: phase ${tiered.id} declares tiers but the contract declares none`);
+    return;
+  }
+  for (const t of TIERS) {
+    if (!contract.tiers[t]) throw new HarnessContractError(`${contract.name}: contract.tiers.${t} must say what that tier runs on`);
+  }
+  for (const p of contract.phases) {
+    if (p.tiers && (p.tiers.length === 0 || p.tiers.some((t) => !(TIERS as readonly string[]).includes(t)))) {
+      throw new HarnessContractError(`${contract.name}: phase ${p.id} has invalid tiers ${JSON.stringify(p.tiers)}`);
+    }
+    const mine = phaseTiers(contract, p);
+    for (const d of p.dependsOn ?? []) {
+      const missing = mine.find((t) => !phaseTiers(contract, byId.get(d)!).includes(t));
+      if (missing) throw new HarnessContractError(`${contract.name}: phase ${p.id} runs in the ${missing} tier but its dependency ${d} does not`);
+    }
+    if (mine.length === TIERS.length && !(p.code && p.code.length > 0)) {
+      throw new HarnessContractError(
+        `${contract.name}: phase ${p.id} runs in both tiers, so it must declare \`code\` (its identity for the tier gate)`,
+      );
+    }
+    if ((p.code ?? []).some((c) => !c || c.startsWith('#') || path.isAbsolute(c.split('#')[0]!))) {
+      throw new HarnessContractError(`${contract.name}: phase ${p.id} has an invalid code path (relative path, optional #function)`);
+    }
   }
 }

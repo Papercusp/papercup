@@ -37,10 +37,14 @@ export function recipePackageInstalledHash(value: RecipePackageValue | CodeRecip
   return createHash('sha256').update(canonicalJson(recipeMaterial(value))).digest('hex');
 }
 
-function recipeValue(pin: ResolvedPackageInput): RecipePackageValue {
+/** The shape readRecipeDir emits: description may be empty, toolsUsed and tags
+ * are always arrays. Compile runs this too, so a malformed pin is refused at
+ * preflight instead of at the wearer's launch. */
+export function recipeValue(pin: ResolvedPackageInput): RecipePackageValue {
   const value = pin.value as Partial<RecipePackageValue> | null;
   if (pin.packageKind !== 'recipe' || !value ||
-      ![value.id, value.title, value.description, value.script].every((entry) => typeof entry === 'string' && entry.trim()) ||
+      ![value.id, value.title, value.script].every((entry) => typeof entry === 'string' && entry.trim()) ||
+      typeof value.description !== 'string' ||
       !Array.isArray(value.toolsUsed) || !value.toolsUsed.every((entry) => typeof entry === 'string') ||
       !Array.isArray(value.tags) || !value.tags.every((entry) => typeof entry === 'string')) {
     throw new Error('recipe resource requires an exact parsed recipe package');

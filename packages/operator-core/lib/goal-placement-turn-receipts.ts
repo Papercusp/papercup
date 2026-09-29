@@ -211,7 +211,11 @@ export async function recordGoalPlacementTurnEnd(input: {
     .map((row) => ({ planSlug: row.scope.planSlug ?? null,
       planRef: row.action?.targetRef?.startsWith('plan:') ? row.action.targetRef : null,
       status: row.status, applicableDemand: row.applicableDemand, actionKind: row.action?.kind ?? null,
-      obligationId: row.id, sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision }));
+      obligationId: row.id, sourceGeneration: row.sourceGeneration, ruleRevision: row.ruleRevision,
+      // An `unknown` row is only diagnosable with its reason: without the code a
+      // no-opportunity trial cannot tell a failed read from a genuinely unplaced plan.
+      ...(row.measurementFailure ? { measurementFailure: {
+        code: row.measurementFailure.code, detail: row.measurementFailure.detail.slice(0, 500) } } : {}) }));
   if (!rows.length) return { recorded: false, reason: 'placement-policy-unmeasured' };
   const parsedDelivery = goalPlacementDeliverySchema.safeParse(await deps.pending?.(input.ownerId, input.workspaceId));
   const delivery = parsedDelivery.success && parsedDelivery.data.ownerId === input.ownerId &&
@@ -365,7 +369,8 @@ const turnEndSchema = z.object({ version: z.literal(1), goalId: nonempty, comple
   rows: z.array(z.object({ planSlug: nonempty.nullable(), planRef: planRefSchema.nullable(),
     status: z.enum(['due', 'in-progress', 'blocked', 'satisfied', 'not-applicable', 'unknown']),
     applicableDemand: z.number(), actionKind: z.string().nullable(), obligationId: nonempty,
-    sourceGeneration: nonempty, ruleRevision: nonempty })),
+    sourceGeneration: nonempty, ruleRevision: nonempty,
+    measurementFailure: z.object({ code: nonempty, detail: z.string() }).optional() })),
   admissions: z.array(z.object({ planRef: planRefSchema, admission: admissionSchema })).optional(),
 });
 

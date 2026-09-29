@@ -242,6 +242,16 @@ export async function compileBlueprintWithPackages(
     requests.push({ kind: 'rubric', ref: ref.ref, version: ref.revision });
   }
   const packages = await resolveBlueprintPackageInputs(requests, options.resolvePackage);
+  if (packages.some((pin) => pin.packageKind === 'recipe')) {
+    // The launch-time journal refuses a malformed recipe; refuse it here first.
+    const { recipeValue } = await import('./package-recipe-resources');
+    for (const pin of packages) {
+      if (pin.packageKind !== 'recipe') continue;
+      try { recipeValue(pin); } catch (error) {
+        throw new CompositionCompilerError('input-invalid', error instanceof Error ? error.message : String(error), pin.ref);
+      }
+    }
+  }
   const externalProgramPins: ResolvedPackageInput[] = [];
   const selectedProgramRefs = new Map<string, { revision: string; contentHash: string }>();
   const sourcePath = options.sourcePath ?? (isLoaded ? (loaded as LoadedBlueprint).sourcePath : null);

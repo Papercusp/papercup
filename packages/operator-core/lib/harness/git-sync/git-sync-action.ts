@@ -5707,10 +5707,22 @@ async function resolveHiveGitProtocolScope(
   return { hive_id: hive.pubkeyBase64, repo_key: repoKey };
 }
 
-async function runRefAnnounceLeg(
+/**
+ * `servingDeps` lets a process that is NOT the serving owner (the P-521 F3
+ * physical drill producer) run this exact leg while resolving the owner's
+ * capability only from its cross-process advertisement — and never lazily
+ * booting a second owner of its own. `onPublished` reports the announcement
+ * THIS call signed and persisted, so that caller can tell its own publication
+ * from one the owner's scheduled tick made in the same window.
+ */
+export async function runRefAnnounceLeg(
   slug: string,
   workspaceId: string,
-  options: { receive?: boolean } = {},
+  options: {
+    receive?: boolean;
+    servingDeps?: GitServingResolutionDeps;
+    onPublished?: (announcement: { version: number; sigrefs_oid: string }) => void;
+  } = {},
 ): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
@@ -5724,7 +5736,7 @@ async function runRefAnnounceLeg(
     if (!potHomeSlug) return;
     // WI-5168: federated repoKey — see repo-identity.ts.
     const repoKey = canonicalRepoKey(entry);
-    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey);
+    const actor = await resolveHiveGitActor(workspaceId, slug, potHomeSlug, repoKey, options.servingDeps);
     if (!actor) return; // gh unauthenticated — no device identity to sign/announce as
     const protocolScope = await resolveHiveGitProtocolScope(workspaceId, potHomeSlug, repoKey);
 
@@ -5826,6 +5838,7 @@ async function runRefAnnounceLeg(
           at: Date.now(),
         }),
       });
+      options.onPublished?.(announcement);
     }
     if (publishOutcome.errors.length) {
       console.warn(`[git-sync] ${slug}: ref-announce publish reported errors: ${publishOutcome.errors.join('; ')}`);

@@ -366,10 +366,17 @@ export interface LaunchArtifactResult {
  * Identity previews compile and pin resources without writing to their stores. */
 export async function provisionLaunchIdentityResources(result: LaunchArtifactResult, sql: Sql, wearer?: { ownerId: string }): Promise<void> {
   if (result.resourceArtifacts.length === 0) return;
+  if (wearer) {
+    // D-018: one journaled installation per wearer attempt, with a durable
+    // manifest before any write and exact-address compensation on failure.
+    const { provisionSessionPackageResources } = await import('./blueprint/session-package-resources');
+    await provisionSessionPackageResources(sql, { ownerId: wearer.ownerId,
+      revision: { specificationRevision: result.specificationRevision, stateRevision: result.stateRevision },
+      artifacts: result.resourceArtifacts });
+    return;
+  }
   const { provisionBlueprintPackages, blueprintPackageProvisioners } = await import('./blueprint/compile-packages');
-  const { sessionPackageDependentId } = await import('./blueprint/session-package-resources');
-  const provisioners = blueprintPackageProvisioners(sql, wearer
-    ? { dependentId: sessionPackageDependentId(wearer.ownerId, result) } : undefined);
+  const provisioners = blueprintPackageProvisioners(sql);
   for (const artifact of result.resourceArtifacts) {
     await provisionBlueprintPackages(artifact, provisioners);
   }

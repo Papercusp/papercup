@@ -28,6 +28,9 @@
 //   node scripts/source-preview.mjs check [--ref main] [--remote <url>]
 //   node scripts/source-preview.mjs push  [--ref main] [--remote <url>] [--confirm]
 // npm: preview:export · preview:gate · preview:check · preview:push
+// Every command takes --target preview|public (default preview). The public target
+// (plan open-source-release-2026-09-29) publishes to Papercusp/papercusp under the
+// Elastic License 2.0, APPEND-ONLY; the preview is replaced wholesale. See TARGETS.
 //
 // PAPERCUSP_RELEASE_OWNER_NAME (and _EMAIL) must be exported — read at run time, never
 // written anywhere — exactly as for a release cut: the scrub and the gate refuse
@@ -51,15 +54,62 @@ import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
+export const PUBLIC_REPO = 'Papercusp/papercusp';
 export const SOURCE_REPO = 'Papercusp/papercup';
 export const DEFAULT_REMOTE = `https://github.com/${PREVIEW_REPO}.git`;
 export const DEFAULT_REF = 'main';
+/** The public target's license (Elastic License 2.0, plan open-source-release-2026-09-29 D-003). */
+export const PUBLIC_LICENSE_PATH = join(ROOT, 'scripts', 'public-release', 'LICENSE');
+
+/**
+ * Where an export is published (plan open-source-release-2026-09-29 P-002/P-003).
+ * - preview: the private, invite-only evaluation snapshot. Replaced WHOLESALE by one
+ *   parentless commit on every push, so no history accumulates there.
+ * - public: the open-source repository. APPEND-ONLY: every export is committed on top of
+ *   the current public main and pushed without --force, so forks, clones and pull
+ *   requests keep a history they can rebase onto. It must never be the preview repo:
+ *   the preview's earlier force-pushed snapshots stay fetchable by SHA.
+ * @typedef {{ key: 'preview' | 'public', repo: string, history: 'replace' | 'append', purpose: string, email: string }} Target
+ * @type {Record<'preview' | 'public', Target>}
+ */
+export const TARGETS = {
+  preview: { key: 'preview', repo: PREVIEW_REPO, history: 'replace', purpose: 'private source preview — public-safe cut (plan dhh-source-preview-2026-09-28)', email: 'source-preview@papercusp.invalid' },
+  public: { key: 'public', repo: PUBLIC_REPO, history: 'append', purpose: 'public source release — public-safe cut (plan open-source-release-2026-09-29)', email: 'public-export@papercusp.invalid' },
+};
+
+/** @param {string} [name] @returns {Target} */
+export function resolveTarget(name = 'preview') {
+  const t = TARGETS[/** @type {'preview' | 'public'} */ (name)];
+  if (!t) throw new PreviewError(`unknown target ${name} (expected ${Object.keys(TARGETS).join(' | ')})`, 2);
+  return t;
+}
+
+/** @param {Target} target */
+export const defaultRemote = (target) => `https://github.com/${target.repo}.git`;
+
+/**
+ * Refuse a remote that names the OTHER target's repository: pushing the public cut into the
+ * preview would flip nothing but mislabel it, and the preview's --force replace would erase
+ * the public history everyone forked from.
+ * @param {Target} target @param {string} remote
+ */
+export function assertRemoteMatchesTarget(target, remote) {
+  const repoOf = (r) => r.replace(/\.git$/, '').replace(/\/+$/, '').split(/[/:]/).slice(-2).join('/').toLowerCase();
+  const named = repoOf(remote);
+  for (const other of Object.values(TARGETS)) {
+    if (other.key !== target.key && named === other.repo.toLowerCase()) {
+      throw new PreviewError(`remote ${remote} is the ${other.key} repository (${other.repo}) — refusing to publish the ${target.key} target there`, 2);
+    }
+  }
+}
 const DESKTOP_BIN = join(ROOT, 'papercusp-desktop', 'bin');
 export const SELECT_SCRIPT = join(DESKTOP_BIN, 'source-tree-select.sh');
 export const SELECTION_LIB = join(DESKTOP_BIN, 'lib', 'source-tree-selection.sh');
 export const AUDIT_SCRIPT = join(DESKTOP_BIN, 'audit-release-bundle.py');
 /** Files this script adds at the export root, outside the shared selection. */
 export const ADDED_FILES = ['NOTICE', 'README.md', 'MANIFEST.json'];
+/** The public target also adds its LICENSE. */
+export const PUBLIC_ADDED_FILES = [...ADDED_FILES, 'LICENSE'];
 /** The env var holding the release host base URL; `${base}/index.html` is the releases page. */
 export const RELEASE_BASE_ENV = 'PAPERCUSP_UPDATE_BASE_URL';
 /** Where the release scripts keep that value (papercusp-desktop/bin/lib/release-host.sh). */
@@ -167,6 +217,22 @@ async function listFiles(dir) {
 }
 
 export function noticeText(manifest) {
+  if (manifest.target === 'public') {
+    return [
+      'Papercusp',
+      '',
+      `Copyright (c) ${manifest.year} Papercusp.`,
+      '',
+      'Licensed under the Elastic License 2.0 (see LICENSE). Libraries that carry their own',
+      'license file or SPDX header (for example the permissively licensed libs/generic/*)',
+      'are covered by that license instead.',
+      '',
+      'Third-party components keep their own licenses.',
+      '',
+      `Exported from ${manifest.source.repo} @ ${manifest.source.commit}`,
+      '',
+    ].join('\n');
+  }
   return [
     'Papercusp — private source preview',
     '',
@@ -245,24 +311,45 @@ export function loadReleaseHost(env = process.env, path = RELEASE_HOST_ENV_PATH)
 
 export async function readmeText(dir, manifest, releasesUrl) {
   const tops = (await fs.readdir(dir, { withFileTypes: true }))
-    .filter((e) => !ADDED_FILES.includes(e.name))
+    .filter((e) => !PUBLIC_ADDED_FILES.includes(e.name))
     .map((e) => (e.isDirectory() ? `${e.name}/` : e.name))
     .sort();
   const ws = await describeWorkspaces(dir);
+  const isPublic = manifest.target === 'public';
+  const intro = isPublic
+    ? [
+      '# Papercusp',
+      '',
+      'Papercusp is a desktop workspace where coding agents work alongside you, coordinated',
+      'through shared plans, work items, locks and memory. This repository is its source,',
+      'licensed under the Elastic License 2.0 (see LICENSE and NOTICE): you may read, run,',
+      'modify and self-host it, but not offer it to others as a hosted or managed service.',
+      '',
+      `- Exported from \`${manifest.source.repo}\` at \`${manifest.source.commit}\`, with`,
+      `  ${manifest.submodules.length} submodule(s) flattened in at their pinned commits (MANIFEST.json).`,
+      '- It is the same public-safe source cut the Papercusp Server installer carries, without',
+      '  `node_modules` (run `npm ci` to install dependencies from `package-lock.json`).',
+      '- Each update is a new commit on top of the previous one, so `git pull` works and forks',
+      '  and pull requests keep a shared history.',
+      '',
+    ]
+    : [
+      '# Papercusp — source preview',
+      '',
+      'Papercusp is a desktop workspace where coding agents work alongside you, coordinated',
+      'through shared plans, work items, locks and memory. This repository is a private,',
+      'read-only snapshot of its source, shared for evaluation (see NOTICE).',
+      '',
+      `- Snapshot of \`${manifest.source.repo}\` at \`${manifest.source.commit}\`, with`,
+      `  ${manifest.submodules.length} submodule(s) flattened in at their pinned commits (MANIFEST.json).`,
+      '- It is the same public-safe source cut the Papercusp Server installer carries, without',
+      '  `node_modules` (run `npm ci` to install dependencies from `package-lock.json`)',
+      '  and without the Tauri desktop shell or git history.',
+      '- It is replaced wholesale on each update: re-clone or `git fetch && git reset --hard origin/main`.',
+      '',
+    ];
   const lines = [
-    '# Papercusp — source preview',
-    '',
-    'Papercusp is a desktop workspace where coding agents work alongside you, coordinated',
-    'through shared plans, work items, locks and memory. This repository is a private,',
-    'read-only snapshot of its source, shared for evaluation (see NOTICE).',
-    '',
-    `- Snapshot of \`${manifest.source.repo}\` at \`${manifest.source.commit}\`, with`,
-    `  ${manifest.submodules.length} submodule(s) flattened in at their pinned commits (MANIFEST.json).`,
-    '- It is the same public-safe source cut the Papercusp Server installer carries, without',
-    '  `node_modules` (run `npm ci` to install dependencies from `package-lock.json`)',
-    '  and without the Tauri desktop shell or git history.',
-    '- It is replaced wholesale on each update: re-clone or `git fetch && git reset --hard origin/main`.',
-    '',
+    ...intro,
     '## Download Papercusp',
     '',
     `Installers for every published version, with release notes and install instructions, are on`,
@@ -342,12 +429,14 @@ export function sourceYear(repo, commit) {
  * Export one pinned commit as the public-safe cut into `out` (must not exist).
  * Deterministic for a given commit — no timestamps — so a drift check compares
  * content, not clock.
- * @param {{ repoRoot?: string, ref?: string, out: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
+ * @param {{ repoRoot?: string, ref?: string, out: string, target?: string, licensePath?: string, selectScript?: string, selectionLib?: string, env?: NodeJS.ProcessEnv, log?: Log }} opts
  */
 export async function exportSnapshot({
   repoRoot = ROOT,
   ref = DEFAULT_REF,
   out,
+  target: targetName = 'preview',
+  licensePath = PUBLIC_LICENSE_PATH,
   selectScript = SELECT_SCRIPT,
   selectionLib = SELECTION_LIB,
   env = process.env,
@@ -355,6 +444,8 @@ export async function exportSnapshot({
 }) {
   if (!out) throw new PreviewError('exportSnapshot: out is required', 2);
   if (existsSync(out)) throw new PreviewError(`refusing to overwrite existing ${out}`, 2);
+  const target = resolveTarget(targetName);
+  const license = target.key === 'public' ? readLicense(licensePath) : null;
   const releasesUrl = releasesPageUrl(env);
   const commit = resolveCommit(repoRoot, ref);
   const allow = allowlistTops(selectionLib);
@@ -376,12 +467,13 @@ export async function exportSnapshot({
     const files = await listFiles(partial);
     const vcs = files.filter((f) => f === '.git' || f.startsWith('.git/') || f.includes('/.git/') || f.endsWith('/.git'));
     if (vcs.length) throw new PreviewError(`export contains git metadata: ${vcs.slice(0, 5).join(', ')}`);
-    const collisions = files.filter((f) => ADDED_FILES.includes(f));
+    const collisions = files.filter((f) => PUBLIC_ADDED_FILES.includes(f));
     if (collisions.length) throw new PreviewError(`the selection already ships ${collisions.join(', ')} — refusing to overwrite`);
     const shipped = submodules.filter((s) => existsSync(join(partial, s.path)));
     const manifest = {
       schema: 1,
-      purpose: 'private source preview — public-safe cut (plan dhh-source-preview-2026-09-28)',
+      target: target.key,
+      purpose: target.purpose,
       year: sourceYear(repoRoot, commit),
       source: { repo: SOURCE_REPO, ref, commit },
       submodules: shipped,
@@ -389,6 +481,7 @@ export async function exportSnapshot({
       fileCount: files.length,
       generatedBy: 'scripts/source-preview.mjs',
     };
+    if (license !== null) await fs.writeFile(join(partial, 'LICENSE'), license);
     await fs.writeFile(join(partial, 'NOTICE'), noticeText(manifest));
     await fs.writeFile(join(partial, 'README.md'), await readmeText(partial, manifest, releasesUrl));
     await fs.writeFile(join(partial, 'MANIFEST.json'), `${JSON.stringify(manifest, null, 2)}\n`);
@@ -400,6 +493,19 @@ export async function exportSnapshot({
   } finally {
     await rm(work, { recursive: true, force: true });
   }
+}
+
+/**
+ * The public target's LICENSE text. Refuses when missing or when it is not the Elastic
+ * License 2.0: publishing source under no license, or the wrong one, is not recoverable
+ * once cloned.
+ * @param {string} path
+ */
+export function readLicense(path) {
+  if (!existsSync(path)) throw new PreviewError(`public target needs its LICENSE at ${path}`, 2);
+  const text = readFileSync(path, 'utf8');
+  if (!/^Elastic License 2\.0/m.test(text)) throw new PreviewError(`${path} is not the Elastic License 2.0 text`, 2);
+  return text;
 }
 
 function which(bin, env) {
@@ -579,7 +685,8 @@ export function remoteTrees(remote, branch = 'main') {
     if (!heads) return null;
     run('git', ['--git-dir', gitDir, 'fetch', '-q', '--depth', '1', remote, `refs/heads/${branch}`]);
     const tree = run('git', ['--git-dir', gitDir, 'rev-parse', 'FETCH_HEAD^{tree}']).trim();
-    return { tree, ...comparableTree(gitDir, tree) };
+    const head = run('git', ['--git-dir', gitDir, 'rev-parse', 'FETCH_HEAD^{commit}']).trim();
+    return { tree, head, ...comparableTree(gitDir, tree) };
   } finally {
     spawnSync('rm', ['-rf', gitDir]);
   }
@@ -587,12 +694,15 @@ export function remoteTrees(remote, branch = 'main') {
 
 /**
  * Compare the remote preview with a fresh export of `ref`.
- * @param {{ repoRoot?: string, ref?: string, remote?: string, env?: NodeJS.ProcessEnv, selectScript?: string, log?: Log }} [opts]
+ * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, env?: NodeJS.ProcessEnv, selectScript?: string, log?: Log }} [opts]
  */
-export async function checkDrift({ repoRoot = ROOT, ref = DEFAULT_REF, remote = DEFAULT_REMOTE, env = process.env, selectScript, log = () => {} } = {}) {
+export async function checkDrift({ repoRoot = ROOT, ref = DEFAULT_REF, remote, target = 'preview', licensePath, env = process.env, selectScript, log = () => {} } = {}) {
+  const t = resolveTarget(target);
+  remote = remote ?? defaultRemote(t);
+  assertRemoteMatchesTarget(t, remote);
   const work = await mkdtemp(join(tmpdir(), 'source-preview-check-'));
   try {
-    const { out, manifest } = await exportSnapshot({ repoRoot, ref, out: join(work, 'export'), env, selectScript, log });
+    const { out, manifest } = await exportSnapshot({ repoRoot, ref, out: join(work, 'export'), target, licensePath, env, selectScript, log });
     const expected = exportTrees(out).comparable;
     const current = remoteTrees(remote);
     const actual = current?.comparable ?? null;
@@ -603,17 +713,22 @@ export async function checkDrift({ repoRoot = ROOT, ref = DEFAULT_REF, remote = 
 }
 
 /**
- * Re-export, re-gate, and (with confirm) replace the preview with ONE commit.
+ * Re-export, re-gate, and (with confirm) publish. The preview target is REPLACED by one
+ * parentless commit (force push); the public target gets a new commit on top of its current
+ * main, pushed without --force, so a concurrent push is refused rather than overwritten.
  * The gate runs before anything is committed; a failing gate pushes nothing.
- * @param {{ repoRoot?: string, ref?: string, remote?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log }} [opts]
+ * @param {{ repoRoot?: string, ref?: string, remote?: string, target?: string, licensePath?: string, confirm?: boolean, env?: NodeJS.ProcessEnv, selectScript?: string, gate?: Gate, log?: Log }} [opts]
  */
 export async function pushSnapshot({
-  repoRoot = ROOT, ref = DEFAULT_REF, remote = DEFAULT_REMOTE, confirm = false,
+  repoRoot = ROOT, ref = DEFAULT_REF, remote, target = 'preview', licensePath, confirm = false,
   env = process.env, selectScript, gate = runGate, log = () => {},
 } = {}) {
+  const t = resolveTarget(target);
+  remote = remote ?? defaultRemote(t);
+  assertRemoteMatchesTarget(t, remote);
   const work = await mkdtemp(join(tmpdir(), 'source-preview-push-'));
   try {
-    const { out, manifest } = await exportSnapshot({ repoRoot, ref, out: join(work, 'export'), env, selectScript, log });
+    const { out, manifest } = await exportSnapshot({ repoRoot, ref, out: join(work, 'export'), target, licensePath, env, selectScript, log });
     log('gating the export');
     const verdict = await gate(out, { env });
     if (!verdict.ok) return { pushed: false, reason: 'gate', verdict, commit: manifest.source.commit };
@@ -628,12 +743,25 @@ export async function pushSnapshot({
     const base = ['--git-dir', gitDir, '--work-tree', out, '-c', 'core.autocrlf=false', '-c', 'core.fileMode=true'];
     run('git', [...base, 'add', '-A', '-f', '.']);
     const written = run('git', [...base, 'write-tree']).trim();
-    const identity = { GIT_AUTHOR_NAME: 'Papercusp', GIT_AUTHOR_EMAIL: 'source-preview@papercusp.invalid', GIT_COMMITTER_NAME: 'Papercusp', GIT_COMMITTER_EMAIL: 'source-preview@papercusp.invalid' };
-    const commit = run('git', ['--git-dir', gitDir, 'commit-tree', written, '-m', `Source preview of ${SOURCE_REPO}@${manifest.source.commit.slice(0, 12)}\n\nPublic-safe source cut, gated. See MANIFEST.json and NOTICE.`], { env: { ...process.env, ...identity } }).trim();
-    run('git', ['--git-dir', gitDir, 'push', '-q', '--force', remote, `${commit}:refs/heads/main`]);
-    const after = remoteTrees(remote)?.tree ?? null;
-    if (after !== written) throw new PreviewError(`push verification failed: remote tree ${after} ≠ ${written}`);
-    return { pushed: true, verdict, tree: written, pushedCommit: commit, commit: manifest.source.commit };
+    const identity = { GIT_AUTHOR_NAME: 'Papercusp', GIT_AUTHOR_EMAIL: t.email, GIT_COMMITTER_NAME: 'Papercusp', GIT_COMMITTER_EMAIL: t.email };
+    const append = t.history === 'append';
+    const parentArgs = [];
+    if (append && current) {
+      // The parent must exist in this object store for commit-tree; a depth-1 fetch is
+      // enough, and the push then sends only the new commit and its new objects.
+      run('git', ['--git-dir', gitDir, 'fetch', '-q', '--depth', '1', remote, 'refs/heads/main']);
+      const parent = run('git', ['--git-dir', gitDir, 'rev-parse', 'FETCH_HEAD^{commit}']).trim();
+      if (parent !== current.head) throw new PreviewError(`public main moved during the push (${current.head} → ${parent}); re-run`);
+      parentArgs.push('-p', parent);
+    }
+    const message = append
+      ? `Sync from ${SOURCE_REPO}@${manifest.source.commit.slice(0, 12)}\n\nPublic-safe source cut, gated. See MANIFEST.json, LICENSE and NOTICE.`
+      : `Source preview of ${SOURCE_REPO}@${manifest.source.commit.slice(0, 12)}\n\nPublic-safe source cut, gated. See MANIFEST.json and NOTICE.`;
+    const commit = run('git', ['--git-dir', gitDir, 'commit-tree', written, ...parentArgs, '-m', message], { env: { ...process.env, ...identity } }).trim();
+    run('git', ['--git-dir', gitDir, 'push', '-q', ...(append ? [] : ['--force']), remote, `${commit}:refs/heads/main`]);
+    const after = remoteTrees(remote);
+    if (after?.tree !== written || after?.head !== commit) throw new PreviewError(`push verification failed: remote main ${after?.head ?? 'missing'} (tree ${after?.tree ?? '-'}) ≠ ${commit} (tree ${written})`);
+    return { pushed: true, verdict, tree: written, pushedCommit: commit, parent: parentArgs[1] ?? null, commit: manifest.source.commit };
   } finally {
     await rm(work, { recursive: true, force: true });
   }
@@ -645,7 +773,7 @@ function parseArgs(argv) {
   for (let i = 0; i < rest.length; i += 1) {
     const a = rest[i];
     if (a === '--confirm') opts.confirm = true;
-    else if (a === '--ref' || a === '--out' || a === '--remote' || a === '--json') opts[a.slice(2)] = rest[++i];
+    else if (a === '--ref' || a === '--out' || a === '--remote' || a === '--json' || a === '--target') opts[a.slice(2)] = rest[++i];
     else if (a.startsWith('--')) throw new PreviewError(`unknown flag ${a}`, 2);
     else opts._.push(a);
   }
@@ -663,9 +791,12 @@ async function main(argv) {
   const { cmd, opts } = parseArgs(argv);
   const log = (m) => console.error(`==> ${m}`);
   loadReleaseHost();
+  const target = resolveTarget(opts.target ?? 'preview');
+  const remote = opts.remote ?? defaultRemote(target);
+  const REPO = target.repo;
   if (cmd === 'export') {
-    const out = opts.out ?? join(ROOT, '.papercusp', 'scratch', 'source-preview', `export-${Date.now()}`);
-    const { manifest } = await exportSnapshot({ ref: opts.ref ?? DEFAULT_REF, out, log });
+    const out = opts.out ?? join(ROOT, '.papercusp', 'scratch', 'source-preview', `export-${target.key}-${Date.now()}`);
+    const { manifest } = await exportSnapshot({ ref: opts.ref ?? DEFAULT_REF, out, target: target.key, log });
     console.log(`exported ${manifest.fileCount} files of ${SOURCE_REPO}@${manifest.source.commit} (+${manifest.submodules.length} submodules) → ${out}`);
     return 0;
   }
@@ -681,22 +812,22 @@ async function main(argv) {
     return verdict.exitCode;
   }
   if (cmd === 'check') {
-    const r = await checkDrift({ ref: opts.ref ?? DEFAULT_REF, remote: opts.remote ?? DEFAULT_REMOTE, log });
+    const r = await checkDrift({ ref: opts.ref ?? DEFAULT_REF, remote, target: target.key, log });
     console.log(r.inSync
-      ? `in sync: ${PREVIEW_REPO} (snapshot of ${r.previewCommit}) ships the same content as a fresh export of ${SOURCE_REPO}@${r.commit}`
-      : `DRIFT: ${PREVIEW_REPO} ${r.actual ? `(snapshot of ${r.previewCommit ?? 'unknown'})` : '(no main branch)'} differs from a fresh export of ${SOURCE_REPO}@${r.commit} — run npm run preview:push`);
+      ? `in sync: ${REPO} (snapshot of ${r.previewCommit}) ships the same content as a fresh export of ${SOURCE_REPO}@${r.commit}`
+      : `DRIFT: ${REPO} ${r.actual ? `(snapshot of ${r.previewCommit ?? 'unknown'})` : '(no main branch)'} differs from a fresh export of ${SOURCE_REPO}@${r.commit} — run npm run preview:push${target.key === 'public' ? ' -- --target public' : ''}`);
     return r.inSync ? 0 : 1;
   }
   if (cmd === 'push') {
-    const r = await pushSnapshot({ ref: opts.ref ?? DEFAULT_REF, remote: opts.remote ?? DEFAULT_REMOTE, confirm: Boolean(opts.confirm), log });
+    const r = await pushSnapshot({ ref: opts.ref ?? DEFAULT_REF, remote, target: target.key, confirm: Boolean(opts.confirm), log });
     printGate(r.verdict);
     if (r.reason === 'gate') { console.log('REFUSED: the gate found problems — nothing was pushed'); return r.verdict.exitCode; }
-    if (r.reason === 'in-sync') { console.log(`already in sync: the preview (snapshot of ${r.previewCommit}) ships the same content as ${SOURCE_REPO}@${r.commit} — nothing to push`); return 0; }
-    if (r.reason === 'dry-run') { console.log(`dry run: would replace ${PREVIEW_REPO} main with tree ${r.tree} (${SOURCE_REPO}@${r.commit}). Re-run with --confirm.`); return 0; }
-    console.log(`pushed ${r.pushedCommit} (tree ${r.tree}) = ${SOURCE_REPO}@${r.commit} → ${PREVIEW_REPO}`);
+    if (r.reason === 'in-sync') { console.log(`already in sync: ${REPO} (snapshot of ${r.previewCommit}) ships the same content as ${SOURCE_REPO}@${r.commit} — nothing to push`); return 0; }
+    if (r.reason === 'dry-run') { console.log(`dry run: would ${target.history === 'append' ? 'append a commit to' : 'replace'} ${REPO} main with tree ${r.tree} (${SOURCE_REPO}@${r.commit}). Re-run with --confirm.`); return 0; }
+    console.log(`pushed ${r.pushedCommit}${r.parent ? ` (parent ${r.parent})` : ''} (tree ${r.tree}) = ${SOURCE_REPO}@${r.commit} → ${REPO}`);
     return 0;
   }
-  console.error('usage: source-preview.mjs export|gate|check|push [--ref <ref>] [--out <dir>] [--remote <url>] [--confirm]');
+  console.error('usage: source-preview.mjs export|gate|check|push [--target preview|public] [--ref <ref>] [--out <dir>] [--remote <url>] [--confirm]');
   return 2;
 }
 

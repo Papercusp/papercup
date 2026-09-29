@@ -233,6 +233,17 @@ describe('native turn-end policy observation', () => {
         actionKind: 'delegate', obligationId: row.id, sourceGeneration: 'generation-1', ruleRevision: 'v1' }],
     } } }));
   });
+  it('records why an unknown placement row could not be measured', async () => {
+    const f = endFixture();
+    const unknown = { ...row, status: 'unknown' as const, action: { kind: 'inspect' as const, summary: 'retry', targetRef: 'plan:harness/plan' },
+      measurementFailure: { code: 'exact-plan-admission-unavailable', detail: 'the exact-plan preflight was not measured', retry: 'retry' } };
+    f.deps.agenda = vi.fn(async () => ({ goalId: 'goal', portfolio: null, observedAt: at(4).toISOString(),
+      agenda: { evaluations: [unknown] } }) as AgentObligationAgendaRead);
+    expect((await recordGoalPlacementTurnEnd(f.endInput, f.deps)).recorded).toBe(true);
+    expect(f.deps.append).toHaveBeenCalledWith(expect.objectContaining({ detail: { goalPlacementTurnEnd: expect.objectContaining({
+      rows: [expect.objectContaining({ status: 'unknown', actionKind: 'inspect',
+        measurementFailure: { code: 'exact-plan-admission-unavailable', detail: 'the exact-plan preflight was not measured' } })] }) } }));
+  });
   it('binds admission evidence to the pending token without claiming it was delivered', async () => {
     const f = endFixture();
     const candidate = { version: 1, ownerId: 'holder', workspaceId: 'workspace', token: 'pending-token',

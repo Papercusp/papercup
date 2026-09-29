@@ -7,7 +7,32 @@
  * is skipped. Planning is pure: it decides run / reuse / skip up front, and the runner then
  * decides blocked-vs-run from actual outcomes.
  */
-import { type HarnessContract, type HarnessRunResult, type HarnessSelection, HarnessContractError } from './contract.js';
+import {
+  type HarnessContract,
+  type HarnessRunResult,
+  type HarnessSelection,
+  HarnessContractError,
+  phaseTiers,
+  type Tier,
+} from './contract.js';
+
+/**
+ * Restrict a plan to one tier: a phase that does not run in it is skipped with
+ * `tier:not-in-<tier>`. Naming such a phase in `--only` is a contract error, not a silent skip.
+ */
+export function applyTier(
+  contract: HarnessContract,
+  plan: PlannedPhase[],
+  tier: Tier | null,
+  selection: HarnessSelection,
+): PlannedPhase[] {
+  if (tier === null) return plan;
+  const byId = new Map(contract.phases.map((p) => [p.id, p]));
+  const outside = (id: string) => !phaseTiers(contract, byId.get(id)!).includes(tier);
+  const named = (selection.only ?? []).find(outside);
+  if (named) throw new HarnessContractError(`${contract.name}: phase ${named} does not run in the ${tier} tier`);
+  return plan.map((p) => (outside(p.phase) ? { phase: p.phase, action: 'skip' as const, reason: `tier:not-in-${tier}` } : p));
+}
 
 export type PhaseAction = 'run' | 'reuse' | 'skip';
 

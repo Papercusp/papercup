@@ -27,6 +27,7 @@ import {
   type SuLaunchSpecRecord,
 } from '../../su-persona-render';
 import type { SessionActivation } from '@papercusp/orchestrator/blueprint';
+import type { SessionPackageFence } from '../../blueprint/session-package-resources';
 import {
   desiredActivation,
   normalizeSessionActivation,
@@ -829,7 +830,10 @@ export async function acknowledgeControlTransition(
   if (!Number.isSafeInteger(generation) || generation < 0) return false;
   if (activationRevision) {
     const { launchRecordAdmitsApplied, appliedIdentityArtifact } = await import('../../capability-envelope/identity-grants-port');
-    return await sql.begin(async (tx) => {
+    // D-018: package installations fenced by this activation are released only
+    // after it commits, so a rollback never deletes rows the wearer still sees.
+    let superseded: SessionPackageFence[] = [];
+    const acknowledged = await sql.begin(async (tx) => {
       const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId);
       if (!launchRecordAdmitsApplied(launchSpec, activationRevision)) return false;
       const rows = await tx<Array<{ control_delivered_generation: number | string }>>`
@@ -869,10 +873,12 @@ export async function acknowledgeControlTransition(
         throw new Error('session_identity_activation_applied_not_recorded');
       }
       const { applySessionPackageResources } = await import('../../blueprint/session-package-resources');
-      await applySessionPackageResources(tx, { ownerId, workspaceId, revision: activationRevision,
-        artifact: appliedIdentityArtifact(launchSpec, activationRevision) });
+      ({ superseded } = await applySessionPackageResources(tx, { ownerId, workspaceId, revision: activationRevision,
+        artifact: appliedIdentityArtifact(launchSpec, activationRevision) }));
       return true;
     });
+    await releaseAfterCommit(sql, superseded);
+    return acknowledged;
   }
   // WI-10002717: a revision-less acknowledgement may advance the delivery
   // watermark only when no identity activation is still pending (desired ==
@@ -930,7 +936,8 @@ export async function convergeActivationToLaunchRecord(
   if (!Number.isSafeInteger(generation) || generation < 0) return false;
   const { launchRecordAdmitsApplied } = await import('../../capability-envelope/identity-grants-port');
   const rev = JSON.stringify({ specificationRevision: revision.specificationRevision, stateRevision: revision.stateRevision });
-  return await sql.begin(async (tx) => {
+  const superseded: SessionPackageFence[] = [];
+  const converged = await sql.begin(async (tx) => {
     const launchSpec = await readGateSelectedLaunchSpec(tx as unknown as Sql, ownerId, workspaceId);
     if (!launchRecordAdmitsApplied(launchSpec, revision)) return false;
     const current = await tx<Array<{ applied: unknown }>>`
@@ -944,8 +951,10 @@ export async function convergeActivationToLaunchRecord(
     if (typeof applied?.specificationRevision !== 'string' || typeof applied.stateRevision !== 'string') return false;
     const appliedRevision = { specificationRevision: applied.specificationRevision, stateRevision: applied.stateRevision };
     if (launchRecordAdmitsApplied(launchSpec, appliedRevision)) return false;
-    return await writeLaunchProvenApplied(tx, ownerId, workspaceId, generation, revision, launchSpec);
+    return await writeLaunchProvenApplied(tx, ownerId, workspaceId, generation, revision, launchSpec, superseded);
   });
+  await releaseAfterCommit(sql, superseded);
+  return converged;
 }
 
 /**
@@ -982,7 +991,8 @@ export async function applyRelaunchedActivation(
   sql: Sql = getOrgPg().sql,
 ): Promise<boolean> {
   if (!Number.isSafeInteger(generation) || generation < 0) return false;
-  return await sql.begin(async (tx) => {
+  const superseded: SessionPackageFence[] = [];
+  const applied = await sql.begin(async (tx) => {
     const [latest] = await tx<Array<{ source: string; specification_revision: string; state_revision: string }>>`
       SELECT source, specification_revision, state_revision
         FROM harness_shared.session_identity_activation_events
@@ -1007,15 +1017,27 @@ export async function applyRelaunchedActivation(
     ) return false;
     const { launchRecordAdmitsApplied } = await import('../../capability-envelope/identity-grants-port');
     if (!launchRecordAdmitsApplied(launchSpec, revision)) return false;
-    return await writeLaunchProvenApplied(tx, ownerId, workspaceId, generation, revision, launchSpec);
+    return await writeLaunchProvenApplied(tx, ownerId, workspaceId, generation, revision, launchSpec, superseded);
   });
+  await releaseAfterCommit(sql, superseded);
+  return applied;
+}
+
+/** Release the package installations an activation fenced, once it has
+ * committed. Fire-and-forget; a failure stays durable on the installation
+ * row and resumes at the wearer's next provisioning. */
+async function releaseAfterCommit(sql: Sql, superseded: readonly SessionPackageFence[]): Promise<void> {
+  if (superseded.length === 0) return;
+  const { scheduleSupersededSessionPackageRelease } = await import('../../blueprint/session-package-resources');
+  scheduleSupersededSessionPackageRelease(sql, superseded);
 }
 
 /**
  * The shared write for a launch-proven `applied`: authority + attribution move to
  * `revision`; `control_delivered_generation` does NOT (the prompt text still awaits
  * the hook's delivery proof). A no-op when `revision` is already applied, so a
- * retry never appends a second receipt.
+ * retry never appends a second receipt. Installations it fences are appended to
+ * `superseded` for the caller to release after its transaction commits.
  */
 async function writeLaunchProvenApplied(
   tx: TransactionSql,
@@ -1024,6 +1046,7 @@ async function writeLaunchProvenApplied(
   generation: number,
   revision: SessionActivation['desired'],
   launchSpec: unknown,
+  superseded: SessionPackageFence[],
 ): Promise<boolean> {
   const rev = JSON.stringify({ specificationRevision: revision.specificationRevision, stateRevision: revision.stateRevision });
   const rows = await tx<Array<{ control_generation: number | string }>>`
@@ -1054,8 +1077,9 @@ async function writeLaunchProvenApplied(
   }
   const { applySessionPackageResources } = await import('../../blueprint/session-package-resources');
   const { appliedIdentityArtifact } = await import('../../capability-envelope/identity-grants-port');
-  await applySessionPackageResources(tx, { ownerId, workspaceId, revision,
+  const fenced = await applySessionPackageResources(tx, { ownerId, workspaceId, revision,
     artifact: appliedIdentityArtifact(launchSpec, revision) });
+  superseded.push(...fenced.superseded);
   return true;
 }
 

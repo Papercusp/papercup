@@ -14,7 +14,11 @@ import {
   type HarnessContract,
   type HarnessRunResult,
   type HarnessSelection,
+  HarnessContractError,
   type PhaseResult,
+  phaseTiers,
+  type Tier,
+  TIERS,
   validateContract,
 } from './contract.js';
 import {
@@ -26,7 +30,18 @@ import {
   runGuardRails,
   selectGuardRails,
 } from './guard-rails.js';
-import { planSelection } from './select.js';
+import { applyTier, planSelection } from './select.js';
+import {
+  defaultTierReceiptsPath,
+  describeTierRefusal,
+  evaluateTierGate,
+  loadTierReceipts,
+  type PhaseCodeIdentity,
+  phaseCodeIdentity,
+  recordTierReceipts,
+  resolveTier,
+  tierGateBlocks,
+} from './tier-gate.js';
 
 export type PhaseOutcome = { ok: true; detail?: string } | { ok: false; reasonCode: string; step?: string; detail?: string };
 
@@ -58,6 +73,14 @@ export interface RunHarnessArgs {
   reuseFrom?: HarnessRunResult | string | null;
   runId?: string;
   now?: () => Date;
+  /** Required when the contract declares tiers: which rig this run is on. */
+  tier?: Tier | null;
+  /** The tier receipt store shared by both tiers (default `<evidenceRoot>/tier-receipts.json`). */
+  tierReceipts?: string;
+  /** Where phase `code` paths resolve (default: guardRailCwd, else the process cwd). */
+  codeRoot?: string;
+  /** Run the expensive tier despite a tier-gate refusal. The reason is kept on the result. */
+  overrideTierGate?: { reason: string } | null;
 }
 
 export const PREFLIGHT_PHASE_ID = 'preflight';
@@ -89,10 +112,14 @@ export async function linkLatest(evidenceRoot: string, runDir: string): Promise<
   await rename(tmp, path.join(evidenceRoot, 'latest'));
 }
 
-export function deriveVerdict(result: Pick<HarnessRunResult, 'preflight' | 'phases'>): {
+export function deriveVerdict(result: Pick<HarnessRunResult, 'preflight' | 'phases' | 'tierGate'>): {
   verdict: HarnessRunResult['verdict'];
   firstFailure: HarnessRunResult['firstFailure'];
 } {
+  if (tierGateBlocks(result.tierGate)) {
+    const p = result.tierGate!.phases.find((q) => q.status === 'refused')!;
+    return { verdict: 'tier-refused', firstFailure: { phase: p.phase, step: null, reasonCode: p.reasonCode } };
+  }
   if (result.preflight && result.preflight.status !== 'passed') {
     const p = result.preflight;
     return { verdict: 'preflight-failed', firstFailure: { phase: p.phase, step: p.step, reasonCode: p.reasonCode } };
@@ -113,10 +140,15 @@ export function formatSummaryLine(result: HarnessRunResult): string {
     : gr.source === 'unconfigured'
       ? ' guard_rails=unconfigured'
       : ` guard_rails=${gr.results.filter((r) => r.ok).length}/${gr.selected}`;
+  const tg = result.tierGate;
+  const tier = !result.tier
+    ? ''
+    : ` tier=${result.tier}` +
+      (tg ? ` tier_gate=${tg.refused > 0 ? `refused:${tg.refused}${tg.override ? ':overridden' : ''}` : 'admitted'}` : '');
   return (
     `HARNESS_RESULT harness=${result.harness} verdict=${result.verdict} run=${result.runId} first_failure=${first}` +
     ` passed=${count('passed')} failed=${count('failed')} blocked=${count('blocked')} skipped=${count('skipped')}` +
-    ` reused=${count('reused')}${rails} evidence=${result.evidenceDir}`
+    ` reused=${count('reused')}${rails}${tier} evidence=${result.evidenceDir}`
   );
 }
 
@@ -217,9 +249,19 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   validateContract(contract);
   const now = args.now ?? (() => new Date());
   const selection: HarnessSelection = args.selection ?? { only: null, from: null };
+  const tier = resolveTier(contract, args.tier);
   const prior =
     typeof args.reuseFrom === 'string' ? await loadRunResult(args.reuseFrom) : (args.reuseFrom ?? null);
-  const plan = planSelection(contract, selection, prior);
+  if (prior && (prior.tier ?? null) !== tier) {
+    throw new HarnessContractError(
+      `${contract.name}: cannot reuse run ${prior.runId} (${prior.tier ?? 'untiered'}) in a ${tier ?? 'untiered'} run`,
+    );
+  }
+  const plan = applyTier(contract, planSelection(contract, selection, prior), tier, selection);
+  const byId = new Map(contract.phases.map((p) => [p.id, p]));
+  const gated = (id: string) => tier !== null && phaseTiers(contract, byId.get(id)!).length === TIERS.length;
+  const codeRoot = args.codeRoot ?? args.guardRailCwd ?? process.cwd();
+  const receiptsPath = args.tierReceipts ?? defaultTierReceiptsPath(args.evidenceRoot);
   const startedAt = now();
   const runId = args.runId ?? newRunId(startedAt);
   const runDir = path.join(args.evidenceRoot, runId);
@@ -236,6 +278,7 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
     phases: [],
     verdict: 'fail',
     firstFailure: null,
+    ...(tier ? { tier } : {}),
     startedAt: startedAt.toISOString(),
     endedAt: null,
   };
@@ -243,6 +286,36 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
     Object.assign(result, deriveVerdict(result));
     await writeRunResult(result);
   };
+
+  // The tier gate runs BEFORE preflight: an expensive run it refuses pays for nothing. It
+  // leaves `latest` alone, because a refused run holds no passes to reuse.
+  const gatedHashes = new Map<string, string | null>();
+  if (tier === 'expensive') {
+    const toRun = plan.filter((s) => s.action === 'run').map((s) => s.phase);
+    const identities = new Map<string, PhaseCodeIdentity>();
+    for (const id of toRun.filter(gated)) identities.set(id, await phaseCodeIdentity(byId.get(id)!, codeRoot));
+    for (const [id, ident] of identities) gatedHashes.set(id, ident.hash);
+    const store = await loadTierReceipts(receiptsPath, contract.name);
+    result.tierGate = evaluateTierGate({ contract, phases: toRun, identities, store, receiptsPath, override: args.overrideTierGate });
+    if (tierGateBlocks(result.tierGate)) {
+      const refused = new Map(result.tierGate.phases.filter((p) => p.status === 'refused').map((p) => [p.phase, p]));
+      for (const step of plan) {
+        const r = refused.get(step.phase);
+        result.phases.push(
+          step.action === 'skip'
+            ? notRun(step.phase, runDir, 'skipped', step.reason ?? 'not-selected')
+            : step.action === 'reuse'
+              ? notRun(step.phase, runDir, 'reused', null, { reusedFromRunId: step.reuseFromRunId! })
+              : notRun(step.phase, runDir, 'blocked', r?.reasonCode ?? 'tier-gate:run-refused', r ? { detail: describeTierRefusal(r) } : {}),
+        );
+      }
+      result.endedAt = now().toISOString();
+      await checkpoint();
+      return result;
+    }
+  } else if (tier === 'cheap') {
+    result.tierReceipts = { tier: 'cheap', receiptsPath, recorded: [], unrecorded: [] };
+  }
 
   // The harness's own preflight and the guard rails both run (never-abort), so one run reports
   // every broken precondition; the first failure names the reason.
@@ -267,6 +340,33 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   }
   const preflightFailed = result.preflight !== null && result.preflight.status !== 'passed';
 
+  // A gated phase is hashed right before it runs and again after: an expensive phase whose code
+  // moved since the gate admitted it is blocked, and a cheap pass is recorded only when the code
+  // that passed is the code that was hashed.
+  const runTiered = async (id: string): Promise<PhaseResult> => {
+    if (!gated(id)) return runOne(id, args.runPhase, runId, runDir, now);
+    const before = (await phaseCodeIdentity(byId.get(id)!, codeRoot)).hash;
+    if (tier === 'expensive' && gatedHashes.has(id) && before !== gatedHashes.get(id)) {
+      return notRun(id, runDir, 'blocked', 'tier-gate:code-changed-during-run', {
+        detail: `${id}: code changed after the tier gate admitted it; re-run the cheap tier`,
+      });
+    }
+    const r = await runOne(id, args.runPhase, runId, runDir, now);
+    if (tier !== 'cheap' || r.status !== 'passed') return r;
+    const after = (await phaseCodeIdentity(byId.get(id)!, codeRoot)).hash;
+    const receipts = result.tierReceipts!;
+    if (before === null || after !== before) {
+      receipts.unrecorded.push({
+        phase: id,
+        reasonCode: before === null ? 'tier-gate:code-unresolved' : 'tier-gate:code-changed-during-run',
+      });
+      return r;
+    }
+    await recordTierReceipts(receiptsPath, contract.name, [{ phase: id, codeHash: before, runId, passedAt: r.endedAt! }]);
+    receipts.recorded.push({ phase: id, codeHash: before });
+    return r;
+  };
+
   const statusOf = new Map<string, PhaseResult['status']>();
   for (const step of plan) {
     const spec = contract.phases.find((p) => p.id === step.phase)!;
@@ -281,7 +381,7 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
       const unmet = (spec.dependsOn ?? []).find((d) => statusOf.get(d) !== 'passed' && statusOf.get(d) !== 'reused');
       r = unmet
         ? notRun(spec.id, runDir, 'blocked', `dependency:${unmet}:${statusOf.get(unmet) ?? 'unknown'}`)
-        : await runOne(spec.id, args.runPhase, runId, runDir, now);
+        : await runTiered(spec.id);
     }
     statusOf.set(spec.id, r.status);
     result.phases.push(r);
