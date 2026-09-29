@@ -277,6 +277,10 @@ export function defaultTurnStartPackageSinkDeps(): TurnStartPackageSinkDeps {
         classRef: call.contribution.ref, verb: call.contribution.verb,
       });
       if (!resolved.ok) throw new Error(`capability-class:${resolved.code}`);
+      // A recipe binding names a saved recipe, not a tool. Its runtime
+      // (recipe-provider-runtime.ts) needs a wearer resolver this sink does not
+      // have yet (P-013 Phase D), so it omits visibly instead of dispatching.
+      if (resolved.provider.providerKind !== 'tool') throw new Error('capability-class:recipe-wearer-unavailable');
       const tool = resolved.provider.verbBindings[resolved.verb];
       if (typeof tool !== 'string' || !tool.trim()) throw new Error('capability-class:verb-unbound');
       const value = await dispatchReadOnlyTool(tool.trim(), {}, {
