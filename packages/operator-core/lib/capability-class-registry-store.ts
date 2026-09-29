@@ -229,6 +229,19 @@ export function parseCapabilityClassRef(ref: string): { id: string; version: str
   return id && version ? { id, version } : null;
 }
 
+/** The one spelling of a class contract's identity rules, shared by the
+ * platform-only classes:define tool and the Cupboard class-contract importer. */
+export const CAPABILITY_CLASS_ID_PATTERN = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/;
+export const CAPABILITY_CLASS_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+export const CAPABILITY_CLASS_VERB_PATTERN = /^[a-z][a-z0-9_-]*$/;
+
+/** The immutable contract bytes compared for same-version replays. */
+export function capabilityClassDefinitionShape(
+  row: Pick<CapabilityClassRow, 'id' | 'version' | 'title' | 'description' | 'interfaceVerbs' | 'behavioralSuiteRef' | 'tags'>,
+): JsonObject {
+  return definitionShape(row);
+}
+
 function definitionShape(row: Pick<CapabilityClassRow, 'id' | 'version' | 'title' | 'description' | 'interfaceVerbs' | 'behavioralSuiteRef' | 'tags'>): JsonObject {
   return {
     id: row.id,

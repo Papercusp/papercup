@@ -6,15 +6,14 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { buildQueryEmbedderResolved, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { isCompilableSchema } from '../../datatype-payload-validation';
 import {
+  CAPABILITY_CLASS_ID_PATTERN as CLASS_ID,
+  CAPABILITY_CLASS_VERB_PATTERN as VERB_ID,
+  CAPABILITY_CLASS_VERSION_PATTERN as SEMVER,
   defineCapabilityClass,
   capabilityClassVectorStorageAcceptsProfile,
   normalizeCapabilityClassId,
   type CapabilityClassVerbs,
 } from '../../capability-class-registry-store';
-
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const CLASS_ID = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/;
-const VERB_ID = /^[a-z][a-z0-9_-]*$/;
 const jsonSchema = z.record(z.string(), z.unknown());
 const interfaceVerb = z.object({
   inputSchema: jsonSchema.describe('JSON Schema for the class verb input.'),
