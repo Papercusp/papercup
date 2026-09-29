@@ -1830,6 +1830,15 @@ export async function runEmbedBackfillOnce(): Promise<void> {
   } catch (err) {
     console.warn('[embed-backfill] turn-chunk sync failed:', (err as Error).message);
   }
+  // generic-rag-chunking P-004: the same, for every registered chunk surface
+  // (search/chunks/registry.ts -> harness_shared.text_chunks). Independently
+  // caught for the same reason; it also logs and counts its own failures.
+  try {
+    const { runChunkSyncTick } = await import('./chunks/tick');
+    await runChunkSyncTick();
+  } catch (err) {
+    console.warn('[embed-backfill] chunk sync failed:', (err as Error).message);
+  }
   await _runSweepLogged('periodic');
 
   // Personal Vault D-001: a separate, bounded LOCAL-ONLY leg. It deliberately
