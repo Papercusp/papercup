@@ -2601,7 +2601,9 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   if (input.id !== undefined && (!explicitId || explicitId.length > 120)) {
     throw new Error('createWorkItem: explicit id must be 1-120 characters');
   }
-  let id = explicitId ?? await nextWorkItemId();
+  // WI-10003631: the feature family allocates its id concurrently with the pot
+  // resolution below (independent autocommit reads, one latency instead of two).
+  let id: string;
 
   // ATOMIC create+claim (loop-routines P-007 / D-008, B-LOOP-4): a non-empty
   // `assignee` makes the row land already-claimed by that agent — no separate
@@ -2615,6 +2617,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   const assignTo = input.admission === 'pending' ? null : requestedAssignee;
 
   if (familyOf(input.kind) === 'issue') {
+    id = explicitId ?? await nextWorkItemId();
     const issue = await createIssue({
       id,
       kind: input.kind as IssueStoreKind,
@@ -2685,10 +2688,15 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   // explicit made-up slug is REJECTED (PotMembershipError propagates to the caller).
   // Flag-gated (default ON); fails open (keeps input.harness) for an un-potted workspace.
   let featureHarness = input.harness;
-  if (await getFlag(FLAGS.POT_MEMBERSHIP_ENFORCEMENT, 'system')) {
-    const pot = await resolveWorkItemPot({ rawSlug: input.harness, workspaceId: resolvedWs });
-    if (pot) featureHarness = pot;
-  }
+  const featureRawHarness = input.harness;
+  const [allocatedId, pot] = await Promise.all([
+    explicitId ? Promise.resolve(explicitId) : nextWorkItemId(),
+    (async () => (await getFlag(FLAGS.POT_MEMBERSHIP_ENFORCEMENT, 'system'))
+      ? resolveWorkItemPot({ rawSlug: featureRawHarness, workspaceId: resolvedWs })
+      : null)(),
+  ]);
+  id = allocatedId;
+  if (pot) featureHarness = pot;
   // queen-steering-panel P-008: stamp the source plan slug so the Queen's survey can
   // HARD-filter the frontier by owner eligible-plans. source_plan_slug is ALWAYS written
   // (NULL when unplanned — the column is nullable). workspace_id is now ALSO always
@@ -4293,23 +4301,27 @@ export async function setWorkItemState(
     // its linked plan lane) no longer justifies any machinery-armed watches.
     // Await this cleanup: a fire-and-forget miss after the terminal write would
     // have no later lifecycle edge on which to retry.
-    await retireLifecycleBindingsForWorkItem(settled);
     // EI-22414305411561114: close the routed-idea feedback loop at the same
     // lifecycle chokepoint used by both work_items:complete and
     // work_items:set_state. The refresh sweep remains the reconciliation
     // backstop, but a freshly terminalized wi: route must not stay actionable
     // until the next sweep. Lazy import avoids a static work-items ↔ Scout
     // module cycle; failures remain best-effort and never undo the close.
-    await trackDetached(import('./scout/routed-ledger'))
-      .then((m) =>
-        m.propagateWorkItemOutcome({
-          workItemId: settled.id,
-          state: settled.state,
-          workspaceId: activeWorkspaceId(),
-          harnessSlug: settled.harness ?? wi.harness ?? opts.harness ?? null,
-        }),
-      )
-      .catch(() => {});
+    // WI-10003631: the two cleanups are independent, so they run concurrently;
+    // both still complete before the settled events below are emitted.
+    await Promise.all([
+      retireLifecycleBindingsForWorkItem(settled),
+      trackDetached(import('./scout/routed-ledger'))
+        .then((m) =>
+          m.propagateWorkItemOutcome({
+            workItemId: settled.id,
+            state: settled.state,
+            workspaceId: activeWorkspaceId(),
+            harnessSlug: settled.harness ?? wi.harness ?? opts.harness ?? null,
+          }),
+        )
+        .catch(() => {}),
+    ]);
     void trackDetached(import('./work-items-events'))
       .then((m) => m.emitWorkItemSettledEvents(settled, { priorAssignee }))
       .catch(() => {});

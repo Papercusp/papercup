@@ -94,20 +94,28 @@ export function submitBlueprintOperation(
       throw new BlueprintOperationRefusal('invalid_request',
         'blueprint submission requires workspace, harness, operation, authenticated caller and request key');
     }
-    const previous = await sql<InvocationRow[]>`
+    // WI-10003631 D-030(4): the receipt and current-hash reads are independent
+    // autocommit reads, so issue them together (one latency, not two). The
+    // hash is used only when neither the receipt nor the caller pins a revision.
+    const [previous, currentHash] = await Promise.all([
+      sql<InvocationRow[]>`
       SELECT id, caller_id, operation_id, specification_revision, target_kind, target_ref
         FROM harness_shared.blueprint_operation_invocations
        WHERE workspace_id = ${input.workspaceId} AND harness_slug = ${input.harnessSlug}
          AND caller_id = ${callerId} AND operation_id = ${input.operationId}
          AND request_key = ${requestKey}
-    `;
+    `,
+      internal?.expectedSpecificationRevision
+        ? Promise.resolve(null)
+        : readBlueprintHashFromPg(sql, input.workspaceId, input.harnessSlug),
+    ]);
     if (internal?.expectedSpecificationRevision && previous[0]?.specification_revision &&
         internal.expectedSpecificationRevision !== previous[0].specification_revision) {
       throw new Error('blueprint operation receipt differs from the expected specification revision');
     }
     const revision = previous[0]?.specification_revision ??
       internal?.expectedSpecificationRevision ??
-      await readBlueprintHashFromPg(sql, input.workspaceId, input.harnessSlug);
+      currentHash;
     if (!revision) throw new Error('blueprint operation has no projected specification');
     const specification = await readBlueprintSpecificationSnapshot(sql, input.workspaceId, input.harnessSlug, revision);
     if (!specification) throw new Error('blueprint operation specification snapshot is missing');
