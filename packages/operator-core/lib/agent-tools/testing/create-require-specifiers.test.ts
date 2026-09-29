@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { createRequireSpecifiers } from './create-require-specifiers';
+import { createRequireSpecifiers, unfollowableImportCall } from './create-require-specifiers';
+
+describe('unfollowableImportCall', () => {
+  it.each([
+    ["import(/* c */ 'pkg'); require(`./x`); __require('y');", null],
+    ["const s = 'import(name) and require(x)'; // import(y)\n", null],
+    ['export const f = (n: string) => import(n);', 'non-literal import() (line 1)'],
+    ['export const f = (n: string) => import(`./${n}.ts`);', 'non-literal import() (line 1)'],
+    ['\nexport const f = (n: string) => require(n);', 'non-literal require() (line 2)'],
+  ])('%s → %s', (text, expected) => {
+    expect(unfollowableImportCall('mod.ts', text)).toBe(expected);
+  });
+});
 
 const IMPORT = "import { createRequire } from 'node:module';\n";
 const analyse = (body: string, file = 'mod.ts') => createRequireSpecifiers(file, IMPORT + body);

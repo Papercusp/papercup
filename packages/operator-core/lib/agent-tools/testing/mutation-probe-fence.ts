@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { getuid } from 'node:process';
 import { build, type Metafile, type Plugin } from 'esbuild';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
-import { createRequireSpecifiers } from './create-require-specifiers';
+import { createRequireSpecifiers, unfollowableImportCall } from './create-require-specifiers';
 
 /**
  * Return active mutation-probe paths for one physical checkout. The lock is a
@@ -171,12 +171,10 @@ async function testImportClosures(root: string, tests: string[]): Promise<Closur
       const at = unfollowed.location ? ` (${unfollowed.location.file}:${unfollowed.location.line})` : '';
       return { status: 'incomplete', reason: `non-literal import${at}` };
     }
-    for (const output of result.outputFiles) {
-      const matchAt = unfollowedImportAt(output.text);
-      if (matchAt === null) continue;
-      const entry = result.metafile.outputs[relative(root, output.path)]?.entryPoint ?? relative(outdir, output.path);
-      return { status: 'incomplete', reason: `${entry} reaches an import esbuild cannot follow: ${JSON.stringify(output.text.slice(matchAt, matchAt + 60))}` };
-    }
+    // Non-literal import()/require() calls and createRequire loaders are recorded per source
+    // module by the onLoad plugin (EI-24556278753778650), so they refuse only the tests whose
+    // closure reaches that module. Scanning the bundle TEXT refused every test for the words
+    // `import(...)` inside a string.
     metafile = result.metafile;
   } catch (error) {
     const first = (error as { errors?: Array<{ text: string }> }).errors?.[0]?.text;
@@ -205,7 +203,7 @@ async function reachReason(
   const hit = probes.find((probe) => closure.has(probe));
   if (hit) return `imports ${hit}`;
   for (const [file, why] of unfollowable) {
-    if (closure.has(file)) return `${file} has a createRequire loader this walk cannot follow: ${why}`;
+    if (closure.has(file)) return `${file} ${why}`;
   }
   // The extension-less stem also catches a path assembled at runtime (`name + '.ts'`).
   const names = probes.map((probe) => basename(probe, extname(probe)));
@@ -213,9 +211,6 @@ async function reachReason(
     if (!CODE_EXTENSIONS.has(extname(file))) continue;
     const text = await readFile(file, 'utf8').catch(() => null);
     if (text === null) return `could not read ${file}`;
-    // esbuild can expand a template import into a generated glob and erase the
-    // original call from its output. The raw reachable source must still refuse it.
-    if (unfollowedImportAt(text) !== null) return `${file} has an import esbuild cannot follow exactly`;
     const named = names.find((name) => text.includes(name));
     if (named) return `${file} names ${named}`;
     if ((file === test || TEST_SIDE_FILE.test(file)) && OUT_OF_GRAPH_ACCESS.test(text)) {

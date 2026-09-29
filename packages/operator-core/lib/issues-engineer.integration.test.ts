@@ -337,6 +337,36 @@ describe('engineer issues surface (real PG)', () => {
     expectFresh((await issues.mergeIssuePayload(id, { note: 'x' }))?.updatedAt);
   });
 
+  it("an explicit null nested in outputPayload round-trips into payload->'out' (EI-24552921468661465)", async () => {
+    // mergeWorkItemOutputPayload's issue-family leg is exactly this call. The key must
+    // EXIST as a JSON null — a value test (=== null) would also pass on an absent key
+    // under a lenient reader, which is how the defect stayed invisible.
+    const issue = await issues.createIssue({ title: `out-null-${Date.now()}`, createdBy: 'agA' });
+    await issues.mergeIssuePayload(issue.id, {
+      out: {
+        processLifecycleVerdict: {
+          taskId: 't-1',
+          decision: 'gone',
+          reason: 'exited',
+          keepCount: 0,
+          recheckAt: null,
+          decidedAt: '2026-09-29T00:00:00.000Z',
+        },
+      },
+    });
+    const [row] = await db.sql<{ has_key: boolean; kind: string | null; keys: string }[]>`
+      SELECT (payload #> '{out,processLifecycleVerdict}') ? 'recheckAt' AS has_key,
+             jsonb_typeof(payload #> '{out,processLifecycleVerdict,recheckAt}') AS kind,
+             (SELECT string_agg(k, ',' ORDER BY k)
+                FROM jsonb_object_keys(payload #> '{out,processLifecycleVerdict}') k) AS keys
+        FROM harness_shared.work_items WHERE feature_id = ${issue.id}`;
+    expect(row).toEqual({
+      has_key: true,
+      kind: 'null',
+      keys: 'decidedAt,decision,keepCount,reason,recheckAt,taskId',
+    });
+  });
+
   it('bounds a contended issue release and leaves the claim intact until retry (EI-23215738429986679)', async () => {
     const issue = await issues.createIssue({ title: `release-contention-${Date.now()}`, createdBy: 'agA' });
     const claimed = await issues.claimIssue(issue.id, 'agB');

@@ -118,6 +118,15 @@ describe('mutationProbeRefusal narrowing', () => {
     await expect(mutationProbeRefusal(dir, ['tests/commented.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
   });
 
+  // EI-24556278753778650: the bundle-text scan refused every test reaching a module whose STRING
+  // mentioned `import(...)` (a real operator-core test prose message did exactly that).
+  it('does not mistake import()/require() text inside strings or comments for a call', async () => {
+    const dir = checkout({ ...base,
+      'src/prose.ts': "// see import(name) and require(x) below\nexport const msg = 'import(...) throws this exact V8-level message before ' + `require(${1})`;\n",
+      'tests/prose.test.ts': "import { msg } from '../src/prose';\nexport default msg;\n" });
+    await expect(mutationProbeRefusal(dir, ['tests/prose.test.ts'], probe('src/subject.ts'))).resolves.toBeNull();
+  });
+
   it('refuses a test that imports the probed source, directly or transitively', async () => {
     const dir = checkout({ ...base,
       'tests/direct.test.ts': "import { subject } from '../src/subject';\nexport default subject;\n",
@@ -149,9 +158,9 @@ describe('mutationProbeRefusal narrowing', () => {
       'tests/unresolved.test.ts': "import { gone } from '../src/gone';\nexport default gone;\n",
       'tests/other.test.ts': "import { other } from '../src/other';\nexport default other;\n" });
     const cases: Array<[string, string, string]> = [
-      ['tests/dynamic.test.ts', 'src/subject.ts', 'import closure could not be established'],
-      ['tests/commented-dynamic.test.ts', 'src/subject.ts', 'import closure could not be established'],
-      ['tests/template-dynamic.test.ts', 'src/subject.ts', 'has an import esbuild cannot follow exactly'],
+      ['tests/dynamic.test.ts', 'src/subject.ts', 'has an import this walk cannot follow: non-literal import()'],
+      ['tests/commented-dynamic.test.ts', 'src/subject.ts', 'has an import this walk cannot follow: non-literal import()'],
+      ['tests/template-dynamic.test.ts', 'src/subject.ts', 'has an import this walk cannot follow: non-literal import()'],
       ['tests/named.test.ts', 'src/subject.ts', 'loader.ts names subject'],
       ['tests/walks.test.ts', 'src/subject.ts', 'reads the filesystem or spawns a process'],
       ['tests/unresolved.test.ts', 'src/subject.ts', 'import closure could not be established'],
