@@ -119,6 +119,18 @@ export async function setOwnTunnelEnabled(enabled: boolean, opts?: OwnTunnelStor
   return rows.length > 0;
 }
 
+/**
+ * Move the tunnel to the operator on `port` (the desktop's port hint changed between launches).
+ * Refuses silently when `port` is the ingress port, which the table's CHECK also forbids.
+ */
+export async function setOwnTunnelOperatorPort(port: number, opts?: OwnTunnelStoreOptions): Promise<void> {
+  const { sql } = ctx(opts);
+  await sql`
+    UPDATE harness_shared.remote_access_own_tunnel
+       SET operator_port = ${port}, updated_at = now()
+     WHERE singleton AND ingress_port <> ${port}`;
+}
+
 export async function recordOwnTunnelError(message: string | null, opts?: OwnTunnelStoreOptions): Promise<void> {
   const { sql } = ctx(opts);
   await sql`
