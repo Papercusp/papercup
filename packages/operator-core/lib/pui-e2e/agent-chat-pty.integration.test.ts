@@ -6336,8 +6336,11 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
       const manifest = installedManifest();
       const question = 'Would you like to keep or change the draft title?';
       // The accepted choice is the product outcome. Native providers may omit
-      // the sentence's final period while still returning the exact choice.
-      const expected = /^You chose: Change\.?$/;
+      // the sentence's final period, or set the label in Markdown emphasis
+      // (real OMP replied "You chose: **Change**", WI-10004247; the PUI renders
+      // it as plain bold "Change"), while still returning the exact choice.
+      // The label itself stays exact: "Keep" or any other word still fails.
+      const expected = /^You chose: (\*\*|\*|_)?Change\1\.?$/;
       const questionTool = { claude: 'AskUserQuestion', codex: 'request_user_input', omp: 'ask' }[
         scriptedEngine.backend
       ];
