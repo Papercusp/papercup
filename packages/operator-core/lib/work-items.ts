@@ -211,6 +211,7 @@ import {
   chunkAwareVectorLegSql,
   runHybridSearch,
   withIterativeScan,
+  type ChunkLegScan,
   type ChunkSurface,
   type PgHandle,
   type SearchSource,
@@ -1954,6 +1955,8 @@ async function workItemChunkLeg(
     selection: ProseProfileSelection | null;
     qVec: string;
     limit: number;
+    /** 'exact' for a family whose filter keeps a small slice (see featureSearchSource). */
+    scan?: ChunkLegScan;
   },
 ): Promise<Array<{ id: string; title: string; body: string | null; score: number }>> {
   return withIterativeScan(pg, async (handle) => {
@@ -1967,6 +1970,7 @@ async function workItemChunkLeg(
         qVec: opts.qVec,
         limit: opts.limit,
         mode: 'retrieve',
+        scan: opts.scan ?? 'ann',
         parentFilter: opts.filter(sql),
         // D-011: the embedding-space rule stays here; the helper only names the
         // qualified columns. A missing column fails closed.
@@ -2099,12 +2103,17 @@ function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSe
           async embedding({ sql: pg, limit, qVec }): Promise<Listing> {
             // The feature-family view is a straight projection of work_items
             // under the same key names, so it is the chunk leg's parent here.
+            // 'exact' (generic-rag-chunking D-032): the family is about 2% of
+            // work_items and of the surface's chunks, so an HNSW scan discards
+            // about 20k rows per query to fill the LIMIT (131 ms measured on
+            // 2026-09-30); ranking the filtered slice exhaustively does not.
             const rows = await workItemChunkLeg(pg, {
               parent: { table: 'harness_shared.harness_features_consolidated', key: WORK_ITEMS_CHUNK_SURFACE.parent.key },
               filter: scoped,
               selection,
               qVec,
               limit,
+              scan: 'exact',
             });
             return toListing(rows, 'embeddings');
           },
