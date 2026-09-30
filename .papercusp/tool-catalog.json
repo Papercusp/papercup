@@ -8550,12 +8550,12 @@
           "POST"
         ]
       },
-      "description": "Publish or update a Cupboard commerce offer through the hosted append-only ledger. Per-use offers require unitPriceMicros, meterUnit, priceVersion and splitManifestHash; those exact terms are persisted in D1, exposed by the commerce catalog/dashboard, and returned by cupboard:checkout as a P2P microcharge preflight. The authenticated GitHub principal becomes the product creator.",
+      "description": "Publish or update a Cupboard commerce offer through the hosted append-only ledger. Per-use offers require unitPriceMicros, meterUnit, priceVersion and splitManifestHash; those exact terms are persisted in D1, exposed by the commerce catalog/dashboard, and returned by cupboard:checkout as a P2P microcharge preflight. For a paid identity pass identityRelease { id, version, markupBps? } instead of skuRef and the terms: they are derived (inference markup, DAO 10%). The authenticated GitHub principal becomes the product creator.",
       "capabilities": [
         "harness:write"
       ],
       "guidance": {
-        "when": "A creator needs to define an executable Cupboard offer, especially a metered per-use offer.",
+        "when": "A creator needs to define an executable Cupboard offer, especially a metered per-use offer or a paid identity (identityRelease).",
         "notWhen": "Publishing a distributable listing/repository (use the relevant cupboard:publish-* listing tool) or buying an existing offer (cupboard:checkout).",
         "chaining": "Read it back with cupboard:commerce-dashboards dashboards:[\"catalog\"], then use cupboard:checkout with maxSpendMicros for a per-use offer."
       }
