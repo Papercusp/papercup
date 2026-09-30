@@ -87,8 +87,13 @@ function assertSessionTurnSurface(surface: ResolvedChunkSurface): void {
   if (problem) throw new Error(`session turn chunk store (surface '${surface.surface}'): ${problem}`);
 }
 
-/** The typed key parameters for one turn: (workspace_id, source_kind, session_id, turn_idx). */
-function keyParams(key: readonly string[]): [string, string, string, number] {
+/**
+ * The typed key parameters for one turn: (workspace_id, source_kind, session_id, turn_idx).
+ * Typed as a concrete string | number array, not a tuple and not unknown[]:
+ * postgres.js infers its parameter element type, and a tuple cannot be cast to
+ * the resulting never[] (TS2352), so this is the one shape it accepts uncast.
+ */
+function keyParams(key: readonly string[]): Array<string | number> {
   if (key.length !== 4) throw new Error(`session turn key must have 4 parts, got ${key.length}`);
   const turnIdx = Number(key[3]);
   if (!Number.isInteger(turnIdx)) throw new Error(`session turn key turn_idx '${key[3]}' is not an integer`);
@@ -150,7 +155,7 @@ export function sessionTurnChunkStore(): ChunkStore {
           WHERE ${KEY_MATCH}
           ORDER BY chunk_idx
           FOR UPDATE`,
-        keyParams(key) as never[],
+        keyParams(key),
       );
       return rows.map((r) => ({
         chunkIdx: r.chunk_idx,
@@ -173,7 +178,7 @@ export function sessionTurnChunkStore(): ChunkStore {
       const k = keyParams(key);
       // Replace wholesale: a re-cut that yields fewer chunks must not leave the
       // old tail behind.
-      await sql.unsafe(`DELETE FROM ${SESSION_TURN_CHUNKS_TABLE} WHERE ${KEY_MATCH}`, k as never[]);
+      await sql.unsafe(`DELETE FROM ${SESSION_TURN_CHUNKS_TABLE} WHERE ${KEY_MATCH}`, k);
       if (rows.length > 0) {
         await sql.unsafe(
           `INSERT INTO ${SESSION_TURN_CHUNKS_TABLE}
@@ -196,14 +201,14 @@ export function sessionTurnChunkStore(): ChunkStore {
       }
       // Retire the turn from the detection index AFTER the rewrite, in the same
       // transaction, and whether or not it produced chunks (see the header).
-      await sql.unsafe(`UPDATE ${SESSION_TURNS_TABLE} SET chunked_at = now() WHERE ${KEY_MATCH}`, k as never[]);
+      await sql.unsafe(`UPDATE ${SESSION_TURNS_TABLE} SET chunked_at = now() WHERE ${KEY_MATCH}`, k);
     },
 
     async touch(sql, _surface, key) {
       // The stored chunks already match the turn: only retire it from detection.
       await sql.unsafe(
         `UPDATE ${SESSION_TURNS_TABLE} SET chunked_at = now() WHERE ${KEY_MATCH} AND chunked_at IS NULL`,
-        keyParams(key) as never[],
+        keyParams(key),
       );
     },
 

@@ -22,7 +22,11 @@
  * Isolation: the store has no eligibleSql (see its header), so it selects any
  * long unchunked turn in the database. The fixture turns carry an ingested_at
  * in 2099 and the tick's batch equals the fixture size, so the freshest-first
- * scan selects exactly them.
+ * scan selects exactly them. That holds only while no OTHER run of this file
+ * has 2099 turns in the same database: a concurrent run's freshly inserted
+ * (still unchunked) turns would be selected instead. So the whole file holds a
+ * session advisory lock from before it seeds until after it cleans up, which
+ * serializes concurrent runs against a shared test database.
  *
  * Mutation-probe seam: PAPERCUSP_SESSION_TURN_STORE_SUBJECT is an absolute path
  * to a copy of ./session-turn-store.ts (scripts/mutation-probe.sh points it at a
@@ -44,6 +48,8 @@ const HARNESS = `r21-h-${TAG}`;
 const SOURCE = 'claude';
 const PROFILE_ID = PROSE_VECTOR_STORAGE_PROFILE.acceptedProfileIds[0]!;
 const MODE = 'gemma';
+/** Session advisory lock serializing runs of this file (see the header). */
+const FILE_LOCK = 'papercusp:test:session-turn-parity.integration';
 
 /** A distinct unit vector per (turn, chunk), so a swapped or rewritten vector is visible. */
 function vec(turn: number, chunk: number): string {
@@ -216,7 +222,10 @@ describe('session-turn engine parity: re-sync rebuilds nothing (R-21)', () => {
     }
     const dsn = inject('baselineSchemaDsn');
     await assertPgReachable(dsn, 'chunks/session-turn-parity.integration');
+    // max 1: the advisory lock is held by the session, so every query of this
+    // file (the engine's included) must run on the one connection that holds it.
     sql = postgres(dsn, { max: 1, onnotice: () => {} });
+    await sql`SELECT pg_advisory_lock(hashtext(${FILE_LOCK}))`;
     for (const t of UNCHANGED) {
       await insertTurn(t.idx, t.text);
       await oldWriterWrite(t.idx, t.text);
@@ -228,8 +237,13 @@ describe('session-turn engine parity: re-sync rebuilds nothing (R-21)', () => {
   afterAll(async () => {
     if (!sql) return;
     // Chunks cascade with their turns (the parent FK).
-    await sql`DELETE FROM harness_shared.session_turns WHERE harness_slug = ${HARNESS}`;
-    await sql.end({ timeout: 5 });
+    try {
+      await sql`DELETE FROM harness_shared.session_turns WHERE harness_slug = ${HARNESS}`;
+    } finally {
+      // Ending the session would release it too; unlocking first frees a waiting run sooner.
+      await sql`SELECT pg_advisory_unlock(hashtext(${FILE_LOCK}))`.catch(() => {});
+      await sql.end({ timeout: 5 });
+    }
   });
 
   it('seeds old-writer rows that are fully embedded, including a turn truncated at maxChunks', async () => {

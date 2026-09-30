@@ -763,9 +763,13 @@ export const TARGETS: SweepTarget[] = [
     recencyColKind: 'timestamptz',
     readers: [
       // session_turn search reads it as the chunk-aware leg's PARENT vector.
+      // Since generic-rag-chunking P-007 the leg takes its parent table and
+      // vector column from the session-turn registry entry
+      // (search/turn-chunk-sync.ts SESSION_TURN_CHUNK_SURFACE.parentVector),
+      // which chunks/derived-registrations.test.ts pins to this column.
       {
         file: SEARCH_SOURCES_FILE,
-        evidence: ["table: 'harness_shared.session_turns'", "column: 'text_embedding'", 'WITH best AS (${chunkAwareVectorLegSql(sql, {'],
+        evidence: ['surface: SESSION_TURN_CHUNK_SURFACE', 'WITH best AS (${chunkAwareVectorLegSql(sql, {'],
       },
       {
         file: 'libs/generic/search/src/chunks/vector-leg.ts',

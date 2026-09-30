@@ -425,6 +425,15 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     // verifyIsAuthority is the app-level check; EI-284 tracks the missing
     // caller-standing hardening.
     'POST /authority/rpc',
+    // Connected-app device sign-in (RFC 8628; plan
+    // external-app-access-to-workspaces-2026-09-29 P-005, D-018). The outside
+    // app calls these from wherever it runs, so loopback would break the flow.
+    // device/code needs no credential by design: it only opens a PENDING request
+    // that the person at this computer must approve on the loopback-only
+    // /connected-apps/device page. device/token authenticates with the secret
+    // device_code and issues a key only for a request that was approved.
+    'POST /connected-apps/device/code',
+    'POST /connected-apps/device/token',
   ]);
 
   it('every mutating HTTP route declares a non-public tier unless owner-allowlisted', () => {
