@@ -117,7 +117,7 @@ export interface HostedCliStore {
     userId: string;
     at: Date;
   }): Promise<HostedLinkedWorkspace>;
-  /** Mark a linked workspace deleted. Returns false for an unknown or hosted workspace. */
+  /** Mark a linked workspace deleted (idempotent). Returns false for an unknown or hosted workspace. */
   unlinkLinkedWorkspace(input: { organizationId: string; customerWorkspaceId: string; at: Date }): Promise<boolean>;
   resolveToken(tokenHash: string, now: Date): Promise<HostedCliToken | null>;
   revokeToken(tokenId: string, reason: string, at: Date): Promise<boolean>;
@@ -341,14 +341,15 @@ export class PostgresHostedCliStore implements HostedCliStore {
 
   unlinkLinkedWorkspace(input: Parameters<HostedCliStore['unlinkLinkedWorkspace']>[0]): Promise<boolean> {
     return this.runControlPlane(async (sql) => {
+      // Idempotent for a linked row: a retry after a failed connector revoke still answers true,
+      // so the caller revokes again instead of leaving a live connector on a deleted workspace.
       const rows = await sql`
         UPDATE harness_shared.customer_workspaces
-           SET state = 'deleted', deleted_at = ${input.at}, updated_at = ${input.at}
+           SET state = 'deleted', deleted_at = COALESCE(deleted_at, ${input.at}), updated_at = ${input.at}
          WHERE workspace_id = ${this.controlPlaneWorkspaceId}
            AND organization_id = ${input.organizationId}
            AND id = ${input.customerWorkspaceId}
            AND kind = 'linked'
-           AND state <> 'deleted'
         RETURNING 1`;
       return rows.length === 1;
     });
