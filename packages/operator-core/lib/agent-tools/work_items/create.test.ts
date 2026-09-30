@@ -45,6 +45,13 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
 vi.mock('../../work-scope-policy', () => ({ gateWorkScope: workScope.gate }));
 // Create-time dedup port (P-009) — mock so this handler test stays hermetic
 // (the memory-pools leg is pinned in memory/claim-port.test.ts).
+// EI-23701433507513915: the holder-identity rules run for real, against an owner registry this
+// file controls, instead of coord presence.
+const OWNER_REGISTRY = vi.hoisted(() => ({ ids: [] as string[] }));
+vi.mock('../../work-item-holder-identity', async (importOriginal) => {
+  const { registryBackedHolderIdentity } = await import('../../work-item-holder-identity.testing');
+  return registryBackedHolderIdentity(await importOriginal(), OWNER_REGISTRY);
+});
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
 // EI-20450339646861882: create.ts reaches this module through a DYNAMIC import
 // (EI-19281789650149592 — a static one makes partially-mocked suites fail at
@@ -119,6 +126,7 @@ const body = async (args: unknown) => (((await tool.handler(parse(args) as never
 
 beforeEach(() => {
   vi.clearAllMocks();
+  OWNER_REGISTRY.ids = [];
   modeState.rows = [];
   drainAdmission.blocked = false;
   drainAdmission.gate.mockImplementation(async (_args, persist) => {
@@ -613,6 +621,27 @@ describe('work_items:create handler (keyed-array)', () => {
       expect(b.results[0].fleetScopeDowngrade).toBeUndefined();
       expect(createM.mock.calls[0][0]).toMatchObject({ assign_to: 'bee-7' });
       expect(fleetAdmission.notify).not.toHaveBeenCalled();
+    });
+
+    // EI-23701433507513915: a short-form assignee (`su-851c1a7a`) was persisted verbatim as the
+    // holder, and every exact holder check then refused the real holder.
+    it('expands a short-form assign_to to the unique full id BEFORE admission and persistence', async () => {
+      const full = 'su-851c1a7a-8ea6-4c70-afeb-472e957fd3d8';
+      OWNER_REGISTRY.ids = [full];
+      const b = await body({ kind: 'bug', title: 'short assignee', assign_to: 'su-851c1a7a' });
+      expect(b.results[0].assigneeResolutionDowngrade).toBeUndefined();
+      expect(createM.mock.calls[0][0]).toMatchObject({ assign_to: full });
+    });
+
+    it('files an UNRESOLVABLE short-form assign_to unassigned, with the reason on the ok:true result', async () => {
+      const b = await body({ kind: 'bug', title: 'unknown assignee', assign_to: 'su-deadbeef' });
+      expect(b.results[0].assigneeResolutionDowngrade).toMatch(/FILED UNASSIGNED/);
+      const persisted = createM.mock.calls[0][0] as { assign_to?: string; admissionBypass?: string; payload?: unknown };
+      expect(persisted.assign_to).toBeUndefined();
+      expect(persisted.admissionBypass).toBe('bypass:explicit-assignment');
+      expect(persisted.payload).toMatchObject({
+        assigneeResolutionDowngrade: { requestedAssignee: 'su-deadbeef', code: 'assignee_short_form_unresolved' },
+      });
     });
   });
 

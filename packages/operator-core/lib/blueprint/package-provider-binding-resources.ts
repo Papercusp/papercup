@@ -79,7 +79,39 @@ export function providerBindingFromAddress(address: PackageResourceAddress): Pot
   throw new Error('provider binding resource address does not describe an exact binding');
 }
 
-type PotBindingRow = { provider_package: string; provider_version: string; provider_kind: CapabilityProviderKind; bound_by: string | null };
+type PotBindingRow = {
+  provider_package: string; provider_version: string; provider_kind: CapabilityProviderKind; bound_by: string | null;
+  /** The bound provider is active and structurally conformant — what the grant resolver can reuse. */
+  usable: boolean;
+};
+type PotBindingScope = { workspaceId: string; potSlug: string; classId: string; classVersion: string };
+
+function bindingScope(address: PackageResourceAddress): PotBindingScope {
+  const { classId, classVersion } = exactClassRef(address.itemKey);
+  return { workspaceId: address.workspaceId, potSlug: address.memoryScope, classId, classVersion };
+}
+
+async function readPotBindingRow(
+  db: postgres.Sql | postgres.TransactionSql,
+  scope: PotBindingScope,
+  lock: boolean,
+): Promise<PotBindingRow | null> {
+  const rows = await db<PotBindingRow[]>`
+    SELECT p.provider_package, p.provider_version, p.provider_kind, p.bound_by,
+           EXISTS (
+             SELECT 1 FROM harness_shared.capability_class_provider_bindings b
+               JOIN harness_shared.capability_class_conformance_runs r ON r.id = b.conformance_run_id
+              WHERE b.workspace_id = p.workspace_id AND b.class_id = p.class_id
+                AND b.class_version = p.class_version AND b.provider_package = p.provider_package
+                AND b.provider_version = p.provider_version AND b.provider_kind = p.provider_kind
+                AND b.latency_class = p.latency_class AND b.status = 'active' AND r.structural_passed
+           ) AS usable
+      FROM harness_shared.pot_capability_class_bindings p
+     WHERE p.workspace_id = ${scope.workspaceId} AND p.pot_slug = ${scope.potSlug}
+       AND p.class_id = ${scope.classId} AND p.class_version = ${scope.classVersion}
+     ${lock ? db`FOR UPDATE OF p` : db``}`;
+  return rows[0] ?? null;
+}
 
 export function packageProviderBindingConflict(address: PackageResourceAddress): Error {
   return new Error(`package-pin-conflict: pot ${address.memoryScope} binds ${address.itemKey} to a different provider than ` +

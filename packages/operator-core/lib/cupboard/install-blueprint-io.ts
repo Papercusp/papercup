@@ -22,9 +22,8 @@ import { parseDepSpec } from '@papercusp/blueprint-distribution';
 import { getOrgPg } from '@papercusp/db-org';
 import { parse as parseYaml } from 'yaml';
 import { INSTALLED_BLUEPRINTS_DIR, operatorResolveExtends } from '../blueprint/installed-blueprints';
+import { blueprintInstallJournal } from './blueprint-install-journal';
 import {
-  bindCapabilityProviderToPot,
-  deletePotCapabilityProviderBinding,
   getPotCapabilityProviderBinding,
   listActiveCapabilityProviderCandidates,
   parseCapabilityClassRef,
@@ -291,103 +290,11 @@ function makeInstallCoreDeps(
               : installed;
           },
         }),
-      async commitCapabilitySelections(selections) {
-        const sql = getOrgPg().sql;
-        const applied = await sql.begin(async (tx) => {
-          const changes: Array<{
-            classId: string;
-            classVersion: string;
-            providerPackage: string;
-            providerVersion: string;
-            previous: Awaited<ReturnType<typeof getPotCapabilityProviderBinding>>;
-          }> = [];
-          for (const selection of selections) {
-            const parsed = parseCapabilityClassRef(selection.classRef);
-            if (!parsed) throw new Error('invalid selected class ref ' + selection.classRef);
-            const previous = await getPotCapabilityProviderBinding(tx, {
-              ...capabilityScope,
-              classId: parsed.id,
-              classVersion: parsed.version,
-              includeInactiveProvider: true,
-              providerKinds: INSTALL_PROVIDER_KINDS,
-            });
-            if (previous?.status === 'active') {
-              if (
-                previous.providerPackage === selection.providerPackage &&
-                previous.providerVersion === selection.providerVersion
-              ) {
-                continue;
-              }
-              throw new Error(
-                selection.classRef + ' was concurrently bound to ' +
-                  previous.providerPackage + '@' + previous.providerVersion,
-              );
-            }
-            await bindCapabilityProviderToPot(tx, {
-              ...capabilityScope,
-              classId: parsed.id,
-              classVersion: parsed.version,
-              providerPackage: selection.providerPackage,
-              providerVersion: selection.providerVersion,
-              boundBy: 'cupboard:install-blueprint',
-              providerKind: selection.providerKind,
-            });
-            changes.push({
-              classId: parsed.id,
-              classVersion: parsed.version,
-              providerPackage: selection.providerPackage,
-              providerVersion: selection.providerVersion,
-              previous,
-            });
-          }
-          return changes;
-        });
-
-        return {
-          rollback: async () => {
-            await sql.begin(async (tx) => {
-              for (const change of [...applied].reverse()) {
-                const current = await getPotCapabilityProviderBinding(tx, {
-                  ...capabilityScope,
-                  classId: change.classId,
-                  classVersion: change.classVersion,
-                  includeInactiveProvider: true,
-                  providerKinds: INSTALL_PROVIDER_KINDS,
-                });
-                if (
-                  !current ||
-                  current.providerPackage !== change.providerPackage ||
-                  current.providerVersion !== change.providerVersion
-                ) {
-                  throw new Error(
-                    change.classId + '@' + change.classVersion +
-                      ' changed after install-time selection; refusing to clobber the newer binding',
-                  );
-                }
-                if (change.previous) {
-                  await bindCapabilityProviderToPot(tx, {
-                    ...capabilityScope,
-                    classId: change.classId,
-                    classVersion: change.classVersion,
-                    providerPackage: change.previous.providerPackage,
-                    providerVersion: change.previous.providerVersion,
-                    boundBy: change.previous.boundBy,
-                    providerKind: change.previous.providerKind,
-                  });
-                } else {
-                  await deletePotCapabilityProviderBinding(tx, {
-                    ...capabilityScope,
-                    classId: change.classId,
-                    classVersion: change.classVersion,
-                    expectedProviderPackage: change.providerPackage,
-                    expectedProviderVersion: change.providerVersion,
-                  });
-                }
-              }
-            });
-          },
-        };
-      },
+      // P-014 / D-034: bindings are journaled resources of the pot's install.
+      blueprintInstallJournal: ({ blueprintId, bindings }) => blueprintInstallJournal(
+        { sql: getOrgPg().sql, workspaceId: capabilityScope.workspaceId, blueprintId },
+        { operation: 'install', potSlug: capabilityScope.potSlug, bindings },
+      ),
     } : {}),
   };
 }
@@ -404,15 +311,22 @@ export async function installBlueprintFromCupboard(
   if (operation === 'rollback' || operation === 'uninstall') {
     const id = input.blueprintId?.trim() ?? '';
     if (!id) return { ok: false, status: 400, error: `blueprintId required for ${operation}` };
+    // D-034: both converge and clean every pot install of this blueprint in the workspace.
+    const journal = blueprintInstallJournal(
+      { sql: getOrgPg().sql, workspaceId: input.workspaceId?.trim() || activeWorkspaceId(), blueprintId: id },
+      { operation },
+    );
     try {
       if (operation === 'uninstall') {
-        return { ok: true, result: await uninstallBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), id }) };
+        return { ok: true, result: await uninstallBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), id, journal }) };
       }
       const target = input.targetVersion?.trim() ?? '';
       if (!target) return { ok: false, status: 400, error: 'targetVersion required for rollback' };
-      return { ok: true, result: await rollbackBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), id, target }) };
+      return { ok: true, result: await rollbackBlueprintRelease({ installedDir: INSTALLED_BLUEPRINTS_DIR(), id, target, journal }) };
     } catch (error) {
-      if (error instanceof BlueprintLifecycleError) return { ok: false, status: error.status, error: error.message };
+      if (error instanceof BlueprintLifecycleError) {
+        return { ok: false, status: error.status, error: error.code ?? error.message, ...(error.code ? { detail: error.message } : {}) };
+      }
       return { ok: false, status: 500, error: `${operation} failed`, detail: error instanceof Error ? error.message.slice(0, 300) : String(error) };
     }
   }

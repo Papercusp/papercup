@@ -106,6 +106,14 @@ vi.mock('../../work-items', () => ({
 
 const getWorkItemCheckpoint = vi.fn();
 const setWorkItemCheckpoint = vi.fn();
+// EI-23701433507513915: the holder-identity rules run for real, against an owner registry this
+// file controls, instead of coord presence (db-org is mocked above).
+const OWNER_REGISTRY = vi.hoisted(() => ({ ids: [] as string[] }));
+vi.mock('../../work-item-holder-identity', async (importOriginal) => {
+  const { registryBackedHolderIdentity } = await import('../../work-item-holder-identity.testing');
+  return registryBackedHolderIdentity(await importOriginal(), OWNER_REGISTRY);
+});
+
 vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpoint: (...a: unknown[]) => getWorkItemCheckpoint(...a),
   setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
@@ -3345,6 +3353,52 @@ describe('work_items:complete (keyed-array)', () => {
       getWorkItem.mockResolvedValue({ ...item, assignee: null });
       const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });
       expect(r.assigneeMismatchWarning).toBeUndefined();
+    });
+  });
+
+  // EI-23701433507513915: a leader assignment stored the SHORT-FORM id (`su-851c1a7a`) as the
+  // holder, and the real holder's own terminal close was refused as a foreign assignee.
+  describe('short-form stored holder (EI-23701433507513915)', () => {
+    const ME = 'su-851c1a7a-8ea6-4c70-afeb-472e957fd3d8';
+    const PEER_SAME_PREFIX = 'su-851c1a7a-0000-4000-8000-000000000001';
+    const OTHER = 'su-00000000-1111-4222-8333-444444444444';
+    const asMe = { uiClientId: ME, isSuperuser: true, workspaceId: 'default' } as never;
+    const oneAsMe = async (x: unknown) =>
+      ((await complete.handler(parse(x) as never, asMe)) as Out).data.results[0];
+    afterEach(() => {
+      OWNER_REGISTRY.ids = [];
+    });
+
+    it('lets the holder close an item whose stored assignee is its UNIQUE short-form prefix', async () => {
+      OWNER_REGISTRY.ids = [ME, OTHER];
+      getWorkItem.mockResolvedValue({ ...item, assignee: 'su-851c1a7a' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+
+      const r = await oneAsMe({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'the holder closes its own item', tests: 'green' },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.assigneeMismatchWarning).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
+    it('still refuses before any write when the short-form holder is AMBIGUOUS (a bare prefix is nobody)', async () => {
+      OWNER_REGISTRY.ids = [ME, PEER_SAME_PREFIX];
+      getWorkItem.mockResolvedValue({ ...item, assignee: 'su-851c1a7a' });
+
+      const r = await oneAsMe({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'must not close on an ambiguous prefix', tests: 'not run' },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/refusing terminal completion/);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
     });
   });
 

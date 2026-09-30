@@ -493,3 +493,33 @@ describe('forceRefusalHint', () => {
     expect(h).toMatch(/coord:send/);
   });
 });
+
+// EI-23701433507513915: a holder stored as its SHORT-FORM id (`su-851c1a7a`) must be judged as
+// the agent it names. Looked up verbatim, the short string has no presence row, no fleet and no
+// session: a LIVE holder read as dead and was reclaimable, while its own fleet leader was not.
+describe('assessForceRelease — short-form stored holder (EI-23701433507513915)', () => {
+  const liveHolder: Pres = { heartbeatAt: iso(min(1)), lastActiveAt: iso(min(1)), agentRole: 'su' };
+  const shortHolder = { ...base, holderOwnerId: 'su-851c1a7a', itemLastProgressAt: null };
+  const canonical: ForceReleaseDeps['resolveHolderOwnerId'] = async (stored) =>
+    stored === 'su-851c1a7a' ? 'su-holder' : stored;
+
+  it('judges liveness by the canonical holder: a LIVE holder behind a short id is NOT reclaimable', async () => {
+    const v = await assessForceRelease(shortHolder, { ...deps({ holder: liveHolder }), resolveHolderOwnerId: canonical });
+    expect(v.allowed).toBe(false);
+    expect(v.holderLiveness).toMatchObject({ live: true });
+  });
+
+  it("authorizes the leader of the canonical holder's fleet", async () => {
+    const v = await assessForceRelease(shortHolder, {
+      ...deps({
+        holder: liveHolder,
+        caller: { heartbeatAt: iso(0), lastActiveAt: iso(0), agentRole: 'worker' },
+        leader: 'su-caller',
+      }),
+      latestFleetMembership: async (_ws, owner) =>
+        owner === 'su-holder' ? { fleetSlug: 'drain-f1', fleetRole: 'member' } : null,
+      resolveHolderOwnerId: canonical,
+    });
+    expect(v).toMatchObject({ allowed: true, basis: 'leads-holder-fleet' });
+  });
+});

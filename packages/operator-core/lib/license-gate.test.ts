@@ -40,7 +40,9 @@ import {
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const EXCEPTIONS_PATH = join(REPO_ROOT, 'scripts', 'license-exceptions.json');
-const COMPONENTS_PATH = join(REPO_ROOT, 'scripts', 'installer-components.json');
+// Overridable so scripts/mutation-probe.sh can point the guard at a mutated COPY (tier 2).
+const COMPONENTS_PATH =
+  process.env.LICENSE_COMPONENTS_PATH ?? join(REPO_ROOT, 'scripts', 'installer-components.json');
 
 const tier = (expr: unknown) => evaluateExpression(expr).tier;
 
@@ -356,6 +358,25 @@ describe('installer leg — validateComponents', () => {
     expect(validateComponents(file)).toEqual([]);
     const kinds = new Set(file.components.map((c: { kind: string }) => c.kind));
     for (const k of ['first-party', 'program', 'model', 'os-image']) expect(kinds.has(k), k).toBe(true);
+  });
+
+  // Defect #10 (open-source-release R-15 build8): the GTK/gdk-pixbuf plugin modules were
+  // listed only under usr/lib/x86_64-linux-gnu/, but linuxdeploy flattens them to usr/lib/,
+  // so the finished AppImage reported 26 UNREVIEWED payloads. Both layouts must match.
+  it('covers GTK/gdk-pixbuf plugin modules in both the multiarch and the flattened AppImage layout', () => {
+    const file = JSON.parse(readFileSync(COMPONENTS_PATH, 'utf8'));
+    const res = file.components.flatMap((c: { paths: string[] }) => c.paths.map((p) => globToRegExp(p)));
+    const covered = (p: string) => res.some((re: RegExp) => re.test(p));
+    for (const lib of ['usr/lib', 'usr/lib/x86_64-linux-gnu']) {
+      for (const rel of [
+        'gtk-3.0/3.0.0/printbackends/libprintbackend-cups.so',
+        'gtk-3.0/3.0.0/immodules/im-xim.so',
+        'gdk-pixbuf-2.0/2.10.0/loaders/libpixbufloader-svg.so',
+      ]) {
+        const p = `squashfs-root/${lib}/${rel}`;
+        expect(covered(p), p).toBe(true);
+      }
+    }
   });
 });
 

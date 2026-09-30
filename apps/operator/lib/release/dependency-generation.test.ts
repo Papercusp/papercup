@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -2327,5 +2327,172 @@ describe('dependency-generation publish-lock waiter', () => {
     expect(result.stderr).toMatch(
       /still waiting for the dependency-generation publish lock after 3\ds of 900s/,
     );
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});
+
+// WI-10004094: the gate and two bg-host prebuilds resolved ONE identity and each copied the
+// ~16 GB tree into its own build dir; the three copies starved each other past the gate's
+// 30m no-output budget, and the one silent cp gave the watchdog nothing to judge.
+describe('WI-10004094: one build per dependency identity, with visible copy progress', () => {
+  const realCp = execFileSync('bash', ['-c', 'command -v cp'], { encoding: 'utf8' }).trim();
+  const host = execFileSync('hostname', { encoding: 'utf8' }).trim();
+
+  function publishAsync(integration: string, env: NodeJS.ProcessEnv = {}): Promise<ShellResult> {
+    return new Promise((resolvePublish) => {
+      const child = spawn('bash', [SCRIPT, '--integration', integration], {
+        env: { ...process.env, ...env },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
+      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+      child.on('close', (status) => resolvePublish({ status, stdout, stderr }));
+    });
+  }
+
+  async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return true;
+      await new Promise((settle) => setTimeout(settle, 50));
+    }
+    return predicate();
+  }
+
+  // A `cp` that runs SHIM_BODY first, then execs the real cp in the same pid.
+  function cpShimPath(root: string, shimBody: string): string {
+    const shimDir = join(root, 'shim-bin');
+    mkdirSync(shimDir, { recursive: true });
+    writeFileSync(join(shimDir, 'cp'), `#!/usr/bin/env bash\n${shimBody}\nexec ${realCp} "$@"\n`);
+    chmodSync(join(shimDir, 'cp'), 0o755);
+    return `${shimDir}:${process.env.PATH ?? ''}`;
+  }
+
+  it('a second publisher joins the live build of the same identity, relays its progress, and cache-hits instead of copying', async () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const inflight = () =>
+      existsSync(generationRoot) &&
+      readdirSync(generationRoot).filter((name) => name.startsWith('.inflight-'));
+    // Every holder cp sleeps 2s first, so its "copying" line stays current across a 1s poll.
+    const holder = publishAsync(integration, { PATH: cpShimPath(dirname(integration), 'sleep 2') });
+    expect(await waitFor(() => (inflight() || []).length === 1, 60_000)).toBe(true);
+
+    const joiner = await publishAsync(integration);
+    const built = await holder;
+
+    expect(built.status, built.stderr).toBe(0);
+    expect(joiner.status, joiner.stderr).toBe(0);
+    expect(joiner.stderr).toMatch(
+      /joining in-flight build of v1-[0-9a-f]{64} \(host=\S+ pid=\d+ held=\d+s\) instead of copying/,
+    );
+    expect(joiner.stderr).toMatch(/in-flight build of v1-[0-9a-f]{64}: copying dependency tree: /);
+    // Every copy line the joiner printed is a relayed one: it copied nothing itself.
+    expect(joiner.stderr).not.toMatch(/^\[dependency-generation\] cop(y|ied)/m);
+    expect(lastSummary(joiner).result).toBe('cache-hit');
+    expect(lastSummary(joiner).identity).toBe(lastSummary(built).identity);
+    expect(Number(lastSummary(built).trees_copied)).toBeGreaterThan(0);
+    expect(inflight()).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('reclaims an in-flight lock whose same-host holder died, then publishes', () => {
+    const integration = makeIntegration();
+    const dead = join(
+      integration,
+      `.papercusp/dependency-generations/.inflight-v1-${'0'.repeat(64)}`,
+    );
+    mkdirSync(dead, { recursive: true });
+    writeFileSync(join(dead, 'writer'), `host=${host}\npid=99999999\nstarted=1\n`);
+
+    const result = publish(integration);
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(dead)).toBe(false);
+    expect(result.stderr).toContain(`reclaimed abandoned in-flight build lock .inflight-v1-${'0'.repeat(64)}`);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  function waitScenario(outcome: 'holder-finishes' | 'holder-stalls'): ShellResult {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-inflight-wait-'));
+    roots.push(root);
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      'lock="$ROOT/.inflight-$ID"',
+      'mkdir "$lock"',
+      // Own stdio, so an orphaned holder cannot keep spawnSync's pipes open.
+      'sleep 45 </dev/null >/dev/null 2>&1 & holder=$!',
+      'printf "host=%s\\npid=%s\\nstarted=%s\\n" "$(dependency_generation_host)" "$holder" "$(date +%s)" > "$lock/writer"',
+      'printf "%s copying dependency tree: node_modules\\n" "$(date +%s)" > "$lock/progress"',
+      'if [ "$OUTCOME" = holder-finishes ]; then ( sleep 2; rm -rf -- "$lock" ) </dev/null >/dev/null 2>&1 & fi',
+      'rc=0; dependency_generation_wait_inflight "$ROOT" "$ID" || rc=$?',
+      'printf "RC=%s\\n" "$rc"',
+      'kill "$holder" 2>/dev/null || true',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        SCRIPT,
+        ROOT: root,
+        ID: `v1-${'a'.repeat(64)}`,
+        OUTCOME: outcome,
+        DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC: outcome === 'holder-stalls' ? '2' : '30',
+      },
+    });
+    return { status: result.status, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
+  }
+
+  it('a joined waiter relays the holder progress and asks for re-validation when the holder ends', () => {
+    const result = waitScenario('holder-finishes');
+    expect(result.stdout, result.stderr).toContain('RC=79');
+    expect(result.stderr).toContain(`in-flight build of v1-${'a'.repeat(64)}: copying dependency tree: node_modules`);
+    expect(result.stderr).toContain('ended; re-validating');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('a waiter whose live holder shows no progress fails rc73 and names the holder before any outer watchdog', () => {
+    const result = waitScenario('holder-stalls');
+    expect(result.stdout, result.stderr).toContain('RC=73');
+    expect(result.stderr).toMatch(
+      /FATAL: in-flight build of v1-a{64} showed no progress for 2s \(host=\S+ pid=\d+ held=\d+s\)/,
+    );
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  function copyScenario(shimBody: string): ShellResult {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-copy-progress-'));
+    roots.push(root);
+    mkdirSync(join(root, 'src/pkg'), { recursive: true });
+    writeFileSync(join(root, 'src/pkg/index.js'), 'copied\n');
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      'rc=0; dependency_generation_copy_independent "$ROOT/src" "$ROOT/build/tree/node_modules" || rc=$?',
+      'printf "RC=%s\\n" "$rc"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        SCRIPT,
+        ROOT: root,
+        PATH: cpShimPath(root, shimBody),
+        DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1',
+      },
+    });
+    expect(readFileSync(join(root, 'build/tree/node_modules/pkg/index.js'), 'utf8')).toBe('copied\n');
+    return { status: result.status, stdout: String(result.stdout ?? ''), stderr: String(result.stderr ?? '') };
+  }
+
+  it('reports bytes written while a long copy keeps writing', () => {
+    // The shim's own builtin writes count toward the copy pid's I/O, as cp's would.
+    const result = copyScenario(
+      `for i in 1 2 3; do printf '%1048576s' '' >> "$ROOT/sink"; sleep 1.2; done`,
+    );
+    expect(result.stdout, result.stderr).toContain('RC=0');
+    expect(result.stderr).toMatch(/copy progress: node_modules written=[1-9]\d*MiB elapsed=\d+s/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('stays silent while a copy writes nothing, so a wedged copy still reads as wedged', () => {
+    const result = copyScenario('sleep 3.5');
+    expect(result.stdout, result.stderr).toContain('RC=0');
+    expect(result.stderr).not.toContain('copy progress');
   }, NATIVE_SHELL_TIMEOUT_MS);
 });

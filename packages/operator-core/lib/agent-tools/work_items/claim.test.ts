@@ -75,6 +75,13 @@ vi.mock('../../work-scope-policy', () => ({
 }));
 // Claim-time recall port (P-008) is exercised in its own memory/claim-port.test.ts;
 // mock it here so the handler test stays a hermetic unit (no real memory backend).
+// EI-23701433507513915: the holder-identity rules run for real, against an owner registry this
+// file controls, instead of coord presence.
+const OWNER_REGISTRY = vi.hoisted(() => ({ ids: [] as string[] }));
+vi.mock('../../work-item-holder-identity', async (importOriginal) => {
+  const { registryBackedHolderIdentity } = await import('../../work-item-holder-identity.testing');
+  return registryBackedHolderIdentity(await importOriginal(), OWNER_REGISTRY);
+});
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
 vi.mock('../../premises-claim-port', () => ({ getClaimTimePremises: premisePort.get }));
 // EI-20417350647749715: keep the force takeover handler tests hermetic while the
@@ -110,6 +117,7 @@ const body = async (args: unknown) => ((await tool.handler(args as never, {} as 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  OWNER_REGISTRY.ids = [];
   identity.ownerId = 'me';
   identity.workspaceId = 'ws-1';
   forceGuard.verdict = { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } };
@@ -910,5 +918,63 @@ describe('work_items:claim handler (keyed-array)', () => {
         fromHolder: identity.ownerId,
       });
     });
+  });
+});
+
+// EI-23701433507513915: a leader assignment stored the SHORT-FORM id (`su-851c1a7a`) as the
+// holder. Every exact holder check then treated the real holder as a stranger.
+describe('work_items:claim short-form owner ids (EI-23701433507513915)', () => {
+  const ME = 'su-851c1a7a-8ea6-4c70-afeb-472e957fd3d8';
+  const PEER_SAME_PREFIX = 'su-851c1a7a-0000-4000-8000-000000000001';
+
+  it("re-claims the caller's OWN legacy short-form hold, widening the CAS by the RAW stored string", async () => {
+    identity.ownerId = ME;
+    OWNER_REGISTRY.ids = [ME];
+    getM.mockResolvedValue({ id: 'WI-LEGACY', assignee: 'su-851c1a7a' } as never);
+    claimM.mockResolvedValue({ id: 'WI-LEGACY', assignee: ME } as never);
+
+    const b = await body({ id: 'WI-LEGACY' });
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    // taken_by holds the short string, so the CAS must match THAT, while the claim writes ME.
+    expect(claimM).toHaveBeenCalledWith('WI-LEGACY', ME, { harness: undefined, fromHolder: 'su-851c1a7a' });
+    expect(assessForceM).not.toHaveBeenCalled();
+  });
+
+  it("does NOT treat an AMBIGUOUS legacy short hold as the caller's own", async () => {
+    identity.ownerId = ME;
+    OWNER_REGISTRY.ids = [ME, PEER_SAME_PREFIX];
+    getM.mockResolvedValue({ id: 'WI-AMB-HOLD', assignee: 'su-851c1a7a' } as never);
+
+    await body({ id: 'WI-AMB-HOLD' });
+
+    expect(claimM).not.toHaveBeenCalledWith('WI-AMB-HOLD', ME, expect.objectContaining({ fromHolder: 'su-851c1a7a' }));
+  });
+
+  it('expands a short-form assignee ARG to the unique full id before claiming', async () => {
+    OWNER_REGISTRY.ids = [ME];
+    claimM.mockImplementation(async (id: string, who: string) => ({ id, assignee: who }) as never);
+
+    const b = await body({ id: 'WI-SHORT', assignee: 'su-851c1a7a' });
+
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(claimM).toHaveBeenCalledWith('WI-SHORT', ME, expect.objectContaining({ fromHolder: 'me' }));
+  });
+
+  it('refuses an AMBIGUOUS short-form assignee with a typed error naming the candidates, and never claims', async () => {
+    OWNER_REGISTRY.ids = [ME, PEER_SAME_PREFIX];
+
+    const b = await body({ id: 'WI-AMB', assignee: 'su-851c1a7a' });
+
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'assignee_short_form_ambiguous' });
+    expect(b.results[0].hint).toContain(PEER_SAME_PREFIX);
+    expect(claimM).not.toHaveBeenCalled();
+  });
+
+  it('refuses an UNRESOLVED short-form assignee with a typed error instead of a phantom conflict', async () => {
+    const b = await body({ id: 'WI-GONE', assignee: 'su-deadbeef' });
+
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'assignee_short_form_unresolved' });
+    expect(claimM).not.toHaveBeenCalled();
   });
 });

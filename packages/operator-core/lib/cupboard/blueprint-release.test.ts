@@ -12,6 +12,7 @@ import {
   readBlueprintLifecycle,
   rollbackBlueprintRelease,
   uninstallBlueprintRelease,
+  type BlueprintLifecycleJournal,
 } from './blueprint-release';
 import { prepareReleaseForPublish } from './publish-release-gate';
 import { listingManifestSigningBytes, type CupboardReleaseManifest } from './listing-manifest';
@@ -331,6 +332,91 @@ describe('immutable blueprint release lifecycle', () => {
     // release, including this plan's own unpriced proof install).
     expect((await commit({ contentHash: rootHash, manifest })).operation).toBe('install');
     expect((await commit(undefined)).operation).toBe('no-op');
+  });
+});
+
+describe('P-014 lifecycle journal order (D-034)', () => {
+  /** Records every journal call with the release the file tier had active at that moment. */
+  function recordingJournal(options: { refuse?: boolean } = {}) {
+    const calls: string[] = [];
+    const active = async () => (await readBlueprintLifecycle(installedDir, 'identity')).active?.version ?? 'none';
+    const journal: BlueprintLifecycleJournal = {
+      async recover(activeContentHash) {
+        calls.push(`recover(${activeContentHash ?? 'null'}) @${await active()}`);
+        return [];
+      },
+      async prepare(contentHash) {
+        calls.push(`prepare(${contentHash ?? 'null'}) @${await active()}`);
+        if (options.refuse) throw new BlueprintLifecycleError('binding refused', 409, 'capability_provider_binding_failed');
+        return {
+          async apply() {
+            calls.push(`apply @${await active()}`);
+            return { pots: [], residue: [] };
+          },
+          async compensate(cause) {
+            calls.push(`compensate(${(cause as NodeJS.ErrnoException).code}) @${await active()}`);
+          },
+        };
+      },
+    };
+    return { journal, calls };
+  }
+
+  it('recovers and prepares before every switch, and applies only after it', async () => {
+    const v1 = await source('1.0.0', 'one\n', 1);
+    const v2 = await source('2.0.0', 'two\n', 2);
+    const request = { installedDir, id: 'identity', source: 'repo' };
+    const { journal, calls } = recordingJournal();
+
+    const first = await commitBlueprintRelease({ ...request, sourceDir: v1.dir, version: '1.0.0', pins: [v1.pin], nowMs: 1, journal });
+    const h1 = first.record.contentHash;
+    expect(first.journal).toEqual({ recovered: [], pots: [], residue: [] });
+    const second = await commitBlueprintRelease({ ...request, sourceDir: v2.dir, version: '2.0.0', pins: [v2.pin], nowMs: 2, journal });
+    const h2 = second.record.contentHash;
+    await rollbackBlueprintRelease({ installedDir, id: 'identity', target: '1.0.0', journal });
+    const removed = await uninstallBlueprintRelease({ installedDir, id: 'identity', nowMs: 3, journal });
+    expect(removed.journal).toEqual({ recovered: [], pots: [], residue: [] });
+
+    expect(calls).toEqual([
+      'recover(null) @none', `prepare(${h1}) @none`, 'apply @1.0.0',
+      `recover(${h1}) @1.0.0`, `prepare(${h2}) @1.0.0`, 'apply @2.0.0',
+      `recover(${h2}) @2.0.0`, `prepare(${h1}) @2.0.0`, 'apply @1.0.0',
+      // Uninstall prepares for no release; the file tier goes before the pot installs are cleaned.
+      `recover(${h1}) @1.0.0`, 'prepare(null) @1.0.0', 'apply @none',
+    ]);
+  });
+
+  it('never switches a release whose bindings the journal refused', async () => {
+    const v1 = await source('1.0.0', 'one\n', 1);
+    const { journal, calls } = recordingJournal({ refuse: true });
+    await expect(commitBlueprintRelease({
+      installedDir, sourceDir: v1.dir, id: 'identity', version: '1.0.0', source: 'repo', pins: [v1.pin], journal,
+    })).rejects.toMatchObject({ status: 409, code: 'capability_provider_binding_failed' });
+    expect(calls).toHaveLength(2);
+    expect(existsSync(join(installedDir, 'identity'))).toBe(false);
+    expect((await readBlueprintLifecycle(installedDir, 'identity')).releases).toEqual([]);
+  });
+
+  it('compensates the prepared attempt when the switch fails, and never applies it', async () => {
+    const v1 = await source('1.0.0', 'one\n', 1);
+    // The pins verify, but the bytes the switch copies are gone.
+    await fs.rm(v1.dir, { recursive: true, force: true });
+    const { journal, calls } = recordingJournal();
+    await expect(commitBlueprintRelease({
+      installedDir, sourceDir: v1.dir, id: 'identity', version: '1.0.0', source: 'repo', pins: [v1.pin], journal,
+    })).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(calls.slice(2)).toEqual(['compensate(ENOENT) @none']);
+    expect((await readBlueprintLifecycle(installedDir, 'identity')).active).toBeNull();
+  });
+
+  it('refuses an activation conflict before the journal is touched', async () => {
+    const v1 = await source('1.0.0', 'one\n', 1);
+    const { journal, calls } = recordingJournal();
+    await expect(commitBlueprintRelease({
+      installedDir, sourceDir: v1.dir, id: 'identity', version: '1.0.0', source: 'repo', pins: [v1.pin], journal,
+      activationStack: [{ id: 'other', slots: ['domain'] }],
+    })).rejects.toThrow(/activation slot conflict/);
+    expect(calls).toEqual([]);
   });
 });
 

@@ -66,6 +66,7 @@ function tickResult(
     touched: 0,
     strandedCount: 0,
     endedUnobservedCount: 0,
+    recoveredFromJobLogCount: 0,
     unaccountedPersisted: 0,
     residueCleared: 0,
     confirmedUnaccounted: [],

@@ -449,7 +449,10 @@ export const BOX_IDENTITY_FIX_HINT =
 export const GENERIC_ACCOUNTS = new Set([
   'root', 'runner', 'build', 'ubuntu', 'node', 'vscode', 'codespace', 'ci', 'agent',
   'linuxbrew', 'dev', 'user', 'shared', 'Shared', 'pcusp', 'papercusp', 'papercup',
+  'tester', 'test', 'admin', 'builder', 'vagrant',
 ]);
+// ↑ MUST equal GENERIC_ACCOUNTS in papercusp-desktop/bin/audit-release-bundle.py
+//   (pinned by papercusp-desktop/test/audit-identity-literal-shape.test.js).
 
 /** A host that names no machine of ours. */
 export const isGenericHost = (h) => /^(runner|ci-|localhost)/i.test(h);

@@ -56,4 +56,67 @@ describe('rubric amend receipts in shared Postgres', () => {
     `;
     expect(rows).toEqual([{ workspace_id: activeWorkspaceId(), state: 'committed' }]);
   });
+
+  // EI-24680663429090445: the key is deterministic per request, so a retry of the same
+  // payload after the underlying defect is fixed lands on the same row. Replaying the stored
+  // failure returned the ORIGINAL error for an hour, on the fixed build too.
+  it('re-runs a same-key retry after a failure instead of replaying the stored error', async () => {
+    const key = 'failed-receipt-rerun';
+    const rubric = 'acceptance-receipt-rerun';
+    let executions = 0;
+    await expect(trackAmendRun(key, rubric, async () => {
+      executions++;
+      throw new Error('acceptance_bar_revision_projection_unmapped:AUTO-BAR-R-10-P-004');
+    })).rejects.toThrow('projection_unmapped');
+    expect(await getAmendReceipt(rubric, key)).toMatchObject({ state: 'failed' });
+
+    const retried = await trackAmendRun(key, rubric, async () => {
+      executions++;
+      return { ok: true, rubric: { id: rubric } };
+    });
+    expect(retried).toEqual({ ok: true, rubric: { id: rubric } });
+    expect(executions).toBe(2);
+    const receipt = await getAmendReceipt(rubric, key);
+    expect(receipt).toMatchObject({ state: 'committed', result: { ok: true } });
+    expect(receipt?.error).toBeUndefined();
+
+    // A COMMITTED receipt still replays: only failures are re-run.
+    const replayed = await trackAmendRun(key, rubric, async () => {
+      executions++;
+      return { ok: true, rerun: true };
+    });
+    expect(replayed).toEqual({ ok: true, rubric: { id: rubric } });
+    expect(executions).toBe(2);
+  });
+
+  it('re-runs a stored ok:false result and lets exactly one of two concurrent retries run it', async () => {
+    const key = 'failed-result-concurrent-rerun';
+    const rubric = 'acceptance-receipt-concurrent';
+    let executions = 0;
+    expect(await trackAmendRun(key, rubric, async () => {
+      executions++;
+      return { ok: false, error: 'stale build refusal' };
+    })).toEqual({ ok: false, error: 'stale build refusal' });
+    expect(await getAmendReceipt(rubric, key)).toMatchObject({ state: 'failed', error: 'stale build refusal' });
+
+    let release!: (value: Record<string, unknown>) => void;
+    const work = new Promise<Record<string, unknown>>((resolve) => { release = resolve; });
+    let started!: () => void;
+    const startedWork = new Promise<void>((resolve) => { started = resolve; });
+    const first = trackAmendRun(key, rubric, () => {
+      executions++;
+      started();
+      return work;
+    });
+    await startedWork;
+    const second = await trackAmendRun(key, rubric, async () => {
+      executions++;
+      return { ok: true, duplicate: true };
+    });
+    expect(second).toMatchObject({ pending: true, idempotencyKey: key });
+    release({ ok: true });
+    expect(await first).toEqual({ ok: true });
+    expect(executions).toBe(2);
+    expect(await getAmendReceipt(rubric, key)).toMatchObject({ state: 'committed' });
+  });
 });
