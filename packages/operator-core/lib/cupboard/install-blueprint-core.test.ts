@@ -21,6 +21,7 @@ import {
 } from './install-blueprint-core';
 import { identityInstallConsentSchema, type IdentityInstallConsent } from './identity-install-consent';
 import {
+  BlueprintLifecycleError,
   buildBlueprintReleaseArchive,
   prepareBlueprintPublicRelease,
   readBlueprintLifecycle,
@@ -729,7 +730,7 @@ describe('installBlueprintFromCupboardCore', () => {
     });
     const recipeInstall = (
       recipeProviderConsent?: RecipeProviderConsent,
-      commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} })),
+      journal = fakeJournal(),
     ) => installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
@@ -744,7 +745,7 @@ describe('installBlueprintFromCupboardCore', () => {
           getPotBinding: async () => null,
           listCandidates: async () => [capabilityCandidate(), recipeCandidate()],
         },
-        commitCapabilitySelections,
+        blueprintInstallJournal: journal.blueprintInstallJournal,
       }),
     );
 
@@ -756,8 +757,8 @@ describe('installBlueprintFromCupboardCore', () => {
     });
 
     it('refuses an unconsented recipe selection before any write and returns the exact subject', async () => {
-      const commit = vi.fn(async () => ({ rollback: async () => {} }));
-      const refusal = await recipeInstall(undefined, commit).catch((error: unknown) => error);
+      const journal = fakeJournal();
+      const refusal = await recipeInstall(undefined, journal).catch((error: unknown) => error);
       expect(refusal).toMatchObject({
         status: 409,
         code: 'capability_recipe_provider_consent_required',
@@ -782,21 +783,22 @@ describe('installBlueprintFromCupboardCore', () => {
       const pin = (refusal as { data: { consentSubject: { providers: Array<{ recipes: Array<{ inspectionPinSha256: string }> }> } } })
         .data.consentSubject.providers[0]!.recipes[0]!.inspectionPinSha256;
       expect(pin).toMatch(/^[0-9a-f]{64}$/);
-      expect(commit).not.toHaveBeenCalled();
+      expect(journal.prepare).not.toHaveBeenCalled();
       expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
     });
 
     it('binds the recipe provider, with its pins, only after consent to the echoed subject', async () => {
       const refusal = await recipeInstall().catch((error: unknown) => error) as { data: { consentSubject: RecipeProviderConsentSubject } };
-      const commit = vi.fn(async () => ({ rollback: async () => {} }));
-      await recipeInstall({ ...refusal.data.consentSubject, decision: 'approved' }, commit);
-      expect(commit).toHaveBeenCalledWith([
-        expect.objectContaining({
-          providerPackage: 'initech-crm-recipes',
-          providerKind: 'recipe',
-          recipePins: [expect.objectContaining({ verb: 'send', recipeId: 'initech:send-summary' })],
-        }),
+      const journal = fakeJournal();
+      const result = await recipeInstall({ ...refusal.data.consentSubject, decision: 'approved' }, journal);
+      expect(journal.bindings()).toEqual([
+        { classRef: 'crm.email@1.0.0', providerPackage: 'initech-crm-recipes', providerVersion: '1.0.0', providerKind: 'recipe' },
       ]);
+      expect(journal.prepare).toHaveBeenCalledOnce();
+      expect(result.capabilityGrants?.selected).toMatchObject([{
+        providerPackage: 'initech-crm-recipes',
+        recipePins: [expect.objectContaining({ verb: 'send', recipeId: 'initech:send-summary' })],
+      }]);
       expect(existsSync(join(installedDir, 'neat-bp', 'blueprint.yaml'))).toBe(true);
     });
 
@@ -825,8 +827,8 @@ describe('installBlueprintFromCupboardCore', () => {
         makeDeps({ capabilityGrantDeps: { getPotBinding: async () => null, listCandidates: async () => [kindOnly] } }),
       )).rejects.toMatchObject({ code: 'required_capability_provider_absent' });
 
-      const commit = vi.fn(async () => ({ rollback: async () => {} }));
-      await installConsented(
+      const journal = fakeJournal();
+      const result = await installConsented(
         {
           githubUrl: 'https://github.com/acme/neat-bp',
           capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent' },
@@ -837,12 +839,11 @@ describe('installBlueprintFromCupboardCore', () => {
             // The recipe row outranks globex on behavioral evidence; the automatic policy still takes the tool.
             listCandidates: async () => [recipeCandidate(), rivalCapabilityCandidate()],
           },
-          commitCapabilitySelections: commit,
+          blueprintInstallJournal: journal.blueprintInstallJournal,
         }),
       );
-      expect(commit).toHaveBeenCalledWith([
-        expect.objectContaining({ providerPackage: 'globex-crm', providerKind: 'tool', reason: 'evidence-policy' }),
-      ]);
+      expect(journal.bindings()).toEqual([expect.objectContaining({ providerPackage: 'globex-crm', providerKind: 'tool' })]);
+      expect(result.capabilityGrants?.selected).toMatchObject([{ providerPackage: 'globex-crm', reason: 'evidence-policy' }]);
     });
   });
 
@@ -853,7 +854,7 @@ describe('installBlueprintFromCupboardCore', () => {
         '\nslots: [{ slot: domain }]' +
         '\ngrants: { requires: [crm.email@1.0.0] }',
     );
-    const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
+    const journal = fakeJournal();
     const installCapabilityProviderPackages = vi.fn();
     const review = {
       ok: true,
@@ -897,7 +898,7 @@ describe('installBlueprintFromCupboardCore', () => {
         },
         reviewCapabilityProviderPackages: async () => review,
         installCapabilityProviderPackages,
-        commitCapabilitySelections,
+        blueprintInstallJournal: journal.blueprintInstallJournal,
       }),
     )).rejects.toMatchObject({
       status: 409,
@@ -905,7 +906,7 @@ describe('installBlueprintFromCupboardCore', () => {
       data: { capabilityProviderReview: { units: [{ name: 'acme-crm' }, { name: 'audit-pack' }] } },
     });
     expect(installCapabilityProviderPackages).not.toHaveBeenCalled();
-    expect(commitCapabilitySelections).not.toHaveBeenCalled();
+    expect(journal.prepare).not.toHaveBeenCalled();
     expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
   });
 
@@ -962,10 +963,7 @@ describe('installBlueprintFromCupboardCore', () => {
           order.push('install-packages');
           return installResult;
         },
-        commitCapabilitySelections: async () => {
-          order.push('bind-provider');
-          return { rollback: async () => {} };
-        },
+        blueprintInstallJournal: fakeJournal(order).blueprintInstallJournal,
       }),
     );
     order.push('identity-installed');
@@ -975,16 +973,16 @@ describe('installBlueprintFromCupboardCore', () => {
     expect(result.capabilityProviderInstalls?.receipts).toHaveLength(1);
   });
 
-  it('compensates a new provider binding when the identity release fails', async () => {
+  it('refuses an activation slot conflict before any binding is journaled', async () => {
     await writeBlueprint(
       fixtureRepo,
       RUNNABLE_YAML +
         '\nslots: [{ slot: domain }]' +
         '\ngrants: { requires: [crm.email@1.0.0] }',
     );
-    const rollback = vi.fn(async () => {});
-    // The release verifies before any write, so the post-binding failure here is
-    // the activation slot conflict the release commit detects.
+    const journal = fakeJournal();
+    // The release commit checks activation before the journal prepares, so a
+    // conflict writes no binding; a failed switch compensates (blueprint-release.test.ts).
     await expect(installConsented(
       {
         githubUrl: 'https://github.com/acme/neat-bp',
@@ -1000,11 +998,32 @@ describe('installBlueprintFromCupboardCore', () => {
           getPotBinding: async () => null,
           listCandidates: async () => [capabilityCandidate()],
         },
-        commitCapabilitySelections: async () => ({ rollback }),
+        blueprintInstallJournal: journal.blueprintInstallJournal,
       }),
-    )).rejects.toBeInstanceOf(InstallBlueprintError);
+    )).rejects.toMatchObject({ status: 409, message: expect.stringMatching(/activation slot conflict/) });
 
-    expect(rollback).toHaveBeenCalledOnce();
+    expect(journal.prepare).not.toHaveBeenCalled();
+    expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
+  });
+
+  it('maps a refused binding journal to its lifecycle code and leaves no release', async () => {
+    await writeBlueprint(fixtureRepo, RUNNABLE_YAML + '\nslots: [{ slot: domain }]' + '\ngrants: { requires: [crm.email@1.0.0] }');
+    const journal: BlueprintLifecycleJournal = {
+      recover: async () => [],
+      prepare: async () => {
+        throw new BlueprintLifecycleError('pot sales-ops binds crm.email@1.0.0 elsewhere', 409, 'capability_provider_binding_failed');
+      },
+    };
+    await expect(installConsented(
+      { githubUrl: 'https://github.com/acme/neat-bp', capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent' } },
+      makeDeps({
+        capabilityGrantDeps: { getPotBinding: async () => null, listCandidates: async () => [capabilityCandidate()] },
+        blueprintInstallJournal: () => journal,
+      }),
+    )).rejects.toMatchObject({
+      status: 409, code: 'capability_provider_binding_failed',
+      data: { capabilityGrants: expect.objectContaining({ ok: true }) },
+    });
     expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
   });
 
@@ -1015,14 +1034,11 @@ describe('installBlueprintFromCupboardCore', () => {
       capabilityContext: { workspaceId: 'workspace-1', potSlug: 'sales-ops', mode: 'agent' },
       ...over,
     });
-    const writes = () => {
-      const commitCapabilitySelections = vi.fn(async () => ({ rollback: async () => {} }));
-      const installCapabilityProviderPackages = vi.fn();
-      return { commitCapabilitySelections, installCapabilityProviderPackages };
-    };
+    const writes = () => ({ journal: fakeJournal(), installCapabilityProviderPackages: vi.fn() });
     const grantDeps = (spies: ReturnType<typeof writes>, over: Partial<InstallBlueprintCoreDeps> = {}) => makeDeps({
       capabilityGrantDeps: { getPotBinding: async () => null, listCandidates: async () => [capabilityCandidate()] },
-      ...spies,
+      blueprintInstallJournal: spies.journal.blueprintInstallJournal,
+      installCapabilityProviderPackages: spies.installCapabilityProviderPackages,
       ...over,
     });
     const refusalOf = (promise: Promise<unknown>) => promise.then(
@@ -1054,14 +1070,14 @@ describe('installBlueprintFromCupboardCore', () => {
       // Exactly what the tool and route accept back as `identityInstallConsent`.
       expect(identityInstallConsentSchema.parse(refusal.data.consentSubject)).toEqual(refusal.data.consentSubject);
       expect(refusal.data.consentSubject.artifactContentHash).toMatch(/^sha256:[0-9a-f]{64}$/);
-      expect(spies.commitCapabilitySelections).not.toHaveBeenCalled();
+      expect(spies.journal.prepare).not.toHaveBeenCalled();
       expect(spies.installCapabilityProviderPackages).not.toHaveBeenCalled();
       expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
 
       const result = await installBlueprintFromCupboardCore(
         agentInput({ identityInstallConsent: refusal.data.consentSubject }), grantDeps(spies));
       expect(result.consent.providerBindings).toEqual(['crm.email@1.0.0 → acme-crm@2.0.0']);
-      expect(spies.commitCapabilitySelections).toHaveBeenCalledOnce();
+      expect(spies.journal.prepare).toHaveBeenCalledOnce();
     });
 
     it('refuses consent given for a different artifact or a different binding set', async () => {
@@ -1078,7 +1094,7 @@ describe('installBlueprintFromCupboardCore', () => {
           getPotBinding: async () => null, listCandidates: async () => [rivalCapabilityCandidate()],
         } }),
       )).rejects.toMatchObject({ status: 409, code: 'identity_install_consent_mismatch' });
-      expect(spies.commitCapabilitySelections).not.toHaveBeenCalled();
+      expect(spies.journal.prepare).not.toHaveBeenCalled();
       expect(existsSync(join(installedDir, 'neat-bp'))).toBe(false);
     });
 
@@ -1124,7 +1140,7 @@ describe('installBlueprintFromCupboardCore', () => {
         await expect(installBlueprintFromCupboardCore(agentInput({ expectedRelease: { manifest: listed } }), grantDeps(spies)))
           .rejects.toMatchObject({ code: 'identity_install_consent_required' });
       }
-      expect(spies.commitCapabilitySelections).not.toHaveBeenCalled();
+      expect(spies.journal.prepare).not.toHaveBeenCalled();
       const installed = await installConsented(agentInput({ expectedRelease: { manifest } }), grantDeps(spies));
       expect(installed.release.contentHash).toBe(published.manifest.rootHash);
     });

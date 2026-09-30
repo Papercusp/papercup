@@ -128,48 +128,42 @@ export function packageProviderBindingDriver(
   address: PackageResourceAddress,
   binding: PotProviderBinding | null,
 ): PackageResourceDriver {
-  const { classId, classVersion } = exactClassRef(address.itemKey);
-  const scope = { workspaceId: address.workspaceId, potSlug: address.memoryScope, classId, classVersion };
+  const scope = bindingScope(address);
   const id = `${address.memoryScope}/${address.itemKey}`;
   const fingerprintOf = (row: PotBindingRow) => providerBindingFingerprint({ potSlug: address.memoryScope,
     classRef: address.itemKey, providerPackage: row.provider_package, providerVersion: row.provider_version,
     providerKind: row.provider_kind });
-  const readRow = async (db: postgres.Sql | postgres.TransactionSql, lock: boolean): Promise<PotBindingRow | null> => {
-    const rows = await db<PotBindingRow[]>`
-      SELECT provider_package, provider_version, provider_kind, bound_by
-        FROM harness_shared.pot_capability_class_bindings
-       WHERE workspace_id = ${scope.workspaceId} AND pot_slug = ${scope.potSlug}
-         AND class_id = ${classId} AND class_version = ${classVersion}
-       ${lock ? db`FOR UPDATE` : db``}`;
-    return rows[0] ?? null;
+  const refOf = (row: PotBindingRow, writeKey: string): PackageExternalResource => {
+    const fingerprint = fingerprintOf(row);
+    return { id, fingerprint,
+      ...(row.bound_by === providerBindingWriteStamp(writeKey) ? {} : { owned: false }),
+      ...(fingerprint === address.installedHash ? {} : { disposition: 'changed' as const }) };
   };
   const read = async (writeKey: string): Promise<PackageExternalResource[]> => {
-    const row = await readRow(sql, false);
-    if (!row) return [];
-    const fingerprint = fingerprintOf(row);
-    return [{ id, fingerprint,
-      ...(row.bound_by === providerBindingWriteStamp(writeKey) ? {} : { owned: false }),
-      ...(fingerprint === address.installedHash ? {} : { disposition: 'changed' as const }) }];
+    const row = await readPotBindingRow(sql, scope, false);
+    return row ? [refOf(row, writeKey)] : [];
   };
   return {
     recover: read,
     async create(writeKey) {
       if (!binding) throw new Error('provider binding release driver cannot create bindings');
-      const prior = await read(writeKey);
-      if (prior.length) {
-        if (prior[0]!.disposition) throw packageProviderBindingConflict(address);
-        return prior;
-      }
       try {
-        await bindCapabilityProviderToPot(sql, { ...scope, providerPackage: binding.providerPackage,
-          providerVersion: binding.providerVersion, providerKind: binding.providerKind,
-          boundBy: providerBindingWriteStamp(writeKey), createOnly: true });
-        return [{ id, fingerprint: address.installedHash }];
+        return await sql.begin(async (tx) => {
+          const row = await readPotBindingRow(tx, scope, true);
+          if (row && fingerprintOf(row) === address.installedHash) return [refOf(row, writeKey)];
+          // D-034 refuses only a different USABLE choice. One whose provider has
+          // retired or lost conformance is what the resolver read as absent, so
+          // this write replaces it; it is then this install's to clean up.
+          if (row?.usable) throw packageProviderBindingConflict(address);
+          await bindCapabilityProviderToPot(tx, { ...scope, providerPackage: binding.providerPackage,
+            providerVersion: binding.providerVersion, providerKind: binding.providerKind,
+            boundBy: providerBindingWriteStamp(writeKey), createOnly: !row });
+          return [{ id, fingerprint: address.installedHash }];
+        });
       } catch (error) {
         // A concurrent equal binding is safe to depend on but is not ours.
         const concurrent = await read(writeKey);
         if (concurrent.length && !concurrent[0]!.disposition) return concurrent;
-        if (concurrent.length) throw packageProviderBindingConflict(address);
         throw error;
       }
     },
@@ -181,7 +175,7 @@ export function packageProviderBindingDriver(
           WHERE workspace_id = ${address.workspaceId} AND resource_key = ${packageResourceKey(address)}`;
         if (!receipt) throw new Error('provider binding ownership receipt is missing');
         // Lock the row through deletion so a concurrent re-point cannot be erased.
-        const row = await readRow(tx, true);
+        const row = await readPotBindingRow(tx, scope, true);
         if (!row) return 'absent';
         const stamp = providerBindingWriteStamp(receipt.write_key);
         if (fingerprintOf(row) !== resource.fingerprint || row.bound_by !== stamp) return 'changed';
@@ -206,8 +200,11 @@ export async function prepareProviderBindingResource(
       const refs = await driver.recover(writeKey);
       // Admission and cleanup share recovery, but only admission refuses a
       // re-pointed binding. Cleanup still needs its changed disposition to keep it.
-      if (refs.some((ref) => ref.disposition === 'changed')) throw packageProviderBindingConflict(planned.address);
-      return refs;
+      if (!refs.some((ref) => ref.disposition === 'changed')) return refs;
+      // An unusable foreign choice is absent to admission: create replaces it.
+      const row = await readPotBindingRow(sql, bindingScope(planned.address), false);
+      if (row && !row.usable) return [];
+      throw packageProviderBindingConflict(planned.address);
     },
   });
 }
