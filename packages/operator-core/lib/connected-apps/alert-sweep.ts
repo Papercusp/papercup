@@ -253,8 +253,8 @@ export async function loadSweepKeys(sql: SqlClient = getOrgPg().sql): Promise<Sw
            (SELECT f.last_reason FROM harness_shared.connected_app_auth_failures f
              WHERE f.app_id = a.id ORDER BY f.last_at DESC LIMIT 1) AS last_failure_reason,
            EXISTS (
-             SELECT 1 FROM papercusp_auth.users u
-              WHERE a.user_email IS NOT NULL AND lower(u.email) = lower(a.user_email)
+             SELECT 1 FROM papercusp_auth.hosted_users u
+              WHERE a.user_email IS NOT NULL AND lower(u.primary_email) = lower(a.user_email)
                 AND EXISTS (SELECT 1 FROM papercusp_auth.organization_memberships m WHERE m.user_id = u.id)
                 AND NOT EXISTS (SELECT 1 FROM papercusp_auth.organization_memberships m
                                  WHERE m.user_id = u.id AND m.status = 'active')

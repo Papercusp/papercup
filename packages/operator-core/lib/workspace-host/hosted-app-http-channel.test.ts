@@ -162,3 +162,44 @@ describe('HostedWorkspaceHostSessionAdapter — app-http channels (P-007)', () =
     expect(h.sent).toContainEqual({ type: 'relay.close', channelId: 'app-1', reason: 'channel_already_open' });
   });
 });
+
+describe('HostedWorkspaceHostSessionAdapter — relay usage on app-http opens (P-328)', () => {
+  const usage = { month: '2026-09-01', bytes: 900, limitBytes: 1000 };
+
+  function hostWithUsage(onRelayUsage: (value: unknown) => void, onWarning?: (message: string) => void) {
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding,
+      workspaceRoot: '/nonexistent-root',
+      send: (message) => sent.push(message),
+      operatorHttp: { origin: 'http://127.0.0.1:9' },
+      onRelayUsage,
+      ...(onWarning ? { onWarning } : {}),
+    });
+    return { adapter, sent };
+  }
+
+  it("hands the portal's usage report to onRelayUsage once the channel is attached", async () => {
+    const reports: unknown[] = [];
+    const h = hostWithUsage((value) => reports.push(value));
+    await h.adapter.accept({ type: 'relay.open', channelId: 'app-1', kind: 'app-http', audience: 'app', role: 'controller', relayUsage: usage });
+    expect(reports).toEqual([usage]);
+    expect(h.sent).toContainEqual({ type: 'relay', channelId: 'app-1', payload: { type: 'http.ready' } });
+  });
+
+  it('does not call onRelayUsage for an open without a report, or for a refused open', async () => {
+    const reports: unknown[] = [];
+    const h = hostWithUsage((value) => reports.push(value));
+    await h.adapter.accept({ type: 'relay.open', channelId: 'app-1', kind: 'app-http', audience: 'app', role: 'controller' });
+    await h.adapter.accept({ type: 'relay.open', channelId: 'app-2', kind: 'app-http', audience: 'workspace-operator', role: 'controller', relayUsage: usage });
+    expect(reports).toEqual([]);
+  });
+
+  it('keeps the channel open when the usage sink throws, and reports it as a warning', async () => {
+    const warnings: string[] = [];
+    const h = hostWithUsage(() => { throw new Error('sink down'); }, (message) => warnings.push(message));
+    await h.adapter.accept({ type: 'relay.open', channelId: 'app-1', kind: 'app-http', audience: 'app', role: 'controller', relayUsage: usage });
+    expect(h.sent).toContainEqual({ type: 'relay', channelId: 'app-1', payload: { type: 'http.ready' } });
+    expect(warnings).toEqual(['relay usage report failed: sink down']);
+  });
+});
