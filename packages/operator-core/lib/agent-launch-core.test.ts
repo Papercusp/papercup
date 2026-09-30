@@ -34,6 +34,7 @@ import {
   waitForPtyHostGone,
   type FleetMemberDefaults,
 } from './agent-launch-core';
+import { CODEX_SAFE_DEFAULT_MODEL } from './model-context-budget.mjs';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
 
@@ -423,7 +424,7 @@ describe('buildAgentLaunchCommand', () => {
         modelSource: 'configured-default',
       }),
     ).toBe(
-      'psu --no-picker --account=default --resume=22661 --model=gpt-5.6-sol:xhigh --model-source=configured-default',
+      `psu --no-picker --account=default --resume=22661 --model=${CODEX_SAFE_DEFAULT_MODEL} --model-source=configured-default`,
     );
   });
 
@@ -459,7 +460,7 @@ describe('buildAgentLaunchCommand', () => {
         agent: 'codex',
         modelSource: 'configured-default',
       }),
-    ).toContain('--model=gpt-5.6-sol:xhigh --model-source=configured-default');
+    ).toContain(`--model=${CODEX_SAFE_DEFAULT_MODEL} --model-source=configured-default`);
   });
 
   it('binds a plan to its harness', () => {
@@ -658,7 +659,7 @@ describe('memberLaunchCommand', () => {
     expect(() => memberLaunchCommand(base)).toThrow(/Codex model is required/);
     expect(() => memberLaunchCommand({ ...base, headless: true })).toThrow(/Codex model is required/);
     expect(memberLaunchCommand({ ...base, modelSource: 'configured-default' })).toContain(
-      '--model=gpt-5.6-sol:xhigh --model-source=configured-default',
+      `--model=${CODEX_SAFE_DEFAULT_MODEL} --model-source=configured-default`,
     );
   });
 
