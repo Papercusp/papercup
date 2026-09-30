@@ -40,6 +40,7 @@ import {
   parseCapabilityClassRef,
   type ProviderBindingRow,
 } from '../capability-class-registry-store';
+import { IDENTITY_GRANT_PROVIDER_KINDS } from '../agent-identities/grant-provider-kinds';
 import {
   resolveIdentityClassProvider,
   type IdentityClassProviderResolution,
@@ -349,6 +350,7 @@ export async function compileBlueprintWithPackages(
         potSlug,
         classId: parsed.id,
         classVersion: parsed.version,
+        providerKinds: IDENTITY_GRANT_PROVIDER_KINDS,
       });
     });
   const capabilityProviders: ResolvedCapabilityProviderInput[] = [];
