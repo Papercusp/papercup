@@ -20,6 +20,10 @@
  *
  * Needs what P-004 needs (PG, an embedder, the Jev key) plus, for step 5, the
  * llm-testing judge credential. A failed step 5 is reported, not fatal.
+ * On a sidecar host export PAPERCUSP_EMBED_SIDECAR_URL (the systemd units' value,
+ * e.g. http://127.0.0.1:3384): without it this process loads the embedder in-process,
+ * and when CUDA allocation fails it seeds on CPU (measured 2026-09-30: 7.7 GB RSS,
+ * 15 CPU-minutes, corpus seed still unfinished after 4 minutes).
  * Artifacts land under .papercusp/bench-reports/jev-robustness-<stamp>.{json,md}.
  */
 import { randomUUID } from 'node:crypto';
