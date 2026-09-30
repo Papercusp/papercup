@@ -696,7 +696,8 @@ export function startPortalRelayReconciler(deps?: PortalRelayDeps): void {
     async () => {
       await reconcilePortalRelay(deps);
     },
-    { category: 'watchdog' },
+    // must-sample: the portal grant poll, operator health and connector exits push nothing here.
+    { category: 'watchdog', classification: 'must-sample' },
   );
 }
 
