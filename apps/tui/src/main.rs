@@ -495,6 +495,17 @@ async fn main() -> Result<()> {
         crossterm::event::EnableBracketedPaste,
         crossterm::event::EnableFocusChange
     )?;
+    // pui-chat-first-ux P-018: on the alternate screen, with no mouse
+    // reporting, terminals turn the wheel into Up/Down keys, and in the
+    // message box those cycle your sent messages instead of scrolling the
+    // conversation. The chat-first surface therefore takes the mouse: the
+    // wheel scrolls the transcript and a drag selects and copies
+    // (App::on_mouse). Shift+drag still gets the terminal's own selection. The
+    // workbench and the docked panes run inside zellij, which owns the mouse
+    // there, so they leave it alone. Released again on teardown below.
+    if chat_first {
+        execute!(out, crossterm::event::EnableMouseCapture)?;
+    }
     // Voice hold-to-talk (voice-mode-tui-port-2026-06-05 D-007): request key
     // RELEASE events when the terminal speaks the kitty keyboard protocol, so
     // holding `v` can drive PTT. Without support no release events arrive and
@@ -556,6 +567,14 @@ async fn main() -> Result<()> {
         );
     }
     disable_raw_mode().ok();
+    // Left armed, mouse reporting would outlive pui and type escape sequences
+    // into the shell on every click and wheel notch.
+    if chat_first {
+        let _ = execute!(
+            terminal.backend_mut(),
+            crossterm::event::DisableMouseCapture
+        );
+    }
     // Paired with the EnableBracketedPaste / EnableFocusChange above: leaving
     // either armed would outlive the TUI — corrupting pastes in the user's shell
     // after pui exits, and spraying focus escape sequences into it.
