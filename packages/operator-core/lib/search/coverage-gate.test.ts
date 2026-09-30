@@ -26,6 +26,19 @@ import { SEARCH_SOURCES } from '../agent-tools/search/sources';
 
 const NOW = new Date('2026-08-03T18:00:00.000Z');
 
+it('cold coverage reads do not initialize the background embedding monitor', async () => {
+  vi.resetModules();
+  vi.doMock('./embed-coverage', () => { throw new Error('background monitor loaded on query path'); });
+  try {
+    const gate = await import('./coverage-gate');
+    const snapshot = await gate.loadCoverageSnapshot({ unsafe: async () => [] }, 'cold-query', NOW);
+    expect(gate.assessSourceCoverage('work_item', snapshot).verdict).toBe('unknown');
+  } finally {
+    vi.doUnmock('./embed-coverage');
+    vi.resetModules();
+  }
+});
+
 function reading(surface: string, embedded: number, eligible: number, opts: {
   ageMs?: number;
   recentEligible?: number;

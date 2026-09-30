@@ -41,12 +41,15 @@ import {
   type SearchCoverageReport,
   type SourceCoverageAssessment,
 } from '@papercusp/search';
-import {
-  TOTAL_COVERAGE_FLOOR,
-  RECENT_COVERAGE_FLOOR,
-  MIN_RECENT_SAMPLE,
-} from './embed-coverage';
 import { withChunkSearchColumns } from './chunks/registry';
+
+/** Shared query/alarm floors. Keep them on the read side so a cold query
+ * does not initialize the background monitor and its backfill dependencies.
+ * Total coverage tolerates a converging backlog; recent coverage detects
+ * write-path regressions, with a sample floor that avoids rounding noise. */
+export const TOTAL_COVERAGE_FLOOR = 0.95;
+export const RECENT_COVERAGE_FLOOR = 0.99;
+export const MIN_RECENT_SAMPLE = 20;
 
 // shared-vector-search-libraries-2026-09-29 P-002: the verdict logic lives in
 // @papercusp/search (createCoverageGate). This module is papercusp's host half:
@@ -130,12 +133,8 @@ let configuredGate: CoverageGate | null = null;
  * Papercusp's configured gate: the library's verdict logic with this host's
  * source map, floors and unmapped-source note.
  *
- * Built on FIRST USE, not at module load. This module sits in an import cycle
- * (embed-coverage → embed-backfill → … → coverage-gate → embed-coverage), so
- * when embed-coverage is loaded first its floor constants are still
- * uninitialised while this module evaluates. Reading them at call time is what
- * the pre-library code did implicitly; injection-coverage.test.ts fails to
- * collect if this becomes eager again.
+ * Built on first use. The query reader owns the shared floors; the background
+ * monitor re-exports them without becoming a dependency of cold queries.
  */
 function gate(): CoverageGate {
   configuredGate ??= createCoverageGate({
