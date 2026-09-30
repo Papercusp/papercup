@@ -112,8 +112,8 @@ describe('the real scenario feeds the summary', () => {
   it('announces every phase before running it, in order, on stderr', () => {
     const body = extractFunction(scenario, 'run_all_phases');
     // `phase_start X fn && fn`: phase_start returns 1 for a phase a selective run skips (P-002).
-    const calls = [...body.matchAll(/phase_start ([A-H]) (phase_[a-h]_[a-z_]+)\s+&&\s+(phase_[a-h]_[a-z_]+)/g)];
-    expect(calls.map(([, letter]) => letter)).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']);
+    const calls = [...body.matchAll(/phase_start ([A-Z]) (phase_[a-z]_[a-z_]+)\s+&&\s+(phase_[a-z]_[a-z_]+)/g)];
+    expect(calls.map(([, letter]) => letter)).toEqual(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']);
     for (const [, letter, announced, invoked] of calls) {
       expect(announced).toBe(invoked);
       expect(invoked.startsWith(`phase_${letter.toLowerCase()}_`)).toBe(true);
