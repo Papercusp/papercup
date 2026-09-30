@@ -20,6 +20,14 @@
 
 dependency_generation_log() {
   printf '[dependency-generation] %s\n' "$*" >&2
+  # WI-10004094: while this process holds an identity's in-flight build, mirror
+  # each line to the lock so a joined waiter can relay the holder's progress.
+  if [ -n "${DEPENDENCY_GENERATION_INFLIGHT_PROGRESS:-}" ]; then
+    {
+      printf '%s %s\n' "$(date +%s)" "$*" > "$DEPENDENCY_GENERATION_INFLIGHT_PROGRESS.tmp" \
+        && mv -f "$DEPENDENCY_GENERATION_INFLIGHT_PROGRESS.tmp" "$DEPENDENCY_GENERATION_INFLIGHT_PROGRESS"
+    } 2>/dev/null || true
+  fi
 }
 
 # Writer-owned monotonic-enough wall clock for phase telemetry. GNU date gives
@@ -879,6 +887,13 @@ dependency_generation_cleanup_abandoned() {
       dependency_generation_log "quarantined abandoned publish lock as $(basename "$quarantine")"
     fi
   fi
+
+  for lock in "$generation_root"/.inflight-*; do
+    [ -d "$lock" ] || continue
+    if dependency_generation_inflight_is_abandoned "$lock" "$host"; then
+      dependency_generation_reclaim_inflight "$generation_root" "$lock"
+    fi
+  done
 }
 
 dependency_generation_write_owner() {
@@ -1046,6 +1061,94 @@ dependency_generation_release_selector_lease() {
   rm -f -- "$lease"
   rmdir "$(dirname "$lease")" 2>/dev/null || true
   DEPENDENCY_GENERATION_SELECTOR_LEASE=''
+}
+
+# WI-10004094: single-flight per generation identity. The gate and bg-host
+# prebuilds for several tips of the SAME lockfile all resolve the same identity,
+# and each used to copy the ~16 GB tree into its own .build-pending-* in
+# parallel; the three copies starved each other past the gate's no-output
+# budget. Exactly one process now builds an identity. Every other caller joins
+# it: it relays the holder's progress lines and then re-validates, which is a
+# cache hit once the holder publishes.
+DEPENDENCY_GENERATION_INFLIGHT_LOCK=''
+DEPENDENCY_GENERATION_INFLIGHT_PROGRESS=''
+DEPENDENCY_GENERATION_JOINED_RC=79
+
+dependency_generation_inflight_is_abandoned() {
+  local lock="$1" host="$2"
+  { [ -f "$lock/writer" ] && ! dependency_generation_writer_is_live "$lock/writer" "$host"; } \
+    || { [ ! -f "$lock/writer" ] && dependency_generation_path_is_old "$lock" 60; }
+}
+
+dependency_generation_reclaim_inflight() {
+  local generation_root="$1" lock="$2" quarantine
+  quarantine="$generation_root/.stale-inflight.$(date +%s).$$.${RANDOM:-0}"
+  if mv "$lock" "$quarantine" 2>/dev/null; then
+    dependency_generation_log "reclaimed abandoned in-flight build lock $(basename "$lock")"
+    rm -rf -- "$quarantine"
+  fi
+}
+
+# 0 = this process now holds the identity's build; 10 = a live peer holds it.
+dependency_generation_try_inflight() {
+  local generation_root="$1" identity="$2" lock host
+  lock="$generation_root/.inflight-$identity"
+  host="$(dependency_generation_host)"
+  while :; do
+    if mkdir "$lock" 2>/dev/null; then
+      dependency_generation_write_owner "$lock/writer"
+      DEPENDENCY_GENERATION_INFLIGHT_LOCK="$lock"
+      DEPENDENCY_GENERATION_INFLIGHT_PROGRESS="$lock/progress"
+      return 0
+    fi
+    if dependency_generation_inflight_is_abandoned "$lock" "$host"; then
+      dependency_generation_reclaim_inflight "$generation_root" "$lock"
+      continue
+    fi
+    [ -d "$lock" ] || continue
+    return 10
+  done
+}
+
+# Wait for a live peer's build of the same identity. Returns JOINED_RC when it
+# ends (published, failed, or died: the caller re-validates either way) and 73
+# when the holder has shown no progress for the stall budget, naming the holder
+# before the caller's own no-output watchdog kills this process blind.
+dependency_generation_wait_inflight() {
+  local generation_root="$1" identity="$2" lock host stall_sec progress seen='' last_change now
+  lock="$generation_root/.inflight-$identity"
+  host="$(dependency_generation_host)"
+  stall_sec="${DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC:-1500}"
+  case "$stall_sec" in ''|*[!0-9]*) stall_sec=1500 ;; esac
+  dependency_generation_log \
+    "joining in-flight build of $identity ($(dependency_generation_publish_lock_holder "$lock")) instead of copying the same trees in parallel"
+  last_change="$(date +%s)"
+  while [ -d "$lock" ]; do
+    dependency_generation_inflight_is_abandoned "$lock" "$host" && break
+    progress="$(cat "$lock/progress" 2>/dev/null || true)"
+    now="$(date +%s)"
+    if [ -n "$progress" ] && [ "$progress" != "$seen" ]; then
+      seen="$progress"
+      last_change="$now"
+      dependency_generation_log "in-flight build of $identity: ${progress#* }"
+    fi
+    if [ $((now - last_change)) -ge "$stall_sec" ]; then
+      dependency_generation_log \
+        "FATAL: in-flight build of $identity showed no progress for ${stall_sec}s ($(dependency_generation_publish_lock_holder "$lock"))"
+      return 73
+    fi
+    sleep 1
+  done
+  dependency_generation_log "in-flight build of $identity ended; re-validating"
+  return "$DEPENDENCY_GENERATION_JOINED_RC"
+}
+
+dependency_generation_release_inflight() {
+  local lock="${DEPENDENCY_GENERATION_INFLIGHT_LOCK:-}"
+  DEPENDENCY_GENERATION_INFLIGHT_PROGRESS=''
+  [ -n "$lock" ] || return 0
+  DEPENDENCY_GENERATION_INFLIGHT_LOCK=''
+  rm -rf -- "$lock"
 }
 
 DEPENDENCY_GENERATION_PREDECESSOR_ID=''
@@ -1326,7 +1429,7 @@ dependency_generation_quarantine_unretained_locked() {
   # dead quarantines had stranded 39 GiB for 2-4 days and put the root filesystem
   # at 95%, which in turn made the cargo lane's disk-headroom admission REFUSE to
   # run and red-pinned @papercusp/desktop in the gate.
-  for quarantine in "$generation_root"/.prune-* "$generation_root"/.invalid-* "$generation_root"/.stale-publish-lock.*; do
+  for quarantine in "$generation_root"/.prune-* "$generation_root"/.invalid-* "$generation_root"/.stale-publish-lock.* "$generation_root"/.stale-inflight.*; do
     [ -d "$quarantine" ] || continue
     # A stale publish lock holds only its writer record, which is useful for
     # post-mortem inspection. Keep it for a day after the atomic quarantine
@@ -1385,11 +1488,51 @@ dependency_generation_copy_independent() {
   mkdir -p "$(dirname "$dest")"
   # GNU cp uses a CoW clone where available and a regular independent copy
   # otherwise. BSD/BusyBox cp reject --reflink; retry with portable `cp -a`.
-  if cp -a --reflink=auto "$src" "$dest" 2>/dev/null; then
+  if dependency_generation_copy_with_progress "$src" "$dest" --reflink=auto; then
     return 0
   fi
   rm -rf -- "$dest"
-  cp -a "$src" "$dest"
+  dependency_generation_copy_with_progress "$src" "$dest"
+}
+
+# WI-10004094: a changed root tree is one ~16 GB `cp -a` on ext4 (no reflink),
+# and it prints nothing. Callers judge liveness by output (green-checkpoint's
+# 30m no-output budget), so a copy starved to ~1 MB/s was killed as a hang.
+# Report the bytes the copy has written, but only when they have grown since the
+# last report: a copy that stops writing stays silent, so it still reads as wedged.
+dependency_generation_copy_with_progress() {
+  local src="$1" dest="$2" reflink="${3:-}" pid rc=0 interval started now next
+  local written='' reported='' nap=0.05
+  interval="${DEPENDENCY_GENERATION_COPY_PROGRESS_SEC:-60}"
+  case "$interval" in ''|*[!0-9]*|0) interval=60 ;; esac
+  if [ -n "$reflink" ]; then
+    cp -a "$reflink" "$src" "$dest" 2>/dev/null &
+  else
+    cp -a "$src" "$dest" &
+  fi
+  pid=$!
+  started="$(date +%s)"
+  next=$((started + interval))
+  while kill -0 "$pid" 2>/dev/null; do
+    # Short first naps keep the many small copies fast; long copies poll at 1s.
+    sleep "$nap"
+    case "$nap" in 0.05) nap=0.2 ;; 0.2) nap=1 ;; esac
+    now="$(date +%s)"
+    [ "$now" -ge "$next" ] || continue
+    next=$((now + interval))
+    # write_bytes misses tmpfs and wchar misses copy_file_range; either grows
+    # while the copy makes progress, so report the larger.
+    written="$(awk '/^(wchar|write_bytes):/ { if ($2 > m) m = $2 } END { if (NR) print m + 0 }' \
+      "/proc/$pid/io" 2>/dev/null || true)"
+    case "$written" in ''|*[!0-9]*) continue ;; esac
+    if [ "$written" -gt "${reported:-0}" ]; then
+      reported="$written"
+      dependency_generation_log \
+        "copy progress: ${dest##*/tree/} written=$((written / 1048576))MiB elapsed=$((now - started))s"
+    fi
+  done
+  wait "$pid" || rc=$?
+  return "$rc"
 }
 
 dependency_generation_prune_ephemeral() {
@@ -1474,7 +1617,28 @@ dependency_generation_remove_build() {
 }
 
 # Sets DEPENDENCY_GENERATION_{ID,PATH,TREE,SOURCE_FINGERPRINT,REUSED}.
+# One attempt either builds (holding the identity's in-flight lock) or joins a
+# live peer's build of the same identity; a join is followed by a fresh attempt,
+# which is a cache hit when the peer published (WI-10004094).
 dependency_generation_ensure() {
+  local rc joins=0 max_joins
+  max_joins="${DEPENDENCY_GENERATION_MAX_JOINS:-4}"
+  case "$max_joins" in ''|*[!0-9]*) max_joins=4 ;; esac
+  while :; do
+    rc=0
+    dependency_generation_ensure_once "$@" || rc=$?
+    dependency_generation_release_inflight
+    [ "$rc" -eq "$DEPENDENCY_GENERATION_JOINED_RC" ] || return "$rc"
+    joins=$((joins + 1))
+    if [ "$joins" -gt "$max_joins" ]; then
+      dependency_generation_log \
+        "FATAL: joined $joins in-flight builds of this dependency set without one publishing a valid generation"
+      return 73
+    fi
+  done
+}
+
+dependency_generation_ensure_once() {
   local integration_root="$1"
   local generation_root="${2:-$integration_root/.papercusp/dependency-generations}"
   local source_before='' source_after='' identity generation build tree nm rel snapshot marker
@@ -1485,7 +1649,7 @@ dependency_generation_ensure() {
   local total_started_ms phase_started_ms tree_total=0 tree_reused=0 tree_copied=0 tree_removed=0
   local predecessor_identity='none'
   local predecessor_fingerprint record_fingerprint extra reuse_manifest_eligible='false'
-  local existing_generation_valid='false' cache_validation_outcome='miss'
+  local existing_generation_valid='false' cache_validation_outcome='miss' inflight_rc
   total_started_ms="$(dependency_generation_now_ms)"
   if [ -z "${DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT:-}" ]; then
     dependency_generation_configure_workspace_dirs "$integration_root" || return $?
@@ -1594,6 +1758,26 @@ dependency_generation_ensure() {
     incumbent_token="$incumbent_token_after"
   else
     incumbent_token=''
+  fi
+
+  # WI-10004094: build this identity at most once at a time. A live peer's build
+  # is joined, not duplicated; a peer that published between our validation and
+  # our acquisition is re-validated rather than rebuilt.
+  inflight_rc=0
+  dependency_generation_try_inflight "$generation_root" "$identity" || inflight_rc=$?
+  if [ "$inflight_rc" -ne 0 ]; then
+    dependency_generation_remove_build "$build"
+    dependency_generation_wait_inflight "$generation_root" "$identity"
+    return $?
+  fi
+  if dependency_generation_has_publication_contract "$generation" \
+    && [ "$(dependency_generation_generation_token "$generation" 2>/dev/null || true)" != "$incumbent_token_after" ] \
+    && dependency_generation_publication_is_valid \
+      "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
+      "$DEPENDENCY_GENERATION_SCOPE_MODE"; then
+    dependency_generation_log "a concurrent build published $identity; re-validating it instead of rebuilding"
+    dependency_generation_remove_build "$build"
+    return "$DEPENDENCY_GENERATION_JOINED_RC"
   fi
 
   if [ "$reuse_manifest_eligible" = 'true' ] \
