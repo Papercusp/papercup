@@ -205,6 +205,54 @@ describe('WI-3615 — hard exhaustion is STICKY (never thrashes a known-dead key
   });
 });
 
+describe('buildOpenAiEmbedder — caller cancellation', () => {
+  it('cancels retry backoff without waiting for it or firing another attempt', async () => {
+    __resetOpenAiEmbedCooldownForTest();
+    const controller = new AbortController();
+    const fetchM = vi.fn(async () => new Response('temporary fault', { status: 500 }));
+    vi.stubGlobal('fetch', fetchM);
+    const pending = buildOpenAiEmbedder('sk-test', { baseMs: 2000, rand: () => 0 })('retry backoff', controller.signal);
+    await vi.waitFor(() => expect(fetchM).toHaveBeenCalledOnce());
+    controller.abort(new Error('obsolete retry'));
+    await expect(pending).rejects.toThrow('obsolete retry');
+    expect(fetchM).toHaveBeenCalledOnce();
+    expect(isOpenAiEmbedInCooldown()).toBe(false);
+  });
+
+  it('aborts the provider request without retrying or marking provider cooldown', async () => {
+    __resetOpenAiEmbedCooldownForTest();
+    mockAcquire.mockResolvedValue({ release: () => {} });
+    const controller = new AbortController();
+    const reason = new Error('obsolete memory request');
+    const fetchM = vi.fn((_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      expect(init?.signal).toBeDefined();
+      init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason), { once: true });
+      controller.abort(reason);
+    }));
+    vi.stubGlobal('fetch', fetchM);
+    const sleep = vi.fn(async () => {});
+    await expect(buildOpenAiEmbedder('sk-test', { sleep })('cancelled', controller.signal)).rejects.toBe(reason);
+    expect(fetchM).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(isOpenAiEmbedInCooldown()).toBe(false);
+  });
+
+  it('releases late admission without starting a provider request', async () => {
+    const controller = new AbortController();
+    const release = vi.fn();
+    let admit!: (slot: { release: () => void }) => void;
+    mockAcquire.mockImplementationOnce(() => new Promise((resolve) => { admit = resolve; }));
+    const fetchM = vi.fn();
+    vi.stubGlobal('fetch', fetchM);
+    const pending = buildOpenAiEmbedder('sk-test')('late admission', controller.signal);
+    controller.abort(new Error('obsolete queue entry'));
+    admit({ release });
+    await expect(pending).rejects.toThrow('obsolete queue entry');
+    expect(release).toHaveBeenCalledOnce();
+    expect(fetchM).not.toHaveBeenCalled();
+  });
+});
+
 describe('buildOpenAiEmbedder — owner alert on quota exhaustion', () => {
   it('alerts once on OpenAI insufficient_quota and clears the condition after a successful embed', async () => {
     const notify = vi.fn();

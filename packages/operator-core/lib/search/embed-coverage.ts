@@ -533,7 +533,7 @@ export function detectCoverageBreaches(inputs: BreachInput[]): CoverageBreach[] 
           `tree: it sweeps to exhaustion under its OWN frozen bodySql and reports "DONE" ` +
           `truthfully, while rows newly eligible under current code are invisible to it. ` +
           `A DEPLOY DOES NOT FIX THAT — check the age of any refill driver and of ` +
-          `papercup-bg-host against the commit time of embed-backfill.ts, and restart the ` +
+          `papercusp-bg-host against the commit time of embed-backfill.ts, and restart the ` +
           `stale one.`,
       });
     }

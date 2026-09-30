@@ -2319,7 +2319,7 @@ export function wrapHeadlessSigtermDiagnostic(oneliner: string): string {
     `trap 'echo "[EI-9748] SIGTERM received at $(date -u +%FT%TZ) — on this host, if the ` +
     `systemd-run --user --scope cgroup escape (EI-9748 Route A, landed 2026-07-11) succeeded ` +
     `at spawn time, this is NOT an operator-service restart (that escape makes this scope a ` +
-    `SIBLING of papercup-dev-api/papercup-staging-api, immune to their KillMode=control-group ` +
+    `SIBLING of papercusp-dev-api/papercusp-staging-api, immune to their KillMode=control-group ` +
     `restarts) — look elsewhere: a manual kill, host reboot/shutdown, or OOM. Only on a host ` +
     `WITHOUT systemd-run on PATH (no escape available, plain detached child) does an ` +
     `operator-service restart remain a likely cause. See work-item EI-9748 for detail." >&2; ` +

@@ -89,6 +89,24 @@ afterEach(() => {
 });
 
 describe('buildQueryEmbedder — OpenAI path', () => {
+  it('forwards cancellation to the provider and rejects aborted cached callers', async () => {
+    vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
+    mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'openai' });
+    const controller = new AbortController();
+    const reason = new Error('obsolete corpus query');
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      expect(init?.signal).toBe(controller.signal);
+      init!.signal!.addEventListener('abort', () => reject(init!.signal!.reason), { once: true });
+      controller.abort(reason);
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const embed = (await buildQueryEmbedder())!;
+    await expect(embed('cancel provider', controller.signal)).rejects.toBe(reason);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    await expect(embed('cancel provider', controller.signal)).rejects.toBe(reason);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it('carries the exact immutable query profile beside the compatibility mode and width', async () => {
     vi.mocked(readCredentials).mockResolvedValue({ openai_api_key: 'sk-stored' });
     mockResolvedTyped(vi.mocked(loadVoicePrefs), { ...DEFAULT_VOICE_PREFS, memoryEmbedderMode: 'openai' });

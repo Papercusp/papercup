@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BG_HOST_RESTART_WATERMARK,
+  BG_HOST_UNIT,
   KNOWN_WATERMARK_REFS,
   compareGenerationFreshness,
   parseSystemdTimestamp,
@@ -16,6 +17,10 @@ import {
 } from './generation-watermark';
 
 describe('parseSystemdTimestamp', () => {
+  it('resolves the generation boundary against the canonical bg-host unit', () => {
+    expect(BG_HOST_UNIT).toBe('papercusp-bg-host.service');
+  });
+
   it('parses the TZ=UTC systemd form (the path the exec pins with TZ=UTC)', () => {
     expect(parseSystemdTimestamp('Tue 2026-07-14 18:08:24 UTC')).toBe(Date.parse('2026-07-14T18:08:24Z'));
   });

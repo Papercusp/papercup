@@ -27,7 +27,7 @@ import { getBuildInfo } from '../build-info';
 export const BG_HOST_RESTART_WATERMARK = 'bg-host-restart';
 
 /** The systemd user unit hosting the scout loop (the long-lived generation). */
-export const BG_HOST_UNIT = 'papercup-bg-host.service';
+export const BG_HOST_UNIT = 'papercusp-bg-host.service';
 
 /** Watermark refs this module can resolve (the vocabulary the tool arg documents). */
 export const KNOWN_WATERMARK_REFS: readonly string[] = [BG_HOST_RESTART_WATERMARK];

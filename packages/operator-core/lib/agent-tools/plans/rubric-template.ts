@@ -70,7 +70,7 @@ export const rubricCriterionWindowSchema = z
       .min(1)
       .optional()
       .describe(
-        "named watermark the window starts at (required when kind='post-watermark'), e.g. 'bg-host-restart' = the running papercup-bg-host generation start",
+        "named watermark the window starts at (required when kind='post-watermark'), e.g. 'bg-host-restart' = the running papercusp-bg-host generation start",
       ),
   })
   .strict()

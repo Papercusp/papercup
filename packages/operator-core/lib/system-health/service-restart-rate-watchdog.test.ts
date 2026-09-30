@@ -8,7 +8,7 @@ import {
 } from './service-restart-rate-watchdog';
 import type { JournalReadResult } from '../journal-read';
 
-const UNIT = 'papercup-staging-api.service';
+const UNIT = 'papercusp-staging-api.service';
 
 /** A journal read result with the healthy defaults; override what a case is about. */
 function read(over: Partial<JournalReadResult> = {}): JournalReadResult {
@@ -109,6 +109,20 @@ describe('evaluateReading', () => {
 });
 
 describe('runRestartRateSweepOnce', () => {
+  it('reads the canonical operator units by default', async () => {
+    const readStarts = vi.fn(async (unit: string) => reading({ unit, starts: 0 }));
+    const result = await runRestartRateSweepOnce({
+      flagEnabled: async () => true,
+      readStarts,
+      escalate: vi.fn(async () => {}),
+    });
+    expect(readStarts.mock.calls.map(([unit]) => unit)).toEqual([
+      'papercusp-dev-api.service',
+      'papercusp-staging-api.service',
+    ]);
+    expect(result).toEqual({ alerts: [], unreadable: [], skipped: false });
+  });
+
   it('skips entirely (no journal read) when the flag is OFF', async () => {
     const readStarts = vi.fn();
     const result = await runRestartRateSweepOnce({ flagEnabled: async () => false, readStarts });

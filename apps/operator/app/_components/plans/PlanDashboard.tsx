@@ -71,7 +71,7 @@ import {
   CHAT_WORK_ITEM_POPUP_PARAM,
   encodeScopedRef,
 } from '../chat/chat-ref-popup-params';
-import { beginInteraction, PERF_INTERACTIONS } from '../perf/perf-marks';
+import { beginInteraction, markInteractionPhase, PERF_INTERACTIONS } from '../perf/perf-marks';
 import { agoLabel, agoLabelMs, WORK_HOT_MS } from './PlansPane';
 import {
   collapsePlanActivity,
@@ -305,6 +305,9 @@ export default function PlanDashboard({
       ppv: "plan",
       jump: null,
     });
+    // Native required-phase checks distinguish this atomic transition from a
+    // stale packaged client still issuing three independent URL updates.
+    markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, 'popup-url-update-queued');
   }, [setPlanPopupState, harness, planSlug]);
 
   const openPlanTarget = useCallback(
@@ -315,6 +318,7 @@ export default function PlanDashboard({
         ppv: "plan",
         jump: target,
       });
+      markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, 'popup-url-update-queued');
     },
     [setPlanPopupState, harness, planSlug],
   );

@@ -1807,6 +1807,94 @@ describe('EI-19344528739076339 — auto-scope a bare multi-pipeline gate key to 
   });
 });
 
+/**
+ * EI-24719187042784648 — `git-sync:committed` / `git-sync:egressed` fire once per git-sync
+ * INSTALL (every harness, and every separately-synced submodule install). Measured
+ * 2026-09-30 20:14Z: a bare `events:await { event: 'git-sync:committed' }` meant as "the
+ * papercusp superproject committed" was consumed by a papercusp/libs/generic/search
+ * submodule commit. The git-sync:await sugar already scoped and refused; the raw door did not.
+ */
+describe('EI-24719187042784648 — git-sync global keys are bound to the caller install', () => {
+  const callAs = async (args: Record<string, unknown>, harnessSlug?: string) => {
+    const scopedCtx = { workspaceId: 'ws-x', ...(harnessSlug ? { harnessSlug } : {}) } as unknown as Parameters<
+      typeof awaitTool.handler
+    >[1];
+    const res = (await awaitTool.handler(args as never, scopedCtx)) as { content: Array<{ text: string }>; isError?: boolean };
+    return { out: JSON.parse(res.content[0].text), isError: res.isError === true };
+  };
+  const fullSha = 'b'.repeat(40);
+
+  it('⭐ narrows a bare git-sync:committed wait to the caller install, with a freshness boundary', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    try {
+      const { out } = await callAs({ event: 'git-sync:committed' }, 'papercusp');
+      expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+        payloadFilter: { installSlug: 'papercusp', workspaceId: 'ws-x', committedAtMs: { gt: 1_700_000_000_000 } },
+      });
+      expect(out.auto_scoped_payload_filter).toBe(true);
+      expect(out.payload_filter_source).toMatchObject({ source: 'harness', installSlug: 'papercusp' });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('narrows git-sync:egressed WITHOUT committedAtMs, which egress payloads never carry', async () => {
+    await callAs({ event: 'git-sync:egressed' }, 'papercusp');
+    expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter).toEqual({
+      installSlug: 'papercusp',
+      workspaceId: 'ws-x',
+    });
+  });
+
+  it('narrows the sha glob the same way, since it also matches every install', async () => {
+    await callAs({ event: 'git-sync:committed:*' }, 'papercusp');
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      payloadFilter: { installSlug: 'papercusp', workspaceId: 'ws-x' },
+    });
+  });
+
+  it('⭐ REFUSES a bare global wait when no concrete harness resolves, before any mutation', async () => {
+    for (const harnessSlug of [undefined, '*']) {
+      vi.clearAllMocks();
+      const { out, isError } = await callAs({ event: 'git-sync:committed' }, harnessSlug);
+      expect(isError).toBe(true);
+      expect(out).toMatchObject({ ok: false, error: 'harness_required', tool: 'events:await' });
+      expect(String(out.detail)).toMatch(/submodule/);
+      expect(registerAwait).not.toHaveBeenCalled();
+      expect(cancelAwaitsForSubscribersOnKeys).not.toHaveBeenCalled();
+    }
+  });
+
+  it('an explicit payload_filter always wins, even without a harness', async () => {
+    const filter = { installSlug: 'portal' };
+    const { out } = await callAs({ event: 'git-sync:committed', payload_filter: filter });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: filter });
+    expect(out.auto_scoped_payload_filter).toBeUndefined();
+  });
+
+  it('leaves a full-sha key alone: the commit identity is already in the key', async () => {
+    const { out } = await callAs({ event: `git-sync:committed:${fullSha}` });
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter ?? null).toBeNull();
+    expect(out.auto_scoped_payload_filter).toBeUndefined();
+  });
+
+  it('⭐ refuses a key that can never fire: a harness name or a short sha in the sha slot', async () => {
+    for (const [event, reason] of [
+      ['git-sync:committed:papercusp', /per-install/],
+      ['git-sync:egressed:abc1234', /short sha/],
+    ] as const) {
+      vi.clearAllMocks();
+      const { out, isError } = await callAs({ event }, 'papercusp');
+      expect(isError).toBe(true);
+      expect(out).toMatchObject({ ok: false, error: 'git_sync_key_never_fires', event });
+      expect(String(out.detail)).toMatch(reason);
+      expect(registerAwait).not.toHaveBeenCalled();
+      expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () => {
   const egressKey = `git-sync:egressed:${'a'.repeat(40)}`;
 
@@ -1851,7 +1939,9 @@ describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () 
   it('does not apply the exact-key latch to the recurring global egress stream', async () => {
     vi.mocked(probeKeyFireEvidence).mockClear();
 
-    const out = await call({ event: 'git-sync:egressed' });
+    // An explicit scope: a harness-less bare global git-sync wait is refused
+    // (EI-24719187042784648), which is not the property this test pins.
+    const out = await call({ event: 'git-sync:egressed', payload_filter: { installSlug: 'papercusp' } });
 
     expect(out.already_fired).toBeUndefined();
     expect(registerAwait).toHaveBeenCalledTimes(1);

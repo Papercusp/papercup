@@ -361,7 +361,7 @@ export async function ensureEmbedSidecar(
           'This is expected for hosts with no sidecar story. If you meant to exercise the sidecar ' +
           'path (e.g. verifying production embedding behavior from a standalone driver), export ' +
           'PAPERCUSP_EMBED_SIDECAR_URL — the systemd units\' value: ' +
-          "`systemctl --user show papercup-bg-host.service -p Environment`. " +
+          "`systemctl --user show papercusp-bg-host.service -p Environment`. " +
           // EI-19464316359123796: the in-process path loads @huggingface/transformers,
           // whose onnxruntime-node native addon leaves a live InferenceSession behind —
           // see the appended warning below for the process.exit() teardown hazard.

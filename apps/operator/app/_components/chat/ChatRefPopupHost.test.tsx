@@ -15,7 +15,8 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
-const { nuqs, nuqsSetters, harness } = vi.hoisted(() => ({
+const { nuqs, nuqsSetters, harness, phaseSpy } = vi.hoisted(() => ({
+  phaseSpy: vi.fn(),
   nuqs: {} as Record<string, unknown>,
   nuqsSetters: {} as Record<string, ReturnType<typeof vi.fn>>,
   // The surrounding surface's resolved harness (`?slug`), mutable per test.
@@ -35,6 +36,10 @@ vi.mock('nuqs', () => ({
 }));
 vi.mock('@/app/adv/create/use-create-data', () => ({
   useResolvedHarnessSlug: () => harness.current,
+}));
+vi.mock('../perf/perf-marks', () => ({
+  markInteractionPhase: phaseSpy,
+  PERF_INTERACTIONS: { planPopupOpen: 'plan-popup-open' },
 }));
 // `lazyWithRetry` is React.lazy + a retry; in jsdom the dynamic import
 // resolves on a microtask, which would force every assertion through
@@ -62,7 +67,7 @@ vi.mock('../plans/PlanPopupModal', () => ({
     ) : null,
 }));
 
-import ChatRefPopupHost from './ChatRefPopupHost';
+import ChatRefPopupHost, { loadPlanPopupModal } from './ChatRefPopupHost';
 
 afterEach(() => {
   for (const k of Object.keys(nuqs)) delete nuqs[k];
@@ -80,6 +85,15 @@ async function renderHost() {
 }
 
 describe('ChatRefPopupHost (WI-6601 — one mount, driven by the param)', () => {
+  it('records lazy module request and completion separately from component mount', async () => {
+    phaseSpy.mockClear();
+    const module = await loadPlanPopupModal();
+    expect(typeof module.default).toBe('function');
+    expect(phaseSpy.mock.calls).toEqual([
+      ['plan-popup-open', 'popup-module-requested'],
+      ['plan-popup-open', 'popup-module-ready'],
+    ]);
+  });
   it('renders a harness-qualified `wpop` with NO surface harness at all', async () => {
     // ⇦ THE BUG. `?slug` absent ⇒ the old per-instance gate closed and nothing
     // mounted, even though the param names its own harness.

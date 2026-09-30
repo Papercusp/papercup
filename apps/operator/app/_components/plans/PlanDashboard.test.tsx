@@ -20,6 +20,7 @@ const {
   syncData,
   launchAgentSpy,
   beginInteractionSpy,
+  markInteractionPhaseSpy,
   preloadVditorSpy,
   toastSpies,
   cleanupFlag,
@@ -44,6 +45,7 @@ const {
   },
   launchAgentSpy: vi.fn(async (_a?: unknown) => ({ ok: true as const })),
   beginInteractionSpy: vi.fn(),
+  markInteractionPhaseSpy: vi.fn(),
   preloadVditorSpy: vi.fn(() => Promise.resolve(true)),
   toastSpies: { success: vi.fn(), error: vi.fn() },
   cleanupFlag: { value: true },
@@ -109,6 +111,7 @@ vi.mock('@papercusp/operator-core/lib/launch-agent', () => ({
 }));
 vi.mock('../perf/perf-marks', () => ({
   beginInteraction: beginInteractionSpy,
+  markInteractionPhase: markInteractionPhaseSpy,
   PERF_INTERACTIONS: { planPopupOpen: 'plan-popup-open' },
 }));
 vi.mock('@/app/_components/MarkdownEditor', () => ({
@@ -301,6 +304,7 @@ afterEach(() => {
   setQueryStatesSpy.mockClear();
   launchAgentSpy.mockClear();
   beginInteractionSpy.mockClear();
+  markInteractionPhaseSpy.mockClear();
   preloadVditorSpy.mockClear();
   toastSpies.success.mockClear();
   toastSpies.error.mockClear();
@@ -410,6 +414,12 @@ describe('PlanDashboard header', () => {
       ppv: 'plan',
       jump: null,
     });
+    expect(markInteractionPhaseSpy).toHaveBeenCalledWith(
+      'plan-popup-open', 'popup-url-update-queued',
+    );
+    expect(markInteractionPhaseSpy.mock.invocationCallOrder[0]).toBeGreaterThan(
+      setQueryStatesSpy.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('Search transcripts opens the popup onto its Sessions tab', () => {

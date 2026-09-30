@@ -961,14 +961,32 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
   });
 
   it("keeps an exact-SHA operator wait available without a concrete harness", async () => {
+    const sha = "abc1234def5678901234567890abcdef12345678";
     const res = await gitSyncTool.handler(
-      { sha: "abc1234" } as never,
+      { sha } as never,
       { harnessSlug: "*", workspaceId: "workspace-a" } as never,
     );
 
-    expect(JSON.parse(res.content[0].text).events).toEqual(["git-sync:committed:abc1234"]);
+    expect(JSON.parse(res.content[0].text).events).toEqual([`git-sync:committed:${sha}`]);
     expect(registerAwait).toHaveBeenCalledTimes(1);
     expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter).toBeNull();
+  });
+
+  // EI-24719187042784648: git-sync emits the FULL head sha only, so a short sha arms a key
+  // that can never fire — the wait would hang silently until its timeout.
+  it("refuses a short sha instead of registering a key that can never fire", async () => {
+    const res = await gitSyncTool.handler(
+      { sha: "abc1234" } as never,
+      { harnessSlug: "harness-a", workspaceId: "workspace-a" } as never,
+    );
+
+    expect(JSON.parse(res.content[0].text)).toMatchObject({
+      ok: false,
+      error: "git_sync_key_never_fires",
+      tool: "git-sync:await",
+      event: "git-sync:committed:abc1234",
+    });
+    expect(registerAwait).not.toHaveBeenCalled();
   });
 });
 

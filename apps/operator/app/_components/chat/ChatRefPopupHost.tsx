@@ -42,6 +42,7 @@
 import { Suspense, useMemo } from 'react';
 import { parseAsString, useQueryState } from 'nuqs';
 import { lazyWithRetry as lazy } from '@papercusp/operator-core/lib/lazy-with-retry';
+import { markInteractionPhase, PERF_INTERACTIONS } from '../perf/perf-marks';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
 import {
   CHAT_PLAN_POPUP_PARAM,
@@ -51,7 +52,13 @@ import {
 } from './chat-ref-popup-params';
 
 const WorkItemPopupModal = lazy(() => import('../work-items/WorkItemPopupModal'));
-const PlanPopupModal = lazy(() => import('../plans/PlanPopupModal'));
+export async function loadPlanPopupModal() {
+  markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, 'popup-module-requested');
+  const module = await import('../plans/PlanPopupModal');
+  markInteractionPhase(PERF_INTERACTIONS.planPopupOpen, 'popup-module-ready');
+  return module;
+}
+const PlanPopupModal = lazy(loadPlanPopupModal);
 
 /**
  * What the click paints WHILE the lazy chunk resolves (WI-7088).

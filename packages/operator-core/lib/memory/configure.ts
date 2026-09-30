@@ -193,11 +193,17 @@ export interface OpenAiEmbedderOpts {
   maxTotalWaitMs?: number;
   baseMs?: number;
   capMs?: number;
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   rand?: () => number;
 }
 
-const realSleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+const realSleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
+  const abort = () => { cleanup(); reject(signal?.reason); };
+  const timer = setTimeout(() => { cleanup(); resolve(); }, ms);
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) abort();
+});
 
 /** "2m59.56s" / "1.5s" / "6ms" / "150" (bare = seconds) → ms; null if unparseable.
  *  OpenAI's `x-ratelimit-reset-tokens`/`-requests` use the compact-duration form;
@@ -296,7 +302,8 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
   const maxAttempts = opts.maxAttempts ?? EMBED_MAX_ATTEMPTS;
   const sleep = opts.sleep ?? realSleep;
   const totalBudgetMs = opts.maxTotalWaitMs ?? EMBED_TOTAL_BUDGET_MS;
-  return async (text: string): Promise<number[]> => {
+  return async (text: string, signal?: AbortSignal): Promise<number[]> => {
+    signal?.throwIfAborted();
     let lastErr: Error | null = null;
     let waitedMs = 0;
     const adm = embedAdmission();
@@ -307,6 +314,7 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
     // smaller) so one hung connection never eats the budget.
     const embedDeadlineAt = Date.now() + totalBudgetMs;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      signal?.throwIfAborted();
       const remainingBudgetMs = embedDeadlineAt - Date.now();
       if (remainingBudgetMs <= 0) break; // budget spent → surface the failure now
       let serverHintMs: number | null = null;
@@ -334,6 +342,11 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
         throw e;
       }
       try {
+        // Admission can outlive its caller. Release the eventual receipt in
+        // finally, but never start obsolete provider work after it arrives.
+        signal?.throwIfAborted();
+        const fetchBudgetMs = embedDeadlineAt - Date.now();
+        if (fetchBudgetMs <= 0) throw new Error('openai_embed_budget_spent');
         const r = await fetch('https://api.openai.com/v1/embeddings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
@@ -344,12 +357,17 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
           }),
           // Abort a STALLED connection so it can't consume the whole embed budget; bound by
           // the remaining wall-clock budget so the abort never pushes past the deadline.
-          signal: AbortSignal.timeout(Math.max(1, Math.min(EMBED_FETCH_TIMEOUT_MS, remainingBudgetMs))),
+          signal: AbortSignal.any([
+            ...(signal ? [signal] : []),
+            AbortSignal.timeout(Math.max(1, Math.min(EMBED_FETCH_TIMEOUT_MS, fetchBudgetMs))),
+          ]),
         });
+        signal?.throwIfAborted();
         adm.recordResponse(headersToRecord(r.headers)); // learn the live limit / pause on remaining=0
         if (r.ok) {
           clearEmbedExhaustionAlertIfActive('openai_billing');
           const j = (await r.json()) as { data: Array<{ embedding: number[] }> };
+          signal?.throwIfAborted();
           return j.data[0].embedding;
         }
         const body = await r.text().catch(() => '');
@@ -381,6 +399,8 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
         if (r.status === 429) adm.penalize({ retryAfterMs: serverHintMs ?? undefined }); // back the whole bucket off
         lastErr = err;
       } catch (e) {
+        // Caller cancellation is neither a provider fault nor retryable.
+        signal?.throwIfAborted();
         // A non-retryable failure propagates immediately: a 4xx that isn't 429 (bad/expired
         // key, malformed request — thrown above) OR a 429 that is actually a hard
         // `insufficient_quota` billing stop (openai_embed_quota_exhausted). A bare
@@ -403,7 +423,8 @@ export function buildOpenAiEmbedder(apiKey: string, opts: OpenAiEmbedderOpts = {
       waitMs = Math.min(waitMs, embedDeadlineAt - Date.now());
       if (waitMs <= 0) break;
       waitedMs += waitMs;
-      await sleep(waitMs);
+      await sleep(waitMs, signal);
+      signal?.throwIfAborted();
     }
     // EI-3381: the retry budget is spent (attempts exhausted, or the server's reset window
     // is longer than we can wait — the exact sustained org-wide TPM-drain shape this ticket

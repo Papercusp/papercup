@@ -196,7 +196,7 @@ export function resolveCheckpointCapacity(
   }
   const fix =
     `Set ${CHECKPOINT_CAPACITY_MODE_ENV}=reserved on the service that launched this run ` +
-    `(a systemd drop-in like the 20-green-checkpoint-capacity.conf on papercup-bg-host), restart it, ` +
+    `(a systemd drop-in like the 20-green-checkpoint-capacity.conf on papercusp-bg-host), restart it, ` +
     `and confirm the run log's GREEN_CHECKPOINT_CAPACITY line. Scheduled gate runs use their own ` +
     `host's contract, so this manual run may be several times slower than a scheduled one (WI-10003521).`;
   if (declared === null) {

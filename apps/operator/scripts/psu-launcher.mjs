@@ -7800,7 +7800,7 @@ export async function fetchWithResilience(
       `the operator at ${shownUrl} did not respond within ${timeoutMs}ms (${label}). ` +
         (isDesktop
           ? `It may be wedged — restart the Papercusp desktop app, `
-          : `It may be wedged — restart it (systemctl --user restart papercup-dev-api.service), `) +
+          : `It may be wedged — restore that operator through the coordinated dev:restart tool, `) +
         `or raise the cap with PAPERCUSP_PSU_TIMEOUT_MS.`,
     );
   }

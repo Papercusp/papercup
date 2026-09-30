@@ -569,9 +569,9 @@ export async function sessionPartsWriterSweep(
             `${verdict.reason}\n\n` +
             `MOST LIKELY CAUSE, from the incident that motivated this guard (D-008): a long-lived host ` +
             `is running a module-cached build older than the tree it loads from. The session ingest runs ` +
-            `on papercup-bg-host, whose WorkingDirectory is the STAGING tree and which executes tsx from ` +
+            `on papercusp-bg-host, whose WorkingDirectory is the STAGING tree and which executes tsx from ` +
             `it — NOT from papercup-release. So a DEPLOY DOES NOT FIX THIS. Check ` +
-            `\`systemctl --user show papercup-bg-host.service -p ExecMainStartTimestamp\` against the ` +
+            `\`systemctl --user show papercusp-bg-host.service -p ExecMainStartTimestamp\` against the ` +
             `commit time of session-ingest.ts; if the host is older, restart it: ` +
             `dev:restart { target: 'bg-host', confirm: true, authorize: true }.\n\n` +
             `Other candidates: the parts INSERT failing every tick (it is best-effort by contract and ` +
