@@ -950,7 +950,14 @@ export async function uninstallBlueprintRelease(input: {
   return withLifecycleLock(input.installedDir, input.id, async () => {
     const index = await readIndex(input.installedDir, input.id);
     const removed = index.releases.find((release) => release.contentHash === index.activeContentHash);
-    if (!removed) throw new BlueprintLifecycleError(`installed blueprint ${input.id} not found`, 404);
+    if (!removed) {
+      // A retried uninstall is still a lifecycle call: converge what an
+      // interrupted one left in the journal before refusing.
+      const recovered = input.journal ? await input.journal.recover(null) : [];
+      const converged = recovered.length ? `; converged ${recovered.length} interrupted pot install(s)` +
+        (recovered.some((entry) => entry.error) ? ', with residue' : '') : '';
+      throw new BlueprintLifecycleError(`installed blueprint ${input.id} not found${converged}`, 404);
+    }
     const before = await readArchive(input.installedDir, input.id, removed.contentHash);
     const target = activeDir(input.installedDir, input.id);
     const tombstone = join(input.installedDir, `.${input.id}.removing-${process.pid}-${randomUUID()}`);
