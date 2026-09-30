@@ -9,6 +9,7 @@ import {
   GRADING_AUDIT_DISPATCH_CONCURRENCY,
   GRADING_AUDIT_DISPATCH_LIMIT,
   GRADING_AUDIT_FAILURE_BACKOFF_MS,
+  GRADING_AUDIT_RESERVATION_TTL_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_DEFAULT_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_MAX_MS,
   GRADING_AUDIT_QUOTA_BACKOFF_MIN_MS,
@@ -647,6 +648,81 @@ describe('dispatchPendingGradingAudits', () => {
       workspaceId: 'ws-test',
       reservedAt: '2026-09-08T00:00:00.000Z',
     });
+  });
+
+  it('retires a live auditor only when its task and no-first-turn log both exceed the reservation TTL', async () => {
+    const d = deps();
+    const nowMs = Date.parse('2026-09-30T12:00:00.000Z');
+    const oldTask = {
+      taskId: 'task-picker-stalled',
+      state: 'running',
+      startedAt: new Date(nowMs - GRADING_AUDIT_RESERVATION_TTL_MS - 1).toISOString(),
+      detail: { label: 'grading-audit:EI-picker-stalled' },
+      logPath: '/tmp/picker-stalled.log',
+    } as unknown as TaskRow;
+    d.listScorecards.mockResolvedValue([card('EI-picker-stalled')]);
+    d.listTasks.mockResolvedValue([oldTask]);
+    const readLogTail = vi.fn(async () => 'Claude TUI tool picker still visible');
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+
+    const result = await reconcilePendingGradingAudits(
+      { ctx, harness: 'papercusp' },
+      {
+        ...d,
+        killTask,
+        readLogTail,
+        now: () => nowMs,
+        readLogMtimeMs: () => nowMs - GRADING_AUDIT_RESERVATION_TTL_MS - 1,
+        terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(killTask).toHaveBeenCalledWith('task-picker-stalled', {
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+    });
+    expect(result.receipts[0]).toMatchObject({
+      state: 'launched',
+      terminalRecovery: {
+        retiredTaskIds: ['task-picker-stalled'],
+        codes: ['startup_first_turn_stalled'],
+      },
+    });
+  });
+
+  it('keeps stale live auditors with first-turn progress or unreadable log evidence', async () => {
+    for (const evidence of [
+      { readLogTail: async () => 'Working (18m)\npapercusp.tools:invoke({})', logMtimeMs: null },
+      { readLogTail: async () => { throw new Error('log unavailable'); }, logMtimeMs: null },
+    ]) {
+      const d = deps();
+      const nowMs = Date.parse('2026-09-30T12:00:00.000Z');
+      d.listScorecards.mockResolvedValue([card('EI-healthy-live-auditor')]);
+      d.listTasks.mockResolvedValue([{
+        taskId: 'task-healthy-live-auditor',
+        state: 'running',
+        startedAt: new Date(nowMs - GRADING_AUDIT_RESERVATION_TTL_MS - 1).toISOString(),
+        detail: { label: 'grading-audit:EI-healthy-live-auditor' },
+        logPath: '/tmp/healthy-live-auditor.log',
+      } as unknown as TaskRow]);
+      const readLogTail = vi.fn(evidence.readLogTail);
+      const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+
+      const result = await reconcilePendingGradingAudits(
+        { ctx, harness: 'papercusp' },
+        {
+          ...d,
+          killTask,
+          readLogTail,
+          now: () => nowMs,
+          readLogMtimeMs: () => nowMs - GRADING_AUDIT_RESERVATION_TTL_MS - 1,
+          terminalLogMaxRechecks: 0,
+        },
+      );
+
+      expect(killTask).not.toHaveBeenCalled();
+      expect(result.receipts[0]).toMatchObject({ state: 'deduped' });
+    }
   });
 
   it('retires a live auditor that explicitly finished without platform tools and launches a bounded fallback', async () => {

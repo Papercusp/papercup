@@ -16,7 +16,9 @@ import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import {
+  classifyAcceptanceGraderNoFirstTurnStall,
   detectAcceptanceGraderTerminalFailure,
+  readAcceptanceGraderLogMtimeMs,
   readAcceptanceGraderLogTail,
   type AcceptanceGraderTerminalFailureCode,
 } from './acceptance-grader';
@@ -270,6 +272,8 @@ export interface DispatchPendingGradingAuditsDeps {
   listTasks?: typeof listTasks;
   getTask?: typeof getTask;
   readLogTail?: (path: string) => string | Promise<string>;
+  /** Read log progress time; null means missing/unreadable and cannot prove a stall. */
+  readLogMtimeMs?: (path: string) => number | null;
   killTask?: typeof killTask;
   sleep?: (ms: number) => Promise<void>;
   terminalLogRecheckDelayMs?: number;
@@ -1019,6 +1023,7 @@ export async function dispatchPendingGradingAudits(
     const terminateTask = deps.killTask ?? killTask;
     const readTask = deps.getTask ?? getTask;
     const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
+    const readLogMtimeMs = deps.readLogMtimeMs ?? readAcceptanceGraderLogMtimeMs;
     const detectTerminalFailure = (
       logPath: string | null,
       maxRechecks = deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
@@ -1183,6 +1188,22 @@ export async function dispatchPendingGradingAudits(
           } catch {
             // An unreadable task log cannot prove the mission terminal. Preserve
             // the existing fail-open dedupe until a later sweep can read it.
+          }
+          if (!terminalFailure) {
+            try {
+              const [logTail, logMtimeMs] = await Promise.all([
+                readLogTail(taskLogPath),
+                Promise.resolve(readLogMtimeMs(taskLogPath)),
+              ]);
+              terminalFailure = classifyAcceptanceGraderNoFirstTurnStall(logTail, {
+                startedAt: task.startedAt,
+                logMtimeMs,
+                nowMs: deps.now?.() ?? Date.now(),
+                staleAfterMs: GRADING_AUDIT_RESERVATION_TTL_MS,
+              });
+            } catch {
+              // Missing/unreadable evidence is unknown, never permission to kill.
+            }
           }
         }
         if (!terminalFailure) {

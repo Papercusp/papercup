@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { blankPng, contentPng } from '@papercusp/image-blankness/testing';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 
 const dbMocks = vi.hoisted(() => ({
@@ -182,6 +183,7 @@ import complete, {
   isVerificationWorkItem,
 } from './complete';
 import {
+  COMPLETION_FIELDS,
   COMPLETION_OBJECT_EXAMPLE,
   COMPLETION_STRING_REJECTION,
   coerceCompletionShape,
@@ -6062,6 +6064,100 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         expect(branch.properties).toHaveProperty('completion');
         expect(branch.properties).toHaveProperty('items');
       }
+    });
+
+    it('publishes the single-item flat aliases that preprocessing accepts', () => {
+      const json = z.toJSONSchema(complete.args as never) as {
+        anyOf?: Array<{ properties?: Record<string, unknown> }>;
+        oneOf?: Array<{ properties?: Record<string, unknown> }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const bulk = branches.find(
+        (branch) => (branch.properties?.items as { type?: unknown } | undefined)?.type === 'array',
+      );
+      const single = branches.find((branch) => branch !== bulk);
+
+      expect(single).toBeDefined();
+      for (const field of COMPLETION_FIELDS) {
+        expect(single?.properties).toHaveProperty(field);
+      }
+      expect(single?.properties).not.toHaveProperty('workOutcome');
+      expect(bulk?.properties).not.toHaveProperty('tests');
+
+      const invalid = (
+        complete.args as {
+          safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } };
+        }
+      ).safeParse({
+        id: 'WI-1',
+        state: 'resolved',
+        assumptions: 'none',
+        completion: { summary: 'the completion was checked' },
+        workOutcome: 'other-no-new-change',
+        tests: 'the focused check passed',
+      });
+      expect(invalid.success).toBe(false);
+      const message = invalid.error?.issues.map((issue) => issue.message).join(' ') ?? '';
+      expect(message).toContain('workOutcome');
+      expect(message).not.toContain('tests');
+
+      const corrected = (
+        complete.args as { safeParse: (x: unknown) => { success: boolean } }
+      ).safeParse({
+        id: 'WI-1',
+        state: 'resolved',
+        assumptions: 'none',
+        completion: {
+          summary: 'the completion was checked',
+          verification: { workOutcome: 'other-no-new-change' },
+        },
+        tests: 'the focused check passed',
+      });
+      expect(corrected.success).toBe(true);
+    });
+
+    it('lists accepted flat aliases beside a corrected call at projected dispatch', async () => {
+      const projected = lookupByMcpName('work_items:complete');
+      expect(projected).toBeTruthy();
+      const d = await dispatchProjectedTool(
+        projected!,
+        'work_items:complete',
+        {
+          id: 'WI-1',
+          harness: 'papercusp',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'the completion was checked' },
+          tests: 'the focused check passed',
+          verifiedHow: 'focused local test run',
+          workOutcome: 'other-no-new-change',
+        },
+        {
+          log: vi.fn(),
+          signal: new AbortController().signal,
+          progress: vi.fn(),
+          emit: vi.fn(),
+          metadata: vi.fn(),
+          workspaceId: 'default',
+          harnessSlug: 'papercusp',
+          runId: 'complete-alias-refusal',
+          role: 'su',
+          gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp',
+          requestedFormat: 'json',
+          requestedStructured: true,
+        } as never,
+        {},
+      );
+
+      expect(d.ok).toBe(false);
+      expect(d.error?.code).toBe('invalid_input');
+      const message = d.error?.message ?? '';
+      expect(message).toMatch(/corrected call/i);
+      const accepted = message.split('this tool accepts ONLY:')[1] ?? '';
+      expect(accepted).toContain('tests');
+      expect(accepted).toContain('verifiedHow');
+      expect(accepted).not.toContain('workOutcome');
     });
 
     it('publishes the shared completion schema once via defs and refs (EI-23318249512516833)', () => {

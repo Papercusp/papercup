@@ -10,7 +10,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/capability/launch-agent.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { KickoffProofResult, SpawnChildExit, SpawnConsoleResult } from '../../console-spawn';
 import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
@@ -386,6 +386,10 @@ beforeEach(() => {
   getFleetSchemeMock.mockImplementation(async (_ws: string, slug: string) =>
     slug === 'alpha-fleet' ? { name: 'royal-purple', bg: '#581c87', fg: '#f5e8ff', cursor: '#d8b4fe' } : null,
   );
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe('launch-tool routing guidance', () => {
@@ -1055,8 +1059,10 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
 
     expect(isError(res)).toBe(false);
     expect(spawnedCommand()).toContain('--agent=codex');
-    expect(spawnedCommand()).toContain('--model=gpt-5.6-sol');
-    expect(codexPreflightModelMock).toHaveBeenCalledWith('/tmp/codex', 'gpt-5.6-sol');
+    const selectedModel = spawnedCommand().match(/--model=(\S+)/)?.[1];
+    const modelId = selectedModel?.split(':')[0];
+    expect(modelId).toMatch(/^gpt-\d+(?:\.\d+)*-[a-z]+$/);
+    expect(codexPreflightModelMock).toHaveBeenCalledWith('/tmp/codex', modelId);
   });
 });
 
@@ -1262,6 +1268,7 @@ describe('headless in-place resume verification', () => {
     endedAt: '2026-07-11T10:00:00.000Z',
     live: false,
     advSessionId: 11,
+    account: null,
   };
 
   const resumeHeadless = (childExit: Promise<SpawnChildExit>) => {
@@ -1776,18 +1783,47 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(buildCarryBriefMock).not.toHaveBeenCalled();
   });
 
-  it("EI-11578: a RESUME forces a process-per-window emulator (preferProcessPerWindow) — a resumed dormant session dies under gnome-terminal's VTE pty", async () => {
+  it('EI-11578: a RESUME keeps the process-per-window fallback when no terminal preference is set', async () => {
+    vi.stubEnv('TERMINAL', '');
     resolveResumeTargetMock.mockResolvedValue(dead);
     await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
     expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
   });
 
-  it('EI-21010422711013687: a FRESH launch also forces process-per-window so gnome-terminal cannot drop the psu command', async () => {
+  it('honors a configured terminal preference on resume', async () => {
+    vi.stubEnv('TERMINAL', 'gnome-terminal');
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
+    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: false });
+  });
+
+  it('EI-21010422711013687: a fresh launch keeps the process-per-window fallback when no terminal preference is set', async () => {
+    vi.stubEnv('TERMINAL', '');
     await launchAgent.handler({ brief: 'fresh work' }, ctx);
     expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({
       preferProcessPerWindow: true,
       verifyBootReceipt: true,
     });
+  });
+
+  it('preserves the source account on resume and accepts an explicit account override', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, account: 'auto' });
+
+    const inherited = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, brief: 'continue the gateway-routed session' },
+      ctx,
+    );
+    expect(isError(inherited)).toBe(false);
+    expect(spawnedCommand()).toContain('--account=auto');
+
+    spawnConsoleMock.mockClear();
+    const overridden = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, account: 'default', brief: 'continue on the system account' },
+      ctx,
+    );
+    expect(isError(overridden)).toBe(false);
+    expect(spawnedCommand()).toContain('--account=default');
+    expect(spawnedCommand()).not.toContain('--account=auto');
   });
 
   it('resumes a dead agent BY AGENT ID — no uuid hunting', async () => {

@@ -15,6 +15,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { formatInvalidArgs } from './server';
 
 describe('formatInvalidArgs', () => {
@@ -110,6 +111,22 @@ describe('formatInvalidArgs', () => {
 });
 
 describe('formatInvalidArgs — invalid_union branch selection', () => {
+  it('preserves an explicit union-level message instead of replacing it with a branch issue', () => {
+    const accepted = 'choose a string payload or an object payload';
+    const schema = z.object({
+      choice: z.union([
+        z.object({ left: z.string() }),
+        z.object({ right: z.number() }),
+      ], { error: accepted }),
+    });
+    const r = schema.safeParse({ choice: { left: 42 } });
+
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      expect(formatInvalidArgs(r.error.issues, { choice: { left: 42 } })).toBe(`choice: ${accepted}`);
+    }
+  });
+
   it('chooses the closer facts-style branch on a depth tie (EI-21892816644875129)', () => {
     // This is the reported facts:assert shape: the first sibling branch has
     // unrelated federation requirements, while the later private-fact branch

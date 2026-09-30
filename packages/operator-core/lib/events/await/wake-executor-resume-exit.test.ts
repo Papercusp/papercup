@@ -281,6 +281,97 @@ describe('wake-executor — resume-headless exit observation (P0a)', () => {
     }
   });
 
+  it('carry-respawns a dead Claude session before resuming a transcript with repeated unavailable-tool errors', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wake-resume-tool-reference-'));
+    try {
+      const transcriptPath = join(root, 'native-A.jsonl');
+      const error = "API Error: 400 Tool reference 'WaitForMcpServers' not found in available tools";
+      const turn = () => JSON.stringify({
+        type: 'assistant',
+        isApiErrorMessage: true,
+        message: { role: 'assistant', model: '<synthetic>', content: [{ type: 'text', text: error }] },
+      });
+      writeFileSync(transcriptPath, [turn(), turn()].join('\n'));
+      const recover = vi.fn(async () => 'queued' as const);
+      const quarantine = vi.fn(async () => ({ poisoned: true, turns: 3 }));
+      let spawned = false;
+      const { deps, s } = await exitedClaudeResumeDeps({
+        getSessionLifecycle: async () => null,
+        collectSessionFiles: async () => [{
+          rel: 'projects/-repo/native-A.jsonl',
+          abs: transcriptPath,
+          bytes: 1,
+          mtimeMs: 1,
+        }],
+        alive: () => false,
+        recoverToolReferenceDeath: recover,
+        quarantineToolReferenceSession: quarantine as never,
+        sendCoordMessage: vi.fn(async () => ({} as never)),
+        spawnDetached: () => {
+          spawned = true;
+          return 4242;
+        },
+      });
+      deps.getSession = async () => ({
+        id: s.advSessionId,
+        workspaceId: 'row-ws',
+        harnessSlug: 'papercusp',
+        agent: 'claude',
+        coordOwnerId: s.ownerId,
+        sessionId: 'native-A',
+        startedAt: '2026-09-24T10:00:00.123Z',
+        endedAt: null,
+        pid: 7777,
+        cwd: s.cwd,
+      }) as never;
+      const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 7777 }) });
+
+      const out = await executeWake(d, deps);
+
+      expect(out).toMatchObject({ kind: 'park', reason: expect.stringContaining('fresh context') });
+      expect(recover).toHaveBeenCalledWith(s.ownerId, expect.objectContaining({ workspaceId: 'row-ws' }));
+      expect(quarantine).not.toHaveBeenCalled();
+      expect(spawned).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('checks reconciled tool-reference recovery for a dead Claude session when local transcript listing misses the file', async () => {
+    const recover = vi.fn(async () => 'queued' as const);
+    let spawned = false;
+    const { deps, s } = await exitedClaudeResumeDeps({
+      getSessionLifecycle: async () => null,
+      collectSessionFiles: async () => [],
+      alive: () => false,
+      recoverToolReferenceDeath: recover,
+      sendCoordMessage: vi.fn(async () => ({} as never)),
+      spawnDetached: () => {
+        spawned = true;
+        return 4242;
+      },
+    });
+    deps.getSession = async () => ({
+      id: s.advSessionId,
+      workspaceId: 'row-ws',
+      harnessSlug: 'papercusp',
+      agent: 'claude',
+      coordOwnerId: s.ownerId,
+      sessionId: 'native-A',
+      startedAt: '2026-09-24T10:00:00.123Z',
+      endedAt: null,
+      pid: 7777,
+      cwd: s.cwd,
+    }) as never;
+    const d = makeDelivery({ subscriberId: s.ownerId, wakeHandle: advSessionHandle(s, { agent: 'claude', sessionId: 'native-A', pid: 7777 }) });
+
+    const out = await executeWake(d, deps);
+
+    expect(out).toMatchObject({ kind: 'park', reason: expect.stringContaining('fresh context') });
+    expect(recover).toHaveBeenCalledWith(s.ownerId, expect.objectContaining({ workspaceId: 'row-ws' }));
+    expect(spawned).toBe(false);
+  });
+
   // WI-10003466 (su-7dc2cf9d, 2026-09-27): a transient MCP disconnect left a LIVE
   // interactive session replaying `Tool reference 'mcp__papercusp-su__capability_bash'
   // not found` on every turn; this branch ENDED the session instead of recovering it.

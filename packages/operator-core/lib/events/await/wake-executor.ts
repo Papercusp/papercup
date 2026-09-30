@@ -3664,7 +3664,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     }
 
     // A live interactive transcript has no detached-child exit callback. Check
-    // the saved assistant-turn streak before injecting another wake.
+    // the saved assistant-turn streak before injecting another wake. A dead
+    // Claude session also needs the reconciled detector before Channel 2 resumes
+    // it, even when this local transcript scan could not find its file.
     //
     // WI-10003466 (su-7dc2cf9d, 2026-09-27): RECOVER FIRST. A transient MCP
     // disconnect makes the client drop its papercusp-su tools, and every later
@@ -3679,26 +3681,31 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // (this row names a dead predecessor's) and the wake proceeds; only
     // `unrecoverable` (no live carry-respawn-capable host) falls through to the
     // quarantine below.
-    let liveTranscriptHealthy = false;
-    if (isAlive && sessionAgent === 'claude' && claudeTranscriptAnalysis?.needsFreshContext && claudeResumeTranscriptPath) {
+    let reconciledTranscriptHealthy = false;
+    if (
+      sessionAgent === 'claude' &&
+      (!isAlive || Boolean(claudeTranscriptAnalysis?.needsFreshContext && claudeResumeTranscriptPath))
+    ) {
       const recovery = await recoverToolReferenceDeath(sessionOwner, {
         workspaceId: fresh?.workspaceId ?? sessionDelivery.workspaceId,
       }).catch((): ToolReferenceDeathRecovery => 'unrecoverable');
       if (recovery === 'queued' || recovery === 'in-grace') {
+        const rejectionStreak = claudeTranscriptAnalysis?.trailingMissingToolReferenceTurns;
+        const rejectionDetail = rejectionStreak != null
+          ? `${rejectionStreak} consecutive rejected turns: ${claudeTranscriptAnalysis?.lastMissingToolReferenceName ?? 'unknown tool'}`
+          : 'confirmed by the reconciled transcript detector';
         return {
           kind: 'park',
           reason:
-            `live Claude session replays an unavailable tool reference ` +
-            `(${claudeTranscriptAnalysis.trailingMissingToolReferenceTurns} consecutive rejected turns: ` +
-            `${claudeTranscriptAnalysis.lastMissingToolReferenceName ?? 'unknown tool'}); ` +
+            `Claude session replays an unavailable tool reference (${rejectionDetail}); ` +
             `carry-respawn onto fresh context ${recovery === 'queued' ? 'queued' : 'already pending'} — ` +
             `this wake re-delivers to the successor`,
         };
       }
-      liveTranscriptHealthy = recovery === 'not-dead';
+      reconciledTranscriptHealthy = recovery === 'not-dead';
     }
     if (
-      !liveTranscriptHealthy &&
+      !reconciledTranscriptHealthy &&
       isAlive && sessionAgent === 'claude' && claudeTranscriptAnalysis?.poisoned && claudeResumeTranscriptPath
     ) {
       const poisonContext: ResumeTurnContext = {

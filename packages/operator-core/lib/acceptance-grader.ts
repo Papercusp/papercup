@@ -1,6 +1,6 @@
 /** Dedicated, frozen acceptance-grader launch for the plan completion gate. */
 import { createHash } from 'node:crypto';
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import { resolveAgentIdentity } from './agent-tools/coordination/identity';
 import { ACCEPTANCE_DRAIN_ACTOR } from './agent-tools/plans/acceptance-drain-filing';
@@ -373,6 +373,7 @@ const ACCEPTANCE_GRADER_FALLBACK = {
 export type AcceptanceGraderTerminalFailureCode =
   | 'model_quota_exhausted'
   | 'startup_connection_stalled'
+  | 'startup_first_turn_stalled'
   | 'inference_gateway_error'
   /**
    * WI-10002155: the launcher's OWN structured receipt said the kickoff was
@@ -747,8 +748,9 @@ export function classifyAcceptanceGraderTerminalFailure(
 /**
  * True when a normalized judge log shows ANY sign the judge entered its first
  * turn: a platform tool it would call, an MCP/tool-use trace, a thinking/working
- * spinner, or a transcript bullet. Shared by the startup-stall and kickoff-drop
- * classifiers so neither can retire a judge that actually started.
+ * spinner, or a transcript bullet. Shared by startup-stall and kickoff-drop
+ * classifiers plus the TTL-bounded stale-live-task check, so none can retire a
+ * judge that actually started.
  */
 function hasAcceptanceGraderFirstTurnProgress(normalized: string): boolean {
   return (
@@ -784,6 +786,67 @@ export function classifyAcceptanceGraderStartupStall(rawLog: string): Acceptance
     .trim()
     .slice(0, 400);
   return { code: 'startup_connection_stalled', evidence };
+}
+
+/**
+ * A live task can outlast the grading reservation while its CLI is still
+ * parked in startup UI. Process liveness is not first-turn progress: retire
+ * only when the task itself and its log have both been quiet for the caller's
+ * bounded stale window and the log contains no evidence that grading began.
+ *
+ * This is candidate-only. Callers must first check explicit terminal receipts,
+ * and should keep this opt-in at the stale-live-task recovery seam.
+ */
+export function classifyAcceptanceGraderNoFirstTurnStall(
+  rawLog: string,
+  {
+    startedAt,
+    logMtimeMs,
+    nowMs,
+    staleAfterMs,
+  }: {
+    startedAt: string;
+    logMtimeMs: number | null;
+    nowMs: number;
+    staleAfterMs: number;
+  },
+): AcceptanceGraderTerminalFailure | null {
+  const startedAtMs = Date.parse(startedAt);
+  const measuredLogMtimeMs =
+    typeof logMtimeMs === 'number' && Number.isFinite(logMtimeMs) ? logMtimeMs : null;
+  if (
+    !Number.isFinite(startedAtMs) ||
+    measuredLogMtimeMs === null ||
+    !Number.isFinite(nowMs) ||
+    !Number.isFinite(staleAfterMs) ||
+    staleAfterMs <= 0 ||
+    startedAtMs > nowMs ||
+    measuredLogMtimeMs < startedAtMs - 5_000 ||
+    measuredLogMtimeMs > nowMs + 5_000 ||
+    nowMs - startedAtMs < staleAfterMs ||
+    nowMs - measuredLogMtimeMs < staleAfterMs
+  ) {
+    return null;
+  }
+
+  const normalized = normalizeAcceptanceGraderLog(rawLog);
+  if (!normalized.trim() || hasAcceptanceGraderFirstTurnProgress(normalized)) return null;
+
+  return {
+    code: 'startup_first_turn_stalled',
+    evidence:
+      `no first-turn progress; task age ${Math.floor(nowMs - startedAtMs)}ms and ` +
+      `grading log quiet for ${Math.floor(nowMs - measuredLogMtimeMs)}ms`,
+  };
+}
+
+/** Read a grader log's mtime without turning a missing/unreadable file into evidence. */
+export function readAcceptanceGraderLogMtimeMs(path: string): number | null {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return null;
+  }
 }
 
 export function readAcceptanceGraderLogTail(path: string): string {

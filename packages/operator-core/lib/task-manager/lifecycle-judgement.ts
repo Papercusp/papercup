@@ -61,7 +61,21 @@ export interface ProcessLifecycleProbe {
   logPath: string | null;
   logMtimeMs: number | null;
   cpuUsec: number | null;
+  /** Time of the stored CPU counter baseline; unchanged counters keep this time. */
+  cpuSampledAtMs: number | null;
   lastActivityAtMs: number | null;
+}
+
+export interface CpuActivityEvidence {
+  state: 'unknown' | 'idle' | 'active';
+  previous: { cpuUsec: number; sampledAtMs: number } | null;
+  current: { cpuUsec: number | null; sampledAtMs: number | null };
+}
+
+export interface LifecycleLivenessEvidence {
+  status: 'present' | 'unknown';
+  source: 'healthy-task-reconcile' | 'not-established';
+  observedAt: string | null;
 }
 
 export interface ProcessLifecycleVerdict {
@@ -86,8 +100,10 @@ export interface LifecycleCandidate {
   endedAt: string | null;
   kinds: LifecycleCandidateKind[];
   reasons: string[];
+  liveness: LifecycleLivenessEvidence;
   metrics: {
     cpuUsec: number | null;
+    cpuActivity: CpuActivityEvidence;
     pidsCurrent: number | null;
     lastMemoryBytes: number | null;
     logMtimeMs: number | null;
@@ -182,6 +198,7 @@ export function processLifecycleProbeFromDetail(detail: Record<string, unknown>)
     logPath: typeof raw.logPath === 'string' && raw.logPath ? raw.logPath : null,
     logMtimeMs: finiteNumber(raw.logMtimeMs),
     cpuUsec: finiteNumber(raw.cpuUsec),
+    cpuSampledAtMs: finiteNumber(raw.cpuSampledAtMs),
     lastActivityAtMs: finiteNumber(raw.lastActivityAtMs),
   };
 }
@@ -211,8 +228,31 @@ function sameProbe(a: ProcessLifecycleProbe | null, b: ProcessLifecycleProbe): b
     a.logPath === b.logPath &&
     a.logMtimeMs === b.logMtimeMs &&
     a.cpuUsec === b.cpuUsec &&
+    a.cpuSampledAtMs === b.cpuSampledAtMs &&
     a.lastActivityAtMs === b.lastActivityAtMs
   );
+}
+
+function cpuActivityEvidence(
+  currentCpuUsec: number | null,
+  currentSampledAtMs: number | null,
+  prior: ProcessLifecycleProbe | null,
+): CpuActivityEvidence {
+  const previous =
+    prior?.cpuUsec !== null && prior?.cpuUsec !== undefined &&
+    prior.cpuSampledAtMs !== null && prior.cpuSampledAtMs !== undefined
+      ? { cpuUsec: prior.cpuUsec, sampledAtMs: prior.cpuSampledAtMs }
+      : null;
+  const current = { cpuUsec: currentCpuUsec, sampledAtMs: currentSampledAtMs };
+  if (
+    previous === null ||
+    currentCpuUsec === null ||
+    currentSampledAtMs === null ||
+    currentSampledAtMs <= previous.sampledAtMs
+  ) {
+    return { state: 'unknown', previous, current };
+  }
+  return { state: currentCpuUsec === previous.cpuUsec ? 'idle' : 'active', previous, current };
 }
 
 function parsedMs(value: string | null | undefined): number | null {
@@ -373,6 +413,7 @@ export function evaluateLifecycleCandidates(input: {
     const confirmedResidue = input.confirmedResidueTaskIds.has(row.taskId);
     const prior = processLifecycleProbeFromDetail(row.detail);
     let nextProbe = prior;
+    const currentCpuSampledAtMs = parsedMs(row.lastSeenAt);
 
     if (row.state === 'unaccounted' && confirmedResidue) {
       const startedAtMs = parsedMs(row.startedAt);
@@ -390,6 +431,45 @@ export function evaluateLifecycleCandidates(input: {
       }
     }
 
+    if (row.state === 'unaccounted') {
+      const cpuUsec = finiteNumber(row.cpuUsec);
+      let nextCpuUsec = cpuUsec;
+      let cpuSampledAtMs: number | null = null;
+      let lastActivityAtMs = prior?.lastActivityAtMs ?? null;
+      if (cpuUsec !== null) {
+        if (prior?.cpuUsec == null || prior.cpuSampledAtMs == null) {
+          // First measurable value is a baseline, not proof of past activity.
+          cpuSampledAtMs = currentCpuSampledAtMs;
+        } else if (currentCpuSampledAtMs !== null && currentCpuSampledAtMs > prior.cpuSampledAtMs) {
+          if (cpuUsec !== prior.cpuUsec) {
+            // A counter decrease means reset/wrap too; it is still observed CPU
+            // activity and starts a new timestamped baseline.
+            cpuSampledAtMs = currentCpuSampledAtMs;
+            lastActivityAtMs = currentCpuSampledAtMs;
+          } else {
+            // Keep the prior baseline so a repeated no-delta pass stays write-free
+            // while the candidate can compare it with the latest scan timestamp.
+            nextCpuUsec = prior.cpuUsec;
+            cpuSampledAtMs = prior.cpuSampledAtMs;
+          }
+        } else {
+          // No ordered timestamp means this sample cannot establish activity.
+          nextCpuUsec = prior.cpuUsec;
+          cpuSampledAtMs = prior.cpuSampledAtMs;
+        }
+      }
+      nextProbe = {
+        version: 1,
+        launcherEndedSinceMs: null,
+        logPath: null,
+        logMtimeMs: null,
+        cpuUsec: nextCpuUsec,
+        cpuSampledAtMs,
+        lastActivityAtMs,
+      };
+      if (!sameProbe(prior, nextProbe)) probeUpdates.push({ taskId: row.taskId, probe: nextProbe });
+    }
+
     if (row.state === 'pending' || row.state === 'running') {
       const launcherIsSu = /^su-[0-9A-Za-z]/.test(row.launchedBy);
       const launcherState = launcherIsSu ? input.launcherStates.get(row.launchedBy) : null;
@@ -405,6 +485,7 @@ export function evaluateLifecycleCandidates(input: {
       const logMtimeMs = validLogMtime(logPath ? input.statLogMtimeMs(logPath) : null, input.nowMs);
       const cpuUsec = finiteNumber(row.cpuUsec);
       let lastActivityAtMs = sameLogPath ? (prior?.lastActivityAtMs ?? null) : null;
+      let cpuSampledAtMs: number | null = prior?.cpuSampledAtMs ?? null;
 
       if (logMtimeMs !== null) {
         lastActivityAtMs = Math.max(lastActivityAtMs ?? 0, logMtimeMs);
@@ -412,12 +493,23 @@ export function evaluateLifecycleCandidates(input: {
       if (sameLogPath && prior?.cpuUsec !== null && cpuUsec !== null && prior?.cpuUsec !== cpuUsec) {
         // A decrease means the counter reset; that is activity too, not evidence
         // that the process was quiet throughout the reset window.
-        lastActivityAtMs = input.nowMs;
+        lastActivityAtMs = currentCpuSampledAtMs ?? input.nowMs;
       }
       if (!sameLogPath || prior === null) {
         // A readable log already carries its own activity clock. With no readable
         // log, the first CPU sample is only a baseline and starts the quiet clock now.
-        lastActivityAtMs = logMtimeMs ?? (cpuUsec !== null ? input.nowMs : null);
+        lastActivityAtMs = logMtimeMs ?? (cpuUsec !== null ? currentCpuSampledAtMs ?? input.nowMs : null);
+      }
+      if (cpuUsec === null) {
+        cpuSampledAtMs = null;
+      } else if (prior?.cpuUsec == null || prior.cpuSampledAtMs == null || !sameLogPath) {
+        cpuSampledAtMs = currentCpuSampledAtMs;
+      } else if (
+        currentCpuSampledAtMs !== null &&
+        currentCpuSampledAtMs > prior.cpuSampledAtMs &&
+        cpuUsec !== prior.cpuUsec
+      ) {
+        cpuSampledAtMs = currentCpuSampledAtMs;
       }
 
       nextProbe = {
@@ -426,6 +518,7 @@ export function evaluateLifecycleCandidates(input: {
         logPath,
         logMtimeMs,
         cpuUsec,
+        cpuSampledAtMs,
         lastActivityAtMs,
       };
       if (!sameProbe(prior, nextProbe)) probeUpdates.push({ taskId: row.taskId, probe: nextProbe });
@@ -477,8 +570,25 @@ export function evaluateLifecycleCandidates(input: {
       endedAt: row.endedAt ?? null,
       kinds,
       reasons,
+      liveness:
+        confirmedResidue && (kinds.includes('unaccounted-residue') || kinds.includes('terminal-residue'))
+          ? {
+              status: 'present',
+              source: 'healthy-task-reconcile',
+              observedAt: new Date(input.nowMs).toISOString(),
+            }
+          : { status: 'unknown', source: 'not-established', observedAt: null },
       metrics: {
         cpuUsec: finiteNumber(row.cpuUsec),
+        cpuActivity: cpuActivityEvidence(
+          row.state === 'unaccounted' || row.state === 'pending' || row.state === 'running'
+            ? finiteNumber(row.cpuUsec)
+            : null,
+          row.state === 'unaccounted' || row.state === 'pending' || row.state === 'running'
+            ? currentCpuSampledAtMs
+            : null,
+          prior,
+        ),
         pidsCurrent: finiteNumber(row.pidsCurrent),
         lastMemoryBytes: finiteNumber(row.lastMemoryBytes),
         logMtimeMs: probe?.logMtimeMs ?? null,
@@ -509,7 +619,9 @@ export function lifecycleJudgeBrief(items: readonly OpenLifecycleCandidateItem[]
     '',
     ...refs,
     '',
+    'processLifecycleCandidate.liveness is a timestamped host-side baseline: present proves presence at that time, not now; unknown is not dead. For current evidence use processes:list. Do not infer liveness from capability:bash /proc/<host-pid>, cgroup.procs, pids.current, or proxied loopback HTTP. A missing /proc entry, cgroup.procs containing 0, or loopback HTTP 502 is inconclusive and must remain unknown.',
     'For each item: read and claim the work item, then inspect its processLifecycleCandidate kinds and scopeUnit. For unaccounted-residue, a taskId-filtered processes:list result cannot prove absence: use processes:list { scopeUnit, live:true } and inspect live.exactScopeUnitMatches. If scopeUnit is missing, use an unfiltered live census and inspect all live.unaccountedGroups; an omitted or truncated group list cannot prove absence. Require a known-present positive control before a gone verdict. For other kinds, use processes:list { taskId, live:true } and judge current evidence.',
+    'Use processLifecycleCandidate.metrics.cpuActivity as cgroup cpu.stat evidence: active means usage_usec changed between its timestamps, idle means unchanged over that interval, and unknown means there is no valid comparison. Idle describes CPU use only; it does not prove the process is gone, and unknown must remain unknown.',
     'You produce evidence and a verdict only. NEVER signal a process: do not call processes:kill, shell, systemctl, or any pid/name/pattern kill. Trusted task-manager code enforces a completed kill verdict later through the exact task/scope identity.',
     'Complete every item with assumptions:"none" and top-level outputPayload.processLifecycleVerdict = { taskId, decision:"keep"|"kill"|"gone", reason, keepCount, recheckAt, decidedAt }. A keep MUST give a future ISO recheckAt and increment prior keepCount; kill/gone use recheckAt:null. Record concrete processes:list evidence in completion. Then exit.',
   ].join('\n');
@@ -521,11 +633,46 @@ export function lifecycleCandidateSummary(candidate: LifecycleCandidate): string
       ? `For unaccounted residue, re-verify with processes:list { scopeUnit:${JSON.stringify(candidate.scopeUnit)}, live:true } and inspect live.exactScopeUnitMatches. A taskId-filtered read cannot prove absence.`
       : 'For unaccounted residue with no recorded scopeUnit, re-verify with an unfiltered processes:list { live:true } and inspect the complete live.unaccountedGroups inventory. A taskId-filtered read cannot prove absence.'
     : 'Re-verify with processes:list { taskId, live:true }.';
+  const cpuActivity = candidate.metrics.cpuActivity;
+  const livenessEvidence =
+    candidate.liveness.status === 'present'
+      ? 'Healthy host reconciliation observed this candidate scope as present at ' +
+        candidate.liveness.observedAt +
+        '. This is a positive baseline only; recheck current state with processes:list before deciding. '
+      : 'No namespace-safe presence sample is attached; keep liveness unknown until processes:list establishes it. ';
+  const namespaceProbeCaveat =
+    'Do not infer liveness from capability:bash /proc/<host-pid>, cgroup.procs, pids.current, or proxied loopback. A missing /proc path, cgroup.procs containing 0, or loopback HTTP 502 is inconclusive, not proof of death. ';
+  const sampleLabel = (sample: { cpuUsec: number | null; sampledAtMs: number | null }) =>
+    `${sample.cpuUsec ?? 'unknown'} usec @ ${sample.sampledAtMs === null ? 'unknown' : new Date(sample.sampledAtMs).toISOString()}`;
+  const cpuEvidence =
+    `Timestamped cgroup CPU activity: ${cpuActivity.state}; ` +
+    `previous=${cpuActivity.previous ? sampleLabel(cpuActivity.previous) : 'unknown'}; ` +
+    `current=${sampleLabel(cpuActivity.current)}. `;
   return (
+    livenessEvidence +
+    namespaceProbeCaveat +
     `Task ${candidate.taskId} is a lifecycle candidate (${candidate.kinds.join(', ')}). ` +
-    `${candidate.reasons.join('; ')}. ${verification} ` +
+    `${candidate.reasons.join('; ')}. ${cpuEvidence}${verification} ` +
     'Before recording gone, require a known-present positive control and check that reconciliation is healthy and the relevant inventory is complete. Keep with a reason and future recheck date, kill only by taskId, or record gone.'
   );
+}
+
+export function lifecycleCandidatePayload(candidate: LifecycleCandidate, observedAt: string) {
+  return {
+    taskId: candidate.taskId,
+    scopeUnit: candidate.scopeUnit,
+    observedAt,
+    taskClass: candidate.taskClass,
+    state: candidate.state,
+    launchedBy: candidate.launchedBy,
+    startedAt: candidate.startedAt,
+    endedAt: candidate.endedAt,
+    kinds: candidate.kinds,
+    reasons: candidate.reasons,
+    liveness: candidate.liveness,
+    metrics: candidate.metrics,
+    previousVerdict: candidate.previousVerdict,
+  };
 }
 
 export interface LifecycleSweepResult {
@@ -727,20 +874,7 @@ export const nodeLifecycleJudgementDeps: LifecycleJudgementDeps = {
 
   async upsertCandidate(conditionKey, candidate, fallbackHarness) {
     const harness = candidate.harnessSlug ?? fallbackHarness;
-    const payload = {
-      taskId: candidate.taskId,
-      scopeUnit: candidate.scopeUnit,
-      observedAt: new Date().toISOString(),
-      taskClass: candidate.taskClass,
-      state: candidate.state,
-      launchedBy: candidate.launchedBy,
-      startedAt: candidate.startedAt,
-      endedAt: candidate.endedAt,
-      kinds: candidate.kinds,
-      reasons: candidate.reasons,
-      metrics: candidate.metrics,
-      previousVerdict: candidate.previousVerdict,
-    };
+    const payload = lifecycleCandidatePayload(candidate, new Date().toISOString());
     const result = await upsertConditionWorkItem(conditionKey, {
       kind: 'task',
       harness,

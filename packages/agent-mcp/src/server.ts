@@ -191,12 +191,16 @@ export function formatInvalidArgs(issues: ReadonlyArray<ValidationIssue>, input:
       ),
     ];
 
-    // An `invalid_union` carries its real diagnosis in nested per-branch issues;
-    // surface the branch that located an actual field instead of "Invalid input".
-    // Bounded recursion so a union of unions cannot spin.
+    // An `invalid_union` usually carries its actionable diagnosis in nested
+    // per-branch issues; surface the branch that located an actual field instead
+    // of the union's generic "Invalid input". Preserve an explicit union-level
+    // message when the schema author supplied one. Bounded recursion so a union
+    // of unions cannot spin.
     if (depth < 4) {
       const branch = bestUnionBranch(issue);
-      if (branch) return branch.flatMap((sub) => render(sub, segs, depth + 1));
+      if (branch && issue.message === 'Invalid input') {
+        return branch.flatMap((sub) => render(sub, segs, depth + 1));
+      }
     }
 
     const path = segs.map((s) => String(s)).join('.');

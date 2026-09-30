@@ -250,6 +250,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
     try {
       const minted = await mintDrainFleetForGoal({
         workspaceId,
+        harnessSlug: installSlug,
         goalId: id,
         goalTitle: input.title,
         agentOwnerId: ownerId,

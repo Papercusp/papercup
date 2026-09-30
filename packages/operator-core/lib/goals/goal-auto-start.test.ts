@@ -265,6 +265,7 @@ describe('goal-auto-start — Scout workspace sentinel (EI-22762141222831537)', 
 
     expect(result.warnings).toEqual([]);
     expect(result.drainFleet).toBe('drain-test');
+    expect(mintDrainFleetForGoal).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'home-pot' }));
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
     for (const [args] of spawnHeadlessMock.mock.calls) {
       const spawn = args as { envelope: { greetingCmd: string } };

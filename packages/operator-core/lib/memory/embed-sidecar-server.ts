@@ -149,7 +149,7 @@ export const EMBED_SIDECAR_MODELS = ['gemma', 'local', 'harrier'] as const;
 export type EmbedSidecarModel = (typeof EMBED_SIDECAR_MODELS)[number];
 
 export interface EmbedRequest {
-  model: EmbedSidecarModel;
+  model: string;
   kind: GemmaEmbedKind;
   texts: string[];
   /** EI-19323982006772080: serve every text from the model — no LRU read, no
@@ -404,12 +404,12 @@ export function validateRerankRequest(body: unknown): RerankRequest | { error: s
  * Pure request validation (unit-tested without a server). Returns the parsed
  * request or an error string suitable for a 400 body.
  */
-export function validateEmbedRequest(body: unknown): EmbedRequest | { error: string } {
+export function validateEmbedRequest(body: unknown, permittedModels: readonly string[] = EMBED_SIDECAR_MODELS): EmbedRequest | { error: string } {
   if (typeof body !== 'object' || body === null) return { error: 'body must be a JSON object' };
   const b = body as { model?: unknown; kind?: unknown; texts?: unknown; bypassCache?: unknown };
   const model = b.model === undefined ? 'gemma' : b.model;
-  if (!EMBED_SIDECAR_MODELS.includes(model as EmbedSidecarModel)) {
-    return { error: `unknown model '${String(model)}' — expected one of: ${EMBED_SIDECAR_MODELS.join(', ')}` };
+  if (typeof model !== 'string' || !permittedModels.includes(model)) {
+    return { error: `unknown model '${String(model)}' — expected one of: ${permittedModels.join(', ')}` };
   }
   if (b.kind !== 'query' && b.kind !== 'document') {
     return { error: `kind must be 'query' or 'document' (got '${String(b.kind)}')` };
@@ -431,7 +431,7 @@ export function validateEmbedRequest(body: unknown): EmbedRequest | { error: str
     return { error: `bypassCache must be a boolean (got '${String(b.bypassCache)}')` };
   }
   return {
-    model: model as EmbedSidecarModel,
+    model,
     kind: b.kind,
     texts: b.texts as string[],
     bypassCache: b.bypassCache === true,
@@ -481,9 +481,7 @@ export function resolveWarmRerankers(env: NodeJS.ProcessEnv = process.env): Rera
 }
 
 /** Builder seam — tests inject fakes so no unit test loads a real ONNX model. */
-export type EmbedderBuilders = {
-  [M in EmbedSidecarModel]: (kind: GemmaEmbedKind) => Promise<EmbedFn>;
-};
+export type EmbedderBuilders = Record<string, (kind: GemmaEmbedKind) => Promise<EmbedFn>>;
 
 const defaultBuilders: EmbedderBuilders = {
   gemma: (kind) => Promise.resolve(buildGemmaEmbedder({ kind })),
@@ -521,6 +519,9 @@ const defaultRerankBuilders: RerankerBuilders = {
 export interface EmbedSidecarOptions {
   port?: number;
   builders?: EmbedderBuilders;
+  /** Explicit identities for additional injected builders (isolated candidate
+   * evaluation). A builder without a revision is refused before listening. */
+  modelRevisions?: Record<string, string>;
   /** Reranker builder seam — tests inject fakes (see `builders`). */
   rerankBuilders?: RerankerBuilders;
   /** Skip the boot warm-up (tests). Production warms gemma at boot. */
@@ -699,6 +700,13 @@ function readBody(req: http.IncomingMessage, signal?: AbortSignal): Promise<stri
  */
 export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedSidecarHandle {
   const builders = opts.builders ?? defaultBuilders;
+  const modelRevisions: Record<string, string> = { ...MODEL_REVS, ...opts.modelRevisions };
+  const permittedModels = Object.keys(builders);
+  for (const model of permittedModels) {
+    if (typeof builders[model] !== 'function' || typeof modelRevisions[model] !== 'string' || !modelRevisions[model].trim()) {
+      throw new Error(`embedder '${model}' requires a builder and explicit model revision`);
+    }
+  }
   const rerankBuilders = opts.rerankBuilders ?? defaultRerankBuilders;
   const log = opts.log ?? ((line: string) => console.log(line));
   const workerStates = opts.workerStates ?? defaultWorkerStates;
@@ -718,7 +726,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   // not brick the slot for the process lifetime).
   const embedders = new Map<string, Promise<EmbedFn>>();
   const warm: Record<string, WarmState> = {};
-  const getEmbedder = (model: EmbedSidecarModel, kind: GemmaEmbedKind): Promise<EmbedFn> => {
+  const getEmbedder = (model: string, kind: GemmaEmbedKind): Promise<EmbedFn> => {
     const key = `${model}:${kind}`;
     let p = embedders.get(key);
     if (!p) {
@@ -1091,7 +1099,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   };
 
   const embedOneCached = (
-    model: EmbedSidecarModel,
+    model: string,
     kind: GemmaEmbedKind,
     text: string,
     signal: AbortSignal,
@@ -1181,7 +1189,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       json(res, 400, { error: `invalid JSON body: ${e instanceof Error ? e.message : String(e)}` });
       return;
     }
-    const v = validateEmbedRequest(parsed);
+    const v = validateEmbedRequest(parsed, permittedModels);
     if ('error' in v) {
       json(res, 400, { error: v.error });
       return;
@@ -1204,7 +1212,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         vectors,
         dims: vectors[0]?.length ?? 0,
         runtime: EMBED_SIDECAR_RUNTIME,
-        modelRev: MODEL_REVS[v.model],
+        modelRev: modelRevisions[v.model],
         cache: tally,
       };
       json(res, 200, body);
@@ -1277,6 +1285,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         // capabilities against this before adopting the process.
         capabilities,
         models: { ...warm },
+        modelRevisions: Object.fromEntries(permittedModels.map((model) => [model, modelRevisions[model]])),
         // The (device, dtype) pair reranking is ACTUALLY running on — not the
         // one requested. A GPU host whose CUDA provider failed to load is
         // demoted to cpu/q8 silently as far as search is concerned (the engine

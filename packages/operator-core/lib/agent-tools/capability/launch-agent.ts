@@ -825,6 +825,7 @@ export default defineTool({
     let resumeAgent: string | null = null;
     let resumeModel: string | null = null;
     let resumeModelSource: CodexModelSource | null = null;
+    let resumeAccount: string | null = null;
     let successorBrief: string | null = null;
     const successorPreparation: { reconcile?: () => Promise<string | null> } = {};
     let fork = !!args.fork;
@@ -843,6 +844,7 @@ export default defineTool({
       resumeOwnerId = target.ownerId;
       resumeAgent = target.agent;
       resumeModel = target.model;
+      resumeAccount = target.account;
       // A legacy Codex launch may have recorded a model without the newer
       // provenance flag, or no model at all. Preserve the recorded model as an
       // inherited choice; when it is absent, make the configured-default
@@ -1583,7 +1585,10 @@ export default defineTool({
               mode: fork ? 'fork' : 'resume',
               sessionId: resumeSessionId,
               resumeId,
-              account: args.account ?? null,
+              // A same-session resume/fork keeps the source's account route
+              // unless the caller deliberately requests another one. Without
+              // this, `--account=auto` sessions silently restart on `default`.
+              account: args.account ?? resumeAccount,
               // Resume/fork does not pass --agent, but the command builder
               // still needs the recorded backend to apply Codex's model
               // policy. A Codex source may have changed model OR reasoning
@@ -1860,15 +1865,13 @@ export default defineTool({
               // interactive shell that owns the tab. Capture the shell's
               // authenticated PID so respawn cleanup can pass it to
                   // fleet:kill's terminal_pids path.
-                  captureTerminalPid: true,
-                  displayOverride: memberSpecs[i]?.display ?? args.display,
-                  // EI-21010422711013687: the server-side gnome-terminal factory can
-                  // open the requested window but silently drop the `-- CMD`
-                  // handoff. That strands BOTH fresh launches (no psu child ever
-                  // exists) and resume/fork launches (EI-11578). Every visible agent
-                  // launch is command-bearing, so reliability outranks the owner's
-                  // normal client-server terminal preference here.
-              preferProcessPerWindow: true,
+              captureTerminalPid: true,
+              displayOverride: memberSpecs[i]?.display ?? args.display,
+              // Keep process-per-window as the safe auto-detection fallback,
+              // but honor an explicit workspace/host TERMINAL choice. The boot
+              // receipt above makes a terminal that drops `-- CMD` fail visibly
+              // instead of claiming a successful launch.
+              preferProcessPerWindow: !process.env.TERMINAL?.trim(),
             });
           },
           );

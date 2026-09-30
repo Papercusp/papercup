@@ -6,6 +6,7 @@ import {
   buildAssignedAcceptanceGraderBrief,
   carriedStaleGradingCardIds,
   classifyAcceptanceGraderStartupStall,
+  classifyAcceptanceGraderNoFirstTurnStall,
   classifyAcceptanceGraderTerminalFailure,
   detectAcceptanceGraderTerminalFailure,
   launchAcceptanceGrader,
@@ -1507,6 +1508,68 @@ describe('classifyAcceptanceGraderStartupStall', () => {
     expect(classifyAcceptanceGraderStartupStall('The plan describes a client connecting to MCP.')).toBeNull();
     expect(
       classifyAcceptanceGraderStartupStall('/rc connecting…\nWorking (4s)\npapercusp.tools:invoke({})'),
+    ).toBeNull();
+  });
+});
+
+describe('classifyAcceptanceGraderNoFirstTurnStall', () => {
+  const nowMs = Date.parse('2026-09-30T12:00:00.000Z');
+  const staleAfterMs = 15 * 60_000;
+  const startedAt = new Date(nowMs - staleAfterMs - 1).toISOString();
+  const logMtimeMs = nowMs - staleAfterMs - 1;
+
+  it('requires an old task, a quiet log, and no first-turn progress', () => {
+    expect(
+      classifyAcceptanceGraderNoFirstTurnStall('Claude TUI tool picker still visible', {
+        startedAt,
+        logMtimeMs,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toMatchObject({ code: 'startup_first_turn_stalled' });
+
+    expect(
+      classifyAcceptanceGraderNoFirstTurnStall('Claude TUI tool picker still visible', {
+        startedAt: new Date(nowMs - staleAfterMs + 1).toISOString(),
+        logMtimeMs,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBeNull();
+    expect(
+      classifyAcceptanceGraderNoFirstTurnStall('Claude TUI tool picker still visible', {
+        startedAt,
+        logMtimeMs: nowMs - staleAfterMs + 1,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBeNull();
+  });
+
+  it('preserves tasks with first-turn progress and treats unreadable evidence as unknown', () => {
+    expect(
+      classifyAcceptanceGraderNoFirstTurnStall('Working (18m)\npapercusp.tools:invoke({})', {
+        startedAt,
+        logMtimeMs,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBeNull();
+    expect(
+      classifyAcceptanceGraderNoFirstTurnStall('', {
+        startedAt,
+        logMtimeMs,
+        nowMs,
+        staleAfterMs,
+      }),
+    ).toBeNull();
+    expect(
+      classifyAcceptanceGraderNoFirstTurnStall('Claude TUI tool picker still visible', {
+        startedAt,
+        logMtimeMs: null,
+        nowMs,
+        staleAfterMs,
+      }),
     ).toBeNull();
   });
 });

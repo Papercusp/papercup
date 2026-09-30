@@ -139,6 +139,41 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     builds.length = 0;
   });
 
+  it('serves explicitly registered candidate builders with their revision and model accounting', async () => {
+    handle = createEmbedSidecarServer({
+      port: 0, warmAtBoot: false, concurrency: 1, log: () => {},
+      builders: { mdenseon: async (kind) => async (text) => [text.length, kind === 'query' ? 1 : 2] },
+      modelRevisions: { mdenseon: 'pinned-candidate-sha' },
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+    const health = await (await fetch(`${baseUrl}/healthz`)).json();
+    expect(health.modelRevisions).toEqual({ mdenseon: 'pinned-candidate-sha' });
+    const request = () => fetch(`${baseUrl}/embed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'mdenseon', kind: 'query', texts: ['same', 'same'], bypassCache: true }),
+    });
+    for (let i = 0; i < 2; i++) {
+      const response = await request();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        modelRev: 'pinned-candidate-sha', vectors: [[4, 1], [4, 1]],
+        cache: { hits: 0, coalesced: 0, inferred: 2 },
+      });
+    }
+    const unsupported = await fetch(`${baseUrl}/embed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gemma', kind: 'query', texts: ['x'] }),
+    });
+    expect(unsupported.status).toBe(400);
+  });
+
+  it('refuses candidate builders without revision evidence before opening a server', () => {
+    expect(() => createEmbedSidecarServer({
+      builders: { mdenseon: async () => async () => [1] }, warmAtBoot: false,
+    })).toThrow('explicit model revision');
+    expect(validateEmbedRequest({ model: 'mdenseon', kind: 'query', texts: ['x'] })).toHaveProperty('error');
+  });
+
   it('GET /healthz answers with warm states and the runtime tag', async () => {
     await boot();
     const res = await fetch(`${baseUrl}/healthz`);

@@ -189,6 +189,7 @@ import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { shapeWorkItemWriteEcho } from './write-echo-shape';
 import {
   COMPLETION_OBJECT_EXAMPLE,
+  COMPLETION_FIELDS,
   COMPLETION_STRING_REJECTION,
   coerceCompletionShape,
   gatherFlatCompletion,
@@ -5273,6 +5274,13 @@ async function completeOne(
 }
 
 // Named so the args preprocess can reach its own inner schema at parse time (RSR-P-008-A).
+// gatherFlatCompletion consumes these legacy single-item aliases before this schema runs.
+// Declare them here too so the projected schema and invalid-argument help describe the
+// same input contract that the preprocess actually accepts.
+const flatCompletionAliasShape = Object.fromEntries(
+  COMPLETION_FIELDS.map((field) => [field, z.unknown().optional()]),
+);
+
 const workItemsCompleteTool = defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
@@ -5459,6 +5467,7 @@ const workItemsCompleteTool = defineTool({
       [
         z
           .object({
+            ...flatCompletionAliasShape,
             id: z
               .string()
               .min(1)
