@@ -40,6 +40,9 @@ const INSTALL_DOOR_SITES = [
   'install-plugin.ts',
   'install-recipe.ts',
   'install-rubric.ts',
+  // 2026-09-30: the `rule` listing kind (bba6c48424). Gated via gateInstallDoor at
+  // install-rule.ts:51-52; it was only undeclared here (ADDED-door half of the guard).
+  'install-rule.ts',
   'install-template.ts',
   'install-theme.ts',
 ] as const;

@@ -1243,6 +1243,107 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(rejected.message).toContain('regression evidence remains unresolved');
   });
 
+  // WI-10004135 — measured on p2p-work-distribution-2026-07-02: a plan outside the
+  // acceptance-BAR contract read satisfied:true on an 'accept-pending-delivery' verdict
+  // while its live criterion was rated unknown. Nothing else blocks on that evidence
+  // for such a plan, so the verdict itself must.
+  describe('accept-pending-delivery outside the acceptance-BAR contract (WI-10004135)', () => {
+    const liveRubric = () =>
+      acceptanceRubric({
+        criteria: [
+          { key: 'k1', title: 'K1', model: '', method: '', driftMarkers: '' },
+          {
+            key: 'live1',
+            title: 'Live journey proven on the rig',
+            model: '',
+            method: '',
+            driftMarkers: '',
+            evidencePlane: 'live',
+          } as Rubric['criteria'][number],
+        ],
+      });
+    const liveRatings = {
+      k1: { rating: 'pass', evidence: 'tree verified' },
+      live1: { rating: 'unknown', evidence: 'no banked two-machine run' },
+    };
+    const independent = () =>
+      scorecard({
+        issueId: 'EI-independent',
+        createdAt: '2026-08-21T01:00:00Z',
+        createdBy: 'su-grader',
+        ratings: liveRatings,
+        nKeys: 2,
+      });
+    const authorCard = (issueId: string, createdAt: string, verdict: 'accept' | 'accept-pending-delivery') =>
+      scorecard({
+        issueId,
+        createdAt,
+        createdBy: 'su-implementer',
+        ratings: liveRatings,
+        nKeys: 2,
+        acceptance: { verdict, reasoning: `${verdict}: the live run is the outstanding obligation.` },
+      });
+
+    it('refuses the ship and names the undelivered deployed/live criterion', async () => {
+      mockRubric.mockResolvedValue(liveRubric());
+      mockScorecards.mockResolvedValue([
+        authorCard('EI-pending', '2026-08-21T02:00:00Z', 'accept-pending-delivery'),
+        independent(),
+      ]);
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+      expect(v).toMatchObject({
+        satisfied: false,
+        code: 'acceptance_pending_delivery',
+        gradingRef: 'EI-independent',
+        gradedBy: 'su-grader',
+        pendingDeliveryCriteria: ['live1'],
+        unknownRatedCriteria: ['live1'],
+      });
+      expect(v.message).toContain('outside the acceptance-BAR contract');
+      expect(v.message).toContain("acceptanceOf:'EI-independent'");
+      expect(planAcceptanceRepairAction('some-plan-2026-08-11', v)).toMatchObject({
+        kind: 'author-verdict',
+        repairVerb: 'scorecards:emit',
+      });
+    });
+
+    it('a newer author accept, recorded once delivery is banked, clears the refusal', async () => {
+      mockRubric.mockResolvedValue(liveRubric());
+      mockScorecards.mockResolvedValue([
+        authorCard('EI-accept', '2026-08-21T03:00:00Z', 'accept'),
+        authorCard('EI-pending', '2026-08-21T02:00:00Z', 'accept-pending-delivery'),
+        independent(),
+      ]);
+      await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+        satisfied: true,
+        gradedBy: 'su-grader',
+      });
+    });
+
+    it('inside the BAR contract the verdict does not block: the BAR owns the delivery evidence', async () => {
+      mockBarLifecycle.mockResolvedValue({
+        phase: 'ship',
+        applicable: true,
+        satisfied: true,
+        codes: [],
+        blockingBars: [],
+        contractCodes: [],
+        codeAttribution: [],
+        nextRepair: null,
+        staleGradingScorecardId: null,
+        message: null,
+      });
+      mockRubric.mockResolvedValue(liveRubric());
+      mockScorecards.mockResolvedValue([
+        authorCard('EI-pending', '2026-08-21T02:00:00Z', 'accept-pending-delivery'),
+        independent(),
+      ]);
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+      expect(v).toMatchObject({ satisfied: true });
+      expect(v.code).toBeUndefined();
+    });
+  });
+
   it('honors a legacy independent grading directly superseded by the standing author acceptance card', async () => {
     mockRubric.mockResolvedValue(acceptanceRubric());
     const independent = scorecard({

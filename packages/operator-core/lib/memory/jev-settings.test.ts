@@ -16,9 +16,10 @@ const db = vi.hoisted(() => ({
 }));
 const creds = vi.hoisted(() => ({ store: {} as Record<string, string> }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
+    sql: Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => {
       const text = strings.join('?');
       if (text.includes('SELECT value')) {
         db.reads += 1;
@@ -33,7 +34,10 @@ vi.mock('@papercusp/db-org', () => ({
         return Promise.resolve([]);
       }
       return Promise.reject(new Error(`unexpected SQL: ${text}`));
-    },
+    }, {
+      // Transaction-capable like the production org client (WI-40234).
+      begin: async (fn: (tx: unknown) => unknown): Promise<unknown> => fn(undefined),
+    }),
   }),
 }));
 

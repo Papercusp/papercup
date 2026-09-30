@@ -196,30 +196,41 @@ export class InMemoryHostedAppRelayUsageStore implements HostedAppRelayUsageStor
   }
 }
 
-/** `papercusp_auth.hosted_app_relay_usage` (migration 1254). */
+/** Runs one statement batch as the hosted service role (`withHostedServiceContext`). */
+export type AppRelayServiceRunner = <T>(fn: (sql: Sql) => Promise<T>) => Promise<T>;
+
+/**
+ * `papercusp_auth.hosted_app_relay_usage` (migrations 1254 + 1255). Runs as the
+ * hosted service role, the only role 1255 grants on this table, the same way
+ * PostgresHostedWorkspaceConnectorStore does.
+ */
 export class PostgresHostedAppRelayUsageStore implements HostedAppRelayUsageStore {
-  constructor(private readonly sql: Sql) {}
+  constructor(private readonly run: AppRelayServiceRunner) {}
 
   async monthBytes(workspace: AppRelayWorkspace, month: string): Promise<number> {
-    const rows = await this.sql<{ bytes: string | number }[]>`
-      SELECT bytes FROM papercusp_auth.hosted_app_relay_usage
-       WHERE control_workspace_id = ${workspace.controlPlaneWorkspaceId}
-         AND organization_id = ${workspace.organizationId}
-         AND customer_workspace_id = ${workspace.customerWorkspaceId}
-         AND month = ${month}::date`;
-    return rows[0] ? Number(rows[0].bytes) : 0;
+    return this.run(async (sql) => {
+      const rows = await sql<{ bytes: string | number }[]>`
+        SELECT bytes FROM papercusp_auth.hosted_app_relay_usage
+         WHERE control_workspace_id = ${workspace.controlPlaneWorkspaceId}
+           AND organization_id = ${workspace.organizationId}
+           AND customer_workspace_id = ${workspace.customerWorkspaceId}
+           AND month = ${month}::date`;
+      return rows[0] ? Number(rows[0].bytes) : 0;
+    });
   }
 
   async add(workspace: AppRelayWorkspace, month: string, usage: { bytes: number; requests: number }): Promise<void> {
-    await this.sql`
-      INSERT INTO papercusp_auth.hosted_app_relay_usage
-        (control_workspace_id, organization_id, customer_workspace_id, month, bytes, requests)
-      VALUES (${workspace.controlPlaneWorkspaceId}, ${workspace.organizationId}, ${workspace.customerWorkspaceId},
-              ${month}::date, ${Math.max(0, Math.floor(usage.bytes))}, ${Math.max(0, Math.floor(usage.requests))})
-      ON CONFLICT (control_workspace_id, organization_id, customer_workspace_id, month) DO UPDATE
-        SET bytes = hosted_app_relay_usage.bytes + EXCLUDED.bytes,
-            requests = hosted_app_relay_usage.requests + EXCLUDED.requests,
-            updated_at = now()`;
+    await this.run(async (sql) => {
+      await sql`
+        INSERT INTO papercusp_auth.hosted_app_relay_usage
+          (control_workspace_id, organization_id, customer_workspace_id, month, bytes, requests)
+        VALUES (${workspace.controlPlaneWorkspaceId}, ${workspace.organizationId}, ${workspace.customerWorkspaceId},
+                ${month}::date, ${Math.max(0, Math.floor(usage.bytes))}, ${Math.max(0, Math.floor(usage.requests))})
+        ON CONFLICT (control_workspace_id, organization_id, customer_workspace_id, month) DO UPDATE
+          SET bytes = hosted_app_relay_usage.bytes + EXCLUDED.bytes,
+              requests = hosted_app_relay_usage.requests + EXCLUDED.requests,
+              updated_at = now()`;
+    });
   }
 }
 

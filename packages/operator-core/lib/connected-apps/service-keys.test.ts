@@ -53,7 +53,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
       if (/member/i.test(text)) return db.members.size > 0 ? [{ status: 'active' }] : [];
       return [];
     },
-    { unsafe: (fragment: string) => fragment },
+    {
+      unsafe: (fragment: string) => fragment,
+      // Transaction-capable like the production org client (WI-40234).
+      begin: async (fn: (tx: unknown) => unknown): Promise<unknown> => fn(sql),
+    },
   );
   return {
     ...(await importOriginal<typeof import('@papercusp/db-org')>()),

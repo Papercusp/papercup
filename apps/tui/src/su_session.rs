@@ -173,6 +173,12 @@ pub struct SuDispatchInputs {
     /// The persisted policy of the conversation currently loaded, if any is
     /// loaded at all.  `None` means no conversation is bound yet.
     pub loaded_class: Option<PuiRuntimeClass>,
+    /// The operator's configured agent backend (`GET /api/agent-config`
+    /// `effectiveBackend`), which is what the session-setup panel already
+    /// defaults to. A conversation with no pick and no home of its own runs
+    /// here (P-016), so a Codex or OMP user's bare `pui` is not silently
+    /// Claude. `None` (not loaded yet, or unmapped) falls back to Claude.
+    pub configured_backend: Option<SuSessionBackend>,
 }
 
 /// Decide where one owner turn goes.
@@ -213,7 +219,10 @@ pub fn decide_su_dispatch(inputs: SuDispatchInputs) -> SuDispatchDecision {
         Some(PuiRuntimeClass::SuSession) => {
             return SuDispatchDecision {
                 target: SuDispatchTarget::OpenSuSession(
-                    inputs.picked_backend.unwrap_or(PUI_DEFAULT_SU_BACKEND),
+                    inputs
+                        .picked_backend
+                        .or(inputs.configured_backend)
+                        .unwrap_or(PUI_DEFAULT_SU_BACKEND),
                 ),
                 reason: SuDispatchReason::HomedSuSession,
             };
@@ -233,9 +242,11 @@ pub fn decide_su_dispatch(inputs: SuDispatchInputs) -> SuDispatchDecision {
         None => {}
     }
     // 4. No conversation is loaded at all: the corrected SU-session host is the
-    //    unconditional default.
+    //    unconditional default, on the operator's configured engine.
     SuDispatchDecision {
-        target: SuDispatchTarget::OpenSuSession(PUI_DEFAULT_SU_BACKEND),
+        target: SuDispatchTarget::OpenSuSession(
+            inputs.configured_backend.unwrap_or(PUI_DEFAULT_SU_BACKEND),
+        ),
         reason: SuDispatchReason::CutoverDefault,
     }
 }
@@ -1333,7 +1344,51 @@ mod cutover_policy_tests {
             ended_backend: None,
             picked_backend: None,
             loaded_class: None,
+            configured_backend: None,
         }
+    }
+
+    #[test]
+    fn a_new_conversation_runs_on_the_configured_backend_below_every_explicit_choice() {
+        // No pick, nothing loaded: the configured engine, not Claude (P-016).
+        let d = decide_su_dispatch(SuDispatchInputs {
+            configured_backend: Some(SuSessionBackend::Codex),
+            ..unbound()
+        });
+        assert_eq!(
+            d.target,
+            SuDispatchTarget::OpenSuSession(SuSessionBackend::Codex)
+        );
+        assert_eq!(d.reason, SuDispatchReason::CutoverDefault);
+        // A loaded SU conversation with no bound session also defaults there.
+        let d = decide_su_dispatch(SuDispatchInputs {
+            configured_backend: Some(SuSessionBackend::Omp),
+            loaded_class: Some(PuiRuntimeClass::SuSession),
+            ..unbound()
+        });
+        assert_eq!(d.target, SuDispatchTarget::OpenSuSession(SuSessionBackend::Omp));
+        // An owner's pick and a conversation's own ended backend both outrank it.
+        let d = decide_su_dispatch(SuDispatchInputs {
+            configured_backend: Some(SuSessionBackend::Codex),
+            picked_backend: Some(SuSessionBackend::Claude),
+            ..unbound()
+        });
+        assert_eq!(
+            d.target,
+            SuDispatchTarget::OpenSuSession(SuSessionBackend::Claude)
+        );
+        let d = decide_su_dispatch(SuDispatchInputs {
+            configured_backend: Some(SuSessionBackend::Codex),
+            ended_backend: Some(SuSessionBackend::Omp),
+            loaded_class: Some(PuiRuntimeClass::SuSession),
+            ..unbound()
+        });
+        assert_eq!(d.target, SuDispatchTarget::OpenSuSession(SuSessionBackend::Omp));
+        // Unknown configuration keeps the historical default.
+        assert_eq!(
+            decide_su_dispatch(unbound()).target,
+            SuDispatchTarget::OpenSuSession(PUI_DEFAULT_SU_BACKEND)
+        );
     }
 
     #[test]

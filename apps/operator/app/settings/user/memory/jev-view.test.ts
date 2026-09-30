@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   JEV_KEY_MIN_LENGTH,
+  JEV_MEASURED_VERDICT,
   JEV_MODE_OPTIONS,
   jevKeyDraftProblem,
   jevView,
@@ -74,5 +75,20 @@ describe('jevKeyDraftProblem', () => {
 
   it('mirrors the server minimum, so it never blocks a key the server would accept', () => {
     expect(jevKeyDraftProblem('a'.repeat(JEV_KEY_MIN_LENGTH))).toBeNull();
+  });
+});
+
+describe('the measured verdict beside the mode control (D-013, superseding D-012)', () => {
+  it('states when and on which model it was measured, the numbers, and that Off stays the default', () => {
+    expect(JEV_MEASURED_VERDICT).toContain('2026-09-30');
+    expect(JEV_MEASURED_VERDICT).toContain('jev-1.13.0');
+    expect(JEV_MEASURED_VERDICT).toContain('0 to 1 times in 30');
+    expect(JEV_MEASURED_VERDICT).toContain('8 in 30');
+    expect(JEV_MEASURED_VERDICT).toMatch(/borderline/);
+    expect(JEV_MEASURED_VERDICT).toMatch(/Off stays the default/);
+  });
+
+  it("no longer carries D-012's state-encoding verdict", () => {
+    expect(JEV_MEASURED_VERDICT).not.toMatch(/not recommended|1 in 10/i);
   });
 });

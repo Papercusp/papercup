@@ -8,6 +8,7 @@ import { SU_SESSION_PROTOCOL_VERSION, SU_SESSION_SCHEMA } from '@papercusp/chat-
 import { resolveCardResponse } from '@papercusp/agent-mcp';
 import { contextTrimmingEnv } from '../../../apps/operator/scripts/psu-launcher.mjs';
 import type { BootstrapSuResult } from './endpoint-route/routes/agent-mcp/bootstrap-su';
+import { humanToolName } from './su-session-approval-display';
 import {
   CHILD_STDERR_TAIL_LIMIT, attachChildStderr, childStderrSuffix, claudeDirectiveDispositionSuTools,
   claudeMemoryFilesInPrompt, claudeReadOnlySuTools, createChildStderrTail,
@@ -627,7 +628,8 @@ describe('structured Claude SU engine', () => {
       void canUseTool(name, {}, { ...request(id), ...(id === 'ask-rule' ? { matchedAskRule: { source: 'userSettings', toolName: name } } : {}) });
       await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
       const card = openCards(engine)[0];
-      expect(card.prompt).toContain(name);
+      // The card names the tool in its human display form (su-session-approval-display).
+      expect(card.prompt).toContain(humanToolName(name));
       resolveCardResponse({ correlationId: card.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' });
       await vi.waitFor(() => expect(openCards(engine)).toHaveLength(0));
     }
@@ -652,7 +654,7 @@ describe('structured Claude SU engine', () => {
     const otherWrite = canUseTool('mcp__papercusp-su__work_items_comment', {}, request('other-write'));
     await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
     const otherCard = openCards(engine)[0];
-    expect(otherCard.prompt).toContain('mcp__papercusp-su__work_items_comment');
+    expect(otherCard.prompt).toContain(humanToolName('mcp__papercusp-su__work_items_comment'));
     resolveCardResponse({ correlationId: otherCard.correlationId, action: 'submit', payload: { picks: ['1'] }, expectedWorkspaceId: 'workspace' });
     await expect(otherWrite).resolves.toMatchObject({ behavior: 'deny' });
     expect(openCards(engine)).toHaveLength(0);
@@ -662,7 +664,7 @@ describe('structured Claude SU engine', () => {
     });
     await vi.waitFor(() => expect(openCards(engine)).toHaveLength(1));
     const askRuleCard = openCards(engine)[0];
-    expect(askRuleCard.prompt).toContain(name);
+    expect(askRuleCard.prompt).toContain(humanToolName(name));
     resolveCardResponse({ correlationId: askRuleCard.correlationId, action: 'submit', payload: { picks: ['0'] }, expectedWorkspaceId: 'workspace' });
     await expect(forcedByAskRule).resolves.toMatchObject({ behavior: 'allow' });
   });

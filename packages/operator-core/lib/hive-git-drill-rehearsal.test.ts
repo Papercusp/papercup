@@ -554,4 +554,25 @@ describe('the real probe and scenario apply the profile on the one path they sha
     const tail = scenario.slice(apply, scenario.indexOf('\nrun_all_phases\n'));
     expect(tail).toMatch(/if rig_profile_is_diagnostic; then SCENARIO_FULL_RUN=0; fi/);
   });
+
+  // Found live, twice (same-box runs 20260930T044642Z and 20260930T045352Z): both owners run
+  // on ONE machine by construction, so a two-machine check on the shared path kills every
+  // same-box run before its first phase. The producer preflight is pinned behaviourally in
+  // physical-drill-target.test.ts; this pins the scenario's own identity contract.
+  it('the scenario demands two machines only on the physical rig, and two owners always', () => {
+    const sourced = scenario.indexOf('\n. "$HERE/lib/rig-profile.sh"\n');
+    const machineFail = scenario.indexOf("fail 'tower and vm identities resolve to the same physical machine'");
+    expect(sourced, 'the profile library must be sourced before the identity contract').toBeGreaterThan(-1);
+    expect(machineFail).toBeGreaterThan(sourced);
+    const gate = scenario.lastIndexOf('\nif ! rig_profile_is_diagnostic; then\n', machineFail);
+    expect(gate, 'the two-machine check sits inside a physical-rig-only block').toBeGreaterThan(sourced);
+    expect(scenario.indexOf('\nfi\n', gate)).toBeGreaterThan(machineFail);
+    // The owner check stays unconditional (column 0, not inside the gate).
+    expect(scenario).toMatch(
+      /\n\[ "\$tower_device" != "\$vm_device" \] \\\n {2}\|\| fail 'tower and vm identities resolve to the same device key'\n/,
+    );
+    // Exactly one two-machine refusal on the shared path, so a new one cannot slip in ungated.
+    expect(scenario.split('same physical machine').length - 1).toBe(1);
+    expect(probe).not.toMatch(/same physical machine|distinct machineFingerprint/);
+  });
 });

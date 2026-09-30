@@ -137,6 +137,10 @@ describe('scenario registry', () => {
       'su-S34-grader-r3-no-opportunity',
       'su-S34-grader-r4-unmatched-effect',
       'su-S34-grader-r7-verdict-complete',
+      // S35 completion residue discipline (D-041, goal-agent-behavior-feedback-2026-09-06 R-18)
+      'su-S35-completion-clean',
+      'su-S35-completion-proof-missing',
+      'su-S35-completion-residue',
       // pui-loop — the owned loop's su-derived prompt profile (D-034)
       'pui-loop-P01-owned-door-read',
       // onboarding-tutor scenario suite (onboarding-tutor target)

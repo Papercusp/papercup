@@ -1,6 +1,7 @@
 /** Restricted same-origin HTTP host for the hosted control-plane profile. */
 
 import { Hono } from "hono";
+import { withHostedServiceContext } from "@papercusp/db-org";
 import {
   createHostedRuntime,
   readHostedRuntimeConfiguration,
@@ -21,6 +22,7 @@ import {
   AppRelayRateLimiter,
   DEFAULT_APP_RELAY_LIMITS,
   InMemoryHostedAppRelayUsageStore,
+  PostgresHostedAppRelayUsageStore,
   handleHostedAppRelay,
   type AppRelayLimits,
   type HostedAppRelayDependencies,
@@ -181,5 +183,9 @@ export async function createHostedHandlerFromEnvironment(
     kind: "hosted",
     controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
   });
-  return createHostedHandler(plane, spa);
+  // The monthly relay bandwidth cap (D-006) must survive a restart, so production
+  // counts it in Postgres, as the hosted service role (migrations 1254 + 1255).
+  return createHostedHandler(plane, spa, {
+    appRelayUsage: new PostgresHostedAppRelayUsageStore(dependencies.runService ?? withHostedServiceContext),
+  });
 }

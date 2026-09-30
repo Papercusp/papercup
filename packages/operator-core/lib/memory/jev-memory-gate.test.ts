@@ -5,6 +5,7 @@ import type { DecisionClient, DecisionOutcome, QuestionMap } from '@papercusp/de
 import {
   JEV_MEMORY_ADMIT_THRESHOLD,
   JEV_MEMORY_CONSUMER,
+  JEV_MEMORY_ENCODING,
   runJevMemoryGate,
   type JevMemoryGateDeps,
 } from './jev-memory-gate';
@@ -90,9 +91,24 @@ describe('runJevMemoryGate — Log only (shadow)', () => {
 
 describe('runJevMemoryGate — On', () => {
   it(`keeps a candidate exactly when P(yes) >= ${JEV_MEMORY_ADMIT_THRESHOLD}`, async () => {
-    const h = harness('on', async () => answered({ m1: 0.9, m2: 0.39 }));
+    const below = Math.round((JEV_MEMORY_ADMIT_THRESHOLD - 0.01) * 100) / 100;
+    const h = harness('on', async () => answered({ m1: JEV_MEMORY_ADMIT_THRESHOLD, m2: below }));
     const r = await runJevMemoryGate({ message: 'where does deploy run', candidates: CANDS }, h.deps);
-    expect(r).toEqual({ effective: 'on', outcome: 'answered', scores: [0.9, 0.39], keep: [true, false] });
+    expect(r).toEqual({ effective: 'on', outcome: 'answered', scores: [JEV_MEMORY_ADMIT_THRESHOLD, below], keep: [true, false] });
+  });
+
+  it('uses the D-013 operating point: instructions encoding, P(yes) >= 0.3', async () => {
+    // D-013 measured exactly this pair; changing either value voids those numbers
+    // until P-004 and P-005 are re-run (see the constants' doc comment).
+    expect(JEV_MEMORY_ENCODING).toBe('instructions');
+    expect(JEV_MEMORY_ADMIT_THRESHOLD).toBe(0.3);
+    const h = harness('on', async () => answered({ m1: 0.9, m2: 0.9 }));
+    await runJevMemoryGate({ message: 'where does deploy run', candidates: CANDS }, h.deps);
+    const request = h.decideSpy.mock.calls[0][0] as { questions: Record<string, { question?: string }> };
+    const asked = JSON.stringify(request.questions);
+    // instructions encoding: each memory's text is inside its own question
+    expect(asked).toContain(CANDS[0].text);
+    expect(asked).toContain(CANDS[1].text);
   });
 
   it('fails open with the reason on an inconclusive outcome (timeout, no key, …)', async () => {

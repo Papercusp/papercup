@@ -8,7 +8,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DecisionCallRecord } from '@papercusp/decision-model';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
 const { recordDecisionModelCall, decisionModelLedgerStats, __resetDecisionModelLedgerStatsForTest } = await import(

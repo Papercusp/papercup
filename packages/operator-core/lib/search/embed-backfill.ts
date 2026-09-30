@@ -1914,20 +1914,13 @@ export async function runEmbedBackfillOnce(): Promise<void> {
   } catch (err) {
     console.warn('[embed-backfill] harness doc-sections sweep failed:', (err as Error).message);
   }
-  // P-034: derive chunk rows for long turns before the sweep, same reason —
-  // the session_turn_chunks target needs rows to embed. Unlike doc-sections
-  // this runs EVERY tick: its source is a continuously-growing table, not a
-  // process-lifetime memoized filesystem corpus. Fail-open and independently
-  // caught, so a chunk-sync fault can never cost the sweep its whole tick.
-  try {
-    const { runTurnChunkSyncTick } = await import('./turn-chunk-sync');
-    await runTurnChunkSyncTick();
-  } catch (err) {
-    console.warn('[embed-backfill] turn-chunk sync failed:', (err as Error).message);
-  }
-  // generic-rag-chunking P-004: the same, for every registered chunk surface
-  // (search/chunks/registry.ts -> harness_shared.text_chunks). Independently
-  // caught for the same reason; it also logs and counts its own failures.
+  // generic-rag-chunking P-004: derive chunk rows for every registered chunk
+  // surface before the sweep, same reason — the chunk tables' targets need
+  // rows to embed. That includes session turns since P-007 (their dedicated
+  // session_turn_chunks store). Runs EVERY tick: its sources are
+  // continuously-growing tables, not a process-lifetime memoized corpus.
+  // Fail-open and independently caught, so a chunk-sync fault can never cost
+  // the sweep its whole tick; it also logs and counts its own failures.
   try {
     const { runChunkSyncTick } = await import('./chunks/tick');
     await runChunkSyncTick();

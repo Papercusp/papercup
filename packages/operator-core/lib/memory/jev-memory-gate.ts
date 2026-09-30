@@ -2,10 +2,13 @@
  * Jev on the memory push path (plan jev-decision-model-integration-2026-09-29,
  * P-007 Log only; P-008 On). The owner's switch lives in jev-settings.ts (D-008).
  *
- * Decision D-012 measured this filter and did NOT adopt it: its answers moved
- * with candidate order (about 1 in 10 flipped when the order was reversed). So
- * the recommended default stays Off, and these modes exist only because the
- * owner asked for a working switch. The contract:
+ * Decision D-012 measured this filter with the memory text in `state` and did
+ * NOT adopt it: about 1 in 10 answers flipped when the candidate order was
+ * reversed. D-013 re-measured it with the memory text inside each question
+ * (`instructions`) and it met the full D-007 bar: order flip 1.9%, 0 to 1 of 30
+ * hard-negative queries admitting anything vs 8 of 30 for the floor alone, no
+ * measurable recall loss. The mode stays the owner's choice (default Off). The
+ * contract:
  *
  *  - effective `off` (mode off, OR no key stored) makes ZERO decision calls and
  *    returns before building anything, so the injection block is byte-identical
@@ -24,18 +27,20 @@ import type { DecisionClient } from '@papercusp/decision-model';
 
 import { activeWorkspaceId } from '../workspace-registry';
 import { admissionPYes, buildAdmissionRequest, type AdmissionEncoding } from './jev-admission-request';
-import { ensureJevDecisionClient, resolveJevMemoryInjection, type JevMemoryInjectionResolution } from './jev-settings';
+import { ensureJevDecisionClient, getJevMode, resolveJevMemoryInjection, type JevMemoryInjectionResolution } from './jev-settings';
 
 /** The ledger consumer label for push-path calls (the bench uses `memory-bench`). */
 export const JEV_MEMORY_CONSUMER = 'memory-injection';
 
 /**
- * The operating point D-012 measured as arm B: the production floor, then keep a
- * candidate when Jev's P(yes) >= 0.4, with the memory text in `state`. P-015 may
- * change these if a pre-registered re-run meets the full D-007 bar.
+ * The operating point D-013 adopted (arm B, P-015): the production floor, then
+ * keep a candidate when Jev's P(yes) >= 0.3, with the memory text inside each
+ * yes-no question. Changing either value invalidates the D-013 measurements;
+ * re-run P-004 and P-005 (bench/jev-admission-cli, bench/jev-robustness-cli)
+ * before keeping a new one.
  */
-export const JEV_MEMORY_ADMIT_THRESHOLD = 0.4;
-export const JEV_MEMORY_ENCODING: AdmissionEncoding = 'state';
+export const JEV_MEMORY_ADMIT_THRESHOLD = 0.3;
+export const JEV_MEMORY_ENCODING: AdmissionEncoding = 'instructions';
 
 export interface JevGateCandidate {
   readonly id: string;
@@ -58,7 +63,9 @@ export interface JevMemoryGateDeps {
 }
 
 const defaultDeps: JevMemoryGateDeps = {
-  resolve: resolveJevMemoryInjection,
+  // Hot path: every injection passes here, so Off (the default) costs one cached
+  // mode read and never touches the key store.
+  resolve: async (workspaceId) => ((await getJevMode(workspaceId)) === 'off' ? { effective: 'off' } : resolveJevMemoryInjection(workspaceId)),
   client: ensureJevDecisionClient,
 };
 
