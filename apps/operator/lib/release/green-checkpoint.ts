@@ -6060,10 +6060,12 @@ export async function verifyRepairHead(
     fileList.length > 0
       ? await settleRepairHeadRunner(deps.runTestsAtRef!(head, fileList))
       : undefined;
-  if (fileSettled && "failure" in fileSettled) {
+  // A runner that REJECTS carries its described cause; one that RESOLVES null produced no
+  // evidence either. Both hold the queue — a null must never fall through to the full gate.
+  if (fileSettled && ("failure" in fileSettled || fileSettled.value === null)) {
     return {
       kind: "unavailable",
-      summary: `the file runner failed to execute at repair head ${at} (${fileSettled.failure}); nothing was measured`,
+      summary: `the file runner failed to execute at repair head ${at} (${"failure" in fileSettled ? fileSettled.failure : "it returned no result"}); nothing was measured`,
     };
   }
   const fileRun = fileSettled?.value;
@@ -6071,10 +6073,10 @@ export async function verifyRepairHead(
     gateList.length > 0
       ? await settleRepairHeadRunner(deps.runGateAtRef!(head, gateList))
       : undefined;
-  if (gateSettled && "failure" in gateSettled) {
+  if (gateSettled && ("failure" in gateSettled || gateSettled.value === null)) {
     return {
       kind: "unavailable",
-      summary: `the gate runner failed to execute at repair head ${at} (${gateSettled.failure}); nothing was measured`,
+      summary: `the gate runner failed to execute at repair head ${at} (${"failure" in gateSettled ? gateSettled.failure : "it returned no result"}); nothing was measured`,
     };
   }
   const gateRun = gateSettled?.value;
