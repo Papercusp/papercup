@@ -4793,6 +4793,12 @@ async function startOperatorProcess(port = 0) {
   let stopped = false;
   let shutdownFailure: string | undefined;
   let output = '';
+  // The child's output rides inside thrown/assertion messages below. Vitest
+  // source-maps every `at file:line:col` line of an error's stack, message
+  // included, and a child frame into a file with a malformed inline map crashed
+  // its reporter and DROPPED this journey's verdict (WI-10004247 runs D-F).
+  // Keep the text, but not in stack-frame shape.
+  const inertOutput = () => output.replace(/^(\s*)at /gm, '$1| at ');
   const child = fork(path.join(__dirname, 'operator-process.mts'), [], {
     cwd: REPO_ROOT, execArgv: ['--import', 'tsx'],
     env: { ...process.env, PUI_OPERATOR_FIXTURE_WORKSPACE: WORKSPACE, PUI_OPERATOR_FIXTURE_PORT: String(port) },
@@ -4841,12 +4847,12 @@ async function startOperatorProcess(port = 0) {
     let timer: ReturnType<typeof setTimeout>;
     try {
       const result = await Promise.race([exit, new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`Operator fixture did not exit: ${output}`)), 60_000);
+        timer = setTimeout(() => reject(new Error(`Operator fixture did not exit: ${inertOutput()}`)), 60_000);
       })]);
       console.info('PUI_OPERATOR_PROCESS_EXIT', JSON.stringify({ pid: child.pid, instanceId: ready?.instanceId, ...result }));
-      expect(shutdownFailure, output).toBeUndefined();
-      expect(stopped, output).toBe(true);
-      expect(result, output).toEqual({ code: null, signal: 'SIGKILL' });
+      expect(shutdownFailure, inertOutput()).toBeUndefined();
+      expect(stopped, inertOutput()).toBe(true);
+      expect(result, inertOutput()).toEqual({ code: null, signal: 'SIGKILL' });
     } finally {
       clearTimeout(timer!);
       // SIGTERM is handled by this fixture and can be swallowed by an already
@@ -4858,8 +4864,10 @@ async function startOperatorProcess(port = 0) {
   try {
     await vi.waitFor(() => {
       if (startupError) throw startupError;
-      if (child.exitCode !== null || child.signalCode !== null) throw new Error(`Operator fixture exited before ready: ${output}`);
-      expect(ready, output).toBeDefined();
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(`Operator fixture exited before ready: ${inertOutput()}`);
+      }
+      expect(ready, inertOutput()).toBeDefined();
     }, { timeout: 120_000, interval: 100 });
   } catch (error) { await stop().catch(() => {}); throw error; }
   return { ...ready!, events, descriptors, diagnostics, responses, readiness, shutdownStages, stop, output: () => output };

@@ -36,8 +36,14 @@ import {
   type SettleEdges,
 } from './work-item-blocking';
 import { isObservationLaneItem } from './fleet/placement-gather';
+// From the dependency-free leaf, NOT the `./work-items` re-export: this module reads
+// the list at MODULE-EVAL time (CLAIMABLE_STATES below) and sits inside work-items.ts's
+// import cycle, so under Node's CJS loader (tsx) the re-export getter ran before
+// work-items.ts had required the leaf and threw "Cannot read properties of undefined
+// (reading 'CLAIM_STATES_ALLOWLIST')" — killing the production host at load
+// (WI-10004247; guarded by pui-e2e/operator-process-load.test.ts).
+import { CLAIM_STATES_ALLOWLIST } from './scheduler/claim-states';
 import {
-  CLAIM_STATES_ALLOWLIST,
   getWorkItem,
   isClaimHoldParked,
   workItemObjectRef,

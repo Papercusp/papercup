@@ -14,7 +14,10 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { CLAIM_STATES_ALLOWLIST, claimNextWorkItem, releaseWorkItem, diagnoseClaimNextMiss } from '../../work-items';
+// The allowlist comes from its leaf: the args schema below reads it at module-eval time,
+// which the `../../work-items` re-export cannot serve inside that module's import cycle.
+import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
+import { claimNextWorkItem, releaseWorkItem, diagnoseClaimNextMiss } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { workItemRedundancyEnabled } from '../../work-item-redundancy';
 import { localSwarmId } from '../../fleet/swarm-identity';

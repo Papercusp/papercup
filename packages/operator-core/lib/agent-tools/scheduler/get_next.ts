@@ -28,7 +28,10 @@ import {
 } from '../../scheduler/claim-spec-store';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { CURRENT_SPEC_VERSION } from '../../scheduler/claim-spec';
-import { CLAIM_STATES_ALLOWLIST, familyOf, releaseWorkItem } from '../../work-items';
+// The allowlist comes from its leaf: the args schema below reads it at module-eval time,
+// which the `../../work-items` re-export cannot serve inside that module's import cycle.
+import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
+import { familyOf, releaseWorkItem } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { getBuildInfo } from '../../build-info';
 import {
