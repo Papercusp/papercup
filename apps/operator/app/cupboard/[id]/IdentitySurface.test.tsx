@@ -8,7 +8,7 @@ import IdentitySurface from './IdentitySurface';
 afterEach(cleanup);
 
 const SURFACE: IdentityListingSurface = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   identity: { id: 'acme.reviewer', version: '1.2.0', slots: ['reviewer'] },
   contributions: [
     {
@@ -32,6 +32,11 @@ const SURFACE: IdentityListingSurface = {
   knowledge: [{ ref: 'acme.style', version: '2.0.0', memories: 3, docs: [{ id: 'd1', title: 'Tone', section: 'style' }] }],
   classContracts: [{ ref: 'acme.search', contractHash: `sha256:${'c'.repeat(64)}` }],
   grants: { requires: ['acme.search'], optional: ['acme.mail'] },
+  burnKnobs: [
+    { path: 'acme.base:roles.worker.effort', value: 'high' },
+    { path: 'maxCostUsd', value: 2 },
+    { path: 'promptBytes', value: 1834 },
+  ],
   permissions: ['injects knowledge-pack acme.style into turn-start every turn'],
   consent: 'required',
 };
@@ -48,13 +53,17 @@ describe('IdentitySurface (portable-identity-packages P-016)', () => {
     const counts = Object.fromEntries(
       [
         'contributions', 'sync-hooks', 'async-hooks', 'unreadable-rules', 'packages',
-        'knowledge', 'class-contracts', 'grants', 'permissions',
+        'knowledge', 'class-contracts', 'grants', 'permissions', 'burn-knobs',
       ].map((group) => [group, screen.getByTestId(`identity-surface-${group}`).getAttribute('data-count')]),
     );
     expect(counts).toEqual({
       contributions: '2', 'sync-hooks': '1', 'async-hooks': '1', 'unreadable-rules': '1', packages: '2',
-      knowledge: '1', 'class-contracts': '1', grants: '2', permissions: '1',
+      knowledge: '1', 'class-contracts': '1', grants: '2', permissions: '1', 'burn-knobs': '3',
     });
+    // What sets spend is shown with its value; prompt size reads as bytes, not a bill.
+    const knobs = screen.getByTestId('identity-surface-burn-knobs');
+    expect(knobs.querySelector('[data-knob="acme.base:roles.worker.effort"]')?.textContent).toContain('high');
+    expect(knobs.querySelector('[data-knob="promptBytes"]')?.textContent).toContain('1834 bytes');
 
     // Where a contribution injects is the part a shopper most needs; an on-demand
     // read says it never injects rather than showing nothing.
@@ -86,6 +95,16 @@ describe('IdentitySurface (portable-identity-packages P-016)', () => {
     expect(screen.queryByTestId('identity-surface-contributions')).toBeNull();
     expect(screen.queryByTestId('identity-surface-permissions')).toBeNull();
     expect(screen.getByTestId('identity-surface').textContent).toContain('content only');
+  });
+
+  it('says a listing in an older surface format must be republished instead of previewing it', () => {
+    const { burnKnobs, ...older } = SURFACE;
+    void burnKnobs;
+    render(<IdentitySurface value={JSON.stringify({ ...older, schemaVersion: 1 })} />);
+    const root = screen.getByTestId('identity-surface');
+    expect(root.getAttribute('data-state')).toBe('schema-version');
+    expect(root.textContent).toContain('republishes');
+    expect(screen.queryByTestId('identity-surface-grants')).toBeNull();
   });
 
   it('renders a notice, not a blank page, for a missing or unreadable surface', () => {
