@@ -82,9 +82,22 @@ export const PENDING_P005 = [
  * Where the memory text travels. `state` puts every candidate in the shared
  * state and asks one question per id; `instructions` keeps only the message in
  * state and carries each memory inside its own question. P-005 compares the
- * two; P-004 runs `state`.
+ * two; P-004 runs `state` by default. P-015 re-runs both CLIs with
+ * `--encoding instructions` as the primary encoding (decision D-012).
  */
 export type AdmissionEncoding = 'state' | 'instructions';
+
+/** Parses a CLI `--encoding` value; an absent flag means `state`, anything else unknown throws. */
+export function parseAdmissionEncoding(raw: string | undefined): AdmissionEncoding {
+  const v = raw ?? 'state';
+  if (v !== 'state' && v !== 'instructions') throw new Error(`--encoding must be state|instructions, got ${v}`);
+  return v;
+}
+
+/** The encoding a robustness run compares its primary encoding against. */
+export function alternateEncoding(e: AdmissionEncoding): AdmissionEncoding {
+  return e === 'state' ? 'instructions' : 'state';
+}
 
 const RELEVANCE_INSTRUCTIONS =
   'Would this memory help respond to the message? Answer yes only when it is directly relevant to what the ' +
