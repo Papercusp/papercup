@@ -3464,7 +3464,19 @@ async function unstagePreStagedProtectedPaths(
   ];
   if (protectedStaged.length === 0) return { ok: true, paths: [] };
 
-  const unstage = await runGit(['reset', '-q', 'HEAD', '--', ...protectedStaged], repoPath);
+  // WI-10004413: this reset WRITES the index and is often the tick's first index
+  // writer, so an orphaned index.lock blocks it exactly like `git add`/`git commit`.
+  // Without the shared age-checked, live-holder-guarded recovery, every tick failed
+  // here until someone removed the lock by hand (2026-09-30: superproject frozen for over an hour).
+  const resetArgs = ['reset', '-q', 'HEAD', '--', ...protectedStaged];
+  const unstage = await recoverIndexLockContention(
+    await runGit(resetArgs, repoPath),
+    () => runGit(resetArgs, repoPath),
+    runGit,
+    repoPath,
+    'git reset (unstage protected paths)',
+    log,
+  );
   if (unstage.code !== 0) {
     return {
       ok: false,
