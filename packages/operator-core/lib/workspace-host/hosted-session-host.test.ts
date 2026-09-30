@@ -16,6 +16,7 @@ import {
   type HostedDesktopSocket,
   type HostedHostOutboundEnvelope,
   type HostedHostPty,
+  type HostedHostPtyFactoryInput,
 } from './hosted-session-host';
 import {
   VIEWER_STREAM_TEARDOWN_CEILING_SEC,
@@ -158,6 +159,84 @@ describe('hosted customer PTY identity', () => {
   });
 });
 
+describe("hosted 'psu' terminal (D-002)", () => {
+  function psuHarness(root: string) {
+    const sent: HostedHostOutboundEnvelope[] = [];
+    const inputs: HostedHostPtyFactoryInput[] = [];
+    const ptys: FakePty[] = [];
+    const audit = vi.fn();
+    const adapter = new HostedWorkspaceHostSessionAdapter({
+      binding,
+      workspaceRoot: root,
+      send: (message) => sent.push(message),
+      onAudit: audit,
+      createPty: (input) => {
+        inputs.push(input);
+        const pty = new FakePty();
+        ptys.push(pty);
+        return pty;
+      },
+    });
+    const open = (channelId: string, extra: Record<string, unknown> = {}) =>
+      adapter.accept({
+        type: 'relay.open',
+        channelId,
+        userId: 'user-1',
+        hostedSessionId: 'cli.token-1.psu',
+        audience: 'workspace-operator',
+        role: 'controller',
+        ...extra,
+      });
+    return { adapter, sent, inputs, ptys, audit, open };
+  }
+
+  it('starts psu with the checked argv and says so on pty.ready', async () => {
+    const { sent, inputs, open } = psuHarness(await projectRoot());
+    await open('psu-1', { kind: 'psu', argv: ['--agent', 'codex', '--model=gpt-5:high', '--no-picker'] });
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]!.psu).toEqual({ argv: ['--agent=codex', '--model=gpt-5:high', '--no-picker'] });
+    const ready = sentOfType(sent, 'pty.ready')[0]!.payload as { program?: string };
+    expect(ready.program).toBe('psu');
+  });
+
+  it('refuses the open, and starts nothing, when one argument is outside the allowlist', async () => {
+    const { sent, inputs, audit, open } = psuHarness(await projectRoot());
+    await open('psu-1', { kind: 'psu', argv: ['--agent=claude', '--launch-context=/var/lib/papercusp/secret'] });
+    expect(inputs).toHaveLength(0);
+    expect(sent).toEqual([{ type: 'relay.close', channelId: 'psu-1', reason: 'psu_argv_refused' }]);
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'psu_argv_refused', detail: 'flag_not_allowed:--launch-context' }),
+    );
+  });
+
+  it('ends the session when psu exits: no shell is started in its place', async () => {
+    const { sent, inputs, ptys, open } = psuHarness(await projectRoot());
+    await open('psu-1', { kind: 'psu' });
+    ptys[0]!.emit('exit', 0, 0);
+    expect(inputs).toHaveLength(1);
+    expect(sentOfType(sent, 'pty.exit')).toHaveLength(1);
+    // A second attach under the same session id starts a NEW psu, never a shell.
+    await open('psu-2', { kind: 'psu' });
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]!.psu).toEqual({ argv: [] });
+  });
+
+  it('never lets a shell attach resume a psu session, or a psu attach resume a shell', async () => {
+    const { sent, inputs, open } = psuHarness(await projectRoot());
+    await open('psu-1', { kind: 'psu' });
+    await open('shell-1');
+    expect(inputs).toHaveLength(1);
+    expect(sent).toContainEqual({ type: 'relay.close', channelId: 'shell-1', reason: 'session_program_mismatch' });
+
+    const other = psuHarness(await projectRoot());
+    await other.open('shell-1');
+    await other.open('psu-1', { kind: 'psu' });
+    expect(other.inputs).toHaveLength(1);
+    expect(other.inputs[0]!.psu).toBeUndefined();
+    expect(other.sent).toContainEqual({ type: 'relay.close', channelId: 'psu-1', reason: 'session_program_mismatch' });
+  });
+});
+
 describe('HostedWorkspaceHostSessionAdapter', () => {
   it('binds one PTY to an exact browser principal/session and resumes it across channels', async () => {
     const root = await projectRoot();
@@ -186,6 +265,7 @@ describe('HostedWorkspaceHostSessionAdapter', () => {
         type: 'pty.ready',
         resumed: true,
         role: 'controller',
+        program: 'shell',
         limits: {
           maxFileBytes: HOSTED_HOST_MAX_FILE_BYTES,
           maxUploadChunkBytes: HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES,
@@ -742,9 +822,12 @@ describe('HostedWorkspaceHostSessionAdapter — desktop channels (P-013)', () =>
       role: 'controller',
       kind: 'hologram',
     });
-    // Rejected, not defaulted into a terminal.
+    // Rejected, not defaulted into a terminal — and SAID so, so a client asking for a kind this
+    // host lacks can fall back instead of waiting (D-002 P-009).
     expect(ptys).toHaveLength(1);
-    expect(sent.some((message) => message.channelId === 'future-1')).toBe(false);
+    expect(sent.filter((message) => message.channelId === 'future-1')).toEqual([
+      { type: 'relay.close', channelId: 'future-1', reason: 'channel_kind_unknown' },
+    ]);
   });
 
   it('rejects a non-desktop operation on a desktop channel without killing the channel', async () => {

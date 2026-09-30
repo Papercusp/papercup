@@ -18,6 +18,7 @@ vi.mock('../../dbos/feature-blockers-edges', () => ({ guardFeatureBlockEdgeAcycl
 
 import { linkWorkItem, unlinkWorkItem, resolveWorkItemRef } from '../../work-items';
 import { guardFeatureBlockEdgeAcyclic } from '../../dbos/feature-blockers-edges';
+import { EVENT_SUBSCRIPTION_KIND } from '../coordination/event-subscriptions';
 const linkM = vi.mocked(linkWorkItem);
 const unlinkM = vi.mocked(unlinkWorkItem);
 const resolveM = vi.mocked(resolveWorkItemRef);
@@ -199,5 +200,52 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     await body({ id: 'WI-1', rel: 'relates', target_id: 'WI-T' });
     await body({ id: 'WI-1', rel: 'blocks', target_id: 'WI-T', remove: true });
     expect(guardM).not.toHaveBeenCalled();
+  });
+
+  // WI-10004344: a gate item hand-linked with target_kind:'condition' was invisible to the
+  // condition store (it reads only EVENT_SUBSCRIPTION_KIND edges), so gate ownership read
+  // 'unowned' while a live fixer held the item, and a second owner was filed.
+  it('stores a target_kind:"condition" edge under the kind the condition store reads, and says so', async () => {
+    const b = await body({
+      id: 'WI-1',
+      rel: 'about',
+      target_kind: 'condition',
+      target_ref: 'gate-red-streak:papercusp',
+    });
+    expect(linkM).toHaveBeenCalledWith(
+      'WI-1',
+      { kind: EVENT_SUBSCRIPTION_KIND, ref: 'gate-red-streak:papercusp' },
+      'about',
+      { harness: undefined, by: 'me' },
+    );
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      targetKindNormalized: { from: 'condition', to: EVENT_SUBSCRIPTION_KIND },
+    });
+  });
+
+  it('canonicalises condition aliases on remove too, so the canonical edge can be detached', async () => {
+    await body({
+      id: 'WI-1',
+      rel: 'about',
+      target_kind: 'conditionKey',
+      target_ref: 'green-stall:papercusp',
+      remove: true,
+    });
+    expect(unlinkM).toHaveBeenCalledWith(
+      'WI-1',
+      { kind: EVENT_SUBSCRIPTION_KIND, ref: 'green-stall:papercusp' },
+      'about',
+      { harness: undefined },
+    );
+  });
+
+  it('passes every other explicit target_kind through unchanged, with no normalisation note', async () => {
+    const b = await body({ id: 'WI-1', rel: 'about', target_kind: 'plan_item', target_ref: 'p#P-1' });
+    expect(linkM).toHaveBeenCalledWith('WI-1', { kind: 'plan_item', ref: 'p#P-1' }, 'about', {
+      harness: undefined,
+      by: 'me',
+    });
+    expect(b.results[0]).not.toHaveProperty('targetKindNormalized');
   });
 });

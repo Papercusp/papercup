@@ -1666,6 +1666,23 @@ judged candidate before calling it stale. ⚠ For a SUBMODULE path do that **ins
 (`git -C <sub> show <pin>:<repo-relative path>`): from the superproject `git status`/`git show`
 answer about the gitlink and report nothing, so the one check that catches this returns empty.
 
+⛔ **The converse holds too: a FAIL in the shared tree is NOT proof the leg is really red.** Some
+suites assert over the LIVE WORKING TREE itself (`REAL TREE …`, "actually examined the tree",
+shrink-only-baseline guards), and dozens of agents mutate that tree concurrently while the gate
+judges an isolated clean checkout — the populations differ by construction. One measured
+reproduction of the `lane-stateful` leg (EI-23817115274707255) showed ~26 failures across 18
+unrelated files, mostly live-tree guards: one shared-tree artifact, not 18 bugs. Read the gate
+run's OWN result instead of a local repro (`state:read { cell:'gate.greenCheckpoint.candidateFailures' }`,
+or `testing:runs { status:["fail","error"] }` and its `outputTail`), and never "fix" such a guard by
+loosening it — that removes the only thing that makes the real class detectable. Two tells that
+the failures are not substantive: process-level termination (SIGKILL/SIGTERM, per-file durations
+pinned at one constant) rather than assertion failures, and ZERO `Test timed out` strings — so a
+grep for timeouts finds nothing and wrongly reads as "these are real". And before reproducing a
+HEAVY leg, run `node scripts/proc-guard.mjs check green-checkpoint`: a repro launched beside the
+gate's own run of that leg can itself cause the termination signature. This is leg-specific —
+`lint:tsc` is a pure typecheck and reproduces faithfully.
+
+
 ## Server-side edits and the two-port model — no hot-reload
 
 The Hono host (`bin/hono-host.ts`, MCP tools, `lib/endpoint-route`,

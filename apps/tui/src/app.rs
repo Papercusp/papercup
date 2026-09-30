@@ -2090,6 +2090,18 @@ pub struct App {
     /// by `?` on an empty message box (Claude Code's `? for shortcuts`). The
     /// next key closes it and then does its usual job.
     pub chat_shortcuts_open: bool,
+    /// pui-chat-first-ux P-018: the left-button drag in progress on the
+    /// chat-first screen, in screen cells. `None` when no button is held.
+    pub mouse_selection: Option<crate::chat_copy::MouseSelection>,
+    /// The last frame drawn while `mouse_selection` was set, written by
+    /// `ui::draw`. The release copies the selected text out of it: the app
+    /// keeps a model, not the screen, and the screen is what was selected.
+    pub mouse_selection_frame: std::cell::RefCell<Option<ratatui::buffer::Buffer>>,
+    /// The furthest `chat_scroll` can go before the top of the transcript,
+    /// as of the last draw (`None` before the first). Scrolling up clamps to
+    /// it, so a fast wheel spin past the top does not leave notches that must
+    /// be scrolled back down before the view moves again.
+    pub chat_scroll_limit: std::cell::Cell<Option<u16>>,
     pub plans: Vec<PlanSummary>,
     pub plan_sel: usize,
     /// Goals for the Plans-tab spine (P-032) + the goals-column cursor.
@@ -2844,6 +2856,9 @@ impl App {
             chat_tools_expanded: false,
             chat_slash_selected: 0,
             chat_shortcuts_open: false,
+            mouse_selection: None,
+            mouse_selection_frame: std::cell::RefCell::new(None),
+            chat_scroll_limit: std::cell::Cell::new(None),
             plans: Vec::new(),
             plan_sel: 0,
             goals: Vec::new(),
