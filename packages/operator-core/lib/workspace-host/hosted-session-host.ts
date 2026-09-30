@@ -41,6 +41,7 @@ import {
 } from '../desktop/hosted-desktop-channel';
 import { OperatorHttpChannel, type OperatorHttpFetch } from './hosted-operator-http';
 import { AppKeyMintChannel, createAppHttpChannel } from './hosted-app-relay';
+import { hostedPsuPtySpawnSpec, parseHostedPsuCustomerArgv } from './hosted-psu-session';
 
 export const HOSTED_HOST_MAX_MESSAGE_BYTES = 1024 * 1024;
 export const HOSTED_HOST_MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -96,7 +97,13 @@ export type HostedHostTabRole = 'controller' | 'observer';
  * What a channel carries. `observer`/`controller` says WHO the viewer is; this
  * says WHAT they attached to.
  */
-export type HostedHostChannelKind = 'pty' | 'desktop' | 'operator-http';
+export type HostedHostChannelKind = 'pty' | 'psu' | 'desktop' | 'operator-http';
+
+/**
+ * What a terminal session's one process is: the customer's shell, or psu started by the host
+ * service (D-002, `hosted-psu-session.ts`). Fixed when the session starts.
+ */
+export type HostedHostTerminalProgram = 'shell' | 'psu';
 
 /** Every kind a `relay.open` can ask for, including the two app planes (P-007, P-325). */
 export type HostedHostOpenKind = HostedHostChannelKind | 'app-http' | 'app-key-mint';
@@ -128,6 +135,12 @@ export interface HostedHostRelayOpen {
   kind?: HostedHostChannelKind;
   /** Required when `kind === 'desktop'`; ignored otherwise. */
   desktopSessionId?: string;
+  /**
+   * `kind === 'psu'` only: the customer's psu arguments. Checked against the D-002 allowlist
+   * (`parseHostedPsuCustomerArgv`); one refused argument refuses the open. Ignored on a resume,
+   * where psu is already running.
+   */
+  argv?: string[];
   /** `kind === 'app-http'` only: the portal relay's usage this month (P-328). Counts only. */
   relayUsage?: unknown;
 }
@@ -178,6 +191,8 @@ export interface HostedHostPtyFactoryInput {
   workspaceRoot: string;
   cols: number;
   rows: number;
+  /** Absent means the customer's shell. Present means psu with these checked arguments. */
+  psu?: { argv: readonly string[] };
 }
 
 /** One live byte pipe to the sandbox's loopback KasmVNC websocket. */
@@ -308,6 +323,7 @@ type HostSession = {
   key: string;
   userId: string;
   hostedSessionId: string;
+  program: HostedHostTerminalProgram;
   channels: Set<string>;
   pty: HostedHostPty;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -723,7 +739,9 @@ export function hostedWorkspacePtySpawnSpec(input: HostedHostPtyFactoryInput) {
 }
 
 function defaultPty(input: HostedHostPtyFactoryInput): HostedHostPty {
-  const handle = spawnPty(hostedWorkspacePtySpawnSpec(input));
+  const handle = spawnPty(
+    input.psu ? hostedPsuPtySpawnSpec({ ...input, argv: input.psu.argv }) : hostedWorkspacePtySpawnSpec(input),
+  );
   return ptyHandleAdapter(handle, input.scope);
 }
 
@@ -967,10 +985,16 @@ export class HostedWorkspaceHostSessionAdapter {
     const kind: HostedHostChannelKind | null =
       message.kind === undefined || message.kind === 'pty'
         ? 'pty'
-        : message.kind === 'desktop' || message.kind === 'operator-http'
+        : message.kind === 'psu' || message.kind === 'desktop' || message.kind === 'operator-http'
           ? message.kind
           : null;
-    if (!channelId || !userId || !hostedSessionId || audience !== 'workspace-operator' || !role || !kind) return;
+    if (!channelId || !userId || !hostedSessionId || audience !== 'workspace-operator' || !role) return;
+    if (!kind) {
+      // Say so, rather than dropping the open: a client asking for a kind this host lacks
+      // (D-002's 'psu' on a later kind) can then fall back instead of waiting.
+      this.options.send({ type: 'relay.close', channelId, reason: 'channel_kind_unknown' });
+      return;
+    }
     if (this.channels.has(channelId)) {
       this.options.send({ type: 'relay.close', channelId, reason: 'channel_already_open' });
       return;
@@ -998,9 +1022,26 @@ export class HostedWorkspaceHostSessionAdapter {
       return;
     }
 
+    const program: HostedHostTerminalProgram = kind === 'psu' ? 'psu' : 'shell';
     const key = sessionKey(userId, hostedSessionId);
     let session = this.sessions.get(key);
     const resumed = Boolean(session);
+    if (session && session.program !== program) {
+      // A session's process is fixed at start: a psu attach must never land in a shell, and a
+      // shell attach must never land in psu.
+      this.options.send({ type: 'relay.close', channelId, reason: 'session_program_mismatch' });
+      return;
+    }
+    let psuArgv: string[] | undefined;
+    if (!session && program === 'psu') {
+      const parsed = parseHostedPsuCustomerArgv(message.argv);
+      if (!parsed.ok) {
+        this.options.send({ type: 'relay.close', channelId, reason: 'psu_argv_refused' });
+        this.audit('psu_argv_refused', { userId, hostedSessionId }, channelId, parsed.reason);
+        return;
+      }
+      psuArgv = parsed.argv;
+    }
     if (!session) {
       const scope: PtyAccessScope = {
         tenantId: this.options.binding.organizationId,
@@ -1015,11 +1056,13 @@ export class HostedWorkspaceHostSessionAdapter {
         workspaceRoot: this.options.workspaceRoot,
         cols: 120,
         rows: 32,
+        ...(psuArgv ? { psu: { argv: psuArgv } } : {}),
       });
       session = {
         key,
         userId,
         hostedSessionId,
+        program,
         channels: new Set(),
         pty,
         idleTimer: null,
@@ -1031,7 +1074,7 @@ export class HostedWorkspaceHostSessionAdapter {
       };
       this.wire(session);
       this.sessions.set(key, session);
-      this.audit('pty_started', session);
+      this.audit('pty_started', session, undefined, program === 'psu' ? `psu ${psuArgv!.join(' ')}`.trimEnd() : undefined);
     }
 
     if (session.idleTimer) {
@@ -1056,6 +1099,7 @@ export class HostedWorkspaceHostSessionAdapter {
       type: 'pty.ready',
       resumed,
       role,
+      program,
       limits: {
         maxFileBytes: this.files.maxFileBytes,
         maxUploadChunkBytes: HOSTED_HOST_MAX_UPLOAD_CHUNK_BYTES,
