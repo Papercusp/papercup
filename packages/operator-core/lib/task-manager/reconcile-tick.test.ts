@@ -7,6 +7,7 @@ const store = vi.hoisted(() => ({
   touched: [] as unknown[],
   stranded: [] as { taskId: string; reason: string }[],
   endedUnobserved: [] as { taskId: string; reason: string; terminalProvenance?: unknown }[],
+  recovered: [] as { taskId: string; state: string; exitCode: number | null; reason: string }[],
   upserted: [] as { taskId: string }[],
   cleared: [] as string[][],
 }));
@@ -23,6 +24,10 @@ vi.mock('./store', () => ({
   },
   markEndedUnobserved: async (v: { taskId: string; reason: string; terminalProvenance?: unknown }[]) => {
     store.endedUnobserved.push(...v);
+    return v.length;
+  },
+  markRecoveredFromJobLog: async (v: { taskId: string; state: string; exitCode: number | null; reason: string }[]) => {
+    store.recovered.push(...v);
     return v.length;
   },
   upsertUnaccounted: async (g: { taskId: string }[]) => {
@@ -101,6 +106,7 @@ beforeEach(() => {
   store.touched.length = 0;
   store.stranded.length = 0;
   store.endedUnobserved.length = 0;
+  store.recovered.length = 0;
   store.upserted.length = 0;
   store.cleared.length = 0;
   resetNotifyDebounce();
@@ -365,6 +371,89 @@ describe('reconcileTick — endedUnobserved wiring (D-018)', () => {
       terminalProvenance: terminal,
     });
     expect(resetFailedTaskUnit).toHaveBeenCalledWith(terminal);
+  });
+
+  // WI-10004208 — a SUCCESSFUL transient service is garbage-collected at once, so
+  // a row whose operator-host watcher died reaches the reconciler with systemd
+  // answering not-found and no exit. The runner's JOB END in the log is the exit.
+  const collected = (unit: string) => ({
+    capturedAt: '2026-09-30T07:59:12.032Z',
+    scopeUnit: unit,
+    cgroupPath: null,
+    invocationId: null,
+    loadState: 'not-found',
+    activeState: 'inactive',
+    serviceResult: null,
+    execMainCode: null,
+    execMainStatus: null,
+    memoryMaxBytes: null,
+    peakMemoryBytes: null,
+    peakMemorySource: 'unknown' as const,
+  });
+
+  it('closes a collected unit from the runner JOB END in its log instead of ended_unobserved', async () => {
+    const terminal = collected('pc-ok888.service');
+    const readJobLogTerminal = vi.fn(() => ({ status: 'completed' as const, exitCode: 0 }));
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'ok888', scopeUnit: terminal.scopeUnit, logPath: '/logs/ok888.log' })],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      inspectTaskUnitTerminals: vi.fn(async () => new Map([[terminal.scopeUnit, terminal]])),
+      resetFailedTaskUnit: vi.fn(async () => true),
+      readJobLogTerminal,
+    });
+    expect(readJobLogTerminal).toHaveBeenCalledWith('/logs/ok888.log');
+    expect(out.recoveredFromJobLogCount).toBe(1);
+    expect(out.endedUnobservedCount).toBe(0);
+    expect(store.endedUnobserved).toHaveLength(0);
+    expect(store.recovered).toEqual([
+      expect.objectContaining({ taskId: 'ok888', state: 'exited', exitCode: 0, reason: expect.stringMatching(/^runner-log: /) }),
+    ]);
+  });
+
+  it('keeps a failed runner exit as exited with its real non-zero code', async () => {
+    const terminal = collected('pc-bad999.service');
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'bad999', scopeUnit: terminal.scopeUnit, logPath: '/logs/bad999.log' })],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      inspectTaskUnitTerminals: vi.fn(async () => new Map([[terminal.scopeUnit, terminal]])),
+      resetFailedTaskUnit: vi.fn(async () => true),
+      readJobLogTerminal: () => ({ status: 'failed', exitCode: 4 }),
+    });
+    expect(out.recoveredFromJobLogCount).toBe(1);
+    expect(store.recovered[0]).toMatchObject({ taskId: 'bad999', state: 'exited', exitCode: 4 });
+  });
+
+  it('still records ended_unobserved when the log carries no JOB END (no evidence is not a verdict)', async () => {
+    const terminal = collected('pc-none000.service');
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'none000', scopeUnit: terminal.scopeUnit, logPath: '/logs/none000.log' })],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      inspectTaskUnitTerminals: vi.fn(async () => new Map([[terminal.scopeUnit, terminal]])),
+      resetFailedTaskUnit: vi.fn(async () => true),
+      readJobLogTerminal: () => null,
+    });
+    expect(out.recoveredFromJobLogCount).toBe(0);
+    expect(out.endedUnobservedCount).toBe(1);
+    expect(store.endedUnobserved).toEqual([expect.objectContaining({ taskId: 'none000' })]);
+  });
+
+  it('never reads the log when systemd still holds the exit status (systemd stays authoritative)', async () => {
+    const terminal = { ...collected('pc-held111.service'), loadState: 'loaded', activeState: 'failed', serviceResult: 'exit-code', execMainCode: 1, execMainStatus: 4 };
+    const readJobLogTerminal = vi.fn(() => ({ status: 'completed' as const, exitCode: 0 }));
+    const out = await reconcileTick({
+      listLive: async () => [row({ taskId: 'held111', scopeUnit: terminal.scopeUnit, logPath: '/logs/held111.log' })],
+      scan: () => scanResult([]),
+      fs: memFs({}),
+      inspectTaskUnitTerminals: vi.fn(async () => new Map([[terminal.scopeUnit, terminal]])),
+      resetFailedTaskUnit: vi.fn(async () => true),
+      readJobLogTerminal,
+    });
+    expect(readJobLogTerminal).not.toHaveBeenCalled();
+    expect(out.recoveredFromJobLogCount).toBe(0);
+    expect(store.endedUnobserved[0]).toMatchObject({ taskId: 'held111', terminalProvenance: terminal });
   });
 
   it('a degraded scan skips BOTH markStranded and markEndedUnobserved', async () => {

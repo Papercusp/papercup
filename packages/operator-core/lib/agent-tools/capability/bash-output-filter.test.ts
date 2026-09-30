@@ -5,7 +5,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { formatJobLogEndMarker } from './bash-jobs';
-import { filterOutputLines, inspectStrandedJobLog, parseJobLogEndMarker } from './bash_output';
+import { filterOutputLines, inspectStrandedJobLog } from './bash_output';
+import { parseJobLogEndMarker } from '../../task-manager/job-log-terminal';
 
 describe('filterOutputLines', () => {
   const chunk = 'apple\nbanana\napricot\ncherry';
