@@ -10,6 +10,7 @@ import {
   type PhysicalDrillHostReceipt,
 } from './physical-drill-host-receipt';
 import { validatePhysicalDrillEvidence } from './physical-drill-evidence';
+import { physicalDrillPreflightMode } from './physical-drill-preflight';
 import {
   capturePhysicalPhaseARepo,
   quarantineAndObservePhysicalPhaseAAbsence,
@@ -86,6 +87,25 @@ import {
   type PhysicalPhaseHInput,
   type PhysicalPhaseHObservation,
 } from './physical-drill-phase-h';
+import {
+  attemptPhysicalPhaseI,
+  startPhaseIOwner,
+  validatePhysicalPhaseI,
+  type PhysicalPhaseIAttempt,
+  type PhysicalPhaseIInput,
+  type PhysicalPhaseIStep,
+} from './physical-drill-phase-i';
+import {
+  installPhysicalPhaseJFault,
+  observePhysicalPhaseJ,
+  phaseJLag,
+  phaseJWriteSummary,
+  phaseJWriteTitle,
+  removePhysicalPhaseJFault,
+  sweepPhysicalPhaseJFaults,
+  validatePhysicalPhaseJ,
+  type PhysicalPhaseJInput,
+} from './physical-drill-phase-j';
 import {
   validatePostGoReleaseCanary,
   type PostGoReleaseCanaryInput,
@@ -538,6 +558,10 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return setPhysicalPhaseEMode({ runId, mode: nextMode });
   }
+  if (mode === 'rig-preflight') {
+    // P-003 (R-5): P-505 guard-rail facts as read-only checks, run before the first rig ssh.
+    return physicalDrillPreflightMode(args);
+  }
   if (mode === 'phase-e-preflight') {
     if (args.length !== 0) {
       throw new Error('usage: physical-drill-producer phase-e-preflight');
@@ -569,16 +593,19 @@ async function cli(argv: string[]): Promise<unknown> {
     return requirePhysicalPhaseEStageMode({ stage: stage as PhysicalPhaseEObservationStage, waitMs: waitSec * 1000 });
   }
   if (mode === 'phase-e-observe') {
-    const [hostId, stage, deviceKey, runId, waitSecRaw] = args;
+    // after-fire-started-at: the ISO start of the git-sync:run this stage judges.
+    // The capture then waits (inside the same budget) for a finished fire started
+    // at/after it, instead of racing the in-flight one (WI-10004055).
+    const [hostId, stage, deviceKey, runId, waitSecRaw, afterFireStartedAt] = args;
     const waitSec = waitSecRaw === undefined ? 0 : Number(waitSecRaw);
     if (
       (hostId !== 'tower' && hostId !== 'vm') ||
       !['legacy-before', 'bridged-member', 'healthy-egress', 'divergence-before', 'divergence-after', 'legacy-after'].includes(stage ?? '') ||
-      !deviceKey || !runId || args.length > 5 ||
+      !deviceKey || !runId || args.length > 6 || afterFireStartedAt === '' ||
       !Number.isInteger(waitSec) || waitSec < 0 || waitSec * 1000 > PHASE_E_MODE_WAIT_MAX_MS
     ) {
       throw new Error(
-        'usage: physical-drill-producer phase-e-observe <tower|vm> <legacy-before|bridged-member|healthy-egress|divergence-before|divergence-after|legacy-after> <device-key> <run-id> [mode-wait-sec<=1200]',
+        'usage: physical-drill-producer phase-e-observe <tower|vm> <legacy-before|bridged-member|healthy-egress|divergence-before|divergence-after|legacy-after> <device-key> <run-id> [wait-sec<=1200] [after-fire-started-at-iso]',
       );
     }
     return capturePhysicalPhaseEObservation({
@@ -587,6 +614,7 @@ async function cli(argv: string[]): Promise<unknown> {
       deviceKey,
       runId,
       waitMs: waitSec * 1000,
+      ...(afterFireStartedAt === undefined ? {} : { afterFireStartedAt }),
     });
   }
   if (mode === 'phase-e-ingress') {
@@ -696,6 +724,55 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return verdict;
   }
+  if (mode === 'phase-i-owner') {
+    // The single owning hive process (P-521 F6, D-022). It is the ONE producer
+    // mode that does not exit on its own: it serves owner signatures until the
+    // scenario SIGKILLs it (the physical owner loss) or its EXIT trap does. The
+    // scenario always starts it detached, so no caller waits on its exit.
+    const [dir, runId] = args;
+    if (!dir || !runId || args.length !== 2) {
+      throw new Error('usage: physical-drill-producer phase-i-owner <absolute-phase-dir> <run-id>');
+    }
+    const owner = await startPhaseIOwner({ dir, runId });
+    await writeFlushed(process.stdout, `${JSON.stringify(owner.record)}\n`);
+    return new Promise<never>(() => undefined);
+  }
+  if (mode === 'phase-i-attempt') {
+    // The device signer is this host's REAL physical device key, addressed by
+    // the keychain id its host identity names. The VM record files carry the
+    // captured owner proof (live) and the VM's signed device head (outage).
+    const [hostId, step, dir, runId, deviceKey, keychainId, hiveId, vmLivePath, vmOutagePath] = args;
+    if (
+      (hostId !== 'tower' && hostId !== 'vm') || !step || !dir || !runId || !deviceKey || !keychainId || !hiveId ||
+      args.length > 9
+    ) {
+      throw new Error(
+        'usage: physical-drill-producer phase-i-attempt <tower|vm> <live|lost|outage|restored> <absolute-phase-dir> <run-id> <device-key> <keychain-id> <hive-id> [vm-live.json [vm-outage.json]]',
+      );
+    }
+    const { signWithDeviceKey } = await import('../../identity/sign-with-device-key');
+    return attemptPhysicalPhaseI({
+      host: hostId,
+      step: step as PhysicalPhaseIStep,
+      dir,
+      runId,
+      deviceKey,
+      hiveId,
+      ownerSocket: hostId === 'vm' ? resolve(dir, 'owner', 'owner.sock') : null,
+      vmLive: vmLivePath ? (readJson(vmLivePath) as PhysicalPhaseIAttempt) : null,
+      vmOutage: vmOutagePath ? (readJson(vmOutagePath) as PhysicalPhaseIAttempt) : null,
+    }, { signDevice: (bytes) => signWithDeviceKey(keychainId, bytes) });
+  }
+  if (mode === 'phase-i-verify') {
+    const [inputPath] = args;
+    if (!inputPath) throw new Error('usage: physical-drill-producer phase-i-verify <private-run-input.json>');
+    const verdict = validatePhysicalPhaseI(readJson(inputPath) as PhysicalPhaseIInput);
+    if (!verdict.ok) {
+      throw new Error(`physical-drill-producer: Phase I rejected: ${verdict.errors.join('; ')}`);
+    }
+    return verdict;
+  }
+  if (PHASE_J_MODES.has(mode)) return physicalPhaseJMode(mode, args);
   if (mode === 'post-go-canary-verify') {
     const [inputPath] = args;
     if (!inputPath) {
@@ -744,8 +821,87 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-quarantine-observe, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-reset, phase-d-tier-hold, phase-d-tier-restore, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-mode-read, phase-e-mode-ensure, phase-e-await-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, phase-h-observe, phase-h-attempt, phase-h-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-quarantine-observe, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-reset, phase-d-tier-hold, phase-d-tier-restore, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-mode-read, phase-e-mode-ensure, phase-e-await-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, phase-h-observe, phase-h-attempt, phase-h-verify, phase-i-owner, phase-i-attempt, phase-i-verify, phase-j-fault, phase-j-write, phase-j-observe, phase-j-verify, post-go-canary-observe, post-go-canary-verify, sign, or finalize',
   );
+}
+
+// Phase J (P-521 F4): the scoped VM outage fault, run-bound writes, the observer
+// and the verifier. The database-touching steps are injectable so the argument
+// handling and the lag -> exit 3 mapping are testable without a database.
+const PHASE_J_MODES = new Set(['phase-j-fault', 'phase-j-write', 'phase-j-observe', 'phase-j-verify']);
+
+export type PhysicalPhaseJModeDeps = {
+  observe: typeof observePhysicalPhaseJ;
+  install: typeof installPhysicalPhaseJFault;
+  remove: typeof removePhysicalPhaseJFault;
+  sweep: typeof sweepPhysicalPhaseJFaults;
+  readInput: (path: string) => unknown;
+};
+
+export async function physicalPhaseJMode(
+  mode: string,
+  args: string[],
+  overrides: Partial<PhysicalPhaseJModeDeps> = {},
+): Promise<unknown> {
+  const deps: PhysicalPhaseJModeDeps = {
+    observe: observePhysicalPhaseJ,
+    install: installPhysicalPhaseJFault,
+    remove: removePhysicalPhaseJFault,
+    sweep: sweepPhysicalPhaseJFaults,
+    readInput: readJson,
+    ...overrides,
+  };
+  if (mode === 'phase-j-fault') {
+    const [hostId, action, runId, ...rest] = args;
+    const usage = 'usage: physical-drill-producer phase-j-fault vm <install|remove> <run-id> | phase-j-fault vm sweep';
+    // The fault is VM-only by construction: the tower is the fleet's live bg-host.
+    if (hostId !== 'vm' || rest.length > 0) throw new Error(usage);
+    if (action === 'sweep' && !runId) return deps.sweep();
+    if (!runId) throw new Error(usage);
+    if (action === 'install') return deps.install({ runId });
+    if (action === 'remove') return deps.remove({ runId });
+    throw new Error(usage);
+  }
+  if (mode === 'phase-j-write') {
+    // The exact work_items:create args for one run-bound write; the scenario pipes
+    // them to the tower's production MCP verb, so the tower authors it itself.
+    const [write, runId] = args;
+    if ((write !== 'A' && write !== 'B') || !runId) {
+      throw new Error('usage: physical-drill-producer phase-j-write <A|B> <run-id>');
+    }
+    return { kind: 'task', title: phaseJWriteTitle(runId, write), summary: phaseJWriteSummary(runId, write), force: true };
+  }
+  if (mode === 'phase-j-observe') {
+    const [hostId, step, runId, featureIdA, logKeyHex, heldPositionRaw] = args;
+    if ((hostId !== 'tower' && hostId !== 'vm') || !step || !runId) {
+      throw new Error(
+        'usage: physical-drill-producer phase-j-observe <tower|vm> <baseline|authored|held|held-after-restart|replayed> <run-id> [feature-id-a [log-key-hex held-position]]',
+      );
+    }
+    const heldPosition = heldPositionRaw === undefined ? undefined : Number(heldPositionRaw);
+    if (heldPosition !== undefined && !Number.isSafeInteger(heldPosition)) {
+      throw new Error(`physical-drill-producer: phase-j-observe held-position must be an integer: ${heldPositionRaw}`);
+    }
+    const observation = await deps.observe({ hostId, step, runId, featureIds: featureIdA ? [featureIdA] : [] });
+    const lag = phaseJLag(observation, { featureIdA, logKeyHex, heldPosition });
+    if (lag.length > 0) {
+      throw new PhysicalDrillIncompleteEvidenceError(
+        `physical Phase J ${hostId} has not reached ${step}: ${lag.join('; ')}`,
+        observation,
+      );
+    }
+    return observation;
+  }
+  if (mode === 'phase-j-verify') {
+    const [inputPath] = args;
+    if (!inputPath) throw new Error('usage: physical-drill-producer phase-j-verify <private-run-input.json>');
+    const verdict = validatePhysicalPhaseJ(deps.readInput(inputPath) as PhysicalPhaseJInput);
+    if (!verdict.ok) {
+      throw new Error(`physical-drill-producer: Phase J rejected: ${verdict.errors.join('; ')}`);
+    }
+    return verdict;
+  }
+  throw new Error(`physical-drill-producer: ${mode} is not a Phase J mode`);
 }
 
 type PhysicalDrillCliStream = { write(chunk: string, callback: (error?: Error | null) => void): boolean };
