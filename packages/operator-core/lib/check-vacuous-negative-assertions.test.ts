@@ -26,6 +26,7 @@ import {
   looksLikeEmittedOutput,
   proseShaped,
   regexSourceToLiteral,
+  resolveSubjectFiles,
 } from '../../../scripts/check-vacuous-negative-assertions.mjs';
 
 /** A judge bound to a synthetic "source tree". */
@@ -142,6 +143,76 @@ describe('judgeFile — the motivating instance', () => {
   it('stays silent once the assertion is re-pointed at the current wording', () => {
     const fixed = text.replace('⚠ quiet-cut EXCLUDED', 'quiet-cut EXCLUDED');
     expect(judge(fixed, 'const note = `quiet-cut EXCLUDED ${n} commit(s)`;')).toEqual([]);
+  });
+});
+
+// WI-10004205: of 31 real DRIFTED findings, 21 carried their fragment only in UNRELATED
+// code and 0 were real drift. Only the test's subject can prove its emitter was reworded.
+describe('judgeFile — locality: drift must be in the SUBJECT to gate', () => {
+  const judgeLocal = (text: string, corpus: string, subject: string) =>
+    judgeFile({
+      file: 't.test.ts',
+      text,
+      includes: (s: string) => corpus.includes(s),
+      subjectIncludes: (s: string) => subject.includes(s),
+    }).findings;
+  const motivating = [
+    `it('no exclusion warning when the quiet-cut judged the tip directly', () => {`,
+    `  expect(String(b.note)).not.toMatch(/⚠ quiet-cut EXCLUDED/);`,
+    `});`,
+  ].join('\n');
+  const reworded = 'const note = `quiet-cut EXCLUDED ${n} commit(s) … they get the NEXT run`;';
+
+  it('still gates the motivating instance when the reworded banner is in the subject', () => {
+    const found = judgeLocal(motivating, reworded, reworded);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ verdict: 'DRIFTED', fragment: 'quiet-cut EXCLUDED' });
+  });
+
+  it('reports COINCIDENT, never DRIFTED, when the fragment exists only outside the subject', () => {
+    const text = `it('x', () => {\n  expect(page).not.toContain('The GUI is not ready yet');\n});`;
+    const found = judgeLocal(text, 'return <p>Your desktop is not ready yet</p>;', 'export const page = render();');
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ verdict: 'COINCIDENT', fragment: ' is not ready yet' });
+  });
+
+  it('reports RENAMED when the same file positively pins the new wording, and DRIFTED without it', () => {
+    const text = [
+      `it('x', () => {`,
+      `  expect(sql).toContain("part_kind = 'tool_use'");`,
+      `  expect(sql).not.toContain("part_kind = 'tool'");`,
+      `});`,
+    ].join('\n');
+    const src = "sql`WHERE part_kind = 'tool_use'`";
+    expect(judgeLocal(text, src, src)).toEqual([
+      expect.objectContaining({ verdict: 'RENAMED', fragment: "part_kind = 'tool" }),
+    ]);
+    // The positive assertion is the whole reason: drop it and the same drift gates.
+    const unpinned = text.replace(`  expect(sql).toContain("part_kind = 'tool_use'");\n`, '');
+    expect(judgeLocal(unpinned, src, src)).toEqual([expect.objectContaining({ verdict: 'DRIFTED' })]);
+  });
+});
+
+describe('resolveSubjectFiles — what a test file is ABOUT', () => {
+  const corpus = new Set(['lib/foo.ts', 'lib/bar.ts', 'lib/util/index.ts', 'scripts/deploy.sh', 'lib/unrelated.ts', 'pkg/src/thing.ts']);
+
+  it('takes the basename sibling, including one level up from __tests__/', () => {
+    expect(resolveSubjectFiles('lib/foo.test.ts', '', corpus)).toEqual(['lib/foo.ts']);
+    expect(resolveSubjectFiles('lib/__tests__/foo.integration.test.ts', '', corpus)).toEqual(['lib/foo.ts']);
+  });
+
+  it('follows relative specifiers the way TS resolves them (.js → .ts, directory → index)', () => {
+    const text = `import { a } from './bar.js';\nimport u from './util';\nvi.mock('../nope/missing');`;
+    expect(resolveSubjectFiles('lib/x.test.ts', text, corpus)).toEqual(['lib/bar.ts', 'lib/util/index.ts']);
+  });
+
+  it('takes repo paths the test names verbatim, and does NOT follow package imports', () => {
+    const text = `const s = readFileSync('scripts/deploy.sh', 'utf8');\nimport { t } from '@scope/pkg/thing';`;
+    expect(resolveSubjectFiles('lib/x.test.ts', text, corpus)).toEqual(['scripts/deploy.sh']);
+  });
+
+  it('resolves nothing for a test that names no subject (the caller then judges globally)', () => {
+    expect(resolveSubjectFiles('lib/lonely.test.ts', `it('x', () => {});`, corpus)).toEqual([]);
   });
 });
 
