@@ -36,6 +36,7 @@ import {
 } from './launch-agent';
 import { nativeSessionHandleForAdvSession, type OmpNativeSessionHandle } from './native-session-handles';
 import { bindSuSessionToAdvSession, persistSuSessionDescriptor } from './su-session-persistence';
+import { SuOwnerTurnReceiptMatcher, type SuOwnerTurnReceiptRef } from './su-session-commands';
 import { findOmpSessionPath, ompAgentHomeForSessionKey } from './session-transcript-resolvers';
 import { createOmpTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
 import { gatewayServedAccountForOwner } from './compaction-usage';
@@ -93,6 +94,9 @@ export interface CreateOmpSuSessionAdapterOptions extends OmpSuSessionDescriptor
   ready?: boolean;
   runtimeReady?: () => boolean;
   register?: boolean;
+  /** Saved owner turns for this session (production: loadSuOwnerTurnReceipts).
+   * A replayed prompt takes the turn id its command was saved under (WI-10004254). */
+  ownerTurnReceipts?: (identity: SuSessionDescriptor<'omp'>['identity']) => Promise<readonly SuOwnerTurnReceiptRef[]>;
 }
 
 export interface OpenOmpSuSessionOptions extends CreateOmpSuSessionAdapterOptions {
@@ -378,6 +382,8 @@ export class OmpSuSessionAdapter {
   private readonly unregister: (() => void) | null;
   private lastErrorKey: string | null = null;
   private readonly servedAccountReader: SuSessionServedAccountReader;
+  private readonly receiptMatcher = new SuOwnerTurnReceiptMatcher();
+  private readonly ownerTurnReceipts: CreateOmpSuSessionAdapterOptions['ownerTurnReceipts'] | null;
   /**
    * Set once a `model_change` record has named the resolved model. OMP stamps
    * assistant messages with a BARE id (`stealth/ox-alpha`) while `model_change`
@@ -395,6 +401,7 @@ export class OmpSuSessionAdapter {
   ) {
     this.runtimeValue = runtime;
     this.servedAccountReader = options.servedAccountReader ?? gatewayServedAccountForOwner;
+    this.ownerTurnReceipts = options.ownerTurnReceipts ?? null;
     this.controls = { ...defaultControls(), ...(options.controls ?? {}) };
     const hostOptions = {
       descriptor: descriptorFor(binding, runtime, options),
