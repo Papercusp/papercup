@@ -19,7 +19,7 @@
  */
 import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import type { Sql } from 'postgres';
-import { isAppKeyShaped } from './key';
+import { parseAppKey } from './key';
 import {
   OAUTH_CLIENT_ID_PREFIX,
   OAUTH_CODE_TTL_MS,
@@ -46,15 +46,22 @@ import {
   type RegisteredOAuthClient,
   type RegistrationInput,
 } from './mcp-oauth';
-import { publicOriginOf } from './mcp-oauth-discovery';
+import {
+  CLIENT_ASSERTION_ALGORITHMS,
+  TOKEN_ENDPOINT_AUTH_METHODS_SUPPORTED,
+  TOKEN_GRANT_TYPES_SUPPORTED,
+  publicOriginOf,
+} from './mcp-oauth-discovery';
 import type { AppKeyScopes } from './store';
 import type { HostedPrincipal } from '../auth/hosted-principal';
 import { isHostedConnectorLive } from '../endpoint-route/hosted-workspace-connector';
-import type {
-  AppRelayConnector,
-  AppRelayPort,
-  AppRelayServiceRunner,
-  AppRelayWorkspace,
+import {
+  isRelayableTokenAnswer,
+  relayedTokenFields,
+  type AppRelayConnector,
+  type AppRelayPort,
+  type AppRelayServiceRunner,
+  type AppRelayWorkspace,
 } from '../workspace-host/hosted-app-relay';
 
 // ── URLs ─────────────────────────────────────────────────────────────────────────────────────
@@ -95,9 +102,10 @@ export function portalAuthorizationServerMetadata(origin: string, id: string) {
     token_endpoint: `${issuer}/oauth/token`,
     registration_endpoint: `${issuer}/oauth/register`,
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code'],
+    grant_types_supported: [...TOKEN_GRANT_TYPES_SUPPORTED],
     code_challenge_methods_supported: ['S256'],
-    token_endpoint_auth_methods_supported: ['none', 'client_secret_post', 'client_secret_basic'],
+    token_endpoint_auth_methods_supported: [...TOKEN_ENDPOINT_AUTH_METHODS_SUPPORTED],
+    token_endpoint_auth_signing_alg_values_supported: [...CLIENT_ASSERTION_ALGORITHMS],
     authorization_response_iss_parameter_supported: true,
   };
 }
@@ -449,7 +457,8 @@ export function mintAppKeyOverRelay(
       {
         onFrame(frame) {
           if (frame.requestId !== requestId) return;
-          if (frame.type === 'mint.issued' && typeof frame.key === 'string' && isAppKeyShaped(frame.key)) {
+          // Strict: a consented grant is a long-lived `pcapp_` key, never a `pcat_` token.
+          if (frame.type === 'mint.issued' && typeof frame.key === 'string' && parseAppKey(frame.key) !== null) {
             const scopes = frame.scopes && typeof frame.scopes === 'object' ? (frame.scopes as AppKeyScopes) : request.scopes;
             settle({ ok: true, key: frame.key, scopes });
           } else if (frame.type === 'mint.error') {
@@ -476,6 +485,85 @@ export function mintAppKeyOverRelay(
     }
     timer = setTimeout(() => {
       channel.close('mint_timeout');
+      settle({ ok: false, code: 'workspace_timeout' });
+    }, options.timeoutMs ?? PORTAL_MINT_TIMEOUT_MS);
+    timer.unref?.();
+  });
+}
+
+/** The frame that relays one client-credentials token request (P-016, D-022). */
+export const TOKEN_REQUEST_FRAME = 'token.request';
+
+export interface PortalTokenRequest {
+  /** The request's form fields; only {@link RELAYED_TOKEN_FIELDS} cross the relay. */
+  readonly fields: Readonly<Record<string, unknown>>;
+  readonly basic: { id: string; secret: string } | null;
+  /** The portal token endpoint the app addressed: an assertion's required `aud`. */
+  readonly audience: string;
+}
+
+export type PortalTokenResult =
+  | { readonly ok: true; readonly status: number; readonly body: Record<string, unknown> }
+  | { readonly ok: false; readonly code: string };
+
+/**
+ * Relay a `grant_type=client_credentials` request to the workspace's machine, which authenticates
+ * the client and issues the token (client-credentials.ts). One request, one answer: `token.answer`
+ * (an OAuth status + body, checked by {@link isRelayableTokenAnswer}) or `mint.error`. The portal
+ * stores nothing: no secret, no token.
+ */
+export function requestTokenOverRelay(
+  port: AppRelayPort,
+  connector: AppRelayConnector,
+  request: PortalTokenRequest,
+  options: { timeoutMs?: number; requestId?: string } = {},
+): Promise<PortalTokenResult> {
+  return new Promise<PortalTokenResult>((resolve) => {
+    const requestId = options.requestId ?? nodeRandomBytes(12).toString('base64url');
+    const fields = relayedTokenFields(request.fields);
+    if (!fields) {
+      resolve({ ok: false, code: 'invalid_request' });
+      return;
+    }
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (result: PortalTokenResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const channel = port.openAppChannel(
+      connector,
+      {
+        onFrame(frame) {
+          if (frame.requestId !== requestId) return;
+          if (frame.type === 'token.answer' && isRelayableTokenAnswer(frame.status, frame.body)) {
+            settle({ ok: true, status: frame.status as number, body: frame.body as Record<string, unknown> });
+          } else if (frame.type === 'mint.error') {
+            settle({ ok: false, code: typeof frame.code === 'string' ? frame.code : 'token_failed' });
+          } else {
+            settle({ ok: false, code: 'token_failed' });
+          }
+          channel?.close('token_complete');
+        },
+        onClose() {
+          settle({ ok: false, code: 'workspace_offline' });
+        },
+      },
+      APP_KEY_MINT_CHANNEL_KIND,
+    );
+    if (!channel) {
+      settle({ ok: false, code: 'workspace_offline' });
+      return;
+    }
+    if (!channel.send({ type: TOKEN_REQUEST_FRAME, requestId, fields, basic: request.basic, audience: request.audience })) {
+      channel.close('token_send_failed');
+      settle({ ok: false, code: 'workspace_offline' });
+      return;
+    }
+    timer = setTimeout(() => {
+      channel.close('token_timeout');
       settle({ ok: false, code: 'workspace_timeout' });
     }, options.timeoutMs ?? PORTAL_MINT_TIMEOUT_MS);
     timer.unref?.();
@@ -753,8 +841,30 @@ export async function handleHostedMcpOAuth(request: Request, deps: PortalMcpOAut
   const body = await readFormOrJson(request);
   if (!body) return oauthErrorResponse('invalid_request', 'the body must be form-encoded');
   const field = (k: string) => (typeof body[k] === 'string' ? (body[k] as string) : '');
-  if (field('grant_type') !== 'authorization_code') return oauthErrorResponse('unsupported_grant_type', 'only authorization_code is supported');
   const basic = readBasicCredentials(request);
+  if (field('grant_type') === 'client_credentials') {
+    // An unattended app's service key (P-016): the machine authenticates it and issues the token.
+    const connector = liveConnector();
+    if (!connector) return offline();
+    const relayed = await requestTokenOverRelay(
+      deps.port,
+      connector,
+      { fields: body, basic, audience: `${issuer}/oauth/token` },
+      { timeoutMs: deps.mintTimeoutMs ?? PORTAL_MINT_TIMEOUT_MS },
+    );
+    if (!relayed.ok) {
+      if (relayed.code === 'invalid_request') return oauthErrorResponse('invalid_request', 'a token request field is malformed or too long');
+      return relayed.code === 'workspace_offline' || relayed.code === 'workspace_timeout'
+        ? offline()
+        : oauthErrorResponse('server_error', `the workspace could not answer (${relayed.code})`, 502);
+    }
+    const headers: Record<string, string> = { ...OAUTH_NO_STORE };
+    if (relayed.status === 401) headers['www-authenticate'] = 'Basic realm="papercusp"';
+    return Response.json(relayed.body, { status: relayed.status, headers });
+  }
+  if (field('grant_type') !== 'authorization_code') {
+    return oauthErrorResponse('unsupported_grant_type', 'grant_type must be authorization_code or client_credentials');
+  }
   const clientId = basic?.id ?? field('client_id');
   const client = clientId ? await deps.store.getClient(id, clientId) : null;
   if (!client || !clientSecretMatches(client, basic?.secret ?? (field('client_secret') || null))) {

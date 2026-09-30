@@ -29,7 +29,7 @@
  * channel carries exactly one request.
  */
 import type { Sql } from 'postgres';
-import { isAppKeyShaped } from '../connected-apps/key';
+import { isAppKeyShaped, parseAccessToken, parseAppKey } from '../connected-apps/key';
 import { publicOriginOf } from '../connected-apps/mcp-oauth-discovery';
 // portal-mcp-oauth imports this module for TYPES only, so this runtime import makes no cycle.
 import { portalResourceMetadataUrl } from '../connected-apps/portal-mcp-oauth';
@@ -165,9 +165,58 @@ export interface AppKeyMintChannelOptions {
   timeoutMs?: number;
 }
 
+/**
+ * The machine's loopback half of the PORTAL's client-credentials grant (P-016, D-022). The portal
+ * token endpoint relays a `grant_type=client_credentials` request as one `token.request`; this
+ * machine authenticates the client and issues the `pcat_` token, so the portal never sees a stored
+ * secret. Same channel kind and one-request rule as the mint.
+ */
+export const PORTAL_TOKEN_ROUTE_PATH = '/api/connected-apps/portal-token';
+/** The token-request form fields relayed, each a bounded string; nothing else crosses. */
+export const RELAYED_TOKEN_FIELDS = ['grant_type', 'scope', 'client_id', 'client_secret', 'client_assertion', 'client_assertion_type'] as const;
+const RELAYED_TOKEN_FIELD_MAX = 8192;
+const RELAYED_BASIC_MAX = 512;
+/** The statuses the machine's grant answers with (RFC 6749 §5.1 / §5.2); anything else is a fault. */
+const TOKEN_ANSWER_STATUSES = new Set([200, 400, 401]);
+
+/** The relayable subset of a token request's fields, or null when one is not a bounded string. */
+export function relayedTokenFields(input: unknown): Record<string, string> | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const out: Record<string, string> = {};
+  for (const name of RELAYED_TOKEN_FIELDS) {
+    const value = (input as Record<string, unknown>)[name];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || value.length > RELAYED_TOKEN_FIELD_MAX) return null;
+    out[name] = value;
+  }
+  return out;
+}
+
+/** Relayed client_secret_basic credentials: absent → null; malformed → undefined (refuse). */
+export function relayedBasic(input: unknown): { id: string; secret: string } | null | undefined {
+  if (input === null || input === undefined) return null;
+  if (typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const { id, secret } = input as { id?: unknown; secret?: unknown };
+  if (typeof id !== 'string' || typeof secret !== 'string' || id.length > RELAYED_BASIC_MAX || secret.length > RELAYED_BASIC_MAX) return undefined;
+  return { id, secret };
+}
+
+/**
+ * A token answer the machine may relay: an OAuth status with an object body, and on 200 a
+ * well-formed `pcat_` access token. A long-lived `pcapp_` key is never a token answer.
+ */
+export function isRelayableTokenAnswer(status: unknown, body: unknown): body is Record<string, unknown> {
+  if (typeof status !== 'number' || !TOKEN_ANSWER_STATUSES.has(status)) return false;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  if (status !== 200) return typeof (body as { error?: unknown }).error === 'string';
+  const token = (body as { access_token?: unknown }).access_token;
+  return typeof token === 'string' && parseAccessToken(token) !== null;
+}
+
 type MintAnswer =
   | { type: 'mint.issued'; requestId: string; key: string; scopes: unknown }
-  | { type: 'mint.error'; requestId: string | null; code: string };
+  | { type: 'mint.error'; requestId: string | null; code: string }
+  | { type: 'token.answer'; requestId: string; status: number; body: Record<string, unknown> };
 
 /**
  * The machine's end of one `app-key-mint` channel: exactly one `mint.request`, answered with
@@ -195,10 +244,13 @@ export class AppKeyMintChannel {
   async accept(type: string, payload: Record<string, unknown>): Promise<void> {
     if (this.closed) return;
     const requestId = typeof payload.requestId === 'string' && payload.requestId.length <= 256 ? payload.requestId : null;
-    if (type !== 'mint.request') return this.answer({ type: 'mint.error', requestId, code: 'channel_kind_mismatch' }, false);
+    if (type !== 'mint.request' && type !== 'token.request') {
+      return this.answer({ type: 'mint.error', requestId, code: 'channel_kind_mismatch' }, false);
+    }
     if (!requestId) return this.answer({ type: 'mint.error', requestId, code: 'invalid_request' });
     if (this.used) return this.answer({ type: 'mint.error', requestId, code: 'mint_already_requested' }, false);
     this.used = true;
+    if (type === 'token.request') return this.token(requestId, payload);
     const label = typeof payload.label === 'string' ? payload.label.trim().slice(0, MINT_LABEL_MAX) : '';
     const approvedBy = typeof payload.approvedBy === 'string' ? payload.approvedBy : '';
     const scopes = payload.scopes && typeof payload.scopes === 'object' && !Array.isArray(payload.scopes) ? payload.scopes : null;
@@ -215,7 +267,8 @@ export class AppKeyMintChannel {
         signal: this.controller.signal,
       });
       const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-      if (response.ok && body?.ok === true && typeof body.key === 'string' && isAppKeyShaped(body.key)) {
+      // Strict: a mint yields a long-lived `pcapp_` key, never a `pcat_` token (isAppKeyShaped admits both).
+      if (response.ok && body?.ok === true && typeof body.key === 'string' && parseAppKey(body.key) !== null) {
         this.options.audit('app_key_minted', approvedBy);
         return this.answer({ type: 'mint.issued', requestId, key: body.key, scopes: body.scopes ?? scopes });
       }
@@ -232,6 +285,40 @@ export class AppKeyMintChannel {
       if (this.closed) return;
       const code = this.controller.signal.aborted ? 'mint_timeout' : 'operator_unreachable';
       this.options.audit('app_key_mint_failed', code);
+      return this.answer({ type: 'mint.error', requestId, code });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** One relayed client-credentials token request → `token.answer` (or `mint.error` on a relay fault). */
+  private async token(requestId: string, payload: Record<string, unknown>): Promise<void> {
+    const fields = relayedTokenFields(payload.fields);
+    const basic = relayedBasic(payload.basic);
+    const audience = typeof payload.audience === 'string' && payload.audience.length <= 1024 ? payload.audience : '';
+    if (!fields || basic === undefined || !audience) return this.answer({ type: 'mint.error', requestId, code: 'invalid_request' });
+    const timer = setTimeout(() => this.controller.abort(), this.options.timeoutMs ?? APP_KEY_MINT_FETCH_TIMEOUT_MS);
+    timer.unref?.();
+    try {
+      const response = await this.fetchImpl(`${this.origin}${PORTAL_TOKEN_ROUTE_PATH}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fields, basic, audience }),
+        signal: this.controller.signal,
+      });
+      const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+      if (response.ok && body?.ok === true && isRelayableTokenAnswer(body.status, body.body)) {
+        const status = body.status as number;
+        const answer = body.body as Record<string, unknown>;
+        this.options.audit(status === 200 ? 'app_token_issued' : 'app_token_refused', status === 200 ? 'client_credentials' : String(answer.error));
+        return this.answer({ type: 'token.answer', requestId, status, body: answer });
+      }
+      this.options.audit('app_token_failed', `http_${response.status}`);
+      return this.answer({ type: 'mint.error', requestId, code: 'token_failed' });
+    } catch {
+      if (this.closed) return;
+      const code = this.controller.signal.aborted ? 'mint_timeout' : 'operator_unreachable';
+      this.options.audit('app_token_failed', code);
       return this.answer({ type: 'mint.error', requestId, code });
     } finally {
       clearTimeout(timer);
