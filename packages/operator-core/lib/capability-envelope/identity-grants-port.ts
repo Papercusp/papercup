@@ -43,7 +43,8 @@ import { ROLE_ENVELOPES, type RoleEnvelope } from './policy';
 // constants here keeps one source of truth rather than a second copy to drift.
 import { RECOVERY_DOOR_TOOL, RECOVERY_DOOR_DISPATCH_WRAPPER, isRecoveryDoorCall } from './recovery-door';
 import { isLazyIdentityLaunchRecord } from './lazy-launch-record';
-import { recipeProviderPins, type CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
+import type { CapabilityGrantResolutionVerdict } from '../cupboard/capability-grant-resolver';
+import { grantProviderToolReach } from '../agent-identities/grant-provider-kinds';
 
 export interface IdentityGrantPolicy {
   policyRevision: string;
@@ -469,9 +470,8 @@ export async function validateIdentityInstallGrants(
     }
     // A recipe provider's verbBindings name recipes. Its reach is the tools its
     // inspected scripts call, so those are what the ceiling must admit (D-019).
-    const toolNames = provider.providerKind === 'recipe'
-      ? recipeProviderPins(provider)?.flatMap((pin) => pin.toolNames) ?? null
-      : Object.values(provider.verbBindings);
+    // The one reach function compile and the runtime envelope also use (D-040(e)).
+    const toolNames = grantProviderToolReach(provider);
     if (!toolNames) {
       failures.push(failure('provider-unbound', requirement.classRef));
       continue;

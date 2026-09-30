@@ -764,7 +764,7 @@ export async function compileLaunchSpecificationArtifact(input: LaunchArtifactIn
     }
     const { compileBlueprintWithPackages } = await import('./blueprint/compile-packages');
     specificationArtifact = await compileBlueprintWithPackages(composition.source, {
-      workspaceId: input.workspaceId, harnessSlug: input.harnessSlug,
+      workspaceId: input.workspaceId, harnessSlug: input.harnessSlug, role: input.role,
       ...(composition.resolve ? { resolve: composition.resolve } : {}), input: compileInput,
     });
     resourceArtifacts.push(specificationArtifact);
