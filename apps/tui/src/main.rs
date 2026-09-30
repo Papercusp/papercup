@@ -613,7 +613,10 @@ fn record_su_session_exit(app: &App) {
 
 /// Carry out the recorded quit plan and return the one line to tell the user.
 async fn finish_su_session_on_exit() -> Option<String> {
-    let plan = SU_SESSION_EXIT.lock().ok().and_then(|mut slot| slot.take())?;
+    let plan = SU_SESSION_EXIT
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())?;
     let detach = matches!(plan, su_session::SuSessionExit::Detach { .. });
     let outcome = tokio::time::timeout(SU_SESSION_EXIT_TIMEOUT, async move {
         let client = OperatorClient::from_discovery().await?;
@@ -622,7 +625,11 @@ async fn finish_su_session_on_exit() -> Option<String> {
                 harness,
                 chat_id,
                 command,
-            } => client.send_su_session_command(&harness, &chat_id, command).await,
+            } => {
+                client
+                    .send_su_session_command(&harness, &chat_id, command)
+                    .await
+            }
             su_session::SuSessionExit::Detach { harness, chat_id } => {
                 client.detach_su_session(&harness, &chat_id).await
             }
@@ -5434,40 +5441,62 @@ fn surface_agent_chat_approval_hydration_failure(
 
 /// Startup and pot switches must land in a writable conversation. Legacy and
 /// unclassified chats stay in the history picker, but are not the chat front
-/// door. A canonical live binding takes precedence over an old policy stamp;
-/// a known ended/failed runtime is history even if its chat is not archived.
+/// door. A canonical live binding takes precedence over an old policy stamp.
+///
+/// pui-chat-first-ux P-009 / D-008: quitting a PUI ends its engine, so the chat
+/// it left normally reads `EndedArchived`. When no live chat qualifies, the most
+/// recent ended chat that can resume from its native transcript is the default,
+/// and the inventory adoption arm resumes it. A live chat always outranks an
+/// ended one; a failed/orphaned runtime, or an ended one with no native session
+/// id, is history only.
 fn default_operator_chat<'a>(
     summaries: &'a [agent_chats::AgentChatSummary],
     inventory: &[crate::su_session::SuSessionInventoryEntry],
     launch_cwd: Option<&str>,
 ) -> Option<&'a agent_chats::AgentChatSummary> {
+    // 2 = live (or an SU chat with no inventory row), 1 = resumable ended.
+    let rank = |chat: &agent_chats::AgentChatSummary| -> Option<u8> {
+        if chat.role != "operator" || chat.feature_id.is_some() || chat.archived_at.is_some() {
+            return None;
+        }
+        if let Some(session) = inventory
+            .iter()
+            .find(|entry| entry.agent_chat_id == chat.id)
+        {
+            // pui-chat-first-ux P-010: never reattach a session that was
+            // started in ANOTHER directory — `pui` in project A must not
+            // pick up project B's running session. A session whose
+            // directory is unknown stays eligible (older operators).
+            if let (Some(launch), Some(session_cwd)) = (launch_cwd, session.cwd.as_deref()) {
+                if !crate::su_session::session_in_directory(Some(session_cwd), Some(launch)) {
+                    return None;
+                }
+            }
+            return match session.reconciliation {
+                crate::su_session::SuSessionReconciliation::Attached if !session.terminal => {
+                    Some(2)
+                }
+                crate::su_session::SuSessionReconciliation::EndedArchived
+                    if !session.native_session_id.is_empty() =>
+                {
+                    Some(1)
+                }
+                _ => None,
+            };
+        }
+        (crate::su_session::PuiRuntimeClass::parse(chat.su_runtime_class.as_deref())
+            == crate::su_session::PuiRuntimeClass::SuSession)
+            .then_some(2)
+    };
     summaries
         .iter()
-        .filter(|chat| {
-            if chat.role != "operator" || chat.feature_id.is_some() || chat.archived_at.is_some() {
-                return false;
-            }
-            if let Some(session) = inventory
-                .iter()
-                .find(|entry| entry.agent_chat_id == chat.id)
-            {
-                // pui-chat-first-ux P-010: never reattach a session that was
-                // started in ANOTHER directory — `pui` in project A must not
-                // pick up project B's running session. A session whose
-                // directory is unknown stays eligible (older operators).
-                if let (Some(launch), Some(session_cwd)) = (launch_cwd, session.cwd.as_deref()) {
-                    if !crate::su_session::session_in_directory(Some(session_cwd), Some(launch)) {
-                        return false;
-                    }
-                }
-                return !session.terminal
-                    && session.reconciliation
-                        == crate::su_session::SuSessionReconciliation::Attached;
-            }
-            crate::su_session::PuiRuntimeClass::parse(chat.su_runtime_class.as_deref())
-                == crate::su_session::PuiRuntimeClass::SuSession
+        .filter_map(|chat| rank(chat).map(|rank| (rank, chat)))
+        .max_by(|(rank_a, a), (rank_b, b)| {
+            rank_a
+                .cmp(rank_b)
+                .then_with(|| a.updated_at.cmp(&b.updated_at))
         })
-        .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+        .map(|(_, chat)| chat)
 }
 
 async fn agent_chat_load(
@@ -7783,7 +7812,10 @@ mod tests {
             reconciliation: SuSessionReconciliation::Attached,
             cwd: cwd.map(str::to_owned),
         };
-        let inventory = vec![row("here", Some("/work/a")), row("elsewhere", Some("/work/b"))];
+        let inventory = vec![
+            row("here", Some("/work/a")),
+            row("elsewhere", Some("/work/b")),
+        ];
         let pick = |launch: Option<&str>| {
             default_operator_chat(&chats, &inventory, launch).map(|chat| chat.id.clone())
         };
@@ -7795,6 +7827,61 @@ mod tests {
         assert_eq!(
             default_operator_chat(&chats, &unknown, Some("/work/c")).map(|chat| chat.id.as_str()),
             Some("elsewhere")
+        );
+    }
+
+    /// pui-chat-first-ux P-009 / D-008: quitting a PUI ends its engine, so the
+    /// chat it left reads `EndedArchived`. That chat stays the default (the
+    /// inventory adoption arm then resumes it) only while it has a native
+    /// transcript to resume; an orphaned row is never picked.
+    #[test]
+    fn default_operator_chat_keeps_an_ended_chat_that_can_resume() {
+        use crate::su_session::{
+            SuSessionBackend, SuSessionInventoryEntry, SuSessionLifecycleState,
+            SuSessionReconciliation,
+        };
+        let chats = vec![startup_chat(
+            "left",
+            Some("su-session"),
+            "2026-09-07T01:00:00Z",
+        )];
+        let row = |native: &str, reconciliation| SuSessionInventoryEntry {
+            agent_chat_id: "left".into(),
+            adv_session_id: 1,
+            backend: SuSessionBackend::Claude,
+            lifecycle: SuSessionLifecycleState::Ended,
+            runtime_generation: 1,
+            native_session_id: native.into(),
+            terminal: true,
+            reconciliation,
+            cwd: Some("/work/a".into()),
+        };
+        let pick = |entry| {
+            default_operator_chat(&chats, &[entry], Some("/work/a")).map(|chat| chat.id.clone())
+        };
+        assert_eq!(
+            pick(row("native-left", SuSessionReconciliation::EndedArchived)).as_deref(),
+            Some("left")
+        );
+        assert_eq!(pick(row("", SuSessionReconciliation::EndedArchived)), None);
+        assert_eq!(
+            pick(row("native-left", SuSessionReconciliation::FailedOrphaned)),
+            None
+        );
+        // A terminal row that still reads Attached is not live: never the default.
+        assert_eq!(
+            pick(row("native-left", SuSessionReconciliation::Attached)),
+            None
+        );
+        // The directory rule still applies to an ended chat.
+        assert_eq!(
+            default_operator_chat(
+                &chats,
+                &[row("native-left", SuSessionReconciliation::EndedArchived)],
+                Some("/work/b")
+            )
+            .map(|chat| chat.id.as_str()),
+            None
         );
     }
 
@@ -7820,7 +7907,10 @@ mod tests {
             task,
             other_role,
         ];
-        assert_eq!(default_operator_chat(&chats, &[], None).unwrap().id, "writable");
+        assert_eq!(
+            default_operator_chat(&chats, &[], None).unwrap().id,
+            "writable"
+        );
         // Historical selection is the regression control: recency alone lands
         // on a conversation that the actual dispatch policy cannot send to.
         let old_default = chats
@@ -7874,6 +7964,7 @@ mod tests {
         ended.terminal = true;
         ended.reconciliation = SuSessionReconciliation::EndedArchived;
         let mut inventory = vec![live, ended];
+        // A live binding outranks a NEWER ended chat.
         assert_eq!(
             default_operator_chat(&chats, &inventory, None).unwrap().id,
             "bound-legacy"
@@ -7883,7 +7974,16 @@ mod tests {
             SuSessionReconciliation::Pending,
         ] {
             inventory[0].reconciliation = reconciliation;
-            assert!(default_operator_chat(&chats, &inventory, None).is_none());
+            // P-009 / D-008: with no live chat left, the ended chat that can
+            // resume from its native transcript is the default …
+            assert_eq!(
+                default_operator_chat(&chats, &inventory, None).unwrap().id,
+                "ended-su"
+            );
+            // … and one with nothing to resume is history only.
+            let mut orphaned = inventory.clone();
+            orphaned[1].native_session_id.clear();
+            assert!(default_operator_chat(&chats, &orphaned, None).is_none());
         }
     }
 

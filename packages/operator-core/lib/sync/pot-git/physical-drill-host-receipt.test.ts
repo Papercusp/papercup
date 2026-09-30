@@ -112,6 +112,40 @@ describe('physical drill keychain-bound host receipt', () => {
     ])).toThrow('two physical hosts must have distinct machineFingerprint values');
   });
 
+  // Same-box rehearsal (D-005): both owners run on ONE machine by construction, so the
+  // diagnostic preflight may share a machine fingerprint — but never an owner identity.
+  // Found live: same-box run 20260930T044642Z died here before any phase.
+  it('lets a diagnostic (same-box) preflight share one machine but never one owner', () => {
+    const tower = generateEd25519KeypairDer();
+    const vm = generateEd25519KeypairDer();
+    const host = (hostId: string, deviceKey: string) => ({
+      schemaVersion: 'hive-git-physical-host-identity/v1',
+      hostId,
+      deviceKey,
+      keychainId: `4242:${hostId}`,
+      githubUserId: 4242,
+      githubLogin: `${hostId}-owner`,
+      machineFingerprint: 'a'.repeat(64),
+    });
+    const hosts = preflightPhysicalDrillHosts(
+      [host('tower', tower.pubkeyBase64), host('vm', vm.pubkeyBase64)],
+      { diagnostic: true },
+    );
+    expect(hosts.map((h) => h.hostId)).toEqual(['tower', 'vm']);
+    expect(() => preflightPhysicalDrillHosts(
+      [host('tower', tower.pubkeyBase64), host('vm', tower.pubkeyBase64)],
+      { diagnostic: true },
+    )).toThrow('two physical hosts must have distinct deviceKey values');
+    expect(() => preflightPhysicalDrillHosts(
+      [host('tower', tower.pubkeyBase64), host('tower', vm.pubkeyBase64)],
+      { diagnostic: true },
+    )).toThrow('two physical hosts must have distinct hostId values');
+    // The physical rig (the default) still demands two machines.
+    expect(() => preflightPhysicalDrillHosts(
+      [host('tower', tower.pubkeyBase64), host('vm', vm.pubkeyBase64)],
+    )).toThrow('two physical hosts must have distinct machineFingerprint values');
+  });
+
   it('refuses a scenario manifest that tries to supply pre-banked attestations', () => {
     const device = generateEd25519KeypairDer();
     const rawEvidence = {

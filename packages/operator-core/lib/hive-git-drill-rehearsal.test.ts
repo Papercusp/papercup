@@ -118,6 +118,18 @@ function stubRig(overrides: Record<string, string> = {}, extraLines: string[] = 
   return { dir, towerHome, vmHome };
 }
 
+/** What a converged same-box owner pair actually writes (r5 rig, 2026-09-30). */
+function converge(rig: ReturnType<typeof stubRig>) {
+  for (const home of [rig.towerHome, rig.vmHome]) {
+    mkdirSync(join(home, '.papercusp', 'identity'), { recursive: true });
+    writeFileSync(join(home, '.papercusp', 'local-announce-identity.json'), '{}\n');
+    mkdirSync(join(home, '.papercusp', 'pot-git', 'same-box-pot', 'gh-1296269.git'), { recursive: true });
+  }
+  for (const f of ['vmcall.sh', 'mcp-call.mjs', 'boot-vm.sh']) writeFileSync(join(rig.dir, f), '');
+  symlinkSync(root, join(rig.dir, 'vm-dep-source'));
+  return rig;
+}
+
 /** Top-level host assignments that name the physical rig, in a real script. */
 function physicalHostVars(source: string): string[] {
   const names = new Set<string>();
@@ -312,6 +324,42 @@ describe('same-box transport — the rig can never reach another machine', () =>
   });
 });
 
+describe('rig-profile.sh — the same-box paths are checked before the slow run', () => {
+  function pathsReady(rig: ReturnType<typeof stubRig>) {
+    return spawnSync('bash', ['-c', `. ${JSON.stringify(profileLib)}; rig_profile_same_box_paths_ready`], {
+      encoding: 'utf8',
+      env: cleanEnv({ HIVE_GIT_RIG: 'same-box', HIVE_GIT_SAME_BOX_RIG: rig.dir }),
+    });
+  }
+  it('names every missing path on an unconverged rig and exits 1', () => {
+    const r = pathsReady(stubRig());
+    expect(r.status).toBe(1);
+    for (const v of ['TOWER_CACHE', 'TOWER_REPO', 'VM_CACHE', 'VM_IDENTITY_DIR', 'VM_REPO', 'VM_CALL', 'VM_DEP_SOURCE']) {
+      expect(r.stderr).toMatch(new RegExp(`RIG_PROFILE_PATH_MISSING ${v}=`));
+    }
+  });
+
+  it('accepts the layout a same-box owner writes (<home>/.papercusp), not the physical .shared layout', () => {
+    const rig = stubRig();
+    converge(rig);
+    const r = pathsReady(rig);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).toBe('');
+  });
+
+  it('the drill entry refuses a rig with a missing profile path before any work', () => {
+    const rig = stubRig();
+    const r = spawnSync('bash', [drillPath, '--rig', 'same-box', '--only-phase', 'A'], {
+      encoding: 'utf8',
+      env: cleanEnv({ HIVE_GIT_SAME_BOX_RIG: rig.dir, HIVE_GIT_PHYSICAL_PROBE_CMD: '/bin/false' }),
+      timeout: 30_000,
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toMatch(/RIG_PROFILE_PATH_MISSING TOWER_CACHE=/);
+    expect(r.stdout).not.toMatch(/VH_RUN/);
+  });
+});
+
 describe('same-box transport — a rig producer never reaches the live operator database', () => {
   // r4 rig finding (2026-09-30): once an owner is down its embedded-pg.json is gone, and the
   // real resolver (embedded-pg-discovery.ts) falls back to the native :5432 — the LIVE
@@ -416,7 +464,7 @@ describe('hive-git-drill.sh --rig same-box — the same entry point, never evide
   });
 
   it('with no selection it hands the checked-in probe every phase under the same-box profile, and is not evidence', () => {
-    const rig = stubRig();
+    const rig = converge(stubRig());
     const t = join(scratch, `tree-${seq++}`);
     mkdirSync(join(t, 'desk', 'bin', 'vm-rig'), { recursive: true });
     mkdirSync(join(t, 'libs', 'generic'), { recursive: true });

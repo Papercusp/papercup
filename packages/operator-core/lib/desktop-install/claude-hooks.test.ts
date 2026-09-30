@@ -45,12 +45,14 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // schedule-wakeup-provenance (ScheduleWakeup, EI-18680056073436345) +
     // write-overwrite-guard (Write, EI-19966323166806405) + generated-file-edit-guard
     // (Edit|Write|MultiEdit, claude-md-projection-from-pg-2026-08-10 P-006) +
-    // unreserved-migration-guard (Edit|Write|MultiEdit, WI-38352), in install order.
+    // unreserved-migration-guard (Edit|Write|MultiEdit, WI-38352) + identity-guard
+    // (every tool, portable-identity-packages P-011), in install order.
     expect(commandsFor(cfg, 'PreToolUse')).toEqual([
       `${DEST}/pretooluse-locks-acquire.sh`,
       `${DEST}/pretooluse-activity-report.sh`,
       `${DEST}/pretooluse-bash-resource-gate.sh`,
       `${DEST}/pretooluse-plans-read-guard.sh`,
+      `${DEST}/pretooluse-identity-guard.sh`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/ask-gate-mirror.sh`,
       `${DEST}/guard-operator-desktop.mjs`,
@@ -82,6 +84,9 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(matcherOf('pretooluse-bash-resource-gate.sh')).toBe(BASH_SHELL_MATCHER);
     expect(BASH_SHELL_MATCHER).toMatch(/capability_bash/);
     expect(matcherOf('pretooluse-plans-read-guard.sh')).toBe('Read|Grep');
+    // P-011 (D-023 §2): matcher-less, because which tools a worn guard names is
+    // the operator's business. Safe only because it renders a deny or nothing.
+    expect(matcherOf('pretooluse-identity-guard.sh')).toBeUndefined();
 
     // EI-21890940999877469 — the durable-write allow-list mirror. The assertions
     // that carry the weight are the NEGATIVE ones: this matcher must never grow to
@@ -208,16 +213,23 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(postMatcherOf('ask-gate-mirror.sh')).toBe('AskUserQuestion|ExitPlanMode');
 
     // Session events + Stop.
-    expect(commandsFor(cfg, 'SessionStart')).toEqual([`${DEST}/lifecycle-report.sh`]);
+    expect(commandsFor(cfg, 'SessionStart')).toEqual([
+      `${DEST}/lifecycle-report.sh`,
+      `${DEST}/sessionstart-identity-context.sh`,
+    ]);
+    // A resume replays a transcript that already holds what the compaction rules said.
+    expect(hookMatcherOf(cfg, 'SessionStart', 'sessionstart-identity-context.sh')).toBe('startup|clear|compact');
     expect(commandsFor(cfg, 'SessionEnd')).toEqual([
       `${DEST}/lifecycle-report.sh`,
       `${DEST}/workitem-verify-nudge.sh`,
     ]);
     // Stop: work-item nudge + per-turn journal ping (deterministic-context-carry P-012)
     // + the ask-gate-mirror bounce/mirror (owner-inbox-single-pane P-001)
-    // + the owner-directive turn-end check (owner-directive-delivery-redesign P-007).
+    // + the owner-directive turn-end check (owner-directive-delivery-redesign P-007)
+    // + the worn identity's stop rules (portable-identity-packages P-011).
     expect(commandsFor(cfg, 'Stop')).toEqual([
       `${DEST}/workitem-verify-nudge.sh`,
+      `${DEST}/stop-identity-context.sh`,
       `${DEST}/stop-turn-journal.sh`,
       `${DEST}/artifact-url-delivery-guard.mjs`,
       `${DEST}/stop-owner-directive-check.mjs`,
@@ -225,6 +237,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     ]);
     // Matcher-less: the check is about the turn ending, not about any tool.
     expect(hookMatcherOf(cfg, 'Stop', 'stop-owner-directive-check.mjs')).toBeUndefined();
+    expect(hookMatcherOf(cfg, 'Stop', 'stop-identity-context.sh')).toBeUndefined();
     expect(hookMatcherOf(cfg, 'Stop', 'ask-gate-mirror.sh')).toBeUndefined(); // every turn end
     // EI-21844056581395228: MUST be matcher-less. The failure it guards lands in the
     // assistant's final PROSE, so a tool matcher here would leave it permanently inert

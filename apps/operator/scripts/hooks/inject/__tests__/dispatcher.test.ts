@@ -105,26 +105,81 @@ afterEach(async () => {
 });
 
 describe('event -> port routing', () => {
-  it('claude maps its two boundaries and ignores everything else', () => {
+  it('claude maps its five boundaries and ignores everything else', () => {
     expect(claude.portForEvent('UserPromptSubmit')).toBe('turn-start');
     expect(claude.portForEvent('PostToolBatch')).toBe('mid-turn');
     // PreToolUse is deliberately NOT mid-turn (D-027): injecting from there
-    // requires a permissionDecision, which would auto-approve tool calls.
-    expect(claude.portForEvent('PreToolUse')).toBeNull();
-    expect(claude.portForEvent('SessionStart')).toBeNull();
+    // requires a permissionDecision, which would auto-approve tool calls. It is
+    // the identity GUARD port instead (P-011), which renders only as a deny.
+    expect(claude.portForEvent('PreToolUse')).toBe('pre-tool');
+    expect(claude.portForEvent('Stop')).toBe('stop');
+    expect(claude.portForEvent('SessionStart')).toBe('compaction');
+    expect(claude.portForEvent('PostToolUse')).toBeNull();
+    expect(claude.portForEvent('SubagentStop')).toBeNull();
   });
 
   it('codex maps BOTH its config (kebab) and payload (Pascal) spellings', () => {
-    for (const e of ['UserPromptSubmit', 'user-prompt-submit']) {
-      expect(codex.portForEvent(e)).toBe('turn-start');
-    }
-    for (const e of ['PostToolUse', 'post-tool-use']) {
-      expect(codex.portForEvent(e)).toBe('mid-turn');
+    const expected: Array<[string[], string]> = [
+      [['UserPromptSubmit', 'user-prompt-submit'], 'turn-start'],
+      [['PostToolUse', 'post-tool-use'], 'mid-turn'],
+      [['PreToolUse', 'pre-tool-use'], 'pre-tool'],
+      [['Stop', 'stop'], 'stop'],
+      [['SessionStart', 'session-start'], 'compaction'],
+    ];
+    for (const [events, port] of expected) {
+      for (const e of events) expect(codex.portForEvent(e)).toBe(port);
     }
     // Codex has no batch event at all; PostToolBatch is a Claude-only name and
     // must not silently map, or a mis-wired install would look like it worked.
     expect(codex.portForEvent('PostToolBatch')).toBeNull();
-    expect(codex.portForEvent('PreToolUse')).toBeNull();
+    expect(codex.portForEvent('pre-compact')).toBeNull();
+  });
+});
+
+describe('identity hook ports (P-011): parse / render', () => {
+  it('pre-tool ships the whole input, or flags it cut, never a lossy prefix', () => {
+    expect(claude.parse('pre-tool', { tool_name: 'Bash', tool_input: { command: 'ls' } }))
+      .toEqual({ tool: 'Bash', input: { command: 'ls' } });
+    const big = { command: 'x'.repeat(ports.PORTS['pre-tool'].guardInputMaxBytes) };
+    expect(claude.parse('pre-tool', { tool_name: 'Bash', tool_input: big })).toEqual({ tool: 'Bash', inputTruncated: true });
+    expect(codex.parse('pre-tool', { tool_name: 'shell', tool_input: { command: 'ls' }, cwd: '/repo' }))
+      .toEqual({ tool: 'shell', input: { command: 'ls' }, cwd: '/repo' });
+    expect(claude.parse('pre-tool', { tool_input: {} })).toBeNull();
+  });
+
+  it('pre-tool renders ONLY as a deny, on both clients', () => {
+    for (const adapter of [claude, codex]) {
+      const out = JSON.parse(adapter.render('pre-tool', 'Refused by identity a rule b: no') as string);
+      expect(out).toEqual({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'Refused by identity a rule b: no',
+        },
+      });
+    }
+  });
+
+  it('stop never re-fires from a stop it already continued', () => {
+    for (const adapter of [claude, codex]) {
+      expect(adapter.parse('stop', { stop_hook_active: true })).toBeNull();
+      expect(adapter.parse('stop', { stop_hook_active: false })).not.toBeNull();
+    }
+  });
+
+  it('stop renders additionalContext on claude and a block reason on codex (no context channel there)', () => {
+    expect(JSON.parse(claude.render('stop', 'S') as string)).toEqual({
+      hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'S' },
+    });
+    expect(JSON.parse(codex.render('stop', 'S') as string)).toEqual({ decision: 'block', reason: 'S' });
+  });
+
+  it('compaction fires on startup/clear/compact only, and renders as SessionStart context', () => {
+    for (const adapter of [claude, codex]) {
+      for (const source of ['startup', 'clear', 'compact']) expect(adapter.parse('compaction', { source })).toMatchObject({ source });
+      for (const source of ['resume', 'fork', undefined]) expect(adapter.parse('compaction', { source })).toBeNull();
+      expect(JSON.parse(adapter.render('compaction', 'C') as string)).toEqual({
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'C' },
+      });
+    }
   });
 });
 
@@ -192,6 +247,78 @@ describe('kill-switch asymmetry (the load-bearing one)', () => {
   it('mid-turn SUPPRESSES — the whole port goes away', () => {
     const state = ports.killSwitchState('mid-turn', { PAPERCUSP_MID_TURN_CONTEXT: 'off' });
     expect(state).toEqual({ off: true, mode: 'suppress' });
+  });
+
+  it('the identity ports share ONE switch, and it suppresses', () => {
+    for (const port of ['pre-tool', 'stop', 'compaction']) {
+      expect(ports.killSwitchState(port, { PAPERCUSP_IDENTITY_HOOKS: 'off' })).toEqual({ off: true, mode: 'suppress' });
+    }
+  });
+});
+
+describe('identity hook ports through the real CLI (P-011)', () => {
+  it('pre-tool: a refusal from the operator becomes a deny for that one call', async () => {
+    const op = fakeOperator({ text: 'Refused by identity safe-coder rule no-rm: no recursive deletes' });
+    const base = await op.start();
+    running = op;
+    const res = await runCli(
+      ['--client=claude', '--event=PreToolUse'],
+      JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'rm -rf /' } }),
+      { PAPERCUSP_SID: 'sid-guard', PAPERCUSP_OPERATOR_URL: base },
+    );
+    expect(res.code).toBe(0);
+    expect(JSON.parse(res.stdout).hookSpecificOutput).toEqual({
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'Refused by identity safe-coder rule no-rm: no recursive deletes',
+    });
+    expect(op.received[0].url).toContain('tool-guard');
+    expect(op.received[0].body).toMatchObject({ tool: 'Bash', input: { command: 'rm -rf /' }, client: 'claude' });
+  });
+
+  it('pre-tool: no verdict emits NOTHING, so the client permission flow decides', async () => {
+    const op = fakeOperator({ text: '' });
+    const base = await op.start();
+    running = op;
+    const res = await runCli(
+      ['--client=codex', '--event=PreToolUse'],
+      JSON.stringify({ tool_name: 'shell', tool_input: { command: 'ls' }, cwd: '/repo' }),
+      { PAPERCUSP_SID: 'sid-guard', PAPERCUSP_OPERATOR_URL: base },
+    );
+    expect(res.code).toBe(0);
+    expect(res.stdout).toBe('');
+    expect(op.received).toHaveLength(1);
+  });
+
+  it('stop and compaction reach their endpoints and render per client', async () => {
+    const op = fakeOperator({ text: 'IDENTITY CONTEXT' });
+    const base = await op.start();
+    running = op;
+    const env = { PAPERCUSP_SID: 'sid-sinks', PAPERCUSP_OPERATOR_URL: base };
+    const stop = await runCli(['--client=codex', '--event=Stop'], JSON.stringify({ stop_hook_active: false, cwd: '/repo' }), env);
+    expect(JSON.parse(stop.stdout)).toEqual({ decision: 'block', reason: 'IDENTITY CONTEXT' });
+    const compaction = await runCli(['--client=claude', '--event=SessionStart'], JSON.stringify({ source: 'compact' }), env);
+    expect(JSON.parse(compaction.stdout)).toEqual({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'IDENTITY CONTEXT' },
+    });
+    expect(op.received.map((r) => r.url)).toEqual([
+      expect.stringContaining('stop-context'), expect.stringContaining('compaction-context'),
+    ]);
+    expect(op.received[1].body).toMatchObject({ source: 'compact' });
+  });
+
+  it('the kill switch means no request at all', async () => {
+    const op = fakeOperator();
+    const base = await op.start();
+    running = op;
+    const res = await runCli(
+      ['--client=claude', '--event=PreToolUse'],
+      JSON.stringify({ tool_name: 'Bash', tool_input: {} }),
+      { PAPERCUSP_SID: 'sid-off', PAPERCUSP_OPERATOR_URL: base, PAPERCUSP_IDENTITY_HOOKS: 'off' },
+    );
+    expect(res.code).toBe(0);
+    expect(res.stdout).toBe('');
+    expect(op.received).toHaveLength(0);
   });
 });
 

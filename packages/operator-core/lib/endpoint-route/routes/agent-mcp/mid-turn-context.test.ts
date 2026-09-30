@@ -29,6 +29,7 @@ const {
   resolveClaimedWorkItemIdForOwnerMock,
   takePendingFailureLoopHintMock,
   buildFailureLoopHintTextMock,
+  evaluateHookContextSinkMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   withMidTurnMemoryAdmissionMock: vi.fn(),
@@ -36,6 +37,7 @@ const {
   resolveClaimedWorkItemIdForOwnerMock: vi.fn(),
   takePendingFailureLoopHintMock: vi.fn(),
   buildFailureLoopHintTextMock: vi.fn(),
+  evaluateHookContextSinkMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (colocated).
@@ -57,6 +59,9 @@ vi.mock('../../../failure-loop-circuit-breaker', async (importOriginal) => ({
 }));
 vi.mock('../../../failure-loop-hints', () => ({
   buildFailureLoopHintText: buildFailureLoopHintTextMock,
+}));
+vi.mock('../../../agent-identities/sync-hook-rules', () => ({
+  evaluateHookContextSink: evaluateHookContextSinkMock,
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
@@ -102,6 +107,7 @@ beforeEach(() => {
   resolveClaimedWorkItemIdForOwnerMock.mockReset().mockResolvedValue(undefined);
   takePendingFailureLoopHintMock.mockReset().mockReturnValue(null);
   buildFailureLoopHintTextMock.mockReset().mockResolvedValue('FAILURE LOOP HINT');
+  evaluateHookContextSinkMock.mockReset().mockResolvedValue({ text: '', result: null });
 });
 
 /** Every coverage event recorded this test, flattened across calls. */
@@ -366,8 +372,63 @@ describe('mid-turn-context — EI-6139 failure-loop bridge', () => {
     expect(out.text).toBe('FAILURE LOOP HINT');
   });
 
-  it('keeps the failure and memory budgets independent when composing', () => {
-    expect(composeMidTurnContextText('MEMORY', 'FAILURE')).toBe('FAILURE\n\nMEMORY');
+  it('keeps the failure, rule and memory budgets independent when composing', () => {
+    expect(composeMidTurnContextText('MEMORY', 'FAILURE', 'RULES')).toBe('FAILURE\n\nRULES\n\nMEMORY');
+    expect(composeMidTurnContextText('MEMORY', '', '')).toBe('MEMORY');
+  });
+});
+
+describe('mid-turn-context — worn post-tool rules (portable-identity-packages P-011)', () => {
+  it("evaluates the post-tool sink with the batch's tool names and delivers its text", async () => {
+    evaluateHookContextSinkMock.mockResolvedValueOnce({ text: 'RULE CONTEXT', result: null });
+    const out = await post({
+      owner: 'sess-rules-batch',
+      workspace: 'ws-rules',
+      toolCalls: [
+        { tool: 'Grep', toolInput: { pattern: 'harness required' } },
+        { tool: ' mcp__papercusp-su__coord_whoami ', toolInput: {} },
+        { toolInput: {} },
+      ],
+    });
+    expect(evaluateHookContextSinkMock).toHaveBeenCalledTimes(1);
+    expect(evaluateHookContextSinkMock.mock.calls[0]![0]).toMatchObject({
+      ownerId: 'sess-rules-batch',
+      workspaceId: 'ws-rules',
+      sink: 'post-tool',
+      tools: ['Grep', 'mcp__papercusp-su__coord_whoami'],
+    });
+    expect(evaluateHookContextSinkMock.mock.calls[0]![0].signal).toBeInstanceOf(AbortSignal);
+    expect(out.text).toBe('RULE CONTEXT\n\nMEM');
+  });
+
+  it('delivers the rule text when a no-signal call exits before recall', async () => {
+    evaluateHookContextSinkMock.mockResolvedValueOnce({ text: 'RULE CONTEXT', result: null });
+    const out = await post({ owner: 'sess-rules-no-signal', tool: 'TodoWrite', toolInput: { todos: [] } });
+    expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+    expect(evaluateHookContextSinkMock.mock.calls[0]![0]).toMatchObject({ workspaceId: 'ws-test', tools: ['TodoWrite'] });
+    expect(out.text).toBe('RULE CONTEXT');
+  });
+
+  it('fails open: a throwing sink costs the batch its rules, never its recall', async () => {
+    evaluateHookContextSinkMock.mockRejectedValueOnce(new Error('store down'));
+    const out = await post({ owner: 'sess-rules-throw', tool: 'Grep', toolInput: { pattern: 'harness required' } });
+    expect(out.text).toBe('MEM');
+  });
+
+  it('fails open inside the wall: a sink that never settles still lets recall through', async () => {
+    evaluateHookContextSinkMock.mockReturnValueOnce(new Promise(() => undefined));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const started = Date.now();
+    const out = await post({ owner: 'sess-rules-hang', tool: 'Grep', toolInput: { pattern: 'harness required' } });
+    expect(out.text).toBe('MEM');
+    expect(Date.now() - started).toBeLessThan(1400);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('mid-turn:post-tool-rules exceeded 1000ms'));
+    warn.mockRestore();
+  });
+
+  it('does not evaluate the sink for a request that names no tool', async () => {
+    await post({ owner: 'sess-rules-none', toolCalls: [{ toolInput: {} }] });
+    expect(evaluateHookContextSinkMock).not.toHaveBeenCalled();
   });
 });
 

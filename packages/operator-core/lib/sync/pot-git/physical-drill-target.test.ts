@@ -6,7 +6,7 @@
  * canary's identity); a same-box run can sign or finalize release evidence.
  */
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -105,4 +105,46 @@ describe('a diagnostic target can never become release evidence', () => {
       rmSync(scratch, { recursive: true, force: true });
     }
   }, 90_000);
+
+  // Found live (same-box run 20260930T044642Z): both owners share ONE machine, so the CLI
+  // preflight must take the target's diagnostic flag — the unit relaxation alone was not
+  // wired, and the physical rig must still demand two machines through the same CLI.
+  it('the producer CLI preflight accepts one shared machine only under the same-box profile', () => {
+    const here = fileURLToPath(new URL('.', import.meta.url));
+    const repo = resolve(here, '../../../../..');
+    const tsx = join(repo, 'node_modules/tsx/dist/cli.mjs');
+    const scratch = mkdtempSync(join(tmpdir(), 'drill-target-'));
+    const identity = (hostId: string, deviceKey: string) => JSON.stringify({
+      schemaVersion: 'hive-git-physical-host-identity/v1',
+      hostId,
+      deviceKey,
+      keychainId: `4242:${hostId}`,
+      githubUserId: 4242,
+      githubLogin: `${hostId}-owner`,
+      machineFingerprint: 'b'.repeat(64),
+    });
+    const physicalEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(SAME_BOX)) delete physicalEnv[key];
+    try {
+      const tower = join(scratch, 'tower.json');
+      const vm = join(scratch, 'vm.json');
+      writeFileSync(tower, identity('tower', 'dG93ZXI='));
+      writeFileSync(vm, identity('vm', 'dm0='));
+      const run = (env: NodeJS.ProcessEnv) => spawnSync(
+        process.execPath,
+        [tsx, join(here, 'physical-drill-producer.ts'), 'preflight', tower, vm],
+        { env, encoding: 'utf8', timeout: 60_000 },
+      );
+      const sameBox = run({ ...physicalEnv, ...SAME_BOX });
+      expect(sameBox.error).toBeUndefined();
+      expect(sameBox.stderr).not.toMatch(/distinct/);
+      expect(sameBox.status).toBe(0);
+      const physical = run(physicalEnv);
+      expect(physical.error).toBeUndefined();
+      expect(physical.status).toBe(1);
+      expect(physical.stderr).toMatch(/distinct machineFingerprint values/);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

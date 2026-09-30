@@ -17,6 +17,15 @@ import {
   HostedWorkspaceSessionBroker,
   type HostedWorkspaceAttachRequest,
 } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-session";
+import {
+  AppRelayRateLimiter,
+  DEFAULT_APP_RELAY_LIMITS,
+  InMemoryHostedAppRelayUsageStore,
+  handleHostedAppRelay,
+  type AppRelayLimits,
+  type HostedAppRelayDependencies,
+  type HostedAppRelayUsageStore,
+} from "@papercusp/operator-core/lib/workspace-host/hosted-app-relay";
 
 /** Local server-rendered namespaces that must never become SPA-looking 200s. */
 export const HOSTED_FORBIDDEN_HOST_PATH_PREFIXES = [
@@ -59,11 +68,52 @@ export interface HostedHandler {
   readonly relay: HostedWorkspaceSessionBroker;
 }
 
+export interface HostedHandlerOptions {
+  /**
+   * Monthly app-relay usage (P-007, D-006). Production passes the Postgres store
+   * (migration 1254); the in-memory default is for tests and hosts without one.
+   */
+  appRelayUsage?: HostedAppRelayUsageStore;
+  appRelayLimits?: AppRelayLimits;
+}
+
 export function createHostedHandler(
   plane: AssembledHostedControlPlane,
   spa: Hono,
+  options: HostedHandlerOptions = {},
 ): HostedHandler {
   const app = new Hono();
+  const gateway = plane.components.connectorGateway;
+  // P-001 (psu-cloud-connector-liveness-multi-signin-2026-09-29): the broker pings
+  // every relay socket and reports what it sees; `heartbeat_at` is what the CLI's
+  // `reachable` and terminal gate read, so a dead link stops reading as connected.
+  const sessionBroker = new HostedWorkspaceSessionBroker({
+    onConnectorLiveness: (binding, alive) => {
+      if (!gateway) return;
+      void gateway.recordLiveness(binding, alive, (error) => {
+        console.warn(
+          `[hosted-relay] could not record connector liveness (${alive ? "alive" : "gone"}) for ${binding.customerWorkspaceId} gen ${binding.generation}:`,
+          error instanceof Error ? error.message : error,
+        );
+      });
+    },
+  });
+
+  // P-007 (external-app-access-to-workspaces-2026-09-29): outside apps call a
+  // workspace's tools here, relayed over its connector. Mounted beside the socket
+  // upgrade rather than in the plane's allowlist because the relay IS this broker,
+  // and hosted-profile refuses catch-all paths by design. The handler refuses
+  // anything but an app key, answers at once for an offline machine, and applies
+  // the per-workspace limits (D-005, D-006, D-008).
+  const appRelayLimits = options.appRelayLimits ?? DEFAULT_APP_RELAY_LIMITS;
+  const appRelay: HostedAppRelayDependencies = {
+    port: sessionBroker,
+    usage: options.appRelayUsage ?? new InMemoryHostedAppRelayUsageStore(),
+    rate: new AppRelayRateLimiter(appRelayLimits.requestsPerMinute),
+    limits: appRelayLimits,
+  };
+  app.all("/api/workspaces/:workspaceId/agent-tools/*", (context) => handleHostedAppRelay(context.req.raw, appRelay));
+  app.all("/api/workspaces/:workspaceId/mcp", (context) => handleHostedAppRelay(context.req.raw, appRelay));
 
   // `/api/*` terminates at the audited hosted plane. A miss stays a JSON/HTTP
   // 404 and can never fall through to the SPA shell.
@@ -82,21 +132,6 @@ export function createHostedHandler(
   app.route("/", spa);
 
   const websocketServer = new WebSocketServer({ noServer: true });
-  const gateway = plane.components.connectorGateway;
-  // P-001 (psu-cloud-connector-liveness-multi-signin-2026-09-29): the broker pings
-  // every relay socket and reports what it sees; `heartbeat_at` is what the CLI's
-  // `reachable` and terminal gate read, so a dead link stops reading as connected.
-  const sessionBroker = new HostedWorkspaceSessionBroker({
-    onConnectorLiveness: (binding, alive) => {
-      if (!gateway) return;
-      void gateway.recordLiveness(binding, alive, (error) => {
-        console.warn(
-          `[hosted-relay] could not record connector liveness (${alive ? "alive" : "gone"}) for ${binding.customerWorkspaceId} gen ${binding.generation}:`,
-          error instanceof Error ? error.message : error,
-        );
-      });
-    },
-  });
 
   return {
     plane,

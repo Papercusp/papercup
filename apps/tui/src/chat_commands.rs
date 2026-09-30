@@ -125,7 +125,11 @@ mod tests {
         assert_eq!(query("/he"), Some("he"));
         assert_eq!(query("hello"), None);
         assert_eq!(query(" /help"), None, "a leading space sends the text");
-        assert_eq!(query("/tmp is full"), None, "text with a space is a message");
+        assert_eq!(
+            query("/tmp is full"),
+            None,
+            "text with a space is a message"
+        );
         assert_eq!(query("/a\nb"), None, "a multi-line draft is a message");
     }
 
@@ -143,14 +147,21 @@ mod tests {
     fn resolve_prefers_the_exact_name_then_the_highlighted_row() {
         assert_eq!(resolve("exit", 0).map(|c| c.kind), Some(SlashKind::Exit));
         assert_eq!(resolve("e", 1).map(|c| c.kind), Some(SlashKind::Exit));
-        assert_eq!(resolve("e", 9).map(|c| c.kind), Some(SlashKind::Exit), "clamped");
+        assert_eq!(
+            resolve("e", 9).map(|c| c.kind),
+            Some(SlashKind::Exit),
+            "clamped"
+        );
         assert_eq!(resolve("", 0).map(|c| c.kind), Some(SlashKind::Help));
         assert_eq!(resolve("nope", 0), None);
     }
 
     #[test]
     fn detach_is_its_own_command_and_never_shadows_details() {
-        assert_eq!(resolve("detach", 0).map(|c| c.kind), Some(SlashKind::Detach));
+        assert_eq!(
+            resolve("detach", 0).map(|c| c.kind),
+            Some(SlashKind::Detach)
+        );
         let de: Vec<_> = matching("de").iter().map(|c| c.name).collect();
         assert_eq!(de, vec!["details", "detach"]);
         assert_eq!(

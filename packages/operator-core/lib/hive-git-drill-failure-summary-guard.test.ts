@@ -154,6 +154,35 @@ describe('physical-failure-summary.sh', () => {
       'before any phase: rig preflight refused the run: PHYSICAL_PREFLIGHT_FAILED drill-source-committed: uncommitted drill source: physical-drill-phase-d.ts',
     );
   });
+
+  it('names a producer error when the probe exited under set -e without fail() (same-box run 20260930T043830Z)', () => {
+    const out = summarize(
+      [
+        'RIG_PROFILE rig=same-box vm=same-box-vm tower_port=18471 vm_port=18571 pot=hello-world-pot dir=/rig',
+        'hive-git-physical-run: pinned source ffd3a468 (+37 submodules) on tower and VM',
+        'physical-drill-host-receipt: cached announce identity/keychain mismatch at /rig/tower-home/x/local-announce-identity.json',
+        'hive-git-physical-probe: preserved failed-run diagnostics at /evidence.json.failure-diagnostics',
+        '',
+      ].join('\n'),
+    );
+    expect(out).toBe(
+      'before any phase: physical-drill-host-receipt: cached announce identity/keychain mismatch at /rig/tower-home/x/local-announce-identity.json',
+    );
+  });
+
+  it('names a thrown producer error inside a phase, stripping the Error: prefix', () => {
+    const out = summarize(
+      'hive-git-physical-scenario: PHASE_START D phase_d_steered 2026-09-30T04:00:00.000Z\nError: physical-drill-phase-d: steer hold never reached below\n    at main (physical-drill-producer.ts:1:1)\n',
+    );
+    expect(out).toBe('phase D (phase_d_steered): physical-drill-phase-d: steer hold never reached below');
+  });
+
+  it('keeps a prefixed fail() reason ahead of an earlier producer line', () => {
+    const out = summarize(
+      'hive-git-physical-scenario: PHASE_START B phase_b_commit 2026-09-30T04:00:00.000Z\nphysical-drill-phase-b: retrying observe\nhive-git-physical-scenario: phase B commit never reached the VM\n',
+    );
+    expect(out).toBe('phase B (phase_b_commit): phase B commit never reached the VM');
+  });
 });
 
 describe('the real scenario feeds the summary', () => {

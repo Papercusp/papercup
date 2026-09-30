@@ -1,0 +1,1127 @@
+{
+ "schemaVersion": 1,
+ "kind": "operational-test-evidence",
+ "name": "P-008 J1H (2026-09-30): SU-default + installed-specialization live journey at build dee89bb985 — CLI/GUI selection, native launch, live mode attach/detach, peer coupling, warm, cold and --resume recovery pins, prompt-hash = delivered-prompt join, native applied-after-injection join",
+ "framework": "operational",
+ "testLayer": "e2e",
+ "evidencePlane": "live",
+ "plan": "su-mode-contract-identity-unification-2026-09-24",
+ "planItem": "P-008",
+ "workItem": "WI-10002965",
+ "supersedes": "docs/evidence/p008-j1-live-2026-09-29c.json",
+ "rubricCriteria": [
+  "AUTO-BAR-R-6-P-008@3",
+  "AUTO-BAR-R-7-P-008@3",
+  "AUTO-BAR-R-9-P-008@3",
+  "identity-native-applied-revision-proof@1"
+ ],
+ "observer": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+ "recordedBy": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+ "operatorPlane": "staging :3170 (papercusp-staging-api.service), build dee89bb985 (papercusp-staging HEAD dee89bb985) for every leg. L7 ran the desktop shell from the shared working tree via verify-tauri-headless.sh.",
+ "capturedAt": "2026-09-30T04:50:20.746Z",
+ "command": [
+  "capability:launch-agent {\"agent\":\"claude\",\"headless\":true,\"harness\":\"papercusp\",\"fleet\":\"r7-journey-0927\",\"model\":\"sonnet\"}   # via :3170 /api/mcp (launch-args-claude.json)",
+  "npx tsx .papercusp/scratch/p008-j1h/l1-cli-picker.mts   # launcher row builder over the live :3170 catalog",
+  "scripts/verify-tauri-headless.sh -- bash -c 'node .papercusp/scratch/p008-j1/s6-picker.mjs'   # GUI picker driver over the launcher Identity combobox",
+  "mode:set { mode:'ideate', ownerId:<subject> } ; mode:set { mode:'ideate', enabled:false, ownerId:<subject> }   # via :3170 /api/mcp",
+  "coord:couple { b:<subject> } ; coord:decouple { b:<subject> }   # via :3170 /api/mcp",
+  "carry-respawn of the subject (warm) ; mode:set cold-auto ; subject loop:arm { carry:'cold' } then scheduled fire (cold)",
+  "processes:kill { taskId:<subject task> } ; capability:launch-agent { resume:<native 650999bd>, carry:'cold' } ; subject loop:arm cold then scheduled fire",
+  "node .papercusp/scratch/p008-j1h/collect.mjs ; python3 .papercusp/scratch/p008-j1h/prompt-snapshots2.py ; node .papercusp/scratch/p008-j1h/transcript-joins-j1f.mjs ; node .papercusp/scratch/p008-j1h/build-j1g-evidence.mjs"
+ ],
+ "commandBasis": "Each leg's request bodies and responses are the per-link artifacts in .papercusp/scratch/p008-j1h. Subject replies are coord messages from su-b0d377c1-5303-4da9-9deb-b0049d78b678 to the driver (subject-reports.json). Activation rows come from harness_shared.session_identity_activation_events; identity pins from harness_shared.adv_sessions id 31719 launch_spec + identityHistory; delivered prompts from the subject's native Claude transcripts (prompt_snapshot systemPrompt[0]).",
+ "exitCode": 0,
+ "startedAt": "2026-09-30T04:38:34.477Z",
+ "finishedAt": "2026-09-30T04:50:20.747Z",
+ "timeBasis": "startedAt = launch-claude-started-at.txt. L1 captured 2026-09-30T04:38:17.922Z; the subject journey runs from launch through the post-resume cold report (2026-09-30T04:47:49.189Z); L7 2026-09-30T04:44:16.899Z -> 2026-09-30T04:44:31.918Z; finishedAt = this build. Every activation event, transcript line and report carries its own timestamp.",
+ "summary": "One headless Claude SU subject (su-b0d377c1-5303-4da9-9deb-b0049d78b678, adv session 31719, fleet r7-journey-0927) was launched on :3170 build dee89bb985 wearing the default SU composition plus the installed specialization (packages base 0.1.0, papercusp 0.1.1, papercusp-engineer 0.1.2). The CLI and GUI pickers both offer SU first and by default over the paginated catalog, keeping invalid and ineligible identities visible with reasons. Mode attach and detach applied live in the same native. Peer coupling reached the subject's orientation. Warm respawn, cold fork and --resume re-rendered only live values (the INSTRUCTION-PRECEDENCE observedAt and watermark); every package, layer, compiler, source and configuration pin stayed fixed across all 6 identity entries. In every native, the pinned prompt-file hash equals the sha256 of the delivered systemPrompt[0]. Activation acknowledgment followed native emission for every injected generation. All links passed.",
+ "subject": {
+  "ownerId": "su-b0d377c1-5303-4da9-9deb-b0049d78b678",
+  "advSessionId": 31719,
+  "fleet": "r7-journey-0927",
+  "launchedBy": "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1",
+  "client": "claude (sonnet, headless)",
+  "nativeSessions": {
+   "launch": "3d1a8575-1489-4b6f-ba0a-d87d1bbf9728",
+   "warm": "4a35ae4e-51b2-4fc8-a5ea-6db4fbd76b79",
+   "cold": "650999bd-34c3-4426-8508-d9bf3db0c848",
+   "resumeCold": "73f4a3dd-17af-4b28-97f6-3fcfbbf635ab"
+  },
+  "launchSpecificationRevision": "36fed9a7b518",
+  "respawnSpecificationRevision": "a774225f27ee",
+  "resumeSpecificationRevision": "eb43508c620c",
+  "launchStateRevision": "9c92de5ff139cd7309429b67",
+  "resumeStateRevision": "d11d349183eac0339dc2e78d",
+  "taskId": "0munm7qlngzssqgumgw",
+  "resumeTaskId": "0munmh9701odlg6t167",
+  "disposition": "both subject tasks stopped after the post-resume cold report"
+ },
+ "activationEvents": [
+  {
+   "id": 27106,
+   "generation": 2,
+   "phase": "desired",
+   "source": "launch",
+   "spec": "36fed9a7b518",
+   "st": "9c92de5ff139",
+   "native": "3d1a8575",
+   "ideate": false,
+   "at": "2026-09-30T04:38:40.224Z"
+  },
+  {
+   "id": 27108,
+   "generation": 2,
+   "phase": "prepared",
+   "source": "control",
+   "spec": "36fed9a7b518",
+   "st": "9c92de5ff139",
+   "native": "3d1a8575",
+   "ideate": false,
+   "at": "2026-09-30T04:38:51.803Z"
+  },
+  {
+   "id": 27113,
+   "generation": 3,
+   "phase": "desired",
+   "source": "control",
+   "spec": "36fed9a7b518",
+   "st": "654709a8a51b",
+   "native": "3d1a8575",
+   "ideate": true,
+   "at": "2026-09-30T04:39:40.542Z"
+  },
+  {
+   "id": 27114,
+   "generation": 3,
+   "phase": "prepared",
+   "source": "control",
+   "spec": "36fed9a7b518",
+   "st": "654709a8a51b",
+   "native": "3d1a8575",
+   "ideate": true,
+   "at": "2026-09-30T04:39:41.823Z"
+  },
+  {
+   "id": 27115,
+   "generation": 3,
+   "phase": "applied",
+   "source": "control",
+   "spec": "36fed9a7b518",
+   "st": "654709a8a51b",
+   "native": "3d1a8575",
+   "ideate": true,
+   "at": "2026-09-30T04:40:15.408Z"
+  },
+  {
+   "id": 27116,
+   "generation": 5,
+   "phase": "desired",
+   "source": "control",
+   "spec": "36fed9a7b518",
+   "st": "0c321e48f9ac",
+   "native": "3d1a8575",
+   "ideate": false,
+   "at": "2026-09-30T04:41:01.255Z"
+  },
+  {
+   "id": 27117,
+   "generation": 5,
+   "phase": "prepared",
+   "source": "control",
+   "spec": "36fed9a7b518",
+   "st": "0c321e48f9ac",
+   "native": "3d1a8575",
+   "ideate": false,
+   "at": "2026-09-30T04:41:02.135Z"
+  },
+  {
+   "id": 27118,
+   "generation": 5,
+   "phase": "applied",
+   "source": "control",
+   "spec": "36fed9a7b518",
+   "st": "0c321e48f9ac",
+   "native": "3d1a8575",
+   "ideate": false,
+   "at": "2026-09-30T04:41:07.191Z"
+  },
+  {
+   "id": 27119,
+   "generation": 7,
+   "phase": "desired",
+   "source": "restart",
+   "spec": "a774225f27ee",
+   "st": "9c92de5ff139",
+   "native": "3d1a8575",
+   "ideate": false,
+   "at": "2026-09-30T04:41:45.611Z"
+  },
+  {
+   "id": 27120,
+   "generation": 7,
+   "phase": "applied",
+   "source": "control",
+   "spec": "a774225f27ee",
+   "st": "9c92de5ff139",
+   "native": "4a35ae4e",
+   "ideate": false,
+   "at": "2026-09-30T04:41:50.042Z"
+  },
+  {
+   "id": 27121,
+   "generation": 8,
+   "phase": "desired",
+   "source": "control",
+   "spec": "a774225f27ee",
+   "st": "8e532d7329fa",
+   "native": "4a35ae4e",
+   "ideate": false,
+   "at": "2026-09-30T04:42:25.735Z"
+  },
+  {
+   "id": 27122,
+   "generation": 8,
+   "phase": "prepared",
+   "source": "control",
+   "spec": "a774225f27ee",
+   "st": "8e532d7329fa",
+   "native": "4a35ae4e",
+   "ideate": false,
+   "at": "2026-09-30T04:42:27.014Z"
+  },
+  {
+   "id": 27123,
+   "generation": 8,
+   "phase": "applied",
+   "source": "control",
+   "spec": "a774225f27ee",
+   "st": "8e532d7329fa",
+   "native": "4a35ae4e",
+   "ideate": false,
+   "at": "2026-09-30T04:42:38.500Z"
+  },
+  {
+   "id": 27128,
+   "generation": 11,
+   "phase": "desired",
+   "source": "restart",
+   "spec": "eb43508c620c",
+   "st": "d11d349183ea",
+   "native": "650999bd",
+   "ideate": false,
+   "at": "2026-09-30T04:46:01.733Z"
+  },
+  {
+   "id": 27129,
+   "generation": 11,
+   "phase": "applied",
+   "source": "control",
+   "spec": "eb43508c620c",
+   "st": "d11d349183ea",
+   "native": "650999bd",
+   "ideate": false,
+   "at": "2026-09-30T04:46:11.062Z"
+  }
+ ],
+ "identityPins": {
+  "method": "sudo psql harness_shared.adv_sessions id=31719 launch_spec (current) + launch_spec.identityHistory[] (hist1=newest); inputs[] {kind,ref,revision(16),contentHash(12)}; source/configuration as md5 of the JSON",
+  "capturedAt": "2026-09-30T04:48:51.874Z",
+  "entries": [
+   {
+    "k": "current",
+    "recordedAt": null,
+    "spec": "eb43508c620c",
+    "state": "d11d349183ea",
+    "compiler": "1.7.0",
+    "schema": "1",
+    "source": "d683e52ad14f",
+    "configuration": "081251cbc4ae",
+    "inputs": [
+     "blueprint-layer:base@45cfdcd1c2de8af7#45cfdcd1c2de",
+     "blueprint-layer:papercusp@8d84f6a4775ae57c#8d84f6a4775a",
+     "blueprint-layer:papercusp-engineer@c19c053c9891cf49#c19c053c9891",
+     "package:base@0.1.0#5293a36690a4",
+     "package:papercusp@0.1.1#833fbfdd504f",
+     "package:papercusp-engineer@0.1.2#e606e13376a2",
+     "prompt-file:inline:su#0@#5874c9710757",
+     "prompt-file:rendered:effective@#5874c9710757",
+     "setting:launch-state-v1@d11d349183eac033#"
+    ]
+   },
+   {
+    "k": "hist1",
+    "recordedAt": "2026-09-30T04:46:01.431Z",
+    "spec": "a774225f27ee",
+    "state": "9c92de5ff139",
+    "compiler": "1.7.0",
+    "schema": "1",
+    "source": "d683e52ad14f",
+    "configuration": "081251cbc4ae",
+    "inputs": [
+     "blueprint-layer:base@45cfdcd1c2de8af7#45cfdcd1c2de",
+     "blueprint-layer:papercusp@8d84f6a4775ae57c#8d84f6a4775a",
+     "blueprint-layer:papercusp-engineer@c19c053c9891cf49#c19c053c9891",
+     "package:base@0.1.0#5293a36690a4",
+     "package:papercusp@0.1.1#833fbfdd504f",
+     "package:papercusp-engineer@0.1.2#e606e13376a2",
+     "prompt-file:inline:su#0@#706578b24af5",
+     "prompt-file:rendered:effective@#706578b24af5",
+     "setting:launch-state-v1@9c92de5ff139cd73#"
+    ]
+   },
+   {
+    "k": "hist2",
+    "recordedAt": "2026-09-30T04:42:25.854Z",
+    "spec": "a774225f27ee",
+    "state": "8e532d7329fa",
+    "compiler": "1.7.0",
+    "schema": "1",
+    "source": "d683e52ad14f",
+    "configuration": "081251cbc4ae",
+    "inputs": [
+     "blueprint-layer:base@45cfdcd1c2de8af7#45cfdcd1c2de",
+     "blueprint-layer:papercusp@8d84f6a4775ae57c#8d84f6a4775a",
+     "blueprint-layer:papercusp-engineer@c19c053c9891cf49#c19c053c9891",
+     "package:base@0.1.0#5293a36690a4",
+     "package:papercusp@0.1.1#833fbfdd504f",
+     "package:papercusp-engineer@0.1.2#e606e13376a2",
+     "prompt-file:inline:su#0@#706578b24af5",
+     "prompt-file:rendered:effective@#706578b24af5",
+     "setting:launch-state-v1@9c92de5ff139cd73#"
+    ]
+   },
+   {
+    "k": "hist3",
+    "recordedAt": "2026-09-30T04:41:45.386Z",
+    "spec": "36fed9a7b518",
+    "state": "9c92de5ff139",
+    "compiler": "1.7.0",
+    "schema": "1",
+    "source": "d683e52ad14f",
+    "configuration": "081251cbc4ae",
+    "inputs": [
+     "blueprint-layer:base@45cfdcd1c2de8af7#45cfdcd1c2de",
+     "blueprint-layer:papercusp@8d84f6a4775ae57c#8d84f6a4775a",
+     "blueprint-layer:papercusp-engineer@c19c053c9891cf49#c19c053c9891",
+     "package:base@0.1.0#5293a36690a4",
+     "package:papercusp@0.1.1#833fbfdd504f",
+     "package:papercusp-engineer@0.1.2#e606e13376a2",
+     "prompt-file:inline:su#0@#646b59ad48ff",
+     "prompt-file:rendered:effective@#646b59ad48ff",
+     "setting:launch-state-v1@9c92de5ff139cd73#"
+    ]
+   },
+   {
+    "k": "hist4",
+    "recordedAt": "2026-09-30T04:41:01.333Z",
+    "spec": "36fed9a7b518",
+    "state": "0c321e48f9ac",
+    "compiler": "1.7.0",
+    "schema": "1",
+    "source": "d683e52ad14f",
+    "configuration": "081251cbc4ae",
+    "inputs": [
+     "blueprint-layer:base@45cfdcd1c2de8af7#45cfdcd1c2de",
+     "blueprint-layer:papercusp@8d84f6a4775ae57c#8d84f6a4775a",
+     "blueprint-layer:papercusp-engineer@c19c053c9891cf49#c19c053c9891",
+     "package:base@0.1.0#5293a36690a4",
+     "package:papercusp@0.1.1#833fbfdd504f",
+     "package:papercusp-engineer@0.1.2#e606e13376a2",
+     "prompt-file:inline:su#0@#646b59ad48ff",
+     "prompt-file:rendered:effective@#646b59ad48ff",
+     "setting:launch-state-v1@9c92de5ff139cd73#"
+    ]
+   },
+   {
+    "k": "hist5",
+    "recordedAt": "2026-09-30T04:39:40.592Z",
+    "spec": "36fed9a7b518",
+    "state": "654709a8a51b",
+    "compiler": "1.7.0",
+    "schema": "1",
+    "source": "d683e52ad14f",
+    "configuration": "081251cbc4ae",
+    "inputs": [
+     "blueprint-layer:base@45cfdcd1c2de8af7#45cfdcd1c2de",
+     "blueprint-layer:papercusp@8d84f6a4775ae57c#8d84f6a4775a",
+     "blueprint-layer:papercusp-engineer@c19c053c9891cf49#c19c053c9891",
+     "package:base@0.1.0#5293a36690a4",
+     "package:papercusp@0.1.1#833fbfdd504f",
+     "package:papercusp-engineer@0.1.2#e606e13376a2",
+     "prompt-file:inline:su#0@#646b59ad48ff",
+     "prompt-file:rendered:effective@#646b59ad48ff",
+     "setting:launch-state-v1@9c92de5ff139cd73#"
+    ]
+   }
+  ]
+ },
+ "promptJoin": {
+  "launch": {
+   "pinned": "646b59ad48ff",
+   "delivered": [
+    "646b59ad48ff"
+   ]
+  },
+  "warm": {
+   "pinned": "706578b24af5",
+   "delivered": [
+    "706578b24af5"
+   ]
+  },
+  "cold": {
+   "pinned": "706578b24af5",
+   "delivered": [
+    "706578b24af5"
+   ]
+  },
+  "resumeCold": {
+   "pinned": "5874c9710757",
+   "delivered": [
+    "5874c9710757"
+   ]
+  }
+ },
+ "links": [
+  {
+   "id": "L1-cli-picker-su-default-paginated",
+   "criteria": [
+    "R-9",
+    "R-6"
+   ],
+   "passed": true,
+   "evidence": "The CLI launcher's own picker-row builder (identityPickerChoices, apps/operator/scripts/psu-launcher.mjs blob cdcaac49) ran over the live :3170 paginated identity catalog (http://127.0.0.1:3170 /api/agent-mcp/console/bootstrap-su/options?identities=1&limit=25, build dee89bb985, captured 2026-09-30T04:38:17.922Z). It returned 4 pages, 23 identities and 3 unreadable. Every page offers 'SU — default identity' (value su) first. 11 rows stay visible but disabled, each with a non-empty reason: invalid:oddsmith-ops, audit:su.mode-audit, autonomy:su.mode-auto, objective:su.mode-drain, goal:su.mode-goal, grade:su.mode-grade, ideation:su.mode-ideate, test:su.mode-test, practice:su.practice, invalid:su.fleet-leader, invalid:su.fleet-member. Installed identities offered: p008-j2-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  b1841ca6e58c; p008-j2r-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  0bb0addc94ee; p008-j2s-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  62b399b8d03b; p008-j2t-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  7208affc9d2f; p008-j2u-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  ac6731e5b4f1; papercusp-engineer  ·  domain  ·  installed  ·  0.1.2  ·  c19c053c9891.",
+   "observed": {
+    "pages": [
+     {
+      "page": 1,
+      "rows": 3,
+      "first": "su",
+      "loadMore": true,
+      "disabled": 0,
+      "disabledWithoutReason": 0
+     },
+     {
+      "page": 2,
+      "rows": 13,
+      "first": "su",
+      "loadMore": true,
+      "disabled": 1,
+      "disabledWithoutReason": 0
+     },
+     {
+      "page": 3,
+      "rows": 15,
+      "first": "su",
+      "loadMore": true,
+      "disabled": 10,
+      "disabledWithoutReason": 0
+     },
+     {
+      "page": 4,
+      "rows": 1,
+      "first": "su",
+      "loadMore": false,
+      "disabled": 0,
+      "disabledWithoutReason": 0
+     }
+    ],
+    "installedOffered": [
+     "p008-j2-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  b1841ca6e58c",
+     "p008-j2r-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  0bb0addc94ee",
+     "p008-j2s-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  62b399b8d03b",
+     "p008-j2t-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  7208affc9d2f",
+     "p008-j2u-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  ac6731e5b4f1",
+     "papercusp-engineer  ·  domain  ·  installed  ·  0.1.2  ·  c19c053c9891"
+    ],
+    "disabledWithReason": [
+     {
+      "value": "invalid:oddsmith-ops",
+      "reason": "[\n  {\n    \"code\": \"invalid_value\",\n    \"values\": [\n      \"pot\",\n      \"harness\"\n    ],\n    \"path\": [\n      \"kind\"\n    ],"
+     },
+     {
+      "value": "audit:su.mode-audit",
+      "reason": "Activate this mode through the validated mode control."
+     },
+     {
+      "value": "autonomy:su.mode-auto",
+      "reason": "Activate this mode through the validated mode control."
+     },
+     {
+      "value": "objective:su.mode-drain",
+      "reason": "Activate this mode through the validated mode control."
+     },
+     {
+      "value": "goal:su.mode-goal",
+      "reason": "Activate this mode through the validated mode control."
+     },
+     {
+      "value": "grade:su.mode-grade",
+      "reason": "Activate this mode through the validated mode control."
+     },
+     {
+      "value": "ideation:su.mode-ideate",
+      "reason": "Activate this mode through the validated mode control."
+     },
+     {
+      "value": "test:su.mode-test",
+      "reason": "Activate this mode through the validated mode control."
+     },
+     {
+      "value": "practice:su.practice",
+      "reason": "This identity needs a live producer binding at launch."
+     },
+     {
+      "value": "invalid:su.fleet-leader",
+      "reason": "attestation-missing: \"su.fleet-leader\" is an installed layer with no publisher attestation — an installed identity must "
+     },
+     {
+      "value": "invalid:su.fleet-member",
+      "reason": "attestation-missing: \"su.fleet-member\" is an installed layer with no publisher attestation — an installed identity must "
+     }
+    ],
+    "assertions": {
+     "suIsFirstAndDefault": true,
+     "everyNonLastPageOffersLoadMore": true,
+     "lastPageHasNoLoadMore": true,
+     "paginated": true,
+     "everyUnreadableVisibleWithReason": true,
+     "everyIneligibleVisibleWithReason": true,
+     "catalogCursorAdvances": true
+    }
+   },
+   "artifact": ".papercusp/scratch/p008-j1h/l1-cli-picker.json (probe .papercusp/scratch/p008-j1h/l1-cli-picker.mts)"
+  },
+  {
+   "id": "L2-native-launch-su-default",
+   "criteria": [
+    "R-6",
+    "R-7"
+   ],
+   "passed": true,
+   "evidence": "capability:launch-agent (via :3170, build dee89bb985) opened a fresh headless Claude subject: psu --launched-by=su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --fleet=r7-journey-0927 --no-picker --account=default --agent=claude --owner-id=su-b0d377c1-5303-4da9-9deb-b0049d78b678 --harness=papercusp --headless --model=sonnet. The launch recorded activation 27106/27108 desired(source=launch) -> prepared at generation 2, specification 36fed9a7b518, launch state 9c92de5ff139cd7309429b67, stack [autonomy:su.mode-auto, fleet-posture:su.fleet-member], native 3d1a8575, adv session 31719. The subject's first reply (P008_J1H_SUBJECT_READY, 2026-09-30T04:39:00.532Z) reported watermark 9c92de5ff139cd7309429b67. The launch spec pins prompt-file rendered:effective at content hash 646b59ad48ff. The system prompt the native actually received (systemPrompt[0], transcript lines 13:prompt_snapshot, 23:prompt_snapshot, 98:prompt_snapshot) has sha256 646b59ad48ff, the same value. The generation-2 CTRL arrived as hook context at line 8 of 3d1a8575 (full-resync). Generation 3 superseded generation 2 before an acknowledgment turn (see L8).",
+   "observed": {
+    "launchEvidence": {
+     "version": 1,
+     "processOpened": 1,
+     "sessionRegistered": 1,
+     "firstTurn": true,
+     "taskDisposition": {
+      "claimed": 0,
+      "noClaim": 0,
+      "unknown": 1
+     }
+    },
+    "taskId": "0munm7qlngzssqgumgw",
+    "nativeSession": "3d1a8575-1489-4b6f-ba0a-d87d1bbf9728",
+    "activation": [
+     27106,
+     27108
+    ],
+    "subjectReport": {
+     "msgId": "coord-send-072832f91cb6a81959b321eb45de32bd9caff16be396d910be98b67e0e46b734",
+     "at": "2026-09-30T04:39:00.532Z",
+     "body": "su-b0d377c1-5303-4da9-9deb-b0049d78b678 plus watermark 9c92de5ff139cd7309429b67"
+    },
+    "promptJoin": {
+     "pinned": "646b59ad48ff",
+     "delivered": [
+      "646b59ad48ff"
+     ]
+    },
+    "transcriptWatermarkLines": [
+     "13:prompt_snapshot",
+     "23:prompt_snapshot",
+     "98:prompt_snapshot"
+    ],
+    "transcriptCtrl": [
+     "g2@8:full-resync",
+     "g3@37:full-resync",
+     "g5@109:transition"
+    ]
+   },
+   "artifact": ".papercusp/scratch/p008-j1h/launch-args-claude.json, .papercusp/scratch/p008-j1h/launch-claude-result.json, .papercusp/scratch/p008-j1h/subject-reports.json, .papercusp/scratch/p008-j1h/subject-transcript-joins.json, .papercusp/scratch/p008-j1h/prompt-snapshots2.json, .papercusp/scratch/p008-j1h/identity-pins.json"
+  },
+  {
+   "id": "L3-mode-attach-detach-live",
+   "criteria": [
+    "R-6"
+   ],
+   "passed": true,
+   "evidence": "A peer mode:set { mode:'ideate' } on :3170 (woken 1) raised control generation 3. The host recorded 27113/27114/27115 desired -> prepared -> applied with ideation:su.mode-ideate attached, in the same native 3d1a8575 (live attach, no relaunch). The subject received the generation-3 CTRL at line 37 of 3d1a8575 (full-resync) and reported the mode (P008_J1H_S2_OBSERVED, 2026-09-30T04:40:02.183Z). mode:set { enabled:false } raised generation 5; 27116/27117/27118 applied the stack without it (live detach). line 109 of 3d1a8575 (transition) carries the generation-5 CTRL with stack op detach su.mode-ideate. The specification revision stayed 36fed9a7b518; only the mode-state revision moved (654709a8 -> 0c321e48). Requested, prepared and applied are separate rows with separate timestamps.",
+   "observed": {
+    "modeSet": {
+     "ok": true,
+     "enabled": true,
+     "woken": 1,
+     "controlGeneration": 3
+    },
+    "modeUnset": {
+     "ok": true,
+     "enabled": false,
+     "woken": 1,
+     "controlGeneration": 5
+    },
+    "activation": {
+     "attach": [
+      27113,
+      27114,
+      27115
+     ],
+     "detach": [
+      27116,
+      27117,
+      27118
+     ]
+    },
+    "subjectReport": {
+     "msgId": "coord-send-2f395c72d3b3d69179ef0a4fbef56e2ffc4888a8f1ce6b5a429984dc95a03f8f",
+     "at": "2026-09-30T04:40:02.183Z",
+     "body": "Observed on my turn: ⟦CTRL:full-resync⟧ generation 3 with modes [auto, ideate], stack includes ideation:su.mode-ideate, provenance source mode:set by you, ownerDirected:false. Its activation block reads desired={specRev 36fed9a7…, stateRev 654709a8…}, prepared=null, applied=null, status='desired' (requested/prepared/applied distinct; nothing prepared or applied yet). The mode-change message reports applied:true. Prior generation-2 activation showed the same prepared/applied null. I claimed no work and edited nothing."
+    },
+    "transcriptCtrl": [
+     "g2@8:full-resync",
+     "g3@37:full-resync",
+     "g5@109:transition"
+    ],
+    "transcriptStack": [
+     {
+      "line": 109,
+      "ts": "2026-09-30T04:41:03.514Z",
+      "where": "hook_additional_context",
+      "op": "detach",
+      "slot": "ideation",
+      "id": "su.mode-ideate"
+     }
+    ]
+   },
+   "artifact": ".papercusp/scratch/p008-j1h/mode-set-result.json, .papercusp/scratch/p008-j1h/mode-unset-result.json, .papercusp/scratch/p008-j1h/activation-events.json (ids 27113-27118), .papercusp/scratch/p008-j1h/subject-transcript-joins.json"
+  },
+  {
+   "id": "L4-peer-coupling-orientation",
+   "criteria": [
+    "R-6"
+   ],
+   "passed": true,
+   "evidence": "coord:couple { b:<subject> } on :3170 coupled the subject with the driver. The subject called coord:orient and reported generation 4, coupledWith [su-b0451bbf-8d54-498c-9454-79a46ccf8ed1], stack [autonomy:su.mode-auto, fleet-posture:su.fleet-member, ideation:su.mode-ideate] (P008_J1H_S3_REPORT, 2026-09-30T04:40:52.380Z). coord:decouple set the coupling to suppressed (suppressesDerived true). The next orient read generation 6, coupledWith [] and modes [auto] (P008_J1H_S3B_REPORT, 2026-09-30T04:41:18.533Z). Coupling is control state, not identity: generations 4 and 6 wrote no activation rows and the specification revision did not move. The subject's orientation used the same stack the launcher selected.",
+   "observed": {
+    "coupleState": "coupled",
+    "decoupleState": "suppressed",
+    "suppressesDerived": true,
+    "reports": {
+     "s3": {
+      "msgId": "coord-send-4666816ec2f9a6cb3ff6637ea9fd6abe8cff4bca3ef2a037360323eeb657b929",
+      "at": "2026-09-30T04:40:52.380Z",
+      "body": {
+       "stack": [
+        "autonomy:su.mode-auto",
+        "fleet-posture:su.fleet-member",
+        "ideation:su.mode-ideate"
+       ],
+       "modes": [
+        "auto",
+        "ideate"
+       ],
+       "stateHash": "8c72a821faa123ffea1e0639e7b84fdee71553573d3cca6de729e5a63fa7ef88",
+       "generation": 4,
+       "coupledWith": [
+        "su-b0451bbf-8d54-498c-9454-79a46ccf8ed1"
+       ]
+      }
+     },
+     "s3b": {
+      "msgId": "coord-send-1e9803b2a3c16cd3c2042269957e55a58c73d4ee26fc8b7f1ab7996178abefec",
+      "at": "2026-09-30T04:41:18.533Z",
+      "body": {
+       "stack": [
+        "autonomy:su.mode-auto",
+        "fleet-posture:su.fleet-member"
+       ],
+       "modes": [
+        "auto"
+       ],
+       "stateHash": "a12395c9f337f2ae5183d11f3b4f12be9aafede6f7e78644071c987a6d600feb",
+       "generation": 6,
+       "coupledWith": []
+      }
+     }
+    },
+    "activationAtGeneration4": [],
+    "activationAtGeneration6": []
+   },
+   "artifact": ".papercusp/scratch/p008-j1h/couple-result.json, .papercusp/scratch/p008-j1h/decouple-result.json, .papercusp/scratch/p008-j1h/subject-reports.json"
+  },
+  {
+   "id": "L5-warm-respawn-preserves-pins",
+   "criteria": [
+    "R-7"
+   ],
+   "passed": true,
+   "evidence": "A warm carry-respawn moved the subject from native 3d1a8575 to 4a35ae4e on the same adv session 31719. Activation 27119/27120: desired source=restart, applied at generation 7 in the new native. The specification revision re-rendered 36fed9a7b518 -> a774225f27ee while the launch state stayed 9c92de5ff139cd7309429b67. Every fixed pin is identical: the three blueprint layers, the three packages (base 0.1.0, papercusp 0.1.1, papercusp-engineer 0.1.2), compiler, schema, source and configuration. The rendered prompt hash moved 646b59ad48ff -> 706578b24af5. The delivered systemPrompt[0] in 4a35ae4e has sha256 706578b24af5. A line diff against the launch render changes only the INSTRUCTION-PRECEDENCE header, and within it only .provenance.observedAt and .watermark. The subject reported watermark 9c92de5ff139cd7309429b67 at generation 7 (P008_J1H_S4_REPORT, 2026-09-30T04:41:58.214Z).",
+   "observed": {
+    "nativeBefore": "3d1a8575-1489-4b6f-ba0a-d87d1bbf9728",
+    "nativeAfter": "4a35ae4e-51b2-4fc8-a5ea-6db4fbd76b79",
+    "specificationRevisionBefore": "36fed9a7b5187853e9bc740986b087eba00ab1c973d30b6fd1c65e1491837927",
+    "specificationRevisionAfter": "a774225f27eee6541df12482b8752e9ba66091f86e81fdd0343c1643c2eb521e",
+    "stateRevisionBefore": "9c92de5ff139cd7309429b67",
+    "stateRevisionAfter": "9c92de5ff139cd7309429b67",
+    "activation": [
+     27119,
+     27120
+    ],
+    "allFixedPinsEqual": true,
+    "promptJoin": {
+     "pinned": "706578b24af5",
+     "delivered": [
+      "706578b24af5"
+     ]
+    },
+    "headerDiffPaths": [
+     ".provenance.observedAt",
+     ".watermark"
+    ],
+    "report": {
+     "msgId": "coord-send-4824a2fa4368889de096bef61bd16d9ab96587c667e7b82432092d4fd3f5ea52",
+     "at": "2026-09-30T04:41:58.214Z",
+     "body": {
+      "ownerId": "su-b0d377c1-5303-4da9-9deb-b0049d78b678",
+      "watermark": "9c92de5ff139cd7309429b67",
+      "stack": [
+       "autonomy:su.mode-auto",
+       "fleet-posture:su.fleet-member"
+      ],
+      "generation": 7
+     }
+    }
+   },
+   "artifact": ".papercusp/scratch/p008-j1h/s4-pin-diff.json (pre .papercusp/scratch/p008-j1h/s4-pre.json, post .papercusp/scratch/p008-j1h/s4-post.json), .papercusp/scratch/p008-j1h/identity-pins.json, .papercusp/scratch/p008-j1h/prompt-snapshots2.json, .papercusp/scratch/p008-j1h/precedence-header-diff.json"
+  },
+  {
+   "id": "L6-cold-recovery-preserves-pins",
+   "criteria": [
+    "R-7"
+   ],
+   "passed": true,
+   "evidence": "mode:set cold-auto (switchedFrom auto, generation 8) applied in native 4a35ae4e (27121/27122/27123, mode-state 8e532d73). The subject then armed a cold loop (S5c message, woken 1). The scheduled cold fire forked a fresh native 650999bd, whose turns arrive as loop-fire COLD LOOP WAKE prompts carrying the carry-note. The fork received the generation-9 CTRL at line 10 of 650999bd (transition). It reported carry cold, freshContext true, generation 9, watermark 9c92de5ff139cd7309429b67 (P008_J1H_S5C_REPORT, 2026-09-30T04:44:48.977Z). The cold fork kept the warm render: its delivered systemPrompt[0] sha256 706578b24af5 equals the pinned 706578b24af5, and no fixed pin moved.",
+   "observed": {
+    "modeSet": {
+     "ok": true,
+     "mode": "cold-auto",
+     "switchedFrom": "auto",
+     "controlGeneration": 8
+    },
+    "activation": {
+     "gen8": [
+      27121,
+      27122,
+      27123
+     ]
+    },
+    "coldNative": "650999bd-34c3-4426-8508-d9bf3db0c848",
+    "coldGeneration": 9,
+    "promptJoin": {
+     "pinned": "706578b24af5",
+     "delivered": [
+      "706578b24af5"
+     ]
+    },
+    "transcriptCtrl": [
+     "g9@10:transition",
+     "g11@41:full-resync"
+    ],
+    "report": {
+     "msgId": "coord-send-acb1472bb5795e7daa9632f54a155a019d058cac1526a99679860d636888e94e",
+     "at": "2026-09-30T04:44:48.977Z",
+     "body": {
+      "ownerId": "su-b0d377c1-5303-4da9-9deb-b0049d78b678",
+      "watermark": "9c92de5ff139cd7309429b67",
+      "stack": [
+       "autonomy:su.mode-auto",
+       "fleet-posture:su.fleet-member"
+      ],
+      "generation": 9,
+      "carry": "cold",
+      "freshContext": true
+     }
+    }
+   },
+   "artifact": ".papercusp/scratch/p008-j1h/s5-mode-result.json, .papercusp/scratch/p008-j1h/s5c-msg.json, .papercusp/scratch/p008-j1h/s5c-send-result.json, .papercusp/scratch/p008-j1h/identity-pins.json, .papercusp/scratch/p008-j1h/subject-transcript-joins.json, .papercusp/scratch/p008-j1h/prompt-snapshots2.json, .papercusp/scratch/p008-j1h/subject-reports.json"
+  },
+  {
+   "id": "L6R-resume-refreshes-live-values-pins-fixed",
+   "criteria": [
+    "R-7"
+   ],
+   "passed": true,
+   "evidence": "The subject's task was stopped and capability:launch-agent resumed it: psu --launched-by=su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --fleet=r7-journey-0927 --no-picker --account=default --resume=650999bd-34c3-4426-8508-d9bf3db0c848 --headless --carry=cold --model=sonnet. mode resume, resumeVerified true (expected and actual native 650999bd). The launcher argv carried --system-prompt-file ~/.papercusp/launch-context/session-refresh-su-b0d377c1-5303-4da9-9deb-b0049d78b678.md, written 2026-09-30T04:46:01.333Z. The resume re-resolved the launch spec: activation 27128/27129 desired(source=restart) -> applied at generation 11 in 650999bd. The adv row moved to specification eb43508c620c and launch state d11d349183eac0339dc2e78d. All fixed pins stayed identical across all 6 identity entries (launch, mode changes, warm, cold, resume): layers, packages, compiler, schema, source and configuration. The resumed native received the generation-11 CTRL naming desired state d11d349183ea at line 41 of 650999bd (full-resync). The refresh file (184788 bytes; the delivered systemPrompt[0] is 183054 chars) hashes to 5874c9710757, the launch spec's pinned prompt-file hash. The next cold fork 73f4a3dd received a systemPrompt[0] with that same sha256, carrying watermark d11d349183eac0339dc2e78d (lines 16:prompt_snapshot, 25:prompt_snapshot). It reported carry cold, freshContext true, generation 12, watermark d11d349183eac0339dc2e78d (P008_J1H_R_COLD_REPORT, 2026-09-30T04:47:49.189Z). The subject host task was stopped first, so this was the only resume attempt.",
+   "observed": {
+    "resumeMode": "resume",
+    "resumeVerification": {
+     "expectedSessionId": "650999bd-34c3-4426-8508-d9bf3db0c848",
+     "actualSessionId": "650999bd-34c3-4426-8508-d9bf3db0c848",
+     "mismatch": false,
+     "rollback": null
+    },
+    "activation": {
+     "gen11": [
+      27128,
+      27129
+     ]
+    },
+    "specBefore": "a774225f27ee",
+    "specAfter": "eb43508c620c",
+    "stateAfter": "d11d349183eac0339dc2e78d",
+    "allFixedPinsEqual": true,
+    "ctrlResume": {
+     "g": 11,
+     "native": "650999bd-34c3-4426-8508-d9bf3db0c848",
+     "ts": "2026-09-30T04:46:11.992Z",
+     "line": 41,
+     "kind": "full-resync",
+     "desiredState12": "d11d349183ea"
+    },
+    "refreshFile": {
+     "path": "~/.papercusp/launch-context/session-refresh-su-b0d377c1-5303-4da9-9deb-b0049d78b678.md",
+     "mtime": "2026-09-30T04:46:01.333Z",
+     "bytes": 184788
+    },
+    "promptJoin": {
+     "pinned": "5874c9710757",
+     "delivered": [
+      "5874c9710757"
+     ]
+    },
+    "reports": {
+     "resumed": {
+      "msgId": "coord-send-f00162261bf6a829e662667d893321418b4c8eb5d66a15a12a2ee2bc7f6a9a63",
+      "at": "2026-09-30T04:46:23.221Z",
+      "body": {
+       "ownerId": "su-b0d377c1-5303-4da9-9deb-b0049d78b678",
+       "watermark": "9c92de5ff139cd7309429b67",
+       "stack": [
+        "autonomy:su.mode-auto",
+        "fleet-posture:su.fleet-member"
+       ],
+       "generation": 11,
+       "carry": "cold"
+      }
+     },
+     "resumeCold": {
+      "msgId": "coord-send-0dc4399b2694623fbfe22912101822447c5d39b64e3b516cf373a07ecbcd2127",
+      "at": "2026-09-30T04:47:49.189Z",
+      "body": {
+       "ownerId": "su-b0d377c1-5303-4da9-9deb-b0049d78b678",
+       "watermark": "d11d349183eac0339dc2e78d",
+       "stack": [
+        "autonomy:su.mode-auto",
+        "fleet-posture:su.fleet-member"
+       ],
+       "generation": 12,
+       "carry": "cold",
+       "freshContext": true
+      }
+     }
+    },
+    "forkAttempt": null
+   },
+   "artifact": ".papercusp/scratch/p008-j1h/resume-args.json, .papercusp/scratch/p008-j1h/resume-result.json, .papercusp/scratch/p008-j1h/identity-pins.json, .papercusp/scratch/p008-j1h/pin-stability.json, .papercusp/scratch/p008-j1h/prompt-snapshots2.json, .papercusp/scratch/p008-j1h/subject-transcript-joins.json, .papercusp/scratch/p008-j1h/subject-reports.json"
+  },
+  {
+   "id": "L7-gui-picker-su-default-paginated",
+   "criteria": [
+    "R-9",
+    "R-6"
+   ],
+   "passed": true,
+   "evidence": "scripts/verify-tauri-headless.sh booted papercusp-desktop on its own Xvfb display and drove the launcher Identity combobox in the real webview (2026-09-30T04:44:16.899Z -> 2026-09-30T04:44:31.918Z). The default input reads 'SU' and SU is the first option. The catalog loaded in 3 pages and rendered 26 of 26 expected options, with none missing or extra. Invalid and ineligible identities stay visible with a reason (true/true), and no disabled option lacks one. It passed on the first attempt.",
+   "observed": {
+    "assertions": {
+     "suIsFirstAndDefault": true,
+     "catalogPaged": 3,
+     "expectedCount": 26,
+     "renderedCount": 26,
+     "missing": [],
+     "extra": [],
+     "disabledMismatch": [],
+     "disabledWithoutReason": [],
+     "invalidVisibleWithReason": true,
+     "ineligibleVisibleWithReason": true,
+     "pass": true
+    },
+    "defaultInput": {
+     "value": "SU",
+     "placeholder": "SU"
+    },
+    "spaDrift": true
+   },
+   "artifact": ".papercusp/scratch/p008-j1h/l7-gui-picker.json, .papercusp/scratch/p008-j1h/l7-verify-tauri.log"
+  },
+  {
+   "id": "L8-native-applied-after-injection",
+   "criteria": [
+    "identity-native-applied-revision-proof"
+   ],
+   "passed": true,
+   "evidence": "The subject's activation rows were joined to the CTRL hook-context lines in its own native transcripts (3d1a8575, 4a35ae4e, 650999bd, 73f4a3dd). For generations 3, 5, 8, prepared < native emission < applied, and the applied row names the native that received the emission. Generations 7 and 11 are relaunch paths (warm respawn, --resume): the new native started on the re-rendered spec, its applied row is the acknowledgment, and the CTRL line follows it. Generation 2 was emitted at launch (line 8 of 3d1a8575 (full-resync)), then superseded by generation 3 before an acknowledgment turn: it has a prepared row and no applied row. Generations 9, 12 changed control state only (loop/carry), emitted CTRL and wrote no activation rows. No generation reports applied without a prior emission, and no ordering violation exists.",
+   "observed": {
+    "rows": [
+     {
+      "generation": 2,
+      "desired": "2026-09-30T04:38:40.224Z",
+      "desiredSource": "launch",
+      "prepared": "2026-09-30T04:38:51.803Z",
+      "emission": {
+       "g": 2,
+       "native": "3d1a8575-1489-4b6f-ba0a-d87d1bbf9728",
+       "ts": "2026-09-30T04:38:53.364Z",
+       "line": 8,
+       "kind": "full-resync",
+       "desiredState12": "9c92de5ff139"
+      },
+      "applied": null,
+      "appliedNative": null,
+      "verdict": "emitted-superseded-before-ack"
+     },
+     {
+      "generation": 3,
+      "desired": "2026-09-30T04:39:40.542Z",
+      "desiredSource": "control",
+      "prepared": "2026-09-30T04:39:41.823Z",
+      "emission": {
+       "g": 3,
+       "native": "3d1a8575-1489-4b6f-ba0a-d87d1bbf9728",
+       "ts": "2026-09-30T04:39:43.423Z",
+       "line": 37,
+       "kind": "full-resync",
+       "desiredState12": "654709a8a51b"
+      },
+      "applied": "2026-09-30T04:40:15.408Z",
+      "appliedNative": "3d1a8575-1489-4b6f-ba0a-d87d1bbf9728",
+      "verdict": "prepared<emission<applied"
+     },
+     {
+      "generation": 5,
+      "desired": "2026-09-30T04:41:01.255Z",
+      "desiredSource": "control",
+      "prepared": "2026-09-30T04:41:02.135Z",
+      "emission": {
+       "g": 5,
+       "native": "3d1a8575-1489-4b6f-ba0a-d87d1bbf9728",
+       "ts": "2026-09-30T04:41:03.514Z",
+       "line": 109,
+       "kind": "transition",
+       "desiredState12": "0c321e48f9ac"
+      },
+      "applied": "2026-09-30T04:41:07.191Z",
+      "appliedNative": "3d1a8575-1489-4b6f-ba0a-d87d1bbf9728",
+      "verdict": "prepared<emission<applied"
+     },
+     {
+      "generation": 7,
+      "desired": "2026-09-30T04:41:45.611Z",
+      "desiredSource": "restart",
+      "prepared": null,
+      "emission": {
+       "g": 7,
+       "native": "4a35ae4e-51b2-4fc8-a5ea-6db4fbd76b79",
+       "ts": "2026-09-30T04:41:51.344Z",
+       "line": 8,
+       "kind": "transition",
+       "desiredState12": "9c92de5ff139"
+      },
+      "applied": "2026-09-30T04:41:50.042Z",
+      "appliedNative": "4a35ae4e-51b2-4fc8-a5ea-6db4fbd76b79",
+      "verdict": "relaunch-applied"
+     },
+     {
+      "generation": 8,
+      "desired": "2026-09-30T04:42:25.735Z",
+      "desiredSource": "control",
+      "prepared": "2026-09-30T04:42:27.014Z",
+      "emission": {
+       "g": 8,
+       "native": "4a35ae4e-51b2-4fc8-a5ea-6db4fbd76b79",
+       "ts": "2026-09-30T04:42:28.251Z",
+       "line": 37,
+       "kind": "full-resync",
+       "desiredState12": "8e532d7329fa"
+      },
+      "applied": "2026-09-30T04:42:38.500Z",
+      "appliedNative": "4a35ae4e-51b2-4fc8-a5ea-6db4fbd76b79",
+      "verdict": "prepared<emission<applied"
+     },
+     {
+      "generation": 9,
+      "desired": null,
+      "desiredSource": null,
+      "prepared": null,
+      "emission": {
+       "g": 9,
+       "native": "650999bd-34c3-4426-8508-d9bf3db0c848",
+       "ts": "2026-09-30T04:44:36.800Z",
+       "line": 10,
+       "kind": "transition",
+       "desiredState12": "8e532d7329fa"
+      },
+      "applied": null,
+      "appliedNative": null,
+      "verdict": "control-only-generation(no-activation-change)"
+     },
+     {
+      "generation": 11,
+      "desired": "2026-09-30T04:46:01.733Z",
+      "desiredSource": "restart",
+      "prepared": null,
+      "emission": {
+       "g": 11,
+       "native": "650999bd-34c3-4426-8508-d9bf3db0c848",
+       "ts": "2026-09-30T04:46:11.992Z",
+       "line": 41,
+       "kind": "full-resync",
+       "desiredState12": "d11d349183ea"
+      },
+      "applied": "2026-09-30T04:46:11.062Z",
+      "appliedNative": "650999bd-34c3-4426-8508-d9bf3db0c848",
+      "verdict": "relaunch-applied"
+     },
+     {
+      "generation": 12,
+      "desired": null,
+      "desiredSource": null,
+      "prepared": null,
+      "emission": {
+       "g": 12,
+       "native": "73f4a3dd-17af-4b28-97f6-3fcfbbf635ab",
+       "ts": "2026-09-30T04:47:39.691Z",
+       "line": 10,
+       "kind": "transition",
+       "desiredState12": "d11d349183ea"
+      },
+      "applied": null,
+      "appliedNative": null,
+      "verdict": "control-only-generation(no-activation-change)"
+     }
+    ]
+   },
+   "artifact": ".papercusp/scratch/p008-j1h/activation-emission-join.json, .papercusp/scratch/p008-j1h/subject-transcript-joins.json (builder .papercusp/scratch/p008-j1h/transcript-joins-j1f.mjs), .papercusp/scratch/p008-j1h/activation-events.json"
+  }
+ ],
+ "notProven": [
+  "R-9 second half — preview/customize the selected composition, save it as a named identity, and launcher preview vs launched-spec parity — was not exercised in J1H.",
+  "Abstract-component discoverability was observed only in the launcher catalog: mode components and practice:su.practice are listed as disabled with reasons.",
+  "The CLI evidence runs the launcher's real row builder over the live catalog. It is not an interactive TTY picker session; the subject itself was launched with --no-picker.",
+  "R-6 goal kickoff/portfolio/obligation composers and R-7 SU fleet/goal holder replacement were not exercised in J1H. Rollback and deployed pins are J3 (WI-10003584). The generic non-SU identity is J2.",
+  "The resumed conversation (650999bd after --resume) recorded no new prompt_snapshot, and its self-report (P008_J1H_R_RESUMED_REPORT) still names the pre-resume watermark 9c92de5f. The resumed process's argv carried the refreshed file, but its effective system prompt is not observable from the transcript. The refreshed render is proven by the file hash and by the next native (73f4a3dd).",
+  "Generation 2 was emitted but superseded by generation 3 before an acknowledgment turn, so it has no applied row. The launch render is proven by the prompt join, not by an applied row for that generation.",
+  "Generations 7 (warm respawn) and 11 (--resume) are relaunch paths, not control injections: the applied row precedes the first transcript CTRL line in the new native.",
+  "Generations 4 and 6 (couple/decouple) have no CTRL hook-context line and no activation rows; the subject read them through coord:orient.",
+  "Cold forks receive their carry through loop-fire COLD LOOP WAKE prompts. 650999bd's second systemPrompt part (a carry document) is inherited from its warm-respawned parent; 73f4a3dd, forked from the resumed process, has one part.",
+  "L7 ran the desktop shell from the shared working tree, not from build dee89bb985. Its SPA snapshot was frozen at boot; a peer rebuilt the shared SPA dist during the run, and the run kept serving its frozen snapshot (drift banner in the log).",
+  "The subject host task was stopped before the resume leg, so capability:launch-agent resumed the same owner on the first attempt (mode resume, no fork)."
+ ],
+ "sourcePaths": [
+  "apps/operator/scripts/psu-launcher.mjs",
+  "packages/operator-core/lib/agent-identities/source.ts",
+  "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.ts",
+  "packages/operator-core/lib/agent-launch-core.ts",
+  "apps/operator/scripts/hooks/inject/core.mjs",
+  "apps/operator/scripts/hooks/inject/delivery-ledger.mjs",
+  "apps/operator/scripts/hooks/inject/index.mjs",
+  "packages/operator-core/lib/agent-tools/coordination/read-cursors.ts",
+  "scripts/verify-tauri-headless.sh"
+ ],
+ "sourceBlobs": [
+  {
+   "path": "apps/operator/scripts/psu-launcher.mjs",
+   "measuredBuild": "cdcaac4958",
+   "workingTree": "cdcaac4958"
+  },
+  {
+   "path": "packages/operator-core/lib/agent-identities/source.ts",
+   "measuredBuild": "4e166bc9fc",
+   "workingTree": "4e166bc9fc"
+  },
+  {
+   "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/turn-start-memory.ts",
+   "measuredBuild": "d774d57cae",
+   "workingTree": "d774d57cae"
+  },
+  {
+   "path": "packages/operator-core/lib/agent-launch-core.ts",
+   "measuredBuild": "9ff77187d5",
+   "workingTree": "9ff77187d5"
+  },
+  {
+   "path": "apps/operator/scripts/hooks/inject/core.mjs",
+   "measuredBuild": "f17ad24c8e",
+   "workingTree": "f17ad24c8e"
+  },
+  {
+   "path": "apps/operator/scripts/hooks/inject/delivery-ledger.mjs",
+   "measuredBuild": "6c15088971",
+   "workingTree": "6c15088971"
+  },
+  {
+   "path": "apps/operator/scripts/hooks/inject/index.mjs",
+   "measuredBuild": "aa1b1b1d72",
+   "workingTree": "aa1b1b1d72"
+  },
+  {
+   "path": "packages/operator-core/lib/agent-tools/coordination/read-cursors.ts",
+   "measuredBuild": "ff216bfa1e",
+   "workingTree": "ff216bfa1e"
+  },
+  {
+   "path": "scripts/verify-tauri-headless.sh",
+   "measuredBuild": "ab3db922d0",
+   "workingTree": "ab3db922d0"
+  }
+ ],
+ "testRunIds": [],
+ "assertions": [
+  {
+   "id": "L1-cli-picker-su-default-paginated",
+   "passed": true,
+   "evidence": "The CLI launcher's own picker-row builder (identityPickerChoices, apps/operator/scripts/psu-launcher.mjs blob cdcaac49) ran over the live :3170 paginated identity catalog (http://127.0.0.1:3170 /api/agent-mcp/console/bootstrap-su/options?identities=1&limit=25, build dee89bb985, captured 2026-09-30T04:38:17.922Z). It returned 4 pages, 23 identities and 3 unreadable. Every page offers 'SU — default identity' (value su) first. 11 rows stay visible but disabled, each with a non-empty reason: invalid:oddsmith-ops, audit:su.mode-audit, autonomy:su.mode-auto, objective:su.mode-drain, goal:su.mode-goal, grade:su.mode-grade, ideation:su.mode-ideate, test:su.mode-test, practice:su.practice, invalid:su.fleet-leader, invalid:su.fleet-member. Installed identities offered: p008-j2-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  b1841ca6e58c; p008-j2r-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  0bb0addc94ee; p008-j2s-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  62b399b8d03b; p008-j2t-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  7208affc9d2f; p008-j2u-generic-domain  ·  domain  ·  installed  ·  1.0.0  ·  ac6731e5b4f1; papercusp-engineer  ·  domain  ·  installed  ·  0.1.2  ·  c19c053c9891."
+  },
+  {
+   "id": "L2-native-launch-su-default",
+   "passed": true,
+   "evidence": "capability:launch-agent (via :3170, build dee89bb985) opened a fresh headless Claude subject: psu --launched-by=su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --fleet=r7-journey-0927 --no-picker --account=default --agent=claude --owner-id=su-b0d377c1-5303-4da9-9deb-b0049d78b678 --harness=papercusp --headless --model=sonnet. The launch recorded activation 27106/27108 desired(source=launch) -> prepared at generation 2, specification 36fed9a7b518, launch state 9c92de5ff139cd7309429b67, stack [autonomy:su.mode-auto, fleet-posture:su.fleet-member], native 3d1a8575, adv session 31719. The subject's first reply (P008_J1H_SUBJECT_READY, 2026-09-30T04:39:00.532Z) reported watermark 9c92de5ff139cd7309429b67. The launch spec pins prompt-file rendered:effective at content hash 646b59ad48ff. The system prompt the native actually received (systemPrompt[0], transcript lines 13:prompt_snapshot, 23:prompt_snapshot, 98:prompt_snapshot) has sha256 646b59ad48ff, the same value. The generation-2 CTRL arrived as hook context at line 8 of 3d1a8575 (full-resync). Generation 3 superseded generation 2 before an acknowledgment turn (see L8)."
+  },
+  {
+   "id": "L3-mode-attach-detach-live",
+   "passed": true,
+   "evidence": "A peer mode:set { mode:'ideate' } on :3170 (woken 1) raised control generation 3. The host recorded 27113/27114/27115 desired -> prepared -> applied with ideation:su.mode-ideate attached, in the same native 3d1a8575 (live attach, no relaunch). The subject received the generation-3 CTRL at line 37 of 3d1a8575 (full-resync) and reported the mode (P008_J1H_S2_OBSERVED, 2026-09-30T04:40:02.183Z). mode:set { enabled:false } raised generation 5; 27116/27117/27118 applied the stack without it (live detach). line 109 of 3d1a8575 (transition) carries the generation-5 CTRL with stack op detach su.mode-ideate. The specification revision stayed 36fed9a7b518; only the mode-state revision moved (654709a8 -> 0c321e48). Requested, prepared and applied are separate rows with separate timestamps."
+  },
+  {
+   "id": "L4-peer-coupling-orientation",
+   "passed": true,
+   "evidence": "coord:couple { b:<subject> } on :3170 coupled the subject with the driver. The subject called coord:orient and reported generation 4, coupledWith [su-b0451bbf-8d54-498c-9454-79a46ccf8ed1], stack [autonomy:su.mode-auto, fleet-posture:su.fleet-member, ideation:su.mode-ideate] (P008_J1H_S3_REPORT, 2026-09-30T04:40:52.380Z). coord:decouple set the coupling to suppressed (suppressesDerived true). The next orient read generation 6, coupledWith [] and modes [auto] (P008_J1H_S3B_REPORT, 2026-09-30T04:41:18.533Z). Coupling is control state, not identity: generations 4 and 6 wrote no activation rows and the specification revision did not move. The subject's orientation used the same stack the launcher selected."
+  },
+  {
+   "id": "L5-warm-respawn-preserves-pins",
+   "passed": true,
+   "evidence": "A warm carry-respawn moved the subject from native 3d1a8575 to 4a35ae4e on the same adv session 31719. Activation 27119/27120: desired source=restart, applied at generation 7 in the new native. The specification revision re-rendered 36fed9a7b518 -> a774225f27ee while the launch state stayed 9c92de5ff139cd7309429b67. Every fixed pin is identical: the three blueprint layers, the three packages (base 0.1.0, papercusp 0.1.1, papercusp-engineer 0.1.2), compiler, schema, source and configuration. The rendered prompt hash moved 646b59ad48ff -> 706578b24af5. The delivered systemPrompt[0] in 4a35ae4e has sha256 706578b24af5. A line diff against the launch render changes only the INSTRUCTION-PRECEDENCE header, and within it only .provenance.observedAt and .watermark. The subject reported watermark 9c92de5ff139cd7309429b67 at generation 7 (P008_J1H_S4_REPORT, 2026-09-30T04:41:58.214Z)."
+  },
+  {
+   "id": "L6-cold-recovery-preserves-pins",
+   "passed": true,
+   "evidence": "mode:set cold-auto (switchedFrom auto, generation 8) applied in native 4a35ae4e (27121/27122/27123, mode-state 8e532d73). The subject then armed a cold loop (S5c message, woken 1). The scheduled cold fire forked a fresh native 650999bd, whose turns arrive as loop-fire COLD LOOP WAKE prompts carrying the carry-note. The fork received the generation-9 CTRL at line 10 of 650999bd (transition). It reported carry cold, freshContext true, generation 9, watermark 9c92de5ff139cd7309429b67 (P008_J1H_S5C_REPORT, 2026-09-30T04:44:48.977Z). The cold fork kept the warm render: its delivered systemPrompt[0] sha256 706578b24af5 equals the pinned 706578b24af5, and no fixed pin moved."
+  },
+  {
+   "id": "L6R-resume-refreshes-live-values-pins-fixed",
+   "passed": true,
+   "evidence": "The subject's task was stopped and capability:launch-agent resumed it: psu --launched-by=su-b0451bbf-8d54-498c-9454-79a46ccf8ed1 --fleet=r7-journey-0927 --no-picker --account=default --resume=650999bd-34c3-4426-8508-d9bf3db0c848 --headless --carry=cold --model=sonnet. mode resume, resumeVerified true (expected and actual native 650999bd). The launcher argv carried --system-prompt-file ~/.papercusp/launch-context/session-refresh-su-b0d377c1-5303-4da9-9deb-b0049d78b678.md, written 2026-09-30T04:46:01.333Z. The resume re-resolved the launch spec: activation 27128/27129 desired(source=restart) -> applied at generation 11 in 650999bd. The adv row moved to specification eb43508c620c and launch state d11d349183eac0339dc2e78d. All fixed pins stayed identical across all 6 identity entries (launch, mode changes, warm, cold, resume): layers, packages, compiler, schema, source and configuration. The resumed native received the generation-11 CTRL naming desired state d11d349183ea at line 41 of 650999bd (full-resync). The refresh file (184788 bytes; the delivered systemPrompt[0] is 183054 chars) hashes to 5874c9710757, the launch spec's pinned prompt-file hash. The next cold fork 73f4a3dd received a systemPrompt[0] with that same sha256, carrying watermark d11d349183eac0339dc2e78d (lines 16:prompt_snapshot, 25:prompt_snapshot). It reported carry cold, freshContext true, generation 12, watermark d11d349183eac0339dc2e78d (P008_J1H_R_COLD_REPORT, 2026-09-30T04:47:49.189Z). The subject host task was stopped first, so this was the only resume attempt."
+  },
+  {
+   "id": "L7-gui-picker-su-default-paginated",
+   "passed": true,
+   "evidence": "scripts/verify-tauri-headless.sh booted papercusp-desktop on its own Xvfb display and drove the launcher Identity combobox in the real webview (2026-09-30T04:44:16.899Z -> 2026-09-30T04:44:31.918Z). The default input reads 'SU' and SU is the first option. The catalog loaded in 3 pages and rendered 26 of 26 expected options, with none missing or extra. Invalid and ineligible identities stay visible with a reason (true/true), and no disabled option lacks one. It passed on the first attempt."
+  },
+  {
+   "id": "L8-native-applied-after-injection",
+   "passed": true,
+   "evidence": "The subject's activation rows were joined to the CTRL hook-context lines in its own native transcripts (3d1a8575, 4a35ae4e, 650999bd, 73f4a3dd). For generations 3, 5, 8, prepared < native emission < applied, and the applied row names the native that received the emission. Generations 7 and 11 are relaunch paths (warm respawn, --resume): the new native started on the re-rendered spec, its applied row is the acknowledgment, and the CTRL line follows it. Generation 2 was emitted at launch (line 8 of 3d1a8575 (full-resync)), then superseded by generation 3 before an acknowledgment turn: it has a prepared row and no applied row. Generations 9, 12 changed control state only (loop/carry), emitted CTRL and wrote no activation rows. No generation reports applied without a prior emission, and no ordering violation exists."
+  }
+ ]
+}

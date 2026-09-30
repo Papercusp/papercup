@@ -30,6 +30,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { parseSseStream } from '@papercusp/sse';
 import type { ClaudeEngineOptions, ClaudeSuEngine } from '../su-session-claude-engine';
 import type { SuRpcEngine } from '../su-session-rpc-engine';
+import type { RpcFrame, SuStdioPeer, SuStdioPeerOptions } from '../su-session-stdio-peer';
 import { _armSuClientLeaseTimersForTest, suClientLeaseDiagnostics } from '../su-session-client-lease';
 import type { SuSessionCommand, SuSessionDescriptor, SuSessionEvent } from '@papercusp/chat-protocol';
 import type { OrgTestDb } from '../../test/_org-test-db';
@@ -107,6 +108,8 @@ const scriptedEngine = vi.hoisted(() => ({
   // Which agent the SDK was asked to run (P-007): the prompt kind, the MCP
   // servers it may load, and whether the psu hook set is silenced.
   sdkIdentities: [] as Array<{ prompt: string; mcpServers: string[] | null; strictMcp: boolean; hooksOff: boolean }>,
+  // Which agent each Codex/OMP launch was asked to run (P-016), in order.
+  rpcLaunches: [] as Array<{ backend: string; identity: string; promptFile: string; cwd: string }>,
   engines: [] as (ClaudeSuEngine | SuRpcEngine)[],
   events: [] as SuSessionEvent[],
   initialization: Promise.resolve(),
@@ -446,6 +449,8 @@ const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
 vi.mock('../su-session-rpc-engine', async (original) => {
   const actual = await original<typeof import('../su-session-rpc-engine')>();
   return { ...actual, startSuRpcEngine(...args: Parameters<typeof actual.startSuRpcEngine>) {
+    scriptedEngine.rpcLaunches.push({ backend: args[1].backend, identity: args[2].identity ?? 'su',
+      promptFile: args[0].promptFile, cwd: args[0].cwd });
     const engine = actual.startSuRpcEngine(args[0], args[1], args[2]);
     scriptedEngine.engines.push(engine);
     void (async () => {
@@ -454,6 +459,67 @@ vi.mock('../su-session-rpc-engine', async (original) => {
     return engine;
   } };
 });
+
+/**
+ * pui-chat-first-ux P-016: a stand-in for the native `codex app-server` / `omp
+ * --mode rpc-ui` process, so the REAL structured engine (identity choice,
+ * CODEX_HOME / OMP config materialisation, readiness, turn delivery) runs
+ * against it. Frame shapes follow su-session-rpc-engine.test.ts. Every turn
+ * is answered with `reply()`; `close()` ends it like a native exit.
+ */
+function fakeNativePeer(backend: 'codex' | 'omp', options: SuStdioPeerOptions, reply: () => string): SuStdioPeer {
+  const threadId = `p016-${backend}-${randomUUID()}`;
+  let exit!: () => void;
+  const done = new Promise<void>((resolve) => { exit = resolve; });
+  const codexModel = () => {
+    for (let index = 0; index < options.args.length - 1; index++) {
+      const value = options.args[index + 1];
+      if (options.args[index] === '-c' && value.startsWith('model=')) return JSON.parse(value.slice('model='.length)) as string;
+    }
+    return 'gpt-5-codex';
+  };
+  const ompModel = () => {
+    const at = options.args.indexOf('--model');
+    const spec = at >= 0 ? options.args[at + 1] : 'openai/gpt-5';
+    const slash = spec.indexOf('/');
+    return slash < 0 ? { provider: 'openai', id: spec } : { provider: spec.slice(0, slash), id: spec.slice(slash + 1) };
+  };
+  const later = (frames: RpcFrame[]) => setTimeout(() => { for (const frame of frames) options.onMessage(frame); }, 50);
+  return {
+    async request(frame: RpcFrame) {
+      if (frame.method === 'thread/start' || frame.method === 'thread/resume') {
+        return { thread: { id: threadId, cwd: options.cwd, path: '' }, model: codexModel() };
+      }
+      if (frame.method === 'mcpServerStatus/list') return { data: [{ name: 'papercusp-su', tools: { 'coord:whoami': {} } }] };
+      if (frame.method === 'turn/start') {
+        const text = reply();
+        later([
+          { method: 'item/agentMessage/delta', params: { threadId, itemId: 'p016-reply', delta: text } },
+          { method: 'item/completed', params: { threadId, item: { id: 'p016-reply', type: 'agentMessage', text } } },
+          { method: 'turn/completed', params: { threadId, turn: { id: 'p016-turn', status: 'completed' } } },
+        ]);
+        return { turn: { id: 'p016-turn' } };
+      }
+      if (frame.type === 'get_state') {
+        return { sessionId: threadId, sessionFile: '', model: ompModel(),
+          dumpTools: [{ name: 'mcp__papercusp_su__coord_whoami' }] };
+      }
+      if (frame.type === 'prompt') {
+        const text = reply();
+        later([
+          { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: text } },
+          { type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }] } },
+          { type: 'agent_end' },
+        ]);
+      }
+      return {};
+    },
+    send() {},
+    done,
+    async close() { exit(); },
+    pid: () => null,
+  };
+}
 const HARNESS = 'papercusp';
 const WORKSPACE = 'pui-agent-chat-e2e';
 const OWNER = 'pui-agent-chat-e2e-owner';
@@ -3664,6 +3730,101 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       rmSync(launchDir, { recursive: true, force: true });
     }
   }, 120_000);
+
+  // pui-chat-first-ux-2026-09-28 P-016 (D-004 / D-005 for Codex and OMP): the
+  // same identity rule as P-007's Claude case above. Outside every registered
+  // checkout a Codex or OMP chat runs that CLI's own identity — no SU playbook,
+  // no papercusp-su MCP, no psu hooks. Inside a checkout it keeps the SU
+  // identity and its rails. The native CLI is a stand-in (fakeNativePeer); the
+  // structured engine, the config it materialises and the PUI are all real.
+  for (const backend of ['codex', 'omp'] as const) {
+    test(`P-016: a ${backend} chat runs ${backend}'s own identity outside every checkout and the SU identity inside one`, async ({ onTestFailed }) => {
+      const { readAgentConfig, writeAgentConfig } = await import('../agent-config');
+      const stdio = await import('../su-session-stdio-peer');
+      const label = backend === 'codex' ? 'Codex' : 'OMP';
+      const outside = realpathSync(mkdtempSync(path.join(tmpdir(), `pui-p016-${backend}-`)));
+      // Default-chat selection matches the directory EXACTLY
+      // (su_session.rs session_in_directory), so a directory no other case
+      // launches in keeps this chat from adopting an earlier case's ended one.
+      const inside = path.join(REPO_ROOT, backend === 'codex' ? 'apps/tui/tests' : 'packages/operator-core/lib/pui-e2e');
+      const read = (file: string) => existsSync(file) ? readFileSync(file, 'utf8') : null;
+      const spawned: Array<{ args: string[]; codexConfig: string | null; codexAgents: string | null;
+        codexHooks: boolean; ompServers: string[] | null }> = [];
+      let replyText = '';
+      const saved = await readAgentConfig();
+      const spy = vi.spyOn(stdio, 'startSuStdioPeer').mockImplementation(async (options) => {
+        const codexHome = options.env.CODEX_HOME;
+        const ompMcp = options.env.PI_CODING_AGENT_DIR ? read(path.join(options.env.PI_CODING_AGENT_DIR, 'mcp.json')) : null;
+        spawned.push({
+          args: [...options.args],
+          codexConfig: codexHome ? read(path.join(codexHome, 'config.toml')) : null,
+          codexAgents: codexHome ? read(path.join(codexHome, 'AGENTS.md')) : null,
+          codexHooks: codexHome ? existsSync(path.join(codexHome, 'hooks.json')) : false,
+          ompServers: ompMcp ? Object.keys((JSON.parse(ompMcp) as { mcpServers?: Record<string, unknown> }).mcpServers ?? {}) : null,
+        });
+        return fakeNativePeer(backend, options, () => replyText);
+      });
+      let stage = 'config';
+      onTestFailed(() => console.info('PUI_P016_FAILURE', JSON.stringify({
+        backend, stage, outside, inside, launches: scriptedEngine.rpcLaunches.slice(-2),
+        spawned: spawned.map(({ args, codexHooks, ompServers }) => ({ args, codexHooks, ompServers })),
+      })));
+      // One chat in `cwd`: the reply must be THIS chat's own text on screen.
+      const chatIn = async (cwd: string) => {
+        const tag = randomUUID().slice(0, 8);
+        const prompt = `P16 ${backend} ${tag}`;
+        replyText = `P16 ${backend} reply ${tag}`;
+        const launches = scriptedEngine.rpcLaunches.length;
+        const pane = new PuiPane(bin, operatorPort, home, { args: [], cwd });
+        try {
+          await pane.waitFor(`${label} · ${cwd}`, { timeoutMs: 40_000 });
+          pane.write(prompt);
+          await pane.waitFor(prompt);
+          pane.enter();
+          await pane.waitFor(replyText, { timeoutMs: 60_000 });
+        } finally { await pane.stop(); }
+        expect(scriptedEngine.rpcLaunches).toHaveLength(launches + 1);
+        return { launch: scriptedEngine.rpcLaunches.at(-1)!, native: spawned.at(-1)! };
+      };
+      try {
+        // PUI reads the configured backend at startup: set it before launching.
+        await writeAgentConfig({ ...saved, backend });
+
+        stage = 'outside';
+        const own = await chatIn(outside);
+        expect(own.launch).toMatchObject({ backend, identity: 'coding-assistant', cwd: outside });
+        expect(own.native.args).not.toContain(own.launch.promptFile);
+        expect(own.native.args).not.toContain('--system-prompt');
+        const sealed = readFileSync(own.launch.promptFile, 'utf8');
+        if (backend === 'codex') {
+          expect(own.native.codexConfig ?? '').not.toMatch(/mcp_servers\.["']?papercusp-su/);
+          expect(own.native.codexConfig ?? '').not.toMatch(/project_doc_max_bytes\s*=\s*0/);
+          // The user's own ~/.codex/AGENTS.md (or none) — never the SU playbook.
+          expect(own.native.codexAgents).not.toBe(sealed);
+          expect(own.native.codexHooks).toBe(false);
+        } else {
+          expect(own.native.ompServers ?? []).not.toContain('papercusp-su');
+        }
+
+        stage = 'inside';
+        const su = await chatIn(inside);
+        expect(su.launch).toMatchObject({ backend, identity: 'su', cwd: inside });
+        if (backend === 'codex') {
+          expect(su.native.codexConfig).toMatch(/mcp_servers\.["']?papercusp-su/);
+          expect(su.native.codexAgents).toBe(readFileSync(su.launch.promptFile, 'utf8'));
+        } else {
+          expect(su.native.args).toEqual(expect.arrayContaining(['--system-prompt', su.launch.promptFile]));
+          expect(su.native.ompServers).toContain('papercusp-su');
+        }
+        console.info('PUI_P016_IDENTITY_ACCEPTANCE', JSON.stringify({ backend, binary: bin, binarySha256,
+          outside: own.launch, inside: su.launch }));
+      } finally {
+        spy.mockRestore();
+        await writeAgentConfig(saved);
+        rmSync(outside, { recursive: true, force: true });
+      }
+    }, 240_000);
+  }
 
   // pui-chat-first-ux-2026-09-28 P-004 / R-04, composer half: the default chat
   // takes input the way Claude Code / Codex do — a `/` command menu, multi-line

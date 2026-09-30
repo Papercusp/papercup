@@ -1449,6 +1449,33 @@ describe('writeCodexLockHooks — context-injection hooks (P-004)', () => {
     expect(injectEntries(hooks, 'PostToolUse')).toHaveLength(1);
     expect(injectEntries(hooks, 'UserPromptSubmit')[0].hooks[0].command).toContain("PAPERCUSP_SID='su-inject-44'");
   });
+
+  it('registers the three identity hook ports (P-011) through the same dispatcher, every matcher .*', async () => {
+    await installFakeHooks();
+    installFakeDispatcher();
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({ sessionKey: 45, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-inject-45' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    for (const event of ['PreToolUse', 'Stop', 'SessionStart']) {
+      const entries = injectEntries(hooks, event);
+      expect(entries, `${event} identity hook`).toHaveLength(1);
+      expect(entries[0].matcher).toBe('.*');
+      expect(entries[0].hooks[0].command).toContain(`--client=codex --event=${event}`);
+      expect(entries[0].hooks[0].command).toContain("PAPERCUSP_SID='role-inject-45'");
+    }
+    // The lifecycle bridge keeps its own SessionStart entry beside the identity one.
+    expect(JSON.stringify(hooks.hooks.SessionStart)).toContain('lifecycle-report.sh');
+  });
+
+  it('omits the Stop key entirely, and every identity port, without the dispatcher', async () => {
+    await installFakeHooks();
+    const writeRoleCodexHome = await load();
+    const out = writeRoleCodexHome({ sessionKey: 46, mcpUrl: 'http://x/?role=worker&sig=1', promptText: 'P', sid: 'role-inject-46' });
+    const hooks = JSON.parse(readFileSync(join(out.codexHome, 'hooks.json'), 'utf8'));
+    expect(hooks.hooks.Stop).toBeUndefined();
+    expect(injectEntries(hooks, 'PreToolUse')).toHaveLength(0);
+    expect(injectEntries(hooks, 'SessionStart')).toHaveLength(0);
+  });
 });
 
 describe('makeCodingAssistantCodexHome (pui-chat-first-ux P-016)', () => {

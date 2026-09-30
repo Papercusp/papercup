@@ -184,7 +184,7 @@ describe('R-11 — rotation has no downtime', () => {
       token_hash: 'f'.repeat(64),
       previous_token_hash: minted.tokenHash,
       previous_token_valid_until: new Date(now.getTime() + 1000),
-    }) as StoredAppKeyRow;
+    }) as unknown as StoredAppKeyRow;
     expect(appKeyVerdictOf(row, minted.key, now)).toMatchObject({ ok: true, viaPreviousKey: true });
   });
 });
@@ -200,7 +200,7 @@ describe('R-12 — a rotated-out key dies after the window', () => {
 
   it('refuses the old key at the deadline itself, and at once for a zero overlap', async () => {
     const at = new Date('2026-09-30T12:00:00Z');
-    const row = serviceRow('f'.repeat(64), minted.id, { previous_token_hash: minted.tokenHash, previous_token_valid_until: at }) as StoredAppKeyRow;
+    const row = serviceRow('f'.repeat(64), minted.id, { previous_token_hash: minted.tokenHash, previous_token_valid_until: at }) as unknown as StoredAppKeyRow;
     expect(appKeyVerdictOf(row, minted.key, at)).toEqual({ ok: false, reason: 'rotated' });
     const oldKey = minted.key;
     await rotateAppKey(WS, minted.id, { overlapSec: 0 });

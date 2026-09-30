@@ -71,6 +71,20 @@ async function resolveWorkspace(body: HookBody): Promise<string> {
 
 const empty = (): Response => Response.json({ ok: true, text: '' });
 
+/**
+ * One context sink under the port's wall. The wall covers the wearer and
+ * worn-rule reads too, not only the evaluation the signal reaches, so a slow
+ * read degrades to no text inside the hook's own timeout.
+ */
+async function boundedContextSinkText(input: { ownerId: string; workspaceId: string; sink: 'stop' | 'compaction' }): Promise<string> {
+  const { withBoundedTimeout } = await import('../../../bounded-timeout');
+  const bounded = await withBoundedTimeout(
+    (signal) => evaluateHookContextSink({ ...input, signal }),
+    { fallback: { text: '', result: null }, timeoutMs: CONTEXT_SINK_BUDGET_MS, label: `identity-hook:${input.sink}` },
+  );
+  return bounded.value.text;
+}
+
 /** The refusal a client shows for a deny verdict; empty for no verdict. */
 export function guardRefusalText(verdict: GuardVerdict): string {
   if (verdict.decision !== 'deny') return '';
@@ -146,12 +160,7 @@ const stopContext = defineTool({
     const body = await readBody(req);
     const ownerId = (body?.owner ?? '').trim();
     if (!body || !ownerId) return empty();
-    const { text } = await evaluateHookContextSink({
-      ownerId,
-      workspaceId: await resolveWorkspace(body),
-      sink: 'stop',
-      signal: AbortSignal.timeout(CONTEXT_SINK_BUDGET_MS),
-    });
+    const text = await boundedContextSinkText({ ownerId, workspaceId: await resolveWorkspace(body), sink: 'stop' });
     return Response.json({ ok: true, text });
   },
 });
@@ -167,12 +176,7 @@ const compactionContext = defineTool({
     if (!body || !ownerId || !source) return empty();
     const workspaceId = await resolveWorkspace(body);
     if (!(await compactionSinkDue({ ownerId, workspaceId, source }))) return empty();
-    const { text } = await evaluateHookContextSink({
-      ownerId,
-      workspaceId,
-      sink: 'compaction',
-      signal: AbortSignal.timeout(CONTEXT_SINK_BUDGET_MS),
-    });
+    const text = await boundedContextSinkText({ ownerId, workspaceId, sink: 'compaction' });
     return Response.json({ ok: true, text });
   },
 });

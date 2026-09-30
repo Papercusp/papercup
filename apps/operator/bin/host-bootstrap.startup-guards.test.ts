@@ -227,7 +227,10 @@ describe('background admission recovery loads the live kernel resolver before ro
   });
 
   it('evaluates the handler before bootstrap in both Hono and packaged background hosts', () => {
-    expect(honoHostSrc).toMatch(/^import \{ handler \} from '\.\/host-handler';$/m);
+    // A STATIC import that names `handler` is the invariant (it evaluates the handler graph at
+    // boot); sibling named imports from the same module are fine (e.g. externalIngressHandler).
+    expect(honoHostSrc).toMatch(/^import \{[^}]*\bhandler\b[^}]*\} from '\.\/host-handler';$/m);
+    expect(honoHostSrc).not.toMatch(/^import type \{[^}]*\bhandler\b[^}]*\} from '\.\/host-handler';$/m);
     expect(honoHostSrc).toContain('return runBootstrap();');
     const packagedHost = readFileSync(join(__dirname, 'serve.ts'), 'utf8');
     const handlerImport = packagedHost.indexOf('const { handler } = await import("./host-handler");');

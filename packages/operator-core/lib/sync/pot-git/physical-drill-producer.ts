@@ -156,16 +156,32 @@ export function samePhysicalDrillPath(
   }
 }
 
-function assertDistinctHosts(identities: PhysicalDrillHostIdentity[]): void {
+/**
+ * Two hosts must be distinct owners (hostId, deviceKey) AND, for release evidence, distinct
+ * machines (machineFingerprint). A same-box rehearsal runs both owners on ONE machine by
+ * construction, so it can only ever meet the owner half. That relaxation is safe solely
+ * because a diagnostic target can never sign or finalize (refuseDiagnosticEvidence): the
+ * finalize path always calls this with distinct machines required.
+ */
+function assertDistinctHosts(
+  identities: PhysicalDrillHostIdentity[],
+  opts: { requireDistinctMachines: boolean } = { requireDistinctMachines: true },
+): void {
   if (identities.length !== 2) throw new Error('physical-drill-producer: exactly two host identities required');
-  for (const field of ['hostId', 'deviceKey', 'machineFingerprint'] as const) {
+  const fields = opts.requireDistinctMachines
+    ? (['hostId', 'deviceKey', 'machineFingerprint'] as const)
+    : (['hostId', 'deviceKey'] as const);
+  for (const field of fields) {
     if (new Set(identities.map((identity) => identity[field])).size !== 2) {
       throw new Error(`physical-drill-producer: two physical hosts must have distinct ${field} values`);
     }
   }
 }
 
-export function preflightPhysicalDrillHosts(rawIdentities: unknown[]): PhysicalDrillHostIdentity[] {
+export function preflightPhysicalDrillHosts(
+  rawIdentities: unknown[],
+  opts: { diagnostic?: boolean } = {},
+): PhysicalDrillHostIdentity[] {
   const identities = rawIdentities.map((raw, index) => {
     const identity = record(raw);
     if (!identity || identity.schemaVersion !== 'hive-git-physical-host-identity/v1') {
@@ -173,7 +189,7 @@ export function preflightPhysicalDrillHosts(rawIdentities: unknown[]): PhysicalD
     }
     return identity as unknown as PhysicalDrillHostIdentity;
   });
-  assertDistinctHosts(identities);
+  assertDistinctHosts(identities, { requireDistinctMachines: opts.diagnostic !== true });
   return identities;
 }
 
@@ -274,7 +290,10 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return {
       ok: true,
-      hosts: preflightPhysicalDrillHosts([readJson(towerIdentityPath), readJson(vmIdentityPath)]),
+      hosts: preflightPhysicalDrillHosts([readJson(towerIdentityPath), readJson(vmIdentityPath)], {
+        // Same-box (D-005): both owners share one machine; the evidence stays unsignable.
+        diagnostic: physicalDrillTarget().diagnostic,
+      }),
     };
   }
   if (mode === 'sign') {

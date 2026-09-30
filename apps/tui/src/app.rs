@@ -3167,10 +3167,12 @@ impl App {
     /// written a new message, so the whole composer is returned.
     fn text_beyond_pending_draft(&self, composer: &str) -> String {
         match self.su_pending_turn.as_ref() {
-            Some(pending) if !pending.draft.is_empty() && self.pending_draft_in_composer() => composer
-                .strip_prefix(pending.draft.as_str())
-                .unwrap_or(composer)
-                .to_owned(),
+            Some(pending) if !pending.draft.is_empty() && self.pending_draft_in_composer() => {
+                composer
+                    .strip_prefix(pending.draft.as_str())
+                    .unwrap_or(composer)
+                    .to_owned()
+            }
             _ => composer.to_owned(),
         }
     }
@@ -4073,9 +4075,8 @@ impl App {
                             // wrapped question reports even an ANSWERED card as
                             // a denied wrapper call, which is not a failure either.
                             let prompts = question_tool_prompts(&tool.name, tool.input.as_ref());
-                            let skipped = prompts
-                                .iter()
-                                .any(|p| self.su_skipped_prompts.contains(p));
+                            let skipped =
+                                prompts.iter().any(|p| self.su_skipped_prompts.contains(p));
                             let answered = !prompts.is_empty()
                                 && prompts.iter().all(|p| self.su_answered_prompts.contains(p));
                             for prompt in &prompts {
@@ -5157,10 +5158,7 @@ impl App {
     fn card_key(&mut self, code: KeyCode) -> Action {
         // P-015: an answered card takes no input until the server closes it, and
         // a repeat of the key that answered it must not answer the NEXT card.
-        if self
-            .card_state
-            .swallow_key(code, std::time::Instant::now())
-        {
+        if self.card_state.swallow_key(code, std::time::Instant::now()) {
             return Action::Render;
         }
         let action = self.card_key_inner(code);
@@ -6059,57 +6057,70 @@ impl App {
                     launch_cwd,
                 )
         };
-        options.extend(self.agent_chat_summaries.iter().filter(in_scope).map(|chat| {
-            let title = chat
-                .title
-                .as_deref()
-                .filter(|t| !t.is_empty())
-                .unwrap_or("untitled");
-            let active = self.agent_chat_id.as_deref() == Some(chat.id.as_str());
-            let inventory = self
-                .su_session_inventory
+        options.extend(
+            self.agent_chat_summaries
                 .iter()
-                .find(|entry| entry.agent_chat_id == chat.id);
-            let status = inventory
-                .map(|entry| format!(" · {} · {}", entry.backend.label(), entry.lifecycle))
-                .unwrap_or_default();
-            let reconciliation = inventory
-                .map(|entry| entry.reconciliation.to_string())
-                .unwrap_or_else(|| "legacy chat".to_string());
-            let turns = format!(
-                "{} turn{}",
-                chat.turn_count,
-                if chat.turn_count == 1 { "" } else { "s" }
-            );
-            if self.chat_first {
-                // pui-chat-first-ux P-010: the default chat's /resume list reads
-                // like Claude Code's — which conversation and when — with no
-                // role, backend lifecycle, chat id or reconciliation jargon.
-                return PickerOption {
-                    id: format!("chat:{}", chat.id),
-                    label: format!("{}{} · {}", if active { "● " } else { "" }, title, turns),
-                    hint: Some(format!("updated {}", Self::human_timestamp(&chat.updated_at))),
-                    disabled: false,
-                };
-            }
-            PickerOption {
-                id: format!("chat:{}", chat.id),
-                label: format!(
-                    "{}{} · {}{} · {} turn{}",
-                    if active { "● " } else { "" },
-                    chat.role,
-                    title,
-                    status,
-                    chat.turn_count,
-                    if chat.turn_count == 1 { "" } else { "s" }
-                ),
-                hint: Some(format!(
-                    "{} · updated {} · {}",
-                    chat.id, chat.updated_at, reconciliation
-                )),
-                disabled: false,
-            }
-        }));
+                .filter(in_scope)
+                .map(|chat| {
+                    let title = chat
+                        .title
+                        .as_deref()
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or("untitled");
+                    let active = self.agent_chat_id.as_deref() == Some(chat.id.as_str());
+                    let inventory = self
+                        .su_session_inventory
+                        .iter()
+                        .find(|entry| entry.agent_chat_id == chat.id);
+                    let status = inventory
+                        .map(|entry| format!(" · {} · {}", entry.backend.label(), entry.lifecycle))
+                        .unwrap_or_default();
+                    let reconciliation = inventory
+                        .map(|entry| entry.reconciliation.to_string())
+                        .unwrap_or_else(|| "legacy chat".to_string());
+                    let turns = format!(
+                        "{} turn{}",
+                        chat.turn_count,
+                        if chat.turn_count == 1 { "" } else { "s" }
+                    );
+                    if self.chat_first {
+                        // pui-chat-first-ux P-010: the default chat's /resume list reads
+                        // like Claude Code's — which conversation and when — with no
+                        // role, backend lifecycle, chat id or reconciliation jargon.
+                        return PickerOption {
+                            id: format!("chat:{}", chat.id),
+                            label: format!(
+                                "{}{} · {}",
+                                if active { "● " } else { "" },
+                                title,
+                                turns
+                            ),
+                            hint: Some(format!(
+                                "updated {}",
+                                Self::human_timestamp(&chat.updated_at)
+                            )),
+                            disabled: false,
+                        };
+                    }
+                    PickerOption {
+                        id: format!("chat:{}", chat.id),
+                        label: format!(
+                            "{}{} · {}{} · {} turn{}",
+                            if active { "● " } else { "" },
+                            chat.role,
+                            title,
+                            status,
+                            chat.turn_count,
+                            if chat.turn_count == 1 { "" } else { "s" }
+                        ),
+                        hint: Some(format!(
+                            "{} · updated {} · {}",
+                            chat.id, chat.updated_at, reconciliation
+                        )),
+                        disabled: false,
+                    }
+                }),
+        );
         if self.chat_first && options.is_empty() {
             // Until this pot's chat list has arrived an empty list means
             // "not loaded yet", never "none exist". The picker refreshes in
@@ -13109,17 +13120,14 @@ impl App {
             // kitty keyboard protocol, main.rs) are the explicit multiline
             // affordances; plain Enter remains send, even when the cursor sits
             // in a middle logical line.
-            if (code == KeyCode::Enter
-                && mods.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT))
+            if (code == KeyCode::Enter && mods.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT))
                 || (code == KeyCode::Char('j') && mods.contains(KeyModifiers::CONTROL))
             {
                 return self.chat_insert_text("\n");
             }
             // The `/` command menu (pui-chat-first-ux P-004): Up/Down pick,
             // Tab completes, Enter runs, Esc dismisses. Typing falls through.
-            if let Some(prefix) =
-                crate::chat_commands::query(&self.chat_input).map(str::to_owned)
-            {
+            if let Some(prefix) = crate::chat_commands::query(&self.chat_input).map(str::to_owned) {
                 let hits = crate::chat_commands::matching(&prefix).len();
                 match code {
                     KeyCode::Up if hits > 0 => {
@@ -15197,7 +15205,9 @@ mod tests {
             "the card stays queued until the server's authoritative close"
         );
         assert_eq!(
-            app.card_state.focused_answered().map(|a| a.summary.as_str()),
+            app.card_state
+                .focused_answered()
+                .map(|a| a.summary.as_str()),
             Some("Answered: Change"),
             "P-015: the answered card collapses at once"
         );
@@ -15208,7 +15218,9 @@ mod tests {
         });
         assert!(app.card_state.focused_answered().is_none());
         assert!(
-            app.last_error.as_deref().is_some_and(|e| e.contains("Answer the card again")),
+            app.last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("Answer the card again")),
             "{:?}",
             app.last_error
         );
@@ -15272,25 +15284,46 @@ mod tests {
         );
 
         // Repeats while ALPHA is in flight — the P-005 harness's second press.
-        for key in [KeyCode::Char('1'), KeyCode::Enter, KeyCode::Char('2'), KeyCode::Esc] {
+        for key in [
+            KeyCode::Char('1'),
+            KeyCode::Enter,
+            KeyCode::Char('2'),
+            KeyCode::Esc,
+        ] {
             let action = app.on_key(key, KeyModifiers::NONE);
-            assert_eq!(answered_id(&action), None, "{key:?} answered a card while ALPHA was in flight");
+            assert_eq!(
+                answered_id(&action),
+                None,
+                "{key:?} answered a card while ALPHA was in flight"
+            );
         }
 
         // The server closes ALPHA; BETA is focused, and an immediate repeat of the
         // answering key still belongs to ALPHA.
         close_card(&mut app, 3, "alpha");
-        assert_eq!(app.card_state.focused_correlation_id().as_deref(), Some("beta"));
+        assert_eq!(
+            app.card_state.focused_correlation_id().as_deref(),
+            Some("beta")
+        );
         assert!(app.card_state.focused_answered().is_none());
         let repeat = app.on_key(KeyCode::Char('1'), KeyModifiers::NONE);
-        assert_eq!(answered_id(&repeat), None, "a repeated Approve answered BETA");
-        assert_eq!(app.card_state.focused_correlation_id().as_deref(), Some("beta"));
+        assert_eq!(
+            answered_id(&repeat),
+            None,
+            "a repeated Approve answered BETA"
+        );
+        assert_eq!(
+            app.card_state.focused_correlation_id().as_deref(),
+            Some("beta")
+        );
 
         // A different key is a deliberate choice about BETA.
         let decline = app.on_key(KeyCode::Char('2'), KeyModifiers::NONE);
         assert_eq!(answered_id(&decline).as_deref(), Some("beta"));
         assert_eq!(
-            app.card_state.focused_answered().map(|a| a.summary.as_str()),
+            app.card_state
+                .focused_answered()
+                .map(|a| a.summary.as_str()),
             Some("Declined")
         );
     }
@@ -15369,7 +15402,10 @@ mod tests {
         ready["state"] = json!("ready");
         ready["runtimeGeneration"] = json!(1);
         app.apply_su_session_event(su_event(ready.clone()));
-        assert!(app.chat_streaming, "the pending first turn is still sending");
+        assert!(
+            app.chat_streaming,
+            "the pending first turn is still sending"
+        );
         assert!(app.su_pending_turn.is_some());
 
         // Calibration: once the turn has failed, ready settles the pane.
@@ -15456,19 +15492,58 @@ mod tests {
             e["turnId"] = json!("turn-1");
             e
         };
-        let question = |prompt: &str| json!({"questions":[{"question":prompt,"options":[{"label":"Tests"}]}]});
+        let question =
+            |prompt: &str| json!({"questions":[{"question":prompt,"options":[{"label":"Tests"}]}]});
         // (call id, tool name, input, card resolution or None, isError, expected)
         let cases: Vec<(&str, &str, Value, Option<&str>, bool, ToolOutcome)> = vec![
-            ("skip", "AskUserQuestion", question("What should we work on?"), Some("declined"), true, ToolOutcome::Skipped),
-            ("interrupt", "AskUserQuestion", question("Still there?"), Some("cancelled"), true, ToolOutcome::Skipped),
-            ("wrapped-answer", "mcp__papercusp-su__tools_invoke",
-                json!({"name":"AskUserQuestion","args":question("Keep or change?")}), Some("submitted"), true, ToolOutcome::Ok),
-            ("wrapped-skip", "mcp__papercusp-su__tools_invoke",
-                json!({"name":"AskUserQuestion","args":question("Which file?")}), Some("declined"), true, ToolOutcome::Skipped),
-            ("broken", "AskUserQuestion", question("Bad schema?"), None, true,
-                ToolOutcome::Failed("SU-session tool failed".into())),
-            ("bash-declined", "Bash", json!({"command":"ls"}), Some("declined"), true,
-                ToolOutcome::Failed("SU-session tool failed".into())),
+            (
+                "skip",
+                "AskUserQuestion",
+                question("What should we work on?"),
+                Some("declined"),
+                true,
+                ToolOutcome::Skipped,
+            ),
+            (
+                "interrupt",
+                "AskUserQuestion",
+                question("Still there?"),
+                Some("cancelled"),
+                true,
+                ToolOutcome::Skipped,
+            ),
+            (
+                "wrapped-answer",
+                "mcp__papercusp-su__tools_invoke",
+                json!({"name":"AskUserQuestion","args":question("Keep or change?")}),
+                Some("submitted"),
+                true,
+                ToolOutcome::Ok,
+            ),
+            (
+                "wrapped-skip",
+                "mcp__papercusp-su__tools_invoke",
+                json!({"name":"AskUserQuestion","args":question("Which file?")}),
+                Some("declined"),
+                true,
+                ToolOutcome::Skipped,
+            ),
+            (
+                "broken",
+                "AskUserQuestion",
+                question("Bad schema?"),
+                None,
+                true,
+                ToolOutcome::Failed("SU-session tool failed".into()),
+            ),
+            (
+                "bash-declined",
+                "Bash",
+                json!({"command":"ls"}),
+                Some("declined"),
+                true,
+                ToolOutcome::Failed("SU-session tool failed".into()),
+            ),
         ];
         for (call, name, input, resolution, is_error, expected) in cases {
             let mut started = next("tool");
@@ -15513,7 +15588,12 @@ mod tests {
         // a later question reusing a prompt starts clean. (An approval card's
         // prompt has no question tool to consume it; it is dropped with the
         // conversation.)
-        for prompt in ["What should we work on?", "Still there?", "Keep or change?", "Which file?"] {
+        for prompt in [
+            "What should we work on?",
+            "Still there?",
+            "Keep or change?",
+            "Which file?",
+        ] {
             assert!(!app.su_skipped_prompts.contains(prompt), "{prompt}");
             assert!(!app.su_answered_prompts.contains(prompt), "{prompt}");
         }
@@ -15523,7 +15603,10 @@ mod tests {
     #[test]
     fn question_tool_prompts_reads_native_and_wrapped_questions_only() {
         let q = json!({"questions":[{"question":"A?"},{"question":"B?"}]});
-        assert_eq!(question_tool_prompts("AskUserQuestion", Some(&q)), vec!["A?", "B?"]);
+        assert_eq!(
+            question_tool_prompts("AskUserQuestion", Some(&q)),
+            vec!["A?", "B?"]
+        );
         let wrapped = json!({"name":"AskUserQuestion","args":q});
         assert_eq!(
             question_tool_prompts("mcp__papercusp-su__tools_invoke", Some(&wrapped)),
@@ -15586,7 +15669,12 @@ mod tests {
         let blocks: Vec<(String, Vec<String>)> = app
             .chat_messages
             .iter()
-            .map(|m| (m.content.clone(), m.tools.iter().map(|t| t.name.clone()).collect()))
+            .map(|m| {
+                (
+                    m.content.clone(),
+                    m.tools.iter().map(|t| t.name.clone()).collect(),
+                )
+            })
             .collect();
         assert_eq!(
             blocks,
@@ -15603,7 +15691,10 @@ mod tests {
             app.chat_history_for_send(),
             vec![
                 ("assistant".to_string(), "Let me look.".to_string()),
-                ("assistant".to_string(), "calc.js adds two numbers.".to_string()),
+                (
+                    "assistant".to_string(),
+                    "calc.js adds two numbers.".to_string()
+                ),
             ]
         );
     }
@@ -15615,7 +15706,9 @@ mod tests {
         let mut a = App::new();
         a.begin_user_send("hi");
         a.update(Event::ChatDelta("thinking aloud ".into()));
-        a.update(Event::ChatToolCall(ChatToolCall::plain("harness:list".into())));
+        a.update(Event::ChatToolCall(ChatToolCall::plain(
+            "harness:list".into(),
+        )));
         a.update(Event::ChatDelta("<say>done</say>".into()));
         a.update(Event::ChatDone);
         assert_eq!(a.chat_messages.len(), 2);
@@ -16831,8 +16924,14 @@ mod tests {
         a.su_session_inventory = vec![earlier];
         let opened = a.run_slash_command("resume");
         assert_eq!(opened, Action::Render);
-        assert!(a.session_switcher.is_none(), "the fleet switcher must not open");
-        let picker = a.session_picker.as_ref().expect("conversation picker opens");
+        assert!(
+            a.session_switcher.is_none(),
+            "the fleet switcher must not open"
+        );
+        let picker = a
+            .session_picker
+            .as_ref()
+            .expect("conversation picker opens");
         assert_eq!(picker.axis, crate::session_config::PickerAxis::Conversation);
         let row = picker
             .options
@@ -17010,7 +17109,10 @@ mod tests {
             selected_chat_id: None,
             entries: vec![row],
         });
-        assert_eq!(a.session_picker.as_ref().unwrap().options[0].id, "chat:earlier");
+        assert_eq!(
+            a.session_picker.as_ref().unwrap().options[0].id,
+            "chat:earlier"
+        );
     }
 
     /// The workbench keeps /resume on the fleet switcher (panes and windows).
@@ -17019,17 +17121,26 @@ mod tests {
         let mut a = App::new();
         a.chat_first = false;
         let action = a.run_slash_command("resume");
-        assert!(matches!(action, Action::FetchSessionSwitcher { .. }), "{action:?}");
+        assert!(
+            matches!(action, Action::FetchSessionSwitcher { .. }),
+            "{action:?}"
+        );
         assert!(a.session_switcher.is_some());
         assert!(a.session_picker.is_none());
     }
 
     #[test]
     fn human_timestamp_formats_iso_instants_and_passes_other_text_through() {
-        assert_eq!(App::human_timestamp("2026-09-29T16:47:13.228Z"), "2026-09-29 16:47 UTC");
+        assert_eq!(
+            App::human_timestamp("2026-09-29T16:47:13.228Z"),
+            "2026-09-29 16:47 UTC"
+        );
         assert_eq!(App::human_timestamp("2026-08-29"), "2026-08-29");
         assert_eq!(App::human_timestamp("yesterday"), "yesterday");
-        assert_eq!(App::human_timestamp("2026-09-29T16:47ééé"), "2026-09-29T16:47ééé");
+        assert_eq!(
+            App::human_timestamp("2026-09-29T16:47ééé"),
+            "2026-09-29T16:47ééé"
+        );
     }
 
     #[test]
@@ -17334,7 +17445,10 @@ mod tests {
         assert!(a.session_setup.is_none(), "no form stays open");
         assert!(a.session_setup_accepted);
         assert!(!a.chat_first_autostart);
-        assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "  first λ 雪  ");
+        assert_eq!(
+            a.su_pending_turn.as_ref().unwrap().content,
+            "  first λ 雪  "
+        );
         assert_eq!(a.chat_account.as_deref(), Some("default"));
     }
 
@@ -17348,7 +17462,10 @@ mod tests {
         a.chat_input = "hi there".into();
         a.chat_cursor = a.chat_input.len();
         let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(action, Action::OpenSuSession { .. }), "got {action:?}");
+        assert!(
+            matches!(action, Action::OpenSuSession { .. }),
+            "got {action:?}"
+        );
         assert!(a.chat_input.is_empty(), "the sent line leaves the composer");
         assert_eq!(a.chat_cursor, 0);
         assert_eq!(a.pending_owner_echo(), Some("hi there"));
@@ -17399,7 +17516,10 @@ mod tests {
         assert!(a.chat_messages.iter().all(|m| m.role != "user"));
 
         a.chat_cursor = a.chat_input.len();
-        assert!(!matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render));
+        assert!(!matches!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Render
+        ));
         assert!(a.chat_input.is_empty(), "the retry leaves the composer too");
         assert_eq!(a.pending_owner_echo(), Some("hi"));
     }
@@ -17451,19 +17571,33 @@ mod tests {
         a.harnesses.clear();
         a.harnesses_loaded = false;
         a.chat_input = "hello".into();
-        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::CheckSessionSetup);
-        assert_eq!(a.chat_first_quiet_wait().as_deref(), Some("Starting Claude…"));
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::CheckSessionSetup
+        );
+        assert_eq!(
+            a.chat_first_quiet_wait().as_deref(),
+            Some("Starting Claude…")
+        );
         assert_eq!(a.pending_owner_echo(), Some("hello"));
 
-        assert_eq!(a.on_key(KeyCode::Char('x'), KeyModifiers::NONE), Action::Render);
-        assert!(a.chat_first_autostart, "a stray key must not cancel the start");
+        assert_eq!(
+            a.on_key(KeyCode::Char('x'), KeyModifiers::NONE),
+            Action::Render
+        );
+        assert!(
+            a.chat_first_autostart,
+            "a stray key must not cancel the start"
+        );
         assert_eq!(a.session_setup.as_ref().unwrap().message, "hello");
 
         a.set_harnesses(vec![HarnessRef {
             slug: "chosen-project".into(),
             path: None,
         }]);
-        let action = a.try_chat_first_autostart().expect("launches once the list lands");
+        let action = a
+            .try_chat_first_autostart()
+            .expect("launches once the list lands");
         assert!(
             matches!(
                 action,
@@ -17485,7 +17619,11 @@ mod tests {
         a.chat_input = "hello".into();
         a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(a.chat_first_autostart);
-        assert_eq!(a.chat_first_quiet_wait(), None, "missing project needs the owner");
+        assert_eq!(
+            a.chat_first_quiet_wait(),
+            None,
+            "missing project needs the owner"
+        );
 
         let mut b = chat_first_app();
         b.harnesses.clear();
@@ -17493,15 +17631,21 @@ mod tests {
         b.chat_input = "hello".into();
         b.on_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(b.chat_first_quiet_wait().is_some());
-        b.chat_first_autostart_since =
-            std::time::Instant::now().checked_sub(CHAT_FIRST_QUIET_WAIT);
-        assert_eq!(b.chat_first_quiet_wait(), None, "a long wait opens the form");
+        b.chat_first_autostart_since = std::time::Instant::now().checked_sub(CHAT_FIRST_QUIET_WAIT);
+        assert_eq!(
+            b.chat_first_quiet_wait(),
+            None,
+            "a long wait opens the form"
+        );
 
         let mut c = chat_first_app();
         c.backend_identity = None;
         c.chat_input = "hello".into();
         c.on_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(c.chat_first_quiet_wait().is_some(), "identity not answered yet");
+        assert!(
+            c.chat_first_quiet_wait().is_some(),
+            "identity not answered yet"
+        );
         c.on_key(KeyCode::Esc, KeyModifiers::NONE);
         assert!(c.session_setup.is_none());
         assert!(!c.chat_first_autostart);
@@ -17531,9 +17675,18 @@ mod tests {
         let mut a = chat_first_app();
         a.chat_input = "/e".into();
         a.chat_cursor = 2;
-        assert!(matches!(a.on_key(KeyCode::Down, KeyModifiers::NONE), Action::Render));
-        assert_eq!(a.chat_slash_selected, 1, "Down highlights the second match (/exit)");
-        assert!(matches!(a.on_key(KeyCode::Up, KeyModifiers::NONE), Action::Render));
+        assert!(matches!(
+            a.on_key(KeyCode::Down, KeyModifiers::NONE),
+            Action::Render
+        ));
+        assert_eq!(
+            a.chat_slash_selected, 1,
+            "Down highlights the second match (/exit)"
+        );
+        assert!(matches!(
+            a.on_key(KeyCode::Up, KeyModifiers::NONE),
+            Action::Render
+        ));
         assert_eq!(a.chat_slash_selected, 0, "Up moves back to /expand");
         let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(matches!(action, Action::Render), "got {action:?}");
@@ -17543,7 +17696,10 @@ mod tests {
 
         a.chat_input = "/exit".into();
         a.chat_cursor = 5;
-        assert!(matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Quit));
+        assert!(matches!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Quit
+        ));
         assert!(a.should_quit);
     }
 
@@ -17554,15 +17710,27 @@ mod tests {
         a.chat_cursor = 5;
         let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(matches!(action, Action::Render), "got {action:?}");
-        assert!(a.su_pending_turn.is_none(), "an unknown command is not sent");
+        assert!(
+            a.su_pending_turn.is_none(),
+            "an unknown command is not sent"
+        );
         assert_eq!(a.chat_input, "/nope", "the text stays for editing");
-        assert!(a.toast.as_ref().is_some_and(|t| t.message.contains("/nope")));
-        assert!(matches!(a.on_key(KeyCode::Esc, KeyModifiers::NONE), Action::Render));
+        assert!(a
+            .toast
+            .as_ref()
+            .is_some_and(|t| t.message.contains("/nope")));
+        assert!(matches!(
+            a.on_key(KeyCode::Esc, KeyModifiers::NONE),
+            Action::Render
+        ));
         assert!(a.chat_input.is_empty(), "Esc dismisses the command");
         // Text with a space is a message, not a command.
         a.chat_input = "/tmp is full".into();
         a.chat_cursor = a.chat_input.len();
-        assert!(!matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render));
+        assert!(!matches!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Render
+        ));
         assert_eq!(a.su_pending_turn.as_ref().unwrap().content, "/tmp is full");
     }
 
@@ -17571,10 +17739,16 @@ mod tests {
         let mut a = chat_first_app();
         a.chat_input = "line one\\".into();
         a.chat_cursor = a.chat_input.len();
-        assert!(matches!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render));
+        assert!(matches!(
+            a.on_key(KeyCode::Enter, KeyModifiers::NONE),
+            Action::Render
+        ));
         assert_eq!(a.chat_input, "line one\n");
         a.on_key(KeyCode::Char('x'), KeyModifiers::NONE);
-        assert!(matches!(a.on_key(KeyCode::Enter, KeyModifiers::SHIFT), Action::Render));
+        assert!(matches!(
+            a.on_key(KeyCode::Enter, KeyModifiers::SHIFT),
+            Action::Render
+        ));
         assert_eq!(a.chat_input, "line one\nx\n");
         assert!(a.su_pending_turn.is_none(), "neither key sends");
     }
@@ -17615,7 +17789,13 @@ mod tests {
         );
         let action = a.on_key(KeyCode::Esc, KeyModifiers::NONE);
         assert!(
-            matches!(action, Action::ResolveAgentChatApproval { approved: false, .. }),
+            matches!(
+                action,
+                Action::ResolveAgentChatApproval {
+                    approved: false,
+                    ..
+                }
+            ),
             "Esc denies, got {action:?}"
         );
         a.chat_input = "typing".into();
@@ -17630,7 +17810,10 @@ mod tests {
     fn chat_first_ctrl_o_toggles_details_without_touching_the_draft() {
         let mut a = chat_first_app();
         a.chat_input = "half-typed".into();
-        assert!(!a.chat_details_visible(), "chat-first hides details by default");
+        assert!(
+            !a.chat_details_visible(),
+            "chat-first hides details by default"
+        );
         let action = a.on_key(KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert!(matches!(action, Action::Render), "got {action:?}");
         assert!(a.chat_details_visible());
@@ -18004,7 +18187,9 @@ mod tests {
     fn quitting_ends_the_running_engine_as_the_client_leaves() {
         let a = app_with_running_su_session();
         match a.su_session_exit() {
-            Some(crate::su_session::SuSessionExit::End { chat_id, command, .. }) => {
+            Some(crate::su_session::SuSessionExit::End {
+                chat_id, command, ..
+            }) => {
                 assert_eq!(chat_id, "chat-1");
                 assert_eq!(command["type"], "end");
                 assert_eq!(command["reason"], crate::su_session::CLIENT_EXIT_REASON);
@@ -18033,7 +18218,12 @@ mod tests {
         let mut a = App::new();
         assert_eq!(a.run_slash_command("detach"), Action::Render);
         assert!(!a.should_quit);
-        assert!(a.toast.as_ref().unwrap().message.contains("nothing to keep"));
+        assert!(a
+            .toast
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("nothing to keep"));
         assert_eq!(a.su_session_exit(), None);
     }
 
@@ -18060,7 +18250,10 @@ mod tests {
         assert_eq!(a.update(Event::Terminate), Action::Quit);
         assert!(a.should_quit);
         assert!(
-            matches!(a.su_session_exit(), Some(crate::su_session::SuSessionExit::End { .. })),
+            matches!(
+                a.su_session_exit(),
+                Some(crate::su_session::SuSessionExit::End { .. })
+            ),
             "a closed terminal ends the engine, it does not detach it"
         );
     }
@@ -18942,7 +19135,11 @@ mod tests {
             selected_chat_id: Some("chat-2".into()),
             entries: vec![ended.clone()],
         });
-        assert_eq!(action, Action::Render, "another chat's ended row must not adopt");
+        assert_eq!(
+            action,
+            Action::Render,
+            "another chat's ended row must not adopt"
+        );
         // Nothing native to resume from.
         let mut app = App::new();
         app.agent_chat_id = Some("chat-1".into());
@@ -18952,7 +19149,11 @@ mod tests {
             selected_chat_id: Some("chat-1".into()),
             entries: vec![ended],
         });
-        assert_eq!(action, Action::Render, "an ended row with no native id must not adopt");
+        assert_eq!(
+            action,
+            Action::Render,
+            "an ended row with no native id must not adopt"
+        );
     }
 
     /// P-010: failed rows are "preserved for inspection" and converged to an

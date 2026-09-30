@@ -48,7 +48,11 @@ pub struct AnsweredCard {
 /// chose, in words, from the `/card-response` action and payload about to be
 /// sent. Approval cards read "Approved" / "Declined"; other choices name the
 /// picked option labels; Esc reads "Skipped" (P-014: a skip is not a failure).
-pub fn answer_summary(card: &OpenCard, action: &str, payload: Option<&serde_json::Value>) -> String {
+pub fn answer_summary(
+    card: &OpenCard,
+    action: &str,
+    payload: Option<&serde_json::Value>,
+) -> String {
     match action {
         "decline" => return "Skipped".to_string(),
         "cancel" => return "Cancelled".to_string(),
@@ -967,8 +971,14 @@ mod tests {
     fn answer_summary_names_the_choice_in_words() {
         let card = approval_card("c");
         let picks = |id: &str| serde_json::json!({ "picks": [id] });
-        assert_eq!(answer_summary(&card, "submit", Some(&picks("0"))), "Approved");
-        assert_eq!(answer_summary(&card, "submit", Some(&picks("1"))), "Declined");
+        assert_eq!(
+            answer_summary(&card, "submit", Some(&picks("0"))),
+            "Approved"
+        );
+        assert_eq!(
+            answer_summary(&card, "submit", Some(&picks("1"))),
+            "Declined"
+        );
         assert_eq!(
             answer_summary(&card, "submit", Some(&picks("2"))),
             "Answered: Always allow echo"
@@ -976,7 +986,11 @@ mod tests {
         assert_eq!(answer_summary(&card, "decline", None), "Skipped");
         assert_eq!(answer_summary(&card, "cancel", None), "Cancelled");
         assert_eq!(
-            answer_summary(&card, "submit", Some(&serde_json::json!({ "value": "main" }))),
+            answer_summary(
+                &card,
+                "submit",
+                Some(&serde_json::json!({ "value": "main" }))
+            ),
             "Answered: main"
         );
     }
@@ -991,7 +1005,12 @@ mod tests {
         s.mark_answered("c1", "Answered: Alpha".into(), KeyCode::Char('1'));
         assert_eq!(s.focused_correlation_id().as_deref(), Some("c1"));
         assert!(s.focused_answered().is_some());
-        for key in [KeyCode::Char('1'), KeyCode::Char('2'), KeyCode::Enter, KeyCode::Esc] {
+        for key in [
+            KeyCode::Char('1'),
+            KeyCode::Char('2'),
+            KeyCode::Enter,
+            KeyCode::Esc,
+        ] {
             assert!(s.swallow_key(key, now), "{key:?} reached an answered card");
         }
         // Close c1: c2 takes focus and is not itself answered.
@@ -1008,7 +1027,10 @@ mod tests {
         assert!(s.swallow_key(KeyCode::Char('1'), Instant::now()));
         assert!(s.swallow_key(KeyCode::Char('1'), Instant::now()));
         assert!(!s.swallow_key(KeyCode::Char('2'), Instant::now()));
-        assert!(!s.swallow_key(KeyCode::Char('1'), Instant::now()), "guard outlived a different key");
+        assert!(
+            !s.swallow_key(KeyCode::Char('1'), Instant::now()),
+            "guard outlived a different key"
+        );
     }
 
     #[test]
@@ -1033,9 +1055,15 @@ mod tests {
         s.apply_snapshot(radio_snapshot("r1", "c1", 1));
         s.mark_answered("c1", "Answered: Alpha".into(), KeyCode::Char('1'));
         s.restore_answer("other");
-        assert!(s.focused_answered().is_some(), "a failure for another card reopened this one");
+        assert!(
+            s.focused_answered().is_some(),
+            "a failure for another card reopened this one"
+        );
         s.restore_answer("c1");
         assert!(s.focused_answered().is_none());
-        assert!(!s.swallow_key(KeyCode::Char('1'), Instant::now()), "a retry is not a repeat");
+        assert!(
+            !s.swallow_key(KeyCode::Char('1'), Instant::now()),
+            "a retry is not a repeat"
+        );
     }
 }

@@ -3127,7 +3127,11 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             // The raw arguments exist for inspection only: behind the expand
             // toggle, never in the skimmable row (P-008).
             if app.chat_tools_expanded {
-                if let Some(raw) = tc.input.as_ref().and_then(|v| serde_json::to_string(v).ok()) {
+                if let Some(raw) = tc
+                    .input
+                    .as_ref()
+                    .and_then(|v| serde_json::to_string(v).ok())
+                {
                     lines.push(Line::from(Span::styled(
                         trunc(&format!("    args {}", raw.replace('\n', " ")), inner_w),
                         Theme::dim(),
@@ -3735,7 +3739,10 @@ fn answered_card_line(
     remaining: usize,
     width: usize,
 ) -> Line<'static> {
-    let negative = matches!(answered.summary.as_str(), "Declined" | "Skipped" | "Cancelled");
+    let negative = matches!(
+        answered.summary.as_str(),
+        "Declined" | "Skipped" | "Cancelled"
+    );
     let (mark, style) = if negative {
         ("– ", Theme::dim())
     } else {
@@ -3769,13 +3776,20 @@ fn answered_card_line(
 /// modal on the operator surface — the composer is suspended while it's open.
 fn draw_card(f: &mut Frame, app: &App, area: Rect) {
     let remaining = app.card_state.remaining();
-    if let (Some(card), Some(answered)) = (app.card_state.focused(), app.card_state.focused_answered()) {
+    if let (Some(card), Some(answered)) =
+        (app.card_state.focused(), app.card_state.focused_answered())
+    {
         // P-015: the answer is on its way — collapse the card to one line the
         // moment the key lands, so it can't look unanswered and invite a second
         // press. The server's close event removes the row.
         f.render_widget(Clear, area);
         f.render_widget(
-            Paragraph::new(answered_card_line(card, answered, remaining, area.width as usize)),
+            Paragraph::new(answered_card_line(
+                card,
+                answered,
+                remaining,
+                area.width as usize,
+            )),
             area,
         );
         return;
@@ -6182,7 +6196,9 @@ pub(crate) fn tool_result_text(result: &serde_json::Value) -> Option<String> {
                     .iter()
                     .filter_map(|it| match it {
                         Value::String(s) => Some(s.clone()),
-                        Value::Object(o) => o.get("text").and_then(Value::as_str).map(str::to_owned),
+                        Value::Object(o) => {
+                            o.get("text").and_then(Value::as_str).map(str::to_owned)
+                        }
                         _ => None,
                     })
                     .collect();
@@ -6236,7 +6252,11 @@ pub(crate) fn tool_detail_lines(
             };
             out.push(Line::from(Span::styled(
                 trunc(
-                    &format!("    {} {}", dl.marker(), crate::glyph::terminal_safe_text(dl.text())),
+                    &format!(
+                        "    {} {}",
+                        dl.marker(),
+                        crate::glyph::terminal_safe_text(dl.text())
+                    ),
                     width,
                 ),
                 style,
@@ -6284,11 +6304,7 @@ pub(crate) fn tool_detail_lines(
 
 /// What a parked tool call wants to do, in words: the semantic card title or
 /// tool name, plus its arguments when they summarise to one line.
-fn approval_request_summary(
-    app: &App,
-    p: &crate::models::PendingApproval,
-    width: usize,
-) -> String {
+fn approval_request_summary(app: &App, p: &crate::models::PendingApproval, width: usize) -> String {
     let call = app
         .chat_messages
         .iter()
@@ -9244,7 +9260,10 @@ mod tests {
         assert_no_chat_jargon(&frame);
         assert!(frame.contains("Claude · /work/demo"), "{frame}");
         assert!(frame.contains("Ctrl+O details"), "{frame}");
-        assert!(!frame.contains('$'), "no cost before one is measured:\n{frame}");
+        assert!(
+            !frame.contains('$'),
+            "no cost before one is measured:\n{frame}"
+        );
 
         app.agent_chat_usage.cost_usd_cents = Some(12.0);
         let priced = render(&app, 120, 24);
@@ -9271,8 +9290,16 @@ mod tests {
         let mut app = chat_first_bound_app();
         app.chat_details = Some(true);
         let details = render(&app, 150, 24);
-        for shown in ["adv 31362", "seq 13", "reconciliation: attached", "pot papercusp"] {
-            assert!(details.contains(shown), "details view lacks `{shown}`:\n{details}");
+        for shown in [
+            "adv 31362",
+            "seq 13",
+            "reconciliation: attached",
+            "pot papercusp",
+        ] {
+            assert!(
+                details.contains(shown),
+                "details view lacks `{shown}`:\n{details}"
+            );
         }
         // The workbench is the operator console: details are its default.
         let mut workbench = chat_first_bound_app();
@@ -9338,7 +9365,10 @@ mod tests {
         let frame = render(&app, 120, 24);
         assert_no_chat_jargon(&frame);
         assert!(frame.contains("Starting Claude…"), "{frame}");
-        assert!(frame.contains("Type a message below and press Enter."), "{frame}");
+        assert!(
+            frame.contains("Type a message below and press Enter."),
+            "{frame}"
+        );
     }
 
     /// EI-22067863854642076: a legacy/unclassified conversation's composer
@@ -9411,7 +9441,10 @@ mod tests {
 
         let text = render(&app, 100, 30);
         let (tool, reply, headers) = rows(&text);
-        assert!(tool < reply, "tool row must render above its answer:\n{text}");
+        assert!(
+            tool < reply,
+            "tool row must render above its answer:\n{text}"
+        );
         // Newest block is the default copy target, so it keeps its marked header.
         assert_eq!(headers, 2, "{text}");
 
@@ -9419,7 +9452,10 @@ mod tests {
         let text = render(&app, 100, 30);
         let (tool, reply, headers) = rows(&text);
         assert!(tool < reply, "{text}");
-        assert_eq!(headers, 1, "an unfocused follow-on block repeats no header:\n{text}");
+        assert_eq!(
+            headers, 1,
+            "an unfocused follow-on block repeats no header:\n{text}"
+        );
     }
 
     /// pui-chat-first-ux-2026-09-28 P-014: a question the user skipped renders
@@ -9452,7 +9488,10 @@ mod tests {
         );
         let text = render(&app, 100, 30);
         assert!(text.contains("· skipped"), "{text}");
-        assert!(!text.contains("✗"), "a skip must not render the failure glyph:\n{text}");
+        assert!(
+            !text.contains("✗"),
+            "a skip must not render the failure glyph:\n{text}"
+        );
         assert!(!text.contains("failed"), "{text}");
         assert!(!text.contains("The user skipped this question"), "{text}");
     }
@@ -9497,7 +9536,10 @@ mod tests {
         assert!(!text.contains(r#"{"file_path""#), "{text}");
         app.chat_tools_expanded = true;
         let expanded = render(&app, 120, 24);
-        assert!(expanded.contains(r#"args {"file_path":"src/main.rs"}"#), "{expanded}");
+        assert!(
+            expanded.contains(r#"args {"file_path":"src/main.rs"}"#),
+            "{expanded}"
+        );
     }
 
     #[test]
@@ -9660,7 +9702,10 @@ mod tests {
             "it is in the transcript, not the composer: {text}"
         );
         assert!(text.contains("you"), "{text}");
-        assert!(text.contains("Sending — Enter queues your next message"), "{text}");
+        assert!(
+            text.contains("Sending — Enter queues your next message"),
+            "{text}"
+        );
         assert!(!text.contains("draft retained"), "{text}");
         assert!(!text.contains("Type a message below"), "{text}");
     }
@@ -9789,7 +9834,12 @@ mod tests {
         let text = |lines: Vec<Line<'static>>| {
             lines
                 .iter()
-                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         };
@@ -9797,35 +9847,59 @@ mod tests {
         tc.outcome = ToolOutcome::Ok;
         tc.result = Some(serde_json::json!("r1\nr2\nr3\nr4\nr5"));
         let collapsed = text(tool_detail_lines(&tc, 80, false));
-        assert!(collapsed.contains("⎿ r1") && collapsed.contains("r3"), "{collapsed}");
+        assert!(
+            collapsed.contains("⎿ r1") && collapsed.contains("r3"),
+            "{collapsed}"
+        );
         assert!(!collapsed.contains("r4"), "{collapsed}");
-        assert!(collapsed.contains("+2 lines (Ctrl+R to expand)"), "{collapsed}");
+        assert!(
+            collapsed.contains("+2 lines (Ctrl+R to expand)"),
+            "{collapsed}"
+        );
         let expanded = text(tool_detail_lines(&tc, 80, true));
-        assert!(expanded.contains("r5") && !expanded.contains("Ctrl+R"), "{expanded}");
+        assert!(
+            expanded.contains("r5") && !expanded.contains("Ctrl+R"),
+            "{expanded}"
+        );
         // A structured envelope is never dumped; text parts are.
         tc.result = Some(serde_json::json!({ "rows": [1, 2, 3] }));
         assert!(tool_detail_lines(&tc, 80, true).is_empty());
-        tc.result = Some(serde_json::json!({ "content": [{ "type": "text", "text": "from parts" }] }));
+        tc.result =
+            Some(serde_json::json!({ "content": [{ "type": "text", "text": "from parts" }] }));
         assert!(text(tool_detail_lines(&tc, 80, false)).contains("⎿ from parts"));
         // P-011: Claude's Read result (`     1\tconst …`) and coloured command
         // output reach the transcript with no control character left.
-        tc.result = Some(serde_json::json!("     1\tconst test = 1;\n\u{1b}[32mok\u{1b}[0m"));
+        tc.result = Some(serde_json::json!(
+            "     1\tconst test = 1;\n\u{1b}[32mok\u{1b}[0m"
+        ));
         let read = text(tool_detail_lines(&tc, 80, false));
-        assert!(read.contains("⎿      1  const test = 1;") && read.contains("      ok"), "{read}");
-        assert!(!read.chars().any(|c| c.is_control() && c != '\n'), "{read:?}");
+        assert!(
+            read.contains("⎿      1  const test = 1;") && read.contains("      ok"),
+            "{read}"
+        );
+        assert!(
+            !read.chars().any(|c| c.is_control() && c != '\n'),
+            "{read:?}"
+        );
         let mut tabbed = ChatToolCall::plain("Edit".into());
         tabbed.input = Some(serde_json::json!({
             "file_path": "a.go", "old_string": "\treturn 1", "new_string": "\treturn 2"
         }));
         let tab_diff = text(tool_detail_lines(&tabbed, 80, false));
-        assert!(tab_diff.contains("- ") && !tab_diff.contains('\t'), "{tab_diff:?}");
+        assert!(
+            tab_diff.contains("- ") && !tab_diff.contains('\t'),
+            "{tab_diff:?}"
+        );
         // A file edit shows its diff inline, before and after it completes.
         let mut edit = ChatToolCall::plain("Edit".into());
         edit.input = Some(serde_json::json!({
             "file_path": "src/a.rs", "old_string": "let a = 1;", "new_string": "let a = 2;"
         }));
         let diff = text(tool_detail_lines(&edit, 80, false));
-        assert!(diff.contains("- let a = 1;") && diff.contains("+ let a = 2;"), "{diff}");
+        assert!(
+            diff.contains("- let a = 1;") && diff.contains("+ let a = 2;"),
+            "{diff}"
+        );
     }
 
     #[test]
@@ -10065,13 +10139,22 @@ mod tests {
         app.card_state
             .apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&snap).unwrap());
         let text = render(&app, 110, 30);
-        assert!(text.contains("Allow Update(calc.js)?"), "readable prompt renders");
+        assert!(
+            text.contains("Allow Update(calc.js)?"),
+            "readable prompt renders"
+        );
         assert!(text.contains("+ return a + b;"), "the diff renders");
         assert!(!text.contains("old_string"), "raw arguments stay hidden");
-        assert!(text.contains("Ctrl+R details"), "the composer names the toggle");
+        assert!(
+            text.contains("Ctrl+R details"),
+            "the composer names the toggle"
+        );
         app.chat_tools_expanded = true;
         let text = render(&app, 110, 30);
-        assert!(text.contains("Raw arguments (Edit):"), "Ctrl+R shows the raw arguments");
+        assert!(
+            text.contains("Raw arguments (Edit):"),
+            "Ctrl+R shows the raw arguments"
+        );
         assert!(text.contains("old_string"));
         assert!(text.contains("Ctrl+R hide details"));
     }
@@ -10347,7 +10430,10 @@ mod tests {
                 .apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&data).unwrap());
         }
         let open = render(&app, 100, 30);
-        assert!(open.contains("Decline") && open.contains("echo ALPHA"), "{open}");
+        assert!(
+            open.contains("Decline") && open.contains("echo ALPHA"),
+            "{open}"
+        );
 
         app.card_state.mark_answered(
             "alpha",
@@ -10356,8 +10442,14 @@ mod tests {
         );
         let text = render(&app, 100, 30);
         assert!(text.contains("✓ Approved · Allow Bash? · 1 more"), "{text}");
-        assert!(!text.contains("Decline"), "the answered card's options are still drawn: {text}");
-        assert!(!text.contains("echo BETA"), "the next card was focused under the answer: {text}");
+        assert!(
+            !text.contains("Decline"),
+            "the answered card's options are still drawn: {text}"
+        );
+        assert!(
+            !text.contains("echo BETA"),
+            "the next card was focused under the answer: {text}"
+        );
         assert!(text.contains("Waiting for the agent"), "{text}");
     }
 

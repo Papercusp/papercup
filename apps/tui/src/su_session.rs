@@ -1199,7 +1199,9 @@ mod tests {
         .expect("decode snapshot");
         assert_eq!(snapshot.launch_cwd.as_deref(), Some("/work/app"));
         assert_eq!(
-            SuSessionInventoryEntry::from_snapshot(&snapshot).cwd.as_deref(),
+            SuSessionInventoryEntry::from_snapshot(&snapshot)
+                .cwd
+                .as_deref(),
             Some("/work/app")
         );
     }
@@ -1219,7 +1221,10 @@ mod tests {
         assert!(title.chars().count() <= CONVERSATION_TITLE_MAX, "{title}");
         // Multi-byte text is cut on a character boundary, not a byte offset.
         let wide = "é".repeat(100);
-        assert_eq!(conversation_title(Some(&wide)).chars().count(), CONVERSATION_TITLE_MAX);
+        assert_eq!(
+            conversation_title(Some(&wide)).chars().count(),
+            CONVERSATION_TITLE_MAX
+        );
         for backend in ["Claude", "Codex", "OMP"] {
             assert!(!conversation_title(None).contains(backend));
         }
@@ -1229,7 +1234,10 @@ mod tests {
     fn session_in_directory_matches_only_the_same_directory() {
         assert!(session_in_directory(Some("/work/app"), Some("/work/app")));
         assert!(session_in_directory(Some("/work/app/"), Some("/work/app")));
-        assert!(!session_in_directory(Some("/work/app-2"), Some("/work/app")));
+        assert!(!session_in_directory(
+            Some("/work/app-2"),
+            Some("/work/app")
+        ));
         assert!(!session_in_directory(Some("/work"), Some("/work/app")));
         assert!(!session_in_directory(None, Some("/work/app")));
         assert!(session_in_directory(None, None));
