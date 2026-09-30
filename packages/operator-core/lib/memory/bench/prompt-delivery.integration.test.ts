@@ -2,8 +2,9 @@
  * P-006 delivery measurement: frozen real memory corpus -> real embedding/PG
  * hybrid search -> production renderer -> the unchanged two-second cache wait.
  * All memory, hygiene and telemetry SQL goes to a migrated throwaway org DB.
- * The independent prose-corpus leg is disabled explicitly; this measures the
- * memory leg, not the combined prose+memory service or a deployed runtime.
+ * Memory-only profiles retain their frozen comparison. Combined profiles also
+ * read the same frozen text as real work-items through the prose search engine.
+ * This measures the current source build, not a deployed runtime.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
@@ -38,6 +39,7 @@ import * as corpusRecallIo from '../corpus-recall-io';
 import { buildMemoryContextBlock, pushSearchFloors } from '../injection';
 import { getMemoryBlockBoundedResult, MEMORY_BLOCK_COLD_DEADLINE_MS } from '../injection-block-cache';
 import { withMemoryTimeout } from '../op-deadline';
+import { buildSidecarAwareEmbedder } from '../embed-sidecar-wiring';
 
 let db: OrgTestDb;
 let backend: MemoryBackend;
@@ -64,11 +66,15 @@ vi.mock('@papercusp/db-org', async (original) => ({
   },
 }));
 vi.mock('../backend', () => ({ getMemoryBackend: () => backend }));
-vi.mock('../../session-brief', () => ({ getSessionBriefAmbientExcludedRefs: async () => new Set() }));
+vi.mock('../../session-brief', () => ({
+  getSessionBriefAmbientExcludedRefs: async () => ({ available: true, refs: new Set<string>() }),
+}));
 // Advisory feature policy is pinned for this profile; retrieval floors, ranking,
 // feedback, dedup and rendering remain the actual production implementations.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => false }));
 const actualRecordRecallStats = recallStats.recordRecallStats;
+const actualRecallCorpusContext = corpusRecallIo.recallCorpusContext;
+const proseKeys = new Map<string, string>();
 function installRecallStatsSpy() {
   // Concurrent dynamic imports can bypass vi.mock through Vitest's shared
   // manual-mock callstack. Observe the real export without replacing its module.
@@ -105,6 +111,9 @@ interface Reading {
   retrieved: string[];
   delivered: string[];
   relevantDelivered: string[];
+  corpusOutcome?: string;
+  corpusDelivered?: string[];
+  corpusEmbedderAvailable?: boolean;
   legs?: SearchLegStats;
   error?: string;
   work: Array<{ phase: string; startedMs: number; elapsedMs?: number; outcome?: 'ready' | 'error' }>;
@@ -241,6 +250,10 @@ async function measure(query: GoldQuery, phase: string): Promise<Reading> {
     row.delivered = Object.entries(manifest.ids)
       .filter(([, memoryIds]) => memoryIds.some((memoryId) => ids.has(memoryId)))
       .map(([key]) => key);
+    row.corpusDelivered = [...proseKeys]
+      .filter(([ref]) => (result.block ?? '').includes(ref))
+      .map(([, key]) => key);
+    row.delivered = [...new Set([...row.delivered, ...row.corpusDelivered])];
     row.relevantDelivered = row.delivered.filter((key) => query.expected.includes(key));
     if (result.status !== 'ready') {
       console.log('[P-006 unfinished-work]', JSON.stringify({ queryId: row.queryId, phase,
@@ -271,16 +284,21 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
       vi.spyOn(CanonicalVectorStore.prototype, 'lexicalSearch').mockImplementation(function (this: CanonicalVectorStore, ...args) {
         return traceWork('lexical-sql', () => actualLexicalSearch.apply(this, args));
       });
-      vi.spyOn(corpusRecallIo, 'recallCorpusContext').mockResolvedValue({
-        block: null,
-        lines: [],
-        dropped: [],
-        embedderAvailable: true,
-        candidateCount: 0,
-        outcome: 'disabled',
-        rerank: 'nothing-to-reorder',
-        legs: null,
-        retrievalDepth: 0,
+      vi.spyOn(corpusRecallIo, 'recallCorpusContext').mockImplementation(async (input) => {
+        const row = context.getStore();
+        if (!row?.phase.includes('combined')) return {
+          block: null, lines: [], dropped: [], embedderAvailable: true,
+          candidateCount: 0, outcome: 'disabled', rerank: 'nothing-to-reorder',
+          legs: null, retrievalDepth: 0,
+        };
+        // Explicitly enable this leg; all retrieval, coverage, selection and
+        // rendering stay real, against the same throwaway org database.
+        const result = await traceWork('prose-corpus', () => actualRecallCorpusContext({
+          ...input, skipFlagCheck: true,
+        }));
+        row.corpusOutcome = result.outcome;
+        row.corpusEmbedderAvailable = result.embedderAvailable;
+        return result;
       });
       console.log('[P-006 setup] creating isolated org database');
       db = await createOrgTestDb();
@@ -373,6 +391,26 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
         '[P-006 setup] frozen corpus seeded',
         JSON.stringify({ elapsedMs: Math.round(performance.now() - seedStarted) }),
       );
+      // Reuse the frozen representative corpus in the second store, with real
+      // document embeddings and the registered work-item source's SQL/indexes.
+      const proseEmbed = await buildSidecarAwareEmbedder('gemma', 'document');
+      for (const [index, entry] of corpus.entries()) {
+        const ref = `WI-${90_000_000 + index}`;
+        const vector = await proseEmbed(entry.text);
+        expect(vector.length).toBe(768);
+        const now = Date.now();
+        await db.adminSql`
+          INSERT INTO harness_shared.work_items
+            (workspace_id, harness_slug, feature_id, title, summary, status,
+             item_kind, origin, ts, created_ts, updated_ts, embedding, embedding_mode)
+          VALUES (${workspaceId}, 'delivery-corpus', ${ref}, ${entry.description ?? entry.key},
+            ${entry.text}, 'open', 'task', 'local', ${now}, ${now}, ${now},
+            ${JSON.stringify(vector)}::vector, 'gemma')
+        `;
+        proseKeys.set(ref, entry.key);
+      }
+      expect(await corpusRecallIo.warmCorpusEmbedder({ acquireBudgetMs: 60_000 })).toBe(true);
+      console.log('[P-006 setup] combined corpus ready', JSON.stringify({ proseRows: proseKeys.size }));
       const queries = loadGoldSetFixture().queries;
       // Fail before the whole matrix when the representative search is stuck.
       // Keep this probe out of coverage/telemetry counts and discard its client
@@ -399,6 +437,10 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
         'packages/operator-core/lib/memory/injection.ts',
         'packages/operator-core/lib/memory/injection-block-cache.ts',
         'packages/operator-core/lib/memory/recall-stats.ts',
+        'packages/operator-core/lib/memory/op-deadline.ts',
+        'packages/operator-core/lib/memory/corpus-recall-io.ts',
+        'packages/operator-core/lib/memory/configure.ts',
+        'packages/operator-core/lib/agent-tools/search/embedder.ts',
         'libs/generic/memory/src/mem0-backend.ts',
         'libs/generic/memory/src/mem0-client.ts',
         'libs/generic/memory/src/hybrid-backend.ts',
@@ -420,7 +462,7 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
           floors: pushSearchFloors(),
           deadlineMs: MEMORY_BLOCK_COLD_DEADLINE_MS,
           recallStats: process.env.PAPERCUSP_P006_RECALL_STATS === 'off' ? 'off' : 'on',
-          isolation: 'throwaway org DB including hygiene; prose disabled; advisory flags false',
+          isolation: 'throwaway org DB including hygiene and frozen prose work-items; advisory flags false; prose explicitly enabled only in combined profiles',
           cache: 'cold rendered-block cache per turn; cold client before each profile; warm query immediately primed',
         }),
       );
@@ -428,6 +470,8 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
         ['normal-cold', 1, false],
         ['normal-warm', 1, true],
         ['burst-cold', 8, false],
+        ['normal-combined', 1, false],
+        ['burst-combined', 8, false],
       ] as const) {
         await disposeMemoryClient();
         const rows: Reading[] = new Array(queries.length);
@@ -451,12 +495,12 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
         console.log('[P-006 result]', JSON.stringify({ name, concurrency, ...summarize(rows), misses }));
       }
       // The warm profile intentionally primes each query once, so the three
-      // measured profiles issue four recalls per gold query. Wait until every
+      // measured profiles issue six recalls per gold query. Wait until every
       // fire-and-forget call has reached the mocked writer, then drain the
       // writer promises and prove serialization preserved one durable row per
       // recall. A latency-only pass could otherwise hide a queue that merely
       // shed telemetry to get out of the retrieval path.
-      const expectedRecallStatsCalls = queries.length * 4;
+      const expectedRecallStatsCalls = queries.length * 6;
       await vi.waitFor(() => expect(blockBuilds).toBe(measuredCalls), { timeout: 5_000 });
       // A completed block means its `finally` scheduled telemetry; it does not
       // mean the fire-and-forget async continuation has crossed the dynamic
@@ -471,7 +515,7 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
         // including warm-prime failures that are not measured profile rows.
         missingTelemetry = queries
           .map((query) => ({ queryId: query.id, calls: recallStatsCallsByQuery.get(query.id) ?? 0 }))
-          .filter((entry) => entry.calls !== 4);
+          .filter((entry) => entry.calls !== 6);
         console.log(
           '[P-006 telemetry-scheduling]',
           JSON.stringify({ measuredCalls, blockBuilds, recallStatsCalls, expectedRecallStatsCalls, missingTelemetry,
@@ -512,7 +556,9 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
 
   it('measured every frozen query and preserved failures in every profile', () => {
     expect(setupError, String(setupError)).toBeUndefined();
-    expect(profiles.map((p) => p.name)).toEqual(['normal-cold', 'normal-warm', 'burst-cold']);
+    expect(profiles.map((p) => p.name)).toEqual([
+      'normal-cold', 'normal-warm', 'burst-cold', 'normal-combined', 'burst-combined',
+    ]);
     for (const profile of profiles) {
       expect(profile.rows.map((r) => r.queryId)).toEqual(loadGoldSetFixture().queries.map((q) => q.id));
       expect(profile.rows.length).toBeGreaterThanOrEqual(100);
@@ -520,6 +566,19 @@ describe('P-006 frozen real-corpus prompt delivery', () => {
         profile.rows.some((r) => r.relevantDelivered.length > 0),
         profile.name,
       ).toBe(true);
+    }
+  });
+
+  it('R-6: combined normal and burst turns execute real prose retrieval and deliver useful context', () => {
+    expect(setupError, String(setupError)).toBeUndefined();
+    const combined = profiles.filter((p) => p.name.includes('combined'));
+    expect(combined).toHaveLength(2);
+    for (const profile of combined) {
+      expect(profile.rows.every((row) => row.corpusOutcome !== undefined), profile.name).toBe(true);
+      expect(profile.rows.some((row) => row.corpusDelivered?.length), profile.name).toBe(true);
+      expect(profile.rows.some((row) => row.corpusEmbedderAvailable), profile.name).toBe(true);
+      expect(summarize(profile.rows).usefulRate,
+        JSON.stringify({ profile: profile.name, ...summarize(profile.rows) })).toBeGreaterThanOrEqual(0.95);
     }
   });
 
