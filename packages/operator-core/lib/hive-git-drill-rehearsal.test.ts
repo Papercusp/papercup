@@ -535,7 +535,9 @@ describe("rig-profile.sh — UP waits until the VM owner answers phase A's first
   // Phase A's precondition, and the drill learned it only after a 20-minute wait.
   it('same-box-rig.sh gates UP on the tower holding the VM namespace, via the scenario precheck', () => {
     const src = readFileSync(sameBoxRigPath, 'utf8');
-    expect(src).toMatch(/steady_namespaces \|\| exit 1\n\s*exit 0/);
+    // Run 12 (2026-09-30) added integrated_baseline after the namespace gate: UP also waits
+    // for the tower's integration queue to drain, so both gates must pass before `exit 0`.
+    expect(src).toMatch(/steady_namespaces \|\| exit 1\n\s*integrated_baseline \|\| exit 1\n\s*exit 0/);
     expect(src).toMatch(/phase-a-precheck "\$dir\/steady-tower-baseline\.json"/);
   });
 
