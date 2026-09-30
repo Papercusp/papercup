@@ -225,6 +225,7 @@ export function fallbackCodexLaunchSpecFromAdvSession(
     autoMode: false,
     drainMode: false,
     loopArmed: false,
+    headless: row.launchArgv?.includes('--headless') === true,
     fleet: null,
   };
 }

@@ -1,3 +1,0 @@
-module.exports=[855286,a=>{"use strict";a.i(428524);var b=a.i(898209),c=a.i(256524),d=a.i(192723),e=a.i(610943);a.s(["CommitDetail",()=>c.CommitDetail,"GitGraphPanel",()=>b.default,"assignLanes",()=>e.assignLanes,"fetchGitLog",()=>d.fetchGitLog,"getCachedGitLog",()=>d.getCachedGitLog,"laneColor",()=>e.laneColor,"preloadGitLog",()=>d.preloadGitLog])}];
-
-//# sourceMappingURL=libs_git-graph_src_index_ts_0-qw_bd._.js.map
