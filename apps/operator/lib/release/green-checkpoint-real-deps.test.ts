@@ -156,8 +156,11 @@ vi.mock(
     resolveEscalationsBatch: async () => ({ resolved: 0 }),
   }),
 );
+// notifyAttentionOnce too: register-system-actions → connected-apps/alert-sweep imports it
+// statically, so a factory that omits it fails the whole file at collection.
 vi.mock("@papercusp/operator-core/lib/attention-notify", () => ({
   notifyAttention: async () => {},
+  notifyAttentionOnce: async () => {},
 }));
 
 // EI-20339710858167842: this file asserts the checkpoint's OWN concurrency profile. An outer
