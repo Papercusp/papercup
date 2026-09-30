@@ -3808,13 +3808,16 @@ fn draw_card(f: &mut Frame, app: &App, area: Rect) {
     }
     let inner_w = area.width.saturating_sub(2).max(1) as usize;
     let lines = card_lines(app, inner_w);
+    // Say what the card needs from the person, not which Papercusp component
+    // raised it: "Operator" is internal product jargon to someone who launched
+    // `pui` to chat (WI-10004211, pui-chat-first-ux-2026-09-28 R-03).
     let title = if remaining > 0 {
         format!(
-            " {} Operator asks · {remaining} more ",
+            " {} Needs your answer · {remaining} more ",
             crate::glyph::nav::EXPANDED
         )
     } else {
-        format!(" {} Operator asks ", crate::glyph::nav::EXPANDED)
+        format!(" {} Needs your answer ", crate::glyph::nav::EXPANDED)
     };
     // Clear under the strip so the transcript doesn't bleed through.
     f.render_widget(Clear, area);
@@ -10148,7 +10151,14 @@ mod tests {
         assert!(text.contains("Approve the deploy?"), "card prompt renders");
         assert!(text.contains("1. Approve"), "option 1 renders numbered");
         assert!(text.contains("2. Reject"), "option 2 renders numbered");
-        assert!(text.contains("Operator asks"), "card block title renders");
+        assert!(
+            text.contains("Needs your answer"),
+            "card block title renders"
+        );
+        assert!(
+            !text.contains("Operator asks"),
+            "card title names no internal component (WI-10004211)"
+        );
         assert!(
             text.contains("answer above") || text.contains("pick"),
             "composer steers the user to the card"

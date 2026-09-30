@@ -3712,6 +3712,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   const CHAT_JARGON: readonly RegExp[] = [
     /\badv \d/, /\bseq \d/, /reconciliation/, /waiting-for-owner/, /SU session/, /SU · /,
     new RegExp(`pot ${HARNESS}`), /role operator/, /\bstore /, /https?:\/\//, /\baccount \S/, /unknown/,
+    // WI-10004211: the approval card once titled itself after the server that raised it.
+    /Operator asks/,
   ];
   const chatJargonIn = (frame: string): string[] =>
     CHAT_JARGON.filter((pattern) => pattern.test(frame)).map(String);
@@ -6346,7 +6348,7 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         const choiceIndex = card.presentation.options.findIndex((option) => option.label === 'Change');
         expect(choiceIndex).toBeGreaterThanOrEqual(0);
         await pane.waitFor(question);
-        await pane.waitFor('Operator asks');
+        await pane.waitFor('Needs your answer');
         await pane.waitFor('Change');
         const questionFrame = pane.screen();
         expect(
