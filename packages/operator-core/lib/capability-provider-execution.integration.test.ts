@@ -11,9 +11,12 @@ import {
   listActiveCapabilityProviderCandidates,
   listProviderBindings,
   recordProviderConformance,
+  validateOperationProviderInterface,
   validateProviderInterface,
 } from './capability-class-registry-store';
 import { resolveIdentityClassProvider } from './agent-identities/class-provider';
+import { resolveClassFireTarget } from './events/class-fire-target';
+import { IDENTITY_REACTION_PROVIDER_KINDS } from './events/identity-reaction';
 
 const migration = (name: string) => fileURLToPath(
   new URL(`../../../libs/papercusp/libs/db/sql/${name}`, import.meta.url),
@@ -279,5 +282,67 @@ describe('capability provider execution attestation (real PG)', () => {
     // Evidence for another verb does not admit this one.
     expect(await resolveIdentityClassProvider(db.sql, { ...request, verb: 'summary' }))
       .toMatchObject({ ok: false, code: 'recipe-unavailable' });
+  });
+
+  describe('operation providers (portable-identity-packages D-030)', () => {
+    const SPEC = 'e'.repeat(64);
+    const inputSchema = { type: 'object', properties: { title: { type: 'string' } } };
+    const resultSchema = { type: 'object', properties: { id: { type: 'string' } } };
+
+    async function recordOperationProvider(workspaceId: string, over: { providerPackage?: string } = {}) {
+      const { capabilityClass } = await defineCapabilityClass(db.sql, {
+        workspaceId, id: 'ops.tasks', version: '1.0.0', title: 'Tasks', description: 'File a task',
+        interfaceVerbs: { create: { inputSchema, outputSchema: resultSchema } },
+      });
+      const verbBindings = { create: 'file-task' };
+      const report = validateOperationProviderInterface({
+        capabilityClass, harnessSlug: 'ops-harness', providerVersion: '1.0.0', specificationRevision: SPEC,
+        verbBindings, lookup: (id) => (id === 'file-task' ? { inputSchema, resultSchema } : null),
+      });
+      return recordProviderConformance(db.sql, {
+        workspaceId, classId: 'ops.tasks', classVersion: '1.0.0',
+        providerPackage: over.providerPackage ?? report.providerPackage, providerVersion: '1.0.0', verbBindings,
+        report: over.providerPackage ? { ...report, providerPackage: over.providerPackage } : report,
+      });
+    }
+
+    it('records an operation run as operation/async, pinned to its blueprint harness and revision', async () => {
+      const { runId, binding } = await recordOperationProvider('ws-operation');
+      expect(binding).toMatchObject({
+        providerPackage: 'blueprint:ops-harness', providerKind: 'operation', latencyClass: 'async',
+        operationHarnessSlug: 'ops-harness', registryRevision: SPEC, verbBindings: { create: 'file-task' },
+      });
+      const [run] = await db.sql`
+        SELECT provider_kind, latency_class, registry_revision FROM harness_shared.capability_class_conformance_runs
+         WHERE id = ${runId}`;
+      expect(run).toEqual({ provider_kind: 'operation', latency_class: 'async', registry_revision: SPEC });
+    });
+
+    it('refuses an operation provider whose package is not its blueprint harness', async () => {
+      await expect(recordOperationProvider('ws-operation-spoof', { providerPackage: 'someone-else' }))
+        .rejects.toThrow(/blueprint:<the harness/);
+    });
+
+    it('resolves to the bound operation only for a caller that admits operation providers', async () => {
+      await recordOperationProvider('ws-operation-fire');
+      const pot = {
+        workspaceId: 'ws-operation-fire', potSlug: 'ops-pot', classId: 'ops.tasks', classVersion: '1.0.0',
+        providerPackage: 'blueprint:ops-harness', providerVersion: '1.0.0',
+      };
+      await expect(bindCapabilityProviderToPot(db.sql, pot)).rejects.toThrow(/different execution kind/);
+      await bindCapabilityProviderToPot(db.sql, { ...pot, providerKind: 'operation' });
+      const fire = { workspaceId: 'ws-operation-fire', potSlug: 'ops-pot', fire: 'class:ops.tasks@1.0.0#create' };
+      // The in-process reaction path stays tool-only: an operation provider is unbound for it.
+      expect(await resolveClassFireTarget(db.sql, fire)).toMatchObject({ status: 'unbound' });
+      expect(await resolveClassFireTarget(db.sql, { ...fire, providerKinds: IDENTITY_REACTION_PROVIDER_KINDS }))
+        .toMatchObject({
+          status: 'resolved', tool: 'file-task', providerKind: 'operation', operationHarnessSlug: 'ops-harness',
+          providerPackage: 'blueprint:ops-harness',
+        });
+      // A sync identity sink never executes it inline.
+      expect(await resolveIdentityClassProvider(db.sql, {
+        workspaceId: 'ws-operation-fire', potSlug: 'ops-pot', classRef: 'ops.tasks@1', verb: 'create',
+      })).toMatchObject({ ok: false, code: 'operation-unavailable' });
+    });
   });
 });

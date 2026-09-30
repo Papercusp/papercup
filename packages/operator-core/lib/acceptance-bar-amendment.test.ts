@@ -343,7 +343,7 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
     // Sanity: the amendment really did move the hash away from the fresh seed's.
     expect(amendedSeed.barSetHash).not.toBe(seeded.barSetHash);
 
-    let written: unknown = null;
+    const updates: string[] = [];
     const sql = vi.fn(async (strings: TemplateStringsArray) => {
       const statement = strings.join(' ');
       if (statement.includes('SELECT status, acceptance_bar_rubric_slug')) {
@@ -361,7 +361,7 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
         return [{ version: 4, template_data: amendedSeed.templateData }];
       }
       if (statement.includes('UPDATE harness_shared.harness_plans')) {
-        written = statement;
+        updates.push(statement);
         return [{ plan_slug: 'acceptance-subject-plan' }];
       }
       throw new Error(`unexpected SQL: ${statement}`);
@@ -377,9 +377,14 @@ describe('BAR-neutral subject-plan revision synchronization', () => {
       }),
     ).resolves.toBe(true);
 
-    // The UPDATE must touch ONLY the pin — the amended text is never rewritten by it.
-    expect(String(written)).toContain('{barContract,subjectPlanRevision}');
-    expect(String(written)).not.toContain('criteria');
+    // The rubric UPDATE must touch ONLY the pin — the amended text is never rewritten by it.
+    expect(updates).toHaveLength(2);
+    expect(updates[0]).toContain('{barContract,subjectPlanRevision}');
+    expect(updates[0]).not.toContain('criteria');
+    // WI-10004146: once the rubric pin names this node's revision again, the
+    // receiver-side verified-revision override on the subject plan is cleared.
+    expect(updates[1]).toContain('SET acceptance_bar_verified_revision = NULL');
+    expect(updates[1]).not.toContain('template_data');
   });
 
   it('does not repair the pin when the Requirements BAR meaning changes', async () => {

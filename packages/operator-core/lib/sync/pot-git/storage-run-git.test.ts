@@ -37,6 +37,7 @@ let stdinSidecarRunMock: (...a: unknown[]) => Promise<{ code: number; stdout: Bu
 const {
   defaultRunGit,
   defaultRunGitStdin,
+  localSpawnRefusalFor,
   potGitLocalSpawnAdmission,
   POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB,
   runGitLocal,
@@ -196,6 +197,9 @@ describe('pot-git local-spawn RSS admission (EI-20282995952031769)', () => {
   });
 
   it('returns a loud transient failure for the stdin fallback too', async () => {
+    // The refusal applies only where the sidecar is the configured path, so the
+    // direct local call is the FALLBACK here (WI-10004179).
+    sidecarEnabledMock = () => true;
     const rss = vi.spyOn(process, 'memoryUsage').mockReturnValue({
       rss: POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB * 1024 * 1024,
       heapTotal: 0,
@@ -231,5 +235,46 @@ describe('pot-git local-spawn RSS admission (EI-20282995952031769)', () => {
     } finally {
       rss.mockRestore();
     }
+  });
+
+  // WI-10004179: a packaged desktop owner configures NO spawner sidecar, so
+  // local spawn is its ONLY git path. Refusing there was a permanent pot-git
+  // outage above the ceiling (measured: a same-box owner at 4643MB could not
+  // `init --bare` its pot store), not the transient fallback refusal above.
+  it('admits local git above the ceiling when no sidecar is configured, warning once', async () => {
+    sidecarEnabledMock = () => false;
+    const expected = await runGitLocal(['rev-parse', 'HEAD'], repo);
+    expect(expected.code).toBe(0);
+    const rss = vi.spyOn(process, 'memoryUsage').mockReturnValue({
+      rss: (POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB + 600) * 1024 * 1024,
+      heapTotal: 0,
+      heapUsed: 0,
+      external: 0,
+      arrayBuffers: 0,
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const viaDefault = await defaultRunGit(['rev-parse', 'HEAD'], repo);
+      expect(viaDefault).toMatchObject({ code: 0, stdout: expected.stdout });
+
+      const viaStdin = await defaultRunGitStdin(['cat-file', '--batch-check'], repo, 'HEAD\n');
+      expect(viaStdin.code).toBe(0);
+      expect(viaStdin.stdout.toString()).toMatch(/ commit \d+\n$/);
+
+      const warnings = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('no spawner sidecar configured'));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(`above ${POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB}MB`);
+    } finally {
+      warn.mockRestore();
+      rss.mockRestore();
+    }
+  });
+
+  it('decides refusal from sidecar configuration, not from RSS alone', () => {
+    const above = potGitLocalSpawnAdmission((POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB + 1) * 1024 * 1024);
+    const below = potGitLocalSpawnAdmission((POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB - 1) * 1024 * 1024);
+    expect(localSpawnRefusalFor(above, true)).toMatch(/refusing local git spawn/);
+    expect(localSpawnRefusalFor(below, true)).toBeNull();
+    expect(localSpawnRefusalFor(below, false)).toBeNull();
   });
 });

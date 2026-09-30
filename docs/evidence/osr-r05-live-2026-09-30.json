@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "R-5: ScanCode over the final public cut, every license finding classified",
+  "framework": "operational",
+  "command": [
+    "git clone https://github.com/Papercusp/papercusp-app.git pub-b985186 (HEAD b98518640b8d026adfc59b7149ed6334dcdd0c2f)",
+    "scancode --license --copyright --only-findings --ignore '*/node_modules/*' --processes 8 --timeout 300 --json-pp scancode-b985186.json pub-b985186",
+    "python3 classifier -> .papercusp/scratch/osr/r5-classification.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-09-30T06:22:05Z",
+  "finishedAt": "2026-09-30T06:41:21Z",
+  "summary": "ScanCode (525 files with findings, 0 scan errors) found 27 files whose detected expression names GPL/AGPL/LGPL/SSPL/proprietary/NC/PolyForm/unknown. All 27 are classified; none is a first-party license grant or vendored copyleft code. The dominant expressions are Apache-2.0, MIT and Elastic-2.0 (product LICENSE).",
+  "assertions": [
+    {
+      "id": "scan-complete",
+      "passed": true,
+      "evidence": "headers[0].errors=[]; files_count=525; end 2026-09-30T06:41:21Z."
+    },
+    {
+      "id": "class-0",
+      "passed": true,
+      "evidence": "build-script comment explaining why a GPL/PolyForm component is excluded (libav, bash 3.2, gitnexus), no license grant: papercusp-desktop/bin/build-appimage.sh, papercusp-desktop/bin/build-desktop-sidecar.sh, papercusp-desktop/bin/lib/source-tree-selection.sh, scripts/check-mac-bash-portability.mjs"
+    },
+    {
+      "id": "class-1",
+      "passed": true,
+      "evidence": "docs prose naming a third-party model/tool license (e.g. CC-BY-NC models disqualified): apps/operator/public/internal/docs/testing.html, apps/operator/public/internal/docs/agent-insights/embedding-space-vs-dimension.html, apps/operator/public/internal/docs/agent-insights/embedding-space-vs-dimension.md, apps/operator-docs/src/content/docs/agent-insights/embedding-space-vs-dimension.md, apps/operator/public/internal/docs/testing/index.md, apps/operator-docs/src/content/docs/testing/index.mdx"
+    },
+    {
+      "id": "class-2",
+      "passed": true,
+      "evidence": "license-policy text: names disallowed licenses to reject them (ELv2 CLA/CONTRIBUTING, license gate, notices): CLA.md, CONTRIBUTING.md, THIRD-PARTY-NOTICES.md, scripts/check-licenses.d.mts, scripts/check-licenses.mjs, scripts/installer-components.json, scripts/public-release/CLA.md, scripts/public-release/CONTRIBUTING.md"
+    },
+    {
+      "id": "class-3",
+      "passed": true,
+      "evidence": "lockfile: third-party dependency licenses recorded by npm, resolved at install, no code vendored: package-lock.json, libs/papercusp/packages/harness/docs-viewer/package-lock.json"
+    },
+    {
+      "id": "class-4",
+      "passed": true,
+      "evidence": "prose: \"NVIDIA proprietary driver\" in a code comment, no license grant: apps/operator/app/harness/PiPanel.tsx, packages/operator-core/lib/agent-tools/computer/desktop-sandbox.ts, papercusp-desktop/src-tauri/src/main.rs"
+    },
+    {
+      "id": "class-5",
+      "passed": true,
+      "evidence": "prose: comment on an external HF dataset license; no dataset content is vendored (only .ts files in the directory): packages/operator-core/lib/external-bench/gdpval/dataset.ts"
+    },
+    {
+      "id": "class-6",
+      "passed": true,
+      "evidence": "user-facing caveat about a third-party dependency license (hyperformula GPLv3 not vendored; Firecrawl AGPL is a network service): libs/papercusp/packages/harness/templates/projects/sheets-clone/AGENTS.md, libs/papercusp/plugins/firecrawl-bridge/README.md"
+    },
+    {
+      "id": "class-7",
+      "passed": true,
+      "evidence": "vendored MIT OR Apache-2.0 crate (LICENSE_MIT, LICENSE_APACHE-2.0 present); CC-BY-NC-ND names the Tauri logo, which is not vendored: papercusp-desktop/src-tauri/vendor/tauri-runtime-wry/README.md"
+    },
+    {
+      "id": "no-unclassified",
+      "passed": true,
+      "evidence": "unclassified=[]"
+    }
+  ],
+  "evidencePlane": "live",
+  "plan": "open-source-release-2026-09-29",
+  "specId": "R-5",
+  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "workItemId": "WI-10003960"
+}

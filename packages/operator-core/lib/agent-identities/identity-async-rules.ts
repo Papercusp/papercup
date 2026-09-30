@@ -199,12 +199,18 @@ export function declaredNeedCovers(need: string, target: Pick<ClassFireTarget, '
  * ceiling ∩ the never-auto protected floor. The floor applies whatever the role:
  * the role envelope exempts `su`, but a reaction is automatic by definition.
  * An identity that declares no grants declares no narrowing of its own.
+ *
+ * `dispatchCapabilities` are what the dispatch PATH itself needs beyond the
+ * class verb: for an `operation` provider, the capabilities `blueprint:submit`
+ * declares (D-030 §5). Each passes the same floor and ceilings as the class
+ * capability; none substitutes for it.
  */
 export function identityReactionAllowlist(input: {
   capability: string;
   target: Pick<ClassFireTarget, 'classId' | 'classVersion' | 'classRef'>;
   declaredClassNeeds: readonly string[] | null;
   ceiling: Pick<IdentityReactionCeiling, 'ceilings' | 'protectedAdditions'>;
+  dispatchCapabilities?: readonly string[];
 }): IdentityReactionAllowlist {
   const empty = (reason: string): IdentityReactionAllowlist => ({ ok: false, code: 'capability-empty', reason });
   const capability = input.capability.trim();
@@ -212,19 +218,23 @@ export function identityReactionAllowlist(input: {
   if (input.declaredClassNeeds && !input.declaredClassNeeds.some((need) => declaredNeedCovers(need, input.target))) {
     return empty(`the identity does not declare a need for class ${input.target.classRef}`);
   }
-  if (matchesAny(capability, [...PROTECTED_CAPABILITY_GLOBS, ...input.ceiling.protectedAdditions])) {
-    return empty(`capability ${capability} is in the never-auto protected set`);
-  }
-  for (const ceiling of input.ceiling.ceilings) {
-    if (ceiling.denyCapabilities && matchesAny(capability, ceiling.denyCapabilities)) {
-      return empty(`capability ${capability} is denied by the pot/role ceiling`);
+  const capabilities = [...new Set([capability, ...(input.dispatchCapabilities ?? []).map((cap) => cap.trim())])];
+  for (const cap of capabilities) {
+    if (!cap) return empty(`the dispatch path for class ${input.target.classRef} names an empty capability`);
+    if (matchesAny(cap, [...PROTECTED_CAPABILITY_GLOBS, ...input.ceiling.protectedAdditions])) {
+      return empty(`capability ${cap} is in the never-auto protected set`);
     }
-    if (ceiling.allowCapabilities && ceiling.allowCapabilities.length > 0 &&
-        !matchesAny(capability, ceiling.allowCapabilities)) {
-      return empty(`capability ${capability} is outside the pot/role ceiling`);
+    for (const ceiling of input.ceiling.ceilings) {
+      if (ceiling.denyCapabilities && matchesAny(cap, ceiling.denyCapabilities)) {
+        return empty(`capability ${cap} is denied by the pot/role ceiling`);
+      }
+      if (ceiling.allowCapabilities && ceiling.allowCapabilities.length > 0 &&
+          !matchesAny(cap, ceiling.allowCapabilities)) {
+        return empty(`capability ${cap} is outside the pot/role ceiling`);
+      }
     }
   }
-  return { ok: true, capabilities: [capability] };
+  return { ok: true, capabilities };
 }
 
 /* ------------------------------------------------------------------ */

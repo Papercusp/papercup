@@ -40,6 +40,7 @@ import { backpressureMiddleware } from './host-backpressure';
 import { requestDeadlineMiddleware } from './host-request-deadline';
 import { runWithLoopbackPeerVerdict } from '@papercusp/operator-core/lib/auth/loopback-peer-trust';
 import { runAsExternalIngress } from '@papercusp/operator-core/lib/auth/forwarded-request-trust';
+import { isServedOnExternalIngress, notServedOnExternalIngress } from './external-ingress-paths';
 import { MCP_OAUTH_WELL_KNOWN } from '@papercusp/operator-core/lib/connected-apps/mcp-oauth-discovery';
 
 const host = new Hono();
@@ -165,10 +166,17 @@ export async function handler(
  * runs as external ingress, so every local-trust gate refuses it — even one whose
  * tunnel rewrote Host to localhost and stripped every forwarding header (D-010's
  * third case, which headers alone cannot tell apart from the desktop).
+ *
+ * WI-10004174: it serves ONLY the MCP resource and its OAuth sign-in
+ * (external-ingress-paths.ts). Every other path is refused here, before the app sees it, so
+ * a tunnel does not expose the operator's `auth:'public'` routes.
  */
 export function externalIngressHandler(
   req: Request,
   env?: HttpBindings | Http2Bindings,
 ): Promise<Response> {
+  if (!isServedOnExternalIngress(new URL(req.url).pathname)) {
+    return Promise.resolve(notServedOnExternalIngress());
+  }
   return runAsExternalIngress('external-ingress', () => handler(req, env));
 }

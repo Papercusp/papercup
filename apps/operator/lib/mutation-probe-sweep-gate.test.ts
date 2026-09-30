@@ -115,6 +115,7 @@ function runLockedProbe(
     | 'all'
     | 'no-file'
     | 'no-resource'
+    | 'resource-short'
     | 'heartbeat-refused'
     | 'timeout-once'
     | 'heartbeat-timeout-once'
@@ -260,7 +261,8 @@ beforeAll(() => {
     "    const extended = mode !== 'file-heartbeat-fails';",
     '    process.stdout.write(JSON.stringify({ results: [{ lock_id: args.lock_id, extended, ok: extended }] }));',
     "  } else if (tool === 'locks:list') {",
-    "    const holders = mode === 'no-resource' ? [] : [{ resource: args.resource, owner: 'probe-owner', mode: 'exclusive', status: 'held', expires_ts: expires }];",
+    "    const resourceExpires = mode === 'resource-short' ? new Date(Date.now() + 280000).toISOString() : expires;",
+    "    const holders = mode === 'no-resource' ? [] : [{ resource: args.resource, owner: 'probe-owner', mode: 'exclusive', status: 'held', expires_ts: resourceExpires }];",
     '    process.stdout.write(JSON.stringify({ holders }));',
     "  } else if (tool === 'locks:heartbeat_resource') {",
     '    process.stdout.write(JSON.stringify({ results: [{ lock_id: args.lock_id, extended: true, ok: true }] }));',
@@ -497,6 +499,27 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     }
   });
 
+  // WI-10004155: a git-sync lease that IS held but ends before the window plus
+  // its 120s margin used to refuse with the same text as "not held", which read
+  // as operator error. It must name the seconds left and the seconds required.
+  it('refuses a held-but-short git-sync lease with the remaining and required seconds', () => {
+    const { code, out } = runLockedProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', 'grep -q GOOD {}',
+      '--in-tree',
+      '--sweep-lock-held',
+    ], 'resource-short');
+
+    expect(code).toBe(2);
+    expect(out).toMatch(/lock is held but expires in 2[67]\ds/);
+    expect(out).toContain('needs at least 720s (MUTATION_PROBE_WINDOW_MAX_SEC=600 plus a 120s margin)');
+    expect(out).toContain('locks:heartbeat_resource');
+    expect(out).not.toContain('none is held by');
+    expect(out).not.toContain('mutant applied:');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
   it("surfaces the tool's own refusal text when a lock call fails", () => {
     const { code, out } = runLockedProbe([
       '--file', subject,
@@ -528,6 +551,7 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
 
     expect(refused.code).toBe(2);
     expect(refused.out).toContain("must hold an exclusive 'git-sync:probe-harness' lock");
+    expect(refused.out).toContain('none is held by probe-owner');
     expect(refused.out).not.toContain('mutant applied:');
     expect(readFileSync(nestedSubject, 'utf8')).toBe(GOOD);
 

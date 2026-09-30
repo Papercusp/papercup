@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { EMBEDDER_DIM_SPECS } from '@papercusp/memory';
 import {
+  blueprintOperationProviderPackage,
   CAPABILITY_CLASS_VECTOR_STORAGE_PROFILE,
   capabilityClassVectorStorageAcceptsProfile,
   capabilityClassRef,
   normalizeCapabilityClassId,
   parseCapabilityClassRef,
+  validateOperationProviderInterface,
   validateProviderInterface,
   type CapabilityClassRow,
+  type ProviderOperationContract,
   type ProviderToolContract,
 } from './capability-class-registry-store';
 
@@ -156,5 +159,57 @@ describe('validateProviderInterface', () => {
     });
     expect(report.ok).toBe(true);
     expect(report.behavioral).toEqual({ status: 'not-run', suiteRef: 'suite:crm-email-v1' });
+  });
+});
+
+describe('validateOperationProviderInterface (portable-identity-packages D-030)', () => {
+  const SPEC = 'f'.repeat(64);
+  const operation = (overrides: Partial<ProviderOperationContract> = {}): ProviderOperationContract => ({
+    // Reversed insertion order again: the comparison is canonical.
+    inputSchema: providerTool().inputSchema,
+    resultSchema: providerTool().outputSchema!,
+    ...overrides,
+  });
+  const validate = (over: Partial<Parameters<typeof validateOperationProviderInterface>[0]> = {}) =>
+    validateOperationProviderInterface({
+      capabilityClass: capabilityClass(),
+      harnessSlug: 'crm-ops',
+      providerVersion: '1.0.0',
+      specificationRevision: SPEC,
+      verbBindings: { send: 'send-email' },
+      lookup: (id) => (id === 'send-email' ? operation() : null),
+      ...over,
+    });
+
+  it('binds each verb to a declared operation with the verb input and output contracts', () => {
+    const report = validate();
+    expect(report).toMatchObject({
+      schemaVersion: 'capability-class-operation-v1', ok: true, classRef: 'crm.email@1.0.0',
+      providerPackage: blueprintOperationProviderPackage('crm-ops'), providerVersion: '1.0.0',
+      registryRevision: SPEC, harnessSlug: 'crm-ops',
+    });
+    expect(report.checks).toEqual([{ verb: 'send', tool: 'send-email', ok: true, problems: [] }]);
+  });
+
+  it('refuses an operation the compiled specification does not declare', () => {
+    const report = validate({ lookup: () => null });
+    expect(report.ok).toBe(false);
+    expect(report.checks[0]?.problems).toEqual(['operation is not declared by the compiled blueprint specification']);
+  });
+
+  it('refuses an operation whose input or result schema differs from the class contract', () => {
+    const input = validate({ lookup: () => operation({ inputSchema: { type: 'object' } }) });
+    expect(input.checks[0]?.problems).toEqual(['input schema differs from the class contract']);
+    const result = validate({ lookup: () => operation({ resultSchema: { type: 'string' } }) });
+    expect(result.checks[0]?.problems).toEqual(['result schema differs from the class output contract']);
+  });
+
+  it('refuses a missing binding and a verb the class does not declare', () => {
+    const report = validate({ verbBindings: { archive: 'archive-email' } });
+    expect(report.ok).toBe(false);
+    expect(report.checks).toEqual([
+      { verb: 'send', tool: null, ok: false, problems: ['missing provider operation binding'] },
+      { verb: 'archive', tool: 'archive-email', ok: false, problems: ['binding names a verb the class does not declare'] },
+    ]);
   });
 });

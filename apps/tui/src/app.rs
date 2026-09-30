@@ -6077,6 +6077,18 @@ impl App {
         // The setup note describes the owner's last action; blockers render live
         // from `setup_blocker()`, so a config refresh has nothing stale to clear.
         self.operator_config = c;
+        // D-010: a setup panel opened before this read landed was built on the
+        // client default engine. Until the owner picks one, it follows the
+        // operator's configured engine, or Review launches the wrong one.
+        if let Some(configured) = self.configured_su_backend() {
+            if let Some(setup) = self.session_setup.as_mut() {
+                if !setup.backend_chosen && setup.backend != configured {
+                    setup.backend = configured;
+                    setup.model = None;
+                    setup.effort = None;
+                }
+            }
+        }
         let Some((axis, selected_id)) = open_selection else {
             return;
         };
@@ -6432,6 +6444,7 @@ impl App {
                                 "omp" => crate::su_session::SuSessionBackend::Omp,
                                 _ => crate::su_session::SuSessionBackend::Claude,
                             };
+                            setup.backend_chosen = true;
                             setup.model = None;
                             setup.effort = None;
                         }
@@ -7683,7 +7696,10 @@ impl App {
             setup.backend = backend;
         }
         if self.agent_chat_id.is_none() && self.su_session.is_none() {
-            setup.backend = self.su_backend.unwrap_or(setup.backend);
+            if let Some(backend) = self.su_backend {
+                setup.backend = backend;
+                setup.backend_chosen = true;
+            }
             setup.model = self.chat_model.clone();
             setup.effort = self.chat_effort.clone();
             // WI-10004164 / D-011: keep an unchosen account unchosen. This is
@@ -17515,6 +17531,47 @@ mod tests {
             );
             assert_eq!(a.chat_engine_label(), SuSessionBackend::Claude.label());
         }
+    }
+
+    /// D-010 / WI-10004164: a setup panel opened before the agent-config read
+    /// landed was built on the client default engine. It follows the configured
+    /// engine when the read lands, unless the owner picked one in the meantime.
+    #[test]
+    fn session_setup_opened_before_the_config_read_follows_the_configured_engine() {
+        use crate::su_session::SuSessionBackend;
+        let omp_config = |a: &App| {
+            let mut config = a.operator_config.clone();
+            config.agent =
+                Some(serde_json::from_value(json!({ "effectiveBackend": "omp" })).unwrap());
+            config
+        };
+
+        let mut a = setup_app();
+        a.operator_config.agent = None;
+        a.open_session_setup();
+        let setup = a.session_setup.as_ref().unwrap();
+        assert_eq!(setup.backend, crate::su_session::PUI_DEFAULT_SU_BACKEND);
+        assert!(!setup.backend_chosen);
+        let config = omp_config(&a);
+        a.set_operator_config(config);
+        assert_eq!(a.session_setup.as_ref().unwrap().backend, SuSessionBackend::Omp);
+        assert_eq!(
+            crate::session_config::account_label(
+                a.session_setup.as_ref().unwrap().account.as_deref(),
+                a.session_setup.as_ref().unwrap().backend
+            ),
+            "default (not chosen; a gateway model uses auto)"
+        );
+
+        // A backend the owner picked is never overwritten by a late read.
+        let mut b = setup_app();
+        b.operator_config.agent = None;
+        b.su_backend = Some(SuSessionBackend::Codex);
+        b.open_session_setup();
+        assert!(b.session_setup.as_ref().unwrap().backend_chosen);
+        let config = omp_config(&b);
+        b.set_operator_config(config);
+        assert_eq!(b.session_setup.as_ref().unwrap().backend, SuSessionBackend::Codex);
     }
 
     #[test]

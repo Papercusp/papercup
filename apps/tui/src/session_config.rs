@@ -97,6 +97,11 @@ pub struct SessionSetup {
     pub show_help: bool,
     pub help_scroll: u16,
     pub backend: crate::su_session::SuSessionBackend,
+    /// Whether the owner picked `backend` (the backend picker, or an explicit
+    /// chat pick carried in). An unpicked backend follows the operator's
+    /// configured engine, including when that read lands after the panel
+    /// opened (D-010; measured: a fast Enter launched Claude on an OMP box).
+    pub backend_chosen: bool,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub account: Option<String>,
@@ -126,6 +131,7 @@ impl SessionSetup {
             show_help: false,
             help_scroll: 0,
             backend: crate::su_session::PUI_DEFAULT_SU_BACKEND,
+            backend_chosen: false,
             model: None,
             effort: None,
             // WI-10004164 / D-011: an account the owner has not chosen is not

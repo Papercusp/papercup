@@ -148,7 +148,9 @@ export const PLANS_CHUNK_SURFACE: PapercuspChunkSurface = {
  */
 export const OPERATOR_TURNS_CHUNK_SURFACE: PapercuspChunkSurface = {
   surface: 'operator_turns',
-  parent: { table: 'harness_shared.operator_turns', key: ['id'] },
+  // id is uuid: declaring the type casts the chunk side, so the prune anti-join
+  // and the vector leg's join keep the primary-key index.
+  parent: { table: 'harness_shared.operator_turns', key: [{ column: 'id', type: 'uuid' }] },
   textSql: 'p.text',
   versionSql: 'to_timestamp(p.created_at / 1000.0)',
   splitter: { kind: 'window', size: 1500, overlap: 250 },

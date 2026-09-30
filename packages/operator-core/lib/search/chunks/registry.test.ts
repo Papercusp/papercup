@@ -56,7 +56,7 @@ describe('chunk surface registry', () => {
     expect(CHUNK_SURFACES).toContain(OPERATOR_TURNS_CHUNK_SURFACE);
     const s = OPERATOR_TURNS_CHUNK_SURFACE;
     expect(s.surface).toBe('operator_turns');
-    expect(s.parent).toEqual({ table: 'harness_shared.operator_turns', key: ['id'] });
+    expect(s.parent).toEqual({ table: 'harness_shared.operator_turns', key: [{ column: 'id', type: 'uuid' }] });
     // D-017: 1,500/250 windows, up to 8, chunk margin 0.06.
     expect(s.splitter).toEqual({ kind: 'window', size: 1500, overlap: 250 });
     expect(s.maxChunks).toBe(8);

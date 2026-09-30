@@ -96,6 +96,16 @@ sudo -n install -d -o postgres -g "$BACKUP_GROUP" -m 0775 "$PGOUT" 2>/dev/null |
 readonly HOST_BACKUP_APPLICATION_NAME=pcbackup
 export PGAPPNAME="$HOST_BACKUP_APPLICATION_NAME"
 
+# Throwaway schemas no restore needs, passed to every pg_dump as
+# --exclude-schema (WI-10004136). The memory benches create a pid-scoped
+# bench_memory_<pid> schema per run and DROP it at exit (BENCH_SCHEMA in
+# packages/operator-core/lib/memory/bench/bench-host.ts). Measured 2026-09-30
+# 04:19Z: a dump that included one held AccessShareLock on all its tables for
+# 9.5 min, so the bench's DROP SCHEMA hit lock_timeout three times and the
+# schema leaked. Dumping them also wastes backup time and space. pg_dump
+# patterns are psql-style: `*` is any sequence, `_` is literal.
+readonly DISPOSABLE_SCHEMA_PATTERN='bench_memory*'
+
 # The host cron producer is a separate backup path from the per-workspace
 # hook, but it dumps the same Postgres cluster. Hold the canonical
 # backup↔migration rendezvous on a dedicated psql session for the complete
@@ -572,7 +582,8 @@ dump_one() {
   dumperr=$(mktemp -t "pcbackup-$label-XXXXXX.err")
   if run_bounded_watched "$TIMEOUT_SEC" "$TIMEOUT_MAX_SEC" "$out.tmp" \
         sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
-        pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none "$@" -f "$out.tmp" "$db" 2>"$dumperr"; then
+        pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none \
+          --exclude-schema="$DISPOSABLE_SCHEMA_PATTERN" "$@" -f "$out.tmp" "$db" 2>"$dumperr"; then
 
     # pg_dump chmods its -Fd output to 0700 postgres:postgres. Left that way the
     # dump is UNREADABLE BY KOPIA (which runs as the backup service user), so it would never

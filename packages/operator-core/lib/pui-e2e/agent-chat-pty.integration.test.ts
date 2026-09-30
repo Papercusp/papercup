@@ -3859,7 +3859,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   // refusal reads as one plain sentence naming the reason, not as a lost
   // connection or a bare retry prompt. The native OMP CLI is a stand-in; the
   // PUI, launch-su and the structured engine's model/route check are real.
-  test('WI-10004164: an unchosen OMP account follows a gateway model to auto; a chosen default shows why OMP could not start', async ({ onTestFailed }) => {
+  test('WI-10004164: an unchosen OMP account follows a gateway model to auto; a chosen default shows why OMP could not start', async ({ onTestFailed, onTestFinished }) => {
     const { readAgentConfig, writeAgentConfig } = await import('../agent-config');
     const stdio = await import('../su-session-stdio-peer');
     const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), 'pui-wi164-omp-')));
@@ -3872,8 +3872,22 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       stage, launches: launchRequests.slice(-2), engines: scriptedEngine.rpcLaunches.slice(-2),
       events: scriptedEngine.events.slice(-6).map((event) => JSON.stringify(event).slice(0, 400)),
       selector: process.env.PAPERCUSP_OMP_MODEL_SELECTOR ?? null,
-      engineCount: scriptedEngine.engines.length,
     })));
+    // The refused start leaves an adv row with no native identity, so its
+    // end-of-session archive has nothing named to archive and says so once,
+    // 15 s after the end. Allowed, never required; every other warning still
+    // fails the case. The case stops the maintenance it scheduled before it
+    // returns, so that pass never lands in a later case (measured: it failed
+    // PUI-APPROVAL-DENY when it did).
+    const jobsBefore = maintenance.jobs.length;
+    const warn = console.warn.bind(console);
+    const archiveWarn = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      if (args.length === 1 && typeof args[0] === 'string'
+        && /^\[session-archive\] adv \d+ not resolvable \(agent=omp, owner=[^,]+, native=null, omp=null\) — left for the disk-side reconciler$/.test(args[0])) {
+        console.info('PUI_WI164_ARCHIVE_DIAGNOSTIC', args[0]);
+      } else warn(...args);
+    });
+    onTestFinished(() => archiveWarn.mockRestore());
     const spy = vi.spyOn(stdio, 'startSuStdioPeer')
       .mockImplementation(async (options) => fakeNativePeer('omp', options, () => replyText));
     // `auto` is honoured only when the pool holds an allowed account of the
@@ -3895,15 +3909,6 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         INSERT INTO harness_shared.operator_account_pool (workspace_id, payload, updated_at)
         VALUES (${WORKSPACE}, ${JSON.stringify(seeded)}::text::jsonb, ${Date.now()})
         ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`;
-      {
-        const { loadAccountPool } = await import('../deployment/account-pool-store');
-        const { getAccountOverride } = await import('../deployment/account-session-override');
-        const { activeWorkspaceId } = await import('../workspace-registry');
-        console.info('PUI_WI164_POOL', JSON.stringify({
-          active: activeWorkspaceId(), pool: await loadAccountPool(WORKSPACE),
-          override: await getAccountOverride(WORKSPACE),
-        }));
-      }
 
       stage = 'unchosen';
       const tag = randomUUID().slice(0, 8);
@@ -3954,7 +3959,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         await pane.waitFor('New session — 3 Review');
         stage = 'chosen-default-review';
         pane.enter();
-        onTestFailed(() => console.info('PUI_WI164_SCREEN', JSON.stringify(pane.screen())));
+        // Review lands in the workbench, whose details view shows raw errors;
+        // the refusal still leads with its plain sentence there.
         await pane.waitFor('OMP could not start:', { timeoutMs: 60_000 });
         const screen = pane.screen().replace(/\s+/g, ' ');
         expect(screen).toContain(`OMP default account cannot use gateway model '${gatewayModel}'`);
@@ -3965,6 +3971,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       ]);
       console.info('PUI_WI164_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256 }));
     } finally {
+      const { drainDetached } = await import('../detached-imports');
+      await drainDetached();
+      await Promise.all(maintenance.jobs.splice(jobsBefore).map((job) => job.stop()));
       spy.mockRestore();
       if (poolBefore) {
         await db.adminSql`
