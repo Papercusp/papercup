@@ -319,7 +319,7 @@ describe('staging-first activation guard', () => {
   it.each(['done', 'dropped'])('does not treat a %s release-plane blocker as a wait', (status) => {
     const parsed = plan([
       `- **P-001** \`${status}\` Verify the green pin, main promotion, and deployed host.`,
-      '- **P-002** `todo` Run the matched trials on whichever build carries the arm switch. blocked-by: P-001',
+      '- **P-002** `todo` Build the arm switch and run the matched trials. blocked-by: P-001',
     ]);
     expect(stagingFirstActivationProblems(parsed)).toEqual([]);
   });
@@ -327,12 +327,23 @@ describe('staging-first activation guard', () => {
   it('still rejects the same dependency while the release-plane blocker is open', () => {
     const parsed = plan([
       '- **P-001** `todo` Verify the green pin, main promotion, and deployed host.',
-      '- **P-002** `todo` Run the matched trials on whichever build carries the arm switch. blocked-by: P-001',
+      '- **P-002** `todo` Build the arm switch and run the matched trials. blocked-by: P-001',
     ]);
     expect(stagingFirstActivationProblems(parsed)).toEqual([
       expect.objectContaining({ itemId: 'P-002', code: 'non_final_deployed_main_wait' }),
     ]);
   });
+
+  it.each(['whichever build', 'the current build', 'a green build', 'the release build'])(
+    'reads "%s" as the artifact under test, not source work',
+    (phrase) => {
+      const parsed = plan([
+        '- **P-001** `todo` Verify the green pin, main promotion, and deployed host.',
+        `- **P-002** \`todo\` Run the matched trials on ${phrase} that carries the arm switch. blocked-by: P-001`,
+      ]);
+      expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+    },
+  );
 
   it('rejects a strong main wait carried only by a decision linked from the item', () => {
     const parsed = plan(
