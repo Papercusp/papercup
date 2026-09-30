@@ -131,6 +131,8 @@ export interface SinkInvocationResult {
   /** Allocation in priority order; the sum of allowances never exceeds `budget.tokens`. */
   readonly allocation: readonly { readonly identityId: string; readonly contributionId: string; readonly allowance: number }[];
   readonly deliveredTokens: number;
+  /** Wall-clock this invocation took; charged to the turn ceiling. */
+  readonly elapsedMs: number;
   readonly deliveries: readonly SinkDelivery[];
   readonly omissions: readonly SinkOmission[];
   /** Provider calls actually started by this invocation. */
@@ -189,7 +191,12 @@ class Semaphore {
 
 interface TurnLedgerEntry {
   tokensSpent: number;
-  startedAt: number;
+  /**
+   * Wall-clock the turn's sink invocations have taken, summed. The ceiling
+   * meters time the hooks ADD to a turn, not time since the turn began: a stop
+   * sink a minute into the turn has spent nothing yet (P-011, D-024).
+   */
+  msSpent: number;
   touchedAt: number;
 }
 
@@ -219,7 +226,7 @@ function turnLedger(sessionId: string, turnId: string, now: number): TurnLedgerE
       if (state.turns.size < TURN_LEDGER_MAX && now - stale.touchedAt < TURN_LEDGER_TTL_MS) break;
       state.turns.delete(staleKey);
     }
-    entry = { tokensSpent: 0, startedAt: now, touchedAt: now };
+    entry = { tokensSpent: 0, msSpent: 0, touchedAt: now };
     state.turns.set(key, entry);
   }
   entry.touchedAt = now;
@@ -297,9 +304,9 @@ export interface EvaluateSinkInvocationInput {
   readonly now?: () => number;
   /**
    * What this turn already spent on OTHER hosts (P-011, D-024): the process
-   * ledger charges at least these tokens, from no later than this start.
+   * ledger charges at least these tokens and this much sink wall-clock.
    */
-  readonly turnSpent?: { readonly tokensSpent: number; readonly startedAt: number };
+  readonly turnSpent?: { readonly tokensSpent: number; readonly msSpent: number };
 }
 
 /**
@@ -314,12 +321,14 @@ export async function evaluateSinkInvocation(input: EvaluateSinkInvocationInput)
   const ledger = turnLedger(sessionId, turnId, start);
   if (input.turnSpent) {
     ledger.tokensSpent = Math.max(ledger.tokensSpent, input.turnSpent.tokensSpent);
-    ledger.startedAt = Math.min(ledger.startedAt, input.turnSpent.startedAt);
+    ledger.msSpent = Math.max(ledger.msSpent, input.turnSpent.msSpent);
   }
   const turnTokensLeft = Math.max(0, limits.turnCeiling.tokens - ledger.tokensSpent);
-  const turnMsLeft = Math.max(0, limits.turnCeiling.wallClockMs - (start - ledger.startedAt));
-  const budgetTokens = Math.min(limits.sinkBudget.tokens, turnTokensLeft);
+  const turnMsLeft = Math.max(0, limits.turnCeiling.wallClockMs - ledger.msSpent);
   const budgetMs = Math.min(limits.sinkBudget.wallClockMs, turnMsLeft);
+  // A turn with no time left has no budget at all: nothing starts, rather than
+  // racing a zero-length timer that a fast provider could beat.
+  const budgetTokens = budgetMs > 0 ? Math.min(limits.sinkBudget.tokens, turnTokensLeft) : 0;
   const deadlineAt = start + budgetMs;
 
   const session = sessionSemaphore(sessionId, limits.perSessionConcurrency);
@@ -426,7 +435,9 @@ export async function evaluateSinkInvocation(input: EvaluateSinkInvocationInput)
   deliveries.sort((a, b) => rank(a) - rank(b));
   omissions.sort((a, b) => rank(a) - rank(b));
   const deliveredTokens = deliveries.reduce((sum, row) => sum + row.tokens, 0);
+  const elapsedMs = Math.max(0, now() - start);
   ledger.tokensSpent += deliveredTokens;
+  ledger.msSpent += elapsedMs;
   if (session.idle) state.sessions.delete(sessionId);
   return {
     invocation: input.invocation,
@@ -434,6 +445,7 @@ export async function evaluateSinkInvocation(input: EvaluateSinkInvocationInput)
     allocation: allocation.map(({ contribution, allowance }) => ({
       identityId: contribution.identityId, contributionId: contribution.contributionId, allowance })),
     deliveredTokens,
+    elapsedMs,
     deliveries: [...deliveries],
     omissions: [...omissions],
     started,
