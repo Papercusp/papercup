@@ -37,6 +37,7 @@ import { publicOriginOf } from '../connected-apps/mcp-oauth-discovery';
 import { portalResourceMetadataUrl } from '../connected-apps/portal-mcp-oauth';
 import { EXTERNAL_INGRESS_MARKER_HEADER } from '../auth/forwarded-request-trust';
 import { isHostedConnectorLive } from '../endpoint-route/hosted-workspace-connector';
+import { WEBHOOK_PATH_RE, WEBHOOK_SOURCE_ID_PATTERN, isWebhookPath } from '../external-triggers/webhook-path';
 import {
   HOSTED_OPERATOR_HTTP_MAX_REQUEST_BODY_BYTES,
   OperatorHttpChannel,
@@ -57,6 +58,8 @@ export const APP_HTTP_ROUTE_ALLOWLIST: ReadonlyArray<OperatorHttpRoute> = [
   { method: 'POST', pattern: /^\/api\/mcp$/, surface: 'app MCP request' },
   { method: 'GET', pattern: /^\/api\/mcp$/, surface: 'app MCP stream' },
   { method: 'DELETE', pattern: /^\/api\/mcp$/, surface: 'app MCP session end' },
+  // P-017 (D-032 #4): a signed webhook. The machine route checks the HMAC signature itself.
+  { method: 'POST', pattern: WEBHOOK_PATH_RE, surface: 'signed webhook delivery' },
 ];
 
 export function decideAppHttpRoute(method: unknown, path: unknown): OperatorHttpRouteDecision {
