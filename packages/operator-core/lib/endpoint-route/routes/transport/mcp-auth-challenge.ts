@@ -25,8 +25,20 @@ export interface McpAuthChallengeDependencies {
   readonly isLocal: (headers: Headers) => boolean;
   /** True when the token has the app-key shape (valid or not). */
   readonly isAppKeyShaped: (token: string | null) => boolean;
-  /** Verify an app key. Throws when the store cannot answer. */
-  readonly verifyAppKey: (token: string) => Promise<{ ok: boolean }>;
+  /** Verify an app key. Throws when the store cannot answer. `reason` names a refusal. */
+  readonly verifyAppKey: (token: string) => Promise<{ ok: boolean; reason?: string }>;
+}
+
+/**
+ * The machine code of an app-key refusal, as the MCP host names it inside the session
+ * (`connected_app_invalid_key:<reason>`, `_mcp-host.ts`). The 401 below runs first, so without
+ * the code there the app would only ever learn "not valid" — never that its key was revoked,
+ * paused, rotated out, or that the workspace turned remote access off (P-010, R-40/R-41).
+ * Reasons are identifiers; anything else is dropped so the header's quoted-string stays valid.
+ */
+export function appKeyRefusalCode(reason: string | undefined): string {
+  const clean = (reason ?? '').replace(/[^a-z0-9_:-]/gi, '');
+  return `connected_app_invalid_key:${clean || 'invalid'}`;
 }
 
 function bearerOf(headers: Headers): string | null {
@@ -36,11 +48,11 @@ function bearerOf(headers: Headers): string | null {
   return token || null;
 }
 
-function challenge(req: Request, error: 'invalid_token' | null, description: string): Response {
+function challenge(req: Request, error: 'invalid_token' | null, description: string, code?: string): Response {
   const params = [`resource_metadata="${protectedResourceMetadataUrl(publicOriginOf(req))}"`];
   if (error) params.push(`error="${error}"`, `error_description="${description}"`);
   return Response.json(
-    { error: error ?? 'unauthorized', error_description: description },
+    { error: error ?? 'unauthorized', error_description: description, ...(code ? { code } : {}) },
     { status: 401, headers: { 'www-authenticate': `Bearer ${params.join(', ')}`, 'cache-control': 'no-store' } },
   );
 }
@@ -49,13 +61,15 @@ function challenge(req: Request, error: 'invalid_token' | null, description: str
 export async function mcpAuthChallenge(req: Request, deps: McpAuthChallengeDependencies): Promise<Response | null> {
   const token = bearerOf(req.headers);
   if (token !== null && deps.isAppKeyShaped(token)) {
-    let verdict: { ok: boolean };
+    let verdict: { ok: boolean; reason?: string };
     try {
       verdict = await deps.verifyAppKey(token);
     } catch {
       return null;
     }
-    return verdict.ok ? null : challenge(req, 'invalid_token', 'the access token is not valid');
+    if (verdict.ok) return null;
+    const code = appKeyRefusalCode(verdict.reason);
+    return challenge(req, 'invalid_token', `the access token is not valid (${code})`, code);
   }
   if (token !== null) return null;
   if (new URL(req.url).searchParams.has('sig')) return null;

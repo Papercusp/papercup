@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mcpAuthChallenge, type McpAuthChallengeDependencies } from './mcp-auth-challenge';
+import { appKeyRefusalCode, mcpAuthChallenge, type McpAuthChallengeDependencies } from './mcp-auth-challenge';
 
 const APP_KEY = 'pcapp_abc_secret';
 
@@ -51,6 +51,34 @@ describe('mcpAuthChallenge (P-006)', () => {
     expect(res?.status).toBe(401);
     expect(res!.headers.get('www-authenticate')).toContain('error="invalid_token"');
     expect(resourceMetadataOf(res!)).toBe('https://ws.example.org/.well-known/oauth-protected-resource/api/mcp');
+  });
+
+  it.each([
+    ['revoked', 'connected_app_invalid_key:revoked'],
+    ['remote_access_off', 'connected_app_invalid_key:remote_access_off'],
+    ['paused', 'connected_app_invalid_key:paused'],
+  ])('names the refusal (%s) so the app learns why its key stopped working (P-010 R-40/R-41)', async (reason, code) => {
+    const res = await mcpAuthChallenge(
+      post('https://ws.example.org/api/mcp', { authorization: `Bearer ${APP_KEY}` }),
+      deps({ verifyAppKey: vi.fn(async () => ({ ok: false, reason })) }),
+    );
+    expect(res?.status).toBe(401);
+    expect(res!.headers.get('www-authenticate')).toContain(`error_description="the access token is not valid (${code})"`);
+    expect(await res!.json()).toEqual({
+      error: 'invalid_token',
+      error_description: `the access token is not valid (${code})`,
+      code,
+    });
+  });
+
+  it('never lets a reason break the header quoting, and names an unexplained refusal "invalid"', async () => {
+    expect(appKeyRefusalCode('x" , evil="1')).toBe('connected_app_invalid_key:xevil1');
+    expect(appKeyRefusalCode(undefined)).toBe('connected_app_invalid_key:invalid');
+    const res = await mcpAuthChallenge(
+      post('https://ws.example.org/api/mcp', { authorization: `Bearer ${APP_KEY}` }),
+      deps({ verifyAppKey: vi.fn(async () => ({ ok: false })) }),
+    );
+    expect((await res!.json()).code).toBe('connected_app_invalid_key:invalid');
   });
 
   it('passes a valid app key through to the host, which resolves it', async () => {
