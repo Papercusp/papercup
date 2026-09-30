@@ -26,6 +26,7 @@
 
 import type { Sql } from 'postgres';
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { networkOf, type AppKeyUseOutcome } from './network';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { appKeyHashMatches, mintAppKey, parseAccessToken, parseAppKey } from './key';
 import {
@@ -632,15 +633,32 @@ export async function loadAppScopeRow(id: string): Promise<AppScopeRow | null> {
  * Record that a key was just used. At most one write a minute per key (or on an
  * address change), so a busy app does not turn every request into an UPDATE.
  * Best-effort: callers must not fail a request because this did.
+ *
+ * Reports what the use found (P-011, D-028): the key's FIRST use ever (`first_used_at` is set by
+ * the one write that finds it null), and a network the key was never used from before (a new row
+ * in `connected_app_networks`). The row lock on the key serializes concurrent first calls, so only
+ * one of them reports `firstUse`. The address is caller-reported: alerts only, never authorization.
  */
-export async function recordAppKeyUse(id: string, ip: string | null): Promise<void> {
+export async function recordAppKeyUse(id: string, ip: string | null): Promise<AppKeyUseOutcome> {
   const { sql } = getOrgPg();
-  await sql`
-    UPDATE harness_shared.connected_apps
-       SET last_seen = now(), last_ip = COALESCE(${ip}, last_ip)
-     WHERE id = ${id} AND ${sql.unsafe(KEY_KINDS_SQL)}
-       AND (last_seen IS NULL
-            OR last_seen < now() - interval '60 seconds'
-            OR (${ip}::text IS NOT NULL AND last_ip IS DISTINCT FROM ${ip}))
+  const network = networkOf(ip);
+  const rows = await sql<Array<{ first_use: boolean | null; new_network: string | null }>>`
+    WITH used AS (
+      UPDATE harness_shared.connected_apps
+         SET last_seen = now(), last_ip = COALESCE(${ip}, last_ip),
+             first_used_at = COALESCE(first_used_at, now())
+       WHERE id = ${id} AND ${sql.unsafe(KEY_KINDS_SQL)}
+         AND (last_seen IS NULL
+              OR last_seen < now() - interval '60 seconds'
+              OR (${ip}::text IS NOT NULL AND last_ip IS DISTINCT FROM ${ip}))
+      RETURNING workspace_id, first_used_at = now() AS first_use
+    ), seen AS (
+      INSERT INTO harness_shared.connected_app_networks (app_id, workspace_id, network)
+      SELECT ${id}, workspace_id, ${network}::text FROM used WHERE ${network}::text IS NOT NULL
+      ON CONFLICT (app_id, network) DO NOTHING
+      RETURNING network
+    )
+    SELECT (SELECT first_use FROM used) AS first_use, (SELECT network FROM seen) AS new_network
   `;
+  return { firstUse: rows[0]?.first_use === true, newNetwork: rows[0]?.new_network ?? null };
 }
