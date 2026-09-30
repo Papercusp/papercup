@@ -1476,8 +1476,11 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalScenario).toContain(
       'row?.workspaceId === workspaceId && row?.harnessSlug === harnessSlug',
     );
-    expect(physicalScenario).toContain('PHASE_A_TOWER_STATUS_ARGS');
-    expect(physicalScenario).toContain('PHASE_A_VM_STATUS_ARGS');
+    // One status-args builder per target (PDS D-005): each host is probed for
+    // ITS OWN git-sync slug, not a hard-coded physical canary slug.
+    expect(physicalScenario).toContain('phase_a_status_args() {');
+    expect(physicalScenario).toContain('phase_a_status_args "$VM_GIT_SYNC_SLUG"');
+    expect(physicalScenario).toContain('phase_a_status_args "$TOWER_GIT_SYNC_SLUG"');
     expect(phaseAScenario.indexOf('require_phase_a_two_host_substrate_ready >')).toBeLessThan(
       phaseAScenario.indexOf('phase-a-quarantine'),
     );
