@@ -37,6 +37,7 @@ describe('embed sidecar pressure supervision contract', () => {
     expect(watchdog).toContain('.queue.depth > 0');
     expect(watchdog).toContain('deferring restart');
     expect(watchdog).toContain('embed worker probe failed — restarting papercup-embed-sidecar');
+    // vacuous-negative-ok: pins the retired `|| {` restart form out; the live message is asserted two lines above
     expect(watchdog).not.toContain("|| { echo 'embed worker probe failed — restarting");
   });
 

@@ -413,6 +413,7 @@ describe('runLifecycleJudgementSweep', () => {
     expect(actualLaunches.size).toBe(1);
     expect(spawn.mock.calls[0][0].brief).toContain('WI-left-open | taskId=older-task');
     expect(spawn.mock.calls[0][0].brief).toContain('NEVER signal a process');
+    // vacuous-negative-ok: the judge must never be told to kill processes; pins the retired instruction out
     expect(spawn.mock.calls[0][0].brief).not.toContain('call processes:kill with');
   });
 

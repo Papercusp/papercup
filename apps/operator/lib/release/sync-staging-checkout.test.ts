@@ -881,6 +881,7 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
   it('routes a required restart through audited dev:restart, never raw systemctl', () => {
     expect(script).toContain('"$PTOOL_BIN" dev:restart --url="http://127.0.0.1:${STAGING_PORT}" --json -');
     expect(script).toContain('"confirm":true,"authorize":true');
+    // vacuous-negative-ok: raw systemctl restart was replaced by audited dev:restart; pins the old form out (deploy.sh restarting "$u" is unrelated)
     expect(script).not.toContain('systemctl --user restart "$UNIT"');
   });
 

@@ -26,8 +26,9 @@ const ROUTINES = [
 describe('heavy sweeps are scheduled independently of routinesTick', () => {
   it('removes both expensive calls from the scheduler workflow', () => {
     const tick = read(TICK_FILE);
+    // vacuous-negative-ok: these sweeps moved out of the scheduler tick into their own routines; pins the old tick entries out
     expect(tick).not.toContain("{ name: 'scout-signal-accumulator-sweep' }");
-    expect(tick).not.toContain("{ name: 'dead-target-reaper-sweep' }");
+    expect(tick).not.toContain("{ name: 'dead-target-reaper-sweep' }"); // vacuous-negative-ok: these sweeps moved out of the scheduler tick into their own routines; pins the old tick entries out
     expect(tick).not.toContain('scoutSignalAccumulatorSweep()');
     expect(tick).not.toContain('deadTargetReaperSweep()');
   });

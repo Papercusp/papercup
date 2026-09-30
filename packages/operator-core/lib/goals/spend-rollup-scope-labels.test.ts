@@ -91,6 +91,7 @@ describe('goal spend breakdown — scope labels are self-describing and pinned',
     // refreshGoalTripwires' `measured ? potCents : null` verbatim here would
     // disable a live budget control, so that specific form is pinned out.
     const normalized = SOURCE.replace(/\s+/g, ' ');
+    // vacuous-negative-ok: pins the budget-disabling `spentCents:` form out; the live key is measuredSpentCents
     expect(normalized).not.toContain('spentCents: rollup.pot.measured ? rollup.potCents : null');
     // The spend floor this protects must still be enforced on unmeasured spend.
     expect(normalized).toContain('spend-floor-goal-breach');

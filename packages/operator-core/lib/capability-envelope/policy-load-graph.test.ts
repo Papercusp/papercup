@@ -53,6 +53,7 @@ describe('capability policy import graph', () => {
     ) as { exports?: Record<string, string> };
 
     expect(source).toContain("from '@papercusp/agent-mcp/gate-bypass'");
+    // vacuous-negative-ok: the root-barrel import moved to the /gate-bypass subpath (asserted above); pins the old import out
     expect(source).not.toContain("import { testingFullAccess } from '@papercusp/agent-mcp';");
     expect(packageJson.exports?.['./gate-bypass']).toBe('./src/gate-bypass.ts');
   });
