@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { stripCommentsOnly } from '../../../../../scripts/lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(__dirname, '../../../../..');
 
@@ -40,14 +41,9 @@ const KNOWN_CHUNK_READERS = [
   'packages/operator-core/lib/consult/peers-know.ts',
 ] as const;
 
-/** Remove block and line comments; keep string and template literals intact. */
-function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:'"`\\])\/\/[^\n]*/g, '$1');
-}
-
 /** What in `source` reads chunk vectors; empty when it ranks by the parent vector alone. */
 function chunkReadsIn(source: string): string[] {
-  const code = stripComments(source);
+  const code = stripCommentsOnly(source, 'source.ts');
   const found: string[] = [];
   if (/\btext_chunks\b/.test(code)) found.push('reads harness_shared.text_chunks');
   if (/\bsession_turn_chunks\b/.test(code)) found.push('reads harness_shared.session_turn_chunks');
@@ -63,7 +59,7 @@ describe('R-39: duplicate and novelty checks rank by the parent vector alone', (
   it.each(PARENT_VECTOR_SITES)('$what ($file) still ranks by a vector', ({ file }) => {
     // Positive control: a site whose query moved elsewhere would pass the
     // chunk check vacuously.
-    expect(stripComments(read(file))).toMatch(/<=>/);
+    expect(stripCommentsOnly(read(file), file)).toMatch(/<=>/);
   });
 
   it.each(PARENT_VECTOR_SITES)('$what ($file) reads no chunk vectors', ({ file }) => {
