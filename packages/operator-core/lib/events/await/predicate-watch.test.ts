@@ -17,6 +17,10 @@ import {
   configurePredicateDispatch,
   dispatchPredicateTool,
   withPredicateDispatchTimeout,
+  predicateEvaluatorKey,
+  nextEvaluatorBaselines,
+  MAX_EVALUATOR_BASELINES,
+  type EvaluatorBaseline,
   type PredicateWatchRow,
 } from './predicate-watch';
 
@@ -214,5 +218,49 @@ describe('extractToolPayload', () => {
   it('returns null for a null result and the object itself when shapeless', () => {
     expect(extractToolPayload(null)).toBeNull();
     expect(extractToolPayload({ other: true })).toEqual({ other: true });
+  });
+});
+
+describe('WI-10004125 — evaluator identity and per-evaluator baselines', () => {
+  it('keys an evaluator by host AND build, so a restart onto new code is a new evaluator', () => {
+    const a = predicateEvaluatorKey({ host: 'port-3070', processId: 'linux:b:1', buildSha: '9a9473af95' });
+    const b = predicateEvaluatorKey({ host: 'port-3170', processId: 'linux:b:2', buildSha: '9a9473af95' });
+    const aNewBuild = predicateEvaluatorKey({ host: 'port-3070', processId: 'linux:b:1', buildSha: 'bba6c48424' });
+    expect(a).toBe('port-3070@9a9473af95');
+    expect(new Set([a, b, aNewBuild]).size).toBe(3);
+  });
+
+  it('falls back to the process id, then to a literal, when the build is unprovable', () => {
+    expect(predicateEvaluatorKey({ host: 'pid-7', processId: 'linux:b:9', buildSha: null })).toBe('pid-7@linux:b:9');
+    expect(predicateEvaluatorKey({ host: 'pid-7', processId: null, buildSha: null })).toBe('pid-7@unknown');
+  });
+
+  const at = (minute: number): string => new Date(Date.UTC(2026, 8, 30, 4, minute)).toISOString();
+  const entry = (minute: number, value: unknown = minute): EvaluatorBaseline => ({ eval: false, value, at: at(minute) });
+
+  it("records the writer's entry without disturbing other evaluators' baselines", () => {
+    const prev = { 'port-3070@x': entry(1, 'inconclusive'), 'port-3170@y': entry(2, 'repair-head-red') };
+    const next = nextEvaluatorBaselines(prev, 'port-3070@x', entry(3, 'green'));
+    expect(next).toEqual({ 'port-3070@x': entry(3, 'green'), 'port-3170@y': entry(2, 'repair-head-red') });
+    expect(prev['port-3070@x'].value, 'the input map must not be mutated').toBe('inconclusive');
+  });
+
+  it('keeps only the most recent evaluators, dropping the oldest observation first', () => {
+    let map: Record<string, EvaluatorBaseline> = {};
+    for (let i = 0; i < MAX_EVALUATOR_BASELINES + 3; i++) map = nextEvaluatorBaselines(map, `e${i}`, entry(i));
+    expect(Object.keys(map)).toHaveLength(MAX_EVALUATOR_BASELINES);
+    expect(map).not.toHaveProperty('e0');
+    expect(map).not.toHaveProperty('e2');
+    expect(map).toHaveProperty('e3');
+    expect(map).toHaveProperty(`e${MAX_EVALUATOR_BASELINES + 2}`);
+  });
+
+  it("never prunes the writer's own entry, even when a clock-skewed writer stamps the oldest time", () => {
+    const prev = Object.fromEntries([10, 11, 12].map((m) => [`peer${m}`, entry(m)]));
+    const next = nextEvaluatorBaselines(prev, 'skewed', entry(0), 3);
+    expect(Object.keys(next)).toHaveLength(3);
+    expect(next.skewed).toEqual(entry(0));
+    // The writer displaces the OLDEST peer, not an arbitrary one.
+    expect(next).not.toHaveProperty('peer10');
   });
 });

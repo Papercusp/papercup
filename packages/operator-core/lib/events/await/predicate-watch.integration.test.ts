@@ -53,6 +53,7 @@ vi.mock('./engine', () => ({
 
 const pw = await import('./predicate-watch');
 const store = await import('./store');
+const servingHost = await import('../../serving-host-identity');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -686,6 +687,85 @@ describe('predicate watches (real PG)', () => {
       expect(h.emits).toHaveLength(0);
       // ...and the row stays healthy: a missing path is not an error-ladder event.
       expect((await pw.getPredicateWatch(row.id))!.active).toBe(true);
+    });
+  });
+
+  /**
+   * WI-10004125 — several hosts poll one row and split the due batch between them, and
+   * they routinely run DIFFERENT BUILDS (main lags staging). A value derived by code can
+   * then differ between hosts at the same instant. Measured: a `changed` watch on the
+   * gate verdict fired twice in minutes while the repair queue was byte-identical,
+   * because :3070 answered 'inconclusive' and :3170 'repair-head-red'.
+   *
+   * The evaluator is switched the way production tells hosts apart: the serving port.
+   */
+  describe('WI-10004125 — each evaluator compares only against its own baseline', () => {
+    const savedPort = process.env.PAPERCUSP_HONO_PORT;
+    const as = (port: string) => {
+      process.env.PAPERCUSP_HONO_PORT = port;
+      servingHost._resetServingHostIdentityForTest();
+    };
+    const step = async (id: string, verdict: unknown) => {
+      pw.configurePredicateDispatch(async () => ({ verdict }));
+      return pw.evalPredicateWatch((await pw.getPredicateWatch(id))!);
+    };
+
+    afterEach(() => {
+      if (savedPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+      else process.env.PAPERCUSP_HONO_PORT = savedPort;
+      servingHost._resetServingHostIdentityForTest();
+    });
+
+    it('POSITIVE CONTROL — the same observations from ONE evaluator DO fire `changed`', async () => {
+      const { row } = await seedWatch({ once: false, awaitOnce: false, op: 'changed', value: null, path: 'verdict' });
+      as('3070');
+      expect(await step(row.id, 'inconclusive')).toMatchObject({ fired: false });
+      expect(await step(row.id, 'repair-head-red')).toMatchObject({ matched: true, fired: true });
+      expect(h.emits.at(-1)?.payload).toMatchObject({
+        observed: 'repair-head-red',
+        predicate: { op: 'changed', changedFrom: 'inconclusive' },
+      });
+    });
+
+    it('two builds answering differently for the SAME state never fire `changed`', async () => {
+      const { row } = await seedWatch({ once: false, awaitOnce: false, op: 'changed', value: null, path: 'verdict' });
+      for (let i = 0; i < 3; i++) {
+        as('3070');
+        expect(await step(row.id, 'inconclusive'), `cross-build flap #${i} (3070)`).toMatchObject({ fired: false });
+        as('3170');
+        expect(await step(row.id, 'repair-head-red'), `cross-build flap #${i} (3170)`).toMatchObject({ fired: false });
+      }
+      expect(h.emits).toHaveLength(0);
+
+      const polled = (await pw.getPredicateWatch(row.id))!;
+      const keys = Object.keys(polled.evaluatorBaselines);
+      expect(keys).toHaveLength(2);
+      expect(keys.some((k) => k.startsWith('port-3070@'))).toBe(true);
+      expect(keys.some((k) => k.startsWith('port-3170@'))).toBe(true);
+      // The row-level latest observation is still the most recent one, for joiners.
+      expect(polled.lastValue).toBe('repair-head-red');
+
+      // A REAL change on one evaluator still fires, reporting that evaluator's own baseline.
+      as('3070');
+      expect(await step(row.id, 'green')).toMatchObject({ matched: true, fired: true });
+      expect(h.emits).toHaveLength(1);
+      expect(h.emits[0].payload).toMatchObject({ observed: 'green', predicate: { changedFrom: 'inconclusive' } });
+    });
+
+    it('a standing condition does not re-fire when a new evaluator first polls it', async () => {
+      const { row } = await seedWatch({ once: false, awaitOnce: false, op: 'eq', value: 'green', path: 'verdict' });
+      as('3070');
+      expect(await step(row.id, 'green')).toMatchObject({ matched: true, fired: true });
+
+      // A host restarting onto a new build is a new evaluator; the condition still holds.
+      as('3170');
+      expect(await step(row.id, 'green')).toMatchObject({ matched: true, fired: false });
+      expect(h.emits).toHaveLength(1);
+
+      // ...but that evaluator's own false→true cross still fires.
+      expect(await step(row.id, 'red')).toMatchObject({ matched: false, fired: false });
+      expect(await step(row.id, 'green')).toMatchObject({ matched: true, fired: true });
+      expect(h.emits).toHaveLength(2);
     });
   });
 });
