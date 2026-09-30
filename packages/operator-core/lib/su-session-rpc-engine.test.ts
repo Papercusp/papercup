@@ -265,7 +265,7 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       expect(f.transport().args).not.toContain('--system-prompt');
       expect(f.transport().args).toContain('rpc-ui');
       const [, options] = mocks.writeOmp.mock.calls.at(-1)!;
-      expect(options).toMatchObject({ discoveryOff: false, toolsAllowlist: null });
+      expect(options).toMatchObject({ discoveryOff: false, toolsAllowlist: null, operatorBearer: null });
       expect(Object.keys(JSON.parse(String(options.mcpJsonContents)).mcpServers)).toEqual(['context7']);
     }
   });
@@ -409,6 +409,22 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       .resolves.toMatchObject({ status: 'refused' });
     expect(f.sent.filter((frame) => frame.type === 'prompt' || frame.method === 'turn/start')).toHaveLength(1);
   });
+});
+
+// WI-10003604: the OMP session's papercusp-su bearer must be the token THIS operator validates
+// ($PAPERCUSP_HOME/superuser-token), not the one baked into the user's ~/.omp template — the
+// installed-product run failed every OMP turn with superuser_invalid_bearer when they differed.
+it('hands OMP the superuser token this operator validates', async () => {
+  const papercuspHome = mkdtempSync(join(tmpdir(), 'rpc-su-token-'));
+  nativeDirs.push(papercuspHome);
+  writeFileSync(join(papercuspHome, 'superuser-token'), 'operator-validated-token-0123456789\n');
+  vi.stubEnv('PAPERCUSP_HOME', papercuspHome);
+  try {
+    const f = fixture('omp');
+    await f.engine.ready;
+    const [, options] = mocks.writeOmp.mock.calls.at(-1)!;
+    expect(options).toMatchObject({ operatorBearer: 'operator-validated-token-0123456789' });
+  } finally { vi.unstubAllEnvs(); }
 });
 
 it('enables native OMP question callbacks through the RPC UI transport', async () => {

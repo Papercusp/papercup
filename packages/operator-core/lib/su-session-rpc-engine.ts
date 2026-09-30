@@ -25,6 +25,7 @@ import { findCodexRolloutPathByUuid } from './session-transcript-resolvers';
 import { SuSessionStartupTimeoutError, type SuSessionEventInput, type SuSessionHost, type SuSessionServedAccountReader } from './su-session-host';
 import { startSuStdioPeer, type RpcFrame, type SuStdioPeer } from './su-session-stdio-peer';
 import { SuNativeCards } from './su-session-native-cards';
+import { readSuperuserToken } from './superuser-token';
 
 type Backend = 'codex' | 'omp';
 type NativeHandle = CodexNativeSessionHandle | OmpNativeSessionHandle;
@@ -125,6 +126,9 @@ export function startSuRpcEngine(
         discoveryOff: su, toolsAllowlist: su ? ompCoreToolNames(env) : null, model: selectedModel,
         modelsYml: env.PAPERCUSP_OMP_MODELS_YML || null, clientId: binding.ownerId,
         operatorUrl: env.PAPERCUSP_OPERATOR_URL, interactive: false,
+        // WI-10003604: this engine runs INSIDE the operator it points OMP at, so the bearer the
+        // session needs is exactly the one this process validates — never the user template's.
+        operatorBearer: su ? readSuperuserToken() : null,
         // P-016: an explicit server map is used verbatim: the user's own servers only.
         ...(su ? {} : { mcpJsonContents: ompUserMcpJsonWithoutSu(env.HOME || homedir()) }),
       });

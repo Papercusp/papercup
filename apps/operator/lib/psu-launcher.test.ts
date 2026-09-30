@@ -43,6 +43,7 @@ import {
   linkOmpAgentDb,
   applyOmpToolsAllowlist,
   applyOmpOperatorOrigin,
+  applyOmpOperatorBearer,
   applyOmpMcpUrlParams,
   resolveOmpOperatorUrl,
   probeOmpOperatorMcp,
@@ -1709,6 +1710,48 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     );
   });
 
+  // WI-10003604: the in-process PUI engine re-points the origin straight at the operator,
+  // bypassing the :9071 proxy that refreshes the bearer. The template's minted bearer
+  // ("SECRET") then reaches an operator validating a different token.
+  it("writes the operator's live bearer, not the template's, when the origin is re-pointed", () => {
+    const dir = writeOmpSessionConfigDir(
+      "bearer",
+      { operatorUrl: "http://localhost:38931", operatorBearer: "LIVE-TOKEN-0123456789" },
+      home,
+    );
+    const su = JSON.parse(readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8"))
+      .mcpServers["papercusp-su"];
+    expect(new URL(su.url).origin).toBe("http://localhost:38931");
+    expect(su.headers.Authorization).toBe("Bearer LIVE-TOKEN-0123456789");
+    // The user's global template is a SOURCE: it is never rewritten.
+    expect(readFileSync(join(home, ".omp", "agent", "mcp.json"), "utf8")).toBe(MCP_JSON);
+  });
+
+  it("keeps the template bearer when no operator bearer is supplied", () => {
+    const dir = writeOmpSessionConfigDir("nobearer", { operatorBearer: null }, home);
+    const su = JSON.parse(readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8"))
+      .mcpServers["papercusp-su"];
+    expect(su.headers.Authorization).toBe("Bearer SECRET");
+  });
+
+  it("never rewrites the bearer inside signed role MCP bytes", () => {
+    const roleMcp = JSON.stringify({
+      mcpServers: {
+        "papercusp-role": {
+          type: "http",
+          url: "http://localhost:3070/api/mcp?superuser=1&role=reviewer&sig=abc",
+          headers: { Authorization: "Bearer ROLE" },
+        },
+      },
+    });
+    const dir = writeOmpSessionConfigDir(
+      "role-bearer",
+      { mcpJsonContents: roleMcp, operatorBearer: "LIVE-TOKEN-0123456789" },
+      home,
+    );
+    expect(readFileSync(join(home, dir!, "agent", "mcp.json"), "utf8")).toBe(roleMcp);
+  });
+
   it.each(["uds", "auto"])("preserves %s and authoritative SU identity through a new-shell resume", (mode) => {
     vi.stubEnv("PAPERCUSP_MCP_TRANSPORT", mode);
     vi.stubEnv("WSL_INTEROP", "");
@@ -2987,6 +3030,50 @@ describe("applyOmpOperatorOrigin (P-030 — member mcp.json follows the launcher
       mcpServers: { p: { url: "http://localhost:3070/api/mcp" } },
     });
     expect(applyOmpOperatorOrigin(src, "not-a-url")).toBe(src);
+  });
+});
+
+describe("applyOmpOperatorBearer (WI-10003604 — the credential follows the re-pointed origin)", () => {
+  const server = (url: string, headers?: Record<string, string>) =>
+    JSON.stringify({ mcpServers: { p: { type: "http", url, ...(headers ? { headers } : {}) } } });
+  const read = (text: string) => JSON.parse(text).mcpServers.p;
+
+  it("replaces a stale bearer on a superuser papercusp server", () => {
+    const out = read(applyOmpOperatorBearer(
+      server("http://localhost:38931/api/mcp?superuser=1&client=x", { Authorization: "Bearer STALE", "x-a": "keep" }),
+      "LIVE",
+    ));
+    expect(out.headers).toEqual({ "x-a": "keep", Authorization: "Bearer LIVE" });
+  });
+
+  it("drops every case variant so the server never receives two Authorization headers", () => {
+    const out = read(applyOmpOperatorBearer(
+      server("http://localhost:3070/api/mcp?superuser=1", { authorization: "Bearer STALE" }),
+      "  LIVE\n",
+    ));
+    expect(out.headers).toEqual({ Authorization: "Bearer LIVE" });
+  });
+
+  it("adds headers when the template carried none", () => {
+    const out = read(applyOmpOperatorBearer(server("http://localhost:3070/api/mcp?superuser=1"), "LIVE"));
+    expect(out.headers).toEqual({ Authorization: "Bearer LIVE" });
+  });
+
+  it.each([
+    ["a non-superuser papercusp server", "http://localhost:3070/api/mcp?client=x"],
+    ["a non-papercusp server", "https://example.com/mcp?superuser=1"],
+  ])("leaves %s untouched", (_label, url) => {
+    const src = server(url, { Authorization: "Bearer OTHER" });
+    expect(read(applyOmpOperatorBearer(src, "LIVE")).headers.Authorization).toBe("Bearer OTHER");
+  });
+
+  it.each([null, undefined, "", "   "])("returns the input unchanged for bearer %j", (bearer) => {
+    const src = server("http://localhost:3070/api/mcp?superuser=1", { Authorization: "Bearer T" });
+    expect(applyOmpOperatorBearer(src, bearer)).toBe(src);
+  });
+
+  it("returns the input unchanged on unparseable json", () => {
+    expect(applyOmpOperatorBearer("not json", "LIVE")).toBe("not json");
   });
 });
 
