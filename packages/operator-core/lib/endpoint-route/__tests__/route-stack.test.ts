@@ -37,6 +37,8 @@ import { registerRoute } from '../define-route';
 import { DEFAULT_ROUTE_STACK } from '../route-stack';
 import { registerAllRoutes } from '../register';
 import { requirePrincipal, PrincipalCheckError } from '../../auth/require-principal';
+import { AgentIdentityRequiredError } from '../../auth/identity-required-error';
+import { resolveAgentIdentity } from '../../agent-tools/coordination/identity';
 import { principalFromCookie } from '../../auth/principal/from-cookie';
 import { getFlag } from '@papercusp/flags/server';
 import { recordRouteInvocation } from '../telemetry';
@@ -833,6 +835,26 @@ describe('invoke step', () => {
     const body = await res.json();
     expect(body.error.code).toBe('handler_error');
     expect(body.error.message).toBe('kaboom');
+  });
+
+  // EI-24708210960582152: an unattributable caller (resolveAgentIdentity throws) is a REQUEST
+  // fault. It must surface as a typed 401 identity_required, not the 500 handler_error above.
+  it('an identity-required throw becomes a typed 401 identity_required, not a 500', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/needs-identity', auth: 'public',
+      // The REAL resolver on an unattributed context, exactly what triggerToolContext does.
+      handler: () => { resolveAgentIdentity({}); throw new Error('unreachable: identity resolved'); },
+    }));
+    const res = await app.request('/needs-identity');
+    expect(res.status).toBe(401);
+    const body = await res.json();
+    expect(body.error.code).toBe('identity_required');
+    expect(body.error.message).toMatch(/cannot be attributed/);
+  });
+
+  it('resolveAgentIdentity refuses an unattributed context with the typed error class', () => {
+    expect(() => resolveAgentIdentity({})).toThrow(AgentIdentityRequiredError);
   });
 
   it('a handler exceeding timeoutSec becomes a 408', async () => {

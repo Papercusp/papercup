@@ -43,6 +43,8 @@
  * cross-package type bridge — same approach as the sibling
  * `agent-tools/locks/identity.ts`.
  */
+import { AgentIdentityRequiredError } from '../../auth/identity-required-error';
+
 export interface ResolveIdentityCtx {
   /** Per-tier resolved client id, set by the transport route.
    *  Power-user: the auth_session_id. Superuser: Mcp-Session-Id || ?client=. */
@@ -451,7 +453,9 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
     };
   }
 
-  throw new Error(
+  // Typed (EI-24708210960582152): a missing identity is the caller's fault, so the route
+  // stack answers 401 identity_required, not a 500 that reads as a server crash.
+  throw new AgentIdentityRequiredError(
     'resolveAgentIdentity: context carries no power-user / superuser / ' +
       'principal / fleet-spawn / signed-spawn identity — the caller cannot ' +
       'be attributed (a cup:spawn child must carry its `s-…` spawnId as ' +
