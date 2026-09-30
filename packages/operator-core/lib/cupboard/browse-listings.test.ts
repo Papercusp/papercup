@@ -143,3 +143,43 @@ describe('browseCupboardListings catalog filters (migration 018 / P-008)', () =>
     });
   });
 });
+
+describe('browseCupboardListings blueprint facet (worker migrations 009/035)', () => {
+  const identity = { id: 'id-1', listing_kind: 'blueprint', blueprint_kind: 'identity' };
+  const hive = { id: 'hive-1', listing_kind: 'blueprint', blueprint_kind: 'hive' };
+  const plugin = { id: 'plug-1', listing_kind: 'plugin', blueprint_kind: null };
+
+  it('sends ?blueprint_kind= and keeps the summary of a worker that applied it', async () => {
+    const calls: string[] = [];
+    global.fetch = vi.fn(async (input: unknown) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ results: [identity], total: 1, kind_facets: { blueprint: 1 } }));
+    }) as unknown as typeof fetch;
+
+    expect(await browseCupboardListings({ blueprintKind: 'identity' })).toEqual({
+      ok: true,
+      listings: [identity],
+      total: 1,
+      kind_facets: { blueprint: 1 },
+    });
+    expect(new URL(calls[0]).searchParams.get('blueprint_kind')).toBe('identity');
+  });
+
+  it('narrows FAIL-CLOSED when an older worker ignores the param, withholding its unfiltered summary', async () => {
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ results: [identity, hive, plugin], total: 3, kind_facets: { blueprint: 2, plugin: 1 } })),
+    ) as unknown as typeof fetch;
+
+    expect(await browseCupboardListings({ blueprintKind: 'identity' })).toEqual({ ok: true, listings: [identity] });
+  });
+
+  it('degrades to empty when a worker rejects the facet value it predates', async () => {
+    global.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: 'invalid_field', field: 'blueprint_kind' }), { status: 400 }),
+    ) as unknown as typeof fetch;
+
+    expect(await browseCupboardListings({ blueprintKind: 'identity' })).toEqual({ ok: true, listings: [] });
+    // Without the facet in the request the same rejection is a real error.
+    expect(await browseCupboardListings({})).toEqual({ ok: false, status: 400, error: 'cupboard_http_400' });
+  });
+});
