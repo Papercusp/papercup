@@ -55,8 +55,17 @@ def is_agent_cli(argv):
     return False
 
 
+# psu-launcher.mjs hosts the PTY IN-PROCESS (it imports psu-pty-host.mjs), so on a
+# live box the managed CLI's parent is usually the launcher, not a separate
+# psu-pty-host process (measured 2026-09-29: every su/grader claude was a direct
+# child of `node …/psu-launcher.mjs`). Either parent means psu minted this CLI's
+# PAPERCUSP_SID for it — it did not inherit one — so it is never nested, even when
+# the launcher itself was started from inside another agent's tool.
+PSU_HOST_SCRIPTS = ('psu-pty-host.mjs', 'psu-launcher.mjs')
+
+
 def is_psu_host(argv):
-    return any(os.path.basename(a) == 'psu-pty-host.mjs' for a in (argv or [])[:4])
+    return any(os.path.basename(a) in PSU_HOST_SCRIPTS for a in (argv or [])[:4])
 
 
 def nested_cli_reason(start_pid=None, environ=None, proc=read_proc):

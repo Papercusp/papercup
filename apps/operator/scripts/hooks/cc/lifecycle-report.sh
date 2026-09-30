@@ -40,6 +40,18 @@ case "$EVENT_NAME" in
   *) exit 0 ;;
 esac
 
+# WI-10003957: a CLI NESTED inside another agent (a `claude -p` run from an su's Bash
+# tool or under a capability:bash job) inherits that su's PAPERCUSP_SID, so without this
+# its SessionStart re-anchors the su's adv row and its SessionEnd is judged the su's
+# terminal end — which fleet:kill'ed a live su (su-075445e6, 2026-09-29 21:45:42Z).
+# The helper exits 0 only on POSITIVE nested evidence; any failure (missing file, no
+# /proc, python error) is a non-zero exit, so the hook reports exactly as before.
+# activity:report applies the same rule server-side (classifyOwnerNativeSession);
+# this is the client half that keeps the foreign report from being sent at all.
+if python3 "$(dirname "$0")/pc_nested_cli.py" >/dev/null 2>&1; then
+  exit 0
+fi
+
 report() {
   python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$PAPERCUSP_SID" "$AGENT" "${PAPERCUSP_HARNESS_SLUG:-}" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF'
 import json, os, sys, urllib.request, urllib.parse

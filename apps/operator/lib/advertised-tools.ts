@@ -105,6 +105,47 @@ function writeStubSse(res: http.ServerResponse): void {
  * never as "the list was empty": a failed capture and a perfect deny look
  * identical, which is why callers must pair this with a positive control.
  */
+/**
+ * The environment the `claude -p` probe runs with: routed to the local capture endpoint
+ * on `port`, stripped of every competing auth route AND every PAPERCUSP_* identity var,
+ * then overlaid with the caller's `overrides` (an explicit `undefined` clears a key).
+ */
+export function advertisedToolsProbeEnv(
+  base: NodeJS.ProcessEnv,
+  port: number,
+  overrides: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base };
+  env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
+  // Deliberately not key-shaped: the endpoint ignores auth, and a
+  // key-shaped literal in this shared tree trips the secrets guard.
+  env.ANTHROPIC_API_KEY = 'probe-local-endpoint-no-auth';
+  // Strip every competing auth/gateway route, or the run can escape to a
+  // real endpoint — which both costs money and captures nothing.
+  for (const k of [
+    'ANTHROPIC_AUTH_TOKEN',
+    'ANTHROPIC_BEDROCK_BASE_URL',
+    'ANTHROPIC_VERTEX_BASE_URL',
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_VERTEX',
+  ])
+    delete env[k];
+  // WI-10003957: never let the probe act AS the agent running the test. The
+  // global ~/.claude hooks fire inside this `claude -p`; with an inherited
+  // PAPERCUSP_SID its SessionEnd once read as the su's terminal death and
+  // fleet:kill'ed the live session. Drop every Papercusp identity/route var.
+  for (const k of Object.keys(env)) {
+    if (k.startsWith('PAPERCUSP_')) delete env[k];
+  }
+  // Caller-supplied env LAST so a test can force or clear a key (e.g. ENABLE_TOOL_SEARCH)
+  // without losing the auth/route scrubbing above. An explicit `undefined` clears.
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === undefined) delete env[k];
+    else env[k] = v;
+  }
+  return env;
+}
+
 export async function captureAdvertisedTools(
   extraArgs: string[] = [],
   opts: { timeoutMs?: number; mcpConfig?: string; env?: NodeJS.ProcessEnv } = {},
@@ -152,36 +193,7 @@ export async function captureAdvertisedTools(
 
   try {
     await new Promise<void>((resolve) => {
-      const env: NodeJS.ProcessEnv = { ...process.env };
-      env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${port}`;
-      // Deliberately not key-shaped: the endpoint ignores auth, and a
-      // key-shaped literal in this shared tree trips the secrets guard.
-      env.ANTHROPIC_API_KEY = 'probe-local-endpoint-no-auth';
-      // Strip every competing auth/gateway route, or the run can escape to a
-      // real endpoint — which both costs money and captures nothing.
-      for (const k of [
-        'ANTHROPIC_AUTH_TOKEN',
-        'ANTHROPIC_BEDROCK_BASE_URL',
-        'ANTHROPIC_VERTEX_BASE_URL',
-        'CLAUDE_CODE_USE_BEDROCK',
-        'CLAUDE_CODE_USE_VERTEX',
-      ])
-        delete env[k];
-      // WI-10003957: never let the probe act AS the agent running the test. The
-      // global ~/.claude hooks fire inside this `claude -p`; with an inherited
-      // PAPERCUSP_SID its SessionEnd once read as the su's terminal death and
-      // fleet:kill'ed the live session. Drop every Papercusp identity/route var.
-      for (const k of Object.keys(env)) {
-        if (k.startsWith('PAPERCUSP_')) delete env[k];
-      }
-
-      // Caller-supplied env LAST so a test can force or clear a key (e.g. ENABLE_TOOL_SEARCH)
-      // without losing the auth/route scrubbing above. An explicit `undefined` clears.
-      for (const [k, v] of Object.entries(opts.env ?? {})) {
-        if (v === undefined) delete env[k];
-        else env[k] = v;
-      }
-
+      const env = advertisedToolsProbeEnv(process.env, port, opts.env);
       const child = spawn(
         'claude',
         [

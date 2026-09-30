@@ -1220,10 +1220,19 @@ export const CC_HOOK_FILES = [
   // installClaudeHooks installs them 0644.
   'pc_tty.py',
   'mcp_response.py',
+  // WI-10003957: lifecycle-report.sh runs this through `python3 <path>` to skip the
+  // SessionStart/SessionEnd report of a CLI NESTED inside another agent (it inherited
+  // the su's PAPERCUSP_SID). Omit it and the guard fails open: a nested `claude -p`
+  // ends the su again. Run via the interpreter, never exec'd directly, so it is 0644.
+  'pc_nested_cli.py',
 ] as const;
 
 /** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x. */
-const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set(['pc_tty.py', 'mcp_response.py']);
+const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set([
+  'pc_tty.py',
+  'mcp_response.py',
+  'pc_nested_cli.py',
+]);
 
 /** Match the runtime-vintage unit label used by host-bootstrap in install evidence. */
 function desktopInstallUnit(): string {
