@@ -135,6 +135,62 @@ describe('OMP SU-session backend — PUI entry and native session translation', 
     } finally { adapter.dispose(); }
   });
 
+  it('replays each restored prompt under its saved receipt turn id (WI-10004254)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'omp-su-receipts-'));
+    tempDirs.push(dir);
+    const transcriptPath = join(dir, `${Date.now()}_${THREAD_A}.jsonl`);
+    const user = (id: string, text: string) => ({ type: 'message', id, message: { role: 'user', content: [{ type: 'text', text }] } });
+    const reply = (id: string, text: string) => ({ type: 'message', id, message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop' } });
+    writeFileSync(transcriptPath, [
+      { type: 'session', id: THREAD_A, timestamp: '2026-08-28T00:00:00.000Z', cwd: '/workspace' },
+      user('user-1', 'hi'), reply('assistant-1', 'Hello'),
+      user('user-2', 'look around'), reply('assistant-2', 'Nothing here'),
+      user('user-3', 'hi'), reply('assistant-3', 'Hello again'),
+    ].map((line) => JSON.stringify(line)).join('\n') + '\n');
+    const turnsOf = (adapter: ReturnType<typeof createOmpSuSessionAdapter>, role: string, content: string) => events(adapter)
+      .flatMap((event) => event.type === 'transcript' && event.phase === 'delta' && event.role === role && event.content === content
+        ? [event.turnId] : []);
+
+    // 'turn-live' was delivered live through this adapter, so no replayed
+    // prompt may take it; 'hi' then takes turn-a and turn-b in order, and the
+    // prompt typed natively (no receipt) keeps an omp: id of its own.
+    const receipts = vi.fn(async () => [
+      { turnId: 'turn-live', content: 'hi' },
+      { turnId: 'turn-a', content: ' hi\n' },
+      { turnId: 'turn-b', content: 'hi' },
+    ]);
+    const ownerTurn = vi.fn<OmpSuSessionControls['ownerTurn']>(async () => ({ ok: true }));
+    const adapter = createOmpSuSessionAdapter(binding(), runtime(THREAD_A, dir, transcriptPath), {
+      agentChatId: 'agent-chat-omp-replay-turns', register: false, controls: { ownerTurn }, ownerTurnReceipts: receipts,
+    });
+    try {
+      const live = adapter.host.startCommand(command(adapter, { type: 'owner_turn', commandId: 'owner-live', turnId: 'turn-live', content: 'hi' }));
+      await expect(live.terminal).resolves.toMatchObject({ status: 'completed' });
+      await adapter.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      expect(receipts).toHaveBeenCalledWith(expect.objectContaining({ nativeSessionId: THREAD_A }));
+      expect(turnsOf(adapter, 'owner', 'hi')).toEqual(['turn-a', 'turn-b']);
+      expect(turnsOf(adapter, 'assistant', 'Hello')).toEqual(['turn-a']);
+      expect(turnsOf(adapter, 'assistant', 'Hello again')).toEqual(['turn-b']);
+      const [native] = turnsOf(adapter, 'owner', 'look around');
+      expect(native).toMatch(/^omp:user-2:/);
+      expect(turnsOf(adapter, 'assistant', 'Nothing here')).toEqual([native]);
+    } finally { adapter.dispose(); }
+
+    // Without receipts (or when reading them fails) every restored prompt
+    // still opens its own omp: turn.
+    const unmatched = createOmpSuSessionAdapter(binding(), runtime(THREAD_A, dir, transcriptPath), {
+      agentChatId: 'agent-chat-omp-replay-turns-unmatched', register: false,
+      ownerTurnReceipts: async () => { throw new Error('receipt read failed'); },
+    });
+    try {
+      await unmatched.consumeTranscriptSnapshot({ preserveLifecycle: true });
+      const owners = [...turnsOf(unmatched, 'owner', 'hi'), ...turnsOf(unmatched, 'owner', 'look around')];
+      expect(owners).toHaveLength(3);
+      expect(new Set(owners).size).toBe(3);
+      expect(owners.every((turnId) => turnId.startsWith('omp:'))).toBe(true);
+    } finally { unmatched.dispose(); }
+  });
+
   it('repairs a stale shared-home attach handle to the tracked per-row OMP home', async () => {
     const returned = runtime(THREAD_A, '/home/test/.omp/agent').nativeSession;
     const resolved = await resolveOmpSuRuntime(binding(returned));

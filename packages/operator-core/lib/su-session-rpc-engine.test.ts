@@ -11,6 +11,11 @@ import type { RpcFrame, SuStdioPeerOptions } from './su-session-stdio-peer';
 const mocks = vi.hoisted(() => ({
   link: vi.fn(async () => 'linked'), persist: vi.fn(async () => true),
   writeOmp: vi.fn((_id: number, _options: Record<string, unknown>) => '.papercusp/su-omp-homes/session-71'),
+  receipts: vi.fn(async (_identity: unknown): Promise<Array<{ turnId: string; content: string }>> => []),
+}));
+vi.mock('./su-session-commands', async (orig) => ({
+  ...(await orig<typeof import('./su-session-commands')>()),
+  loadSuOwnerTurnReceipts: mocks.receipts,
 }));
 vi.mock('./adv-sessions', async (orig) => ({
   ...(await orig<typeof import('./adv-sessions')>()),
@@ -41,6 +46,7 @@ afterEach(async () => {
   for (const dir of nativeDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   vi.clearAllMocks();
   mocks.persist.mockResolvedValue(true);
+  mocks.receipts.mockResolvedValue([]);
 });
 
 function fixture(backend: 'codex' | 'omp', overrides: {
@@ -176,6 +182,29 @@ describe.each(['codex', 'omp'] as const)('%s structured SU engine', (backend) =>
       event.type === 'transcript' && event.phase === 'completed' && event.role === 'assistant'))
       .toEqual([expect.objectContaining({ content: 'Saved assistant reply' })]);
     expect(f.sent.some((frame) => frame.method === 'turn/start' || frame.type === 'prompt')).toBe(false);
+  });
+
+  it('shows a restored prompt and its reply under the saved receipt turn id (WI-10004254)', async () => {
+    const history = backend === 'codex' ? [
+      { type: 'response_item', payload: { type: 'message', id: 'saved-user', role: 'user', content: [{ type: 'input_text', text: 'Saved greeting' }] } },
+      { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Saved reply' }] } },
+      { type: 'event_msg', payload: { type: 'task_complete' } },
+    ] : [
+      { type: 'message', id: 'saved-user', message: { role: 'user', content: 'Saved greeting' } },
+      { type: 'message', id: 'saved-reply', message: { role: 'assistant', content: [{ type: 'text', text: 'Saved reply' }], stopReason: 'stop' } },
+    ];
+    mocks.receipts.mockResolvedValue([{ turnId: 'saved-turn', content: 'Saved greeting' }]);
+    const f = fixture(backend, { resume: true, history });
+    await f.engine.ready;
+    expect(mocks.receipts).toHaveBeenCalledWith(expect.objectContaining({
+      agentChatId: `chat-${backend}`, nativeSessionId: backend === 'codex' ? 'native-codex' : 'native-omp',
+    }));
+    const completed = f.engine.adapter.host.recent.map(({ event }) => event)
+      .filter((event) => event.type === 'transcript' && event.phase === 'completed');
+    expect(completed).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'owner', content: 'Saved greeting', turnId: 'saved-turn' }),
+      expect.objectContaining({ role: 'assistant', content: 'Saved reply', turnId: 'saved-turn' }),
+    ]));
   });
 
   it('refuses resume readiness when saved history cannot be read', async () => {

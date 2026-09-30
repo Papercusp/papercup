@@ -18,6 +18,7 @@ import { resolveSpawnHostOperatorBaseUrl } from './mcp-base-url';
 import type { CodexNativeSessionHandle, OmpNativeSessionHandle } from './native-session-handles';
 import { createCodexSuSessionAdapter, type CodexSuSessionAdapter } from './su-session-codex-adapter';
 import { createOmpSuSessionAdapter, type OmpSuSessionAdapter } from './su-session-omp-adapter';
+import { loadSuOwnerTurnReceipts, type SuOwnerTurn, type SuOwnerTurnReceiptRef } from './su-session-commands';
 import { makeCodingAssistantCodexHome } from './role-codex-home';
 import type { ClaudeEngineIdentity } from './su-session-claude-engine';
 import { persistSuSessionDescriptor } from './su-session-persistence';
@@ -50,6 +51,9 @@ export interface SuRpcEngineOptions {
   /** P-016: 'coding-assistant' runs the backend's own identity, with no SU
    * playbook, Papercusp hooks or papercusp-su MCP (default 'su'). */
   identity?: ClaudeEngineIdentity;
+  /** Saved owner turns the resume replay pairs restored prompts with
+   * (default: loadSuOwnerTurnReceipts, WI-10004254). */
+  ownerTurnReceipts?: (identity: SuOwnerTurn['target']) => Promise<readonly SuOwnerTurnReceiptRef[]>;
 }
 
 /** The user's own OMP MCP servers, minus papercusp-su (P-016). */
@@ -242,7 +246,10 @@ export function startSuRpcEngine(
     async focus() { return { ok: true as const }; },
     async end() { await close(); return { ok: true as const }; },
   };
-  const shared = { ...options, controls, ready: false, runtimeReady: () => ready && !closed };
+  const shared = {
+    ...options, controls, ready: false, runtimeReady: () => ready && !closed,
+    ownerTurnReceipts: options.ownerTurnReceipts ?? ((identity: SuOwnerTurn['target']) => loadSuOwnerTurnReceipts(identity)),
+  };
   const adapter = backend === 'codex'
     ? createCodexSuSessionAdapter(binding, { nativeSession: { ...native as CodexNativeSessionHandle, rolloutId: nativeId() }, rolloutPath: null }, { ...shared, host: options.host as SuSessionHost<'codex'> | undefined })
     : createOmpSuSessionAdapter(binding, { nativeSession: { ...native as OmpNativeSessionHandle, ompThreadId: nativeId() }, transcriptPath: null }, { ...shared, host: options.host as SuSessionHost<'omp'> | undefined });
