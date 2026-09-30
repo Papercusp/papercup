@@ -106,6 +106,7 @@ import {
   enforceDefaultClaudeAccount,
   sanitizeInheritedEnv,
   applyCodexDiagnosticEnv,
+  applyHeadlessCodexBrowserPolicy,
   CODEX_DIAGNOSTIC_RUST_LOG,
   addDirArgs,
   forkUnsupportedMessage,
@@ -6004,6 +6005,31 @@ describe("psu-launcher arg parsing", () => {
   it("applyCodexDiagnosticEnv leaves non-Codex launches unchanged", () => {
     const env = { RUST_LOG: "debug", KEEP_ME: "v" };
     expect(applyCodexDiagnosticEnv(env, "claude")).toEqual(env);
+  });
+
+  it("headless Codex overrides an inherited browser command so OAuth cannot escape to the desktop", () => {
+    expect(applyHeadlessCodexBrowserPolicy({
+      PAPERCUSP_AGENT: "codex",
+      PAPERCUSP_PSU_HEADLESS: "1",
+      BROWSER: "google-chrome",
+      KEEP_ME: "v",
+    })).toEqual({
+      PAPERCUSP_AGENT: "codex",
+      PAPERCUSP_PSU_HEADLESS: "1",
+      BROWSER: "false",
+      KEEP_ME: "v",
+    });
+  });
+
+  it("browser policy leaves visible Codex and non-Codex launches unchanged", () => {
+    const visible = { PAPERCUSP_AGENT: "codex", BROWSER: "google-chrome" };
+    const headlessClaude = {
+      PAPERCUSP_AGENT: "claude",
+      PAPERCUSP_PSU_HEADLESS: "1",
+      BROWSER: "google-chrome",
+    };
+    expect(applyHeadlessCodexBrowserPolicy(visible)).toEqual(visible);
+    expect(applyHeadlessCodexBrowserPolicy(headlessClaude)).toEqual(headlessClaude);
   });
 
   it("codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin", () => {
@@ -14639,6 +14665,136 @@ describe("operator endpoint resolution (desktop vs dev box)", () => {
         warn: (m: string) => warnings.push(m),
       });
       expect(warnings).toHaveLength(0);
+    });
+
+    // ── EI-24402391758483336: a :3170 (staging) pin rides the staging proxy ──
+    // A direct :3170 pin is refused for every staging restart window, so psu
+    // failed with "refused connections for 30s" / "route exceeded 30s". When the
+    // staging proxy (:9171 → :3170) is live the pin must route through it — the
+    // same operator build, but restarts are held open instead of refused.
+
+    it("routes an explicit :3170 pin through a LIVE staging proxy (children inherit it)", () => {
+      const probed: number[] = [];
+      const warnings: string[] = [];
+      const target = resolveOperatorTarget({
+        env: { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3170" },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return port === 9171;
+        },
+        warn: (m: string) => warnings.push(m),
+      });
+      expect(target).toEqual({
+        url: "http://127.0.0.1:9171",
+        source: "env",
+        startedAt: null,
+      });
+      expect(probed).toContain(9171);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/EI-24402391758483336/);
+      expect(warnings[0]).toMatch(/PAPERCUSP_MCP_STAGING_PROXY=0/);
+    });
+
+    it("routes a localhost:3170 pin (and a suffixed /api/mcp one) through the staging proxy too", () => {
+      for (const pin of [
+        "http://localhost:3170",
+        "http://127.0.0.1:3170/api/mcp",
+      ]) {
+        expect(
+          resolveOperatorUrl({
+            env: { PAPERCUSP_OPERATOR_URL: pin },
+            home,
+            probe: (port: number) => port === 9171,
+            warn: () => {},
+          }),
+        ).toBe("http://127.0.0.1:9171");
+      }
+    });
+
+    it("keeps the managed-env provenance when a launcher-managed :3170 pin is proxied", () => {
+      expect(
+        resolveOperatorTarget({
+          env: {
+            PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3170",
+            PAPERCUSP_OPERATOR_URL_PROVENANCE: "psu-launcher",
+          },
+          home,
+          probe: (port: number) => port === 9171,
+          warn: () => {},
+        }),
+      ).toEqual({
+        url: "http://127.0.0.1:9171",
+        source: "managed-env",
+        startedAt: null,
+      });
+    });
+
+    it("connects to :3170 directly when the staging proxy is DOWN (no silent redirect to green)", () => {
+      const warnings: string[] = [];
+      const target = resolveOperatorTarget({
+        env: { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3170" },
+        home,
+        // the green proxy (:9071) is alive — it must NOT be substituted for staging
+        probe: (port: number) => port === 9071,
+        warn: (m: string) => warnings.push(m),
+      });
+      expect(target.url).toBe("http://127.0.0.1:3170");
+      expect(warnings).toHaveLength(0);
+    });
+
+    it("PAPERCUSP_MCP_STAGING_PROXY=0 opts out without probing the staging proxy", () => {
+      const probed: number[] = [];
+      const url = resolveOperatorUrl({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3170",
+          PAPERCUSP_MCP_STAGING_PROXY: "0",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return true;
+        },
+        warn: () => {},
+      });
+      expect(url).toBe("http://127.0.0.1:3170");
+      expect(probed).not.toContain(9171);
+    });
+
+    it("honors PAPERCUSP_MCP_STAGING_PROXY_PORT for both the probe and the url", () => {
+      const probed: number[] = [];
+      const url = resolveOperatorUrl({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:3170",
+          PAPERCUSP_MCP_STAGING_PROXY_PORT: "9272",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return port === 9272;
+        },
+        warn: () => {},
+      });
+      expect(url).toBe("http://127.0.0.1:9272");
+      expect(probed).toContain(9272);
+      expect(probed).not.toContain(9171);
+    });
+
+    it("leaves non-staging pins untouched even with the staging proxy live", () => {
+      for (const pin of [
+        "http://127.0.0.1:3070",
+        "http://127.0.0.1:24689",
+        "http://10.0.0.5:3170", // a remote host's :3170 is not our staging proxy's upstream
+      ]) {
+        expect(
+          resolveOperatorUrl({
+            env: { PAPERCUSP_OPERATOR_URL: pin },
+            home,
+            probe: (port: number) => port === 9171,
+            warn: () => {},
+          }),
+        ).toBe(pin);
+      }
     });
   });
 
