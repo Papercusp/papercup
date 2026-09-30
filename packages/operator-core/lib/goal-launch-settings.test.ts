@@ -105,8 +105,9 @@ interface MockOpts {
     {
       budget_cents?: number | string | null;
       spent_cents?: unknown;
-      /** WI-10002052: the diagnostic breakdown the unmeasurable-spend gate reads. */
-      spent_cents_breakdown?: unknown;
+      /** WI-10002052 / D-011: `metadata.spentCentsUnmeasuredReason`, which the
+       *  unmeasurable-spend gate reads. */
+      spent_cents_unmeasured_reason?: string | null;
       spent_cents_at?: string | null;
       spent_cents_source?: string | null;
     }
@@ -208,7 +209,7 @@ function mockSql(opts: MockOpts = {}): Sql {
           launch_settings: opts.settings?.[goalId] ?? null,
           budget_cents: b?.budget_cents ?? null,
           spent_cents: b?.spent_cents ?? null,
-          spent_cents_breakdown: b?.spent_cents_breakdown ?? null,
+          spent_cents_unmeasured_reason: b?.spent_cents_unmeasured_reason ?? null,
           spent_cents_at: b?.spent_cents_at ?? null,
           spent_cents_source: b?.spent_cents_source ?? null,
         },
@@ -1144,7 +1145,7 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       unmeasuredPricedSpend: false,
       spentCentsAt: '2026-08-28T02:00:00Z',
       // The ordinary case: a rollup-written figure, so it carries the marker.
-      spentCentsSource: 'goal-pots-rollup',
+      spentCentsSource: 'goal-lineage-rollup',
     },
     ceilings: { maxAgents: 12, maxPerFleet: 5 },
     headcount: { total: 3, fleet: 2 },
@@ -1253,11 +1254,11 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
       },
       reporting: { draft: { fields: {
         moved: expect.stringContaining('no previous report watermark'),
-        cost: expect.stringContaining('coverage=measured-pot'),
+        cost: expect.stringContaining('coverage=measured'),
         ownerWalled: expect.stringContaining('WI-43: provide billing access'),
         killed: 'none evidenced in the current portfolio',
       } } },
-      operatingInputs: { status: 'ready', canExecute: true, spendCoverage: 'measured-pot' },
+      operatingInputs: { status: 'ready', canExecute: true, spendCoverage: 'measured' },
       attribution: { status: 'healthy', checked: { pots: 1, plans: 1, workItems: 1 }, issues: [] },
     });
     expect(brief?.priorities).toEqual([
@@ -1297,11 +1298,11 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     // P-004: this line lands in every goal agent's kickoff (goals:start,
     // start-goal-by-id, goal-holder-launch-action all render it), which makes it
     // the most-read rendering of spentCents anywhere. Unqualified, `spent=1250c`
-    // reads as what the goal has cost; it is the POT leg only, so the population
-    // must travel with the number.
-    expect(rendered).toContain('Budget: spent=1250c [inside-goal-pots:authoritative] / 5000c');
+    // does not say which population it counts; since D-011 it is the goal's
+    // lineage-attributed stream, and that population must travel with the number.
+    expect(rendered).toContain('Budget: spent=1250c [attributed-by-lineage:authoritative] / 5000c');
     // And the label must be EARNED, not decorative: an unmarked figure says so
-    // rather than borrowing the pot scope's standing.
+    // rather than borrowing the lineage scope's standing.
     const unmarked = renderGoalPortfolioBrief({
       ...brief!,
       budget: { ...brief!.budget, spentCentsSource: null },
@@ -1736,7 +1737,7 @@ describe('P-015 GOAL operating inputs', () => {
     budgetCents: 50_000,
     budgetWindowSec: null,
     spentCents: 1_000,
-    spentCentsSource: 'goal-pots-rollup',
+    spentCentsSource: 'goal-lineage-rollup',
     unmeasuredPricedSpend: false,
     tripwires: [{ metric: 'paying_users', threshold: 1 }],
   };
@@ -2024,8 +2025,8 @@ describe('P-006: the budget launch gate', () => {
     budget: {
       budget_cents?: number | string | null;
       spent_cents?: unknown;
-      /** WI-10002052: the diagnostic breakdown the unmeasurable-spend gate reads. */
-      spent_cents_breakdown?: unknown;
+      /** WI-10002052 / D-011: why the rollup left spentCents null. */
+      spent_cents_unmeasured_reason?: string | null;
       spent_cents_at?: string | null;
       spent_cents_source?: string | null;
     },
@@ -2048,7 +2049,7 @@ describe('P-006: the budget launch gate', () => {
         budget_cents: 5000,
         spent_cents: 5000,
         spent_cents_at: '2026-08-17T03:00:00Z',
-        spent_cents_source: 'goal-pots-rollup',
+        spent_cents_source: 'goal-lineage-rollup',
       },
       seen,
     );
@@ -2070,7 +2071,7 @@ describe('P-006: the budget launch gate', () => {
     const r = await launchWithBudget({
       budget_cents: 5000,
       spent_cents: 5000,
-      spent_cents_source: 'goal-pots-rollup',
+      spent_cents_source: 'goal-lineage-rollup',
     });
     expect(r.refusal?.reason).toBe('goal_budget_exceeded'); // …the real gate refuses it
   });
@@ -2078,7 +2079,7 @@ describe('P-006: the budget launch gate', () => {
   it('admits under budget, surfaces the truth for display, and the agent ceilings still apply', async () => {
     const seen: string[] = [];
     const r = await launchWithBudget(
-      { budget_cents: 5000, spent_cents: 4999, spent_cents_source: 'goal-pots-rollup' },
+      { budget_cents: 5000, spent_cents: 4999, spent_cents_source: 'goal-lineage-rollup' },
       seen,
     );
     expect(r.refusal).toBeNull();
@@ -2086,11 +2087,11 @@ describe('P-006: the budget launch gate', () => {
     expect(r.budget).toEqual({
       budgetCents: 5000,
       spentCents: 4999,
-      // WI-10002052: the pot leg MEASURED, so the unmeasured-spend signal is
+      // WI-10002052: the rollup MEASURED, so the unmeasured-spend signal is
       // false by construction and cannot soften this measured reading.
       unmeasuredPricedSpend: false,
       spentCentsAt: null,
-      spentCentsSource: 'goal-pots-rollup',
+      spentCentsSource: 'goal-lineage-rollup',
     });
     // Under budget the D-015 default ceilings still get their headcount.
     expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(true);
@@ -2100,29 +2101,38 @@ describe('P-006: the budget launch gate', () => {
     const r = await launchWithBudget({
       budget_cents: '7000',
       spent_cents: 7000,
-      spent_cents_source: 'goal-spend-tick',
+      spent_cents_source: 'goal-lineage-rollup',
     });
     expect(r.refusal?.reason).toBe('goal_budget_exceeded');
     expect(r.refusal?.limit).toBe(7000);
   });
 
-  // ── WI-10002052 / plan decision D-004: an unmeasurable ceiling must not fail OPEN ──
-  //
-  // `spentCents: null` carries TWO populations that used to share one fail-open
-  // branch: a goal never ticked (harmless — nothing is being let past a ceiling),
-  // and a POT-LESS goal whose spend is real but invisible to goalSpend()'s INNER
-  // JOIN on goal_pots. For the second, failing open means the ceiling never binds
-  // once, ever. These tests pin the split.
-  //
-  // Shape mirrors a real pot-less goal measured on 2026-09-20: priced, goal-tagged
-  // session spend with no pot leg to measure it.
-  const PRICED_BUT_UNMEASURED = { sessionCents: 42042, sessionSamples: 193 };
+  it('the retired goal-spend-tick marker no longer carries authority (D-011)', async () => {
+    // Its writer was deleted, so a figure stamped with it can only be stale.
+    const r = await launchWithBudget({
+      budget_cents: '7000',
+      spent_cents: 7000,
+      spent_cents_source: 'goal-spend-tick',
+    });
+    expect(r.refusal).toBeNull();
+    expect(r.degradedReasons.some((s) => s.includes('no recognized platform spend provenance marker'))).toBe(true);
+  });
 
-  it('REFUSES a pot-less goal whose priced spend the pot leg could not measure', async () => {
+  // ── WI-10002052 / D-011 clause 3: an unmeasurable ceiling must not fail OPEN ──
+  //
+  // `spentCents: null` carries TWO populations, and the rollup names which one in
+  // `spentCentsUnmeasuredReason`: nothing attributed in the window (harmless —
+  // nothing is being let past a ceiling), and attributed samples the ledger
+  // could not price, so the true total is unknown. For the second, failing open
+  // means the ceiling never binds while those samples stay in the window. These
+  // tests pin the split.
+  const UNPRICED = 'unpriced-lineage-samples';
+
+  it('REFUSES a goal whose window holds attributed samples that carry no price', async () => {
     const r = await launchWithBudget({
       budget_cents: 50000,
       spent_cents: null,
-      spent_cents_breakdown: PRICED_BUT_UNMEASURED,
+      spent_cents_unmeasured_reason: UNPRICED,
     });
     expect(r.refusal).not.toBeNull();
     expect(r.refusal!.reason).toBe('goal_budget_unmeasurable');
@@ -2134,45 +2144,34 @@ describe('P-006: the budget launch gate', () => {
     expect(r.degraded).toBe(false);
   });
 
-  it('does not leak the diagnostic session cents into the refusal (D-004 clause 3)', async () => {
+  it('forecloses the forbidden mitigations instead of inviting them (D-004 clause 2)', async () => {
     const r = await launchWithBudget({
       budget_cents: 50000,
       spent_cents: null,
-      spent_cents_breakdown: PRICED_BUT_UNMEASURED,
+      spent_cents_unmeasured_reason: UNPRICED,
     });
-    // 42042 is the SESSION leg, which its writer marks diagnostic-only and
-    // forbids as a terminal-control input. Its appearance anywhere in the
-    // refusal would mean the gate had started controlling on it.
-    expect(r.refusal!.message).not.toContain('42042');
-    expect(r.refusal!.current).toBeNull();
-  });
-
-  it('forecloses the forbidden mitigation instead of inviting it (D-004 clause 2)', async () => {
-    const r = await launchWithBudget({
-      budget_cents: 50000,
-      spent_cents: null,
-      spent_cents_breakdown: PRICED_BUT_UNMEASURED,
-    });
-    // "No pots" reads as "attach a pot" to anyone acting on this refusal, and
-    // that fabricates measurability rather than repairing anything.
+    // Attaching a pot changes nothing since D-011 (spend is not measured from
+    // pots), and moving the ceiling only to get admitted fabricates headroom.
     expect(r.refusal!.message).toContain('Do NOT attach a pot');
-    expect(r.refusal!.message).toMatch(/repair the authoritative.*spend measurement/i);
+    expect(r.refusal!.message).toMatch(/repair the pricing of those samples/i);
     expect(r.refusal!.message).not.toContain('Levers: raise or clear budget_cents');
-    expect(r.refusal!.message).toContain('do not infer available headroom');
+    expect(r.refusal!.message).toContain('do not infer headroom');
   });
 
-  it('PRESERVES fail-open for a goal that has simply never been ticked', async () => {
-    // The other population, unchanged: no breakdown, no evidence of spend.
-    const r = await launchWithBudget({ budget_cents: 50000, spent_cents: null });
-    expect(r.refusal).toBeNull();
-    expect(r.degraded).toBe(true);
+  it('PRESERVES fail-open for a goal with nothing attributed in its window', async () => {
+    // The other population: no evidence of spend, so no ceiling is being passed.
+    for (const spent_cents_unmeasured_reason of [null, 'no-lineage-samples']) {
+      const r = await launchWithBudget({ budget_cents: 50000, spent_cents: null, spent_cents_unmeasured_reason });
+      expect(r.refusal).toBeNull();
+      expect(r.degraded).toBe(true);
+    }
   });
 
   it('opens a distinctly-deduped owner escalation, so the refusal is never silent', async () => {
     await launchWithBudget({
       budget_cents: 50000,
       spent_cents: null,
-      spent_cents_breakdown: PRICED_BUT_UNMEASURED,
+      spent_cents_unmeasured_reason: UNPRICED,
     });
     await vi.waitFor(() => expect(escalated.calls.length).toBe(1));
     const call = escalated.calls[0]!;
@@ -2182,21 +2181,20 @@ describe('P-006: the budget launch gate', () => {
     expect((call.meta as Record<string, unknown>).dedupKind).toBe('goal-budget-unmeasurable');
   });
 
-  it('CONTROL (falsifiability): a MEASURED pot leg suppresses the signal entirely', () => {
-    // This is what makes the change strictly additive: the signal can only ever
-    // ADD a refusal where the gate previously failed open, never soften or
-    // override a measured one. A mutant that dropped the spentCents guard would
-    // fail here while every other test above still passed.
-    expect(hasUnmeasuredPricedSpend(PRICED_BUT_UNMEASURED, 4999)).toBe(false);
-    expect(hasUnmeasuredPricedSpend(PRICED_BUT_UNMEASURED, 0)).toBe(false);
-    expect(hasUnmeasuredPricedSpend(PRICED_BUT_UNMEASURED, null)).toBe(true);
+  it('CONTROL (falsifiability): a MEASURED figure suppresses the signal entirely', () => {
+    // The signal can only ever ADD a refusal where the gate would fail open,
+    // never soften or override a measured one. A mutant that dropped the
+    // spentCents guard would fail here while every other test above still passed.
+    expect(hasUnmeasuredPricedSpend(UNPRICED, 4999)).toBe(false);
+    expect(hasUnmeasuredPricedSpend(UNPRICED, 0)).toBe(false);
+    expect(hasUnmeasuredPricedSpend(UNPRICED, null)).toBe(true);
   });
 
-  it('requires BOTH priced cents and samples — neither alone is evidence of spend', () => {
-    expect(hasUnmeasuredPricedSpend({ sessionCents: 0, sessionSamples: 193 }, null)).toBe(false);
-    expect(hasUnmeasuredPricedSpend({ sessionCents: 42042, sessionSamples: 0 }, null)).toBe(false);
+  it('only the unpriced-samples reason is a hole — any other value is not evidence of spend', () => {
+    expect(hasUnmeasuredPricedSpend('no-lineage-samples', null)).toBe(false);
     expect(hasUnmeasuredPricedSpend(null, null)).toBe(false);
-    expect(hasUnmeasuredPricedSpend('not-an-object', null)).toBe(false);
+    // The retired breakdown object shape must not be mistaken for the reason.
+    expect(hasUnmeasuredPricedSpend({ sessionCents: 42042, sessionSamples: 193 }, null)).toBe(false);
     expect(hasUnmeasuredPricedSpend([], null)).toBe(false);
   });
 
@@ -2205,7 +2203,7 @@ describe('P-006: the budget launch gate', () => {
     expect(r.refusal).toBeNull();
     expect(r.degraded).toBe(true);
     expect(r.degradedReasons.some((s) => s.includes('budget ceiling not enforced'))).toBe(true);
-    expect(r.degradedReasons.some((s) => s.includes('no platform spend snapshot'))).toBe(true);
+    expect(r.degradedReasons.some((s) => s.includes('no measured spend in its budget window yet'))).toBe(true);
   });
 
   it('fails OPEN when spentCents has no recognized provenance — legacy values cannot enforce the ceiling', async () => {
@@ -2266,7 +2264,7 @@ describe('P-006: the budget launch gate', () => {
     await launchWithBudget({
       budget_cents: 5000,
       spent_cents: 6000,
-      spent_cents_source: 'goal-pots-rollup',
+      spent_cents_source: 'goal-lineage-rollup',
     });
     await vi.waitFor(() => expect(escalated.calls.length).toBe(1));
     const call = escalated.calls[0]!;

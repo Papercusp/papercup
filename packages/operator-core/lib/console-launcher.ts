@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve as resolvePath } from 'node:path';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 
 import { resolveBackend } from '@papercusp/papercusp-shared/agent';
 
@@ -356,7 +356,16 @@ export async function buildConsoleEnvelope(
   // `PAPERCUSP_REPO_ROOT` was already referenced by the coord-hook's docs but was
   // never actually set by anything; this makes it real. Only set when cwd really
   // is a checkout, so its presence is a reliable signal rather than a guess.
-  if (hasPapercupMarkers(cwd)) env.PAPERCUSP_REPO_ROOT = cwd;
+  delete env.PAPERCUSP_NODE_RUNTIME_DIR;
+  if (hasPapercupMarkers(cwd)) {
+    env.PAPERCUSP_REPO_ROOT = cwd;
+    // Papercusp's native addons are built for the operator's Node ABI. A
+    // desktop-session PATH can put a different system Node ahead of the
+    // operator's runtime, so checkout terminals get this one explicit
+    // precedence entry; other backend PATH fallbacks remain appended.
+    const runtimeName = basename(process.execPath).replace(/\.exe$/i, '').toLowerCase();
+    if (runtimeName === 'node') env.PAPERCUSP_NODE_RUNTIME_DIR = dirname(process.execPath);
+  }
   // If no slug, resolveContextEnv set PAPERCUSP_HARNESS_SLUG=''; drop
   // that — empty value is worse than absent for "is this harness-scoped?".
   if (!opts.slug) delete env.PAPERCUSP_HARNESS_SLUG;

@@ -4,7 +4,7 @@
  * [0-9a-f-]; throws (rather than escaping) on anything else.
  */
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { shellSafeId, buildSuperuserMcpUrl, buildConsoleEnvelope } from './console-launcher';
@@ -120,6 +120,7 @@ describe('buildConsoleEnvelope cwd for a workspace-only launch (EI-10938)', () =
       skipMcpJson: true,
     });
     expect(envelope.env.PAPERCUSP_REPO_ROOT).toBe(envelope.cwd);
+    expect(envelope.env.PAPERCUSP_NODE_RUNTIME_DIR).toBe(dirname(process.execPath));
     expect(existsSync(join(envelope.env.PAPERCUSP_REPO_ROOT!, '.git'))).toBe(true);
   });
 });

@@ -104,6 +104,7 @@ import {
   PSU_LAUNCH_LOG_TAIL_CHARS,
   readPsuLaunchLogTail,
 } from '../../psu-launch-log.mjs';
+import { codexThreadWriterHolder } from '../../../../../apps/operator/scripts/psu-launcher.mjs';
 import { resolveCodexModelSelection } from '../../model-context-budget.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
@@ -871,6 +872,35 @@ export default defineTool({
         );
       }
       let sourceStillLive = target.live;
+      let codexWriterHeld = false;
+      // A wake-pump can reactivate a Codex session without a managed pty-host
+      // row being visible to resolveResumeTarget yet. Codex's per-thread flock
+      // is the same single-writer authority checked by psu immediately before
+      // resume, so consult it here as an additional positive liveness witness.
+      // This turns that race into the documented live-source fork instead of a
+      // second terminal that later exits with Codex's active-writer refusal.
+      if (!isSuccessor && !fork && target.agent === 'codex') {
+        const nativeHandle = nativeSessionHandleForAdvSession(
+          {
+            id: target.advSessionId,
+            agent: 'codex',
+            coordOwnerId: target.ownerId,
+            sessionId: target.sessionId,
+          } as Parameters<typeof nativeSessionHandleForAdvSession>[0],
+          { findCodexRolloutId: () => null },
+        );
+        if (nativeHandle?.backend === 'codex') {
+          const writer = codexThreadWriterHolder(nativeHandle.codexHome, target.sessionId);
+          codexWriterHeld = writer.held;
+          if (writer.held) {
+            sourceStillLive = true;
+            notes.push(
+              `⚠ Codex reports an active writer for ${target.sessionId ?? 'the latest thread'}; ` +
+                'the source is treated as live and will be forked to avoid a second writer.',
+            );
+          }
+        }
+      }
       const prepareSuccessor = async (sourceKind: 'ended' | 'critical-dormant'): Promise<string | null> => {
         if (!target.ownerId) {
           return (
@@ -982,6 +1012,12 @@ export default defineTool({
         const successorFailure = await prepareSuccessor('ended');
         if (successorFailure) return err(successorFailure);
       } else if (args.restoreVisible) {
+        if (codexWriterHeld && !target.live) {
+          return err(
+            `Cannot restore ${target.sessionId}: Codex reports an active writer but no managed host is registered. ` +
+              'Pass `fork: true` to branch safely, or retry after the writer exits; no process was opened.',
+          );
+        }
         if (!target.live || !target.ownerId) {
           sourceStillLive = false;
           notes.push(
@@ -1038,7 +1074,7 @@ export default defineTool({
       }
       if (!isSuccessor) {
         let staleHeadlessRecovery = false;
-        if (sourceStillLive && !fork && !args.restoreVisible && target.ownerId) {
+        if (sourceStillLive && !codexWriterHeld && !fork && !args.restoreVisible && target.ownerId) {
           const host = findLiveHost(target.ownerId);
           if (!host) {
             // The host can disappear between resolveResumeTarget and this check.

@@ -246,6 +246,28 @@ describe('resolveHitTurnOrigins', () => {
     );
     expect(got.get(turnOriginKey(key))?.verdict).toBe('agent-injected');
   });
+
+  it('EI-24443430418223338: keeps a long paste-wrapped wake-pump turn out of owner provenance', async () => {
+    const full = pasted(
+      envelope('wake-pump') +
+        '\n[await-event] coord:inbox-wake:agent fired — ' +
+        'wake payload '.repeat(40),
+    );
+    expect(head(full)).not.toContain('</pasted_content');
+    expect(tail(full)).toContain('</pasted_content');
+    expect(classifyHitTurnOrigin('user', head(full)).verdict).toBe('owner-typed');
+
+    const got = await resolveHitTurnOrigins(
+      fakeSql([{ source_kind: 'claude', session_id: 'sess-1', turn_idx: 7, speaker: 'user', head: head(full), tail: tail(full) }]),
+      'ws',
+      [key],
+    );
+
+    expect(got.get(turnOriginKey(key))).toMatchObject({
+      verdict: 'agent-injected',
+      origin: 'wake-pump',
+    });
+  });
 });
 
 /**

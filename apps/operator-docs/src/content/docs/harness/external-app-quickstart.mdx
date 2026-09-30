@@ -4,7 +4,7 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: "External-app quickstart: call a workspace with curl, an MCP client or TypeScript"
+title: "External-app quickstart"
 description: "Quickstart for an outside app calling a Papercusp workspace: base URLs and what each serves (hosted portal or opt-in relay: HTTP tools, MCP, webhooks; your own tunnel: MCP + OAuth + webhooks only), getting a limited pcapp_ key (Connect an app, OAuth, device-code sign-in, service keys / client credentials), then curl, MCP client config and TypeScript (fetch and MCP SDK) examples, signed webhooks, and refusal codes."
 type: Insight
 discovered: 2026-09-30
@@ -54,13 +54,14 @@ refused on every app route (`401 app_key_required`).
   harnesses the key may use. The key is shown **once**, with a ready curl line and MCP config.
 - **OAuth** — an MCP client or chat connector given the `/api/mcp` URL signs in through the
   server's own authorization server (section 4); the person at the computer approves it.
-- **Device-code sign-in** (RFC 8628), served on the machine's own address (not through a
-  tunnel or the relay):
-  1. The app calls `POST <machine>/api/connected-apps/device/code` (optionally with a
+- **Device-code sign-in** (RFC 8628), served on the machine's own address and through your
+  own tunnel, so it needs no portal account (the portal relay does not carry it; relay apps
+  use OAuth instead):
+  1. The app calls `POST <machine or tunnel>/api/connected-apps/device/code` (optionally with a
      `clientLabel`) and shows the user the returned `userCode`.
   2. The user approves that code on the computer running Papercusp, under Settings → Remote
-     access.
-  3. The app polls `POST <machine>/api/connected-apps/device/token` with
+     access. The approval page itself is never served through the tunnel.
+  3. The app polls `POST <machine or tunnel>/api/connected-apps/device/token` with
      `{"deviceCode": "..."}` every `interval` seconds; once approved, the response carries the key.
 - **Service keys** are for unattended apps. They need a spending cap, do not expire unless
   you set an expiry, and keep working after their creator leaves the organization. A service

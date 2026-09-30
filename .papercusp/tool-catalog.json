@@ -10737,7 +10737,7 @@
       ],
       "guidance": {
         "when": "Load integration-tree edits into long-running hosts (no deploy). desktop-dev uses the verified wrapper-owned :3270 listener (bounded drain, no-native-teardown hard exit, waits for a new listener). Route desktop→\"desktop-dev\"; inference-gateway→\"gateway\"; routines/git-sync→\"bg-host\"; embeddings→\"embed-sidecar\"; MCP proxy/transport→\"mcp-proxy\"; shared server→\"staging\" (probe :3170).",
-        "notWhen": "Just probing. desktop-dev is only the :3270 Tauri wrapper, not :3070/:3170. Gateway drops in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its drain cannot reach children (EI-19479764372783341). Never raw systemctl restart; it bypasses drain/debounce (WI-4221). dev/staging/bg-host refuse an in-flight git-sync operation; use override_git_sync_collision:true only when the host is wedged. gateway/bg-host/embed-sidecar refuse during green-checkpoint; use override_gate_collision:true only when needed.",
+        "notWhen": "Just probing. desktop-dev is only the :3270 Tauri wrapper, not :3070/:3170. Gateway drops in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its drain cannot reach children (EI-19479764372783341). Never raw systemctl restart; it bypasses drain/debounce (WI-4221). dev/bg-host refuse an in-flight git-sync operation; target:staging refuses while papercup-staging-sync holds its exclusive checkout lock, and the sync script downgrades to shared for its own final restart. Use override_git_sync_collision:true only when the host is wedged. gateway/bg-host/embed-sidecar refuse during green-checkpoint; use override_gate_collision:true only when needed.",
         "chaining": "dry → review holders → { confirm:true, authorize:true, reason:\"<why>\", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status."
       }
     },
@@ -31223,7 +31223,7 @@
           "POST"
         ]
       },
-      "description": "Record an already-executed non-Vitest operational check in harness_shared.test_runs and return its numeric testRunIds for plans:bind-spec-evidence. The evidence must be a committed docs/evidence/*.json artifact with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and explicit assertions; expectedSha256 pins the exact bytes. The verdict is derived from exitCode + assertions, never accepted as a caller boolean. Idempotent by artifact hash.",
+      "description": "Record an already-executed non-Vitest operational check in harness_shared.test_runs and return its numeric testRunIds for plans:bind-spec-evidence. The evidence must be a committed docs/evidence/*.json artifact with schemaVersion:1, kind:\"operational-test-evidence\", command, timestamps, exitCode, summary, and explicit assertions; expectedSha256 pins the exact bytes. Evidence JSON is capped at 262144 bytes; keep it compact and store bulky payloads as raw artifacts pinned by SHA-256. The verdict is derived from exitCode + assertions, never accepted as a caller boolean. Idempotent by artifact hash.",
       "capabilities": [
         "testing:run"
       ],

@@ -838,6 +838,14 @@ export const FLAGS = {
   // stopped instantly without a deploy — and its guard fails CLOSED (a
   // flag-read error captures nothing), unlike the retention prunes' fail-safe.
   MEMORY_RECALL_QUERY_TEXT: "papercusp-memory-recall-query-text",
+  // jev-performance-improvements-2026-09-30 P-010 (owner directive #1050): memory:remember
+  // refuses, once at save time, a new memory that only claims its own relevance or
+  // importance (Jev's substance question, asked in the same request as the conflict
+  // check; refused with reason content_free and the usual force override). Default ON
+  // (derived FLAG_DEFAULTS — not in DARK_FLAGS): the threshold was chosen on a measured
+  // real-memory sample (at most 1% refused, plan R-3). OFF is the kill switch — the
+  // write path returns to the conflict-only request.
+  MEMORY_CONTENT_FREE_REFUSAL: "papercusp-memory-content-free-refusal",
   // context-injection-audit-2026-07-28 P-039 / D-012: the presence-transition
   // emitter — the missing FEEDER for the mid-turn coord rail. Automatic
   // injection carried zero liveness, and every coord_event_log writer was an
@@ -1883,11 +1891,10 @@ export const FLAGS = {
   // goal-mode-design-intent-hardening-2026-08-16 P-005 (D-003): gates the goal
   // spend-rollup tick — a recurring platform sweep (operator-core
   // lib/goals/spend-rollup.ts, managedSetInterval like the goal watchdog family)
-  // that aggregates the cost ledger (agent_usage_samples) per ACTIVE goal — the
-  // pot leg (goalSpend over goal_pots) PLUS the subject/descendant session leg
-  // (agent_modes/session_briefs → adv_sessions → session_id, pot-harness rows
-  // excluded so the union never double-counts) — and writes
-  // goals.metadata.spentCents (+Source 'goal-spend-tick' +At +Breakdown)
+  // that aggregates the cost ledger (agent_usage_samples) per ACTIVE goal over
+  // its budget window — the goal_id-attributed stream is authoritative (D-011),
+  // the pot and session legs ride along as diagnostics — and writes
+  // goals.metadata.spentCents (+Source 'goal-lineage-rollup' +At +Breakdown)
   // platform-side. D-003: agents never hand-write spentCents; before this tick
   // only 3 of 17 goals ever carried one. DEFAULT ON. OFF = the kill-switch: the
   // timer still ticks but every sweep no-ops before reading the goals table.

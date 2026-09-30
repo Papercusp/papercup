@@ -638,6 +638,15 @@ PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)" || {
   exit 1
 }
 
+# All checkout mutation and bundle work is complete. Downgrade the held
+# exclusive lock to shared before the final dev:restart: restart's nonblocking
+# shared-lock probe now admits this sync-owned cutover, while this process keeps
+# excluding a new staging-sync until exact-source readiness is verified.
+if ! flock -s 9; then
+  log "FATAL: could not downgrade the staging-sync checkout lock for final restart"
+  exit 1
+fi
+
 # The ptool result may be lost when this request restarts its own :3170 server.
 log "requesting coordinated restart of $UNIT via dev:restart (git_sync_drain_sec=${GIT_SYNC_DRAIN_SEC})"
 restart_result_file="$(mktemp)"

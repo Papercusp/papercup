@@ -248,6 +248,72 @@ describe("hosted desktop browser protocol", () => {
     expect(onClose).toHaveBeenCalledWith({ code: 1000, reason: "done" });
   });
 
+  describe("bytes that arrive before noVNC attaches (WI-10004214)", () => {
+    const ready = JSON.stringify({
+      type: "desktop.ready",
+      action: "watch",
+      inputAllowed: false,
+    });
+    const frame = (text: string) => ({
+      data: buildDesktopDataRelay(new TextEncoder().encode(text)),
+    });
+
+    it("holds them, then delivers them in order once the handshake has begun", async () => {
+      const socket = new FakeSocket();
+      const channel = new HostedDesktopRelayChannel(socket);
+      socket.emit("message", { data: ready });
+      socket.emit("message", frame("RFB 003.008\n"));
+      socket.emit("message", frame("second"));
+
+      // noVNC's attach(): assign onmessage, THEN start the handshake synchronously.
+      const received: string[] = [];
+      let handshaking = false;
+      channel.onmessage = ({ data }) => {
+        received.push(handshaking ? new TextDecoder().decode(data) : "early");
+      };
+      handshaking = true;
+      expect(received).toEqual([]);
+
+      await Promise.resolve();
+      expect(received).toEqual(["RFB 003.008\n", "second"]);
+      socket.emit("message", frame("live"));
+      expect(received).toEqual(["RFB 003.008\n", "second", "live"]);
+    });
+
+    it("discards them when the channel closes before anything attaches", async () => {
+      const socket = new FakeSocket();
+      const channel = new HostedDesktopRelayChannel(socket);
+      socket.emit("message", { data: ready });
+      socket.emit("message", frame("RFB 003.008\n"));
+      socket.close(1000, "viewer_detached");
+
+      const onMessage = vi.fn();
+      channel.onmessage = onMessage;
+      await Promise.resolve();
+      expect(onMessage).not.toHaveBeenCalled();
+    });
+
+    it("still exposes every property noVNC 1.7's Websock.attach() requires", () => {
+      // core/websock.js rawChannelProps, checked the way attach() checks them.
+      const channel = new HostedDesktopRelayChannel(new FakeSocket());
+      const props = [
+        ...Object.keys(channel),
+        ...Object.getOwnPropertyNames(Object.getPrototypeOf(channel)),
+      ];
+      for (const prop of [
+        "send",
+        "close",
+        "binaryType",
+        "onerror",
+        "onmessage",
+        "onopen",
+        "protocol",
+        "readyState",
+      ])
+        expect(props).toContain(prop);
+    });
+  });
+
   it("does not invoke noVNC onopen after onready closes a mismatched channel", () => {
     const socket = new FakeSocket();
     const channel = new HostedDesktopRelayChannel(socket);

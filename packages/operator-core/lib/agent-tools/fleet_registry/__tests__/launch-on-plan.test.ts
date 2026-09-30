@@ -819,6 +819,53 @@ describe('fleet:launch-on-plan GOAL provider placement boundary (P-006 / A-04)',
     expect(createFleetIfAbsentMock).toHaveBeenCalled();
   });
 
+  it('reports a GOAL launch refusal in failed[] and releases the slot for a retry', async () => {
+    const { claimFleetLaunchSlot, releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    let claimedAt: number | null = null;
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockClear();
+    (releaseFleetLaunchSlot as ReturnType<typeof vi.fn>).mockClear();
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      if (claimedAt !== null) return { won: false, priorAt: claimedAt };
+      claimedAt = Date.now();
+      return { won: true, at: claimedAt };
+    });
+    (releaseFleetLaunchSlot as ReturnType<typeof vi.fn>).mockImplementation(async ({ at }: { at: number }) => {
+      if (claimedAt === at) claimedAt = null;
+    });
+    goalLaunchResolveMock.mockResolvedValueOnce({
+      goalId: 'goal-1',
+      effective: {},
+      refusal: {
+        reason: 'goal_budget_unmeasurable',
+        message: 'goal goal-1 budget cannot be measured; member launch refused',
+      },
+      settings: null,
+    });
+
+    const args = { name: 'Budget Gate Retry', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true };
+    try {
+      const refused = await invokeLaunchHandler(args as never, {} as never, null);
+      expect(parseHandlerPayload(refused)).toMatchObject({
+        ok: false,
+        fleet: 'budget-gate-retry',
+        opened: [],
+        failed: [{ code: 403, error: expect.stringContaining('budget cannot be measured') }],
+        launchGuardReleased: true,
+      });
+      expect(claimedAt).toBeNull();
+      expect(spawnHeadlessMock).not.toHaveBeenCalled();
+
+      const retried = await invokeLaunchHandler(args as never, {} as never, null);
+      const retryPayload = parseHandlerPayload(retried);
+      expect(retryPayload.relaunchSuppressed).toBeUndefined();
+      expect(retryPayload.opened).toHaveLength(1);
+      expect(claimFleetLaunchSlot).toHaveBeenCalledTimes(2);
+    } finally {
+      (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue({ won: true, at: 1 });
+      (releaseFleetLaunchSlot as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(undefined);
+    }
+  });
+
   it('refuses a wrong-plan/fleet operation before promotion or fleet writes', async () => {
     obligationAgendaReadMock.mockResolvedValueOnce({
       goalId: 'goal-1',

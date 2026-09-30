@@ -4406,7 +4406,36 @@ export default defineTool({
       requested: requestedGoalProfile,
     });
     if (goalLaunch.refusal) {
-      return err(goalLaunch.refusal.message);
+      // This policy gate runs after the atomic relaunch slot is claimed, because
+      // its count must be the post-capacity-clamp openCount. A refusal opens no
+      // leader or member, so retaining that slot would make the next call look
+      // like a successful launch and suppress a legitimate retry for 5 minutes.
+      let launchGuardReleaseError: string | null = null;
+      try {
+        await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+      } catch (error) {
+        launchGuardReleaseError = error instanceof Error ? error.message : String(error);
+      }
+      const failure = launchGuardReleaseError
+        ? `${goalLaunch.refusal.message} Launch guard release failed: ${launchGuardReleaseError}`
+        : goalLaunch.refusal.message;
+      return json({
+        ok: false,
+        fleet: fleetSlug,
+        leaderRole,
+        callerMembership,
+        plan: planSlug,
+        harness,
+        requested: count,
+        liveMembers,
+        requestedOpenCount,
+        opened: [],
+        failed: [{ error: failure, code: launchGuardReleaseError ? 500 : 403 }],
+        launchGuardReleased: launchGuardReleaseError === null,
+        message: launchGuardReleaseError
+          ? `GOAL launch was refused before spawning, but the relaunch guard could not be released: ${launchGuardReleaseError}. ${goalLaunch.refusal.message}`
+          : `GOAL launch was refused before spawning; no members were opened and the relaunch guard was released. ${goalLaunch.refusal.message}`,
+      });
     }
 
     const launchFallbackDefaults: FleetMemberDefaults = {

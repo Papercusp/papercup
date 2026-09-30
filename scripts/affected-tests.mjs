@@ -5582,8 +5582,11 @@ async function armTestPassReuse(taskList) {
       // TEST_PASS_REUSE_ALARM (phase C), judged on the first pass before any retry.
       if (watch.size > 0) t.reuseWatch = { watch, prefix };
       if (skip.length > 0) {
+        // Workspace-relative, for the EI-11132 guard: a run this list empties must keep its
+        // script's --passWithNoTests (see reuseSkipCoversRun in scripts/lib/empty-suite-guard.mjs).
+        t.reuseSkipped = skip.map((f) => f.slice(prefix.length));
         t.reuseSkipList = writeReuseSkipList(RUN_LOG_ROOT, {
-          files: skip.map((f) => f.slice(prefix.length)),
+          files: t.reuseSkipped,
           runContext,
           runnerIdentity,
           judgedSha,
@@ -6159,7 +6162,8 @@ const taskContexts = tasks.map((t) => ({
   isQuarantined: quarantined.has(t.ws.name),
   coverageArgs: coverageArgsFor(t),
   // EI-11132: when this script declares --passWithNoTests AND the workspace genuinely
-  // has matching test files on disk, disable passWithNoTests for THIS task.
+  // has matching test files on disk, disable passWithNoTests for THIS task — unless the
+  // pass-reuse skip list covers every file the task would run, which empties it on purpose.
   // A guard that diffs git must see the same base this runner used to select it;
   // otherwise a clean-after-git-sync tree looks like a no-op to the child process.
   guardArgs: [
@@ -6167,6 +6171,8 @@ const taskContexts = tasks.map((t) => ({
       scriptText: t.ws.scripts[t.script] ?? "",
       wsAbsDir: join(ROOT, t.ws.dir),
       script: t.script,
+      reuseSkipped: t.reuseSkipped ?? null,
+      selectedFiles: Array.isArray(t.relatedFiles) ? t.relatedFiles : null,
     }),
     ...(t.guardArgs ?? []),
     ...(t.guardBase ? ["--base", t.guardBase] : []),

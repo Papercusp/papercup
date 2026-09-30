@@ -279,6 +279,10 @@ export default defineTool({
         ...tick.summary,
         degraded: tick.degraded,
         degradedReason: tick.degradedReason,
+        // Keep scan bounds visible on filtered reads too; an exact group list can
+        // still come from a census whose owned or foreign pass hit its cap.
+        ownedTruncated: tick.scan.ownedTruncated,
+        foreignTruncated: tick.scan.foreignTruncated,
       };
       const mapLiveGroup = (group: {
         cgroupPath: string;

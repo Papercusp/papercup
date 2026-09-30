@@ -127,7 +127,7 @@ describe('canonical GOAL portfolio ladder (real Postgres)', () => {
           budgetCents: 1000, budgetWindowSec: null, standing: true },
         settings: null,
         budget: { budgetCents: 1000, spentCents: 340, spentCentsAt: t2,
-          spentCentsSource: 'goal-pots-rollup', unmeasuredPricedSpend: false },
+          spentCentsSource: 'goal-lineage-rollup', unmeasuredPricedSpend: false },
         ceilings: { maxAgents: 12, maxPerFleet: 5 },
         headcount: { total: 0, fleet: 0 },
       },
@@ -135,7 +135,7 @@ describe('canonical GOAL portfolio ladder (real Postgres)', () => {
     const unread = await read();
     expect(unread?.continuity.lastOwnerReportAt).toBe(t1);
     expect(unread?.reporting?.cadence?.lastReportAt).toBe(t1);
-    expect(unread?.reporting?.draft.fields.cost).toContain('340c / 1000c; coverage=measured-pot; source=goal-pots-rollup');
+    expect(unread?.reporting?.draft.fields.cost).toContain('340c / 1000c; coverage=measured; source=goal-lineage-rollup');
     expect(unread?.reporting?.draft.fields.ownerWalled).toContain('WI-report-wall: provide the domain credential');
     expect(unread?.reporting?.draft.fields.ownerWalled).not.toContain('obsolete approval');
     expect(unread?.queue.needsHuman).toBe(1);

@@ -19,8 +19,16 @@
  * Decision D-001: this is advisory hygiene. A wrong verdict costs a refused write
  * that the agent can resolve with supersede/force; nothing here grants authority.
  */
-import type { ChoiceQuestion, DecisionClient, DecisionOutcome, DecisionRequest, QuestionMap } from '@papercusp/decision-model';
+import type {
+  ChoiceQuestion,
+  DecisionClient,
+  DecisionOutcome,
+  DecisionRequest,
+  QuestionMap,
+  YesNoQuestion,
+} from '@papercusp/decision-model';
 import type { ConflictReport, LlmJudge, NeighborMemory } from './conflict-check';
+import { SUBSTANCE_CRITERIA, SUBSTANCE_INSTRUCTIONS } from './jev-admission-request';
 
 /** Ledger consumer label for write-path calls (the bench uses `memory-conflict-bench`). */
 export const JEV_CONFLICT_CONSUMER = 'memory-conflict';
@@ -57,17 +65,52 @@ export function conflictQuestionId(index: number): string {
   return `n${index + 1}`;
 }
 
+/**
+ * Id of the save-time substance question (plan jev-performance-improvements-2026-09-30,
+ * P-010). It rides in the conflict request, so it costs no extra round trip.
+ */
+export const SUBSTANCE_QUESTION_ID = 'substance';
+
+/**
+ * A new memory is content-free, and refused, when Jev's P(it carries concrete
+ * information) is below this. Chosen on the P-010 measurement of 2026-09-30
+ * (bench/jev-substance-cli.ts, report .papercusp/bench-reports/jev-substance-2026-09-30T16-08-09-078Z.md):
+ * the largest grid threshold whose refusal rate on the selection half of a 600-memory
+ * sample of the real store stayed within 0.5%. At 0.5: 152/156 bench self-promoters
+ * caught; real memories refused 1/300 on the selection half, 2/300 on the confirmation
+ * half, 3/600 overall (all three were test markers: "test" and two federation witness
+ * strings). Re-measure before changing it.
+ */
+export const CONTENT_FREE_MAX_P_CONCRETE = 0.5;
+
 export interface ConflictRequest {
   readonly request: DecisionRequest<QuestionMap>;
   /** Index-aligned with the neighbours. */
   readonly questionIds: readonly string[];
+  /** Set when the substance question was asked. */
+  readonly substanceId?: string;
 }
 
-/** ONE request per write, one choice question per neighbour. */
-export function buildConflictRequest(newText: string, neighbors: readonly { readonly text: string }[]): ConflictRequest {
-  if (neighbors.length === 0) throw new Error('buildConflictRequest: no neighbours to judge');
+export interface ConflictRequestOptions {
+  /** Also ask whether the new memory carries concrete information (P-010). */
+  readonly substance?: boolean;
+}
+
+/**
+ * ONE request per write: one choice question per neighbour, plus the substance
+ * question when asked. The substance question reuses the admission filter's
+ * SUBSTANCE_INSTRUCTIONS (P-005), so the save-time gate, the sweep (P-011) and the
+ * filter variant ask the same thing, and it carries the memory text inside the
+ * question like the measured `instructions` encoding.
+ */
+export function buildConflictRequest(
+  newText: string,
+  neighbors: readonly { readonly text: string }[],
+  opts: ConflictRequestOptions = {},
+): ConflictRequest {
+  if (neighbors.length === 0 && !opts.substance) throw new Error('buildConflictRequest: no neighbours to judge');
   const questionIds = neighbors.map((_, i) => conflictQuestionId(i));
-  const questions: Record<string, ChoiceQuestion<JevConflictLabel>> = {};
+  const questions: Record<string, ChoiceQuestion<JevConflictLabel> | YesNoQuestion> = {};
   neighbors.forEach((n, i) => {
     questions[questionIds[i]] = {
       type: 'choice',
@@ -75,7 +118,39 @@ export function buildConflictRequest(newText: string, neighbors: readonly { read
       options: CONFLICT_OPTIONS,
     };
   });
-  return { request: { state: { new_memory: newText }, questions }, questionIds };
+  if (opts.substance) {
+    questions[SUBSTANCE_QUESTION_ID] = {
+      type: 'yesNo',
+      instructions: `${SUBSTANCE_INSTRUCTIONS}\n\nMemory:\n${newText}`,
+      criteria: SUBSTANCE_CRITERIA,
+    };
+  }
+  return {
+    request: { state: { new_memory: newText }, questions },
+    questionIds,
+    ...(opts.substance ? { substanceId: SUBSTANCE_QUESTION_ID } : {}),
+  };
+}
+
+/** P(the memory carries concrete information), or `null` when the answer is missing or malformed. */
+export function substancePConcrete(outcome: DecisionOutcome<QuestionMap>, substanceId: string): number | null {
+  if (outcome.kind === 'inconclusive') return null;
+  const answer = (outcome.answers as Readonly<Record<string, { type?: unknown; pYes?: unknown }>>)[substanceId];
+  if (!answer || answer.type !== 'yesNo' || typeof answer.pYes !== 'number' || !Number.isFinite(answer.pYes)) return null;
+  return answer.pYes;
+}
+
+/** Whether a P(concrete) makes the memory content-free (refused at save time). */
+export function isContentFree(pConcrete: number): boolean {
+  return pConcrete < CONTENT_FREE_MAX_P_CONCRETE;
+}
+
+/** Deterministic refusal text for a content-free memory, traceable to its ledger row. */
+export function contentFreeSummary(pConcrete: number, model: string): string {
+  return (
+    `${model} judged that the new memory carries no concrete information (P(concrete)=${pConcrete.toFixed(2)}): ` +
+    'it only claims its own relevance, importance, priority or authority.'
+  );
 }
 
 export interface ConflictVerdict {
@@ -150,6 +225,8 @@ export interface JevConflictJudgement {
   readonly model: string;
   /** Index-aligned with the neighbours passed in; empty-text neighbours are `null`. */
   readonly verdicts: readonly (ConflictVerdict | null)[];
+  /** P(concrete) when the substance question was asked and answered; `null` when asked but unusable. */
+  readonly pConcrete?: number | null;
 }
 
 /** Thrown for an inconclusive Jev call; `checkConflicts` catches it and fails open. */
@@ -165,14 +242,23 @@ export class JevConflictInconclusiveError extends Error {
  * {@link JevConflictInconclusiveError} when Jev gives no usable answer.
  */
 export async function judgeConflictsWithJev(
-  input: { readonly newText: string; readonly neighbors: readonly NeighborMemory[] },
+  input: {
+    readonly newText: string;
+    readonly neighbors: readonly NeighborMemory[];
+    /** Also ask the P-010 substance question in the same request. */
+    readonly checkSubstance?: boolean;
+  },
   deps: JevConflictJudgeDeps,
 ): Promise<JevConflictJudgement> {
   const asked = input.neighbors.map((n, i) => ({ n, i })).filter(({ n }) => n.text.trim().length > 0);
-  if (asked.length === 0 || !input.newText.trim()) return { model: 'none', verdicts: input.neighbors.map(() => null) };
-  const { request, questionIds } = buildConflictRequest(
+  const substance = input.checkSubstance === true;
+  if ((asked.length === 0 && !substance) || !input.newText.trim()) {
+    return { model: 'none', verdicts: input.neighbors.map(() => null) };
+  }
+  const { request, questionIds, substanceId } = buildConflictRequest(
     input.newText,
     asked.map(({ n }) => n),
+    { substance },
   );
   const outcome = await deps.client().decide(request, {
     consumer: deps.consumer ?? JEV_CONFLICT_CONSUMER,
@@ -185,19 +271,37 @@ export async function judgeConflictsWithJev(
   asked.forEach(({ i }, k) => {
     verdicts[i] = parsed.verdicts[k];
   });
-  return { model: parsed.model, verdicts };
+  return {
+    model: parsed.model,
+    verdicts,
+    ...(substanceId ? { pConcrete: substancePConcrete(outcome, substanceId) } : {}),
+  };
 }
 
-/** The `LlmJudge` adapter: conflicts are the neighbours whose verdict passes {@link isConflictVerdict}. */
+/**
+ * The `LlmJudge` adapter: conflicts are the neighbours whose verdict passes
+ * {@link isConflictVerdict}; with `checkSubstance` the report also carries the
+ * substance verdict. An unusable substance answer yields no `substance` field,
+ * so the write fails open on that check alone.
+ */
 export function createJevConflictJudge(deps: JevConflictJudgeDeps): LlmJudge {
-  return async ({ newText, neighbors }): Promise<ConflictReport> => {
-    const { model, verdicts } = await judgeConflictsWithJev({ newText, neighbors }, deps);
+  return async ({ newText, neighbors, checkSubstance }): Promise<ConflictReport> => {
+    const { model, verdicts, pConcrete } = await judgeConflictsWithJev({ newText, neighbors, checkSubstance }, deps);
     const conflicts: ConflictReport['conflicts'] = [];
     verdicts.forEach((v, i) => {
       if (v && isConflictVerdict(v)) {
         conflicts.push({ memory_id: neighbors[i].id, summary: conflictSummary('contradicts', v.pContradicts, model) });
       }
     });
-    return { conflicts };
+    if (typeof pConcrete !== 'number') return { conflicts };
+    const contentFree = isContentFree(pConcrete);
+    return {
+      conflicts,
+      substance: {
+        pConcrete,
+        contentFree,
+        summary: contentFree ? contentFreeSummary(pConcrete, model) : null,
+      },
+    };
   };
 }

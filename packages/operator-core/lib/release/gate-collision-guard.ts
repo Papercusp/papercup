@@ -47,7 +47,7 @@
  * standing up a third way to ask "what is the gate doing".
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
@@ -804,6 +804,89 @@ export async function checkGitSyncCollision(
   }
   const probe = await probeGitSyncCollision(deps, target);
   return judgeGitSyncCollision({ target, probe, override });
+}
+
+/**
+ * The isolated staging-sync service owns this flock exclusively while it may
+ * mutate the checkout. A staging restart probes for a SHARED lock: that fails
+ * while sync is in its exclusive checkout/build phase, but succeeds after the
+ * sync script downgrades its own lock for the final restart/readiness phase.
+ */
+export const STAGING_SYNC_LOCK_PATH = '/tmp/papercup-staging-sync.lock';
+
+export type StagingSyncCollisionKind =
+  | 'not-staging-target'
+  | 'clear'
+  | 'staging-sync-in-flight'
+  | 'probe-failed';
+
+export interface StagingSyncCollisionVerdict {
+  blocked: boolean;
+  kind: StagingSyncCollisionKind;
+  note: string;
+  detail: { lockPath: string; lockHeld: boolean | null };
+}
+
+async function defaultStagingSyncLockProbe(): Promise<boolean> {
+  // Do not create the shared lock file merely by previewing a restart.
+  if (!existsSync(STAGING_SYNC_LOCK_PATH)) return false;
+  try {
+    await runExecFile(
+      '/usr/bin/flock',
+      ['--nonblock', '--shared', STAGING_SYNC_LOCK_PATH, 'true'],
+      { timeout: 3_000 },
+    );
+    return false;
+  } catch (error) {
+    // flock(1) uses status 1 for a nonblocking lock conflict. Other failures
+    // are UNKNOWN, not evidence that the sync lock is clear.
+    if ((error as NodeJS.ErrnoException).code === 1) return true;
+    throw error;
+  }
+}
+
+/** Refuse target:staging while the sync service holds its exclusive checkout lock. */
+export async function checkStagingSyncCollision(
+  target: string,
+  probe: () => Promise<boolean> = defaultStagingSyncLockProbe,
+): Promise<StagingSyncCollisionVerdict> {
+  const detail = { lockPath: STAGING_SYNC_LOCK_PATH, lockHeld: null as boolean | null };
+  if (target !== 'staging') {
+    return {
+      blocked: false,
+      kind: 'not-staging-target',
+      note: `${target} is not the staging operator; no staging-sync lock check applies.`,
+      detail,
+    };
+  }
+  try {
+    const lockHeld = await probe();
+    detail.lockHeld = lockHeld;
+    return lockHeld
+      ? {
+          blocked: true,
+          kind: 'staging-sync-in-flight',
+          note:
+            `Restart REFUSED — papercup-staging-sync holds its exclusive checkout lock (${detail.lockPath}). ` +
+            'Nothing was restarted; retry after the sync reaches its final restart phase.',
+          detail,
+        }
+      : {
+          blocked: false,
+          kind: 'clear',
+          note: `papercup-staging-sync is not in its exclusive checkout/build phase (${detail.lockPath}).`,
+          detail,
+        };
+  } catch {
+    return {
+      blocked: true,
+      kind: 'probe-failed',
+      note:
+        `Restart REFUSED — could not verify the papercup-staging-sync lock at ${detail.lockPath}. ` +
+        'Nothing was restarted; retry after the lock probe is healthy.',
+      detail,
+    };
+  }
 }
 
 /**

@@ -25,8 +25,8 @@ describe('P-021 evidence-backed owner report draft', () => {
     previousReportAt: '2026-09-25T19:00:00.000Z',
     movements: [{ ref: 'plan:papercusp/alpha', state: 'shipped', updatedAt: '2026-09-25T19:30:00.000Z',
       artifact: { ref: 'scorecard:alpha', updatedAt: '2026-09-25T19:25:00.000Z' } }],
-    cost: { spentCents: 340, budgetCents: 1000, source: 'goal-pots-rollup',
-      coverage: 'measured-pot', unmeasuredPricedSpend: false },
+    cost: { spentCents: 340, budgetCents: 1000, source: 'goal-lineage-rollup',
+      coverage: 'measured', unmeasuredPricedSpend: false },
     ownerWalls: [{ ref: 'WI-1', action: 'choose a domain' }],
     killed: [{ ref: 'fleet:old', criterion: 'cost exceeded 1000c', at: '2026-09-25T19:40:00.000Z' }],
     artifactReads: [] as Array<{ ref: string; readAt: string }>,
@@ -36,7 +36,7 @@ describe('P-021 evidence-backed owner report draft', () => {
     const unread = buildGoalOwnerReportDraft(base);
     expect(unread.unreadArtifacts).toEqual(['scorecard:alpha']);
     expect(unread.fields.moved).toContain('completion unverified (artifact unread)');
-    expect(unread.fields.cost).toContain('coverage=measured-pot; source=goal-pots-rollup');
+    expect(unread.fields.cost).toContain('coverage=measured; source=goal-lineage-rollup');
     expect(unread.fields.ownerWalled).toContain('WI-1: choose a domain');
     expect(unread.fields.killed).toContain('fleet:old');
     expect(parseGoalOwnerReport(unread.text).complete).toBe(true);

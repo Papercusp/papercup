@@ -99,6 +99,7 @@ import {
   GIT_SYNC_RESTART_BARRIER_DRAIN_SEC,
   checkGateCollision,
   checkGitSyncCollision,
+  checkStagingSyncCollision,
   isGateSensitiveTarget,
   isGitSyncSensitiveTarget,
 } from '../../release/gate-collision-guard';
@@ -959,7 +960,7 @@ export default defineTool({
   guidance: {
     when: 'Load integration-tree edits into long-running hosts (no deploy). desktop-dev uses the verified wrapper-owned :3270 listener (bounded drain, no-native-teardown hard exit, waits for a new listener). Route desktop→"desktop-dev"; inference-gateway→"gateway"; routines/git-sync→"bg-host"; embeddings→"embed-sidecar"; MCP proxy/transport→"mcp-proxy"; shared server→"staging" (probe :3170).',
     notWhen:
-      'Just probing. desktop-dev is only the :3270 Tauri wrapper, not :3070/:3170. Gateway drops in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its drain cannot reach children (EI-19479764372783341). Never raw systemctl restart; it bypasses drain/debounce (WI-4221). dev/staging/bg-host refuse an in-flight git-sync operation; use override_git_sync_collision:true only when the host is wedged. gateway/bg-host/embed-sidecar refuse during green-checkpoint; use override_gate_collision:true only when needed.',
+      'Just probing. desktop-dev is only the :3270 Tauri wrapper, not :3070/:3170. Gateway drops in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its drain cannot reach children (EI-19479764372783341). Never raw systemctl restart; it bypasses drain/debounce (WI-4221). dev/bg-host refuse an in-flight git-sync operation; target:staging refuses while papercup-staging-sync holds its exclusive checkout lock, and the sync script downgrades to shared for its own final restart. Use override_git_sync_collision:true only when the host is wedged. gateway/bg-host/embed-sidecar refuse during green-checkpoint; use override_gate_collision:true only when needed.',
     chaining:
       'dry → review holders → { confirm:true, authorize:true, reason:"<why>", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status.',
     seeAlso: [
@@ -1152,6 +1153,8 @@ export default defineTool({
       const gitSyncPreview = gitSyncSensitive
         ? await checkGitSyncCollision(target, args.override_git_sync_collision === true)
         : null;
+      const stagingSyncPreview =
+        target === 'staging' ? await checkStagingSyncCollision(target) : null;
       // EI-18661647550414959: same reasoning as the gate-collision preview above — the dry
       // run is where the decision is actually made, so "this tree cannot boot" belongs HERE,
       // where it costs nothing, not only in the refusal afterwards.
@@ -1201,13 +1204,22 @@ export default defineTool({
               },
             }
           : {}),
+        ...(stagingSyncPreview
+          ? {
+              staging_sync_collision: {
+                kind: stagingSyncPreview.kind,
+                would_block: stagingSyncPreview.blocked,
+                ...stagingSyncPreview.detail,
+              },
+            }
+          : {}),
         note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${cooldownNote} confirm:true ALONE is not enough — the real restart also needs the enablement gate: pass authorize:true + a short \`reason\` (≤300 chars) in the same call, or set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process. Without it the call is REFUSED outright (ok:false, nothing drained).${
           gitSyncPreview?.blocked
             ? gitSyncDrainSec > 0
               ? ` ℹ A git-sync operation shares this cgroup, but you passed git_sync_drain_sec:${gitSyncDrainSec} — on that path the cgroup preflight is ADVISORY and the workspace-wide \`git-sync\` barrier arbitrates instead (fires hold it only ~5-10s). This preview reserves nothing; the confirmed call can still refuse with drain_timeout, which is transient and side-effect-free — retry rather than abandon.`
               : ` ⚠ ${gitSyncPreview.note} On a merely BUSY host the supported way through is git_sync_drain_sec (up to ${GIT_SYNC_RESTART_BARRIER_DRAIN_SEC}s) — WAIT for the drain. override_git_sync_collision is for a WEDGED host: it SIGKILLs an in-flight commit and strands a peer's uncommitted work.`
             : ''
-        }${preview.blocked ? ` ⚠ ${preview.note}` : ''}${quiescePreview?.blocked ? ` ⚠ ${quiescePreview.note}` : ''}`,
+        }${stagingSyncPreview?.blocked ? ` ⚠ ${stagingSyncPreview.note}` : ''}${preview.blocked ? ` ⚠ ${preview.note}` : ''}${quiescePreview?.blocked ? ` ⚠ ${quiescePreview.note}` : ''}`,
       });
     }
 
@@ -1338,6 +1350,22 @@ export default defineTool({
         drained: false,
         git_sync_collision: { kind: gitSync.kind, ...gitSync.detail },
         note: gitSync.note,
+      });
+    }
+
+    // The staging operator is restarted by a separate sync service. That
+    // service's exclusive flock covers checkout mutation and bundle creation;
+    // refuse before cooldown or drain if it is still in that phase.
+    const stagingSync = target === 'staging' ? await checkStagingSyncCollision(target) : null;
+    if (stagingSync?.blocked) {
+      return json({
+        ok: false,
+        target,
+        reason: `staging_sync_collision_${stagingSync.kind.replace(/-/g, '_')}`,
+        restarted: false,
+        drained: false,
+        staging_sync_collision: { kind: stagingSync.kind, ...stagingSync.detail },
+        note: stagingSync.note,
       });
     }
 
@@ -1693,35 +1721,6 @@ export default defineTool({
         // real cycle happened (the restart is detached+delayed, so we cannot
         // confirm it synchronously — but a changed MainPID proves it landed).
         const before = await probeServiceStart(cfg.unit);
-        // Audit BEFORE spawning (mirrors process-kill.ts: a record must exist
-        // even if signaling crashes the process tree). Fire-and-forget — never
-        // blocks the restart.
-        void writeRestartAudit(ownerId, {
-          target,
-          unit: cfg.unit,
-          viaEnv: enabledByEnv,
-          viaAuthorizeArg: enabledByArg,
-          reason: args.reason ?? null,
-          fenceSeq: fence.seq,
-          phantomCoalesceBroken: phantomCoalesceBroken !== null,
-          gateCollision: isGateSensitiveTarget(target)
-            ? { kind: gate.kind, overridden: gate.overridden, runElapsedSec: gate.detail.runElapsedSec }
-            : null,
-          gitSyncCollision: gitSync
-            ? {
-                kind: gitSync.kind,
-                overridden: gitSync.overridden,
-                resources: gitSync.detail.collidingResources,
-                pids: gitSync.detail.collidingPids,
-              }
-            : null,
-          gitSyncBarrier:
-            gitSyncBarrier?.acquired === true
-              ? { resource: gitSyncBarrier.resource, expiresAt: gitSyncBarrier.expiresAt }
-              : null,
-          systemdDaemonReloaded,
-          quiesceOverridden: quiesce?.overridden ? { marker: quiesce.marker } : null,
-        });
         // Detached + delayed so this response returns before the service dies.
         // systemd latches a unit after it exceeds StartLimitBurst. A plain
         // `restart` is then rejected with "Start request repeated too quickly"
@@ -1736,6 +1735,59 @@ export default defineTool({
           ? `systemctl --user reset-failed ${cfg.unit} && ${restartCmd}`
           : restartCmd;
         const performRestart = async () => {
+          // The first check protects cooldown/drain. Recheck after that work,
+          // immediately before audit+spawn, so a sync that starts in the gap
+          // cannot be interrupted by the staging unit restart.
+          const finalStagingSyncCheck =
+            target === 'staging' ? await checkStagingSyncCollision(target) : null;
+          if (finalStagingSyncCheck?.blocked) {
+            await releaseGitSyncBarrierOnAbort();
+            await releaseCooldownOnAbort();
+            return json({
+              ok: false,
+              target,
+              reason: `staging_sync_collision_${finalStagingSyncCheck.kind.replace(/-/g, '_')}`,
+              restarted: false,
+              drained: true,
+              staging_sync_collision: { kind: finalStagingSyncCheck.kind, ...finalStagingSyncCheck.detail },
+              note:
+                `${finalStagingSyncCheck.note} The staging-server drain has been released; ` +
+                'no restart was scheduled and the cooldown marker was released.',
+            });
+          }
+          // Audit BEFORE spawning (mirrors process-kill.ts: a record must exist
+          // even if signaling crashes the process tree). Fire-and-forget.
+          void writeRestartAudit(ownerId, {
+            target,
+            unit: cfg.unit,
+            viaEnv: enabledByEnv,
+            viaAuthorizeArg: enabledByArg,
+            reason: args.reason ?? null,
+            fenceSeq: fence.seq,
+            phantomCoalesceBroken: phantomCoalesceBroken !== null,
+            gateCollision: isGateSensitiveTarget(target)
+              ? { kind: gate.kind, overridden: gate.overridden, runElapsedSec: gate.detail.runElapsedSec }
+              : null,
+            gitSyncCollision: gitSync
+              ? {
+                  kind: gitSync.kind,
+                  overridden: gitSync.overridden,
+                  resources: gitSync.detail.collidingResources,
+                  pids: gitSync.detail.collidingPids,
+                }
+              : null,
+            stagingSyncCollision: finalStagingSyncCheck
+              ? { kind: finalStagingSyncCheck.kind, ...finalStagingSyncCheck.detail }
+              : stagingSync
+                ? { kind: stagingSync.kind, ...stagingSync.detail }
+                : null,
+            gitSyncBarrier:
+              gitSyncBarrier?.acquired === true
+                ? { resource: gitSyncBarrier.resource, expiresAt: gitSyncBarrier.expiresAt }
+                : null,
+            systemdDaemonReloaded,
+            quiesceOverridden: quiesce?.overridden ? { marker: quiesce.marker } : null,
+          });
           let child;
           try {
             child = spawn('sh', ['-c', `sleep 1; ${scheduledRestartCmd}`], {

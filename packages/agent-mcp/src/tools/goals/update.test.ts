@@ -20,7 +20,6 @@ type Call = { sql: string; params: unknown[] };
 let calls: Call[] = [];
 let existingRow: Record<string, unknown> | null = null;
 let finalRow: Record<string, unknown> | null = null;
-let spendRows: Array<Record<string, string | null>> = [];
 let blockedByRows: Array<{ blocked_ref: string; blocker_kind: string; blocker_ref: string }> = [];
 let blockerGoalRows: Array<{ id: string; status: string }> = [];
 let goalAuthorityRows: Array<Record<string, unknown>> = [];
@@ -31,9 +30,6 @@ function makeTx() {
     calls.push({ sql, params });
     if (/SELECT NULLIF\(current_setting\('app\.workspace_id'/.test(sql)) {
       return Promise.resolve([{ ws: 'papercusp-workspace' }]);
-    }
-    if (/FROM harness_shared\.agent_usage_samples s/.test(sql)) {
-      return Promise.resolve(spendRows);
     }
     if (/SELECT blocked_ref, blocker_kind, blocker_ref/.test(sql)) {
       return Promise.resolve(blockedByRows);
@@ -115,17 +111,6 @@ beforeEach(() => {
   blockedByRows = [];
   blockerGoalRows = [];
   goalAuthorityRows = [];
-  // The authoritative fixture is $12.34, so every accepted snapshot must be
-  // exactly 1234 cents. Tests that use an unpriced/empty rollup override this.
-  spendRows = [
-    {
-      harness_slug: 'child-pot',
-      cost: '12.34',
-      samples: '1',
-      priced_samples: '1',
-      unpriced_samples: '0',
-    },
-  ];
 });
 
 describe('goals:update — effective-holder mutation fence (WI-1139512)', () => {
@@ -224,7 +209,7 @@ describe('goals:update — install_slug repair cannot write an unlaunchable valu
 
   it('preserves the existing install_slug when the arg is omitted', async () => {
     existingRow = { ...(existingRow as Record<string, unknown>), install_slug: 'some-other-pot' };
-    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Ship a paid app, revised' }) as never, CTX() as never);
     expect(writtenInstallSlug()).toBe('some-other-pot');
   });
 });
@@ -252,56 +237,32 @@ describe('goals:update — partial writes preserve untouched state', () => {
     });
   });
 
-  it('reporting spend does NOT clear the kill criterion', async () => {
-    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
+  it('an unrelated edit does NOT clear the kill criterion', async () => {
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Ship a paid app, revised' }) as never, CTX() as never);
     expect(writtenCriterion()).toBe('no paying user after 2 weeks');
-    expect(writtenMetadata()).toEqual({ spentCents: 1234, spentCentsSource: 'goal-pots-rollup' });
-  });
-
-  it('refuses a snapshot when the rollup has no priced samples', async () => {
-    spendRows = [];
-    const res = (await tool.handler(
-      tool.args.parse({ id: 'g1', spentCents: 0 }) as never,
-      CTX() as never,
-    )) as { data: unknown; degraded?: boolean; degradedReasons?: string[] };
-    expect(res.data).toBeNull();
-    expect(res.degraded).toBe(true);
-    expect(res.degradedReasons?.join(' ')).toContain('tripwire remains unmeasured');
-    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(false);
-  });
-
-  it('refuses a snapshot when any rollup sample is unpriced', async () => {
-    spendRows = [
-      {
-        harness_slug: 'child-pot',
-        cost: '12.34',
-        samples: '2',
-        priced_samples: '1',
-        unpriced_samples: '1',
-      },
-    ];
-    const res = (await tool.handler(
-      tool.args.parse({ id: 'g1', spentCents: 1234 }) as never,
-      CTX() as never,
-    )) as { data: unknown; degraded?: boolean; degradedReasons?: string[] };
-    expect(res.data).toBeNull();
-    expect(res.degradedReasons?.join(' ')).toContain('unpriced=1');
-    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(false);
-  });
-
-  it('refuses a caller value that does not match the measured rollup', async () => {
-    const res = (await tool.handler(
-      tool.args.parse({ id: 'g1', spentCents: 1235 }) as never,
-      CTX() as never,
-    )) as { data: unknown; degraded?: boolean; degradedReasons?: string[] };
-    expect(res.data).toBeNull();
-    expect(res.degradedReasons?.join(' ')).toContain('does not match');
-    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(false);
+    expect(writtenMetadata()).toEqual({});
   });
 
   /*
-   * TRIPWIRE PROVENANCE (EI-22512669283419131) — the sibling of the spentCents
-   * refusals directly above, and the class that actually fired.
+   * spentCents is not an argument (WI-1074208): the platform spend rollup is
+   * its only writer (D-003, D-011). The strict schema REJECTS a caller-supplied
+   * figure rather than silently dropping it, so an agent trying to hand-write
+   * spend is told so instead of believing it succeeded.
+   */
+  it('rejects a caller spentCents — the rollup is the only writer', async () => {
+    existingRow!.metadata = { spentCents: 999, spentCentsSource: 'goal-lineage-rollup' };
+    expect(() => tool.args.parse({ id: 'g1', spentCents: 1234, title: 'Ship a paid app, revised' })).toThrow(
+      /spentCents/,
+    );
+    // The same edit without it goes through and leaves the rollup's figure alone.
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Ship a paid app, revised' }) as never, CTX() as never);
+    expect(writtenMetadata()).toEqual({ spentCents: 999, spentCentsSource: 'goal-lineage-rollup' });
+    expect(calls.some((c) => /agent_usage_samples/.test(c.sql))).toBe(false);
+  });
+
+  /*
+   * TRIPWIRE PROVENANCE (EI-22512669283419131) — the sibling of spentCents
+   * provenance directly above, and the class that actually fired.
    *
    * On 2026-09-06 an agent attached a tripwire to a live STANDING goal for
    * VISIBILITY, hand-writing current:1165.2 — its own diagnostic estimate,
@@ -395,12 +356,8 @@ describe('goals:update — partial writes preserve untouched state', () => {
 
   it('leaves unrelated metadata keys alone (merge, not replace)', async () => {
     existingRow!.metadata = { ownerNote: 'keep me' };
-    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
-    expect(writtenMetadata()).toEqual({
-      ownerNote: 'keep me',
-      spentCents: 1234,
-      spentCentsSource: 'goal-pots-rollup',
-    });
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Ship a paid app, revised' }) as never, CTX() as never);
+    expect(writtenMetadata()).toEqual({ ownerNote: 'keep me' });
   });
 
   /**
@@ -412,13 +369,10 @@ describe('goals:update — partial writes preserve untouched state', () => {
   it('migrates a legacy metadata.killCriterion into the column, and drops the stale copy', async () => {
     existingRow!.kill_criterion = null;
     existingRow!.metadata = { killCriterion: 'legacy prose', spentCents: 12 };
-    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Ship a paid app, revised' }) as never, CTX() as never);
     expect(writtenCriterion()).toBe('legacy prose');
     // Exactly one source of truth afterwards — the stale key is gone.
-    expect(writtenMetadata()).toEqual({
-      spentCents: 1234,
-      spentCentsSource: 'goal-pots-rollup',
-    });
+    expect(writtenMetadata()).toEqual({ spentCents: 12 });
   });
 
   it('an explicit criterion beats the legacy metadata copy', async () => {
@@ -453,7 +407,7 @@ describe('goals:update — unrestricted amendments are always reversible from hi
       tripwires: nextTripwires,
       metadata: {
         spentCents: 1234,
-        spentCentsSource: 'goal-pots-rollup',
+        spentCentsSource: 'goal-lineage-rollup',
         drainFleet: 'goal-drain',
       },
       launch_settings: { maxAgents: 3 },
@@ -468,7 +422,6 @@ describe('goals:update — unrestricted amendments are always reversible from hi
         parentId: 'parent-goal',
         budgetCents: 75000,
         budgetWindowSec: 86400,
-        spentCents: 1234,
         killCriterion: 'no repeat purchase after 30 days',
         tripwires: nextTripwires,
         drainFleet: 'goal-drain',
@@ -539,7 +492,7 @@ describe('goals:update — unrestricted amendments are always reversible from hi
   });
 
   it('does not manufacture an amendment row for a semantic no-op', async () => {
-    await tool.handler(tool.args.parse({ id: 'g1', title: 'Ship a paid app' }) as never, CTX() as never);
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Ship a paid app, revised' }) as never, CTX() as never);
     expect(amendmentInsert()).toBeUndefined();
   });
 
@@ -682,7 +635,7 @@ describe('goals:update — tripwires', () => {
 
   it('leaves existing tripwires untouched when the arg is omitted', async () => {
     existingRow!.tripwires = TRIPWIRES;
-    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Ship a paid app, revised' }) as never, CTX() as never);
     expect(JSON.stringify(updateCall().params)).toContain('spend_usd');
   });
 
@@ -872,7 +825,7 @@ describe('goals:update — per-goal launch settings', () => {
     // The whole tool is partial-by-construction; a settings write on every
     // unrelated update would clear a ceiling by reporting spend.
     return tool
-      .handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never)
+      .handler(tool.args.parse({ id: 'g1', title: 'Ship a paid app, revised' }) as never, CTX() as never)
       .then(() => {
         expect(settingsWrite()).toBeUndefined();
       });

@@ -3614,7 +3614,11 @@ async function checkMigrationReservations(
 type ReconcileRepoOpts = Pick<
   CommitRepoOpts,
   'remote' | 'defaultBranch' | 'log' | 'staleTempPackMs' | 'isTempPackOpen'
-> & { doPush: boolean };
+> & {
+  doPush: boolean;
+  /** A child repo's stale remote-tracking ref cannot prove its current pin is publishable. */
+  requireRemoteVerification?: boolean;
+};
 
 /** JSON-serializable — checkpointed as the superproject `git-sync:pointer-bump` step output. */
 interface CommitRepoResult {
@@ -4475,6 +4479,15 @@ async function reconcileAndPushOneRepo(
     // commit + push a gitlink pointing at an unpushed submodule commit, which a fresh
     // clone can't resolve (this actually corrupted origin once). With push disabled, a
     // local commit is the expected local-only result.
+    if (o.requireRemoteVerification) {
+      const reason = summarizeFetchFailure(fetch.stderr || fetch.stdout);
+      return {
+        status: 'error',
+        message:
+          `fetch failed; submodule remote state could not be verified before superproject publication` +
+          `${reason ? `: ${reason}` : ''}${cleanupNote}`,
+      };
+    }
     if (doPush) {
       const rl = await runGit(['rev-list', '--count', `${remote}/${branch}..HEAD`], repoPath);
       const aheadCount = rl.code === 0 ? Number.parseInt(rl.stdout.trim(), 10) || 0 : 1; // ref missing → assume unpushed
@@ -4641,7 +4654,12 @@ async function reconcileAndPushOneRepo(
 async function syncOneRepo(
   runGit: RunGit,
   repoPath: string,
-  o: CommitRepoOpts & { remote: string; defaultBranch: string; doPush: boolean },
+  o: CommitRepoOpts & {
+    remote: string;
+    defaultBranch: string;
+    doPush: boolean;
+    requireRemoteVerification?: boolean;
+  },
 ): Promise<RepoSyncResult> {
   const c = await commitOneRepo(runGit, repoPath, o);
   if (c.skippedPaths && c.skippedPaths.length > 0) {
@@ -5024,6 +5042,10 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         ...repoO,
         scope: s,
         doPush: doSubPush,
+        // A failed fetch with no commits ahead of a stale tracking ref used to
+        // look like `nothing`, so the superproject could publish imports against
+        // an older submodule pin. The remote must be measured before publication.
+        requireRemoteVerification: true,
         defaultBranch: 'main',
         // The caller supplies workspace/superproject-root-relative paths, while
         // git commands inside a submodule use that submodule's own root. This is

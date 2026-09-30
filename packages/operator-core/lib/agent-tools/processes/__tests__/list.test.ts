@@ -201,7 +201,7 @@ describe('processes:list structured output', () => {
     expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ invocationId }));
   });
 
-  it('returns only the exact live systemd group when scopeUnit is selected', async () => {
+  it('preserves scan truncation flags while returning only the exact live systemd group', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
     const scopeUnit = 'papercup-green-checkpoint-manual-1fxzuva.service';
@@ -224,7 +224,7 @@ describe('processes:list structured output', () => {
         overdue: [],
         tooYoung: [],
       },
-      scan: { processes: 3, foreignTruncated: false },
+      scan: { processes: 3, ownedTruncated: false, foreignTruncated: true },
       degraded: false,
       touched: 0,
       strandedCount: 0,
@@ -256,8 +256,14 @@ describe('processes:list structured output', () => {
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     const structured = dispatched.result?.structuredContent as {
-      live: { exactScopeUnitMatches: Array<Record<string, unknown>> };
+      live: {
+        exactScopeUnitMatches: Array<Record<string, unknown>>;
+        ownedTruncated: boolean;
+        foreignTruncated: boolean;
+      };
     };
+    expect(structured.live.ownedTruncated).toBe(false);
+    expect(structured.live.foreignTruncated).toBe(true);
     expect(structured.live.exactScopeUnitMatches).toEqual([
       {
         kind: 'unaccounted',

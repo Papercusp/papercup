@@ -95,8 +95,10 @@ export {
   alternateEncoding,
   buildAdmissionRequest,
   parseAdmissionEncoding,
+  parseAdmissionVariant,
   type AdmissionEncoding,
   type AdmissionRequest,
+  type AdmissionVariant,
 } from '../jev-admission-request';
 
 function sha256(text: string): string {

@@ -36,13 +36,13 @@ import {
 
 /** The measured instance, reduced to its essential shape: a two-stage cascade. */
 const SHARED_LIB_BEFORE = `
-  export async function lexicalWithCascade(source, params) {
+  export async function lexicalWithCascade(source: SearchSource, params) {
     const stage1 = await source.lexical(params);
     return stage1;
   }
 `;
 const SHARED_LIB_AFTER = `
-  export async function lexicalWithCascade(source, params) {
+  export async function lexicalWithCascade(source: SearchSource, params) {
     const stage1 = await source.lexical(params);
     if (stage1.length >= params.limit) return stage1;
     // The added call — correct engine behaviour, and the whole trap.
@@ -52,7 +52,7 @@ const SHARED_LIB_AFTER = `
 `;
 
 const CONTROL_FLOW_BEFORE = `
-  export async function run(input) {
+  export async function run(input, probe: Probe) {
     for (const spec of input.specs) {
       const evidence = await probe({ runner: input.runner, spec });
       if (evidence.ready) break;
@@ -60,7 +60,7 @@ const CONTROL_FLOW_BEFORE = `
   }
 `;
 const CONTROL_FLOW_AFTER = `
-  export async function run(input) {
+  export async function run(input, probe: Probe) {
     for (const spec of input.specs) {
       const evidence = await probe({ runner: input.runner, spec });
       if (!spec.satisfiesReadiness) continue;
@@ -143,17 +143,17 @@ const INTERCEPTING_LITERAL_AFTER = `
 `;
 
 describe('the trigger: a seam gained call sites', () => {
-  it('counts only calls rooted at a FUNCTION PARAMETER — an injected collaborator', () => {
+  it('counts calls rooted at a typed injected collaborator parameter', () => {
     const counts = seamCallCounts(SHARED_LIB_AFTER, 'hybrid.ts');
     expect(counts.get('source.lexical')).toBe(2);
   });
 
-  it('does NOT count a call on a module-scope import — a test cannot inject or count it', () => {
+  it('counts calls through an imported binding that downstream tests can mock', () => {
     const src = `
       import { helper } from './helper';
       export function run(params) { helper(params); helper(params); }
     `;
-    expect(seamCallCounts(src, 'x.ts').size).toBe(0);
+    expect(seamCallCounts(src, 'x.ts').get('helper()')).toBe(2);
   });
 
   it('FIXTURE PAIR: reports the seam whose call count went up', () => {
@@ -179,14 +179,41 @@ describe('the trigger: a seam gained call sites', () => {
   });
 
   it('counts a DESTRUCTURED seam, and a directly-called parameter', () => {
-    const before = `export function run({ lexical }, embed) { lexical(1); embed(2); }`;
-    const after = `export function run({ lexical }, embed) { lexical(1); lexical(2); embed(2); }`;
+    const before = `export function run({ lexical }: SearchSource, embed: Embedder) { lexical(1); embed(2); }`;
+    const after = `export function run({ lexical }: SearchSource, embed: Embedder) { lexical(1); lexical(2); embed(2); }`;
     expect(increasedSeams(before, after, 'x.ts')).toEqual([{ seam: 'lexical()', before: 1, after: 2 }]);
   });
 
   it('counts a seam called inside a nested closure — the parameter is still injected', () => {
-    const src = `export function run(source, items) { items.map((i) => source.lexical(i)); }`;
+    const src = `export function run(source: SearchSource, items) { items.map((i) => source.lexical(i)); }`;
     expect(seamCallCounts(src, 'x.ts').get('source.lexical')).toBe(1);
+  });
+
+  it('ignores callback parameters, local bindings, and methods on built-in value types', () => {
+    const src = `
+      export function inspect(buffer: Buffer, text: string, values: string[], run) {
+        new Promise<void>((resolve) => { resolve(); });
+        buffer.toString();
+        text.slice(1);
+        values.map((value) => value.toString());
+        const invoke = () => 1;
+        invoke();
+        run();
+      }
+    `;
+    expect(seamCallCounts(src, 'built-ins.ts').size).toBe(0);
+  });
+
+  it('does not treat a local shadow as its imported binding', () => {
+    const src = `
+      import { lookup } from './lookup';
+      export function inspect(deps: LookupDeps) {
+        const lookup = () => null;
+        lookup();
+        deps.load();
+      }
+    `;
+    expect([...seamCallCounts(src, 'shadow.ts')]).toEqual([['deps.load', 1]]);
   });
 
   it('ignores calls inside comments — the AST is the instrument, not a grep', () => {
@@ -216,6 +243,12 @@ describe('the trigger: a seam gained call sites', () => {
       'const evidence = await probe({ runner: input.runner, spec });\n      await probe({ runner: input.runner, spec });',
     );
     expect(changedSeamControlFlow(CONTROL_FLOW_BEFORE, after, 'probe.ts')).toEqual([]);
+  });
+
+  it('ignores a Promise executor callback when its control flow changes', () => {
+    const before = `export function finish(run) { return new Promise((resolve) => { resolve(); }); }`;
+    const after = `export function finish(run) { return new Promise((resolve) => { if (run) resolve(); }); }`;
+    expect(changedSeamControlFlow(before, after, 'promise-executor.ts')).toEqual([]);
   });
 });
 

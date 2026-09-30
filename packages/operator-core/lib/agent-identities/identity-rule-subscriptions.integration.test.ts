@@ -166,12 +166,15 @@ describe('identity rule subscriptions + reaction receipts (real migrated PG)', (
     };
     let fireSeq = 0;
 
-    async function fire(ownerId: string, eventKey = 'demo.fired') {
+    // One fire, planned over every row the named wearers hold on the key.
+    async function fire(owners: string | readonly string[], eventKey = 'demo.fired') {
+      const ownerIds = typeof owners === 'string' ? [owners] : [...owners];
       const rows = await db.adminSql<Array<{ subscriber_id: string; delivery_mode: string; derived_from_kind: string; derived_from_ref: string }>>`
         SELECT subscriber_id, delivery_mode, derived_from_kind, derived_from_ref
           FROM harness_shared.coord_entity_subscriptions
-         WHERE workspace_id = ${WS} AND derived_from_ref = ${ownerId} AND target_ref = ${eventKey}
-           AND cancelled_at IS NULL`;
+         WHERE workspace_id = ${WS} AND derived_from_ref IN ${db.adminSql(ownerIds)} AND target_ref = ${eventKey}
+           AND cancelled_at IS NULL
+         ORDER BY derived_from_ref`;
       return planIdentityReactions({
         workspaceId: WS, eventKey, fireId: `${eventKey}@1790000000000000#${++fireSeq}`, payload: { kind: 'bug' }, rows,
       }).payloads;
@@ -223,7 +226,9 @@ describe('identity rule subscriptions + reaction receipts (real migrated PG)', (
     it('two wearers of one fire get two receipts and two dispatches, each as themselves', async () => {
       await wear('wearer-4', fileOnly);
       await wear('wearer-5', fileOnly);
-      const payloads = [...await fire('wearer-4'), ...await fire('wearer-5')];
+      const payloads = await fire(['wearer-4', 'wearer-5']);
+      expect(new Set(payloads.map((payload) => payload.fireId)).size).toBe(1);
+      expect(new Set(payloads.map((payload) => payload.receiptId)).size).toBe(2);
       for (const payload of payloads) await executeIdentityReaction(payload, deps);
       expect(dispatch.mock.calls.map(([input]) => input.ownerId)).toEqual(['wearer-4', 'wearer-5']);
       for (const payload of payloads) expect((await receipt(payload.receiptId))?.status).toBe('fired');

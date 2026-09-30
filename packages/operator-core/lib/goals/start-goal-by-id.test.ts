@@ -543,7 +543,7 @@ describe('startGoalById — an omitted kickoff is BUILT, never left null', () =>
             limit: 100,
             current: 100,
             requested: 1,
-            currentScope: 'inside-goal-pots:authoritative',
+            currentScope: 'attributed-by-lineage:authoritative',
             message: 'budget exhausted',
           },
         }),

@@ -482,6 +482,16 @@ export default defineTool({
     if (conflictJudge && !conflictJudge.available) warnConflictJudgeUnavailableOnce();
     const usableJudge = conflictJudge?.available ? conflictJudge.judge : null;
     const conflictUsable = usableJudge !== null;
+    // P-010 (plan jev-performance-improvements-2026-09-30): the Jev judge also asks,
+    // in the SAME request, whether the new memory carries concrete information; a
+    // memory that only claims its own relevance or importance is refused here, once,
+    // instead of being filtered out of every later turn. Jev only (the question and
+    // threshold were measured on Jev); the flag is the kill switch. A flag-store error
+    // skips the check (fail open), since this is hygiene, not a safety rail.
+    const substanceWanted =
+      conflictJudge?.available === true &&
+      conflictJudge.backend === 'jev' &&
+      (await getFlag(FLAGS.MEMORY_CONTENT_FREE_REFUSAL, 'system').catch(() => false));
 
     if (dedupWanted || conflictUsable) {
       try {
@@ -552,12 +562,31 @@ export default defineTool({
         // `conflictUsable` (not just `conflictCheckEnabled()`) — with no real
         // judge this call could only ever return an empty report, and we no
         // longer even have neighbours to hand it in that case.
-        if (usableJudge && neighbors.length > 0) {
+        if (usableJudge && (neighbors.length > 0 || substanceWanted)) {
           const conflict = await checkConflicts({
             newText: args.content,
             neighbors: neighbors.map((n) => ({ id: n.id, text: n.text, score: n.score })),
             judge: usableJudge,
+            ...(substanceWanted ? { checkSubstance: true } : {}),
           });
+          // P-010: a content-free memory is refused before any conflict is considered;
+          // `supersede` names a conflict to resolve, not a reason to store an empty claim.
+          if (conflict.substance?.contentFree) {
+            if (journalId) void markJournalCommitted(journalId, null);
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  ok: false,
+                  reason: 'content_free',
+                  p_concrete: conflict.substance.pConcrete,
+                  summary: conflict.substance.summary,
+                  hint:
+                    'This memory only claims its own relevance or importance. Rewrite it to state the fact, decision, procedure, preference or value itself, or pass force=true to write it anyway.',
+                }),
+              }],
+            };
+          }
           // `supersede:<id>` is an explicit resolution of THAT conflict, not a
           // blanket force-through: any other contradiction still refuses.
           const unresolvedConflicts = conflict.conflicts.filter(

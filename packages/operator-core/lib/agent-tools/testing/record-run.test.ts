@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  MAX_OPERATIONAL_EVIDENCE_BYTES,
   parseOperationalEvidenceArtifact,
   recordOperationalRun,
   type CommittedOperationalEvidence,
@@ -100,6 +101,28 @@ describe('testing:record-run', () => {
         Buffer.from(JSON.stringify({ ...ARTIFACT, finishedAt: '2026-09-08T01:00:00.000Z' })),
       ),
     ).toThrow('evidence_time_order_invalid');
+  });
+
+  it('returns the size, byte cap, and raw-artifact remedy for oversized evidence without persisting it', async () => {
+    const actualBytes = MAX_OPERATIONAL_EVIDENCE_BYTES + 17;
+    const expectedError =
+      `evidence_too_large: ${actualBytes} bytes exceeds the ${MAX_OPERATIONAL_EVIDENCE_BYTES}-byte limit. ` +
+      'Store bulky payloads as a raw artifact pinned by SHA-256 and keep the docs/evidence JSON small.';
+    const d = deps({
+      inspectEvidence: vi.fn(async () => {
+        parseOperationalEvidenceArtifact(Buffer.alloc(actualBytes));
+        return EVIDENCE;
+      }),
+    });
+    const result = await recordOperationalRun(
+      { evidenceFile: EVIDENCE.filePath, expectedSha256: EVIDENCE.sha256, harness: 'papercusp' },
+      { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', projectDir: process.cwd() },
+      d,
+    );
+
+    expect(result).toEqual({ ok: false, error: expectedError });
+    expect(d.findIds).not.toHaveBeenCalled();
+    expect(d.persist).not.toHaveBeenCalled();
   });
 
   it('names every failing field path in evidence_schema_invalid (WI-10003460)', () => {

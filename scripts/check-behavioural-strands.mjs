@@ -297,81 +297,291 @@ function workspaceOf(file, packageDirs) {
 // ── the trigger: a seam's call count went up ────────────────────────────────────────────
 
 /**
- * Every call in `text` whose callee is rooted at a FUNCTION PARAMETER — i.e. an injected
- * collaborator, the only kind of call a downstream test can mock and count.
+ * Calls in `text` whose callee resolves to an imported binding or an explicitly injected
+ * collaborator parameter. Arbitrary function parameters are often values or callback
+ * arguments (`Buffer`, strings, Promise executors, event payloads), not seams a downstream
+ * test can mock and count. The parameter-name/type checks below keep those local bindings
+ * out while preserving the common deps/context and typed collaborator forms.
  *
  * Keyed by `param.member` (or `param()` for a directly-called parameter) and counted at
  * FILE level rather than per function: a call that merely MOVES between functions in the
  * same file strands nobody, and counting per function would report that move as an
- * increase. Nested closures still count, because the parameter they capture is the same
- * seam the caller injected.
+ * increase. Nested closures still count when they capture an injected parameter.
  *
  * @returns {Map<string, number>} seam key -> number of call sites
  */
-export function seamCallCounts(text, fileName = 'file.ts') {
-  const counts = new Map();
-  let source;
-  try {
-    source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  } catch {
-    return counts;
+function seamCallSites(text, fileName = 'file.ts', sourceOverride = null) {
+  const callSites = [];
+  let source = sourceOverride;
+  if (!source) {
+    try {
+      source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    } catch {
+      return callSites;
+    }
   }
 
-  const paramScopes = [];
-  const declaresParam = (name) => paramScopes.some((scope) => scope.has(name));
+  const BUILTIN_METHODS = new Set([
+    'at', 'charAt', 'charCodeAt', 'codePointAt', 'concat', 'endsWith', 'every', 'filter', 'find',
+    'findIndex', 'flat', 'flatMap', 'forEach', 'includes', 'indexOf', 'join', 'lastIndexOf', 'map',
+    'match', 'matchAll', 'padEnd', 'padStart', 'pop', 'push', 'reduce', 'reduceRight', 'replace',
+    'replaceAll', 'reverse', 'search', 'shift', 'slice', 'some', 'sort', 'splice', 'split', 'startsWith',
+    'substring', 'substr', 'toLocaleLowerCase', 'toLocaleString', 'toLocaleUpperCase', 'toLowerCase',
+    'toString', 'toUpperCase', 'trim', 'trimEnd', 'trimStart', 'unshift', 'valueOf',
+  ]);
+  const INJECTED_PARAM_NAME_RE =
+    /^(?:deps?|dependencies|ctx|context|ports?|services?|source|embedder|probe|runner|fetcher|transport|adapter|client|repositories?|repo|store|storage|database|db|gateway|logger|clock|cache|queue|scheduler|publisher|writer|reader|validator|authorizer|connector|provider|api)$/i;
+  const INJECTED_TYPE_NAME_RE =
+    /(?:Deps?|Dependencies|Context|Ctx|Ports?|Services?|Source|Embedder|Probe|Runner|Fetcher|Transport|Adapter|Client|Repositories?|Store|Database|Gateway|Logger|Clock|Cache|Queue|Scheduler|Publisher|Reader|Writer|Validator|Authorizer|Provider|Api)$/i;
+  const BUILTIN_TYPE_RE =
+    /^(?:string|number|boolean|bigint|symbol|String|Number|Boolean|BigInt|Symbol|Buffer|Uint(?:8|8Clamped|16|32|Big64|8|16|32)Array|Int(?:8|16|32|Big64)Array|Float(?:32|64)Array|ArrayBuffer|SharedArrayBuffer|DataView|ReadonlyArray|Array|Date|RegExp|Map|Set|WeakMap|WeakSet|URL|URLSearchParams)(?:\s*<|\s*\[|\s*\||\s*&|$)/i;
 
-  const collectParamNames = (node, into) => {
-    for (const param of node.parameters ?? []) {
-      const bind = param.name;
-      if (ts.isIdentifier(bind)) {
-        into.add(bind.text);
-      } else if (ts.isObjectBindingPattern(bind) || ts.isArrayBindingPattern(bind)) {
-        // A destructured seam (`{ lexical }`) is injected exactly like a named one.
-        for (const el of bind.elements) {
-          if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) into.add(el.name.text);
-        }
+  const isFunctionLike = (node) =>
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isConstructorDeclaration(node);
+
+  const addBindingNames = (name, into, binding) => {
+    if (ts.isIdentifier(name)) {
+      into.set(name.text, binding);
+      return;
+    }
+    if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) {
+      for (const element of name.elements) {
+        if (ts.isBindingElement(element)) addBindingNames(element.name, into, binding);
       }
     }
   };
 
-  /** `p(...)` -> `p()`; `p.m(...)` / `p?.m(...)` -> `p.m`; anything else -> null. */
-  const seamKeyFor = (callee) => {
-    if (ts.isIdentifier(callee)) return declaresParam(callee.text) ? `${callee.text}()` : null;
-    if (ts.isPropertyAccessExpression(callee)) {
-      const root = callee.expression;
-      if (ts.isIdentifier(root) && declaresParam(root.text)) return `${root.text}.${callee.name.text}`;
-      return null;
+  const imported = new Set();
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && statement.importClause && !statement.importClause.isTypeOnly) {
+      const clause = statement.importClause;
+      if (clause.name) imported.add(clause.name.text);
+      if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+        imported.add(clause.namedBindings.name.text);
+      } else if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+        for (const element of clause.namedBindings.elements) {
+          if (!element.isTypeOnly) imported.add(element.name.text);
+        }
+      }
+    } else if (ts.isImportEqualsDeclaration(statement)) {
+      imported.add(statement.name.text);
     }
-    if (ts.isNonNullExpression(callee) || ts.isParenthesizedExpression(callee)) {
-      return seamKeyFor(callee.expression);
+  }
+
+  const directLexicalBindings = (container) => {
+    const bindings = new Map();
+    const visitDeclarations = (node) => {
+      if (node !== container && (isFunctionLike(node) || ts.isBlock(node))) {
+        if (ts.isFunctionDeclaration(node) && node.name) {
+          bindings.set(node.name.text, { kind: 'local' });
+        }
+        return;
+      }
+      if (ts.isVariableDeclaration(node)) {
+        const list = node.parent;
+        if (ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.BlockScoped) !== 0) {
+          addBindingNames(node.name, bindings, { kind: 'local' });
+        }
+      } else if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name) {
+        bindings.set(node.name.text, { kind: 'local' });
+      }
+      ts.forEachChild(node, visitDeclarations);
+    };
+    visitDeclarations(container);
+    return bindings;
+  };
+
+  const functionScopedVars = (node) => {
+    const bindings = new Map();
+    const visitVars = (current) => {
+      if (current !== node && isFunctionLike(current)) return;
+      if (ts.isVariableDeclaration(current)) {
+        const list = current.parent;
+        if (ts.isVariableDeclarationList(list) && (list.flags & ts.NodeFlags.BlockScoped) === 0) {
+          addBindingNames(current.name, bindings, { kind: 'local' });
+        }
+      }
+      ts.forEachChild(current, visitVars);
+    };
+    if (node.body) visitVars(node.body);
+    return bindings;
+  };
+
+  const isInlineCallback = (node) => {
+    let current = node;
+    while (current.parent && (ts.isParenthesizedExpression(current.parent) || ts.isAsExpression(current.parent))) {
+      current = current.parent;
+    }
+    const parent = current.parent;
+    return (
+      (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+      (parent.arguments ?? []).some((argument) => argument === current)
+    );
+  };
+
+  const typeName = (typeNode) => {
+    if (!typeNode) return '';
+    if (ts.isTypeReferenceNode(typeNode)) return typeNode.typeName.getText(source);
+    return '';
+  };
+
+  const isBuiltinType = (typeNode) => {
+    if (!typeNode) return false;
+    if ([
+      ts.SyntaxKind.StringKeyword,
+      ts.SyntaxKind.NumberKeyword,
+      ts.SyntaxKind.BooleanKeyword,
+      ts.SyntaxKind.BigIntKeyword,
+      ts.SyntaxKind.SymbolKeyword,
+    ].includes(typeNode.kind)) return true;
+    if (ts.isUnionTypeNode(typeNode)) {
+      const meaningful = typeNode.types.filter(
+        (part) => part.kind !== ts.SyntaxKind.UndefinedKeyword && part.kind !== ts.SyntaxKind.NullKeyword,
+      );
+      return meaningful.length > 0 && meaningful.every(isBuiltinType);
+    }
+    if (ts.isArrayTypeNode(typeNode)) return true;
+    if (ts.isTypeReferenceNode(typeNode)) {
+      const name = typeName(typeNode);
+      return BUILTIN_TYPE_RE.test(name);
+    }
+    return false;
+  };
+
+  const isInjectedType = (typeNode) => {
+    if (!typeNode) return false;
+    if (ts.isUnionTypeNode(typeNode) || ts.isIntersectionTypeNode(typeNode)) {
+      return typeNode.types.some(isInjectedType);
+    }
+    return INJECTED_TYPE_NAME_RE.test(typeName(typeNode));
+  };
+
+  const isInjectedParameter = (param, callback) => {
+    if (callback || isBuiltinType(param.type)) return false;
+    const names = new Map();
+    addBindingNames(param.name, names, { kind: 'parameter' });
+    return [...names.keys()].some((name) => INJECTED_PARAM_NAME_RE.test(name)) || isInjectedType(param.type);
+  };
+
+  const scopes = [{ kind: 'module', bindings: new Map() }];
+  for (const name of imported) scopes[0].bindings.set(name, { kind: 'import' });
+  for (const [name, binding] of directLexicalBindings(source)) scopes[0].bindings.set(name, binding);
+
+  const resolveBinding = (name) => {
+    for (let index = scopes.length - 1; index >= 0; index -= 1) {
+      const binding = scopes[index].bindings.get(name);
+      if (binding) return binding;
     }
     return null;
   };
 
-  const visit = (node) => {
-    const isFunctionLike =
-      ts.isFunctionDeclaration(node) ||
-      ts.isFunctionExpression(node) ||
-      ts.isArrowFunction(node) ||
-      ts.isMethodDeclaration(node) ||
-      ts.isConstructorDeclaration(node);
+  const isSeamBinding = (binding) =>
+    Boolean(binding && (binding.kind === 'import' || (binding.kind === 'parameter' && binding.injected)));
 
-    if (isFunctionLike) {
-      const names = new Set();
-      collectParamNames(node, names);
-      paramScopes.push(names);
+  const rootIdentifier = (expression) => {
+    let current = expression;
+    while (ts.isPropertyAccessExpression(current) || ts.isElementAccessExpression(current)) {
+      current = current.expression;
+    }
+    return ts.isIdentifier(current) ? current : null;
+  };
+
+  const terminalMember = (expression) => {
+    if (ts.isPropertyAccessExpression(expression)) return expression.name.text;
+    if (ts.isElementAccessExpression(expression) && expression.argumentExpression &&
+        (ts.isStringLiteral(expression.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(expression.argumentExpression))) {
+      return expression.argumentExpression.text;
+    }
+    return null;
+  };
+
+  /** Imported calls and injected dependency/context parameters are seams; local values are not. */
+  const seamKeyFor = (callee) => {
+    if (ts.isNonNullExpression(callee) || ts.isParenthesizedExpression(callee) || ts.isAsExpression(callee)) {
+      return seamKeyFor(callee.expression);
+    }
+    const root = rootIdentifier(callee);
+    if (!root) return null;
+    const binding = resolveBinding(root.text);
+    if (!isSeamBinding(binding)) return null;
+    if (binding.kind === 'parameter' && binding.builtinReceiver) return null;
+    const member = terminalMember(callee);
+    if (binding.kind === 'parameter' && member && BUILTIN_METHODS.has(member)) return null;
+    return ts.isIdentifier(callee) ? `${root.text}()` : callee.getText(source);
+  };
+
+  const visit = (node) => {
+    const pushed = [];
+    if (isFunctionLike(node)) {
+      const bindings = functionScopedVars(node);
+      const callback = isInlineCallback(node);
+      if (node.name && ts.isIdentifier(node.name)) bindings.set(node.name.text, { kind: 'local' });
+      for (const param of node.parameters ?? []) {
+        const injected = isInjectedParameter(param, callback);
+        addBindingNames(param.name, bindings, {
+          kind: 'parameter',
+          injected,
+          builtinReceiver: isBuiltinType(param.type),
+        });
+      }
+      scopes.push({ kind: 'function', bindings });
+      pushed.push('function');
+    }
+    if (ts.isBlock(node) || ts.isSourceFile(node)) {
+      scopes.push({ kind: 'block', bindings: directLexicalBindings(node) });
+      pushed.push('block');
+    }
+    if (ts.isCatchClause(node) && node.variableDeclaration) {
+      const bindings = new Map();
+      addBindingNames(node.variableDeclaration.name, bindings, { kind: 'local' });
+      scopes.push({ kind: 'catch', bindings });
+      pushed.push('catch');
+    }
+
+    // Preserve a seam's identity through a local alias (`const fetcher = deps.fetcher`).
+    // The initializer must resolve to an imported or explicitly injected binding; an
+    // arbitrary local value or callback parameter never acquires seam status by its name.
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      const root = rootIdentifier(node.initializer);
+      const sourceBinding = root ? resolveBinding(root.text) : null;
+      if (isSeamBinding(sourceBinding)) {
+        const aliasBinding = sourceBinding.kind === 'import'
+          ? { kind: 'import' }
+          : { kind: 'parameter', injected: true, builtinReceiver: false };
+        const aliases = new Map();
+        addBindingNames(node.name, aliases, aliasBinding);
+        for (const [name, binding] of aliases) {
+          for (let index = scopes.length - 1; index >= 0; index -= 1) {
+            if (!scopes[index].bindings.has(name)) continue;
+            scopes[index].bindings.set(name, binding);
+            break;
+          }
+        }
+      }
     }
 
     if (ts.isCallExpression(node)) {
       const key = seamKeyFor(node.expression);
-      if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+      if (key) callSites.push({ start: node.getStart(source), end: node.getEnd(), seam: key });
     }
 
     ts.forEachChild(node, visit);
-    if (isFunctionLike) paramScopes.pop();
+    for (let index = pushed.length - 1; index >= 0; index -= 1) scopes.pop();
   };
 
   ts.forEachChild(source, visit);
+  return callSites;
+}
+
+export function seamCallCounts(text, fileName = 'file.ts') {
+  const counts = new Map();
+  for (const { seam } of seamCallSites(text, fileName)) {
+    counts.set(seam, (counts.get(seam) ?? 0) + 1);
+  }
   return counts;
 }
 
@@ -458,86 +668,12 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
     return [];
   }
 
-  const bindingScopes = [];
+  const seamSites = new Map(
+    seamCallSites(text, fileName, source).map(({ start, end, seam }) => [`${start}:${end}`, seam]),
+  );
   const functionStack = [];
   const records = [];
   let anonymousOrdinal = 0;
-  const lookupBinding = (name) => {
-    for (let index = bindingScopes.length - 1; index >= 0; index -= 1) {
-      const binding = bindingScopes[index].get(name);
-      if (binding) return binding;
-    }
-    return null;
-  };
-  const collectParamBindings = (node, into) => {
-    for (const param of node.parameters ?? []) {
-      const bind = param.name;
-      if (ts.isIdentifier(bind)) into.set(bind.text, bind.text);
-      else if (ts.isObjectBindingPattern(bind) || ts.isArrayBindingPattern(bind)) {
-        for (const el of bind.elements) {
-          if (ts.isBindingElement(el) && ts.isIdentifier(el.name)) {
-            const property = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : el.name.text;
-            into.set(el.name.text, property);
-          }
-        }
-      }
-    }
-  };
-  const expressionPath = (node) => {
-    if (!node) return null;
-    if (ts.isIdentifier(node)) return lookupBinding(node.text);
-    if (ts.isPropertyAccessExpression(node)) {
-      const base = expressionPath(node.expression);
-      return base ? `${base}.${node.name.text}` : null;
-    }
-    if (ts.isElementAccessExpression(node)) {
-      const base = expressionPath(node.expression);
-      const index = node.argumentExpression;
-      if (!base) return null;
-      if (ts.isStringLiteral(index) || ts.isNumericLiteral(index)) return `${base}[${index.text}]`;
-      return `${base}[*]`;
-    }
-    if (ts.isNonNullExpression(node) || ts.isParenthesizedExpression(node)) return expressionPath(node.expression);
-    return null;
-  };
-  const firstDependencyPath = (node) => {
-    const direct = expressionPath(node);
-    if (direct) return direct;
-    let found = null;
-    const visit = (current) => {
-      if (found) return;
-      const path = expressionPath(current);
-      if (path) {
-        found = path;
-        return;
-      }
-      ts.forEachChild(current, visit);
-    };
-    visit(node);
-    return found;
-  };
-  const bindPattern = (pattern, basePath, into) => {
-    if (ts.isIdentifier(pattern)) {
-      into.set(pattern.text, basePath);
-      return;
-    }
-    if (ts.isObjectBindingPattern(pattern)) {
-      for (const el of pattern.elements) {
-        if (!ts.isBindingElement(el) || !ts.isIdentifier(el.name)) continue;
-        const property = el.propertyName && ts.isIdentifier(el.propertyName) ? el.propertyName.text : el.name.text;
-        bindPattern(el.name, `${basePath}.${property}`, into);
-      }
-    }
-  };
-  const calleeLabel = (callee, sourceFile) => {
-    if (ts.isIdentifier(callee)) return callee.text;
-    if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
-    return callee.getText(sourceFile);
-  };
-  const seamKeyFor = (callee) => {
-    const path = expressionPath(callee);
-    return path ? `${path}()` : null;
-  };
   const visit = (node) => {
     const isFunctionLike =
       ts.isFunctionDeclaration(node) ||
@@ -546,15 +682,6 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
       ts.isMethodDeclaration(node) ||
       ts.isConstructorDeclaration(node);
     if (isFunctionLike) {
-      const bindings = new Map();
-      for (const param of node.parameters ?? []) {
-        const bind = param.name;
-        if (ts.isIdentifier(bind)) bindings.set(bind.text, bind.text);
-        else if (ts.isObjectBindingPattern(bind) || ts.isArrayBindingPattern(bind)) {
-          collectParamBindings({ parameters: [param] }, bindings);
-        }
-      }
-      bindingScopes.push(bindings);
       const record = {
         function: callableIdentity(node, source, anonymousOrdinal++),
         seams: [],
@@ -568,24 +695,14 @@ export function seamControlFlowRecords(text, fileName = 'file.ts') {
     if (current) {
       const token = controlFlowToken(node, source, fileName);
       if (token) current.controlFlow.push(token);
-      if (ts.isVariableDeclaration(node) && node.initializer) {
-        const basePath = expressionPath(node.initializer);
-        if (basePath) bindPattern(node.name, basePath, bindingScopes.at(-1));
-      }
       if (ts.isCallExpression(node)) {
-        const seam = seamKeyFor(node.expression) ??
-          (node.arguments.some((argument) => firstDependencyPath(argument))
-            ? `${calleeLabel(node.expression, source)}()`
-            : null);
+        const seam = seamSites.get(`${node.getStart(source)}:${node.getEnd()}`) ?? null;
         if (seam) current.seams.push(seam);
       }
     }
 
     ts.forEachChild(node, visit);
-    if (isFunctionLike) {
-      functionStack.pop();
-      bindingScopes.pop();
-    }
+    if (isFunctionLike) functionStack.pop();
   };
   ts.forEachChild(source, visit);
   return records.filter((record) => record.seams.length > 0);

@@ -10,7 +10,7 @@ import { EventEmitter } from 'node:events';
 // spread — only `spawn` is stubbed, so this execFileSync is the real one
 // (used to prove one-liners parse/execute under actual bash).
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import * as nodePty from '@lydell/node-pty';
@@ -1435,6 +1435,34 @@ describe('buildConsoleOneliner', () => {
     it('emits a PATH export from the backend dirs ALONE (no papercusp dirs set)', () => {
       const out = buildConsoleOneliner('/x', { PAPERCUSP_BACKEND_PATH_DIRS: '/home/u/.bun/bin' }, 'true', APPEARANCE);
       expect(out).toContain("export PATH=${PATH}:'/home/u/.bun/bin'");
+    });
+
+    it('selects the Papercusp Node runtime ahead of an incompatible desktop PATH', () => {
+      const root = mkdtempSync(join(tmpdir(), 'papercup-node-path-'));
+      const runtimeDir = join(root, 'operator-node');
+      const desktopDir = join(root, 'desktop-node');
+      mkdirSync(runtimeDir);
+      mkdirSync(desktopDir);
+      writeFileSync(join(runtimeDir, 'node'), '#!/bin/sh\nprintf "%s\\n" "abi-141"\n');
+      writeFileSync(join(desktopDir, 'node'), '#!/bin/sh\nprintf "%s\\n" "abi-127"\n');
+      chmodSync(join(runtimeDir, 'node'), 0o755);
+      chmodSync(join(desktopDir, 'node'), 0o755);
+
+      try {
+        const oneliner = buildConsoleOneliner(
+          root,
+          { PAPERCUSP_NODE_RUNTIME_DIR: runtimeDir, SHELL: '/bin/true' },
+          'node --version > selected-node.txt',
+          APPEARANCE,
+        );
+        execFileSync('/bin/bash', ['-c', oneliner], {
+          cwd: root,
+          env: { PATH: `${desktopDir}:/usr/bin:/bin` },
+        });
+        expect(readFileSync(join(root, 'selected-node.txt'), 'utf8').trim()).toBe('abi-141');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     });
 
     it('is byte-identical to the pre-fix line when the key is absent', () => {

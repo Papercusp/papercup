@@ -1695,11 +1695,16 @@ restart does **NOT** pick up your edits:
 stale, restart the *right* host and re-probe. Detail:
 [repo-conventions § two-port model](/internal/docs/system/repo-conventions).
 
-⚠ **Your own MCP tool calls execute `:3070` — NOT your edit.** The `papercusp-su`
-client points at `http://127.0.0.1:9071/api/mcp` (`papercup-mcp-proxy.service`),
-which forwards to **`:3070`**, the release checkout. So a landed `operator-core` fix
-is live in your tree, your tests and (after publication) `:3170`, while the very tool
-you would call to exercise it still runs the RELEASED build until the deploy lands.
+⚠ **The MCP client URL does not prove which build served a call.** The `papercusp-su`
+client connects through `http://127.0.0.1:9071/api/mcp`; the proxy's default upstream
+is `:3070`, but the serving host is recorded separately for each tool invocation.
+Records have shown the same owner served by both `port-3070` and `port-3170`. For a
+specific call, use `dev:pg_query` to query `harness_shared.tool_invocations` by
+`coord_owner_id`, `tool_name`, and `invoked_at`; read `serving_host` and
+`serving_build_sha`. The writer captures the service and loaded build at invocation
+time (`packages/operator-core/lib/projected-tool-deps.ts`), unlike the proxy URL or
+current checkout. Compare that SHA with `/api/health` on the recorded host before
+treating a route-level result as current.
 
 Confirm which build an endpoint runs from its **health sha** — never a proxy's cwd or
 boot time, which describe the proxy, not the code it forwards to:

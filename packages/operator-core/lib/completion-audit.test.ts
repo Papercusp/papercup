@@ -97,6 +97,19 @@ describe("live-service completion evidence (EI-20096763429995249)", () => {
     ).toBe(true);
   });
 
+  it.each(['http_status=200', 'http_code=200'])(
+    'accepts the documented curl HTTP status label: %s',
+    (observation) => {
+      expect(
+        isBackedLiveServiceClaim({
+          verifiedHow: 'live-service',
+          testsRun: 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3170/api/health',
+          testResult: `papercusp-staging-api.service ${observation}`,
+        }),
+      ).toBe(true);
+    },
+  );
+
   it('accepts a non-systemd process when it is concretely named', () => {
     expect(
       isBackedLiveServiceClaim({

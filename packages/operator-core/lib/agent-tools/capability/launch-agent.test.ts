@@ -54,6 +54,19 @@ vi.mock('../../psu-launch-log.mjs', async (orig) => ({
   readPsuLaunchLogTail: (...args: unknown[]) => readPsuLaunchLogTailMock(...args),
 }));
 
+const codexThreadWriterHolderMock = vi.hoisted(() =>
+  vi.fn((_codexHome: string, _sessionId: string | null) => ({
+    held: false,
+    pid: null,
+    lockPath: null,
+    sessionId: null,
+    reason: 'no-lock-file',
+  })),
+);
+vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', () => ({
+  codexThreadWriterHolder: (...args: [string, string | null]) => codexThreadWriterHolderMock(...args),
+}));
+
 const shutdownViaPtyMock = vi.hoisted(() => vi.fn(async (_ownerId: string, _opts?: unknown) => 'sent'));
 const findLiveHostMock = vi.hoisted(() => vi.fn((_ownerId: string): unknown => null));
 const markAdvSessionEndedMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => true));
@@ -314,6 +327,13 @@ beforeEach(() => {
   rmSync(HEADLESS_RESUME_LOG_PATH, { force: true });
   assembleRolePromptMock.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/repo' } });
   readPsuLaunchLogTailMock.mockReturnValue(null);
+  codexThreadWriterHolderMock.mockReset().mockReturnValue({
+    held: false,
+    pid: null,
+    lockPath: null,
+    sessionId: null,
+    reason: 'no-lock-file',
+  });
   codexPreflightHomeMock.mockResolvedValue(null);
   codexPreflightModelMock.mockReset();
   claimAgentLaunchMock.mockResolvedValue({
@@ -2128,6 +2148,51 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--resume=sid-dead --fork');
     expect(textOf(res)).toContain('still LIVE');
     expect(textOf(res)).toContain('FRESH identity');
+  });
+
+  it('FORKS a Codex source with an active thread writer even when no pty host is registered', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex', live: false });
+    findLiveHostMock.mockReturnValue(null);
+    codexThreadWriterHolderMock.mockReturnValue({
+      held: true,
+      pid: 9876,
+      lockPath: '/tmp/codex/thread-writer-locks/sid-dead.lock',
+      sessionId: 'sid-dead',
+      reason: 'held',
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    expect(codexThreadWriterHolderMock).toHaveBeenCalledWith(expect.any(String), 'sid-dead');
+    expect(spawnedCommand()).toContain('--resume=sid-dead --fork');
+    expect(textOf(res)).toContain('Codex reports an active writer');
+    expect(textOf(res)).toContain('FRESH identity');
+  });
+
+  it('refuses visible restore when a Codex writer is active without a managed host', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, agent: 'codex', live: false });
+    findLiveHostMock.mockReturnValue(null);
+    codexThreadWriterHolderMock.mockReturnValue({
+      held: true,
+      pid: 9876,
+      lockPath: '/tmp/codex/thread-writer-locks/sid-dead.lock',
+      sessionId: 'sid-dead',
+      reason: 'held',
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, restoreVisible: true, brief: 'restore the session visibly' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('active writer but no managed host is registered');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it('forks explicitly when asked, even from a dead source', async () => {

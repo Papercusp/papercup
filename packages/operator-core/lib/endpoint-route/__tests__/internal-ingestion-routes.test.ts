@@ -20,7 +20,13 @@ import { Hono } from 'hono';
 
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
-vi.mock('../../attention-notify', () => ({ notifyAttention: vi.fn(async () => {}) }));
+// notifyAttentionOnce too: it is reached statically at import through
+// register-system-actions → connected-apps/alert-sweep, and a hand-listed factory that
+// omits it fails the whole file at collection.
+vi.mock('../../attention-notify', () => ({
+  notifyAttention: vi.fn(async () => {}),
+  notifyAttentionOnce: vi.fn(async () => {}),
+}));
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
 // The route-stack's framework auth step (`requirePrincipal` for `auth: {}`)

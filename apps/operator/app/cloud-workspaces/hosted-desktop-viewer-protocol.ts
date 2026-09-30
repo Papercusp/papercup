@@ -297,8 +297,37 @@ export class HostedDesktopRelayChannel implements HostedDesktopRawChannel {
   readyState = this.CONNECTING;
   inputAllowed = false;
   onerror: ((event: unknown) => void) | null = null;
-  onmessage: ((event: { data: ArrayBuffer }) => void) | null = null;
   onopen: (() => void) | null = null;
+  /**
+   * WI-10004214: bytes that arrived before noVNC attached. The viewer constructs
+   * noVNC after an async import, and on a page's first open the host's version
+   * greeting beats that import; dropping it left noVNC waiting in ProtocolVersion.
+   */
+  private held: ArrayBuffer[] = [];
+  private messageHandler: ((event: { data: ArrayBuffer }) => void) | null =
+    null;
+
+  get onmessage(): ((event: { data: ArrayBuffer }) => void) | null {
+    return this.messageHandler;
+  }
+
+  set onmessage(handler: ((event: { data: ArrayBuffer }) => void) | null) {
+    this.messageHandler = handler;
+    if (!handler || this.held.length === 0) return;
+    // noVNC assigns onmessage inside attach(), BEFORE _socketOpen() starts the
+    // handshake, so bytes delivered synchronously here would be unparseable.
+    queueMicrotask(() => this.deliverHeld());
+  }
+
+  private deliverHeld(): void {
+    while (this.held.length > 0 && this.messageHandler) {
+      if (this.readyState !== this.OPEN) {
+        this.held = [];
+        return;
+      }
+      this.messageHandler({ data: this.held.shift()! });
+    }
+  }
   onready: ((event: HostedDesktopReadyEvent) => void) | null = null;
   onclose: ((event: { code?: number; reason?: string }) => void) | null = null;
 
@@ -327,7 +356,13 @@ export class HostedDesktopRelayChannel implements HostedDesktopRawChannel {
         this.onopen?.();
       } else if (parsed.kind === "data") {
         if (this.readyState !== this.OPEN) return;
-        this.onmessage?.({ data: toArrayBuffer(parsed.data) });
+        const data = toArrayBuffer(parsed.data);
+        // Behind anything still held, so the stream keeps its order.
+        if (this.messageHandler && this.held.length === 0) {
+          this.messageHandler({ data });
+        } else {
+          this.held.push(data);
+        }
       } else if (parsed.kind === "error") {
         this.onerror?.(parsed);
       }
@@ -340,6 +375,7 @@ export class HostedDesktopRelayChannel implements HostedDesktopRawChannel {
       if (this.readyState === this.CLOSED) return;
       this.readyState = this.CLOSED;
       this.inputAllowed = false;
+      this.held = [];
       this.onclose?.(event);
     });
   }

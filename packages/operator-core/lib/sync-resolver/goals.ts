@@ -37,7 +37,7 @@
 // the annotation fails to typecheck outright. Every other `sql.begin` in this
 // package leaves it inferred for the same reason.
 
-import { GOAL_SPEND_SNAPSHOT_SOURCE, GOAL_SPEND_TICK_SOURCE } from '@papercusp/db-org';
+import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { budgetSpendScope } from '../goal-launch-settings';
 // P-001 — goal-live-holder-guarantee-2026-08-18: ROW PRESENCE IS NOT LIVENESS.
 // A goal-mode row outlives the session that wrote it, so both surfaces below
@@ -348,12 +348,10 @@ function toSummary(
 ): GoalSummaryRowBase {
   const metadata = r.metadata ?? {};
   const spentCents =
-    // Either measured source: the agent-verified pots rollup (goals:update) or
-    // the P-005 platform tick (spend-rollup.ts) — a legacy hand-entered value
-    // carries neither marker and still reads null.
-    (metadata.spentCentsSource === GOAL_SPEND_SNAPSHOT_SOURCE ||
-      metadata.spentCentsSource === GOAL_SPEND_TICK_SOURCE) &&
-    typeof metadata.spentCents === 'number'
+    // Only the platform rollup's marker (spend-rollup.ts, D-011): a legacy
+    // hand-entered value, or a snapshot from the retired pot-authoritative
+    // rollup, carries a different marker and reads null until the next tick.
+    metadata.spentCentsSource === GOAL_SPEND_SNAPSHOT_SOURCE && typeof metadata.spentCents === 'number'
       ? (metadata.spentCents as number)
       : null;
   // Resolved through the SAME helper the kickoff brief uses, over the SAME

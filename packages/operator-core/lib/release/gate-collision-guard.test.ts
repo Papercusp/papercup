@@ -24,6 +24,8 @@ import {
   judgeGitSyncCollision,
   probeGitSyncCollision,
   checkGitSyncCollision,
+  checkStagingSyncCollision,
+  STAGING_SYNC_LOCK_PATH,
   acquireGitSyncRestartBarrier,
   GIT_SYNC_RESTART_BARRIER_RESOURCE,
   GIT_SYNC_RESTART_BARRIER_TTL_SEC,
@@ -545,6 +547,47 @@ describe('git-sync collision probe shell', () => {
       expect(verdict.kind).toBe('not-git-sync-sensitive');
     }
     expect(readHolders).not.toHaveBeenCalled();
+  });
+});
+
+describe('staging-sync restart collision guard', () => {
+  it('blocks a staging restart while the sync service holds its exclusive checkout lock', async () => {
+    const verdict = await checkStagingSyncCollision('staging', async () => true);
+    expect(verdict).toMatchObject({
+      blocked: true,
+      kind: 'staging-sync-in-flight',
+      detail: { lockPath: STAGING_SYNC_LOCK_PATH, lockHeld: true },
+    });
+    expect(verdict.note).toContain('Nothing was restarted');
+  });
+
+  it('allows the final sync restart after the script downgrades its lock to shared', async () => {
+    const probe = vi.fn(async () => false);
+    const verdict = await checkStagingSyncCollision('staging', probe);
+    expect(verdict).toMatchObject({
+      blocked: false,
+      kind: 'clear',
+      detail: { lockPath: STAGING_SYNC_LOCK_PATH, lockHeld: false },
+    });
+    expect(probe).toHaveBeenCalledOnce();
+  });
+
+  it('does not inspect the staging lock for other restart targets', async () => {
+    const probe = vi.fn(async () => true);
+    const verdict = await checkStagingSyncCollision('dev', probe);
+    expect(verdict).toMatchObject({ blocked: false, kind: 'not-staging-target' });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the lock state cannot be measured', async () => {
+    const verdict = await checkStagingSyncCollision('staging', async () => {
+      throw new Error('flock unavailable');
+    });
+    expect(verdict).toMatchObject({
+      blocked: true,
+      kind: 'probe-failed',
+      detail: { lockPath: STAGING_SYNC_LOCK_PATH, lockHeld: null },
+    });
   });
 });
 

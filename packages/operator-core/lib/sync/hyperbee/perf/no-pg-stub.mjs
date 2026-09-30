@@ -104,7 +104,6 @@ export const getOrgPg = stub('getOrgPg');
 export const getOrgPgListener = stub('getOrgPgListener');
 export const getOrgPgLosslessBigint = stub('getOrgPgLosslessBigint');
 export const GOAL_SPEND_SNAPSHOT_SOURCE = stub('GOAL_SPEND_SNAPSHOT_SOURCE');
-export const GOAL_SPEND_TICK_SOURCE = stub('GOAL_SPEND_TICK_SOURCE');
 export const goalSpend = stub('goalSpend');
 export const GoalSpend = stub('GoalSpend');
 export const goalsForPot = stub('goalsForPot');

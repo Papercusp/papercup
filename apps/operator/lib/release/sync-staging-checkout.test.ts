@@ -748,6 +748,15 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
     expect(script).not.toContain('"$PTOOL_BIN" dev:restart --json -');
   });
 
+  it('downgrades its checkout lock before the final dev:restart so the staging collision guard admits cutover', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const downgrade = script.indexOf('flock -s 9');
+    const restart = script.indexOf('"$PTOOL_BIN" dev:restart --url=');
+    expect(downgrade).toBeGreaterThan(script.indexOf('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"'));
+    expect(restart).toBeGreaterThan(downgrade);
+    expect(script.slice(downgrade, restart)).toContain('keeps');
+  });
+
   it('accepts a lost self-restart receipt only after a new MainPID serves the exact target SHA', () => {
     const target = '0123456789abcdef0123456789abcdef01234567';
     expect(restartIsObserved('470360', '471002', '0123456789ab', target)).toBe(true);

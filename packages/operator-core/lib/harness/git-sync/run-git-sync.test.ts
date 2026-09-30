@@ -2597,6 +2597,44 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     });
   });
 
+  it('EI-24433253827583139: refuses to publish an importer when submodule fetch failed before the export was observed', async () => {
+    const subWriter = join(root, 'sub-writer');
+    git(root, 'clone', subOrigin, subWriter);
+    configUser(subWriter);
+    writeFileSync(join(subWriter, 'turn-error.ts'), 'export const classify = () => "ok";\n');
+    git(subWriter, 'add', '-A');
+    git(subWriter, 'commit', '--no-verify', '-m', 'publish turn-error export');
+    git(subWriter, 'push', '-u', 'origin', 'main');
+
+    const remoteSubHead = git(subWriter, 'rev-parse', 'HEAD');
+    const staleSubHead = git(join(repo, 'libs/sub'), 'rev-parse', 'HEAD');
+    const originalSuperHead = git(superOrigin, 'rev-parse', 'main');
+    expect(staleSubHead).not.toBe(remoteSubHead);
+    expect(existsSync(join(repo, 'libs/sub', 'turn-error.ts'))).toBe(false);
+
+    // This superproject source now depends on an export that exists at the submodule
+    // origin but is absent from the locally pinned submodule revision.
+    writeFileSync(join(repo, 'consumer.ts'), "import { classify } from './libs/sub/turn-error';\nvoid classify;\n");
+
+    const failedSubmoduleFetch: RunGit = async (args, cwd) => {
+      if (cwd === join(repo, 'libs/sub') && args[0] === 'fetch') {
+        return { code: 1, stdout: '', stderr: 'simulated temporary submodule fetch failure' };
+      }
+      return directRunGit(args, cwd);
+    };
+    const out = await runGitSync('test', { repoPath: repo, runGit: failedSubmoduleFetch });
+
+    expect(out.status).toBe('error');
+    if (out.status === 'error') {
+      expect(out.errors.map((e) => e.scope)).toContain('libs/sub');
+      expect(out.pushed).not.toContain('superproject');
+    }
+    expect(git(superOrigin, 'rev-parse', 'main')).toBe(originalSuperHead);
+    expect(git(superOrigin, 'rev-parse', 'main:libs/sub')).toBe(staleSubHead);
+    // Preserve locally committed source for the next successful submodule-sync tick.
+    expect(git(repo, 'show', 'HEAD:consumer.ts')).toContain("'./libs/sub/turn-error'");
+  });
+
   it('EI-21234208817497976: clears an orphaned submodule .git/modules/**/index.lock and publishes the recovered gitlink', async () => {
     const subRepo = join(repo, 'libs/sub');
     writeFileSync(join(subRepo, 'sub-stale-lock-recovered.txt'), 'submodule work survived\n');

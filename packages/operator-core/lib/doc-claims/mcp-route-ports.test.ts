@@ -122,7 +122,7 @@ describe('mcp-route-ports doc claim', () => {
   });
 
   describe('the live tree', () => {
-    it('keeps CLAUDE.md naming the ports the proxy actually uses', () => {
+    it('keeps CLAUDE.md naming the proxy default ports', () => {
       const v = judgeMcpRoutePorts({
         proxySource: LIVE_PROXY,
         unitSource: LIVE_UNIT,
@@ -138,10 +138,14 @@ describe('mcp-route-ports doc claim', () => {
       expect(v.unitListenPort).toBe(v.listenPort);
     });
 
-    it('still carries the claim sentence the ports belong to', () => {
-      // Ports alone are not the claim — the point is that the tool call an agent makes
-      // executes the RELEASE build. If this sentence is removed, the pin is pointless.
-      expect(LIVE_DOC).toContain('Your own MCP tool calls execute');
+    it('requires per-invocation serving-host evidence before attributing a build', () => {
+      // The proxy's default does not identify the host that served every call. Keep the
+      // loaded-host/build ledger fields in the guidance and reject the old universal claim.
+      expect(LIVE_DOC).toContain('MCP client URL does not prove which build served a call');
+      expect(LIVE_DOC).toContain('harness_shared.tool_invocations');
+      expect(LIVE_DOC).toContain('serving_host');
+      expect(LIVE_DOC).toContain('serving_build_sha');
+      expect(LIVE_DOC).not.toContain('Your own MCP tool calls execute `:3070`');
     });
   });
 });

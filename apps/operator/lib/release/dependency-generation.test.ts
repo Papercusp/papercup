@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 // EI-21475576623166605: these tests launch several real shells and copy/hardlink/prune
 // filesystem trees. Under fleet I/O contention they have measured 7–53s, so Vitest's
@@ -2342,11 +2343,9 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
       const child = spawn('bash', [SCRIPT, '--integration', integration], {
         env: { ...process.env, ...env },
       });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-      child.stderr.on('data', (chunk) => { stderr += String(chunk); });
-      child.on('close', (status) => resolvePublish({ status, stdout, stderr }));
+      const stdout = createTextCollector(child.stdout);
+      const stderr = createTextCollector(child.stderr);
+      child.on('close', (status) => resolvePublish({ status, stdout: stdout.text(), stderr: stderr.text() }));
     });
   }
 

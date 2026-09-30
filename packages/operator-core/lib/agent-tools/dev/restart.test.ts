@@ -73,6 +73,7 @@ vi.mock('../../release/gate-collision-guard', async (importOriginal) => {
     ...actual,
     checkGateCollision: vi.fn(),
     checkGitSyncCollision: vi.fn(),
+    checkStagingSyncCollision: vi.fn(),
     acquireGitSyncRestartBarrier: vi.fn(),
   };
 });
@@ -110,6 +111,7 @@ import {
   acquireGitSyncRestartBarrier,
   checkGateCollision,
   checkGitSyncCollision,
+  checkStagingSyncCollision,
 } from '../../release/gate-collision-guard';
 import { checkBgHostQuiesce } from './bg-host-quiesce-guard';
 import { mockImplementationTyped, mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
@@ -145,6 +147,7 @@ const orgPgM = vi.mocked(getOrgPg);
 const auditUnsafeM = vi.fn(async (_query: string, _params: unknown[]) => undefined);
 const gateCollisionM = vi.mocked(checkGateCollision);
 const gitSyncCollisionM = vi.mocked(checkGitSyncCollision);
+const stagingSyncCollisionM = vi.mocked(checkStagingSyncCollision);
 const gitSyncBarrierM = vi.mocked(acquireGitSyncRestartBarrier);
 const gitSyncBarrierReleaseM = vi.fn(async () => undefined);
 const quiesceM = vi.mocked(checkBgHostQuiesce);
@@ -216,6 +219,13 @@ const clearGitSyncCollision = () => ({
     unknownResources: [],
     deadResources: [],
   },
+});
+
+const clearStagingSyncCollision = () => ({
+  blocked: false,
+  kind: 'clear' as const,
+  note: 'staging-sync lock is clear',
+  detail: { lockPath: '/tmp/papercup-staging-sync.lock', lockHeld: false },
 });
 
 const restartModule = await import('./restart');
@@ -343,6 +353,7 @@ beforeEach(() => {
   orgPgM.mockReturnValue({ sql: { unsafe: auditUnsafeM } } as never);
   gateCollisionM.mockResolvedValue(clearGateCollision());
   gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
+  stagingSyncCollisionM.mockResolvedValue(clearStagingSyncCollision());
   quiesceM.mockResolvedValue(quiesceVerdict());
   gitSyncBarrierReleaseM.mockClear();
   gitSyncBarrierM.mockResolvedValue({
@@ -1325,6 +1336,64 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
       'spawn failed',
     );
     expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('dev:restart staging-sync collision guard', () => {
+  const blocked = () => ({
+    ...clearStagingSyncCollision(),
+    blocked: true,
+    kind: 'staging-sync-in-flight' as const,
+    note: 'Restart REFUSED — papercup-staging-sync holds its exclusive checkout lock.',
+    detail: { lockPath: '/tmp/papercup-staging-sync.lock', lockHeld: true },
+  });
+
+  it('refuses an active sync before cooldown, drain, audit, or spawn', async () => {
+    stagingSyncCollisionM.mockResolvedValue(blocked());
+    const b = body(
+      await call({ confirm: true, authorize: true, target: 'staging', reason: 'reload staging' }),
+    );
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'staging_sync_collision_staging_sync_in_flight',
+      restarted: false,
+      drained: false,
+      staging_sync_collision: { lockHeld: true },
+    });
+    expect(acquireM).not.toHaveBeenCalled();
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it('rechecks after the drain and refuses a late collision before audit or spawn', async () => {
+    stagingSyncCollisionM.mockResolvedValueOnce(clearStagingSyncCollision()).mockResolvedValueOnce(blocked());
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-LATE-STAGING-SYNC',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 23,
+    } as never);
+    guardM.mockImplementation(runGuard(fenceOk(23)) as never);
+
+    const b = body(
+      await call({ confirm: true, authorize: true, target: 'staging', reason: 'reload staging' }),
+    );
+
+    expect(stagingSyncCollisionM).toHaveBeenCalledTimes(2);
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'staging_sync_collision_staging_sync_in_flight',
+      restarted: false,
+      drained: true,
+      staging_sync_collision: { lockHeld: true },
+    });
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+    expect(releaseM).toHaveBeenCalledTimes(1);
   });
 });
 

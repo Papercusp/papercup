@@ -56,6 +56,41 @@ describe('external-ingress listener (WI-10004174)', () => {
     expect((JSON.parse(text) as { error?: unknown }).error, text).toBe('invalid_body');
   });
 
+  it('routes the RFC 8628 device-grant POSTs to their routes (WI-10004269, D-004/D-018)', async () => {
+    // Each body is refused by the route itself before any database read, so a 400 from the
+    // route (not the 404 wall) proves the listener serves the path to an app on another host.
+    const post = (path: string, body: unknown) =>
+      externalIngressHandler(new Request(`http://${PUBLIC_HOST}${path}`, {
+        method: 'POST',
+        headers: { host: PUBLIC_HOST, 'x-forwarded-proto': 'https', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }));
+    const code = await post('/api/connected-apps/device/code', { tools: 5 });
+    const codeText = await code.text();
+    expect(code.status, codeText).toBe(400);
+    expect((JSON.parse(codeText) as { error?: { code?: string } }).error?.code, codeText).toBe('invalid_request');
+    const token = await post('/api/connected-apps/device/token', { deviceCode: 'not-a-device-code' });
+    const tokenText = await token.text();
+    expect(token.status, tokenText).toBe(400);
+    expect((JSON.parse(tokenText) as { error?: unknown }).error, tokenText).toBe('invalid_grant');
+  });
+
+  it('keeps the device approval page, pending list and decision route off the tunnel', async () => {
+    for (const [method, path] of [
+      ['GET', '/api/connected-apps/device'],
+      ['GET', '/api/connected-apps/device/pending'],
+      ['POST', '/api/connected-apps/device/decision'],
+    ] as const) {
+      const res = await externalIngressHandler(new Request(`http://${PUBLIC_HOST}${path}`, {
+        method,
+        headers: { host: PUBLIC_HOST, 'x-forwarded-proto': 'https' },
+      }));
+      expect(res.status, `${method} ${path}`).toBe(404);
+      const body = (await res.json()) as { error?: { code?: string } };
+      expect(body.error?.code, `${method} ${path}`).toBe('not_served_on_external_ingress');
+    }
+  });
+
   it('leaves the loopback listener refusing a public Host (the rebinding guard still applies there)', async () => {
     const res = await handler(get('/api/connected-apps/oauth/authorization-server', PUBLIC_HOST));
     expect(res.status).toBe(403);

@@ -3,11 +3,12 @@
  *
  *   npx tsx packages/operator-core/lib/memory/bench/embedder-eval-cli.ts \
  *     [--legs gemma@512,granite97@384,granite311@384,qwen3@384,local,openai,\
- *             harrier,harrier384,sidecar[:model],ollama:<model>] \
+ *             harrier,harrier384,pplx,sidecar[:model],ollama:<model>] \
  *     [--corpus memory|prose] \
  *     [--sidecar http://127.0.0.1:PORT] [--ollama http://127.0.0.1:11434] \
  *     [--dims 384] [--out <path.json>] \
  *     [--baseline <leg>] [--compare-with <prior-run.json>] [--limit <N>]
+ *     [--vectors <candidate-vectors.json>]
  *
  * `--limit N` is a SMOKE pass over the first N docs — use it to prove a newly
  * added leg loads/pools/sizes correctly before paying for a full corpus. Its
@@ -96,12 +97,14 @@ import { loadGoldSetFixture } from './gold-set';
 import { PROSE_CORPUS_FIXTURE_VERSION, loadProseCorpusFixture } from './prose-corpus';
 import { loadProseGoldSetFixture, PROSE_GOLD_SET_VERSION } from './prose-gold-set';
 import { compareLegs, classesDisagree, ALL_ANSWERABLE, type PerQueryRow } from './paired-leg-report';
+import { buildPplxBenchmarkEmbedder, loadCandidateVectors, PPLX_MODEL, PPLX_OUTPUT, PPLX_REVISION } from './candidate-embedders';
 
 type EmbedFn = (text: string) => Promise<number[]>;
 interface Leg {
   name: string;
   doc: EmbedFn;
   query: EmbedFn;
+  metadata?: Record<string, unknown>;
   /**
    * Set on legs that are MRL truncations of a shared base pass. Legs sharing a
    * `family` are embedded ONCE at the family's widest `dims` and the narrower
@@ -287,6 +290,12 @@ async function buildLegs(
           doc: buildHarrierEmbedder({ kind: 'document' }),
           query: buildHarrierEmbedder({ kind: 'query' }),
         });
+      } else if (name === 'pplx') {
+        const fn = buildPplxBenchmarkEmbedder();
+        out.push({ name, doc: fn, query: fn, metadata: {
+          model: PPLX_MODEL, revision: PPLX_REVISION, output: PPLX_OUTPUT,
+          runtime: 'transformers-js-direct-encoder-cpu-fp32', experimental: true,
+        } });
       } else if (name === 'harrier384') {
         // Exploratory truncation — harrier has NO documented MRL (P-013).
         out.push({
@@ -535,6 +544,15 @@ async function main(): Promise<void> {
   const corpusKeys = corpus.map((e) => e.key);
   const corpusTexts = corpus.map((e) => e.text);
   const queryTexts = gold.queries.map((q) => q.query);
+  const vectorsPath = argValue('--vectors');
+  const fixturesDir = path.join(path.dirname(new URL(import.meta.url).pathname), 'fixtures');
+  const fixturePrefix = corpusChoice === 'prose' ? 'prose-' : '';
+  const imported = vectorsPath ? loadCandidateVectors(
+    vectorsPath, corpusChoice,
+    path.join(fixturesDir, `${fixturePrefix}corpus.v1.json`),
+    path.join(fixturesDir, `${fixturePrefix}gold-set.v1.json`),
+    corpusKeys, gold.queries.map((q) => q.id),
+  ) : undefined;
   console.log(
     `corpus=${corpusChoice}/${corpusVersion} docs=${corpusKeys.length} queries=${gold.queries.length} legs=${legNames.join(',')}`,
   );
@@ -586,6 +604,17 @@ async function main(): Promise<void> {
         `rejection-margin=${scored.rejection.margin}`,
     );
   };
+
+  if (imported) {
+    const { manifest, suite } = imported;
+    record(manifest.name, suite.docVectors.map(l2norm), suite.queryVectors.map(l2norm), {
+      model: manifest.model, revision: manifest.revision, runtime: manifest.runtime,
+      experimental: true, vectorSource: vectorsPath, loadSeconds: manifest.loadSeconds,
+      assetBytes: manifest.assetBytes, docSeconds: suite.docSeconds, querySeconds: suite.querySeconds,
+      msPerDoc: suite.docSeconds * 1000 / corpusTexts.length,
+      msPerQuery: suite.querySeconds * 1000 / queryTexts.length, peakRssMB: suite.peakRssMB,
+    });
+  }
 
   // Partition: MRL siblings share one forward pass, everything else is its own.
   const built = await buildLegs(legNames, sidecarUrl, ollamaUrl);
@@ -657,6 +686,7 @@ async function main(): Promise<void> {
       const doc = await embedAll(leg.doc, corpusTexts, `${leg.name}/doc`);
       const query = await embedAll(leg.query, queryTexts, `${leg.name}/query`);
       record(leg.name, doc.vecs, query.vecs, {
+        ...leg.metadata,
         docSeconds: +doc.seconds.toFixed(1),
         querySeconds: +query.seconds.toFixed(1),
         msPerDoc: +((doc.seconds * 1000) / Math.max(corpusTexts.length, 1)).toFixed(1),

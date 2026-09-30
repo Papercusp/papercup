@@ -8,9 +8,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const M = vi.hoisted(() => ({
   notifyAttention: vi.fn(async (..._args: unknown[]) => {}),
+  notifyAttentionOnce: vi.fn(async (..._args: unknown[]) => {}),
   broadcastSevereEvent: vi.fn(async (..._args: unknown[]) => true),
 }));
-vi.mock('../attention-notify', () => ({ notifyAttention: M.notifyAttention }));
+// notifyAttentionOnce too: it is reached statically at import through
+// register-system-actions → connected-apps/alert-sweep, and a hand-listed factory that
+// omits it fails the whole file at collection.
+vi.mock('../attention-notify', () => ({
+  notifyAttention: M.notifyAttention,
+  notifyAttentionOnce: M.notifyAttentionOnce,
+}));
 vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: M.broadcastSevereEvent }));
 
 import { defaultPage } from './liveness-alarm';

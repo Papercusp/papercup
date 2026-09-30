@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "SPEC-P-005-SEAM-DECISION: a plan Decision assigns every backfill responsibility named in P-005 to either the generic sweep or a papercusp hook",
+  "framework": "operational",
+  "command": "plans:items { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', item: 'P-005' } (oracle: the responsibility list) ; plans:get { slug: 'shared-vector-search-libraries-2026-09-29', harness: 'papercusp', decisionId: 'D-004' } (subject: the seam) ; grep -n -F <symbol> packages/operator-core/lib/search/embed-backfill.ts (instrument: each responsibility exists in today's source)",
+  "exitCode": 0,
+  "startedAt": "2026-09-30T15:41:00Z",
+  "finishedAt": "2026-09-30T15:45:00Z",
+  "summary": "The oracle is the P-005 plan item text, written when the plan was authored and before D-004 existed. It names nine responsibilities: five for the generic sweep and four papercusp hooks. Each was looked up in D-004 (plan version 25, contentHash e1cc4870ec342cbf47f39aad8b39e4147ced4fbc429d11866eec0b36c8bb15c1). All nine are assigned to exactly one side, and the side matches P-005. Each was also located in packages/operator-core/lib/search/embed-backfill.ts at blob 1b34ae5330efb46e21c966f2e1c2fd74589c8ac9 (last changed in 53da45e4751c5969248420ef9f120595bdcd3c64), so the Decision covers code that exists rather than a paraphrase. D-004 also assigns items P-005 does not name: target shape (1), infrastructure checks (7), logging (8), storage width (12), the SQL client and the surrounding tick (13 onward). The check fails if D-004 is absent, or if any P-005 phrase maps to no numbered D-004 section or to the wrong side.",
+  "assertions": [
+    {
+      "id": "decision-recorded",
+      "passed": true,
+      "evidence": "plans:get decisionId D-004 returns 'P-005: the backfill-engine seam. The generic sweep owns selection, embedding, the input cap, writes and the round-robin; papercusp supplies targets, embedder, admission, resource profile and storage width', dated 2026-09-30, itemRefs P-005, P-006, P-002, P-001."
+    },
+    {
+      "id": "select-missing-or-wrong-space",
+      "passed": true,
+      "evidence": "P-005: 'select rows whose vector is missing or in the wrong embedding space' (generic sweep). D-004 section 2, GENERIC SWEEP: 'Select rows whose vector is missing or in the wrong embedding space. These move: stalePredicateSql, eligiblePredicateSql, activeRecipeVersion, BASELINE_RECIPE_VERSION, and the SELECT.' Source: stalePredicateSql line 542, eligiblePredicateSql line 512, the SELECT with the target ORDER BY at line 1282."
+    },
+    {
+      "id": "batch-embed-per-row-fallback",
+      "passed": true,
+      "evidence": "P-005: 'batch-embed with per-row fallback on batch failure' (generic sweep). D-004 section 3, GENERIC SWEEP: 'Batch-embed with per-row fallback on batch failure. Moves unchanged.' Chunk size 16, the break on the first failing chunk and the per-row timeout move as config; the batch timeout is a host hook."
+    },
+    {
+      "id": "cap-oversized-input",
+      "passed": true,
+      "evidence": "P-005: 'cap oversized input' (generic sweep). D-004 section 4, GENERIC SWEEP: 'Cap oversized input. The engine takes config maxInputChars and truncates each body to that many characters before it embeds.' The left(..., 2000) caps in each TARGETS bodySql stay with the targets."
+    },
+    {
+      "id": "write-vector-plus-label",
+      "passed": true,
+      "evidence": "P-005: 'write vector plus label' (generic sweep). D-004 section 5, GENERIC SWEEP: 'Write vector plus label. The UPDATE moves unchanged. It is keyed on keyCols and guarded by the same stale predicate.' The host supplies the label values."
+    },
+    {
+      "id": "round-robin-within-budget",
+      "passed": true,
+      "evidence": "P-005: 'round-robin across targets within a time budget' (generic sweep). D-004 section 6, GENERIC SWEEP: 'Round-robin across targets within a time budget. runBackfillSweep's loop moves', rotating by sweepCounter mod target count, with drain rules and config budgetMs. The latch moves onto a sweeper instance; papercusp pins it with pinModuleState."
+    },
+    {
+      "id": "targets-list",
+      "passed": true,
+      "evidence": "P-005: 'the TARGETS list' (papercusp hook). D-004 section 9, PAPERCUSP HOOKS: 'The TARGETS list and chunkStoreBackfillTarget (built from the CHUNK_STORES registry), passed to the sweeper as a getter.'"
+    },
+    {
+      "id": "embed-admission",
+      "passed": true,
+      "evidence": "P-005: 'embed admission' (papercusp hook). D-004 section 10, PAPERCUSP HOOKS: 'Embed admission and the embedders: resolveBackfillEmbedder, the admission-governed OpenAI embedder (daily cap, 429 penalties) ...'. Source: embedAdmission import from '../memory/embed-admission'; adm.acquire(text, 'bench') at line 233."
+    },
+    {
+      "id": "sidecar-embedder",
+      "passed": true,
+      "evidence": "P-005: 'the sidecar embedder' (papercusp hook). D-004 section 10, PAPERCUSP HOOKS: '... the sidecar embedders and resolveBatchEmbed. The hook is resolveEmbedder() -> { mode, dims, profile?, embed, embedMany? } or disabled.' Source: sidecarEmbedBatch and sidecarBatchTimeoutMs from '@papercusp/memory' at line 46; buildSidecarAwareEmbedder at line 47."
+    },
+    {
+      "id": "resource-profile",
+      "passed": true,
+      "evidence": "P-005: 'resource profile' (papercusp hook). D-004 section 11, PAPERCUSP HOOKS: 'The resource profile: batchSize = getResourceProfile().embedBatchSize, the per-sweep row cap, and the sidecar batch timeout (sidecarBatchTimeoutMs).' Source: getResourceProfile import at line 35; BATCH_SIZE = getResourceProfile().embedBatchSize at line 65."
+    },
+    {
+      "id": "no-responsibility-unassigned",
+      "passed": true,
+      "evidence": "9 of 9 P-005 responsibilities are assigned to exactly one side. Sections 2-6 are generic sweep and match P-005's generic list. Sections 9-11 are papercusp hooks and match P-005's hook list. None is split across sides or missing."
+    }
+  ],
+  "evidencePlane": "tree",
+  "plan": "shared-vector-search-libraries-2026-09-29",
+  "specId": "SPEC-P-005-SEAM-DECISION",
+  "subjectCommit": "53da45e4751c5969248420ef9f120595bdcd3c64",
+  "workItemId": "WI-10004274"
+}
