@@ -48,6 +48,10 @@ import {
   type ResumeTarget,
 } from '../agent-launch-core';
 import { fetchContextPressure } from '../agent-tools/coordination/context-pressure';
+import {
+  analyzeClaudeResumeTranscriptFile,
+  type ClaudeResumeTranscriptAnalysis,
+} from '../claude-resume-tool-references.mjs';
 import { buildConsoleEnvelope } from '../console-launcher';
 import { spawnHeadless, type SpawnChildExit } from '../console-spawn';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
@@ -123,6 +127,7 @@ export type DispatchSkipReason =
   | 'convert-needs-live-source-identity'
   | 'account-walled'
   | 'source-context-critical'
+  | 'source-transcript-poisoned'
   | 'evidence-span-unavailable'
   | 'launch-failed'
   | 'kickoff-not-persisted'
@@ -188,7 +193,18 @@ export interface ConsultDispatchDeps extends ExpertModelAllowlistDeps {
   /** Test seam for the saved per-review model, read again on every cascade leg. */
   readReviewerModel?: (workspaceId: string, conversationId: string) => Promise<ConsultReviewerModel | null>;
   resolveResumeTarget: typeof resolveResumeTarget;
-  checkResumeTranscript: (target: ResumeTarget) => Promise<{ available: boolean; detail: string }>;
+  checkResumeTranscript: (
+    target: ResumeTarget,
+  ) => Promise<{ available: boolean; detail: string; transcriptPath?: string }>;
+  /**
+   * Read a Claude source transcript's tail for provider "Tool reference … not
+   * found" rejections. A fork replays the source history, so a source whose
+   * latest assistant output is such a rejection yields a fork that fails the
+   * same way on its first turn (WI-10004260). Returns null when unreadable.
+   */
+  analyzeSourceTranscript: (
+    transcriptPath: string,
+  ) => Pick<ClaudeResumeTranscriptAnalysis, 'trailingMissingToolReferenceTurns' | 'lastMissingToolReferenceName'> | null;
   buildAgentLaunchCommand: typeof buildAgentLaunchCommand;
   injectLaunchedByArg: typeof injectLaunchedByArg;
   buildConsoleEnvelope: typeof buildConsoleEnvelope;
@@ -796,6 +812,7 @@ export async function dispatchConsultResponder(
   const d: ConsultDispatchDeps = {
     resolveResumeTarget,
     checkResumeTranscript: defaultCheckResumeTranscript,
+    analyzeSourceTranscript: analyzeClaudeResumeTranscriptFile,
     buildAgentLaunchCommand,
     injectLaunchedByArg,
     buildConsoleEnvelope,
@@ -881,7 +898,7 @@ async function walkConsultDispatch(
       return give(`evidence session ownership changed: ${evidenceSource.sessionId} resolves to ${target.ownerId ?? 'no owner'}, expected ${opts.sourceOwnerId}`);
     }
 
-    let transcript: { available: boolean; detail: string };
+    let transcript: { available: boolean; detail: string; transcriptPath?: string };
     try {
       transcript = await d.checkResumeTranscript(target);
     } catch (e) {
@@ -915,6 +932,31 @@ async function walkConsultDispatch(
         forkBlockedByPressure =
           `context-pressure preflight failed for ${target.ownerId} ` +
           `(${(e as Error)?.message ?? String(e)}); forking was refused rather than assumed safe`;
+      }
+    }
+
+    // WI-10004260: a Claude source whose LATEST assistant output is a provider
+    // "Tool reference … not found in available tools" 400 is a poisoned
+    // transcript. A FORK replays that exact history, so it inherits the poison
+    // and 400s on its first turn — measured twice on one acceptance consult,
+    // where the dead forks held the grading slot for ~30 minutes each. A
+    // CONVERT re-renders the history and does not inherit it, so, like the
+    // pressure gate above, this skips the fork legs only. An unreadable
+    // transcript is not evidence of poison: the kickoff proof still guards it.
+    let forkBlockedByPoison: string | null = null;
+    const sourceAgent = (target.agent ?? '').toLowerCase();
+    if ((sourceAgent === 'claude' || sourceAgent === 'claude-code') && transcript.transcriptPath) {
+      try {
+        const analysis = d.analyzeSourceTranscript(transcript.transcriptPath);
+        if (analysis && analysis.trailingMissingToolReferenceTurns > 0) {
+          forkBlockedByPoison =
+            `${target.ownerId ?? 'the source'}'s transcript ends in ${analysis.trailingMissingToolReferenceTurns} ` +
+            `provider "Tool reference not found" rejection(s)` +
+            (analysis.lastMissingToolReferenceName ? ` (last: '${analysis.lastMissingToolReferenceName}')` : '') +
+            ', so a fork would replay the same history and fail on its first turn';
+        }
+      } catch {
+        // Fail open on the analysis only — see the comment above.
       }
     }
 
@@ -969,6 +1011,18 @@ async function walkConsultDispatch(
           outcome: 'skipped',
           reason: 'source-context-critical',
           detail: forkBlockedByPressure,
+        });
+        continue;
+      }
+      if (operation === 'fork' && forkBlockedByPoison) {
+        attempts.push({
+          rank: rank.rank,
+          agent: rank.agent,
+          model: rank.model,
+          operation,
+          outcome: 'skipped',
+          reason: 'source-transcript-poisoned',
+          detail: forkBlockedByPoison,
         });
         continue;
       }

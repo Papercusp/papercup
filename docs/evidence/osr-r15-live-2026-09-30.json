@@ -4,49 +4,55 @@
   "name": "R-15: the Syft installer scan of a distributed build has no UNREVIEWED finding and every disallowed license has a recorded disposition",
   "framework": "operational",
   "command": [
-    "fresh VM osr18b: clone b98518640b8d (git status: 14 locally patched files, see stand-ins), papercusp-desktop build (log ~/r18/linux-local-build8.log, EXIT=0 2026-09-30T09:57:01Z)",
-    "PATH=~/.local/bin:$PATH (syft 1.51.0) PAPERCUSP_RELEASE_OWNER_NAME/EMAIL=<from build-box git config, not stored> python3 bin/audit-release-bundle.py --scan-artifact --licenses <GUI deb> <Server deb> <AppImage> > ~/r18/lic-audit8c.log",
-    "after fix #10 (installer-components.json GTK/gdk-pixbuf plugin paths): same command on the AppImage > ~/r18/lic-audit8d.log"
+    "VM osr18b (guest script .papercusp/scratch/osr/r18/guest-build9.sh): git fetch; git reset --hard origin/HEAD of Papercusp/papercusp-app -> PUBLIC_HEAD=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c; git status --porcelain EMPTY (STATUS_BEFORE_STANDIN)",
+    "disclosed stand-in only: tauri.conf.json plugins.updater.pubkey := tester minisign pubkey; npm ci; operator-vite build; papercusp-desktop npm ci (STATUS_AFTER_INSTALL: only tauri.conf.json)",
+    "PAPERCUSP_TRANSFORMERS_MODEL_CACHE=~/r18/models papercusp-desktop/bin/build-linux-local.sh (log ~/r18/build9.log, BUILD_RC=0 2026-09-30T14:07:43Z)",
+    "PATH=~/.local/bin:$PATH (syft) python3 papercusp-desktop/bin/audit-release-bundle.py --scan-artifact --licenses <each of the 3 installers> > ~/r18/lic-audit9b.log"
   ],
   "exitCode": 0,
-  "startedAt": "2026-09-30T10:19:00Z",
-  "finishedAt": "2026-09-30T10:23:43Z",
-  "summary": "All three finished Linux installers from build8 pass the installer license leg with 0 UNREVIEWED and 0 denied. GUI deb (sha256 b3a92c1a…): 2,076 files, 4/4 payloads covered. Server deb (6001f44f…): 14,173 files, 648 Syft packages, 818 covered. AppImage (f32f6189…): 2,498 files, 338 payloads, 341 covered. The only non-permissive license outside the LGPL/MPL runtime is GNU readline linked into the bundled psql tools. It ships as a recorded aggregate component in scripts/installer-components.json (component, license PostgreSQL AND GPL-3.0-or-later, reason, obligations). GPL-only AppImage libraries are removed per D-013. The first AppImage scan reported 26 UNREVIEWED GTK/gdk-pixbuf plugin modules, so the check can fail. The cause was a path-layout mismatch (the component listed them only under usr/lib/x86_64-linux-gnu/). It was fixed with a regression test and a caught mutation probe (test_run 20228054), and the re-scan is clean. Stand-ins disclosed: the build ran b98518640b8d plus fixes from staging that the public cut does not yet carry (audit-release-bundle.py, identity-leak-patterns.mjs, build-*.sh pipefail fixes, transformers-models.sh, README, installer-components.json), the goal-packages copy, VM-installed kopia 0.22.3 and libasound2-dev, fetched embedding models, and a tester-generated updater pubkey. The next public re-sync carries these fixes.",
+  "startedAt": "2026-09-30T13:12:42Z",
+  "finishedAt": "2026-09-30T14:10:25Z",
+  "summary": "Built from the public repo head 3c1ed9a1d7dd with ZERO source patches (git status empty after reset and after npm ci; the only modified tracked file before the build is the disclosed updater pubkey stand-in in tauri.conf.json, which a third-party builder must supply and which does not change bundled content or licenses). All three finished Linux installers pass the installer license leg with 0 UNREVIEWED and 0 denied: GUI deb (sha256 88c6c36b…) 2,078 files, 4/4 payloads covered; Server deb (8427b0d0…) 14,198 files, 648 Syft packages, 818 covered; AppImage (5a6e7e19…) 2,500 files, 338 payloads, 341 covered. The only non-permissive license outside the LGPL/MPL runtime is GNU readline linked into the bundled psql tools, shipped as the recorded aggregate component in scripts/installer-components.json (PostgreSQL AND GPL-3.0-or-later, with the offer-source obligation). No GPL-only AppImage library remains (D-013). Build-machine prerequisites, not source changes: embedding models fetched via bin/lib/transformers-models.sh into ~/r18/models, and syft in ~/.local/bin. The in-build scan pass ran without syft on PATH and reported LICENSE_GATE_RESULT status=undetermined for all three (not pass); the evidence here is the re-scan of the SAME bytes (identical sha256) with syft present. The build also rewrote package-lock.json to mark ~20 workspace entries absent from the export as extraneous (filed WI-10004261); that affects lockfile hygiene, not installer content. Scope: this certifies installers built from the public source; the 0.0.25 AppImage currently on the download channel predates D-013 and is superseded by the next published release (0.0.26).",
   "assertions": [
+    {
+      "id": "public-head-zero-patches",
+      "passed": true,
+      "evidence": "build9.log: PUBLIC_HEAD=3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c; STATUS_BEFORE_STANDIN empty; STATUS_AFTER_INSTALL ' M papercusp-desktop/src-tauri/tauri.conf.json' only."
+    },
     {
       "id": "gui-deb-clean",
       "passed": true,
-      "evidence": "lic-audit8c: LICENSE_GATE ... Papercusp GUI_0.0.25_amd64.deb files=2076 payloads=4 covered=4 denied=0 unreviewed=0; LICENSE_GATE_RESULT status=pass; RC=0."
+      "evidence": "lic-audit9b: 88c6c36b… Papercusp GUI_0.0.25_amd64.deb files=2078 syftPackages=0 payloads=4 covered=4 denied=0 unreviewed=0; LICENSE_GATE_RESULT status=pass."
     },
     {
       "id": "server-deb-clean",
       "passed": true,
-      "evidence": "lic-audit8c: Papercusp Server_0.0.25_amd64.deb files=14173 syftPackages=648 payloads=172 covered=818 denied=0 unreviewed=0; status=pass; RC=0."
+      "evidence": "lic-audit9b: 8427b0d0… Papercusp Server_0.0.25_amd64.deb files=14198 syftPackages=648 payloads=172 covered=818 denied=0 unreviewed=0; LICENSE_GATE_RESULT status=pass."
     },
     {
       "id": "appimage-clean",
       "passed": true,
-      "evidence": "lic-audit8d: Papercusp_GUI_0.0.25_amd64.AppImage files=2498 syftPackages=3 payloads=338 covered=341 denied=0 unreviewed=0; status=pass; RC=0."
+      "evidence": "lic-audit9b: 5a6e7e19… Papercusp_GUI_0.0.25_amd64.AppImage files=2500 syftPackages=3 payloads=338 covered=341 denied=0 unreviewed=0; LICENSE_GATE_RESULT status=pass."
     },
     {
       "id": "disallowed-has-disposition",
       "passed": true,
-      "evidence": "Server deb 'component aggregate PostgreSQL client tools linked with GNU readline — PostgreSQL AND GPL-3.0-or-later (6 item(s))' with obligations (offer readline/psql source); matches an installer-components.json entry."
+      "evidence": "lic-audit9b Server deb: 'component aggregate PostgreSQL client tools linked with GNU readline — PostgreSQL AND GPL-3.0-or-later (6 item(s))' with the offer-source obligation; matches installer-components.json."
     },
     {
-      "id": "before-fix-control",
+      "id": "instrument-not-vacuous",
       "passed": true,
-      "evidence": "lic-audit8c AppImage: unreviewed=26, LICENSE_GATE_RESULT status=fail (GTK printbackends/immodules, gdk-pixbuf loaders). The instrument does report UNREVIEWED findings."
+      "evidence": "build9.log in-build pass (no syft): all three 'UNDETERMINED ... spawnSync syft ENOENT' -> LICENSE_GATE_RESULT status=undetermined, never pass; and build8 lic-audit8c AppImage reported unreviewed=26 status=fail before the installer-components fix. The gate does report non-pass results."
     },
     {
       "id": "identity-clean",
       "passed": true,
-      "evidence": "All three: '✓ CLEAN — no sensitive/build-box identity or credential in the assembled bundle'."
+      "evidence": "build9.log: all three finished artifacts '✓ CLEAN — no sensitive/build-box identity or credential in the assembled bundle'."
     }
   ],
   "evidencePlane": "live",
   "plan": "open-source-release-2026-09-29",
   "specId": "R-15",
-  "subjectCommit": "b98518640b8d026adfc59b7149ed6334dcdd0c2f",
+  "subjectCommit": "3c1ed9a1d7ddf2823f4892e94516c9f8b519d80c",
   "workItemId": "WI-10003960"
 }

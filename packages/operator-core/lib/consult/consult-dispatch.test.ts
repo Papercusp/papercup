@@ -18,7 +18,11 @@
  * "--fork carries --owner-id" and "a conversion carries --agent=<target>" claims
  * about the shipped launcher rather than about the fixture.
  */
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { __resetClaudeResumeTranscriptCacheForTests } from '../claude-resume-tool-references.mjs';
 import {
   DISPATCH_RECORD_TEXT_MAX,
   DISPATCH_VERIFY_TIMEOUT_MS,
@@ -430,6 +434,86 @@ describe('dispatchConsultResponder — the walk', () => {
     const r = await dispatchConsultResponder(OPTS, CTX, deps);
     expect(r.attempts[0]).toMatchObject({ rank: 1, operation: 'fork', reason: 'source-context-critical' });
     expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+  });
+
+  // WI-10004260: two acceptance-grading forks of sources whose transcripts
+  // already ended in a provider "Tool reference … not found" 400 each replayed
+  // the poison on their first turn and held the grading slot until expiry.
+  describe('a Claude source whose transcript ends in a missing-tool-reference 400', () => {
+    const userTurn = (text: string) => JSON.stringify({ type: 'user', message: { role: 'user', content: text } });
+    const assistantTurn = (text: string) =>
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+    // The real record shape of a provider rejection (see claude-resume-tool-references.test.ts).
+    const rejection = (tool: string) =>
+      JSON.stringify({
+        type: 'assistant',
+        error: 'unknown',
+        isApiErrorMessage: true,
+        apiErrorStatus: 400,
+        message: {
+          role: 'assistant',
+          model: '<synthetic>',
+          content: [{ type: 'text', text: `API Error: 400 Tool reference '${tool}' not found in available tools` }],
+        },
+      });
+
+    function withTranscript(lines: string[], run: (path: string) => Promise<void>) {
+      return async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'consult-poison-'));
+        const path = join(dir, 'sess-1.jsonl');
+        writeFileSync(path, `${lines.join('\n')}\n`);
+        __resetClaudeResumeTranscriptCacheForTests();
+        try {
+          await run(path);
+        } finally {
+          __resetClaudeResumeTranscriptCacheForTests();
+          rmSync(dir, { recursive: true, force: true });
+        }
+      };
+    }
+
+    it(
+      'skips the FORK ranks (real analyzer) and still reaches the expert by conversion',
+      withTranscript(
+        [userTurn('earlier work'), assistantTurn('done'), userTurn('wake'), rejection('WaitForMcpServers')],
+        async (path) => {
+          const { deps, calls } = makeFakes({
+            checkResumeTranscript: async () => ({ available: true, detail: 'fixture', transcriptPath: path }),
+          });
+          const r = await dispatchConsultResponder(OPTS, CTX, deps);
+          expect(r.attempts[0]).toMatchObject({ rank: 1, operation: 'fork', reason: 'source-transcript-poisoned' });
+          expect(r.attempts[0]!.detail).toContain("'WaitForMcpServers'");
+          // No fork was launched: the only spawn is the conversion.
+          expect(calls.spawn).toHaveLength(1);
+          expect(r).toMatchObject({ dispatched: true, operation: 'convert', agent: 'codex' });
+        },
+      ),
+    );
+
+    it(
+      'CONTROL: a source that recovered after the rejection is forked normally',
+      withTranscript(
+        [userTurn('wake'), rejection('WaitForMcpServers'), userTurn('wake again'), assistantTurn('recovered')],
+        async (path) => {
+          const { deps } = makeFakes({
+            checkResumeTranscript: async () => ({ available: true, detail: 'fixture', transcriptPath: path }),
+          });
+          const r = await dispatchConsultResponder(OPTS, CTX, deps);
+          expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+        },
+      ),
+    );
+
+    it('an unreadable transcript analysis does not block the fork (the kickoff proof still guards it)', async () => {
+      const { deps } = makeFakes({
+        checkResumeTranscript: async () => ({ available: true, detail: 'fixture', transcriptPath: '/nope.jsonl' }),
+        analyzeSourceTranscript: () => {
+          throw new Error('EACCES');
+        },
+      });
+      const r = await dispatchConsultResponder(OPTS, CTX, deps);
+      expect(r).toMatchObject({ dispatched: true, operation: 'fork', agent: 'claude' });
+    });
   });
 
   it('an exhausted allowlist is the terminal verdict, with every rank recorded as evidence', async () => {
