@@ -51,7 +51,7 @@ import { toolGuardText } from '../endpoint-route/routes/agent-mcp/identity-hook-
 import { getEventKey } from '../event-key-registry-store';
 import type { LatchedEventSubscriber } from '../events/await/store';
 import { planIdentityReactions } from '../events/identity-reaction';
-import { IDENTITY_RULE_SUBSCRIPTION_KIND } from '../agent-identities/identity-async-rules';
+import { checkAsyncRuleInstall, IDENTITY_RULE_SUBSCRIPTION_KIND } from '../agent-identities/identity-async-rules';
 import { IDENTITY_RULE_DELIVERY_MODE } from '../agent-identities/identity-rule-subscriptions';
 import { prepareBlueprintPublicRelease, readBlueprintLifecycle, resolveInstalledReleasePackage,
   rollbackBlueprintRelease, uninstallBlueprintRelease } from './blueprint-release';
@@ -181,7 +181,8 @@ async function authorPublisherRepo() {
     schemaVersion: 1, title: 'Review noted', description: 'An Acme reviewer noted a change.', version: '1.0.0',
     eventKey: EVENT_KEY, keyPattern: `${EVENT_KEY}:*`, tags: ['acme'],
   });
-  await writeJson(join(repo, 'packages', 'event', EVENT_REF, 'listing.json'), { kind: 'event', version: '1.0.0' });
+  await writeJson(join(repo, 'packages', 'event', EVENT_REF, 'listing.json'),
+    { kind: 'event', ref: EVENT_REF, version: '1.0.0', source: `https://github.com/${PUBLISHER}/${ID}` });
   await writeAsyncRule(EVENT_KEY);
   const pack = join(repo, 'packages', 'knowledge-pack', PACK);
   await fs.mkdir(join(pack, 'docs'), { recursive: true });
@@ -242,8 +243,17 @@ function destinationDeps(): InstallBlueprintCoreDeps {
         units: [], stillMissing: { tools: [], packs: [], plugins: [], events: [] }, advisory: [], rounds: 0,
       };
     },
-    blueprintInstallJournal: ({ blueprintId, bindings }) => blueprintInstallJournal(
-      { sql: db.adminSql, workspaceId: WS, blueprintId }, { operation: 'install', potSlug: POT, bindings }),
+    blueprintInstallJournal: ({ blueprintId, bindings, eventKeys }) => blueprintInstallJournal(
+      { sql: db.adminSql, workspaceId: WS, blueprintId }, { operation: 'install', potSlug: POT, bindings, eventKeys }),
+    // The destination's own D-027 §1 check, against its own (empty) registry and imported classes.
+    async checkAsyncRules({ rules, claimingKeys }) {
+      const refusals: Array<{ rule: string; error: string }> = [];
+      for (const rule of rules) {
+        const check = await checkAsyncRuleInstall(db.adminSql, WS, rule, { claimingKeys });
+        if (!check.ok) refusals.push({ rule: rule.id, error: check.error });
+      }
+      return refusals;
+    },
   };
 }
 
