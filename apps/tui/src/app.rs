@@ -4516,9 +4516,17 @@ impl App {
             return Action::Render;
         };
         self.su_command_counter = self.su_command_counter.saturating_add(1);
+        // WI-10004247: the counter restarts with every PUI process (a reopened
+        // PUI sent `pui-2-interrupt-1` again, measured). A host that outlives
+        // the process answers a repeated id with the same payload as a replay
+        // (SuSessionHost.dispatchCommand), so that control would stop nothing.
+        // The nonce makes each control its own.
         let command_id = format!(
-            "pui-{}-{}-{}",
-            identity.adv_session_id, command_type, self.su_command_counter
+            "pui-{}-{}-{}-{}",
+            identity.adv_session_id,
+            command_type,
+            crate::command_nonce(),
+            self.su_command_counter
         );
         let command = control.command_json(identity, &command_id, "pui");
         let Some(chat_id) = self.agent_chat_id.clone() else {
@@ -4708,6 +4716,16 @@ impl App {
         self.chat_draft.clear();
         self.chat_vertical_column = None;
         self.chat_slash_selected = 0;
+    }
+
+    /// The engine is restoring a saved conversation and no owner turn of this
+    /// PUI is in flight. `Resuming` locks input like a running turn, but there
+    /// is nothing for Esc to stop.
+    fn su_restoring_without_turn(&self) -> bool {
+        self.su_session.as_ref().is_some_and(|session| {
+            session.lifecycle == crate::su_session::SuSessionLifecycleState::Resuming
+        }) && self.su_pending_turn.is_none()
+            && self.su_active_command_id.is_none()
     }
 
     /// Stop the running turn (Esc in the composer, or Ctrl+X). Queued lines are
@@ -13351,8 +13369,13 @@ impl App {
             }
             return match code {
                 // Esc stops a running turn (Claude Code / Codex parity); with
-                // nothing running it leaves the message box as before.
-                KeyCode::Esc if self.chat_streaming => self.interrupt_chat_turn(),
+                // nothing running it leaves the message box as before. A saved
+                // conversation being restored is not a running turn
+                // (WI-10004247: Esc on a just-reopened chat sent an interrupt to
+                // the resuming engine and left the owner stuck in the box).
+                KeyCode::Esc if self.chat_streaming && !self.su_restoring_without_turn() => {
+                    self.interrupt_chat_turn()
+                }
                 KeyCode::Esc => {
                     self.chat_composing = false;
                     Action::Render
@@ -18505,6 +18528,25 @@ mod tests {
             Action::Render
         );
         assert!(a.session_note.as_deref().unwrap().contains("unsupported"));
+
+        // WI-10004247: a second PUI process starts its counter at 1 again. Its
+        // control ids must still differ, or a host that outlived the first
+        // process answers the repeat as a replay and stops nothing.
+        let mut reopened = App::new();
+        reopened.agent_chat_id = a.agent_chat_id.clone();
+        reopened.su_session = a.su_session.clone();
+        reopened.su_command_counter = 0;
+        a.su_command_counter = 0;
+        let id_of = |app: &mut App| match app.su_session_control(
+            crate::su_session::SuSessionControl::Interrupt { reason: None },
+        ) {
+            Action::SendSuSessionCommand { command, .. } => command["commandId"].as_str().unwrap().to_string(),
+            other => panic!("expected typed SU command, got {other:?}"),
+        };
+        let first = id_of(&mut a);
+        let repeat = id_of(&mut reopened);
+        assert!(first.starts_with("pui-7-interrupt-"), "{first}");
+        assert_ne!(first, repeat, "each process's controls are distinct");
     }
 
     /// A chat with a running SU engine bound, as P-009's quit paths see it.
@@ -18892,6 +18934,123 @@ mod tests {
             "each reply shows once, in conversation order"
         );
         assert!(app.su_replay_tail.is_empty());
+    }
+
+    /// WI-10004247 (measured on the installed PUI with real Claude, reopen of
+    /// the greeting journey): a replacement runtime re-reads the native
+    /// transcript and mints its own turn ids, which the saved record's
+    /// receipts never held. Claude's replay carries ONE id for the whole
+    /// history (the native file has no turn-end records); OMP mints one per
+    /// record. Both shapes must render each saved turn once, reply beneath.
+    #[test]
+    fn su_replay_with_native_turn_ids_anchors_at_the_saved_owner_turns() {
+        for per_turn_ids in [false, true] {
+            let mut app = App::new();
+            app.agent_chat_id = Some("chat-1".into());
+            app.chat_messages = vec![
+                ChatMessage::user("greeting"),
+                ChatMessage::user("file request"),
+                ChatMessage::user("follow-up"),
+            ];
+            app.su_rendered_owner_turns =
+                ["pui-turn-1", "pui-turn-2", "pui-turn-3"].map(String::from).into_iter().collect();
+            app.set_su_session_binding(su_binding());
+            app.apply_su_session_snapshot(su_archived_snapshot(1, 9, Some(su_rematerialize_verdict())));
+            let mut sequence = 0;
+            let mut send = |app: &mut App, phase: &str, turn: &str, role: &str, content: Option<&str>| {
+                sequence += 1;
+                let mut event = su_event_base("transcript", sequence);
+                event["phase"] = json!(phase);
+                event["turnId"] = json!(turn);
+                event["role"] = json!(role);
+                event["channel"] = json!(if role == "owner" { "primary" } else { "text" });
+                if let Some(content) = content {
+                    event["content"] = json!(content);
+                }
+                app.apply_su_session_event(su_event(event));
+            };
+            for (index, (question, reply)) in [
+                ("greeting", "hello back"),
+                ("file request", "file contents"),
+                ("follow-up", "continued"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let turn = if per_turn_ids {
+                    format!("omp:record-{index}:{}", index + 1)
+                } else {
+                    "claude:first-record:1".to_string()
+                };
+                send(&mut app, "completed", &turn, "owner", Some(question));
+                send(&mut app, "started", &turn, "assistant", None);
+                send(&mut app, "completed", &turn, "assistant", Some(reply));
+            }
+            let rendered: Vec<(&str, &str)> = app
+                .chat_messages
+                .iter()
+                .map(|m| (m.role.as_str(), m.content.as_str()))
+                .collect();
+            assert_eq!(
+                rendered,
+                vec![
+                    ("user", "greeting"),
+                    ("assistant", "hello back"),
+                    ("user", "file request"),
+                    ("assistant", "file contents"),
+                    ("user", "follow-up"),
+                    ("assistant", "continued"),
+                ],
+                "per_turn_ids={per_turn_ids}: each saved turn once, its reply beneath"
+            );
+            assert!(app.su_replay_tail.is_empty());
+        }
+    }
+
+    /// Calibration for the case above: a LIVE owner turn with an unknown id is
+    /// new conversation and is shown, even when its words repeat a saved turn.
+    #[test]
+    fn su_live_owner_turn_with_repeated_words_is_still_shown() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.chat_messages = vec![ChatMessage::user("continue")];
+        app.su_rendered_owner_turns = ["pui-turn-1"].map(String::from).into_iter().collect();
+        app.set_su_session_binding(su_binding());
+        let mut event = su_event_base("transcript", 1);
+        event["phase"] = json!("completed");
+        event["turnId"] = json!("pui-turn-2");
+        event["role"] = json!("owner");
+        event["channel"] = json!("primary");
+        event["content"] = json!("continue");
+        app.apply_su_session_event(su_event(event));
+        let users = app.chat_messages.iter().filter(|m| m.role == "user").count();
+        assert_eq!(users, 2, "a live repeat is a new turn");
+    }
+
+    /// WI-10004247: Esc on a just-reopened chat, while the engine restores
+    /// the saved conversation, leaves the message box. Nothing is running, so
+    /// no interrupt goes to the resuming engine.
+    #[test]
+    fn chat_first_esc_while_restoring_leaves_the_box_without_interrupting() {
+        let mut a = chat_first_app();
+        a.agent_chat_id = Some("chat-1".into());
+        a.set_su_session_binding(su_binding());
+        let mut resuming = su_event_base("lifecycle", 1);
+        resuming["previousState"] = json!("ready");
+        resuming["state"] = json!("resuming");
+        resuming["runtimeGeneration"] = json!(1);
+        a.apply_su_session_event(su_event(resuming));
+        assert!(a.chat_streaming, "restoring locks input");
+        a.chat_composing = true;
+        let action = a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(action, Action::Render, "no interrupt while restoring");
+        assert!(!a.chat_composing, "Esc leaves the message box");
+
+        // Calibration: once an owner turn is in flight, Esc stops it.
+        a.chat_composing = true;
+        a.su_active_command_id = Some("pui-1".into());
+        let action = a.on_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_ne!(action, Action::Render, "a running turn is interrupted, got {action:?}");
     }
 
     /// The progress surfaced while an archive is replayed must be a measured
