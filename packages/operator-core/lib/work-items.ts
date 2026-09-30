@@ -28,6 +28,7 @@
  * trigger (already wired) — so neither path needs an extra fan-out call here.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import type { GoalSqlTag } from '@papercusp/agent-mcp/goals';
 import { healOrphanedRemoteOriginIfAuthorEnded } from './work-items-orphan-author';
 import { selfHealTerminalOwnerOriginIfStranded } from './work-items-terminal-owner-origin-heal';
 import type { Fragment, TransactionSql } from 'postgres';
@@ -9781,23 +9782,102 @@ export interface UpdateWorkItemPatch {
   confirmShrink?: boolean;
 }
 
-/** Persist the shared goal attribution directly on the base table. The issue-family
- * compat view already exposes goal_id for reads, but its INSTEAD OF UPDATE trigger
- * intentionally preserves that column; writing through the view would therefore report
- * success while leaving the goal unchanged. This helper uses the row family's canonical
- * workspace and is deliberately limited to the one shared field. */
-async function updateWorkItemGoal(id: string, wi: WorkItem, goal: string | null): Promise<WorkItem | null> {
-  const { sql } = getOrgPg();
-  const workspace = wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId();
+type WorkItemGoalIdentity =
+  | { family: 'issue'; kind: IssueKind }
+  | { family: 'feature'; harness: string | null }
+  | { family: 'source'; harness: string };
+
+/** The one base-table writer for `work_items.goal_id`. Issue-family's compat view
+ * deliberately preserves this column on UPDATE, so every path uses this writer. */
+async function writeWorkItemGoalColumn(
+  sql: GoalSqlTag,
+  opts: {
+    id: string;
+    workspaceId: string | null;
+    goal: string | null;
+    identity: WorkItemGoalIdentity;
+    /** When supplied, compare-and-set this exact prior value (including null). */
+    expectedGoalId?: string | null;
+  },
+): Promise<boolean> {
+  const identityWhere = opts.identity.family === 'issue'
+    ? sql`item_kind = ${opts.identity.kind}`
+    : sql`harness_slug = ${opts.identity.harness}`;
+  const expectedWhere = opts.expectedGoalId !== undefined
+    ? sql`AND goal_id IS NOT DISTINCT FROM ${opts.expectedGoalId}`
+    : sql``;
   const rows = await sql<{ feature_id: string }[]>`
     UPDATE harness_shared.work_items
-       SET goal_id = ${goal}, updated_ts = ${Date.now()}
-     WHERE workspace_id = ${workspace}
-       AND feature_id = ${id}
-       AND ${wi.family === 'issue' ? sql`item_kind = ${wi.kind}` : sql`harness_slug = ${wi.harness}`}
+       SET goal_id = ${opts.goal}, updated_ts = ${Date.now()}
+     WHERE workspace_id = ${opts.workspaceId}
+       AND feature_id = ${opts.id}
+       AND ${identityWhere}
+       ${expectedWhere}
      RETURNING feature_id`;
-  if (!rows[0]) return null;
+  return rows.length > 0;
+}
+
+/** Persist goal attribution through the canonical base-table writer. */
+async function updateWorkItemGoal(id: string, wi: WorkItem, goal: string | null): Promise<WorkItem | null> {
+  const sql = getOrgPg().sql as unknown as GoalSqlTag;
+  const workspaceId = wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId();
+  const written = await writeWorkItemGoalColumn(sql, {
+    id,
+    workspaceId,
+    goal,
+    identity: wi.family === 'issue'
+      ? { family: 'issue', kind: wi.kind as IssueKind }
+      : { family: 'feature', harness: wi.harness },
+  });
+  if (!written) return null;
   return getWorkItem(id, wi.family === 'feature' ? (wi.harness ?? undefined) : undefined);
+}
+
+export type GoalStartWorkItemStampResult =
+  | { ok: true; changed: boolean }
+  | { ok: false; reason: 'not_found' | 'wrong_harness' | 'already_attributed' | 'changed' };
+
+/** Attribute a goal's explicit source item before its goal-drain fleet is minted.
+ * The caller supplies the same transaction used to insert the goal. This deliberately
+ * refuses cross-harness links and never reparents an item already owned by another goal. */
+export async function stampWorkItemGoalAtStart(
+  tx: GoalSqlTag,
+  opts: { id: string; workspaceId: string; harness: string; goalId: string },
+): Promise<GoalStartWorkItemStampResult> {
+  const rows = await tx<{ goal_id: string | null; harness_slug: string | null }[]>`
+    SELECT goal_id, harness_slug
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${opts.workspaceId} AND feature_id = ${opts.id}
+     FOR UPDATE`;
+  const existing = rows[0];
+  if (!existing) return { ok: false, reason: 'not_found' };
+  if (existing.harness_slug !== opts.harness) return { ok: false, reason: 'wrong_harness' };
+  if (existing.goal_id === opts.goalId) return { ok: true, changed: false };
+  if (existing.goal_id !== null) return { ok: false, reason: 'already_attributed' };
+
+  const changed = await writeWorkItemGoalColumn(tx, {
+    id: opts.id,
+    workspaceId: opts.workspaceId,
+    goal: opts.goalId,
+    identity: { family: 'source', harness: opts.harness },
+    expectedGoalId: null,
+  });
+  return changed ? { ok: true, changed: true } : { ok: false, reason: 'changed' };
+}
+
+/** Compensate a source-item stamp if goals:start later has to roll the goal back.
+ * The compare-and-set ensures the rollback never clears a newer/different attribution. */
+export async function clearWorkItemGoalAtStart(
+  tx: GoalSqlTag,
+  opts: { id: string; workspaceId: string; harness: string; goalId: string },
+): Promise<boolean> {
+  return writeWorkItemGoalColumn(tx, {
+    id: opts.id,
+    workspaceId: opts.workspaceId,
+    goal: null,
+    identity: { family: 'source', harness: opts.harness },
+    expectedGoalId: opts.goalId,
+  });
 }
 
 function hasIssueFieldPatch(patch: UpdateWorkItemPatch): boolean {
