@@ -536,6 +536,27 @@ describe('goal spend rollup (P-005 / D-003 / D-011) — real PG', () => {
     expect(String(after[0].updated_at)).toBe(String(before[0].updated_at));
   });
 
+  it('WI-10004419: spend_usd_7d advances only when the goal budget window IS 7d', async () => {
+    const WEEKLY = { metric: 'spend_usd_7d', label: 'Trailing-7d spend', threshold: 500, unit: 'usd', current: 34.91 };
+    // Goal A: a 7d budget window — the rollup window matches the suffix.
+    await seedGoal({ budgetWindowSec: 604_800 });
+    // Goal B: a 24h budget window — a 7d metric must NOT be fed the 24h figure.
+    await seedGoal({ id: 'goal-daily', budgetWindowSec: 86_400 });
+    await sample({ goalId: GOAL, usd: 1.25 });
+    await sample({ goalId: 'goal-daily', usd: 2.5 });
+    await setTripwires([WEEKLY]);
+    await setTripwires([WEEKLY], 'goal-daily');
+
+    const res = await runGoalSpendRollupOnce(rootSql, { nowMs: GOAL_MS + 3_600_000 });
+    expect(res).toMatchObject({ ok: true, errors: [] });
+
+    const weekly = (await goalTripwires())?.[0];
+    expect(weekly?.current).toBe(1.25);
+    expect(weekly?.measuredBy).toMatchObject({ source: 'resolver:spend_usd_7d', value: 1.25 });
+    // Window mismatch ⇒ unmeasured: the authored value is left exactly as it was.
+    expect((await goalTripwires('goal-daily'))?.[0]).toEqual(WEEKLY);
+  });
+
   it('P-004: an UNMEASURED (floor) rollup advances no spend tripwire and snapshots null', async () => {
     await seedGoal();
     await sample({ goalId: GOAL, usd: 1.0 });

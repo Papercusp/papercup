@@ -53,6 +53,73 @@ describe('refreshTripwireCurrents', () => {
     ]);
   });
 
+  describe('window-suffixed spend metrics (WI-10004419)', () => {
+    /** work-on-everything-fresh-grading-and-improvement-60d3a8, verbatim as measured 2026-09-30. */
+    const WEEKLY_CEILING: GoalTripwireLike[] = [
+      {
+        metric: 'spend_usd_7d',
+        label: 'Trailing-7d measured spend vs $500/wk ceiling',
+        threshold: 500,
+        unit: 'usd',
+        current: 34.91,
+      },
+    ];
+    const WEEK_SEC = 604_800;
+
+    it('advances spend_usd_7d from a 7d rollup — the live defect (frozen at 34.91 vs 102.78 measured)', () => {
+      const res = refreshTripwireCurrents(WEEKLY_CEILING, {
+        measuredSpentCents: 10278,
+        measuredWindowSec: WEEK_SEC,
+        goalAgeMs: 30 * 86_400_000,
+      });
+      expect(res.outcomes[0]).toMatchObject({ metric: 'spend_usd_7d', before: 34.91, after: 102.78, reason: 'advanced' });
+      expect(res.next[0]?.current).toBe(102.78);
+      expect(isDerived(res.next[0] as GoalTripwireLike)).toBe(true);
+    });
+
+    it('resolves spend_cents_7d in cents over the same window', () => {
+      const res = refreshTripwireCurrents([{ metric: 'spend_cents_7d', label: 'c', threshold: 50_000 }], {
+        measuredSpentCents: 10278.4,
+        measuredWindowSec: WEEK_SEC,
+        goalAgeMs: 0,
+      });
+      expect(res.next[0]?.current).toBe(10278);
+    });
+
+    it('stays UNMEASURED when the rollup window differs from the suffix — never relabels a population', () => {
+      for (const measuredWindowSec of [86_400, 2_592_000, null, undefined]) {
+        const res = refreshTripwireCurrents(WEEKLY_CEILING, {
+          measuredSpentCents: 10278,
+          measuredWindowSec,
+          goalAgeMs: 0,
+        });
+        expect(res.outcomes[0]?.reason).toBe('unmeasured');
+        expect(res.next[0]).toBe(WEEKLY_CEILING[0]);
+      }
+    });
+
+    it('stays unmeasured on a floor rollup even with the right window (rule 2)', () => {
+      const res = refreshTripwireCurrents(WEEKLY_CEILING, {
+        measuredSpentCents: null,
+        measuredWindowSec: WEEK_SEC,
+        goalAgeMs: 0,
+      });
+      expect(res.outcomes[0]?.reason).toBe('unmeasured');
+      expect(res.next[0]?.current).toBe(34.91);
+    });
+
+    it('makes a measured weekly breach breach-eligible', () => {
+      const res = refreshTripwireCurrents(WEEKLY_CEILING, {
+        measuredSpentCents: 61_000,
+        measuredWindowSec: WEEK_SEC,
+        goalAgeMs: 0,
+      });
+      expect(breachedTripwires(res.next)).toEqual([
+        { metric: 'spend_usd_7d', current: 610, threshold: 500, unit: 'usd' },
+      ]);
+    });
+  });
+
   it('RULE 1: leaves a metric with no generic resolver byte-identical', () => {
     const res = refreshTripwireCurrents(DESKTOP_GOAL_TRIPWIRES, {
       measuredSpentCents: 34618,
@@ -209,7 +276,13 @@ describe('refreshTripwireCurrents', () => {
       'days_elapsed',
       'hours_elapsed',
       'spend_cents',
+      'spend_cents_24h',
+      'spend_cents_30d',
+      'spend_cents_7d',
       'spend_usd',
+      'spend_usd_24h',
+      'spend_usd_30d',
+      'spend_usd_7d',
     ]);
     // The domain metrics measured live are deliberately NOT in the set.
     for (const domain of [
