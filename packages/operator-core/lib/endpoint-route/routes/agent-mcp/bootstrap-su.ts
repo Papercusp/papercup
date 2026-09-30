@@ -691,7 +691,8 @@ export async function resolveAccountChoices(
  *
  * A boot arg is not evidence about who leads a fleet, and on every re-entry into a
  * launch it is actively WRONG: `--fleet=<slug>` hard-sets the role to `member`
- * unconditionally (psu-launcher.mjs:416 and :578 — there is no `--fleet-role=` flag),
+ * unless `--fleet-role=leader` is passed (WI-10004449 added that flag for the spawned
+ * leader of fleet:launch-on-plan; it is never re-emitted into launch_argv),
  * and `psuLaunchArgvRecord` re-emits only `--fleet=<slug>`, so the role is not carried
  * on `adv_sessions.launch_argv` at all. Any launch rebuilt that way for an agent that
  * DURABLY leads the fleet silently demotes it, and the demotion is what composes a
@@ -1099,6 +1100,37 @@ export const AUTO_MODE_DIRECTIVE_LOOP_ARMED =
   "(The persona's AUTO-mode section governs; the narrow irreversible-high-stakes brakes " +
   'still apply.)';
 
+/**
+ * WI-10004449: the AUTO activation for a fleet LEADER. The member directive above
+ * ("You are a fleet member… self-assign + advance a work_item every wake") was also
+ * handed to leaders, including the leader `fleet:launch-on-plan { leader:'spawn' }`
+ * launches, and it contradicted the leader brief each one carries. A leader
+ * supervises the fleet and never takes plan items itself.
+ */
+export const LEADER_AUTO_MODE_KICKOFF_DIRECTIVE =
+  'AUTO mode is ON for this session — act on your judgment, do not stop to ask. You are this ' +
+  "fleet's LEADER, not a member: you do NOT claim or implement plan items yourself — your " +
+  'members do. Your job is the standing leader job in your launch brief: keep the fleet claim ' +
+  'spec scoped to the plan, verify members actually claim its items, answer member messages, ' +
+  'reclaim stalled claims, audit completions, and keep a monitor loop armed (loop:status; ' +
+  'loop:arm if none) so your leadership persists. If the fleet is short of hands, relaunch ' +
+  "members; never fall back to doing the work solo. (The persona's AUTO-mode section governs; " +
+  'the narrow irreversible-high-stakes brakes still apply.)';
+
+/** WI-10004449: the plan kickoff for a LEADER — orient on the plan and the fleet,
+ *  then lead. Replaces the member plan kickoff's "claim your lane and work that item". */
+export function leaderPlanKickoff(planSlug: string, harnessSlug?: string | null, fleetSlug?: string | null): string {
+  const harness = harnessSlug ? `, harness: "${harnessSlug}"` : '';
+  const fleet = fleetSlug ? `fleet \`${fleetSlug}\` on ` : 'your fleet on ';
+  return (
+    `Begin: lead ${fleet}plan \`${planSlug}\`. Orient FIRST: call \`coord:orient\` with ` +
+    `{ intent: "Lead fleet on ${planSlug}", planSlug: "${planSlug}"${harness} }, then ` +
+    '`fleet:leader-brief` for your fleet. Check that the fleet claim spec selects this plan\'s ' +
+    "items and that members are claiming them; fix the spec if they are not. Do not claim the " +
+    "plan's items yourself."
+  );
+}
+
 /** The AUTO activation a launch bakes/prepends, picked by whether P-001's
  *  server-side auto-arm actually took (never assume — a leader, an unplanned
  *  member, a disabled flag, or an arm error all fall back to the full
@@ -1179,8 +1211,16 @@ export function deriveKickoffPrompt(opts: {
    *  fn stays synchronous/pure). Only affects the AUTO-OFF routing-gate text;
    *  omitted ⇒ today's static option (C) (no behavior change). */
   remoteSeats?: RemoteSeatSummary | null;
+  /** WI-10004449: the resolved fleet role. An AUTO `leader` launch gets the leader
+   *  activation + leader plan kickoff instead of the member ones. Omitted/member ⇒
+   *  unchanged. A DRAIN launch keeps the DRAIN directive (it already leads). */
+  fleetRole?: string | null;
+  fleetSlug?: string | null;
 }): string | null {
-  const base = opts.planSlug
+  const autoLeader = opts.autoMode && !opts.drainMode && opts.fleetRole === 'leader';
+  const base = opts.planSlug && autoLeader
+    ? leaderPlanKickoff(opts.planSlug, opts.harnessSlug, opts.fleetSlug)
+    : opts.planSlug
     ? deriveLaunchPromptText(
         null,
         opts.autoMode,
@@ -1196,7 +1236,9 @@ export function deriveKickoffPrompt(opts: {
       : null;
   const activation = opts.drainMode
     ? [DRAIN_MODE_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE]
-    : opts.autoMode
+    : autoLeader
+      ? [LEADER_AUTO_MODE_KICKOFF_DIRECTIVE, CONTEXT_DISCIPLINE_DIRECTIVE]
+      : opts.autoMode
       ? [autoModeDirective(opts.loopAutoArmed === true), CONTEXT_DISCIPLINE_DIRECTIVE]
       : [];
   return activation.length ? [...activation, base].filter(Boolean).join('\n\n') : base;
@@ -3288,6 +3330,8 @@ export const bootstrapSu = defineTool({
           agent,
           loopAutoArmed: loopAutoArm?.armed === true,
           remoteSeats,
+          fleetRole: fleetPin.fleetRole,
+          fleetSlug: fleetPin.fleetSlug,
         });
 
     const result: BootstrapSuResult = {

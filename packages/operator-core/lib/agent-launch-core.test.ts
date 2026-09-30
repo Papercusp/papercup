@@ -632,6 +632,14 @@ describe('memberLaunchCommand', () => {
     );
   });
 
+  it('WI-10004449: a spawned leader declares --fleet-role=leader; a member argv is unchanged', () => {
+    const base = { fleetSlug: 'ops', agent: 'claude', harness: 'papercusp', plan: 'my-plan' };
+    expect(memberLaunchCommand({ ...base, fleetRole: 'leader' })).toBe(
+      'psu --no-picker --fleet=ops --fleet-role=leader --agent=claude --harness=papercusp --plan=my-plan',
+    );
+    expect(memberLaunchCommand(base)).not.toContain('--fleet-role');
+  });
+
   it('rejects shell metacharacters in fleet identity values', () => {
     expect(() =>
       memberLaunchCommand({ fleetSlug: 'ops; touch /tmp/pwned', agent: 'claude', harness: 'h', plan: 'p' }),
@@ -869,6 +877,7 @@ describe('resolveResumeTarget', () => {
       advSessionId: 22661,
       model: null,
       modelSource: null,
+      account: null,
     });
   });
 
@@ -883,6 +892,7 @@ describe('resolveResumeTarget', () => {
       launch_argv: [
         'psu',
         '--agent=codex',
+        '--account=auto',
         '--model=gpt-5.6-sol:xhigh',
         '--model-source=inherited',
       ],
@@ -897,6 +907,7 @@ describe('resolveResumeTarget', () => {
       ok: true,
       model: 'gpt-5.6-sol:xhigh',
       modelSource: 'inherited',
+      account: 'auto',
     });
 
     const queries = launchCoreSql.mock.calls.map((call) => String(call[0]?.join(' ')));
@@ -910,9 +921,10 @@ describe('resolveResumeTarget', () => {
       agent: 'codex',
       model: 'gpt-5.6-sol:xhigh',
       modelSource: 'inherited',
+      account: 'auto',
       headless: true,
     })).toBe(
-      'psu --no-picker --account=default --resume=22662 --headless --model=gpt-5.6-sol:xhigh --model-source=inherited',
+      'psu --no-picker --account=auto --resume=22662 --headless --model=gpt-5.6-sol:xhigh --model-source=inherited',
     );
   });
 
