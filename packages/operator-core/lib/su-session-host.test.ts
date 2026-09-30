@@ -17,8 +17,20 @@ import {
   type SuSessionCommandExecutor,
 } from './su-session-host';
 import type { SuSessionCommandStore } from './su-session-commands';
+import { _resetSuClientLeaseForTest, type SuClientLeaseStore } from './su-session-client-lease';
 
 vi.mock('./endpoint-route/telemetry', () => ({ recordRouteInvocation: vi.fn() }));
+
+// P-009: every event stream renews the session's durable client lease. Unit
+// tests record those grants instead of writing adv_sessions rows.
+const leaseGrants: number[] = [];
+const leaseStore: SuClientLeaseStore = {
+  grant: async (advSessionId) => { leaseGrants.push(advSessionId); },
+  renew: async () => undefined,
+  detach: async () => true,
+  expired: async () => [],
+};
+_resetSuClientLeaseForTest(leaseStore);
 
 const supported = { state: 'supported', implementation: 'native' } as const;
 const hostSupported = { state: 'supported', implementation: 'host' } as const;
@@ -527,6 +539,20 @@ describe('SuSessionHost', () => {
     expect(host.descriptor()).toMatchObject({ lifecycle: 'starting', runtimeGeneration: replacement.runtimeGeneration });
   });
 
+  it('an open event stream grants the client lease and a terminal session grants none (P-009)', async () => {
+    leaseGrants.length = 0;
+    const host = new SuSessionHost({ descriptor: descriptor() });
+    registerSuSessionHost(host);
+    const response = createSuSessionEventResponse(
+      new Request('http://localhost/su-session/events'), host as SuSessionHost, { heartbeatMs: 0 });
+    expect(leaseGrants).toEqual([host.descriptor().identity.advSessionId]);
+    await response.body!.getReader().cancel();
+
+    host.transition('ended', 'test');
+    createSuSessionEventResponse(new Request('http://localhost/su-session/events'), host as SuSessionHost, { heartbeatMs: 0 });
+    expect(leaseGrants).toHaveLength(1);
+  });
+
   it('reconnects with Last-Event-ID without duplication after a consumer drops', async () => {
     const host = new SuSessionHost({ descriptor: descriptor() });
     registerSuSessionHost(host);
@@ -746,12 +772,14 @@ describe('agent-chat SU-session route registration', () => {
     }
   });
 
-  it('mounts snapshot, resumable event, and command endpoints on agent-chats', async () => {
+  it('mounts snapshot, resumable event, command and detach endpoints on agent-chats', async () => {
     const routes = (await import('./endpoint-route/routes/agent-chats/su-session')).default;
     expect(routes.map((route) => [route.method, route.path])).toEqual([
       ['GET', '/harness/:slug/agent-chats/:chatId/su-session'],
       ['GET', '/harness/:slug/agent-chats/:chatId/su-session/events'],
       ['POST', '/harness/:slug/agent-chats/:chatId/su-session/commands'],
+      // P-009: keep an engine running after its client leaves.
+      ['POST', '/harness/:slug/agent-chats/:chatId/su-session/detach'],
     ]);
   });
 });
