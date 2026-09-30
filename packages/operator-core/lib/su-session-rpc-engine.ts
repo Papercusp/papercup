@@ -383,6 +383,16 @@ export function startSuRpcEngine(
     return closing;
   }
   starting = (async () => {
+    if (options.nativeSession) {
+      // WI-10004162: show the saved conversation before the native peer starts
+      // (seconds, or never when startup fails). Best-effort: the replay once the
+      // peer is up stays authoritative and adds only what it wrote since.
+      await (backend === 'codex'
+        ? (adapter as CodexSuSessionAdapter).consumeRolloutSnapshot({ preserveLifecycle: true })
+        : (adapter as OmpSuSessionAdapter).consumeTranscriptSnapshot({ preserveLifecycle: true })
+      ).catch(() => undefined);
+      if (closed) throw new Error('Structured connection closed during startup');
+    }
     peer = await (options.peerFactory ?? startSuStdioPeer)({
       binary: backend, args, cwd: boot.cwd, env, ownerId: binding.ownerId!, workspaceId: boot.workspaceId, onMessage,
       spec: { class: 'agent-session', title: `PUI ${backend} structured engine`, launchedBy: 'pui-su-session',
