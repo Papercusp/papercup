@@ -66,10 +66,10 @@ vi.mock('./get-activation-readiness', () => ({
   previewPlanStartConsult: vi.fn(),
 }));
 
-import { getLatestActivationAudit, recordCurrentActivationAudit, type ActivationAuditPayload } from '../../plan-audits';
-import { mockImplementationTyped } from '../../testing/typed-mock';
+import { getLatestActivationAudit, recordCurrentActivationAudit, type ActivationAuditPayload, type PlanAudit } from '../../plan-audits';
+import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
-import { getPlanRow } from './source';
+import { getPlanRow, type PlanRow } from './source';
 import { setSpecClause } from './spec-clauses-store';
 import { previewPlanStartConsult } from './get-activation-readiness';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
@@ -133,15 +133,35 @@ const activationArgs = (over: Record<string, unknown> = {}) => ({
 });
 
 /**
- * Single seams for the two partial row fixtures. PlanRow and PlanAudit are wide while
- * these tests read only `content` / `auditSeq` + `activation`, so each needs one cast —
- * kept here, in one place, rather than at every call site (lint:mock-cast-escape).
+ * Fully typed row fixtures for the two seams. audit.ts reads only `content` from the
+ * PlanRow and `auditSeq` + `activation` from the previous PlanAudit, but each fixture
+ * is a complete row so a new required field fails HERE at compile time rather than as
+ * a runtime surprise (lint:mock-cast-escape; typed-mock.ts).
  */
+const planRowFixture = (content: string): PlanRow => ({
+  workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: 'plan-a', content,
+  contentHash: 'content-hash', version: 1, title: null, status: null, created: null,
+  updated: null, owner: null, initiative: null, template: null, templateData: null,
+  inputSchema: null, outputSchema: null, supersedes: [], supersededBy: null,
+  opStatus: null, opStartedAt: null, opUpdatedAt: null, currentWave: null, opPriority: null,
+  archived: false, isLegacy: false, updatedAt: '2026-09-30T00:00:00.000Z', items: [],
+  decisions: [], nowState: null, nowNext: null, promotePolicy: null, forcedPast: null,
+  schedule: null, scheduleActive: false, scheduledAt: null, expiresAt: null, tzid: null,
+  templateSlug: null, runSeq: null,
+});
+const previousAuditFixture = (
+  previous: { auditSeq: number; activation: ActivationAuditPayload },
+): PlanAudit => ({
+  planSlug: 'plan-a', harnessSlug: 'papercusp', auditSeq: previous.auditSeq,
+  createdBy: 'test-author', createdAt: '2026-09-30T00:00:00.000Z', auditKind: 'activation',
+  auditedSha: null, activation: previous.activation, auditedPlanRevision: null,
+  items: [], findings: [], summary: null,
+});
 const resolvePlanContent = (content: string): void => {
-  mockGetPlanRow.mockResolvedValue({ content } as never);
+  mockResolvedTyped(mockGetPlanRow, planRowFixture(content));
 };
 const resolvePreviousActivation = (previousAudit: { auditSeq: number; activation: ActivationAuditPayload }): void => {
-  mockPreviousActivation.mockResolvedValue(previousAudit as never);
+  mockResolvedTyped(mockPreviousActivation, previousAuditFixture(previousAudit));
 };
 
 const run = async (args: Record<string, unknown>) =>
