@@ -20,9 +20,76 @@
 //!   - `/card-response` body — `{ correlationId, workspaceId, action, payload? }`
 //!     (`packages/operator-core/lib/post-card-response.ts`)
 
+use std::time::{Duration, Instant};
+
+use crossterm::event::KeyCode;
 use serde::Deserialize;
 
 use crate::chat_tags::Report;
+
+/// How long after an answered card leaves the screen a repeat of the key that
+/// answered it is still treated as that same press (P-015). Double taps, key
+/// bounce and autorepeat all land well inside it; each swallowed repeat extends
+/// it, so a held key stays swallowed for as long as it is held.
+pub const CARD_REPEAT_WINDOW: Duration = Duration::from_millis(400);
+
+/// The card this client just answered (P-015). It stays in the queue until the
+/// server's close event, but renders as one summary line and takes no input,
+/// so it cannot be answered twice and the next card is not focused under it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AnsweredCard {
+    pub correlation_id: String,
+    /// What the row says the answer was: "Approved", "Declined", "Skipped", or
+    /// "Answered: <choice>".
+    pub summary: String,
+}
+
+/// The one-line summary an answered card collapses to (P-015): what the user
+/// chose, in words, from the `/card-response` action and payload about to be
+/// sent. Approval cards read "Approved" / "Declined"; other choices name the
+/// picked option labels; Esc reads "Skipped" (P-014: a skip is not a failure).
+pub fn answer_summary(card: &OpenCard, action: &str, payload: Option<&serde_json::Value>) -> String {
+    match action {
+        "decline" => return "Skipped".to_string(),
+        "cancel" => return "Cancelled".to_string(),
+        _ => {}
+    }
+    let Some(payload) = payload else {
+        return "Answered".to_string();
+    };
+    if let Some(picks) = payload.get("picks").and_then(|p| p.as_array()) {
+        let labels: Vec<String> = picks
+            .iter()
+            .filter_map(|id| id.as_str())
+            .map(|id| {
+                card.presentation
+                    .options()
+                    .iter()
+                    .find(|o| o.id == id)
+                    .map(|o| o.label.clone())
+                    .unwrap_or_else(|| id.to_string())
+            })
+            .collect();
+        return match labels.as_slice() {
+            [one] if one == "Approve" => "Approved".to_string(),
+            [one] if one == "Decline" => "Declined".to_string(),
+            _ => format!("Answered: {}", labels.join(", ")),
+        };
+    }
+    match payload.get("value") {
+        Some(serde_json::Value::String(s)) => format!("Answered: {s}"),
+        Some(v) => format!("Answered: {v}"),
+        None => "Answered".to_string(),
+    }
+}
+
+/// The key that answered the last card, and until when a repeat of it is
+/// swallowed rather than delivered to the next card.
+#[derive(Debug, Clone)]
+struct RepeatGuard {
+    key: KeyCode,
+    until: Instant,
+}
 
 /// One clickable option of a radio / checkbox card. Mirrors `CardOption`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -265,6 +332,10 @@ pub struct CardState {
     /// the next snapshot drops them (the SSE-disconnected bridge, matching the
     /// browser's `dismissed` set).
     dismissed: std::collections::HashSet<String>,
+    /// The card answered on this client and awaiting the server's close (P-015).
+    answered: Option<AnsweredCard>,
+    /// Swallows a repeat of the answering key (P-015).
+    repeat_guard: Option<RepeatGuard>,
     /// Highlighted option index (radio/checkbox) for the focused card.
     pub sel: usize,
     /// Checkbox toggles (option index → checked) for the focused card.
@@ -356,8 +427,91 @@ impl CardState {
             .map(|c| c.correlation_id.as_str())
             .collect();
         self.dismissed.retain(|d| live.contains(d.as_str()));
+        // The server closed the card this client answered: the next card can be
+        // focused now, but a repeat of the answering key still belongs to the
+        // closed card, so the window restarts from the moment it disappears.
+        if self
+            .answered
+            .as_ref()
+            .is_some_and(|a| !live.contains(a.correlation_id.as_str()))
+        {
+            self.answered = None;
+            if let Some(guard) = self.repeat_guard.as_mut() {
+                guard.until = guard.until.max(Instant::now() + CARD_REPEAT_WINDOW);
+            }
+        }
         self.cards = out;
         self.rebind();
+    }
+
+    /// Record that the focused card was just answered with `key` (P-015). It
+    /// collapses to one summary line at once and takes no further input until
+    /// the server closes it or the answer fails to send.
+    pub fn mark_answered(&mut self, correlation_id: &str, summary: String, key: KeyCode) {
+        self.answered = Some(AnsweredCard {
+            correlation_id: correlation_id.to_string(),
+            summary,
+        });
+        self.repeat_guard = Some(RepeatGuard {
+            key,
+            until: Instant::now() + CARD_REPEAT_WINDOW,
+        });
+    }
+
+    /// The focused card's answered state, when the focused card is the one this
+    /// client answered and the server has not closed it yet.
+    pub fn focused_answered(&self) -> Option<&AnsweredCard> {
+        let head = self.cards.first()?;
+        self.answered
+            .as_ref()
+            .filter(|a| a.correlation_id == head.correlation_id)
+    }
+
+    /// The answer to `correlation_id` did not reach the server: the card is
+    /// answerable again, and nothing about it is treated as a repeat.
+    pub fn restore_answer(&mut self, correlation_id: &str) {
+        if self
+            .answered
+            .as_ref()
+            .is_some_and(|a| a.correlation_id == correlation_id)
+        {
+            self.answered = None;
+            self.repeat_guard = None;
+        }
+    }
+
+    /// Whether `key` must be swallowed instead of acting on the focused card
+    /// (P-015). True for every key while the focused card is already answered,
+    /// and for a repeat of the answering key inside the repeat window (which
+    /// the repeat extends). Any other key ends the guard: the user has moved on.
+    pub fn swallow_key(&mut self, key: KeyCode, now: Instant) -> bool {
+        if self.focused_answered().is_some() {
+            if let Some(guard) = self.repeat_guard.as_mut() {
+                if guard.key == key {
+                    guard.until = guard.until.max(now + CARD_REPEAT_WINDOW);
+                }
+            }
+            return true;
+        }
+        match self.repeat_guard.as_mut() {
+            Some(guard) if guard.key == key && now < guard.until => {
+                guard.until = now + CARD_REPEAT_WINDOW;
+                true
+            }
+            Some(_) => {
+                self.repeat_guard = None;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Let the repeat window lapse (tests stand in for the wall clock).
+    #[cfg(test)]
+    pub fn expire_repeat_guard(&mut self) {
+        if let Some(guard) = self.repeat_guard.as_mut() {
+            guard.until = Instant::now() - Duration::from_millis(1);
+        }
     }
 
     /// Re-initialize selection / input when the focused card changes.
