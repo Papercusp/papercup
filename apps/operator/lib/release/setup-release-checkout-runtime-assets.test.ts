@@ -53,6 +53,9 @@ import {
   writeFileSync,
   readFileSync,
   existsSync,
+  linkSync,
+  statSync,
+  chmodSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -202,7 +205,11 @@ describe('setup-release-checkout.sh 3b — gitignored runtime asset provisioning
     git(integration, 'init', '-q');
     writeFileSync(
       join(integration, '.gitignore'),
-      ['apps/operator/public/vditor/', 'apps/operator/public/ort-wasm-*'].join('\n'),
+      [
+        'apps/operator/public/vditor/',
+        'apps/operator/public/ort-wasm-*',
+        'apps/operator/public/internal/docs.old.*/',
+      ].join('\n'),
     );
     for (const rel of [VDITOR_REL, WASM_REL]) {
       const abs = join(integration, rel);
@@ -280,6 +287,76 @@ describe('setup-release-checkout.sh 3b — gitignored runtime asset provisioning
     git(bare, 'init', '-q');
     const r = runBlock({ integrationRoot: bare });
     expect(r.status, r.stderr).toBe(0);
+  });
+
+  // WI-10004321: a hard link shares ONE inode between the integration tree and the
+  // release tree, so any in-place rewrite in either tree (the setup-*-runtime.sh
+  // postinstall scripts used plain cp) silently changed the other. Measured
+  // 2026-09-30: one asset inode had 11 links across canonical and three cut trees.
+  it('provisions a real copy, so an in-place rewrite of the integration file cannot reach the release tree', () => {
+    const r = runBlock();
+    expect(r.status, r.stderr).toBe(0);
+    const src = join(integration, WASM_REL);
+    const dst = join(release, WASM_REL);
+    expect(statSync(dst).nlink).toBe(1);
+    expect(statSync(dst).ino).not.toBe(statSync(src).ino);
+    writeFileSync(src, 'rewritten in place by a later canonical install');
+    expect(readFileSync(dst, 'utf8')).toBe(`payload:${WASM_REL}`);
+  });
+
+  it('unshares an entry a pre-fix run hard-linked, without writing through the shared inode', () => {
+    // 3b skips entries that already exist, so a tree provisioned by the old
+    // `cp -al` keeps its links unless something breaks them.
+    const src = join(integration, WASM_REL);
+    const dst = join(release, WASM_REL);
+    mkdirSync(dirname(dst), { recursive: true });
+    linkSync(src, dst);
+    const srcIno = statSync(src).ino;
+    expect(statSync(src).nlink, 'fixture did not share the inode').toBe(2);
+    const r = runBlock();
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/unshared 1 hard-linked file\(s\) under apps\/operator\/public/);
+    expect(statSync(dst).nlink).toBe(1);
+    expect(statSync(dst).ino).not.toBe(srcIno);
+    expect(statSync(src).ino).toBe(srcIno);
+    expect(readFileSync(dst, 'utf8')).toBe(`payload:${WASM_REL}`);
+    expect(readFileSync(src, 'utf8')).toBe(`payload:${WASM_REL}`);
+  });
+
+  // root ignores directory permissions, so the read-only dir cannot block the copy.
+  it.skipIf(process.getuid?.() === 0)('fails the setup when a shared inode cannot be unshared', () => {
+    const src = join(integration, WASM_REL);
+    const dst = join(release, WASM_REL);
+    const publicDir = dirname(dst);
+    mkdirSync(publicDir, { recursive: true });
+    linkSync(src, dst);
+    // A read-only directory makes the sibling temp copy impossible.
+    chmodSync(publicDir, 0o555);
+    try {
+      const r = runBlock();
+      expect(r.status).not.toBe(0);
+      expect(r.stdout).toContain('FATAL files under apps/operator/public still share an inode');
+    } finally {
+      chmodSync(publicDir, 0o755);
+    }
+  });
+
+  it("never copies the docs publisher's docs.old.<pid> swap leftover", () => {
+    const leftover = 'apps/operator/public/internal/docs.old.3438785/index.html';
+    mkdirSync(dirname(join(integration, leftover)), { recursive: true });
+    writeFileSync(join(integration, leftover), 'previous docs mirror');
+    // The live mirror beside it is not ignored, exactly as in the real tree. That
+    // is what makes git report docs.old.<pid>/ as its own entry instead of
+    // folding it into a wholly-ignored internal/.
+    mkdirSync(join(integration, 'apps/operator/public/internal/docs'), { recursive: true });
+    writeFileSync(join(integration, 'apps/operator/public/internal/docs/index.html'), 'live docs mirror');
+    expect(git(integration, 'status', '--porcelain', '--ignored', '--', 'apps/operator/public')).toContain(
+      '!! apps/operator/public/internal/docs.old.3438785/',
+    );
+    const r = runBlock();
+    expect(r.status, r.stderr).toBe(0);
+    expect(existsSync(join(release, leftover))).toBe(false);
+    expect(existsSync(join(release, VDITOR_REL))).toBe(true);
   });
 
   it('reports how many assets it provisioned, so a silent no-op is visible in the gate log', () => {

@@ -26,6 +26,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -151,13 +152,16 @@ describe('provision_runtime_asset — cross-filesystem copy parity (WI-10004073)
     expect(readdirSync(stage)).toEqual([]);
   });
 
-  it('produces the same tree via the hard-link path', () => {
+  it('produces the same tree on the same filesystem, as a real copy that shares no inode (WI-10004321)', () => {
     const src = makeSource();
     const dst = join(work, 'release/apps/operator/public/wake-runtime');
     const r = runBash('provision_runtime_asset "$SRC" "$DST"', undefined, { SRC: src, DST: dst });
     expect(r.status, r.stderr).toBe(0);
     expect(listTree(dst)).toEqual(listTree(src));
     expect(readdirSync(join(work, 'release/apps/operator/public'))).toEqual(['wake-runtime']);
+    for (const rel of listTree(src)) {
+      expect(statSync(join(dst, rel)).nlink, `${rel} is hard-linked to the integration tree`).toBe(1);
+    }
   });
 
   it('provisions a single file asset the same way', () => {

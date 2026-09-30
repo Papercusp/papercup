@@ -1630,8 +1630,8 @@ rebuild_stale_native_addons
 #
 # Same treatment node_modules already gets in step 3, and for the same stated
 # reason ("untracked by design"): provision from the integration tree rather
-# than re-download. Hardlink first — lute.min.js alone is ~3.9MB and the gate
-# host is not reliably networked, so re-running the setup scripts here would
+# than re-download. Copy locally (a real copy, not a hard link: WI-10004321,
+# below) — lute.min.js alone is ~3.9MB and the gate host is not reliably networked, so re-running the setup scripts here would
 # trade a deterministic red for a flaky one.
 #
 # ONLY fills entries MISSING from the release tree, so anything tracked at
@@ -1648,6 +1648,16 @@ rebuild_stale_native_addons
 # copying, and renames into place, so the fallback can never nest. Staging
 # lives in PROVISION_STAGE_DIR (outside public/, same filesystem as DST) so a
 # crash mid-copy cannot leave a half tree that vite would ship.
+#
+# WI-10004321: a REAL copy (`cp -a`), never a hard link (`cp -al`). A hard link
+# shares one inode between the integration tree and this release tree, and the
+# setup-*-runtime.sh postinstall scripts used to rewrite these files IN PLACE
+# (`cp`/`cp -f` open an existing destination with O_TRUNC). So a canonical
+# `npm install` or vite rebuild silently rewrote the published and in-flight
+# release trees' assets (measured 2026-09-30: silero_vad_v5.onnx was one inode
+# with 11 links across canonical, relcut-0024/0025/0026). The writers now unlink
+# first, and this copy removes the sharing at the source, so neither side alone
+# has to be right. The cost is disk (~320 MB of real runtime assets per tree).
 provision_runtime_asset() {
   _pra_src="$1"
   _pra_dst="$2"
@@ -1655,12 +1665,9 @@ provision_runtime_asset() {
   _pra_tmp="$_pra_stage/.provision.$$.$(basename "$_pra_dst")"
   mkdir -p "$(dirname "$_pra_dst")" "$_pra_stage" 2>/dev/null || return 1
   rm -rf -- "$_pra_tmp"
-  if ! cp -al "$_pra_src" "$_pra_tmp" 2>/dev/null; then
+  if ! cp -a "$_pra_src" "$_pra_tmp" 2>/dev/null; then
     rm -rf -- "$_pra_tmp"
-    if ! cp -a "$_pra_src" "$_pra_tmp" 2>/dev/null; then
-      rm -rf -- "$_pra_tmp"
-      return 1
-    fi
+    return 1
   fi
   if ! mv -- "$_pra_tmp" "$_pra_dst"; then
     rm -rf -- "$_pra_tmp"
@@ -1674,6 +1681,13 @@ if [ -d "$INTEGRATION_ROOT/$PUBLIC_ASSET_REL" ]; then
   PROVISION_STAGE_DIR="$RELEASE_ROOT/.provision-stage.$$"
   while IFS= read -r _ignored_entry; do
     [ -n "$_ignored_entry" ] || continue
+    # internal/docs.old.<pid> is the docs publisher's swap-out of the PREVIOUS
+    # mirror (apps/operator-docs/scripts/postbuild-copy.sh), never a runtime
+    # asset. One left behind in the integration tree (350 MB, measured
+    # 2026-09-30) was copied into every release tree and its SPA dist.
+    case "$_ignored_entry" in
+      "$PUBLIC_ASSET_REL"/internal/docs.old.*) continue ;;
+    esac
     _asset_src="$INTEGRATION_ROOT/$_ignored_entry"
     _asset_dst="$RELEASE_ROOT/$_ignored_entry"
     [ -e "$_asset_src" ] || continue
@@ -1690,6 +1704,34 @@ EOF
   rm -rf -- "$PROVISION_STAGE_DIR"
   unset PROVISION_STAGE_DIR
   log "provisioned $_provisioned_assets gitignored runtime asset(s) under $PUBLIC_ASSET_REL"
+fi
+
+# 3b (cont). No file under apps/operator/public may share an inode (WI-10004321).
+# The loop above skips entries that already exist, so a tree provisioned before
+# the fix still holds `cp -al` hard links to the integration tree. Unshare them:
+# copy each multiply-linked file to a sibling temp and rename it over the
+# original. The rename gives THIS tree a fresh inode and never writes through the
+# shared one, so the other trees' bytes are untouched. Then assert none remain.
+# Unlike a missing asset (non-fatal above: the owning test reports it), a shared
+# inode is silent: the tree's assets can change after it was built and tested,
+# and nothing would ever go red. So this one is fatal.
+if [ -d "$RELEASE_ROOT/apps/operator/public" ]; then
+  _unshared_assets=0
+  while IFS= read -r -d '' _linked_asset; do
+    _unshare_tmp="$(dirname "$_linked_asset")/.unshare.$$.$(basename "$_linked_asset")"
+    if cp -a -- "$_linked_asset" "$_unshare_tmp" && mv -f -- "$_unshare_tmp" "$_linked_asset"; then
+      _unshared_assets=$((_unshared_assets + 1))
+    else
+      rm -f -- "$_unshare_tmp"
+    fi
+  done < <(find "$RELEASE_ROOT/apps/operator/public" -type f -links +1 -print0 2>/dev/null)
+  [ "$_unshared_assets" -eq 0 ] || log "unshared $_unshared_assets hard-linked file(s) under apps/operator/public"
+  _still_linked="$(find "$RELEASE_ROOT/apps/operator/public" -type f -links +1 2>/dev/null | head -5)"
+  if [ -n "$_still_linked" ]; then
+    log "FATAL files under apps/operator/public still share an inode with another tree (WI-10004321); a rewrite in either tree would change the other:"
+    log "$_still_linked"
+    exit 1
+  fi
 fi
 
 # 3c. Checksum-pinned desktop rootfs -----------------------------------------
