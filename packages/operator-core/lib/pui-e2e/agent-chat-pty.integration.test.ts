@@ -1795,6 +1795,7 @@ beforeEach(async () => {
   scriptedEngine.sdkSessions = [];
   scriptedEngine.sdkCwds = [];
   scriptedEngine.sdkIdentities = [];
+  scriptedEngine.rpcLaunches = [];
   scriptedEngine.events = [];
   scriptedEngine.initialization = Promise.resolve();
   initializeWarnings = [];
@@ -3786,9 +3787,16 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
         expect(scriptedEngine.rpcLaunches).toHaveLength(launches + 1);
         return { launch: scriptedEngine.rpcLaunches.at(-1)!, native: spawned.at(-1)! };
       };
+      // A default-account OMP launch with no model falls back to the user's own
+      // ~/.omp/agent/config.yml default (resolveOmpSessionModel), and refuses a
+      // papercusp-gateway/* default on that route. Pin a direct-provider model
+      // through the selector the account envelope uses, so the case does not
+      // depend on the machine's OMP config.
+      const savedOmpModel = process.env.PAPERCUSP_OMP_MODEL_SELECTOR;
       try {
         // PUI reads the configured backend at startup: set it before launching.
         await writeAgentConfig({ ...saved, backend });
+        if (backend === 'omp') process.env.PAPERCUSP_OMP_MODEL_SELECTOR = 'openai/gpt-5';
 
         stage = 'outside';
         const own = await chatIn(outside);
@@ -3824,6 +3832,8 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
           outside: own.launch, inside: su.launch }));
       } finally {
         spy.mockRestore();
+        if (savedOmpModel === undefined) delete process.env.PAPERCUSP_OMP_MODEL_SELECTOR;
+        else process.env.PAPERCUSP_OMP_MODEL_SELECTOR = savedOmpModel;
         await writeAgentConfig(saved);
         rmSync(outside, { recursive: true, force: true });
       }
