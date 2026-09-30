@@ -34,5 +34,32 @@
     { "id": "b6817cf6-1233-405e-afcb-ab6665cb49ca", "pool": "harness:papercusp", "pConcrete": 0.38, "text": "P-104 mem0 LIVE witness NON-SHAREABLE marker su-bce40 2026-07-17T03:58Z — this memory must NEVER appear on any peer", "decision": "reject", "reason": "Federation leak canary: its presence is what lets a leak be detected. Must stay." },
     { "id": "3411cd44-6a1c-44de-a796-4565528b589a", "pool": "harness:tau2-valid-mem-1781762509", "pConcrete": 0.48, "text": "Resolution applied: No problem at all! Let me look up your account.", "decision": "reject", "reason": "Same tau2 benchmark pool as d444e037; out of scope." }
   ],
-  "summary": { "flagged": 18, "confirm": 14, "reject": 4 }
+  "summary": { "flagged": 18, "confirm": 14, "reject": 4 },
+  "apply": {
+    "appliedAt": "2026-09-30T17:29Z",
+    "appliedBy": "su-f7ad1084-1707-4238-bb66-0577aa8bc067",
+    "command": "npx tsx packages/operator-core/lib/memory/corpus-sweep-cli.ts --apply --keep-duplicates --no-judge --content-free --content-free-concurrency 8 --pool 120f421b-25c9-47f7-8e3b-329c0edd4bf2 --pool hive:papercusp --forget-content-free-ids <the 14 confirm ids above> --content-free-out .papercusp/bench-reports/content-free-sweep-apply-2026-09-30.json",
+    "report": { "path": ".papercusp/bench-reports/content-free-sweep-apply-2026-09-30.json", "sha256": "1612b5abc230ae5f768b5daa7f5aa4ef9277569794d46030363acf394af0e83d" },
+    "rule": "Forget only a confirm id that this apply run flags again and that is local, not shareable and still open. --keep-duplicates: exact duplicates are left open (duplicate resolved=0 in both pools).",
+    "totals": { "rowsInSweptPools": 1020, "judged": 873, "flaggedAgain": 14, "forgotten": 6 },
+    "forgotten": [
+      "0e84a76b-b033-438a-8222-178b80dbcbb6",
+      "2a85422c-cdc5-429e-904a-01496c78e2a7",
+      "d817ade4-38af-46d2-b549-c0f1cbfa3aaf",
+      "0bc6ee85-b2fb-4231-a8d2-5482bc8880ea",
+      "ae9b5935-b757-4588-9f5d-40d441ca6b79",
+      "41d2ee46-cebe-44dc-9f12-3990c7ef4642"
+    ],
+    "notForgotten": [
+      { "id": "5963353e-b622-4425-bcaa-2026a7e72a8a", "reason": "shareable: the sweep never forgets a shared memory" },
+      { "id": "d28f4b2c-d422-46cf-96ca-91e01c129dd3", "reason": "shareable" },
+      { "id": "302b4bcd-be9e-4871-ae5a-b2140cf81c91", "reason": "shareable" },
+      { "id": "7b6c54cc-c33b-4c35-86cb-b3fef4dc0c36", "reason": "shareable" },
+      { "id": "4be29121-866c-488d-90c6-03ddb41b3a97", "reason": "shareable" },
+      { "id": "759fcdac-febe-4a8d-958f-632b0d7bc3cc", "reason": "shareable" },
+      { "id": "1bb7eabb-f12e-4b0d-8170-70a53eb6320f", "reason": "shareable" },
+      { "id": "4c6ddefd-a655-4801-8cd4-1fc19d0cddf3", "reason": "not judged: redundant copy of cb7c5235 (same text), which is not in this review record and so was not forgotten" }
+    ],
+    "verifiedHow": "harness_shared.memory_canonical.invalid_at is set for exactly the 6 forgotten ids and null for the other 8 confirm ids (dev:pg_query after the run). The process exited 134 after writing its report: the known native embedder teardown abort (EI-19464316359123796), not a sweep failure."
+  }
 }
