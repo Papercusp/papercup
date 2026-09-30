@@ -812,6 +812,15 @@ export default defineTool({
         } };
       }
 
+      // plan-item-provenance P-004: plan_audits has no change trigger, so this — the sole
+      // activation-audit writer — pushes the provenance view itself after the commit.
+      try {
+        const { notifySyncInvalidate } = await import('../../sync-sse');
+        await notifySyncInvalidate('plans.provenance', undefined);
+      } catch {
+        /* best-effort — the panel refreshes on its next mount */
+      }
+
       // EI-22638466916646751: surface the same side-effect-free checkpoint
       // consult preview that plans:start would evaluate. The audit is already
       // durable at this point, so an unavailable advisory preview must remain

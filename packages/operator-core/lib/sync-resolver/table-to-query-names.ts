@@ -205,6 +205,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // class, and the `forcedPast` waiver stamped onto it. A force recorded on the plan
     // must not leave an open verdict panel still claiming an unwaived pass.
     'plans.acceptanceGate',
+    // plan-item-provenance P-004: an added/dropped item changes the per-item provenance view.
+    'plans.provenance',
     'plans.list',
     'coord.plans',
     // plans.get (EI-7433): scoped by plan slug (mig 507's natural-key

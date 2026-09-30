@@ -160,6 +160,7 @@ import {
   type WorkItemBehaviorContractArgs,
 } from './work-item-behavior-contract';
 import { resolvePlanSpecCoverage, planSpecCoverageArgsSchema, type PlanSpecCoverageArgs } from './plan-spec-coverage';
+import { resolvePlanProvenance, planProvenanceArgsSchema, type PlanProvenanceArgs } from '../plan-provenance-read';
 import {
   resolvePlanAcceptanceGateVerdict,
   planAcceptanceGateArgsSchema,
@@ -3020,6 +3021,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       'harness_shared.spec_evidence_bindings',
       'harness_shared.work_items',
     ],
+  } as QueryEntry<unknown>,
+
+  // plans.provenance — plan-item-provenance-2026-09-29 P-004: both directions of the
+  // activation audit for the owner (per-item provenance with quoted source turns; every
+  // forward request, rejected/open first) plus audited-vs-current revision. Labels use
+  // the verdicts the audit STORED (D-005); quotes are read live. Mounted on demand.
+  'plans.provenance': {
+    argsSchema: planProvenanceArgsSchema,
+    resolve: async (args) => resolvePlanProvenance(args as PlanProvenanceArgs),
+    backingTables: ['harness_shared.harness_plans', 'harness_shared.plan_audits', 'harness_shared.session_turns'],
   } as QueryEntry<unknown>,
 
   // plans.acceptanceGate — P-011: the plan acceptance gate's verdict as a READ.

@@ -58,7 +58,7 @@ import {
   REPLICATION_DRILL_MARKER,
   type RubricLossAck,
 } from './agent-tools/plans/rubric-loss-guard';
-import { isConversationAuditRequiredValue } from './agent-tools/plans/plan-activation-gate';
+import { isActivationGateRefusalValue } from './agent-tools/plans/plan-activation-gate';
 import {
   assertCriterionCheckPathsResolve,
   subjectPlanAllowsPlannedPaths,
@@ -3148,7 +3148,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   // tools can render them without throwing. This library API cannot return a partial
   // Rubric, so preserve the exact refusal rather than misreporting it as a failed
   // post-write lookup.
-  if (isConversationAuditRequiredValue(result.value)) {
+  if (isActivationGateRefusalValue(result.value)) {
     throw new Error(`${result.value.code}: ${result.value.message}`);
   }
 

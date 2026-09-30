@@ -47,7 +47,7 @@ import * as path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { NOTE_SUFFIX_RE, parsePlan } from '@papercusp/plan-parser';
 import { activeWorkspaceId } from './workspace-registry';
-import type { ItemProvenanceDeclaration, ItemProvenanceLabel } from './activation-item-provenance';
+import type { ItemProvenanceDeclaration, StoredItemProvenanceCheck } from './activation-item-provenance';
 import {
   PLAN_ADVISORY_LOCK_NAMESPACE,
   planAdvisoryLockKey,
@@ -187,15 +187,6 @@ export interface ActivationAuditMapping {
   disposition: 'covered' | 'repaired' | 'rejected' | 'open';
 }
 
-/** Server-written reverse-coverage verdict stored on an activation audit (P-002). */
-export interface ItemProvenanceCheck {
-  /** True when this audit was held to the rule (refused on any unresolved item). */
-  enforced: boolean;
-  /** Current non-dropped items at the audited revision, with their label. */
-  items: Record<string, ItemProvenanceLabel>;
-  /** Items that were unresolved at this audit (always empty when enforced). */
-  unresolved: string[];
-}
 
 export interface ActivationAuditPayload {
   sourceRanges: ActivationAuditSourceRange[];
@@ -210,7 +201,7 @@ export interface ActivationAuditPayload {
   /** Server-written only (P-002/P-003): the reverse-coverage verdict computed at this
    *  audit. `enforced:false` marks a plan whose earlier audits predate item provenance
    *  (recorded with a warning); the lifecycle gate enforces only `enforced:true`. */
-  itemProvenanceCheck?: ItemProvenanceCheck;
+  itemProvenanceCheck?: StoredItemProvenanceCheck;
   /** Server-written only. Repeated re-audits must stay pending until the
    * reviewed BAR amendment advances the stale subject pin. */
   barSeedPendingAmendment?: {

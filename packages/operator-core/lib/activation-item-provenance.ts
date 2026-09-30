@@ -285,61 +285,106 @@ export type RefOriginLookup = (refs: readonly string[]) => Promise<Map<string, H
  * never an excerpt). Arrays go through sql.array() so each stays one SQL argument on
  * getOrgPg (the same reason audit.ts's under-read query uses it).
  */
-export function dbRefOriginLookup(
-  sql: {
-    <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T>;
-    array?: (values: unknown[]) => unknown;
-  },
+export type TurnSql = {
+  <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T>;
+  array?: (values: unknown[]) => unknown;
+};
+
+/** One cited turn as read from the corpus: its speaker, the first `chars` characters of
+ *  its text, and the origin verdict classified from that text's head. */
+export interface SourceTurn {
+  speaker: string | null;
+  text: string | null;
+  verdict: HitTurnOriginVerdict;
+}
+
+/**
+ * Read a batch of canonical session_turn refs in ONE round trip over
+ * harness_shared.session_turns, classifying each turn's HEAD with the same classifier
+ * sessions:search uses (turn-origin.ts property 1: never an excerpt). Refs that do not
+ * parse, or whose turn is absent, are simply missing from the result — never guessed.
+ * Arrays go through sql.array() so each stays one SQL argument on getOrgPg.
+ *
+ * Shared by the audit-time origin lookup (P-002) and the provenance read model (P-004),
+ * so the verdict a plan was audited against and the one the owner sees come from the
+ * same query.
+ */
+export async function fetchSourceTurns(
+  sql: TurnSql,
   workspaceId: string,
-): RefOriginLookup {
+  refs: readonly string[],
+  chars: number = TURN_ORIGIN_HEAD_CHARS,
+): Promise<Map<string, SourceTurn>> {
+  const out = new Map<string, SourceTurn>();
+  const keyed = [...new Set(refs)]
+    .map((ref) => ({ ref, parsed: parseTurnRef(ref) }))
+    .filter((entry): entry is { ref: string; parsed: NonNullable<ReturnType<typeof parseTurnRef>> } => entry.parsed != null);
+  if (keyed.length === 0) return out;
+  const wrap = (values: unknown[]) => (sql.array ? sql.array(values) : values);
+  const width = Math.max(chars, TURN_ORIGIN_HEAD_CHARS);
+  const rows = await sql<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string | null; head: string | null }>>`
+    SELECT turns.source_kind, turns.session_id, turns.turn_idx, turns.speaker,
+           left(turns.text, ${width}) AS head
+      FROM harness_shared.session_turns AS turns
+     WHERE (turns.workspace_id = ${workspaceId} OR turns.workspace_id = 'default')
+       AND EXISTS (
+         SELECT 1
+           FROM unnest(
+             ${wrap(keyed.map((entry) => entry.parsed.sourceKind))}::text[],
+             ${wrap(keyed.map((entry) => entry.parsed.sessionId))}::text[],
+             ${wrap(keyed.map((entry) => entry.parsed.turnIdx))}::int[]
+           ) AS wanted(source_kind, session_id, turn_idx)
+          WHERE wanted.source_kind = turns.source_kind
+            AND wanted.session_id = turns.session_id
+            AND wanted.turn_idx = turns.turn_idx
+       )`;
+  const byKey = new Map<string, SourceTurn>();
+  for (const row of rows) {
+    const head = row.head ?? null;
+    byKey.set(turnOriginKey({ sourceKind: row.source_kind, sessionId: row.session_id, turnIdx: Number(row.turn_idx) }), {
+      speaker: row.speaker ?? null,
+      text: head === null ? null : head.slice(0, chars),
+      verdict: classifyHitTurnOrigin(row.speaker, head === null ? null : head.slice(0, TURN_ORIGIN_HEAD_CHARS)).verdict,
+    });
+  }
+  for (const { ref, parsed } of keyed) {
+    const turn = byKey.get(turnOriginKey(parsed));
+    if (turn) out.set(ref, turn);
+  }
+  return out;
+}
+
+export function dbRefOriginLookup(sql: TurnSql, workspaceId: string): RefOriginLookup {
   return async (refs) => {
     const out = new Map<string, HitTurnOriginVerdict>();
-    const keyed = [...new Set(refs)]
-      .map((ref) => ({ ref, parsed: parseTurnRef(ref) }))
-      .filter((entry): entry is { ref: string; parsed: NonNullable<ReturnType<typeof parseTurnRef>> } => entry.parsed != null);
-    if (keyed.length === 0) return out;
-    const wrap = (values: unknown[]) => (sql.array ? sql.array(values) : values);
-    const rows = await sql<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string | null; head: string | null }>>`
-      SELECT turns.source_kind, turns.session_id, turns.turn_idx, turns.speaker,
-             left(turns.text, ${TURN_ORIGIN_HEAD_CHARS}) AS head
-        FROM harness_shared.session_turns AS turns
-       WHERE (turns.workspace_id = ${workspaceId} OR turns.workspace_id = 'default')
-         AND EXISTS (
-           SELECT 1
-             FROM unnest(
-               ${wrap(keyed.map((entry) => entry.parsed.sourceKind))}::text[],
-               ${wrap(keyed.map((entry) => entry.parsed.sessionId))}::text[],
-               ${wrap(keyed.map((entry) => entry.parsed.turnIdx))}::int[]
-             ) AS wanted(source_kind, session_id, turn_idx)
-            WHERE wanted.source_kind = turns.source_kind
-              AND wanted.session_id = turns.session_id
-              AND wanted.turn_idx = turns.turn_idx
-         )`;
-    const byKey = new Map<string, HitTurnOriginVerdict>();
-    for (const row of rows) {
-      byKey.set(
-        turnOriginKey({ sourceKind: row.source_kind, sessionId: row.session_id, turnIdx: Number(row.turn_idx) }),
-        classifyHitTurnOrigin(row.speaker, row.head).verdict,
-      );
-    }
-    for (const { ref, parsed } of keyed) {
-      const verdict = byKey.get(turnOriginKey(parsed));
-      if (verdict) out.set(ref, verdict);
-    }
+    for (const [ref, turn] of await fetchSourceTurns(sql, workspaceId, refs)) out.set(ref, turn.verdict);
     return out;
   };
+}
+
+/**
+ * The per-audit verdict persisted on the activation payload (plan D-005): the per-item
+ * labels AND the per-ref origin verdicts they were computed from, so the lifecycle gate
+ * never re-classifies transcripts and the read model can show what the audit saw.
+ */
+export interface StoredItemProvenanceCheck {
+  version: 1;
+  /** True when this audit was held to the rule (refused on any unresolved item). */
+  enforced: boolean;
+  /** Current non-dropped items at the audited revision, with their label. */
+  items: Record<string, ItemProvenanceLabel>;
+  /** Items that were unresolved at this audit (always empty when enforced). */
+  unresolved: string[];
+  /** Origin verdict of every cited source ref; a ref absent here was unreadable (unknown). */
+  refOrigins: Record<string, HitTurnOriginVerdict>;
 }
 
 export interface ActivationItemProvenanceEvaluation {
   /** Structural declaration problems — the audit must refuse on any. */
   problems: ItemProvenanceDeclarationProblem[];
   summary: ItemProvenanceSummary;
-  /** The server-written verdict to store on the audit. */
-  check: {
-    enforced: boolean;
-    items: Record<string, ItemProvenanceLabel>;
-    unresolved: string[];
-  };
+  /** The server-written verdict to store on the audit (plan D-005). */
+  check: StoredItemProvenanceCheck;
   /** True when the audit must refuse `item_provenance_missing`. */
   refuse: boolean;
   /** Set when the audit records with unresolved items (legacy plan). */
@@ -379,7 +424,7 @@ export async function evaluateActivationItemProvenance(input: {
   return {
     problems,
     summary,
-    check: { enforced, items, unresolved: summary.unresolved },
+    check: { version: 1, enforced, items, unresolved: summary.unresolved, refOrigins: Object.fromEntries(origins) },
     refuse: problems.length === 0 && enforced && summary.unresolved.length > 0,
     ...(!enforced
       ? {

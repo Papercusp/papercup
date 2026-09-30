@@ -255,6 +255,17 @@ const PUSH_EXEMPT: Record<string, string> = {
     'no trigger on code_recipes — same as the feed leg above; an open recipe detail refreshes on remount/manual refresh.',
   'learning.retainCounts :: harness_shared.code_recipes':
     'no trigger on code_recipes — same as the feed leg above; the recipes BADGE (WI-39900) tolerates staleness by design (generous staleTime) and refreshes on remount/manual refresh.',
+
+  // plans.provenance (plan-item-provenance-2026-09-29 P-004). plan_audits has ONE writer
+  // for this view's data — plans:audit, which pushes plans.provenance after the
+  // activation audit commits (agent-tools/plans/audit.ts). session_turns supplies only
+  // live quote text for turns an audit already cited; those turns are historical and
+  // do not change. RE-ARM: bridge plan_audits if a second activation-audit writer
+  // appears or audit.ts stops pushing; never bridge session_turns (hot append ledger).
+  'plans.provenance :: harness_shared.plan_audits':
+    'the sole activation-audit writer (plans:audit) pushes plans.provenance after commit; bridge the table if another writer appears or that push is removed.',
+  'plans.provenance :: harness_shared.session_turns':
+    'quotes are read from turns an audit already cited, which are historical and immutable; session_turns is a hot append ledger, so a trigger would full-bust every open panel for nothing.',
 };
 
 /**

@@ -176,6 +176,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'workItems.specAdequacy': null, // a specific work-item id (P-011)
   'plans.specCoverage': null, // a specific plan slug (P-011)
   'plans.acceptanceGate': null, // a specific plan slug (P-011)
+  'plans.provenance': null, // a specific plan slug (plan-item-provenance P-004)
   'featuresConsolidated.detail': null, // a specific featureId
   'featureTimeline.byFeature': null, // a specific featureId
   'learning.analyzeCycle': null, // a specific cycleId (from learning.analyze)
