@@ -3726,6 +3726,21 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   ];
   const MULTIPLEXER_OR_SHELL = /^(zellij|tmux|screen|bash|sh|dash|zsh|fish)$/;
 
+  // R-01 positive control: `pui hud` is the operator surface the workbench's
+  // HUD pane runs, so its first loaded frame MUST match WORKBENCH_CHROME. If
+  // the tokens drift from what pui renders, this fails and P-001's empty match
+  // below stops passing vacuously.
+  test('R-01 control: a `pui hud` frame shows the chrome a default launch must not', async () => {
+    const pane = new PuiPane(bin, operatorPort, home, { args: ['hud'], cols: 220, rows: 44 });
+    try {
+      await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
+      await vi.waitFor(() => {
+        const frame = pane.screen();
+        expect(WORKBENCH_CHROME.filter((pattern) => pattern.test(frame)).length, frame).toBeGreaterThan(0);
+      }, { timeout: 20_000, interval: 250 });
+    } finally { await pane.stop(); }
+  }, 90_000);
+
   // pui-chat-first-ux-2026-09-28 P-001 acceptance. Owner #783: `pui` must start
   // the way `claude` / `codex` do — one conversation, full screen, in the
   // directory it was started from, ready to type. No zellij, no workbench tab
@@ -3770,6 +3785,10 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       pane.write('\u000f');
       await pane.waitFor('reconciliation: ');
       expect(pane.screen()).toMatch(/\badv \d/);
+      // Positive control for the scan above: the details view MUST trip it, so
+      // an empty scan of the ready frame is a verdict, not a dead scanner.
+      expect(chatJargonIn(pane.screen()), 'CHAT_JARGON fires on the details view').toEqual(
+        expect.arrayContaining([String(/\badv \d/), String(/reconciliation/)]));
       // R-02: the session the UI shows is the backend's own: the same adv row,
       // run in the launch directory, live, in the lifecycle state the UI names.
       await vi.waitFor(async () => {
@@ -3874,6 +3893,9 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
           expect(own.native.codexHooks).toBe(false);
         } else {
           expect(own.native.ompServers ?? []).not.toContain('papercusp-su');
+          // psu attaches OMP hooks as `--hook` / `-e` extension modules; the
+          // chat's own identity carries neither.
+          expect(own.native.args.filter((arg) => arg === '--hook' || arg === '-e')).toEqual([]);
         }
 
         stage = 'inside';
