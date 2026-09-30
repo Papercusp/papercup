@@ -346,7 +346,7 @@ const empty = (outcome: CorpusRecallOutcome): CorpusRecallResult => ({
   rerank: 'nothing-to-reorder',
 });
 
-type QueryEmbedder = (text: string) => Promise<number[]>;
+type QueryEmbedder = (text: string, signal?: AbortSignal) => Promise<number[]>;
 
 export interface CorpusEmbedderWarmupOptions {
   /** Override the short request acquisition budget for boot/background work. */

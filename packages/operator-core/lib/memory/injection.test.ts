@@ -6,6 +6,7 @@ import {
   MemoryTimeoutError,
   noteMemoryFailure,
   resetMemoryDegradedForTest,
+  createMemoryWorkDeadline,
 } from './op-deadline';
 
 // db-org is mocked so the dedup/bump paths (getOrgPg().sql) are deterministic and
@@ -215,7 +216,7 @@ it('cancels upstream search when the existing injection phase deadline expires',
     });
     await didStart;
     await vi.advanceTimersByTimeAsync(MEMORY_INJECT_TIMEOUT_MS + 1);
-    await expect(block).resolves.toBeNull();
+    await expect(block).resolves.toContain('memory leg: timed-out');
     expect(upstream.aborted).toBe(true);
     expect(upstream.reason).toBeInstanceOf(MemoryTimeoutError);
     expect(backend.search).toHaveBeenCalledOnce();
@@ -224,6 +225,45 @@ it('cancels upstream search when the existing injection phase deadline expires',
     log.mockRestore();
     resetMemoryDegradedForTest();
   }
+});
+
+it('keeps useful memory when the concurrently running corpus exhausts their shared budget', async () => {
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  // Real module imports and hygiene work must actually complete before the
+  // deadline; jumping a fake clock can expire while those imports are pending.
+  const deadline = createMemoryWorkDeadline(1000);
+  useBackend(mockBackend([{ id: 'timely', text: 'The http2 transport uses stream cancellation.' }]));
+  recallCorpusContext.mockImplementationOnce(async () => new Promise(() => {}));
+  try {
+    const build = buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'http2 transport', deadline });
+    const block = await build;
+    expect(block).toContain('id=timely');
+    expect(block).toContain('corpus leg: timed-out');
+    expect(block).not.toContain('memory leg: timed-out');
+  } finally { deadline.close(); log.mockRestore(); warn.mockRestore(); resetMemoryDegradedForTest(); }
+});
+
+it('charges availability and search to one budget and cancels the remaining search', async () => {
+  vi.useFakeTimers();
+  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const deadline = createMemoryWorkDeadline(100);
+  const backend = mockBackend([]);
+  backend.available.mockImplementation(async () => new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 70)));
+  let searchSignal: AbortSignal | undefined;
+  backend.search.mockImplementation(async (_query, opts) => {
+    searchSignal = opts.signal;
+    return new Promise((resolve) => setTimeout(() => resolve([]), 70));
+  });
+  useBackend(backend);
+  try {
+    const build = buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'http2', deadline });
+    await vi.advanceTimersByTimeAsync(101);
+    expect(await build).toContain('memory leg: timed-out');
+    expect(searchSignal?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(backend.search).toHaveBeenCalledOnce();
+  } finally { deadline.close(); log.mockRestore(); vi.useRealTimers(); resetMemoryDegradedForTest(); }
 });
 
 beforeEach(() => {

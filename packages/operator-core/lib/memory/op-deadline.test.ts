@@ -85,6 +85,18 @@ describe('memory degraded latch — self-healing', () => {
 });
 
 describe('withMemoryTimeout — deadline race', () => {
+  it('preserves an explicitly disabled local bound while honoring parent cancellation', async () => {
+    const parent = new AbortController();
+    const deadline = createMemoryWorkDeadline(Number.POSITIVE_INFINITY, parent.signal);
+    try {
+      await expect(deadline.run(async () => 'ready', 'unbounded local')).resolves.toBe('ready');
+      const pending = deadline.run(() => new Promise<string>(() => {}), 'parent-bound');
+      const rejected = expect(pending).rejects.toThrow('parent expired');
+      parent.abort(new Error('parent expired'));
+      await rejected;
+    } finally { deadline.close(); }
+  });
+
   it('spends one deadline across phases and never starts work after expiry', async () => {
     vi.useFakeTimers();
     const deadline = createMemoryWorkDeadline(100);

@@ -453,22 +453,23 @@ const turnStartMemory = defineTool({
           const bounded = await getMemoryBlockBoundedResult(
             workspaceId,
             `turn-start:${owner}`,
-            async () => {
+            async (deadline) => {
               // P-044 (F-L): resolve the agent's ACTION signals only when this
               // turn actually builds/revalidates memory. A stale cache hit must
               // return immediately rather than paying these lookups inline.
               let agentSignals;
               try {
                 const { resolveAgentSignalsForOwner } = await import('../../../memory/agent-signals');
-                agentSignals = await resolveAgentSignalsForOwner({
+                agentSignals = await deadline.run(() => resolveAgentSignalsForOwner({
                   ownerId: owner,
                   workspaceId,
                   ...(body.cwd ? { cwd: body.cwd } : {}),
-                });
+                }), 'agent signals');
               } catch {
                 agentSignals = undefined;
               }
               return await buildMemoryContextBlock({
+                deadline,
                 userId: recallInput.userId,
                 workspaceId,
                 harnessSlugs: harness ? [harness] : [],

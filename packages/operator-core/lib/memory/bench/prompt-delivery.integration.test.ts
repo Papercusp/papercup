@@ -217,10 +217,11 @@ async function measure(query: GoldQuery, phase: string): Promise<Reading> {
     const result = await getMemoryBlockBoundedResult(
       workspaceId,
       id,
-      () => {
+      (deadline) => {
         blockBuilds += 1;
         const buildStarted = performance.now();
         build = buildMemoryContextBlock({
+          deadline,
           workspaceId,
           harnessSlugs: ['delivery-corpus'],
           potSlugs: [],

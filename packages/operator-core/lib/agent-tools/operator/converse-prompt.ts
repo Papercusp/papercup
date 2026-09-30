@@ -343,8 +343,9 @@ export async function buildOperatorPrompt(
       return await getMemoryBlockBounded(
         activeWorkspaceId(),
         memScopeKey,
-        () =>
+        (deadline) =>
           buildMemoryContextBlock({
+            deadline,
             userId: sessionUser?.id ?? null,
             workspaceId: activeWorkspaceId(),
             harnessSlugs,

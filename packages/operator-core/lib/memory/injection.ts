@@ -53,6 +53,8 @@ import {
   isMemoryDegraded,
   noteMemoryFailure,
   withMemoryTimeout,
+  createMemoryWorkDeadline,
+  type MemoryWorkDeadline,
 } from './op-deadline';
 
 // P-016: Mirrors EPHEMERAL_BENCHMARK_SLUG_RE in harness/improvements/watchdog.ts.
@@ -80,6 +82,8 @@ const EPHEMERAL_SLUG_RE =
  */
 
 export interface MemoryInjectionInput {
+  /** Shared with prompt preparation and both recall legs; phases cannot reset it. */
+  deadline?: MemoryWorkDeadline;
   /**
    * Per-user memory scope. Omit (or pass null) on workspace-bearer
    * routes that don't have a session user — the helper will then
@@ -523,6 +527,9 @@ const MAX_ENTRY_CHARS = 450;
 const SLOW_INJECTION_LOG_MS = 750;
 
 export async function buildMemoryContextBlock(input: MemoryInjectionInput): Promise<string | null> {
+  const ownsDeadline = !input.deadline;
+  const deadline = input.deadline ?? createMemoryWorkDeadline(MEMORY_INJECT_TIMEOUT_MS);
+  input = { ...input, deadline };
   const marks: Array<[string, number]> = [];
   const t0 = Date.now();
   let corpus: CorpusLegResult | null = null;
@@ -539,16 +546,37 @@ export async function buildMemoryContextBlock(input: MemoryInjectionInput): Prom
     // join the one comparable ranking F-C/D-011 built — merging them could
     // only be done by a fixed priority, which D-011 names "a quota under
     // another name". See ./corpus-recall.
-    const corpusP = startCorpusLeg(input);
-    const memoryBlock = await buildBlockInner(input, (label, ms) => marks.push([label, ms]), corpusP);
+    const corpusP = deadline.run(() => startCorpusLeg(input), 'corpus leg').catch((error) => {
+      if (!(error instanceof MemoryTimeoutError)) return null;
+      return emptyCorpusLeg('Related context (matched excerpts)', false, 0, null, {
+        outcome: 'timed-out', selected: 0, dropped: emptyCorpusDrops(),
+        sessionDedup: 0, legs: null, retrievalDepth: 0, rerank: 'nothing-to-reorder',
+      });
+    });
+    let memoryTimedOut = false;
+    let renderedMemory: string | null | undefined;
+    const memoryBlock = await deadline.run(
+      () => buildBlockInner(input, (label, ms) => marks.push([label, ms]), corpusP, (block) => { renderedMemory = block; }), 'memory leg',
+    ).catch((error) => {
+      if (!(error instanceof MemoryTimeoutError)) throw error;
+      // Scheduling the joint telemetry row may still be awaiting the slower
+      // corpus. It must not erase memory that was already safely rendered.
+      memoryTimedOut = renderedMemory === undefined;
+      if (memoryTimedOut) noteMemoryFailure(error);
+      return renderedMemory ?? null;
+    });
     // Settled HERE rather than inside the composer (P-001): the leg's own
     // health is a fact about this injection, not about how the block was
     // assembled, and the `finally` below has to be able to report it. The await
     // point is unchanged, so the two legs still overlap exactly as before.
     corpus = await corpusP.catch(() => null);
     noteCorpusLegHealth(corpus);
-    return composeWithCorpus(memoryBlock, corpus);
+    const block = composeWithCorpus(memoryBlock, corpus);
+    if (!memoryTimedOut) return block;
+    const notice = '⚠ Memory retrieval was DEGRADED this turn (memory leg: timed-out) — recover missing recall with memory:search.';
+    return block ? `${block}\n\n${notice}` : notice;
   } finally {
+    if (ownsDeadline) deadline.close();
     const totalMs = Date.now() - t0;
     if (totalMs > SLOW_INJECTION_LOG_MS) {
       const stamped = marks.reduce((s, [, v]) => s + v, 0);
@@ -779,6 +807,7 @@ async function assessCorpusGate(
  * section", exactly like every other best-effort leg on this path.
  */
 function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | null> {
+  const deadline = input.deadline!;
   return (async (): Promise<CorpusLegResult | null> => {
     try {
       const query = toRecallQuery(input.queryContext);
@@ -798,7 +827,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       const sessionId = input.session?.sessionId?.trim() || null;
       let ambientExcludedRefs: ReadonlySet<string> | undefined;
       if (sessionId) {
-        const fence = await getSessionBriefAmbientExcludedRefs(sessionId);
+        const fence = await deadline.run(() => getSessionBriefAmbientExcludedRefs(sessionId), 'ambient fence');
         // A missing/legacy row is an available empty fence. A read or parse
         // failure is different: fail closed so a blind session never receives
         // an unreviewed corpus pointer while its exclusion policy is unknown.
@@ -819,13 +848,14 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       if (sessionId) {
         try {
           const { sql } = getOrgPg();
-          epoch = input.session?.epoch ?? (await currentSessionEpoch(sql, sessionId));
+          epoch = input.session?.epoch ?? (await deadline.run(() => currentSessionEpoch(sql, sessionId), 'corpus epoch'));
         } catch {
           /* no epoch ⇒ no dedup, never a blocked leg */
         }
       }
 
-      const res = await recallCorpusContext({
+      const res = await deadline.run(() => recallCorpusContext({
+        signal: deadline.signal,
         queryText,
         workspaceId: input.workspaceId,
         harnessSlugs: input.harnessSlugs ?? [],
@@ -839,7 +869,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         // production (EI-19460887729945170). The corpus leg now resolves the owner's
         // whole session chain, which is the unit this always meant.
         excludeOwnerId: sessionId,
-      });
+      }), 'corpus retrieval');
       // P-003: what is this retrieval ENTITLED to claim? Evaluated from the
       // coverage samples the alarm already persists — one indexed read,
       // TTL-memoised, fail-open to `unknown` (never to healthy).
@@ -847,7 +877,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       // Evaluated even when nothing was admitted: an empty section under a
       // degraded index and an empty section under a healthy one are different
       // facts, and the observability path must be able to tell them apart.
-      const gate = await assessCorpusGate(input.workspaceId, res);
+      const gate = await deadline.run(() => assessCorpusGate(input.workspaceId, res), 'corpus coverage');
       const baseTelemetry = {
         outcome: res.outcome ?? 'ok',
         selected: res.lines.length,
@@ -892,18 +922,18 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         try {
           const { sql } = getOrgPg();
           const { alreadySurfacedRefs, stampSurfacedRefs } = await import('./corpus-surfaced-ledger');
-          const seen = await alreadySurfacedRefs(
+          const seen = await deadline.run(() => alreadySurfacedRefs(
             sql,
             sessionId,
             epoch,
             lines.map((l) => l.handle.ref),
-          );
+          ), 'corpus dedup');
           if (seen.size > 0) {
             const before = lines.length;
             lines = lines.filter((l) => !seen.has(l.handle.ref));
             sessionDedup = before - lines.length;
           }
-          if (lines.length > 0) {
+          if (lines.length > 0 && !deadline.signal.aborted) {
             void stampSurfacedRefs(
               sql,
               sessionId,
@@ -994,7 +1024,10 @@ async function buildBlockInner(
   input: MemoryInjectionInput,
   mark: (label: string, ms: number) => void,
   corpusP: Promise<CorpusLegResult | null> = Promise.resolve(null),
+  onRendered: (block: string | null) => void = () => {},
 ): Promise<string | null> {
+  const deadline = input.deadline!;
+  const rendered = (block: string | null) => { onRendered(block); return block; };
   // P-042 (F-J): normalize the accepted forms ONCE, here, so the three readers
   // below share one query object. P-044 (F-L) then splits what is ISSUED into
   // two texts, one per fusion leg: `queryText` (the user text) is embedded by
@@ -1012,7 +1045,7 @@ async function buildBlockInner(
   const query = toRecallQuery(input.queryContext);
   const queryText = retrievalQueryText(query);
   const lexText = lexicalQueryText(query);
-  if (!queryText.trim()) return null;
+  if (!queryText.trim()) return rendered(null);
 
   const backend = getMemoryBackend();
   const earlyTotalLimit = input.limit ?? INJECTION_TOTAL_LIMIT;
@@ -1095,7 +1128,7 @@ async function buildBlockInner(
   }
   const tAvail = Date.now();
   try {
-    const avail = await withMemoryTimeout(backend.available(), 'available()', MEMORY_INJECT_TIMEOUT_MS);
+    const avail = await deadline.run(() => backend.available(), 'available()', MEMORY_INJECT_TIMEOUT_MS);
     if (!avail.ok) {
       await writeEarlyZeroRecallStats();
       return null;
@@ -1131,8 +1164,8 @@ async function buildBlockInner(
   } else if (harnessSlugs.length > 0) {
     const tHive = Date.now();
     try {
-      potSlugs = await withMemoryTimeout(
-        resolvePotSlugsForHarnesses(input.workspaceId, harnessSlugs),
+      potSlugs = await deadline.run(
+        () => resolvePotSlugsForHarnesses(input.workspaceId, harnessSlugs),
         'hive-resolve',
         MEMORY_INJECT_TIMEOUT_MS,
       );
@@ -1299,19 +1332,18 @@ async function buildBlockInner(
     let pinnedPackResources: ReadonlySet<string> = new Set();
     if (wearer && scopes.length > 0) {
       try {
-        pinnedPackResources = await withMemoryTimeout(
-          wearerPackageResourcesOrEmpty(getOrgPg().sql, { workspaceId: input.workspaceId, ownerId: wearer }),
+        pinnedPackResources = await deadline.run(
+          () => wearerPackageResourcesOrEmpty(getOrgPg().sql, { workspaceId: input.workspaceId, ownerId: wearer }),
           'package eligibility', MEMORY_INJECT_TIMEOUT_MS);
       } catch {
         pinnedPackResources = new Set();
       }
     }
-    const searchLifetime = new AbortController();
     const doSearch = async (): Promise<MemoryEntry[]> =>
       scopes.length === 0
         ? []
         : backend.search(queryText, {
-            signal: searchLifetime.signal,
+            signal: deadline.signal,
             scope: scopes,
             limit: totalLimit,
             ...(input.includeSuperseded ? { includeSuperseded: true } : {}),
@@ -1333,7 +1365,7 @@ async function buildBlockInner(
             ...(diversityLambda !== undefined ? { diversify: { lambda: diversityLambda } } : {}),
           });
 
-    ranked = await withMemoryTimeout(doSearch(), 'search', MEMORY_INJECT_TIMEOUT_MS, searchLifetime).finally(() => {
+    ranked = await deadline.run(doSearch, 'search', MEMORY_INJECT_TIMEOUT_MS).finally(() => {
       const searchMs = Date.now() - tSearch;
       mark('searchMs', searchMs);
       if (searchMs > SLOW_INJECTION_LOG_MS) {
@@ -1345,7 +1377,7 @@ async function buildBlockInner(
     ranked = shapeIdentityPackageHits(ranked, pinnedPackResources);
     const tStaleness = Date.now();
     try {
-      ranked = await applyStoredMemoryStaleness(ranked, input.workspaceId);
+      ranked = await deadline.run(() => applyStoredMemoryStaleness(ranked, input.workspaceId), 'staleness');
     } finally {
       mark('stalenessMs', Date.now() - tStaleness);
     }
@@ -1459,7 +1491,7 @@ async function buildBlockInner(
   };
 
   try {
-    if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
+    if (userResults.length + harnessHits.length + hiveHits.length === 0) return rendered(null);
 
     // knowledge-packs P-009: a DISABLED pack's rows stay stored but stop being
     // recalled. One settings read per hive in scope (usually 1); best-effort —
@@ -1473,9 +1505,9 @@ async function buildBlockInner(
             const { disabledPacksFor } = await import('../knowledge-packs/manage');
             const slugs = [...new Set(hiveHits.map(({ slug }) => slug))];
             const disabledBySlug = new Map(
-              await Promise.all(
-                slugs.map(async (slug) => [slug, new Set(await disabledPacksFor(input.workspaceId, slug))] as const),
-              ),
+              await deadline.run(() => Promise.all(
+                slugs.map(async (slug) => [slug, new Set(await deadline.run(() => disabledPacksFor(input.workspaceId, slug), 'pack lookup'))] as const),
+              ), 'packs'),
             );
             hiveHits = hiveHits.filter(({ hit, slug }) => {
               const m = hit.metadata ?? {};
@@ -1491,7 +1523,7 @@ async function buildBlockInner(
         mark('packMs', Date.now() - tPack);
       }
     }
-    if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
+    if (userResults.length + harnessHits.length + hiveHits.length === 0) return rendered(null);
 
     // memory_feedback consumer (EI-366 / consume-edges P-031): the push path
     // DROPS anything the user deleted — tombstoned ids (the lexical projection
@@ -1505,7 +1537,7 @@ async function buildBlockInner(
       try {
         const { sql } = getOrgPg();
         const { loadFeedbackSignals, isFeedbackSuppressed } = await import('./feedback-rerank');
-        const signals = await loadFeedbackSignals(sql);
+        const signals = await deadline.run(() => loadFeedbackSignals(sql), 'feedback');
         if (signals.deletedIds.size > 0 || signals.deletedTexts.size > 0) {
           userResults = userResults.filter((h) => !isFeedbackSuppressed(h, signals));
           harnessHits = harnessHits.filter(({ hit }) => !isFeedbackSuppressed(hit, signals));
@@ -1526,7 +1558,7 @@ async function buildBlockInner(
     {
       const tWorkspace = Date.now();
       try {
-        if (userResults.length > 0 && (await isMemoryWorkspaceScopedRecallOn())) {
+        if (userResults.length > 0 && (await deadline.run(() => isMemoryWorkspaceScopedRecallOn(), 'workspace policy'))) {
           const before = surviving();
           userResults = userResults.filter((h) => keepUserPoolHitForWorkspace(h, input.workspaceId));
           funnel.dropped.workspace = before - surviving();
@@ -1535,7 +1567,7 @@ async function buildBlockInner(
         mark('workspaceMs', Date.now() - tWorkspace);
       }
     }
-    if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
+    if (userResults.length + harnessHits.length + hiveHits.length === 0) return rendered(null);
 
     // D-006 — the pre-turn dedup: drop any memory surfaced within the recent
     // watermark window so a stable fact is delivered ONCE, not re-injected
@@ -1559,10 +1591,11 @@ async function buildBlockInner(
             const { sql } = getOrgPg();
             let suppressed: Set<string>;
             if (input.session?.sessionId) {
-              sessionEpoch = input.session.epoch ?? (await currentSessionEpoch(sql, input.session.sessionId));
-              suppressed = await alreadySurfacedIds(sql, input.session.sessionId, sessionEpoch, candidateIds);
+              const session = input.session;
+              sessionEpoch = session.epoch ?? (await deadline.run(() => currentSessionEpoch(sql, session.sessionId), 'memory epoch'));
+              suppressed = await deadline.run(() => alreadySurfacedIds(sql, session.sessionId, sessionEpoch!, candidateIds), 'memory dedup');
             } else {
-              suppressed = await recentlySurfacedIds(sql, candidateIds, reinjectWindowMs());
+              suppressed = await deadline.run(() => recentlySurfacedIds(sql, candidateIds, reinjectWindowMs()), 'memory dedup');
             }
             if (suppressed.size > 0) {
               const before = surviving();
@@ -1579,7 +1612,7 @@ async function buildBlockInner(
         mark('dedupMs', Date.now() - tDedup);
       }
     }
-    if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
+    if (userResults.length + harnessHits.length + hiveHits.length === 0) return rendered(null);
 
     // Jev, the owner's opt-in filter (plan jev-decision-model-integration-2026-09-29;
     // the switch is jev-settings.ts, D-008; the operating point is D-013). Effective
@@ -1597,11 +1630,11 @@ async function buildBlockInner(
           ...harnessHits.map(({ hit }) => hit),
           ...hiveHits.map(({ hit }) => hit),
         ];
-        const verdict = await runJevMemoryGate({
+        const verdict = await deadline.run(() => runJevMemoryGate({
           workspaceId: input.workspaceId,
           message: queryText,
           candidates: pooled.map((hit) => ({ id: hit.id, text: hit.text })),
-        });
+        }), 'admission');
         if (verdict.effective === 'on' && verdict.outcome === 'answered') {
           const drop = new Set(pooled.filter((_, i) => verdict.keep[i] === false));
           if (drop.size > 0) {
@@ -1618,7 +1651,7 @@ async function buildBlockInner(
         mark('jevMs', Date.now() - tJev);
       }
     }
-    if (userResults.length + harnessHits.length + hiveHits.length === 0) return null;
+    if (userResults.length + harnessHits.length + hiveHits.length === 0) return rendered(null);
 
     // Two-tier marker (self-learning-frontier P-022 / FB-08, D-006): with the
     // transfer harness armed, probationary entries are visibly marked — STILL
@@ -1630,7 +1663,7 @@ async function buildBlockInner(
     try {
       const { FLAGS } = await import('@papercusp/flags');
       const { getFlag } = await import('@papercusp/flags/server');
-      tierMarkers = await getFlag(FLAGS.TRANSFER_HARNESS, 'memory-injection');
+      tierMarkers = await deadline.run(() => getFlag(FLAGS.TRANSFER_HARNESS, 'memory-injection'), 'tier policy');
     } catch {
       /* never load-bearing */
     } finally {
@@ -1747,13 +1780,14 @@ async function buildBlockInner(
         mainRows.push(row());
       }
     }
-    const rendered = [...mainRows, ...packRows];
+    deadline.signal.throwIfAborted();
+    const renderedRows = [...mainRows, ...packRows];
     // P-008 (WI-4538): collapse near-duplicate memories (the SAME fact stored under multiple ids
     // — the id-based dedups above can't see it) BEFORE the budget, so a dupe never consumes a
     // slot a distinct fact needed. Order is preserved, so post-F-C the highest-RELEVANCE copy of
     // each cluster survives (it was the highest-priority-POOL copy before D-011).
-    const { kept: dedupedRendered } = collapseNearDuplicates(rendered, (r) => r.text);
-    funnel.dropped.nearDuplicate = rendered.length - dedupedRendered.length;
+    const { kept: dedupedRendered } = collapseNearDuplicates(renderedRows, (r) => r.text);
+    funnel.dropped.nearDuplicate = renderedRows.length - dedupedRendered.length;
     let truncated = false;
     for (const { line, id, entry } of dedupedRendered) {
       // WI-6870: skip-and-continue instead of a hard break. A `break` here discarded every
@@ -1789,7 +1823,7 @@ async function buildBlockInner(
     // writer, whose failures are swallowed (see `admittedByLeg`'s note).
     funnel.byLeg = admittedByLeg(admittedEntries);
     mark('renderMs', Date.now() - tRender);
-    if (lines.length === 0) return null;
+    if (lines.length === 0) return rendered(null);
     if (truncated) {
       lines.push(
         '- (more learnings withheld this turn — the memory budget is full; memory:search pulls the rest on demand)',
@@ -1828,7 +1862,7 @@ async function buildBlockInner(
     }
 
     const heading = input.heading ?? 'Operator memory (relevant entries)';
-    return `## ${heading}\n\n${lines.join('\n')}`;
+    return rendered(`## ${heading}\n\n${lines.join('\n')}`);
   } finally {
     // ONE row per recall, on EVERY exit path — the several `return null`s above,
     // the delivered-block return, and any throw. A `finally` rather than a call

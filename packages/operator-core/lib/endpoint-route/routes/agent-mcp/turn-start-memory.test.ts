@@ -18,6 +18,7 @@
  * This endpoint previously had NO test file at all.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createMemoryWorkDeadline, type MemoryWorkDeadline } from '../../../memory/op-deadline';
 import {
   configureReadCursorStore,
   DELIVERY_TOKEN_KEY,
@@ -149,10 +150,11 @@ beforeEach(() => {
   recordInjectionCoverageMock.mockReset().mockResolvedValue(undefined);
   buildPersonalAmbientContextBlockMock.mockReset().mockResolvedValue(null);
   getMemoryBlockBoundedResultMock.mockReset().mockImplementation(
-    async (_workspaceId: string, _scopeKey: string, build: () => Promise<string | null>) => ({
-      status: 'ready',
-      block: await build(),
-    }),
+    async (_workspaceId: string, _scopeKey: string, build: (deadline: MemoryWorkDeadline) => Promise<string | null>) => {
+      const deadline = createMemoryWorkDeadline(2000);
+      try { return { status: 'ready', block: await build(deadline) }; }
+      finally { deadline.close(); }
+    },
   );
   buildTurnStartOrientationBlockMock.mockReset().mockResolvedValue({ block: '', deliveryToken: null });
   readSuLaunchSpecByOwnerMock.mockReset().mockResolvedValue(null);

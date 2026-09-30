@@ -164,13 +164,13 @@ export function withMemoryTimeout<T>(
   return new Promise<T>((resolve, reject) => {
     const signal = controller?.signal;
     const onAbort = () => { cleanup(); reject(signal?.reason); };
-    const timer = setTimeout(() => {
+    const timer = Number.isFinite(timeoutMs) ? setTimeout(() => {
       const error = new MemoryTimeoutError(`memory ${label} exceeded ${timeoutMs}ms`);
       controller?.abort(error);
       reject(error);
-    }, timeoutMs);
+    }, timeoutMs) : undefined;
     const cleanup = () => {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
     };
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -204,7 +204,7 @@ export function createMemoryWorkDeadline(timeoutMs: number, parent?: AbortSignal
   else parent?.addEventListener('abort', onParentAbort, { once: true });
   const expiresAt = Date.now() + timeoutMs;
   const expire = () => controller.abort(new MemoryTimeoutError(`memory block exceeded ${timeoutMs}ms`));
-  const timer = setTimeout(expire, timeoutMs);
+  const timer = Number.isFinite(timeoutMs) ? setTimeout(expire, timeoutMs) : undefined;
   return {
     signal: controller.signal,
     async run(start, label, capMs = timeoutMs) {
@@ -213,7 +213,7 @@ export function createMemoryWorkDeadline(timeoutMs: number, parent?: AbortSignal
       controller.signal.throwIfAborted();
       return await withMemoryTimeout(start(), label, Math.min(remaining, capMs), controller);
     },
-    close() { clearTimeout(timer); parent?.removeEventListener('abort', onParentAbort); },
+    close() { if (timer !== undefined) clearTimeout(timer); parent?.removeEventListener('abort', onParentAbort); },
   };
 }
 
