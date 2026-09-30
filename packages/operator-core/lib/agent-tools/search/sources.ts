@@ -31,7 +31,17 @@ import type { SearchSource, SearchSourceParams, Listing } from '@papercusp/searc
 // 600-row request on the live 302k-row corpus.
 import { withIterativeScan, chunkAwareVectorLegSql, type ChunkAwareVectorLegOptions } from '@papercusp/search';
 import { SESSION_TURN_CHUNK_SURFACE } from '../../search/turn-chunk-sync';
-import { OPERATOR_TURNS_CHUNK_SURFACE } from '../../search/chunks/registry';
+import { OPERATOR_TURNS_CHUNK_SURFACE, WORK_ITEMS_CHUNK_SURFACE } from '../../search/chunks/registry';
+
+/**
+ * The work_item source's chunk-leg parent: the engineer_issues VIEW, keyed by the
+ * view's names for the base table's key (harness_slug, feature_id), so the
+ * chunk join reaches work_items' primary key through the view.
+ */
+const ENGINEER_ISSUES_CHUNK_PARENT = {
+  table: 'harness_shared.engineer_issues',
+  key: ['base_harness_slug', 'issue_id'],
+} as const;
 import { OWNER_CANDIDATE_TURN_VERDICTS } from '../../turn-provenance/turn-ref';
 import {
   proseProfilePredicateSql,
@@ -801,21 +811,39 @@ const workItem: SearchSource = {
    */
   async embedding(p): Promise<Listing> {
     const { sql, query, workspaceId, scopeFilter, limit, qVec } = p;
+    // generic-rag-chunking P-011 (D-015): rank each item by the nearer of its own
+    // vector (title + first 2,000 characters) and its window chunks, so an item
+    // whose only match lies past the cut is still found. The leg reads the VIEW
+    // as its parent, like the lexical leg, so the scope derivation and the
+    // bug/change/task row set stay defined once; the view's base_harness_slug
+    // and issue_id are the base table's chunk key (harness_slug, feature_id).
     const rows = (await withIterativeScan(sql, (sql) => sql`
-      SELECT issue_id, scope, title, body, kind, state, severity, lane,
-             coalesce(updated_at, created_at) AS updated_at,
-             1 - (embedding <=> ${qVec}::vector) AS sim,
-             ts_headline('english', coalesce(title, '') || E'\n' || coalesce(body, ''),
+      WITH best AS (${chunkAwareVectorLegSql(sql, {
+        surface: { ...WORK_ITEMS_CHUNK_SURFACE, parent: ENGINEER_ISSUES_CHUNK_PARENT },
+        parentAlias: 'ei',
+        qVec,
+        limit,
+        mode: 'retrieve',
+        // Same scope semantics as the lexical leg: the column stores
+        // 'operator' | 'harness:<slug>', so a bare slug maps to the latter.
+        parentFilter: p.sql`ei.workspace_id = ${workspaceId}
+          AND (${scopeFilter}::text IS NULL OR ei.scope = 'harness:' || ${scopeFilter}::text)`,
+        // D-011: the embedding-space rule stays here; the helper only names
+        // the qualified columns. A missing column fails closed.
+        spaceFilter: (cols) => (cols.profileColumn && cols.modeColumn
+          ? proseProfileSql(p, cols.profileColumn, cols.modeColumn)
+          : p.sql`FALSE`),
+      })})
+      SELECT e.issue_id, e.scope, e.title, e.body, e.kind, e.state, e.severity, e.lane,
+             coalesce(e.updated_at, e.created_at) AS updated_at,
+             1 - b.distance AS sim,
+             ts_headline('english', coalesce(e.title, '') || E'\n' || coalesce(e.body, ''),
                plainto_tsquery('english', ${query}),
                ${HEADLINE_OPTS}) AS highlight
-        FROM harness_shared.engineer_issues
-       WHERE workspace_id = ${workspaceId}
-         -- same scope semantics as the lexical leg: the column stores
-         -- 'operator' | 'harness:<slug>', so a bare slug maps to the latter.
-         AND (${scopeFilter}::text IS NULL OR scope = 'harness:' || ${scopeFilter}::text)
-         AND embedding IS NOT NULL
-         AND ${proseProfileSql(p, 'embedding_profile', 'embedding_mode')}
-    ORDER BY embedding <=> ${qVec}::vector
+        FROM best b
+        JOIN harness_shared.engineer_issues e
+          ON e.base_harness_slug = b.base_harness_slug AND e.issue_id = b.issue_id
+    ORDER BY b.distance, e.issue_id
        LIMIT ${limit}
     `)) as unknown as Array<{
       issue_id: string;

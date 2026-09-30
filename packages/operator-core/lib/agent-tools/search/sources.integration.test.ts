@@ -212,6 +212,12 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
         (setweight(to_tsvector('english', coalesce(title, '')), 'A')
          || setweight(to_tsvector('english', coalesce(body, '')), 'B'))
       ) STORED,
+      -- generic-rag-chunking P-011: the view's name for the base table's
+      -- harness_slug, the first half of the work_items chunk key. Production
+      -- derives scope FROM it; the fixture derives it back from scope.
+      base_harness_slug TEXT GENERATED ALWAYS AS (
+        CASE WHEN scope LIKE 'harness:%' THEN substr(scope, 9) ELSE '' END
+      ) STORED,
       PRIMARY KEY (workspace_id, issue_id)
     );
   `);
@@ -587,6 +593,38 @@ async function seedTurnChunks(s: postgres.Sql): Promise<void> {
   await chunk(P010.decoy, 0, 0);
 }
 
+/**
+ * P-011 / D-015 fixture — work_item.embedding reads work-item chunks (margin 0).
+ * The query is v(0), so sim = cos θ.
+ *   LONG   own vector far (θ=1.2), window 1 on the query (θ=0.05): its only
+ *          match lies past the 2,000-character cut
+ *   SHORT  own vector θ=0.3, no chunks; under another harness scope
+ *   DECOY  another workspace, SAME harness: own vector far, chunk exactly on
+ *          the query — the chunk leg must filter it before its LIMIT
+ */
+const WS_P011 = 'ws-p011';
+const WS_P011_DECOY = 'ws-p011-decoy';
+
+async function seedWorkItemChunks(s: postgres.Sql): Promise<void> {
+  const issue = async (ws: string, id: string, scope: string, theta: number): Promise<void> => {
+    await s`INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, scope, title, body, kind, state, severity, embedding, embedding_mode)
+            VALUES (${ws}, ${id}, ${scope}, ${`${id} title`}, 'body', 'bug', 'open', 'minor', ${vecLit(theta)}::vector, 'gemma')`;
+  };
+  const chunk = async (harness: string, id: string, idx: number, theta: number): Promise<void> => {
+    await s`INSERT INTO harness_shared.text_chunks
+              (surface, parent_key, chunk_idx, content, parent_sha, chunk_sha, splitter_version,
+               embedding, embedding_mode, embedding_profile)
+            VALUES ('work_items', ${[harness, id]}::text[], ${idx}, 'window text', 'sha', ${`${id}-${idx}`}, 'test',
+                    ${vecLit(theta)}::vector, 'gemma', 'gemma-embeddinggemma-300m-768@v1')`;
+  };
+  await issue(WS_P011, 'EI-P011-LONG', 'harness:sheets', 1.2);
+  await chunk('sheets', 'EI-P011-LONG', 0, 1.1);
+  await chunk('sheets', 'EI-P011-LONG', 1, 0.05);
+  await issue(WS_P011, 'EI-P011-SHORT', 'harness:docs', 0.3);
+  await issue(WS_P011_DECOY, 'EI-P011-DECOY', 'harness:sheets', 1.4);
+  await chunk('sheets', 'EI-P011-DECOY', 0, 0);
+}
+
 const params = (over: Partial<SearchSourceParams> = {}): SearchSourceParams => ({
   sql,
   query: 'kubernetes',
@@ -609,7 +647,57 @@ beforeAll(async () => {
   await seedCompactToken(sql);
   await seedChunks(sql);
   await seedTurnChunks(sql);
+  await seedWorkItemChunks(sql);
 }, 60_000);
+
+describe('P-011 — work_item.embedding reads work-item chunks (D-015)', () => {
+  const run = (over: Partial<SearchSourceParams> = {}) =>
+    embeddingOf('work_item')({ ...params({ workspaceId: WS_P011, ...over }), qVec: QVEC });
+  const ids = (out: Awaited<ReturnType<typeof run>>) => out.map((r) => r.row.source_id);
+
+  it('an item whose only near match is a chunk past the cut ranks first, scored by that chunk', async () => {
+    const out = await run();
+    expect(ids(out)).toEqual(['EI-P011-LONG', 'EI-P011-SHORT']);
+    expect(out[0]!.row.score).toBeCloseTo(Math.cos(0.05), 5);
+    expect(out[0]!.key).toBe('work_item:EI-P011-LONG');
+    expect(out[0]!.row.scope).toBe('harness:sheets');
+  });
+
+  it('SECURITY — the chunk leg is scoped by workspace: another workspace\'s on-query chunk never appears', async () => {
+    expect(ids(await run())).not.toContain('EI-P011-DECOY');
+    // The decoy's own workspace does see it, through its chunk.
+    const decoy = await run({ workspaceId: WS_P011_DECOY });
+    expect(ids(decoy)).toEqual(['EI-P011-DECOY']);
+    expect(decoy[0]!.row.score).toBeCloseTo(1, 5);
+  });
+
+  it('the scope filter applies inside the chunk leg', async () => {
+    expect(ids(await run({ scopeFilter: 'docs' }))).toEqual(['EI-P011-SHORT']);
+    expect(ids(await run({ scopeFilter: 'sheets' }))).toEqual(['EI-P011-LONG']);
+  });
+
+  it('control: without its chunks, the long item falls below the item whose own vector is nearer', async () => {
+    await sql`DELETE FROM harness_shared.text_chunks WHERE surface = 'work_items' AND parent_key = ${['sheets', 'EI-P011-LONG']}::text[]`;
+    try {
+      const out = await run();
+      expect(ids(out)).toEqual(['EI-P011-SHORT', 'EI-P011-LONG']);
+      expect(out[1]!.row.score).toBeCloseTo(Math.cos(1.2), 5);
+    } finally {
+      await seedChunkRows();
+    }
+  });
+
+  // Restores LONG's chunks after the control drops them.
+  async function seedChunkRows(): Promise<void> {
+    for (const [idx, theta] of [[0, 1.1], [1, 0.05]] as const) {
+      await sql`INSERT INTO harness_shared.text_chunks
+                  (surface, parent_key, chunk_idx, content, parent_sha, chunk_sha, splitter_version,
+                   embedding, embedding_mode, embedding_profile)
+                VALUES ('work_items', ${['sheets', 'EI-P011-LONG']}::text[], ${idx}, 'window text', 'sha', ${`EI-P011-LONG-${idx}`}, 'test',
+                        ${vecLit(theta)}::vector, 'gemma', 'gemma-embeddinggemma-300m-768@v1')`;
+    }
+  }
+});
 
 describe('P-010 — turns.embedding reads operator-turn chunks (D-017)', () => {
   const run = () => embeddingOf('turns')({ ...params({ workspaceId: WS_P010 }), qVec: QVEC });
