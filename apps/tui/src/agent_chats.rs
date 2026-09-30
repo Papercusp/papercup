@@ -350,10 +350,76 @@ fn encode_segment(value: &str) -> String {
     out
 }
 
+/// `2026-09-30T01:12:05.123Z` → (`2026-09-30T01:12:05`, 123_000_000). UTC
+/// instants only (what the operator writes); anything else is `None`.
+fn instant_key(ts: &str) -> Option<(&str, u32)> {
+    let bytes = ts.as_bytes();
+    if !ts.is_ascii() || ts.len() < 20 || bytes[10] != b'T' || !ts.ends_with('Z') {
+        return None;
+    }
+    let (secs, rest) = ts.split_at(19);
+    let rest = &rest[..rest.len() - 1];
+    let frac = match rest.strip_prefix('.') {
+        None if rest.is_empty() => 0,
+        Some(digits) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            let mut nanos = String::from(&digits[..digits.len().min(9)]);
+            while nanos.len() < 9 {
+                nanos.push('0');
+            }
+            nanos.parse().ok()?
+        }
+        _ => return None,
+    };
+    Some((secs, frac))
+}
+
+/// Put a loaded transcript in the order the turns happened. The array is
+/// appended by more than one writer — owner turns when the command is
+/// accepted, assistant turns when the runtime's reply is recorded — so its
+/// storage order can put every owner turn ahead of every reply (P-005 review:
+/// the resumed conversation read "you, you, you, you, agent, agent, …").
+/// Each turn carries the instant it happened; a stable sort on it restores the
+/// conversation. If any timestamp is unreadable the stored order is kept
+/// rather than guessed at.
+pub fn in_time_order(turns: &mut [AgentChatTranscriptTurn]) {
+    if turns.iter().all(|turn| instant_key(&turn.ts).is_some()) {
+        turns.sort_by(|a, b| instant_key(&a.ts).cmp(&instant_key(&b.ts)));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn turn(role: &str, content: &str, ts: &str) -> AgentChatTranscriptTurn {
+        serde_json::from_value(json!({ "role": role, "content": content, "ts": ts })).unwrap()
+    }
+
+    #[test]
+    fn a_transcript_stored_owner_turns_first_reads_back_in_the_order_it_happened() {
+        let mut turns = vec![
+            turn("user", "hi", "2026-09-30T01:10:00Z"),
+            turn("user", "read calc.js", "2026-09-30T01:10:20.5Z"),
+            turn("assistant", "Hi!", "2026-09-30T01:10:09.100Z"),
+            turn("assistant", "calc.js defines…", "2026-09-30T01:10:26.000Z"),
+            turn("assistant", "same second, later", "2026-09-30T01:10:20.600Z"),
+        ];
+        in_time_order(&mut turns);
+        let order: Vec<&str> = turns.iter().map(|t| t.content.as_str()).collect();
+        assert_eq!(
+            order,
+            vec!["hi", "Hi!", "read calc.js", "same second, later", "calc.js defines…"]
+        );
+
+        // An unreadable timestamp keeps the stored order untouched.
+        let mut odd = vec![
+            turn("user", "b", "2026-09-30T01:10:20Z"),
+            turn("assistant", "a", "yesterday"),
+        ];
+        in_time_order(&mut odd);
+        assert_eq!(odd[0].content, "b");
+    }
 
     #[test]
     fn decodes_lifecycle_payloads() {

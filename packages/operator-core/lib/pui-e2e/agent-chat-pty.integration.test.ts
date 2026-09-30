@@ -6439,8 +6439,13 @@ describe.skipIf(!scriptedEngine.real).sequential(`installed PUI with the real ${
         frame('05a-relaunch', pane.screen());
         pane.write('/resume');
         await pane.waitFor('/resume');
+        const pickerOpened = performance.now();
         pane.enter();
-        await sleep(2_000);
+        // Until the list arrives the picker says it is loading (P-007); a user
+        // waits for the conversation row, so the review does too, and records
+        // how long that took instead of hiding it behind a fixed sleep.
+        await pane.waitFor(' turns', { timeoutMs: 30_000 });
+        log.push({ label: '05b-resume-list', listMs: Math.round(performance.now() - pickerOpened) });
         frame('05b-resume-picker', pane.screen());
         // The review conversation is the only earlier one in this workspace.
         pane.enter();

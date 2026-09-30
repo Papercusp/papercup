@@ -3066,6 +3066,13 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                     Theme::warn(),
                 ),
             };
+            // P-008: a readable name + target (`Update(calc.js)`,
+            // `papercusp-su · work items claimable (MCP)`), never the wire id.
+            let display = crate::tool_display::tool_display(
+                &tc.name,
+                tc.input.as_ref(),
+                app.launch_cwd.as_deref(),
+            );
             lines.push(Line::from(vec![
                 Span::styled(
                     format!(
@@ -3073,7 +3080,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                         semantic
                             .as_ref()
                             .map(|c| c.title.as_str())
-                            .unwrap_or(&tc.name)
+                            .unwrap_or(display.title.as_str())
                     ),
                     Theme::dim(),
                 ),
@@ -3094,15 +3101,21 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                         style,
                     )));
                 }
-            } else if let Some(args) = tc
-                .input
-                .as_ref()
-                .and_then(|v| tool_input_summary(v, inner_w.saturating_sub(4)))
-            {
+            } else if let Some(summary) = display.summary.as_deref() {
                 lines.push(Line::from(Span::styled(
-                    format!("    {args}"),
+                    trunc(&format!("    {summary}"), inner_w),
                     Theme::dim(),
                 )));
+            }
+            // The raw arguments exist for inspection only: behind the expand
+            // toggle, never in the skimmable row (P-008).
+            if app.chat_tools_expanded {
+                if let Some(raw) = tc.input.as_ref().and_then(|v| serde_json::to_string(v).ok()) {
+                    lines.push(Line::from(Span::styled(
+                        trunc(&format!("    args {}", raw.replace('\n', " ")), inner_w),
+                        Theme::dim(),
+                    )));
+                }
             }
             if let ToolOutcome::Failed(msg) = &tc.outcome {
                 for wl in wrap_text(msg, inner_w.saturating_sub(4)) {
@@ -3222,9 +3235,14 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     let (ctitle, ctext, cstyle) = if app.card_state.has_card() {
         // A blocking card is open — the composer is suspended; the card owns the
         // keys (arrows/number/space/Enter). Tell the user where to act.
+        let details = match app.card_state.focused().and_then(|card| card.details()) {
+            Some(_) if app.chat_tools_expanded => " · Ctrl+R hide details",
+            Some(_) => " · Ctrl+R details",
+            None => "",
+        };
         (
             " Card — answer above ",
-            "↑↓ move · Enter/number pick · Space toggle · Esc skip".to_string(),
+            format!("↑↓ move · Enter/number pick · Space toggle · Esc skip{details}"),
             Theme::notify(),
         )
     } else if app.voice_phase.is_active() {
@@ -3536,6 +3554,18 @@ fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
     // Optional structured report block (the same two-tier render the inbox uses).
     if let Some(rep) = &card.report {
         lines.extend(report_block_lines(rep, inner_w));
+    }
+    // P-008: a tool approval's raw arguments stay behind Ctrl+R, like the
+    // transcript's tool output; the prompt above is the readable question.
+    if app.chat_tools_expanded {
+        if let Some(details) = card.details() {
+            lines.push(Line::from(""));
+            for raw in details.lines() {
+                for wl in wrap_text(raw, inner_w.saturating_sub(2).max(8)) {
+                    lines.push(Line::from(Span::styled(wl, Theme::dim())));
+                }
+            }
+        }
     }
     lines.push(Line::from(""));
     match &card.presentation {
@@ -6185,7 +6215,14 @@ fn approval_request_summary(
     let title = call
         .and_then(crate::semantic_tool_cards::card_for_tool)
         .map(|c| c.title)
-        .unwrap_or_else(|| p.tool_name.clone());
+        .unwrap_or_else(|| {
+            crate::tool_display::tool_display(
+                &p.tool_name,
+                call.and_then(|t| t.input.as_ref()),
+                app.launch_cwd.as_deref(),
+            )
+            .title
+        });
     let args = call
         .and_then(|t| t.input.as_ref())
         .and_then(|v| tool_input_summary(v, width.max(8)));
@@ -6204,11 +6241,11 @@ pub(crate) fn tool_input_summary(input: &serde_json::Value, width: usize) -> Opt
         serde_json::Value::Array(a) if a.is_empty() => return None,
         _ => {}
     }
-    let compact = serde_json::to_string(input).ok()?;
-    // Collapse embedded newlines BEFORE truncating: this is a single-line
-    // summary, and a multi-line argument value must not smuggle extra rows into
-    // a card whose height the transcript layout has already accounted for.
-    let flat = compact.replace('\n', " ");
+    // P-008: `key: value · key: value`, never raw JSON. The helper collapses
+    // embedded newlines BEFORE truncating: this is a single-line summary, and
+    // a multi-line argument value must not smuggle extra rows into a card
+    // whose height the transcript layout has already accounted for.
+    let flat = crate::tool_display::human_args(input, usize::MAX)?;
     Some(trunc(&flat, width))
 }
 
@@ -9287,8 +9324,14 @@ mod tests {
         assert!(text.contains("Completed WI-7"), "{text}");
         assert!(text.contains("evidence: landed it"), "{text}");
         assert!(text.contains("tests: 12 passed"), "{text}");
-        assert!(text.contains("capability:read"), "{text}");
-        assert!(text.contains(r#"{"file_path":"src/main.rs"}"#), "{text}");
+        // P-008: the generic fallback is a readable name + `key: value`
+        // summary; the raw JSON object is only behind the expand toggle.
+        assert!(text.contains("capability read"), "{text}");
+        assert!(text.contains("file path: src/main.rs"), "{text}");
+        assert!(!text.contains(r#"{"file_path""#), "{text}");
+        app.chat_tools_expanded = true;
+        let expanded = render(&app, 120, 24);
+        assert!(expanded.contains(r#"args {"file_path":"src/main.rs"}"#), "{expanded}");
     }
 
     #[test]
@@ -9632,7 +9675,7 @@ mod tests {
 
         assert_eq!(
             tool_input_summary(&json!({ "command": "ls" }), 40),
-            Some(r#"{"command":"ls"}"#.to_string())
+            Some("command: ls".to_string())
         );
 
         // Bounded to the given width, never wider.
@@ -9828,6 +9871,43 @@ mod tests {
             text.contains("answer above") || text.contains("pick"),
             "composer steers the user to the card"
         );
+    }
+
+    /// pui-chat-first-ux P-008: a tool approval shows its readable prompt and
+    /// keeps the raw arguments behind Ctrl+R, which the composer names.
+    #[test]
+    fn approval_card_keeps_raw_arguments_behind_ctrl_r() {
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        let snap = serde_json::json!({
+            "runId": "run-1",
+            "workspaceId": "ws-1",
+            "version": 1,
+            "snapshot": { "openCards": [{
+                "correlationId": "corr-1",
+                "prompt": "Allow Update(calc.js)?\nAdd 1 line, remove 1 line\n- return a - b;\n+ return a + b;",
+                "details": "Raw arguments (Edit):\n{\"old_string\": \"return a - b;\"}",
+                "presentation": { "kind": "radio", "options": [
+                    { "id": "0", "label": "Approve" },
+                    { "id": "1", "label": "Decline" }
+                ]},
+                "allowDecline": true,
+                "createdAt": 1.0
+            }]}
+        })
+        .to_string();
+        app.card_state
+            .apply_snapshot(crate::card_view::SnapshotEnvelope::from_json(&snap).unwrap());
+        let text = render(&app, 110, 30);
+        assert!(text.contains("Allow Update(calc.js)?"), "readable prompt renders");
+        assert!(text.contains("+ return a + b;"), "the diff renders");
+        assert!(!text.contains("old_string"), "raw arguments stay hidden");
+        assert!(text.contains("Ctrl+R details"), "the composer names the toggle");
+        app.chat_tools_expanded = true;
+        let text = render(&app, 110, 30);
+        assert!(text.contains("Raw arguments (Edit):"), "Ctrl+R shows the raw arguments");
+        assert!(text.contains("old_string"));
+        assert!(text.contains("Ctrl+R hide details"));
     }
 
     #[test]

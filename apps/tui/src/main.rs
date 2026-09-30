@@ -57,6 +57,7 @@ mod shared_cache;
 mod sse;
 mod su_session;
 mod theme;
+mod tool_display;
 mod transcript;
 mod tutorial;
 mod ui;
@@ -5391,7 +5392,10 @@ async fn agent_chat_load(
         return;
     };
     match client.get_agent_chat(&harness, &summary.id).await {
-        Ok(chat) => {
+        Ok(mut chat) => {
+            // Stored order ≠ conversation order for SU chats (owner turns are
+            // appended at accept, replies when recorded) — P-007.
+            agent_chats::in_time_order(&mut chat.transcript);
             let approvals = match client.list_agent_chat_approvals(&harness, &chat.id).await {
                 Ok(pending) => pending
                     .into_iter()
