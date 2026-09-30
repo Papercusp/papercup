@@ -135,6 +135,10 @@ beforeAll(async () => {
     '163-await-event-subscriptions.sql',
     '175-watch-floor-coalesce-cols.sql',
     '541-predicate-watches.sql',
+    // recordKeyFire's announcement-pending probe filters event_awaits on
+    // superseded_at; without the column's owning migration every event-emitting
+    // test logs "column superseded_at does not exist" (EI-24551293655721837).
+    '599-event-announcement-generation.sql',
     // Work-item create/status/settled events all write the durable fire latch.
     // Without its owning migration every event-emitting test logs a missing-
     // relation warning, which fail-on-console correctly turns into a red suite
