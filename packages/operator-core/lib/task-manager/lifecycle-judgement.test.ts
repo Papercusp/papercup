@@ -424,7 +424,7 @@ describe('runLifecycleJudgementSweep', () => {
     expect(lifecycleJudgeIntervalKey('ws-1', NOW + LIFECYCLE_JUDGE_INTERVAL_MS)).not.toBe(current);
   });
 
-  it('does not launch a second judge across an interval boundary for candidates claimed by the first', async () => {
+  it('does not launch a second judge across an interval boundary for candidates claimed in either work-item family', async () => {
     const spawn = vi.fn(async (_input: Parameters<LifecycleJudgementDeps['spawnJudge']>[0]) =>
       ({ ok: true, spawnId: 'spawn-free' }));
     const result = await runLifecycleJudgementSweep(
@@ -432,7 +432,7 @@ describe('runLifecycleJudgementSweep', () => {
       depsForRunner({
         listOpenCandidateItems: async () => [
           { id: 'WI-held-a', taskId: 'task-a', harnessSlug: 'papercusp', takenBy: 'queen-a' },
-          { id: 'WI-held-b', taskId: 'task-b', harnessSlug: 'papercusp', takenBy: 'queen-a' },
+          { id: 'WI-held-b', taskId: 'task-b', harnessSlug: 'papercusp', assignee: 'queen-a' },
           { id: 'WI-free', taskId: 'task-c', harnessSlug: 'papercusp', takenBy: null },
         ],
         spawnJudge: spawn,
@@ -450,7 +450,8 @@ describe('runLifecycleJudgementSweep', () => {
       { workspaceId: 'ws-1', harnessSlug: 'papercusp', nowMs: NOW + LIFECYCLE_JUDGE_INTERVAL_MS },
       depsForRunner({
         listOpenCandidateItems: async () => [
-          { id: 'WI-held', taskId: 'task-a', harnessSlug: 'papercusp', takenBy: 'queen-a' },
+          { id: 'WI-held-feature', taskId: 'task-a', harnessSlug: 'papercusp', takenBy: 'queen-a' },
+          { id: 'WI-held-issue', taskId: 'task-b', harnessSlug: 'papercusp', assignee: 'queen-a' },
         ],
         spawnJudge: spawn,
       }),
@@ -460,6 +461,8 @@ describe('runLifecycleJudgementSweep', () => {
     expect(spawn).not.toHaveBeenCalled();
     expect(readFileSync(new URL('./lifecycle-judgement.ts', import.meta.url), 'utf8'))
       .toContain("AND (taken_by IS NULL OR taken_by = '')");
+    expect(readFileSync(new URL('./lifecycle-judgement.ts', import.meta.url), 'utf8'))
+      .toContain("AND (assignee IS NULL OR assignee = '')");
   });
 
   it('launches for an earlier open candidate even when this sweep finds no current candidate', async () => {
