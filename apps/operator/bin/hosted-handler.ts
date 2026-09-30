@@ -66,6 +66,20 @@ export function readAttachRequest(request: Request): HostedWorkspaceAttachReques
   // operator. The broker echoes `kind` on `session.bound`, so a client can tell
   // this control plane honoured it rather than degrading to a PTY.
   if (params.get("kind") === "operator-http") return { kind: "operator-http" };
+  // D-002: psu started by the host. `argv` is a JSON list; anything that does not parse is
+  // handed on as-is so the broker REFUSES it, instead of launching psu with no arguments.
+  if (params.get("kind") === "psu") {
+    const raw = params.get("argv");
+    let argv: unknown = undefined;
+    if (raw !== null) {
+      try {
+        argv = JSON.parse(raw);
+      } catch {
+        argv = raw;
+      }
+    }
+    return { kind: "psu", ...(argv === undefined ? {} : { argv }) };
+  }
   if (params.get("kind") !== "desktop") return {};
   const desktopSessionId = params.get("desktopSessionId")?.trim();
   return {
