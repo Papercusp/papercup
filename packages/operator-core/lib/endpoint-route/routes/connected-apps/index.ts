@@ -43,7 +43,7 @@ import {
 } from '../../../connected-apps/store';
 import { RotationOverlapError, SpendCapError } from '../../../connected-apps/service-keys';
 import { PostgresDeviceGrantStore, type DeviceGrantStore } from '../../../connected-apps/device-grants';
-import { normalizeUserCode, sanitizeClientLabel } from '../hosted-cli';
+import { DEFAULT_CLIENT_LABEL, normalizeUserCode, sanitizeClientLabel } from '../hosted-cli';
 
 export const CONNECTED_APP_DEVICE_CODE_TTL_MS = 10 * 60_000;
 export const CONNECTED_APP_POLL_INTERVAL_MS = 5_000;
@@ -339,7 +339,7 @@ export function createConnectedAppRoutes(deps: ConnectedAppRouteDependencies): R
       } catch (err) {
         return scopeRefusal(err);
       }
-      const clientLabel = sanitizeClientLabel(body.clientLabel);
+      const clientLabel = sanitizeClientLabel(body.clientLabel) || DEFAULT_CLIENT_LABEL;
       const now = clock();
       const expiresAt = new Date(now.getTime() + CONNECTED_APP_DEVICE_CODE_TTL_MS);
       const code = `pad_${randomString(32)}`;

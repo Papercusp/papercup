@@ -21,7 +21,9 @@ import { randomBytes as nodeRandomBytes } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { RouteDefinition } from '@papercusp/agent-mcp';
 import { isLoopbackHost } from '../device/_shared';
-import { readRegistry } from '../../../workspace-registry';
+import { activeWorkspaceId, readRegistry } from '../../../workspace-registry';
+import { PORTAL_APPROVER_RE } from '../../../workspace-host/hosted-app-relay';
+import { sanitizeClientLabel } from '../hosted-cli';
 import {
   OAUTH_REQUEST_TTL_MS,
   OAuthScopeError,
@@ -46,7 +48,15 @@ import {
   protectedResourceMetadata,
   publicOriginOf,
 } from '../../../connected-apps/mcp-oauth-discovery';
-import { AppKeyScopeError, resolveAppKeyScopes, type AppKeyScopeRequest, type AppKeyScopes } from '../../../connected-apps/store';
+import {
+  AppKeyScopeError,
+  createAppKey,
+  resolveAppKeyScopes,
+  type AppKeyScopeRequest,
+  type AppKeyScopes,
+  type CreateAppKeyOptions,
+  type CreatedAppKey,
+} from '../../../connected-apps/store';
 import { consentFormHtml, escapeHtml, htmlPage } from './index';
 
 type AnyRoute = RouteDefinition<any>;
@@ -300,11 +310,78 @@ ${consentFormHtml({ userCode, scopes, workspaces: deps.listWorkspaces(), hidden:
   return [resourceMetadata, serverMetadata, register, authorize, cont, token];
 }
 
-const routes: ReadonlyArray<AnyRoute> = createMcpOAuthRoutes({
-  store: new PostgresOAuthStore(),
-  resolveScopes: resolveAppKeyScopes,
-  listWorkspaces: () => readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name ?? w.id })),
-  isLocal: isLoopbackHost,
-});
+export interface PortalMintRouteDependencies {
+  readonly createKey: (opts: CreateAppKeyOptions) => Promise<CreatedAppKey>;
+  /** The workspace this machine's keys belong to. */
+  readonly workspaceId: () => string;
+  /** True when the request is from this machine and not through a tunnel or relay. */
+  readonly isLocal: (req: Request) => boolean;
+}
+
+/**
+ * POST /connected-apps/portal-mint — the machine half of the PORTAL's MCP OAuth (P-325, D-021).
+ * The portal's consent page approves a grant; its token endpoint asks this machine, over the
+ * connector's `app-key-mint` channel, to mint the key. The channel's machine end
+ * (workspace-host/hosted-app-relay.ts AppKeyMintChannel) is this route's only caller: it is
+ * loopback-only at the route stack and in the handler, neither relay plane's allowlist reaches it,
+ * and the external-ingress listener does not serve it. The scopes are resolved here against this
+ * machine's catalog and hard-deny set, like every other issuance path.
+ */
+export function createPortalMintRoute(deps: PortalMintRouteDependencies): AnyRoute {
+  return defineTool({
+    method: 'POST',
+    path: '/connected-apps/portal-mint',
+    auth: 'loopback',
+    async handler(req) {
+      const refuse = (code: string, status: number, extra: Record<string, unknown> = {}) =>
+        Response.json({ ok: false, error: { code, ...extra } }, { status, headers: noStore });
+      if (!deps.isLocal(req)) return refuse('local_only', 403);
+      let body: unknown;
+      try {
+        body = await req.json();
+      } catch {
+        return refuse('invalid_json', 400);
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return refuse('invalid_json', 400);
+      const fields = body as Record<string, unknown>;
+      // sanitizeClientLabel returns '' when nothing printable is left (blank, spaces, control
+      // characters only), so the check below refuses those labels.
+      const label = sanitizeClientLabel(fields.label);
+      const approvedBy = typeof fields.approvedBy === 'string' ? fields.approvedBy : '';
+      const scopes = scopeFieldsOf(fields.scopes);
+      if (!label || !scopes || !PORTAL_APPROVER_RE.test(approvedBy)) return refuse('invalid_request', 400);
+      try {
+        const created = await deps.createKey({ workspaceId: deps.workspaceId(), userEmail: approvedBy, label, ...scopes });
+        return Response.json({ ok: true, key: created.key, scopes: created.app.scopes }, { status: 201, headers: noStore });
+      } catch (err) {
+        if (err instanceof AppKeyScopeError) return refuse('invalid_scope', 400, { problems: err.problems });
+        throw err;
+      }
+    },
+  });
+}
+
+/** The scope object a mint request carries; null when a field is present but not a string array. */
+function scopeFieldsOf(value: unknown): AppKeyScopeRequest | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const out: AppKeyScopeRequest = {};
+  for (const field of ['tools', 'harnesses', 'capabilities'] as const) {
+    const list = (value as Record<string, unknown>)[field];
+    if (list === undefined) continue;
+    if (!Array.isArray(list) || !list.every((v) => typeof v === 'string')) return null;
+    out[field] = list as string[];
+  }
+  return out;
+}
+
+const routes: ReadonlyArray<AnyRoute> = [
+  ...createMcpOAuthRoutes({
+    store: new PostgresOAuthStore(),
+    resolveScopes: resolveAppKeyScopes,
+    listWorkspaces: () => readRegistry().workspaces.map((w) => ({ id: w.id, name: w.name ?? w.id })),
+    isLocal: isLoopbackHost,
+  }),
+  createPortalMintRoute({ createKey: createAppKey, workspaceId: activeWorkspaceId, isLocal: isLoopbackHost }),
+];
 
 export default routes;

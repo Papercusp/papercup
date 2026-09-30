@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createHostedPrincipal, type HostedPermission } from '../../../auth/hosted-principal';
 import type { HostedPrincipalResolver } from '../../../auth/hosted-principal-resolver';
-import { createHostedCliRoutes, HOSTED_CLI_ROUTES, normalizeUserCode, sanitizeClientLabel } from './index';
+import { createHostedCliRoutes, DEFAULT_CLIENT_LABEL, HOSTED_CLI_ROUTES, normalizeUserCode, sanitizeClientLabel } from './index';
 import type { HostedCliStore, HostedCliToken, HostedCliWorkspace } from './store';
 
 const ORIGIN = 'https://app.papercusp.com';
@@ -153,6 +153,8 @@ describe('hosted psu CLI routes', () => {
     expect(code.userCode).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
     expect(code.verificationUriComplete).toBe(`${ORIGIN}/api/hosted/cli/device?user_code=${code.userCode}`);
     expect([...t.memory.grants.keys()][0]).not.toContain(code.deviceCode); // hash-only
+    // A CLI that sends no label is named DEFAULT_CLIENT_LABEL on the approval page.
+    expect([...t.memory.grants.values()][0].clientLabel).toBe(DEFAULT_CLIENT_LABEL);
 
     const poll = () => t.call('POST', '/hosted/cli/device/token', { method: 'POST', body: JSON.stringify({ deviceCode: code.deviceCode }) });
     expect(await (await poll()).json()).toMatchObject({ error: 'authorization_pending' });
@@ -322,6 +324,11 @@ describe('hosted psu CLI routes', () => {
     expect(normalizeUserCode(' bcdf ghjk ')).toBe('BCDF-GHJK');
     expect(normalizeUserCode('short')).toBeNull();
     expect(sanitizeClientLabel('host\n\u0007name')).toBe('host name');
-    expect(sanitizeClientLabel('')).toBe('psu');
+    // Nothing printable left -> '' so a route that requires a label can refuse it;
+    // routes that want a fallback name apply DEFAULT_CLIENT_LABEL themselves.
+    expect(sanitizeClientLabel('')).toBe('');
+    expect(sanitizeClientLabel('   ')).toBe('');
+    expect(sanitizeClientLabel('\u0007\n\t')).toBe('');
+    expect(sanitizeClientLabel(42)).toBe('');
   });
 });

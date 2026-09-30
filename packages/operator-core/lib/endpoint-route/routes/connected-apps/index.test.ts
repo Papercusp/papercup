@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { createConnectedAppRoutes, LOCAL_OWNER_EMAIL } from './index';
+import { DEFAULT_CLIENT_LABEL } from '../hosted-cli';
 import { isLoopbackHost } from '../device/_shared';
 import { resolveAppKeyScopes, type AppKeyRow, type AppKeyScopes, type CreatedAppKey } from '../../../connected-apps/store';
 import { mintAppKey, parseAppKey, hashAppKey } from '../../../connected-apps/key';
@@ -226,5 +227,24 @@ describe('Connect an app (local key creation)', () => {
     const res = await t.call('POST', '/connected-apps', { label: 'zapier', workspaceId: 'ws-local' }, { remote: true });
     expect(res.status).toBe(403);
     expect(t.created).toEqual([]);
+  });
+
+  it('refuses a label with nothing printable in it instead of naming the key for it', async () => {
+    const t = setup();
+    for (const label of ['', '   ', '\u0007', '\n\t']) {
+      const res = await t.call('POST', '/connected-apps', { label, workspaceId: 'ws-local', tools: ['plans:list'] });
+      expect(res.status, JSON.stringify(label)).toBe(400);
+      expect((await res.json()).error.code).toBe('invalid_request');
+    }
+    expect(t.created).toEqual([]);
+  });
+
+  it('names a device-code client that sends no usable label with the default label', async () => {
+    const t = setup();
+    for (const clientLabel of [undefined, '', '\u0007']) {
+      const res = await t.call('POST', '/connected-apps/device/code', { clientLabel, tools: ['plans:list'] });
+      expect(res.status).toBe(200);
+    }
+    expect([...t.grants.values()].map((g) => g.clientLabel)).toEqual([DEFAULT_CLIENT_LABEL, DEFAULT_CLIENT_LABEL, DEFAULT_CLIENT_LABEL]);
   });
 });
